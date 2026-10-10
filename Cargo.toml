@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Separate cargo-fuzz crate (nightly-only, never part of the normal build).
+exclude = ["crates/gusset-store/fuzz"]
 
 [workspace.package]
 version = "0.0.1"
