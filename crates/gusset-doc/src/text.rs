@@ -183,7 +183,9 @@ fn split_comment(line: &str) -> (&str, Option<&str>) {
             let code = line.get(..i).unwrap_or("");
             let comment = line.get(i + 1..).unwrap_or("");
             let comment = comment.strip_prefix(' ').unwrap_or(comment);
-            return (code, Some(comment));
+            // A trailing `\r` would print before the `\n` and then be read as part of a
+            // CRLF line ending, so a comment never keeps one (found by fuzzing).
+            return (code, Some(comment.trim_end_matches('\r')));
         }
         prev = c;
     }
