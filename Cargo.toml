@@ -30,6 +30,7 @@ mem_forget = "deny"
 libm = "0.2.16"
 blake3 = "1.8.7"
 getrandom = "0.4.3"
+windows-sys = "0.61.2"
 zstd = { version = "0.14.1", default-features = false }
 
 [profile.release]

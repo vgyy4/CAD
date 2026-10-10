@@ -13,6 +13,9 @@ blake3.workspace = true
 getrandom.workspace = true
 zstd.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 # This is a listed FFI crate (ADR 0007): the Windows atomic-replace and file-identity
 # calls need `unsafe`. The workspace forbids unsafe code, so the lints are spelled out
 # here instead of inherited; everything except `unsafe_code` matches the workspace. The
