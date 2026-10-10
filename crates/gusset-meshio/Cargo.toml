@@ -1,0 +1,16 @@
+[package]
+name = "gusset-meshio"
+description = "Mesh exchange for Gusset: STL, 3MF and OBJ import/export with hostile-input limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-kernel.workspace = true
+quick-xml.workspace = true
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

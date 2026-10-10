@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# Separate cargo-fuzz crate (nightly-only, never part of the normal build).
-exclude = ["crates/gusset-store/fuzz"]
+# Separate cargo-fuzz crates (nightly-only, never part of the normal build).
+exclude = ["crates/gusset-store/fuzz", "crates/gusset-meshio/fuzz"]
 
 [workspace.package]
 version = "0.0.1"
@@ -31,6 +31,8 @@ mem_forget = "deny"
 [workspace.dependencies]
 libm = "0.2.16"
 blake3 = "1.8.7"
+quick-xml = { version = "0.42.0", default-features = false }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 directories = "6.0.0"
 getrandom = "0.4.3"
 trash = "5.2.9"
@@ -57,6 +59,7 @@ gusset-eval = { path = "crates/gusset-eval", version = "0.0.1" }
 gusset-hw = { path = "crates/gusset-hw", version = "0.0.1" }
 gusset-commands = { path = "crates/gusset-commands", version = "0.0.1" }
 gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
+gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
