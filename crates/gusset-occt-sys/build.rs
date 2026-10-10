@@ -70,5 +70,6 @@ fn main() {
         }
     }
     println!("cargo::rustc-cfg=gusset_occt");
+    // Dependents read DEP_GUSSET_OCCT_LIB_DIR in their build scripts to enable cfg(gusset_occt).
     println!("cargo::metadata=lib_dir={}", lib.display());
 }

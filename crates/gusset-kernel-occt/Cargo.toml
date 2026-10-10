@@ -1,0 +1,25 @@
+[package]
+name = "gusset-kernel-occt"
+description = "Kernel trait implementation on OCCT (via gusset-occt-sys)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-kernel.workspace = true
+gusset-occt-sys.workspace = true
+
+[lints.rust]
+# Calls into the FFI crate (ADR 0008): unsafe only in `ffi.rs`, each block with SAFETY.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"

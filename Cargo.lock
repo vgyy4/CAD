@@ -82,6 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-kernel-occt"
+version = "0.0.1"
+dependencies = [
+ "gusset-kernel",
+ "gusset-occt-sys",
+]
+
+[[package]]
 name = "gusset-naming"
 version = "0.0.1"
 dependencies = [
