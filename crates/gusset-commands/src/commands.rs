@@ -1,0 +1,1671 @@
+//! Every command (ADR 0012). Each struct is the command's typed, JSON-schema'd arguments.
+//!
+//! Output conventions: free text authored by users or agents (labels, notes, comments,
+//! branch names) is returned only in fields ending in `_user_text`, so the MCP layer
+//! can label and sanitize it as untrusted (spec: prompt injection).
+
+use crate::error::CommandError;
+use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, spec};
+use crate::session::{CmdCtx, Session};
+use gusset_doc::validate::{creates_body, validate_feature_name};
+use gusset_doc::*;
+use gusset_eval::{FeatureStatus, solve_sketch_def};
+use gusset_history::{BranchId, Change as HChange, NodeId};
+use gusset_units::params::{self, Param};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+pub(crate) fn all() -> Vec<CommandSpec> {
+    vec![
+        spec::<GetText>(),
+        spec::<SetText>(),
+        spec::<ParamSet>(),
+        spec::<ParamDelete>(),
+        spec::<SketchCreate>(),
+        spec::<SketchAddLine>(),
+        spec::<SketchAddRectangle>(),
+        spec::<SketchAddCircle>(),
+        spec::<SketchAddArc>(),
+        spec::<SketchAddConstraint>(),
+        spec::<SketchDeleteItems>(),
+        spec::<SketchMovePoint>(),
+        spec::<Extrude>(),
+        spec::<Revolve>(),
+        spec::<Fillet>(),
+        spec::<Chamfer>(),
+        spec::<FeatureDelete>(),
+        spec::<FeatureRename>(),
+        spec::<FeatureSuppress>(),
+        spec::<FeatureMove>(),
+        spec::<SetRollback>(),
+        spec::<Undo>(),
+        spec::<Redo>(),
+        spec::<BranchList>(),
+        spec::<BranchCreate>(),
+        spec::<BranchRename>(),
+        spec::<BranchSwitch>(),
+        spec::<BranchCompare>(),
+        spec::<BranchCherryPick>(),
+        spec::<BranchSetMain>(),
+        spec::<BranchDelete>(),
+        spec::<BranchRestore>(),
+        spec::<NodeStar>(),
+        spec::<QueryModel>(),
+        spec::<QuerySketch>(),
+        spec::<QueryBody>(),
+        spec::<ExportStep>(),
+    ]
+}
+
+// ------------------------------------------------------------------ helpers
+
+fn edit(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    label: &str,
+    f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
+) -> Result<Value, CommandError> {
+    let branch = s.branch_for(ctx)?;
+    let mut doc = s.history().head_document(branch).map_err(CommandError::history)?;
+    let rollback = s.history().branch(branch).map_err(CommandError::history)?.rollback;
+    let before = doc.features.len();
+    let extra = f(&mut doc, rollback)?;
+    let out = s.commit(ctx, label, &doc)?;
+    // Inserting while rolled back keeps the marker just after the new feature.
+    if let Some(r) = rollback {
+        if doc.features.len() > before {
+            let new = r + (doc.features.len() - before);
+            let hctx = ctx.hctx();
+            let _ = s.history_mut_pub().set_rollback(&hctx, branch, Some(new));
+        }
+    }
+    let mut v = json!({
+        "node": out.node.to_string(),
+        "branch": out.branch.to_string(),
+        "rebuild_ok": out.new_errors.is_empty(),
+        "new_errors": out.new_errors,
+    });
+    if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
+        m.extend(e);
+    }
+    Ok(v)
+}
+
+/// Inserts a feature at the rollback marker (or the end).
+fn insert_feature(doc: &mut Document, rollback: Option<usize>, f: Feature) {
+    match rollback {
+        Some(r) if r <= doc.features.len() => doc.features.insert(r, f),
+        _ => doc.features.push(f),
+    }
+}
+
+fn parse_expr(what: &str, s: &str) -> Result<gusset_units::expr::Expr, CommandError> {
+    gusset_units::expr::parse(s).map_err(|e| {
+        let mut ce = CommandError::args(format!("{what}: {}", e.message));
+        ce.hint = e.hint;
+        ce
+    })
+}
+
+fn sketch_mut<'a>(doc: &'a mut Document, name: &str) -> Result<&'a mut SketchDef, CommandError> {
+    match doc.features.iter_mut().find(|f| f.name == name) {
+        Some(Feature { kind: FeatureKind::Sketch(s), .. }) => Ok(s),
+        Some(_) => Err(CommandError::args(format!("'{name}' is not a sketch"))),
+        None => Err(CommandError::not_found(format!("sketch '{name}' does not exist"))),
+    }
+}
+
+fn new_id(s: &mut SketchDef, prefix: char) -> String {
+    let id = format!("{prefix}{}", s.next_id);
+    s.next_id += 1;
+    id
+}
+
+fn add_point(s: &mut SketchDef, x: f64, y: f64) -> Result<String, CommandError> {
+    if !(x.is_finite() && y.is_finite()) || x.abs() > 1e9 || y.abs() > 1e9 {
+        return Err(CommandError::args("coordinates must be finite and within ±1e9 mm"));
+    }
+    let id = new_id(s, 'p');
+    s.entities.push(SkEntity { id: id.clone(), geom: SkGeom::Point { x, y }, construction: false });
+    Ok(id)
+}
+
+fn add_entity(s: &mut SketchDef, geom: SkGeom, construction: bool) -> String {
+    let id = new_id(s, geom.id_prefix());
+    s.entities.push(SkEntity { id: id.clone(), geom, construction });
+    id
+}
+
+fn add_constraint(
+    s: &mut SketchDef,
+    kind: SkConstraintKind,
+    ents: &[&str],
+    value: Option<gusset_units::expr::Expr>,
+) -> String {
+    let id = new_id(s, 'k');
+    s.constraints.push(SkConstraint {
+        id: id.clone(),
+        kind,
+        entities: ents.iter().map(|e| (*e).to_string()).collect(),
+        value,
+    });
+    id
+}
+
+/// Re-solves a sketch and stores the solved positions, so the document reflects what
+/// the user sees (and later solves start from there).
+fn store_solution(doc: &mut Document, sketch: &str) {
+    let values = params::evaluate(&doc.params);
+    let units = doc.units;
+    let Some(Feature { kind: FeatureKind::Sketch(def), .. }) = doc.features.iter_mut().find(|f| f.name == sketch)
+    else {
+        return;
+    };
+    if let Ok(r) = solve_sketch_def(sketch, def, &values, units) {
+        // Snap to a 1 nm grid: keeps the code view readable (no 4.9999999999997 noise)
+        // while staying far below any modeling tolerance.
+        let snap = |v: f64| {
+            let s = (v * 1e6).round() / 1e6;
+            if (s - v).abs() < 1e-9 { if s == 0.0 { 0.0 } else { s } } else { v }
+        };
+        for e in &mut def.entities {
+            match &mut e.geom {
+                SkGeom::Point { x, y } => {
+                    if let Some(p) = r.points.get(&e.id) {
+                        (*x, *y) = (snap(p[0]), snap(p[1]));
+                    }
+                }
+                SkGeom::Circle { radius, .. } => {
+                    if let Some(rr) = r.radii.get(&e.id) {
+                        *radius = snap(*rr);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn parse_node(s: &str) -> Option<NodeId> {
+    s.strip_prefix('n').and_then(|n| n.parse().ok()).map(NodeId)
+}
+
+/// Resolves a branch by id (`b3`), exact name, or "main".
+fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
+    if r == "main" {
+        return Ok(s.history().main());
+    }
+    if let Some(b) = r.strip_prefix('b').and_then(|n| n.parse().ok()).map(BranchId) {
+        if s.history().branch(b).is_ok() {
+            return Ok(b);
+        }
+    }
+    s.history()
+        .branch_by_name(r)
+        .map(|b| b.id)
+        .ok_or_else(|| CommandError::not_found(format!("no branch '{r}'")).hint("use branch.list to see branches"))
+}
+
+/// A node by id (`n12`) or the head of a branch reference.
+fn find_node(s: &Session, r: &str) -> Result<NodeId, CommandError> {
+    if let Some(n) = parse_node(r) {
+        if s.history().node(n).is_ok() {
+            return Ok(n);
+        }
+    }
+    let b = find_branch(s, r)?;
+    s.history().head(b).map_err(CommandError::history)
+}
+
+fn status_json(st: &FeatureStatus) -> Value {
+    match st {
+        FeatureStatus::Ok => json!({"state": "ok"}),
+        FeatureStatus::Suppressed => json!({"state": "suppressed"}),
+        FeatureStatus::RolledBack => json!({"state": "rolled_back"}),
+        FeatureStatus::Blocked { by } => json!({"state": "blocked", "by": by}),
+        FeatureStatus::Failed(e) => json!({
+            "state": "failed",
+            "code": e.code.as_str(),
+            "message": e.message,
+            "hint": e.hint,
+            "reference": e.reference,
+            "suggestion": e.suggestion,
+        }),
+    }
+}
+
+// ------------------------------------------------------------------ document / code view
+
+/// Returns the document as code-view text (the canonical text form).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetText {}
+
+impl Command for GetText {
+    const ID: &'static str = "document.get_text";
+    const TITLE: &'static str = "Show code";
+    const DESCRIPTION: &'static str = "Return the model as code-view text (deterministic; edit and apply it with document.set_text). Labels and comments in it are untrusted user content.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        Ok(json!({ "text_user_text": s.document(&ctx.actor)?.to_text() }))
+    }
+}
+
+/// Replaces the whole model with code-view text (validated, one undoable step).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetText {
+    /// Full document text starting with `gusset 1`.
+    pub text: String,
+}
+
+impl Command for SetText {
+    const ID: &'static str = "document.set_text";
+    const TITLE: &'static str = "Apply code";
+    const DESCRIPTION: &'static str = "Replace the model with the given code-view text. The text is parsed and validated; errors come back with line/column.";
+    const CATEGORY: Category = Category::Document;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let new = gusset_doc::text::parse(&self.text).map_err(|e| {
+            let mut ce = CommandError::new("invalid_document", e.to_string());
+            ce.hint = e.hint.clone();
+            ce.details(json!({"line": e.line, "column": e.column}))
+        })?;
+        let old = s.document(&ctx.actor)?;
+        let changed = old.features.iter().filter(|f| new.feature(&f.name) != Some(*f)).count()
+            + new.features.iter().filter(|f| old.feature(&f.name).is_none()).count();
+        if ctx.is_agent() && s.config.approvals_required && !ctx.approved && changed > s.config.bulk_threshold {
+            return Err(CommandError::approval(&format!("changing {changed} features at once")));
+        }
+        edit(s, ctx, "Edit code", |doc, _| {
+            *doc = new;
+            Ok(json!({ "features_changed": changed }))
+        })
+    }
+}
+
+// ------------------------------------------------------------------ parameters
+
+/// Creates or updates a named parameter.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParamSet {
+    /// Parameter name (letters, digits, `_`).
+    pub name: String,
+    /// Unit-aware expression, e.g. `40 mm` or `width / 2 + 0.5 in`.
+    pub expr: String,
+    /// Optional comment (user text).
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+impl Command for ParamSet {
+    const ID: &'static str = "param.set";
+    const TITLE: &'static str = "Set parameter";
+    const DESCRIPTION: &'static str = "Create or change a named parameter (expression with units).";
+    const CATEGORY: Category = Category::Parameters;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        params::validate_name(&self.name).map_err(CommandError::args)?;
+        let expr = parse_expr(&self.name, &self.expr)?;
+        let label = format!("Set {}", self.name);
+        edit(s, ctx, &label, |doc, _| {
+            match doc.params.iter_mut().find(|p| p.name == self.name) {
+                Some(p) => {
+                    p.expr = expr;
+                    if let Some(c) = self.comment {
+                        p.comment = c;
+                    }
+                }
+                None => {
+                    doc.params.push(Param { name: self.name.clone(), expr, comment: self.comment.unwrap_or_default() })
+                }
+            }
+            let v = params::evaluate(&doc.params);
+            let val = match v.get(&self.name) {
+                Some(Ok(q)) => json!(q.display(doc.units)),
+                Some(Err(e)) => return Err(CommandError::args(format!("{}: {e}", self.name))),
+                None => Value::Null,
+            };
+            Ok(json!({ "value": val }))
+        })
+    }
+}
+
+/// Deletes a parameter (refused while features or parameters still use it).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParamDelete {
+    pub name: String,
+}
+
+impl Command for ParamDelete {
+    const ID: &'static str = "param.delete";
+    const TITLE: &'static str = "Delete parameter";
+    const DESCRIPTION: &'static str = "Delete a parameter that nothing uses (undoable).";
+    const CATEGORY: Category = Category::Parameters;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        edit(s, ctx, &format!("Delete {}", self.name), |doc, _| {
+            let users: Vec<String> = doc
+                .features
+                .iter()
+                .filter(|f| f.kind.parameters().contains(&self.name))
+                .map(|f| f.name.clone())
+                .chain(doc.params.iter().filter(|p| p.expr.variables().contains(&self.name)).map(|p| p.name.clone()))
+                .collect();
+            if !users.is_empty() {
+                return Err(CommandError::args(format!("'{}' is used by {}", self.name, users.join(", ")))
+                    .hint("change those first"));
+            }
+            let n = doc.params.len();
+            doc.params.retain(|p| p.name != self.name);
+            if n == doc.params.len() {
+                return Err(CommandError::not_found(format!("no parameter '{}'", self.name)));
+            }
+            Ok(json!({}))
+        })
+    }
+}
+
+// ------------------------------------------------------------------ sketches
+
+/// Creates an empty sketch on a base plane or a planar face.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchCreate {
+    /// `XY`, `XZ`, `YZ`, or a face reference such as `Extrude1/cap(end)`.
+    pub plane: String,
+    /// Optional name (default `SketchN`).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for SketchCreate {
+    const ID: &'static str = "sketch.create";
+    const TITLE: &'static str = "New sketch";
+    const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ or on a planar face (persistent face reference).";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("S");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let plane = match self.plane.as_str() {
+            "XY" => PlaneRef::XY,
+            "XZ" => PlaneRef::XZ,
+            "YZ" => PlaneRef::YZ,
+            other => PlaneRef::Face(FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?),
+        };
+        edit(s, ctx, "New sketch", |doc, rb| {
+            let name = match self.name {
+                Some(n) => {
+                    validate_feature_name(&n).map_err(CommandError::args)?;
+                    n
+                }
+                None => doc.unique_feature_name("Sketch"),
+            };
+            insert_feature(
+                doc,
+                rb,
+                Feature::new(
+                    name.clone(),
+                    FeatureKind::Sketch(SketchDef { plane, next_id: 1, entities: vec![], constraints: vec![] }),
+                ),
+            );
+            Ok(json!({ "sketch": name }))
+        })
+    }
+}
+
+/// Adds a line between two new points (mm, sketch coordinates).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddLine {
+    pub sketch: String,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    /// Reuse an existing point as the start instead of creating one.
+    #[serde(default)]
+    pub from_point: Option<String>,
+    #[serde(default)]
+    pub construction: bool,
+}
+
+impl Command for SketchAddLine {
+    const ID: &'static str = "sketch.add_line";
+    const TITLE: &'static str = "Line";
+    const DESCRIPTION: &'static str = "Add a line segment to a sketch (coordinates in mm).";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("L");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add line", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let a = match self.from_point {
+                Some(p) => {
+                    if !d.entities.iter().any(|e| e.id == p && matches!(e.geom, SkGeom::Point { .. })) {
+                        return Err(CommandError::not_found(format!("no point '{p}' in {sk}")));
+                    }
+                    p
+                }
+                None => add_point(d, self.x1, self.y1)?,
+            };
+            let b = add_point(d, self.x2, self.y2)?;
+            let l = add_entity(d, SkGeom::Line { a: a.clone(), b: b.clone() }, self.construction);
+            store_solution(doc, &sk);
+            Ok(json!({ "line": l, "points": [a, b] }))
+        })
+    }
+}
+
+/// Adds an axis-aligned rectangle (4 lines sharing corners, horizontal/vertical constraints).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddRectangle {
+    pub sketch: String,
+    /// Corner x (mm).
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// Also add width/height dimensions (expressions, e.g. `width` or `40 mm`).
+    #[serde(default)]
+    pub width_expr: Option<String>,
+    #[serde(default)]
+    pub height_expr: Option<String>,
+}
+
+impl Command for SketchAddRectangle {
+    const ID: &'static str = "sketch.add_rectangle";
+    const TITLE: &'static str = "Rectangle";
+    const DESCRIPTION: &'static str =
+        "Add a rectangle with horizontal/vertical constraints, optionally dimensioned by expressions.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("R");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.width.abs() < 1e-9 || self.height.abs() < 1e-9 {
+            return Err(CommandError::args("rectangle width and height must be non-zero"));
+        }
+        let wexpr = self.width_expr.as_deref().map(|e| parse_expr("width_expr", e)).transpose()?;
+        let hexpr = self.height_expr.as_deref().map(|e| parse_expr("height_expr", e)).transpose()?;
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add rectangle", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let (x, y, w, h) = (self.x, self.y, self.width, self.height);
+            let p =
+                [add_point(d, x, y)?, add_point(d, x + w, y)?, add_point(d, x + w, y + h)?, add_point(d, x, y + h)?];
+            let [p0, p1, p2, p3] = p.clone();
+            let lines = [
+                add_entity(d, SkGeom::Line { a: p0.clone(), b: p1.clone() }, false),
+                add_entity(d, SkGeom::Line { a: p1, b: p2.clone() }, false),
+                add_entity(d, SkGeom::Line { a: p2, b: p3.clone() }, false),
+                add_entity(d, SkGeom::Line { a: p3, b: p0 }, false),
+            ];
+            let [l0, l1, l2, l3] = &lines;
+            let mut cons = vec![
+                add_constraint(d, SkConstraintKind::Horizontal, &[l0], None),
+                add_constraint(d, SkConstraintKind::Vertical, &[l1], None),
+                add_constraint(d, SkConstraintKind::Horizontal, &[l2], None),
+                add_constraint(d, SkConstraintKind::Vertical, &[l3], None),
+            ];
+            if let Some(e) = wexpr {
+                cons.push(add_constraint(d, SkConstraintKind::Distance, &[l0, l0], Some(e)));
+            }
+            if let Some(e) = hexpr {
+                cons.push(add_constraint(d, SkConstraintKind::Distance, &[l1, l1], Some(e)));
+            }
+            store_solution(doc, &sk);
+            Ok(json!({ "points": p, "lines": lines, "constraints": cons }))
+        })
+    }
+}
+
+/// Adds a circle.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddCircle {
+    pub sketch: String,
+    pub cx: f64,
+    pub cy: f64,
+    pub radius: f64,
+    /// Also add a radius dimension (expression).
+    #[serde(default)]
+    pub radius_expr: Option<String>,
+    #[serde(default)]
+    pub construction: bool,
+}
+
+impl Command for SketchAddCircle {
+    const ID: &'static str = "sketch.add_circle";
+    const TITLE: &'static str = "Circle";
+    const DESCRIPTION: &'static str = "Add a circle (center and radius in mm), optionally with a radius dimension.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("C");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if !(self.radius.is_finite() && self.radius > 0.0) {
+            return Err(CommandError::args("radius must be positive"));
+        }
+        let rexpr = self.radius_expr.as_deref().map(|e| parse_expr("radius_expr", e)).transpose()?;
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add circle", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let c = add_point(d, self.cx, self.cy)?;
+            let circ = add_entity(d, SkGeom::Circle { center: c.clone(), radius: self.radius }, self.construction);
+            let k = rexpr.map(|e| add_constraint(d, SkConstraintKind::Radius, &[&circ], Some(e)));
+            store_solution(doc, &sk);
+            Ok(json!({ "circle": circ, "center": c, "constraint": k }))
+        })
+    }
+}
+
+/// Adds a counter-clockwise arc from (x1,y1) to (x2,y2) around (cx,cy).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddArc {
+    pub sketch: String,
+    pub cx: f64,
+    pub cy: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    #[serde(default)]
+    pub start_point: Option<String>,
+    #[serde(default)]
+    pub end_point: Option<String>,
+}
+
+impl Command for SketchAddArc {
+    const ID: &'static str = "sketch.add_arc";
+    const TITLE: &'static str = "Arc";
+    const DESCRIPTION: &'static str = "Add a counter-clockwise arc by center, start and end (the end is projected onto the radius). Optionally reuse existing start/end points.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("A");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let r = (self.x1 - self.cx).hypot(self.y1 - self.cy);
+        let de = (self.x2 - self.cx).hypot(self.y2 - self.cy);
+        if !(r > 1e-9 && de > 1e-9) {
+            return Err(CommandError::args("arc start and end must differ from the center"));
+        }
+        let (ex, ey) = (self.cx + (self.x2 - self.cx) * r / de, self.cy + (self.y2 - self.cy) * r / de);
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add arc", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let c = add_point(d, self.cx, self.cy)?;
+            let a = match self.start_point {
+                Some(p) => p,
+                None => add_point(d, self.x1, self.y1)?,
+            };
+            let b = match self.end_point {
+                Some(p) => p,
+                None => add_point(d, ex, ey)?,
+            };
+            let arc = add_entity(d, SkGeom::Arc { center: c.clone(), start: a.clone(), end: b.clone() }, false);
+            store_solution(doc, &sk);
+            Ok(json!({ "arc": arc, "center": c, "start": a, "end": b }))
+        })
+    }
+}
+
+/// Adds a constraint between sketch entities.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddConstraint {
+    pub sketch: String,
+    /// One of: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel,
+    /// perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric.
+    pub kind: String,
+    /// Entity ids (e.g. `["p1", "p2"]`; for a line length use the line twice).
+    pub entities: Vec<String>,
+    /// Value expression for dimensional constraints (`10 mm`, `width/2`, `30 deg`).
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl Command for SketchAddConstraint {
+    const ID: &'static str = "sketch.add_constraint";
+    const TITLE: &'static str = "Constraint";
+    const DESCRIPTION: &'static str =
+        "Add a geometric or dimensional constraint. The result reports degrees of freedom and any conflict.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("D");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let kind = SkConstraintKind::from_keyword(&self.kind)
+            .ok_or_else(|| CommandError::args(format!("unknown constraint kind '{}'", self.kind)))?;
+        let (n, has_value) = kind.arity();
+        if self.entities.len() != n {
+            return Err(CommandError::args(format!("{} takes {n} entities, got {}", self.kind, self.entities.len())));
+        }
+        let value = match (has_value, &self.value) {
+            (true, Some(v)) => Some(parse_expr("value", v)?),
+            (true, None) => return Err(CommandError::args(format!("{} needs a value", self.kind))),
+            (false, Some(_)) => return Err(CommandError::args(format!("{} takes no value", self.kind))),
+            (false, None) => None,
+        };
+        let sk = self.sketch.clone();
+        let label = format!("Constrain {}", self.kind);
+        let out = edit(s, ctx, &label, |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            for e in &self.entities {
+                if !d.entities.iter().any(|x| &x.id == e) {
+                    return Err(CommandError::not_found(format!("no entity '{e}' in {sk}")));
+                }
+            }
+            let ents: Vec<&str> = self.entities.iter().map(String::as_str).collect();
+            let k = add_constraint(d, kind, &ents, value);
+            store_solution(doc, &sk);
+            Ok(json!({ "constraint": k }))
+        })?;
+        let status = sketch_status(s, ctx, &sk)?;
+        Ok(merge(out, json!({ "sketch_status": status })))
+    }
+}
+
+fn merge(mut a: Value, b: Value) -> Value {
+    if let (Value::Object(m), Value::Object(e)) = (&mut a, b) {
+        m.extend(e);
+    }
+    a
+}
+
+/// Deletes sketch entities/constraints (cascading to dependent items).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDeleteItems {
+    pub sketch: String,
+    pub ids: Vec<String>,
+}
+
+impl Command for SketchDeleteItems {
+    const ID: &'static str = "sketch.delete_items";
+    const TITLE: &'static str = "Delete sketch items";
+    const DESCRIPTION: &'static str = "Delete sketch entities or constraints; geometry and constraints that depend on them are deleted too (undoable).";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Delete sketch items", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let mut dead: Vec<String> = self.ids.clone();
+            loop {
+                let more: Vec<String> = d
+                    .entities
+                    .iter()
+                    .filter(|e| !dead.contains(&e.id) && e.geom.refs().iter().any(|r| dead.iter().any(|x| x == r)))
+                    .map(|e| e.id.clone())
+                    .collect();
+                if more.is_empty() {
+                    break;
+                }
+                dead.extend(more);
+            }
+            d.entities.retain(|e| !dead.contains(&e.id));
+            let before = d.constraints.len();
+            d.constraints.retain(|c| !dead.contains(&c.id) && !c.entities.iter().any(|e| dead.contains(e)));
+            let removed_constraints = before - d.constraints.len();
+            store_solution(doc, &sk);
+            Ok(json!({ "deleted": dead, "constraints_removed": removed_constraints }))
+        })
+    }
+}
+
+/// Drags a point to a new position and re-solves (like dragging in the viewport).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchMovePoint {
+    pub sketch: String,
+    pub point: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Command for SketchMovePoint {
+    const ID: &'static str = "sketch.move_point";
+    const TITLE: &'static str = "Move point";
+    const DESCRIPTION: &'static str = "Move a sketch point; constrained geometry follows where the constraints allow.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Move point", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let p = d
+                .entities
+                .iter_mut()
+                .find(|e| e.id == self.point)
+                .ok_or_else(|| CommandError::not_found(format!("no point '{}'", self.point)))?;
+            match &mut p.geom {
+                SkGeom::Point { x, y } => (*x, *y) = (self.x, self.y),
+                _ => return Err(CommandError::args(format!("'{}' is not a point", self.point))),
+            }
+            store_solution(doc, &sk);
+            Ok(json!({}))
+        })
+    }
+}
+
+// ------------------------------------------------------------------ solid features
+
+fn op_of(op: &Option<String>) -> Result<BodyOp, CommandError> {
+    match op.as_deref() {
+        None => Ok(BodyOp::New),
+        Some(o) => BodyOp::from_keyword(o)
+            .ok_or_else(|| CommandError::args(format!("unknown op '{o}' (new, add, cut, intersect)"))),
+    }
+}
+
+fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<String, CommandError> {
+    match name {
+        Some(n) => {
+            validate_feature_name(&n).map_err(CommandError::args)?;
+            if doc.feature(&n).is_some() {
+                return Err(CommandError::args(format!("a feature named '{n}' already exists")));
+            }
+            Ok(n)
+        }
+        None => Ok(doc.unique_feature_name(base)),
+    }
+}
+
+/// Extrudes closed sketch regions; creates a new body or adds/cuts/intersects.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Extrude {
+    pub sketch: String,
+    /// Regions by an entity on their outer boundary; empty = all regions.
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// Distance expression (`10 mm`, `depth`, negative to flip).
+    pub distance: String,
+    #[serde(default)]
+    pub symmetric: bool,
+    /// new (default), add, cut, intersect.
+    #[serde(default)]
+    pub op: Option<String>,
+    /// Target body for add/cut/intersect (default: the latest body).
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Extrude {
+    const ID: &'static str = "feature.extrude";
+    const TITLE: &'static str = "Extrude";
+    const DESCRIPTION: &'static str =
+        "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body).";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("E");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let distance = parse_expr("distance", &self.distance)?;
+        let op = op_of(&self.op)?;
+        edit(s, ctx, "Extrude", |doc, rb| {
+            let name = feature_name(doc, self.name, "Extrude")?;
+            let f = Feature::new(
+                name.clone(),
+                FeatureKind::Extrude(ExtrudeDef {
+                    profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                    distance,
+                    symmetric: self.symmetric,
+                    op,
+                    body: if op == BodyOp::New { None } else { self.body },
+                }),
+            );
+            insert_feature(doc, rb, f);
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Revolves closed sketch regions around an axis.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Revolve {
+    pub sketch: String,
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// `X` or `Y` (sketch axes) or a sketch line, e.g. `Sketch1.l3`.
+    pub axis: String,
+    /// Angle expression, default `360 deg`.
+    #[serde(default)]
+    pub angle: Option<String>,
+    #[serde(default)]
+    pub op: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Revolve {
+    const ID: &'static str = "feature.revolve";
+    const TITLE: &'static str = "Revolve";
+    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let angle = parse_expr("angle", self.angle.as_deref().unwrap_or("360 deg"))?;
+        let op = op_of(&self.op)?;
+        let axis = match self.axis.as_str() {
+            "X" => AxisRef::X,
+            "Y" => AxisRef::Y,
+            other => {
+                let (sk, ent) =
+                    other.split_once('.').ok_or_else(|| CommandError::args("axis must be X, Y or <Sketch>.<line>"))?;
+                AxisRef::SketchLine { sketch: sk.to_string(), entity: ent.to_string() }
+            }
+        };
+        edit(s, ctx, "Revolve", |doc, rb| {
+            let name = feature_name(doc, self.name, "Revolve")?;
+            let f = Feature::new(
+                name.clone(),
+                FeatureKind::Revolve(RevolveDef {
+                    profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                    axis,
+                    angle,
+                    op,
+                    body: if op == BodyOp::New { None } else { self.body },
+                }),
+            );
+            insert_feature(doc, rb, f);
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+fn parse_edges(edges: &[String]) -> Result<Vec<EdgeRef>, CommandError> {
+    if edges.is_empty() {
+        return Err(CommandError::args("select at least one edge").hint("query.body lists edge names"));
+    }
+    edges.iter().map(|e| EdgeRef::parse(e).map_err(|err| CommandError::args(format!("edge '{e}': {err}")))).collect()
+}
+
+/// Rounds edges.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Fillet {
+    /// Edge references, e.g. `edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))` (see query.body).
+    pub edges: Vec<String>,
+    pub radius: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Fillet {
+    const ID: &'static str = "feature.fillet";
+    const TITLE: &'static str = "Fillet";
+    const DESCRIPTION: &'static str =
+        "Round the given edges with a radius. Edges are persistent references (query.body lists them).";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("F");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let edges = parse_edges(&self.edges)?;
+        let size = parse_expr("radius", &self.radius)?;
+        edit(s, ctx, "Fillet", |doc, rb| {
+            let name = feature_name(doc, self.name, "Fillet")?;
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Bevels edges.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Chamfer {
+    pub edges: Vec<String>,
+    pub distance: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Chamfer {
+    const ID: &'static str = "feature.chamfer";
+    const TITLE: &'static str = "Chamfer";
+    const DESCRIPTION: &'static str = "Bevel the given edges by a distance.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let edges = parse_edges(&self.edges)?;
+        let size = parse_expr("distance", &self.distance)?;
+        edit(s, ctx, "Chamfer", |doc, rb| {
+            let name = feature_name(doc, self.name, "Chamfer")?;
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Deletes a feature (undoable). Refused while other features depend on it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureDelete {
+    pub name: String,
+}
+
+impl Command for FeatureDelete {
+    const ID: &'static str = "feature.delete";
+    const TITLE: &'static str = "Delete feature";
+    const DESCRIPTION: &'static str =
+        "Delete a feature from the timeline (undoable). Fails if other features depend on it, listing them.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("Delete");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        edit(s, ctx, &format!("Delete {}", self.name), |doc, _| {
+            let i = doc
+                .feature_index(&self.name)
+                .ok_or_else(|| CommandError::not_found(format!("no feature '{}'", self.name)))?;
+            let users: Vec<String> = doc
+                .features
+                .iter()
+                .filter(|f| f.kind.dependencies().contains(&self.name))
+                .map(|f| f.name.clone())
+                .collect();
+            if !users.is_empty() {
+                return Err(CommandError::args(format!("{} is used by {}", self.name, users.join(", ")))
+                    .hint("delete or edit those features first"));
+            }
+            // A body consumed by later ops (op: add/cut without explicit body) is also a dependency.
+            if doc.features.get(i).is_some_and(creates_body) {
+                let later_default = doc.features.iter().skip(i + 1).find(|f| match &f.kind {
+                    FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
+                    FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
+                    _ => false,
+                });
+                if let Some(u) = later_default {
+                    let _ = u;
+                }
+            }
+            doc.features.remove(i);
+            Ok(json!({}))
+        })
+    }
+}
+
+/// Renames a feature, updating every reference to it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureRename {
+    pub from: String,
+    pub to: String,
+}
+
+fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
+    for f in &mut doc.features {
+        if f.name == from {
+            f.name = to.to_string();
+        }
+        match &mut f.kind {
+            FeatureKind::Sketch(s) => {
+                if let PlaneRef::Face(r) = &mut s.plane {
+                    r.rename_feature(from, to);
+                }
+            }
+            FeatureKind::Extrude(ExtrudeDef { profile, body, .. })
+            | FeatureKind::Revolve(RevolveDef { profile, body, .. }) => {
+                if profile.sketch == from {
+                    profile.sketch = to.to_string();
+                }
+                if body.as_deref() == Some(from) {
+                    *body = Some(to.to_string());
+                }
+            }
+            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
+                for e in &mut b.edges {
+                    e.rename_feature(from, to);
+                }
+            }
+            FeatureKind::Import(_) => {}
+        }
+        if let FeatureKind::Revolve(RevolveDef { axis: AxisRef::SketchLine { sketch, .. }, .. }) = &mut f.kind {
+            if sketch == from {
+                *sketch = to.to_string();
+            }
+        }
+    }
+}
+
+impl Command for FeatureRename {
+    const ID: &'static str = "feature.rename";
+    const TITLE: &'static str = "Rename feature";
+    const DESCRIPTION: &'static str = "Rename a feature; all references (profiles, edges, faces, bodies) are updated.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("F2");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        validate_feature_name(&self.to).map_err(CommandError::args)?;
+        edit(s, ctx, &format!("Rename {} to {}", self.from, self.to), |doc, _| {
+            if doc.feature(&self.from).is_none() {
+                return Err(CommandError::not_found(format!("no feature '{}'", self.from)));
+            }
+            if doc.feature(&self.to).is_some() {
+                return Err(CommandError::args(format!("a feature named '{}' already exists", self.to)));
+            }
+            rename_in_doc(doc, &self.from, &self.to);
+            Ok(json!({}))
+        })
+    }
+}
+
+/// Suppresses or unsuppresses a feature.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureSuppress {
+    pub name: String,
+    pub suppressed: bool,
+}
+
+impl Command for FeatureSuppress {
+    const ID: &'static str = "feature.suppress";
+    const TITLE: &'static str = "Suppress feature";
+    const DESCRIPTION: &'static str = "Suppress (skip) or unsuppress a feature without deleting it.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let label = format!("{} {}", if self.suppressed { "Suppress" } else { "Unsuppress" }, self.name);
+        edit(s, ctx, &label, |doc, _| {
+            let f = doc
+                .features
+                .iter_mut()
+                .find(|f| f.name == self.name)
+                .ok_or_else(|| CommandError::not_found(format!("no feature '{}'", self.name)))?;
+            f.suppressed = self.suppressed;
+            Ok(json!({}))
+        })
+    }
+}
+
+/// Moves a feature in the timeline (validated against dependencies).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureMove {
+    pub name: String,
+    /// New 0-based position.
+    pub index: usize,
+}
+
+impl Command for FeatureMove {
+    const ID: &'static str = "feature.move";
+    const TITLE: &'static str = "Reorder feature";
+    const DESCRIPTION: &'static str = "Move a feature to another timeline position; refused if it would come before something it depends on (or after something depending on it).";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        edit(s, ctx, &format!("Move {}", self.name), |doc, _| {
+            let i = doc
+                .feature_index(&self.name)
+                .ok_or_else(|| CommandError::not_found(format!("no feature '{}'", self.name)))?;
+            if self.index >= doc.features.len() {
+                return Err(CommandError::args(format!("index must be below {}", doc.features.len())));
+            }
+            let f = doc.features.remove(i);
+            doc.features.insert(self.index, f);
+            let issues = gusset_doc::validate::validate(doc);
+            if !issues.is_empty() {
+                return Err(CommandError::invalid_document(&issues).hint("that order breaks a dependency"));
+            }
+            Ok(json!({}))
+        })
+    }
+}
+
+// ------------------------------------------------------------------ timeline & history
+
+/// Moves the rollback marker (null = end of timeline).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetRollback {
+    /// Number of active features, or null for all.
+    #[serde(default)]
+    pub index: Option<usize>,
+}
+
+impl Command for SetRollback {
+    const ID: &'static str = "timeline.set_rollback";
+    const TITLE: &'static str = "Move rollback marker";
+    const DESCRIPTION: &'static str = "Roll the timeline back so only the first N features are active (null = all). New features are inserted at the marker.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = s.branch_for(ctx)?;
+        s.history_mut_pub().set_rollback(&ctx.hctx(), b, self.index).map_err(CommandError::history)?;
+        s.note_change(ctx, b, "Rollback");
+        Ok(json!({ "rollback": s.history().branch(b).map_err(CommandError::history)?.rollback }))
+    }
+}
+
+/// Undo (a tree: undone states are never lost).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Undo {}
+
+impl Command for Undo {
+    const ID: &'static str = "history.undo";
+    const TITLE: &'static str = "Undo";
+    const DESCRIPTION: &'static str =
+        "Undo your last change on your current branch (non-destructive; the undone state stays in the history tree).";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("Ctrl+Z");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = s.branch_for(ctx)?;
+        let msg = s.history_mut_pub().undo(&ctx.hctx(), b).map_err(CommandError::history)?;
+        s.note_change(ctx, b, &msg);
+        Ok(json!({ "done": msg }))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Redo {}
+
+impl Command for Redo {
+    const ID: &'static str = "history.redo";
+    const TITLE: &'static str = "Redo";
+    const DESCRIPTION: &'static str = "Redo the last undone change on your current branch.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("Ctrl+Shift+Z");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = s.branch_for(ctx)?;
+        let msg = s.history_mut_pub().redo(&ctx.hctx(), b).map_err(CommandError::history)?;
+        s.note_change(ctx, b, &msg);
+        Ok(json!({ "done": msg }))
+    }
+}
+
+// ------------------------------------------------------------------ branches
+
+fn branch_json(s: &Session, b: &gusset_history::Branch, current: BranchId) -> Value {
+    json!({
+        "id": b.id.to_string(),
+        "name_user_text": b.name,
+        "head": b.head.to_string(),
+        "main": b.id == s.history().main(),
+        "current": b.id == current,
+        "pinned": b.pinned,
+        "color": b.color,
+        "created_by": b.created_by.to_string(),
+        "deleted": b.deleted_at.is_some(),
+        "rollback": b.rollback,
+        "notes_user_text": b.notes,
+    })
+}
+
+/// Lists branches (and recently deleted ones).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchList {}
+
+impl Command for BranchList {
+    const ID: &'static str = "branch.list";
+    const TITLE: &'static str = "Iterations";
+    const DESCRIPTION: &'static str =
+        "List branches (iterations), which one is main, your current branch, and recently deleted branches.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let cur = s.current_branch(&ctx.actor);
+        let live: Vec<Value> = s.history().branches().iter().map(|b| branch_json(s, b, cur)).collect();
+        let deleted: Vec<Value> = s.history().deleted_branches().iter().map(|b| branch_json(s, b, cur)).collect();
+        Ok(json!({ "branches": live, "recently_deleted": deleted }))
+    }
+}
+
+/// Creates a branch from your current state (or any node) and switches to it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchCreate {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Node id (`n12`) or branch to start from; default: your current branch head.
+    #[serde(default)]
+    pub from: Option<String>,
+}
+
+impl Command for BranchCreate {
+    const ID: &'static str = "branch.create";
+    const TITLE: &'static str = "New iteration";
+    const DESCRIPTION: &'static str =
+        "Create a branch (iteration) from any point in history and switch to it. Default name 'Iteration N'.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = match &self.from {
+            Some(f) => find_node(s, f)?,
+            None => {
+                let b = s.branch_for(ctx)?;
+                s.history().head(b).map_err(CommandError::history)?
+            }
+        };
+        let b =
+            s.history_mut_pub().create_branch(&ctx.hctx(), at, self.name.as_deref()).map_err(CommandError::history)?;
+        s.switch_branch(&ctx.actor, b)?;
+        s.note_change(ctx, b, "New iteration");
+        Ok(
+            json!({ "branch": b.to_string(), "name_user_text": s.history().branch(b).map_err(CommandError::history)?.name }),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchRename {
+    pub branch: String,
+    pub name: String,
+}
+
+impl Command for BranchRename {
+    const ID: &'static str = "branch.rename";
+    const TITLE: &'static str = "Rename iteration";
+    const DESCRIPTION: &'static str = "Rename a branch.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = find_branch(s, &self.branch)?;
+        s.history_mut_pub().rename_branch(&ctx.hctx(), b, &self.name).map_err(CommandError::history)?;
+        s.note_change(ctx, b, "Rename iteration");
+        Ok(json!({}))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchSwitch {
+    pub branch: String,
+}
+
+impl Command for BranchSwitch {
+    const ID: &'static str = "branch.switch";
+    const TITLE: &'static str = "Switch iteration";
+    const DESCRIPTION: &'static str =
+        "Switch your session to another branch (instant, non-destructive). Agents need approval to edit main.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = find_branch(s, &self.branch)?;
+        s.switch_branch(&ctx.actor, b)?;
+        Ok(json!({ "branch": b.to_string() }))
+    }
+}
+
+/// Compares two iterations (parameter and feature diff).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchCompare {
+    /// Branch or node (`n12`).
+    pub a: String,
+    pub b: String,
+}
+
+impl Command for BranchCompare {
+    const ID: &'static str = "branch.compare";
+    const TITLE: &'static str = "Compare iterations";
+    const DESCRIPTION: &'static str = "Compare two branches or history nodes: parameter and feature differences.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, _ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let (a, b) = (find_node(s, &self.a)?, find_node(s, &self.b)?);
+        let d = s.history().compare(a, b).map_err(CommandError::history)?;
+        let item = |c: &gusset_history::ItemChange| -> Value {
+            match &c.change {
+                gusset_history::Change::Added => json!({"name": c.name, "change": "added"}),
+                gusset_history::Change::Removed => json!({"name": c.name, "change": "removed"}),
+                gusset_history::Change::Modified { old, new } => {
+                    json!({"name": c.name, "change": "modified", "old_user_text": old, "new_user_text": new})
+                }
+                gusset_history::Change::Moved { old_index, new_index } => {
+                    json!({"name": c.name, "change": "moved", "from": old_index, "to": new_index})
+                }
+            }
+        };
+        Ok(json!({
+            "units_changed": d.units_changed,
+            "parameters": d.params.iter().map(item).collect::<Vec<_>>(),
+            "features": d.features.iter().map(item).collect::<Vec<_>>(),
+        }))
+    }
+}
+
+/// Copies features/parameters from another iteration onto your branch.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchCherryPick {
+    /// Source branch or node.
+    pub from: String,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub params: Vec<String>,
+}
+
+impl Command for BranchCherryPick {
+    const ID: &'static str = "branch.cherry_pick";
+    const TITLE: &'static str = "Cherry-pick";
+    const DESCRIPTION: &'static str = "Apply chosen features and parameter values from another iteration onto your current branch, validated by a rebuild.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.features.is_empty() && self.params.is_empty() {
+            return Err(CommandError::args("choose at least one feature or parameter"));
+        }
+        let src = find_node(s, &self.from)?;
+        let b = s.branch_for(ctx)?;
+        let doc = s.history().cherry_pick(src, b, &self.features, &self.params).map_err(CommandError::history)?;
+        let out = s.commit(ctx, "Cherry-pick", &doc)?;
+        Ok(
+            json!({ "node": out.node.to_string(), "rebuild_ok": out.new_errors.is_empty(), "new_errors": out.new_errors }),
+        )
+    }
+}
+
+/// Makes a branch the main branch (logged, undoable; agents need approval).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchSetMain {
+    pub branch: String,
+}
+
+impl Command for BranchSetMain {
+    const ID: &'static str = "branch.set_main";
+    const TITLE: &'static str = "Set as main";
+    const DESCRIPTION: &'static str =
+        "Make a branch the main branch (default for opening and exports). Agents need human approval.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = Flags { mutating: true, destructive: false, agent_approval: true, user_only: false };
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = find_branch(s, &self.branch)?;
+        s.history_mut_pub().set_main(&ctx.hctx(), b).map_err(CommandError::history)?;
+        s.note_change(ctx, b, "Set main");
+        Ok(json!({ "main": b.to_string() }))
+    }
+}
+
+/// Deletes a branch into "Recently deleted" (restorable; requires confirm).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchDelete {
+    pub branch: String,
+    /// Must be true; without it the reply explains what would be affected.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+impl Command for BranchDelete {
+    const ID: &'static str = "branch.delete";
+    const TITLE: &'static str = "Delete iteration";
+    const DESCRIPTION: &'static str = "Move a branch to Recently deleted (restorable). Requires confirm: true; main cannot be deleted. Agents need human approval.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = Flags { mutating: true, destructive: true, agent_approval: true, user_only: false };
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = find_branch(s, &self.branch)?;
+        s.history_mut_pub().delete_branch(&ctx.hctx(), b, self.confirm).map_err(CommandError::history)?;
+        s.note_change(ctx, b, "Delete iteration");
+        Ok(json!({ "deleted": b.to_string() }))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchRestore {
+    pub branch: String,
+}
+
+impl Command for BranchRestore {
+    const ID: &'static str = "branch.restore";
+    const TITLE: &'static str = "Restore iteration";
+    const DESCRIPTION: &'static str = "Restore a branch from Recently deleted.";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let b = self
+            .branch
+            .strip_prefix('b')
+            .and_then(|n| n.parse().ok())
+            .map(BranchId)
+            .or_else(|| s.history().deleted_branches().iter().find(|x| x.name == self.branch).map(|x| x.id))
+            .ok_or_else(|| CommandError::not_found(format!("no deleted branch '{}'", self.branch)))?;
+        s.history_mut_pub().restore_branch(&ctx.hctx(), b).map_err(CommandError::history)?;
+        s.note_change(ctx, b, "Restore iteration");
+        Ok(json!({ "restored": b.to_string() }))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeStar {
+    /// Node id (`n12`) or branch (its head).
+    pub node: String,
+    pub starred: bool,
+}
+
+impl Command for NodeStar {
+    const ID: &'static str = "history.star";
+    const TITLE: &'static str = "Star iteration";
+    const DESCRIPTION: &'static str = "Star or unstar a point in history (starred states are never pruned).";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let n = find_node(s, &self.node)?;
+        s.history_mut_pub().set_starred(&ctx.hctx(), n, self.starred).map_err(CommandError::history)?;
+        Ok(json!({}))
+    }
+}
+
+// ------------------------------------------------------------------ queries
+
+/// Feature tree, parameters, statuses and bodies of your current branch.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryModel {}
+
+impl Command for QueryModel {
+    const ID: &'static str = "query.model";
+    const TITLE: &'static str = "Model overview";
+    const DESCRIPTION: &'static str =
+        "Feature tree with rebuild status and errors, parameter values, and bodies on your current branch.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let doc = s.document(&ctx.actor)?;
+        let ev = s.evaluate(&ctx.actor)?;
+        let b = s.current_branch(&ctx.actor);
+        let br = s.history().branch(b).map_err(CommandError::history)?;
+        let features: Vec<Value> = doc
+            .features
+            .iter()
+            .map(|f| {
+                json!({
+                    "name": f.name,
+                    "kind": f.kind.keyword(),
+                    "label_user_text": f.label,
+                    "note_user_text": f.note,
+                    "suppressed": f.suppressed,
+                    "status": ev.status(&f.name).map(status_json),
+                    "depends_on": f.kind.dependencies(),
+                })
+            })
+            .collect();
+        let params: Vec<Value> = doc
+            .params
+            .iter()
+            .map(|p| {
+                let v = match ev.params.get(&p.name) {
+                    Some(Ok(q)) => json!({"value": q.display(doc.units)}),
+                    Some(Err(e)) => json!({"error": e.to_string()}),
+                    None => Value::Null,
+                };
+                json!({"name": p.name, "expr": p.expr.to_string(), "comment_user_text": p.comment, "result": v})
+            })
+            .collect();
+        let bodies: Vec<Value> = ev
+            .bodies
+            .iter()
+            .map(|b| json!({"name": b.name, "faces": b.topology.faces.len(), "edges": b.topology.edges.len()}))
+            .collect();
+        Ok(json!({
+            "branch": b.to_string(),
+            "branch_name_user_text": br.name,
+            "head": br.head.to_string(),
+            "rollback": br.rollback,
+            "units": match doc.units { gusset_units::LengthUnit::Millimetre => "mm", gusset_units::LengthUnit::Inch => "in" },
+            "features": features,
+            "parameters": params,
+            "bodies": bodies,
+            "errors": ev.errors().iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+        }))
+    }
+}
+
+fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, CommandError> {
+    let ev = s.evaluate(&ctx.actor)?;
+    let st = ev.status(name).map(status_json);
+    match ev.sketches.get(name) {
+        Some(r) => Ok(json!({
+            "status": format!("{:?}", r.status),
+            "dof": r.dof,
+            "free_entities": r.free_entities,
+            "redundant": r.redundant,
+            "conflicting": r.conflicting,
+            "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
+            "points": r.points,
+            "feature_status": st,
+        })),
+        None => Ok(json!({ "feature_status": st })),
+    }
+}
+
+/// Constraint status of a sketch: DOF, free entities, conflicts, closed regions.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuerySketch {
+    pub sketch: String,
+}
+
+impl Command for QuerySketch {
+    const ID: &'static str = "query.sketch";
+    const TITLE: &'static str = "Sketch status";
+    const DESCRIPTION: &'static str = "Degrees of freedom, free entities, redundant/conflicting constraints, closed regions and solved point positions of a sketch.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        sketch_status(s, ctx, &self.sketch)
+    }
+}
+
+/// Mass properties, bounding box and named faces/edges of a body.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryBody {
+    /// Body name (default: the latest body).
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Include every face and edge name (for picking references).
+    #[serde(default)]
+    pub names: bool,
+}
+
+impl Command for QueryBody {
+    const ID: &'static str = "query.body";
+    const TITLE: &'static str = "Measure body";
+    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    const SHORTCUT: Option<&'static str> = Some("M");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let ev = s.evaluate(&ctx.actor)?;
+        let body = match &self.body {
+            Some(n) => ev.body(n).cloned().ok_or_else(|| CommandError::not_found(format!("no body '{n}'")))?,
+            None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies yet"))?,
+        };
+        let k = s.kernel().clone();
+        let m = k.mass_properties(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+        let bb = k.bbox(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+        let mut v = json!({
+            "body": body.name,
+            "volume_mm3": m.volume,
+            "area_mm2": m.area,
+            "centroid_mm": m.centroid,
+            "bbox_min_mm": bb.min,
+            "bbox_max_mm": bb.max,
+            "size_mm": bb.size(),
+            "faces": body.topology.faces.len(),
+            "edges": body.topology.edges.len(),
+        });
+        if self.names {
+            let faces: Vec<Value> = body
+                .names
+                .faces
+                .iter()
+                .zip(&body.topology.faces)
+                .map(|(n, f)| json!({"name": n.to_string(), "kind": format!("{:?}", f.kind), "area_mm2": f.area, "centroid_mm": f.centroid, "normal": f.normal}))
+                .collect();
+            let edges: Vec<Value> = body
+                .names
+                .edges
+                .iter()
+                .zip(&body.topology.edges)
+                .map(|(n, e)| json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint}))
+                .collect();
+            v = merge(v, json!({ "face_names": faces, "edge_names": edges }));
+        }
+        Ok(v)
+    }
+}
+
+// ------------------------------------------------------------------ exchange
+
+/// Writes STEP (AP242) of all bodies into the project folder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportStep {
+    /// File name relative to the project folder (no `..`, no absolute paths).
+    pub path: String,
+    /// Overwrite an existing file (agents need approval).
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+impl Command for ExportStep {
+    const ID: &'static str = "export.step";
+    const TITLE: &'static str = "Export STEP";
+    const DESCRIPTION: &'static str =
+        "Export all bodies of your current branch as STEP (AP242, mm) to a file inside the project folder.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        if path.exists() {
+            if !self.overwrite {
+                return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
+                    .hint("pass overwrite: true to replace it"));
+            }
+            if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
+                return Err(CommandError::approval("overwriting an exported file"));
+            }
+        }
+        let ev = s.evaluate(&ctx.actor)?;
+        if ev.bodies.is_empty() {
+            return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
+        }
+        let bodies: Vec<(&gusset_kernel::Shape, &str)> =
+            ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+        let bytes = s.kernel().export_step(&bodies).map_err(|e| CommandError::new("io", e.to_string()))?;
+        crate::paths::write_file(&path, &bytes)?;
+        Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
+    }
+}
+
+#[allow(dead_code)]
+fn _unused(_: HChange) {}

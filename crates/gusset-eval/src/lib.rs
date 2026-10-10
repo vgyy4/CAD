@@ -579,3 +579,14 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 
 #[cfg(test)]
 mod tests;
+
+/// Solves a sketch definition on its own (no 3D placement), for commands that write
+/// solved positions back into the document after an edit.
+pub fn solve_sketch_def(
+    name: &str,
+    def: &gusset_doc::SketchDef,
+    params: &ParamValues,
+    units: LengthUnit,
+) -> Result<SketchResult, EvalError> {
+    sketch::solve_sketch(name, def, params, units, Frame::XY).map(|s| s.result)
+}
