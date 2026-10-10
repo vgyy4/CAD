@@ -32,6 +32,11 @@ allow = [
 # LGPL/GPL/AGPL Rust crates are never allowed (Rust links statically). OCCT is
 # LGPL-2.1 but is a C++ shared library, not a crate; see ADR 0001/0002.
 
+# Font licences, scoped to the one crate that bundles fonts (ADR 0001, "Fonts").
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["Ubuntu-font-1.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

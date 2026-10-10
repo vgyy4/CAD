@@ -17,6 +17,11 @@
   - **GPL/AGPL/SSPL**: never linked into Gusset. A GPL tool may only exist as a separately
     distributed program that talks to Gusset over IPC/CLI, documented in its own ADR.
   - Code is never copied from GPL projects or from repositories with no license.
+- **Fonts** bundled as data (not code) may use permissive font licences: OFL-1.1, and
+  the Ubuntu Font Licence 1.0 for egui's default fonts (`epaint_default_fonts`). The
+  UFL allows redistribution bundled with software and puts no conditions on our code;
+  modified fonts must be renamed, and we ship them unmodified. It is allowed in
+  `deny.toml` as an exception for that crate only, not globally. (Recorded 2026-10-10.)
 - `THIRD_PARTY_LICENSES.md` is generated from the dependency tree by CI, with a
   "check that the file is up to date" job.
 
