@@ -8,6 +8,7 @@
 //!   NEON, SVE).
 //! * [`budgets`]: thread-pool sizes, cache budget, default tessellation quality.
 //! * [`priority`]: low-priority / efficiency-QoS background threads.
+//! * [`stdio`]: keeps native libraries from writing into a stdout protocol stream.
 //! * [`tier`]: automatic, user-overridable GPU quality tier.
 //! * [`Diagnostics`]: the About panel / MCP diagnostics report.
 //!
@@ -33,6 +34,7 @@ pub mod docgen;
 pub mod kernels;
 pub mod priority;
 pub mod registry;
+pub mod stdio;
 pub mod tier;
 
 mod sys;
