@@ -378,7 +378,7 @@ pub fn import_file(path: &Path, opts: &ImportOptions) -> Result<Imported> {
 /// Checks an export body: whole triangles, indices in range, finite coordinates.
 pub(crate) fn check_body(b: &ExportBody<'_>) -> Result<()> {
     let err = |detail: String| MeshIoError::InvalidMesh { body: b.name.to_string(), detail };
-    if b.mesh.indices.len() % 3 != 0 {
+    if !b.mesh.indices.len().is_multiple_of(3) {
         return Err(err(format!("index count {} is not a multiple of 3", b.mesh.indices.len())));
     }
     let n = b.mesh.positions.len();

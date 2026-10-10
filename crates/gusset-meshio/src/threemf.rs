@@ -213,10 +213,10 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
             Event::Start(e) => (e, true),
             Event::Empty(e) => (e, false),
             Event::End(_) => {
-                if stack.pop() == Some(Ctx::Object) {
-                    if let Some((id, obj)) = cur.take() {
-                        finish_object(&mut model, id, obj, part)?;
-                    }
+                if stack.pop() == Some(Ctx::Object)
+                    && let Some((id, obj)) = cur.take()
+                {
+                    finish_object(&mut model, id, obj, part)?;
                 }
                 continue;
             }
@@ -695,10 +695,10 @@ pub(crate) fn import(
         ld.collect(&part, it.objectid, &m, 0, &mut walk, warnings)?;
         let soup = walk.soup;
         let obj = ld.parts.get(&part.to_ascii_lowercase()).and_then(|m| m.objects.get(&it.objectid));
-        if let Some(k) = obj.and_then(|o| o.kind.clone()).filter(|k| k != "model") {
-            if !odd_types.contains(&k) {
-                odd_types.push(k);
-            }
+        if let Some(k) = obj.and_then(|o| o.kind.clone()).filter(|k| k != "model")
+            && !odd_types.contains(&k)
+        {
+            odd_types.push(k);
         }
         let base = obj
             .and_then(|o| o.name.clone())

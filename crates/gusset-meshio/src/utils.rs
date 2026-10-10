@@ -426,10 +426,10 @@ fn crease(positions: &[[f32; 3]], tris: &[Tri], angle_deg: f32) -> (Vec<[f32; 3]
                 c.1 = add(c.1, r);
                 let t = tris.get(ti as usize).copied().unwrap_or([0; 3]);
                 for (corner, &tv) in t.iter().enumerate() {
-                    if tv as usize == v {
-                        if let Some(slot) = out_i.get_mut(ti as usize * 3 + corner) {
-                            *slot = c.2;
-                        }
+                    if tv as usize == v
+                        && let Some(slot) = out_i.get_mut(ti as usize * 3 + corner)
+                    {
+                        *slot = c.2;
                     }
                 }
             }
