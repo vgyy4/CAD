@@ -3,40 +3,57 @@
 Living status document. Any session should be able to resume from here and CLAUDE.md.
 
 ## Current phase
-Phase 0 (research) → Phase 1 (architecture ADRs). Work on Phase 2 crates that don't
-depend on open decisions (units/expressions, sketch solver) is starting in parallel.
+Phase 2 (MVP vertical slice), well under way. Phase 0 research and the Phase 1 ADRs are
+written (0000–0015, except 0016, which is not needed yet).
 
 ## Done
-- Repository initialised; spec in `PROMPT.md`.
-- ADR 0000 name (**Gusset**), 0001 license, 0003 persistent naming, 0004 document model,
-  0006 history model.
-- `gusset-units`: unit-aware expressions, parameter tables, deterministic math.
+- Research: `docs/RESEARCH.md` plus 5 sourced reports; design guide `docs/DESIGN.md`;
+  threat model; SECURITY.md; HARDWARE.md (generated sections, drift test);
+  PERFORMANCE.md (budgets); INTEROP.md; FORMAT.md (container).
+- Crates (see CLAUDE.md): units, sketch (solver), kernel + mock, OCCT shim + safe
+  kernel, naming, doc (code view), history, eval, store, project, commands (registry,
+  37+ commands, agent policy), meshio, hw, cli.
+- **End to end with real OCCT 8.0.1:** `gusset build examples/bracket.gus.txt --export
+  x.step --export x.3mf`. Sketch → extrude → fillet → sketch on face → cut → exports;
+  the volume matches the analytic value exactly. `gusset self-test` passes.
+- CI: fmt/clippy/test on Linux x64/ARM64 and Windows x64/ARM64 (required), macOS ARM
+  (allowed to fail), cargo-deny, cargo-audit, and a pinned native OCCT build + kernel
+  tests on all targets.
 
-## In progress
-- Research reports in `docs/research/` (kernels, GUI and solver, MCP/SIMD/storage/crates,
-  users and UX, interop).
-- `gusset-sketch` (subagent, branch `feat/sketch-solver`).
+## In progress (subagents)
+- `gusset-host` + `gusset-mcp` (rmcp MCP server, stdio bridge, approvals, sanitization).
+- `gusset-render` (wgpu viewport, headless render_view, software fallback, golden PNGs).
 
 ## Next
-- Synthesize `docs/RESEARCH.md`, `docs/DESIGN.md` and the feature matrix.
-- Remaining ADRs: kernel, container format, save/recovery, threat model, GUI toolkit,
-  design system, hardware tiers, MCP, release tooling, updater, code signing.
-- CI skeleton (fmt, clippy, test, cargo-deny), pinned actions.
+1. Merge host/MCP + render; add `gusset mcp` to the CLI. MCP stdio must keep OCCT's
+   stray `std::cout` output (BinTools on bad input) away from the protocol stream:
+   redirect fd 1 to stderr and use a dup'd fd for the protocol.
+2. GUI app (`gusset-app`, egui): layout per DESIGN.md, viewport, sketch mode, timeline,
+   iteration graph, code view, parameters, close/recovery dialogs, kittest automation.
+3. Sandboxed import worker (`gusset-worker`): STEP/IGES via OCCT out of process.
+4. Release workflow + installers + updater; Miri/fuzz CI jobs; THIRD_PARTY_LICENSES.
+5. Milestone review subagents (code + security), dogfooding subagent (5 parts via MCP).
 
 ## Decisions made without the owner (easy to reverse)
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is
-  also the repository's default branch, so it plays the role of "main" in the spec.
-  Short-lived feature branches (`feat/...`) are merged into it locally and never pushed
-  separately.
-- **Repository visibility is private.** That affects GitHub Actions minutes (2,000/month
-  on the Free plan; Windows ×2 and macOS ×10 multipliers) and the availability of ARM
-  runners. See the CI ADR.
-- The repository is named `CAD`, not `gusset`. Renaming it is left to the owner.
+  also the repository's default branch, so it plays the role of "main". Feature
+  branches are merged locally.
+- **Repository visibility is private:** Actions minutes are limited (Windows ×2, macOS
+  ×10). The OCCT build is cached per target.
+- The repository is named `CAD`, not `gusset`. Renaming is left to the owner.
+- MSRV raised to 1.89 (std file locks, rmcp).
+- Sketch coordinates stored in the document are snapped to 1e-6 mm when they are within
+  1e-9 mm of the snapped value, for a readable code view.
+- Container: a custom checksummed format instead of SQLite (ADR 0005). Two-slot
+  recovery file with an extra slot marker; the Windows cache path follows the
+  `directories` crate layout.
 
 ## Deviations from spec
-(none yet)
+- Right-to-left text rendering is a known egui gap (ADR 0009). Strings are
+  externalized; RTL rendering waits on upstream.
 
 ## Research gaps
 - Reddit, and direct fetches of the FreeCAD and Onshape forums and HN, were blocked from
   this environment. User research relied on search-engine snippets of those sources.
   Re-run when access allows.
+- WebFetch could not open vendor pages; some HARDWARE.md entries are marked unverified.
