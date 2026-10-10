@@ -31,12 +31,14 @@ fn empty_state_and_modeling_through_forms() {
     h.run();
     assert!(h.state().form.as_ref().is_some_and(|f| f.command == "sketch.create"));
     h.state_mut().apply_form();
+    h.state_mut().wait_idle();
     h.run();
     assert!(h.state().form.is_none(), "{:?}", h.state().form.as_ref().and_then(|f| f.error.clone()));
     // Rectangle + extrude via commands (same registry the forms use).
     h.state_mut()
         .run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0}))
         .unwrap();
+    h.state_mut().wait_idle();
     h.state_mut().start_command("feature.extrude");
     h.run();
     {
@@ -45,8 +47,9 @@ fn empty_state_and_modeling_through_forms() {
         form.set("distance", "10 mm");
     }
     h.state_mut().apply_form();
+    h.state_mut().wait_idle();
     h.run();
-    let ev = h.state_mut().evaluation().unwrap();
+    let ev = h.state().evaluation().unwrap();
     assert!(h.state().is_dirty());
     // The status bar reflects unsaved work and the browser lists the features.
     h.get_by_label_contains("Unsaved changes");
@@ -80,11 +83,13 @@ fn save_as_then_reopen_roundtrips() {
     let dir = std::env::temp_dir().join(format!("gusset-app-save-{}", rand_suffix()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("p.gus");
-    a.save_as(path.clone()).unwrap();
+    a.save_as(path.clone());
+    a.wait_idle();
     assert!(!a.is_dirty());
+    assert!(a.dialog.is_none());
     let mut b = app();
     b.open(path).unwrap();
-    let doc = b.session.document(&gusset_history::Actor::User).unwrap();
+    let doc = b.host().with_session(|s| s.document(&gusset_history::Actor::User)).unwrap().unwrap();
     assert_eq!(doc.params.first().map(|p| p.name.as_str()), Some("w"));
 }
 
@@ -104,6 +109,7 @@ fn light_theme_and_code_view_render() {
     let mut a = app();
     a.theme = crate::theme::ThemeKind::Light;
     a.run("param.set", json!({"name": "w", "expr": "10 mm"})).unwrap();
+    a.wait_idle();
     a.toggle_code();
     let mut h = harness(a);
     h.run();
@@ -112,6 +118,31 @@ fn light_theme_and_code_view_render() {
     h.state_mut().code = Some(("gusset 1\nparam = = \n".into(), None));
     h.get_by_label("Apply code").click();
     h.run();
+    h.state_mut().wait_idle();
+    h.run();
     let err = h.state().code.as_ref().and_then(|c| c.1.clone());
     assert!(err.is_some_and(|e| e.contains("line")));
+}
+
+#[test]
+fn agent_command_through_the_host_updates_the_gui() {
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_label_contains("agent_w").is_none());
+    // An agent connection (another thread, like an MCP session) edits the user's branch
+    // with an approval the human gave.
+    let host = h.state().host().clone();
+    std::thread::spawn(move || {
+        let mut a = gusset_commands::CmdCtx::agent("bot-1", 1);
+        host.call(a.clone(), "branch.switch", json!({"branch": "main"})).unwrap();
+        a.approved = true;
+        host.call(a, "param.set", json!({"name": "agent_w", "expr": "7 mm"})).unwrap();
+    })
+    .join()
+    .unwrap();
+    // No GUI call involved: the host's change broadcast alone refreshes the window.
+    h.run();
+    h.get_by_label_contains("agent_w");
+    assert!(h.state().agent_changes >= 1);
+    h.get_by_label_contains("Agent activity");
 }

@@ -1,27 +1,36 @@
-//! The application: one project window with a [`Session`] behind it (DESIGN.md §4).
+//! The application: one project window in front of the model thread (DESIGN.md §4).
 //!
-//! Every action goes through the command registry, so what the GUI can do, the CLI and
-//! the MCP server can do too (ADR 0012). The UI is a plain function of [`App`] state,
-//! which is what the kittest automation drives.
+//! The [`Session`] lives on the `gusset-host` model thread, shared with the MCP server,
+//! so the user and AI agents work on the same open project (ADR 0012). Every action goes
+//! through the command registry as a detached host job; results come back over a channel
+//! and the UI never waits for a long command. What the UI draws is a [`Snapshot`] read
+//! with a short, non-blocking `try_with_session` whenever the host reports a change. The
+//! UI is a plain function of [`App`] state, which is what the kittest automation drives.
 
 use crate::forms::{self, Form};
 use crate::i18n::tr;
+use crate::link::{self, Snapshot, Waker};
 use crate::theme::{self, ThemeKind};
 use crate::viewport::{self, Camera, DrawBody, DrawSketch, Hit};
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
 use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
 use gusset_history::{Actor, History, NodeId};
+use gusset_host::{Host, HostEvent, HostHandle};
 use gusset_kernel::{Kernel, TessellationParams};
 use gusset_project::{OpenReport, Project};
 use gusset_store::paths::DataDirs;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 
 /// How often unsaved work is written to the recovery slot.
 pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How soon to retry a snapshot read while a long command holds the session.
+const BUSY_RETRY: Duration = Duration::from_millis(50);
 
 pub fn now_unix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -68,6 +77,59 @@ pub struct Notice {
     pub error: bool,
 }
 
+/// What to do with the result of a command the GUI sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Then {
+    /// Report it in the status bar.
+    Notice,
+    /// It came from the open form: close the form, or show the error in it.
+    Form,
+    /// It came from the code view: clear or show the parse error there.
+    Code,
+    /// Only report errors.
+    Quiet,
+    /// A path dialog action: re-open the dialog with the error on failure.
+    PathDialog(PathPurpose, String),
+}
+
+/// What to do after a save finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterSave {
+    Nothing,
+    /// "Save and close" from the close dialog.
+    Close,
+}
+
+/// Results of host jobs, delivered to the UI thread.
+pub(crate) enum Done {
+    Command {
+        id: String,
+        then: Then,
+        result: Result<Value, CommandError>,
+    },
+    Scene(Result<Result<SceneData, CommandError>, CommandError>),
+    Saved {
+        result: Result<(), String>,
+        then: AfterSave,
+    },
+    SavedAs {
+        path: PathBuf,
+        text: String,
+        result: Result<(), String>,
+    },
+    Recovery(Result<Option<u64>, String>),
+    /// A job whose result needs no handling beyond refreshing the snapshot.
+    Refresh(Result<(), CommandError>),
+}
+
+/// Drawable scene computed on the model thread.
+pub(crate) struct SceneData {
+    key: (NodeId, Option<usize>),
+    bodies: Vec<DrawBody>,
+    sketches: Vec<DrawSketch>,
+    eval: Arc<Evaluation>,
+}
+
 /// Cached drawable scene for one evaluated state.
 struct Scene {
     key: (NodeId, Option<usize>),
@@ -78,13 +140,27 @@ struct Scene {
 
 impl std::fmt::Debug for App {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("App").field("theme", &self.theme).field("dirty", &self.session.dirty).finish_non_exhaustive()
+        f.debug_struct("App").field("theme", &self.theme).field("dirty", &self.snapshot.dirty).finish_non_exhaustive()
     }
 }
 
 pub struct App {
-    pub session: Session,
-    pub project: Option<Project>,
+    host: HostHandle,
+    kernel: Arc<dyn Kernel>,
+    /// This frame's view of the model (refreshed when the host reports a change).
+    pub snapshot: Snapshot,
+    stale: bool,
+    events: broadcast::Receiver<HostEvent>,
+    done_tx: mpsc::Sender<Done>,
+    done_rx: mpsc::Receiver<Done>,
+    /// Host jobs sent and not yet answered.
+    in_flight: usize,
+    pub(crate) waker: Arc<Waker>,
+    /// Number of change events from agents seen (for the status bar and tests).
+    pub agent_changes: u64,
+    has_project: bool,
+    project_path: Option<PathBuf>,
+    project_risky: Option<String>,
     dirs: Option<DataDirs>,
     pub theme: ThemeKind,
     pub reduce_motion: bool,
@@ -100,7 +176,9 @@ pub struct App {
     /// Shown once when the real kernel is unavailable.
     pub kernel_note: Option<String>,
     scene: Option<Scene>,
+    scene_requested: Option<(NodeId, Option<usize>)>,
     last_snapshot: Instant,
+    close_after_save: bool,
     /// Set when the window may close (after the close dialog).
     pub allow_close: bool,
     pub show_iterations: bool,
@@ -109,11 +187,28 @@ pub struct App {
 impl App {
     /// A new, empty project.
     pub fn new(kernel: Arc<dyn Kernel>, dirs: Option<DataDirs>) -> App {
-        let session = Session::new(&gusset_doc::Document::default(), kernel, &CmdCtx::user(now_unix()));
+        let session = Session::new(&gusset_doc::Document::default(), kernel.clone(), &CmdCtx::user(now_unix()));
         let project = dirs.clone().and_then(|d| Project::create(d).ok());
+        let has_project = project.is_some();
+        let host = Host::spawn(session, project);
+        let waker = Arc::new(Waker::default());
+        link::spawn_listener(host.subscribe(), waker.clone());
+        let events = host.subscribe();
+        let (done_tx, done_rx) = mpsc::channel();
         App {
-            session,
-            project,
+            host,
+            kernel,
+            snapshot: Snapshot::default(),
+            stale: true,
+            events,
+            done_tx,
+            done_rx,
+            in_flight: 0,
+            waker,
+            agent_changes: 0,
+            has_project,
+            project_path: None,
+            project_risky: None,
             dirs,
             theme: ThemeKind::Dark,
             reduce_motion: false,
@@ -128,27 +223,248 @@ impl App {
             notice: None,
             kernel_note: None,
             scene: None,
+            scene_requested: None,
             last_snapshot: Instant::now(),
+            close_after_save: false,
             allow_close: false,
             show_iterations: false,
         }
+    }
+
+    /// The model thread this window talks to (shared with the MCP server).
+    pub fn host(&self) -> &HostHandle {
+        &self.host
     }
 
     fn ctx() -> CmdCtx {
         CmdCtx::user(now_unix())
     }
 
-    /// Runs a registry command as the user and reports the outcome in the status bar.
+    // ------------------------------------------------------------ host jobs
+
+    /// Queues `f` on the model thread; `wrap` turns its result into a [`Done`] for the UI.
+    fn submit<R, F, W>(&mut self, f: F, wrap: W)
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Session, Option<&mut Project>) -> R + Send + 'static,
+        W: FnOnce(Result<R, CommandError>) -> Done + Send + 'static,
+    {
+        let tx = self.done_tx.clone();
+        let waker = self.waker.clone();
+        self.in_flight += 1;
+        // The callback always runs exactly once (also on errors), so `in_flight` balances.
+        let _ = self.host.exec_detached(f, move |r| {
+            let _ = tx.send(wrap(r));
+            waker.wake();
+        });
+    }
+
+    /// Sends a registry command as the user without waiting; `then` says what to do with
+    /// the result when it arrives.
+    pub fn submit_command(&mut self, id: &str, args: Value, then: Then) {
+        let ctx = Self::ctx();
+        let id = id.to_string();
+        let id2 = id.clone();
+        self.submit(
+            move |s, _| gusset_commands::execute(s, &ctx, &id2, args),
+            move |r| Done::Command { id, then, result: r.and_then(|x| x) },
+        );
+    }
+
+    /// Runs a registry command as the user and **waits** for the result (automation and
+    /// tests; the UI itself uses [`App::submit_command`]). Reports it in the status bar.
     pub fn run(&mut self, id: &str, args: Value) -> Result<Value, CommandError> {
-        let r = gusset_commands::execute(&mut self.session, &Self::ctx(), id, args);
-        match &r {
+        let r = self.host.call(Self::ctx(), id, args);
+        self.report(id, &r);
+        self.stale = true;
+        r
+    }
+
+    /// True while commands sent by the GUI are still running.
+    pub fn busy(&self) -> bool {
+        self.in_flight > 0
+    }
+
+    /// Waits until every job the GUI sent has finished and its result was applied, and
+    /// the snapshot and scene are current (tests and shutdown paths; never per frame).
+    pub fn wait_idle(&mut self) {
+        for _ in 0..16 {
+            // Jobs run in order, so once this one ran every earlier job has replied.
+            let _ = self.host.exec(|_, _| ());
+            self.poll(None);
+            if self.in_flight == 0 && !self.stale {
+                break;
+            }
+        }
+    }
+
+    fn report(&mut self, id: &str, r: &Result<Value, CommandError>) {
+        match r {
             Ok(_) => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
                 self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
             }
             Err(e) => self.notice = Some(Notice { text: e.message.clone(), hint: e.hint.clone(), error: true }),
         }
-        r
+    }
+
+    /// Applies finished jobs and host events, refreshes the snapshot and requests the
+    /// scene when needed. `ctx` is `None` outside a frame (then reads may wait).
+    fn poll(&mut self, ctx: Option<&egui::Context>) {
+        loop {
+            match self.events.try_recv() {
+                Ok(HostEvent::Changed { actor, .. }) => {
+                    if matches!(actor, Actor::Agent(_)) {
+                        self.agent_changes += 1;
+                    }
+                    self.stale = true;
+                }
+                Ok(HostEvent::Saved) | Err(broadcast::error::TryRecvError::Lagged(_)) => self.stale = true,
+                Ok(HostEvent::Shutdown)
+                | Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        while let Ok(done) = self.done_rx.try_recv() {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            self.apply_done(done);
+        }
+        if self.stale {
+            let snap = match ctx {
+                Some(_) => self.host.try_with_session(|s| Snapshot::read(s)),
+                None => self.host.with_session(|s| Snapshot::read(s)).map(Some),
+            };
+            match snap {
+                Ok(Some(s)) => {
+                    self.snapshot = s;
+                    self.stale = false;
+                }
+                Ok(None) => {
+                    if let Some(c) = ctx {
+                        c.request_repaint_after(BUSY_RETRY);
+                    }
+                }
+                Err(_) => self.stale = false, // shut down: keep the last snapshot
+            }
+        }
+        self.request_scene();
+    }
+
+    /// Evaluates and tessellates the user's branch on the model thread when it changed.
+    fn request_scene(&mut self) {
+        let Some(key) = self.snapshot.scene_key() else { return };
+        if self.scene.as_ref().is_some_and(|s| s.key == key) || self.scene_requested == Some(key) {
+            return;
+        }
+        self.scene_requested = Some(key);
+        self.submit(build_scene, Done::Scene);
+    }
+
+    fn apply_done(&mut self, done: Done) {
+        match done {
+            Done::Command { id, then, result } => {
+                self.stale = true;
+                self.apply_command(&id, then, result);
+            }
+            Done::Scene(Ok(Ok(data))) => {
+                if self.scene.as_ref().is_none_or(|s| s.key != data.key) {
+                    self.selection.clear();
+                }
+                self.scene =
+                    Some(Scene { key: data.key, bodies: data.bodies, sketches: data.sketches, eval: data.eval });
+            }
+            Done::Scene(Ok(Err(e)) | Err(e)) => {
+                self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
+            }
+            Done::Saved { result, then } => {
+                self.stale = true;
+                match result {
+                    Ok(()) => {
+                        self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
+                        if then == AfterSave::Close {
+                            self.close_after_save = true;
+                        }
+                    }
+                    Err(e) => {
+                        if then == AfterSave::Close {
+                            self.dialog = Some(Dialog::Close { save_failed: Some(e.clone()) });
+                        }
+                        self.notice = Some(Notice { text: e, hint: None, error: true });
+                    }
+                }
+            }
+            Done::SavedAs { path, text, result } => {
+                self.stale = true;
+                match result {
+                    Ok(()) => {
+                        self.project_risky = gusset_store::paths::classify(&path).map(|r| format!("{r:?}"));
+                        self.project_path = Some(path);
+                        self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
+                    }
+                    Err(e) => {
+                        self.dialog = Some(Dialog::Path { purpose: PathPurpose::SaveAs, text, error: Some(e) });
+                    }
+                }
+            }
+            Done::Recovery(r) => {
+                if let Err(e) = r {
+                    self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
+                }
+            }
+            Done::Refresh(r) => {
+                self.stale = true;
+                if let Err(e) = r {
+                    self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
+                }
+            }
+        }
+    }
+
+    fn apply_command(&mut self, id: &str, then: Then, result: Result<Value, CommandError>) {
+        match then {
+            Then::Notice => self.report(id, &result),
+            Then::Quiet => {
+                if result.is_err() {
+                    self.report(id, &result);
+                }
+            }
+            Then::Form => {
+                let Some(form) = self.form.as_mut().filter(|f| f.command == id) else {
+                    self.report(id, &result);
+                    return;
+                };
+                match result {
+                    Ok(_) => {
+                        let title = form.title;
+                        self.form = None;
+                        self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
+                    }
+                    Err(e) => {
+                        form.error = Some(match &e.hint {
+                            Some(h) => format!("{} — {}: {h}", e.message, tr("error.fix")),
+                            None => e.message.clone(),
+                        });
+                    }
+                }
+            }
+            Then::Code => {
+                let Some(c) = self.code.as_mut() else { return };
+                c.1 = match result {
+                    Ok(_) => None,
+                    Err(e) => {
+                        let loc = e
+                            .details
+                            .as_ref()
+                            .map(|d| format!(" (line {}, column {})", d["line"], d["column"]))
+                            .unwrap_or_default();
+                        Some(format!("{}{loc}", e.message))
+                    }
+                };
+            }
+            Then::PathDialog(purpose, text) => match result {
+                Ok(_) => self.report(id, &result),
+                Err(e) => self.dialog = Some(Dialog::Path { purpose, text, error: Some(e.message) }),
+            },
+        }
     }
 
     /// Opens the dialog for a command (or runs it directly when it takes no input).
@@ -156,7 +472,7 @@ impl App {
         let Some(spec) = gusset_commands::find(id) else { return };
         let mut form = Form::new(spec);
         if form.fields.is_empty() {
-            let _ = self.run(spec.id, json!({}));
+            self.submit_command(spec.id, json!({}), Then::Notice);
             return;
         }
         self.prefill(&mut form);
@@ -165,14 +481,14 @@ impl App {
 
     /// Fills obvious fields from context: the latest sketch, selected edges and faces.
     fn prefill(&self, form: &mut Form) {
-        let doc = self.session.document(&Actor::User).ok();
-        let last_sketch = doc.as_ref().and_then(|d| {
-            d.features
-                .iter()
-                .rev()
-                .find(|f| matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)))
-                .map(|f| f.name.clone())
-        });
+        let last_sketch = self
+            .snapshot
+            .doc
+            .features
+            .iter()
+            .rev()
+            .find(|f| matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)))
+            .map(|f| f.name.clone());
         if let Some(s) = last_sketch {
             form.set("sketch", &s);
         }
@@ -189,77 +505,111 @@ impl App {
         form.set("plane", face.unwrap_or("XY"));
     }
 
+    /// Sends the open form's command; the form closes when it succeeded.
     pub fn apply_form(&mut self) {
         let Some(form) = self.form.as_mut() else { return };
         match form.to_args() {
             Ok(args) => {
+                form.error = None;
                 let id = form.command;
-                match gusset_commands::execute(&mut self.session, &Self::ctx(), id, args) {
-                    Ok(_) => {
-                        let title = form.title;
-                        self.form = None;
-                        self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
-                    }
-                    Err(e) => {
-                        form.error = Some(match &e.hint {
-                            Some(h) => format!("{} — {}: {h}", e.message, tr("error.fix")),
-                            None => e.message.clone(),
-                        });
-                    }
-                }
+                self.submit_command(id, args, Then::Form);
             }
             Err(msg) => form.error = Some(msg),
         }
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.session.dirty
+        self.snapshot.dirty
     }
 
-    /// Saves to the current path; asks for one when the project was never saved.
+    /// Starts saving to the current path; asks for one when the project was never saved.
+    /// Returns false when nothing was started.
     pub fn save(&mut self) -> bool {
-        let Some(p) = self.project.as_mut() else {
+        self.save_then(AfterSave::Nothing)
+    }
+
+    fn save_then(&mut self, then: AfterSave) -> bool {
+        if !self.has_project {
             self.notice = Some(Notice { text: "No data folder: cannot save".into(), hint: None, error: true });
             return false;
-        };
-        if p.path().is_none() {
+        }
+        if self.project_path.is_none() {
             self.dialog = Some(Dialog::Path { purpose: PathPurpose::SaveAs, text: "part.gus".into(), error: None });
             return false;
         }
-        match p.save(self.session.history()) {
-            Ok(()) => {
-                self.session.dirty = false;
-                self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
-                true
-            }
-            Err(e) => {
-                self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
-                false
-            }
+        self.notice = Some(Notice { text: "Saving…".into(), hint: None, error: false });
+        self.submit(
+            |s, p| {
+                let p = p.ok_or("No data folder: cannot save")?;
+                p.save(s.history()).map_err(|e| e.to_string())?;
+                s.dirty = false;
+                Ok(())
+            },
+            move |r| Done::Saved { result: r.map_err(|e| e.message).and_then(|x: Result<(), String>| x), then },
+        );
+        true
+    }
+
+    /// Starts "Save As" to `path`; a failure re-opens the path dialog with the error.
+    pub fn save_as(&mut self, path: PathBuf) {
+        if !self.has_project {
+            self.notice = Some(Notice { text: "No data folder: cannot save".into(), hint: None, error: true });
+            return;
         }
+        let text = path.to_string_lossy().into_owned();
+        let p2 = path.clone();
+        self.submit(
+            move |s, p| {
+                let p = p.ok_or("No data folder: cannot save")?;
+                p.save_as(&p2, s.history()).map_err(|e| e.to_string())?;
+                s.project_dir = p2.parent().map(PathBuf::from);
+                s.dirty = false;
+                Ok(())
+            },
+            move |r| Done::SavedAs { path, text, result: r.map_err(|e| e.message).and_then(|x: Result<(), String>| x) },
+        );
     }
 
-    pub fn save_as(&mut self, path: PathBuf) -> Result<(), String> {
-        let p = self.project.as_mut().ok_or("No data folder: cannot save")?;
-        p.save_as(&path, self.session.history()).map_err(|e| e.to_string())?;
-        self.session.project_dir = path.parent().map(PathBuf::from);
-        self.session.dirty = false;
-        self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
-        Ok(())
+    /// Replaces the hosted session: stops the current model thread (after the jobs already
+    /// queued), lets `make` build the next session from the old one, and starts a new
+    /// model thread for it.
+    fn replace_host(&mut self, make: impl FnOnce(Option<(Session, Option<Project>)>) -> (Session, Option<Project>)) {
+        let old = self.host.shutdown();
+        // Results of the old host's jobs are all delivered by now; apply them first.
+        while let Ok(done) = self.done_rx.try_recv() {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            self.apply_done(done);
+        }
+        self.in_flight = 0;
+        let (session, project) = make(old);
+        self.has_project = project.is_some();
+        self.host = Host::spawn(session, project);
+        link::spawn_listener(self.host.subscribe(), self.waker.clone());
+        self.events = self.host.subscribe();
+        self.stale = true;
+        self.scene = None;
+        self.scene_requested = None;
+        self.selection.clear();
+        self.fit_pending = true;
     }
 
+    /// Opens a project file in this window (replacing the current project).
     pub fn open(&mut self, path: PathBuf) -> Result<(), String> {
         let dirs = self.dirs.clone().ok_or("No data folder")?;
         let (project, history, report) = Project::open(&path, dirs).map_err(|e| e.to_string())?;
-        let kernel = self.session.kernel().clone();
-        self.session = Session::from_history(history, kernel);
-        self.session.project_dir = path.parent().map(PathBuf::from);
-        if let Some(old) = self.project.replace(project) {
-            old.close();
+        let mut session = Session::from_history(history, self.kernel.clone());
+        session.project_dir = path.parent().map(PathBuf::from);
+        if matches!(report, OpenReport::Damaged { .. }) {
+            session.dirty = true;
         }
-        self.scene = None;
-        self.selection.clear();
-        self.fit_pending = true;
+        self.project_risky = project.risky.as_ref().map(|r| format!("{r:?}"));
+        self.project_path = Some(path);
+        self.replace_host(move |old| {
+            if let Some((_, Some(p))) = old {
+                p.close();
+            }
+            (session, Some(project))
+        });
         match report {
             OpenReport::Clean => {}
             OpenReport::RecoveryAvailable { recovered, .. } => self.dialog = Some(Dialog::Recovery { recovered }),
@@ -268,64 +618,46 @@ impl App {
                     title: tr("damaged.title").into(),
                     body: format!("{reason}\nOpened instead: {source:?}. Save to repair the file."),
                 });
-                self.session.dirty = true;
             }
         }
         Ok(())
     }
 
     /// Writes a recovery snapshot if there are unsaved changes and the interval passed.
+    /// `force` (on exit) waits for it; otherwise it runs as a background job.
     pub fn maybe_snapshot(&mut self, force: bool) {
-        if !self.session.dirty || (!force && self.last_snapshot.elapsed() < RECOVERY_INTERVAL) {
+        if force {
+            if let Err(e) = self.host.snapshot() {
+                self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
+            }
+            return;
+        }
+        if !self.snapshot.dirty || self.last_snapshot.elapsed() < RECOVERY_INTERVAL {
             return;
         }
         self.last_snapshot = Instant::now();
-        if let Some(p) = self.project.as_mut()
-            && let Err(e) = p.snapshot(self.session.history())
-        {
-            self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
-        }
+        self.submit(
+            |s, p| match p {
+                Some(p) if s.dirty => p.snapshot(s.history()).map(Some).map_err(|e| e.to_string()),
+                _ => Ok(None),
+            },
+            |r| Done::Recovery(r.map_err(|e| e.message).and_then(|x| x)),
+        );
     }
 
-    /// Rebuilds the drawable scene when the model changed.
-    fn refresh_scene(&mut self) {
-        let b = self.session.current_branch(&Actor::User);
-        let h = self.session.history();
-        let (Ok(head), Ok(br)) = (h.head(b), h.branch(b)) else { return };
-        let key = (head, br.rollback);
-        if self.scene.as_ref().is_some_and(|s| s.key == key) {
-            return;
-        }
-        let eval = match self.session.evaluate(&Actor::User) {
-            Ok(e) => e,
-            Err(e) => {
-                self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
-                return;
-            }
-        };
-        let kernel = self.session.kernel().clone();
-        let tp = TessellationParams::default();
-        let bodies = eval
-            .bodies
-            .iter()
-            .filter_map(|body| {
-                let mesh = kernel.tessellate(&body.shape, &tp).ok()?;
-                Some(DrawBody {
-                    name: body.name.clone(),
-                    mesh,
-                    face_names: body.names.faces.iter().map(ToString::to_string).collect(),
-                    edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
-                })
-            })
-            .collect();
-        let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
-        self.scene = Some(Scene { key, bodies, sketches, eval });
-        self.selection.clear();
-    }
-
-    pub fn evaluation(&mut self) -> Option<Arc<Evaluation>> {
-        self.refresh_scene();
+    /// The evaluation of the drawn state (as of the last scene the host delivered).
+    pub fn evaluation(&self) -> Option<Arc<Evaluation>> {
         self.scene.as_ref().map(|s| s.eval.clone())
+    }
+
+    /// Stops the model thread and closes the project (window closing).
+    fn shutdown(&mut self, discard_recovery: bool) {
+        if let Some((_, Some(p))) = self.host.shutdown() {
+            if discard_recovery {
+                p.discard_recovery();
+            }
+            p.close();
+        }
     }
 
     // ------------------------------------------------------------------ UI
@@ -333,13 +665,18 @@ impl App {
     /// Draws one frame.
     pub fn ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.waker.set(&ctx);
         if self.theme_applied != Some(self.theme) {
             theme::apply(&ctx, self.theme, self.reduce_motion);
             self.theme_applied = Some(self.theme);
         }
+        self.poll(Some(&ctx));
+        if self.close_after_save {
+            self.close_after_save = false;
+            self.close_now(&ctx, false);
+        }
         self.handle_close(&ctx);
         self.shortcuts(&ctx);
-        self.refresh_scene();
         self.maybe_snapshot(false);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
@@ -362,8 +699,9 @@ impl App {
             if self.is_dirty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.dialog = Some(Dialog::Close { save_failed: None });
-            } else if let Some(p) = self.project.take() {
-                p.close();
+            } else {
+                self.allow_close = true;
+                self.shutdown(false);
             }
         }
     }
@@ -380,10 +718,10 @@ impl App {
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)))
             || ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Y)))
         {
-            let _ = self.run("history.redo", json!({}));
+            self.submit_command("history.redo", json!({}), Then::Notice);
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Z))) {
-            let _ = self.run("history.undo", json!({}));
+            self.submit_command("history.undo", json!({}), Then::Notice);
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
             self.form = None;
@@ -432,10 +770,10 @@ impl App {
             });
             ui.menu_button(tr("menu.edit"), |ui| {
                 if ui.button(tr("menu.undo")).clicked() {
-                    let _ = self.run("history.undo", json!({}));
+                    self.submit_command("history.undo", json!({}), Then::Notice);
                 }
                 if ui.button(tr("menu.redo")).clicked() {
-                    let _ = self.run("history.redo", json!({}));
+                    self.submit_command("history.redo", json!({}), Then::Notice);
                 }
             });
             ui.menu_button(tr("menu.view"), |ui| {
@@ -471,10 +809,8 @@ impl App {
             s.push_str(n);
             s.push('\n');
         }
-        if let Some(p) = &self.project
-            && let Some(r) = &p.risky
-        {
-            s.push_str(&format!("Storage warning: {r:?}\n"));
+        if let Some(r) = &self.project_risky {
+            s.push_str(&format!("Storage warning: {r}\n"));
         }
         s
     }
@@ -482,10 +818,7 @@ impl App {
     pub fn toggle_code(&mut self) {
         self.code = match self.code {
             Some(_) => None,
-            None => {
-                let text = self.session.document(&Actor::User).map(|d| d.to_text()).unwrap_or_default();
-                Some((text, None))
-            }
+            None => Some((self.snapshot.doc.to_text(), None)),
         };
     }
 
@@ -521,12 +854,16 @@ impl App {
             } else {
                 ui.colored_label(pal.success, format!("✔ {}", tr("status.saved")));
             }
+            if self.busy() {
+                ui.spinner();
+                ui.weak(tr("status.working"));
+            }
             if let Some(eval) = self.scene.as_ref().map(|s| &s.eval)
                 && !eval.errors().is_empty()
             {
                 ui.colored_label(pal.danger, format!("⚠ {} ({})", tr("status.rebuild_errors"), eval.errors().len()));
             }
-            if self.session.audit_log().iter().any(|a| matches!(a.actor, Actor::Agent(_))) {
+            if self.snapshot.audit_total > 0 || self.agent_changes > 0 {
                 ui.colored_label(pal.agent, format!("◆ {}", tr("status.agent")));
             }
             if let Some(n) = &self.notice {
@@ -545,7 +882,7 @@ impl App {
     }
 
     fn browser(&mut self, ui: &mut Ui) {
-        let doc = self.session.document(&Actor::User).ok().unwrap_or_default();
+        let doc = self.snapshot.doc.clone();
         let eval = self.scene.as_ref().map(|s| s.eval.clone());
         let pal = *theme::palette(self.theme);
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -610,20 +947,16 @@ impl App {
                 }
             });
             egui::CollapsingHeader::new("Branches").default_open(false).show(ui, |ui| {
-                let cur = self.session.current_branch(&Actor::User);
-                let branches: Vec<(gusset_history::BranchId, String, bool)> = self
-                    .session
-                    .history()
-                    .branches()
-                    .iter()
-                    .map(|b| (b.id, b.name.clone(), matches!(b.created_by, Actor::Agent(_))))
-                    .collect();
-                for (id, name, agent) in branches {
-                    let label =
-                        if agent { RichText::new(format!("◆ {name}")).color(pal.agent) } else { RichText::new(name) };
-                    if ui.selectable_label(id == cur, label).clicked() && id != cur {
-                        let _ = self.session.switch_branch(&Actor::User, id);
-                        self.scene = None;
+                let cur = self.snapshot.branch;
+                let branches = self.snapshot.branches.clone();
+                for b in branches {
+                    let label = if b.agent.is_some() {
+                        RichText::new(format!("◆ {}", b.name)).color(pal.agent)
+                    } else {
+                        RichText::new(b.name.clone())
+                    };
+                    if ui.selectable_label(Some(b.id) == cur, label).clicked() && Some(b.id) != cur {
+                        self.submit_command("branch.switch", json!({ "branch": b.id.to_string() }), Then::Quiet);
                     }
                 }
             });
@@ -631,10 +964,8 @@ impl App {
     }
 
     fn timeline(&mut self, ui: &mut Ui) {
-        let doc = self.session.document(&Actor::User).ok().unwrap_or_default();
-        let b = self.session.current_branch(&Actor::User);
-        let rollback = self.session.history().branch(b).ok().and_then(|br| br.rollback);
-        let n = doc.features.len();
+        let n = self.snapshot.doc.features.len();
+        let rollback = self.snapshot.rollback;
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("timeline.title")).strong());
             if ui
@@ -648,10 +979,10 @@ impl App {
                 ui.add(egui::Slider::new(&mut marker, 0..=n).show_value(false)).on_hover_text(tr("timeline.rollback"));
             if r.changed() {
                 let m = if marker >= n { Value::Null } else { json!(marker) };
-                let _ = self.run("timeline.set_rollback", json!({ "marker": m }));
+                self.submit_command("timeline.set_rollback", json!({ "marker": m }), Then::Quiet);
             }
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                for (i, f) in doc.features.iter().enumerate() {
+                for (i, f) in self.snapshot.doc.features.iter().enumerate() {
                     let active = rollback.is_none_or(|m| i < m);
                     let t = RichText::new(&f.name);
                     ui.label(if active { t } else { t.weak() });
@@ -659,12 +990,8 @@ impl App {
             });
         });
         if self.show_iterations {
-            let h = self.session.history();
-            let head = h.head(b).ok();
             ui.horizontal_wrapped(|ui| {
-                for node in head.map(|n| h.lineage(n)).unwrap_or_default().iter().rev().take(30).rev() {
-                    let label =
-                        h.node(*node).map(|n| n.name.clone().unwrap_or_else(|| n.label.clone())).unwrap_or_default();
+                for label in &self.snapshot.lineage {
                     ui.label(RichText::new(format!("● {label}")).small());
                 }
             });
@@ -688,28 +1015,7 @@ impl App {
             });
         }
         if apply && let Some((text, _)) = self.code.clone() {
-            match gusset_commands::execute(
-                &mut self.session,
-                &Self::ctx(),
-                "document.set_text",
-                json!({ "text": text }),
-            ) {
-                Ok(_) => {
-                    if let Some(c) = self.code.as_mut() {
-                        c.1 = None;
-                    }
-                }
-                Err(e) => {
-                    let loc = e
-                        .details
-                        .as_ref()
-                        .map(|d| format!(" (line {}, column {})", d["line"], d["column"]))
-                        .unwrap_or_default();
-                    if let Some(c) = self.code.as_mut() {
-                        c.1 = Some(format!("{}{loc}", e.message));
-                    }
-                }
-            }
+            self.submit_command("document.set_text", json!({ "text": text }), Then::Code);
         }
         if revert {
             self.code = None;
@@ -823,7 +1129,6 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.dialog.take() else { return };
-        let mut keep = true;
         let modal = egui::Modal::new(egui::Id::new("dialog"));
         match dialog {
             Dialog::Close { save_failed } => {
@@ -831,7 +1136,7 @@ impl App {
                 modal.show(ctx, |ui| {
                     ui.heading(tr("close.title"));
                     ui.label(tr("close.body"));
-                    let name = self.project.as_ref().and_then(|p| p.path()).map_or_else(
+                    let name = self.project_path.as_ref().map_or_else(
                         || "Untitled".to_string(),
                         |p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     );
@@ -852,29 +1157,15 @@ impl App {
                     });
                 });
                 match action {
+                    // Closes once the save succeeded; on failure the dialog comes back
+                    // with the error, and without a file Save As takes over.
                     Some(0) => {
-                        if self.save() {
-                            self.close_now(ctx);
-                            keep = false;
-                        } else if !matches!(self.dialog, Some(Dialog::Path { .. })) {
-                            let msg = self.notice.as_ref().map(|n| n.text.clone());
-                            self.dialog = Some(Dialog::Close { save_failed: msg });
-                            return;
-                        } else {
-                            return; // Save As takes over.
-                        }
+                        self.save_then(AfterSave::Close);
                     }
-                    Some(1) => {
-                        if let Some(p) = self.project.as_ref() {
-                            p.discard_recovery();
-                        }
-                        self.close_now(ctx);
-                        keep = false;
-                    }
-                    Some(_) => keep = false,
+                    Some(1) => self.close_now(ctx, true),
+                    Some(_) => {}
                     None => self.dialog = Some(Dialog::Close { save_failed }),
                 }
-                if !keep {}
             }
             Dialog::Recovery { recovered } => {
                 let mut action = None;
@@ -895,30 +1186,43 @@ impl App {
                 });
                 match action {
                     Some(0) => {
-                        let kernel = self.session.kernel().clone();
-                        let dir = self.session.project_dir.clone();
-                        self.session = Session::from_history(*recovered, kernel);
-                        self.session.project_dir = dir;
-                        self.session.dirty = true;
-                        self.scene = None;
+                        let kernel = self.kernel.clone();
+                        self.replace_host(move |old| {
+                            let (dir, project) = match old {
+                                Some((s, p)) => (s.project_dir, p),
+                                None => (None, None),
+                            };
+                            let mut session = Session::from_history(*recovered, kernel);
+                            session.project_dir = dir;
+                            session.dirty = true;
+                            (session, project)
+                        });
                     }
-                    Some(1) => {
-                        if let Some(p) = self.project.as_ref() {
-                            p.discard_recovery();
-                        }
-                    }
+                    Some(1) => self.submit(
+                        |_, p| {
+                            if let Some(p) = p {
+                                p.discard_recovery();
+                            }
+                            Ok(())
+                        },
+                        |r| Done::Refresh(r.and_then(|x| x)),
+                    ),
                     Some(_) => {
                         // Keep both: the recovered state becomes a branch next to the saved one.
                         if let Ok(doc) = recovered.head_document(recovered.main()) {
                             let ctx = Self::ctx();
-                            let _ = gusset_commands::execute(
-                                &mut self.session,
-                                &ctx,
-                                "branch.create",
-                                json!({ "name": "Recovered", "switch": true }),
+                            self.submit(
+                                move |s, _| {
+                                    gusset_commands::execute(
+                                        s,
+                                        &ctx,
+                                        "branch.create",
+                                        json!({ "name": "Recovered", "switch": true }),
+                                    )?;
+                                    s.commit(&ctx, "Recovered work", &doc).map(|_| ())
+                                },
+                                |r| Done::Refresh(r.and_then(|x| x)),
                             );
-                            let _ = self.session.commit(&ctx, "Recovered work", &doc);
-                            self.scene = None;
                         }
                     }
                     None => self.dialog = Some(Dialog::Recovery { recovered }),
@@ -949,7 +1253,7 @@ impl App {
                     return;
                 }
                 if submit {
-                    match self.path_action(purpose, PathBuf::from(text.trim())) {
+                    match self.path_action(purpose, &text) {
                         Ok(()) => return,
                         Err(e) => error = Some(e),
                     }
@@ -957,6 +1261,7 @@ impl App {
                 self.dialog = Some(Dialog::Path { purpose, text, error });
             }
             Dialog::Message { title, body } => {
+                let mut keep = true;
                 modal.show(ctx, |ui| {
                     ui.heading(&title);
                     ui.label(&body);
@@ -971,14 +1276,17 @@ impl App {
         }
     }
 
-    fn path_action(&mut self, purpose: PathPurpose, path: PathBuf) -> Result<(), String> {
+    /// Runs a path dialog's action. Quick failures come back as `Err` (the dialog stays
+    /// open); slower ones (saving, exporting) re-open the dialog with the error later.
+    fn path_action(&mut self, purpose: PathPurpose, text: &str) -> Result<(), String> {
+        let path = PathBuf::from(text.trim());
         if path.as_os_str().is_empty() {
             return Err("Enter a file path".into());
         }
         let abs = if path.is_absolute() {
             path
         } else {
-            let base = self.session.project_dir.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+            let base = self.snapshot.project_dir.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
             base.join(path)
         };
         let export = |app: &mut App, id: &str, extra: Value| {
@@ -986,10 +1294,14 @@ impl App {
             if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
                 a.extend(e.clone());
             }
-            app.run(id, args).map(|_| ()).map_err(|e| e.message)
+            app.submit_command(id, args, Then::PathDialog(purpose, text.to_string()));
+            Ok(())
         };
         match purpose {
-            PathPurpose::SaveAs => self.save_as(abs),
+            PathPurpose::SaveAs => {
+                self.save_as(abs);
+                Ok(())
+            }
             PathPurpose::Open => self.open(abs),
             PathPurpose::ExportStep => export(self, "export.step", json!({})),
             PathPurpose::ExportStl => export(self, "export.mesh", json!({ "format": "stl" })),
@@ -997,13 +1309,46 @@ impl App {
         }
     }
 
-    fn close_now(&mut self, ctx: &egui::Context) {
+    fn close_now(&mut self, ctx: &egui::Context, discard_recovery: bool) {
         self.allow_close = true;
-        if let Some(p) = self.project.take() {
-            p.close();
-        }
+        self.shutdown(discard_recovery);
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Stop the model thread; the project's lock is released when it drops.
+        drop(self.host.shutdown());
+    }
+}
+
+/// The scene job: evaluates the user's branch and tessellates its bodies (on the model
+/// thread, so the UI thread never does the heavy work).
+fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, CommandError> {
+    let b = s.current_branch(&Actor::User);
+    let (head, rollback) = {
+        let br = s.history().branch(b).map_err(CommandError::history)?;
+        (br.head, br.rollback)
+    };
+    let eval = s.evaluate(&Actor::User)?;
+    let kernel = s.kernel().clone();
+    let tp = TessellationParams::default();
+    let bodies = eval
+        .bodies
+        .iter()
+        .filter_map(|body| {
+            let mesh = kernel.tessellate(&body.shape, &tp).ok()?;
+            Some(DrawBody {
+                name: body.name.clone(),
+                mesh,
+                face_names: body.names.faces.iter().map(ToString::to_string).collect(),
+                edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
+            })
+        })
+        .collect();
+    let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
+    Ok(SceneData { key: (head, rollback), bodies, sketches, eval })
 }
 
 /// Builds polylines for a solved sketch on its plane.

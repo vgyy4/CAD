@@ -62,6 +62,7 @@ const EN: &[(&str, &str)] = &[
     ("status.unsaved", "Unsaved changes"),
     ("status.rebuild_errors", "Rebuild errors"),
     ("status.agent", "Agent activity"),
+    ("status.working", "Working…"),
     ("code.title", "Code"),
     ("code.apply", "Apply code"),
     ("code.revert", "Revert"),

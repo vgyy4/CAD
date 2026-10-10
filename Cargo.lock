@@ -1555,6 +1555,7 @@ dependencies = [
  "gusset-doc",
  "gusset-eval",
  "gusset-history",
+ "gusset-host",
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
@@ -1562,6 +1563,7 @@ dependencies = [
  "gusset-store",
  "gusset-units",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

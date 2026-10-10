@@ -23,6 +23,8 @@ gusset-commands.workspace = true
 gusset-project.workspace = true
 gusset-store.workspace = true
 gusset-hw.workspace = true
+gusset-host.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 serde_json.workspace = true
 egui.workspace = true
 eframe.workspace = true
