@@ -1,0 +1,24 @@
+[package]
+name = "gusset-host"
+description = "Gusset model thread: owns the Session, runs commands serially and broadcasts changes (ADR 0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-commands.workspace = true
+gusset-history.workspace = true
+gusset-project.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+gusset-doc.workspace = true
+gusset-kernel.workspace = true
+gusset-store.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

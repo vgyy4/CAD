@@ -56,6 +56,17 @@ schemars = "1.2.2"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }
 # gusset-render: PNG encoding for render_view and screenshot goldens.
 png = "0.18.1"
+# gusset-mcp: the official MCP Rust SDK (Apache-2.0), pinned exactly (ADR 0012).
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation"] }
+# gusset-host / gusset-mcp: async runtime and the localhost HTTP stack (already pulled
+# in by rmcp's streamable-HTTP transport; listed so we can enable server/client parts).
+tokio = { version = "1.53.2", default-features = false }
+hyper = { version = "1.12.0", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+bytes = "1.12.1"
+tokio-util = "0.7.20"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
@@ -77,6 +88,8 @@ gusset-sandbox = { path = "crates/gusset-sandbox", version = "0.0.1" }
 gusset-worker = { path = "crates/gusset-worker", version = "0.0.1" }
 gusset-app = { path = "crates/gusset-app", version = "0.0.1" }
 gusset-render = { path = "crates/gusset-render", version = "0.0.1" }
+gusset-host = { path = "crates/gusset-host", version = "0.0.1" }
+gusset-mcp = { path = "crates/gusset-mcp", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"

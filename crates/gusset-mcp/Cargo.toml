@@ -1,0 +1,40 @@
+[package]
+name = "gusset-mcp"
+description = "Gusset's built-in MCP server: registry-generated tools, resources, approvals and localhost transports (ADR 0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-commands.workspace = true
+gusset-host.workspace = true
+gusset-history.workspace = true
+gusset-hw.workspace = true
+gusset-kernel.workspace = true
+gusset-eval.workspace = true
+gusset-doc.workspace = true
+gusset-project.workspace = true
+gusset-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+rmcp.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time"] }
+hyper.workspace = true
+hyper-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+tokio-util.workspace = true
+schemars.workspace = true
+directories.workspace = true
+
+[dev-dependencies]
+# The rmcp client drives full in-process MCP sessions in the tests.
+rmcp = { workspace = true, features = ["client"] }
+gusset-kernel.workspace = true
+
+[lints]
+workspace = true
