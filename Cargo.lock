@@ -1678,6 +1678,7 @@ dependencies = [
  "gusset-hw",
  "gusset-kernel",
  "gusset-project",
+ "gusset-render",
  "gusset-store",
  "http",
  "http-body-util",
