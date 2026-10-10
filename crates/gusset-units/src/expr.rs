@@ -83,6 +83,25 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Whether two trees are equal apart from their source spans (number values are
+    /// compared bit for bit).
+    pub fn same_tree(&self, other: &Expr) -> bool {
+        match (self, other) {
+            (Expr::Number { value: a, unit: ua, .. }, Expr::Number { value: b, unit: ub, .. }) => {
+                a.to_bits() == b.to_bits() && ua == ub
+            }
+            (Expr::Var { name: a, .. }, Expr::Var { name: b, .. }) => a == b,
+            (Expr::Neg { inner: a, .. }, Expr::Neg { inner: b, .. }) => a.same_tree(b),
+            (Expr::Binary { op: oa, lhs: la, rhs: ra, .. }, Expr::Binary { op: ob, lhs: lb, rhs: rb, .. }) => {
+                oa == ob && la.same_tree(lb) && ra.same_tree(rb)
+            }
+            (Expr::Call { func: fa, args: aa, .. }, Expr::Call { func: fb, args: ab, .. }) => {
+                fa == fb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(a, b)| a.same_tree(b))
+            }
+            _ => false,
+        }
+    }
+
     pub fn span(&self) -> Span {
         match self {
             Expr::Number { span, .. }
@@ -153,8 +172,20 @@ impl fmt::Display for Expr {
                 }
                 Expr::Var { name, .. } => f.write_str(name),
                 Expr::Neg { inner, .. } => {
+                    // A leading `-` takes a whole power (`-x ^ 2` is `-(x ^ 2)`), so a
+                    // negation needs parentheses only as the base of `^`.
+                    let needs = parent_prec > BinOp::Pow.precedence();
+                    if needs {
+                        f.write_str("(")?;
+                    }
                     f.write_str("-")?;
-                    go(inner, 4, false, f)
+                    // The operand is parsed like the right side of `^`: powers need no
+                    // parentheses, anything looser does.
+                    go(inner, BinOp::Pow.precedence(), true, f)?;
+                    if needs {
+                        f.write_str(")")?;
+                    }
+                    Ok(())
                 }
                 Expr::Binary { op, lhs, rhs, .. } => {
                     let p = op.precedence();
@@ -884,15 +915,43 @@ mod tests {
             "atan2(h, w / 2) + 30 deg",
             "10 mm + 0.5 in",
             "a / (b * c)",
+            "(-2) ^ 2",
+            "(-x) ^ (-y) ^ 2",
+            "-(x ^ 2)",
+            "2 ^ -x ^ 2",
+            "a * -b - -(c + d)",
+            "--x",
         ] {
             let e = parse(s).unwrap();
             let printed = e.to_string();
             let e2 = parse(&printed).unwrap();
             assert_eq!(printed, e2.to_string(), "{s}");
+            assert!(e.same_tree(&e2), "{s} printed as {printed}");
             let v = |n: &str| Some(Quantity::number(n.len() as f64 + 1.5));
             let (a, b) = (eval(&e, &v), eval(&e2, &v));
             assert_eq!(a.map(|q| q.value.to_bits()).ok(), b.map(|q| q.value.to_bits()).ok(), "{s}");
         }
+    }
+
+    #[test]
+    fn negation_prints_with_minimal_parentheses() {
+        for (s, want) in [
+            ("(-2) ^ 2", "(-2) ^ 2"),
+            ("-(2 ^ 2)", "-2 ^ 2"),
+            ("-(a * b)", "-(a * b)"),
+            ("2 ^ (-x)", "2 ^ -x"),
+            ("-(-x)", "--x"),
+        ] {
+            assert_eq!(parse(s).unwrap().to_string(), want, "{s}");
+        }
+        // Found by fuzzing: printing a negated power used to add parentheses, so a deep
+        // but valid expression printed past the nesting limit.
+        let deep = format!("2 ^{}2 ^ a", "-".repeat(29));
+        let e = parse(&deep).unwrap();
+        assert!(parse(&e.to_string()).unwrap().same_tree(&e));
+        let v = |_: &str| Some(Quantity::number(3.0));
+        assert_eq!(eval(&parse("(-2) ^ 2").unwrap(), &v).unwrap().value, 4.0);
+        assert_eq!(eval(&parse("-2 ^ 2").unwrap(), &v).unwrap().value, -4.0);
     }
 
     #[test]
