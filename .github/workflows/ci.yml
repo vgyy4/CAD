@@ -51,8 +51,16 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ${{ matrix.name }}
+      - name: Install a software Vulkan/GL adapter (renderer GPU golden tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libegl1 libegl-mesa0
       - run: cargo build --workspace --locked
-      - run: cargo test --workspace --locked
+      - name: cargo test --workspace --locked
+        # On Linux lavapipe/llvmpipe are installed above, so a missing adapter is a
+        # failure there instead of a skipped GPU test.
+        env:
+          GUSSET_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: cargo test --workspace --locked
 
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
