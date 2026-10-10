@@ -29,6 +29,10 @@ mem_forget = "deny"
 [workspace.dependencies]
 libm = "0.2.16"
 blake3 = "1.8.7"
+# gusset-hw: thread QoS/priority and sysctl FFI on Linux/Android/Apple (ADR 0011).
+libc = "0.2.190"
+# gusset-hw: EcoQoS (SetThreadInformation) and RAM query on Windows (ADR 0011).
+windows-sys = "0.61.2"
 
 [profile.release]
 lto = "fat"
