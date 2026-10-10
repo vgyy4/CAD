@@ -1,0 +1,30 @@
+# Rust build output
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Fuzzing artifacts
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+
+# Quarantine for downloaded untrusted samples (never committed)
+/quarantine/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.key
+!docs/**/*.key.pub
