@@ -1,0 +1,112 @@
+[package]
+name = "gusset-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "cargo-fuzz targets for every Gusset parser (ADR 0008 §11)"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# rust-fuzz/libfuzzer, (MIT OR Apache-2.0) AND NCSA; no RustSec advisories (checked 2026-10-10).
+libfuzzer-sys = "0.4.13"
+gusset-units = { path = "../crates/gusset-units" }
+gusset-doc = { path = "../crates/gusset-doc" }
+gusset-store = { path = "../crates/gusset-store" }
+gusset-project = { path = "../crates/gusset-project" }
+gusset-kernel = { path = "../crates/gusset-kernel" }
+gusset-meshio = { path = "../crates/gusset-meshio" }
+# Only the protocol codec is fuzzed; without GUSSET_OCCT_DIR the OCCT crates build as
+# stubs, so this does not need OCCT.
+gusset-worker = { path = "../crates/gusset-worker" }
+
+[dev-dependencies]
+# Only for examples/make_seeds.rs.
+gusset-history = { path = "../crates/gusset-history" }
+
+# Standalone: listed in the root workspace's `exclude` (nightly-only tooling, never part
+# of the normal build).
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "units_expr"
+path = "fuzz_targets/units_expr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "doc_text"
+path = "fuzz_targets/doc_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_open"
+path = "fuzz_targets/container_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_salvage"
+path = "fuzz_targets/container_salvage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "project_decode"
+path = "fuzz_targets/project_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mesh_stl"
+path = "fuzz_targets/mesh_stl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mesh_obj"
+path = "fuzz_targets/mesh_obj.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mesh_3mf"
+path = "fuzz_targets/mesh_3mf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mesh_any"
+path = "fuzz_targets/mesh_any.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "worker_request"
+path = "fuzz_targets/worker_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "worker_response"
+path = "fuzz_targets/worker_response.rs"
+test = false
+doc = false
+bench = false

@@ -29,6 +29,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The fuzz crate is outside the workspace (fuzz-miri.yml runs it on nightly);
+      # lint it here on the pinned stable toolchain too.
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
+      - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
 
   test:
     name: test (${{ matrix.name }})

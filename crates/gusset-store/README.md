@@ -40,10 +40,11 @@ files, project locks, the cache directory and startup housekeeping. Design: ADR 
   fsync;
 - lock, cache, housekeeping and deletion tests, and a 40-session hygiene simulation.
 
-Fuzzing (nightly plus `cargo-fuzz`):
+Fuzzing (nightly plus `cargo-fuzz`; the targets live in the repository-level `fuzz/`
+crate, see `fuzz/README.md`):
 
 ```sh
-cd crates/gusset-store/fuzz
+cd fuzz
 cargo +nightly fuzz run container_open
-cargo +nightly fuzz run salvage
+cargo +nightly fuzz run container_salvage
 ```
