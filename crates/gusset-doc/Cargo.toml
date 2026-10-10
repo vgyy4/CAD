@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gusset-units = { path = "../gusset-units" }
+gusset-units.workspace = true
 
 [lints]
 workspace = true

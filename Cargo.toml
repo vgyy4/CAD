@@ -30,6 +30,13 @@ mem_forget = "deny"
 libm = "0.2.16"
 blake3 = "1.8.7"
 
+# Internal crates (versioned so cargo-deny's wildcard check passes)
+gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
+gusset-kernel = { path = "crates/gusset-kernel", version = "0.0.1" }
+gusset-doc = { path = "crates/gusset-doc", version = "0.0.1" }
+gusset-history = { path = "crates/gusset-history", version = "0.0.1" }
+gusset-naming = { path = "crates/gusset-naming", version = "0.0.1" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

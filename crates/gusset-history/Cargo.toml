@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gusset-doc = { path = "../gusset-doc" }
-gusset-units = { path = "../gusset-units" }
+gusset-doc.workspace = true
+gusset-units.workspace = true
 blake3.workspace = true
 
 [lints]
