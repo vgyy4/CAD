@@ -1,0 +1,37 @@
+gusset 1
+units mm
+
+param thickness = 5 mm
+param leg = 40 mm
+param width = 30 mm
+param hole = 3.2 mm  # M3 clearance
+
+# L profile in the XZ plane
+sketch Profile (plane: XZ, next_id: 13) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 5)
+  p4 = point(5, 5)
+  p5 = point(5, 40)
+  p6 = point(0, 40)
+  l7 = line(p1, p2)
+  l8 = line(p2, p3)
+  l9 = line(p3, p4)
+  l10 = line(p4, p5)
+  l11 = line(p5, p6)
+  l12 = line(p6, p1)
+}
+
+extrude Body (profile: Profile, distance: width, symmetric: true, op: new)
+
+fillet InnerFillet (edges: [edge(Body/side(Profile/l9), Body/side(Profile/l10))], radius: 4 mm)
+
+# Mounting holes through the base
+sketch Holes (plane: Body/side(Profile/l7), next_id: 5) {
+  p1 = point(25, 7)
+  c2 = circle(p1, 1.6)
+  p3 = point(25, -7)
+  c4 = circle(p3, 1.6)
+}
+
+extrude HoleCut (profile: Holes, distance: 20 mm, symmetric: true, op: cut, body: Body)

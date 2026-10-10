@@ -130,7 +130,7 @@ mod imp {
         let nfaces = topo.faces.len() / 8;
         let mut origins: Vec<Vec<FaceOrigin>> = vec![Vec::new(); nfaces];
         for q in recs.chunks_exact(4) {
-            let [face, kind, a, b] = [q[0], q[1], q[2], q[3]];
+            let &[face, kind, a, b] = q else { continue };
             let o = match kind {
                 sys::GS_ORIGIN_LATERAL => FaceOrigin::Lateral { tag: a as u64 },
                 sys::GS_ORIGIN_CAP => {
@@ -178,29 +178,20 @@ mod imp {
         let t = ffi::topology(s)?;
         let mut out = Topology::default();
         for f in t.faces.chunks_exact(8) {
-            out.faces.push(FaceInfo {
-                kind: surface_kind(f[0]),
-                area: f[1],
-                centroid: [f[2], f[3], f[4]],
-                normal: [f[5], f[6], f[7]],
-            });
+            let &[k, area, cx, cy, cz, nx, ny, nz] = f else { continue };
+            out.faces.push(FaceInfo { kind: surface_kind(k), area, centroid: [cx, cy, cz], normal: [nx, ny, nz] });
         }
         for (e, a) in t.edges.chunks_exact(5).zip(t.adj.chunks_exact(6)) {
-            let nf = a[0].clamp(0, 2) as usize;
-            let faces: Vec<u32> = a.get(1..1 + nf).unwrap_or_default().iter().map(|&x| u32_of(x)).collect();
-            let nv = a[3].clamp(0, 2) as usize;
+            let (&[k, length, mx, my, mz], &[nf, f0, f1, nv, v0, v1]) = (e, a) else { continue };
+            let faces: Vec<u32> = [f0, f1].into_iter().take(nf.clamp(0, 2) as usize).map(u32_of).collect();
             let vertices: Vec<u32> =
-                a.get(4..6).unwrap_or_default().iter().filter(|&&x| x >= 0).take(nv).map(|&x| u32_of(x)).collect();
-            out.edges.push(EdgeInfo {
-                kind: curve_kind(e[0]),
-                length: e[1],
-                midpoint: [e[2], e[3], e[4]],
-                faces,
-                vertices,
-            });
+                [v0, v1].into_iter().filter(|&x| x >= 0).take(nv.clamp(0, 2) as usize).map(u32_of).collect();
+            out.edges.push(EdgeInfo { kind: curve_kind(k), length, midpoint: [mx, my, mz], faces, vertices });
         }
         for v in t.verts.chunks_exact(3) {
-            out.vertices.push(VertexInfo { point: [v[0], v[1], v[2]] });
+            if let &[x, y, z] = v {
+                out.vertices.push(VertexInfo { point: [x, y, z] });
+            }
         }
         out.solids = t.counts.first().map_or(0, |&c| u32_of(c));
         out.shells = t.counts.get(1).map_or(0, |&c| u32_of(c));
@@ -266,13 +257,24 @@ mod imp {
 
         fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh> {
             let m = ffi::tessellate(raw(shape)?, params.linear_deflection, params.angular_deflection)?;
-            let v3 = |v: &[f32]| v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect::<Vec<_>>();
-            let face_ranges = m.face_ranges.chunks_exact(2).map(|c| c[0]..c[1]).collect();
+            let v3 = |v: &[f32]| {
+                v.chunks_exact(3)
+                    .filter_map(|c| if let &[x, y, z] = c { Some([x, y, z]) } else { None })
+                    .collect::<Vec<_>>()
+            };
+            let face_ranges =
+                m.face_ranges.chunks_exact(2).filter_map(|c| if let &[a, b] = c { Some(a..b) } else { None }).collect();
             let pts = v3(&m.edge_points);
             let edges = m
                 .edge_offsets
                 .windows(2)
-                .map(|w| pts.get(w[0] as usize..w[1] as usize).unwrap_or_default().to_vec())
+                .filter_map(|w| {
+                    if let &[a, b] = w {
+                        Some(pts.get(a as usize..b as usize).unwrap_or_default().to_vec())
+                    } else {
+                        None
+                    }
+                })
                 .collect();
             Ok(Mesh { positions: v3(&m.positions), normals: v3(&m.normals), indices: m.indices, face_ranges, edges })
         }

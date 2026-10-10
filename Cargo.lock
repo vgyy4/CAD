@@ -173,6 +173,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-cli"
+version = "0.0.1"
+dependencies = [
+ "gusset-commands",
+ "gusset-doc",
+ "gusset-eval",
+ "gusset-history",
+ "gusset-hw",
+ "gusset-kernel",
+ "gusset-kernel-occt",
+ "gusset-meshio",
+ "gusset-occt-sys",
+ "gusset-project",
+ "gusset-store",
+ "gusset-units",
+ "serde_json",
+]
+
+[[package]]
 name = "gusset-commands"
 version = "0.0.1"
 dependencies = [

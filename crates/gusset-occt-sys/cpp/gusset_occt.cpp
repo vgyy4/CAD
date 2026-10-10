@@ -42,6 +42,9 @@
 #include <IGESControl_Reader.hxx>
 #include <IGESControl_Writer.hxx>
 #include <Interface_Static.hxx>
+#include <Message.hxx>
+#include <Message_Messenger.hxx>
+#include <Message_PrinterOStream.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
@@ -88,6 +91,17 @@ using AncMap = NCollection_IndexedDataMap<TopoDS_Shape, ShapeList, TopTools_Shap
 
 thread_local std::string g_err;
 
+// OCCT prints progress/statistics to stdout by default; the app's stdout belongs to the
+// CLI and the MCP stdio transport, so remove the default printers once.
+void quiet_occt() {
+  static bool done = [] {
+    const occ::handle<Message_Messenger>& m = Message::DefaultMessenger();
+    m->RemovePrinters(STANDARD_TYPE(Message_PrinterOStream));
+    return true;
+  }();
+  (void)done;
+}
+
 int fail(const std::string& msg) {
   g_err = msg;
   return GS_ERR;
@@ -110,7 +124,9 @@ void bytes_to_buf(const std::string& s, GsBuf* out) {
   to_buf(v, out);
 }
 
-#define GS_GUARD_BEGIN try {
+#define GS_GUARD_BEGIN \
+  quiet_occt();        \
+  try {
 #define GS_GUARD_END                                                \
   }                                                                 \
   catch (const Standard_Failure& e) {                               \
@@ -222,9 +238,10 @@ std::vector<TopoDS_Face> build_faces(const GsProfile* p, const Frame& f, std::ve
       } else {
         throw Standard_Failure("unknown profile segment kind");
       }
-      tagged.push_back(TaggedEdge{e, s.tag});
       mw.Add(e);
       if (!mw.IsDone()) throw Standard_Failure("profile loop is not connected");
+      // MakeWire may replace the edge (to share vertices); tag the edge actually used.
+      tagged.push_back(TaggedEdge{mw.Edge(), s.tag});
     }
     TopoDS_Wire w = mw.Wire();
     double area = loop_area(p, l);

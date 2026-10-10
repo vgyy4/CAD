@@ -1,0 +1,33 @@
+[package]
+name = "gusset-cli"
+description = "The `gusset` command-line tool: headless builds, exports, code view, diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+build = "build.rs"
+
+[[bin]]
+name = "gusset"
+path = "src/main.rs"
+
+[dependencies]
+gusset-doc.workspace = true
+gusset-units.workspace = true
+gusset-kernel.workspace = true
+gusset-kernel-occt.workspace = true
+# Direct dependency only so build.rs receives DEP_GUSSET_OCCT_LIB_DIR (dev rpath).
+gusset-occt-sys.workspace = true
+gusset-history.workspace = true
+gusset-eval.workspace = true
+gusset-commands.workspace = true
+gusset-project.workspace = true
+gusset-store.workspace = true
+gusset-hw.workspace = true
+gusset-meshio.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
