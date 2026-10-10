@@ -45,6 +45,11 @@ cc = "1.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.2"
+# gusset-render: wgpu viewport renderer (ADR 0009). Web backends off; the native
+# backends (Vulkan, DX12, Metal, GL) stay on for the fallback chain.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl"] }
+# gusset-render: PNG encoding for render_view and screenshot goldens.
+png = "0.18.1"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
@@ -61,6 +66,7 @@ gusset-commands = { path = "crates/gusset-commands", version = "0.0.1" }
 gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
 gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
 gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
+gusset-render = { path = "crates/gusset-render", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
