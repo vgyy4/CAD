@@ -262,6 +262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-project"
+version = "0.0.1"
+dependencies = [
+ "gusset-doc",
+ "gusset-history",
+ "gusset-store",
+]
+
+[[package]]
 name = "gusset-sketch"
 version = "0.0.1"
 dependencies = [

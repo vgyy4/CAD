@@ -60,6 +60,7 @@ gusset-hw = { path = "crates/gusset-hw", version = "0.0.1" }
 gusset-commands = { path = "crates/gusset-commands", version = "0.0.1" }
 gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
 gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
+gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"

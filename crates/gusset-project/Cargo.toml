@@ -1,0 +1,16 @@
+[package]
+name = "gusset-project"
+description = "Gusset projects on disk: .gus encode/decode, saving, locking, recovery (ADR 0005/0007)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-doc.workspace = true
+gusset-history.workspace = true
+gusset-store.workspace = true
+
+[lints]
+workspace = true
