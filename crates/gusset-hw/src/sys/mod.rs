@@ -11,6 +11,7 @@
 pub(crate) mod apple;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
+pub(crate) mod stdio;
 #[cfg(windows)]
 pub(crate) mod windows;
 #[cfg(target_arch = "x86_64")]

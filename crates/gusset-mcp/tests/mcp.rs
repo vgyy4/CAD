@@ -540,6 +540,42 @@ async fn stdio_bridge_relays_to_the_running_app_modern() {
     bridge_session(true).await;
 }
 
+/// `gusset mcp --read-only` while relaying: the bridge itself refuses mutating tools
+/// (the app's live session is not in read-only mode), reads still pass through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stdio_bridge_read_only_refuses_edits() {
+    let dir = tmpdir("bridge-ro");
+    let project = dir.join("p.gus");
+    let host = host();
+    let server = McpServer::new(host.clone());
+    server
+        .start_http(HttpOptions {
+            connection_dir: Some(dir.join("conn")),
+            project: Some(project.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    std::fs::write(&project, b"placeholder").unwrap();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let mut opts = StdioOptions::new(Some(project.clone()), Arc::new(MockKernel));
+    opts.connection_dir = Some(dir.join("conn"));
+    opts.read_only = true;
+    tokio::spawn(async move {
+        let (r, w) = tokio::io::split(a);
+        gusset_mcp::run_stdio_async(opts, r, w).await.unwrap();
+    });
+    let c = Client::new("bridged-ro", None).serve(b).await.unwrap();
+    ok(&call(&c, "query_model", json!({})).await);
+    assert_eq!(err_code(&call(&c, "param_set", json!({"name": "width", "expr": "40 mm"})).await), "read_only");
+    let n =
+        host.with_session(|s| s.history().branches().iter().filter(|b| b.name.starts_with("agent/")).count()).unwrap();
+    assert_eq!(n, 0, "nothing reached the app");
+    c.cancel().await.unwrap();
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stdio_headless_creates_and_saves_the_project() {
     let dir = tmpdir("headless");

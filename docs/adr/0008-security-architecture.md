@@ -14,7 +14,8 @@
    each has Miri runs where feasible:
    - `gusset-occt-sys` (C++ FFI shim)
    - `gusset-store` (Windows `MoveFileExW` write-through only)
-   - `gusset-hw` (CPU feature/brand queries and thread-priority FFI only)
+   - `gusset-hw` (CPU feature/brand queries, thread-priority FFI, and pointing stdout at
+     stderr for the `gusset mcp` protocol stream only)
    - `gusset-sandbox` (OS sandbox setup for the import worker)
    - `gusset-app` (Windows DLL search-path hardening at startup)
    

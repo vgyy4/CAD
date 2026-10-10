@@ -47,6 +47,10 @@ pub struct StdioOptions {
     pub renderer: Option<Arc<dyn ViewRenderer>>,
     /// Headless: approval provider when the client cannot elicit (default: deny).
     pub approvals: Option<Arc<dyn ApprovalProvider>>,
+    /// Read-only agent mode (`gusset mcp --read-only`): mutating tools are rejected.
+    /// Headless it maps to `SessionConfig::read_only_agents`; when relaying to a running
+    /// app the bridge itself refuses mutating `tools/call` requests.
+    pub read_only: bool,
 }
 
 impl std::fmt::Debug for StdioOptions {
@@ -54,6 +58,7 @@ impl std::fmt::Debug for StdioOptions {
         f.debug_struct("StdioOptions")
             .field("project", &self.project)
             .field("attach", &self.attach)
+            .field("read_only", &self.read_only)
             .finish_non_exhaustive()
     }
 }
@@ -70,6 +75,7 @@ impl StdioOptions {
             attach: true,
             renderer: None,
             approvals: None,
+            read_only: false,
         }
     }
 }
@@ -82,6 +88,18 @@ impl StdioOptions {
 pub fn run_stdio(options: StdioOptions) -> Result<(), McpError> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(run_stdio_async(options, tokio::io::stdin(), tokio::io::stdout()))
+}
+
+/// Like [`run_stdio`], but the protocol is written to `protocol_out` instead of the
+/// process's stdout. The CLI passes the original stdout here after pointing descriptor 1
+/// at stderr (`gusset_hw::stdio::take_stdout_for_protocol`), so native libraries that
+/// print to stdout cannot corrupt the JSON-RPC stream.
+///
+/// # Errors
+/// As [`run_stdio`].
+pub fn run_stdio_with_output(options: StdioOptions, protocol_out: std::fs::File) -> Result<(), McpError> {
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(run_stdio_async(options, tokio::io::stdin(), tokio::fs::File::from_std(protocol_out)))
 }
 
 /// [`run_stdio`] on arbitrary streams (tests use in-memory duplex streams).
@@ -99,7 +117,7 @@ where
             && let Some(app) = find_instance(&dir, options.project.as_deref()).await
         {
             eprintln!("gusset mcp: attaching to the running Gusset app on port {}", app.port);
-            return relay(app, read, write).await;
+            return relay(app, options.read_only, read, write).await;
         }
     }
     headless(options, read, write).await
@@ -215,6 +233,7 @@ where
     let host = Host::spawn(session, project);
     let server = McpServer::new(host.clone());
     server.set_renderer(options.renderer.clone());
+    server.set_read_only(options.read_only).map_err(McpError::Command)?;
     if let Some(a) = options.approvals.clone() {
         server.set_approval_provider(a);
     }
@@ -282,7 +301,28 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-async fn relay<R, W>(app: AppInstance, read: R, write: W) -> Result<(), McpError>
+/// `--read-only` while relaying: the app's own setting is the user's, so the bridge
+/// refuses mutating registry tools itself. Returns the error result to send back.
+fn read_only_refusal(msg: &Value) -> Option<Value> {
+    if msg.at("method") != "tools/call" {
+        return None;
+    }
+    let name = msg.at("params").at("name").as_str()?;
+    let spec = gusset_commands::registry().iter().find(|s| s.tool_name() == name)?;
+    if !spec.flags.mutating {
+        return None;
+    }
+    let e =
+        gusset_commands::CommandError::new("read_only", "this MCP connection is read-only (gusset mcp --read-only)")
+            .hint(
+                "use the read tools (query_*, render_view, get_text); restart the bridge without --read-only to edit",
+            );
+    let result = rmcp::model::CallToolResult::structured_error(json!({ "error": e }));
+    let result = serde_json::to_value(result).ok()?;
+    Some(json!({"jsonrpc": "2.0", "id": msg.at("id"), "result": result}))
+}
+
+async fn relay<R, W>(app: AppInstance, read_only: bool, read: R, write: W) -> Result<(), McpError>
 where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
@@ -303,6 +343,10 @@ where
                 continue;
             }
         };
+        if read_only && let Some(refusal) = read_only_refusal(&msg) {
+            emit(&out, &refusal).await;
+            continue;
+        }
         let is_init = msg.at("method") == "initialize";
         // Keep the order of the handshake: wait for `initialize` before sending more.
         let (out2, st2, app2) = (out.clone(), state.clone(), app.clone());

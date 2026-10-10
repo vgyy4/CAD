@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 getrandom.workspace = true
 rmcp.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "sync", "time", "fs"] }
 hyper.workspace = true
 hyper-util.workspace = true
 http.workspace = true
@@ -30,6 +30,11 @@ bytes.workspace = true
 tokio-util.workspace = true
 schemars.workspace = true
 directories.workspace = true
+# `render` feature: the real `render_view` renderer (GPU with CPU fallback).
+gusset-render = { workspace = true, optional = true }
+
+[features]
+render = ["dep:gusset-render"]
 
 [dev-dependencies]
 # The rmcp client drives full in-process MCP sessions in the tests.

@@ -13,7 +13,9 @@ repository.workspace = true
 name = "gen-hardware-doc"
 path = "src/bin/gen-hardware-doc.rs"
 
-[target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))'.dependencies]
+# libc: sysctl / thread QoS FFI, and stdout redirection for `gusset mcp` (on Windows
+# the C runtime's `_dup2`).
+[target.'cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))'.dependencies]
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -21,6 +23,7 @@ windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
+    "Win32_System_Console",
 ] }
 
 # This crate cannot use `lints.workspace = true`: the workspace *forbids* `unsafe_code`,

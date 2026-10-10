@@ -26,12 +26,16 @@ pub mod http;
 mod json_ext;
 pub mod render;
 pub mod sanitize;
+#[cfg(feature = "render")]
+pub mod scene_renderer;
 pub mod server;
 
 pub use approval::{ApprovalDecision, ApprovalProvider, ApprovalRequest, ApproveAll, DenyApprovals};
-pub use bridge::{StdioOptions, run_stdio, run_stdio_async};
+pub use bridge::{StdioOptions, run_stdio, run_stdio_async, run_stdio_with_output};
 pub use http::{ConnectionInfo, HttpOptions};
 pub use render::{Camera, NamedView, RenderBody, RenderRequest, RenderScene, RenderStyle, StubRenderer, ViewRenderer};
+#[cfg(feature = "render")]
+pub use scene_renderer::{RenderBackend, SceneRenderer};
 pub use server::GussetMcp;
 
 use gusset_commands::CommandError;
