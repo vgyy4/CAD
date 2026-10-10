@@ -188,3 +188,27 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         assert_eq!(deps, vec!["Extrude1".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod object_tests {
+    use super::*;
+
+    #[test]
+    fn feature_and_param_objects_roundtrip() {
+        let doc = Document::from_text(
+            "gusset 1\nunits mm\n\nparam a = 2 mm  # note\n\n# hello\nextrude E1 (profile: S1, distance: a, op: new)\n",
+        );
+        // E1 refers to a missing sketch: that is a validation issue, not a parse issue.
+        assert!(doc.is_err());
+        let doc = text::parse(
+            "gusset 1\nunits mm\n\nparam a = 2 mm  # note\n\n# hello\nextrude E1 (profile: S1, distance: a, op: new)\n",
+        )
+        .unwrap();
+        let f = &doc.features[0];
+        let obj = text::print_feature_object(f);
+        assert_eq!(&text::parse_feature_object(&obj).unwrap(), f);
+        let p = text::print_params_object(&doc.params);
+        assert_eq!(text::parse_params_object(&p).unwrap(), doc.params);
+        assert!(text::parse_feature_object(&format!("{obj}{obj}")).is_err());
+    }
+}

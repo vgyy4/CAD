@@ -1,0 +1,16 @@
+[package]
+name = "gusset-history"
+description = "Gusset history: content-addressed snapshots, undo tree, iterations/branches (ADR 0006)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-doc = { path = "../gusset-doc" }
+gusset-units = { path = "../gusset-units" }
+blake3.workspace = true
+
+[lints]
+workspace = true

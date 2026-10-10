@@ -656,3 +656,40 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
 pub fn parse_face_ref(s: &str) -> Result<FaceRef, ParseError> {
     FaceRef::parse(s)
 }
+
+// ------------------------------------------------------------------ history objects
+
+/// Canonical text of a single feature (a history object, ADR 0006).
+pub fn print_feature_object(f: &Feature) -> String {
+    let mut s = String::new();
+    print_feature(&mut s, f);
+    s
+}
+
+/// Parses a single-feature history object.
+pub fn parse_feature_object(s: &str) -> Result<Feature, ParseError> {
+    let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;
+    let mut it = doc.features.into_iter();
+    match (it.next(), it.next(), doc.params.is_empty()) {
+        (Some(f), None, true) => Ok(f),
+        _ => Err(perr(1, "a feature object must contain exactly one feature")),
+    }
+}
+
+/// Canonical text of a parameter table (a history object).
+pub fn print_params_object(params: &[Param]) -> String {
+    let mut s = String::new();
+    for p in params {
+        print_param(&mut s, p);
+    }
+    s
+}
+
+/// Parses a parameter-table history object.
+pub fn parse_params_object(s: &str) -> Result<Vec<Param>, ParseError> {
+    let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;
+    if !doc.features.is_empty() {
+        return Err(perr(1, "a parameter object must not contain features"));
+    }
+    Ok(doc.params)
+}
