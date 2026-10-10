@@ -122,3 +122,79 @@ fn save_and_snapshot_with_a_project() {
     p.unwrap().close();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn detached_jobs_run_in_order_and_always_report_back() {
+    let host = Host::spawn(session(), None);
+    let (tx, rx) = std::sync::mpsc::channel();
+    for i in 0..5 {
+        let tx = tx.clone();
+        host.exec_detached(
+            move |s, _| {
+                gusset_commands::execute(
+                    s,
+                    &CmdCtx::user(1),
+                    "param.set",
+                    json!({"name": format!("p{i}"), "expr": "1 mm"}),
+                )
+                .is_ok()
+            },
+            move |r| {
+                let _ = tx.send((i, r));
+            },
+        )
+        .unwrap();
+    }
+    let got: Vec<_> = (0..5).map(|_| rx.recv().unwrap()).collect();
+    assert_eq!(got, (0..5).map(|i| (i, Ok(true))).collect::<Vec<_>>());
+    // A panicking detached job reports `internal` instead of going silent.
+    let tx2 = tx.clone();
+    #[allow(clippy::panic)]
+    host.exec_detached(
+        |_, _| -> bool { panic!("boom") },
+        move |r| {
+            let _ = tx2.send((99, r));
+        },
+    )
+    .unwrap();
+    let (i, r) = rx.recv().unwrap();
+    assert_eq!(i, 99);
+    assert_eq!(r.unwrap_err().code, "internal");
+    assert!(host.is_quiescent());
+    // After shutdown the callback still runs, with the error.
+    let _ = host.shutdown();
+    let tx3 = tx.clone();
+    let e = host
+        .exec_detached(
+            |_, _| true,
+            move |r| {
+                let _ = tx3.send((7, r));
+            },
+        )
+        .unwrap_err();
+    assert_eq!(e.code, "shutdown");
+    assert_eq!(rx.recv().unwrap().1.unwrap_err().code, "shutdown");
+}
+
+#[test]
+fn try_with_session_never_waits_for_a_running_job() {
+    let host = Host::spawn(session(), None);
+    assert_eq!(host.try_with_session(|s| s.dirty).unwrap(), Some(false));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    host.exec_detached(
+        move |_, _| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        },
+        |_| {},
+    )
+    .unwrap();
+    started_rx.recv().unwrap();
+    assert_eq!(host.try_with_session(|_| 1).unwrap(), None, "busy: must not block");
+    release_tx.send(()).unwrap();
+    host.exec(|_, _| ()).unwrap();
+    assert_eq!(host.try_with_session(|_| 2).unwrap(), Some(2));
+    let _ = host.shutdown();
+    assert_eq!(host.try_with_session(|_| 3).unwrap_err().code, "shutdown");
+}

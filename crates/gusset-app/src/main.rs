@@ -25,6 +25,8 @@ impl eframe::App for Gui {
     fn on_exit(&mut self) {
         // Unsaved work survives a forced exit through the recovery slot.
         self.0.maybe_snapshot(true);
+        // Stop the MCP endpoint (deletes the connection file) and deny pending approvals.
+        self.0.agents.shutdown();
     }
 }
 
@@ -38,6 +40,10 @@ fn main() -> eframe::Result {
     {
         app.notice = Some(gusset_app::app::Notice { text: e, hint: None, error: true });
     }
+    // Agents reach the open project over localhost MCP (ADR 0012). `render_view` needs a
+    // renderer: install the gusset-render adapter here with `app.set_renderer(..)` once
+    // it exists; until then agents get a clear "no renderer" error.
+    app.start_agents(gusset_mcp::HttpOptions::default());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Gusset")
