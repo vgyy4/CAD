@@ -69,6 +69,25 @@ jobs:
         with:
           command: check all
 
+  licenses:
+    # THIRD_PARTY_LICENSES.md must match what cargo-about generates from Cargo.lock
+    # (ADR 0001); regenerate it with the command in about.toml.
+    name: third-party license inventory
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-about
+          key: cargo-about-0.9.2-${{ runner.os }}
+      - run: command -v cargo-about || cargo install cargo-about --version 0.9.2 --locked
+      - run: cargo fetch --locked
+      - run: cargo about generate --frozen --workspace -o THIRD_PARTY_LICENSES.md about.hbs
+      - run: git diff --exit-code -- THIRD_PARTY_LICENSES.md
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-24.04

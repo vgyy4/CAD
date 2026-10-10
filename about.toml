@@ -1,0 +1,49 @@
+# cargo-about configuration: generates THIRD_PARTY_LICENSES.md (ADR 0001).
+#
+#   cargo about generate --frozen --workspace -o THIRD_PARTY_LICENSES.md about.hbs
+#
+# CI (`licenses` job in .github/workflows/ci.yml) regenerates the file with a pinned
+# cargo-about and fails if it differs from the committed one. `--frozen` (locked and
+# offline) keeps the output deterministic: license texts come only from the crate
+# sources in Cargo.lock, never from the network.
+
+# Mirrors the allow-list in deny.toml (cargo-deny is the enforcing check; this list
+# only has to accept everything cargo-deny accepts).
+accepted = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "BSL-1.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "MPL-2.0",
+  "OFL-1.1",
+  "CDLA-Permissive-2.0",
+]
+
+# Every shipped platform (ADR 0013), so platform-specific dependencies (windows-sys,
+# objc2, ...) are listed even when the file is generated on Linux.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+]
+
+# Only code that ends up in the shipped binaries.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# egui's bundled default fonts include Ubuntu-Light (Ubuntu Font Licence 1.0). That
+# licence is not in the ADR 0001 allow-list yet, so cargo-deny flags it; it is accepted
+# here only for this crate so the inventory lists it truthfully. See docs/PROGRESS.md.
+[epaint_default_fonts]
+accepted = ["Ubuntu-font-1.0"]
