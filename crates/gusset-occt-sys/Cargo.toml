@@ -1,0 +1,22 @@
+[package]
+name = "gusset-occt-sys"
+description = "Raw FFI to Gusset's C shim over OCCT (dynamically linked). FFI crate: unsafe allowed."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "gusset_occt"
+build = "build.rs"
+
+[build-dependencies]
+cc.workspace = true
+
+[lints.rust]
+# FFI crate (ADR 0008): unsafe is allowed only here, with SAFETY comments.
+unsafe_code = "allow"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
