@@ -42,6 +42,9 @@ libc = "0.2.190"
 # gusset-hw: EcoQoS (SetThreadInformation) and RAM query on Windows (ADR 0011).
 windows-sys = "0.61.2"
 cc = "1.7.0"
+landlock = "0.4.7"
+seccompiler = "0.5.0"
+rlimit = "0.11.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.2"
@@ -62,6 +65,8 @@ gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
 gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
 gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
 gusset-cli = { path = "crates/gusset-cli", version = "0.0.1" }
+gusset-sandbox = { path = "crates/gusset-sandbox", version = "0.0.1" }
+gusset-worker = { path = "crates/gusset-worker", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"

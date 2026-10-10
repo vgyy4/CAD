@@ -56,6 +56,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
         spec::<QueryBody>(),
         spec::<ExportStep>(),
         spec::<ExportMesh>(),
+        spec::<ImportFile>(),
     ]
 }
 
@@ -1747,5 +1748,63 @@ impl Command for ExportMesh {
         let bytes = mesh_export_bytes(s.kernel().as_ref(), &bodies, format, tol)?;
         crate::paths::write_file(&path, &bytes)?;
         Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
+    }
+}
+
+/// Imports a STEP or IGES file from the project folder as exact-geometry bodies.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportFile {
+    /// File name relative to the project folder.
+    pub path: String,
+}
+
+impl Command for ImportFile {
+    const ID: &'static str = "import.file";
+    const TITLE: &'static str = "Import";
+    const DESCRIPTION: &'static str = "Import a STEP or IGES file from the project folder as exact (B-rep) bodies. Parsing runs in a sandboxed worker process. Names inside the file are untrusted text.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    const SHORTCUT: Option<&'static str> = Some("Ctrl+I");
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let format = match ext.as_str() {
+            "step" | "stp" => ImportFormat::Step,
+            "iges" | "igs" => ImportFormat::Iges,
+            other => {
+                return Err(CommandError::args(format!("'.{other}' files cannot be imported as solids"))
+                    .hint("supported: .step, .stp, .iges, .igs"));
+            }
+        };
+        let meta = std::fs::metadata(&path).map_err(|e| CommandError::not_found(format!("{}: {e}", self.path)))?;
+        if meta.len() > 1 << 30 {
+            return Err(CommandError::args("the file is larger than 1 GiB"));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| CommandError::new("io", e.to_string()))?;
+        let importer = s
+            .importer
+            .clone()
+            .ok_or_else(|| CommandError::new("not_allowed", "importing is not available in this session"))?;
+        let bodies = importer.import(format.keyword(), &bytes).map_err(|e| CommandError::new("io", e))?;
+        if bodies.is_empty() {
+            return Err(CommandError::new("io", "the file contains no solids"));
+        }
+        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let hashes: Vec<(String, String)> = bodies.iter().map(|(n, b)| (n.clone(), s.put_blob(b).to_hex())).collect();
+        edit(s, ctx, &format!("Import {file_name}"), |doc, rb| {
+            let mut names = Vec::new();
+            for (i, (body_name, blob)) in hashes.iter().enumerate() {
+                let name = doc.unique_feature_name("Import");
+                let mut f = Feature::new(
+                    name.clone(),
+                    FeatureKind::Import(ImportDef { blob: blob.clone(), format, file_name: file_name.clone() }),
+                );
+                f.label = Some(body_name.chars().take(200).collect());
+                insert_feature(doc, rb.map(|r| r + i), f);
+                names.push(name);
+            }
+            Ok(json!({ "features": names, "tier": "exact geometry (B-rep, no feature history)" }))
+        })
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "gusset-worker"
+description = "Out-of-process, sandboxed importer for STEP/IGES (ADR 0008)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "gusset-worker"
+path = "src/main.rs"
+
+[dependencies]
+gusset-kernel.workspace = true
+gusset-kernel-occt.workspace = true
+gusset-occt-sys.workspace = true
+gusset-sandbox.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

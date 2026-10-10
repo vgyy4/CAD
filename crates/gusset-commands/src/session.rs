@@ -77,7 +77,15 @@ pub struct Change {
     pub label: String,
 }
 
+/// Imports exact-geometry files (STEP/IGES) into kernel-native B-rep bodies. The app
+/// and CLI plug in the sandboxed out-of-process worker (ADR 0008); tests use doubles.
+pub trait Importer: Send + Sync {
+    /// Returns (body name, native B-rep bytes) per body.
+    fn import(&self, format: &str, bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String>;
+}
+
 pub struct Session {
+    pub importer: Option<Arc<dyn Importer>>,
     history: History,
     evaluator: Evaluator,
     current: BTreeMap<Actor, BranchId>,
@@ -114,6 +122,7 @@ impl Session {
 
     pub fn from_history(history: History, kernel: Arc<dyn Kernel>) -> Session {
         Session {
+            importer: None,
             history,
             evaluator: Evaluator::new(kernel),
             current: BTreeMap::new(),
@@ -281,6 +290,11 @@ impl Session {
         }
         q.push_back(ctx.time);
         true
+    }
+
+    /// Stores imported data once, content-addressed (shared by every branch).
+    pub(crate) fn put_blob(&mut self, bytes: &[u8]) -> gusset_history::Hash {
+        self.history_mut().put_blob(bytes)
     }
 
     pub(crate) fn invalidate_cache(&mut self) {

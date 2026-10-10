@@ -1,0 +1,29 @@
+[package]
+name = "gusset-sandbox"
+description = "OS sandboxing for Gusset's import worker (ADR 0008)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+seccompiler.workspace = true
+libc.workspace = true
+[target.'cfg(unix)'.dependencies]
+rlimit.workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+# Listed FFI crate (ADR 0008): only the cfg(windows) job-object module uses unsafe.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
