@@ -1,5 +1,5 @@
-//! 2D sketches for Gusset: geometry and a geometric constraint solver with
-//! degree-of-freedom analysis.
+//! 2D sketches for Gusset: geometry, a geometric constraint solver with
+//! degree-of-freedom analysis, and closed-profile extraction.
 //!
 //! ```
 //! use gusset_sketch::{Constraint, Sketch, SolveOptions, SolveStatus, solve};
@@ -22,8 +22,10 @@ mod dual;
 mod equations;
 mod geom2;
 mod linalg;
+pub mod profile;
 pub mod sketch;
 pub mod solver;
 
+pub use profile::{Curve, Loop, Profile, ProfileError, Segment, profiles};
 pub use sketch::{Constraint, ConstraintId, Entity, EntityId, EntityKind, Geom, Sketch, SketchError};
 pub use solver::{Drag, SolveError, SolveOptions, SolveResult, SolveStatus, solve, solve_drag};

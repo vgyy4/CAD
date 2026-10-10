@@ -157,6 +157,10 @@ fn tangent_slot_solves() {
     assert!(close(pos(&res, pd), [0.0, 10.0], 1e-8));
     assert!((res.sketch.radius(right).unwrap() - 10.0).abs() < 1e-9);
     assert!((res.sketch.radius(left).unwrap() - 10.0).abs() < 1e-9);
+
+    let profiles = gusset_sketch::profiles(&res.sketch, 1e-6).unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert!((profiles[0].area - (800.0 + PI * 100.0)).abs() < 1e-6);
 }
 
 /// Line and arc with their own endpoints joined by `Coincident`: tangency is still
