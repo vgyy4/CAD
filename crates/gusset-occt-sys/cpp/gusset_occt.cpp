@@ -360,6 +360,29 @@ int shapes_out(std::vector<GsShape*>& v, GsShape*** out, size_t* n) {
   return GS_OK;
 }
 
+template <typename Mk>
+int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, bool fillet, GsShape** out,
+          GsBuf* origins) {
+  if (!s || !out || !origins || (!edges && nedges)) return fail("null argument");
+  if (nedges == 0) return fail("no edges selected");
+  if (!std::isfinite(size) || size <= 0) return fail(fillet ? "fillet radius must be positive" : "chamfer distance must be positive");
+  Mk mk(s->s);
+  for (size_t i = 0; i < nedges; ++i) mk.Add(size, edge_by_index(s->s, edges[i]));
+  mk.Build();
+  if (!mk.IsDone()) return fail(fillet ? "fillet failed" : "chamfer failed");
+  TopoDS_Shape result = mk.Shape();
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  record_input_faces(mk, s->s, 0, out_faces, o);
+  record_generated(mk, s->s, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o);
+  record_generated(mk, s->s, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o);
+  check_valid(result, fillet ? "fillet" : "chamfer");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+}
+
 }  // namespace
 
 extern "C" {
@@ -547,29 +570,6 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   *out = new GsShape{result};
   return GS_OK;
   GS_GUARD_END
-}
-
-template <typename Mk>
-int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, bool fillet, GsShape** out,
-          GsBuf* origins) {
-  if (!s || !out || !origins || (!edges && nedges)) return fail("null argument");
-  if (nedges == 0) return fail("no edges selected");
-  if (!std::isfinite(size) || size <= 0) return fail(fillet ? "fillet radius must be positive" : "chamfer distance must be positive");
-  Mk mk(s->s);
-  for (size_t i = 0; i < nedges; ++i) mk.Add(size, edge_by_index(s->s, edges[i]));
-  mk.Build();
-  if (!mk.IsDone()) return fail(fillet ? "fillet failed" : "chamfer failed");
-  TopoDS_Shape result = mk.Shape();
-  ShapeMap out_faces;
-  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
-  std::vector<int64_t> o;
-  record_input_faces(mk, s->s, 0, out_faces, o);
-  record_generated(mk, s->s, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o);
-  record_generated(mk, s->s, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o);
-  check_valid(result, fillet ? "fillet" : "chamfer");
-  to_buf(o, origins);
-  *out = new GsShape{result};
-  return GS_OK;
 }
 
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins) {
