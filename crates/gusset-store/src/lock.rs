@@ -155,6 +155,26 @@ fn read_info(file: &mut File) -> Option<LockInfo> {
     LockInfo::parse(&s)
 }
 
+/// Windows locks the whole lock file against other handles (`LockFileEx`), so the
+/// holder also publishes its details in an unlocked sidecar `<lock>.info`.
+fn sidecar(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".info");
+    PathBuf::from(s)
+}
+
+/// The holder's details as another process can see them: the lock file itself, or the
+/// sidecar where the OS lock blocks reading it.
+#[must_use]
+pub fn holder_info(path: &Path) -> Option<LockInfo> {
+    let read = |p: &Path| -> Option<LockInfo> {
+        let mut s = String::new();
+        File::open(p).ok()?.take(MAX_LOCK_FILE).read_to_string(&mut s).ok()?;
+        LockInfo::parse(&s)
+    };
+    read(path).or_else(|| read(&sidecar(path)))
+}
+
 /// Whether `path` currently names the same file as `file`.
 fn same_file(file: &File, path: &Path) -> io::Result<bool> {
     #[cfg(unix)]
@@ -200,7 +220,9 @@ fn try_once(path: &Path, create: bool) -> Result<TryOutcome, LockError> {
     };
     match file.try_lock() {
         Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(TryOutcome::Held(read_info(&mut file))),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Ok(TryOutcome::Held(read_info(&mut file).or_else(|| holder_info(path))));
+        }
         Err(std::fs::TryLockError::Error(e)) => return Err(LockError::Io(e)),
     }
     if !same_file(&file, path)? {
@@ -232,6 +254,10 @@ impl ProjectLock {
                     file.seek(SeekFrom::Start(0))?;
                     file.write_all(info.to_text().as_bytes())?;
                     file.sync_all()?;
+                    if cfg!(windows) {
+                        // Best effort: only the "who holds it" display depends on it.
+                        let _ = std::fs::write(sidecar(path), info.to_text());
+                    }
                     let how = if had_content { Acquired::TookOverStale(previous) } else { Acquired::Fresh };
                     return Ok((ProjectLock { file, path: path.to_path_buf(), info }, how));
                 }
@@ -259,6 +285,7 @@ impl ProjectLock {
     /// # Errors
     /// If deleting the file fails (the OS lock is released anyway).
     pub fn release(self) -> io::Result<()> {
+        let _ = std::fs::remove_file(sidecar(&self.path));
         let r = match std::fs::remove_file(&self.path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -361,8 +388,8 @@ mod tests {
         std::fs::write(&p, dead.to_text()).unwrap();
         let (lock, how) = ProjectLock::acquire(&p).unwrap();
         assert_eq!(how, Acquired::TookOverStale(Some(dead)));
-        let text = std::fs::read_to_string(&p).unwrap();
-        assert_eq!(LockInfo::parse(&text).as_ref(), Some(lock.info()));
+        // Another process sees the holder's details on every platform.
+        assert_eq!(holder_info(&p).as_ref(), Some(lock.info()));
         // Dropping without release simulates a crash: the file stays, the lock is free.
         drop(lock);
         assert!(p.exists());
