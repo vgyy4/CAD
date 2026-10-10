@@ -45,6 +45,17 @@ cc = "1.7.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 schemars = "1.2.2"
+# gusset-mcp: the official MCP Rust SDK (Apache-2.0), pinned exactly (ADR 0012).
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation"] }
+# gusset-host / gusset-mcp: async runtime and the localhost HTTP stack (already pulled
+# in by rmcp's streamable-HTTP transport; listed so we can enable server/client parts).
+tokio = { version = "1.53.2", default-features = false }
+hyper = { version = "1.12.0", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+bytes = "1.12.1"
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
@@ -61,6 +72,8 @@ gusset-commands = { path = "crates/gusset-commands", version = "0.0.1" }
 gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
 gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
 gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
+gusset-host = { path = "crates/gusset-host", version = "0.0.1" }
+gusset-mcp = { path = "crates/gusset-mcp", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
