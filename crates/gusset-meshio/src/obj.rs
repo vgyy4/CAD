@@ -206,6 +206,8 @@ pub(crate) fn import(
         .unwrap_or_else(|| "OBJ mesh".to_string());
     let nverts = verts.len();
     let mut fallbacks = 0u64;
+    // Total ear-clipping work for the whole file (~1 s); beyond it polygons are fanned.
+    let mut ear_budget: u64 = 1_000_000_000;
     let mut out = Vec::with_capacity(order.len());
     let mut corner_pts: Vec<[f64; 3]> = Vec::new();
     // Polygons grouped by object, keeping file order within each object (stable sort).
@@ -243,7 +245,7 @@ pub(crate) fn import(
             } else {
                 corner_pts.clear();
                 corner_pts.extend(ids.iter().map(|&i| utils::v64(utils::pos(&soup.positions, i))));
-                let (tris, ok) = utils::triangulate_polygon(&corner_pts);
+                let (tris, ok) = utils::triangulate_polygon_budgeted(&corner_pts, &mut ear_budget);
                 if !ok {
                     fallbacks += 1;
                 }

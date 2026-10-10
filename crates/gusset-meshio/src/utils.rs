@@ -352,6 +352,9 @@ pub(crate) fn build_display(
     }
 }
 
+/// Maximum normal clusters (output vertices) per input vertex in crease mode.
+const MAX_CREASE_CLUSTERS: usize = 64;
+
 fn crease(positions: &[[f32; 3]], tris: &[Tri], angle_deg: f32) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
     let cos_thr = f64::from(angle_deg.clamp(0.0, 180.0)).to_radians().cos();
     let nv = positions.len();
@@ -400,6 +403,18 @@ fn crease(positions: &[[f32; 3]], tris: &[Tri], angle_deg: f32) -> (Vec<[f32; 3]
             let r = raw.get(ti as usize).copied().unwrap_or([0.0; 3]);
             let k = match clusters.iter().position(|c| dot(c.0, n) >= cos_thr) {
                 Some(k) => k,
+                // Bound the work per vertex (adversarial fans, tiny angles, zero normals):
+                // past the cap, join the closest existing cluster.
+                None if clusters.len() >= MAX_CREASE_CLUSTERS => {
+                    clusters
+                        .iter()
+                        .enumerate()
+                        .fold((0usize, f64::NEG_INFINITY), |best, (i, c)| {
+                            let d = dot(c.0, n);
+                            if d > best.1 { (i, d) } else { best }
+                        })
+                        .0
+                }
                 None => {
                     out_p.push(pos(positions, v as u32));
                     out_n.push([0.0; 3]);
@@ -588,6 +603,14 @@ pub const EAR_CLIP_MAX: usize = 256;
 /// whether ear clipping succeeded; on failure (self-intersecting or degenerate polygons,
 /// or more than [`EAR_CLIP_MAX`] corners) a triangle fan is returned.
 pub fn triangulate_polygon(points: &[[f64; 3]]) -> (Vec<[usize; 3]>, bool) {
+    let mut unlimited = u64::MAX;
+    triangulate_polygon_budgeted(points, &mut unlimited)
+}
+
+/// [`triangulate_polygon`] with a shared work budget (point-in-triangle tests). When the
+/// budget runs out the polygon is fan-triangulated, so a file full of large polygons
+/// cannot make an import take quadratic-times-file-size time.
+pub fn triangulate_polygon_budgeted(points: &[[f64; 3]], budget: &mut u64) -> (Vec<[usize; 3]>, bool) {
     let n = points.len();
     let fan = || (1..n.saturating_sub(1)).map(|i| [0, i, i + 1]).collect::<Vec<_>>();
     if n < 3 {
@@ -648,6 +671,10 @@ pub fn triangulate_polygon(points: &[[f64; 3]]) -> (Vec<[usize; 3]>, bool) {
             let (a, b, c) = (pt(ia), pt(ib), pt(ic));
             if cross2(a, b, c) * o <= 0.0 {
                 continue; // reflex or flat corner
+            }
+            *budget = budget.saturating_sub(m as u64);
+            if *budget == 0 {
+                return (fan(), false);
             }
             let blocked = ring.iter().any(|&j| {
                 if j == ia || j == ib || j == ic {

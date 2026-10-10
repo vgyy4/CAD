@@ -86,6 +86,23 @@ fn weld_mesh_and_normals() {
 }
 
 #[test]
+fn crease_work_per_vertex_is_bounded() {
+    // 20 000 triangles fanning around vertex 0 with wildly varying normals and a tiny
+    // crease angle: the hub may split into at most 64 copies.
+    let mut m = Mesh { positions: vec![[0.0, 0.0, 0.0]], ..Default::default() };
+    for i in 0..20_000u32 {
+        let a = i as f32 * 0.37;
+        m.positions.push([a.cos(), a.sin(), (i % 7) as f32 - 3.0]);
+        m.positions.push([(a + 1.3).cos(), (a + 1.3).sin(), (i % 5) as f32]);
+        m.indices.extend_from_slice(&[0, 2 * i + 1, 2 * i + 2]);
+    }
+    let n_before = m.positions.len();
+    apply_normals(&mut m, NormalMode::Crease { angle_deg: 0.01 });
+    assert!(m.positions.len() <= n_before - 1 + 64, "{}", m.positions.len());
+    assert_eq!(m.positions.len(), m.normals.len());
+}
+
+#[test]
 fn degenerate_removal_keeps_ranges() {
     let mut m = cube(1.0);
     m.indices.extend_from_slice(&[0, 0, 1, 0, 1, 2]);
