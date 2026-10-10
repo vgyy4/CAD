@@ -7,6 +7,7 @@
 //! with a short, non-blocking `try_with_session` whenever the host reports a change. The
 //! UI is a plain function of [`App`] state, which is what the kittest automation drives.
 
+use crate::agents::{Agents, plain};
 use crate::forms::{self, Form};
 use crate::i18n::tr;
 use crate::link::{self, Snapshot, Waker};
@@ -90,6 +91,8 @@ pub enum Then {
     Quiet,
     /// A path dialog action: re-open the dialog with the error on failure.
     PathDialog(PathPurpose, String),
+    /// A branch comparison for the agents panel (branch name, plain text).
+    Compare(String),
 }
 
 /// What to do after a save finished.
@@ -182,6 +185,8 @@ pub struct App {
     /// Set when the window may close (after the close dialog).
     pub allow_close: bool,
     pub show_iterations: bool,
+    /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
+    pub agents: Agents,
 }
 
 impl App {
@@ -195,6 +200,7 @@ impl App {
         link::spawn_listener(host.subscribe(), waker.clone());
         let events = host.subscribe();
         let (done_tx, done_rx) = mpsc::channel();
+        let agents = Agents::new(&host, waker.clone());
         App {
             host,
             kernel,
@@ -228,6 +234,7 @@ impl App {
             close_after_save: false,
             allow_close: false,
             show_iterations: false,
+            agents,
         }
     }
 
@@ -236,14 +243,36 @@ impl App {
         &self.host
     }
 
-    fn ctx() -> CmdCtx {
+    /// The project's file, once it was saved or opened.
+    pub fn project_file(&self) -> Option<&std::path::Path> {
+        self.project_path.as_deref()
+    }
+
+    /// Starts the localhost MCP endpoint for this window's project (ADR 0012: random
+    /// port, bearer token, owner-only connection file). The app calls this at start-up;
+    /// the endpoint follows the window when another project is opened.
+    pub fn start_agents(&mut self, mut options: gusset_mcp::HttpOptions) {
+        if options.project.is_none() {
+            options.project.clone_from(&self.project_path);
+        }
+        self.agents.start_http(options);
+    }
+
+    /// **Hook point for `render_view`:** installs the renderer agents use to look at the
+    /// model (the gusset-render adapter, when available). Without one, `render_view`
+    /// answers with a clear "no renderer" error.
+    pub fn set_renderer(&mut self, renderer: Option<Arc<dyn gusset_mcp::ViewRenderer>>) {
+        self.agents.set_renderer(renderer);
+    }
+
+    pub(crate) fn ctx() -> CmdCtx {
         CmdCtx::user(now_unix())
     }
 
     // ------------------------------------------------------------ host jobs
 
     /// Queues `f` on the model thread; `wrap` turns its result into a [`Done`] for the UI.
-    fn submit<R, F, W>(&mut self, f: F, wrap: W)
+    pub(crate) fn submit<R, F, W>(&mut self, f: F, wrap: W)
     where
         R: Send + 'static,
         F: FnOnce(&mut Session, Option<&mut Project>) -> R + Send + 'static,
@@ -460,6 +489,7 @@ impl App {
                     }
                 };
             }
+            Then::Compare(branch) => self.show_compare(&branch, result),
             Then::PathDialog(purpose, text) => match result {
                 Ok(_) => self.report(id, &result),
                 Err(e) => self.dialog = Some(Dialog::Path { purpose, text, error: Some(e.message) }),
@@ -574,6 +604,8 @@ impl App {
     /// queued), lets `make` build the next session from the old one, and starts a new
     /// model thread for it.
     fn replace_host(&mut self, make: impl FnOnce(Option<(Session, Option<Project>)>) -> (Session, Option<Project>)) {
+        // Agents are disconnected first; they reconnect to the new project (new token).
+        self.agents.detach();
         let old = self.host.shutdown();
         // Results of the old host's jobs are all delivered by now; apply them first.
         while let Ok(done) = self.done_rx.try_recv() {
@@ -586,6 +618,7 @@ impl App {
         self.host = Host::spawn(session, project);
         link::spawn_listener(self.host.subscribe(), self.waker.clone());
         self.events = self.host.subscribe();
+        self.agents.attach(&self.host);
         self.stale = true;
         self.scene = None;
         self.scene_requested = None;
@@ -652,6 +685,7 @@ impl App {
 
     /// Stops the model thread and closes the project (window closing).
     fn shutdown(&mut self, discard_recovery: bool) {
+        self.agents.shutdown();
         if let Some((_, Some(p))) = self.host.shutdown() {
             if discard_recovery {
                 p.discard_recovery();
@@ -684,6 +718,9 @@ impl App {
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
         egui::Panel::left("browser").default_size(240.0).resizable(true).show(ui, |ui| self.browser(ui));
+        if self.agents.show_panel {
+            egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
+        }
         if self.code.is_some() {
             egui::Panel::right("code").default_size(360.0).resizable(true).show(ui, |ui| self.code_view(ui));
         }
@@ -692,6 +729,8 @@ impl App {
         self.form_window(&ctx);
         self.palette_window(&ctx);
         self.dialogs(&ctx);
+        // Last, so it is on top of every other dialog.
+        self.approval_modal(&ctx);
     }
 
     fn handle_close(&mut self, ctx: &egui::Context) {
@@ -792,11 +831,15 @@ impl App {
                 if ui.button("Fit view").clicked() {
                     self.fit_pending = true;
                 }
+                ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
             });
             ui.menu_button(tr("menu.help"), |ui| {
                 if ui.button(tr("menu.diagnostics")).clicked() {
                     self.dialog =
                         Some(Dialog::Message { title: tr("menu.diagnostics").into(), body: self.diagnostics() });
+                }
+                if ui.button(format!("{}…", tr("agents.title"))).clicked() {
+                    self.agents.show_panel = true;
                 }
             });
         });
@@ -855,8 +898,9 @@ impl App {
                 ui.colored_label(pal.success, format!("✔ {}", tr("status.saved")));
             }
             if self.busy() {
-                ui.spinner();
-                ui.weak(tr("status.working"));
+                // A static indicator: an animated spinner would repaint every frame, and
+                // the finished job wakes the UI anyway.
+                ui.weak(format!("⏳ {}", tr("status.working")));
             }
             if let Some(eval) = self.scene.as_ref().map(|s| &s.eval)
                 && !eval.errors().is_empty()
@@ -951,7 +995,7 @@ impl App {
                 let branches = self.snapshot.branches.clone();
                 for b in branches {
                     let label = if b.agent.is_some() {
-                        RichText::new(format!("◆ {}", b.name)).color(pal.agent)
+                        RichText::new(format!("◆ {}", plain(&b.name, 80))).color(pal.agent)
                     } else {
                         RichText::new(b.name.clone())
                     };
@@ -1319,6 +1363,7 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         // Stop the model thread; the project's lock is released when it drops.
+        self.agents.shutdown();
         drop(self.host.shutdown());
     }
 }

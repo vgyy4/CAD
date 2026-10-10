@@ -24,7 +24,8 @@ gusset-project.workspace = true
 gusset-store.workspace = true
 gusset-hw.workspace = true
 gusset-host.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+gusset-mcp.workspace = true
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
 serde_json.workspace = true
 egui.workspace = true
 eframe.workspace = true

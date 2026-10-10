@@ -1559,6 +1559,7 @@ dependencies = [
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
+ "gusset-mcp",
  "gusset-project",
  "gusset-store",
  "gusset-units",
