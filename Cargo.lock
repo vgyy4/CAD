@@ -1564,6 +1564,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-render"
+version = "0.0.1"
+dependencies = [
+ "gusset-hw",
+ "gusset-kernel",
+ "png",
+ "wgpu",
+]
+
+[[package]]
 name = "gusset-sandbox"
 version = "0.0.1"
 dependencies = [

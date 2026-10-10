@@ -1,0 +1,17 @@
+[package]
+name = "gusset-render"
+description = "wgpu viewport renderer for Gusset: scene, camera, picking, headless PNG rendering and a CPU fallback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-kernel.workspace = true
+gusset-hw.workspace = true
+wgpu.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true
