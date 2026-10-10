@@ -140,6 +140,18 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn comments_ending_in_carriage_returns_are_stable() {
+        // Found by fuzzing: extra `\r`s before the line end used to stay in the comment,
+        // so every print/parse cycle removed one.
+        let src = "gusset 1\nunits mm\nparam a = 1  # note\r\r\r\n# above\r\r\nparam b = 2\r";
+        let doc = Document::from_text(src).unwrap();
+        assert_eq!(doc.params[0].comment, "note");
+        assert_eq!(doc.params[1].comment, "above");
+        let printed = doc.to_text();
+        assert_eq!(Document::from_text(&printed).unwrap().to_text(), printed);
+    }
+
+    #[test]
     fn parse_errors_have_positions() {
         let e = text::parse("gusset 1\nunits mm\nextrude E1 (profile: S1, distance: 5 mm,, op: new)\n").unwrap_err();
         assert_eq!(e.line, 3);

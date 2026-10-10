@@ -1,0 +1,130 @@
+# Fuzzing and Miri (ADR 0008 §11, PROMPT.md "Supply chain & CI"). Both need a nightly
+# toolchain, pinned here by date; the normal build stays on rust-toolchain.toml.
+#
+# - fuzz: every cargo-fuzz target in fuzz/ (all file and protocol parsers), with
+#   AddressSanitizer, seeded from fuzz/examples/make_seeds.rs. Short smoke runs on
+#   pushes and pull requests; long runs nightly, which also keep the corpus.
+# - miri: the `unsafe` SIMD dispatch in gusset-hw (the only `unsafe` code that runs on
+#   Linux; the rest is cfg(windows) FFI, which Miri cannot execute), once per compiled
+#   feature level.
+name: Fuzz + Miri
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-miri-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  NIGHTLY: nightly-2026-10-01
+  CARGO_FUZZ_VERSION: "0.13.1"
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - units_expr
+          - doc_text
+          - container_open
+          - container_salvage
+          - project_decode
+          - mesh_stl
+          - mesh_obj
+          - mesh_3mf
+          - mesh_any
+          - worker_request
+          - worker_response
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned nightly and cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo +"$NIGHTLY" install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      # The corpus is written only by scheduled runs on the default branch; other runs
+      # only read it (GitHub scopes caches by branch, so PRs cannot write it).
+      - name: Restore corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Seeds
+        working-directory: fuzz
+        run: cargo +"$NIGHTLY" run --release --example make_seeds -- seeds
+      - name: Build
+        run: |
+          cargo +"$NIGHTLY" fuzz build "${{ matrix.target }}"
+          # The fuzz crate's dependencies are locked like the workspace's.
+          git diff --exit-code -- fuzz/Cargo.lock
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'schedule' && '1200' || '60' }}
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.target }}"
+          cargo +"$NIGHTLY" fuzz run "${{ matrix.target }}" \
+            "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.target }}" -- \
+            -max_total_time="$SECONDS_PER_TARGET" -rss_limit_mb=4096 -timeout=10
+      - name: Minimize corpus
+        if: github.event_name == 'schedule'
+        run: cargo +"$NIGHTLY" fuzz cmin "${{ matrix.target }}" "fuzz/corpus/${{ matrix.target }}"
+      - name: Save corpus
+        if: github.event_name == 'schedule'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  miri:
+    name: miri (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Under Miri, feature detection reports the compile-time target features, so
+          # each entry makes a different SIMD variant run (the rest fall back to scalar).
+          - { name: x86_64-baseline, os: ubuntu-24.04, rustflags: "" }
+          - { name: x86_64-sse42, os: ubuntu-24.04, rustflags: "-C target-feature=+sse4.2,+popcnt" }
+          - { name: x86_64-avx2-fma, os: ubuntu-24.04, rustflags: "-C target-feature=+avx,+avx2,+fma" }
+          - { name: aarch64-neon, os: ubuntu-24.04-arm, rustflags: "" }
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      MIRIFLAGS: -Zmiri-strict-provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned nightly with Miri
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal --component miri,rust-src
+          cargo +"$NIGHTLY" miri setup
+      - name: Miri (gusset-hw SIMD kernels)
+        run: |
+          cargo +"$NIGHTLY" miri test --locked -p gusset-hw --lib kernels::

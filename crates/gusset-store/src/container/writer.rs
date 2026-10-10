@@ -134,7 +134,10 @@ impl ContainerWriter {
         if !self.check_new(kind, &hash)? {
             return Ok(hash);
         }
-        let compressed = if data.is_empty() {
+        // Miri cannot execute zstd's C code. Under Miri the writer stores every record
+        // raw, an encoding it already uses whenever compression does not help, so the
+        // rest of the codec (framing, hashing, index, roots, trailer) is still checked.
+        let compressed = if data.is_empty() || cfg!(miri) {
             None
         } else {
             Some(zstd::bulk::compress(data, self.level).map_err(|e| WriteError::Compress(e.to_string()))?)

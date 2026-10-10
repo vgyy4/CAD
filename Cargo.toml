@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*"]
 # Separate cargo-fuzz crates (nightly-only, never part of the normal build).
-exclude = ["crates/gusset-store/fuzz", "crates/gusset-meshio/fuzz"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"
@@ -67,6 +67,11 @@ http = "1.5.0"
 http-body-util = "0.1.5"
 bytes = "1.12.1"
 tokio-util = "0.7.20"
+# gusset-update: minisign (Ed25519) signature verification, MIT, no dependencies and no
+# unsafe code (ADR 0014; reviewed 2026-10-10).
+minisign-verify = "0.3.0"
+# gusset-update: version ordering for update checks (dtolnay/semver, MIT OR Apache-2.0).
+semver = "1.0.28"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
@@ -90,6 +95,7 @@ gusset-app = { path = "crates/gusset-app", version = "0.0.1" }
 gusset-render = { path = "crates/gusset-render", version = "0.0.1" }
 gusset-host = { path = "crates/gusset-host", version = "0.0.1" }
 gusset-mcp = { path = "crates/gusset-mcp", version = "0.0.1" }
+gusset-update = { path = "crates/gusset-update", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"

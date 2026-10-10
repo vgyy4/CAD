@@ -100,19 +100,14 @@ The following tests and fuzz targets cover this:
   input that is accepted must re-export deterministically and re-import cleanly. It has
   run 1 M release iterations and 100 k debug iterations (with overflow checks) with no
   failures.
-- `fuzz/` is a cargo-fuzz crate, excluded from the workspace. Its targets are
-  `import_stl`, `import_obj`, `import_3mf` and `import_any` (import, then re-export in
-  every format and re-import).
-
-  Run it with:
+- The repository-level `fuzz/` crate (cargo-fuzz, excluded from the workspace) has
+  the targets `mesh_stl`, `mesh_obj`, `mesh_3mf` and `mesh_any` (import, then
+  re-export in every format and re-import). CI runs each one for a short time on every
+  push (see `fuzz/README.md`). Run one locally with:
 
   ```
-  cd crates/gusset-meshio/fuzz && cargo +nightly fuzz run import_3mf
+  cd fuzz && cargo +nightly fuzz run mesh_3mf
   ```
-
-  The targets type-check on stable with `cargo check --bins`. They have not yet been run
-  under libFuzzer because no nightly toolchain or cargo-fuzz was available in the
-  development container.
 
 ## Performance and determinism
 
