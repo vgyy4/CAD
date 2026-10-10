@@ -1,0 +1,19 @@
+[package]
+name = "gusset-eval"
+description = "Evaluates a Gusset document into named solid bodies (incremental, deterministic)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-units.workspace = true
+gusset-doc.workspace = true
+gusset-kernel.workspace = true
+gusset-naming.workspace = true
+gusset-sketch.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

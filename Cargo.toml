@@ -40,6 +40,7 @@ gusset-naming = { path = "crates/gusset-naming", version = "0.0.1" }
 gusset-sketch = { path = "crates/gusset-sketch", version = "0.0.1" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.0.1" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.0.1" }
+gusset-eval = { path = "crates/gusset-eval", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
