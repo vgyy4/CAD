@@ -82,6 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-naming"
+version = "0.0.1"
+dependencies = [
+ "gusset-doc",
+ "gusset-kernel",
+]
+
+[[package]]
 name = "gusset-units"
 version = "0.0.1"
 dependencies = [

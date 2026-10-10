@@ -655,11 +655,7 @@ impl History {
         let stack = self.undo.get(&ctx.actor).cloned().unwrap_or_default();
         let pos = stack
             .iter()
-            .rposition(|&i| {
-                self.events
-                    .get(i)
-                    .is_some_and(|e| e.event.context().is_none_or(|b| b == branch))
-            })
+            .rposition(|&i| self.events.get(i).is_some_and(|e| e.event.context().is_none_or(|b| b == branch)))
             .ok_or(HistoryError::NothingToUndo)?;
         let idx = stack.get(pos).copied().ok_or(HistoryError::NothingToUndo)?;
         let ev = self.events.get(idx).map(|e| e.event.clone()).ok_or(HistoryError::NothingToUndo)?;
@@ -676,11 +672,7 @@ impl History {
         let stack = self.redo.get(&ctx.actor).cloned().unwrap_or_default();
         let pos = stack
             .iter()
-            .rposition(|&i| {
-                self.events
-                    .get(i)
-                    .is_some_and(|e| e.event.context().is_none_or(|b| b == branch))
-            })
+            .rposition(|&i| self.events.get(i).is_some_and(|e| e.event.context().is_none_or(|b| b == branch)))
             .ok_or(HistoryError::NothingToRedo)?;
         let idx = stack.get(pos).copied().ok_or(HistoryError::NothingToRedo)?;
         let ev = self.events.get(idx).map(|e| e.event.clone()).ok_or(HistoryError::NothingToRedo)?;

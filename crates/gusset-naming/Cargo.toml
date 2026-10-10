@@ -1,0 +1,15 @@
+[package]
+name = "gusset-naming"
+description = "Persistent topological naming for Gusset (ADR 0003)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-doc = { path = "../gusset-doc" }
+gusset-kernel = { path = "../gusset-kernel" }
+
+[lints]
+workspace = true
