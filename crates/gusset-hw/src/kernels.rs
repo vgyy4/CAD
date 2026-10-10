@@ -215,29 +215,49 @@ mod tests {
         assert!(KERNEL_BBOX.starts_with("kernels::bbox_f32 "));
     }
 
+    /// Runs `level` on `src` and checks it against the scalar reference. Returns the
+    /// level that actually ran.
+    fn check_against_scalar(level: Dispatch, src: &[[f32; 3]]) -> Dispatch {
+        let mut reference = src.to_vec();
+        assert_eq!(transform_points_f32(Dispatch::Scalar, &M, &mut reference), Dispatch::Scalar);
+        let mut out = src.to_vec();
+        let ran = transform_points_f32(level, &M, &mut out);
+        for ((o, r), p) in out.iter().zip(&reference).zip(src) {
+            for ((ov, rv), row) in o.iter().zip(r).zip(&M) {
+                let [a, b, c, d] = *row;
+                let mag = (a * p[0]).abs() + (b * p[1]).abs() + (c * p[2]).abs() + d.abs();
+                let tol = 8.0 * f32::EPSILON * mag;
+                assert!((ov - rv).abs() <= tol, "{level}: {ov} vs {rv} (tol {tol})");
+            }
+        }
+        let (bb, bb_ran) = bbox_f32(level, src);
+        assert_eq!(bb_ran, ran, "{level}: transform and bbox must pick the same level");
+        let (rb, _) = bbox_f32(Dispatch::Scalar, src);
+        let bits = |b: Option<Aabb>| b.map(|b| (b.min.map(f32::to_bits), b.max.map(f32::to_bits)));
+        assert_eq!(bits(bb), bits(rb), "{level}: bbox must be bit-identical");
+        ran
+    }
+
     #[test]
+    // CPU detection uses `cpuid` and OS queries, which Miri cannot run; the next test
+    // covers the SIMD code under Miri.
+    #[cfg_attr(miri, ignore)]
     fn every_supported_level_matches_scalar_within_tolerance() {
         let src = points(1027); // not a multiple of any vector width
-        let mut reference = src.clone();
-        assert_eq!(transform_points_f32(Dispatch::Scalar, &M, &mut reference), Dispatch::Scalar);
-        let levels = supported_levels(&CpuFeatures::detect());
-        for &level in &levels {
-            let mut out = src.clone();
-            let ran = transform_points_f32(level, &M, &mut out);
-            assert_eq!(ran, level, "supported level must actually run");
-            for ((o, r), p) in out.iter().zip(&reference).zip(&src) {
-                for ((ov, rv), row) in o.iter().zip(r).zip(&M) {
-                    let [a, b, c, d] = *row;
-                    let mag = (a * p[0]).abs() + (b * p[1]).abs() + (c * p[2]).abs() + d.abs();
-                    let tol = 8.0 * f32::EPSILON * mag;
-                    assert!((ov - rv).abs() <= tol, "{level}: {ov} vs {rv} (tol {tol})");
-                }
-            }
-            let (bb, ran) = bbox_f32(level, &src);
-            assert_eq!(ran, level);
-            let (rb, _) = bbox_f32(Dispatch::Scalar, &src);
-            let bits = |b: Option<Aabb>| b.map(|b| (b.min.map(f32::to_bits), b.max.map(f32::to_bits)));
-            assert_eq!(bits(bb), bits(rb), "{level}: bbox must be bit-identical");
+        for &level in &supported_levels(&CpuFeatures::detect()) {
+            assert_eq!(check_against_scalar(level, &src), level, "supported level must actually run");
+        }
+    }
+
+    /// Every level either runs (its features are present) or falls back to scalar. Under
+    /// Miri, `is_x86_feature_detected!` reports the compile-time target features, so CI
+    /// runs this with `-C target-feature=...` to check each variant's `unsafe` call.
+    #[test]
+    fn every_level_runs_or_falls_back_to_scalar() {
+        let src = points(if cfg!(miri) { 37 } else { 1027 });
+        for &level in Dispatch::ALL {
+            let ran = check_against_scalar(level, &src);
+            assert!(ran == level || ran == Dispatch::Scalar, "{level} ran as {ran}");
         }
     }
 
