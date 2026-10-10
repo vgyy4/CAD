@@ -10,7 +10,7 @@ use crate::session::{CmdCtx, Session};
 use gusset_doc::validate::{creates_body, validate_feature_name};
 use gusset_doc::*;
 use gusset_eval::{FeatureStatus, solve_sketch_def};
-use gusset_history::{BranchId, Change as HChange, NodeId};
+use gusset_history::{BranchId, NodeId};
 use gusset_units::params::{self, Param};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,6 +55,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
         spec::<QuerySketch>(),
         spec::<QueryBody>(),
         spec::<ExportStep>(),
+        spec::<ExportMesh>(),
     ]
 }
 
@@ -1667,5 +1668,84 @@ impl Command for ExportStep {
     }
 }
 
-#[allow(dead_code)]
-fn _unused(_: HChange) {}
+/// Writes STL, 3MF or OBJ (triangle meshes) of all bodies into the project folder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportMesh {
+    /// File name relative to the project folder.
+    pub path: String,
+    /// `stl`, `stl_ascii`, `3mf` or `obj`. Default: from the file extension.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// Maximum surface deviation in mm (default 0.01).
+    #[serde(default)]
+    pub tolerance_mm: Option<f64>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Tessellates every body and encodes it as a mesh file.
+pub fn mesh_export_bytes(
+    kernel: &dyn gusset_kernel::Kernel,
+    bodies: &[(&gusset_kernel::Shape, &str)],
+    format: gusset_meshio::ExportFormat,
+    tolerance: f64,
+) -> Result<Vec<u8>, CommandError> {
+    let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, angular_deflection: 0.25 };
+    let meshes = bodies
+        .iter()
+        .map(|(s, n)| kernel.tessellate(s, &params).map(|m| (m, *n)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CommandError::new("io", e.to_string()))?;
+    let eb: Vec<gusset_meshio::ExportBody<'_>> =
+        meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }).collect();
+    gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
+}
+
+/// Parses a mesh format name or file extension.
+pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
+    match name.to_ascii_lowercase().as_str() {
+        "stl" => Some(gusset_meshio::ExportFormat::StlBinary),
+        "stl_ascii" => Some(gusset_meshio::ExportFormat::StlAscii),
+        "3mf" => Some(gusset_meshio::ExportFormat::ThreeMf),
+        "obj" => Some(gusset_meshio::ExportFormat::Obj { normals: true }),
+        _ => None,
+    }
+}
+
+impl Command for ExportMesh {
+    const ID: &'static str = "export.mesh";
+    const TITLE: &'static str = "Export mesh (STL/3MF/OBJ)";
+    const DESCRIPTION: &'static str =
+        "Export all bodies as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let ext = std::path::Path::new(&self.path).extension().and_then(|e| e.to_str()).unwrap_or("");
+        let format = mesh_format(self.format.as_deref().unwrap_or(ext))
+            .ok_or_else(|| CommandError::args("format must be stl, stl_ascii, 3mf or obj"))?;
+        let tol = self.tolerance_mm.unwrap_or(0.01);
+        if !(tol.is_finite() && (1e-4..=10.0).contains(&tol)) {
+            return Err(CommandError::args("tolerance_mm must be between 0.0001 and 10"));
+        }
+        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        if path.exists() {
+            if !self.overwrite {
+                return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
+                    .hint("pass overwrite: true to replace it"));
+            }
+            if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
+                return Err(CommandError::approval("overwriting an exported file"));
+            }
+        }
+        let ev = s.evaluate(&ctx.actor)?;
+        if ev.bodies.is_empty() {
+            return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
+        }
+        let bodies: Vec<(&gusset_kernel::Shape, &str)> =
+            ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+        let bytes = mesh_export_bytes(s.kernel().as_ref(), &bodies, format, tol)?;
+        crate::paths::write_file(&path, &bytes)?;
+        Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
+    }
+}

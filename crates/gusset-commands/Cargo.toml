@@ -13,6 +13,7 @@ gusset-doc.workspace = true
 gusset-kernel.workspace = true
 gusset-history.workspace = true
 gusset-eval.workspace = true
+gusset-meshio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

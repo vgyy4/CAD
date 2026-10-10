@@ -220,3 +220,21 @@ fn rename_updates_references() {
     let m = run(&mut s, &u, "query.model", json!({}));
     assert_eq!(m["errors"].as_array().unwrap().len(), 0, "{m}");
 }
+
+#[test]
+fn mesh_export_writes_stl() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let d = std::env::temp_dir().join(format!("gusset-mesh-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    let r = run(&mut s, &u, "export.mesh", json!({"path": "plate.stl"}));
+    assert_eq!(r["bodies"], 1);
+    let bytes = std::fs::read(d.join("plate.stl")).unwrap();
+    assert_eq!(bytes.len(), 84 + 50 * 12); // binary STL: 12 triangles
+    let e = execute(&mut s, &u, "export.mesh", json!({"path": "plate.stl"})).unwrap_err();
+    assert_eq!(e.code, "confirmation_required");
+    run(&mut s, &u, "export.mesh", json!({"path": "plate.3mf"}));
+    let _ = std::fs::remove_dir_all(&d);
+}
