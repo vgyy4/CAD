@@ -1,0 +1,174 @@
+# Gusset design guide
+
+The binding rules for Gusset's UI. Derived from `docs/research/users-and-ux.md` (what users
+praise and hate in Fusion, SolidWorks, Solid Edge, Onshape, FreeCAD and OpenSCAD) and
+from the spec's "UI design" section. A UI change that breaks a rule here needs an ADR.
+
+Target: a beginner models a first part within minutes without a tutorial, and an expert
+never feels slowed down. We get there through progressive disclosure, not modes.
+
+## 1. Interaction rules
+
+1. **No workbenches.** Tools appear by *context* (part, sketch, later assembly/drawing).
+   Each command exists exactly once in the command registry, and the toolbar, marking
+   menu, palette and MCP are all views of that registry.
+2. **Command search (Ctrl+K, also `/`).** Fuzzy search over every command, setting,
+   parameter, feature and recent file, with each command's shortcut shown. It is the
+   universal escape hatch, so nothing is ever buried.
+3. **Cursor-local tools:** an S-key quick bar (context-sensitive, customizable) and a
+   radial marking menu on right-click or right-drag (gesture mode: flick toward an
+   item). A quick right-click release never fires a command by accident.
+4. **One history, two views:** the feature tree (model browser) and the horizontal
+   timeline at the bottom show the same history, with a draggable rollback marker,
+   suppress, reorder (validated against dependencies), group, and dependency
+   highlighting on hover.
+5. **Edit in context.** Editing a feature keeps the full current model visible, with a
+   live preview of the change. Only sketch editing rolls back, and it ghosts the
+   downstream geometry.
+6. **Live, transparent previews** of every feature before confirming. They update as
+   values change and fade between before and after.
+7. **Numbers everywhere accept expressions with units** (`width/2 + 3 mm`), and you can
+   type dimensions in the viewport while drawing (on-canvas value entry, Tab to the next
+   field).
+8. **Parameters are first-class:** a variables panel and a batch-edit table. Later,
+   parameters can be exposed as "customizer" sliders.
+9. **Broken references never silently re-pick.** The feature is marked, the old
+   reference is shown ghosted, and the user gets a one-click re-pick or "accept
+   suggestion".
+10. **Errors say what broke, where, and how to fix it**, and link to the feature and the
+    entity. The MCP server uses the same error objects.
+11. **No save anxiety:** infinite non-destructive undo (a tree), named iterations,
+    branches, and auto-save by default. Manual-save mode still keeps a recovery snapshot.
+12. **Local-first, offline, open format, no account. Exports are never gated:** STEP,
+    STL and 3MF are always available.
+13. **Direct edits are recorded features** (move/offset face) layered on history. There
+    is no destructive mode switch.
+14. **Selection never fights the user:** pre-highlight on hover, a "select other" picker
+    for overlapping entities, selection filters in the quick bar, and temporary
+    see-through.
+15. **Stable layouts:** no surprise reshuffles. Panels are dockable and collapsible and
+    remember their layout. One key (F11 by default) toggles a clean full-screen viewport.
+16. **Navigation presets** (Gusset, Fusion, SolidWorks, FreeCAD, Onshape) are chosen at
+    first launch and can be changed in Settings. SpaceMouse support.
+17. **Dialogs show essentials first.** Advanced options sit in a collapsed "More"
+    section, and every command works with zero settings changed.
+18. **Tab/Enter flow** through every dialog without the mouse. Enter confirms, Esc
+    cancels, and Ctrl+Enter confirms and repeats the command.
+19. **Rich tooltips:** one-line description plus a small illustration, and a longer
+    explanation after a further delay (default 1.2 s). Tooltips never cover the item
+    under the cursor.
+20. **Helpful empty states:** an empty document shows three starting actions (new sketch
+    on a plane, import, open sample) and the command-search hint.
+21. **Agents are visible:** agent branches, live agent edits and the audit log are
+    visible in the UI. Agents never act invisibly.
+22. **Accessibility:** full keyboard navigation, screen-reader labels through the
+    toolkit's accessibility tree (AccessKit), WCAG AA contrast in both themes, UI scale
+    from 75 % to 250 %, and "reduce motion" respected.
+
+## 2. Layout
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│ [Workspace ▾ Design]  Solid │ Sketch │ Inspect      (Ctrl+K search)   │  contextual tabbed toolbar
+├────────────┬──────────────────────────────────────────┬───────────────┤
+│ Browser    │                                          │ Properties /  │
+│ - Bodies   │              viewport                    │ command panel │
+│ - Sketches │                         [view cube]      │ (essentials,  │
+│ - Params   │                                          │  "More" ▸)    │
+├────────────┴──────────────────────────────────────────┴───────────────┤
+│ ◀ timeline: [S1][Ext1][Fil1]│▶ rollback marker     (expand ▴ graph)   │
+└───────────────────────────────────────────────────────────────────────┘
+```
+- The workspace switcher shows Design first. Assemble, Drawing, Render and Manufacture
+  appear as they ship.
+- The toolbar switches to sketch tools when a sketch is active, with a prominent
+  "Finish sketch".
+- The timeline expands into the full iteration graph (branches, stars, colors).
+
+## 3. Design tokens
+
+The tokens are defined in code (`gusset-ui` `theme` module). No ad-hoc colors or sizes
+anywhere in the UI. This table is the source of truth, and a test checks that the code
+matches it.
+
+### Spacing (logical px)
+`space-0: 0, space-1: 2, space-2: 4, space-3: 8, space-4: 12, space-5: 16, space-6: 24, space-7: 32`
+
+### Radii
+`radius-sm: 3, radius-md: 6, radius-lg: 10, radius-pill: 999`
+
+### Typography
+- UI font: Inter (OFL-1.1), bundled. Fallbacks come from the system font stack.
+- Monospace (code view, parameters): JetBrains Mono (OFL-1.1), bundled.
+- Scale: `caption 11, body 13, body-strong 13/600, title 15/600, heading 18/600`.
+- Line height 1.35. Tabular numbers in value fields.
+
+### Color: dark theme (default)
+| Token | Value | Use |
+|---|---|---|
+| `bg-app` | `#16181C` | window background |
+| `bg-panel` | `#1D2026` | panels |
+| `bg-raised` | `#252932` | popovers, menus |
+| `bg-hover` | `#2D323C` | hover |
+| `border` | `#323844` | separators |
+| `text` | `#E6E8EC` | primary text (contrast 13.9:1 on bg-panel) |
+| `text-muted` | `#A0A7B4` | secondary text (6.9:1) |
+| `accent` | `#4C9AFF` | primary actions, focus ring |
+| `accent-text` | `#0B1220` | text on accent |
+| `success` | `#3FB27F` | |
+| `warning` | `#E3A33B` | |
+| `danger` | `#E5534B` | errors, broken features |
+| `agent` | `#B07CFF` | agent branches and agent activity |
+| `vp-bg-top` / `vp-bg-bottom` | `#2A2F38` / `#1A1D22` | viewport gradient |
+| `vp-preselect` | `#7FB8FF` | hover highlight |
+| `vp-select` | `#FFB000` | selection (distinct from accent for color-blind users) |
+| `vp-edge` | `#0E1013` | model edges |
+
+### Color: light theme
+| Token | Value |
+|---|---|
+| `bg-app` | `#EEF0F3` |
+| `bg-panel` | `#F8F9FB` |
+| `bg-raised` | `#FFFFFF` |
+| `bg-hover` | `#E4E8EE` |
+| `border` | `#D3D8E0` |
+| `text` | `#16181C` (16.6:1) |
+| `text-muted` | `#545C69` (6.6:1) |
+| `accent` | `#1F6FEB` |
+| `accent-text` | `#FFFFFF` |
+| `success` | `#1E8A5A` |
+| `warning` | `#A86A00` |
+| `danger` | `#C93C37` |
+| `agent` | `#7A4FD6` |
+| `vp-bg-top` / `vp-bg-bottom` | `#F4F6F9` / `#D9DEE6` |
+| `vp-preselect` | `#2F7DEB` |
+| `vp-select` | `#D98300` |
+| `vp-edge` | `#20242B` |
+
+### Elevation
+`elev-0` flat; `elev-1` 1 px border; `elev-2` border + shadow (0 4 12 rgba(0,0,0,.25)) for
+popovers and menus. Shadows are disabled on the low quality tier.
+
+### Motion
+`motion-fast 90 ms`, `motion-base 160 ms`, `motion-slow 260 ms`, ease-out cubic. Camera
+moves to a named view take 260 ms. All motion drops to 0 under "reduce motion". Animation
+frames are requested only while an animation is running (idle means idle).
+
+## 4. Icons
+An original SVG icon set in `assets/icons/`. 24×24 grid, 1.5 px stroke, rounded joins,
+two-tone (stroke `text`, fill accent at 20 %). Icons are drawn from scratch; no vendor
+icons and no copied trade dress. They are rendered to textures at the exact device scale
+so they stay crisp at every DPI.
+
+## 5. Viewport look (low tier must look good)
+- Gradient background; matcap-style shaded faces with a soft key light and fill; black
+  feature edges at 1 px device-independent width; silhouette edges.
+- Selection color and pre-highlight are distinct from the accent and from each other,
+  and also differ in luminance.
+- High tier adds SSAO, a ground shadow and MSAA 4×.
+
+## 6. Verification
+- Screenshot tests of key screens in both themes (`tests/screenshots`), diffed in CI
+  under the software renderer.
+- At every milestone the reviewer subagent critiques fresh screenshots against this
+  document. Issues are fixed like bugs, and the gallery in `docs/screenshots/` is updated.
