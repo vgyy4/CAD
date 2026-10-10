@@ -1,0 +1,9 @@
+# Normalize text to LF everywhere so golden files, generated docs and the canonical
+# text format compare byte-for-byte on Windows checkouts too.
+* text=auto eol=lf
+*.png binary
+*.gus binary
+*.step binary
+*.stp binary
+*.stl binary
+*.3mf binary

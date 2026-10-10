@@ -5,7 +5,8 @@ use std::path::PathBuf;
 #[test]
 fn hardware_doc_is_up_to_date() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/HARDWARE.md");
-    let doc = std::fs::read_to_string(&path).expect("docs/HARDWARE.md must exist");
+    // Compare with LF line endings regardless of the checkout's conversion settings.
+    let doc = std::fs::read_to_string(&path).expect("docs/HARDWARE.md must exist").replace("\r\n", "\n");
     let regenerated = gusset_hw::docgen::update_document(&doc).expect("markers must be well-formed");
     assert!(
         regenerated == doc,
