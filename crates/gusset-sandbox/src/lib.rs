@@ -107,10 +107,15 @@ fn linux_seccomp(r: &mut Report) {
     // Deny-list: anything that would let a compromised parser reach outside the
     // worker. (An allow-list would be stricter but OCCT's syscall surface varies by
     // libc and version; Landlock + rlimits cover filesystem and resources.)
+    // (aarch64 has no fork/vfork syscalls; processes are created with clone, which
+    // threads also need. Exec is denied everywhere, so a cloned child cannot run
+    // anything new, and Landlock still confines it.)
     let denied: &[i64] = &[
         libc::SYS_execve,
         libc::SYS_execveat,
+        #[cfg(target_arch = "x86_64")]
         libc::SYS_fork,
+        #[cfg(target_arch = "x86_64")]
         libc::SYS_vfork,
         libc::SYS_socket,
         libc::SYS_socketpair,

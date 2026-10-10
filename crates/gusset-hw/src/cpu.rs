@@ -212,6 +212,7 @@ fn x86_brand() -> Option<String> {
 }
 
 /// Trim NULs and whitespace; collapse internal runs of spaces. `None` if empty.
+#[cfg(any(target_arch = "x86_64", target_vendor = "apple", target_os = "linux", test))]
 pub(crate) fn clean_string(bytes: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(bytes);
     let s: Vec<&str> = s.trim_matches(char::from(0)).split_whitespace().collect();
