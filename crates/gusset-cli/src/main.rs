@@ -4,6 +4,7 @@
 //! gusset build <model.gus|model.gus.txt> [--branch NAME] [--export OUT]... [--tolerance MM]
 //! gusset text  <model.gus> [--branch NAME]          print the code view
 //! gusset pack  <model.gus.txt> -o <model.gus>      create a project from text
+//! gusset mcp [model.gus] [--read-only] [--no-attach] MCP server on stdio (ADR 0012)
 //! gusset info                                       hardware / kernel diagnostics
 //! gusset self-test                                  quick end-to-end check (used by the updater)
 //! gusset --version
@@ -24,6 +25,7 @@ const USAGE: &str = "usage:
   gusset build <model.gus|model.gus.txt> [--branch NAME] [--export OUT]... [--tolerance MM]
   gusset text <model.gus> [--branch NAME]
   gusset pack <model.gus.txt> -o <model.gus>
+  gusset mcp [model.gus] [--read-only] [--no-attach]
   gusset info
   gusset self-test
   gusset --version
@@ -57,6 +59,7 @@ fn main() -> ExitCode {
         Some("build") => build(args.get(1..).unwrap_or_default()),
         Some("text") => text(args.get(1..).unwrap_or_default()),
         Some("pack") => pack(args.get(1..).unwrap_or_default()),
+        Some("mcp") => mcp(args.get(1..).unwrap_or_default()),
         Some("info") => info(),
         Some("self-test" | "--self-test") => self_test(),
         Some("--help" | "-h" | "help") | None => {
@@ -242,6 +245,54 @@ fn pack(args: &[String]) -> Result<ExitCode, String> {
     gusset_store::durable::durable_write(&fs, &out, &bytes, &gusset_store::container::verify)
         .map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     println!("wrote {}", out.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `gusset mcp [model.gus] [--read-only] [--no-attach]`: relays stdio to a running app's
+/// MCP endpoint when one serves the project (or any project, without a file), otherwise
+/// serves the project headless on stdio with the OCCT kernel and the real `render_view`
+/// renderer, saving the agent's work on exit (ADR 0012).
+fn mcp(args: &[String]) -> Result<ExitCode, String> {
+    let mut file: Option<PathBuf> = None;
+    let (mut read_only, mut attach) = (false, true);
+    for a in args {
+        match a.as_str() {
+            "--read-only" => read_only = true,
+            "--no-attach" => attach = false,
+            s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
+            s if file.is_none() => file = Some(PathBuf::from(s)),
+            s => return Err(format!("unexpected argument '{s}'")),
+        }
+    }
+    // stdout carries JSON-RPC. Native code (OCCT, GPU drivers) may print to descriptor 1,
+    // so the protocol gets a private duplicate and descriptor 1 now points at stderr.
+    // This must happen before the kernel or the renderer is initialized.
+    let protocol_out = match gusset_hw::stdio::take_stdout_for_protocol() {
+        Ok(f) => Some(f),
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            eprintln!("gusset mcp: warning: {e}; native output on stdout could corrupt the protocol stream");
+            None
+        }
+        Err(e) => return Err(format!("cannot set up the protocol stream: {e}")),
+    };
+    let kernel: Arc<dyn Kernel> = match OcctKernel::new() {
+        Ok(k) => Arc::new(k),
+        Err(e) => {
+            eprintln!(
+                "gusset mcp: warning: {e}; falling back to the mock kernel (simple prisms only, not for real models)"
+            );
+            Arc::new(gusset_kernel::mock::MockKernel)
+        }
+    };
+    let mut options = gusset_mcp::StdioOptions::new(file, kernel);
+    options.attach = attach;
+    options.read_only = read_only;
+    options.renderer = Some(Arc::new(gusset_mcp::SceneRenderer::new()));
+    let r = match protocol_out {
+        Some(out) => gusset_mcp::run_stdio_with_output(options, out),
+        None => gusset_mcp::run_stdio(options),
+    };
+    r.map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)
 }
 
