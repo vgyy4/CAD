@@ -69,6 +69,13 @@ fn main() {
             println!("cargo::rustc-link-lib=dylib={l}");
         }
     }
+    // This crate's own test binary needs to find the libraries too (dependents add the
+    // same RPATH in their build scripts; release bundles use install-relative paths).
+    match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => println!("cargo::rustc-link-arg=-Wl,--disable-new-dtags,-rpath,{}", lib.display()),
+        Ok("windows") => {}
+        _ => println!("cargo::rustc-link-arg=-Wl,-rpath,{}", lib.display()),
+    }
     println!("cargo::rustc-cfg=gusset_occt");
     // Dependents read DEP_GUSSET_OCCT_LIB_DIR in their build scripts to enable cfg(gusset_occt).
     println!("cargo::metadata=lib_dir={}", lib.display());
