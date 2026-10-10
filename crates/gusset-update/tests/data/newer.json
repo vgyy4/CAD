@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "released": "2026-10-01T00:00:00Z",
+  "expires": "2026-12-30T00:00:00Z",
+  "min_supported": "0.1.0",
+  "notes": "Test release.",
+  "revoked_keys": [],
+  "targets": {
+    "linux-x86_64-appimage": {
+      "url": "https://github.com/example/gusset/releases/download/v0.2.0/Gusset-0.2.0-x86_64.AppImage",
+      "size": 1234,
+      "sha256": "abababababababababababababababababababababababababababababababab",
+      "sig": "untrusted comment: signature from minisign secret key\nRUQBAgMEBQYHCMLPqlKbrjLdKi/fU+l+O9z5g0wfnKMiQZJA8Yznm9jB5TF5zBk+KiF+Rf+fRn5zx+a1CkK4+Y7Q5oO/p7WVRws=\ntrusted comment: timestamp:1759276800\tfile:update-manifest.json\thashed\nTyepgbToCfIuFh/XVs7bSzuh1mJgigFy1bjFh/V3cvgl+vWxy88WRytZt6RSQYwtd85wxTHNuXGUkaI/0qa9DA==\n",
+      "files": [
+        {
+          "path": "usr/bin/gusset",
+          "sha256": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "size": 10
+        }
+      ],
+      "delta_from": {
+        "0.1.0": {
+          "url": "https://github.com/example/gusset/releases/download/v0.2.0/delta-0.1.0.zst",
+          "size": 99,
+          "sha256": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "sig": "untrusted comment: signature from minisign secret key\nRUQBAgMEBQYHCMLPqlKbrjLdKi/fU+l+O9z5g0wfnKMiQZJA8Yznm9jB5TF5zBk+KiF+Rf+fRn5zx+a1CkK4+Y7Q5oO/p7WVRws=\ntrusted comment: timestamp:1759276800\tfile:update-manifest.json\thashed\nTyepgbToCfIuFh/XVs7bSzuh1mJgigFy1bjFh/V3cvgl+vWxy88WRytZt6RSQYwtd85wxTHNuXGUkaI/0qa9DA==\n"
+        }
+      }
+    },
+    "linux-x86_64-deb": {
+      "url": "https://github.com/example/gusset/releases/download/v0.2.0/gusset_0.2.0_amd64.deb",
+      "size": 1000,
+      "sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+      "sig": "untrusted comment: signature from minisign secret key\nRUQBAgMEBQYHCMLPqlKbrjLdKi/fU+l+O9z5g0wfnKMiQZJA8Yznm9jB5TF5zBk+KiF+Rf+fRn5zx+a1CkK4+Y7Q5oO/p7WVRws=\ntrusted comment: timestamp:1759276800\tfile:update-manifest.json\thashed\nTyepgbToCfIuFh/XVs7bSzuh1mJgigFy1bjFh/V3cvgl+vWxy88WRytZt6RSQYwtd85wxTHNuXGUkaI/0qa9DA==\n"
+    }
+  }
+}
