@@ -10,6 +10,8 @@
 //! - [`lock`]: project lock files with an OS exclusive lock and stale takeover.
 //! - [`paths`]: per-user data/cache directories, owner-only permissions, project IDs
 //!   and the risky-storage classifier.
+//! - [`cache`]: content-addressed, size-capped LRU cache directory.
+//! - [`housekeeping`]: the project registry, startup cleanup and project deletion.
 //!
 //! ```
 //! use gusset_store::container::{self, ContainerWriter, Kind, SaveInfo};
@@ -23,11 +25,13 @@
 
 #![deny(unsafe_code)]
 
+pub mod cache;
 pub mod checksum;
 pub mod container;
 pub mod durable;
 pub mod fs;
 mod hash;
+pub mod housekeeping;
 pub mod lock;
 pub mod paths;
 pub mod recovery;

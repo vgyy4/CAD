@@ -12,6 +12,7 @@ repository.workspace = true
 blake3.workspace = true
 directories.workspace = true
 getrandom.workspace = true
+trash.workspace = true
 zstd.workspace = true
 
 [target.'cfg(windows)'.dependencies]
