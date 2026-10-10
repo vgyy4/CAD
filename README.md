@@ -16,12 +16,18 @@ overwriting exports). Text stored in the model is returned as untrusted `user_te
 
 **stdio (recommended).** `gusset mcp [file]` attaches to the running app when it has
 that project open (or the most recently started app when no file is given); otherwise
-it opens the file headless:
+it opens the file headless (a new file is created; the agent's work is saved on exit):
 
 ```sh
 claude mcp add --transport stdio gusset -- gusset mcp
 claude mcp add --transport stdio gusset-part -- gusset mcp /path/to/part.gus
 ```
+
+Options: `--read-only` rejects every mutating tool (also when relaying to the app);
+`--no-attach` always runs headless, even when the app is open. Headless, `render_view`
+renders with the GPU (any adapter, including software Vulkan/GL) or a built-in CPU
+rasterizer, so it always returns a PNG. Diagnostics go to stderr; stdout carries only
+the protocol.
 
 **HTTP, directly to the running app.** The app listens on `127.0.0.1` only, on a
 random port, and requires a bearer token. Both are shown in the app's "Connect an

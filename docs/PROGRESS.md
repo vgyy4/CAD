@@ -20,14 +20,14 @@ written (0000–0015, except 0016, which is not needed yet).
   (allowed to fail), cargo-deny, cargo-audit, and a pinned native OCCT build + kernel
   tests on all targets.
 
-## In progress (subagents)
-- `gusset-host` + `gusset-mcp` (rmcp MCP server, stdio bridge, approvals, sanitization).
-- `gusset-render` (wgpu viewport, headless render_view, software fallback, golden PNGs).
+- `gusset mcp [file] [--read-only] [--no-attach]`: relays to a running app or serves
+  headless (OCCT, mock kernel with a warning without OCCT); fd 1 is pointed at stderr
+  and the protocol uses a private duplicate. `render_view` uses gusset-render (GPU,
+  CPU fallback) via gusset-mcp's `render` feature. CLI stdio end-to-end test.
 
 ## Next
-1. Merge host/MCP + render; add `gusset mcp` to the CLI. MCP stdio must keep OCCT's
-   stray `std::cout` output (BinTools on bad input) away from the protocol stream:
-   redirect fd 1 to stderr and use a dup'd fd for the protocol.
+1. Verify `gusset mcp` against Claude Code in practice (with OCCT); wire the app's
+   HTTP endpoint and renderer (`SceneRenderer`) into `gusset-app`.
 2. GUI app (`gusset-app`, egui): layout per DESIGN.md, viewport, sketch mode, timeline,
    iteration graph, code view, parameters, close/recovery dialogs, kittest automation.
 3. Sandboxed import worker (`gusset-worker`): STEP/IGES via OCCT out of process.
