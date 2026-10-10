@@ -413,11 +413,12 @@ impl Parser {
         match self.bump() {
             (Tok::Num(v), s) => {
                 // A unit name directly after a number binds to it: `10 mm`, `0.5in`.
-                if let (Tok::Ident(name), us) = self.peek().clone() {
-                    if unit(&name).is_some() && !matches!(self.toks.get(self.pos + 1), Some((Tok::LParen, _))) {
-                        self.bump();
-                        return Ok(Expr::Number { value: v, unit: Some(name), span: s.to(us) });
-                    }
+                if let (Tok::Ident(name), us) = self.peek().clone()
+                    && unit(&name).is_some()
+                    && !matches!(self.toks.get(self.pos + 1), Some((Tok::LParen, _)))
+                {
+                    self.bump();
+                    return Ok(Expr::Number { value: v, unit: Some(name), span: s.to(us) });
                 }
                 Ok(Expr::Number { value: v, unit: None, span: s })
             }

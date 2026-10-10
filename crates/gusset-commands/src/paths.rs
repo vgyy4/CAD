@@ -29,10 +29,10 @@ pub fn confined(project_dir: Option<&Path>, rel: &str) -> Result<PathBuf, Comman
     let name = full.file_name().ok_or_else(|| CommandError::args("invalid file name"))?;
     let target = cparent.join(name);
     // An existing symlink at the target itself must not point outside either.
-    if let Ok(meta) = std::fs::symlink_metadata(&target) {
-        if meta.file_type().is_symlink() {
-            return Err(CommandError::new("not_allowed", "refusing to write through a symbolic link"));
-        }
+    if let Ok(meta) = std::fs::symlink_metadata(&target)
+        && meta.file_type().is_symlink()
+    {
+        return Err(CommandError::new("not_allowed", "refusing to write through a symbolic link"));
     }
     Ok(target)
 }

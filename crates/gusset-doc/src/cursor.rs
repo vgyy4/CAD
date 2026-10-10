@@ -99,10 +99,10 @@ impl<'a> Cursor<'a> {
     /// Consumes a keyword (identifier equal to `kw`) if present.
     pub(crate) fn eat_kw(&mut self, kw: &str) -> bool {
         let save = self.pos;
-        if let Ok(id) = self.ident() {
-            if id == kw {
-                return true;
-            }
+        if let Ok(id) = self.ident()
+            && id == kw
+        {
+            return true;
         }
         self.pos = save;
         false

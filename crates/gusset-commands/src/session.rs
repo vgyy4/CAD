@@ -159,10 +159,10 @@ impl Session {
     /// The branch `actor` works on. Agents get their own `agent/<name>` branch from main
     /// on first use (ADR 0012); the user starts on main.
     pub fn branch_for(&mut self, ctx: &CmdCtx) -> Result<BranchId, CommandError> {
-        if let Some(b) = self.current.get(&ctx.actor) {
-            if self.history.branch(*b).is_ok_and(|x| x.deleted_at.is_none()) {
-                return Ok(*b);
-            }
+        if let Some(b) = self.current.get(&ctx.actor)
+            && self.history.branch(*b).is_ok_and(|x| x.deleted_at.is_none())
+        {
+            return Ok(*b);
         }
         let b = match &ctx.actor {
             Actor::User => self.history.main(),
@@ -217,10 +217,11 @@ impl Session {
     pub fn evaluate_branch(&mut self, branch: BranchId) -> Result<Arc<Evaluation>, CommandError> {
         let b = self.history.branch(branch).map_err(CommandError::history)?;
         let (node, rollback) = (b.head, b.rollback);
-        if let Some((n, r, e)) = &self.cache {
-            if *n == node && *r == rollback {
-                return Ok(e.clone());
-            }
+        if let Some((n, r, e)) = &self.cache
+            && *n == node
+            && *r == rollback
+        {
+            return Ok(e.clone());
         }
         let doc = self.history.document(node).map_err(CommandError::history)?;
         let blobs = HistoryBlobs(&self.history);

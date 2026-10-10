@@ -217,10 +217,10 @@ impl ObjectStore {
             out.insert(s.params);
             out.extend(s.features.iter().copied());
             for f in &s.features {
-                if let Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) = self.feature(*f) {
-                    if let Some(b) = Hash::from_hex(&i.blob) {
-                        out.insert(b);
-                    }
+                if let Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) = self.feature(*f)
+                    && let Some(b) = Hash::from_hex(&i.blob)
+                {
+                    out.insert(b);
                 }
             }
         }

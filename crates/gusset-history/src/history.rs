@@ -514,10 +514,10 @@ impl History {
     pub fn rename_branch(&mut self, ctx: &Ctx, branch: BranchId, name: &str) -> HResult<()> {
         check_branch_name(name)?;
         let name = name.trim().to_string();
-        if let Some(other) = self.branch_by_name(&name) {
-            if other.id != branch {
-                return Err(HistoryError::NameTaken(name));
-            }
+        if let Some(other) = self.branch_by_name(&name)
+            && other.id != branch
+        {
+            return Err(HistoryError::NameTaken(name));
         }
         let b = self.live_branch_mut(branch)?;
         let old = std::mem::replace(&mut b.name, name.clone());

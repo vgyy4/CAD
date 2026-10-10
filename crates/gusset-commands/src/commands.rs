@@ -73,12 +73,12 @@ fn edit(
     let extra = f(&mut doc, rollback)?;
     let out = s.commit(ctx, label, &doc)?;
     // Inserting while rolled back keeps the marker just after the new feature.
-    if let Some(r) = rollback {
-        if doc.features.len() > before {
-            let new = r + (doc.features.len() - before);
-            let hctx = ctx.hctx();
-            let _ = s.history_mut_pub().set_rollback(&hctx, branch, Some(new));
-        }
+    if let Some(r) = rollback
+        && doc.features.len() > before
+    {
+        let new = r + (doc.features.len() - before);
+        let hctx = ctx.hctx();
+        let _ = s.history_mut_pub().set_rollback(&hctx, branch, Some(new));
     }
     let mut v = json!({
         "node": out.node.to_string(),
@@ -196,10 +196,10 @@ fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
     if r == "main" {
         return Ok(s.history().main());
     }
-    if let Some(b) = r.strip_prefix('b').and_then(|n| n.parse().ok()).map(BranchId) {
-        if s.history().branch(b).is_ok() {
-            return Ok(b);
-        }
+    if let Some(b) = r.strip_prefix('b').and_then(|n| n.parse().ok()).map(BranchId)
+        && s.history().branch(b).is_ok()
+    {
+        return Ok(b);
     }
     s.history()
         .branch_by_name(r)
@@ -209,10 +209,10 @@ fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
 
 /// A node by id (`n12`) or the head of a branch reference.
 fn find_node(s: &Session, r: &str) -> Result<NodeId, CommandError> {
-    if let Some(n) = parse_node(r) {
-        if s.history().node(n).is_ok() {
-            return Ok(n);
-        }
+    if let Some(n) = parse_node(r)
+        && s.history().node(n).is_ok()
+    {
+        return Ok(n);
     }
     let b = find_branch(s, r)?;
     s.history().head(b).map_err(CommandError::history)
@@ -1028,10 +1028,10 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             }
             FeatureKind::Import(_) => {}
         }
-        if let FeatureKind::Revolve(RevolveDef { axis: AxisRef::SketchLine { sketch, .. }, .. }) = &mut f.kind {
-            if sketch == from {
-                *sketch = to.to_string();
-            }
+        if let FeatureKind::Revolve(RevolveDef { axis: AxisRef::SketchLine { sketch, .. }, .. }) = &mut f.kind
+            && sketch == from
+        {
+            *sketch = to.to_string();
         }
     }
 }

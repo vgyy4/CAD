@@ -209,10 +209,10 @@ impl History {
         }
         // Integrity: parents exist, no cycles, snapshots exist.
         for n in nodes.values() {
-            if let Some(p) = n.parent {
-                if !nodes.contains_key(&p) {
-                    return Err(format!("node {} has a missing parent {p}", n.id));
-                }
+            if let Some(p) = n.parent
+                && !nodes.contains_key(&p)
+            {
+                return Err(format!("node {} has a missing parent {p}", n.id));
             }
             if !objects.contains(n.snapshot) {
                 return Err(format!("node {} refers to a missing snapshot", n.id));

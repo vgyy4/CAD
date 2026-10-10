@@ -180,10 +180,10 @@ pub(crate) fn solve_sketch(
 
     let mut line_points = BTreeMap::new();
     for e in &def.entities {
-        if let SkGeom::Line { a, b } = &e.geom {
-            if let (Some(pa), Some(pb)) = (result.points.get(a), result.points.get(b)) {
-                line_points.insert(e.id.clone(), (*pa, *pb));
-            }
+        if let SkGeom::Line { a, b } = &e.geom
+            && let (Some(pa), Some(pb)) = (result.points.get(a), result.points.get(b))
+        {
+            line_points.insert(e.id.clone(), (*pa, *pb));
         }
     }
     let mut profiles = Vec::new();

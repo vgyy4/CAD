@@ -98,10 +98,10 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::Extrude(ExtrudeDef { profile, op, body, .. })
             | FeatureKind::Revolve(RevolveDef { profile, op, body, .. }) => {
                 check_profile(n, profile, &seen, &mut out);
-                if let FeatureKind::Revolve(r) = &f.kind {
-                    if let AxisRef::SketchLine { sketch, entity } = &r.axis {
-                        check_sketch_entity(n, sketch, entity, Some('l'), &seen, &mut out);
-                    }
+                if let FeatureKind::Revolve(r) = &f.kind
+                    && let AxisRef::SketchLine { sketch, entity } = &r.axis
+                {
+                    check_sketch_entity(n, sketch, entity, Some('l'), &seen, &mut out);
                 }
                 if let Some(b) = body {
                     match seen.get(b.as_str()) {
@@ -175,13 +175,13 @@ fn check_sketch_entity(
     match s.entities.iter().find(|e| e.id == entity) {
         None => out.push(issue(n, format!("sketch '{sketch}' has no entity '{entity}'"))),
         Some(e) => {
-            if let Some(p) = prefix {
-                if e.geom.id_prefix() != p {
-                    out.push(issue(
-                        n,
-                        format!("'{sketch}.{entity}' must be a {}", if p == 'l' { "line" } else { "entity" }),
-                    ));
-                }
+            if let Some(p) = prefix
+                && e.geom.id_prefix() != p
+            {
+                out.push(issue(
+                    n,
+                    format!("'{sketch}.{entity}' must be a {}", if p == 'l' { "line" } else { "entity" }),
+                ));
             }
         }
     }
@@ -245,10 +245,10 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
                 out.push(issue(n, format!("'{}' refers to point '{r}' before it is defined", e.id)));
             }
         }
-        if let SkGeom::Line { a, b } = &e.geom {
-            if a == b {
-                out.push(issue(n, format!("line '{}' starts and ends at the same point", e.id)));
-            }
+        if let SkGeom::Line { a, b } = &e.geom
+            && a == b
+        {
+            out.push(issue(n, format!("line '{}' starts and ends at the same point", e.id)));
         }
         defined.insert(e.id.as_str());
     }
