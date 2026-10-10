@@ -1,0 +1,34 @@
+[package]
+name = "gusset-app"
+description = "The Gusset desktop application (egui/eframe, ADR 0009)"
+version.workspace = true
+edition.workspace = true
+# egui 0.36 requires Rust 1.95.
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "gusset-gui"
+path = "src/main.rs"
+
+[dependencies]
+gusset-units.workspace = true
+gusset-doc.workspace = true
+gusset-kernel.workspace = true
+gusset-kernel-occt.workspace = true
+gusset-history.workspace = true
+gusset-eval.workspace = true
+gusset-commands.workspace = true
+gusset-project.workspace = true
+gusset-store.workspace = true
+gusset-hw.workspace = true
+serde_json.workspace = true
+egui.workspace = true
+eframe.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+
+[lints]
+workspace = true

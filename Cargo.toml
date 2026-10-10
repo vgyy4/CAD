@@ -42,6 +42,9 @@ libc = "0.2.190"
 # gusset-hw: EcoQoS (SetThreadInformation) and RAM query on Windows (ADR 0011).
 windows-sys = "0.61.2"
 cc = "1.7.0"
+egui = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "accesskit", "default_fonts", "wayland", "x11"] }
+egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }
 landlock = "0.4.7"
 seccompiler = "0.5.0"
 rlimit = "0.11.0"
@@ -67,6 +70,7 @@ gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
 gusset-cli = { path = "crates/gusset-cli", version = "0.0.1" }
 gusset-sandbox = { path = "crates/gusset-sandbox", version = "0.0.1" }
 gusset-worker = { path = "crates/gusset-worker", version = "0.0.1" }
+gusset-app = { path = "crates/gusset-app", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
