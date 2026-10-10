@@ -28,3 +28,6 @@ desktop.ini
 *.pem
 *.key
 !docs/**/*.key.pub
+
+# Agent worktrees
+/.claude/worktrees/

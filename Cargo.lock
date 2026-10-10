@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "gusset-kernel"
+version = "0.0.1"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "gusset-units"
 version = "0.0.1"
 dependencies = [
