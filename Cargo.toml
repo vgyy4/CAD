@@ -29,6 +29,10 @@ mem_forget = "deny"
 [workspace.dependencies]
 libm = "0.2.16"
 blake3 = "1.8.7"
+# gusset-hw: thread QoS/priority and sysctl FFI on Linux/Android/Apple (ADR 0011).
+libc = "0.2.190"
+# gusset-hw: EcoQoS (SetThreadInformation) and RAM query on Windows (ADR 0011).
+windows-sys = "0.61.2"
 cc = "1.7.0"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
@@ -41,6 +45,7 @@ gusset-sketch = { path = "crates/gusset-sketch", version = "0.0.1" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.0.1" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.0.1" }
 gusset-eval = { path = "crates/gusset-eval", version = "0.0.1" }
+gusset-hw = { path = "crates/gusset-hw", version = "0.0.1" }
 
 [profile.release]
 lto = "fat"
