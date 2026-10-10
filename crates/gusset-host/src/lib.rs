@@ -13,6 +13,9 @@
 //! - Commands ([`HostHandle::call`], [`HostHandle::call_async`]), saves and recovery
 //!   snapshots are *jobs*: they are sent over a channel and run one at a time on the
 //!   model thread, which holds the lock only while a single job runs.
+//! - [`HostHandle::exec_detached`] queues a job without waiting; its callback gets the
+//!   result. The GUI uses it (and [`HostHandle::try_with_session`], which never waits for
+//!   a running job) so its UI thread never blocks behind a long command.
 //! - [`HostHandle::with_session`] runs a short closure on the **calling** thread while
 //!   holding the lock (between jobs). It is meant for quick read-only snapshots (the
 //!   renderer fetching evaluated bodies, the GUI reading the feature tree). Keep the
@@ -155,6 +158,18 @@ fn internal(what: &str) -> CommandError {
         .hint("this is a bug; please report it")
 }
 
+/// Holds the completion callback of [`HostHandle::exec_detached`]; if the job is dropped
+/// without running (the host stopped first) it reports `internal` instead of going silent.
+struct DoneGuard<R, D: FnOnce(Result<R, CommandError>)>(Option<D>, std::marker::PhantomData<fn(R)>);
+
+impl<R, D: FnOnce(Result<R, CommandError>)> Drop for DoneGuard<R, D> {
+    fn drop(&mut self) {
+        if let Some(d) = self.0.take() {
+            d(Err(internal("the command")));
+        }
+    }
+}
+
 fn lock(m: &Mutex<Option<State>>) -> MutexGuard<'_, Option<State>> {
     // A panic inside a job is caught before it can poison the lock, but be robust anyway.
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -285,6 +300,50 @@ impl HostHandle {
         rx.await.map_err(|_| internal("the command"))
     }
 
+    /// Queues `f` on the model thread **without waiting** for it. `done` receives the
+    /// result on the model thread right after the job (with the lock released and change
+    /// events already broadcast), so keep it short: send the value over a channel and wake
+    /// the receiver. If `f` panics, `done` receives a `CommandError` with code `internal`.
+    /// Jobs queued from one thread run in the order they were queued. A UI thread uses
+    /// this to stay responsive while long commands run.
+    ///
+    /// `done` is called exactly once in every case: also when the job cannot be queued
+    /// (then with the same error this function returns).
+    ///
+    /// # Errors
+    /// `shutdown` after the host stopped and `reentrant` from the model thread or inside
+    /// `with_session`.
+    pub fn exec_detached<R, F, D>(&self, f: F, done: D) -> Result<(), CommandError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Session, Option<&mut Project>) -> R + Send + 'static,
+        D: FnOnce(Result<R, CommandError>) + Send + 'static,
+    {
+        let early = if self.on_model_thread() || IN_HOST.with(Cell::get) {
+            Some(reentrant())
+        } else if self.is_shut_down() {
+            Some(stopped())
+        } else {
+            None
+        };
+        if let Some(e) = early {
+            done(Err(e.clone()));
+            return Err(e);
+        }
+        let mut guard = DoneGuard(Some(done), std::marker::PhantomData);
+        self.send(Box::new(move |st: &mut State| {
+            // Caught here (not only in the model loop) so `done` still runs after the
+            // job, outside the lock, like a normal reply.
+            let r = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut st.session, st.project.as_mut())))
+                .map_err(|_| internal("the command"));
+            Box::new(move || {
+                if let Some(d) = guard.0.take() {
+                    d(r);
+                }
+            }) as Reply
+        }))
+    }
+
     /// Executes a registry command (policy, approvals and audit included) on the model
     /// thread and waits for the result.
     ///
@@ -315,6 +374,23 @@ impl HostHandle {
         let mut guard = lock(&self.inner.state);
         let st = guard.as_mut().ok_or_else(stopped)?;
         Ok(f(&mut st.session))
+    }
+
+    /// Like [`HostHandle::with_session`], but never waits: returns `Ok(None)` while a job
+    /// holds the session (a long command is running). A UI thread uses this so a long
+    /// command never freezes it; it retries on a later frame.
+    ///
+    /// # Errors
+    /// `shutdown` after the host stopped; `reentrant` when nested.
+    pub fn try_with_session<R>(&self, f: impl FnOnce(&mut Session) -> R) -> Result<Option<R>, CommandError> {
+        let _g = InHostGuard::enter().ok_or_else(reentrant)?;
+        let mut guard = match self.inner.state.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+        };
+        let st = guard.as_mut().ok_or_else(stopped)?;
+        Ok(Some(f(&mut st.session)))
     }
 
     /// Subscribes to change notifications.
