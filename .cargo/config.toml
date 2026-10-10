@@ -1,0 +1,27 @@
+# Build baselines (ADR 0011, docs/HARDWARE.md).
+#
+# x86-64: compile everything for x86-64-v2 (SSE4.2, POPCNT, SSSE3, CMPXCHG16B,
+# LAHF/SAHF). Never raise this to v3/AVX2: newer features are used only through runtime
+# dispatch (crates/gusset-hw). Only x86_64 targets are listed, so builds for every other
+# target are unaffected.
+#
+# aarch64: the default target CPU (ARMv8.0-A, NEON included) is the baseline; nothing is
+# set here on purpose.
+#
+# Note: a RUSTFLAGS environment variable *replaces* these flags. CI jobs that set
+# RUSTFLAGS must include `-C target-cpu=x86-64-v2` on x86_64.
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
