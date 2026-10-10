@@ -222,9 +222,14 @@ pub fn format_number(v: f64) -> String {
 }
 
 /// Formats a number so that parsing it back yields exactly the same `f64`.
+///
+/// Uses the shortest round-tripping representation, with scientific notation for very
+/// large or small magnitudes (`2.5e-7`, `1e20`) and no trailing `.0` (`40`).
 pub fn format_exact(v: f64) -> String {
-    // Rust's `{}` for f64 prints the shortest representation that round-trips.
-    let s = format!("{v}");
+    // Rust's `{:?}` for f64 prints the shortest representation that round-trips,
+    // switching to exponent notation outside 1e-5..1e16.
+    let s = format!("{v:?}");
+    let s = s.strip_suffix(".0").map(str::to_string).unwrap_or(s);
     if s == "-0" { "0".to_string() } else { s }
 }
 
@@ -252,8 +257,11 @@ mod tests {
 
     #[test]
     fn exact_roundtrip() {
-        for v in [0.1, 1.0 / 3.0, 1e-300, 123_456.789, -2.5] {
+        for v in [0.1, 1.0 / 3.0, 1e-300, 123_456.789, -2.5, 2.5e-7, 1e300, 40.0] {
             assert_eq!(format_exact(v).parse::<f64>().unwrap().to_bits(), v.to_bits());
         }
+        assert_eq!(format_exact(40.0), "40");
+        assert_eq!(format_exact(2.5e-7), "2.5e-7");
+        assert_eq!(format_exact(-0.0), "0");
     }
 }
