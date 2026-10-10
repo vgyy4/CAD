@@ -604,6 +604,11 @@ impl Sketch {
         }
         Ok(())
     }
+
+    /// Mutable entity access for writing solved values back (ids and kinds must not change).
+    pub(crate) fn entities_mut(&mut self) -> &mut [Entity] {
+        &mut self.entities
+    }
 }
 
 #[cfg(test)]

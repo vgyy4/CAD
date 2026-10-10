@@ -14,3 +14,8 @@ pub(crate) fn norm(a: V2) -> f64 {
 pub(crate) fn dist(a: V2, b: V2) -> f64 {
     norm(sub(a, b))
 }
+
+/// `true` unless `a > b`; in particular `true` when either value is NaN.
+pub(crate) fn not_gt(a: f64, b: f64) -> bool {
+    a.partial_cmp(&b) != Some(core::cmp::Ordering::Greater)
+}
