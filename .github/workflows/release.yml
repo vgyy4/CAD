@@ -1,0 +1,405 @@
+# Release workflow (ADR 0013). Builds, packages, smoke-tests and publishes Gusset for
+# every target when a `v*` tag is pushed. Release artifacts are built only here.
+#
+# Security (ADR 0008 §11, ADR 0015, PROMPT.md "Supply chain & CI"):
+# - Triggered only by tag pushes: never by pull requests, so PR code never sees the
+#   `release` environment or its secrets.
+# - The workflow default grants nothing; each job asks for the minimum it needs.
+# - Only the `publish` job uses the protected `release` environment (the owner limits it
+#   to tags on the default branch). Build jobs get no secrets at all.
+# - Third-party actions are pinned by full commit SHA; downloaded tools are pinned by
+#   version and SHA-256.
+# - Build jobs only *restore* caches (OCCT build), and only caches the default branch
+#   wrote; no Rust build cache is used for releases.
+# - Code signing (ADR 0015) is off: those steps run only when the repository variable
+#   SIGNING_ENABLED is 'true', and they need secrets that are not configured.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Pinned packaging tools (ADR 0013). Hashes were recorded on 2026-10-10 from the
+  # official release assets; a mismatch fails the build.
+  APPIMAGETOOL_VERSION: "1.9.1"
+  APPIMAGETOOL_SHA256_X86_64: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+  APPIMAGETOOL_SHA256_AARCH64: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+  APPIMAGE_RUNTIME_VERSION: "20251108"
+  APPIMAGE_RUNTIME_SHA256_X86_64: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+  APPIMAGE_RUNTIME_SHA256_AARCH64: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+  WIX_VERSION: "5.0.2"
+  WIX_NUPKG_SHA256: f30ef0c74e2a986126539c5780be93ac24e8136eaf723b1937b26272703ae173
+  CARGO_CYCLONEDX_VERSION: "0.5.9"
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    # macOS is best effort (PROMPT.md "Hard requirements").
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-24.04, os_id: linux, arch: x86_64, triple: x86_64-unknown-linux-gnu, optional: false }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, os_id: linux, arch: aarch64, triple: aarch64-unknown-linux-gnu, optional: false }
+          - { name: windows-x64, os: windows-2025, os_id: windows, arch: x86_64, triple: x86_64-pc-windows-msvc, optional: false }
+          - { name: windows-arm64, os: windows-11-arm, os_id: windows, arch: aarch64, triple: aarch64-pc-windows-msvc, optional: false }
+          - { name: macos-arm64, os: macos-15, os_id: macos, arch: aarch64, triple: aarch64-apple-darwin, optional: true }
+    defaults:
+      run:
+        shell: bash
+    env:
+      DIST: ${{ github.workspace }}/dist
+      STAGE: ${{ github.workspace }}/stage/gusset
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Version from tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $cargo_version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Restore OCCT build
+        id: occt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/occt-install
+          key: occt-${{ matrix.name }}-${{ hashFiles('deps/occt/**') }}
+      - name: Build OCCT (cache miss only; verifies the pinned source commit)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: deps/occt/build-occt.sh "$RUNNER_TEMP/occt-install"
+      - name: Point the build at OCCT
+        run: |
+          echo "GUSSET_OCCT_DIR=$RUNNER_TEMP/occt-install" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/occt-install/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: cargo build --release --locked -p gusset-cli -p gusset-app -p gusset-worker
+
+      - name: Install packaging tools (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends patchelf
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            tool_sha="$APPIMAGETOOL_SHA256_X86_64"; rt_sha="$APPIMAGE_RUNTIME_SHA256_X86_64"
+          else
+            tool_sha="$APPIMAGETOOL_SHA256_AARCH64"; rt_sha="$APPIMAGE_RUNTIME_SHA256_AARCH64"
+          fi
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools"
+          curl -fsSL -o "$tools/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-${{ matrix.arch }}.AppImage"
+          curl -fsSL -o "$tools/runtime" \
+            "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME_VERSION/runtime-${{ matrix.arch }}"
+          echo "$tool_sha  $tools/appimagetool" | sha256sum -c -
+          echo "$rt_sha  $tools/runtime" | sha256sum -c -
+          chmod +x "$tools/appimagetool"
+
+      - name: Install WiX (Windows)
+        if: matrix.os_id == 'windows'
+        run: |
+          feed="$RUNNER_TEMP/wix-feed"
+          mkdir -p "$feed"
+          curl -fsSL -o "$feed/wix.$WIX_VERSION.nupkg" \
+            "https://api.nuget.org/v3-flatcontainer/wix/$WIX_VERSION/wix.$WIX_VERSION.nupkg"
+          echo "$WIX_NUPKG_SHA256  $feed/wix.$WIX_VERSION.nupkg" | sha256sum -c -
+          dotnet tool install --global wix --version "$WIX_VERSION" --add-source "$feed" --ignore-failed-sources
+
+      - name: Stage install tree
+        run: |
+          packaging/stage.sh "${{ matrix.os_id }}" "${{ matrix.arch }}" "${{ steps.version.outputs.version }}" \
+            "$RUNNER_TEMP/occt-install" target "$STAGE"
+
+      - name: Check install-relative library paths (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          for f in "$STAGE"/bin/* "$STAGE"/lib/gusset/*.so*; do
+            [ -L "$f" ] && continue
+            rpath="$(readelf -d "$f" | sed -n 's/.*R\(UN\)\{0,1\}PATH.*\[\(.*\)\]/\2/p')"
+            case "$rpath" in
+              ''|'$ORIGIN'|'$ORIGIN/../lib/gusset') ;;
+              *) echo "::error::$f has search path '$rpath'"; exit 1 ;;
+            esac
+          done
+          # Every OCCT dependency resolves inside the tree, without LD_LIBRARY_PATH.
+          if env -u LD_LIBRARY_PATH ldd "$STAGE/bin/gusset" | grep -E 'libTK.*(not found|=> /(usr|lib))'; then
+            echo "::error::OCCT libraries do not resolve from the bundle"; exit 1
+          fi
+
+      - name: Package (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          packaging/linux/package.sh "${{ steps.version.outputs.version }}" "${{ matrix.arch }}" "$STAGE" "$DIST" \
+            "$RUNNER_TEMP/tools/appimagetool" "$RUNNER_TEMP/tools/runtime"
+
+      - name: Package (Windows)
+        if: matrix.os_id == 'windows'
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          name="gusset-$v-windows-${{ matrix.arch }}"
+          mkdir -p "$DIST"
+          (cd "$STAGE" && 7z a -tzip -mx=9 "$DIST/$name.zip" . > /dev/null)
+          cp "$STAGE.files.json" "$DIST/$name.zip.files.json"
+          wixarch="x64"; [ "${{ matrix.arch }}" = "aarch64" ] && wixarch="arm64"
+          wix build packaging/windows/gusset.wxs -arch "$wixarch" \
+            -d "Version=$v" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
+          cp "$STAGE.files.json" "$DIST/$name.msi.files.json"
+
+      - name: Package (macOS)
+        if: matrix.os_id == 'macos'
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          mkdir -p "$DIST"
+          hdiutil create -volname Gusset -srcfolder "$STAGE/Gusset.app" -fs HFS+ -format UDZO \
+            "$DIST/Gusset-$v-macos-${{ matrix.arch }}.dmg"
+          cp "$STAGE.files.json" "$DIST/Gusset-$v-macos-${{ matrix.arch }}.dmg.files.json"
+
+      # ---------------------------------------------------------------- code signing
+      # Disabled until the owner decides (ADR 0015). Enabling needs the repository
+      # variable SIGNING_ENABLED=true *and* moving these steps into a job that uses the
+      # protected `release` environment, where the signing secrets would live. They are
+      # placeholders and fail loudly rather than ship something half-signed.
+      - name: Sign Windows packages (disabled, ADR 0015)
+        if: ${{ vars.SIGNING_ENABLED == 'true' && matrix.os_id == 'windows' }}
+        run: |
+          echo "::error::Windows code signing is not configured yet (ADR 0015: SignPath Foundation or Azure Artifact Signing)."
+          exit 1
+      - name: Sign and notarize macOS app (disabled, ADR 0015)
+        if: ${{ vars.SIGNING_ENABLED == 'true' && matrix.os_id == 'macos' }}
+        run: |
+          echo "::error::Apple Developer ID signing and notarization are not configured yet (ADR 0015)."
+          exit 1
+
+      # ---------------------------------------------------------------- smoke tests
+      # ADR 0013: install, run headless, open and rebuild a sample, export STEP,
+      # uninstall, and check that nothing is left behind.
+      - name: Smoke test portable archive (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          t="$(mktemp -d)"
+          tar -xzf "$DIST"/gusset-*-linux-*.tar.gz -C "$t"
+          root="$(echo "$t"/gusset-*)"
+          env -i HOME="$t/home" "$root/bin/gusset" --version
+          env -i HOME="$t/home" "$root/bin/gusset" self-test
+          env -i HOME="$t/home" "$root/bin/gusset" build examples/bracket.gus.txt --export "$t/out.step"
+          test -s "$t/out.step"
+          rm -rf "$t"
+
+      - name: Smoke test AppImage (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          t="$(mktemp -d)"
+          cp "$DIST"/Gusset-*.AppImage "$t/Gusset.AppImage"
+          (cd "$t" && ./Gusset.AppImage --appimage-extract > /dev/null)
+          "$t/squashfs-root/usr/bin/gusset" --version
+          "$t/squashfs-root/usr/bin/gusset" build examples/bracket.gus.txt --export "$t/out.step"
+          test -s "$t/out.step"
+          rm -rf "$t"
+
+      - name: Smoke test .deb install and removal (Linux)
+        if: matrix.os_id == 'linux'
+        run: |
+          sudo dpkg -i "$DIST"/gusset_*.deb
+          gusset --version
+          gusset build examples/bracket.gus.txt --export "$RUNNER_TEMP/out.step"
+          test -s "$RUNNER_TEMP/out.step"
+          sudo dpkg --purge gusset
+          for p in /usr/bin/gusset /usr/bin/gusset-gui /usr/bin/gusset-worker /usr/lib/gusset /usr/share/doc/gusset \
+                   /usr/share/applications/gusset.desktop; do
+            if [ -e "$p" ]; then echo "::error::$p left behind after removal"; exit 1; fi
+          done
+
+      - name: Smoke test portable zip (Windows)
+        if: matrix.os_id == 'windows'
+        run: |
+          t="$RUNNER_TEMP/zip-smoke"
+          mkdir -p "$t"
+          7z x -o"$t" "$DIST"/gusset-*-windows-*.zip > /dev/null
+          "$t/gusset.exe" --version
+          "$t/gusset.exe" self-test
+          "$t/gusset.exe" build examples/bracket.gus.txt --export "$t/out.step"
+          test -s "$t/out.step"
+
+      - name: Smoke test MSI install and uninstall (Windows)
+        if: matrix.os_id == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem "$env:DIST\gusset-*-windows-*.msi").FullName
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Gusset'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$msi`" /qn /l*v `"$env:RUNNER_TEMP\install.log`""
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\install.log" -Tail 50; throw "install failed: $($p.ExitCode)" }
+          & "$dir\gusset.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'gusset --version failed' }
+          & "$dir\gusset.exe" build examples/bracket.gus.txt --export "$env:RUNNER_TEMP\msi-out.step"
+          if ($LASTEXITCODE -ne 0) { throw 'gusset build failed' }
+          # Per-user install: nothing in Program Files, no services, tasks or autostart entries.
+          if (Test-Path "$env:ProgramFiles\Gusset") { throw 'files installed machine-wide' }
+          if (Get-Service | Where-Object { $_.Name -like '*gusset*' }) { throw 'a service was installed' }
+          if (Get-ScheduledTask | Where-Object { $_.TaskName -like '*gusset*' }) { throw 'a scheduled task was installed' }
+          if (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue |
+              Select-Object -Property *gusset*) { throw 'an autostart entry was installed' }
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/x `"$msi`" /qn /l*v `"$env:RUNNER_TEMP\uninstall.log`""
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          if (Test-Path $dir) { Get-ChildItem -Recurse $dir; throw 'install directory left behind' }
+          if (Test-Path 'HKCU:\Software\Gusset\Installer') { throw 'installer registry key left behind' }
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Gusset.lnk'
+          if (Test-Path $lnk) { throw 'Start menu shortcut left behind' }
+          $uninstall = Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+            Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -eq 'Gusset' }
+          if ($uninstall) { throw 'uninstall registry entry left behind' }
+
+      - name: Smoke test app bundle (macOS)
+        if: matrix.os_id == 'macos'
+        run: |
+          app="$STAGE/Gusset.app/Contents/MacOS"
+          "$app/gusset" --version
+          "$app/gusset" self-test
+          "$app/gusset" build examples/bracket.gus.txt --export "$RUNNER_TEMP/out.step"
+          test -s "$RUNNER_TEMP/out.step"
+
+      # ---------------------------------------------------------------- SBOM
+      - name: SBOM (CycloneDX)
+        run: |
+          cargo install cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION" --locked
+          cargo cyclonedx --format json --spec-version 1.5 --all --no-build-deps --target "${{ matrix.triple }}" \
+            --override-filename sbom
+          mkdir -p "$DIST"
+          for c in gusset-cli gusset-app gusset-worker; do
+            cp "crates/$c/sbom.json" "$DIST/sbom-$c-${{ matrix.name }}.cdx.json"
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # The only job with secrets. The environment's protection rules (set by the owner)
+    # restrict it to tags on the default branch.
+    environment: release
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # sign build-provenance attestations (OIDC)
+      attestations: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: The tag must point at the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::$GITHUB_REF_NAME is not on $DEFAULT_BRANCH; refusing to publish"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: OCCT corresponding source (LGPL 2.1 §6)
+        run: |
+          . deps/occt/occt.env
+          git clone --quiet --depth 1 --branch "$OCCT_TAG" "$OCCT_REPO" "$RUNNER_TEMP/occt-src"
+          test "$(git -C "$RUNNER_TEMP/occt-src" rev-parse HEAD)" = "$OCCT_COMMIT"
+          git -C "$RUNNER_TEMP/occt-src" archive --format=tar.gz --prefix="occt-$OCCT_TAG/" \
+            -o "$GITHUB_WORKSPACE/dist/occt-src-$OCCT_TAG.tar.gz" "$OCCT_COMMIT"
+
+      - name: Sign update packages (only when the update key exists, ADR 0014)
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set: publishing an unsigned update manifest, which the app refuses (ADR 0014)."
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          key="$RUNNER_TEMP/update.key"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          for f in dist/*.AppImage dist/*.deb dist/*.zip dist/*.msi dist/*.dmg; do
+            [ -e "$f" ] || continue
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "gusset ${GITHUB_REF_NAME} $(basename "$f")" < /dev/null
+          done
+          rm -f "$key"
+
+      - name: Update manifest
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          channel=stable
+          case "$version" in *-*) channel=nightly ;; esac
+          python3 -I packaging/make_update_manifest.py dist "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "$channel" \
+            > dist/update-manifest.json
+
+      - name: Sign update manifest (only when the update key exists)
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          [ -n "$UPDATE_SIGNING_KEY" ] || exit 0
+          umask 077
+          key="$RUNNER_TEMP/update.key"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          minisign -S -s "$key" -m dist/update-manifest.json -x dist/update-manifest.json.minisig \
+            -t "gusset update manifest ${GITHUB_REF_NAME}" < /dev/null
+          rm -f "$key"
+
+      - name: Checksums
+        run: |
+          cd dist
+          rm -f ./*.files.json
+          sha256sum -- * | sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Create GitHub release (draft)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            "${prerelease[@]}" --title "Gusset ${GITHUB_REF_NAME#v}" \
+            --notes "Unsigned build (ADR 0015). Verify downloads with SHA256SUMS and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."

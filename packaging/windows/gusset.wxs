@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-user MSI for Gusset (ADR 0013), built with WiX v5 (MS-RL) by release.yml:
+
+    wix build packaging/windows/gusset.wxs -arch x64|arm64 -d Version=<x.y.z> -d StageDir=<dir> -o <msi>
+
+  Installs to %LOCALAPPDATA%\Programs\Gusset without elevation, so the in-app updater
+  can replace files there (ADR 0014). No services, scheduled tasks, autostart entries,
+  PATH changes or file associations (ADR 0008 §1).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Gusset"
+      Manufacturer="Gusset contributors"
+      Version="$(Version)"
+      UpgradeCode="03d69ed8-e2e3-48b2-8ef1-1bde763489b0"
+      Scope="perUser"
+      Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Gusset is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Gusset" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="Gusset">
+      <!-- Everything staged by packaging/stage.sh: programs, OCCT DLLs, runtime, docs. -->
+      <Files Include="$(StageDir)\**" Directory="INSTALLFOLDER" />
+      <ComponentRef Id="Shortcuts" />
+    </Feature>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- Per-user components need an HKCU key path; it also removes the folders on
+           uninstall so nothing is left behind. -->
+      <Component Id="Shortcuts">
+        <Shortcut
+            Id="StartMenuShortcut"
+            Directory="ProgramMenuFolder"
+            Name="Gusset"
+            Description="Parametric CAD"
+            Target="[INSTALLFOLDER]gusset-gui.exe"
+            WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsDir" Directory="ProgramsDir" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Gusset\Installer" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Package>
+</Wix>

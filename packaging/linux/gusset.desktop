@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Gusset
+GenericName=Parametric CAD
+Comment=Parametric CAD with a built-in MCP server
+Exec=gusset-gui %F
+Icon=gusset
+Terminal=false
+Categories=Graphics;Engineering;3DGraphics;
