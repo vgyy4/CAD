@@ -1,0 +1,40 @@
+[package]
+name = "gusset-store"
+description = "Durable storage for Gusset: the .gus container, atomic saves, recovery files, locks, cache and housekeeping"
+version.workspace = true
+edition.workspace = true
+# `File::try_lock` (project locks) is stable since Rust 1.89.
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+directories.workspace = true
+getrandom.workspace = true
+trash.workspace = true
+zstd.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+# This is a listed FFI crate (ADR 0007): the Windows atomic-replace and file-identity
+# calls need `unsafe`. The workspace forbids unsafe code, so the lints are spelled out
+# here instead of inherited; everything except `unsafe_code` matches the workspace. The
+# crate root denies unsafe code and only the `cfg(windows)` FFI module allows it.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+float_cmp = "warn"
+indexing_slicing = "warn"
+mem_forget = "deny"

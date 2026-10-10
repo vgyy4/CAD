@@ -1,0 +1,32 @@
+[package]
+name = "gusset-store-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "cargo-fuzz targets for the gusset-store container parser"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+gusset-store = { path = ".." }
+
+# Standalone: excluded from the main workspace (nightly-only tooling).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "container_open"
+path = "fuzz_targets/container_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "salvage"
+path = "fuzz_targets/salvage.rs"
+test = false
+doc = false
+bench = false
