@@ -79,3 +79,49 @@ jobs:
           key: cargo-audit-0.22.2-${{ runner.os }}
       - run: command -v cargo-audit || cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo audit --deny warnings
+
+  occt:
+    # Builds the pinned OCCT natively on every target (cached), then runs the kernel,
+    # golden-geometry and CLI end-to-end tests against it (ADR 0002 hard criterion).
+    name: occt kernel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64, os: ubuntu-24.04, optional: false }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, optional: false }
+          - { name: windows-x64, os: windows-2025, optional: false }
+          - { name: windows-arm64, os: windows-11-arm, optional: false }
+          - { name: macos-arm64, os: macos-15, optional: true }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Restore OCCT build
+        id: occt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/occt-install
+          key: occt-${{ matrix.name }}-${{ hashFiles('deps/occt/**') }}
+      - name: Build OCCT (cache miss only)
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        run: deps/occt/build-occt.sh "$RUNNER_TEMP/occt-install"
+      - name: Point the build at OCCT
+        run: |
+          echo "GUSSET_OCCT_DIR=$RUNNER_TEMP/occt-install" >> "$GITHUB_ENV"
+          # Windows test executables find the DLLs through PATH (dev/CI only; the
+          # shipped app loads them by absolute path, ADR 0008).
+          echo "$RUNNER_TEMP/occt-install/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: occt-${{ matrix.name }}
+      - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli --all-targets --locked -- -D warnings
+      - run: cargo test -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli --locked
+      - run: cargo run -p gusset-cli --locked -- self-test
