@@ -23,6 +23,13 @@ pub struct SketchResult {
     pub conflicting: Vec<String>,
     /// Closed regions found (identified by their identifying entity), or why none.
     pub regions: Result<Vec<RegionInfo>, String>,
+    /// Where the sketch plane sits in 3D (for drawing and picking in the viewport).
+    pub frame: Frame,
+    /// Lines (doc id → endpoint ids), circles (id → center id) and arcs (id → center,
+    /// start, end ids), for drawing.
+    pub lines: Vec<(String, String, String)>,
+    pub circles: Vec<(String, String)>,
+    pub arcs: Vec<(String, String, String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +170,31 @@ pub(crate) fn solve_sketch(
         redundant: cnames(&r.redundant),
         conflicting: cnames(&r.conflicting),
         regions: Ok(Vec::new()),
+        frame,
+        lines: def
+            .entities
+            .iter()
+            .filter_map(|e| match &e.geom {
+                SkGeom::Line { a, b } => Some((e.id.clone(), a.clone(), b.clone())),
+                _ => None,
+            })
+            .collect(),
+        circles: def
+            .entities
+            .iter()
+            .filter_map(|e| match &e.geom {
+                SkGeom::Circle { center, .. } => Some((e.id.clone(), center.clone())),
+                _ => None,
+            })
+            .collect(),
+        arcs: def
+            .entities
+            .iter()
+            .filter_map(|e| match &e.geom {
+                SkGeom::Arc { center, start, end } => Some((e.id.clone(), center.clone(), start.clone(), end.clone())),
+                _ => None,
+            })
+            .collect(),
     };
     if status == SketchStatus::Failed {
         let why = r.error.map_or_else(|| "the solver did not converge".to_string(), |e| e.to_string());
