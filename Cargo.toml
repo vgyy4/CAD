@@ -55,7 +55,7 @@ hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1"] }
 http = "1.5.0"
 http-body-util = "0.1.5"
 bytes = "1.12.1"
-futures = { version = "0.3.34", default-features = false, features = ["std"] }
+tokio-util = "0.7.20"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
