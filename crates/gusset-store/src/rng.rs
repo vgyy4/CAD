@@ -42,3 +42,10 @@ impl SplitMix64 {
 pub(crate) fn os_random_u64() -> io::Result<u64> {
     getrandom::u64().map_err(|e| io::Error::other(format!("OS random number generator failed: {e}")))
 }
+
+/// 128 bits from the OS CSPRNG.
+pub(crate) fn os_random_128() -> io::Result<[u8; 16]> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|e| io::Error::other(format!("OS random number generator failed: {e}")))?;
+    Ok(b)
+}

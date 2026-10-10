@@ -7,6 +7,9 @@
 //! - [`fs`]: the [`fs::Fs`] abstraction used by `durable_write`, the real
 //!   implementation and [`fs::FaultFs`], a seeded power-loss simulator for tests.
 //! - [`recovery`]: the two-slot recovery file (one per open project).
+//! - [`lock`]: project lock files with an OS exclusive lock and stale takeover.
+//! - [`paths`]: per-user data/cache directories, owner-only permissions, project IDs
+//!   and the risky-storage classifier.
 //!
 //! ```
 //! use gusset_store::container::{self, ContainerWriter, Kind, SaveInfo};
@@ -25,6 +28,8 @@ pub mod container;
 pub mod durable;
 pub mod fs;
 mod hash;
+pub mod lock;
+pub mod paths;
 pub mod recovery;
 mod rng;
 mod wire;
