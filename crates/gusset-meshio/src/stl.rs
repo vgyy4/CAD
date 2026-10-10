@@ -209,6 +209,11 @@ fn import_ascii(
         match lx.token() {
             None => break,
             Some(t) if kw(t, "solid") => {}
+            Some(_) if !solids.is_empty() => {
+                // e.g. a DOS end-of-file marker or exporter junk after the last solid
+                warnings.push(format!("ignored trailing data after the last 'endsolid' ({})", lx.at()));
+                break;
+            }
             t => return Err(malformed(F, lx.at(), format!("expected 'solid', found {}", show(t)))),
         }
         if solids.len() as u64 >= lim.max_objects {

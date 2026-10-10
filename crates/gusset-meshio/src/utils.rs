@@ -87,18 +87,74 @@ pub fn triangles(mesh: &Mesh) -> impl Iterator<Item = Tri> + '_ {
 // ---------------------------------------------------------------------------------------
 // welding
 
-fn exact_key(p: [f32; 3]) -> [u32; 3] {
-    // -0.0 and +0.0 weld together.
-    p.map(|c| {
+/// Packs a position into a 96-bit key; -0.0 and +0.0 weld together.
+fn exact_key(p: [f32; 3]) -> u128 {
+    let k = p.map(|c| {
         let b = c.to_bits();
         if b & 0x7fff_ffff == 0 { 0 } else { b }
-    })
+    });
+    (u128::from(k[0]) << 64) | (u128::from(k[1]) << 32) | u128::from(k[2])
+}
+
+/// Fast hasher for packed position keys: a folded 64×64→128 multiply mix with a
+/// per-map random seed (taken from std's `RandomState`), so adversarial inputs cannot
+/// precompute collisions. Only used for lookups, never for iteration order, so results
+/// stay deterministic.
+#[derive(Debug, Clone, Copy)]
+struct SeededMix {
+    seed: u64,
+}
+
+impl SeededMix {
+    fn new() -> Self {
+        use std::hash::BuildHasher;
+        SeededMix { seed: std::hash::RandomState::new().hash_one(0x9E37_79B9_7F4A_7C15u64) | 1 }
+    }
+}
+
+#[derive(Debug)]
+struct MixHasher {
+    h: u64,
+}
+
+fn fold_mul(a: u64, b: u64) -> u64 {
+    let r = u128::from(a) * u128::from(b);
+    (r as u64) ^ ((r >> 64) as u64)
+}
+
+impl std::hash::Hasher for MixHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut w = [0u8; 8];
+            for (d, s) in w.iter_mut().zip(c) {
+                *d = *s;
+            }
+            self.write_u64(u64::from_le_bytes(w));
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.h = fold_mul(self.h ^ v, 0x5851_F42D_4C95_7F2D);
+    }
+    fn write_u128(&mut self, v: u128) {
+        self.h = fold_mul(self.h ^ (v as u64), 0x5851_F42D_4C95_7F2D ^ ((v >> 64) as u64));
+    }
+    fn finish(&self) -> u64 {
+        fold_mul(self.h, 0x2D35_8DCC_AA6C_78A5)
+    }
+}
+
+impl std::hash::BuildHasher for SeededMix {
+    type Hasher = MixHasher;
+    fn build_hasher(&self) -> MixHasher {
+        MixHasher { h: self.seed }
+    }
 }
 
 /// Merges bit-identical positions (`-0.0` equals `0.0`). Returns the unique positions in
 /// first-occurrence order and the old→new index map.
 pub fn weld_exact(positions: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<u32>) {
-    let mut map: HashMap<[u32; 3], u32> = HashMap::with_capacity(positions.len() / 2 + 1);
+    let mut map: HashMap<u128, u32, SeededMix> =
+        HashMap::with_capacity_and_hasher(positions.len() / 2 + 1, SeededMix::new());
     let mut out = Vec::with_capacity(positions.len() / 2 + 1);
     let mut remap = Vec::with_capacity(positions.len());
     for &p in positions {
@@ -456,6 +512,41 @@ pub(crate) fn validate_indexed(positions: &[[f32; 3]], tris: &[Tri]) -> MeshVali
     v.vertices = used.iter().filter(|u| **u).count() as u64;
     v.signed_volume = vol / 6.0;
 
+    if positions.len() < (1 << 31) {
+        // One sort: key = (min << 32) | (max << 1) | direction.
+        for e in edges.iter_mut() {
+            let (x, y) = (*e >> 32, *e & 0xffff_ffff);
+            *e = (x.min(y) << 32) | (x.max(y) << 1) | u64::from(x > y);
+        }
+        edges.sort_unstable();
+        let mut it = edges.iter().peekable();
+        while let Some(&e) = it.next() {
+            let (mut n0, mut n1) = (0u64, 0u64);
+            if e & 1 == 0 {
+                n0 += 1
+            } else {
+                n1 += 1
+            }
+            while let Some(&&x) = it.peek() {
+                if x >> 1 != e >> 1 {
+                    break;
+                }
+                if x & 1 == 0 {
+                    n0 += 1
+                } else {
+                    n1 += 1
+                }
+                it.next();
+            }
+            match n0 + n1 {
+                1 => v.boundary_edges += 1,
+                2 => {}
+                _ => v.non_manifold_edges += 1,
+            }
+            v.inconsistent_edges += u64::from(n0 >= 2) + u64::from(n1 >= 2);
+        }
+        return v;
+    }
     // Directed duplicates: two triangles running an edge the same way.
     edges.sort_unstable();
     v.inconsistent_edges = count_runs(&edges, |n| n >= 2);

@@ -301,10 +301,13 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
                         "z" => 2,
                         _ => return Ok(()),
                     };
-                    let x: f64 = v
+                    // Parsed as f32 (the precision of the output mesh, and exact for
+                    // values written by f32 writers), then widened for transforms.
+                    let x32: f32 = v
                         .trim()
                         .parse()
                         .map_err(|_| malformed(F, at(), format!("object {id} vertex {n}: bad number {v:?}")))?;
+                    let x = f64::from(x32);
                     if !x.is_finite() {
                         return Err(non_finite(F, format!("object {id} vertex {n}"), x));
                     }

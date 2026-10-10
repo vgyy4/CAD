@@ -282,7 +282,8 @@ impl<'a> Archive<'a> {
 // writer
 
 /// Writes a deterministic ZIP archive with `entries` in the given order. Each entry is
-/// deflated (level 6) unless storing is smaller.
+/// deflated at level 3 (measured: ~2x faster than level 6 for ~20% larger 3MF
+/// files) unless storing is smaller. The level is fixed so output stays deterministic.
 pub(crate) fn write_zip(entries: &[(&str, &[u8])], out: &mut dyn Write) -> Result<()> {
     const DOS_TIME: u16 = 0; // 00:00:00
     const DOS_DATE: u16 = (1 << 5) | 1; // 1980-01-01
@@ -292,7 +293,7 @@ pub(crate) fn write_zip(entries: &[(&str, &[u8])], out: &mut dyn Write) -> Resul
     let mut offset: u64 = 0;
     for (name, data) in entries {
         let crc = crc32(data);
-        let deflated = miniz_oxide::deflate::compress_to_vec(data, 6);
+        let deflated = miniz_oxide::deflate::compress_to_vec(data, 3);
         let (method, payload): (u16, &[u8]) = if deflated.len() < data.len() { (8, &deflated) } else { (0, data) };
         let usize_ = u32::try_from(data.len()).map_err(|_| too_big())?;
         let csize = u32::try_from(payload.len()).map_err(|_| too_big())?;

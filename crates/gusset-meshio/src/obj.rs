@@ -94,13 +94,13 @@ pub(crate) fn import(
                     let t = toks.next();
                     let v = t
                         .and_then(|t| std::str::from_utf8(t).ok())
-                        .and_then(|s| s.parse::<f64>().ok())
+                        .and_then(|s| s.parse::<f32>().ok())
                         .ok_or_else(|| malformed(F, at(), "vertex needs three numbers"))?;
-                    let v32 = v as f32;
-                    if !v32.is_finite() {
-                        return Err(non_finite(F, at(), v));
+                    // Parsed directly as f32 (no double rounding); overflow becomes ±inf.
+                    if !v.is_finite() {
+                        return Err(non_finite(F, at(), f64::from(v)));
                     }
-                    *c = v32;
+                    *c = v;
                 }
                 if verts.len() as u64 >= lim.max_vertices {
                     return Err(limit("vertex count", verts.len() as u64 + 1, lim.max_vertices));
