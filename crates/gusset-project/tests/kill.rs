@@ -60,7 +60,7 @@ fn kill_helper() {
         i += 1;
         let main = h.main();
         h.commit(&Ctx::user(i), main, &doc(i), &format!("edit {i}"), NodeState::Ok).unwrap();
-        if i % 3 == 0 {
+        if i.is_multiple_of(3) {
             p.save(&h).unwrap();
             println!("saved {i}");
         } else {
