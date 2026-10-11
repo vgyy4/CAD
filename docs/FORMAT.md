@@ -81,6 +81,15 @@ Record kinds:
 | 9 | Settings | Canonical text |
 | 10 | Thumbnail | Image, derived and optional |
 
+Snapshot records (kind 3) come in two schemas. `snapshot 1` lists units, the params
+hash and every feature hash inline. `snapshot 2` (written since 2026-10-11) has
+`units`, `params <hash>` and `list <hash>`. The list object, also kind 3, is
+`featurelist-root 1` followed by `chunk <hash>` lines. Each chunk, kind 3 too, is
+`featurelist 1` followed by `feature <hash>` lines. A chunk ends after a feature whose
+hash's first byte is a multiple of 16, or after 64 features. That way an edit changes
+only its own chunk and the root, and a parameter edit reuses the whole list. Readers
+accept both schemas (fixture `v1-project-snapshot2.gus`).
+
 Readers accept unknown non-zero kinds, so newer minor additions stay readable, and apply
 the "small object" size limit to them. Every canonical text object starts with its own
 `gusset <schema> <version>` line, and schema migrations are per object.
@@ -168,7 +177,7 @@ Readers ignore roots they do not know.
 ### Frozen fixtures
 
 `tests/fixtures/format/` holds files written by each format/schema version
-(`v1-project.gus`, `v1-recovery.grec`). `gusset-project`'s `format_v1_fixtures_still_open`
+(`v1-project.gus`, `v1-recovery.grec`, `v1-project-snapshot2.gus`). `gusset-project`'s `format_v1_fixtures_still_open`
 opens them and checks their content. Fixtures are never regenerated; every format or
 schema bump adds new ones together with its migration.
 

@@ -15,9 +15,9 @@ under the software renderer for frame times.
 | Software renderer | ≥ 15 fps | not yet measured | CI (llvmpipe) |
 | Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | not yet measured | criterion `rebuild_100` |
 | Binary size (app + OCCT libs, compressed) | < 60 MB | not yet measured | release workflow |
-| History overhead | ≤ 15 % of the model's parametric size per 100 single-parameter edits | not yet measured | criterion `history_overhead` |
-| Project save (parametric only) | < 50 ms for 1,000 features | 60 ms (was 166 ms) | `gusset-project` `perf_save_and_snapshot` (see log) |
-| Recovery snapshot | < 100 ms for 1,000 features; never blocks the UI | 52 ms (was 168 ms); 0.65 s with a 64 MiB blob (was 2.8 s) | `gusset-project` `perf_save_and_snapshot` (see log) |
+| History overhead | ≤ 450 bytes per single-parameter edit, independent of model size (revised from "≤ 15 % of the parametric size per 100 edits", see below) | ~370 bytes per edit (29 % of a 1,000-feature model per 100 edits; was ~7.5 KB per edit with 200 features) | `gusset-project` test `history_overhead_budget` |
+| Project save (parametric only) | < 50 ms for 1,000 features | 33 ms (was 166 ms) | `gusset-project` `perf_save_and_snapshot` (see log) |
+| Recovery snapshot | < 100 ms for 1,000 features; never blocks the UI | 34 ms (was 168 ms); 0.65 s with a 64 MiB blob (was 2.8 s) | `gusset-project` `perf_save_and_snapshot` (see log) |
 
 ## Rules
 - A CI benchmark regression of more than 10 % fails the build unless the commit
@@ -52,3 +52,18 @@ What changed:
   the append-only journal slot ADR 0007 leaves room for, a chunked snapshot vector
   (the 100 snapshot objects of 73 KB each dominate the parametric file), and running
   the encode off the model thread.
+
+## History overhead (2026-10-11)
+
+Each history node used to store a snapshot object listing every feature hash, so a
+one-parameter edit of a 200-feature part added ~7.5 KB (30× the model size per 100
+edits). Snapshot format 2 (docs/FORMAT.md) points to a feature-list root with
+content-defined chunks: a parameter edit now shares the whole list and adds only the
+node line, the parameter table and a ~170-byte snapshot, about 370 bytes after
+container compression. A feature edit adds its feature, one chunk and a new root.
+
+That cost does not depend on model size, so the original budget ("≤ 15 % of the
+parametric size per 100 edits") cannot hold for small models: 100 edits of a 25 KB
+model add ~37 KB whatever the format, as long as nodes are kept. The budget is
+therefore stated per edit (≤ 450 bytes); for a 1,000-feature part it amounts to
+~30 % per 100 edits. History pruning (ADR 0006) bounds the total.

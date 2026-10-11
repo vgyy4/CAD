@@ -58,14 +58,75 @@ pub enum ObjectKind {
 }
 
 /// A document state: units, the parameter table and the ordered feature list, all by hash.
+///
+/// Version 2 stores the feature list as a separate list-root object naming
+/// content-defined chunks, so a parameter edit shares the whole list with the previous
+/// snapshot and a feature edit only adds its chunk and a new root, instead of repeating
+/// every feature hash (PERFORMANCE.md "History overhead"). Version 1 (the full list
+/// inline) is still read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub units: LengthUnit,
     pub params: Hash,
+    /// The flattened feature list.
     pub features: Vec<Hash>,
+    /// Objects holding the feature list (version 2: the list root and its chunks; empty
+    /// for version 1).
+    pub chunks: Vec<Hash>,
+}
+
+/// Feature-list chunks end after a feature whose hash's first byte is a multiple of
+/// this (content-defined, about 16 features per chunk), or at [`MAX_CHUNK`].
+const CHUNK_DIV: u8 = 16;
+const MAX_CHUNK: usize = 64;
+
+/// Splits a feature list into chunks at content-defined boundaries, so inserting or
+/// changing one feature changes only its own chunk.
+fn chunk_features(features: &[Hash]) -> Vec<&[Hash]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, h) in features.iter().enumerate() {
+        let len = i + 1 - start;
+        if h.0.first().is_some_and(|b| b % CHUNK_DIV == 0) || len >= MAX_CHUNK {
+            out.push(features.get(start..=i).unwrap_or(&[]));
+            start = i + 1;
+        }
+    }
+    if start < features.len() {
+        out.push(features.get(start..).unwrap_or(&[]));
+    }
+    out
+}
+
+fn chunk_text(features: &[Hash]) -> String {
+    let mut s = String::from("featurelist 1\n");
+    for f in features {
+        s.push_str(&format!("feature {f}\n"));
+    }
+    s
+}
+
+fn parse_chunk(s: &str) -> Result<Vec<Hash>, String> {
+    let mut lines = s.lines();
+    if lines.next() != Some("featurelist 1") {
+        return Err("not a feature-list object".into());
+    }
+    lines
+        .map(|l| l.strip_prefix("feature ").and_then(Hash::from_hex).ok_or_else(|| "bad feature line".into()))
+        .collect()
 }
 
 impl Snapshot {
+    /// The version-2 text.
+    fn to_text_v2(units: LengthUnit, params: Hash, list: Hash) -> String {
+        let u = match units {
+            LengthUnit::Millimetre => "mm",
+            LengthUnit::Inch => "in",
+        };
+        format!("snapshot 2\nunits {u}\nparams {params}\nlist {list}\n")
+    }
+
+    /// Version-1 text (the full feature list inline).
     pub fn to_text(&self) -> String {
         let mut s = String::from("snapshot 1\n");
         s.push_str(match self.units {
@@ -99,7 +160,7 @@ impl Snapshot {
             let h = l.strip_prefix("feature ").and_then(Hash::from_hex).ok_or("snapshot: bad feature line")?;
             features.push(h);
         }
-        Ok(Snapshot { units, params, features })
+        Ok(Snapshot { units, params, features, chunks: Vec::new() })
     }
 }
 
@@ -228,8 +289,14 @@ impl ObjectStore {
         for f in &doc.features {
             features.push(stage(ObjectKind::Feature, &|| format!("feature '{}'", f.name), print_feature_object(f))?);
         }
-        let snap = Snapshot { units: doc.units, params, features };
-        let snapshot = stage(ObjectKind::Snapshot, &|| "the model snapshot".into(), snap.to_text())?;
+        let mut root = String::from("featurelist-root 1\n");
+        for c in chunk_features(&features) {
+            let h = stage(ObjectKind::Snapshot, &|| "a feature-list chunk".into(), chunk_text(c))?;
+            root.push_str(&format!("chunk {h}\n"));
+        }
+        let list = stage(ObjectKind::Snapshot, &|| "the feature list".into(), root)?;
+        let text = Snapshot::to_text_v2(doc.units, params, list);
+        let snapshot = stage(ObjectKind::Snapshot, &|| "the model snapshot".into(), text)?;
         Ok(StagedDocument { snapshot, objects })
     }
 
@@ -242,7 +309,37 @@ impl ObjectStore {
     }
 
     pub fn snapshot(&self, h: Hash) -> Result<Snapshot, ObjectError> {
-        Snapshot::from_text(self.text(h)?).map_err(|reason| ObjectError::Corrupt { hash: h, reason })
+        let text = self.text(h)?;
+        let corrupt = |reason: String| ObjectError::Corrupt { hash: h, reason };
+        let Some(rest) = text.strip_prefix("snapshot 2\n") else {
+            return Snapshot::from_text(text).map_err(corrupt);
+        };
+        // Version 2: the same header lines, then the list root.
+        let v1 = format!("snapshot 1\n{}", rest.lines().take(2).collect::<Vec<_>>().join("\n"));
+        let head = Snapshot::from_text(&v1).map_err(corrupt)?;
+        let mut tail = rest.lines().skip(2);
+        let list = tail
+            .next()
+            .and_then(|l| l.strip_prefix("list "))
+            .and_then(Hash::from_hex)
+            .ok_or_else(|| corrupt("bad list line".into()))?;
+        if tail.next().is_some() {
+            return Err(corrupt("trailing lines".into()));
+        }
+        let root = self.text(list)?;
+        let bad_root = |r: &str| ObjectError::Corrupt { hash: list, reason: r.to_string() };
+        let mut rl = root.lines();
+        if rl.next() != Some("featurelist-root 1") {
+            return Err(bad_root("not a feature-list root"));
+        }
+        let mut features = Vec::new();
+        let mut chunks = vec![list];
+        for l in rl {
+            let c = l.strip_prefix("chunk ").and_then(Hash::from_hex).ok_or_else(|| bad_root("bad chunk line"))?;
+            features.extend(parse_chunk(self.text(c)?).map_err(|r| ObjectError::Corrupt { hash: c, reason: r })?);
+            chunks.push(c);
+        }
+        Ok(Snapshot { units: head.units, params: head.params, features, chunks })
     }
 
     pub fn feature(&self, h: Hash) -> Result<Feature, ObjectError> {
@@ -266,6 +363,7 @@ impl ObjectStore {
         }
         if let Ok(s) = self.snapshot(snapshot) {
             out.insert(s.params);
+            out.extend(s.chunks.iter().copied());
             out.extend(s.features.iter().copied());
             for f in &s.features {
                 if let Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) = self.feature(*f)

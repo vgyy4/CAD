@@ -488,6 +488,12 @@ fn write_format_fixtures() {
         let bytes = encode_with(&h, &fixture_meta(), None, &overrides, &mut RecordCache::new()).unwrap();
         std::fs::write(&project, bytes).unwrap();
     }
+    // Snapshot objects, schema 2 (feature list in a root + chunks).
+    let project2 = dir.join("v1-project-snapshot2.gus");
+    if !project2.exists() {
+        let bytes = encode_with(&h, &fixture_meta(), None, &overrides, &mut RecordCache::new()).unwrap();
+        std::fs::write(&project2, bytes).unwrap();
+    }
     let rec = dir.join("v1-recovery.grec");
     if !rec.exists() {
         let mut meta = fixture_meta();
@@ -518,4 +524,49 @@ fn format_v1_fixtures_still_open() {
     let c = container::open(&newest.payload).unwrap();
     assert_eq!(c.root(ORIGIN_ROOT), Some(&b"/projects/bracket.gus"[..]));
     check_fixture_history(&decode(&newest.payload).unwrap().0);
+}
+
+#[test]
+fn snapshot2_fixture_still_opens() {
+    let bytes = std::fs::read(fixture_dir().join("v1-project-snapshot2.gus")).expect("frozen fixture missing");
+    let (h, meta, _) = decode_full(&bytes, None).unwrap();
+    let starts = |p: &[u8]| h.objects().iter().any(|(_, k, b)| k == ObjectKind::Snapshot && b.starts_with(p));
+    assert!(starts(b"snapshot 2\n") && starts(b"featurelist-root 1\n"), "written with snapshot schema 2");
+    assert_eq!(meta, fixture_meta());
+    check_fixture_history(&h);
+}
+
+/// PERFORMANCE.md "History overhead" (`history_overhead`): a single-parameter edit adds
+/// a small, size-independent amount to the project file (the node line, the parameter
+/// table and a snapshot that shares the feature list), not a copy of the feature list.
+#[test]
+fn history_overhead_budget() {
+    let mut text = String::from("gusset 1\nunits mm\n\nparam a = 1 mm\n");
+    for i in 0..500 {
+        text.push_str(&format!(
+            "sketch S{i} (plane: XY, next_id: 9) {{\n  p1 = point({i}, 0)\n  p2 = point({}, 0)\n  p3 = point({}, 5)\n  \
+             p4 = point({i}, 5)\n  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}}\n\
+             extrude E{i} (profile: S{i}, distance: a, op: new)\n",
+            i + 1,
+            i + 1
+        ));
+    }
+    let base = Document::from_text(&text).unwrap();
+    let parametric = base.to_text().len() as f64;
+    let u = Ctx::user(1);
+    let mut h = History::new(&base, &u);
+    let meta = ProjectMeta { id: ProjectId::new_random().unwrap(), save_seq: 1, base_seq: 1, created: 0 };
+    let before = encode(&h, &meta).unwrap().len() as f64;
+    let main = h.main();
+    for i in 0..100 {
+        let mut d = base.clone();
+        d.params[0].expr = gusset_units::expr::parse(&format!("{} mm", i + 2)).unwrap();
+        h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
+    }
+    let after = encode(&h, &meta).unwrap().len() as f64;
+    let overhead = (after - before) / parametric;
+    let per_edit = (after - before) / 100.0;
+    eprintln!("history overhead: {:.1} % of {parametric} bytes, {per_edit:.0} bytes per edit", overhead * 100.0);
+    assert!(per_edit <= 450.0, "a parameter edit added {per_edit:.0} bytes");
+    assert!(overhead <= 0.35, "100 edits added {:.1} % of the parametric size", overhead * 100.0);
 }
