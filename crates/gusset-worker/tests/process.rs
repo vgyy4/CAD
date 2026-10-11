@@ -1,7 +1,7 @@
 //! Worker process handling without OCCT: stand-in "workers" are shell scripts that
 //! misbehave the way a compromised worker could (security review #6).
 #![cfg(unix)]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use gusset_worker::{Format, ImportError, import_out_of_process};
 use std::os::unix::fs::PermissionsExt;
@@ -18,9 +18,17 @@ fn script(name: &str, body: &str) -> PathBuf {
 }
 
 fn run(p: &Path, timeout: Duration) -> (Result<gusset_worker::Imported, ImportError>, Duration) {
-    let t = Instant::now();
-    let r = import_out_of_process(p, Format::Step, b"x", &gusset_sandbox::Limits::default(), timeout);
-    (r, t.elapsed())
+    // A test running in parallel may fork while this script's write fd is still open in
+    // this process; until that child execs, exec of the script fails with ETXTBSY.
+    for _ in 0..50 {
+        let t = Instant::now();
+        let r = import_out_of_process(p, Format::Step, b"x", &gusset_sandbox::Limits::default(), timeout);
+        match r {
+            Err(ImportError::Spawn(ref e)) if e.contains("busy") => std::thread::sleep(Duration::from_millis(20)),
+            r => return (r, t.elapsed()),
+        }
+    }
+    panic!("the test script stayed busy");
 }
 
 #[test]
