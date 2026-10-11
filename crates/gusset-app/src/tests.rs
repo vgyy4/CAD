@@ -245,12 +245,12 @@ fn agents_panel_shows_connection_audit_and_branches() {
         host.call(gusset_commands::CmdCtx::agent("bot-2", 3_700), "param.set", json!({"name": "u", "expr": "1 mm"}));
     assert_eq!(e.unwrap_err().code, "read_only");
 
-    // Kill switch: the token changes at once.
+    // Kill switch: the token is gone at once and agents stay paused until allowed again.
     let before = h.state().agents.server().and_then(gusset_mcp::McpServer::bearer_token);
     h.get_by_label("Revoke token").click();
     h.run();
     let after = h.state().agents.server().and_then(gusset_mcp::McpServer::bearer_token);
-    assert!(before.is_some() && after.is_some() && before != after);
+    assert!(before.is_some() && after.is_none());
     h.get_by_label_contains("Token revoked");
     drop(h);
     let _ = std::fs::remove_dir_all(conn);

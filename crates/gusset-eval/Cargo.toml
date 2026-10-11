@@ -13,6 +13,7 @@ gusset-doc.workspace = true
 gusset-kernel.workspace = true
 gusset-naming.workspace = true
 gusset-sketch.workspace = true
+gusset-meshio.workspace = true
 blake3.workspace = true
 
 [lints]

@@ -48,6 +48,6 @@ fn oversized_response_is_refused_without_buffering_it() {
     let p = script("flood", "/bin/dd if=/dev/zero bs=1048576 count=64 2>/dev/null");
     let (r, took) = run(&p, Duration::from_secs(20));
     let _ = std::fs::remove_dir_all(p.parent().unwrap());
-    assert!(matches!(&r, Err(ImportError::Protocol(m)) if m.contains("too large")), "{r:?}");
+    assert_eq!(r.unwrap_err(), ImportError::OutputTooLarge);
     assert!(took < Duration::from_secs(10), "took {took:?}");
 }

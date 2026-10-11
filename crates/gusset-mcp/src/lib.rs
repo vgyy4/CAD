@@ -5,9 +5,10 @@
 //! - **Resources** under `gusset://project/...` ([`server::resource_list`]).
 //! - **Agent identity:** each connection gets an agent name (`<client>-<n>`) and works
 //!   on its own branch; `CmdCtx::approved` is never taken from tool arguments.
-//! - **Approvals:** `approval_required` → MCP elicitation (2026-07-28 `input_required`,
-//!   or legacy `elicitation/create`) → otherwise an [`ApprovalProvider`] (GUI prompt;
-//!   headless default: deny).
+//! - **Approvals:** `approval_required` → the in-app [`ApprovalProvider`] when the GUI
+//!   hosts the session (never client elicitation, which the client can answer itself);
+//!   headless: MCP elicitation (2026-07-28 `input_required`, or legacy
+//!   `elicitation/create`), else deny.
 //! - **Output sanitization:** [`sanitize`].
 //! - **Transports:** in-process/stdio ([`McpServer::serve_io`]), localhost Streamable
 //!   HTTP with bearer token, Host and Origin checks ([`McpServer::start_http`]), and the
@@ -23,7 +24,9 @@ pub mod b64;
 pub mod bridge;
 pub mod guidance;
 pub mod http;
+pub mod identity;
 mod json_ext;
+pub mod limits;
 pub mod render;
 pub mod sanitize;
 #[cfg(feature = "render")]
@@ -103,10 +106,19 @@ impl McpServer {
         self.shared.set_renderer(renderer);
     }
 
-    /// Installs the approval provider used when the client cannot elicit (the GUI's
-    /// in-app prompt).
+    /// Installs the in-app approval prompt (the GUI's [`ApprovalProvider`]). From then on
+    /// every high-impact approval (set main, delete branch, overwrite, bulk, edits to
+    /// main) is asked **only** through it: MCP elicitation is never used, because an
+    /// elicitation answer comes from the client, which can answer for itself (security
+    /// review #1). Without a provider (headless `gusset mcp`), elicitation is the only
+    /// channel, and clients that cannot elicit are denied.
     pub fn set_approval_provider(&self, provider: Arc<dyn ApprovalProvider>) {
-        self.shared.set_approvals(provider);
+        self.shared.set_approvals(Some(provider));
+    }
+
+    /// Back to headless approvals (elicitation, else deny).
+    pub fn clear_approval_provider(&self) {
+        self.shared.set_approvals(None);
     }
 
     /// Replaces the diagnostics text (the GUI adds GPU details once the renderer chose an
@@ -168,21 +180,57 @@ impl McpServer {
     }
 
     /// The current bearer token, for the GUI to show in its "Connect an agent" dialog.
-    /// Never log it.
+    /// `None` while agents are paused by the kill switch. Never log it.
     #[must_use]
     pub fn bearer_token(&self) -> Option<String> {
-        self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(http::Endpoint::token)
+        self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(http::Endpoint::token)
     }
 
-    /// Kill switch: rotates the token at once (the old one stops working), drops every
-    /// HTTP connection and MCP session, and rewrites the connection file.
+    /// Live legacy MCP sessions on the HTTP endpoint.
+    #[must_use]
+    pub fn http_session_count(&self) -> usize {
+        self.http
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, http::Endpoint::session_count)
+    }
+
+    /// True after [`McpServer::revoke`] until [`McpServer::allow_agents`].
+    #[must_use]
+    pub fn agents_paused(&self) -> bool {
+        self.http
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(http::Endpoint::is_paused)
+    }
+
+    /// Kill switch: invalidates the token at once, drops every HTTP connection and MCP
+    /// session, and **pauses** agent access. The connection file is rewritten without a
+    /// token (`"paused": true`), so a restarted `gusset mcp` bridge cannot silently
+    /// reconnect; it reports that agents are switched off in the app. Agents get access
+    /// again only after the user calls [`McpServer::allow_agents`].
     ///
     /// # Errors
-    /// When the new token cannot be generated or the connection file rewritten (the old
-    /// token is invalidated and connections dropped regardless).
+    /// When the connection file cannot be rewritten (the token is invalidated and
+    /// connections dropped regardless).
     pub fn revoke(&self) -> Result<(), McpError> {
         match self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             Some(ep) => ep.revoke(),
+            None => Ok(()),
+        }
+    }
+
+    /// The user allows agents again after [`McpServer::revoke`]: a new token and a new
+    /// connection-file generation. The GUI calls this from an explicit "Allow agents
+    /// again" action, never automatically.
+    ///
+    /// # Errors
+    /// When no token can be generated or the connection file cannot be written.
+    pub fn allow_agents(&self) -> Result<(), McpError> {
+        match self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            Some(ep) => ep.resume(),
             None => Ok(()),
         }
     }

@@ -16,6 +16,7 @@ path = "src/main.rs"
 gusset-occt-sys.workspace = true
 gusset-sandbox.workspace = true
 gusset-hw.workspace = true
+gusset-commands.workspace = true
 blake3.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -26,6 +27,10 @@ libc.workspace = true
 # this crate's library for the B-rep gate; a dev-dependency cycle is fine.)
 gusset-kernel.workspace = true
 gusset-kernel-occt.workspace = true
+# End-to-end import test through a real session and host (OCCT builds only).
+gusset-host.workspace = true
+gusset-doc.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -13,7 +13,8 @@
 //! output on stdout (OCCT prints diagnostics there) cannot corrupt the protocol.
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const REQUEST_MAGIC: &[u8; 8] = b"GWRQ1\0\0\0";
@@ -190,6 +191,10 @@ pub enum ImportError {
     /// The worker crashed or was killed (likely a malformed or hostile file).
     Crashed(String),
     TimedOut,
+    /// The caller cancelled the import (the worker was killed).
+    Cancelled,
+    /// The worker sent more output than the input can justify.
+    OutputTooLarge,
     /// The file was parsed but could not be imported.
     Failed(String),
     Protocol(String),
@@ -204,6 +209,8 @@ impl std::fmt::Display for ImportError {
                 write!(f, "the importer stopped while reading this file ({e}); the file may be damaged or unsupported")
             }
             ImportError::TimedOut => f.write_str("importing took too long and was stopped"),
+            ImportError::Cancelled => f.write_str("the import was cancelled"),
+            ImportError::OutputTooLarge => f.write_str("the import worker sent too much data; the import was stopped"),
             ImportError::Failed(e) => write!(f, "import failed: {e}"),
             ImportError::Protocol(e) => write!(f, "import worker error: {e}"),
         }
@@ -227,10 +234,22 @@ pub fn import_out_of_process(
     limits: &gusset_sandbox::Limits,
     timeout: Duration,
 ) -> Result<Imported, ImportError> {
+    import_out_of_process_cancellable(worker, format, data, limits, timeout, &AtomicBool::new(false))
+}
+
+/// [`import_out_of_process`] that kills the worker as soon as `cancel` becomes true.
+pub fn import_out_of_process_cancellable(
+    worker: &Path,
+    format: Format,
+    data: &[u8],
+    limits: &gusset_sandbox::Limits,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Imported, ImportError> {
     if data.len() as u64 > MAX_INPUT {
         return Err(ImportError::TooLarge);
     }
-    let out = run_worker(worker, encode_request(format, data), output_cap(data.len() as u64), limits, timeout)?;
+    let out = run_worker(worker, encode_request(format, data), output_cap(data.len() as u64), limits, timeout, cancel)?;
     let (result, report) = decode_response(&out).map_err(ImportError::Protocol)?;
     let bodies = result.map_err(ImportError::Failed)?;
     Ok(Imported { bodies, sandbox_report: report })
@@ -389,6 +408,7 @@ fn run_worker(
     cap: u64,
     limits: &gusset_sandbox::Limits,
     timeout: Duration,
+    cancel: &AtomicBool,
 ) -> Result<Vec<u8>, ImportError> {
     if !worker.is_absolute() {
         return Err(ImportError::Spawn("worker path must be absolute".into()));
@@ -427,7 +447,7 @@ fn run_worker(
         let _ = (&mut stdout).take(cap.saturating_add(1)).read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
-    let too_large = || ImportError::Protocol("the import worker's response is too large".into());
+    let too_large = || ImportError::OutputTooLarge;
     let start = Instant::now();
     let mut early = None;
     loop {
@@ -442,6 +462,10 @@ fn run_worker(
         }
         match gusset_sandbox::has_exited(&mut child) {
             Ok(true) => break,
+            Ok(false) if cancel.load(Ordering::Relaxed) => {
+                let _ = finish(&mut child);
+                return Err(ImportError::Cancelled);
+            }
             Ok(false) if start.elapsed() > timeout => {
                 let _ = finish(&mut child);
                 return Err(ImportError::TimedOut);
@@ -476,6 +500,50 @@ pub fn default_worker_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let name = if cfg!(windows) { "gusset-worker.exe" } else { "gusset-worker" };
     Some(exe.parent()?.join(name))
+}
+
+/// The session [`gusset_commands::session::Importer`] for STEP/IGES: the sandboxed
+/// worker process. Front ends install it with [`WorkerImporter::next_to_exe`].
+#[derive(Debug, Clone)]
+pub struct WorkerImporter {
+    worker: PathBuf,
+    limits: gusset_sandbox::Limits,
+    timeout: Duration,
+}
+
+/// Default import timeout.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
+
+impl WorkerImporter {
+    /// An importer using the worker binary at `worker` (must be absolute).
+    #[must_use]
+    pub fn new(worker: PathBuf) -> Self {
+        WorkerImporter { worker, limits: gusset_sandbox::Limits::default(), timeout: DEFAULT_TIMEOUT }
+    }
+
+    /// The worker installed next to the running executable, if it is there.
+    #[must_use]
+    pub fn next_to_exe() -> Option<Self> {
+        let p = default_worker_path()?;
+        std::fs::metadata(&p).ok().filter(std::fs::Metadata::is_file)?;
+        Some(WorkerImporter::new(p))
+    }
+
+    /// Changes the timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+impl gusset_commands::session::Importer for WorkerImporter {
+    fn import(&self, format: &str, bytes: &[u8], cancel: &AtomicBool) -> Result<Vec<(String, Vec<u8>)>, String> {
+        let f = Format::from_extension(format).ok_or_else(|| format!("'{format}' is not imported by the worker"))?;
+        let r = import_out_of_process_cancellable(&self.worker, f, bytes, &self.limits, self.timeout, cancel)
+            .map_err(|e| e.to_string())?;
+        Ok(r.bodies.into_iter().map(|b| (b.name, b.brep)).collect())
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +581,43 @@ mod tests {
         assert_eq!(output_cap(1 << 20), (4 << 20) + (16 << 20));
         assert_eq!(output_cap(MAX_INPUT), MAX_OUTPUT);
         assert_eq!(output_cap(u64::MAX), MAX_OUTPUT);
+    }
+
+    #[cfg(unix)]
+    fn script(tag: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("gusset-fake-worker-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("worker.sh");
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    /// Code review M6: an import can be cancelled; the worker is killed.
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_the_worker() {
+        let w = script("cancel", "exec /bin/sleep 30");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let c2 = cancel.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            c2.store(true, Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let r = import_out_of_process_cancellable(
+            &w,
+            Format::Step,
+            b"x",
+            &gusset_sandbox::Limits::default(),
+            Duration::from_secs(60),
+            &cancel,
+        );
+        assert_eq!(r.unwrap_err(), ImportError::Cancelled);
+        assert!(start.elapsed() < Duration::from_secs(10));
+        t.join().unwrap();
+        let _ = std::fs::remove_dir_all(w.parent().unwrap());
     }
 
     #[test]

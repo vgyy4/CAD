@@ -49,7 +49,17 @@ same live model.
   1. **In the GUI app:** Streamable HTTP on `127.0.0.1:<random port>` (and `[::1]`),
      path `/mcp`, with origin enforcement on (`enforce_origin_validation`, because
      rmcp's default empty allow-list does nothing), `Host` validation, a bearer token
-     (constant-time compare), request size limits and per-session rate limits.
+     (constant-time compare), request size limits, rate limits per connection and for
+     all connections together, and at most 32 legacy MCP sessions, each closed after
+     10 minutes without requests.
+- **Rate limits per agent identity** (amended 2026-10-11, security review #10/#15):
+  the identity is the agent name without its connection counter (`claude-code-3` →
+  `claude-code`), so reconnecting does not reset a budget, and every budget also has a
+  global share for all agents. Per minute (identity / all agents): tool calls 600/1200,
+  `render_view` 30/60 (and two renders at a time), `get_text` 300/600, resource reads
+  300/600. A refusal is `rate_limited` with `details.retry_after_s`. Agent names are
+  never reused, also after a restart: names recorded in the project history are
+  skipped, so a new connection never inherits an older agent's branch.
   2. **`gusset mcp [file]`** stdio bridge: if the app is running with that project (or
      any project, when no file is given), it reads the connection file
      (`<runtime_dir>/mcp/<instance>.json`: port + token, mode 0600 / user-only ACL) and
@@ -72,10 +82,22 @@ same live model.
   The connection can switch explicitly, but writing to main requires approval.
 - **Human approval** for set-main, deleting branches, overwriting exported files, bulk
   changes above a threshold (default 25 features or parameters in one call), and
-  any write to main. The request goes through MCP elicitation (on 2026-07-28: an
-  `input_required` result; on legacy connections: `elicitation/create`) when the client
-  supports it, and otherwise through an in-app prompt that blocks only that request.
-  The default is on; it can be configured in Settings, but not by agents.
+  any write to main. The default is on; it can be configured in Settings, but not by
+  agents. Where the request goes depends on who hosts the session:
+  - **In the GUI app:** always the in-app prompt (the app's `ApprovalProvider`), which
+    blocks only that request. MCP elicitation is never used there, whatever the client
+    declares.
+  - **Headless** (`gusset mcp` without a running app): MCP elicitation (on 2026-07-28 an
+    `input_required` result; on legacy connections `elicitation/create`) is the only
+    way to reach a human. Clients that cannot elicit are denied. Tool descriptions and
+    server instructions say so.
+- **Approval trust model** (amended 2026-10-11 after security review #1): an
+  elicitation answer comes from the MCP client, which is the agent's own software and
+  can answer for itself. A bearer-token holder (anyone who can read the owner-only
+  connection file) is therefore exactly as trusted as the local user: headless
+  approvals protect against an agent that follows instructions, not against a hostile
+  local client. The in-app prompt is the strong path, because only the person at the
+  app can answer it; that is why the app never accepts elicitation answers.
 - **Untrusted text in output:** every user-authored string (labels, notes, comments,
   file names, imported names) appears only in fields named `user_text` or ending in
   `_user_text`. Control, zero-width and bidi-override characters are stripped, values
@@ -86,7 +108,18 @@ same live model.
 - **Audit log:** every agent tool call (tool, arguments summary, result, branch, time)
   is appended to the session log and the project event log, and shown in the GUI.
 - **Kill switch:** the GUI can revoke the token at once, which drops all MCP
-  connections. A read-only agent mode rejects all mutating tools.
+  connections and sessions and **pauses** agent access: no token is valid and the
+  connection file is rewritten as `"paused": true` without a token, so a restarted
+  `gusset mcp` bridge cannot reconnect (it reports that agents are switched off rather
+  than opening the project headless). Only an explicit "allow agents again" action
+  (`McpServer::allow_agents`) issues a new token and connection-file generation. A
+  read-only agent mode rejects all mutating tools.
+- **Connection-file trust** (security review #13): the bridge accepts a connection file
+  only if it and its directory belong to the current user and are closed to others.
+  Before sending anything else it sends a random nonce to `/gusset/identity` and checks
+  the answer, a BLAKE3 keyed hash of the nonce under the token; every relayed request
+  carries a new nonce and every response must carry its proof. A process squatting a
+  stale port never sees the token and cannot answer the agent.
 
 ### Claude Code setup (documented in README)
 ```

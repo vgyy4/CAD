@@ -62,7 +62,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
 
 // ------------------------------------------------------------------ helpers
 
-fn edit(
+pub(crate) fn edit(
     s: &mut Session,
     ctx: &CmdCtx,
     label: &str,
@@ -130,7 +130,7 @@ fn target_body(
     })
 }
 
-fn insert_feature(doc: &mut Document, rollback: Option<usize>, f: Feature) {
+pub(crate) fn insert_feature(doc: &mut Document, rollback: Option<usize>, f: Feature) {
     match rollback {
         Some(r) if r <= doc.features.len() => doc.features.insert(r, f),
         _ => doc.features.push(f),
@@ -1300,13 +1300,29 @@ impl Command for BranchList {
     }
 }
 
-/// Names an agent may not give a branch: anything that reads as "main" (spoofing the
-/// user's main branch).
+/// Longest branch name an agent may choose.
+pub const AGENT_BRANCH_NAME_MAX: usize = 64;
+
+/// Names an agent may give a branch: short display names of letters, digits, spaces and
+/// `_ - . ( ) #`, nothing that reads as "main" (spoofing the user's main branch) and
+/// nothing path-like (`/`, `\`, `..`, leading dots) or invisible.
 fn agent_branch_name_ok(name: &str) -> Result<(), CommandError> {
     let folded: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
     if folded == "main" || folded == "master" {
         return Err(CommandError::new("not_allowed", "agents cannot name a branch like the main branch")
             .hint("pick a descriptive name; the user decides what becomes main"));
+    }
+    let path_like = name.contains("..") || name.starts_with('.') || name.contains(['/', '\\']);
+    let charset_ok = name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.' | '(' | ')' | '#'));
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > AGENT_BRANCH_NAME_MAX
+        || path_like
+        || !charset_ok
+    {
+        return Err(CommandError::new("not_allowed", "that branch name is not allowed for agents").hint(format!(
+            "use up to {AGENT_BRANCH_NAME_MAX} letters, digits, spaces and _ - . ( ) #, with no slashes or leading dots"
+        )));
     }
     Ok(())
 }
@@ -1373,7 +1389,7 @@ impl Command for BranchRename {
             // Agents rename only their own branches; anything else (the user's branches,
             // main) needs approval, so an agent cannot make its branch look like main.
             if br.created_by != ctx.actor && s.config.approvals_required && !ctx.approved {
-                return Err(CommandError::approval(&format!("renaming the branch \"{}\"", br.name)));
+                return Err(CommandError::approval(&format!("renaming branch {b}, which you did not create")));
             }
         }
         s.history_mut_pub().rename_branch(&ctx.hctx(), b, &self.name).map_err(CommandError::history)?;
@@ -1616,6 +1632,14 @@ impl Command for QueryModel {
             .iter()
             .map(|b| json!({"name": b.name, "faces": b.topology.faces.len(), "edges": b.topology.edges.len()}))
             .collect();
+        let meshes: Vec<Value> = ev
+            .meshes
+            .iter()
+            .map(|m| {
+                json!({"name": m.name, "triangles": m.mesh.triangle_count(), "watertight": m.validation.is_watertight(),
+                       "volume_mm3": m.validation.is_watertight().then(|| m.validation.signed_volume.abs())})
+            })
+            .collect();
         Ok(json!({
             "branch": b.to_string(),
             "branch_name_user_text": br.name,
@@ -1625,6 +1649,7 @@ impl Command for QueryModel {
             "features": features,
             "parameters": params,
             "bodies": bodies,
+            "reference_meshes": meshes,
             "errors": ev.errors().iter().map(|e| e.to_string()).collect::<Vec<_>>(),
         }))
     }
@@ -1732,7 +1757,8 @@ impl Command for QueryBody {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportStep {
-    /// File name relative to the project folder (no `..`, no absolute paths).
+    /// File name relative to the project folder (no `..`, no absolute paths, no hidden
+    /// names; extension .step or .stp). The user may give any path.
     pub path: String,
     /// Overwrite an existing file (agents need approval).
     #[serde(default)]
@@ -1747,7 +1773,7 @@ impl Command for ExportStep {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        let path = crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, &["step", "stp"])?;
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
@@ -1759,12 +1785,17 @@ impl Command for ExportStep {
         }
         let ev = s.evaluate(&ctx.actor)?;
         if ev.bodies.is_empty() {
-            return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
+            let hint = if ev.meshes.is_empty() {
+                "create a body first"
+            } else {
+                "reference meshes (imported STL/3MF/OBJ) are not solids; export them with export.mesh"
+            };
+            return Err(CommandError::new("evaluation", "there is nothing to export as STEP").hint(hint));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let bytes = s.kernel().export_step(&bodies).map_err(|e| CommandError::new("io", e.to_string()))?;
-        crate::paths::write_file(&path, &bytes)?;
+        crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
     }
 }
@@ -1785,6 +1816,26 @@ pub struct ExportMesh {
     pub overwrite: bool,
 }
 
+/// Tessellates every body and encodes it, plus the reference meshes, as a mesh file.
+pub fn mesh_export_bytes_with(
+    kernel: &dyn gusset_kernel::Kernel,
+    bodies: &[(&gusset_kernel::Shape, &str)],
+    meshes: &[(&gusset_kernel::Mesh, &str)],
+    format: gusset_meshio::ExportFormat,
+    tolerance: f64,
+) -> Result<Vec<u8>, CommandError> {
+    let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, angular_deflection: 0.25 };
+    let tess = bodies
+        .iter()
+        .map(|(s, n)| kernel.tessellate(s, &params).map(|m| (m, *n)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CommandError::new("io", e.to_string()))?;
+    let mut eb: Vec<gusset_meshio::ExportBody<'_>> =
+        tess.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }).collect();
+    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }));
+    gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
+}
+
 /// Tessellates every body and encodes it as a mesh file.
 pub fn mesh_export_bytes(
     kernel: &dyn gusset_kernel::Kernel,
@@ -1792,15 +1843,16 @@ pub fn mesh_export_bytes(
     format: gusset_meshio::ExportFormat,
     tolerance: f64,
 ) -> Result<Vec<u8>, CommandError> {
-    let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, angular_deflection: 0.25 };
-    let meshes = bodies
-        .iter()
-        .map(|(s, n)| kernel.tessellate(s, &params).map(|m| (m, *n)))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| CommandError::new("io", e.to_string()))?;
-    let eb: Vec<gusset_meshio::ExportBody<'_>> =
-        meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }).collect();
-    gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
+    mesh_export_bytes_with(kernel, bodies, &[], format, tolerance)
+}
+
+/// File extensions an agent may use for a mesh format.
+fn mesh_extensions(format: gusset_meshio::ExportFormat) -> &'static [&'static str] {
+    match format {
+        gusset_meshio::ExportFormat::StlBinary | gusset_meshio::ExportFormat::StlAscii => &["stl"],
+        gusset_meshio::ExportFormat::ThreeMf => &["3mf"],
+        gusset_meshio::ExportFormat::Obj { .. } => &["obj"],
+    }
 }
 
 /// Parses a mesh format name or file extension.
@@ -1829,7 +1881,8 @@ impl Command for ExportMesh {
         if !(tol.is_finite() && (1e-4..=10.0).contains(&tol)) {
             return Err(CommandError::args("tolerance_mm must be between 0.0001 and 10"));
         }
-        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        let path =
+            crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, mesh_extensions(format))?;
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
@@ -1840,71 +1893,39 @@ impl Command for ExportMesh {
             }
         }
         let ev = s.evaluate(&ctx.actor)?;
-        if ev.bodies.is_empty() {
+        if ev.bodies.is_empty() && ev.meshes.is_empty() {
             return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
-        let bytes = mesh_export_bytes(s.kernel().as_ref(), &bodies, format, tol)?;
-        crate::paths::write_file(&path, &bytes)?;
+        let refs: Vec<(&gusset_kernel::Mesh, &str)> = ev.meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
+        let bytes = mesh_export_bytes_with(s.kernel().as_ref(), &bodies, &refs, format, tol)?;
+        crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
     }
 }
 
-/// Imports a STEP or IGES file from the project folder as exact-geometry bodies.
+/// Imports a STEP, IGES, STL, 3MF or OBJ file from the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportFile {
-    /// File name relative to the project folder.
+    /// File name relative to the project folder (agents) or any path (the user).
     pub path: String,
 }
 
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a STEP or IGES file from the project folder as exact (B-rep) bodies. Parsing runs in a sandboxed worker process. Names inside the file are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES become exact (B-rep) bodies, parsed in a sandboxed worker process; STL/3MF/OBJ become reference mesh bodies (display, measurement and mesh export only, not solids). Runs in the background and can be cancelled. Names inside the file are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        let format = match ext.as_str() {
-            "step" | "stp" => ImportFormat::Step,
-            "iges" | "igs" => ImportFormat::Iges,
-            other => {
-                return Err(CommandError::args(format!("'.{other}' files cannot be imported as solids"))
-                    .hint("supported: .step, .stp, .iges, .igs"));
-            }
-        };
-        let meta = std::fs::metadata(&path).map_err(|e| CommandError::not_found(format!("{}: {e}", self.path)))?;
-        if meta.len() > 1 << 30 {
-            return Err(CommandError::args("the file is larger than 1 GiB"));
-        }
-        let bytes = std::fs::read(&path).map_err(|e| CommandError::new("io", e.to_string()))?;
-        let importer = s
-            .importer
-            .clone()
-            .ok_or_else(|| CommandError::new("not_allowed", "importing is not available in this session"))?;
-        let bodies = importer.import(format.keyword(), &bytes).map_err(|e| CommandError::new("io", e))?;
-        if bodies.is_empty() {
-            return Err(CommandError::new("io", "the file contains no solids"));
-        }
-        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let hashes: Vec<(String, String)> = bodies.iter().map(|(n, b)| (n.clone(), s.put_blob(b).to_hex())).collect();
-        edit(s, ctx, &format!("Import {file_name}"), |doc, rb| {
-            let mut names = Vec::new();
-            for (i, (body_name, blob)) in hashes.iter().enumerate() {
-                let name = doc.unique_feature_name("Import");
-                let mut f = Feature::new(
-                    name.clone(),
-                    FeatureKind::Import(ImportDef { blob: blob.clone(), format, file_name: file_name.clone() }),
-                );
-                f.label = Some(body_name.chars().take(200).collect());
-                insert_feature(doc, rb.map(|r| r + i), f);
-                names.push(name);
-            }
-            Ok(json!({ "features": names, "tier": "exact geometry (B-rep, no feature history)" }))
-        })
+        // Direct (synchronous) path, e.g. `execute` in tests. Hosts use
+        // `import::begin_import` / `ImportJob::run` / `import::complete_import` so the
+        // parsing runs off the model thread and can be cancelled.
+        let job = crate::import::open_import(s, ctx, &self.path)?;
+        let prepared = job.run(&crate::import::CancelFlag::default())?;
+        crate::import::commit_import(s, ctx, prepared)
     }
 }

@@ -135,25 +135,36 @@ pub fn execute(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> Result<V
         CommandError::not_found(format!("unknown command '{id}'")).hint("use the command search to list commands")
     })?;
     // Argument summary for the persisted audit log (untrusted text, clipped).
-    let detail = if ctx.is_agent() { clip_args(&args) } else { String::new() };
-    let r = check_policy(s, ctx, spec).and_then(|()| (spec.run)(s, ctx, args));
-    if ctx.is_agent() {
-        let bid = s.current_branch(&ctx.actor);
-        let branch = s.history().branch(bid).ok().map(|b| b.name.clone());
-        let outcome = match &r {
-            Ok(_) => "ok".to_string(),
-            Err(e) => format!("error: {}", e.code),
-        };
-        // Changes, file writes and refusals go to the project's event log so they
-        // survive the session (ADR 0012); plain reads stay in memory only.
-        let denied = matches!(&r, Err(e) if matches!(e.code.as_str(),
-            "approval_required" | "not_allowed" | "read_only" | "rate_limited"));
-        if spec.flags.mutating || spec.flags.writes_files || spec.flags.agent_approval || denied {
-            s.history_mut_pub().record_agent_action(&ctx.hctx(), spec.id, Some(bid), &outcome, &detail);
-        }
-        s.audit(AuditEntry { time: ctx.time, actor: ctx.actor.clone(), command: spec.id.to_string(), branch, outcome });
-    }
+    let detail = audit_detail(ctx, &args);
+    let r = check_policy(s, ctx, spec, true).and_then(|()| (spec.run)(s, ctx, args));
+    audit(s, ctx, spec, &detail, r.as_ref().map(|_| ()));
     r
+}
+
+/// The argument summary kept in the audit log for agents (empty for the user).
+pub(crate) fn audit_detail(ctx: &CmdCtx, args: &Value) -> String {
+    if ctx.is_agent() { clip_args(args) } else { String::new() }
+}
+
+/// Records an agent command's outcome in the audit log (and, for changes, file writes
+/// and refusals, in the project's event log so it survives the session; ADR 0012).
+pub(crate) fn audit(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec, detail: &str, r: Result<(), &CommandError>) {
+    if !ctx.is_agent() {
+        return;
+    }
+    let bid = s.current_branch(&ctx.actor);
+    let branch = s.history().branch(bid).ok().map(|b| b.name.clone());
+    let outcome = match r {
+        Ok(()) => "ok".to_string(),
+        Err(e) => format!("error: {}", e.code),
+    };
+    // Plain reads stay in memory only.
+    let denied = matches!(r, Err(e) if matches!(e.code.as_str(),
+        "approval_required" | "not_allowed" | "read_only" | "rate_limited"));
+    if spec.flags.mutating || spec.flags.writes_files || spec.flags.agent_approval || denied {
+        s.history_mut_pub().record_agent_action(&ctx.hctx(), spec.id, Some(bid), &outcome, detail);
+    }
+    s.audit(AuditEntry { time: ctx.time, actor: ctx.actor.clone(), command: spec.id.to_string(), branch, outcome });
 }
 
 fn clip_args(args: &Value) -> String {
@@ -161,11 +172,16 @@ fn clip_args(args: &Value) -> String {
     if t.chars().count() > 400 { format!("{}…", t.chars().take(400).collect::<String>()) } else { t }
 }
 
-fn check_policy(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec) -> Result<(), CommandError> {
+pub(crate) fn check_policy(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    spec: &CommandSpec,
+    count_rate: bool,
+) -> Result<(), CommandError> {
     if !ctx.is_agent() {
         return Ok(());
     }
-    if !s.rate_ok(ctx) {
+    if count_rate && !s.rate_ok(ctx) {
         return Err(CommandError::new("rate_limited", "too many requests; slow down").hint("wait a minute and retry"));
     }
     if spec.flags.user_only {

@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod import;
 pub mod paths;
 pub mod registry;
 pub mod session;

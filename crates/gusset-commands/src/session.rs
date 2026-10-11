@@ -78,10 +78,17 @@ pub struct Change {
 }
 
 /// Imports exact-geometry files (STEP/IGES) into kernel-native B-rep bodies. The app
-/// and CLI plug in the sandboxed out-of-process worker (ADR 0008); tests use doubles.
+/// and CLI plug in the sandboxed out-of-process worker (`gusset_worker::WorkerImporter`,
+/// ADR 0008); tests use doubles. Called off the model thread (see [`crate::import`]).
 pub trait Importer: Send + Sync {
-    /// Returns (body name, native B-rep bytes) per body.
-    fn import(&self, format: &str, bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String>;
+    /// Returns (body name, native B-rep bytes) per body. Should stop soon after `cancel`
+    /// becomes true (the worker is killed).
+    fn import(
+        &self,
+        format: &str,
+        bytes: &[u8],
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<(String, Vec<u8>)>, String>;
 }
 
 pub struct Session {
@@ -236,8 +243,9 @@ impl Session {
     pub fn switch_branch(&mut self, actor: &Actor, b: BranchId) -> Result<(), CommandError> {
         let br = self.history.branch(b).map_err(CommandError::history)?;
         if br.deleted_at.is_some() {
-            return Err(CommandError::new("not_found", format!("branch \"{}\" is deleted", br.name))
-                .hint("restore it from Recently deleted first"));
+            return Err(CommandError::new("not_found", format!("branch {b} is deleted"))
+                .hint("restore it from Recently deleted first")
+                .details(serde_json::json!({ "name_user_text": br.name })));
         }
         self.current.insert(actor.clone(), b);
         Ok(())

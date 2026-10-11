@@ -40,3 +40,25 @@ fn bracket_golden_volume_and_exports() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Dogfood F-B1 / review H5: `gusset build --import` imports STEP through the sandboxed
+/// worker found next to the executable, and STL as a reference mesh.
+#[cfg(gusset_occt)]
+#[test]
+fn build_imports_step_and_stl() {
+    let dir = std::env::temp_dir().join(format!("gusset-cli-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ex = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/bracket.gus.txt");
+    let (step, stl) = (dir.join("b.step"), dir.join("b.stl"));
+    let out = gusset().args(["build", ex, "--export"]).arg(&step).arg("--export").arg(&stl).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let empty = dir.join("empty.gus.txt");
+    std::fs::write(&empty, "gusset 1\nunits mm\n").unwrap();
+    let out = gusset().arg("build").arg(&empty).arg("--import").arg(&step).arg("--import").arg(&stl).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("exact geometry"), "{text}");
+    assert!(text.contains("volume 11272.584 mm³"), "{text}");
+    assert!(text.contains("reference mesh Import2"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

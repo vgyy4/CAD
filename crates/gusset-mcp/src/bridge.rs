@@ -11,6 +11,13 @@
 //!    snapshot is kept. A project with a pending crash-recovery copy or a damaged file
 //!    is refused with a clear message: only the app's recovery dialog resolves those.
 //!
+//! Connection files are trusted only if they and their directory belong to the current
+//! user and nobody else can read them. Before relaying anything, the bridge checks the
+//! port really is that app (an identity challenge bound to the token; see
+//! [`crate::identity`]), and every response must carry a proof. When the user revoked
+//! the token in the app (kill switch), the file says `paused` and the bridge refuses to
+//! start instead of reconnecting or falling back to the same project headless.
+//!
 //! Diagnostics go to stderr (stdout is the protocol stream). The token is never printed.
 
 use crate::approval::ApprovalProvider;
@@ -48,6 +55,9 @@ pub struct StdioOptions {
     pub renderer: Option<Arc<dyn ViewRenderer>>,
     /// Headless: approval provider when the client cannot elicit (default: deny).
     pub approvals: Option<Arc<dyn ApprovalProvider>>,
+    /// Headless: the STEP/IGES importer (the CLI passes the sandboxed worker). Mesh
+    /// formats need none.
+    pub importer: Option<Arc<dyn gusset_commands::session::Importer>>,
     /// Read-only agent mode (`gusset mcp --read-only`): mutating tools are rejected.
     /// Headless it maps to `SessionConfig::read_only_agents`; when relaying to a running
     /// app the bridge itself refuses mutating `tools/call` requests.
@@ -76,6 +86,7 @@ impl StdioOptions {
             attach: true,
             renderer: None,
             approvals: None,
+            importer: None,
             read_only: false,
         }
     }
@@ -114,11 +125,21 @@ where
 {
     if options.attach {
         let dir = options.connection_dir.clone().or_else(crate::http::default_connection_dir);
-        if let Some(dir) = dir
-            && let Some(app) = find_instance(&dir, options.project.as_deref()).await
-        {
-            eprintln!("gusset mcp: attaching to the running Gusset app on port {}", app.port);
-            return relay(app, options.read_only, read, write).await;
+        if let Some(dir) = dir {
+            match find_instance(&dir, options.project.as_deref()).await {
+                Found::App(app) => {
+                    eprintln!("gusset mcp: attaching to the running Gusset app on port {}", app.port);
+                    return relay(app, options.read_only, read, write).await;
+                }
+                Found::Paused => {
+                    return Err(McpError::Config(
+                        "agents are switched off in the running Gusset app (the token was revoked); allow agents \
+                         again in the app's AI agents panel, then restart this bridge"
+                            .into(),
+                    ));
+                }
+                Found::Nothing => {}
+            }
         }
     }
     headless(options, read, write).await
@@ -128,9 +149,52 @@ where
 #[derive(Clone)]
 pub(crate) struct AppInstance {
     pub(crate) port: u16,
-    token: String,
+    /// `None` while the app has agents paused (kill switch).
+    token: Option<String>,
     project: Option<PathBuf>,
     started: u64,
+}
+
+/// What [`find_instance`] found.
+#[derive(Debug)]
+pub(crate) enum Found {
+    /// A verified running app.
+    App(AppInstance),
+    /// The matching app is running with agents paused.
+    Paused,
+    /// No usable app.
+    Nothing,
+}
+
+/// The current user's id, learnt safely (no FFI) from a probe file created in `dir`. A
+/// directory we cannot create files in is not ours.
+#[cfg(unix)]
+fn our_uid(dir: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let probe = dir.join(format!(".probe-{}", crate::approval::random_hex(8)?));
+    let f = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).ok()?;
+    let uid = f.metadata().ok().map(|m| m.uid());
+    drop(f);
+    let _ = std::fs::remove_file(&probe);
+    uid
+}
+
+/// The connection directory must be a real directory owned by us and closed to others.
+#[cfg(unix)]
+fn trusted_dir(dir: &Path) -> Option<u32> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let meta = std::fs::symlink_metadata(dir).ok()?;
+    if !meta.file_type().is_dir() || meta.permissions().mode() & 0o077 != 0 {
+        return None;
+    }
+    let uid = our_uid(dir)?;
+    (meta.uid() == uid).then_some(uid)
+}
+
+#[cfg(not(unix))]
+fn trusted_dir(_dir: &Path) -> Option<u32> {
+    // Per-user profile directory; its default ACL limits it to the user (THREAT_MODEL B3).
+    Some(0)
 }
 
 impl std::fmt::Debug for AppInstance {
@@ -139,28 +203,36 @@ impl std::fmt::Debug for AppInstance {
     }
 }
 
-fn read_connection_file(path: &Path) -> Option<AppInstance> {
+pub(crate) fn read_connection_file(path: &Path, uid: u32) -> Option<AppInstance> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.file_type().is_file() || meta.len() > 64 * 1024 {
         return None;
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        // Only trust files nobody else could have written or read.
-        if meta.permissions().mode() & 0o077 != 0 {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // Only trust files we own and nobody else could have written or read.
+        if meta.permissions().mode() & 0o077 != 0 || meta.uid() != uid {
             return None;
         }
     }
+    #[cfg(not(unix))]
+    let _ = uid;
     let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    if v.at("version").as_u64() != Some(1) {
+    if v.at("version").as_u64() != Some(crate::http::CONNECTION_FILE_VERSION) {
         return None;
     }
     let port = u16::try_from(v.at("port").as_u64()?).ok().filter(|p| *p != 0)?;
-    let token = v.at("token").as_str()?.to_string();
-    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
+    let paused = v.at("paused").as_bool().unwrap_or(false);
+    let token = if paused {
+        None
+    } else {
+        let t = v.at("token").as_str()?.to_string();
+        if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(t)
+    };
     Some(AppInstance {
         port,
         token,
@@ -169,16 +241,18 @@ fn read_connection_file(path: &Path) -> Option<AppInstance> {
     })
 }
 
-/// Finds a reachable running app: the one serving `project` if given, else the most
-/// recently started one.
-pub(crate) async fn find_instance(dir: &Path, project: Option<&Path>) -> Option<AppInstance> {
+/// Finds a running app: the one serving `project` if given, else the most recently
+/// started one. Files must be ours (see [`trusted_dir`]) and the port must prove it holds
+/// the file's token ([`verify_identity`]) before anything else is sent to it.
+pub(crate) async fn find_instance(dir: &Path, project: Option<&Path>) -> Found {
+    let Some(uid) = trusted_dir(dir) else { return Found::Nothing };
     let want = project.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
-    let mut found: Vec<AppInstance> = std::fs::read_dir(dir)
-        .ok()?
+    let Ok(entries) = std::fs::read_dir(dir) else { return Found::Nothing };
+    let mut found: Vec<AppInstance> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| read_connection_file(&p))
+        .filter_map(|p| read_connection_file(&p, uid))
         .filter(|a| match (&want, &a.project) {
             (None, _) => true,
             (Some(w), Some(p)) => p.canonicalize().unwrap_or_else(|_| p.clone()) == *w,
@@ -186,13 +260,53 @@ pub(crate) async fn find_instance(dir: &Path, project: Option<&Path>) -> Option<
         })
         .collect();
     found.sort_by_key(|a| std::cmp::Reverse(a.started));
+    let mut paused = false;
     for a in found {
-        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, a.port));
-        if let Ok(Ok(_)) = tokio::time::timeout(Duration::from_secs(1), tokio::net::TcpStream::connect(addr)).await {
-            return Some(a);
+        match verify_identity(&a).await {
+            Identity::Verified => return Found::App(a),
+            Identity::Paused => paused = true,
+            Identity::Unverified => {}
         }
     }
-    None
+    if paused { Found::Paused } else { Found::Nothing }
+}
+
+enum Identity {
+    Verified,
+    Paused,
+    Unverified,
+}
+
+/// Asks the port to prove it knows the token, without sending the token. A paused app
+/// answers 503; anything else that does not prove itself is ignored (a stale file whose
+/// port another process now holds).
+async fn verify_identity(app: &AppInstance) -> Identity {
+    let attempt = async {
+        let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, app.port));
+        let stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.ok()?;
+        tokio::spawn(conn);
+        let nonce = crate::identity::new_nonce()?;
+        let req = hyper::Request::builder()
+            .method(http::Method::GET)
+            .uri(crate::identity::IDENTITY_PATH)
+            .header(http::header::HOST, format!("127.0.0.1:{}", app.port))
+            .header(crate::identity::NONCE_HEADER, nonce.as_str())
+            .body(Full::new(Bytes::new()))
+            .ok()?;
+        let resp = sender.send_request(req).await.ok()?;
+        if resp.status() == hyper::StatusCode::SERVICE_UNAVAILABLE {
+            return Some(Identity::Paused);
+        }
+        let proof = resp.headers().get(crate::identity::PROOF_HEADER).and_then(|v| v.to_str().ok())?;
+        let token = app.token.as_deref()?;
+        Some(if resp.status().is_success() && crate::identity::verify(token, &nonce, proof) {
+            Identity::Verified
+        } else {
+            Identity::Unverified
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(2), attempt).await.ok().flatten().unwrap_or(Identity::Unverified)
 }
 
 async fn headless<R, W>(options: StdioOptions, read: R, write: W) -> Result<(), McpError>
@@ -229,6 +343,7 @@ where
             }
             let mut s = Session::from_history(history, options.kernel.clone());
             s.project_dir = path.parent().map(Path::to_path_buf);
+            s.importer = options.importer.clone();
             (s, Some(p), None)
         }
         Some(path) => {
@@ -236,6 +351,7 @@ where
                 .map_err(|e| McpError::Command(gusset_commands::CommandError::new("io", e.to_string())))?;
             let mut s = Session::new(&empty()?, options.kernel.clone(), &CmdCtx::user(0));
             s.project_dir = path.parent().map(Path::to_path_buf);
+            s.importer = options.importer.clone();
             (s, Some(p), Some(path.clone()))
         }
         None => {
@@ -393,6 +509,8 @@ async fn send(
     headers: Vec<(String, String)>,
     body: Bytes,
 ) -> Result<hyper::Response<hyper::body::Incoming>, String> {
+    let token = app.token.as_deref().ok_or("agents are switched off in the Gusset app")?;
+    let nonce = crate::identity::new_nonce().ok_or("the OS random number generator failed")?;
     let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, app.port));
     let stream = tokio::net::TcpStream::connect(addr).await.map_err(|e| format!("cannot reach the app: {e}"))?;
     let (mut sender, conn) =
@@ -402,14 +520,24 @@ async fn send(
         .method(method)
         .uri("/mcp")
         .header(http::header::HOST, format!("127.0.0.1:{}", app.port))
-        .header(http::header::AUTHORIZATION, format!("Bearer {}", app.token))
+        .header(http::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(crate::identity::NONCE_HEADER, nonce.as_str())
         .header(http::header::CONTENT_TYPE, "application/json")
         .header(http::header::ACCEPT, "application/json, text/event-stream");
     for (k, v) in headers {
         req = req.header(k, v);
     }
     let req = req.body(Full::new(body)).map_err(|e| e.to_string())?;
-    sender.send_request(req).await.map_err(|e| e.to_string())
+    let resp = sender.send_request(req).await.map_err(|e| e.to_string())?;
+    if resp.status() == hyper::StatusCode::UNAUTHORIZED {
+        // Nothing to prove with a dead token; the caller reports the revocation.
+        return Ok(resp);
+    }
+    let proof = resp.headers().get(crate::identity::PROOF_HEADER).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !crate::identity::verify(token, &nonce, proof) {
+        return Err("the process on the app's port could not prove it is the Gusset app; stopping".into());
+    }
+    Ok(resp)
 }
 
 async fn post(app: &AppInstance, state: &Mutex<RelayState>, out: &Out, msg: Value) -> Result<(), String> {
@@ -439,7 +567,8 @@ async fn post(app: &AppInstance, state: &Mutex<RelayState>, out: &Out, msg: Valu
     let status = resp.status();
     if status == hyper::StatusCode::UNAUTHORIZED || status == hyper::StatusCode::FORBIDDEN {
         return Err(
-            "the Gusset app refused the connection (the token was revoked or the app restarted); restart the bridge"
+            "the Gusset app refused the connection (agents were switched off or the app restarted); allow agents in \
+             the app if needed, then restart the bridge"
                 .into(),
         );
     }
@@ -504,5 +633,75 @@ fn note_init(state: &Mutex<RelayState>, method: &str, v: &Value) {
         && let Some(ver) = v.at("result").at("protocolVersion").as_str()
     {
         state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).legacy_version = Some(ver.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn private_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("gusset-bridge-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        gusset_store::fs::create_private_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write_conn(dir: &Path, port: u16, token: Option<&str>) -> PathBuf {
+        let p = dir.join("app.json");
+        let body = json!({"version": crate::http::CONNECTION_FILE_VERSION, "port": port, "token": token,
+                          "paused": token.is_none(), "started": 1});
+        std::fs::write(&p, body.to_string()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        p
+    }
+
+    /// Security review #13: a stale connection file whose port another process now
+    /// holds is never used; the squatter never receives the token.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn squatted_port_is_not_trusted() {
+        use tokio::io::AsyncReadExt;
+        let dir = private_dir("squat");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(tokio::sync::Mutex::new(Vec::<u8>::new()));
+        let seen2 = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                seen2.lock().await.extend_from_slice(buf.get(..n).unwrap_or_default());
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
+            }
+        });
+        let token = "ab".repeat(32);
+        write_conn(&dir, port, Some(&token));
+        assert!(matches!(find_instance(&dir, None).await, Found::Nothing));
+        let seen = seen.lock().await;
+        assert!(!seen.is_empty(), "the challenge was sent");
+        assert!(!String::from_utf8_lossy(&seen).contains(&token), "the token leaked to the squatter");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connection_files_need_private_owned_files_and_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = private_dir("owner");
+        let p = write_conn(&dir, 1, Some(&"ab".repeat(32)));
+        let uid = trusted_dir(&dir).expect("our own private dir is trusted");
+        assert!(read_connection_file(&p, uid).is_some());
+        assert!(read_connection_file(&p, uid.wrapping_add(1)).is_none(), "another owner");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_connection_file(&p, uid).is_none(), "readable by others");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(trusted_dir(&dir).is_none(), "open directory");
+        // No probe file is left behind.
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

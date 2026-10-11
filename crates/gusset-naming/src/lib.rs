@@ -113,8 +113,15 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
     for (fi, os) in origins.iter().enumerate() {
         let mut sorted = os.clone();
         sorted.sort_by_key(origin_rank);
-        let mut name = None;
-        for o in &sorted {
+        // Imported faces are named by index; they have no operation history (the
+        // kernel reports none), so this must not depend on `os`.
+        let mut name = match ctx {
+            OpContext::Import { feature } => {
+                Some(FaceRef::new(*feature, FaceKey::Imported(u32::try_from(fi).unwrap_or(u32::MAX))))
+            }
+            _ => None,
+        };
+        for o in if name.is_none() { sorted.as_slice() } else { &[] } {
             name = match (ctx, o) {
                 (OpContext::Sweep { feature, sketch, regions }, o) => sweep_face(feature, sketch, regions, o),
                 (
@@ -434,6 +441,16 @@ mod tests {
         let n = name_body(&OpContext::Modify { feature: "Fillet1", inputs: &[&base] }, &origins, &topo).unwrap();
         assert_eq!(n.faces[2], base.faces[2]);
         assert_eq!(n.faces[6].to_string(), format!("Fillet1/blend({})", base.edges[4]));
+    }
+
+    #[test]
+    fn imported_faces_need_no_history() {
+        let f =
+            |x: f64| FaceInfo { kind: SurfaceKind::Plane, area: 1.0, centroid: [x, 0.0, 0.0], normal: [0.0, 0.0, 1.0] };
+        let topo = Topology { faces: vec![f(0.0), f(1.0)], ..Default::default() };
+        let n = name_body(&OpContext::Import { feature: "Import1" }, &[vec![], vec![]], &topo).unwrap();
+        assert_eq!(n.faces.len(), 2);
+        assert_ne!(n.faces[0], n.faces[1]);
     }
 
     #[test]
