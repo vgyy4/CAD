@@ -17,8 +17,8 @@ pub const REQUEST_MAGIC: &[u8; 8] = b"GWRQ1\0\0\0";
 pub const RESPONSE_MAGIC: &[u8; 8] = b"\0GWRSP1\0";
 /// Largest input file accepted.
 pub const MAX_INPUT: u64 = 1 << 30;
-/// Largest response accepted from a worker.
-pub const MAX_OUTPUT: u64 = 4 << 30;
+/// Hard cap on a worker response, whatever the input size (see [`output_cap`]).
+pub const MAX_OUTPUT: u64 = 1 << 30;
 pub const MAX_BODIES: u32 = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,16 @@ impl Format {
             _ => None,
         }
     }
+}
+
+/// The most stdout the parent accepts from a worker for an input of `input_len` bytes.
+///
+/// Measured with OCCT's samples, the B-rep output of a STEP import is about 0.3× the
+/// input and a validated B-rep blob is about 1× its input. Allowing 4× plus 16 MiB
+/// (for the frame, the report and library chatter) leaves wide headroom while keeping
+/// a compromised worker from making the app buffer gigabytes (security review #12).
+pub fn output_cap(input_len: u64) -> u64 {
+    input_len.saturating_mul(4).saturating_add(16 << 20).min(MAX_OUTPUT)
 }
 
 /// Encodes a request frame.
@@ -214,7 +224,7 @@ pub fn import_out_of_process(
     if data.len() as u64 > MAX_INPUT {
         return Err(ImportError::TooLarge);
     }
-    let out = run_worker(worker, encode_request(format, data), limits, timeout)?;
+    let out = run_worker(worker, encode_request(format, data), output_cap(data.len() as u64), limits, timeout)?;
     let (result, report) = decode_response(&out).map_err(ImportError::Protocol)?;
     let bodies = result.map_err(ImportError::Failed)?;
     Ok(Imported { bodies, sandbox_report: report })
@@ -232,6 +242,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 fn run_worker(
     worker: &Path,
     request: Vec<u8>,
+    cap: u64,
     limits: &gusset_sandbox::Limits,
     timeout: Duration,
 ) -> Result<Vec<u8>, ImportError> {
@@ -268,11 +279,23 @@ fn run_worker(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = (&mut stdout).take(MAX_OUTPUT).read_to_end(&mut buf);
+        // One byte past the cap tells "too large" apart from "exactly the cap".
+        let _ = (&mut stdout).take(cap.saturating_add(1)).read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
+    let too_large = || ImportError::Protocol("the import worker's response is too large".into());
     let start = Instant::now();
+    let mut early = None;
     loop {
+        if early.is_none()
+            && let Ok(buf) = rx.try_recv()
+        {
+            if buf.len() as u64 > cap {
+                let _ = finish(&mut child);
+                return Err(too_large());
+            }
+            early = Some(buf);
+        }
         match gusset_sandbox::has_exited(&mut child) {
             Ok(true) => break,
             Ok(false) if start.elapsed() > timeout => {
@@ -289,11 +312,17 @@ fn run_worker(
     // The worker has exited but is not reaped yet: kill anything it left behind.
     let status = finish(&mut child).map_err(|e| ImportError::Crashed(e.to_string()))?;
     let _ = writer.join();
-    let out = rx
-        .recv_timeout(DRAIN_TIMEOUT)
-        .map_err(|_| ImportError::Protocol("the import worker's output did not close".into()))?;
+    let out = match early {
+        Some(buf) => buf,
+        None => rx
+            .recv_timeout(DRAIN_TIMEOUT)
+            .map_err(|_| ImportError::Protocol("the import worker's output did not close".into()))?,
+    };
     if !status.success() {
         return Err(ImportError::Crashed(format!("exit status {status}")));
+    }
+    if out.len() as u64 > cap {
+        return Err(too_large());
     }
     Ok(out)
 }
@@ -308,6 +337,14 @@ pub fn default_worker_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_cap_follows_input_size() {
+        assert_eq!(output_cap(0), 16 << 20);
+        assert_eq!(output_cap(1 << 20), (4 << 20) + (16 << 20));
+        assert_eq!(output_cap(MAX_INPUT), MAX_OUTPUT);
+        assert_eq!(output_cap(u64::MAX), MAX_OUTPUT);
+    }
 
     #[test]
     fn frames_roundtrip_and_resist_noise() {
