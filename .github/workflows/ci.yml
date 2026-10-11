@@ -59,6 +59,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libegl1 libegl-mesa0
       - run: cargo build --workspace --locked
+      - name: GPU tests one at a time with output (shows which adapter a crash is in)
+        run: cargo test -p gusset-render --test gpu --locked -- --test-threads=1 --nocapture
       - name: cargo test --workspace --locked
         # On Linux lavapipe/llvmpipe are installed above, so a missing adapter is a
         # failure there instead of a skipped GPU test.
@@ -90,10 +92,10 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo-about
-          key: cargo-about-0.9.2-${{ runner.os }}-v2
+          key: cargo-about-0.9.2-${{ runner.os }}-v3
       # Installed into its own root and run by path, so the step cannot pick up (or miss)
       # a cargo-about elsewhere on PATH.
-      - run: test -x ~/.cargo-about/bin/cargo-about || cargo install cargo-about --version 0.9.2 --locked --root ~/.cargo-about
+      - run: test -x ~/.cargo-about/bin/cargo-about || cargo install cargo-about --version 0.9.2 --locked --force --root ~/.cargo-about
       - run: cargo fetch --locked
       - run: ~/.cargo-about/bin/cargo-about about generate --frozen --workspace -o THIRD_PARTY_LICENSES.md about.hbs
       - run: git diff --exit-code -- THIRD_PARTY_LICENSES.md
@@ -155,6 +157,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: occt-${{ matrix.name }}
-      - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli --all-targets --locked -- -D warnings
-      - run: cargo test -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli --locked
+      - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker --all-targets --locked -- -D warnings
+      # The CLI tests run `gusset`, which starts `gusset-worker` from its own directory.
+      - run: cargo build -p gusset-cli -p gusset-worker --bins --locked
+      - name: Put the OCCT DLLs next to the binaries (Windows)
+        if: runner.os == 'Windows'
+        # The binaries are linked with /DEPENDENTLOADFLAG (System32 + application
+        # directory only, security review #2), so PATH is not searched for them.
+        run: cp "$RUNNER_TEMP"/occt-install/bin/*.dll target/debug/
+      - run: cargo test -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker --locked
       - run: cargo run -p gusset-cli --locked -- self-test
