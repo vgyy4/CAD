@@ -131,7 +131,7 @@ impl Cache {
         }
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::NotFound || contended(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
         let Some(payload) = decode(&bytes) else {
@@ -178,7 +178,8 @@ impl Cache {
             .and_then(|()| std::fs::rename(&temp, self.entry_path(scope, key)));
         if let Err(e) = result {
             let _ = std::fs::remove_file(&temp);
-            return Err(e);
+            // Another instance holds the entry open: skipping a cache store is harmless.
+            return if contended(&e) { Ok(()) } else { Err(e) };
         }
         let over = match self.usage.lock() {
             Ok(mut u) => match *u {
@@ -299,6 +300,7 @@ impl Cache {
             match std::fs::remove_file(&e.path) {
                 Ok(()) => removed += 1,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {} // another instance won
+                Err(err) if contended(&err) => continue,                // in use elsewhere; try the next one
                 Err(err) => return Err(err),
             }
             total = total.saturating_sub(e.len);
@@ -337,6 +339,13 @@ pub(crate) fn remove_dir_no_follow(dir: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+/// Windows reports a file that another instance has open, or is deleting, as "access
+/// denied" (sharing violation / delete pending). For a cache that is contention, not a
+/// permission problem: reads miss, writes are skipped, eviction moves on.
+fn contended(e: &io::Error) -> bool {
+    cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied
 }
 
 #[cfg(test)]
