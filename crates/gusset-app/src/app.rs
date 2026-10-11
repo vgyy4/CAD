@@ -223,6 +223,8 @@ pub struct App {
     scene_requested: Option<(NodeId, Option<usize>)>,
     /// When to auto-save or write a recovery snapshot (settings: save mode, interval).
     save: SaveScheduler,
+    /// The running import's cancel flag (the status bar offers Cancel).
+    import_cancel: Option<gusset_commands::import::CancelFlag>,
     /// Continue with this action after the save that is running.
     after_save: Option<Pending>,
     /// Continue with this action once no job is running ("Wait" in the busy dialog).
@@ -291,6 +293,7 @@ impl App {
             scene: None,
             scene_requested: None,
             save: SaveScheduler::new(settings),
+            import_cancel: None,
             after_save: None,
             after_idle: None,
             send_close: false,
@@ -361,6 +364,24 @@ impl App {
     /// the result when it arrives.
     pub fn submit_command(&mut self, id: &str, args: Value, then: Then) {
         let ctx = Self::ctx();
+        if id == "import.file" {
+            // The worker parses on its own thread without holding the model, and the
+            // user can cancel it (the sandboxed worker process is killed).
+            let cancel = gusset_commands::import::CancelFlag::default();
+            self.import_cancel = Some(cancel.clone());
+            let (tx, waker) = (self.done_tx.clone(), self.waker.clone());
+            self.in_flight += 1;
+            let started = self.host.import_detached(ctx, args, cancel, move |r| {
+                let _ = tx.send(Done::Command { id: "import.file".into(), then, result: r });
+                waker.wake();
+            });
+            if let Err(e) = started {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                self.import_cancel = None;
+                self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
+            }
+            return;
+        }
         let id = id.to_string();
         let id2 = id.clone();
         self.submit(
@@ -462,6 +483,9 @@ impl App {
         match done {
             Done::Command { id, then, result } => {
                 self.stale = true;
+                if id == "import.file" {
+                    self.import_cancel = None;
+                }
                 self.apply_command(&id, then, result);
             }
             Done::Scene(Ok(Ok(data))) => {
@@ -1155,6 +1179,12 @@ impl App {
                 // A static indicator: an animated spinner would repaint every frame, and
                 // the finished job wakes the UI anyway.
                 ui.weak(format!("⏳ {}", tr("status.working")));
+            }
+            if let Some(c) = &self.import_cancel {
+                ui.weak(tr("status.importing"));
+                if ui.small_button(tr("dialog.cancel")).clicked() {
+                    c.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
             }
             if let Some(eval) = self.scene.as_ref().map(|s| &s.eval)
                 && !eval.errors().is_empty()

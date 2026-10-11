@@ -461,8 +461,10 @@ fn imported_reference_mesh_is_drawn() {
     )
     .unwrap();
     let mut a = app();
-    a.run("import.file", json!({"path": stl.to_string_lossy()})).unwrap();
+    // The GUI path: a detached, cancellable import.
+    a.submit_command("import.file", json!({"path": stl.to_string_lossy()}), crate::app::Then::Notice);
     a.wait_idle();
+    assert!(a.notice.as_ref().is_none_or(|n| !n.error), "{:?}", a.notice.as_ref().map(|n| &n.text));
     let mut h = harness(a);
     for _ in 0..50 {
         h.run();

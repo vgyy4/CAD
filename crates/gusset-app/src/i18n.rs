@@ -125,6 +125,7 @@ const EN: &[(&str, &str)] = &[
     ("approval.queued", "more request(s) waiting"),
     ("approval.approve", "Approve"),
     ("approval.deny", "Deny"),
+    ("status.importing", "Importing…"),
     ("unrecovered.title", "Recover unsaved work"),
     ("unrecovered.body", "Gusset was not closed cleanly. These projects have work that was never saved:"),
     ("unrecovered.untitled", "Untitled project"),
