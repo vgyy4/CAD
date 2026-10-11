@@ -129,6 +129,37 @@ mod tests {
     }
 
     #[test]
+    fn undo_of_branch_delete_or_create_never_duplicates_names() {
+        let u = Ctx::user(1);
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        // Redo of a branch creation after another actor took the name.
+        let b = h.create_branch(&u, root, Some("Wing")).unwrap();
+        h.undo(&u, main).unwrap();
+        assert!(h.branch(b).unwrap().deleted_at.is_some());
+        let other = h.create_branch(&Ctx::agent("bot", 2), root, Some("WING")).unwrap();
+        h.redo(&u, main).unwrap();
+        assert!(h.branch(other).unwrap().deleted_at.is_none());
+        assert!(h.branch(b).unwrap().deleted_at.is_none());
+        assert_eq!(h.branch(b).unwrap().name, "Wing (restored)");
+        assert_eq!(h.branch_by_name_folded("wing").unwrap().id, other);
+
+        // The review's scenario: delete, recreate the same default name, undo the delete.
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        let b = h.create_branch(&u, root, None).unwrap();
+        h.delete_branch(&u, b, true).unwrap();
+        let c = h.create_branch(&Ctx::agent("bot", 2), root, None).unwrap();
+        assert_eq!(h.branch(c).unwrap().name, h.branch(b).unwrap().name);
+        h.undo(&u, main).unwrap();
+        let names: Vec<&str> = h.branches().iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["Main", "Iteration 2 (restored)", "Iteration 2"]);
+        assert_eq!(h.branch_by_name("Iteration 2").unwrap().id, c);
+    }
+
+    #[test]
     fn structural_sharing_and_gc() {
         let u = Ctx::user(0);
         let base = with_feature(with_feature(doc(&[("a", "1 mm")]), "S1"), "S2");

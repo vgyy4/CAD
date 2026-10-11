@@ -655,12 +655,33 @@ impl History {
         if b.deleted_at.is_none() {
             return Ok(());
         }
+        self.undelete(branch)?;
+        self.record(ctx, Event::RestoreBranch { branch });
+        Ok(())
+    }
+
+    /// Brings a soft-deleted branch back. If a live branch now has the same name
+    /// (ignoring case), the restored one gets a free "<name> (restored)" variant, so two
+    /// live branches never share a name (review M8).
+    fn undelete(&mut self, branch: BranchId) -> HResult<()> {
+        let b = self.branches.get(&branch).ok_or(HistoryError::UnknownBranch(branch))?;
+        if b.deleted_at.is_none() {
+            return Ok(());
+        }
         let name = b.name.clone();
-        let final_name = if self.branch_by_name(&name).is_some() { format!("{name} (restored)") } else { name };
+        let taken = |h: &History, n: &str| h.branch_by_name_folded(n).is_some_and(|o| o.id != branch);
+        let final_name = if taken(self, &name) {
+            let base: String = name.chars().take(MAX_NAME_LEN.saturating_sub(16)).collect();
+            (1..)
+                .map(|i| if i == 1 { format!("{base} (restored)") } else { format!("{base} (restored {i})") })
+                .find(|n| !taken(self, n))
+                .unwrap_or_else(|| format!("{base} (restored)"))
+        } else {
+            name
+        };
         let b = self.branches.get_mut(&branch).ok_or(HistoryError::UnknownBranch(branch))?;
         b.deleted_at = None;
         b.name = final_name;
-        self.record(ctx, Event::RestoreBranch { branch });
         Ok(())
     }
 
@@ -791,20 +812,28 @@ impl History {
                 if *branch == self.main {
                     return Err(HistoryError::Conflict("that branch is now main".into()));
                 }
-                let b = self.branches.get_mut(branch).ok_or(HistoryError::UnknownBranch(*branch))?;
-                b.deleted_at = if inverse { Some(now) } else { None };
+                if inverse {
+                    let b = self.branches.get_mut(branch).ok_or(HistoryError::UnknownBranch(*branch))?;
+                    b.deleted_at = Some(now);
+                } else {
+                    self.undelete(*branch)?;
+                }
             }
             Event::DeleteBranch { branch } | Event::RestoreBranch { branch } => {
                 let delete = matches!(ev, Event::DeleteBranch { .. }) != inverse;
                 if delete && *branch == self.main {
                     return Err(HistoryError::MainCannotBeDeleted);
                 }
-                let b = self.branches.get_mut(branch).ok_or(HistoryError::UnknownBranch(*branch))?;
-                b.deleted_at = if delete { Some(now) } else { None };
+                if delete {
+                    let b = self.branches.get_mut(branch).ok_or(HistoryError::UnknownBranch(*branch))?;
+                    b.deleted_at = Some(now);
+                } else {
+                    self.undelete(*branch)?;
+                }
             }
             Event::RenameBranch { branch, old, new } => {
                 let (_, set) = pick(old.clone(), new.clone(), inverse);
-                if self.branch_by_name(&set).is_some_and(|b| b.id != *branch) {
+                if self.branch_by_name_folded(&set).is_some_and(|b| b.id != *branch) {
                     return Err(HistoryError::NameTaken(set));
                 }
                 self.live_branch_mut(*branch)?.name = set;
