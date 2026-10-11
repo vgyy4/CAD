@@ -713,3 +713,24 @@ fn exports_can_select_bodies_and_report_rebuild_errors() {
     assert!(r["warnings"][0].as_str().unwrap().contains("failed to rebuild"), "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn query_body_reports_a_failed_rebuild_instead_of_no_bodies() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    // Nothing built and nothing failed: plain not_found.
+    let e = execute(&mut s, &u, "query.body", json!({})).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    // An open profile cannot be extruded: the only feature fails, so there is no body.
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 0, "y1": 0, "x2": 10, "y2": 0}));
+    let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    assert_eq!(r["rebuild_ok"], false, "{r}");
+    for args in [json!({}), json!({"body": "Extrude1"})] {
+        let e = execute(&mut s, &u, "query.body", args).unwrap_err();
+        assert_eq!(e.code, "evaluation", "{e:?}");
+        assert!(e.message.contains("failed to rebuild"), "{e:?}");
+        let errs = e.details.as_ref().unwrap()["rebuild_errors"].as_array().unwrap();
+        assert!(errs[0].as_str().unwrap().contains("Extrude1"), "{e:?}");
+    }
+}

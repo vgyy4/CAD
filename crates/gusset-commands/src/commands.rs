@@ -1916,9 +1916,19 @@ impl Command for QueryBody {
     const SHORTCUT: Option<&'static str> = Some("M");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let ev = s.evaluate(&ctx.actor)?;
+        // When the rebuild failed, say so instead of claiming the body never existed.
+        let failed = |what: String| {
+            let errors: Vec<String> = ev.errors().iter().map(|e| e.to_string()).collect();
+            if errors.is_empty() {
+                return CommandError::not_found(what);
+            }
+            CommandError::new("evaluation", format!("{what}: {} feature(s) failed to rebuild", errors.len()))
+                .hint("fix the failing features (or undo the last edit); see details.rebuild_errors and query.model")
+                .details(json!({ "rebuild_errors": errors }))
+        };
         let body = match &self.body {
-            Some(n) => ev.body(n).cloned().ok_or_else(|| CommandError::not_found(format!("no body '{n}'")))?,
-            None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies yet"))?,
+            Some(n) => ev.body(n).cloned().ok_or_else(|| failed(format!("no body '{n}'")))?,
+            None => ev.bodies.last().cloned().ok_or_else(|| failed("the model has no bodies".to_string()))?,
         };
         let k = s.kernel().clone();
         let m = k.mass_properties(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
