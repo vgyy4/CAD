@@ -101,18 +101,62 @@ pub struct Branch {
 /// Everything that changes the project, in order. Persisted as the audit log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Edit { branch: BranchId, from: NodeId, to: NodeId },
-    MoveHead { branch: BranchId, from: NodeId, to: NodeId },
-    CreateBranch { branch: BranchId, at: NodeId },
-    RenameBranch { branch: BranchId, old: String, new: String },
-    SetMain { old: BranchId, new: BranchId },
-    DeleteBranch { branch: BranchId },
-    RestoreBranch { branch: BranchId },
-    SetRollback { branch: BranchId, old: Option<usize>, new: Option<usize> },
-    Star { node: NodeId, starred: bool },
-    NameNode { node: NodeId, old: Option<String>, new: Option<String> },
-    Undo { event: usize },
-    Redo { event: usize },
+    Edit {
+        branch: BranchId,
+        from: NodeId,
+        to: NodeId,
+    },
+    MoveHead {
+        branch: BranchId,
+        from: NodeId,
+        to: NodeId,
+    },
+    CreateBranch {
+        branch: BranchId,
+        at: NodeId,
+    },
+    RenameBranch {
+        branch: BranchId,
+        old: String,
+        new: String,
+    },
+    SetMain {
+        old: BranchId,
+        new: BranchId,
+    },
+    DeleteBranch {
+        branch: BranchId,
+    },
+    RestoreBranch {
+        branch: BranchId,
+    },
+    SetRollback {
+        branch: BranchId,
+        old: Option<usize>,
+        new: Option<usize>,
+    },
+    Star {
+        node: NodeId,
+        starred: bool,
+    },
+    NameNode {
+        node: NodeId,
+        old: Option<String>,
+        new: Option<String>,
+    },
+    Undo {
+        event: usize,
+    },
+    Redo {
+        event: usize,
+    },
+    /// An agent ran a command (audit only; never undone). `detail` is untrusted text.
+    AgentAction {
+        command: String,
+        branch: Option<BranchId>,
+        outcome: String,
+        detail: String,
+    },
 }
 
 impl Event {
@@ -147,6 +191,7 @@ impl Event {
             },
             Event::Undo { event } => format!("undid event {event}"),
             Event::Redo { event } => format!("redid event {event}"),
+            Event::AgentAction { command, outcome, .. } => format!("agent ran {command}: {outcome}"),
         }
     }
 }
@@ -343,6 +388,34 @@ impl History {
         self.branches.values().find(|b| b.deleted_at.is_none() && b.name == name)
     }
 
+    /// A live branch whose name equals `name` ignoring case and surrounding space
+    /// (names that look the same must not coexist: spoofing "Main").
+    pub fn branch_by_name_folded(&self, name: &str) -> Option<&Branch> {
+        let n = name.trim().to_lowercase();
+        self.branches.values().find(|b| b.deleted_at.is_none() && b.name.trim().to_lowercase() == n)
+    }
+
+    /// Appends an agent audit entry to the persisted event log (not undoable).
+    pub fn record_agent_action(
+        &mut self,
+        ctx: &Ctx,
+        command: &str,
+        branch: Option<BranchId>,
+        outcome: &str,
+        detail: &str,
+    ) {
+        let clip = |s: &str, n: usize| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>();
+        self.record(
+            ctx,
+            Event::AgentAction {
+                command: clip(command, 64),
+                branch,
+                outcome: clip(outcome, 128),
+                detail: clip(detail, 512),
+            },
+        );
+    }
+
     pub fn node(&self, id: NodeId) -> HResult<&Node> {
         self.nodes.get(&id).ok_or(HistoryError::UnknownNode(id))
     }
@@ -399,7 +472,7 @@ impl History {
     pub fn default_branch_name(&self) -> String {
         (2..)
             .map(|i| format!("Iteration {i}"))
-            .find(|n| self.branch_by_name(n).is_none())
+            .find(|n| self.branch_by_name_folded(n).is_none())
             .unwrap_or_else(|| "Iteration".into())
     }
 
@@ -414,7 +487,7 @@ impl History {
     }
 
     fn record(&mut self, ctx: &Ctx, event: Event) -> usize {
-        let undoable = !matches!(event, Event::Undo { .. } | Event::Redo { .. });
+        let undoable = !matches!(event, Event::Undo { .. } | Event::Redo { .. } | Event::AgentAction { .. });
         self.events.push(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event });
         let idx = self.events.len() - 1;
         if undoable {
@@ -483,7 +556,7 @@ impl History {
             }
             None => self.default_branch_name(),
         };
-        if self.branch_by_name(&name).is_some() {
+        if self.branch_by_name_folded(&name).is_some() {
             return Err(HistoryError::NameTaken(name));
         }
         let id = BranchId(self.next_branch);
@@ -514,7 +587,7 @@ impl History {
     pub fn rename_branch(&mut self, ctx: &Ctx, branch: BranchId, name: &str) -> HResult<()> {
         check_branch_name(name)?;
         let name = name.trim().to_string();
-        if let Some(other) = self.branch_by_name(&name)
+        if let Some(other) = self.branch_by_name_folded(&name)
             && other.id != branch
         {
             return Err(HistoryError::NameTaken(name));
@@ -753,7 +826,7 @@ impl History {
                 let (_, set) = pick(old.clone(), new.clone(), inverse);
                 self.nodes.get_mut(node).ok_or(HistoryError::UnknownNode(*node))?.name = set;
             }
-            Event::Undo { .. } | Event::Redo { .. } => {}
+            Event::Undo { .. } | Event::Redo { .. } | Event::AgentAction { .. } => {}
         }
         Ok(())
     }
