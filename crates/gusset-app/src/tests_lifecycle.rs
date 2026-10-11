@@ -395,8 +395,21 @@ fn startup_offers_unsaved_work_of_a_never_saved_project() {
     h.get_by_label_contains("Untitled project");
     h.get_by_label("Recover").click();
     settle(&mut h);
+    for _ in 0..200 {
+        if h.state().snapshot.doc.params.iter().any(|p| p.name == "lost") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.step();
+        h.state_mut().wait_idle();
+    }
     let a = h.state();
-    assert!(a.snapshot.doc.params.iter().any(|p| p.name == "lost"), "recovered the parameter");
+    assert!(
+        a.snapshot.doc.params.iter().any(|p| p.name == "lost"),
+        "recovered the parameter; dialog {:?}, notice {:?}",
+        a.dialog,
+        a.notice.as_ref().map(|n| &n.text)
+    );
     assert!(a.snapshot.dirty);
     assert!(a.project_file().is_none(), "still Untitled");
     drop(h);
