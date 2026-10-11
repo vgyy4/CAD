@@ -508,6 +508,16 @@ impl GussetMcp {
                         edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
                     });
                 }
+                // Reference meshes (imported STL/3MF/OBJ) are drawn too; they have no
+                // persistent face or edge names.
+                for m in &ev.meshes {
+                    bodies.push(RenderBody {
+                        name: m.name.clone(),
+                        mesh: m.mesh.clone(),
+                        face_names: Vec::new(),
+                        edge_names: Vec::new(),
+                    });
+                }
                 Ok(RenderScene { bodies })
             })
             .await

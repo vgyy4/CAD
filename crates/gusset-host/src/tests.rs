@@ -198,3 +198,47 @@ fn try_with_session_never_waits_for_a_running_job() {
     let _ = host.shutdown();
     assert_eq!(host.try_with_session(|_| 3).unwrap_err().code, "shutdown");
 }
+
+/// Code review M6: while an import parses, the model thread keeps serving commands, and
+/// the import can be cancelled.
+#[test]
+fn import_parses_off_the_model_thread_and_cancels() {
+    use gusset_commands::import::CancelFlag;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    struct Slow(Arc<AtomicBool>);
+    impl gusset_commands::session::Importer for Slow {
+        fn import(&self, _: &str, _: &[u8], cancel: &AtomicBool) -> Result<Vec<(String, Vec<u8>)>, String> {
+            self.0.store(true, Ordering::SeqCst);
+            while !cancel.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err("stopped".into())
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("gusset-host-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("part.step"), b"ISO-10303-21;").unwrap();
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut s = Session::new(&doc, Arc::new(gusset_kernel::mock::MockKernel), &CmdCtx::user(0));
+    let started = Arc::new(AtomicBool::new(false));
+    s.importer = Some(Arc::new(Slow(started.clone())));
+    s.project_dir = Some(dir.clone());
+    let h = Host::spawn(s, None);
+    let cancel = CancelFlag::default();
+    let (tx, rx) = mpsc::channel();
+    h.import_detached(CmdCtx::user(1), serde_json::json!({"path": "part.step"}), cancel.clone(), move |r| {
+        let _ = tx.send(r);
+    })
+    .unwrap();
+    while !started.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The model thread is free while the import runs.
+    h.call(CmdCtx::user(2), "param.set", serde_json::json!({"name": "w", "expr": "1 mm"})).unwrap();
+    cancel.store(true, Ordering::SeqCst);
+    let e = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().unwrap_err();
+    assert_eq!(e.code, "cancelled");
+    let _ = h.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

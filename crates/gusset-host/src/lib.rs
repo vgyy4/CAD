@@ -31,9 +31,14 @@
 //!   subscribers miss old events (`RecvError::Lagged`) and should re-read the model.
 //! - A panicking command is caught on the model thread and reported as a
 //!   `CommandError` with code `internal`; the host keeps running.
+//! - `import.file` never parses on the model thread: [`HostHandle::call`],
+//!   [`HostHandle::call_async`] and [`HostHandle::import_detached`] run its three phases
+//!   (open on the model thread, read and parse on a separate thread, commit on the model
+//!   thread) and can be cancelled ([`gusset_commands::import`]).
 //! - [`HostHandle::shutdown`] drains already-queued jobs, stops the thread and hands the
 //!   session and project back to the caller (who decides whether to save and close).
 
+use gusset_commands::import::{CancelFlag, begin_import, complete_import};
 use gusset_commands::session::Change;
 use gusset_commands::{CmdCtx, CommandError, Session, execute};
 use gusset_history::{Actor, BranchId, NodeId};
@@ -167,6 +172,19 @@ impl<R, D: FnOnce(Result<R, CommandError>)> Drop for DoneGuard<R, D> {
         if let Some(d) = self.0.take() {
             d(Err(internal("the command")));
         }
+    }
+}
+
+fn is_import(id: &str) -> bool {
+    gusset_commands::find(id).is_some_and(|s| s.id == "import.file")
+}
+
+/// Sets the flag when dropped (an abandoned async import stops its worker).
+struct CancelOnDrop(CancelFlag);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
     }
 }
 
@@ -350,6 +368,9 @@ impl HostHandle {
     /// # Errors
     /// The command's own error, or the errors of [`HostHandle::exec`].
     pub fn call(&self, ctx: CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
+        if is_import(id) {
+            return self.import(ctx, args, &CancelFlag::default());
+        }
         let id = id.to_string();
         self.exec(move |s, _| execute(s, &ctx, &id, args))?
     }
@@ -359,8 +380,63 @@ impl HostHandle {
     /// # Errors
     /// As [`HostHandle::call`].
     pub async fn call_async(&self, ctx: CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
+        if is_import(id) {
+            return self.import_async(ctx, args).await;
+        }
         let id = id.to_string();
         self.exec_async(move |s, _| execute(s, &ctx, &id, args)).await?
+    }
+
+    /// `import.file` with the parsing on the **calling** thread (never the model thread):
+    /// the model thread only opens the file and later commits the result. Set `cancel`
+    /// from another thread to stop it (the import worker is killed).
+    ///
+    /// # Errors
+    /// The import's errors (`cancelled` when cancelled), plus those of [`HostHandle::exec`].
+    pub fn import(&self, ctx: CmdCtx, args: Value, cancel: &CancelFlag) -> Result<Value, CommandError> {
+        let c1 = ctx.clone();
+        let job = self.exec(move |s, _| begin_import(s, &c1, args))??;
+        let prepared = job.run(cancel);
+        self.exec(move |s, _| complete_import(s, &ctx, prepared))?
+    }
+
+    /// Async [`HostHandle::import`] for MCP: the parse runs on its own thread, and
+    /// dropping the future (the client cancelled the request) cancels the import.
+    ///
+    /// # Errors
+    /// As [`HostHandle::import`].
+    pub async fn import_async(&self, ctx: CmdCtx, args: Value) -> Result<Value, CommandError> {
+        let cancel = CancelFlag::default();
+        let _guard = CancelOnDrop(cancel.clone());
+        let c1 = ctx.clone();
+        let job = self.exec_async(move |s, _| begin_import(s, &c1, args)).await??;
+        let (tx, rx) = oneshot::channel();
+        let c2 = cancel.clone();
+        std::thread::Builder::new()
+            .name("gusset-import".into())
+            .spawn(move || {
+                let _ = tx.send(job.run(&c2));
+            })
+            .map_err(|_| internal("starting the import"))?;
+        let prepared = rx.await.map_err(|_| internal("the import"))?;
+        self.exec_async(move |s, _| complete_import(s, &ctx, prepared)).await?
+    }
+
+    /// [`HostHandle::import`] on a new thread, for the GUI: returns at once; `done`
+    /// receives the result (on the import thread). Keep `cancel` to offer a Cancel button.
+    ///
+    /// # Errors
+    /// When the thread cannot be started (`done` is then not called).
+    pub fn import_detached<D>(&self, ctx: CmdCtx, args: Value, cancel: CancelFlag, done: D) -> Result<(), CommandError>
+    where
+        D: FnOnce(Result<Value, CommandError>) + Send + 'static,
+    {
+        let h = self.clone();
+        std::thread::Builder::new()
+            .name("gusset-import".into())
+            .spawn(move || done(h.import(ctx, args, &cancel)))
+            .map(|_| ())
+            .map_err(|_| internal("starting the import"))
     }
 
     /// Runs a short closure on the calling thread with the session locked (between
