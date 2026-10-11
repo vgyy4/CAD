@@ -3,36 +3,51 @@
 Living status document. Any session should be able to resume from here and CLAUDE.md.
 
 ## Current phase
-Phase 2 (MVP vertical slice), well under way. Phase 0 research and the Phase 1 ADRs are
-written (0000–0015, except 0016, which is not needed yet).
+Phase 2 (MVP vertical slice): feature-complete apart from the gaps below; the milestone
+review (code review, security review, MCP dogfooding with the real kernel) ran on
+2026-10-11 and its findings are being fixed before tagging `v0.1.0-mvp`.
 
 ## Done
-- Research: `docs/RESEARCH.md` plus 5 sourced reports; design guide `docs/DESIGN.md`;
-  threat model; SECURITY.md; HARDWARE.md (generated sections, drift test);
-  PERFORMANCE.md (budgets); INTEROP.md; FORMAT.md (container).
-- Crates (see CLAUDE.md): units, sketch (solver), kernel + mock, OCCT shim + safe
-  kernel, naming, doc (code view), history, eval, store, project, commands (registry,
-  37+ commands, agent policy), meshio, hw, cli.
-- **End to end with real OCCT 8.0.1:** `gusset build examples/bracket.gus.txt --export
-  x.step --export x.3mf`. Sketch → extrude → fillet → sketch on face → cut → exports;
-  the volume matches the analytic value exactly. `gusset self-test` passes.
-- CI: fmt/clippy/test on Linux x64/ARM64 and Windows x64/ARM64 (required), macOS ARM
-  (allowed to fail), cargo-deny, cargo-audit, and a pinned native OCCT build + kernel
-  tests on all targets.
+- Research and design docs: `docs/RESEARCH.md` (+5 reports), `docs/DESIGN.md`, threat
+  model, SECURITY.md, HARDWARE.md, PERFORMANCE.md (budgets), INTEROP.md, FORMAT.md;
+  ADRs 0000–0015.
+- Crates (see CLAUDE.md): units, sketch solver, kernel + mock, OCCT shim + safe kernel,
+  naming, doc (code view), history, eval, store, project, commands (registry, ~40
+  commands, agent policy), meshio, hw, sandbox, worker, render (wgpu + CPU), host,
+  mcp, app (egui GUI), update (signed manifests), cli.
+- End to end with real OCCT 8.0.1: CLI build/export, `gusset self-test`; GUI renders the
+  bracket example; an agent built 5 reference parts through MCP with exact volumes
+  (docs/DOGFOODING.md).
+- GUI: menus/toolbar/command search generated from the registry, schema-generated
+  command dialogs, browser, timeline, code view, close/recovery dialogs, AI agents panel
+  with approvals, audit log and agent branches; kittest automation; screenshot gallery
+  in docs/screenshots/.
+- MCP: rmcp server (HTTP on localhost with token + stdio bridge), tool parity with the
+  registry, `render_view`, agent branches, approvals, read-only mode, persisted audit.
+- CI: fmt/clippy/test on Linux x64/ARM64, Windows x64/ARM64, macOS ARM; cargo-deny,
+  cargo-audit, license inventory, native OCCT builds + kernel tests, fuzzing (11
+  targets) and Miri; release workflow (packages, SBOM, attestations; signing off).
 
-- `gusset mcp [file] [--read-only] [--no-attach]`: relays to a running app or serves
-  headless (OCCT, mock kernel with a warning without OCCT); fd 1 is pointed at stderr
-  and the protocol uses a private duplicate. `render_view` uses gusset-render (GPU,
-  CPU fallback) via gusset-mcp's `render` feature. CLI stdio end-to-end test.
+## In progress (milestone fixes; see docs/SECURITY_REVIEWS.md and docs/reviews/)
+- GPU viewport in the GUI (gusset-render via egui_wgpu) + visual fixes; app-level review
+  findings (open/close/recovery flows, file I/O off the UI thread).
+- Storage/recovery fixes (untitled recovery, Save As project ids, housekeeping/GC,
+  save modes, incremental snapshots, history limits).
+- MCP/agent security (forged elicitation, kill switch, rate limits, export names) and
+  wiring STEP/IGES/mesh import into CLI/app sessions.
+- Sandbox allow-list, Windows DLL hardening, untrusted B-rep blobs in project files.
 
 ## Next
-1. Verify `gusset mcp` against Claude Code in practice (with OCCT); wire the app's
-   HTTP endpoint and renderer (`SceneRenderer`) into `gusset-app`.
-2. GUI app (`gusset-app`, egui): layout per DESIGN.md, viewport, sketch mode, timeline,
-   iteration graph, code view, parameters, close/recovery dialogs, kittest automation.
-3. Sandboxed import worker (`gusset-worker`): STEP/IGES via OCCT out of process.
-4. Release workflow + installers + updater; Miri/fuzz CI jobs; THIRD_PARTY_LICENSES.
-5. Milestone review subagents (code + security), dogfooding subagent (5 parts via MCP).
+1. Modeling-core review items: persistent-naming golden tests (H7), sketch solver
+   performance (M4), evaluation cache memory bound (M10), naming robustness (L3/L4).
+2. Agent ergonomics from dogfooding (face-frame reporting, cut direction, zero-volume
+   warnings, larger code-view text, per-body export, polyline/batch sketch tools).
+3. Benchmarks + CI regression gate (rebuild_100, history_overhead, save_1000).
+4. Re-run review + dogfooding; tag `v0.1.0-mvp` when CI is green.
+
+## Known gaps (not MVP scope per the spec; planned for later phases)
+- Pattern, mirror, shell, splines, offset/datum planes, body move (dogfooding F-M4..M7).
+- Sketch trim / region arrangement from crossing curves (F-M8).
 
 ## Decisions made without the owner (easy to reverse)
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is
@@ -41,7 +56,7 @@ written (0000–0015, except 0016, which is not needed yet).
 - **Repository visibility is private:** Actions minutes are limited (Windows ×2, macOS
   ×10). The OCCT build is cached per target.
 - The repository is named `CAD`, not `gusset`. Renaming is left to the owner.
-- MSRV raised to 1.89 (std file locks, rmcp).
+- MSRV 1.89 for libraries (std file locks, rmcp); the GUI crate needs 1.95 (egui 0.36).
 - Sketch coordinates stored in the document are snapped to 1e-6 mm when they are within
   1e-9 mm of the snapped value, for a readable code view.
 - Container: a custom checksummed format instead of SQLite (ADR 0005). Two-slot
