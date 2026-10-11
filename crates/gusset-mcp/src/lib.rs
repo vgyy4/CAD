@@ -22,6 +22,7 @@ pub mod agents;
 pub mod approval;
 pub mod b64;
 pub mod bridge;
+pub mod grants;
 pub mod guidance;
 pub mod http;
 pub mod identity;
@@ -135,6 +136,18 @@ impl McpServer {
         self.shared.host.with_session(|s| s.config.read_only_agents = read_only)
     }
 
+    /// Standing approvals ("always allow", ADR 0012): list, revoke, suspend/resume and
+    /// load the remembered ones. New grants come only from the in-app prompt.
+    #[must_use]
+    pub fn grants(&self) -> Arc<grants::Grants> {
+        self.shared.grants()
+    }
+
+    /// Shares one grant store between the servers of the projects a window opens.
+    pub fn set_grants(&self, grants: Arc<grants::Grants>) {
+        self.shared.set_grants(grants);
+    }
+
     /// A handler for one stream connection (stdio or in-process).
     #[must_use]
     pub fn handler(&self) -> GussetMcp {
@@ -216,6 +229,9 @@ impl McpServer {
     /// When the connection file cannot be rewritten (the token is invalidated and
     /// connections dropped regardless).
     pub fn revoke(&self) -> Result<(), McpError> {
+        // Standing approvals are suspended too, until the user resumes them explicitly
+        // (the in-memory state changes even if the grant file cannot be written).
+        let _ = self.shared.grants().set_suspended(true);
         match self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             Some(ep) => ep.revoke(),
             None => Ok(()),

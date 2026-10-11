@@ -826,3 +826,73 @@ async fn stdio_headless_refuses_pending_recovery_and_keeps_it() {
     p.release();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The in-app prompt answering "always allow" once (ADR 0012 "Standing approvals").
+struct AlwaysOnce {
+    scope: gusset_mcp::grants::GrantScope,
+    asked: AtomicUsize,
+}
+
+impl gusset_mcp::ApprovalProvider for AlwaysOnce {
+    fn request_approval(&self, _r: &gusset_mcp::ApprovalRequest) -> gusset_mcp::ApprovalDecision {
+        if self.asked.fetch_add(1, Ordering::SeqCst) == 0 {
+            gusset_mcp::ApprovalDecision::ApprovedAlways { scope: self.scope.clone(), remember: false }
+        } else {
+            gusset_mcp::ApprovalDecision::Denied("asked again".into())
+        }
+    }
+}
+
+fn main_name(server: &McpServer) -> String {
+    server.host().with_session(|s| s.history().branch(s.history().main()).unwrap().name.clone()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standing_approval_covers_the_same_agent_only() {
+    use gusset_mcp::grants::GrantScope;
+    let server = McpServer::new(host());
+    let prompt =
+        Arc::new(AlwaysOnce { scope: GrantScope::Command("branch.set_main".into()), asked: AtomicUsize::new(0) });
+    server.set_approval_provider(prompt.clone());
+    let c1 = connect(&server, Client::new("bot", None), false).await;
+    ok(&call(&c1, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+    ok(&call(&c1, "branch_set_main", json!({"branch": "agent/bot-1"})).await);
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 1);
+    // A new connection of the same client: no prompt, audit says why.
+    let c2 = connect(&server, Client::new("bot", None), false).await;
+    ok(&call(&c2, "param_set", json!({"name": "w", "expr": "2 mm"})).await);
+    ok(&call(&c2, "branch_set_main", json!({"branch": "agent/bot-2"})).await);
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 1, "covered by the grant");
+    assert_eq!(main_name(&server), "agent/bot-2");
+    let audit = server.host().with_session(|s| s.audit_log().to_vec()).unwrap();
+    assert!(audit.iter().any(|e| e.command == "branch.set_main" && e.outcome.contains("auto-approved by grant")));
+    // Another client is not covered; nor is another action.
+    let c3 = connect(&server, Client::new("other", None), false).await;
+    ok(&call(&c3, "param_set", json!({"name": "w", "expr": "3 mm"})).await);
+    assert_eq!(err_code(&call(&c3, "branch_set_main", json!({"branch": "agent/other-1"})).await), "approval_denied");
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 2);
+    // Suspended (kill switch): asked again.
+    server.grants().set_suspended(true).unwrap();
+    assert_eq!(err_code(&call(&c2, "branch_set_main", json!({"branch": "agent/bot-1"})).await), "approval_denied");
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 3);
+    server.grants().set_suspended(false).unwrap();
+    // Headless (no app prompt), grants are never used.
+    server.clear_approval_provider();
+    assert_eq!(err_code(&call(&c2, "branch_set_main", json!({"branch": "agent/bot-1"})).await), "approval_denied");
+    assert_eq!(main_name(&server), "agent/bot-2");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blanket_grant_still_asks_for_destructive_actions() {
+    use gusset_mcp::grants::GrantScope;
+    let server = McpServer::new(host());
+    let prompt = Arc::new(AlwaysOnce { scope: GrantScope::All, asked: AtomicUsize::new(0) });
+    server.set_approval_provider(prompt.clone());
+    let c = connect(&server, Client::new("bot", None), false).await;
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+    ok(&call(&c, "branch_set_main", json!({"branch": "agent/bot-1"})).await);
+    ok(&call(&c, "branch_create", json!({"name": "scratch"})).await);
+    let r = call(&c, "branch_delete", json!({"branch": "scratch", "confirm": true})).await;
+    assert_eq!(err_code(&r), "approval_denied", "destructive: asked, not covered");
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 2);
+}

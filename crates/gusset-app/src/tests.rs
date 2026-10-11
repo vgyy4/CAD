@@ -193,9 +193,91 @@ fn approval_modal_approve_and_deny() {
     provider.set_timeout(std::time::Duration::from_millis(50));
     match provider.request_approval(&approval_request("{}")) {
         ApprovalDecision::Denied(why) => assert!(why.contains("did not answer"), "{why}"),
-        ApprovalDecision::Approved => panic!("timed-out request approved"),
+        other => panic!("timed-out request approved: {other:?}"),
     }
     assert_eq!(provider.pending(), 0);
+}
+
+#[test]
+fn approval_modal_always_allow_choices() {
+    use gusset_mcp::grants::GrantScope;
+    let mut h = harness(app());
+    h.run();
+    let provider = h.state().agents.approvals.clone();
+    // "This action" + "remember": a remembered grant for exactly this command.
+    let p = provider.clone();
+    let t = std::thread::spawn(move || p.request_approval(&approval_request("{}")));
+    run_until(&mut h, "the approval modal", |h| h.query_by_label("Approve").is_some());
+    h.get_by_label("Always allow this action for \"claude-code\"").click();
+    h.run();
+    h.get_by_label("Remember after restart").click();
+    h.run();
+    h.get_by_label("Approve").click();
+    h.run();
+    assert_eq!(
+        t.join().unwrap(),
+        ApprovalDecision::ApprovedAlways { scope: GrantScope::Command("branch.set_main".into()), remember: true }
+    );
+    // The next request starts with every box cleared: a plain approval.
+    let p = provider.clone();
+    let t = std::thread::spawn(move || p.request_approval(&approval_request("{}")));
+    run_until(&mut h, "the approval modal", |h| h.query_by_label("Approve").is_some());
+    h.get_by_label("Approve").click();
+    h.run();
+    assert_eq!(t.join().unwrap(), ApprovalDecision::Approved);
+    // "All actions" cannot be chosen for a destructive command.
+    let p = provider.clone();
+    let t = std::thread::spawn(move || {
+        let mut r = approval_request("{}");
+        r.command = "branch.delete".into();
+        p.request_approval(&r)
+    });
+    run_until(&mut h, "the approval modal", |h| h.query_by_label("Approve").is_some());
+    h.get_by_label("Always allow all actions for \"claude-code\"").click();
+    h.run();
+    h.get_by_label("Approve").click();
+    h.run();
+    assert_eq!(t.join().unwrap(), ApprovalDecision::Approved);
+}
+
+#[test]
+fn agents_panel_lists_and_revokes_grants() {
+    let mut a = app();
+    a.agents.show_panel = true;
+    let mut h = harness(a);
+    h.run();
+    h.get_by_label("No standing approvals");
+    let file = std::env::temp_dir().join(format!("gusset-app-grants-{}", rand_suffix()));
+    let path = file.join("agent-grants.json");
+    let grants = h.state().agents.grants.clone();
+    grants.load(&path).unwrap();
+    // Grants are created by the server on an in-app answer; simulate the stored file.
+    std::fs::create_dir_all(&file).unwrap();
+    std::fs::write(
+        &path,
+        json!({"version": 1, "suspended": false, "grants": [
+            {"agent": "claude-code", "scope": "all", "remember": true, "created": 0}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(grants.load(&path).unwrap(), 1);
+    h.run();
+    h.get_by_label("claude-code");
+    h.get_by_label_contains("all actions · kept after restart");
+    // The kill switch suspends them; Resume brings them back.
+    h.get_by_label("Revoke token").click();
+    h.run();
+    h.get_by_label_contains("Suspended by the kill switch");
+    assert!(grants.covering("claude-code-1", "branch.set_main").is_none());
+    h.get_by_label("Resume grants").click();
+    h.run();
+    assert!(grants.covering("claude-code-1", "branch.set_main").is_some());
+    h.get_by_label("Revoke").click();
+    h.run();
+    h.get_by_label("No standing approvals");
+    assert_eq!(grants.load(&path).unwrap(), 0, "revocation is saved");
+    let _ = std::fs::remove_dir_all(&file);
 }
 
 #[test]

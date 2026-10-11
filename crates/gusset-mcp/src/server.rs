@@ -46,6 +46,8 @@ pub(crate) struct Shared {
     limits: RateLimiter,
     texts: TextStore,
     pending: PendingApprovals,
+    /// Standing approvals; used only while the app's provider is installed.
+    grants: RwLock<Arc<crate::grants::Grants>>,
     diagnostics: RwLock<Option<String>>,
     elicitation_timeout: Duration,
     next_instance: AtomicU64,
@@ -70,6 +72,7 @@ impl Shared {
             limits: RateLimiter::default(),
             texts: TextStore::default(),
             pending: PendingApprovals::default(),
+            grants: RwLock::new(Arc::default()),
             diagnostics: RwLock::new(None),
             elicitation_timeout: Duration::from_secs(600),
             next_instance: AtomicU64::new(1),
@@ -82,6 +85,14 @@ impl Shared {
 
     pub(crate) fn set_approvals(&self, p: Option<Arc<dyn ApprovalProvider>>) {
         *self.approvals.write().unwrap_or_else(std::sync::PoisonError::into_inner) = p;
+    }
+
+    pub(crate) fn grants(&self) -> Arc<crate::grants::Grants> {
+        self.grants.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    pub(crate) fn set_grants(&self, g: Arc<crate::grants::Grants>) {
+        *self.grants.write().unwrap_or_else(std::sync::PoisonError::into_inner) = g;
     }
 
     pub(crate) fn set_diagnostics(&self, text: String) {
@@ -414,12 +425,30 @@ impl GussetMcp {
         // app hosts the session, its in-app prompt is the only channel, whatever the
         // client claims. Headless, elicitation is the only way to reach a human at all.
         if let Some(provider) = self.shared.approvals() {
+            // Standing approvals ("always allow") exist only in the app, were made only
+            // through its prompt, and are void while suspended by the kill switch.
+            if let Some(g) = self.shared.grants().covering(agent, spec.id) {
+                let ctx = CmdCtx {
+                    approved: true,
+                    approved_by: Some(format!("auto-approved by grant: {}", g.describe())),
+                    ..cctx
+                };
+                return self.finish(agent, self.run(ctx, spec.id, args).await);
+            }
             let decision = tokio::task::spawn_blocking(move || provider.request_approval(&request))
                 .await
                 .unwrap_or_else(|_| ApprovalDecision::Denied("the approval prompt failed".into()));
             return match decision {
                 ApprovalDecision::Approved => {
                     self.finish(agent, self.run(CmdCtx { approved: true, ..cctx }, spec.id, args).await)
+                }
+                ApprovalDecision::ApprovedAlways { scope, remember } => {
+                    let note = match self.shared.grants().add(agent, scope, remember, cctx.time) {
+                        Ok(g) => format!("approved by the user, who granted: {}", g.describe()),
+                        Err(e) => format!("approved by the user; the grant was not kept: {e}"),
+                    };
+                    let ctx = CmdCtx { approved: true, approved_by: Some(note), ..cctx };
+                    self.finish(agent, self.run(ctx, spec.id, args).await)
                 }
                 ApprovalDecision::Denied(why) => self.denied(agent, &why),
             };
@@ -447,8 +476,9 @@ impl GussetMcp {
                 Err(_) => self.denied(agent, "the approval request was not answered"),
             };
         }
+        // Headless: never a standing approval, whatever a provider returned.
         match DenyApprovals.request_approval(&request) {
-            ApprovalDecision::Approved => {
+            ApprovalDecision::Approved | ApprovalDecision::ApprovedAlways { .. } => {
                 self.finish(agent, self.run(CmdCtx { approved: true, ..cctx }, spec.id, args).await)
             }
             ApprovalDecision::Denied(why) => self.denied(agent, &why),

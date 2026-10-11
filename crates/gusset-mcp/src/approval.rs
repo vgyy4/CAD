@@ -50,6 +50,10 @@ impl ApprovalRequest {
 pub enum ApprovalDecision {
     /// Run the command with approval.
     Approved,
+    /// Run it, and from now on approve what `scope` covers for this agent without asking
+    /// (ADR 0012 "Standing approvals"). Only the app's in-app prompt may return this;
+    /// `remember` keeps the grant after a restart.
+    ApprovedAlways { scope: crate::grants::GrantScope, remember: bool },
     /// Do not run it; the reason is passed to the agent.
     Denied(String),
 }

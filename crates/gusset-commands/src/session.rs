@@ -17,14 +17,17 @@ pub struct CmdCtx {
     /// Set **only** by the trusted layer (GUI prompt or MCP elicitation answered by the
     /// human). Agents can never set it through tool arguments.
     pub approved: bool,
+    /// How approval was given when not by a prompt answer for this very call (a standing
+    /// "always allow" grant); recorded in the audit log. Set only by the trusted layer.
+    pub approved_by: Option<String>,
 }
 
 impl CmdCtx {
     pub fn user(time: u64) -> Self {
-        CmdCtx { actor: Actor::User, time, approved: true }
+        CmdCtx { actor: Actor::User, time, approved: true, approved_by: None }
     }
     pub fn agent(name: &str, time: u64) -> Self {
-        CmdCtx { actor: Actor::Agent(name.to_string()), time, approved: false }
+        CmdCtx { actor: Actor::Agent(name.to_string()), time, approved: false, approved_by: None }
     }
     pub fn is_agent(&self) -> bool {
         matches!(self.actor, Actor::Agent(_))

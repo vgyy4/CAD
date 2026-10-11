@@ -154,10 +154,13 @@ pub(crate) fn audit(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec, detail: &
     }
     let bid = s.current_branch(&ctx.actor);
     let branch = s.history().branch(bid).ok().map(|b| b.name.clone());
-    let outcome = match r {
+    let mut outcome = match r {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("error: {}", e.code),
     };
+    if let Some(by) = &ctx.approved_by {
+        outcome = format!("{outcome} ({})", clip(by, 200));
+    }
     // Plain reads stay in memory only.
     let denied = matches!(r, Err(e) if matches!(e.code.as_str(),
         "approval_required" | "not_allowed" | "read_only" | "rate_limited"));
@@ -165,6 +168,10 @@ pub(crate) fn audit(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec, detail: &
         s.history_mut_pub().record_agent_action(&ctx.hctx(), spec.id, Some(bid), &outcome, detail);
     }
     s.audit(AuditEntry { time: ctx.time, actor: ctx.actor.clone(), command: spec.id.to_string(), branch, outcome });
+}
+
+fn clip(t: &str, n: usize) -> String {
+    if t.chars().count() > n { format!("{}…", t.chars().take(n).collect::<String>()) } else { t.to_string() }
 }
 
 fn clip_args(args: &Value) -> String {

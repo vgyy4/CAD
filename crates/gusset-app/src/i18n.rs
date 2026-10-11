@@ -125,6 +125,26 @@ const EN: &[(&str, &str)] = &[
     ("approval.queued", "more request(s) waiting"),
     ("approval.approve", "Approve"),
     ("approval.deny", "Deny"),
+    ("approval.always_action", "Always allow this action for"),
+    ("approval.always_all", "Always allow all actions for"),
+    ("approval.always_all_help", "Except deleting branches and overwriting files, which always ask"),
+    ("approval.always_all_excluded", "Deleting and overwriting always ask; grant this action on its own instead"),
+    ("approval.always_remember", "Remember after restart"),
+    (
+        "approval.always_remember_help",
+        "Otherwise the grant ends when Gusset closes. Revoke grants in the AI agents panel",
+    ),
+    ("agents.allow_again", "Allow agents again"),
+    ("agents.allowed_again", "Agents may connect again with the new token"),
+    ("agents.grants", "Always allowed"),
+    ("agents.no_grants", "No standing approvals"),
+    ("agents.grants_suspended", "Suspended by the kill switch: every request asks again"),
+    ("agents.grant_all", "all actions"),
+    ("agents.grant_kept", "kept after restart"),
+    ("agents.grant_session", "until Gusset closes"),
+    ("agents.grant_revoke", "Revoke"),
+    ("agents.grants_revoke_all", "Revoke all"),
+    ("agents.grants_resume", "Resume grants"),
 ];
 
 /// Looks up a UI string; unknown keys return the key itself (visible in tests).

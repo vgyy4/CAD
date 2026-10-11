@@ -198,6 +198,37 @@ pub struct Agents {
     pub show_token: bool,
     /// Last branch comparison: (branch name, plain-text lines).
     pub compare: Option<(String, Vec<String>)>,
+    /// Standing approvals ("always allow"), shared by every project this window opens.
+    pub grants: Arc<gusset_mcp::grants::Grants>,
+    /// The approval modal's "always allow" choices for the request it shows.
+    pub always: AlwaysChoice,
+}
+
+/// The "always allow" checkboxes of the approval modal (reset for every request).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AlwaysChoice {
+    /// Request id these choices belong to.
+    pub id: u64,
+    pub this_action: bool,
+    pub all_actions: bool,
+    pub remember: bool,
+}
+
+impl AlwaysChoice {
+    /// The decision for "Approve" with these choices. "All actions" wins over "this
+    /// action"; without either it is a one-time approval.
+    #[must_use]
+    pub fn decision(&self, command: &str) -> ApprovalDecision {
+        use gusset_mcp::grants::GrantScope;
+        let scope = if self.all_actions {
+            GrantScope::All
+        } else if self.this_action {
+            GrantScope::Command(command.to_string())
+        } else {
+            return ApprovalDecision::Approved;
+        };
+        ApprovalDecision::ApprovedAlways { scope, remember: self.remember }
+    }
 }
 
 impl std::fmt::Debug for Agents {
@@ -221,6 +252,8 @@ impl Agents {
             show_panel: false,
             show_token: false,
             compare: None,
+            grants: Arc::default(),
+            always: AlwaysChoice::default(),
         };
         a.attach(host);
         a
@@ -237,6 +270,7 @@ impl Agents {
     pub fn attach(&mut self, host: &HostHandle) {
         let server = McpServer::new(host.clone());
         server.set_approval_provider(self.approvals.clone());
+        server.set_grants(self.grants.clone());
         server.set_renderer(self.renderer.clone());
         self.server = Some(server);
         if let Some(opts) = self.http.clone() {
@@ -302,8 +336,37 @@ impl Agents {
     /// # Errors
     /// A message for the status bar.
     pub fn revoke(&self) -> Result<(), String> {
+        // Standing approvals are suspended with the token (the server does it too).
+        let _ = self.grants.set_suspended(true);
         match &self.server {
             Some(s) => s.revoke().map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    /// Loads the remembered "always allow" grants (owner-only file in the user's data
+    /// directory). Without this call grants last until the window closes.
+    ///
+    /// # Errors
+    /// A message for the status bar (a damaged file gives no grants).
+    pub fn load_grants(&self, path: &std::path::Path) -> Result<usize, String> {
+        self.grants.load(path).map_err(|e| e.to_string())
+    }
+
+    /// True after the kill switch until the user allows agents again.
+    #[must_use]
+    pub fn paused(&self) -> bool {
+        self.server.as_ref().is_some_and(McpServer::agents_paused)
+    }
+
+    /// "Allow agents again" after the kill switch: a new token. Grants stay suspended
+    /// until resumed separately.
+    ///
+    /// # Errors
+    /// A message for the status bar.
+    pub fn allow_again(&self) -> Result<(), String> {
+        match &self.server {
+            Some(s) => s.allow_agents().map_err(|e| e.to_string()),
             None => Ok(()),
         }
     }
@@ -478,6 +541,14 @@ impl App {
                     Err(e) => Notice { text: e, hint: None, error: true },
                 });
             }
+            if self.agents.paused() && ui.button(tr("agents.allow_again")).clicked() {
+                self.notice = Some(match self.agents.allow_again() {
+                    Ok(()) => Notice { text: tr("agents.allowed_again").into(), hint: None, error: false },
+                    Err(e) => Notice { text: e, hint: None, error: true },
+                });
+            }
+            ui.separator();
+            self.grants_section(ui, &pal);
             ui.separator();
 
             // Agent branches.
@@ -539,6 +610,48 @@ impl App {
         });
     }
 
+    /// Standing approvals: every grant with its own Revoke button, Revoke all, and
+    /// Resume after the kill switch suspended them.
+    fn grants_section(&mut self, ui: &mut Ui, pal: &theme::Palette) {
+        use gusset_mcp::grants::GrantScope;
+        let grants = self.agents.grants.list();
+        ui.label(RichText::new(tr("agents.grants")).strong());
+        if grants.is_empty() {
+            ui.weak(tr("agents.no_grants"));
+            return;
+        }
+        let suspended = self.agents.grants.suspended();
+        if suspended {
+            ui.colored_label(pal.warning, tr("agents.grants_suspended"));
+        }
+        let mut result = None;
+        for g in &grants {
+            ui.horizontal_wrapped(|ui| {
+                let what = match &g.scope {
+                    GrantScope::Command(c) => plain(c, 64),
+                    GrantScope::All => tr("agents.grant_all").to_string(),
+                };
+                let when = if g.remember { tr("agents.grant_kept") } else { tr("agents.grant_session") };
+                icons::labeled(ui, Icon::Diamond, pal.agent, plain(&g.agent, 64));
+                ui.label(format!("{what} · {when}"));
+                if ui.small_button(tr("agents.grant_revoke")).clicked() {
+                    result = Some(self.agents.grants.revoke(&g.agent, &g.scope));
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui.button(tr("agents.grants_revoke_all")).clicked() {
+                result = Some(self.agents.grants.revoke_all());
+            }
+            if suspended && ui.button(tr("agents.grants_resume")).clicked() {
+                result = Some(self.agents.grants.set_suspended(false));
+            }
+        });
+        if let Some(Err(e)) = result {
+            self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
+        }
+    }
+
     /// The approval modal: the exact action an agent wants to run, Approve / Deny.
     pub(crate) fn approval_modal(&mut self, ctx: &egui::Context) {
         let Some(shown) = self.agents.approvals.current() else { return };
@@ -565,13 +678,34 @@ impl App {
                     ui.end_row();
                 }
             });
+            // "Always allow" (ADR 0012 "Standing approvals"): only ever set here.
+            if self.agents.always.id != shown.id {
+                self.agents.always = AlwaysChoice { id: shown.id, ..AlwaysChoice::default() };
+            }
+            let who = plain(gusset_mcp::limits::identity_of(&r.agent), 64);
+            let a = &mut self.agents.always;
+            ui.add_space(theme::SPACE[2]);
+            ui.checkbox(&mut a.this_action, format!("{} \"{who}\"", tr("approval.always_action")));
+            let blanket = gusset_mcp::grants::blanket_ok(&r.command);
+            ui.add_enabled_ui(blanket, |ui| {
+                ui.checkbox(&mut a.all_actions, format!("{} \"{who}\"", tr("approval.always_all")))
+                    .on_hover_text(tr("approval.always_all_help"))
+                    .on_disabled_hover_text(tr("approval.always_all_excluded"));
+            });
+            if !blanket {
+                a.all_actions = false;
+            }
+            ui.add_enabled_ui(a.this_action || a.all_actions, |ui| {
+                ui.checkbox(&mut a.remember, tr("approval.always_remember"))
+                    .on_hover_text(tr("approval.always_remember_help"));
+            });
             ui.weak(format!("{} {} s", tr("approval.timeout"), shown.seconds_left));
             if shown.queued > 0 {
                 ui.weak(format!("{} {}", shown.queued, tr("approval.queued")));
             }
             ui.horizontal(|ui| {
                 if ui.button(tr("approval.approve")).clicked() {
-                    decision = Some(ApprovalDecision::Approved);
+                    decision = Some(self.agents.always.decision(&r.command));
                 }
                 if ui.button(tr("approval.deny")).clicked() {
                     decision = Some(ApprovalDecision::Denied("the user denied the request".into()));

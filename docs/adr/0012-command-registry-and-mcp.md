@@ -98,6 +98,33 @@ same live model.
   approvals protect against an agent that follows instructions, not against a hostile
   local client. The in-app prompt is the strong path, because only the person at the
   app can answer it; that is why the app never accepts elicitation answers.
+- **Standing approvals ("always allow")** (added 2026-10-11 at the owner's request;
+  code: `gusset_mcp::grants`). The in-app prompt offers "Always allow this action for
+  <agent>", "Always allow all actions for <agent>" and "Remember after restart".
+  - *Only the app creates grants:* the in-app provider returns
+    `ApprovalDecision::ApprovedAlways`; tool arguments, elicitation answers and the
+    headless server can neither create nor use a grant (headless ignores the store).
+  - *Identity:* a grant names the agent identity, the sanitized client name without
+    the per-connection `-<n>` (the key rate limits use), so it covers reconnects and
+    restarts. Limit: the client name is self-declared, so any client holding the
+    bearer token can claim it. Per the trust model above, a token holder already is
+    the local user; grants are a convenience boundary against a well-behaved agent
+    overreaching, not a defense against hostile same-user code. Per-agent
+    credentials would not change that and are not worth their setup cost now.
+  - *Scope:* one command, or all commands that are neither destructive nor write files.
+    Deleting branches and overwriting exports always ask unless that exact action was
+    granted; the prompt disables "all actions" for such requests.
+  - *Lifetime:* session-only unless "remember" is ticked. Remembered grants live in
+    `<data dir>/agent-grants.json`, owner-only (0600 file in a 0700 directory), written
+    with `durable_write`. A symlink, an oversized file or bad JSON gives no grants;
+    entries are validated (sanitized identity, registered non-user-only command) and
+    capped at 256.
+  - *Control:* the Agents panel lists every grant with Revoke and "Revoke all". The
+    kill switch (revoke token) suspends all grants, persistently, until the user
+    presses "Resume grants". "Allow agents again" does not resume them.
+  - *Audit:* each auto-approved call is recorded with outcome
+    `ok (auto-approved by grant: <grant>)` in the persisted agent audit log, and the
+    approving call with the grant it created.
 - **Untrusted text in output:** every user-authored string (labels, notes, comments,
   file names, imported names) appears only in fields named `user_text` or ending in
   `_user_text`. Control, zero-width and bidi-override characters are stripped, values

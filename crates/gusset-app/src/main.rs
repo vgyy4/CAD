@@ -29,7 +29,14 @@ fn main() -> eframe::Result {
     {
         eprintln!("warning: trusted-blob list unavailable: {e}");
     }
+    let grant_file = dirs.as_ref().map(|d| d.data_dir().join("agent-grants.json"));
     let mut app = App::new(k, dirs);
+    // Remembered "always allow" agent grants (ADR 0012 "Standing approvals").
+    if let Some(f) = &grant_file
+        && let Err(e) = app.agents.load_grants(f)
+    {
+        app.notice = Some(gusset_app::app::Notice { text: e, hint: None, error: true });
+    }
     app.kernel_note = note;
     if let Some(path) = std::env::args_os().nth(1)
         && let Err(e) = app.open(path.into())
