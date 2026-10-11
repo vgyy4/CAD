@@ -56,6 +56,9 @@ pub enum OpContext<'a> {
 pub struct BodyNames {
     pub faces: Vec<FaceRef>,
     pub edges: Vec<EdgeRef>,
+    /// Per vertex: the smallest name among its edges. A corner blend made at that
+    /// vertex is named after it (review L3).
+    pub corners: Vec<Option<EdgeRef>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,13 +172,24 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
         .map(|e| EdgeRef::new(e.faces.iter().filter_map(|&f| faces.get(f as usize).cloned()).collect(), None))
         .collect();
     disambiguate(&mut edges, |i| topo.edges.get(i).map(|e| geo_key(e.midpoint, e.length)), |e, k| e.index = k);
-    Ok(BodyNames { faces, edges })
+    let mut corners: Vec<Option<EdgeRef>> = vec![None; topo.vertices.len()];
+    for (e, info) in edges.iter().zip(&topo.edges) {
+        for &v in &info.vertices {
+            if let Some(slot) = corners.get_mut(v as usize)
+                && slot.as_ref().is_none_or(|c| e.to_string() < c.to_string())
+            {
+                *slot = Some(e.clone());
+            }
+        }
+    }
+    Ok(BodyNames { faces, edges, corners })
 }
 
-fn corner_edge(b: &BodyNames, _vertex: u32) -> Option<EdgeRef> {
-    // Vertex adjacency is not tracked in BodyNames; use the smallest edge name overall as a
-    // stable fallback. Corner blends are rarely referenced directly.
-    b.edges.iter().min_by_key(|e| e.to_string()).cloned()
+fn corner_edge(b: &BodyNames, vertex: u32) -> Option<EdgeRef> {
+    // The smallest-named edge at that vertex; the two corners at the ends of one edge
+    // are then told apart by the geometric `#k` index. Bodies named without vertex
+    // information fall back to the smallest edge name overall.
+    b.corners.get(vertex as usize).cloned().flatten().or_else(|| b.edges.iter().min_by_key(|e| e.to_string()).cloned())
 }
 
 /// A deterministic ordering key from rounded geometry.
@@ -444,6 +458,51 @@ mod tests {
         let n = name_body(&OpContext::Modify { feature: "Fillet1", inputs: &[&base] }, &origins, &topo).unwrap();
         assert_eq!(n.faces[2], base.faces[2]);
         assert_eq!(n.faces[6].to_string(), format!("Fillet1/blend({})", base.edges[4]));
+    }
+
+    #[test]
+    fn corner_blends_are_named_after_an_edge_at_their_vertex() {
+        // Review L3: two corner blends at different vertices get different names, each
+        // from an edge that meets its own vertex.
+        let mut base = named_box(40.0);
+        let pick = |i: usize| base.edges.get(i).cloned();
+        base.corners = vec![pick(0), pick(5)];
+        let mut origins: Vec<Vec<FaceOrigin>> = (0..6).map(|f| vec![FaceOrigin::Input { input: 0, face: f }]).collect();
+        origins.push(vec![FaceOrigin::FromVertex { input: 0, vertex: 0 }]);
+        origins.push(vec![FaceOrigin::FromVertex { input: 0, vertex: 1 }]);
+        let mut topo = Topology::default();
+        for i in 0..8 {
+            topo.faces.push(FaceInfo {
+                kind: SurfaceKind::Plane,
+                area: 1.0,
+                centroid: [i as f64, 0.0, 0.0],
+                normal: [0.0; 3],
+            });
+        }
+        let n = name_body(&OpContext::Modify { feature: "Fillet1", inputs: &[&base] }, &origins, &topo).unwrap();
+        assert_eq!(n.faces[6].to_string(), format!("Fillet1/blend({})", base.edges[0]));
+        assert_eq!(n.faces[7].to_string(), format!("Fillet1/blend({})", base.edges[5]));
+    }
+
+    #[test]
+    fn corners_come_from_incident_edges() {
+        let k = MockKernel;
+        let res = k
+            .extrude(
+                &rect_profile(40.0, 20.0, ["l5", "l6", "l7", "l8"]),
+                &ExtrudeSpec { distance: 10.0, symmetric: false },
+            )
+            .unwrap();
+        let t = k.topology(&res.shape).unwrap();
+        let n =
+            name_body(&OpContext::Sweep { feature: "E", sketch: "S", regions: &[] }, &res.face_origins, &t).unwrap();
+        assert!(t.vertices.len() >= 8, "the mock box has its vertices");
+        assert_eq!(n.corners.len(), t.vertices.len());
+        for (v, c) in n.corners.iter().enumerate() {
+            let c = c.as_ref().unwrap();
+            let ei = n.edges.iter().position(|e| e == c).unwrap();
+            assert!(t.edges[ei].vertices.contains(&(v as u32)), "corner {v} named after a far edge");
+        }
     }
 
     #[test]
