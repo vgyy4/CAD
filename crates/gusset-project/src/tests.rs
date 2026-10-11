@@ -417,3 +417,105 @@ fn perf_save_and_snapshot() {
         p.close();
     }
 }
+
+// ---------------------------------------------------------------- format fixtures
+//
+// Frozen files under tests/fixtures/format/ (ADR 0005 "every schema bump adds a
+// migration test with a frozen fixture file"). They must always open with the same
+// content. Never regenerate an existing fixture: add a new one per schema/format bump
+// (`GUSSET_WRITE_FIXTURES=1 cargo test -p gusset-project write_format_fixtures --
+// --ignored` writes missing files only).
+
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/format")
+}
+
+fn fixture_history() -> History {
+    let u = Ctx::user(1_760_000_000);
+    let a = Ctx::agent("claude-code-1", 1_760_000_100);
+    let mut h = History::new(&doc("10 mm"), &u);
+    let main = h.main();
+    let root = h.head(main).unwrap();
+    let n2 = h.commit(&u, main, &doc("12 mm"), "a=12", NodeState::Ok).unwrap();
+    h.set_starred(&u, n2, true).unwrap();
+    h.name_node(&u, n2, Some("Baseline")).unwrap();
+    let b = h.create_branch(&a, root, Some("agent/claude-code-1")).unwrap();
+    h.commit(&a, b, &doc("3 mm"), "agent edit", NodeState::Broken { message: "Fillet1: radius too big".into() })
+        .unwrap();
+    let gone = h.create_branch(&u, n2, Some("Scrap")).unwrap();
+    h.delete_branch(&u, gone, true).unwrap();
+    h.set_rollback(&u, main, Some(0)).unwrap();
+    h.record_agent_action(&a, "feature_add", Some(b), "ok", "added\tFillet1");
+    h.put_blob(b"imported STEP bytes");
+    h
+}
+
+fn fixture_meta() -> ProjectMeta {
+    ProjectMeta { id: ProjectId([0x11; 16]), save_seq: 4, base_seq: 4, created: 1_760_000_000 }
+}
+
+fn check_fixture_history(h: &History) {
+    let names: Vec<&str> = h.branches().iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["Main", "agent/claude-code-1"]);
+    assert_eq!(h.deleted_branches().len(), 1);
+    assert_eq!(h.head_document(h.main()).unwrap(), doc("12 mm"));
+    assert_eq!(h.branch(h.main()).unwrap().rollback, None, "rollback past the end is clamped");
+    let named = h.nodes().find(|n| n.name.as_deref() == Some("Baseline")).unwrap();
+    assert!(named.starred);
+    assert!(h.nodes().any(|n| matches!(&n.state, NodeState::Broken { message } if message.contains("Fillet1"))));
+    assert!(
+        h.events()
+            .iter()
+            .any(|e| matches!(&e.event, gusset_history::Event::AgentAction { detail, .. } if detail == "addedFillet1"))
+    );
+    assert!(
+        h.objects().iter().any(|(_, k, b)| k == gusset_history::ObjectKind::Blob && &b[..] == b"imported STEP bytes")
+    );
+}
+
+#[test]
+#[ignore = "writes missing fixture files"]
+fn write_format_fixtures() {
+    if std::env::var("GUSSET_WRITE_FIXTURES").is_err() {
+        return;
+    }
+    let dir = fixture_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let h = fixture_history();
+    let overrides = ProjectSettings { save_mode: Some(SaveMode::Auto), ..ProjectSettings::default() };
+    let project = dir.join("v1-project.gus");
+    if !project.exists() {
+        let bytes = encode_with(&h, &fixture_meta(), None, &overrides, &mut RecordCache::new()).unwrap();
+        std::fs::write(&project, bytes).unwrap();
+    }
+    let rec = dir.join("v1-recovery.grec");
+    if !rec.exists() {
+        let mut meta = fixture_meta();
+        meta.base_seq = 4;
+        let img = encode_with(&h, &meta, Some(Path::new("/projects/bracket.gus")), &overrides, &mut RecordCache::new())
+            .unwrap();
+        let older = encode(&History::new(&doc("1 mm"), &Ctx::user(1)), &fixture_meta()).unwrap();
+        std::fs::write(&rec, recovery::encode(&[(6, &older), (7, &img)])).unwrap();
+    }
+}
+
+#[test]
+fn format_v1_fixtures_still_open() {
+    let dir = fixture_dir();
+    let bytes = std::fs::read(dir.join("v1-project.gus")).expect("frozen fixture missing");
+    let (h, meta, overrides) = decode_full(&bytes, None).unwrap();
+    assert_eq!(meta, fixture_meta());
+    assert_eq!(overrides.save_mode, Some(SaveMode::Auto));
+    check_fixture_history(&h);
+    // Re-encoding what we read must open again (forward path of a migration).
+    let again = encode(&h, &meta).unwrap();
+    check_fixture_history(&decode(&again).unwrap().0);
+
+    let rec = std::fs::read(dir.join("v1-recovery.grec")).expect("frozen fixture missing");
+    let slots = recovery::decode_slots(&rec);
+    assert_eq!(slots.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![6, 7]);
+    let newest = slots.iter().max_by_key(|s| s.seq).unwrap();
+    let c = container::open(&newest.payload).unwrap();
+    assert_eq!(c.root(ORIGIN_ROOT), Some(&b"/projects/bracket.gus"[..]));
+    check_fixture_history(&decode(&newest.payload).unwrap().0);
+}

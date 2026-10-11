@@ -136,8 +136,8 @@ fn killed_mid_write_always_leaves_an_openable_project() {
             }
         }
 
-        let (p, h, report) = Project::open(&file, dirs(&root))
-            .unwrap_or_else(|e| panic!("round {round}: project does not open: {e}"));
+        let (p, h, report) =
+            Project::open(&file, dirs(&root)).unwrap_or_else(|e| panic!("round {round}: project does not open: {e}"));
         let at = edit_number(&h);
         assert!(at >= last_saved, "round {round}: file at edit {at}, but edit {last_saved} was acknowledged");
         match report {
@@ -149,7 +149,10 @@ fn killed_mid_write_always_leaves_an_openable_project() {
             }
             OpenReport::RecoveryAvailable { recovered, .. } => {
                 let r = edit_number(&recovered);
-                assert!(r >= last_snap_after_save, "round {round}: recovery at {r} < acknowledged {last_snap_after_save}");
+                assert!(
+                    r >= last_snap_after_save,
+                    "round {round}: recovery at {r} < acknowledged {last_snap_after_save}"
+                );
             }
             OpenReport::Damaged { reason, source } => {
                 panic!("round {round}: damaged after a kill ({reason}); fell back to {source:?}")
