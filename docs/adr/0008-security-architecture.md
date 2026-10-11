@@ -12,14 +12,18 @@
 2. **Memory safety.** `#![forbid(unsafe_code)]` is the workspace default. Only these
    crates may contain `unsafe`, each with `// SAFETY:` comments on every block, and
    each has Miri runs where feasible:
-   - `gusset-occt-sys` (C++ FFI shim)
+   - `gusset-occt-sys` (C++ FFI shim, and the safe wrappers in its `safe` module that
+     `gusset-kernel-occt` and the worker use; those two crates forbid `unsafe`)
    - `gusset-store` (Windows `MoveFileExW` write-through only)
-   - `gusset-hw` (CPU feature/brand queries, thread-priority FFI, and pointing stdout at
-     stderr for the `gusset mcp` protocol stream only)
-   - `gusset-sandbox` (OS sandbox setup for the import worker)
-   - `gusset-app` (Windows DLL search-path hardening at startup)
-   
-   The reviewer checks this list against `grep -r "allow(unsafe_code)"`.
+   - `gusset-hw` (CPU feature/brand queries, thread-priority FFI, pointing stdout at
+     stderr for the `gusset mcp` protocol stream, and the Windows DLL search-path
+     hardening that the app, CLI and worker call at startup)
+   - `gusset-sandbox` (OS sandbox setup for the import worker, process-group kill)
+
+   The reviewer checks this list against `grep -r "allow(unsafe_code)"`, and
+   `crates/gusset-sandbox/tests/unsafe_allowlist.rs` enforces it: every other crate must
+   inherit the workspace lints (`unsafe_code = "forbid"`), and this list must match the
+   test's.
 3. **Code-view language sandbox:** the language is declarative and pure (ADR 0004), and
    its parser and evaluator enforce size, depth and count limits. A future scripting
    feature gets its own WASM sandbox with explicit capabilities and a per-project

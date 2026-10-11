@@ -1,7 +1,8 @@
 //! Raw FFI bindings to Gusset's C shim over OCCT (`cpp/gusset_occt.h`).
 //!
-//! This is one of the few crates allowed to contain `unsafe` (ADR 0008). Everything is
-//! wrapped safely by `gusset-kernel-occt`; nothing else should use this crate directly.
+//! This is one of the few crates allowed to contain `unsafe` (ADR 0008). The raw
+//! `extern` functions are private; the [`safe`] module wraps every one of them, so
+//! dependents (`gusset-kernel-occt`, `gusset-worker`) contain no `unsafe` code.
 //!
 //! When the crate is built without OCCT (`GUSSET_OCCT_DIR` unset), [`AVAILABLE`] is false
 //! and no symbols are declared.
@@ -83,83 +84,105 @@ pub struct GsProfile {
 }
 
 #[cfg(gusset_occt)]
-unsafe extern "C" {
-    pub fn gs_last_error() -> *const core::ffi::c_char;
-    pub fn gs_occt_version() -> *const core::ffi::c_char;
-    pub fn gs_shape_free(s: *mut GsShape);
-    pub fn gs_buf_free(b: *mut GsBuf);
-    pub fn gs_shape_array_free(shapes: *mut *mut GsShape, n: usize);
+pub mod safe;
 
-    pub fn gs_extrude(
-        p: *const GsProfile,
-        distance: f64,
-        symmetric: i32,
-        out: *mut *mut GsShape,
-        origins: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_revolve(
-        p: *const GsProfile,
-        axis_origin: *const f64,
-        axis_dir: *const f64,
-        angle: f64,
-        out: *mut *mut GsShape,
-        origins: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_boolean(
-        op: i32,
-        target: *const GsShape,
-        tool: *const GsShape,
-        out: *mut *mut GsShape,
-        origins: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_fillet(
-        s: *const GsShape,
-        edges: *const u32,
-        nedges: usize,
-        radius: f64,
-        out: *mut *mut GsShape,
-        origins: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_chamfer(
-        s: *const GsShape,
-        edges: *const u32,
-        nedges: usize,
-        dist: f64,
-        out: *mut *mut GsShape,
-        origins: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_compound(shapes: *const *const GsShape, n: usize, out: *mut *mut GsShape, origins: *mut GsBuf) -> i32;
-    pub fn gs_topology(
-        s: *const GsShape,
-        faces: *mut GsBuf,
-        edges: *mut GsBuf,
-        edge_adj: *mut GsBuf,
-        verts: *mut GsBuf,
-        counts: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_mass(s: *const GsShape, mass: *mut GsBuf) -> i32;
-    pub fn gs_bbox(s: *const GsShape, bbox: *mut GsBuf) -> i32;
-    pub fn gs_check(s: *const GsShape) -> i32;
-    pub fn gs_tessellate(
-        s: *const GsShape,
-        lin_defl: f64,
-        ang_defl: f64,
-        positions: *mut GsBuf,
-        normals: *mut GsBuf,
-        indices: *mut GsBuf,
-        face_ranges: *mut GsBuf,
-        edge_offsets: *mut GsBuf,
-        edge_points: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_step_write(
-        shapes: *const *const GsShape,
-        names: *const *const core::ffi::c_char,
-        n: usize,
-        out: *mut GsBuf,
-    ) -> i32;
-    pub fn gs_iges_write(shapes: *const *const GsShape, n: usize, out: *mut GsBuf) -> i32;
-    pub fn gs_step_read(data: *const u8, len: usize, out_shapes: *mut *mut *mut GsShape, n: *mut usize) -> i32;
-    pub fn gs_iges_read(data: *const u8, len: usize, out_shapes: *mut *mut *mut GsShape, n: *mut usize) -> i32;
-    pub fn gs_brep_write(s: *const GsShape, out: *mut GsBuf) -> i32;
-    pub fn gs_brep_read(data: *const u8, len: usize, out: *mut *mut GsShape) -> i32;
+#[cfg(gusset_occt)]
+mod raw {
+    use super::{GsBuf, GsProfile, GsShape};
+
+    unsafe extern "C" {
+        pub(crate) fn gs_last_error() -> *const core::ffi::c_char;
+        pub(crate) fn gs_occt_version() -> *const core::ffi::c_char;
+        pub(crate) fn gs_shape_free(s: *mut GsShape);
+        pub(crate) fn gs_buf_free(b: *mut GsBuf);
+        pub(crate) fn gs_shape_array_free(shapes: *mut *mut GsShape, n: usize);
+
+        pub(crate) fn gs_extrude(
+            p: *const GsProfile,
+            distance: f64,
+            symmetric: i32,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_revolve(
+            p: *const GsProfile,
+            axis_origin: *const f64,
+            axis_dir: *const f64,
+            angle: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_boolean(
+            op: i32,
+            target: *const GsShape,
+            tool: *const GsShape,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_fillet(
+            s: *const GsShape,
+            edges: *const u32,
+            nedges: usize,
+            radius: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_chamfer(
+            s: *const GsShape,
+            edges: *const u32,
+            nedges: usize,
+            dist: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_compound(
+            shapes: *const *const GsShape,
+            n: usize,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_topology(
+            s: *const GsShape,
+            faces: *mut GsBuf,
+            edges: *mut GsBuf,
+            edge_adj: *mut GsBuf,
+            verts: *mut GsBuf,
+            counts: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_mass(s: *const GsShape, mass: *mut GsBuf) -> i32;
+        pub(crate) fn gs_bbox(s: *const GsShape, bbox: *mut GsBuf) -> i32;
+        pub(crate) fn gs_check(s: *const GsShape) -> i32;
+        pub(crate) fn gs_tessellate(
+            s: *const GsShape,
+            lin_defl: f64,
+            ang_defl: f64,
+            positions: *mut GsBuf,
+            normals: *mut GsBuf,
+            indices: *mut GsBuf,
+            face_ranges: *mut GsBuf,
+            edge_offsets: *mut GsBuf,
+            edge_points: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_step_write(
+            shapes: *const *const GsShape,
+            names: *const *const core::ffi::c_char,
+            n: usize,
+            out: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_iges_write(shapes: *const *const GsShape, n: usize, out: *mut GsBuf) -> i32;
+        pub(crate) fn gs_step_read(
+            data: *const u8,
+            len: usize,
+            out_shapes: *mut *mut *mut GsShape,
+            n: *mut usize,
+        ) -> i32;
+        pub(crate) fn gs_iges_read(
+            data: *const u8,
+            len: usize,
+            out_shapes: *mut *mut *mut GsShape,
+            n: *mut usize,
+        ) -> i32;
+        pub(crate) fn gs_brep_write(s: *const GsShape, out: *mut GsBuf) -> i32;
+        pub(crate) fn gs_brep_read(data: *const u8, len: usize, out: *mut *mut GsShape) -> i32;
+    }
 }
