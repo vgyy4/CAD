@@ -37,6 +37,9 @@ impl CmdCtx {
     }
 }
 
+/// Branch heads whose evaluation the session keeps.
+const EVAL_CACHE_BRANCHES: usize = 8;
+
 /// Session policy (Settings; never changeable by agents).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
@@ -101,7 +104,9 @@ pub struct Session {
     current: BTreeMap<Actor, BranchId>,
     pub config: SessionConfig,
     audit: Vec<AuditEntry>,
-    cache: Option<(NodeId, Option<usize>, Arc<Evaluation>)>,
+    /// Recent evaluations by (node, rollback), most recent first. Several entries so a
+    /// GUI and agents on different branches do not evict each other (review M10).
+    cache: VecDeque<(NodeId, Option<usize>, Arc<Evaluation>)>,
     rate: BTreeMap<Actor, VecDeque<u64>>,
     /// Project folder: the only place file commands may read/write (spec: MCP scope).
     pub project_dir: Option<PathBuf>,
@@ -153,7 +158,7 @@ impl Session {
             current: BTreeMap::new(),
             config: SessionConfig::default(),
             audit,
-            cache: None,
+            cache: VecDeque::new(),
             rate: BTreeMap::new(),
             project_dir: None,
             dirty: false,
@@ -263,16 +268,17 @@ impl Session {
     pub fn evaluate_branch(&mut self, branch: BranchId) -> Result<Arc<Evaluation>, CommandError> {
         let b = self.history.branch(branch).map_err(CommandError::history)?;
         let (node, rollback) = (b.head, b.rollback);
-        if let Some((n, r, e)) = &self.cache
-            && *n == node
-            && *r == rollback
+        if let Some(i) = self.cache.iter().position(|(n, r, _)| *n == node && *r == rollback)
+            && let Some(hit) = self.cache.remove(i)
         {
-            return Ok(e.clone());
+            let e = hit.2.clone();
+            self.cache.push_front(hit);
+            return Ok(e);
         }
         let doc = self.history.document(node).map_err(CommandError::history)?;
         let blobs = HistoryBlobs(&self.history);
         let e = Arc::new(self.evaluator.evaluate(&doc, rollback, &blobs));
-        self.cache = Some((node, rollback, e.clone()));
+        self.remember_eval(node, rollback, e.clone());
         Ok(e)
     }
 
@@ -307,7 +313,7 @@ impl Session {
             NodeState::Broken { message: new_errors.join("; ").chars().take(2000).collect() }
         };
         let node = self.history_mut().commit(&ctx.hctx(), branch, doc, label, state).map_err(CommandError::history)?;
-        self.cache = Some((node, rollback, eval.clone()));
+        self.remember_eval(node, rollback, eval.clone());
         self.changes.push(Change { actor: ctx.actor.clone(), branch, node, label: label.to_string() });
         Ok(CommitOutcome { node, branch, evaluation: eval, new_errors })
     }
@@ -335,7 +341,13 @@ impl Session {
     }
 
     pub(crate) fn invalidate_cache(&mut self) {
-        self.cache = None;
+        self.cache.clear();
+    }
+
+    fn remember_eval(&mut self, node: NodeId, rollback: Option<usize>, e: Arc<Evaluation>) {
+        self.cache.retain(|(n, r, _)| !(*n == node && *r == rollback));
+        self.cache.push_front((node, rollback, e));
+        self.cache.truncate(EVAL_CACHE_BRANCHES);
     }
 
     pub(crate) fn note_change(&mut self, ctx: &CmdCtx, branch: BranchId, label: &str) {

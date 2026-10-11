@@ -28,7 +28,7 @@ use gusset_naming::{BodyNames, OpContext, Resolution, name_body};
 use gusset_units::params::{self, ParamValues, coerce};
 use gusset_units::{Dim, LengthUnit, Quantity};
 use sketch::Solved;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// A solid body produced by evaluation.
@@ -118,21 +118,57 @@ impl Evaluation {
     }
 }
 
-/// Maximum cached feature states (each holds `Arc`s, so sharing keeps this cheap).
+/// Maximum cached feature states.
 pub const DEFAULT_CACHE_ENTRIES: usize = 4096;
+/// Memory budget of the evaluation cache (estimated bytes of the bodies each cached
+/// state added; review M10).
+pub const DEFAULT_CACHE_BYTES: u64 = 512 << 20;
+
+/// Rough memory of a body: kernel shapes are opaque, so this is an estimate per face
+/// and edge (B-rep plus its triangulation) plus the exact size of mesh data.
+fn body_bytes(b: &Body) -> u64 {
+    let (f, e) = (b.topology.faces.len() as u64, b.topology.edges.len() as u64);
+    1024 + f * 4096 + e * 1024
+}
+
+fn mesh_bytes(m: &MeshBody) -> u64 {
+    let mesh = &m.mesh;
+    256 + (mesh.positions.len() + mesh.normals.len()) as u64 * 12 + mesh.indices.len() as u64 * 4
+}
+
+#[derive(Debug)]
+struct Cached {
+    state: Arc<State>,
+    /// Estimated bytes of the bodies this state added over the previous one.
+    bytes: u64,
+    /// Last use (for LRU eviction).
+    stamp: u64,
+}
 
 /// Incremental evaluator; keep one per open project.
 #[derive(Debug)]
 pub struct Evaluator {
     kernel: Arc<dyn Kernel>,
-    cache: HashMap<[u8; 32], Arc<State>>,
-    order: VecDeque<[u8; 32]>,
+    cache: HashMap<[u8; 32], Cached>,
+    /// stamp → key, oldest first.
+    lru: BTreeMap<u64, [u8; 32]>,
+    clock: u64,
+    bytes: u64,
     capacity: usize,
+    max_bytes: u64,
 }
 
 impl Evaluator {
     pub fn new(kernel: Arc<dyn Kernel>) -> Self {
-        Evaluator { kernel, cache: HashMap::new(), order: VecDeque::new(), capacity: DEFAULT_CACHE_ENTRIES }
+        Evaluator {
+            kernel,
+            cache: HashMap::new(),
+            lru: BTreeMap::new(),
+            clock: 0,
+            bytes: 0,
+            capacity: DEFAULT_CACHE_ENTRIES,
+            max_bytes: DEFAULT_CACHE_BYTES,
+        }
     }
 
     pub fn kernel(&self) -> &Arc<dyn Kernel> {
@@ -141,16 +177,75 @@ impl Evaluator {
 
     pub fn clear_cache(&mut self) {
         self.cache.clear();
-        self.order.clear();
+        self.lru.clear();
+        self.bytes = 0;
     }
 
-    fn remember(&mut self, key: [u8; 32], st: Arc<State>) {
-        if self.cache.insert(key, st).is_none() {
-            self.order.push_back(key);
-            while self.order.len() > self.capacity {
-                if let Some(old) = self.order.pop_front() {
-                    self.cache.remove(&old);
-                }
+    /// Changes the cache limits (entries and estimated bytes); evicts at once.
+    pub fn set_cache_limits(&mut self, entries: usize, bytes: u64) {
+        self.capacity = entries.max(1);
+        self.max_bytes = bytes;
+        self.evict();
+    }
+
+    /// Estimated bytes held by cached states.
+    #[must_use]
+    pub fn cache_bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Cached states.
+    #[must_use]
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    fn lookup(&mut self, key: &[u8; 32]) -> Option<Arc<State>> {
+        let stamp = self.tick();
+        let c = self.cache.get_mut(key)?;
+        self.lru.remove(&c.stamp);
+        c.stamp = stamp;
+        self.lru.insert(stamp, *key);
+        Some(c.state.clone())
+    }
+
+    fn remember(&mut self, key: [u8; 32], st: Arc<State>, prev: &State) {
+        let added = |ptrs: &[*const ()], p: *const ()| !ptrs.contains(&p);
+        let old_bodies: Vec<*const ()> = prev.bodies.iter().map(|b| Arc::as_ptr(b).cast()).collect();
+        let old_meshes: Vec<*const ()> = prev.meshes.iter().map(|m| Arc::as_ptr(m).cast()).collect();
+        let bytes = 256
+            + st.bodies
+                .iter()
+                .filter(|b| added(&old_bodies, Arc::as_ptr(b).cast()))
+                .map(|b| body_bytes(b))
+                .sum::<u64>()
+            + st.meshes
+                .iter()
+                .filter(|m| added(&old_meshes, Arc::as_ptr(m).cast()))
+                .map(|m| mesh_bytes(m))
+                .sum::<u64>();
+        let stamp = self.tick();
+        if let Some(old) = self.cache.insert(key, Cached { state: st, bytes, stamp }) {
+            self.lru.remove(&old.stamp);
+            self.bytes = self.bytes.saturating_sub(old.bytes);
+        }
+        self.lru.insert(stamp, key);
+        self.bytes += bytes;
+        self.evict();
+    }
+
+    /// Drops least recently used states until both limits hold (the newest state
+    /// always stays).
+    fn evict(&mut self) {
+        while self.cache.len() > 1 && (self.cache.len() > self.capacity || self.bytes > self.max_bytes) {
+            let Some((_, key)) = self.lru.pop_first() else { break };
+            if let Some(c) = self.cache.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(c.bytes);
             }
         }
     }
@@ -169,15 +264,15 @@ impl Evaluator {
                 continue;
             }
             key = step_key(&key, f, &params);
-            if let Some(cached) = self.cache.get(&key) {
-                state = cached.clone();
+            if let Some(cached) = self.lookup(&key) {
+                state = cached;
                 continue;
             }
             recomputed += 1;
             let mut s = (*state).clone();
             self.apply(&mut s, f, doc.units, &params, blobs);
             let st = Arc::new(s);
-            self.remember(key, st.clone());
+            self.remember(key, st.clone(), &state);
             state = st;
         }
         let sketches = state.solved.iter().map(|(n, s)| (n.clone(), s.result.clone())).collect();

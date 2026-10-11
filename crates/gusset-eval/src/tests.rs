@@ -226,3 +226,30 @@ fn mesh_imports_become_reference_mesh_bodies() {
     let r = ev.evaluate(&doc, None, &One(Arc::from(&b"solid x\nfacet"[..])));
     assert!(matches!(r.status("Import1"), Some(FeatureStatus::Failed(_))), "{:?}", r.statuses);
 }
+
+#[test]
+fn cache_is_bounded_by_estimated_bytes_and_is_lru() {
+    // Review M10: the cache holds bodies of every intermediate state; it must respect a
+    // memory budget and keep what was used last.
+    let doc = Document::from_text(PLATE).unwrap();
+    let mut ev = Evaluator::new(Arc::new(MockKernel));
+    ev.evaluate(&doc, None, &());
+    let one_body = ev.cache_bytes();
+    assert!(one_body > 0 && ev.cache_len() == 2);
+    // A budget for about two extrude states: older depths are evicted, the newest kept.
+    ev.set_cache_limits(1000, one_body * 2);
+    let mut last = doc.clone();
+    for d in 1..20 {
+        let mut x = doc.clone();
+        x.params[1].expr = gusset_units::expr::parse(&format!("{d} mm")).unwrap();
+        ev.evaluate(&x, None, &());
+        assert!(ev.cache_bytes() <= one_body * 2, "{} > {}", ev.cache_bytes(), one_body * 2);
+        last = x;
+    }
+    assert_eq!(ev.evaluate(&last, None, &()).recomputed, 0, "the newest state is kept");
+    // The original 10 mm state was evicted.
+    assert_eq!(ev.evaluate(&doc, None, &()).recomputed, 1);
+    // An entry limit applies as well.
+    ev.set_cache_limits(2, u64::MAX);
+    assert!(ev.cache_len() <= 2);
+}
