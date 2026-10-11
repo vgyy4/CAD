@@ -1617,6 +1617,7 @@ dependencies = [
  "blake3",
  "gusset-doc",
  "gusset-kernel",
+ "gusset-meshio",
  "gusset-naming",
  "gusset-sketch",
  "gusset-units",

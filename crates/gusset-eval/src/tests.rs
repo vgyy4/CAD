@@ -188,3 +188,41 @@ fn imports_need_their_blob() {
     let (_, r) = eval(text);
     assert_eq!(r.errors()[0].code, ErrorCode::MissingBlob);
 }
+
+/// Imported STL/3MF/OBJ meshes become reference mesh bodies, not solids (review H5).
+#[test]
+fn mesh_imports_become_reference_mesh_bodies() {
+    use gusset_doc::{Feature, FeatureKind, ImportDef, ImportFormat};
+    struct One(Arc<[u8]>);
+    impl BlobSource for One {
+        fn blob(&self, h: &str) -> Option<Arc<[u8]>> {
+            (h == "abc").then(|| self.0.clone())
+        }
+    }
+    // A closed tetrahedron as ASCII STL.
+    let stl = "solid t\n\
+        facet normal 0 0 0\n outer loop\n vertex 0 0 0\n vertex 0 1 0\n vertex 1 0 0\n endloop\n endfacet\n\
+        facet normal 0 0 0\n outer loop\n vertex 0 0 0\n vertex 1 0 0\n vertex 0 0 1\n endloop\n endfacet\n\
+        facet normal 0 0 0\n outer loop\n vertex 0 0 0\n vertex 0 0 1\n vertex 0 1 0\n endloop\n endfacet\n\
+        facet normal 0 0 0\n outer loop\n vertex 1 0 0\n vertex 0 1 0\n vertex 0 0 1\n endloop\n endfacet\n\
+        endsolid t\n";
+    let mut doc = Document::from_text("gusset 1\nunits mm\n").unwrap();
+    doc.features.push(Feature::new(
+        "Import1".to_string(),
+        FeatureKind::Import(ImportDef { blob: "abc".into(), format: ImportFormat::Stl, file_name: "t.stl".into() }),
+    ));
+    let mut ev = Evaluator::new(Arc::new(gusset_kernel::mock::MockKernel));
+    let r = ev.evaluate(&doc, None, &One(Arc::from(stl.as_bytes())));
+    assert_eq!(r.status("Import1"), Some(&FeatureStatus::Ok), "{:?}", r.statuses);
+    assert!(r.bodies.is_empty());
+    assert_eq!(r.meshes.len(), 1);
+    let m = &r.meshes[0];
+    assert_eq!(m.mesh.triangle_count(), 4);
+    assert!(m.validation.is_watertight());
+    assert!((m.validation.signed_volume.abs() - 1.0 / 6.0).abs() < 1e-6, "{}", m.validation.signed_volume);
+    // A corrupt blob is a feature error, never a panic (fresh evaluator: blobs are
+    // content-addressed, so the cache would rightly reuse the good result).
+    let mut ev = Evaluator::new(Arc::new(gusset_kernel::mock::MockKernel));
+    let r = ev.evaluate(&doc, None, &One(Arc::from(&b"solid x\nfacet"[..])));
+    assert!(matches!(r.status("Import1"), Some(FeatureStatus::Failed(_))), "{:?}", r.statuses);
+}

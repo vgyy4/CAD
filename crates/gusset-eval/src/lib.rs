@@ -41,6 +41,20 @@ pub struct Body {
     pub topology: Topology,
 }
 
+/// A reference mesh body from an imported STL, 3MF or OBJ file (spec import tier 3).
+/// The kernel cannot turn a triangle mesh into a B-rep solid, so it is displayed,
+/// measured and exported as a mesh, but features cannot reference or modify it
+/// (docs/PROGRESS.md "Deviations from spec").
+#[derive(Debug)]
+pub struct MeshBody {
+    /// The import feature's name.
+    pub name: String,
+    /// Triangles in millimetres (`edges` empty).
+    pub mesh: gusset_kernel::Mesh,
+    /// Topology check (watertight, manifold, orientation, signed volume).
+    pub validation: gusset_meshio::MeshValidation,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeatureStatus {
     Ok,
@@ -68,6 +82,7 @@ impl BlobSource for () {
 #[derive(Debug, Clone, Default)]
 struct State {
     bodies: Vec<Arc<Body>>,
+    meshes: Vec<Arc<MeshBody>>,
     solved: BTreeMap<String, Arc<Solved>>,
     failed: BTreeSet<String>,
     statuses: Vec<(String, FeatureStatus)>,
@@ -80,6 +95,8 @@ pub struct Evaluation {
     pub statuses: Vec<(String, FeatureStatus)>,
     pub sketches: BTreeMap<String, SketchResult>,
     pub bodies: Vec<Arc<Body>>,
+    /// Reference mesh bodies (imported meshes; not solids).
+    pub meshes: Vec<Arc<MeshBody>>,
     /// How many features were recomputed (the rest came from the cache).
     pub recomputed: usize,
 }
@@ -164,7 +181,14 @@ impl Evaluator {
             state = st;
         }
         let sketches = state.solved.iter().map(|(n, s)| (n.clone(), s.result.clone())).collect();
-        Evaluation { params, statuses: state.statuses.clone(), sketches, bodies: state.bodies.clone(), recomputed }
+        Evaluation {
+            params,
+            statuses: state.statuses.clone(),
+            sketches,
+            bodies: state.bodies.clone(),
+            meshes: state.meshes.clone(),
+            recomputed,
+        }
     }
 
     fn apply(&self, s: &mut State, f: &Feature, units: LengthUnit, params: &ParamValues, blobs: &dyn BlobSource) {
@@ -285,17 +309,20 @@ impl Evaluator {
                 Ok(())
             }
             FeatureKind::Import(i) => {
-                if !matches!(i.format, ImportFormat::Brep | ImportFormat::Step | ImportFormat::Iges) {
-                    return Err(EvalError::new(
-                        name,
-                        ErrorCode::Unsupported,
-                        format!("{} imports are meshes and cannot be used as solids yet", i.format.keyword()),
-                    ));
-                }
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
                     EvalError::new(name, ErrorCode::MissingBlob, "the imported data is missing from the project")
                         .with_hint("re-import the file")
                 })?;
+                let mesh_format = match i.format {
+                    ImportFormat::Stl => Some(gusset_meshio::Format::Stl),
+                    ImportFormat::ThreeMf => Some(gusset_meshio::Format::ThreeMf),
+                    ImportFormat::Obj => Some(gusset_meshio::Format::Obj),
+                    ImportFormat::Brep | ImportFormat::Step | ImportFormat::Iges => None,
+                };
+                if let Some(fmt) = mesh_format {
+                    s.meshes.push(Arc::new(read_mesh(name, &bytes, fmt)?));
+                    return Ok(());
+                }
                 let shape = k.read_native(&bytes).map_err(|ke| kernel_err(name, "import", ke))?;
                 let topo = k.topology(&shape).map_err(|ke| kernel_err(name, "topology", ke))?;
                 let origins: Vec<Vec<gusset_kernel::FaceOrigin>> = vec![Vec::new(); topo.faces.len()];
@@ -589,4 +616,30 @@ pub fn solve_sketch_def(
     units: LengthUnit,
 ) -> Result<SketchResult, EvalError> {
     sketch::solve_sketch(name, def, params, units, Frame::XY).map(|s| s.result)
+}
+
+/// Parses a stored mesh blob (pure Rust, with gusset-meshio's limits) into one
+/// reference mesh body.
+fn read_mesh(name: &str, bytes: &[u8], fmt: gusset_meshio::Format) -> Result<MeshBody, EvalError> {
+    let imported = gusset_meshio::import_bytes(bytes, Some(fmt), &gusset_meshio::ImportOptions::default())
+        .map_err(|e| EvalError::new(name, ErrorCode::Unsupported, format!("the stored mesh cannot be read: {e}")))?;
+    let mut mesh = gusset_kernel::Mesh::default();
+    let mut validation = gusset_meshio::MeshValidation::default();
+    for m in imported.meshes {
+        let base = u32::try_from(mesh.positions.len())
+            .map_err(|_| EvalError::new(name, ErrorCode::Unsupported, "the mesh is too large"))?;
+        let tri0 = u32::try_from(mesh.indices.len() / 3).unwrap_or(u32::MAX);
+        mesh.positions.extend_from_slice(&m.mesh.positions);
+        mesh.normals.extend_from_slice(&m.mesh.normals);
+        mesh.indices.extend(m.mesh.indices.iter().map(|i| i.saturating_add(base)));
+        mesh.face_ranges.extend(m.mesh.face_ranges.iter().map(|r| r.start + tri0..r.end + tri0));
+        validation.triangles += m.validation.triangles;
+        validation.vertices += m.validation.vertices;
+        validation.degenerate_triangles += m.validation.degenerate_triangles;
+        validation.boundary_edges += m.validation.boundary_edges;
+        validation.non_manifold_edges += m.validation.non_manifold_edges;
+        validation.inconsistent_edges += m.validation.inconsistent_edges;
+        validation.signed_volume += m.validation.signed_volume;
+    }
+    Ok(MeshBody { name: name.to_string(), mesh, validation })
 }
