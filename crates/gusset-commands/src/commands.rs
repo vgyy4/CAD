@@ -1957,7 +1957,7 @@ impl Command for QueryBody {
 
 // ------------------------------------------------------------------ exchange
 
-/// Writes STEP (AP242) of all bodies into the project folder.
+/// Writes STEP (AP214, the OCCT default schema) of all bodies into the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportStep {
@@ -1973,7 +1973,7 @@ impl Command for ExportStep {
     const ID: &'static str = "export.step";
     const TITLE: &'static str = "Export STEP";
     const DESCRIPTION: &'static str =
-        "Export all bodies of your current branch as STEP (AP242, mm) to a file inside the project folder.";
+        "Export all bodies of your current branch as STEP (AP214, mm) to a file inside the project folder.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

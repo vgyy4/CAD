@@ -666,3 +666,10 @@ fn get_text_pages_by_line() {
     let e = execute(&mut s, &u, "document.get_text", json!({"offset": total + 1})).unwrap_err();
     assert_eq!(e.code, "invalid_args");
 }
+
+#[test]
+fn step_export_description_names_the_schema_that_is_written() {
+    // gs_step_write leaves OCCT's write.step.schema at its default (AP214CD).
+    let d = find("export.step").unwrap().description;
+    assert!(d.contains("AP214") && !d.contains("AP242"), "{d}");
+}

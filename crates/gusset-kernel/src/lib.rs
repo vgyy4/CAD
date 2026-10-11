@@ -101,7 +101,7 @@ pub trait Kernel: Send + Sync + Debug {
     fn bbox(&self, shape: &Shape) -> KResult<BBox>;
     fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh>;
 
-    /// Writes STEP AP242 with one named body per entry.
+    /// Writes STEP (the kernel's default schema: AP214 for OCCT) with one named body per entry.
     fn export_step(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {
         let _ = bodies;
         unsupported("STEP export", self.name())
