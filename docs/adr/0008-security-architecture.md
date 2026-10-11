@@ -101,9 +101,9 @@
      optional DLL is not installed, the load fails closed: wgpu falls back from DXC to
      FXC (`d3dcompiler_47.dll`, System32), and the GL backend reports itself
      unavailable.
-   - The CLI and worker link with `/DEPENDENTLOADFLAG:0xA00` (application directory
-     and System32) for their load-time imports such as the OCCT DLLs. The app needs
-     the same flag in a build script (open: tracked in docs/SECURITY_REVIEWS.md).
+   - The app, the CLI and the worker link with `/DEPENDENTLOADFLAG:0xA00`
+     (application directory and System32) for their load-time imports such as the
+     OCCT DLLs (each crate's `build.rs`).
    - Linux: RPATH `$ORIGIN/../lib/gusset` only.
    - macOS: `@executable_path/../Frameworks` plus the hardened runtime.
 7. **External programs** (only Blender for now) are launched only from an absolute path
