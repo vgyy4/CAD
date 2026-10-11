@@ -39,7 +39,8 @@ const APPROVAL_INPUT: &str = "approval";
 pub(crate) struct Shared {
     pub(crate) host: HostHandle,
     renderer: RwLock<Option<Arc<dyn ViewRenderer>>>,
-    approvals: RwLock<Arc<dyn ApprovalProvider>>,
+    /// The in-app prompt when the GUI hosts the session (`None`: headless).
+    approvals: RwLock<Option<Arc<dyn ApprovalProvider>>>,
     agents: AgentRegistry,
     texts: TextStore,
     pending: PendingApprovals,
@@ -59,7 +60,7 @@ impl Shared {
         Shared {
             host,
             renderer: RwLock::new(None),
-            approvals: RwLock::new(Arc::new(DenyApprovals)),
+            approvals: RwLock::new(None),
             agents: AgentRegistry::default(),
             texts: TextStore::default(),
             pending: PendingApprovals::default(),
@@ -73,7 +74,7 @@ impl Shared {
         *self.renderer.write().unwrap_or_else(std::sync::PoisonError::into_inner) = r;
     }
 
-    pub(crate) fn set_approvals(&self, p: Arc<dyn ApprovalProvider>) {
+    pub(crate) fn set_approvals(&self, p: Option<Arc<dyn ApprovalProvider>>) {
         *self.approvals.write().unwrap_or_else(std::sync::PoisonError::into_inner) = p;
     }
 
@@ -85,7 +86,7 @@ impl Shared {
         self.renderer.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
-    fn approvals(&self) -> Arc<dyn ApprovalProvider> {
+    fn approvals(&self) -> Option<Arc<dyn ApprovalProvider>> {
         self.approvals.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
@@ -322,7 +323,8 @@ impl GussetMcp {
 
         // Retry of a 2026-07-28 `input_required` approval round.
         if let Some(handle) = req.request_state.as_deref() {
-            if !self.shared.pending.take(handle, &agent, &tool, &args) {
+            // Handles are only issued headless; in the app nothing can answer for the user.
+            if !self.shared.pending.take(handle, &agent, &tool, &args) || self.shared.approvals().is_some() {
                 let e = CommandError::new("approval_expired", "that approval request is unknown or expired")
                     .hint("call the tool again; the user will be asked again");
                 return self.err_result(&agent, &e).into();
@@ -370,6 +372,21 @@ impl GussetMcp {
         cctx: CmdCtx,
         ctx: &RequestContext<RoleServer>,
     ) -> CallToolResponse {
+        // Trust model (ADR 0012 "Human approval"): an elicitation answer comes from the
+        // MCP client, which is the agent's own stack and can answer for itself. When the
+        // app hosts the session, its in-app prompt is the only channel, whatever the
+        // client claims. Headless, elicitation is the only way to reach a human at all.
+        if let Some(provider) = self.shared.approvals() {
+            let decision = tokio::task::spawn_blocking(move || provider.request_approval(&request))
+                .await
+                .unwrap_or_else(|_| ApprovalDecision::Denied("the approval prompt failed".into()));
+            return match decision {
+                ApprovalDecision::Approved => {
+                    self.finish(agent, self.run(CmdCtx { approved: true, ..cctx }, spec.id, args).await)
+                }
+                ApprovalDecision::Denied(why) => self.denied(agent, &why),
+            };
+        }
         let message = format!("Gusset: {}", request.prompt());
         if supports_form_elicitation(ctx) {
             if is_modern(ctx) {
@@ -393,11 +410,7 @@ impl GussetMcp {
                 Err(_) => self.denied(agent, "the approval request was not answered"),
             };
         }
-        let provider = self.shared.approvals();
-        let decision = tokio::task::spawn_blocking(move || provider.request_approval(&request))
-            .await
-            .unwrap_or_else(|_| ApprovalDecision::Denied("the approval prompt failed".into()));
-        match decision {
+        match DenyApprovals.request_approval(&request) {
             ApprovalDecision::Approved => {
                 self.finish(agent, self.run(CmdCtx { approved: true, ..cctx }, spec.id, args).await)
             }

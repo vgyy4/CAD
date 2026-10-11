@@ -5,9 +5,10 @@
 //! - **Resources** under `gusset://project/...` ([`server::resource_list`]).
 //! - **Agent identity:** each connection gets an agent name (`<client>-<n>`) and works
 //!   on its own branch; `CmdCtx::approved` is never taken from tool arguments.
-//! - **Approvals:** `approval_required` → MCP elicitation (2026-07-28 `input_required`,
-//!   or legacy `elicitation/create`) → otherwise an [`ApprovalProvider`] (GUI prompt;
-//!   headless default: deny).
+//! - **Approvals:** `approval_required` → the in-app [`ApprovalProvider`] when the GUI
+//!   hosts the session (never client elicitation, which the client can answer itself);
+//!   headless: MCP elicitation (2026-07-28 `input_required`, or legacy
+//!   `elicitation/create`), else deny.
 //! - **Output sanitization:** [`sanitize`].
 //! - **Transports:** in-process/stdio ([`McpServer::serve_io`]), localhost Streamable
 //!   HTTP with bearer token, Host and Origin checks ([`McpServer::start_http`]), and the
@@ -103,10 +104,19 @@ impl McpServer {
         self.shared.set_renderer(renderer);
     }
 
-    /// Installs the approval provider used when the client cannot elicit (the GUI's
-    /// in-app prompt).
+    /// Installs the in-app approval prompt (the GUI's [`ApprovalProvider`]). From then on
+    /// every high-impact approval (set main, delete branch, overwrite, bulk, edits to
+    /// main) is asked **only** through it: MCP elicitation is never used, because an
+    /// elicitation answer comes from the client, which can answer for itself (security
+    /// review #1). Without a provider (headless `gusset mcp`), elicitation is the only
+    /// channel, and clients that cannot elicit are denied.
     pub fn set_approval_provider(&self, provider: Arc<dyn ApprovalProvider>) {
-        self.shared.set_approvals(provider);
+        self.shared.set_approvals(Some(provider));
+    }
+
+    /// Back to headless approvals (elicitation, else deny).
+    pub fn clear_approval_provider(&self) {
+        self.shared.set_approvals(None);
     }
 
     /// Replaces the diagnostics text (the GUI adds GPU details once the renderer chose an

@@ -72,10 +72,22 @@ same live model.
   The connection can switch explicitly, but writing to main requires approval.
 - **Human approval** for set-main, deleting branches, overwriting exported files, bulk
   changes above a threshold (default 25 features or parameters in one call), and
-  any write to main. The request goes through MCP elicitation (on 2026-07-28: an
-  `input_required` result; on legacy connections: `elicitation/create`) when the client
-  supports it, and otherwise through an in-app prompt that blocks only that request.
-  The default is on; it can be configured in Settings, but not by agents.
+  any write to main. The default is on; it can be configured in Settings, but not by
+  agents. Where the request goes depends on who hosts the session:
+  - **In the GUI app:** always the in-app prompt (the app's `ApprovalProvider`), which
+    blocks only that request. MCP elicitation is never used there, whatever the client
+    declares.
+  - **Headless** (`gusset mcp` without a running app): MCP elicitation (on 2026-07-28 an
+    `input_required` result; on legacy connections `elicitation/create`) is the only
+    way to reach a human. Clients that cannot elicit are denied. Tool descriptions and
+    server instructions say so.
+- **Approval trust model** (amended 2026-10-11 after security review #1): an
+  elicitation answer comes from the MCP client, which is the agent's own software and
+  can answer for itself. A bearer-token holder (anyone who can read the owner-only
+  connection file) is therefore exactly as trusted as the local user: headless
+  approvals protect against an agent that follows instructions, not against a hostile
+  local client. The in-app prompt is the strong path, because only the person at the
+  app can answer it; that is why the app never accepts elicitation answers.
 - **Untrusted text in output:** every user-authored string (labels, notes, comments,
   file names, imported names) appears only in fields named `user_text` or ending in
   `_user_text`. Control, zero-width and bidi-override characters are stripped, values
