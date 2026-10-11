@@ -235,6 +235,11 @@ pub struct Project {
     /// Network share / cloud folder / FAT media warning (shown once).
     pub risky: Option<RiskyStorage>,
     pub took_over_stale_lock: bool,
+    /// When opened: a recovery file exists that is not provably older than the project
+    /// file (it was offered, or could not be read). Until the user resolved it in the
+    /// app, nothing may delete it: headless front ends must refuse to work on the
+    /// project (see [`Project::release`]).
+    pub recovery_pending: bool,
 }
 
 fn now_unix() -> u64 {
@@ -248,7 +253,15 @@ impl Project {
         let id =
             ProjectId::new_random().map_err(|e| ProjectError::Io { path: PathBuf::new(), message: e.to_string() })?;
         let meta = ProjectMeta { id, save_seq: 0, base_seq: 0, created: now_unix() };
-        let mut p = Project { path: None, meta, dirs, lock: None, risky: None, took_over_stale_lock: false };
+        let mut p = Project {
+            path: None,
+            meta,
+            dirs,
+            lock: None,
+            risky: None,
+            took_over_stale_lock: false,
+            recovery_pending: false,
+        };
         p.lock()?;
         Ok(p)
     }
@@ -288,17 +301,29 @@ impl Project {
                     lock: None,
                     risky,
                     took_over_stale_lock: false,
+                    recovery_pending: false,
                 };
                 p.lock()?;
                 let _ = housekeeping::register(&p.dirs, p.meta.id, path);
                 let report = match recovery::read_newest(&RealFs::default(), &p.recovery_path(), &container::verify) {
+                    Ok(None) => OpenReport::Clean,
                     Ok(Some(snap)) => match decode(&snap.payload) {
                         Ok((rh, rm)) if rm.base_seq >= p.meta.save_seq => {
+                            p.recovery_pending = true;
                             OpenReport::RecoveryAvailable { recovered: Box::new(rh), recovery_seq: snap.seq }
                         }
-                        _ => OpenReport::Clean,
+                        // Older than the file: obsolete.
+                        Ok(_) => OpenReport::Clean,
+                        Err(_) => {
+                            p.recovery_pending = true;
+                            OpenReport::Clean
+                        }
                     },
-                    _ => OpenReport::Clean,
+                    // Exists but unreadable or damaged: keep it for the user to decide.
+                    Err(_) => {
+                        p.recovery_pending = true;
+                        OpenReport::Clean
+                    }
                 };
                 Ok((p, history, report))
             }
@@ -325,6 +350,7 @@ impl Project {
                             lock: None,
                             risky,
                             took_over_stale_lock: false,
+                            recovery_pending: false,
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -339,6 +365,7 @@ impl Project {
                             lock: None,
                             risky,
                             took_over_stale_lock: false,
+                            recovery_pending: false,
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -396,6 +423,14 @@ impl Project {
     /// Discards a pending recovery snapshot (after the user chose what to keep).
     pub fn discard_recovery(&self) {
         let _ = recovery::remove(&RealFs::default(), &self.recovery_path());
+    }
+
+    /// Releases the lock **without** touching the recovery file (headless front ends
+    /// that must not resolve a pending recovery, and error paths).
+    pub fn release(mut self) {
+        if let Some(l) = self.lock.take() {
+            let _ = l.release();
+        }
     }
 
     /// Clean close: deletes the recovery file and releases the lock.
