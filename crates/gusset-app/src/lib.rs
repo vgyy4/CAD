@@ -15,3 +15,5 @@ pub mod viewport_gpu;
 mod screenshots;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_lifecycle;

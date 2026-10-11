@@ -1,6 +1,6 @@
 //! UI automation (egui_kittest drives the real UI through the accessibility tree).
 
-use crate::app::{App, Dialog, search};
+use crate::app::{App, search};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use gusset_kernel::mock::MockKernel;
@@ -19,7 +19,11 @@ fn rand_suffix() -> u64 {
 }
 
 fn harness(app: App) -> Harness<'static, App> {
-    Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(|ui, app: &mut App| app.ui(ui), app)
+    // Host change events wake the UI from another thread and can add a frame or two.
+    Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(12)
+        .build_ui_state(|ui, app: &mut App| app.ui(ui), app)
 }
 
 #[test]
@@ -58,23 +62,6 @@ fn empty_state_and_modeling_through_forms() {
     h.get_by_label_contains("extrude Extrude1");
     assert!(h.state().form.is_none());
     assert_eq!(ev.bodies.len(), 1, "{:?}", ev.errors());
-}
-
-#[test]
-fn close_with_unsaved_changes_asks_first() {
-    let mut a = app();
-    a.run("param.set", json!({"name": "w", "expr": "10 mm"})).unwrap();
-    let mut h = harness(a);
-    h.run();
-    h.event(egui::Event::WindowFocused(true));
-    // Simulate the OS close button.
-    h.state_mut().dialog = Some(Dialog::Close { save_failed: None });
-    h.run();
-    h.get_by_label("Save changes before closing?");
-    h.get_by_label("Cancel").click();
-    h.run();
-    assert!(h.state().dialog.is_none());
-    assert!(!h.state().allow_close);
 }
 
 #[test]
@@ -308,9 +295,11 @@ fn consumed_sketches_are_hidden_until_toggled_or_edited() {
 }
 
 fn settle(h: &mut Harness<'static, App>) {
-    h.run();
+    // Host change events wake the UI from another thread, so step a fixed number of
+    // frames rather than waiting for the UI to go idle.
+    h.run_steps(4);
     h.state_mut().wait_idle();
-    h.run();
+    h.run_steps(4);
 }
 
 #[test]

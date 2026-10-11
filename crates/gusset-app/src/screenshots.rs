@@ -82,7 +82,7 @@ fn generate_gallery() {
         shoot(&dir, &format!("06-agents-panel-{t}"), a, |_| {});
         let mut a = app(theme);
         bracket(&mut a);
-        a.dialog = Some(Dialog::Close { save_failed: None });
+        a.dialog = Some(Dialog::Unsaved { pending: crate::app::Pending::Close, save_failed: None });
         shoot(&dir, &format!("07-close-dialog-{t}"), a, |_| {});
     }
 }
