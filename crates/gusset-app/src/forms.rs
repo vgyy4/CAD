@@ -188,8 +188,10 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
     if let Some(e) = &form.error {
         ui.colored_label(ui.visuals().error_fg_color, e);
     }
-    ui.horizontal(|ui| {
-        if ui.button(tr("dialog.ok")).clicked() {
+    ui.add_space(crate::theme::SPACE[2]);
+    // The primary action, on the right in the accent color.
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if crate::theme::primary_button(ui, tr("dialog.ok"), 72.0).clicked() {
             submit = true;
         }
     });

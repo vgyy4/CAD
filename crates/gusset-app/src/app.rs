@@ -870,7 +870,11 @@ impl App {
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
-        egui::Panel::left("browser").default_size(240.0).resizable(true).show(ui, |ui| self.browser(ui));
+        egui::Panel::left("browser")
+            .default_size(240.0)
+            .min_size(200.0)
+            .resizable(true)
+            .show(ui, |ui| self.browser(ui));
         if self.agents.show_panel {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
         }
@@ -1151,7 +1155,9 @@ impl App {
                                 .on_hover_text(tr("browser.show_sketch_help"))
                                 .clicked();
                         } else {
-                            ui.add_space(icons::toggle_size(ui));
+                            // Same footprint as the eye toggle, so names line up.
+                            let s = icons::toggle_size(ui);
+                            ui.allocate_exact_size(egui::Vec2::splat(s), egui::Sense::hover());
                         }
                         icons::icon(ui, icon, col);
                         ui.label(text)
@@ -1227,6 +1233,10 @@ impl App {
                     status: eval.as_ref().and_then(|e| e.status(&f.name)),
                 })
                 .collect();
+            if n == 0 {
+                ui.weak(tr("timeline.empty"));
+                return;
+            }
             let moved = egui::ScrollArea::horizontal()
                 .show(ui, |ui| timeline::show(ui, &items, rollback.unwrap_or(n), &pal))
                 .inner;
@@ -1309,15 +1319,17 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(tr("empty.title"));
-                if ui.button(tr("empty.sketch")).clicked() {
+                ui.add_space(theme::SPACE[3]);
+                if theme::primary_button(ui, tr("empty.sketch"), 200.0).clicked() {
                     self.start_command("sketch.create");
                 }
-                if ui.button(tr("empty.import")).clicked() {
+                if ui.add(egui::Button::new(tr("empty.import")).min_size(egui::vec2(200.0, 0.0))).clicked() {
                     self.start_command("import.file");
                 }
-                if ui.button(tr("empty.code")).clicked() {
+                if ui.add(egui::Button::new(tr("empty.code")).min_size(egui::vec2(200.0, 0.0))).clicked() {
                     self.toggle_code();
                 }
+                ui.add_space(theme::SPACE[2]);
                 ui.weak(tr("empty.hint"));
             });
         });
@@ -1379,7 +1391,8 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.dialog.take() else { return };
-        let modal = egui::Modal::new(egui::Id::new("dialog"));
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(theme::SPACE[5] as i8));
+        let modal = egui::Modal::new(egui::Id::new("dialog")).frame(frame);
         match dialog {
             Dialog::Unsaved { pending, save_failed } => {
                 let mut action = None;
@@ -1393,16 +1406,18 @@ impl App {
                         || "Untitled".to_string(),
                         |p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     );
+                    ui.set_min_width(400.0);
                     ui.label(format!("• {name}"));
                     if let Some(e) = &save_failed {
                         ui.colored_label(ui.visuals().error_fg_color, format!("{} {e}", tr("close.save_failed")));
                     }
+                    ui.add_space(theme::SPACE[4]);
                     ui.horizontal(|ui| {
                         let (save, discard) = match pending {
                             Pending::Close => (tr("close.save"), tr("close.discard")),
                             Pending::Open(_) => (tr("open.save"), tr("open.discard")),
                         };
-                        if ui.button(save).clicked() {
+                        if theme::primary_button(ui, save, 72.0).clicked() {
                             action = Some(0);
                         }
                         if ui.button(discard).clicked() {

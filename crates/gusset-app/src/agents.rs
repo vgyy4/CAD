@@ -428,9 +428,11 @@ impl App {
         let pal = *theme::palette(self.theme);
         ui.horizontal(|ui| {
             ui.heading(tr("agents.title"));
-            if ui.small_button("🗙").on_hover_text(tr("dialog.close")).clicked() {
-                self.agents.show_panel = false;
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("🗙").on_hover_text(tr("dialog.close")).clicked() {
+                    self.agents.show_panel = false;
+                }
+            });
         });
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Connection.

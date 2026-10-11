@@ -39,6 +39,7 @@ const EN: &[(&str, &str)] = &[
     ("timeline.title", "Timeline"),
     ("timeline.rollback", "Drag the marker to roll back features after it (or focus it and use the arrow keys)"),
     ("timeline.marker", "Rollback marker"),
+    ("timeline.empty", "Features appear here in the order they were made."),
     ("timeline.expand", "Show iteration graph"),
     ("timeline.collapse", "Hide iteration graph"),
     ("search.hint", "Search commands, parameters, features… (Ctrl+K)"),
