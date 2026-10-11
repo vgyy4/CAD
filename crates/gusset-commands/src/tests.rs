@@ -564,3 +564,10 @@ fn history_limits_are_clean_command_errors() {
     assert!(r.hint.is_some(), "{r:?}");
     assert!(s.history().branch_by_name("Three").is_none());
 }
+
+#[test]
+fn naming_golden_scenarios_with_the_mock_kernel() {
+    if let Err(e) = crate::golden::all(&(Arc::new(MockKernel) as Arc<dyn gusset_kernel::Kernel>)) {
+        panic!("{e}");
+    }
+}

@@ -5,6 +5,8 @@
 
 pub mod commands;
 pub mod error;
+#[doc(hidden)]
+pub mod golden;
 pub mod import;
 pub mod paths;
 pub mod registry;

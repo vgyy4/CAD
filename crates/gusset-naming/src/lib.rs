@@ -93,7 +93,10 @@ fn sweep_face(feature: &str, sketch: &str, regions: &[String], o: &FaceOrigin) -
             FaceKey::Side { sketch: sketch.to_string(), entity: tag_entity(*tag).unwrap_or_else(|| format!("t{tag}")) },
         )),
         FaceOrigin::Cap { end, region } => {
-            let region = if regions.len() > 1 { regions.get(*region as usize).cloned() } else { None };
+            // The first region (regions are ordered by identifying entity, so the oldest
+            // loop) keeps the plain `cap(end)` name: adding another closed loop to the
+            // sketch later must not rename the caps existing references use (review L4).
+            let region = if *region == 0 { None } else { regions.get(*region as usize).cloned() };
             Some(FaceRef::new(feature, FaceKey::Cap { side: cap(*end), region }))
         }
         _ => None,

@@ -17,7 +17,11 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
 1. **Every topological entity gets a name derived from how it was created**, never from
    its index in the B-rep:
    - Faces of a sketch-based feature: `<feature>/side(<sketch entity id>)` for lateral
-     faces, `<feature>/cap(start|end)` for caps.
+     faces, `<feature>/cap(start|end)` for caps. When the sketch has several regions,
+     the caps of every region but the first get the region's identifying entity
+     (`cap(end, l12)`); regions are ordered by identifying entity, so the first is the
+     oldest loop and adding a loop later never renames existing caps (amended
+     2026-10-11, review L4).
    - Faces of a fillet/chamfer: `<feature>/blend(<edge name>)`.
    - Primitives: `<feature>/face(top|bottom|side...)`.
    - Faces carried through a boolean or modification keep their original name. Faces
