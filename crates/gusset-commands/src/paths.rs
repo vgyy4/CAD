@@ -143,6 +143,18 @@ pub fn export_target(
     }
 }
 
+/// The file `actor` asks to read (imports): confined for agents ([`confined`]), any
+/// path the user chose (absolute, or relative to the project folder).
+///
+/// # Errors
+/// As [`confined`].
+pub fn read_target(project_dir: Option<&Path>, path: &str, actor: &Actor) -> Result<PathBuf, CommandError> {
+    match actor {
+        Actor::Agent(_) => confined(project_dir, path),
+        Actor::User => export_target(project_dir, path, actor, &[]),
+    }
+}
+
 /// Writes an exported file through the store's `durable_write` (temp file named
 /// `~$<stem>.<16 hex>.gtmp`, fsync, read-back check, atomic replace, directory fsync).
 /// `shown` is the name used in error messages (never an absolute path).

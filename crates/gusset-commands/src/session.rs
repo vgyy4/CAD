@@ -78,10 +78,17 @@ pub struct Change {
 }
 
 /// Imports exact-geometry files (STEP/IGES) into kernel-native B-rep bodies. The app
-/// and CLI plug in the sandboxed out-of-process worker (ADR 0008); tests use doubles.
+/// and CLI plug in the sandboxed out-of-process worker (`gusset_worker::WorkerImporter`,
+/// ADR 0008); tests use doubles. Called off the model thread (see [`crate::import`]).
 pub trait Importer: Send + Sync {
-    /// Returns (body name, native B-rep bytes) per body.
-    fn import(&self, format: &str, bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String>;
+    /// Returns (body name, native B-rep bytes) per body. Should stop soon after `cancel`
+    /// becomes true (the worker is killed).
+    fn import(
+        &self,
+        format: &str,
+        bytes: &[u8],
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<(String, Vec<u8>)>, String>;
 }
 
 pub struct Session {

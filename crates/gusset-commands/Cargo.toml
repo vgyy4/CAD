@@ -19,5 +19,9 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Only the O_NOFOLLOW / O_NONBLOCK constants for opening import files (no unsafe).
+libc.workspace = true
+
 [lints]
 workspace = true
