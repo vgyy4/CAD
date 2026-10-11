@@ -470,14 +470,23 @@ async fn http_security_checks() {
     let (s, body) = raw(port, &[host_h.clone(), ct.clone(), accept.clone(), auth.clone(), own], INIT).await;
     assert_eq!(s, 200, "{body}");
     assert!(body.contains("\"serverInfo\""), "{body}");
-    // Kill switch: the old token stops working at once.
+    // Kill switch: the old token stops working at once, and no new token exists until
+    // the user allows agents again (security review #7).
     server.revoke().unwrap();
     let (s, _) = raw(port, &[host_h.clone(), ct.clone(), accept.clone(), auth.clone()], INIT).await;
     assert_eq!(s, 401);
+    assert!(server.agents_paused());
+    assert_eq!(server.bearer_token(), None);
+    let conn: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(conn["paused"], true);
+    assert!(conn["token"].is_null(), "no token for a restarted bridge to pick up");
+    let generation = conn["generation"].as_u64().unwrap();
+    server.allow_agents().unwrap();
     let new = server.bearer_token().unwrap();
     assert_ne!(new, token);
     let conn: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(conn["token"], new.as_str());
+    assert_eq!(conn["generation"].as_u64().unwrap(), generation + 1);
     let (s, _) = raw(port, &[host_h.clone(), ct, accept, ("authorization", format!("Bearer {new}"))], INIT).await;
     assert_eq!(s, 200);
     server.shutdown();
@@ -625,4 +634,44 @@ async fn hosted_approvals_ignore_client_elicitation() {
             server.host().with_session(|s| s.history().branch(s.history().main()).unwrap().name.clone()).unwrap();
         assert_eq!(main, "Main");
     }
+}
+
+/// Security review #7: after "Revoke token" a restarted bridge does not reconnect (and
+/// does not open the project headless either); it works again only after the user
+/// allows agents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoked_bridge_cannot_reconnect_until_allowed() {
+    let dir = tmpdir("bridge-revoked");
+    let project = dir.join("p.gus");
+    let server = McpServer::new(host());
+    server
+        .start_http(HttpOptions {
+            connection_dir: Some(dir.join("conn")),
+            project: Some(project.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    std::fs::write(&project, b"placeholder").unwrap();
+    server.revoke().unwrap();
+    let run = |dir: std::path::PathBuf, project: std::path::PathBuf| async move {
+        let (a, b) = tokio::io::duplex(1 << 20);
+        let mut opts = StdioOptions::new(Some(project), Arc::new(MockKernel));
+        opts.connection_dir = Some(dir.join("conn"));
+        let task = tokio::spawn(async move {
+            let (r, w) = tokio::io::split(a);
+            gusset_mcp::run_stdio_async(opts, r, w).await
+        });
+        (task, b)
+    };
+    let (task, _b) = run(dir.clone(), project.clone()).await;
+    let e = task.await.unwrap().unwrap_err();
+    assert!(e.to_string().contains("switched off"), "{e}");
+    server.allow_agents().unwrap();
+    let (_task, b) = run(dir.clone(), project.clone()).await;
+    let c = Client::new("again", None).serve(b).await.unwrap();
+    ok(&call(&c, "query_model", json!({})).await);
+    c.cancel().await.unwrap();
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -24,6 +24,7 @@ pub mod b64;
 pub mod bridge;
 pub mod guidance;
 pub mod http;
+pub mod identity;
 mod json_ext;
 pub mod render;
 pub mod sanitize;
@@ -178,21 +179,47 @@ impl McpServer {
     }
 
     /// The current bearer token, for the GUI to show in its "Connect an agent" dialog.
-    /// Never log it.
+    /// `None` while agents are paused by the kill switch. Never log it.
     #[must_use]
     pub fn bearer_token(&self) -> Option<String> {
-        self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(http::Endpoint::token)
+        self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(http::Endpoint::token)
     }
 
-    /// Kill switch: rotates the token at once (the old one stops working), drops every
-    /// HTTP connection and MCP session, and rewrites the connection file.
+    /// True after [`McpServer::revoke`] until [`McpServer::allow_agents`].
+    #[must_use]
+    pub fn agents_paused(&self) -> bool {
+        self.http
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(http::Endpoint::is_paused)
+    }
+
+    /// Kill switch: invalidates the token at once, drops every HTTP connection and MCP
+    /// session, and **pauses** agent access. The connection file is rewritten without a
+    /// token (`"paused": true`), so a restarted `gusset mcp` bridge cannot silently
+    /// reconnect; it reports that agents are switched off in the app. Agents get access
+    /// again only after the user calls [`McpServer::allow_agents`].
     ///
     /// # Errors
-    /// When the new token cannot be generated or the connection file rewritten (the old
-    /// token is invalidated and connections dropped regardless).
+    /// When the connection file cannot be rewritten (the token is invalidated and
+    /// connections dropped regardless).
     pub fn revoke(&self) -> Result<(), McpError> {
         match self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
             Some(ep) => ep.revoke(),
+            None => Ok(()),
+        }
+    }
+
+    /// The user allows agents again after [`McpServer::revoke`]: a new token and a new
+    /// connection-file generation. The GUI calls this from an explicit "Allow agents
+    /// again" action, never automatically.
+    ///
+    /// # Errors
+    /// When no token can be generated or the connection file cannot be written.
+    pub fn allow_agents(&self) -> Result<(), McpError> {
+        match self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            Some(ep) => ep.resume(),
             None => Ok(()),
         }
     }

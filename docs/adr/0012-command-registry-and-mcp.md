@@ -98,7 +98,18 @@ same live model.
 - **Audit log:** every agent tool call (tool, arguments summary, result, branch, time)
   is appended to the session log and the project event log, and shown in the GUI.
 - **Kill switch:** the GUI can revoke the token at once, which drops all MCP
-  connections. A read-only agent mode rejects all mutating tools.
+  connections and sessions and **pauses** agent access: no token is valid and the
+  connection file is rewritten as `"paused": true` without a token, so a restarted
+  `gusset mcp` bridge cannot reconnect (it reports that agents are switched off rather
+  than opening the project headless). Only an explicit "allow agents again" action
+  (`McpServer::allow_agents`) issues a new token and connection-file generation. A
+  read-only agent mode rejects all mutating tools.
+- **Connection-file trust** (security review #13): the bridge accepts a connection file
+  only if it and its directory belong to the current user and are closed to others.
+  Before sending anything else it sends a random nonce to `/gusset/identity` and checks
+  the answer, a BLAKE3 keyed hash of the nonce under the token; every relayed request
+  carries a new nonce and every response must carry its proof. A process squatting a
+  stale port never sees the token and cannot answer the agent.
 
 ### Claude Code setup (documented in README)
 ```

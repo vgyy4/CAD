@@ -18,7 +18,16 @@
 //!
 //! The listener binds 127.0.0.1 (and optionally ::1) on a random port, never 0.0.0.0.
 //! The port and token are written to an owner-only connection file for the stdio bridge;
-//! the token is never logged. [`Endpoint::revoke`] is the kill switch.
+//! the token is never logged.
+//!
+//! [`crate::identity::IDENTITY_PATH`] answers the bridge's identity challenge without a
+//! token (Host/Origin checks still apply), and every `/mcp` response carries a proof of
+//! the request's nonce, so the bridge never talks to a process squatting a stale port.
+//!
+//! [`Endpoint::revoke`] is the kill switch: it invalidates the token, drops every
+//! connection and session, and **pauses** the endpoint. The connection file then says
+//! `paused` and holds no token, so a restarted bridge cannot reconnect. Only
+//! [`Endpoint::resume`] (the user allowing agents again) issues a new token.
 
 use crate::server::{GussetMcp, Shared, Transport};
 use bytes::Bytes;
@@ -33,10 +42,14 @@ use std::convert::Infallible;
 use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
+
+/// Version of the connection-file format (2: `paused`, `generation`, identity proofs).
+pub const CONNECTION_FILE_VERSION: u64 = 2;
 
 /// Default limit for a request body (rmcp enforces it while streaming, too).
 pub const DEFAULT_MAX_BODY_BYTES: usize = 4 << 20;
@@ -152,6 +165,10 @@ struct State {
     port: u16,
     options: HttpOptions,
     token: RwLock<Option<Token>>,
+    /// Kill switch engaged: no token is valid until [`Endpoint::resume`].
+    paused: AtomicBool,
+    /// Bumped on every new token (connection-file generation).
+    generation: AtomicU64,
     epoch: tokio::sync::watch::Sender<u64>,
     service: RwLock<(Service, CancellationToken)>,
     shared: Arc<Shared>,
@@ -200,8 +217,15 @@ fn header_eq_any(v: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|a| a.eq_ignore_ascii_case(v))
 }
 
+/// What a request that passed the pre-checks is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    Mcp,
+    Identity,
+}
+
 /// The pre-checks; `Err` is the response to send instead.
-fn check(req: &Request<Incoming>, st: &State) -> Result<(), Box<Response<Body>>> {
+fn check(req: &Request<Incoming>, st: &State) -> Result<Route, Box<Response<Body>>> {
     let headers = req.headers();
     let mut hosts = headers.get_all(http::header::HOST).iter();
     let host = match (hosts.next(), hosts.next()) {
@@ -223,6 +247,9 @@ fn check(req: &Request<Incoming>, st: &State) -> Result<(), Box<Response<Body>>>
             }
         }
         _ => return Err(Box::new(plain(StatusCode::FORBIDDEN, "Forbidden: Origin not allowed"))),
+    }
+    if req.uri().path() == crate::identity::IDENTITY_PATH {
+        return Ok(Route::Identity);
     }
     if req.uri().path() != "/mcp" {
         return Err(Box::new(plain(StatusCode::NOT_FOUND, "Not Found")));
@@ -253,7 +280,39 @@ fn check(req: &Request<Incoming>, st: &State) -> Result<(), Box<Response<Body>>>
     if len > st.options.max_body_bytes as u64 {
         return Err(Box::new(plain(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large")));
     }
-    Ok(())
+    Ok(Route::Mcp)
+}
+
+fn nonce_of(req: &Request<Incoming>) -> Option<String> {
+    req.headers()
+        .get(crate::identity::NONCE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|n| n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+}
+
+/// Adds the identity proof for `nonce` to `resp`.
+fn add_proof(resp: &mut Response<Body>, st: &State, nonce: Option<&str>) {
+    let token = st.token.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if let (Some(t), Some(n)) = (token, nonce)
+        && let Some(p) = crate::identity::proof(&t.0, n)
+        && let Ok(v) = http::HeaderValue::from_str(&p)
+    {
+        resp.headers_mut().insert(crate::identity::PROOF_HEADER, v);
+    }
+}
+
+/// Answers an identity challenge: 200 with the proof, 503 while paused (no token).
+fn identity(req: &Request<Incoming>, st: &State) -> Response<Body> {
+    if st.paused.load(Ordering::SeqCst) {
+        return plain(StatusCode::SERVICE_UNAVAILABLE, "Agents are paused in the Gusset app");
+    }
+    let Some(nonce) = nonce_of(req) else {
+        return plain(StatusCode::BAD_REQUEST, "Bad Request: missing nonce");
+    };
+    let mut r = plain(StatusCode::OK, "gusset");
+    add_proof(&mut r, st, Some(&nonce));
+    r
 }
 
 async fn handle(
@@ -261,16 +320,23 @@ async fn handle(
     st: Arc<State>,
     rate: Arc<Mutex<RateWindow>>,
 ) -> Result<Response<Body>, Infallible> {
-    if let Err(r) = check(&req, &st) {
-        return Ok(*r);
-    }
+    let route = match check(&req, &st) {
+        Ok(r) => r,
+        Err(r) => return Ok(*r),
+    };
     if !rate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).allow(st.options.requests_per_second) {
         let mut r = plain(StatusCode::TOO_MANY_REQUESTS, "Too Many Requests");
         r.headers_mut().insert(http::header::RETRY_AFTER, http::HeaderValue::from_static("1"));
         return Ok(r);
     }
+    if route == Route::Identity {
+        return Ok(identity(&req, &st));
+    }
+    let nonce = nonce_of(&req);
     let svc = st.service.read().unwrap_or_else(std::sync::PoisonError::into_inner).0.clone();
-    Ok(svc.handle(req).await)
+    let mut resp = svc.handle(req).await;
+    add_proof(&mut resp, &st, nonce.as_deref());
+    Ok(resp)
 }
 
 async fn serve_conn(stream: TcpStream, st: Arc<State>, stop: CancellationToken) {
@@ -354,12 +420,14 @@ impl State {
         let Some(path) = &self.file else { return Ok(()) };
         let token = self.token.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let body = json!({
-            "version": 1,
+            "version": CONNECTION_FILE_VERSION,
             "instance": self.instance,
             "pid": std::process::id(),
             "port": self.port,
             "url": format!("http://127.0.0.1:{}/mcp", self.port),
             "token": token.map(|t| t.0),
+            "paused": self.paused.load(Ordering::SeqCst),
+            "generation": self.generation.load(Ordering::SeqCst),
             "project": self.options.project.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "started": self.started,
         });
@@ -412,6 +480,8 @@ impl Endpoint {
             port,
             options,
             token: RwLock::new(Some(token)),
+            paused: AtomicBool::new(false),
+            generation: AtomicU64::new(1),
             epoch,
             service: RwLock::new(service),
             shared,
@@ -436,20 +506,20 @@ impl Endpoint {
         }
     }
 
-    pub(crate) fn token(&self) -> String {
-        self.st
-            .token
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|t| t.0.clone())
-            .unwrap_or_default()
+    pub(crate) fn token(&self) -> Option<String> {
+        self.st.token.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|t| t.0.clone())
     }
 
+    pub(crate) fn is_paused(&self) -> bool {
+        self.st.paused.load(Ordering::SeqCst)
+    }
+
+    /// Kill switch: no token is valid any more, every connection and MCP session is
+    /// dropped, and the connection file is rewritten as `paused` without a token, so a
+    /// restarted bridge cannot reconnect until [`Endpoint::resume`].
     pub(crate) fn revoke(&self) -> Result<(), crate::McpError> {
-        let new = new_token();
-        let ok = new.is_some();
-        *self.st.token.write().unwrap_or_else(std::sync::PoisonError::into_inner) = new;
+        self.st.paused.store(true, Ordering::SeqCst);
+        *self.st.token.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         // Drop every open connection and MCP session.
         self.st.epoch.send_modify(|e| *e += 1);
         {
@@ -458,11 +528,17 @@ impl Endpoint {
             *svc = make_service(&self.st.shared, self.st.port, self.st.options.max_body_bytes);
         }
         self.st.write_file()?;
-        if ok {
-            Ok(())
-        } else {
-            Err(crate::McpError::Config("the OS random number generator failed; no token is valid".into()))
-        }
+        Ok(())
+    }
+
+    /// The user allows agents again: a new token (new connection-file generation).
+    pub(crate) fn resume(&self) -> Result<(), crate::McpError> {
+        let new = new_token().ok_or_else(|| crate::McpError::Config("the OS random number generator failed".into()))?;
+        *self.st.token.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new);
+        self.st.generation.fetch_add(1, Ordering::SeqCst);
+        self.st.paused.store(false, Ordering::SeqCst);
+        self.st.write_file()?;
+        Ok(())
     }
 
     pub(crate) fn stop(&self) {
