@@ -103,6 +103,33 @@ fn unopt_usize(s: &str) -> Result<Option<usize>, String> {
     if s == "-" { Ok(None) } else { num(s).map(Some) }
 }
 
+/// Checks that following parent links from every node ends at a root. Linear in the
+/// number of nodes: every node is walked at most once, because each walk marks every
+/// node on its path (security review #4: memoising only the start node made a
+/// descending parent chain quadratic).
+pub(crate) fn check_acyclic(nodes: &BTreeMap<NodeId, Node>) -> Result<(), String> {
+    // 0 = unvisited, 1 = on the current path, 2 = known to reach a root.
+    let mut state: BTreeMap<NodeId, u8> = BTreeMap::new();
+    let mut path = Vec::new();
+    for &start in nodes.keys() {
+        let mut cur = Some(start);
+        while let Some(c) = cur {
+            match state.get(&c).copied().unwrap_or(0) {
+                2 => break,
+                1 => return Err("history graph contains a cycle".into()),
+                _ => {}
+            }
+            state.insert(c, 1);
+            path.push(c);
+            cur = nodes.get(&c).and_then(|n| n.parent);
+        }
+        for n in path.drain(..) {
+            state.insert(n, 2);
+        }
+    }
+    Ok(())
+}
+
 impl History {
     pub fn to_records(&self) -> HistoryRecords {
         let objects = self.objects.iter().map(|(h, k, b)| (k, h, b.clone())).collect();
@@ -225,22 +252,7 @@ impl History {
                 return Err(format!("node {} refers to a missing snapshot", n.id));
             }
         }
-        let mut depth_ok = BTreeMap::new();
-        for &start in nodes.keys() {
-            let mut cur = Some(start);
-            let mut steps = 0usize;
-            while let Some(c) = cur {
-                if depth_ok.contains_key(&c) {
-                    break;
-                }
-                steps += 1;
-                if steps > nodes.len() {
-                    return Err("history graph contains a cycle".into());
-                }
-                cur = nodes.get(&c).and_then(|n: &Node| n.parent);
-            }
-            depth_ok.insert(start, ());
-        }
+        check_acyclic(&nodes)?;
         // Branches.
         let mut lines = r.branches.lines();
         if lines.next() != Some("branches 1") {
@@ -335,6 +347,34 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records whose nodes form `n1` (root) and a chain `n_k → n_{k+1}` written in
+    /// descending order, ending at the root (the shape that was quadratic).
+    fn reversed_chain(n: u64, cycle: bool) -> HistoryRecords {
+        let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+        let mut r = History::new(&doc, &Ctx::user(0)).to_records();
+        let snap = r.nodes.lines().nth(1).unwrap().split('\t').nth(2).unwrap().to_string();
+        let mut nodes = String::from("nodes 1\n");
+        let root_parent = if cycle { format!("n{n}") } else { "-".into() };
+        nodes.push_str(&format!("n1\t{root_parent}\t{snap}\t0\tuser\tok\t0\t-\t%\n"));
+        for k in 2..=n {
+            let parent = if k == n { "n1".to_string() } else { format!("n{}", k + 1) };
+            nodes.push_str(&format!("n{k}\t{parent}\t{snap}\t0\tuser\tok\t0\t-\t%\n"));
+        }
+        r.nodes = nodes;
+        r
+    }
+
+    #[test]
+    fn cycle_check_is_linear_on_reversed_chain() {
+        let t = std::time::Instant::now();
+        let h = History::from_records(&reversed_chain(60_000, false)).unwrap();
+        assert_eq!(h.nodes().count(), 60_000);
+        // The quadratic check needed minutes here (security review #4).
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "took {:?}", t.elapsed());
+        let e = History::from_records(&reversed_chain(1_000, true)).unwrap_err();
+        assert!(e.contains("cycle"), "{e}");
+    }
 
     #[test]
     fn escaping() {
