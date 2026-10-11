@@ -4,11 +4,16 @@ pub mod agents;
 pub mod app;
 pub mod forms;
 pub mod i18n;
+pub mod icons;
 pub mod link;
 pub mod theme;
+pub mod timeline;
 pub mod viewport;
+pub mod viewport_gpu;
 
 #[cfg(test)]
 mod screenshots;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_lifecycle;

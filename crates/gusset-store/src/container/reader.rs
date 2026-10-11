@@ -52,11 +52,30 @@ pub fn verify(bytes: &[u8]) -> Result<(), OpenError> {
     open(bytes).map(|_| ())
 }
 
+/// Checks a container's framing without decompressing anything: header, trailer,
+/// index, layout and the CRC32C of every record (so every byte of the file is
+/// covered by a checksum), but not the BLAKE3 hash of each decoded payload.
+///
+/// This is the read-back validator for images this process just built (ADR 0007 as
+/// amended): each record's hash was verified when the record was encoded, and the bytes
+/// read back are compared byte-for-byte with that image. Opening a file always uses the
+/// full [`verify`].
+///
+/// # Errors
+/// See [`open`].
+pub fn verify_framing(bytes: &[u8]) -> Result<(), OpenError> {
+    open_impl(bytes, Limits::default(), false).map(|_| ())
+}
+
 /// Opens and fully validates a container with the given limits.
 ///
 /// # Errors
 /// An [`OpenError`] describing the first problem found.
 pub fn open_with(bytes: &[u8], limits: Limits) -> Result<Container<'_>, OpenError> {
+    open_impl(bytes, limits, true)
+}
+
+fn open_impl(bytes: &[u8], limits: Limits, decode: bool) -> Result<Container<'_>, OpenError> {
     let len = bytes.len() as u64;
     if len > limits.max_file_size {
         return Err(OpenError::TooLarge { len, max: limits.max_file_size });
@@ -112,7 +131,9 @@ pub fn open_with(bytes: &[u8], limits: Limits) -> Result<Container<'_>, OpenErro
         if total_raw > limits.max_total_raw {
             return Err(OpenError::DecodeBudget { total: total_raw, max: limits.max_total_raw });
         }
-        decode_record(&rec, &limits).map_err(rec_err)?;
+        if decode {
+            decode_record(&rec, &limits).map_err(rec_err)?;
+        }
         records.push(RecordInfo {
             kind,
             hash,

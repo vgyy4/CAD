@@ -55,6 +55,8 @@ impl CommandError {
             HistoryError::NameTaken(name) => CommandError::new("history", "a branch with that name already exists")
                 .hint("pick another name; names are unique ignoring case")
                 .details(serde_json::json!({ "name_user_text": name })),
+            HistoryError::LimitReached(_) => CommandError::new("limit_reached", e.to_string())
+                .hint("the change was not made; delete branches that are no longer needed or compact history"),
             other => CommandError::new("history", other.to_string()),
         }
     }

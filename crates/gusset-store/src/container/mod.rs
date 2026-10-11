@@ -23,9 +23,9 @@ mod salvage;
 mod writer;
 
 pub use error::{OpenError, RecordProblem, WriteError};
-pub use reader::{Container, RecordInfo, open, open_with, verify};
+pub use reader::{Container, RecordInfo, open, open_with, verify, verify_framing};
 pub use salvage::{Salvaged, SalvagedRecord, salvage, salvage_with};
-pub use writer::{ContainerWriter, SaveInfo};
+pub use writer::{ContainerWriter, RecordCache, SaveInfo};
 
 /// File magic: `GUSSET\r\n\x1a\0` (the CR LF / ^Z / NUL bytes detect text-mode
 /// mangling, like PNG's signature).

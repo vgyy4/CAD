@@ -23,6 +23,7 @@ gusset-commands.workspace = true
 gusset-project.workspace = true
 gusset-store.workspace = true
 gusset-hw.workspace = true
+gusset-render.workspace = true
 gusset-host.workspace = true
 gusset-worker.workspace = true
 gusset-mcp = { workspace = true, features = ["render"] }
@@ -32,7 +33,7 @@ egui.workspace = true
 eframe.workspace = true
 
 [dev-dependencies]
-egui_kittest.workspace = true
+egui_kittest = { workspace = true, features = ["eframe"] }
 
 [lints]
 workspace = true

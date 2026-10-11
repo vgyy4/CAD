@@ -1561,6 +1561,7 @@ dependencies = [
  "gusset-kernel-occt",
  "gusset-mcp",
  "gusset-project",
+ "gusset-render",
  "gusset-store",
  "gusset-units",
  "gusset-worker",
@@ -1671,6 +1672,8 @@ version = "0.0.1"
 dependencies = [
  "gusset-kernel",
  "gusset-occt-sys",
+ "gusset-sandbox",
+ "gusset-worker",
 ]
 
 [[package]]
@@ -1734,6 +1737,7 @@ dependencies = [
  "gusset-doc",
  "gusset-history",
  "gusset-store",
+ "gusset-units",
 ]
 
 [[package]]
@@ -1771,6 +1775,7 @@ dependencies = [
  "blake3",
  "directories",
  "getrandom 0.4.3",
+ "libc",
  "trash",
  "windows-sys 0.61.2",
  "zstd",
@@ -1801,10 +1806,12 @@ dependencies = [
  "gusset-commands",
  "gusset-doc",
  "gusset-host",
+ "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "libc",
  "serde_json",
 ]
 

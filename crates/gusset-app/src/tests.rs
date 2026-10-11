@@ -1,8 +1,8 @@
 //! UI automation (egui_kittest drives the real UI through the accessibility tree).
 
-use crate::app::{App, Dialog, search};
+use crate::app::{App, search};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use gusset_kernel::mock::MockKernel;
 use gusset_mcp::{ApprovalDecision, ApprovalProvider, ApprovalRequest};
 use serde_json::json;
@@ -19,7 +19,11 @@ fn rand_suffix() -> u64 {
 }
 
 fn harness(app: App) -> Harness<'static, App> {
-    Harness::builder().with_size(egui::vec2(1280.0, 800.0)).build_ui_state(|ui, app: &mut App| app.ui(ui), app)
+    // Host change events wake the UI from another thread and can add a frame or two.
+    Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_max_steps(12)
+        .build_ui_state(|ui, app: &mut App| app.ui(ui), app)
 }
 
 #[test]
@@ -58,23 +62,6 @@ fn empty_state_and_modeling_through_forms() {
     h.get_by_label_contains("extrude Extrude1");
     assert!(h.state().form.is_none());
     assert_eq!(ev.bodies.len(), 1, "{:?}", ev.errors());
-}
-
-#[test]
-fn close_with_unsaved_changes_asks_first() {
-    let mut a = app();
-    a.run("param.set", json!({"name": "w", "expr": "10 mm"})).unwrap();
-    let mut h = harness(a);
-    h.run();
-    h.event(egui::Event::WindowFocused(true));
-    // Simulate the OS close button.
-    h.state_mut().dialog = Some(Dialog::Close { save_failed: None });
-    h.run();
-    h.get_by_label("Save changes before closing?");
-    h.get_by_label("Cancel").click();
-    h.run();
-    assert!(h.state().dialog.is_none());
-    assert!(!h.state().allow_close);
 }
 
 #[test]
@@ -233,9 +220,9 @@ fn agents_panel_shows_connection_audit_and_branches() {
     host.call(gusset_commands::CmdCtx::agent("bot-2", 3_661), "param.set", json!({"name": "t", "expr": "3 mm"}))
         .unwrap();
     h.run();
-    h.get_by_label_contains("param.set on agent/bot-2 → ok");
+    h.get_by_label_contains("param.set on agent/bot-2: ok");
     h.get_by_label_contains("01:01:01");
-    h.get_by_label_contains("◆ agent/bot-2");
+    h.get_by_label("agent/bot-2");
 
     // Compare, then apply the agent branch onto the user's branch.
     h.get_by_label("Compare").click();
@@ -267,4 +254,111 @@ fn agents_panel_shows_connection_audit_and_branches() {
     h.get_by_label_contains("Token revoked");
     drop(h);
     let _ = std::fs::remove_dir_all(conn);
+}
+
+/// A part with one sketch used by an extrude and one free sketch.
+fn two_sketches() -> App {
+    let mut a = app();
+    for (name, x) in [("Base", 0.0), ("Free", 60.0)] {
+        a.run("sketch.create", json!({"plane": "XY", "name": name})).unwrap();
+        a.run("sketch.add_rectangle", json!({"sketch": name, "x": x, "y": 0.0, "width": 40.0, "height": 20.0}))
+            .unwrap();
+    }
+    a.run("feature.extrude", json!({"sketch": "Base", "distance": "10 mm"})).unwrap();
+    a.wait_idle();
+    a
+}
+
+#[test]
+fn consumed_sketches_are_hidden_until_toggled_or_edited() {
+    let a = two_sketches();
+    assert_eq!(crate::app::consumed_sketches(&a.snapshot.doc).into_iter().collect::<Vec<_>>(), vec!["Base"]);
+    assert!(!a.sketch_visible("Base"));
+    assert!(a.sketch_visible("Free"));
+    let mut h = harness(a);
+    h.run();
+    // The browser's eye toggles reflect and change the visibility.
+    assert_eq!(h.get_by_label("Visibility of Base").accesskit_node().toggled(), Some(egui::accesskit::Toggled::False));
+    h.get_by_label("Visibility of Base").click();
+    h.run();
+    assert!(h.state().sketch_visible("Base"));
+    h.get_by_label("Visibility of Free").click();
+    h.run();
+    assert!(!h.state().sketch_visible("Free"));
+    // The sketch being edited is always shown.
+    h.state_mut().sketch_visibility.clear();
+    h.state_mut().start_command("sketch.add_line");
+    h.state_mut().form.as_mut().unwrap().set("sketch", "Base");
+    assert!(h.state().sketch_visible("Base"));
+    h.state_mut().form = None;
+    assert!(!h.state().sketch_visible("Base"));
+}
+
+fn settle(h: &mut Harness<'static, App>) {
+    // Host change events wake the UI from another thread, so step a fixed number of
+    // frames rather than waiting for the UI to go idle.
+    h.run_steps(4);
+    h.state_mut().wait_idle();
+    h.run_steps(4);
+}
+
+#[test]
+fn timeline_marker_moves_with_keys_and_drag() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    let n = h.state().snapshot.doc.features.len();
+    assert_eq!(n, 3);
+    assert_eq!(h.get_by_label("Rollback marker").accesskit_node().numeric_value(), Some(n as f64));
+    // Keyboard: focus the marker, then Left / Home / End.
+    h.get_by_label("Rollback marker").focus();
+    h.run();
+    h.key_press(egui::Key::ArrowLeft);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(n - 1));
+    let ev = h.state().evaluation().unwrap();
+    assert_eq!(ev.status("Extrude1"), Some(&gusset_eval::FeatureStatus::RolledBack));
+    h.key_press(egui::Key::Home);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(0));
+    h.key_press(egui::Key::End);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, None);
+    // Drag the marker to the far left: everything rolled back.
+    let from = h.get_by_label("Rollback marker").rect().center();
+    let to = egui::pos2(0.0, from.y);
+    h.event(egui::Event::PointerMoved(from));
+    h.run();
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(button(from, true));
+    h.run();
+    for k in 1..=10 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 10.0)));
+        h.run();
+    }
+    h.event(button(to, false));
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(0));
+    assert!(h.state().notice.as_ref().is_none_or(|n| !n.error), "{:?}", h.state().notice);
+}
+
+#[test]
+fn viewport_renders_only_when_something_changed() {
+    let mut h = harness(two_sketches());
+    h.run();
+    assert!(!h.state().viewport.uses_gpu(), "the test harness has no wgpu device: CPU fallback");
+    assert!(!h.state().viewport.scene().is_empty());
+    let n = h.state().viewport.software_renders;
+    assert!(n >= 1);
+    // Idle frames reuse the last image.
+    h.run_steps(5);
+    assert_eq!(h.state().viewport.software_renders, n);
+    // A camera change renders again.
+    h.state_mut().viewport.camera.orbit(0.3, 0.0);
+    h.run_steps(1);
+    assert_eq!(h.state().viewport.software_renders, n + 1);
 }

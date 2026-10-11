@@ -129,6 +129,154 @@ mod tests {
     }
 
     #[test]
+    fn undo_of_branch_delete_or_create_never_duplicates_names() {
+        let u = Ctx::user(1);
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        // Redo of a branch creation after another actor took the name.
+        let b = h.create_branch(&u, root, Some("Wing")).unwrap();
+        h.undo(&u, main).unwrap();
+        assert!(h.branch(b).unwrap().deleted_at.is_some());
+        let other = h.create_branch(&Ctx::agent("bot", 2), root, Some("WING")).unwrap();
+        h.redo(&u, main).unwrap();
+        assert!(h.branch(other).unwrap().deleted_at.is_none());
+        assert!(h.branch(b).unwrap().deleted_at.is_none());
+        assert_eq!(h.branch(b).unwrap().name, "Wing (restored)");
+        assert_eq!(h.branch_by_name_folded("wing").unwrap().id, other);
+
+        // The review's scenario: delete, recreate the same default name, undo the delete.
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        let b = h.create_branch(&u, root, None).unwrap();
+        h.delete_branch(&u, b, true).unwrap();
+        let c = h.create_branch(&Ctx::agent("bot", 2), root, None).unwrap();
+        assert_eq!(h.branch(c).unwrap().name, h.branch(b).unwrap().name);
+        h.undo(&u, main).unwrap();
+        let names: Vec<&str> = h.branches().iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, vec!["Main", "Iteration 2 (restored)", "Iteration 2"]);
+        assert_eq!(h.branch_by_name("Iteration 2").unwrap().id, c);
+    }
+
+    fn sizes_match(h: &History) {
+        let r = h.to_records();
+        let s = h.record_sizes();
+        assert_eq!((s.nodes, s.branches, s.events), (r.nodes.len(), r.branches.len(), r.events.len()));
+    }
+
+    fn small_limits(bytes: usize) -> HistoryLimits {
+        HistoryLimits { max_record_bytes: bytes, max_branches: 50, ..HistoryLimits::default() }
+    }
+
+    #[test]
+    fn write_limits_keep_every_history_savable() {
+        // Security review #5: ~150k edits made the nodes record exceed the container's
+        // 16 MiB record limit, so nothing could be saved. Scaled down: 32 KiB records.
+        let u = Ctx::user(0);
+        let a = Ctx::agent("bot", 0);
+        let mut h = History::new(&doc(&[]), &u);
+        h.set_limits(small_limits(32 << 10));
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        let star = h.commit(&u, main, &doc(&[("st", "1 mm")]), "starred", NodeState::Ok).unwrap();
+        h.set_starred(&u, star, true).unwrap();
+        for i in 0..3000u64 {
+            let c = Ctx::user(i);
+            h.commit(&c, main, &doc(&[("a", &format!("{i} mm"))]), "edit with a fairly long label", NodeState::Ok)
+                .unwrap();
+            h.record_agent_action(&Ctx::agent("bot", i), "feature_add", Some(main), "ok", &"x".repeat(400));
+            let s = h.record_sizes();
+            assert!(s.nodes <= 32 << 10 && s.events <= 32 << 10 && s.branches <= 32 << 10, "{s:?}");
+        }
+        sizes_match(&h);
+        // Starred and head iterations survived compaction; undo of the last edit works.
+        assert!(h.node(star).unwrap().starred);
+        assert_eq!(h.head_document(main).unwrap(), doc(&[("a", "2999 mm")]));
+        h.undo(&u, main).unwrap();
+        assert_eq!(h.head_document(main).unwrap(), doc(&[("a", "2998 mm")]));
+        sizes_match(&h);
+        let back = History::from_records(&h.to_records()).unwrap();
+        assert_eq!(back.head_document(main).unwrap(), h.head_document(main).unwrap());
+
+        // Branches: a clean error at the limit (live branches are never purged).
+        let mut made = 0;
+        let err = loop {
+            match h.create_branch(&a, root, None) {
+                Ok(_) => made += 1,
+                Err(e) => break e,
+            }
+            assert!(made <= 50);
+        };
+        assert!(matches!(err, HistoryError::LimitReached(_)), "{err:?}");
+        sizes_match(&h);
+        // Deleted branches make room again (oldest purged first, only when needed).
+        let victim = h.branches().last().unwrap().id;
+        h.delete_branch(&u, victim, true).unwrap();
+        assert!(h.create_branch(&u, root, Some("after")).is_ok());
+        sizes_match(&h);
+        let back = History::from_records(&h.to_records()).unwrap();
+        assert_eq!(back.branches().len(), h.branches().len());
+    }
+
+    #[test]
+    fn oversized_objects_and_notes_are_refused() {
+        let u = Ctx::user(0);
+        let mut h = History::new(&doc(&[]), &u);
+        h.set_limits(HistoryLimits { max_object_bytes: 200, ..small_limits(4 << 10) });
+        let main = h.main();
+        let many: Vec<(String, String)> = (0..20).map(|i| (format!("p{i}"), "1 mm".to_string())).collect();
+        let refs: Vec<(&str, &str)> = many.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let objects = h.objects().len();
+        let e = h.commit(&u, main, &doc(&refs), "big", NodeState::Ok).unwrap_err();
+        assert!(matches!(e, HistoryError::LimitReached(_)), "{e:?}");
+        assert_eq!(h.objects().len(), objects, "nothing was stored");
+        let e = h.set_branch_meta(main, None, Some("n".repeat(5000)), None).unwrap_err();
+        assert!(matches!(e, HistoryError::LimitReached(_)), "{e:?}");
+        sizes_match(&h);
+    }
+
+    #[test]
+    fn default_write_limits_are_within_load_limits() {
+        let l = HistoryLimits::default();
+        assert!(l.max_record_bytes < RECORD_LIMIT);
+        assert!(l.max_object_bytes <= RECORD_LIMIT);
+        assert!(l.max_branches <= persist::MAX_BRANCHES);
+        assert!(l.max_nodes <= persist::MAX_NODES);
+        assert!(l.max_events <= persist::MAX_EVENTS);
+        // A history cannot be given looser limits than these.
+        let mut h = History::new(&doc(&[]), &Ctx::user(0));
+        h.set_limits(HistoryLimits { max_branches: usize::MAX, max_record_bytes: usize::MAX, ..l.clone() });
+        assert_eq!(h.limits(), &l);
+    }
+
+    #[test]
+    fn record_sizes_track_every_mutation() {
+        let u = Ctx::user(5);
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        let n = h.commit(&u, main, &doc(&[("a", "1 mm")]), "a", NodeState::Broken { message: "x\ty".into() }).unwrap();
+        let b = h.create_branch(&u, root, Some("Wide %")).unwrap();
+        h.rename_branch(&u, b, "Wider\u{e9}").unwrap();
+        h.set_branch_meta(b, Some(Some("#ff0000".into())), Some("notes\nmore".into()), Some(true)).unwrap();
+        h.name_node(&u, n, Some("Baseline")).unwrap();
+        h.set_starred(&u, n, true).unwrap();
+        h.set_rollback(&u, main, Some(0)).unwrap();
+        h.move_head(&u, b, n).unwrap();
+        h.set_main(&u, b).unwrap();
+        h.undo(&u, main).unwrap();
+        h.delete_branch(&u, b, true).unwrap();
+        h.undo(&u, main).unwrap();
+        h.redo(&u, main).unwrap();
+        h.restore_branch(&u, b).unwrap();
+        h.record_agent_action(&Ctx::agent("a\tb", 9), "x", None, "ok", "d");
+        sizes_match(&h);
+        h.gc(1_000_000_000, &GcPolicy::default());
+        sizes_match(&h);
+    }
+
+    #[test]
     fn structural_sharing_and_gc() {
         let u = Ctx::user(0);
         let base = with_feature(with_feature(doc(&[("a", "1 mm")]), "S1"), "S2");

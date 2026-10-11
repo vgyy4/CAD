@@ -103,70 +103,124 @@ fn unopt_usize(s: &str) -> Result<Option<usize>, String> {
     if s == "-" { Ok(None) } else { num(s).map(Some) }
 }
 
+/// Checks that following parent links from every node ends at a root. Linear in the
+/// number of nodes: every node is walked at most once, because each walk marks every
+/// node on its path (security review #4: memoising only the start node made a
+/// descending parent chain quadratic).
+pub(crate) fn check_acyclic(nodes: &BTreeMap<NodeId, Node>) -> Result<(), String> {
+    // 0 = unvisited, 1 = on the current path, 2 = known to reach a root.
+    let mut state: BTreeMap<NodeId, u8> = BTreeMap::new();
+    let mut path = Vec::new();
+    for &start in nodes.keys() {
+        let mut cur = Some(start);
+        while let Some(c) = cur {
+            match state.get(&c).copied().unwrap_or(0) {
+                2 => break,
+                1 => return Err("history graph contains a cycle".into()),
+                _ => {}
+            }
+            state.insert(c, 1);
+            path.push(c);
+            cur = nodes.get(&c).and_then(|n| n.parent);
+        }
+        for n in path.drain(..) {
+            state.insert(n, 2);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) const NODES_HEADER: &str = "nodes 1\n";
+pub(crate) const BRANCHES_HEADER: &str = "branches 1\n";
+pub(crate) const EVENTS_HEADER: &str = "events 1\n";
+
+/// One line of the nodes record (including the newline).
+pub(crate) fn node_line(n: &Node) -> String {
+    let state = match &n.state {
+        NodeState::Ok => "ok".to_string(),
+        NodeState::Broken { message } => format!("broken={}", esc(message)),
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        n.id,
+        n.parent.map_or("-".into(), |p| p.to_string()),
+        n.snapshot,
+        n.time,
+        actor(&n.actor),
+        state,
+        u8::from(n.starred),
+        opt(&n.name),
+        esc(&n.label),
+    )
+}
+
+/// The `main` line of the branches record.
+pub(crate) fn main_line(main: BranchId) -> String {
+    format!("main\t{main}\n")
+}
+
+/// One line of the branches record (including the newline).
+pub(crate) fn branch_line(b: &Branch) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        b.id,
+        b.head,
+        esc(&b.name),
+        opt(&b.color),
+        esc(&b.notes),
+        u8::from(b.pinned),
+        actor(&b.created_by),
+        b.created_at,
+        b.deleted_at.map_or("-".into(), |t| t.to_string()),
+        opt_usize(b.rollback),
+    )
+}
+
+/// One line of the events record (including the newline).
+pub(crate) fn event_line(e: &EventRecord) -> String {
+    let body = match &e.event {
+        Event::Edit { branch, from, to } => format!("edit\t{branch}\t{from}\t{to}"),
+        Event::MoveHead { branch, from, to } => format!("move\t{branch}\t{from}\t{to}"),
+        Event::CreateBranch { branch, at } => format!("create\t{branch}\t{at}"),
+        Event::RenameBranch { branch, old, new } => format!("rename\t{branch}\t{}\t{}", esc(old), esc(new)),
+        Event::SetMain { old, new } => format!("setmain\t{old}\t{new}"),
+        Event::DeleteBranch { branch } => format!("delete\t{branch}"),
+        Event::RestoreBranch { branch } => format!("restore\t{branch}"),
+        Event::SetRollback { branch, old, new } => {
+            format!("rollback\t{branch}\t{}\t{}", opt_usize(*old), opt_usize(*new))
+        }
+        Event::Star { node, starred } => format!("star\t{node}\t{}", u8::from(*starred)),
+        Event::NameNode { node, old, new } => format!("name\t{node}\t{}\t{}", opt(old), opt(new)),
+        Event::Undo { event } => format!("undo\t{event}"),
+        Event::Redo { event } => format!("redo\t{event}"),
+        Event::AgentAction { command, branch, outcome, detail } => format!(
+            "agent\t{}\t{}\t{}\t{}",
+            esc(command),
+            branch.map_or_else(|| "-".to_string(), |b| b.to_string()),
+            esc(outcome),
+            esc(detail)
+        ),
+    };
+    format!("{}\t{}\t{}\n", e.time, actor(&e.actor), body)
+}
+
 impl History {
     pub fn to_records(&self) -> HistoryRecords {
         let objects = self.objects.iter().map(|(h, k, b)| (k, h, b.clone())).collect();
-        let mut nodes = String::from("nodes 1\n");
+        let mut nodes = String::with_capacity(self.sizes.nodes);
+        nodes.push_str(NODES_HEADER);
         for n in self.nodes.values() {
-            let state = match &n.state {
-                NodeState::Ok => "ok".to_string(),
-                NodeState::Broken { message } => format!("broken={}", esc(message)),
-            };
-            nodes.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                n.id,
-                n.parent.map_or("-".into(), |p| p.to_string()),
-                n.snapshot,
-                n.time,
-                actor(&n.actor),
-                state,
-                u8::from(n.starred),
-                opt(&n.name),
-                esc(&n.label),
-            ));
+            nodes.push_str(&node_line(n));
         }
-        let mut branches = format!("branches 1\nmain\t{}\n", self.main);
+        let mut branches = String::from(BRANCHES_HEADER);
+        branches.push_str(&main_line(self.main));
         for b in self.branches.values() {
-            branches.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                b.id,
-                b.head,
-                esc(&b.name),
-                opt(&b.color),
-                esc(&b.notes),
-                u8::from(b.pinned),
-                actor(&b.created_by),
-                b.created_at,
-                b.deleted_at.map_or("-".into(), |t| t.to_string()),
-                opt_usize(b.rollback),
-            ));
+            branches.push_str(&branch_line(b));
         }
-        let mut events = String::from("events 1\n");
+        let mut events = String::with_capacity(self.sizes.events);
+        events.push_str(EVENTS_HEADER);
         for e in &self.events {
-            let body = match &e.event {
-                Event::Edit { branch, from, to } => format!("edit\t{branch}\t{from}\t{to}"),
-                Event::MoveHead { branch, from, to } => format!("move\t{branch}\t{from}\t{to}"),
-                Event::CreateBranch { branch, at } => format!("create\t{branch}\t{at}"),
-                Event::RenameBranch { branch, old, new } => format!("rename\t{branch}\t{}\t{}", esc(old), esc(new)),
-                Event::SetMain { old, new } => format!("setmain\t{old}\t{new}"),
-                Event::DeleteBranch { branch } => format!("delete\t{branch}"),
-                Event::RestoreBranch { branch } => format!("restore\t{branch}"),
-                Event::SetRollback { branch, old, new } => {
-                    format!("rollback\t{branch}\t{}\t{}", opt_usize(*old), opt_usize(*new))
-                }
-                Event::Star { node, starred } => format!("star\t{node}\t{}", u8::from(*starred)),
-                Event::NameNode { node, old, new } => format!("name\t{node}\t{}\t{}", opt(old), opt(new)),
-                Event::Undo { event } => format!("undo\t{event}"),
-                Event::Redo { event } => format!("redo\t{event}"),
-                Event::AgentAction { command, branch, outcome, detail } => format!(
-                    "agent\t{}\t{}\t{}\t{}",
-                    esc(command),
-                    branch.map_or_else(|| "-".to_string(), |b| b.to_string()),
-                    esc(outcome),
-                    esc(detail)
-                ),
-            };
-            events.push_str(&format!("{}\t{}\t{}\n", e.time, actor(&e.actor), body));
+            events.push_str(&event_line(e));
         }
         HistoryRecords { objects, nodes, branches, events }
     }
@@ -225,22 +279,7 @@ impl History {
                 return Err(format!("node {} refers to a missing snapshot", n.id));
             }
         }
-        let mut depth_ok = BTreeMap::new();
-        for &start in nodes.keys() {
-            let mut cur = Some(start);
-            let mut steps = 0usize;
-            while let Some(c) = cur {
-                if depth_ok.contains_key(&c) {
-                    break;
-                }
-                steps += 1;
-                if steps > nodes.len() {
-                    return Err("history graph contains a cycle".into());
-                }
-                cur = nodes.get(&c).and_then(|n: &Node| n.parent);
-            }
-            depth_ok.insert(start, ());
-        }
+        check_acyclic(&nodes)?;
         // Branches.
         let mut lines = r.branches.lines();
         if lines.next() != Some("branches 1") {
@@ -335,6 +374,34 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records whose nodes form `n1` (root) and a chain `n_k → n_{k+1}` written in
+    /// descending order, ending at the root (the shape that was quadratic).
+    fn reversed_chain(n: u64, cycle: bool) -> HistoryRecords {
+        let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+        let mut r = History::new(&doc, &Ctx::user(0)).to_records();
+        let snap = r.nodes.lines().nth(1).unwrap().split('\t').nth(2).unwrap().to_string();
+        let mut nodes = String::from("nodes 1\n");
+        let root_parent = if cycle { format!("n{n}") } else { "-".into() };
+        nodes.push_str(&format!("n1\t{root_parent}\t{snap}\t0\tuser\tok\t0\t-\t%\n"));
+        for k in 2..=n {
+            let parent = if k == n { "n1".to_string() } else { format!("n{}", k + 1) };
+            nodes.push_str(&format!("n{k}\t{parent}\t{snap}\t0\tuser\tok\t0\t-\t%\n"));
+        }
+        r.nodes = nodes;
+        r
+    }
+
+    #[test]
+    fn cycle_check_is_linear_on_reversed_chain() {
+        let t = std::time::Instant::now();
+        let h = History::from_records(&reversed_chain(60_000, false)).unwrap();
+        assert_eq!(h.nodes().count(), 60_000);
+        // The quadratic check needed minutes here (security review #4).
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "took {:?}", t.elapsed());
+        let e = History::from_records(&reversed_chain(1_000, true)).unwrap_err();
+        assert!(e.contains("cycle"), "{e}");
+    }
 
     #[test]
     fn escaping() {

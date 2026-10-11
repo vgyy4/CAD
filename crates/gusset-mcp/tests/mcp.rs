@@ -792,3 +792,37 @@ async fn agents_import_meshes_and_fifos_do_not_hang() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review C2: a headless bridge on a project with pending crash recovery must refuse
+/// and leave the recovery file alone, even if the agent never connects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stdio_headless_refuses_pending_recovery_and_keeps_it() {
+    let dir = tmpdir("headless-recovery");
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = dir.join("p.gus");
+    let dirs = gusset_store::paths::DataDirs::at(dir.join("data"), dir.join("cache"));
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut h = gusset_history::History::new(&doc, &gusset_history::Ctx::user(1));
+    let mut p = gusset_project::Project::create(dirs.clone()).unwrap();
+    p.save_as(&project, &h).unwrap();
+    let main = h.main();
+    let unsaved = gusset_doc::Document::from_text("gusset 1\nunits mm\n\nparam a = 3 mm\n").unwrap();
+    h.commit(&gusset_history::Ctx::user(2), main, &unsaved, "unsaved", gusset_history::NodeState::Ok).unwrap();
+    p.snapshot(&h).unwrap();
+    let recovery = p.recovery_path();
+    drop(p); // crash: no clean close
+
+    let mut opts = StdioOptions::new(Some(project.clone()), Arc::new(MockKernel));
+    opts.connection_dir = Some(dir.join("no-apps"));
+    opts.data_dirs = Some(dirs.clone());
+    let (a, b) = tokio::io::duplex(1 << 20);
+    drop(b); // the agent never even connects
+    let (r, w) = tokio::io::split(a);
+    let err = gusset_mcp::run_stdio_async(opts, r, w).await.unwrap_err();
+    assert!(err.to_string().contains("recovered after a crash"), "{err}");
+    assert!(recovery.exists(), "the recovery file must survive the bridge");
+    let (p, _, report) = gusset_project::Project::open(&project, dirs).unwrap();
+    assert!(matches!(report, gusset_project::OpenReport::RecoveryAvailable { .. }), "{report:?}");
+    p.release();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -160,6 +160,16 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind, reduce_motion: bool) {
     });
 }
 
+/// The dialog's main action: accent fill with `accent-text`.
+pub fn primary_button(ui: &mut egui::Ui, text: &str, min_width: f32) -> egui::Response {
+    let sel = ui.visuals().selection;
+    ui.add(
+        egui::Button::new(egui::RichText::new(text).color(sel.stroke.color))
+            .fill(sel.bg_fill)
+            .min_size(egui::vec2(min_width, 0.0)),
+    )
+}
+
 /// WCAG relative luminance.
 pub fn luminance(c: Color32) -> f64 {
     let ch = |v: u8| {

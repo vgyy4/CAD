@@ -27,6 +27,7 @@
 #![deny(unsafe_code)]
 
 pub mod budgets;
+pub mod codeload;
 pub mod cpu;
 pub mod diagnostics;
 pub mod dispatch;

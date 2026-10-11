@@ -33,6 +33,10 @@ global options: --force-dispatch LEVEL";
 
 /// Exit codes: 0 ok, 1 model has feature errors, 2 usage / IO / damaged input.
 fn main() -> ExitCode {
+    // Code-loading hardening before anything else (Windows DLL search path; ADR 0008 §6).
+    if let Some(e) = gusset_hw::codeload::harden() {
+        eprintln!("warning: {e}");
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--force-dispatch") {
         let Some(level) = args.get(i + 1).cloned() else {
@@ -302,6 +306,21 @@ fn mcp(args: &[String]) -> Result<ExitCode, String> {
         }
         Err(e) => return Err(format!("cannot set up the protocol stream: {e}")),
     };
+    // The one startup routine (housekeeping, cache cap, recovery scan; review M1). It
+    // never deletes recovery data the user has not resolved, and never touches projects
+    // a running app holds, so it is safe while the app runs.
+    if let Some(dirs) = gusset_store::paths::DataDirs::from_os() {
+        match gusset_project::startup(&dirs, &[]) {
+            Ok(r) if !r.pending_recoveries.is_empty() => eprintln!(
+                "gusset mcp: note: {} crash-recovery cop{} of unsaved work wait{} in the Gusset app",
+                r.pending_recoveries.len(),
+                if r.pending_recoveries.len() == 1 { "y" } else { "ies" },
+                if r.pending_recoveries.len() == 1 { "s" } else { "" }
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!("gusset mcp: warning: startup housekeeping failed: {e}"),
+        }
+    }
     let kernel: Arc<dyn Kernel> = match OcctKernel::new() {
         Ok(k) => Arc::new(k),
         Err(e) => {

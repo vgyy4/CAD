@@ -241,11 +241,34 @@ where
     P: Fs + ?Sized,
     D: Fs + ?Sized,
 {
-    container::verify(bytes).map_err(DurableError::Invalid)?;
+    save_project_with(project_fs, path, data_fs, lkg, bytes, &container::verify)
+}
+
+/// [`save_project`] with a caller-chosen container validator, used for `bytes`, for the
+/// existing file before it becomes the LKG copy, and for both read-backs. Pass
+/// [`container::verify_framing`] for images built from individually verified records
+/// (every byte stays CRC-checked and read-backs are compared byte-for-byte); opening
+/// always verifies fully.
+///
+/// # Errors
+/// As [`save_project`].
+pub fn save_project_with<P, D>(
+    project_fs: &P,
+    path: &Path,
+    data_fs: &D,
+    lkg: Option<&Path>,
+    bytes: &[u8],
+    validate: &dyn Fn(&[u8]) -> Result<(), container::OpenError>,
+) -> Result<(), DurableError<container::OpenError>>
+where
+    P: Fs + ?Sized,
+    D: Fs + ?Sized,
+{
+    validate(bytes).map_err(DurableError::Invalid)?;
     if let Some(lkg) = lkg {
         match project_fs.read(path) {
-            Ok(old) if container::verify(&old).is_ok() => {
-                durable_write(data_fs, lkg, &old, &container::verify)?;
+            Ok(old) if validate(&old).is_ok() => {
+                durable_write(data_fs, lkg, &old, validate)?;
             }
             // Missing or damaged: keep whatever LKG we already have.
             Ok(_) => {}
@@ -253,7 +276,7 @@ where
             Err(e) => return Err(DurableError::Io { step: Step::ReadBack, path: path.to_path_buf(), source: e }),
         }
     }
-    durable_write(project_fs, path, bytes, &container::verify)
+    durable_write(project_fs, path, bytes, validate)
 }
 
 #[cfg(test)]

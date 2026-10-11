@@ -9,16 +9,36 @@ mod ffi;
 use gusset_kernel::*;
 
 /// OCCT-backed geometry kernel.
-#[derive(Debug, Clone, Copy)]
+///
+/// [`Kernel::read_native`] parses a B-rep blob in-process only if this process produced
+/// it ([`Kernel::write_native`]) or the sandboxed worker already validated it
+/// ([`gusset_worker::trust`]). Any other blob, such as one from a project file
+/// someone sent, is first parsed and re-serialized by `gusset-worker`, and the app then
+/// parses the worker's output (ADR 0008 §4, security review #3). Without a worker,
+/// untrusted blobs are refused.
+#[derive(Debug, Clone)]
 pub struct OcctKernel {
-    _private: (),
+    #[cfg_attr(not(gusset_occt), allow(dead_code))]
+    worker: Option<std::path::PathBuf>,
 }
 
+/// Time allowed for validating one B-rep blob in the worker.
+pub const VALIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl OcctKernel {
-    /// Returns the kernel, or an error if this build does not include OCCT.
+    /// Returns the kernel, or an error if this build does not include OCCT. Untrusted
+    /// B-rep blobs are validated by the `gusset-worker` installed next to the current
+    /// executable.
     pub fn new() -> KResult<OcctKernel> {
+        let worker = gusset_worker::default_worker_path().filter(|p| p.is_file());
+        Self::with_worker(worker)
+    }
+
+    /// Like [`OcctKernel::new`], with an explicit worker (an absolute path), or `None`
+    /// to refuse every B-rep blob that is not already trusted.
+    pub fn with_worker(worker: Option<std::path::PathBuf>) -> KResult<OcctKernel> {
         if cfg!(gusset_occt) {
-            Ok(OcctKernel { _private: () })
+            Ok(OcctKernel { worker })
         } else {
             Err(KernelError::new(KernelErrorKind::Unsupported, "this build of Gusset does not include the OCCT kernel")
                 .with_hint("build with GUSSET_OCCT_DIR pointing to an OCCT 8 installation"))
@@ -307,11 +327,36 @@ mod imp {
         }
 
         fn write_native(&self, shape: &Shape) -> KResult<Vec<u8>> {
-            ffi::brep_write(raw(shape)?)
+            let bytes = ffi::brep_write(raw(shape)?)?;
+            gusset_worker::trust::trust(&bytes);
+            Ok(bytes)
         }
 
         fn read_native(&self, data: &[u8]) -> KResult<Shape> {
-            Ok(Shape::new(OcctShape(ffi::brep_read(data)?)))
+            if gusset_worker::trust::is_trusted(data) {
+                return Ok(Shape::new(OcctShape(ffi::brep_read(data)?)));
+            }
+            let Some(worker) = &self.worker else {
+                return Err(KernelError::new(
+                    KernelErrorKind::Unsupported,
+                    "imported geometry in this project cannot be checked because the import worker is missing",
+                )
+                .with_hint("reinstall Gusset so that gusset-worker is next to the app"));
+            };
+            let canonical = gusset_worker::validate_native_out_of_process(
+                worker,
+                data,
+                &gusset_sandbox::Limits::default(),
+                VALIDATE_TIMEOUT,
+            )
+            .map_err(|e| {
+                KernelError::new(KernelErrorKind::InvalidInput, format!("imported geometry is damaged or unsafe ({e})"))
+                    .with_hint("re-import the original file")
+            })?;
+            let shape = ffi::brep_read(&canonical)?;
+            gusset_worker::trust::trust(data);
+            gusset_worker::trust::trust(&canonical);
+            Ok(Shape::new(OcctShape(shape)))
         }
     }
 }

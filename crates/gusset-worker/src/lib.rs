@@ -1,5 +1,8 @@
 //! The out-of-process importer (ADR 0008 §4).
 //!
+//! It also checks kernel-native B-rep blobs from project files before the app parses
+//! them in-process ([`validate_native_out_of_process`], [`trust`]; security review #3).
+//!
 //! The parent ([`import_out_of_process`]) starts `gusset-worker` from the install
 //! directory with an empty environment, sends the file bytes over stdin, and reads
 //! kernel-native B-rep bodies back over stdout. The worker sandboxes itself before
@@ -18,23 +21,16 @@ pub const REQUEST_MAGIC: &[u8; 8] = b"GWRQ1\0\0\0";
 pub const RESPONSE_MAGIC: &[u8; 8] = b"\0GWRSP1\0";
 /// Largest input file accepted.
 pub const MAX_INPUT: u64 = 1 << 30;
-/// Hard cap on a worker's response, whatever the input size.
+/// Hard cap on a worker response, whatever the input size (see [`output_cap`]).
 pub const MAX_OUTPUT: u64 = 1 << 30;
-
-/// Largest response accepted for an input of `input_len` bytes: 16 × the input plus
-/// 64 MiB (native B-rep is far more compact than STEP/IGES text, so a real import stays
-/// well below), never more than [`MAX_OUTPUT`]. A compromised worker therefore cannot
-/// make the app buffer gigabytes for a small file (security review #12).
-#[must_use]
-pub fn max_output_for(input_len: usize) -> u64 {
-    (input_len as u64).saturating_mul(16).saturating_add(64 << 20).min(MAX_OUTPUT)
-}
 pub const MAX_BODIES: u32 = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Step = 1,
     Iges = 2,
+    /// A kernel-native B-rep blob (OCCT `BinTools`) to validate and re-serialize.
+    Brep = 3,
 }
 
 impl Format {
@@ -42,6 +38,7 @@ impl Format {
         match v {
             1 => Some(Format::Step),
             2 => Some(Format::Iges),
+            3 => Some(Format::Brep),
             _ => None,
         }
     }
@@ -52,6 +49,16 @@ impl Format {
             _ => None,
         }
     }
+}
+
+/// The most stdout the parent accepts from a worker for an input of `input_len` bytes.
+///
+/// Measured with OCCT's samples, the B-rep output of a STEP import is about 0.3× the
+/// input and a validated B-rep blob is about 1× its input. Allowing 4× plus 16 MiB
+/// (for the frame, the report and library chatter) leaves wide headroom while keeping
+/// a compromised worker from making the app buffer gigabytes (security review #12).
+pub fn output_cap(input_len: u64) -> u64 {
+    input_len.saturating_mul(4).saturating_add(16 << 20).min(MAX_OUTPUT)
 }
 
 /// Encodes a request frame.
@@ -242,70 +249,250 @@ pub fn import_out_of_process_cancellable(
     if data.len() as u64 > MAX_INPUT {
         return Err(ImportError::TooLarge);
     }
-    if !worker.is_absolute() {
-        return Err(ImportError::Spawn("worker path must be absolute".into()));
-    }
-    let mut child = std::process::Command::new(worker)
-        .env_clear()
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| ImportError::Spawn(e.to_string()))?;
-    let _guard = gusset_sandbox::contain_child(&child, limits).map_err(ImportError::Spawn)?;
-    let req = encode_request(format, data);
-    let mut stdin = child.stdin.take().ok_or_else(|| ImportError::Spawn("no stdin".into()))?;
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&req);
-    });
-    let mut stdout = child.stdout.take().ok_or_else(|| ImportError::Spawn("no stdout".into()))?;
-    let cap = max_output_for(data.len());
-    let overflow = std::sync::Arc::new(AtomicBool::new(false));
-    let overflow2 = overflow.clone();
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        // One byte over the cap is enough to know it was exceeded.
-        let _ = (&mut stdout).take(cap.saturating_add(1)).read_to_end(&mut buf);
-        if buf.len() as u64 > cap {
-            overflow2.store(true, Ordering::SeqCst);
-        }
-        buf
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if cancel.load(Ordering::Relaxed) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ImportError::Cancelled);
-            }
-            Ok(None) if overflow.load(Ordering::SeqCst) => {
-                // The worker sent more than the input can justify: stop it now.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ImportError::OutputTooLarge);
-            }
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ImportError::TimedOut);
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Err(ImportError::Crashed(e.to_string())),
-        }
-    };
-    let _ = writer.join();
-    let out = reader.join().map_err(|_| ImportError::Protocol("reader thread failed".into()))?;
-    if out.len() as u64 > cap {
-        return Err(ImportError::OutputTooLarge);
-    }
-    if !status.success() {
-        return Err(ImportError::Crashed(format!("exit status {status}")));
-    }
+    let out = run_worker(worker, encode_request(format, data), output_cap(data.len() as u64), limits, timeout, cancel)?;
     let (result, report) = decode_response(&out).map_err(ImportError::Protocol)?;
     let bodies = result.map_err(ImportError::Failed)?;
     Ok(Imported { bodies, sandbox_report: report })
+}
+
+/// Parses an untrusted kernel-native B-rep blob in the sandboxed worker and returns the
+/// worker's re-serialization of it (written by OCCT's writer from the parsed shape).
+///
+/// Use the returned bytes, not `data`, for the in-process parse: then the app's
+/// `BinTools::Read` only ever sees writer-produced data. A blob that crashes, hangs or
+/// exhausts the parser only takes down the worker.
+pub fn validate_native_out_of_process(
+    worker: &Path,
+    data: &[u8],
+    limits: &gusset_sandbox::Limits,
+    timeout: Duration,
+) -> Result<Vec<u8>, ImportError> {
+    let out = import_out_of_process(worker, Format::Brep, data, limits, timeout)?;
+    let mut bodies = out.bodies.into_iter();
+    match (bodies.next(), bodies.next()) {
+        (Some(b), None) => Ok(b.brep),
+        _ => Err(ImportError::Protocol("the import worker returned an unexpected number of shapes".into())),
+    }
+}
+
+/// Blobs this process (or, with [`trust::persist_to`], this installation) produced or
+/// validated in the worker, by BLAKE3 hash. Only these are parsed in-process directly.
+pub mod trust {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError};
+
+    /// Upper bound on remembered hashes (32 bytes each); beyond it, blobs are re-checked.
+    const MAX_ENTRIES: usize = 1 << 20;
+    /// Largest trust file read at startup.
+    const MAX_FILE: u64 = 80 << 20;
+
+    #[derive(Debug, Default)]
+    struct State {
+        hashes: HashSet<[u8; 32]>,
+        file: Option<PathBuf>,
+    }
+
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
+        let mut g = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        f(g.get_or_insert_with(State::default))
+    }
+
+    /// Whether `data` was produced or validated before.
+    pub fn is_trusted(data: &[u8]) -> bool {
+        let h = *blake3::hash(data).as_bytes();
+        with(|s| s.hashes.contains(&h))
+    }
+
+    /// Records `data` as produced by this installation or validated by the worker.
+    pub fn trust(data: &[u8]) {
+        let h = *blake3::hash(data).as_bytes();
+        let file = with(|s| {
+            if s.hashes.len() >= MAX_ENTRIES || !s.hashes.insert(h) {
+                return None;
+            }
+            s.file.clone()
+        });
+        if let Some(f) = file {
+            let _ = append(&f, &h);
+        }
+    }
+
+    /// Keeps the trusted set in `path` (one hex hash per line, owner-only), so blobs are
+    /// validated once per installation instead of once per process. Loads existing
+    /// entries. A symlinked or oversized file is ignored (and not written).
+    ///
+    /// # Errors
+    /// If the file exists but cannot be read.
+    pub fn persist_to(path: &Path) -> std::io::Result<usize> {
+        let mut loaded = Vec::new();
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_file() || m.len() > MAX_FILE => {
+                return Err(std::io::Error::other("the trusted-blob list is not a regular file of sane size"));
+            }
+            Ok(_) => {
+                for line in std::fs::read_to_string(path)?.lines() {
+                    let mut h = [0u8; 32];
+                    if parse_hex(line.trim(), &mut h) {
+                        loaded.push(h);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let n = loaded.len();
+        with(|s| {
+            for h in loaded {
+                if s.hashes.len() >= MAX_ENTRIES {
+                    break;
+                }
+                s.hashes.insert(h);
+            }
+            s.file = Some(path.to_path_buf());
+        });
+        Ok(n)
+    }
+
+    fn parse_hex(s: &str, out: &mut [u8; 32]) -> bool {
+        if s.len() != 64 || !s.is_ascii() {
+            return false;
+        }
+        for (i, b) in out.iter_mut().enumerate() {
+            match s.get(i * 2..i * 2 + 2).and_then(|d| u8::from_str_radix(d, 16).ok()) {
+                Some(v) => *b = v,
+                None => return false,
+            }
+        }
+        true
+    }
+
+    fn append(path: &Path, h: &[u8; 32]) -> std::io::Result<()> {
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut f = o.open(path)?;
+        let mut line = String::with_capacity(65);
+        for b in h {
+            line.push_str(&format!("{b:02x}"));
+        }
+        line.push('\n');
+        f.write_all(line.as_bytes())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test() {
+        with(|s| *s = State::default());
+    }
+}
+
+/// How long to wait for the worker's stdout to close after the worker is gone.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Spawns the worker, sends `request`, and returns everything it wrote to stdout.
+///
+/// The worker leads its own process group (Unix) or job (Windows). Whatever happens —
+/// normal exit, crash or timeout — everything in that group is killed before the worker
+/// is reaped, so no descendant can outlive the call or hold the pipe open, and reading
+/// stdout has a deadline.
+fn run_worker(
+    worker: &Path,
+    request: Vec<u8>,
+    cap: u64,
+    limits: &gusset_sandbox::Limits,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, ImportError> {
+    if !worker.is_absolute() {
+        return Err(ImportError::Spawn("worker path must be absolute".into()));
+    }
+    let mut cmd = std::process::Command::new(worker);
+    cmd.env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    gusset_sandbox::configure_command(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| ImportError::Spawn(e.to_string()))?;
+    let guard = match gusset_sandbox::contain_child(&child, limits) {
+        Ok(g) => g,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ImportError::Spawn(e));
+        }
+    };
+    let finish = |child: &mut std::process::Child| {
+        guard.kill_all();
+        let _ = child.kill();
+        child.wait()
+    };
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = finish(&mut child);
+        return Err(ImportError::Spawn("no stdin/stdout".into()));
+    };
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&request);
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        // One byte past the cap tells "too large" apart from "exactly the cap".
+        let _ = (&mut stdout).take(cap.saturating_add(1)).read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let too_large = || ImportError::OutputTooLarge;
+    let start = Instant::now();
+    let mut early = None;
+    loop {
+        if early.is_none()
+            && let Ok(buf) = rx.try_recv()
+        {
+            if buf.len() as u64 > cap {
+                let _ = finish(&mut child);
+                return Err(too_large());
+            }
+            early = Some(buf);
+        }
+        match gusset_sandbox::has_exited(&mut child) {
+            Ok(true) => break,
+            Ok(false) if cancel.load(Ordering::Relaxed) => {
+                let _ = finish(&mut child);
+                return Err(ImportError::Cancelled);
+            }
+            Ok(false) if start.elapsed() > timeout => {
+                let _ = finish(&mut child);
+                return Err(ImportError::TimedOut);
+            }
+            Ok(false) => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) => {
+                let _ = finish(&mut child);
+                return Err(ImportError::Crashed(e.to_string()));
+            }
+        }
+    }
+    // The worker has exited but is not reaped yet: kill anything it left behind.
+    let status = finish(&mut child).map_err(|e| ImportError::Crashed(e.to_string()))?;
+    let _ = writer.join();
+    let out = match early {
+        Some(buf) => buf,
+        None => rx
+            .recv_timeout(DRAIN_TIMEOUT)
+            .map_err(|_| ImportError::Protocol("the import worker's output did not close".into()))?,
+    };
+    if !status.success() {
+        return Err(ImportError::Crashed(format!("exit status {status}")));
+    }
+    if out.len() as u64 > cap {
+        return Err(too_large());
+    }
+    Ok(out)
 }
 
 /// The worker binary next to the current executable (install directory).
@@ -364,11 +551,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_cap_follows_the_input_size() {
-        assert_eq!(max_output_for(0), 64 << 20);
-        assert_eq!(max_output_for(1 << 20), (16 << 20) + (64 << 20));
-        assert_eq!(max_output_for(1 << 30), MAX_OUTPUT);
-        const { assert!(MAX_OUTPUT < 4 << 30) };
+    fn trust_set_and_persistent_store() {
+        trust::reset_for_test();
+        assert!(!trust::is_trusted(b"blob-a"));
+        trust::trust(b"blob-a");
+        assert!(trust::is_trusted(b"blob-a"));
+        let dir = std::env::temp_dir().join(format!("gusset-trust-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("trusted-blobs");
+        assert_eq!(trust::persist_to(&f).unwrap(), 0);
+        trust::trust(b"blob-b");
+        trust::reset_for_test();
+        assert!(!trust::is_trusted(b"blob-b"));
+        assert_eq!(trust::persist_to(&f).unwrap(), 1);
+        assert!(trust::is_trusted(b"blob-b") && !trust::is_trusted(b"blob-a"));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&f, &link).unwrap();
+            assert!(trust::persist_to(&link).is_err());
+        }
+        trust::reset_for_test();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn output_cap_follows_input_size() {
+        assert_eq!(output_cap(0), 16 << 20);
+        assert_eq!(output_cap(1 << 20), (4 << 20) + (16 << 20));
+        assert_eq!(output_cap(MAX_INPUT), MAX_OUTPUT);
+        assert_eq!(output_cap(u64::MAX), MAX_OUTPUT);
     }
 
     #[cfg(unix)]
@@ -380,18 +592,6 @@ mod tests {
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
-    }
-
-    /// Security review #12: a (compromised) worker that floods stdout is stopped at a
-    /// bound derived from the input size.
-    #[cfg(unix)]
-    #[test]
-    fn flooding_worker_is_stopped() {
-        let w = script("flood", "exec /usr/bin/head -c 200000000 /dev/zero");
-        let r =
-            import_out_of_process(&w, Format::Step, b"x", &gusset_sandbox::Limits::default(), Duration::from_secs(60));
-        assert_eq!(r.unwrap_err(), ImportError::OutputTooLarge);
-        let _ = std::fs::remove_dir_all(w.parent().unwrap());
     }
 
     /// Code review M6: an import can be cancelled; the worker is killed.

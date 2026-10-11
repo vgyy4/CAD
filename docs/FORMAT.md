@@ -154,6 +154,24 @@ record, or one byte after a failed candidate. The roots can be recovered from th
 if the trailer and index CRCs still verify, or else from any `"GIDX"` candidate whose
 CRC verifies.
 
+### Roots written by Gusset
+
+| Root | Value |
+|---|---|
+| `nodes`, `branches`, `events` | 32-byte hashes of the history text records |
+| `meta` | `project 1` text: project ID, `save_seq`, `base_seq`, creation time |
+| `settings` | optional, `project-settings 1` text: per-project save-mode overrides |
+| `origin` | recovery images only, optional: the project file the image belongs to (UTF-8), so it is never offered for another file |
+
+Readers ignore roots they do not know.
+
+### Frozen fixtures
+
+`tests/fixtures/format/` holds files written by each format/schema version
+(`v1-project.gus`, `v1-recovery.grec`). `gusset-project`'s `format_v1_fixtures_still_open`
+opens them and checks their content. Fixtures are never regenerated; every format or
+schema bump adds new ones together with its migration.
+
 ## `.grec` recovery file, version 1
 
 One per open project, at `<data_dir>/recovery/<project-id>.grec`, on the local disk.

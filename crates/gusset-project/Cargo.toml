@@ -12,5 +12,8 @@ gusset-doc.workspace = true
 gusset-history.workspace = true
 gusset-store.workspace = true
 
+[dev-dependencies]
+gusset-units.workspace = true
+
 [lints]
 workspace = true

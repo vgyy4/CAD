@@ -92,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Worker protocol frames.
     write(out, "worker_request", "step", &encode_request(Format::Step, b"ISO-10303-21;\nEND-ISO-10303-21;\n"))?;
     write(out, "worker_request", "iges", &encode_request(Format::Iges, b""))?;
+    write(out, "worker_request", "brep", &encode_request(Format::Brep, b"\x00\x01Open CASCADE Topology V3"))?;
     let ok = Ok(vec![
         Body { name: "Body".into(), brep: b"DBRep_DrawableShape\n".to_vec() },
         Body { name: String::new(), brep: Vec::new() },
