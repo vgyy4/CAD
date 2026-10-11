@@ -268,3 +268,75 @@ fn import_uses_the_importer_and_stores_blobs_once() {
     assert!(e.code == "invalid_args" || e.code == "not_found");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+fn err_code(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> String {
+    execute(s, ctx, id, args).map(|v| format!("ok: {v}")).unwrap_or_else(|e| e.code)
+}
+
+#[test]
+fn agents_cannot_impersonate_main() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let a = CmdCtx::agent("eve", 2);
+    run(&mut s, &a, "param.set", json!({"name": "x", "expr": "1 mm"}));
+    let main = s.history().main();
+    let main_name = s.history().branch(main).unwrap().name.clone();
+    // Renaming the user's main (to anything) needs approval.
+    assert_eq!(
+        err_code(&mut s, &a, "branch.rename", json!({"branch": main.to_string(), "name": "agent/eve"})),
+        "approval_required"
+    );
+    // Its own branch cannot be named like main, in any spelling.
+    let own = s.current_branch(&a.actor).to_string();
+    for n in ["Main", " MAIN ", "ma-in", "master"] {
+        assert_eq!(err_code(&mut s, &a, "branch.rename", json!({"branch": own, "name": n})), "not_allowed", "{n}");
+    }
+    // Names stay unique ignoring case, for everyone.
+    assert_ne!(
+        err_code(&mut s, &u, "branch.rename", json!({"branch": own, "name": main_name.to_uppercase()})),
+        "ok: {}"
+    );
+    // Even if main somehow carries the agent's branch name, the agent never lands on main.
+    run(&mut s, &u, "branch.rename", json!({"branch": main.to_string(), "name": "agent/mallory"}));
+    let m = CmdCtx::agent("mallory", 3);
+    run(&mut s, &m, "param.set", json!({"name": "y", "expr": "2 mm"}));
+    assert_ne!(s.current_branch(&m.actor), main);
+    assert!(s.history().head_document(main).unwrap().params.iter().all(|p| p.name != "y"));
+}
+
+#[test]
+fn read_only_agents_cannot_write_files_and_bulk_counts_params() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let dir = std::env::temp_dir().join(format!("gusset-ro-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project_dir = Some(dir.clone());
+    s.config.read_only_agents = true;
+    let a = CmdCtx::agent("ro", 2);
+    assert_eq!(err_code(&mut s, &a, "export.step", json!({"path": "x.step"})), "read_only");
+    assert_eq!(err_code(&mut s, &a, "export.mesh", json!({"path": "x.stl"})), "read_only");
+    assert!(!dir.join("x.step").exists() && !dir.join("x.stl").exists());
+    s.config.read_only_agents = false;
+    // 30 new parameters at once is a bulk change.
+    let mut text = s.document(&a.actor).unwrap().to_text();
+    for i in 0..30 {
+        text.push_str(&format!("param p{i} = {i} mm\n"));
+    }
+    assert_eq!(err_code(&mut s, &a, "document.set_text", json!({"text": text})), "approval_required");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn agent_audit_survives_reopening() {
+    let mut s = session();
+    let a = CmdCtx::agent("aud", 2);
+    run(&mut s, &a, "param.set", json!({"name": "x", "expr": "1 mm"}));
+    let _ = execute(&mut s, &a, "branch.set_main", json!({"branch": "main"}));
+    let h = s.history().clone();
+    let reopened = Session::from_history(h, Arc::new(MockKernel));
+    let log = reopened.audit_log();
+    assert!(log.iter().any(|e| e.command == "param.set" && e.outcome == "ok"), "{log:?}");
+    assert!(log.iter().any(|e| e.command == "branch.set_main" && e.outcome.contains("approval")), "{log:?}");
+}

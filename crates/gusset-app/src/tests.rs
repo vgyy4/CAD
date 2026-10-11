@@ -171,6 +171,7 @@ fn approval_request(args: &str) -> ApprovalRequest {
         title: "Set as main".into(),
         reason: "Agents need human approval to change the main branch".into(),
         arguments: args.into(),
+        context: "branch: b2 = \"agent/x\", created by agent x, not main".into(),
     }
 }
 

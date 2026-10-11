@@ -25,6 +25,8 @@ pub struct ApprovalRequest {
     pub reason: String,
     /// Short, sanitized summary of the arguments (agent-supplied: show as data).
     pub arguments: String,
+    /// What the arguments refer to, resolved by the server (e.g. which branch is main).
+    pub context: String,
 }
 
 impl ApprovalRequest {
@@ -32,8 +34,13 @@ impl ApprovalRequest {
     #[must_use]
     pub fn prompt(&self) -> String {
         format!(
-            "The AI agent \"{}\" wants to run \"{}\" ({}). {}. Arguments: {}. Approve?",
-            self.agent, self.title, self.tool, self.reason, self.arguments
+            "The AI agent \"{}\" wants to run \"{}\" ({}). {}. Arguments: {}.{} Approve?",
+            self.agent,
+            self.title,
+            self.tool,
+            self.reason,
+            self.arguments,
+            if self.context.is_empty() { String::new() } else { format!(" Affects: {}.", self.context) }
         )
     }
 }

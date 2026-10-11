@@ -557,6 +557,11 @@ impl App {
                 ui.label(tr("approval.arguments"));
                 ui.add(egui::Label::new(RichText::new(plain(&r.arguments, 1000)).monospace()).wrap());
                 ui.end_row();
+                if !r.context.is_empty() {
+                    ui.label(tr("approval.affects"));
+                    ui.add(egui::Label::new(RichText::new(plain(&r.context, 600)).strong()).wrap());
+                    ui.end_row();
+                }
             });
             ui.weak(format!("{} {} s", tr("approval.timeout"), shown.seconds_left));
             if shown.queued > 0 {

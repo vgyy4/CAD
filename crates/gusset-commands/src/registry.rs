@@ -45,10 +45,15 @@ pub struct Flags {
     pub agent_approval: bool,
     /// Agents may not run this at all.
     pub user_only: bool,
+    /// Writes files outside the project document (exports); blocked in read-only mode.
+    pub writes_files: bool,
 }
 
-pub const READ: Flags = Flags { mutating: false, destructive: false, agent_approval: false, user_only: false };
-pub const EDIT: Flags = Flags { mutating: true, destructive: false, agent_approval: false, user_only: false };
+pub const READ: Flags =
+    Flags { mutating: false, destructive: false, agent_approval: false, user_only: false, writes_files: false };
+pub const EDIT: Flags = Flags { mutating: true, ..READ };
+/// Read-only for the model, but writes a file (exports).
+pub const WRITE_FILE: Flags = Flags { writes_files: true, ..READ };
 
 /// A typed command: arguments are a JSON-schema'd struct.
 pub trait Command: DeserializeOwned + JsonSchema {
@@ -129,16 +134,31 @@ pub fn execute(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> Result<V
     let spec = find(id).ok_or_else(|| {
         CommandError::not_found(format!("unknown command '{id}'")).hint("use the command search to list commands")
     })?;
+    // Argument summary for the persisted audit log (untrusted text, clipped).
+    let detail = if ctx.is_agent() { clip_args(&args) } else { String::new() };
     let r = check_policy(s, ctx, spec).and_then(|()| (spec.run)(s, ctx, args));
     if ctx.is_agent() {
-        let branch = s.history().branch(s.current_branch(&ctx.actor)).ok().map(|b| b.name.clone());
+        let bid = s.current_branch(&ctx.actor);
+        let branch = s.history().branch(bid).ok().map(|b| b.name.clone());
         let outcome = match &r {
             Ok(_) => "ok".to_string(),
             Err(e) => format!("error: {}", e.code),
         };
+        // Changes, file writes and refusals go to the project's event log so they
+        // survive the session (ADR 0012); plain reads stay in memory only.
+        let denied = matches!(&r, Err(e) if matches!(e.code.as_str(),
+            "approval_required" | "not_allowed" | "read_only" | "rate_limited"));
+        if spec.flags.mutating || spec.flags.writes_files || spec.flags.agent_approval || denied {
+            s.history_mut_pub().record_agent_action(&ctx.hctx(), spec.id, Some(bid), &outcome, &detail);
+        }
         s.audit(AuditEntry { time: ctx.time, actor: ctx.actor.clone(), command: spec.id.to_string(), branch, outcome });
     }
     r
+}
+
+fn clip_args(args: &Value) -> String {
+    let t = args.to_string();
+    if t.chars().count() > 400 { format!("{}…", t.chars().take(400).collect::<String>()) } else { t }
 }
 
 fn check_policy(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec) -> Result<(), CommandError> {
@@ -151,7 +171,7 @@ fn check_policy(s: &mut Session, ctx: &CmdCtx, spec: &CommandSpec) -> Result<(),
     if spec.flags.user_only {
         return Err(CommandError::new("not_allowed", format!("'{}' is only available to the user", spec.id)));
     }
-    if spec.flags.mutating && s.config.read_only_agents {
+    if (spec.flags.mutating || spec.flags.writes_files) && s.config.read_only_agents {
         return Err(CommandError::new("read_only", "agents are in read-only mode for this project")
             .hint("the user can turn off read-only agent mode in the app"));
     }

@@ -5,7 +5,7 @@
 //! can label and sanitize it as untrusted (spec: prompt injection).
 
 use crate::error::CommandError;
-use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, spec};
+use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, WRITE_FILE, spec};
 use crate::session::{CmdCtx, Session};
 use gusset_doc::validate::{creates_body, validate_feature_name};
 use gusset_doc::*;
@@ -209,6 +209,32 @@ fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
         .ok_or_else(|| CommandError::not_found(format!("no branch '{r}'")).hint("use branch.list to see branches"))
 }
 
+/// Plain-language description of the branches a command's arguments refer to, for
+/// approval prompts: ids alone ("b2") would let an agent hide which branch is affected.
+/// Names are user/agent text; callers show the result as plain text.
+#[must_use]
+pub fn describe_branch_args(s: &Session, args: &Value) -> String {
+    let mut out = Vec::new();
+    let main = s.history().main();
+    if let Some(map) = args.as_object() {
+        for (k, v) in map {
+            let Some(r) = v.as_str() else { continue };
+            if !matches!(k.as_str(), "branch" | "from" | "into" | "source" | "target") {
+                continue;
+            }
+            let Ok(b) = find_branch(s, r) else { continue };
+            let Ok(br) = s.history().branch(b) else { continue };
+            let who = match &br.created_by {
+                gusset_history::Actor::User => "the user".to_string(),
+                gusset_history::Actor::Agent(a) => format!("agent {a}"),
+            };
+            let role = if b == main { "THE CURRENT MAIN BRANCH" } else { "not main" };
+            out.push(format!("{k}: {b} = \"{}\", created by {who}, {role}", br.name));
+        }
+    }
+    out.join("; ")
+}
+
 /// A node by id (`n12`) or the head of a branch reference.
 fn find_node(s: &Session, r: &str) -> Result<NodeId, CommandError> {
     if let Some(n) = parse_node(r)
@@ -276,10 +302,13 @@ impl Command for SetText {
             ce.details(json!({"line": e.line, "column": e.column}))
         })?;
         let old = s.document(&ctx.actor)?;
+        let param = |d: &gusset_doc::Document, n: &str| d.params.iter().find(|p| p.name == n).cloned();
         let changed = old.features.iter().filter(|f| new.feature(&f.name) != Some(*f)).count()
-            + new.features.iter().filter(|f| old.feature(&f.name).is_none()).count();
+            + new.features.iter().filter(|f| old.feature(&f.name).is_none()).count()
+            + old.params.iter().filter(|p| param(&new, &p.name).as_ref() != Some(*p)).count()
+            + new.params.iter().filter(|p| param(&old, &p.name).is_none()).count();
         if ctx.is_agent() && s.config.approvals_required && !ctx.approved && changed > s.config.bulk_threshold {
-            return Err(CommandError::approval(&format!("changing {changed} features at once")));
+            return Err(CommandError::approval(&format!("changing {changed} features or parameters at once")));
         }
         edit(s, ctx, "Edit code", |doc, _| {
             *doc = new;
@@ -1225,6 +1254,17 @@ impl Command for BranchList {
     }
 }
 
+/// Names an agent may not give a branch: anything that reads as "main" (spoofing the
+/// user's main branch).
+fn agent_branch_name_ok(name: &str) -> Result<(), CommandError> {
+    let folded: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    if folded == "main" || folded == "master" {
+        return Err(CommandError::new("not_allowed", "agents cannot name a branch like the main branch")
+            .hint("pick a descriptive name; the user decides what becomes main"));
+    }
+    Ok(())
+}
+
 /// Creates a branch from your current state (or any node) and switches to it.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1251,6 +1291,11 @@ impl Command for BranchCreate {
                 s.history().head(b).map_err(CommandError::history)?
             }
         };
+        if ctx.is_agent()
+            && let Some(n) = &self.name
+        {
+            agent_branch_name_ok(n)?;
+        }
         let b =
             s.history_mut_pub().create_branch(&ctx.hctx(), at, self.name.as_deref()).map_err(CommandError::history)?;
         s.switch_branch(&ctx.actor, b)?;
@@ -1276,6 +1321,15 @@ impl Command for BranchRename {
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
+        if ctx.is_agent() {
+            agent_branch_name_ok(&self.name)?;
+            let br = s.history().branch(b).map_err(CommandError::history)?;
+            // Agents rename only their own branches; anything else (the user's branches,
+            // main) needs approval, so an agent cannot make its branch look like main.
+            if br.created_by != ctx.actor && s.config.approvals_required && !ctx.approved {
+                return Err(CommandError::approval(&format!("renaming the branch \"{}\"", br.name)));
+            }
+        }
         s.history_mut_pub().rename_branch(&ctx.hctx(), b, &self.name).map_err(CommandError::history)?;
         s.note_change(ctx, b, "Rename iteration");
         Ok(json!({}))
@@ -1385,7 +1439,7 @@ impl Command for BranchSetMain {
     const DESCRIPTION: &'static str =
         "Make a branch the main branch (default for opening and exports). Agents need human approval.";
     const CATEGORY: Category = Category::Branches;
-    const FLAGS: Flags = Flags { mutating: true, destructive: false, agent_approval: true, user_only: false };
+    const FLAGS: Flags = Flags { agent_approval: true, ..EDIT };
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
         s.history_mut_pub().set_main(&ctx.hctx(), b).map_err(CommandError::history)?;
@@ -1409,7 +1463,7 @@ impl Command for BranchDelete {
     const TITLE: &'static str = "Delete iteration";
     const DESCRIPTION: &'static str = "Move a branch to Recently deleted (restorable). Requires confirm: true; main cannot be deleted. Agents need human approval.";
     const CATEGORY: Category = Category::Branches;
-    const FLAGS: Flags = Flags { mutating: true, destructive: true, agent_approval: true, user_only: false };
+    const FLAGS: Flags = Flags { destructive: true, agent_approval: true, ..EDIT };
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
         s.history_mut_pub().delete_branch(&ctx.hctx(), b, self.confirm).map_err(CommandError::history)?;
@@ -1645,7 +1699,7 @@ impl Command for ExportStep {
     const DESCRIPTION: &'static str =
         "Export all bodies of your current branch as STEP (AP242, mm) to a file inside the project folder.";
     const CATEGORY: Category = Category::Exchange;
-    const FLAGS: Flags = READ;
+    const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
         if path.exists() {
@@ -1720,7 +1774,7 @@ impl Command for ExportMesh {
     const DESCRIPTION: &'static str =
         "Export all bodies as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing.";
     const CATEGORY: Category = Category::Exchange;
-    const FLAGS: Flags = READ;
+    const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let ext = std::path::Path::new(&self.path).extension().and_then(|e| e.to_str()).unwrap_or("");
         let format = mesh_format(self.format.as_deref().unwrap_or(ext))

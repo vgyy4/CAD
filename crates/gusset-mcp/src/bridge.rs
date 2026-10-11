@@ -309,7 +309,7 @@ fn read_only_refusal(msg: &Value) -> Option<Value> {
     }
     let name = msg.at("params").at("name").as_str()?;
     let spec = gusset_commands::registry().iter().find(|s| s.tool_name() == name)?;
-    if !spec.flags.mutating {
+    if !spec.flags.mutating && !spec.flags.writes_files {
         return None;
     }
     let e =
