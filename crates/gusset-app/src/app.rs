@@ -1835,6 +1835,17 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
             Some((info, mesh))
         })
         .collect();
+    // Imported reference meshes (STL/3MF/OBJ) are drawn and pickable as one face each.
+    let mut meshes = meshes;
+    for m in &eval.meshes {
+        let mut mesh = m.mesh.clone();
+        if mesh.face_ranges.is_empty() {
+            mesh.face_ranges = std::iter::once(0..u32::try_from(mesh.indices.len() / 3).unwrap_or(u32::MAX)).collect();
+        }
+        let info =
+            BodyInfo { name: m.name.clone(), face_names: vec![format!("{}.mesh", m.name)], edge_names: Vec::new() };
+        meshes.push((info, mesh));
+    }
     let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
     let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
     Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })

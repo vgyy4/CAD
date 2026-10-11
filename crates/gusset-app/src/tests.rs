@@ -444,3 +444,34 @@ fn viewport_renders_only_when_something_changed() {
     h.run_steps(1);
     assert_eq!(h.state().viewport.software_renders, n + 1);
 }
+
+#[test]
+fn imported_reference_mesh_is_drawn() {
+    let dir = std::env::temp_dir().join(format!("gusset-app-stl-{}", rand_suffix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let stl = dir.join("tet.stl");
+    std::fs::write(
+        &stl,
+        "solid t\n\
+         facet normal 0 0 -1\nouter loop\nvertex 0 0 0\nvertex 0 10 0\nvertex 10 0 0\nendloop\nendfacet\n\
+         facet normal 0 -1 0\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 0 10\nendloop\nendfacet\n\
+         facet normal -1 0 0\nouter loop\nvertex 0 0 0\nvertex 0 0 10\nvertex 0 10 0\nendloop\nendfacet\n\
+         facet normal 1 1 1\nouter loop\nvertex 10 0 0\nvertex 0 10 0\nvertex 0 0 10\nendloop\nendfacet\n\
+         endsolid t\n",
+    )
+    .unwrap();
+    let mut a = app();
+    a.run("import.file", json!({"path": stl.to_string_lossy()})).unwrap();
+    a.wait_idle();
+    let mut h = harness(a);
+    for _ in 0..50 {
+        h.run();
+        h.state_mut().wait_idle();
+        if !h.state().viewport.bodies().is_empty() {
+            break;
+        }
+    }
+    let names: Vec<String> = h.state().viewport.bodies().iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
