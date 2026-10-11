@@ -235,12 +235,17 @@ fn triangle_with_angles() {
 
 /// A 100-segment polyline (201 entities) with lengths and relative angles.
 fn long_chain(rng: &mut Rng, noise: f64) -> (Sketch, Vec<[f64; 2]>, Vec<EntityId>) {
+    chain_of(rng, noise, 100)
+}
+
+/// A polyline of `n` segments with lengths and relative angles.
+fn chain_of(rng: &mut Rng, noise: f64, n: usize) -> (Sketch, Vec<[f64; 2]>, Vec<EntityId>) {
     let mut s = Sketch::new();
     let mut truth = vec![[0.0, 0.0]];
     let mut heading: f64 = 0.0;
     let mut turns = Vec::new();
     let mut lengths = Vec::new();
-    for i in 0..100 {
+    for i in 0..n {
         let turn = if i == 0 { 0.0 } else { rng.range(-0.8, 0.8) };
         heading += turn;
         let len = rng.range(5.0, 15.0);
@@ -283,6 +288,26 @@ fn two_hundred_entities_within_budget() {
     }
     // Generous for unoptimised debug builds on slow CI machines.
     assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+/// Review M4: a 400-segment chain (802 unknowns in one component) took 4.2 s per solve
+/// with dense algebra. The budget is checked in release builds; debug builds only check
+/// the result.
+#[test]
+fn four_hundred_segment_chain_is_fast() {
+    let mut rng = Rng(11);
+    let (s, truth, pts) = chain_of(&mut rng, 0.3, 400);
+    let t = Instant::now();
+    let res = solve(&s, &opts());
+    let elapsed = t.elapsed();
+    assert_eq!(res.status, SolveStatus::WellConstrained, "{:?} {:?}", res.status, res.error);
+    for (p, e) in pts.iter().zip(&truth) {
+        assert!(close(pos(&res, *p), *e, 1e-6));
+    }
+    eprintln!("400-segment chain: {elapsed:?}");
+    if !cfg!(debug_assertions) {
+        assert!(elapsed < Duration::from_millis(250), "took {elapsed:?}");
+    }
 }
 
 #[test]

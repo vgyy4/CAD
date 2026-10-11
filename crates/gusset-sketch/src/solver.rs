@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::dual::N;
 use crate::equations::{self, Equation, Layout, Owner};
-use crate::linalg::{RowBasis, cholesky_solve};
+use crate::linalg::{RowEchelon, cholesky_solve, rcm};
 use crate::sketch::{ConstraintId, EntityId, Geom, MAX_COORD, Sketch, SketchError};
 
 /// Upper bound for [`SolveOptions::max_iterations`].
@@ -244,13 +244,43 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
 
         // Rank analysis at the final point.
         let nc = comp.cols.len();
-        let mut basis = RowBasis::new(nc, o.rank_tolerance);
+        // Banded column order for the echelon form (only speed depends on it: which
+        // rows are dependent does not depend on the column order).
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nc];
+        for &ei in &comp.eqs {
+            let Some(eq) = eqs.get(ei) else { continue };
+            let cs: Vec<usize> = eq.locals.iter().take(eq.nloc).filter_map(|g| col_map.get(*g).copied()).collect();
+            for &a in &cs {
+                for &b in &cs {
+                    if a != b
+                        && let Some(l) = adj.get_mut(a)
+                        && !l.contains(&b)
+                    {
+                        l.push(b);
+                    }
+                }
+            }
+        }
+        let order = rcm(&adj);
+        let mut pos = vec![0usize; nc];
+        for (new, &old) in order.iter().enumerate() {
+            if let Some(p) = pos.get_mut(old) {
+                *p = new;
+            }
+        }
+        let mut basis = RowEchelon::new(nc, o.rank_tolerance);
         let mut row = vec![0.0; nc];
+        let mut prow = vec![0.0; nc];
         let mut res = Vec::with_capacity(comp.eqs.len());
         for &ei in &comp.eqs {
             let Some(eq) = eqs.get(ei) else { continue };
             let r = sparse_row(eq, &col_map, &x, &mut row);
-            let independent = basis.add(&row);
+            for (j, v) in row.iter().enumerate() {
+                if let Some(slot) = pos.get(j).and_then(|&p| prow.get_mut(p)) {
+                    *slot = *v;
+                }
+            }
+            let independent = basis.add(&prow);
             if let Owner::Constraint(ci) = eq.owner
                 && !independent
                 && let Some(d) = dependent.get_mut(ci)
@@ -271,8 +301,9 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
             }
         }
         dof += (nc - basis.rank()) as u64;
+        let free = basis.free_columns(FREE_TOL);
         for (j, &c) in comp.cols.iter().enumerate() {
-            if 1.0 - basis.coverage(j) > FREE_TOL
+            if pos.get(j).and_then(|&p| free.get(p)).copied().unwrap_or(false)
                 && let Some(f) = free_param.get_mut(c)
             {
                 *f = true;
