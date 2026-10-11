@@ -289,3 +289,66 @@ fn one_copys_recovery_is_never_offered_for_another() {
     }
     pb.close();
 }
+
+#[test]
+fn opening_enforces_deleted_branch_retention() {
+    // Review M1: history GC never ran, so "Recently deleted" grew forever.
+    let t = Tmp::new("retention");
+    let file = t.0.join("part.gus");
+    let mut h = sample_history();
+    let u = Ctx::user(10); // 1970: long past the 7-day retention
+    let lighter = h.branch_by_name("Lighter").unwrap().id;
+    let recent = h.create_branch(&Ctx::user(now_unix()), h.head(h.main()).unwrap(), Some("Recent")).unwrap();
+    h.delete_branch(&u, lighter, true).unwrap();
+    h.delete_branch(&Ctx::user(now_unix()), recent, true).unwrap();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&file, &h).unwrap();
+    p.close();
+    let (p, h2, _) = Project::open(&file, t.dirs()).unwrap();
+    let deleted: Vec<&str> = h2.deleted_branches().iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(deleted, vec!["Recent"], "expired branch purged, recent one kept");
+    // The purged branch's own iteration and objects are gone; main is untouched.
+    assert_eq!(h2.head_document(h2.main()).unwrap(), doc("2 mm"));
+    assert!(h2.nodes().all(|n| n.label != "light"));
+    p.close();
+}
+
+#[test]
+fn startup_routine_cleans_and_lists_recoveries() {
+    let t = Tmp::new("startup");
+    let d = t.dirs();
+    // A saved project deleted outside the app, with a stale recovery copy.
+    let gone_file = t.0.join("gone.gus");
+    let mut p = Project::create(d.clone()).unwrap();
+    p.save_as(&gone_file, &sample_history()).unwrap();
+    p.snapshot(&sample_history()).unwrap();
+    let gone = p.meta.id;
+    drop(p);
+    std::fs::remove_file(&gone_file).unwrap();
+    // An untitled project that crashed.
+    let mut u = Project::create(d.clone()).unwrap();
+    u.snapshot(&sample_history()).unwrap();
+    let untitled = u.meta.id;
+    drop(u);
+    // Settings are persisted per user and read back.
+    let s = Settings { save_mode: SaveMode::Auto, ..Settings::default() };
+    s.save(&d).unwrap();
+    let r = startup(&d, &[]).unwrap();
+    assert_eq!(r.settings, s);
+    assert!(!d.recovery_file(&gone).exists() && !d.lkg_file(&gone).exists());
+    assert!(d.recovery_file(&untitled).exists());
+    assert_eq!(r.pending_recoveries.iter().map(|p| p.id).collect::<Vec<_>>(), vec![untitled]);
+    assert_eq!(r.housekeeping.unowned_recovery_kept, 1);
+    // Per-project overrides travel in the project file.
+    let file = t.0.join("o.gus");
+    let mut p = Project::create(d.clone()).unwrap();
+    p.overrides.save_mode = Some(SaveMode::Manual);
+    p.overrides.recovery_after_changes = Some(5);
+    p.save_as(&file, &sample_history()).unwrap();
+    p.close();
+    let (p, _, _) = Project::open(&file, d.clone()).unwrap();
+    assert_eq!(p.overrides.recovery_after_changes, Some(5));
+    let eff = p.settings();
+    assert_eq!((eff.save_mode, eff.recovery_after_changes), (SaveMode::Manual, 5));
+    p.close();
+}

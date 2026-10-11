@@ -15,6 +15,12 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod settings;
+mod startup;
+
+pub use settings::{ProjectSettings, SaveAction, SaveMode, SaveScheduler, Settings};
+pub use startup::{StartupReport, startup};
+
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Project identity and save bookkeeping, stored in the `meta` root.
@@ -96,8 +102,11 @@ fn kind_of(k: ObjectKind) -> Kind {
 
 /// Serializes a history into a complete `.gus` image.
 pub fn encode(history: &History, meta: &ProjectMeta) -> Result<Vec<u8>, ProjectError> {
-    encode_with(history, meta, None)
+    encode_with(history, meta, None, &ProjectSettings::default())
 }
+
+/// Root holding the per-project settings overrides.
+const SETTINGS_ROOT: &str = "settings";
 
 /// Root naming the project file a recovery image belongs to (UTF-8, lossy). Lets
 /// `open` refuse to offer one copy's recovery for another copy (review H2).
@@ -107,7 +116,12 @@ fn origin_text(path: &Path) -> String {
     housekeeping::normalise(path).to_string_lossy().into_owned()
 }
 
-fn encode_with(history: &History, meta: &ProjectMeta, origin: Option<&Path>) -> Result<Vec<u8>, ProjectError> {
+fn encode_with(
+    history: &History,
+    meta: &ProjectMeta,
+    origin: Option<&Path>,
+    overrides: &ProjectSettings,
+) -> Result<Vec<u8>, ProjectError> {
     let r = history.to_records();
     let w = |e: container::WriteError| ProjectError::Write(e.to_string());
     let mut cw = ContainerWriter::new();
@@ -124,12 +138,21 @@ fn encode_with(history: &History, meta: &ProjectMeta, origin: Option<&Path>) -> 
     if let Some(o) = origin {
         cw.set_root(ORIGIN_ROOT, origin_text(o).as_bytes()).map_err(w)?;
     }
+    if !overrides.is_empty() {
+        cw.set_root(SETTINGS_ROOT, overrides.to_text().as_bytes()).map_err(w)?;
+    }
     cw.finish(&SaveInfo { save_seq: meta.save_seq, created_unix: meta.created, app_version: APP_VERSION }).map_err(w)
 }
 
 /// Parses and fully verifies a `.gus` image.
 pub fn decode(bytes: &[u8]) -> Result<(History, ProjectMeta), ProjectError> {
+    decode_full(bytes).map(|(h, m, _)| (h, m))
+}
+
+fn decode_full(bytes: &[u8]) -> Result<(History, ProjectMeta, ProjectSettings), ProjectError> {
     let c = container::open(bytes).map_err(|e| ProjectError::Damaged(e.to_string()))?;
+    let overrides =
+        c.root(SETTINGS_ROOT).map(|t| ProjectSettings::parse(&String::from_utf8_lossy(t))).unwrap_or_default();
     let meta = c
         .root("meta")
         .and_then(|m| std::str::from_utf8(m).ok())
@@ -168,7 +191,7 @@ pub fn decode(bytes: &[u8]) -> Result<(History, ProjectMeta), ProjectError> {
         events: text_root("events")?,
     };
     let h = History::from_records(&recs).map_err(ProjectError::Damaged)?;
-    Ok((h, meta))
+    Ok((h, meta, overrides))
 }
 
 /// Best-effort salvage of a damaged file: every intact record is recovered; if the
@@ -259,6 +282,15 @@ pub struct Project {
     /// different path, the other still registered or open): it got this new identity
     /// and the old ID stays with the original (review H2). Holds the old ID.
     pub reidentified_from: Option<ProjectId>,
+    /// Per-project overrides of the save settings (saved in the project file).
+    pub overrides: ProjectSettings,
+}
+
+/// The retention part of history GC (ADR 0006), run when a project is opened: purges
+/// "Recently deleted" branches past their retention and what only they referenced, and
+/// keeps the history below its save limits. Never prunes live iterations.
+fn retention_gc(history: &mut History, settings: &Settings) {
+    history.gc(now_unix(), &settings.gc_policy(false));
 }
 
 fn new_id() -> Result<ProjectId, ProjectError> {
@@ -285,6 +317,7 @@ impl Project {
             took_over_stale_lock: false,
             recovery_pending: false,
             reidentified_from: None,
+            overrides: ProjectSettings::default(),
         };
         p.lock()?;
         Ok(p)
@@ -316,8 +349,8 @@ impl Project {
         let io = |e: std::io::Error| ProjectError::Io { path: path.to_path_buf(), message: e.to_string() };
         let bytes = std::fs::read(path).map_err(io)?;
         let risky = gusset_store::paths::classify(path);
-        match decode(&bytes) {
-            Ok((history, meta)) => {
+        match decode_full(&bytes) {
+            Ok((mut history, meta, overrides)) => {
                 let mut p = Project {
                     path: Some(path.to_path_buf()),
                     meta,
@@ -327,6 +360,7 @@ impl Project {
                     took_over_stale_lock: false,
                     recovery_pending: false,
                     reidentified_from: None,
+                    overrides,
                 };
                 let copy_of = p.copy_of(path);
                 if copy_of.is_some() {
@@ -335,7 +369,12 @@ impl Project {
                     p.lock()?;
                     let _ = housekeeping::register(&p.dirs, p.meta.id, path);
                 }
-                let report = p.check_recovery(path);
+                let mut report = p.check_recovery(path);
+                let settings = p.settings();
+                retention_gc(&mut history, &settings);
+                if let OpenReport::RecoveryAvailable { recovered, .. } = &mut report {
+                    retention_gc(recovered, &settings);
+                }
                 Ok((p, history, report))
             }
             Err(e) => {
@@ -363,6 +402,7 @@ impl Project {
                             took_over_stale_lock: false,
                             recovery_pending: false,
                             reidentified_from: None,
+                            overrides: ProjectSettings::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -379,6 +419,7 @@ impl Project {
                             took_over_stale_lock: false,
                             recovery_pending: false,
                             reidentified_from: None,
+                            overrides: ProjectSettings::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -510,7 +551,7 @@ impl Project {
         let mut meta = self.meta.clone();
         meta.save_seq += 1;
         meta.base_seq = meta.save_seq;
-        let bytes = encode(history, &meta)?;
+        let bytes = encode_with(history, &meta, None, &self.overrides)?;
         let fs = RealFs::default();
         let lkg = self.dirs.lkg_file(&self.meta.id);
         durable::save_project(&fs, path, &fs, Some(&lkg), &bytes).map_err(|e| ProjectError::Write(e.to_string()))?;
@@ -525,7 +566,7 @@ impl Project {
     pub fn snapshot(&mut self, history: &History) -> Result<u64, ProjectError> {
         let mut meta = self.meta.clone();
         meta.base_seq = self.meta.save_seq;
-        let bytes = encode_with(history, &meta, self.path.as_deref())?;
+        let bytes = encode_with(history, &meta, self.path.as_deref(), &self.overrides)?;
         recovery::write_snapshot(&RealFs::default(), &self.recovery_path(), &bytes, &container::verify)
             .map_err(|e| ProjectError::Write(e.to_string()))
     }
@@ -533,6 +574,19 @@ impl Project {
     /// Discards a pending recovery snapshot (after the user chose what to keep).
     pub fn discard_recovery(&self) {
         let _ = recovery::remove(&RealFs::default(), &self.recovery_path());
+    }
+
+    /// The user's settings with this project's overrides applied (the save mode and
+    /// recovery timing to use for it).
+    pub fn settings(&self) -> Settings {
+        Settings::load(&self.dirs).with_overrides(&self.overrides)
+    }
+
+    /// "Compact history" (Settings → Storage): runs the full GC policy, including pruning
+    /// of old unnamed intermediate iterations if the user enabled it. The caller marks
+    /// the project dirty if anything was removed, so the next save shrinks the file.
+    pub fn compact(&self, history: &mut History) -> gusset_history::GcReport {
+        history.gc(now_unix(), &self.settings().gc_policy(true))
     }
 
     /// Releases the lock **without** touching the recovery file (headless front ends
@@ -636,7 +690,7 @@ impl Project {
         let snap = recovery::read_newest(&RealFs::default(), &file, &container::verify)
             .map_err(|e| ProjectError::Damaged(e.to_string()))?
             .ok_or_else(|| ProjectError::Io { path: file.clone(), message: "no recovery copy".into() })?;
-        let (history, mut meta) = decode(&snap.payload)?;
+        let (mut history, mut meta, overrides) = decode_full(&snap.payload)?;
         meta.id = id;
         let mut p = Project {
             path: None,
@@ -647,8 +701,10 @@ impl Project {
             took_over_stale_lock: false,
             recovery_pending: true,
             reidentified_from: None,
+            overrides,
         };
         p.lock()?;
+        retention_gc(&mut history, &p.settings());
         Ok((p, history))
     }
 }
