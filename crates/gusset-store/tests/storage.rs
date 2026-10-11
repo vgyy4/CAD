@@ -217,22 +217,26 @@ fn housekeeping_removes_orphans_and_keeps_live_data() {
     assert!(d.lkg_file(&alive.id).exists());
     assert!(cache.project_scopes().unwrap().contains(&alive.id));
     assert!(!d.lock_file(&alive.id).exists(), "stale lock not removed");
-    for f in [d.recovery_file(&gone.id), d.lkg_file(&gone.id), d.recovery_file(&stray)] {
+    for f in [d.recovery_file(&gone.id), d.lkg_file(&gone.id)] {
         assert!(!f.exists(), "{} not removed", f.display());
     }
+    // Review H1: an unregistered recovery file may be a never-saved project's only copy.
+    assert!(d.recovery_file(&stray).exists(), "untitled recovery must be kept");
     assert!(!cache.project_scopes().unwrap().contains(&gone.id));
     assert!(d.recovery_file(&unmounted).exists());
     let reg = Registry::load(&d.registry_file()).unwrap();
     assert!(reg.get(&gone.id).is_none() && reg.get(&alive.id).is_some() && reg.get(&unmounted).is_some());
     assert_eq!(first.stale_locks, 1);
     assert_eq!(first.unregistered, 1);
-    assert_eq!(first.recovery_files, 2);
+    assert_eq!(first.recovery_files, 1);
+    assert_eq!(first.unowned_recovery_kept, 1);
     assert_eq!(first.lkg_files, 1);
     assert_eq!(first.cache_scopes, 1);
 
-    // Idempotent.
+    // Idempotent (the untitled recovery file is reported again, never removed).
     let r = housekeeping::run(&d, &now_opts()).unwrap();
-    assert_eq!(r, housekeeping::Report::default());
+    assert_eq!(r, housekeeping::Report { unowned_recovery_kept: 1, ..housekeeping::Report::default() });
+    assert!(d.recovery_file(&stray).exists());
 }
 
 #[test]

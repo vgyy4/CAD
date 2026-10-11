@@ -368,3 +368,19 @@ fn cuts_keep_their_target_body() {
     let e = execute(&mut s, &u, "feature.delete", json!({"name": "Extrude2"})).unwrap_err();
     assert!(e.message.contains("Extrude3"), "{e:?}");
 }
+
+#[test]
+fn history_limits_are_clean_command_errors() {
+    // Security review #5: an agent could create branches until the project no longer
+    // opened. The limit now refuses the change with a structured error.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    s.history_mut_pub()
+        .set_limits(gusset_history::HistoryLimits { max_branches: 3, ..gusset_history::HistoryLimits::default() });
+    run(&mut s, &u, "branch.create", json!({"name": "One"}));
+    run(&mut s, &u, "branch.create", json!({"name": "Two"}));
+    assert_eq!(err_code(&mut s, &u, "branch.create", json!({"name": "Three"})), "limit_reached");
+    let r = execute(&mut s, &u, "branch.create", json!({"name": "Three"})).unwrap_err();
+    assert!(r.hint.is_some(), "{r:?}");
+    assert!(s.history().branch_by_name("Three").is_none());
+}

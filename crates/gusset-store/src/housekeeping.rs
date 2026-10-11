@@ -16,6 +16,13 @@
 //! When its registered path does not exist **but its parent directory does**. A missing
 //! parent usually means an unmounted drive or share, so its data is kept.
 //!
+//! An ID with **no** registry entry is not gone: it may be a never-saved ("Untitled")
+//! project whose recovery file is the only copy of the user's work (review H1), or the
+//! registry may have been lost. Its recovery file and LKG copy are kept; only
+//! regenerable data (its cache namespace) and stale locks are removed. Such recovery
+//! files are offered to the user at startup (`gusset_project::startup`) and removed
+//! only when the user recovers or discards them.
+//!
 //! # Housekeeping never touches a project whose lock is held
 //! Before deleting anything that belongs to a project, housekeeping acquires that
 //! project's lock itself; if another instance holds it, the project is skipped.
@@ -95,8 +102,15 @@ fn decode_path(s: &str) -> Option<PathBuf> {
     }
 }
 
+/// Whether two paths name the same file location (after canonicalisation; best effort).
+#[must_use]
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    a == b || normalise(a) == normalise(b)
+}
+
 /// Best-effort absolute, canonical form used for registry comparisons.
-fn normalise(path: &Path) -> PathBuf {
+#[must_use]
+pub fn normalise(path: &Path) -> PathBuf {
     if let Ok(c) = std::fs::canonicalize(path) {
         return c;
     }
@@ -264,6 +278,9 @@ pub struct Report {
     pub temp_files: usize,
     /// Recovery files of projects that no longer exist.
     pub recovery_files: usize,
+    /// Recovery files kept because no registered project owns them (never-saved
+    /// projects); the user decides about them.
+    pub unowned_recovery_kept: usize,
     /// LKG copies of projects that no longer exist.
     pub lkg_files: usize,
     /// Stale lock files.
@@ -355,9 +372,11 @@ pub fn run(dirs: &DataDirs, opts: &Options) -> io::Result<Report> {
     let mut gone = Vec::new();
     for id in &ids {
         let lock_path = dirs.lock_file(id);
-        let is_gone = registry.get(id).is_none_or(project_gone);
+        let registered = registry.get(id);
+        let is_gone = registered.is_some_and(project_gone);
+        let unregistered = registered.is_none();
         let has_lock_file = exists_no_follow(&lock_path)?;
-        if !is_gone && !has_lock_file {
+        if !is_gone && !unregistered && !has_lock_file {
             continue; // healthy project, nothing to do
         }
         let lock = match ProjectLock::acquire(&lock_path) {
@@ -377,8 +396,16 @@ pub fn run(dirs: &DataDirs, opts: &Options) -> io::Result<Report> {
         };
         if is_gone {
             remove_project_data(dirs, id, &mut report)?;
-            if registry.get(id).is_some() {
-                gone.push(*id);
+            gone.push(*id);
+        } else if unregistered {
+            // Possibly an untitled project's only copy: keep recovery and LKG.
+            let scope = dirs.cache_dir().join(id.to_hex());
+            if exists_no_follow(&scope)? {
+                crate::cache::remove_dir_no_follow(&scope)?;
+                report.cache_scopes += 1;
+            }
+            if exists_no_follow(&dirs.recovery_file(id))? {
+                report.unowned_recovery_kept += 1;
             }
         }
         lock.release()?;

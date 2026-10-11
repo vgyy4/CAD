@@ -8,7 +8,8 @@
 //!    [`gusset_host::Host`] and served over stdio with the same tools. Approvals are
 //!    denied unless the client supports elicitation. On exit, unsaved changes (agent
 //!    work lives on agent branches) are saved to the file; if that fails a recovery
-//!    snapshot is kept.
+//!    snapshot is kept. A project with a pending crash-recovery copy or a damaged file
+//!    is refused with a clear message: only the app's recovery dialog resolves those.
 //!
 //! Diagnostics go to stderr (stdout is the protocol stream). The token is never printed.
 
@@ -209,10 +210,22 @@ where
         Some(path) if path.exists() => {
             let (p, history, report) = gusset_project::Project::open(path, dirs)
                 .map_err(|e| McpError::Command(gusset_commands::CommandError::new("io", e.to_string())))?;
-            if !matches!(report, gusset_project::OpenReport::Clean) {
-                eprintln!(
-                    "gusset mcp: note: the project has a recovery snapshot or was damaged; open it in the app to review"
-                );
+            // Never resolve (and so never delete) recovery data the user has not reviewed
+            // (review C2): the app's recovery dialog is the only place that decides.
+            let refusal = match &report {
+                gusset_project::OpenReport::Clean if !p.recovery_pending => None,
+                gusset_project::OpenReport::Clean | gusset_project::OpenReport::RecoveryAvailable { .. } => Some(
+                    "it has unsaved work recovered after a crash. Open it in the Gusset app and choose \
+                     Recover, Open saved or Keep both first; the agent bridge leaves recovery data alone"
+                        .to_string(),
+                ),
+                gusset_project::OpenReport::Damaged { reason, .. } => {
+                    Some(format!("the file is damaged ({reason}). Open it in the Gusset app to repair it first"))
+                }
+            };
+            if let Some(why) = refusal {
+                p.release();
+                return Err(McpError::Config(format!("gusset mcp: not opening {}: {why}", path.display())));
             }
             let mut s = Session::from_history(history, options.kernel.clone());
             s.project_dir = path.parent().map(Path::to_path_buf);

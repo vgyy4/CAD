@@ -105,3 +105,25 @@ removed in the same operation.
   times, then verify.
 - The Linux CI job additionally runs `dm-flakey` / `dm-log-writes` replays (root is
   available on the runner).
+
+## Amendment (2026-10-11): verification cost of saves and snapshots (review M3)
+Step 3 of `durable_write` ("verify before replacing") for project saves, LKG copies and
+recovery snapshots now runs `container::verify_framing`: header, trailer, index,
+layout and the CRC32C of every record (so every byte is checksummed), together with the
+existing byte-for-byte comparison of the read-back with the in-memory image. The
+BLAKE3 hash of each record is verified once, when the record is first encoded
+(`ContainerWriter::add_cached`), and unchanged records are reused from a per-project
+`RecordCache` instead of being recompressed. Opening a file (and reading a recovery
+slot on open) still performs the full verification. Measurements: `docs/PERFORMANCE.md`.
+
+## Amendment (2026-10-11): identity, untitled recovery, save modes (reviews H1, H2, M1, M2)
+- Save As to a new path gives the project a new ID; opening a copy (same ID, the
+  registry or the recovery copy names another existing file) re-identifies it and
+  writes the new ID into it. Recovery images record their file (`origin` root) and are
+  never offered for another file.
+- Housekeeping keeps recovery and LKG copies that no registered project owns (never
+  saved projects); `gusset_project::startup` lists them for "Recover unsaved work".
+- `gusset_project::settings` holds the save modes and timings above (per user, with
+  per-project overrides in the file) and a `SaveScheduler` the front ends drive.
+- Deleted-branch retention and the history size limits are applied when a project is
+  opened; the headless MCP bridge refuses projects with unresolved recovery.

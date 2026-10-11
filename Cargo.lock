@@ -1731,6 +1731,7 @@ dependencies = [
  "gusset-doc",
  "gusset-history",
  "gusset-store",
+ "gusset-units",
 ]
 
 [[package]]

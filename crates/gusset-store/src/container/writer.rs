@@ -23,7 +23,57 @@ struct Pending {
     kind: Kind,
     hash: Hash,
     /// The complete encoded record, magic through CRC.
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<[u8]>,
+}
+
+/// Encoded records kept between saves, so unchanged records are copied instead of
+/// being hashed, compressed and verified again (ADR 0005 "unchanged records are copied
+/// byte-for-byte"; review M3). Every record enters the cache only after it was decoded
+/// back and its hash checked. Use one cache per project.
+#[derive(Debug, Default)]
+pub struct RecordCache {
+    records: HashMap<Hash, (Kind, std::sync::Arc<[u8]>)>,
+    /// Hashes used by the writer currently filling the cache.
+    used: std::collections::HashSet<Hash>,
+}
+
+impl RecordCache {
+    /// An empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of cached records.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Whether the cache is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Adds every record of an opened (fully verified) container whose kind satisfies
+    /// `keep`, so the first save after opening copies them instead of recompressing.
+    pub fn prime(&mut self, src: &Container<'_>, keep: impl Fn(Kind) -> bool) {
+        for info in src.records() {
+            if keep(info.kind)
+                && let Some((_, raw)) = src.record_bytes(&info.hash)
+            {
+                self.records.insert(info.hash, (info.kind, raw.into()));
+            }
+        }
+    }
+
+    /// Drops every record that was not used since the last call (records of objects
+    /// that left the history), bounding memory to about one file's worth.
+    pub fn retain_used(&mut self) {
+        let used = std::mem::take(&mut self.used);
+        self.records.retain(|h, _| used.contains(h));
+    }
 }
 
 /// Builds a `.gus` container in memory. Output is deterministic: records appear in
@@ -110,7 +160,7 @@ impl ContainerWriter {
         Ok(true)
     }
 
-    fn push(&mut self, kind: Kind, hash: Hash, bytes: Vec<u8>) {
+    fn push(&mut self, kind: Kind, hash: Hash, bytes: std::sync::Arc<[u8]>) {
         self.total_len = self.total_len.saturating_add(bytes.len() as u64);
         self.by_hash.insert(hash, self.records.len());
         self.records.push(Pending { kind, hash, bytes });
@@ -146,8 +196,57 @@ impl ContainerWriter {
             Some(c) if c.len() < data.len() => encode_record(kind, Codec::Zstd, &hash, &c, raw_len)?,
             _ => encode_record(kind, Codec::Raw, &hash, data, raw_len)?,
         };
-        self.push(kind, hash, bytes);
+        self.push(kind, hash, bytes.into());
         Ok(hash)
+    }
+
+    /// Like [`ContainerWriter::add`], but reuses an encoded record from `cache` when it
+    /// holds `known_hash` (the caller's content hash of `data`, e.g. a history object's
+    /// address), and otherwise encodes the record, checks that it decodes back to
+    /// `data` with that hash, and caches it. Records from the cache are already
+    /// verified, so a cached save costs a copy, not a compression.
+    ///
+    /// # Errors
+    /// As [`ContainerWriter::add`], plus [`WriteError::Compress`] if a fresh record does
+    /// not decode back to `data` (or `known_hash` is not its hash).
+    pub fn add_cached(
+        &mut self,
+        kind: Kind,
+        data: &[u8],
+        known_hash: Option<Hash>,
+        cache: &mut RecordCache,
+    ) -> Result<Hash, WriteError> {
+        if let Some(h) = known_hash
+            && let Some((k, rec)) = cache.records.get(&h)
+            && *k == kind
+        {
+            let rec = rec.clone();
+            if self.check_new(kind, &h)? {
+                self.push(kind, h, rec);
+            }
+            cache.used.insert(h);
+            return Ok(h);
+        }
+        let n = self.records.len();
+        let h = self.add(kind, data)?;
+        if known_hash.is_some_and(|k| k != h) {
+            return Err(WriteError::Compress("an object does not match its content hash".into()));
+        }
+        if self.records.len() > n
+            && let Some(p) = self.records.last()
+        {
+            let rec = super::parse_record_at(&p.bytes, 0, &self.limits)
+                .and_then(|r| super::decode_record(&r, &self.limits))
+                .map_err(|e| WriteError::Compress(format!("a freshly encoded record does not verify: {e:?}")))?;
+            if rec != data {
+                return Err(WriteError::Compress("a freshly encoded record does not decode to its data".into()));
+            }
+            if known_hash.is_some() {
+                cache.records.insert(h, (kind, p.bytes.clone()));
+            }
+        }
+        cache.used.insert(h);
+        Ok(h)
     }
 
     /// Copies a record from an already-opened container byte-for-byte (no
@@ -165,7 +264,7 @@ impl ContainerWriter {
         if !self.check_new(info.kind, hash)? {
             return Ok(*hash);
         }
-        self.push(info.kind, *hash, raw.to_vec());
+        self.push(info.kind, *hash, raw.into());
         Ok(*hash)
     }
 
