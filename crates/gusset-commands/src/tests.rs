@@ -571,3 +571,23 @@ fn naming_golden_scenarios_with_the_mock_kernel() {
         panic!("{e}");
     }
 }
+
+#[test]
+fn sketch_create_and_query_report_the_frame() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let r = run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
+    assert_eq!(r["frame"]["x_axis"], json!([1.0, 0.0, 0.0]), "{r}");
+    assert_eq!(r["frame"]["y_axis"], json!([0.0, 0.0, 1.0]), "{r}");
+    assert_eq!(r["frame"]["origin_mm"], json!([0.0, 0.0, 0.0]), "{r}");
+    // Right-handed: x cross y.
+    assert_eq!(r["frame"]["normal"], json!([0.0, -1.0, 0.0]), "{r}");
+    // A face sketch sits on the plate's top (z = 10 mm).
+    let mut s = session();
+    build_plate(&mut s, &u);
+    let r = run(&mut s, &u, "sketch.create", json!({"plane": "Extrude1/cap(end)"}));
+    assert!((r["frame"]["origin_mm"][2].as_f64().unwrap() - 10.0).abs() < 1e-9, "{r}");
+    let name = r["sketch"].as_str().unwrap().to_string();
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": name}));
+    assert_eq!(q["frame"], r["frame"], "{q}");
+}

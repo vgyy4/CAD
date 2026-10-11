@@ -68,6 +68,18 @@ pub(crate) fn edit(
     label: &str,
     f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
 ) -> Result<Value, CommandError> {
+    edit_post(s, ctx, label, f, |_, _| Value::Null)
+}
+
+/// Like [`edit`], with a second closure that sees the commit outcome and may add result
+/// fields computed from the new evaluation (e.g. the sketch frame).
+pub(crate) fn edit_post(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    label: &str,
+    f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
+    post: impl FnOnce(&Session, &crate::session::CommitOutcome) -> Value,
+) -> Result<Value, CommandError> {
     let branch = s.branch_for(ctx)?;
     let mut doc = s.history().head_document(branch).map_err(CommandError::history)?;
     let rollback = s.history().branch(branch).map_err(CommandError::history)?.rollback;
@@ -91,7 +103,15 @@ pub(crate) fn edit(
     if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
         m.extend(e);
     }
+    if let (Value::Object(m), Value::Object(e)) = (&mut v, post(s, &out)) {
+        m.extend(e);
+    }
     Ok(v)
+}
+
+/// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
+fn frame_json(f: &gusset_kernel::Frame) -> Value {
+    json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() })
 }
 
 /// Inserts a feature at the rollback marker (or the end).
@@ -452,7 +472,7 @@ pub struct SketchCreate {
 impl Command for SketchCreate {
     const ID: &'static str = "sketch.create";
     const TITLE: &'static str = "New sketch";
-    const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ or on a planar face (persistent face reference).";
+    const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ or on a planar face (persistent face reference). The result's `frame` gives the sketch plane in world mm: origin_mm, x_axis, y_axis and normal (sketch (u,v) maps to origin + u*x_axis + v*y_axis).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("S");
@@ -463,24 +483,35 @@ impl Command for SketchCreate {
             "YZ" => PlaneRef::YZ,
             other => PlaneRef::Face(FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?),
         };
-        edit(s, ctx, "New sketch", |doc, rb| {
-            let name = match self.name {
-                Some(n) => {
-                    validate_feature_name(&n).map_err(CommandError::args)?;
-                    n
-                }
-                None => doc.unique_feature_name("Sketch"),
-            };
-            insert_feature(
-                doc,
-                rb,
-                Feature::new(
-                    name.clone(),
-                    FeatureKind::Sketch(SketchDef { plane, next_id: 1, entities: vec![], constraints: vec![] }),
-                ),
-            );
-            Ok(json!({ "sketch": name }))
-        })
+        let created = std::cell::RefCell::new(String::new());
+        edit_post(
+            s,
+            ctx,
+            "New sketch",
+            |doc, rb| {
+                let name = match self.name {
+                    Some(n) => {
+                        validate_feature_name(&n).map_err(CommandError::args)?;
+                        n
+                    }
+                    None => doc.unique_feature_name("Sketch"),
+                };
+                insert_feature(
+                    doc,
+                    rb,
+                    Feature::new(
+                        name.clone(),
+                        FeatureKind::Sketch(SketchDef { plane, next_id: 1, entities: vec![], constraints: vec![] }),
+                    ),
+                );
+                *created.borrow_mut() = name.clone();
+                Ok(json!({ "sketch": name }))
+            },
+            |_, out| match out.evaluation.sketches.get(created.borrow().as_str()) {
+                Some(r) => json!({ "frame": frame_json(&r.frame) }),
+                None => Value::Null,
+            },
+        )
     }
 }
 
@@ -1667,6 +1698,7 @@ fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, Com
             "conflicting": r.conflicting,
             "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
             "points": r.points,
+            "frame": frame_json(&r.frame),
             "feature_status": st,
         })),
         None => Ok(json!({ "feature_status": st })),
@@ -1683,7 +1715,7 @@ pub struct QuerySketch {
 impl Command for QuerySketch {
     const ID: &'static str = "query.sketch";
     const TITLE: &'static str = "Sketch status";
-    const DESCRIPTION: &'static str = "Degrees of freedom, free entities, redundant/conflicting constraints, closed regions and solved point positions of a sketch.";
+    const DESCRIPTION: &'static str = "Degrees of freedom, free entities, redundant/conflicting constraints, closed regions, solved point positions and the sketch frame (origin_mm, x_axis, y_axis, normal in world mm) of a sketch.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
