@@ -9,4 +9,6 @@ pub mod theme;
 pub mod viewport;
 
 #[cfg(test)]
+mod screenshots;
+#[cfg(test)]
 mod tests;
