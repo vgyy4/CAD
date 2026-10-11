@@ -59,3 +59,104 @@ fn oversized_response_is_refused_without_buffering_it() {
     assert_eq!(r.unwrap_err(), ImportError::OutputTooLarge);
     assert!(took < Duration::from_secs(10), "took {took:?}");
 }
+
+/// Runs an IGES import against a stand-in worker; returns the result and what the script
+/// recorded in `rec` (argv and the state of the private input file).
+fn run_iges(
+    tag: &str,
+    body: &str,
+    timeout: Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> (Result<gusset_worker::Imported, ImportError>, String) {
+    let p = script(tag, body);
+    let rec = p.parent().unwrap().join("rec");
+    for _ in 0..50 {
+        let r = gusset_worker::import_out_of_process_cancellable(
+            &p,
+            Format::Iges,
+            b"IGES-BYTES",
+            &gusset_sandbox::Limits::default(),
+            timeout,
+            cancel,
+        );
+        match r {
+            Err(ImportError::Spawn(ref e)) if e.contains("busy") => std::thread::sleep(Duration::from_millis(20)),
+            r => {
+                let text = std::fs::read_to_string(&rec).unwrap_or_default();
+                let _ = std::fs::remove_dir_all(p.parent().unwrap());
+                return (r, text);
+            }
+        }
+    }
+    panic!("the test script stayed busy");
+}
+
+/// Script prologue: $1 is the flag, $2 the file. Records flag, file, modes and contents.
+fn recording_body(tail: &str) -> String {
+    format!(
+        "rec=\"$(dirname \"$0\")/rec\"\n\
+         echo \"$1\" > \"$rec\"\n\
+         echo \"$2\" >> \"$rec\"\n\
+         stat -c '%a' \"$(dirname \"$2\")\" >> \"$rec\"\n\
+         stat -c '%a' \"$2\" >> \"$rec\"\n\
+         cat \"$2\" >> \"$rec\"\n\
+         {tail}"
+    )
+}
+
+#[test]
+fn iges_input_goes_to_a_private_file_that_is_deleted_afterwards() {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let (r, rec) = run_iges("iges-ok", &recording_body("exit 0"), Duration::from_secs(20), &cancel);
+    // The stand-in sends no response frame; what matters is what it saw.
+    assert!(matches!(r, Err(ImportError::Protocol(_))), "{r:?}");
+    let lines: Vec<&str> = rec.lines().collect();
+    assert_eq!(lines.first(), Some(&"--input-file"), "{rec}");
+    let file = Path::new(lines.get(1).unwrap());
+    assert!(file.is_absolute());
+    assert_eq!(lines.get(2), Some(&"700"), "directory mode: {rec}");
+    assert_eq!(lines.get(3), Some(&"600"), "file mode: {rec}");
+    assert_eq!(lines.get(4), Some(&"IGES-BYTES"), "contents: {rec}");
+    assert!(!file.exists() && !file.parent().unwrap().exists(), "temp dir left behind: {}", file.display());
+}
+
+#[test]
+fn iges_temp_dir_is_deleted_after_a_crash_and_a_timeout() {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let (r, rec) = run_iges("iges-crash", &recording_body("kill -9 $$"), Duration::from_secs(20), &cancel);
+    assert!(matches!(r, Err(ImportError::Crashed(_))), "{r:?}");
+    let file = rec.lines().nth(1).map(PathBuf::from).unwrap();
+    assert!(!file.parent().unwrap().exists(), "left behind after crash");
+
+    let body = recording_body("exec /bin/sleep 30");
+    let (r, rec) = run_iges("iges-timeout", &body, Duration::from_millis(500), &cancel);
+    assert_eq!(r.unwrap_err(), ImportError::TimedOut);
+    let file = rec.lines().nth(1).map(PathBuf::from).unwrap();
+    assert!(!file.parent().unwrap().exists(), "left behind after timeout");
+}
+
+#[test]
+fn iges_temp_dir_is_deleted_after_a_cancel() {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let c2 = cancel.clone();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        c2.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let body = recording_body("exec /bin/sleep 30");
+    let (r, rec) = run_iges("iges-cancel", &body, Duration::from_secs(60), &cancel);
+    t.join().unwrap();
+    assert_eq!(r.unwrap_err(), ImportError::Cancelled);
+    let file = rec.lines().nth(1).map(PathBuf::from).unwrap();
+    assert!(!file.parent().unwrap().exists(), "left behind after cancel");
+}
+
+#[test]
+fn step_stays_on_stdin_without_a_file_argument() {
+    let p = script("step-args", "rec=\"$(dirname \"$0\")/rec\"\necho \"argc=$#\" > \"$rec\"\nexit 0");
+    let (r, _) = run(&p, Duration::from_secs(20));
+    let rec = std::fs::read_to_string(p.parent().unwrap().join("rec")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    assert!(matches!(r, Err(ImportError::Protocol(_))), "{r:?}");
+    assert_eq!(rec.trim(), "argc=0");
+}
