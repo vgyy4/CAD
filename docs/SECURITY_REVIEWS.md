@@ -14,9 +14,14 @@ status. Scratch harnesses referenced below lived outside the repository.
 | Dogfood S4 | Bulk threshold ignores parameters | **Fixed**: parameter changes count |
 | Dogfood S5 | Audit log in memory only | **Fixed**: agent changes, file writes and refusals are persisted as `AgentAction` events in the project history and reloaded on open |
 | Review #1 | Forged approval via client elicitation | Open — next |
-| Review #2 | Windows DLL search path | Open — next |
-| Review #3 | In-process BinTools parsing of project blobs | Open — next |
-| Review #4–7, #9–20; Dogfood S6–S9 | see below | Open — next |
+| Review #2 | Windows DLL search path | **Fixed** (code; no Windows host to run it): `gusset_hw::codeload::harden()` (`SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` + `SetDllDirectoryW("")`) first in the app, CLI and worker `main`; CLI and worker link with `/DEPENDENTLOADFLAG:0xA00`. wgpu's bare-name `dxcompiler.dll`/`libEGL.dll` loads fail closed (FXC fallback / no GL). **Open:** the same link flag for the app (needs a gusset-app build script), a Windows CI check of loaded modules, and an explicit wgpu `Dx12Compiler` |
+| Review #3 | In-process BinTools parsing of project blobs | **Fixed** (ADR 0008 §4): untrusted blobs are parsed and re-serialized in the sandboxed worker before the app parses the worker's output; blobs this process wrote or the worker validated are trusted (`gusset_worker::trust`, optional per-installation file). **Open:** the app should call `trust::persist_to` with its data directory; `BinTools::Read` fuzzing needs an OCCT-linked fuzz build (fuzz/README.md); residual risk of a worker compromise returning hostile bytes is documented |
+| Review #6 / Code review M11 | Sandbox gaps, deny-list seccomp | **Fixed**: measured seccomp allow-list (clone only with `CLONE_THREAD`, `clone3` → `ENOSYS`, signals only to self, no `PROT_EXEC`, no io_uring/sockets/exec/files), Landlock ABI 6 scopes, `PR_SET_PDEATHSIG`, worker in its own process group killed before reaping, stdout read with a deadline |
+| Review #12 | 4 GiB worker output | **Fixed**: cap = 4 × input + 16 MiB, at most 1 GiB |
+| Review #14 | x32 ABI | **Fixed**: x32 syscall numbers are not on the allow-list (test probes it) |
+| Review #17 | Windows lock sidecar | **Fixed**: temp file + rename, no-follow opens with an is-a-file check, stale sidecars removed by housekeeping |
+| Code review M12 | `unsafe` in gusset-kernel-occt | **Fixed**: wrappers moved to `gusset_occt_sys::safe`; a test enforces ADR 0008's list |
+| Review #4, #5, #7, #9–11, #13, #15, #16, #18–20; Dogfood S6–S9 | see below | Open — next |
 
 ## Review 1: MVP milestone (2026-10-11)
 
