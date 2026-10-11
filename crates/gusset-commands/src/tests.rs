@@ -591,3 +591,45 @@ fn sketch_create_and_query_report_the_frame() {
     let q = run(&mut s, &u, "query.sketch", json!({"sketch": name}));
     assert_eq!(q["frame"], r["frame"], "{q}");
 }
+
+#[test]
+fn edit_results_report_body_volume_changes() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    // The first extrude creates the body.
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "10 mm"}));
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(
+        &mut s,
+        &u,
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10, "width_expr": "w", "height_expr": "10 mm"}),
+    );
+    let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    let c = &r["body_changes"][0];
+    assert_eq!((c["body"].as_str(), c["change"].as_str()), (Some("Extrude1"), Some("created")), "{r}");
+    assert!((c["after"]["volume_mm3"].as_f64().unwrap() - 500.0).abs() < 1e-6, "{r}");
+    // Editing a parameter reports the volume delta and both bounding boxes.
+    let r = run(&mut s, &u, "param.set", json!({"name": "w", "expr": "20 mm"}));
+    let c = &r["body_changes"][0];
+    assert_eq!(c["change"], "changed", "{r}");
+    assert!((c["volume_delta_mm3"].as_f64().unwrap() - 500.0).abs() < 1e-6, "{r}");
+    assert!(c["before"]["bbox_max_mm"].is_array() && c["after"]["bbox_min_mm"].is_array(), "{r}");
+    // An edit that touches no body reports no body changes.
+    let r = run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
+    assert!(r["body_changes"].is_null(), "{r}");
+}
+
+#[test]
+fn a_cut_that_changes_nothing_warns() {
+    use crate::commands::{BodyChange, no_effect_warning};
+    use gusset_doc::BodyOp;
+    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None };
+    let w = no_effect_warning("Extrude2", BodyOp::Cut, Some("Extrude1"), &[], &[]);
+    let msg = w["warnings"][0].as_str().unwrap();
+    assert!(msg.contains("did not change body 'Extrude1'") && msg.contains("negative distance"), "{w}");
+    // No warning when the body changed, the feature failed, or the op creates a new body.
+    assert!(no_effect_warning("E", BodyOp::Cut, Some("Extrude1"), &[], &[changed]).is_null());
+    assert!(no_effect_warning("E", BodyOp::Add, Some("Extrude1"), &["boom".into()], &[]).is_null());
+    assert!(no_effect_warning("E", BodyOp::New, None, &[], &[]).is_null());
+}

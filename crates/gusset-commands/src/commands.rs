@@ -68,7 +68,7 @@ pub(crate) fn edit(
     label: &str,
     f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
 ) -> Result<Value, CommandError> {
-    edit_post(s, ctx, label, f, |_, _| Value::Null)
+    edit_post(s, ctx, label, f, |_, _, _| Value::Null)
 }
 
 /// Like [`edit`], with a second closure that sees the commit outcome and may add result
@@ -78,14 +78,16 @@ pub(crate) fn edit_post(
     ctx: &CmdCtx,
     label: &str,
     f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
-    post: impl FnOnce(&Session, &crate::session::CommitOutcome) -> Value,
+    post: impl FnOnce(&Session, &crate::session::CommitOutcome, &[BodyChange]) -> Value,
 ) -> Result<Value, CommandError> {
     let branch = s.branch_for(ctx)?;
     let mut doc = s.history().head_document(branch).map_err(CommandError::history)?;
     let rollback = s.history().branch(branch).map_err(CommandError::history)?.rollback;
     let before = doc.features.len();
+    let before_eval = s.evaluate_branch(branch)?;
     let extra = f(&mut doc, rollback)?;
     let out = s.commit(ctx, label, &doc)?;
+    let changes = body_changes(s.kernel().as_ref(), &before_eval, &out.evaluation);
     // Inserting while rolled back keeps the marker just after the new feature.
     if let Some(r) = rollback
         && doc.features.len() > before
@@ -100,13 +102,118 @@ pub(crate) fn edit_post(
         "rebuild_ok": out.new_errors.is_empty(),
         "new_errors": out.new_errors,
     });
+    if !changes.is_empty()
+        && let Value::Object(m) = &mut v
+    {
+        m.insert("body_changes".into(), Value::Array(changes.iter().map(BodyChange::to_json).collect()));
+    }
     if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
         m.extend(e);
     }
-    if let (Value::Object(m), Value::Object(e)) = (&mut v, post(s, &out)) {
+    if let (Value::Object(m), Value::Object(e)) = (&mut v, post(s, &out, &changes)) {
         m.extend(e);
     }
     Ok(v)
+}
+
+type Metrics = (f64, [[f64; 3]; 2]);
+
+/// How one body differs between the model before and after an edit (volume in mm3,
+/// bounding boxes as [min, max] in mm).
+#[derive(Debug, Clone)]
+pub(crate) struct BodyChange {
+    pub body: String,
+    /// `created`, `removed` or `changed`.
+    pub change: &'static str,
+    pub before: Option<Metrics>,
+    pub after: Option<Metrics>,
+}
+
+impl BodyChange {
+    fn to_json(&self) -> Value {
+        let m = |x: &Option<Metrics>| {
+            x.as_ref().map(|(v, bb)| json!({"volume_mm3": v, "bbox_min_mm": bb[0], "bbox_max_mm": bb[1]}))
+        };
+        let mut v =
+            json!({ "body": self.body, "change": self.change, "before": m(&self.before), "after": m(&self.after) });
+        if let (Some((a, _)), Some((b, _))) = (&self.before, &self.after)
+            && let Value::Object(o) = &mut v
+        {
+            o.insert("volume_delta_mm3".into(), json!(b - a));
+        }
+        v
+    }
+}
+
+fn body_metrics(k: &dyn gusset_kernel::Kernel, b: &gusset_eval::Body) -> Option<Metrics> {
+    let m = k.mass_properties(&b.shape).ok()?;
+    let bb = k.bbox(&b.shape).ok()?;
+    Some((m.volume, [bb.min, bb.max]))
+}
+
+/// Bodies that are new, gone, or whose volume or bounding box differ after an edit.
+/// Bodies whose shape is shared with the old evaluation are skipped without measuring.
+fn body_changes(
+    k: &dyn gusset_kernel::Kernel,
+    before: &gusset_eval::Evaluation,
+    after: &gusset_eval::Evaluation,
+) -> Vec<BodyChange> {
+    let mut out = Vec::new();
+    for b in &after.bodies {
+        match before.body(&b.name) {
+            None => out.push(BodyChange {
+                body: b.name.clone(),
+                change: "created",
+                before: None,
+                after: body_metrics(k, b),
+            }),
+            Some(o) if std::ptr::addr_eq(std::sync::Arc::as_ptr(&o.shape.0), std::sync::Arc::as_ptr(&b.shape.0)) => {}
+            Some(o) => {
+                let (ma, mb) = (body_metrics(k, o), body_metrics(k, b));
+                let same = match (&ma, &mb) {
+                    (Some((va, ba)), Some((vb, bb))) => {
+                        let tol = 1e-9 * va.abs().max(vb.abs()).max(1.0);
+                        (va - vb).abs() <= tol
+                            && ba.iter().flatten().zip(bb.iter().flatten()).all(|(x, y)| (x - y).abs() <= 1e-9)
+                    }
+                    _ => false,
+                };
+                if !same {
+                    out.push(BodyChange { body: b.name.clone(), change: "changed", before: ma, after: mb });
+                }
+            }
+        }
+    }
+    for o in &before.bodies {
+        if after.body(&o.name).is_none() {
+            out.push(BodyChange { body: o.name.clone(), change: "removed", before: body_metrics(k, o), after: None });
+        }
+    }
+    out
+}
+
+/// A warning when an add/cut/intersect left its target body unchanged (F-M2).
+pub(crate) fn no_effect_warning(
+    feature: &str,
+    op: BodyOp,
+    target: Option<&str>,
+    new_errors: &[String],
+    changes: &[BodyChange],
+) -> Value {
+    let Some(target) = target else { return Value::Null };
+    if op == BodyOp::New || !new_errors.is_empty() || changes.iter().any(|c| c.body == target) {
+        return Value::Null;
+    }
+    let verb = match op {
+        BodyOp::Cut => "cut",
+        BodyOp::Intersect => "intersect",
+        _ => "add",
+    };
+    json!({ "warnings": [format!(
+        "{feature} ({verb}) did not change body '{target}': its volume and bounding box are unchanged. \
+         Check that the sketch region overlaps the body and that the direction is right (a sketch on a face \
+         extrudes along the face's outward normal, so a cut needs a negative distance, or symmetric: true)."
+    )] })
 }
 
 /// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
@@ -507,7 +614,7 @@ impl Command for SketchCreate {
                 *created.borrow_mut() = name.clone();
                 Ok(json!({ "sketch": name }))
             },
-            |_, out| match out.evaluation.sketches.get(created.borrow().as_str()) {
+            |_, out, _| match out.evaluation.sketches.get(created.borrow().as_str()) {
                 Some(r) => json!({ "frame": frame_json(&r.frame) }),
                 None => Value::Null,
             },
@@ -897,30 +1004,40 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str =
-        "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body).";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body). A sketch on a face extrudes along the face's outward normal, so a cut into the material needs a negative distance. The result lists body_changes (volume and bounding box before/after) and warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let distance = parse_expr("distance", &self.distance)?;
         let op = op_of(&self.op)?;
-        edit(s, ctx, "Extrude", |doc, rb| {
-            let name = feature_name(doc, self.name, "Extrude")?;
-            let body = target_body(doc, rb, op, self.body)?;
-            let f = Feature::new(
-                name.clone(),
-                FeatureKind::Extrude(ExtrudeDef {
-                    profile: ProfileRef { sketch: self.sketch, regions: self.regions },
-                    distance,
-                    symmetric: self.symmetric,
-                    op,
-                    body,
-                }),
-            );
-            insert_feature(doc, rb, f);
-            Ok(json!({ "feature": name }))
-        })
+        let seen = std::cell::RefCell::new((String::new(), None::<String>));
+        edit_post(
+            s,
+            ctx,
+            "Extrude",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Extrude")?;
+                let body = target_body(doc, rb, op, self.body)?;
+                *seen.borrow_mut() = (name.clone(), body.clone());
+                let f = Feature::new(
+                    name.clone(),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                        distance,
+                        symmetric: self.symmetric,
+                        op,
+                        body,
+                    }),
+                );
+                insert_feature(doc, rb, f);
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, ch| {
+                let (name, body) = &*seen.borrow();
+                no_effect_warning(name, op, body.as_deref(), &out.new_errors, ch)
+            },
+        )
     }
 }
 
@@ -962,22 +1079,33 @@ impl Command for Revolve {
                 AxisRef::SketchLine { sketch: sk.to_string(), entity: ent.to_string() }
             }
         };
-        edit(s, ctx, "Revolve", |doc, rb| {
-            let name = feature_name(doc, self.name, "Revolve")?;
-            let body = target_body(doc, rb, op, self.body)?;
-            let f = Feature::new(
-                name.clone(),
-                FeatureKind::Revolve(RevolveDef {
-                    profile: ProfileRef { sketch: self.sketch, regions: self.regions },
-                    axis,
-                    angle,
-                    op,
-                    body,
-                }),
-            );
-            insert_feature(doc, rb, f);
-            Ok(json!({ "feature": name }))
-        })
+        let seen = std::cell::RefCell::new((String::new(), None::<String>));
+        edit_post(
+            s,
+            ctx,
+            "Revolve",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Revolve")?;
+                let body = target_body(doc, rb, op, self.body)?;
+                *seen.borrow_mut() = (name.clone(), body.clone());
+                let f = Feature::new(
+                    name.clone(),
+                    FeatureKind::Revolve(RevolveDef {
+                        profile: ProfileRef { sketch: self.sketch, regions: self.regions },
+                        axis,
+                        angle,
+                        op,
+                        body,
+                    }),
+                );
+                insert_feature(doc, rb, f);
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, ch| {
+                let (name, body) = &*seen.borrow();
+                no_effect_warning(name, op, body.as_deref(), &out.new_errors, ch)
+            },
+        )
     }
 }
 
