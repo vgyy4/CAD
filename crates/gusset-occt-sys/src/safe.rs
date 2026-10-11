@@ -328,18 +328,36 @@ pub fn iges_write(shapes: &[&RawShape]) -> ShimResult<Vec<u8>> {
     Ok(v)
 }
 
-pub fn read_shapes(data: &[u8], iges: bool) -> ShimResult<Vec<RawShape>> {
+/// Reads every root shape of a STEP file from memory.
+pub fn read_shapes(data: &[u8]) -> ShimResult<Vec<RawShape>> {
     let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut arr: *mut *mut GsShape = std::ptr::null_mut();
     let mut n = 0usize;
-    let rc = if iges {
-        // SAFETY: `data` alive for the call; out-params valid.
-        unsafe { sys::gs_iges_read(data.as_ptr(), data.len(), &mut arr, &mut n) }
-    } else {
-        // SAFETY: as above.
-        unsafe { sys::gs_step_read(data.as_ptr(), data.len(), &mut arr, &mut n) }
-    };
+    // SAFETY: `data` alive for the call; out-params valid.
+    let rc = unsafe { sys::gs_step_read(data.as_ptr(), data.len(), &mut arr, &mut n) };
     check(rc)?;
+    Ok(collect_shapes(arr, n))
+}
+
+/// Reads every root shape of the IGES file at `path`. OCCT's IGES reader cannot read from
+/// memory, so the caller provides a file (the sandboxed worker is allowed exactly that
+/// one file, read-only).
+pub fn read_iges_file(path: &std::path::Path) -> ShimResult<Vec<RawShape>> {
+    let cpath = path
+        .to_str()
+        .and_then(|p| std::ffi::CString::new(p).ok())
+        .ok_or_else(|| ShimError::Failed("the IGES file path is not valid UTF-8 text".into()))?;
+    let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut arr: *mut *mut GsShape = std::ptr::null_mut();
+    let mut n = 0usize;
+    // SAFETY: `cpath` is a NUL-terminated string alive for the call; out-params valid.
+    let rc = unsafe { sys::gs_iges_read_file(cpath.as_ptr(), &mut arr, &mut n) };
+    check(rc)?;
+    Ok(collect_shapes(arr, n))
+}
+
+/// Takes ownership of the `n` shapes in the shim-allocated array `arr` and frees the array.
+fn collect_shapes(arr: *mut *mut GsShape, n: usize) -> Vec<RawShape> {
     let mut out = Vec::with_capacity(n);
     if !arr.is_null() {
         for i in 0..n {
@@ -354,7 +372,7 @@ pub fn read_shapes(data: &[u8], iges: bool) -> ShimResult<Vec<RawShape>> {
         // SAFETY: `arr` was allocated by the shim; with n = 0 only the array is freed.
         unsafe { sys::gs_shape_array_free(arr, 0) };
     }
-    Ok(out)
+    out
 }
 
 pub fn brep_write(s: &RawShape) -> ShimResult<Vec<u8>> {
