@@ -35,9 +35,28 @@
      and returns results over stdout using a length-prefixed, versioned, size-limited
      message format.
    - Sandbox, applied before it reads any input:
-     - Linux: Landlock (no filesystem access), seccomp-bpf allow-list, no network
-       namespace access (the `unshare` user namespace if available), and
-       `RLIMIT_AS`/`RLIMIT_CPU`.
+     - Linux: `PR_SET_PDEATHSIG` (the worker dies with the app), Landlock (no
+       filesystem, no TCP, and with ABI 6 signals and abstract UNIX sockets scoped to
+       the worker), a seccomp-bpf allow-list, and `RLIMIT_AS`/`RLIMIT_CPU`.
+       - The allow-list was measured (2026-10-11, `strace -f`) on the real worker with
+         OCCT importing OCCT's sample STEP and IGES files and validating B-rep blobs:
+         after lockdown the worker only reads stdin, allocates memory, reads the clock,
+         probes a few resource files and writes stdout. The list is in
+         `gusset-sandbox` (`allowed_syscalls`); anything else fails with `EPERM`.
+       - Argument filters: `clone` only with `CLONE_THREAD` and no namespace flags;
+         `clone3` fails with `ENOSYS` (its flags are in memory seccomp cannot read;
+         glibc then falls back to `clone`); `kill`/`tgkill` only to the worker's own
+         pid; `mmap`/`mprotect` never with `PROT_EXEC`; `ioctl` only `TCGETS`;
+         `prctl` only the thread name. `open`/`openat` fail with `EACCES`, so files
+         stay closed even without Landlock. fork, user namespaces, io_uring, sockets,
+         ptrace and exec are not on the list.
+       - Syscall numbers with the x32 bit are not on the list, so the x32 ABI is
+         refused (seccompiler only checks `AUDIT_ARCH_X86_64`).
+     - Process lifetime (all platforms): the parent starts the worker in its own
+       process group (Unix) or job object (Windows). On exit, crash or timeout it
+       kills the whole group *before* reaping the worker (so the group id cannot have
+       been reused), and reads the worker's stdout with a deadline. A forked or
+       leftover descendant therefore cannot outlive the import or hang the app.
      - Windows: a job object (memory/CPU/kill-on-close) plus a restricted
        token/low integrity, and AppContainer when feasible.
      - macOS: `sandbox_init` with a no-filesystem/no-network profile.

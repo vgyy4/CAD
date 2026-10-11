@@ -214,49 +214,88 @@ pub fn import_out_of_process(
     if data.len() as u64 > MAX_INPUT {
         return Err(ImportError::TooLarge);
     }
-    if !worker.is_absolute() {
-        return Err(ImportError::Spawn("worker path must be absolute".into()));
-    }
-    let mut child = std::process::Command::new(worker)
-        .env_clear()
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| ImportError::Spawn(e.to_string()))?;
-    let _guard = gusset_sandbox::contain_child(&child, limits).map_err(ImportError::Spawn)?;
-    let req = encode_request(format, data);
-    let mut stdin = child.stdin.take().ok_or_else(|| ImportError::Spawn("no stdin".into()))?;
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&req);
-    });
-    let mut stdout = child.stdout.take().ok_or_else(|| ImportError::Spawn("no stdout".into()))?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = (&mut stdout).take(MAX_OUTPUT).read_to_end(&mut buf);
-        buf
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ImportError::TimedOut);
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(e) => return Err(ImportError::Crashed(e.to_string())),
-        }
-    };
-    let _ = writer.join();
-    let out = reader.join().map_err(|_| ImportError::Protocol("reader thread failed".into()))?;
-    if !status.success() {
-        return Err(ImportError::Crashed(format!("exit status {status}")));
-    }
+    let out = run_worker(worker, encode_request(format, data), limits, timeout)?;
     let (result, report) = decode_response(&out).map_err(ImportError::Protocol)?;
     let bodies = result.map_err(ImportError::Failed)?;
     Ok(Imported { bodies, sandbox_report: report })
+}
+
+/// How long to wait for the worker's stdout to close after the worker is gone.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Spawns the worker, sends `request`, and returns everything it wrote to stdout.
+///
+/// The worker leads its own process group (Unix) or job (Windows). Whatever happens —
+/// normal exit, crash or timeout — everything in that group is killed before the worker
+/// is reaped, so no descendant can outlive the call or hold the pipe open, and reading
+/// stdout has a deadline.
+fn run_worker(
+    worker: &Path,
+    request: Vec<u8>,
+    limits: &gusset_sandbox::Limits,
+    timeout: Duration,
+) -> Result<Vec<u8>, ImportError> {
+    if !worker.is_absolute() {
+        return Err(ImportError::Spawn("worker path must be absolute".into()));
+    }
+    let mut cmd = std::process::Command::new(worker);
+    cmd.env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    gusset_sandbox::configure_command(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| ImportError::Spawn(e.to_string()))?;
+    let guard = match gusset_sandbox::contain_child(&child, limits) {
+        Ok(g) => g,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ImportError::Spawn(e));
+        }
+    };
+    let finish = |child: &mut std::process::Child| {
+        guard.kill_all();
+        let _ = child.kill();
+        child.wait()
+    };
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        let _ = finish(&mut child);
+        return Err(ImportError::Spawn("no stdin/stdout".into()));
+    };
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&request);
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = (&mut stdout).take(MAX_OUTPUT).read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let start = Instant::now();
+    loop {
+        match gusset_sandbox::has_exited(&mut child) {
+            Ok(true) => break,
+            Ok(false) if start.elapsed() > timeout => {
+                let _ = finish(&mut child);
+                return Err(ImportError::TimedOut);
+            }
+            Ok(false) => std::thread::sleep(Duration::from_millis(5)),
+            Err(e) => {
+                let _ = finish(&mut child);
+                return Err(ImportError::Crashed(e.to_string()));
+            }
+        }
+    }
+    // The worker has exited but is not reaped yet: kill anything it left behind.
+    let status = finish(&mut child).map_err(|e| ImportError::Crashed(e.to_string()))?;
+    let _ = writer.join();
+    let out = rx
+        .recv_timeout(DRAIN_TIMEOUT)
+        .map_err(|_| ImportError::Protocol("the import worker's output did not close".into()))?;
+    if !status.success() {
+        return Err(ImportError::Crashed(format!("exit status {status}")));
+    }
+    Ok(out)
 }
 
 /// The worker binary next to the current executable (install directory).
