@@ -6,7 +6,7 @@
 //!   handling on open, and clean close.
 
 use gusset_history::{History, HistoryRecords, ObjectKind};
-use gusset_store::container::{self, ContainerWriter, Kind, SaveInfo};
+use gusset_store::container::{self, ContainerWriter, Kind, RecordCache, SaveInfo};
 use gusset_store::fs::RealFs;
 use gusset_store::lock::{Acquired, ProjectLock};
 use gusset_store::paths::{DataDirs, ProjectId, RiskyStorage};
@@ -102,7 +102,7 @@ fn kind_of(k: ObjectKind) -> Kind {
 
 /// Serializes a history into a complete `.gus` image.
 pub fn encode(history: &History, meta: &ProjectMeta) -> Result<Vec<u8>, ProjectError> {
-    encode_with(history, meta, None, &ProjectSettings::default())
+    encode_with(history, meta, None, &ProjectSettings::default(), &mut RecordCache::new())
 }
 
 /// Root holding the per-project settings overrides.
@@ -121,16 +121,18 @@ fn encode_with(
     meta: &ProjectMeta,
     origin: Option<&Path>,
     overrides: &ProjectSettings,
+    cache: &mut RecordCache,
 ) -> Result<Vec<u8>, ProjectError> {
     let r = history.to_records();
     let w = |e: container::WriteError| ProjectError::Write(e.to_string());
     let mut cw = ContainerWriter::new();
-    for (k, _h, bytes) in &r.objects {
-        cw.add(kind_of(*k), bytes).map_err(w)?;
+    for (k, h, bytes) in &r.objects {
+        cw.add_cached(kind_of(*k), bytes, Some(StoreHash(h.0)), cache).map_err(w)?;
     }
-    let nodes = cw.add(Kind::NODE, r.nodes.as_bytes()).map_err(w)?;
-    let branches = cw.add(Kind::BRANCHES, r.branches.as_bytes()).map_err(w)?;
-    let events = cw.add(Kind::EVENTS, r.events.as_bytes()).map_err(w)?;
+    let nodes = cw.add_cached(Kind::NODE, r.nodes.as_bytes(), None, cache).map_err(w)?;
+    let branches = cw.add_cached(Kind::BRANCHES, r.branches.as_bytes(), None, cache).map_err(w)?;
+    let events = cw.add_cached(Kind::EVENTS, r.events.as_bytes(), None, cache).map_err(w)?;
+    cache.retain_used();
     cw.set_root("nodes", nodes.as_bytes()).map_err(w)?;
     cw.set_root("branches", branches.as_bytes()).map_err(w)?;
     cw.set_root("events", events.as_bytes()).map_err(w)?;
@@ -146,11 +148,17 @@ fn encode_with(
 
 /// Parses and fully verifies a `.gus` image.
 pub fn decode(bytes: &[u8]) -> Result<(History, ProjectMeta), ProjectError> {
-    decode_full(bytes).map(|(h, m, _)| (h, m))
+    decode_full(bytes, None).map(|(h, m, _)| (h, m))
 }
 
-fn decode_full(bytes: &[u8]) -> Result<(History, ProjectMeta, ProjectSettings), ProjectError> {
+fn decode_full(
+    bytes: &[u8],
+    prime: Option<&mut RecordCache>,
+) -> Result<(History, ProjectMeta, ProjectSettings), ProjectError> {
     let c = container::open(bytes).map_err(|e| ProjectError::Damaged(e.to_string()))?;
+    if let Some(cache) = prime {
+        cache.prime(&c, |k| [Kind::FEATURE, Kind::PARAMS, Kind::SNAPSHOT, Kind::BLOB].contains(&k));
+    }
     let overrides =
         c.root(SETTINGS_ROOT).map(|t| ProjectSettings::parse(&String::from_utf8_lossy(t))).unwrap_or_default();
     let meta = c
@@ -284,6 +292,8 @@ pub struct Project {
     pub reidentified_from: Option<ProjectId>,
     /// Per-project overrides of the save settings (saved in the project file).
     pub overrides: ProjectSettings,
+    /// Encoded records of the last save or snapshot, reused by the next one (M3).
+    records: RecordCache,
 }
 
 /// The retention part of history GC (ADR 0006), run when a project is opened: purges
@@ -318,6 +328,7 @@ impl Project {
             recovery_pending: false,
             reidentified_from: None,
             overrides: ProjectSettings::default(),
+            records: RecordCache::new(),
         };
         p.lock()?;
         Ok(p)
@@ -349,7 +360,8 @@ impl Project {
         let io = |e: std::io::Error| ProjectError::Io { path: path.to_path_buf(), message: e.to_string() };
         let bytes = std::fs::read(path).map_err(io)?;
         let risky = gusset_store::paths::classify(path);
-        match decode_full(&bytes) {
+        let mut records = RecordCache::new();
+        match decode_full(&bytes, Some(&mut records)) {
             Ok((mut history, meta, overrides)) => {
                 let mut p = Project {
                     path: Some(path.to_path_buf()),
@@ -361,6 +373,7 @@ impl Project {
                     recovery_pending: false,
                     reidentified_from: None,
                     overrides,
+                    records,
                 };
                 let copy_of = p.copy_of(path);
                 if copy_of.is_some() {
@@ -403,6 +416,7 @@ impl Project {
                             recovery_pending: false,
                             reidentified_from: None,
                             overrides: ProjectSettings::default(),
+                            records: RecordCache::new(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -420,6 +434,7 @@ impl Project {
                             recovery_pending: false,
                             reidentified_from: None,
                             overrides: ProjectSettings::default(),
+                            records: RecordCache::new(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -551,10 +566,11 @@ impl Project {
         let mut meta = self.meta.clone();
         meta.save_seq += 1;
         meta.base_seq = meta.save_seq;
-        let bytes = encode_with(history, &meta, None, &self.overrides)?;
+        let bytes = encode_with(history, &meta, None, &self.overrides, &mut self.records)?;
         let fs = RealFs::default();
         let lkg = self.dirs.lkg_file(&self.meta.id);
-        durable::save_project(&fs, path, &fs, Some(&lkg), &bytes).map_err(|e| ProjectError::Write(e.to_string()))?;
+        durable::save_project_with(&fs, path, &fs, Some(&lkg), &bytes, &container::verify_framing)
+            .map_err(|e| ProjectError::Write(e.to_string()))?;
         self.meta = meta;
         let _ = housekeeping::register(&self.dirs, self.meta.id, path);
         // The project file now holds everything: the recovery file is obsolete.
@@ -566,8 +582,10 @@ impl Project {
     pub fn snapshot(&mut self, history: &History) -> Result<u64, ProjectError> {
         let mut meta = self.meta.clone();
         meta.base_seq = self.meta.save_seq;
-        let bytes = encode_with(history, &meta, self.path.as_deref(), &self.overrides)?;
-        recovery::write_snapshot(&RealFs::default(), &self.recovery_path(), &bytes, &container::verify)
+        let bytes = encode_with(history, &meta, self.path.as_deref(), &self.overrides, &mut self.records)?;
+        // Records were verified when encoded; the image is checked for framing and CRCs
+        // and the read-back is compared byte-for-byte (ADR 0007, amended for M3).
+        recovery::write_snapshot(&RealFs::default(), &self.recovery_path(), &bytes, &container::verify_framing)
             .map_err(|e| ProjectError::Write(e.to_string()))
     }
 
@@ -690,7 +708,7 @@ impl Project {
         let snap = recovery::read_newest(&RealFs::default(), &file, &container::verify)
             .map_err(|e| ProjectError::Damaged(e.to_string()))?
             .ok_or_else(|| ProjectError::Io { path: file.clone(), message: "no recovery copy".into() })?;
-        let (mut history, mut meta, overrides) = decode_full(&snap.payload)?;
+        let (mut history, mut meta, overrides) = decode_full(&snap.payload, None)?;
         meta.id = id;
         let mut p = Project {
             path: None,
@@ -702,6 +720,7 @@ impl Project {
             recovery_pending: true,
             reidentified_from: None,
             overrides,
+            records: RecordCache::new(),
         };
         p.lock()?;
         retention_gc(&mut history, &p.settings());

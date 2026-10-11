@@ -420,3 +420,53 @@ fn random_garbage_and_mutations_never_panic() {
         let _ = container::salvage(&d);
     }
 }
+
+/// Review M3: unchanged records are copied from the cache, not recompressed.
+#[test]
+fn cached_records_are_copied_not_recompressed() {
+    use gusset_store::container::RecordCache;
+    let data: Vec<u8> = (0..200_000u32).flat_map(|i| (i % 977).to_le_bytes()).collect();
+    let info = SaveInfo { save_seq: 1, created_unix: 0, app_version: "t" };
+    // A file written at a high level, then opened: its records prime the cache.
+    let mut w = ContainerWriter::new().with_level(19);
+    let h = w.add(Kind::BLOB, &data).unwrap();
+    let a = w.finish(&info).unwrap();
+    let opened = container::open(&a).unwrap();
+    let mut cache = RecordCache::new();
+    cache.prime(&opened, |_| true);
+    // Saving at level 1 with the cache reuses the level-19 bytes verbatim.
+    let mut w = ContainerWriter::new().with_level(1);
+    w.add_cached(Kind::BLOB, &data, Some(h), &mut cache).unwrap();
+    let b = w.finish(&info).unwrap();
+    let mut w = ContainerWriter::new().with_level(1);
+    w.add(Kind::BLOB, &data).unwrap();
+    let fresh = w.finish(&info).unwrap();
+    assert_ne!(a, fresh, "levels must differ for this test to mean anything");
+    assert_eq!(a, b, "the cached record was not copied byte-for-byte");
+    container::verify(&b).unwrap();
+    // A fresh record is verified and cached; a wrong caller hash is refused.
+    let mut cache = RecordCache::new();
+    let mut w = ContainerWriter::new();
+    w.add_cached(Kind::FEATURE, b"abc", Some(gusset_store::Hash::of(b"abc")), &mut cache).unwrap();
+    assert_eq!(cache.len(), 1);
+    assert!(w.add_cached(Kind::FEATURE, b"xyz", Some(gusset_store::Hash::of(b"other")), &mut cache).is_err());
+    cache.retain_used();
+    assert_eq!(cache.len(), 1);
+    cache.retain_used();
+    assert!(cache.is_empty(), "unused records are dropped");
+}
+
+#[test]
+fn framing_check_covers_every_byte() {
+    let mut w = ContainerWriter::new();
+    let h = w.add(Kind::FEATURE, &vec![7u8; 5000]).unwrap();
+    w.add(Kind::BLOB, b"some blob bytes").unwrap();
+    w.set_root("head", h.as_bytes()).unwrap();
+    let good = w.finish(&SaveInfo { save_seq: 3, created_unix: 0, app_version: "t" }).unwrap();
+    container::verify_framing(&good).unwrap();
+    for i in 0..good.len() {
+        let mut bad = good.clone();
+        bad[i] ^= 0x20;
+        assert!(container::verify_framing(&bad).is_err(), "flipped byte {i} not detected");
+    }
+}

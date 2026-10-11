@@ -352,3 +352,68 @@ fn startup_routine_cleans_and_lists_recoveries() {
     assert_eq!((eff.save_mode, eff.recovery_after_changes), (SaveMode::Manual, 5));
     p.close();
 }
+
+/// Save and recovery-snapshot timings (review M3; numbers in docs/PERFORMANCE.md).
+/// `cargo test --release -p gusset-project perf_save_and_snapshot -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark; run in release"]
+fn perf_save_and_snapshot() {
+    let t = Tmp::new("perf");
+    let mut text = String::from("gusset 1\nunits mm\n\nparam a = 1 mm\n");
+    for i in 0..1000 {
+        text.push_str(&format!("sketch S{i} (plane: XY, next_id: 1) {{\n}}\n"));
+    }
+    let base = Document::from_text(&text).unwrap();
+    let u = Ctx::user(1);
+    let mut h = History::new(&base, &u);
+    let main = h.main();
+    for i in 0..100 {
+        let mut d = base.clone();
+        d.params[0].expr = gusset_units::expr::parse(&format!("{} mm", i + 2)).unwrap();
+        h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
+    }
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let blob: Vec<u8> = (0..(64usize << 20))
+        .map(|i| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            if i % 4 == 0 { (x & 0xff) as u8 } else { (i / 4 % 251) as u8 }
+        })
+        .collect();
+    for (label, with_blob) in [("1000 features", false), ("1000 features + 64 MiB blob", true)] {
+        let mut h = h.clone();
+        if with_blob {
+            h.put_blob(&blob);
+        }
+        let file = t.0.join(format!("perf-{with_blob}.gus"));
+        let mut p = Project::create(t.dirs()).unwrap();
+        p.save_as(&file, &h).unwrap();
+        let mut d = base.clone();
+        let time = |f: &mut dyn FnMut()| {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let s = std::time::Instant::now();
+                f();
+                best = best.min(s.elapsed());
+            }
+            best
+        };
+        let mut n = 1000;
+        let snap = time(&mut || {
+            n += 1;
+            d.params[0].expr = gusset_units::expr::parse(&format!("{n} mm")).unwrap();
+            h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
+            p.snapshot(&h).unwrap();
+        });
+        let save = time(&mut || {
+            n += 1;
+            d.params[0].expr = gusset_units::expr::parse(&format!("{n} mm")).unwrap();
+            h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
+            p.save(&h).unwrap();
+        });
+        let size = std::fs::metadata(&file).unwrap().len();
+        println!("PERF {label}: snapshot {snap:?}, save {save:?}, file {} KiB", size >> 10);
+        p.close();
+    }
+}
