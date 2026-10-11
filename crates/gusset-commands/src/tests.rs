@@ -771,3 +771,41 @@ fn unresolvable_references_are_rejected_up_front_with_candidates() {
     assert_eq!(e.code, "not_found");
     assert!(e.hint.as_deref().unwrap().contains("create a body"), "{e:?}");
 }
+
+#[test]
+fn polyline_is_one_history_node_and_closes_into_a_profile() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    let before = s.history().head(s.history().main()).unwrap();
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch1", "points": [[0, 0], [20, 0], [20, 10], [10, 15], [0, 10]], "closed": true}),
+    );
+    assert_eq!(r["points"].as_array().unwrap().len(), 5, "{r}");
+    assert_eq!(r["lines"].as_array().unwrap().len(), 5, "{r}");
+    // Exactly one new history node for the whole polyline.
+    let head = s.history().head(s.history().main()).unwrap();
+    assert_eq!(s.history().node(head).unwrap().parent, Some(before));
+    // The closed outline is one region, extrudable into a body.
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
+    assert_eq!(q["regions"].as_array().unwrap().len(), 1, "{q}");
+    let e = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "4 mm"}));
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    let b = run(&mut s, &u, "query.body", json!({}));
+    // Trapezoid + roof: 20*10 + 0.5*20*5 = 250 mm2, times 4 mm.
+    assert!((b["volume_mm3"].as_f64().unwrap() - 1000.0).abs() < 1e-6, "{b}");
+    // Open polylines have n-1 segments; too few points and bad input are refused.
+    run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
+    let r = run(&mut s, &u, "sketch.add_polyline", json!({"sketch": "Sketch2", "points": [[0, 0], [1, 0], [1, 1]]}));
+    assert_eq!(r["lines"].as_array().unwrap().len(), 2);
+    for bad in [
+        json!({"sketch": "Sketch2", "points": [[0, 0]]}),
+        json!({"sketch": "Sketch2", "points": [[0, 0], [1, 1]], "closed": true}),
+        json!({"sketch": "Sketch2", "points": [[0, 0], [1e12, 1]]}),
+    ] {
+        assert_eq!(execute(&mut s, &u, "sketch.add_polyline", bad).unwrap_err().code, "invalid_args");
+    }
+}

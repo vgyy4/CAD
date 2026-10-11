@@ -24,6 +24,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
         spec::<ParamDelete>(),
         spec::<SketchCreate>(),
         spec::<SketchAddLine>(),
+        spec::<SketchAddPolyline>(),
         spec::<SketchAddRectangle>(),
         spec::<SketchAddCircle>(),
         spec::<SketchAddArc>(),
@@ -710,6 +711,65 @@ impl Command for SketchAddLine {
             let l = add_entity(d, SkGeom::Line { a: a.clone(), b: b.clone() }, self.construction);
             store_solution(doc, &sk);
             Ok(json!({ "line": l, "points": [a, b] }))
+        })
+    }
+}
+
+/// Most points one `sketch.add_polyline` call accepts.
+const MAX_POLYLINE_POINTS: usize = 1000;
+
+/// Adds a chain of connected line segments through a list of points.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddPolyline {
+    pub sketch: String,
+    /// Vertices in order, each `[x, y]` in mm (sketch coordinates); at least 2 (3 if closed).
+    pub points: Vec<[f64; 2]>,
+    /// Also connect the last point back to the first (a closed outline that can be
+    /// extruded).
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub construction: bool,
+}
+
+impl Command for SketchAddPolyline {
+    const ID: &'static str = "sketch.add_polyline";
+    const TITLE: &'static str = "Polyline";
+    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let min = if self.closed { 3 } else { 2 };
+        if self.points.len() < min {
+            return Err(CommandError::args(format!(
+                "a {} polyline needs at least {min} points",
+                if self.closed { "closed" } else { "open" }
+            )));
+        }
+        if self.points.len() > MAX_POLYLINE_POINTS {
+            return Err(CommandError::args(format!("at most {MAX_POLYLINE_POINTS} points per polyline")));
+        }
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add polyline", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let mut pts = Vec::with_capacity(self.points.len());
+            for [x, y] in &self.points {
+                pts.push(add_point(d, *x, *y)?);
+            }
+            let mut lines = Vec::new();
+            for w in pts.windows(2) {
+                if let [a, b] = w {
+                    lines.push(add_entity(d, SkGeom::Line { a: a.clone(), b: b.clone() }, self.construction));
+                }
+            }
+            if self.closed
+                && let (Some(last), Some(first)) = (pts.last(), pts.first())
+            {
+                lines.push(add_entity(d, SkGeom::Line { a: last.clone(), b: first.clone() }, self.construction));
+            }
+            store_solution(doc, &sk);
+            Ok(json!({ "points": pts, "lines": lines }))
         })
     }
 }
