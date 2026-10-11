@@ -4,6 +4,10 @@
 //!   - Linux: die-with-parent, resource limits, Landlock (no filesystem, no TCP and,
 //!     where the kernel supports it, no signals or abstract UNIX sockets outside the
 //!     worker), and a seccomp allow-list (see `allowed_syscalls`).
+//!   - Optionally ([`Limits::read_file`]) read access to exactly one file, for formats
+//!     whose reader needs a file name (IGES): Landlock grants `ReadFile` on that file and
+//!     seccomp then allows read-only `openat`. Without enforced Landlock `openat` stays
+//!     denied and [`Report::read_file`] is `None`.
 //!   - macOS: resource limits only (the sandbox profile is a known gap, see Report).
 //! - [`configure_command`] and [`contain_child`] run in the *parent*: the worker gets
 //!   its own process group (Unix) or a job object with a memory cap, one process and
@@ -19,15 +23,27 @@ mod unix;
 mod win;
 
 /// Resource limits for one import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
     pub memory_bytes: u64,
     pub cpu_seconds: u64,
+    /// One file the worker may open read-only (IGES input: OCCT's IGES reader only
+    /// reads from a file name). On Linux this needs Landlock; see [`lockdown`].
+    pub read_file: Option<std::path::PathBuf>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { memory_bytes: 4 << 30, cpu_seconds: 600 }
+        Limits { memory_bytes: 4 << 30, cpu_seconds: 600, read_file: None }
+    }
+}
+
+impl Limits {
+    /// These limits plus a read-only allowance for exactly `path`.
+    #[must_use]
+    pub fn with_read_file(mut self, path: std::path::PathBuf) -> Self {
+        self.read_file = Some(path);
+        self
     }
 }
 
@@ -36,11 +52,19 @@ impl Default for Limits {
 pub struct Report {
     pub applied: Vec<String>,
     pub missing: Vec<String>,
+    /// The single file the worker may read, if one was requested *and* the sandbox
+    /// could restrict it to that file (Linux: Landlock enforced). `None` means opening
+    /// files stays denied.
+    pub read_file: Option<std::path::PathBuf>,
 }
 
 impl Report {
     pub fn to_text(&self) -> String {
-        format!("sandbox applied: [{}]; missing: [{}]", self.applied.join(", "), self.missing.join(", "))
+        let file = match &self.read_file {
+            Some(p) => format!("; read-only file allowance: {}", p.display()),
+            None => String::new(),
+        };
+        format!("sandbox applied: [{}]; missing: [{}]{file}", self.applied.join(", "), self.missing.join(", "))
     }
 }
 
@@ -58,16 +82,32 @@ pub fn lockdown(limits: &Limits) -> Report {
     unix_limits(limits, &mut r);
     #[cfg(target_os = "linux")]
     {
-        linux_landlock(&mut r);
-        linux_seccomp(&mut r);
+        // openat is only ever allowed when Landlock confines it to the one file.
+        let granted = match limits.read_file.as_deref() {
+            Some(path) => linux_landlock_with_file(path, &mut r),
+            None => {
+                linux_landlock(&mut r);
+                false
+            }
+        };
+        linux_seccomp(granted, &mut r);
+        if granted {
+            r.read_file.clone_from(&limits.read_file);
+        }
     }
     #[cfg(target_os = "macos")]
     r.missing.push("macOS sandbox profile".into());
     #[cfg(windows)]
     {
-        let _ = limits;
         r.applied.push("job object (applied by the parent)".into());
         r.missing.push("AppContainer / low-integrity token".into());
+    }
+    // No filesystem sandbox exists on these platforms (see `missing`): the worker simply
+    // reads the file with the parent's file permissions.
+    #[cfg(not(target_os = "linux"))]
+    if let Some(p) = &limits.read_file {
+        r.read_file = Some(p.clone());
+        r.missing.push("file allowance is not enforced (no filesystem sandbox on this platform)".into());
     }
     r
 }
@@ -115,6 +155,63 @@ fn linux_landlock(r: &mut Report) {
     }
 }
 
+/// Landlock for a worker that may read exactly one file. The filesystem rights of
+/// Landlock ABI V1 (kernel 5.13+) are a hard requirement: if the kernel cannot enforce
+/// them, nothing is restricted here and `false` is returned, so the caller keeps `openat`
+/// denied. Newer filesystem rights are best-effort; TCP and scopes are applied in a
+/// second ruleset so that their partial support does not hide whether the filesystem
+/// part is enforced.
+#[cfg(target_os = "linux")]
+fn linux_landlock_with_file(path: &std::path::Path, r: &mut Report) -> bool {
+    use landlock::{
+        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, RulesetStatus, Scope,
+    };
+    let fs = PathFd::new(path).map_err(|e| e.to_string()).and_then(|fd| {
+        Ruleset::default()
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(AccessFs::from_all(ABI::V1))
+            .and_then(|rs| rs.set_compatibility(CompatLevel::BestEffort).handle_access(AccessFs::from_all(ABI::V6)))
+            .and_then(|rs| rs.create())
+            .and_then(|rs| {
+                rs.set_compatibility(CompatLevel::HardRequirement).add_rule(PathBeneath::new(fd, AccessFs::ReadFile))
+            })
+            .and_then(|rs| rs.restrict_self())
+            .map_err(|e| e.to_string())
+    });
+    let granted = match fs {
+        Ok(st) if st.ruleset != RulesetStatus::NotEnforced => {
+            r.applied.push("landlock (no filesystem except read access to one input file)".into());
+            true
+        }
+        Ok(_) => {
+            r.missing.push("landlock (not supported by this kernel)".into());
+            false
+        }
+        Err(e) => {
+            r.missing.push(format!("landlock filesystem ({e})"));
+            false
+        }
+    };
+    if !granted {
+        return false;
+    }
+    let abi = ABI::V6;
+    let net = Ruleset::default()
+        .handle_access(AccessNet::from_all(abi))
+        .and_then(|rs| rs.scope(Scope::from_all(abi)))
+        .and_then(|rs| rs.create())
+        .and_then(|rs| rs.restrict_self());
+    match net {
+        Ok(st) if st.ruleset == RulesetStatus::FullyEnforced => {
+            r.applied.push("landlock (no TCP, signals and abstract sockets scoped)".into());
+        }
+        Ok(_) => r.missing.push("landlock network rules or scopes (kernel too old)".into()),
+        Err(e) => r.missing.push(format!("landlock network rules or scopes ({e})")),
+    }
+    true
+}
+
 /// Syscalls the worker may make after lockdown (an allow-list; everything else fails
 /// with `EPERM`). Measured with `strace -f` on the real worker importing OCCT's sample
 /// STEP/IGES files and validating B-rep blobs (ADR 0008 §4): after lockdown it only
@@ -126,10 +223,15 @@ fn linux_landlock(r: &mut Report) {
 /// - `mmap`/`mprotect` never with `PROT_EXEC` (no new code after lockdown).
 /// - `ioctl` only `TCGETS` (isatty), `prctl` only `PR_SET_NAME`/`PR_GET_NAME`.
 ///
-/// `open`/`openat` fail with `EACCES` even where Landlock is unavailable. Syscall numbers
+/// `open`/`openat` fail with `EACCES` even where Landlock is unavailable. Only with
+/// `allow_open` (Landlock confines the worker to one read-only file) are they allowed,
+/// and then only without write, create, truncate or tmpfile flags. Syscall numbers
 /// with the x32 bit (`0x4000_0000`) are not on the list, so the x32 ABI is denied too.
 #[cfg(target_os = "linux")]
-fn allowed_syscalls(pid: u32) -> Result<std::collections::BTreeMap<i64, Vec<seccompiler::SeccompRule>>, String> {
+fn allowed_syscalls(
+    pid: u32,
+    allow_open: bool,
+) -> Result<std::collections::BTreeMap<i64, Vec<seccompiler::SeccompRule>>, String> {
     use seccompiler::{SeccompCmpArgLen as Len, SeccompCmpOp as Op, SeccompCondition as Cond, SeccompRule as Rule};
     let e = |e: seccompiler::BackendError| e.to_string();
     let cond = |arg: u8, op: Op, v: u64| Cond::new(arg, Len::Qword, op, v).map_err(e);
@@ -182,9 +284,6 @@ fn allowed_syscalls(pid: u32) -> Result<std::collections::BTreeMap<i64, Vec<secc
         libc::SYS_exit_group,
         // Refused with a specific errno by the earlier filters (see `linux_seccomp`).
         libc::SYS_clone3,
-        libc::SYS_openat,
-        #[cfg(target_arch = "x86_64")]
-        libc::SYS_open,
         #[cfg(target_arch = "x86_64")]
         libc::SYS_poll,
         #[cfg(target_arch = "x86_64")]
@@ -207,6 +306,18 @@ fn allowed_syscalls(pid: u32) -> Result<std::collections::BTreeMap<i64, Vec<secc
     let pid = u64::from(pid);
     m.insert(libc::SYS_kill, vec![rule(vec![cond(0, Op::Eq, pid)?])?]);
     m.insert(libc::SYS_tgkill, vec![rule(vec![cond(0, Op::Eq, pid)?])?]);
+    if !allow_open {
+        // Listed so that the allow-list returns "allow" and the `EACCES` filter decides.
+        m.insert(libc::SYS_openat, vec![]);
+        #[cfg(target_arch = "x86_64")]
+        m.insert(libc::SYS_open, vec![]);
+    } else {
+        let ro = (libc::O_ACCMODE | libc::O_CREAT | libc::O_TRUNC | libc::O_TMPFILE) as u64;
+        let flags = |arg: u8| Cond::new(arg, Len::Dword, Op::MaskedEq(ro), 0).map_err(e).and_then(|c| rule(vec![c]));
+        m.insert(libc::SYS_openat, vec![flags(2)?]);
+        #[cfg(target_arch = "x86_64")]
+        m.insert(libc::SYS_open, vec![flags(1)?]);
+    }
     let no_exec = || cond(2, Op::MaskedEq(libc::PROT_EXEC as u64), 0);
     m.insert(libc::SYS_mmap, vec![rule(vec![no_exec()?])?]);
     m.insert(libc::SYS_mprotect, vec![rule(vec![no_exec()?])?]);
@@ -225,7 +336,7 @@ fn allowed_syscalls(pid: u32) -> Result<std::collections::BTreeMap<i64, Vec<secc
 }
 
 #[cfg(target_os = "linux")]
-fn linux_seccomp(r: &mut Report) {
+fn linux_seccomp(allow_open: bool, r: &mut Report) {
     use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
     use std::collections::BTreeMap;
     let arch = if cfg!(target_arch = "x86_64") {
@@ -249,13 +360,15 @@ fn linux_seccomp(r: &mut Report) {
     let single = |sys: i64, errno: i32| {
         build(BTreeMap::from([(sys, vec![])]), SeccompAction::Allow, SeccompAction::Errno(errno as u32))
     };
-    #[allow(unused_mut)]
-    let mut filters = vec![single(libc::SYS_clone3, libc::ENOSYS), single(libc::SYS_openat, libc::EACCES)];
-    #[cfg(target_arch = "x86_64")]
-    filters.push(single(libc::SYS_open, libc::EACCES));
+    let mut filters = vec![single(libc::SYS_clone3, libc::ENOSYS)];
+    if !allow_open {
+        filters.push(single(libc::SYS_openat, libc::EACCES));
+        #[cfg(target_arch = "x86_64")]
+        filters.push(single(libc::SYS_open, libc::EACCES));
+    }
     // Then the allow-list; anything not on it fails with EPERM.
     filters.push(
-        allowed_syscalls(std::process::id())
+        allowed_syscalls(std::process::id(), allow_open)
             .and_then(|rules| build(rules, SeccompAction::Errno(libc::EPERM as u32), SeccompAction::Allow)),
     );
     let result = filters
@@ -341,18 +454,31 @@ mod tests {
     /// Runs `probe` in a locked-down child: lockdown is irreversible, so this re-runs the
     /// test binary with an env marker. Returns (stdout, stderr) of the child.
     fn in_locked_child(test: &str, probe: impl FnOnce()) -> Option<(String, String)> {
+        in_locked_child_with(test, &[], |_| probe())
+    }
+
+    /// Like [`in_locked_child`], with extra environment for the child. The path in
+    /// `GUSSET_SANDBOX_FILE`, if set, becomes the read-only file allowance. The probe
+    /// gets the lockdown report.
+    fn in_locked_child_with(
+        test: &str,
+        envs: &[(&str, &std::path::Path)],
+        probe: impl FnOnce(&Report),
+    ) -> Option<(String, String)> {
         if std::env::var_os("GUSSET_SANDBOX_CHILD").is_some() {
-            let rep = lockdown(&Limits { memory_bytes: 2 << 30, cpu_seconds: 30 });
+            let read_file = std::env::var_os("GUSSET_SANDBOX_FILE").map(std::path::PathBuf::from);
+            let rep = lockdown(&Limits { memory_bytes: 2 << 30, cpu_seconds: 30, read_file });
             eprintln!("{}", rep.to_text());
-            probe();
+            probe(&rep);
             return None;
         }
         let exe = std::env::current_exe().unwrap();
-        let out = std::process::Command::new(exe)
-            .args(["--exact", test, "--nocapture", "--test-threads=1"])
-            .env("GUSSET_SANDBOX_CHILD", "1")
-            .output()
-            .unwrap();
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["--exact", test, "--nocapture", "--test-threads=1"]).env("GUSSET_SANDBOX_CHILD", "1");
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
         Some((String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned()))
     }
 
@@ -435,6 +561,88 @@ mod tests {
             assert!(line.contains(&format!("{k}=true")), "{k} not refused/allowed as expected: {line}\n{stderr}");
         }
         assert!(line.contains("threads_ok=true") && line.contains("kill_other=true"), "{line}");
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("gusset-sandbox-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The IGES allowance: exactly one file is readable, read-only; nothing else on the
+    /// filesystem is; the report lists it. Where Landlock is unavailable the allowance
+    /// must be refused (no silent open).
+    #[test]
+    fn read_file_allowance_opens_only_that_file() {
+        use std::io::Write;
+        let dir = temp_dir("allow");
+        let allowed = dir.join("input.igs");
+        let other = dir.join("other.txt");
+        std::fs::write(&allowed, b"hello").unwrap();
+        std::fs::write(&other, b"secret").unwrap();
+        let envs: [(&str, &std::path::Path); 2] = [("GUSSET_SANDBOX_FILE", &allowed), ("GUSSET_SANDBOX_OTHER", &other)];
+        let res = in_locked_child_with("tests::read_file_allowance_opens_only_that_file", &envs, |rep| {
+            let get = |k: &str| std::path::PathBuf::from(std::env::var_os(k).unwrap());
+            let (file, other) = (get("GUSSET_SANDBOX_FILE"), get("GUSSET_SANDBOX_OTHER"));
+            println!("GRANTED={}", rep.read_file.as_deref() == Some(file.as_path()));
+            println!("READ_ALLOWED={}", std::fs::read(&file).ok().as_deref() == Some(b"hello".as_slice()));
+            println!("OTHER_BLOCKED={}", std::fs::read(&other).is_err());
+            println!("WRITE_BLOCKED={}", std::fs::OpenOptions::new().write(true).open(&file).is_err());
+            println!("APPEND_BLOCKED={}", std::fs::OpenOptions::new().append(true).open(&file).is_err());
+            let new = other.with_file_name("new.txt");
+            println!("CREATE_BLOCKED={}", std::fs::File::create(&new).and_then(|mut f| f.write_all(b"x")).is_err());
+            println!("DIR_BLOCKED={}", std::fs::read_dir(other.parent().unwrap()).is_err());
+            println!("NEW_ABSENT={}", !new.exists());
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let Some((stdout, stderr)) = res else { return };
+        if stdout.contains("GRANTED=false") {
+            assert!(
+                stdout.contains("READ_ALLOWED=false") && stdout.contains("OTHER_BLOCKED=true"),
+                "{stdout}\n{stderr}"
+            );
+            assert!(!stderr.contains("read-only file allowance"), "{stderr}");
+            return;
+        }
+        for k in [
+            "GRANTED",
+            "READ_ALLOWED",
+            "OTHER_BLOCKED",
+            "WRITE_BLOCKED",
+            "APPEND_BLOCKED",
+            "CREATE_BLOCKED",
+            "DIR_BLOCKED",
+            "NEW_ABSENT",
+        ] {
+            assert!(stdout.contains(&format!("{k}=true")), "{k}: {stdout}\n{stderr}");
+        }
+        assert!(stderr.contains("read-only file allowance"), "the report must list the file: {stderr}");
+    }
+
+    /// Without the option `openat` stays denied (EACCES), whatever file is named.
+    #[test]
+    fn openat_stays_denied_without_the_option() {
+        let dir = temp_dir("deny");
+        let f = dir.join("input.igs");
+        std::fs::write(&f, b"hello").unwrap();
+        let res = in_locked_child_with(
+            "tests::openat_stays_denied_without_the_option",
+            &[("GUSSET_SANDBOX_TARGET", &f)],
+            |rep| {
+                let t = std::env::var_os("GUSSET_SANDBOX_TARGET").unwrap();
+                let r = std::fs::read(t);
+                let e = r.as_ref().err().and_then(std::io::Error::raw_os_error);
+                println!(
+                    "DENIED={} EACCES={} NO_ALLOWANCE={}",
+                    r.is_err(),
+                    e == Some(libc::EACCES),
+                    rep.read_file.is_none()
+                );
+            },
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let Some((stdout, stderr)) = res else { return };
+        assert!(stdout.contains("DENIED=true EACCES=true NO_ALLOWANCE=true"), "{stdout}\n{stderr}");
     }
 
     /// Security review #6: a grandchild holding the worker's stdout must not outlive
