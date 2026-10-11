@@ -15,6 +15,21 @@ fn kernel() -> (Arc<dyn Kernel>, Option<String>) {
     }
 }
 
+/// Vulkan/Metal/DX12 first. On Windows, DX12 (with WARP when there is no GPU) always
+/// exists, so the GL backend is left out there (ADR 0009); elsewhere it is the last
+/// resort before the CPU viewport.
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    if cfg!(windows) {
+        setup.instance_descriptor.backends =
+            eframe::wgpu::Backends::from_env().unwrap_or(eframe::wgpu::Backends::PRIMARY);
+    }
+    eframe::egui_wgpu::WgpuConfiguration {
+        wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(setup),
+        ..Default::default()
+    }
+}
+
 fn main() -> eframe::Result {
     // Code-loading hardening before anything else (Windows DLL search path; ADR 0008 §6).
     if let Some(e) = gusset_hw::codeload::harden() {
@@ -52,6 +67,7 @@ fn main() -> eframe::Result {
             .with_title("Gusset")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0]),
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
     eframe::run_native(

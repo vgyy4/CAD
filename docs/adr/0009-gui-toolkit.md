@@ -27,7 +27,9 @@ software fallback; GUI automation tests; a permissive license.
   headless, with snapshot images rendered through wgpu, which in CI is the software
   adapter.
 - **No-GPU fallback chain:** wgpu hardware adapter → wgpu `force_fallback_adapter` (WARP
-  on Windows, lavapipe/llvmpipe on Linux) → wgpu GL backend → (last resort) a CPU
+  on Windows, lavapipe/llvmpipe on Linux) → wgpu GL backend (not on Windows, where DX12
+  and WARP always exist and GL drivers are the least reliable; amended 2026-10-11 after
+  a GL access violation on Windows ARM64) → (last resort) a CPU
   rasterizer path for the viewport image, shown as an egui texture. The UI itself always
   needs some wgpu adapter. In practice WARP ships with Windows 10/11 and llvmpipe with
   Mesa, so a working software adapter is always present on first-class targets.

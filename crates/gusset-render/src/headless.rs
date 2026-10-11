@@ -72,7 +72,7 @@ pub enum AdapterPreference {
     Primary,
     /// Only `force_fallback_adapter` on the primary backends (WARP / lavapipe).
     SoftwareFallback,
-    /// Only the GL backend.
+    /// Only the GL backend (never on Windows, where DX12/WARP always exist).
     Gl,
 }
 
@@ -206,16 +206,23 @@ impl HeadlessRenderer {
     /// [`RenderError::NoAdapter`] when no allowed step works.
     pub fn with_preference(pref: AdapterPreference) -> Result<HeadlessRenderer, RenderError> {
         let primary = wgpu::Backends::PRIMARY;
+        // GL is the last resort for machines without Vulkan/Metal/DX12. Windows always
+        // has DX12 with WARP, so GL adds nothing there, and its drivers are the least
+        // reliable (an access violation on Windows ARM64 runners): not used (ADR 0009).
+        let gl: Vec<(&str, wgpu::Backends, bool)> = if cfg!(windows) {
+            Vec::new()
+        } else {
+            vec![("gl", wgpu::Backends::GL, false), ("gl-fallback", wgpu::Backends::GL, true)]
+        };
         let steps: Vec<(&str, wgpu::Backends, bool)> = match pref {
-            AdapterPreference::Auto => vec![
-                ("primary", primary, false),
-                ("primary-fallback", primary, true),
-                ("gl", wgpu::Backends::GL, false),
-                ("gl-fallback", wgpu::Backends::GL, true),
-            ],
+            AdapterPreference::Auto => {
+                let mut v = vec![("primary", primary, false), ("primary-fallback", primary, true)];
+                v.extend(gl);
+                v
+            }
             AdapterPreference::Primary => vec![("primary", primary, false)],
             AdapterPreference::SoftwareFallback => vec![("primary-fallback", primary, true)],
-            AdapterPreference::Gl => vec![("gl", wgpu::Backends::GL, false), ("gl-fallback", wgpu::Backends::GL, true)],
+            AdapterPreference::Gl => gl,
         };
         let mut failed = Vec::new();
         for (label, backends, force_fallback) in steps {
@@ -254,6 +261,9 @@ impl HeadlessRenderer {
                 }
                 Err(e) => failed.push(format!("{label}: {e}")),
             }
+        }
+        if failed.is_empty() {
+            failed.push("the GL backend is not used on Windows".to_string());
         }
         Err(RenderError::NoAdapter(failed.join("; ")))
     }
