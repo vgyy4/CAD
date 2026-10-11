@@ -126,7 +126,8 @@ impl Cache {
         match std::fs::symlink_metadata(&path) {
             Ok(md) if md.file_type().is_file() && md.len() <= self.cap.saturating_add(ENTRY_HEADER) => {}
             Ok(_) => return Ok(None),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // Another instance may be replacing or deleting the entry right now.
+            Err(e) if e.kind() == io::ErrorKind::NotFound || contended(&e) => return Ok(None),
             Err(e) => return Err(e),
         }
         let bytes = match std::fs::read(&path) {
