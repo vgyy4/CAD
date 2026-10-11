@@ -46,6 +46,8 @@ impl CommandError {
             HistoryError::ConfirmationRequired { reason } => CommandError::new("confirmation_required", reason)
                 .hint("repeat the command with confirm: true after the user agrees"),
             HistoryError::UnknownBranch(_) | HistoryError::UnknownNode(_) => CommandError::not_found(e.to_string()),
+            HistoryError::LimitReached(_) => CommandError::new("limit_reached", e.to_string())
+                .hint("the change was not made; delete branches that are no longer needed or compact history"),
             other => CommandError::new("history", other.to_string()),
         }
     }

@@ -120,6 +120,25 @@ impl fmt::Display for ObjectError {
 
 impl std::error::Error for ObjectError {}
 
+/// A document's objects prepared by [`ObjectStore::stage_document`].
+#[derive(Debug, Clone)]
+pub struct StagedDocument {
+    snapshot: Hash,
+    objects: Vec<(Hash, ObjectKind, Vec<u8>)>,
+}
+
+impl StagedDocument {
+    /// The snapshot hash the document will have.
+    pub fn hash(&self) -> Hash {
+        self.snapshot
+    }
+}
+
+fn unreachable_hash() -> Hash {
+    // `stage_document` with an unlimited size never fails.
+    Hash([0; 32])
+}
+
 /// An in-memory content-addressed object store. Objects are never mutated; storing the
 /// same bytes twice is free.
 #[derive(Debug, Clone, Default)]
@@ -183,11 +202,43 @@ impl ObjectStore {
 
     /// Stores a document and returns its snapshot hash.
     pub fn put_document(&mut self, doc: &Document) -> Hash {
-        let params = self.put(ObjectKind::Params, print_params_object(&doc.params).as_bytes());
-        let features =
-            doc.features.iter().map(|f| self.put(ObjectKind::Feature, print_feature_object(f).as_bytes())).collect();
+        match self.stage_document(doc, usize::MAX) {
+            Ok(s) => self.commit_staged(s),
+            Err(_) => unreachable_hash(),
+        }
+    }
+
+    /// Prepares a document's objects without storing them, refusing any object larger
+    /// than `max_object` bytes (`Err((what, len))`). Store them with
+    /// [`ObjectStore::commit_staged`].
+    pub fn stage_document(&self, doc: &Document, max_object: usize) -> Result<StagedDocument, (String, usize)> {
+        let mut objects = Vec::new();
+        let mut stage = |kind: ObjectKind, what: &dyn Fn() -> String, text: String| -> Result<Hash, (String, usize)> {
+            if text.len() > max_object {
+                return Err((what(), text.len()));
+            }
+            let h = Hash::of(text.as_bytes());
+            if !self.objects.contains_key(&h) {
+                objects.push((h, kind, text.into_bytes()));
+            }
+            Ok(h)
+        };
+        let params = stage(ObjectKind::Params, &|| "the parameter table".into(), print_params_object(&doc.params))?;
+        let mut features = Vec::with_capacity(doc.features.len());
+        for f in &doc.features {
+            features.push(stage(ObjectKind::Feature, &|| format!("feature '{}'", f.name), print_feature_object(f))?);
+        }
         let snap = Snapshot { units: doc.units, params, features };
-        self.put(ObjectKind::Snapshot, snap.to_text().as_bytes())
+        let snapshot = stage(ObjectKind::Snapshot, &|| "the model snapshot".into(), snap.to_text())?;
+        Ok(StagedDocument { snapshot, objects })
+    }
+
+    /// Stores staged objects; returns the snapshot hash.
+    pub fn commit_staged(&mut self, staged: StagedDocument) -> Hash {
+        for (h, k, b) in staged.objects {
+            self.objects.entry(h).or_insert_with(|| (k, Arc::from(b)));
+        }
+        staged.snapshot
     }
 
     pub fn snapshot(&self, h: Hash) -> Result<Snapshot, ObjectError> {

@@ -2,6 +2,7 @@
 
 use crate::diff::{DocDiff, diff_documents};
 use crate::objects::{Hash, ObjectError, ObjectStore};
+use crate::persist::{branch_line, event_line, node_line};
 use gusset_doc::Document;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -222,6 +223,9 @@ pub enum HistoryError {
     Conflict(String),
     Object(ObjectError),
     InvalidDocument(String),
+    /// The project reached a size limit that keeps it savable and openable (security
+    /// review #5). Compacting history may make room.
+    LimitReached(String),
 }
 
 impl fmt::Display for HistoryError {
@@ -241,6 +245,7 @@ impl fmt::Display for HistoryError {
             HistoryError::Conflict(m) => write!(f, "cannot undo: {m}"),
             HistoryError::Object(e) => write!(f, "{e}"),
             HistoryError::InvalidDocument(m) => write!(f, "{m}"),
+            HistoryError::LimitReached(m) => write!(f, "the project reached a size limit: {m}"),
         }
     }
 }
@@ -280,6 +285,64 @@ pub struct GcReport {
     pub bytes_after: usize,
 }
 
+/// The size of one history text record (nodes, branches, events) that the `.gus`
+/// container accepts (its 16 MiB limit for non-blob records).
+pub const RECORD_LIMIT: usize = 16 << 20;
+
+/// Limits enforced when the history changes, so that every history can be saved and
+/// opened again (security review #5). They are never above the load limits in
+/// [`crate::persist`] and the container's record limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryLimits {
+    /// Bytes per history text record (nodes, branches, events). Default 15 MiB: the
+    /// container allows 16 MiB, the rest is headroom for small untracked growth.
+    pub max_record_bytes: usize,
+    /// Bytes per feature, parameter-table or snapshot object (container: 16 MiB).
+    pub max_object_bytes: usize,
+    /// Nodes (load limit: [`crate::persist::MAX_NODES`]).
+    pub max_nodes: usize,
+    /// Branches, including recently deleted ones (load limit:
+    /// [`crate::persist::MAX_BRANCHES`]).
+    pub max_branches: usize,
+    /// Events (load limit: [`crate::persist::MAX_EVENTS`]).
+    pub max_events: usize,
+    /// Objects (the container holds at most 10 M records).
+    pub max_objects: usize,
+}
+
+impl Default for HistoryLimits {
+    fn default() -> Self {
+        HistoryLimits {
+            max_record_bytes: RECORD_LIMIT - (1 << 20),
+            max_object_bytes: RECORD_LIMIT,
+            max_nodes: crate::persist::MAX_NODES,
+            max_branches: 10_000,
+            max_events: crate::persist::MAX_EVENTS,
+            max_objects: 9_000_000,
+        }
+    }
+}
+
+/// Exact byte sizes of the three history text records (as [`History::to_records`]
+/// writes them), maintained incrementally.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordSizes {
+    pub nodes: usize,
+    pub branches: usize,
+    pub events: usize,
+}
+
+/// What a mutation is about to add (see `History::room`).
+#[derive(Debug, Clone, Copy, Default)]
+struct Need {
+    nodes: usize,
+    branches: usize,
+    events: usize,
+    new_nodes: usize,
+    new_branches: usize,
+    new_objects: usize,
+}
+
 /// The project history. See the crate docs and ADR 0006.
 #[derive(Debug, Clone)]
 pub struct History {
@@ -293,6 +356,8 @@ pub struct History {
     /// Session-only undo/redo stacks per actor (indices into `events`).
     undo: BTreeMap<Actor, Vec<usize>>,
     redo: BTreeMap<Actor, Vec<usize>>,
+    pub(crate) sizes: RecordSizes,
+    limits: HistoryLimits,
 }
 
 pub const MAX_NAME_LEN: usize = 120;
@@ -349,7 +414,7 @@ impl History {
                 rollback: None,
             },
         );
-        History {
+        let mut h = History {
             objects,
             nodes,
             branches,
@@ -359,7 +424,11 @@ impl History {
             next_branch: 2,
             undo: BTreeMap::new(),
             redo: BTreeMap::new(),
-        }
+            sizes: RecordSizes::default(),
+            limits: HistoryLimits::default(),
+        };
+        h.recompute_sizes();
+        h
     }
 
     // ------------------------------------------------------------ queries
@@ -405,15 +474,18 @@ impl History {
         detail: &str,
     ) {
         let clip = |s: &str, n: usize| s.chars().filter(|c| !c.is_control()).take(n).collect::<String>();
-        self.record(
-            ctx,
-            Event::AgentAction {
-                command: clip(command, 64),
-                branch,
-                outcome: clip(outcome, 128),
-                detail: clip(detail, 512),
-            },
-        );
+        let event = Event::AgentAction {
+            command: clip(command, 64),
+            branch,
+            outcome: clip(outcome, 128),
+            detail: clip(detail, 512),
+        };
+        let need = Need { events: Self::event_need(ctx, event.clone()), ..Need::default() };
+        // The audit entry uses the reserved room; if even that is gone after
+        // compaction, it is dropped rather than making the project unsavable.
+        if self.room(ctx.time, need, true).is_ok() {
+            self.record(ctx, event);
+        }
     }
 
     pub fn node(&self, id: NodeId) -> HResult<&Node> {
@@ -435,6 +507,81 @@ impl History {
 
     pub fn objects(&self) -> &ObjectStore {
         &self.objects
+    }
+
+    /// Sizes of the history text records as they would be saved.
+    pub fn record_sizes(&self) -> RecordSizes {
+        self.sizes
+    }
+
+    pub fn limits(&self) -> &HistoryLimits {
+        &self.limits
+    }
+
+    /// Replaces the write-side limits (tests, or stricter settings). Limits above the
+    /// defaults are clamped to them, so a history can never outgrow what loads.
+    pub fn set_limits(&mut self, limits: HistoryLimits) {
+        let d = HistoryLimits::default();
+        self.limits = HistoryLimits {
+            max_record_bytes: limits.max_record_bytes.min(d.max_record_bytes),
+            max_object_bytes: limits.max_object_bytes.min(d.max_object_bytes),
+            max_nodes: limits.max_nodes.min(d.max_nodes),
+            max_branches: limits.max_branches.min(d.max_branches),
+            max_events: limits.max_events.min(d.max_events),
+            max_objects: limits.max_objects.min(d.max_objects),
+        };
+    }
+
+    /// Room kept free in the event log for audit entries and undo/redo records.
+    fn event_reserve(&self) -> usize {
+        (self.limits.max_record_bytes / 16).min(64 << 10)
+    }
+
+    fn fits(&self, need: &Need, use_reserve: bool) -> Result<(), String> {
+        let l = &self.limits;
+        let reserve = if use_reserve { 0 } else { self.event_reserve() };
+        if self.sizes.nodes + need.nodes > l.max_record_bytes || self.nodes.len() + need.new_nodes > l.max_nodes {
+            return Err(format!(
+                "the iteration tree is full ({} iterations, {} bytes)",
+                self.nodes.len(),
+                self.sizes.nodes
+            ));
+        }
+        if self.sizes.branches + need.branches > l.max_record_bytes
+            || self.branches.len() + need.new_branches > l.max_branches
+        {
+            return Err(format!(
+                "too many branches ({} including recently deleted; at most {})",
+                self.branches.len(),
+                l.max_branches
+            ));
+        }
+        if self.sizes.events + need.events + reserve > l.max_record_bytes || self.events.len() + 1 > l.max_events {
+            return Err(format!("the project's event log is full ({} events)", self.events.len()));
+        }
+        if self.objects.len() + need.new_objects > l.max_objects {
+            return Err(format!("too many history objects ({})", self.objects.len()));
+        }
+        Ok(())
+    }
+
+    /// Makes sure a mutation needing `need` keeps the history savable. Compacts the
+    /// history (see [`History::compact_to_limits`]) if that makes room; otherwise
+    /// returns [`HistoryError::LimitReached`] and nothing changes.
+    fn room(&mut self, now: u64, need: Need, use_reserve: bool) -> HResult<()> {
+        if self.fits(&need, use_reserve).is_ok() {
+            return Ok(());
+        }
+        self.compact_to_limits(now);
+        self.fits(&need, use_reserve).map_err(|m| {
+            HistoryError::LimitReached(format!(
+                "{m}; delete branches you no longer need, empty \"Recently deleted\" or compact history"
+            ))
+        })
+    }
+
+    fn event_need(ctx: &Ctx, event: Event) -> usize {
+        event_line(&EventRecord { time: ctx.time, actor: ctx.actor.clone(), event }).len()
     }
 
     /// Stores a blob (imported file) and returns its hash.
@@ -488,13 +635,18 @@ impl History {
 
     fn record(&mut self, ctx: &Ctx, event: Event) -> usize {
         let undoable = !matches!(event, Event::Undo { .. } | Event::Redo { .. } | Event::AgentAction { .. });
-        self.events.push(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event });
+        self.push_event(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event });
         let idx = self.events.len() - 1;
         if undoable {
             self.undo.entry(ctx.actor.clone()).or_default().push(idx);
             self.redo.entry(ctx.actor.clone()).or_default().clear();
         }
         idx
+    }
+
+    fn push_event(&mut self, e: EventRecord) {
+        self.sizes.events += event_line(&e).len();
+        self.events.push(e);
     }
 
     /// Records a new document state on `branch`. Returns the new head. A document equal
@@ -508,26 +660,46 @@ impl History {
         state: NodeState,
     ) -> HResult<NodeId> {
         let head = self.live_branch_mut(branch)?.head;
-        let snapshot = self.objects.put_document(doc);
+        let new_objects = doc.features.len() + 2;
+        let staged = self.objects.stage_document(doc, self.limits.max_object_bytes).map_err(|(what, len)| {
+            HistoryError::LimitReached(format!(
+                "{what} is {len} bytes; one history object can be at most {} bytes",
+                self.limits.max_object_bytes
+            ))
+        })?;
+        let snapshot = staged.hash();
         if state == NodeState::Ok && self.node(head)?.snapshot == snapshot {
             return Ok(head);
         }
         let id = NodeId(self.next_node);
-        self.next_node += 1;
-        self.nodes.insert(
+        let mut message = state;
+        if let NodeState::Broken { message: m } = &mut message {
+            *m = m.chars().take(4000).collect();
+        }
+        let node = Node {
             id,
-            Node {
-                id,
-                parent: Some(head),
-                snapshot,
-                label: label.chars().take(200).collect(),
-                actor: ctx.actor.clone(),
-                time: ctx.time,
-                state,
-                name: None,
-                starred: false,
-            },
-        );
+            parent: Some(head),
+            snapshot,
+            label: label.chars().take(200).collect(),
+            actor: ctx.actor.clone(),
+            time: ctx.time,
+            state: message,
+            name: None,
+            starred: false,
+        };
+        let line = node_line(&node).len();
+        let need = Need {
+            nodes: line,
+            events: Self::event_need(ctx, Event::Edit { branch, from: head, to: id }),
+            new_nodes: 1,
+            new_objects,
+            ..Need::default()
+        };
+        self.room(ctx.time, need, false)?;
+        self.objects.commit_staged(staged);
+        self.next_node += 1;
+        self.nodes.insert(id, node);
+        self.sizes.nodes += line;
         self.live_branch_mut(branch)?.head = id;
         self.record(ctx, Event::Edit { branch, from: head, to: id });
         Ok(id)
@@ -536,11 +708,13 @@ impl History {
     /// Points a branch at any node (e.g. "go to this iteration"); non-destructive.
     pub fn move_head(&mut self, ctx: &Ctx, branch: BranchId, to: NodeId) -> HResult<()> {
         self.node(to)?;
-        let b = self.live_branch_mut(branch)?;
-        let from = b.head;
+        let from = self.live_branch_mut(branch)?.head;
         if from == to {
             return Ok(());
         }
+        let need = Need { events: Self::event_need(ctx, Event::MoveHead { branch, from, to }), ..Need::default() };
+        self.room(ctx.time, need, false)?;
+        let b = self.live_branch_mut(branch)?;
         b.head = to;
         b.rollback = None;
         self.record(ctx, Event::MoveHead { branch, from, to });
@@ -560,26 +734,33 @@ impl History {
             return Err(HistoryError::NameTaken(name));
         }
         let id = BranchId(self.next_branch);
-        self.next_branch += 1;
         let color = match &ctx.actor {
             Actor::Agent(_) => Some("agent".to_string()),
             Actor::User => None,
         };
-        self.branches.insert(
+        let b = Branch {
             id,
-            Branch {
-                id,
-                name,
-                head: at,
-                color,
-                notes: String::new(),
-                pinned: false,
-                created_by: ctx.actor.clone(),
-                created_at: ctx.time,
-                deleted_at: None,
-                rollback: None,
-            },
-        );
+            name,
+            head: at,
+            color,
+            notes: String::new(),
+            pinned: false,
+            created_by: ctx.actor.clone(),
+            created_at: ctx.time,
+            deleted_at: None,
+            rollback: None,
+        };
+        let line = branch_line(&b).len();
+        let need = Need {
+            branches: line,
+            events: Self::event_need(ctx, Event::CreateBranch { branch: id, at }),
+            new_branches: 1,
+            ..Need::default()
+        };
+        self.room(ctx.time, need, false)?;
+        self.next_branch += 1;
+        self.branches.insert(id, b);
+        self.sizes.branches += line;
         self.record(ctx, Event::CreateBranch { branch: id, at });
         Ok(id)
     }
@@ -592,11 +773,38 @@ impl History {
         {
             return Err(HistoryError::NameTaken(name));
         }
-        let b = self.live_branch_mut(branch)?;
-        let old = std::mem::replace(&mut b.name, name.clone());
-        if old != name {
-            self.record(ctx, Event::RenameBranch { branch, old, new: name });
+        let old = self.live_branch_mut(branch)?.name.clone();
+        if old == name {
+            return Ok(());
         }
+        let need = Need {
+            branches: 3 * name.len(),
+            events: Self::event_need(ctx, Event::RenameBranch { branch, old: old.clone(), new: name.clone() }),
+            ..Need::default()
+        };
+        self.room(ctx.time, need, false)?;
+        self.resize_branch(branch, |b| b.name = name.clone())?;
+        self.record(ctx, Event::RenameBranch { branch, old, new: name });
+        Ok(())
+    }
+
+    /// Changes a branch and keeps the branches record size exact.
+    fn resize_branch(&mut self, branch: BranchId, f: impl FnOnce(&mut Branch)) -> HResult<()> {
+        let b = self.branches.get_mut(&branch).ok_or(HistoryError::UnknownBranch(branch))?;
+        let before = branch_line(b).len();
+        f(b);
+        let after = branch_line(b).len();
+        self.sizes.branches = (self.sizes.branches + after).saturating_sub(before);
+        Ok(())
+    }
+
+    /// Changes a node and keeps the nodes record size exact.
+    fn resize_node(&mut self, node: NodeId, f: impl FnOnce(&mut Node)) -> HResult<()> {
+        let n = self.nodes.get_mut(&node).ok_or(HistoryError::UnknownNode(node))?;
+        let before = node_line(n).len();
+        f(n);
+        let after = node_line(n).len();
+        self.sizes.nodes = (self.sizes.nodes + after).saturating_sub(before);
         Ok(())
     }
 
@@ -606,6 +814,8 @@ impl History {
         self.live_branch_mut(branch)?;
         let old = self.main;
         if old != branch {
+            let need = Need { events: Self::event_need(ctx, Event::SetMain { old, new: branch }), ..Need::default() };
+            self.room(ctx.time, need, false)?;
             self.main = branch;
             self.record(ctx, Event::SetMain { old, new: branch });
         }
@@ -645,6 +855,8 @@ impl History {
             }
             return Err(HistoryError::ConfirmationRequired { reason });
         }
+        let need = Need { events: Self::event_need(ctx, Event::DeleteBranch { branch }), ..Need::default() };
+        self.room(ctx.time, need, false)?;
         self.live_branch_mut(branch)?.deleted_at = Some(ctx.time);
         self.record(ctx, Event::DeleteBranch { branch });
         Ok(())
@@ -655,6 +867,9 @@ impl History {
         if b.deleted_at.is_none() {
             return Ok(());
         }
+        let need =
+            Need { branches: 64, events: Self::event_need(ctx, Event::RestoreBranch { branch }), ..Need::default() };
+        self.room(ctx.time, need, false)?;
         self.undelete(branch)?;
         self.record(ctx, Event::RestoreBranch { branch });
         Ok(())
@@ -679,28 +894,34 @@ impl History {
         } else {
             name
         };
-        let b = self.branches.get_mut(&branch).ok_or(HistoryError::UnknownBranch(branch))?;
-        b.deleted_at = None;
-        b.name = final_name;
-        Ok(())
+        self.resize_branch(branch, |b| {
+            b.deleted_at = None;
+            b.name = final_name;
+        })
     }
 
     pub fn set_rollback(&mut self, ctx: &Ctx, branch: BranchId, marker: Option<usize>) -> HResult<()> {
         let n = self.head_document(branch)?.features.len();
         let marker = marker.filter(|&m| m < n);
-        let b = self.live_branch_mut(branch)?;
-        let old = b.rollback;
+        let old = self.live_branch_mut(branch)?.rollback;
         if old != marker {
-            b.rollback = marker;
+            let need = Need {
+                events: Self::event_need(ctx, Event::SetRollback { branch, old, new: marker }),
+                ..Need::default()
+            };
+            self.room(ctx.time, need, false)?;
+            self.live_branch_mut(branch)?.rollback = marker;
             self.record(ctx, Event::SetRollback { branch, old, new: marker });
         }
         Ok(())
     }
 
     pub fn set_starred(&mut self, ctx: &Ctx, node: NodeId, starred: bool) -> HResult<()> {
-        let n = self.nodes.get_mut(&node).ok_or(HistoryError::UnknownNode(node))?;
-        if n.starred != starred {
-            n.starred = starred;
+        let current = self.node(node)?.starred;
+        if current != starred {
+            let need = Need { events: Self::event_need(ctx, Event::Star { node, starred }), ..Need::default() };
+            self.room(ctx.time, need, false)?;
+            self.resize_node(node, |n| n.starred = starred)?;
             self.record(ctx, Event::Star { node, starred });
         }
         Ok(())
@@ -711,10 +932,16 @@ impl History {
             check_branch_name(n)?;
         }
         let new = name.map(|s| s.trim().to_string());
-        let n = self.nodes.get_mut(&node).ok_or(HistoryError::UnknownNode(node))?;
-        let old = n.name.clone();
+        let old = self.node(node)?.name.clone();
         if old != new {
-            n.name = new.clone();
+            let need = Need {
+                nodes: new.as_ref().map_or(0, |n| 3 * n.len() + 1),
+                events: Self::event_need(ctx, Event::NameNode { node, old: old.clone(), new: new.clone() }),
+                ..Need::default()
+            };
+            self.room(ctx.time, need, false)?;
+            let set = new.clone();
+            self.resize_node(node, |n| n.name = set)?;
             self.record(ctx, Event::NameNode { node, old, new });
         }
         Ok(())
@@ -728,17 +955,28 @@ impl History {
         notes: Option<String>,
         pinned: Option<bool>,
     ) -> HResult<()> {
-        let b = self.live_branch_mut(branch)?;
-        if let Some(c) = color {
-            b.color = c.map(|s| s.chars().take(32).collect());
+        self.live_branch_mut(branch)?;
+        let color: Option<Option<String>> = color.map(|c| c.map(|s| s.chars().take(32).collect()));
+        let notes: Option<String> = notes.map(|n| n.chars().take(10_000).collect());
+        let grow = 3
+            * (color.as_ref().and_then(|c| c.as_ref()).map_or(0, String::len) + notes.as_ref().map_or(0, String::len));
+        if self.sizes.branches + grow > self.limits.max_record_bytes {
+            return Err(HistoryError::LimitReached(format!(
+                "the branch table is full ({} bytes); shorten branch notes or delete branches",
+                self.sizes.branches
+            )));
         }
-        if let Some(n) = notes {
-            b.notes = n.chars().take(10_000).collect();
-        }
-        if let Some(p) = pinned {
-            b.pinned = p;
-        }
-        Ok(())
+        self.resize_branch(branch, |b| {
+            if let Some(c) = color {
+                b.color = c;
+            }
+            if let Some(n) = notes {
+                b.notes = n;
+            }
+            if let Some(p) = pinned {
+                b.pinned = p;
+            }
+        })
     }
 
     // ------------------------------------------------------------ undo / redo
@@ -753,6 +991,12 @@ impl History {
             .ok_or(HistoryError::NothingToUndo)?;
         let idx = stack.get(pos).copied().ok_or(HistoryError::NothingToUndo)?;
         let ev = self.events.get(idx).map(|e| e.event.clone()).ok_or(HistoryError::NothingToUndo)?;
+        let need = Need { events: Self::event_need(ctx, Event::Undo { event: idx }), branches: 64, ..Need::default() };
+        if self.fits(&need, true).is_err() {
+            // Compaction renumbers events; let the caller retry against the new log.
+            self.room(ctx.time, need, true)?;
+            return self.undo(ctx, branch);
+        }
         self.apply(&ev, true, ctx.time)?;
         if let Some(s) = self.undo.get_mut(&ctx.actor) {
             s.remove(pos);
@@ -770,12 +1014,17 @@ impl History {
             .ok_or(HistoryError::NothingToRedo)?;
         let idx = stack.get(pos).copied().ok_or(HistoryError::NothingToRedo)?;
         let ev = self.events.get(idx).map(|e| e.event.clone()).ok_or(HistoryError::NothingToRedo)?;
+        let need = Need { events: Self::event_need(ctx, Event::Redo { event: idx }), branches: 64, ..Need::default() };
+        if self.fits(&need, true).is_err() {
+            self.room(ctx.time, need, true)?;
+            return self.redo(ctx, branch);
+        }
         self.apply(&ev, false, ctx.time)?;
         if let Some(s) = self.redo.get_mut(&ctx.actor) {
             s.remove(pos);
         }
         self.undo.entry(ctx.actor.clone()).or_default().push(idx);
-        self.events.push(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event: Event::Redo { event: idx } });
+        self.push_event(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event: Event::Redo { event: idx } });
         Ok(format!("Redo: {}", ev.describe()))
     }
 
@@ -799,6 +1048,9 @@ impl History {
         match ev {
             Event::Edit { branch, from, to } | Event::MoveHead { branch, from, to } => {
                 let (expect, set) = pick(*from, *to, inverse);
+                if !self.nodes.contains_key(&set) {
+                    return Err(HistoryError::Conflict("that iteration was removed when history was compacted".into()));
+                }
                 let b = self.live_branch_mut(*branch)?;
                 if b.head != expect {
                     return Err(HistoryError::Conflict(format!(
@@ -836,7 +1088,8 @@ impl History {
                 if self.branch_by_name_folded(&set).is_some_and(|b| b.id != *branch) {
                     return Err(HistoryError::NameTaken(set));
                 }
-                self.live_branch_mut(*branch)?.name = set;
+                self.live_branch_mut(*branch)?;
+                self.resize_branch(*branch, |b| b.name = set)?;
             }
             Event::SetMain { old, new } => {
                 let (_, set) = pick(*old, *new, inverse);
@@ -848,12 +1101,12 @@ impl History {
                 self.live_branch_mut(*branch)?.rollback = set;
             }
             Event::Star { node, starred } => {
-                let n = self.nodes.get_mut(node).ok_or(HistoryError::UnknownNode(*node))?;
-                n.starred = if inverse { !starred } else { *starred };
+                let set = if inverse { !starred } else { *starred };
+                self.resize_node(*node, |n| n.starred = set)?;
             }
             Event::NameNode { node, old, new } => {
                 let (_, set) = pick(old.clone(), new.clone(), inverse);
-                self.nodes.get_mut(node).ok_or(HistoryError::UnknownNode(*node))?.name = set;
+                self.resize_node(*node, |n| n.name = set)?;
             }
             Event::Undo { .. } | Event::Redo { .. } | Event::AgentAction { .. } => {}
         }
@@ -923,7 +1176,9 @@ impl History {
 
     /// Purges expired deleted branches, squashes old unnamed intermediate nodes and drops
     /// unreachable nodes and objects. Never touches starred/named nodes, branch heads or
-    /// nodes shared by several branches.
+    /// nodes shared by several branches. Dangling "redo futures" (leaves no branch points
+    /// at) are kept for the deleted-branch retention period. Finally the history is
+    /// compacted below its size limits ([`History::compact_to_limits`]).
     pub fn gc(&mut self, now: u64, policy: &GcPolicy) -> GcReport {
         let mut rep = GcReport { bytes_before: self.objects.byte_size(), ..GcReport::default() };
         // 1. Purge expired soft-deleted branches.
@@ -939,60 +1194,234 @@ impl History {
         }
         // 2. Squash old unnamed intermediate nodes.
         if let Some(age) = policy.squash_after {
-            let heads: BTreeSet<NodeId> = self.branches.values().map(|b| b.head).collect();
-            let mut child_count: BTreeMap<NodeId, usize> = BTreeMap::new();
-            for n in self.nodes.values() {
-                if let Some(p) = n.parent {
-                    *child_count.entry(p).or_default() += 1;
-                }
-            }
-            let victims: Vec<NodeId> = self
-                .nodes
-                .values()
-                .filter(|n| {
-                    n.parent.is_some()
-                        && !n.starred
-                        && n.name.is_none()
-                        && !heads.contains(&n.id)
-                        && child_count.get(&n.id).copied() == Some(1)
-                        && now.saturating_sub(n.time) >= age
-                })
-                .map(|n| n.id)
-                .collect();
-            for v in victims {
-                let Some(parent) = self.nodes.get(&v).and_then(|n| n.parent) else { continue };
-                for n in self.nodes.values_mut() {
-                    if n.parent == Some(v) {
-                        n.parent = Some(parent);
-                    }
-                }
-                self.nodes.remove(&v);
-                rep.nodes_squashed += 1;
+            let victims: BTreeSet<NodeId> =
+                self.squash_candidates().into_iter().filter(|n| now.saturating_sub(n.1) >= age).map(|n| n.0).collect();
+            rep.nodes_squashed += self.squash(&victims);
+        }
+        // 3. Reachability.
+        let (nodes, objects) = self.sweep(now, policy.deleted_retention);
+        rep.nodes_removed = nodes;
+        rep.objects_removed = objects;
+        // 4. Stay below the save limits.
+        let c = self.compact_to_limits(now);
+        rep.branches_purged += c.branches_purged;
+        rep.nodes_squashed += c.nodes_squashed;
+        rep.nodes_removed += c.nodes_removed;
+        rep.objects_removed += c.objects_removed;
+        rep.bytes_after = self.objects.byte_size();
+        self.recompute_sizes();
+        rep
+    }
+
+    /// Nodes that may be squashed: unnamed, unstarred, not a branch head, not the root,
+    /// with exactly one child. Returned with their time, oldest first.
+    fn squash_candidates(&self) -> Vec<(NodeId, u64)> {
+        let heads: BTreeSet<NodeId> = self.branches.values().map(|b| b.head).collect();
+        let mut child_count: BTreeMap<NodeId, usize> = BTreeMap::new();
+        for n in self.nodes.values() {
+            if let Some(p) = n.parent {
+                *child_count.entry(p).or_default() += 1;
             }
         }
-        // 3. Reachability from branch heads (incl. recently deleted) and starred/named nodes.
+        let mut v: Vec<(NodeId, u64)> = self
+            .nodes
+            .values()
+            .filter(|n| {
+                n.parent.is_some()
+                    && !n.starred
+                    && n.name.is_none()
+                    && !heads.contains(&n.id)
+                    && child_count.get(&n.id).copied() == Some(1)
+            })
+            .map(|n| (n.id, n.time))
+            .collect();
+        v.sort_by_key(|&(id, t)| (t, id));
+        v
+    }
+
+    /// Removes `victims` and reparents their children onto the nearest surviving
+    /// ancestor. Linear in the number of nodes.
+    fn squash(&mut self, victims: &BTreeSet<NodeId>) -> usize {
+        if victims.is_empty() {
+            return 0;
+        }
+        let mut resolved: BTreeMap<NodeId, Option<NodeId>> = BTreeMap::new();
+        let mut resolve = |start: NodeId, nodes: &BTreeMap<NodeId, Node>| -> Option<NodeId> {
+            let mut path = Vec::new();
+            let mut cur = Some(start);
+            let result = loop {
+                match cur {
+                    Some(c) if victims.contains(&c) => {
+                        if let Some(r) = resolved.get(&c) {
+                            break *r;
+                        }
+                        path.push(c);
+                        cur = nodes.get(&c).and_then(|n| n.parent);
+                    }
+                    other => break other,
+                }
+            };
+            for p in path {
+                resolved.insert(p, result);
+            }
+            result
+        };
+        let mut moves = Vec::new();
+        for n in self.nodes.values() {
+            if let Some(p) = n.parent
+                && victims.contains(&p)
+                && !victims.contains(&n.id)
+            {
+                moves.push((n.id, resolve(p, &self.nodes)));
+            }
+        }
+        for (id, parent) in moves {
+            if let Some(n) = self.nodes.get_mut(&id) {
+                n.parent = parent;
+            }
+        }
+        let before = self.nodes.len();
+        self.nodes.retain(|id, _| !victims.contains(id));
+        before - self.nodes.len()
+    }
+
+    /// Drops nodes not reachable from a branch head (live or recently deleted), a
+    /// starred/named node, or a leaf younger than `leaf_retention`; then objects no
+    /// remaining snapshot references. Returns (nodes, objects) removed.
+    fn sweep(&mut self, now: u64, leaf_retention: u64) -> (usize, usize) {
+        let mut has_child = BTreeSet::new();
+        for n in self.nodes.values() {
+            if let Some(p) = n.parent {
+                has_child.insert(p);
+            }
+        }
         let mut roots: Vec<NodeId> = self.branches.values().map(|b| b.head).collect();
         roots.extend(self.nodes.values().filter(|n| n.starred || n.name.is_some()).map(|n| n.id));
+        roots.extend(
+            self.nodes
+                .values()
+                .filter(|n| !has_child.contains(&n.id) && now.saturating_sub(n.time) < leaf_retention)
+                .map(|n| n.id),
+        );
         let mut reachable = BTreeSet::new();
         for r in roots {
-            reachable.extend(self.lineage(r));
+            let mut cur = Some(r);
+            while let Some(c) = cur {
+                if !self.nodes.contains_key(&c) || !reachable.insert(c) {
+                    break; // already marked: the rest of the lineage is too
+                }
+                cur = self.nodes.get(&c).and_then(|n| n.parent);
+            }
         }
         let before = self.nodes.len();
         self.nodes.retain(|id, _| reachable.contains(id));
-        rep.nodes_removed = before - self.nodes.len();
-        // 4. Objects reachable from remaining snapshots.
+        let nodes_removed = before - self.nodes.len();
         let mut keep = BTreeSet::new();
         for n in self.nodes.values() {
             self.objects.snapshot_closure(n.snapshot, &mut keep);
         }
         let before = self.objects.len();
         self.objects.retain(&keep);
-        rep.objects_removed = before - self.objects.len();
-        rep.bytes_after = self.objects.byte_size();
-        // Undo stacks may reference removed nodes; they are session state, so drop them.
-        self.undo.clear();
-        self.redo.clear();
+        (nodes_removed, before - self.objects.len())
+    }
+
+    /// Brings the history below three quarters of its limits when it is above them, so
+    /// it stays savable (security review #5). In order, and only as far as needed:
+    /// the oldest events of the log are dropped (the audit trail keeps its newest half),
+    /// the oldest unnamed intermediate iterations are squashed (starred, named and head
+    /// iterations never are), and the oldest "Recently deleted" branches are purged.
+    /// Undo/redo keeps working for everything that remains.
+    pub fn compact_to_limits(&mut self, now: u64) -> GcReport {
+        let mut rep = GcReport::default();
+        let l = self.limits.clone();
+        let soft = l.max_record_bytes / 4 * 3;
+        let target = l.max_record_bytes / 2;
+        // Events.
+        if self.sizes.events > soft || self.events.len() > l.max_events / 4 * 3 {
+            let mut bytes = self.sizes.events;
+            let mut drop = 0;
+            let max_keep = l.max_events / 2;
+            for e in &self.events {
+                if bytes <= target && self.events.len() - drop <= max_keep {
+                    break;
+                }
+                bytes -= event_line(e).len();
+                drop += 1;
+            }
+            self.drop_oldest_events(drop);
+        }
+        // Nodes.
+        if self.sizes.nodes > soft || self.nodes.len() > l.max_nodes / 4 * 3 {
+            let mut bytes = self.sizes.nodes;
+            let mut count = self.nodes.len();
+            let mut victims = BTreeSet::new();
+            for (id, _) in self.squash_candidates() {
+                if bytes <= target && count <= l.max_nodes / 2 {
+                    break;
+                }
+                if let Some(n) = self.nodes.get(&id) {
+                    bytes -= node_line(n).len();
+                }
+                count -= 1;
+                victims.insert(id);
+            }
+            rep.nodes_squashed = self.squash(&victims);
+        }
+        // Branches.
+        if self.sizes.branches > soft || self.branches.len() > l.max_branches / 4 * 3 {
+            let mut deleted: Vec<(u64, BranchId)> =
+                self.branches.values().filter_map(|b| b.deleted_at.map(|t| (t, b.id))).collect();
+            deleted.sort();
+            let mut bytes = self.sizes.branches;
+            let mut count = self.branches.len();
+            for (_, id) in deleted {
+                if bytes <= target && count <= l.max_branches / 2 {
+                    break;
+                }
+                if let Some(b) = self.branches.remove(&id) {
+                    bytes -= branch_line(&b).len();
+                    count -= 1;
+                    rep.branches_purged += 1;
+                }
+            }
+            if rep.branches_purged > 0 {
+                let (n, o) = self.sweep(now, GcPolicy::default().deleted_retention);
+                rep.nodes_removed += n;
+                rep.objects_removed += o;
+            }
+        }
+        if rep != GcReport::default() || self.sizes.events > soft {
+            self.recompute_sizes();
+        }
         rep
+    }
+
+    /// Drops the first `n` events (and undo/redo records that point at them), and
+    /// renumbers the undo/redo stacks and the remaining undo/redo records.
+    fn drop_oldest_events(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let old = std::mem::take(&mut self.events);
+        let mut map: BTreeMap<usize, usize> = BTreeMap::new();
+        for (i, mut e) in old.into_iter().enumerate() {
+            if i < n {
+                continue;
+            }
+            if let Event::Undo { event } | Event::Redo { event } = &mut e.event {
+                match map.get(event) {
+                    Some(&new) => *event = new,
+                    None => continue, // points at a dropped event
+                }
+            }
+            map.insert(i, self.events.len());
+            self.events.push(e);
+        }
+        for stacks in [&mut self.undo, &mut self.redo] {
+            for stack in stacks.values_mut() {
+                *stack = stack.iter().filter_map(|i| map.get(i).copied()).collect();
+            }
+        }
     }
 
     // ------------------------------------------------------------ persistence helpers
@@ -1006,7 +1435,7 @@ impl History {
     ) -> History {
         let next_node = nodes.keys().map(|n| n.0).max().unwrap_or(0) + 1;
         let next_branch = branches.keys().map(|b| b.0).max().unwrap_or(0) + 1;
-        History {
+        let mut h = History {
             objects,
             nodes,
             branches,
@@ -1016,6 +1445,21 @@ impl History {
             next_branch,
             undo: BTreeMap::new(),
             redo: BTreeMap::new(),
-        }
+            sizes: RecordSizes::default(),
+            limits: HistoryLimits::default(),
+        };
+        h.recompute_sizes();
+        h
+    }
+
+    fn recompute_sizes(&mut self) {
+        use crate::persist::{BRANCHES_HEADER, EVENTS_HEADER, NODES_HEADER, branch_line, event_line, main_line};
+        self.sizes = RecordSizes {
+            nodes: NODES_HEADER.len() + self.nodes.values().map(|n| node_line(n).len()).sum::<usize>(),
+            branches: BRANCHES_HEADER.len()
+                + main_line(self.main).len()
+                + self.branches.values().map(|b| branch_line(b).len()).sum::<usize>(),
+            events: EVENTS_HEADER.len() + self.events.iter().map(|e| event_line(e).len()).sum::<usize>(),
+        };
     }
 }

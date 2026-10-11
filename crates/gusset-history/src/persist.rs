@@ -130,70 +130,97 @@ pub(crate) fn check_acyclic(nodes: &BTreeMap<NodeId, Node>) -> Result<(), String
     Ok(())
 }
 
+pub(crate) const NODES_HEADER: &str = "nodes 1\n";
+pub(crate) const BRANCHES_HEADER: &str = "branches 1\n";
+pub(crate) const EVENTS_HEADER: &str = "events 1\n";
+
+/// One line of the nodes record (including the newline).
+pub(crate) fn node_line(n: &Node) -> String {
+    let state = match &n.state {
+        NodeState::Ok => "ok".to_string(),
+        NodeState::Broken { message } => format!("broken={}", esc(message)),
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        n.id,
+        n.parent.map_or("-".into(), |p| p.to_string()),
+        n.snapshot,
+        n.time,
+        actor(&n.actor),
+        state,
+        u8::from(n.starred),
+        opt(&n.name),
+        esc(&n.label),
+    )
+}
+
+/// The `main` line of the branches record.
+pub(crate) fn main_line(main: BranchId) -> String {
+    format!("main\t{main}\n")
+}
+
+/// One line of the branches record (including the newline).
+pub(crate) fn branch_line(b: &Branch) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        b.id,
+        b.head,
+        esc(&b.name),
+        opt(&b.color),
+        esc(&b.notes),
+        u8::from(b.pinned),
+        actor(&b.created_by),
+        b.created_at,
+        b.deleted_at.map_or("-".into(), |t| t.to_string()),
+        opt_usize(b.rollback),
+    )
+}
+
+/// One line of the events record (including the newline).
+pub(crate) fn event_line(e: &EventRecord) -> String {
+    let body = match &e.event {
+        Event::Edit { branch, from, to } => format!("edit\t{branch}\t{from}\t{to}"),
+        Event::MoveHead { branch, from, to } => format!("move\t{branch}\t{from}\t{to}"),
+        Event::CreateBranch { branch, at } => format!("create\t{branch}\t{at}"),
+        Event::RenameBranch { branch, old, new } => format!("rename\t{branch}\t{}\t{}", esc(old), esc(new)),
+        Event::SetMain { old, new } => format!("setmain\t{old}\t{new}"),
+        Event::DeleteBranch { branch } => format!("delete\t{branch}"),
+        Event::RestoreBranch { branch } => format!("restore\t{branch}"),
+        Event::SetRollback { branch, old, new } => {
+            format!("rollback\t{branch}\t{}\t{}", opt_usize(*old), opt_usize(*new))
+        }
+        Event::Star { node, starred } => format!("star\t{node}\t{}", u8::from(*starred)),
+        Event::NameNode { node, old, new } => format!("name\t{node}\t{}\t{}", opt(old), opt(new)),
+        Event::Undo { event } => format!("undo\t{event}"),
+        Event::Redo { event } => format!("redo\t{event}"),
+        Event::AgentAction { command, branch, outcome, detail } => format!(
+            "agent\t{}\t{}\t{}\t{}",
+            esc(command),
+            branch.map_or_else(|| "-".to_string(), |b| b.to_string()),
+            esc(outcome),
+            esc(detail)
+        ),
+    };
+    format!("{}\t{}\t{}\n", e.time, actor(&e.actor), body)
+}
+
 impl History {
     pub fn to_records(&self) -> HistoryRecords {
         let objects = self.objects.iter().map(|(h, k, b)| (k, h, b.clone())).collect();
-        let mut nodes = String::from("nodes 1\n");
+        let mut nodes = String::with_capacity(self.sizes.nodes);
+        nodes.push_str(NODES_HEADER);
         for n in self.nodes.values() {
-            let state = match &n.state {
-                NodeState::Ok => "ok".to_string(),
-                NodeState::Broken { message } => format!("broken={}", esc(message)),
-            };
-            nodes.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                n.id,
-                n.parent.map_or("-".into(), |p| p.to_string()),
-                n.snapshot,
-                n.time,
-                actor(&n.actor),
-                state,
-                u8::from(n.starred),
-                opt(&n.name),
-                esc(&n.label),
-            ));
+            nodes.push_str(&node_line(n));
         }
-        let mut branches = format!("branches 1\nmain\t{}\n", self.main);
+        let mut branches = String::from(BRANCHES_HEADER);
+        branches.push_str(&main_line(self.main));
         for b in self.branches.values() {
-            branches.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                b.id,
-                b.head,
-                esc(&b.name),
-                opt(&b.color),
-                esc(&b.notes),
-                u8::from(b.pinned),
-                actor(&b.created_by),
-                b.created_at,
-                b.deleted_at.map_or("-".into(), |t| t.to_string()),
-                opt_usize(b.rollback),
-            ));
+            branches.push_str(&branch_line(b));
         }
-        let mut events = String::from("events 1\n");
+        let mut events = String::with_capacity(self.sizes.events);
+        events.push_str(EVENTS_HEADER);
         for e in &self.events {
-            let body = match &e.event {
-                Event::Edit { branch, from, to } => format!("edit\t{branch}\t{from}\t{to}"),
-                Event::MoveHead { branch, from, to } => format!("move\t{branch}\t{from}\t{to}"),
-                Event::CreateBranch { branch, at } => format!("create\t{branch}\t{at}"),
-                Event::RenameBranch { branch, old, new } => format!("rename\t{branch}\t{}\t{}", esc(old), esc(new)),
-                Event::SetMain { old, new } => format!("setmain\t{old}\t{new}"),
-                Event::DeleteBranch { branch } => format!("delete\t{branch}"),
-                Event::RestoreBranch { branch } => format!("restore\t{branch}"),
-                Event::SetRollback { branch, old, new } => {
-                    format!("rollback\t{branch}\t{}\t{}", opt_usize(*old), opt_usize(*new))
-                }
-                Event::Star { node, starred } => format!("star\t{node}\t{}", u8::from(*starred)),
-                Event::NameNode { node, old, new } => format!("name\t{node}\t{}\t{}", opt(old), opt(new)),
-                Event::Undo { event } => format!("undo\t{event}"),
-                Event::Redo { event } => format!("redo\t{event}"),
-                Event::AgentAction { command, branch, outcome, detail } => format!(
-                    "agent\t{}\t{}\t{}\t{}",
-                    esc(command),
-                    branch.map_or_else(|| "-".to_string(), |b| b.to_string()),
-                    esc(outcome),
-                    esc(detail)
-                ),
-            };
-            events.push_str(&format!("{}\t{}\t{}\n", e.time, actor(&e.actor), body));
+            events.push_str(&event_line(e));
         }
         HistoryRecords { objects, nodes, branches, events }
     }
