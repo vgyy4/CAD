@@ -236,8 +236,9 @@ impl Session {
     pub fn switch_branch(&mut self, actor: &Actor, b: BranchId) -> Result<(), CommandError> {
         let br = self.history.branch(b).map_err(CommandError::history)?;
         if br.deleted_at.is_some() {
-            return Err(CommandError::new("not_found", format!("branch \"{}\" is deleted", br.name))
-                .hint("restore it from Recently deleted first"));
+            return Err(CommandError::new("not_found", format!("branch {b} is deleted"))
+                .hint("restore it from Recently deleted first")
+                .details(serde_json::json!({ "name_user_text": br.name })));
         }
         self.current.insert(actor.clone(), b);
         Ok(())

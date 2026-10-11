@@ -46,6 +46,15 @@ impl CommandError {
             HistoryError::ConfirmationRequired { reason } => CommandError::new("confirmation_required", reason)
                 .hint("repeat the command with confirm: true after the user agrees"),
             HistoryError::UnknownBranch(_) | HistoryError::UnknownNode(_) => CommandError::not_found(e.to_string()),
+            // Branch names are user/agent text: keep them out of `message` (agents see it
+            // unlabelled) and return them only as `*_user_text` detail.
+            HistoryError::BranchDeleted(name) => {
+                CommandError::new("history", "that branch is deleted; restore it first")
+                    .details(serde_json::json!({ "name_user_text": name }))
+            }
+            HistoryError::NameTaken(name) => CommandError::new("history", "a branch with that name already exists")
+                .hint("pick another name; names are unique ignoring case")
+                .details(serde_json::json!({ "name_user_text": name })),
             other => CommandError::new("history", other.to_string()),
         }
     }

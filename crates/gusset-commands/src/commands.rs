@@ -1300,13 +1300,29 @@ impl Command for BranchList {
     }
 }
 
-/// Names an agent may not give a branch: anything that reads as "main" (spoofing the
-/// user's main branch).
+/// Longest branch name an agent may choose.
+pub const AGENT_BRANCH_NAME_MAX: usize = 64;
+
+/// Names an agent may give a branch: short display names of letters, digits, spaces and
+/// `_ - . ( ) #`, nothing that reads as "main" (spoofing the user's main branch) and
+/// nothing path-like (`/`, `\`, `..`, leading dots) or invisible.
 fn agent_branch_name_ok(name: &str) -> Result<(), CommandError> {
     let folded: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
     if folded == "main" || folded == "master" {
         return Err(CommandError::new("not_allowed", "agents cannot name a branch like the main branch")
             .hint("pick a descriptive name; the user decides what becomes main"));
+    }
+    let path_like = name.contains("..") || name.starts_with('.') || name.contains(['/', '\\']);
+    let charset_ok = name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.' | '(' | ')' | '#'));
+    if name.trim().is_empty()
+        || name.trim() != name
+        || name.chars().count() > AGENT_BRANCH_NAME_MAX
+        || path_like
+        || !charset_ok
+    {
+        return Err(CommandError::new("not_allowed", "that branch name is not allowed for agents").hint(format!(
+            "use up to {AGENT_BRANCH_NAME_MAX} letters, digits, spaces and _ - . ( ) #, with no slashes or leading dots"
+        )));
     }
     Ok(())
 }
@@ -1373,7 +1389,7 @@ impl Command for BranchRename {
             // Agents rename only their own branches; anything else (the user's branches,
             // main) needs approval, so an agent cannot make its branch look like main.
             if br.created_by != ctx.actor && s.config.approvals_required && !ctx.approved {
-                return Err(CommandError::approval(&format!("renaming the branch \"{}\"", br.name)));
+                return Err(CommandError::approval(&format!("renaming branch {b}, which you did not create")));
             }
         }
         s.history_mut_pub().rename_branch(&ctx.hctx(), b, &self.name).map_err(CommandError::history)?;
