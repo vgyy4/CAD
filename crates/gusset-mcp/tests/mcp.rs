@@ -759,3 +759,36 @@ async fn agent_identity_is_not_reused_after_restart() {
         .unwrap();
     assert!(names.contains(&"agent/bot-1".to_string()) && names.contains(&"agent/bot-2".to_string()), "{names:?}");
 }
+
+/// Review H5: agents import meshes over MCP (through the host's off-thread import path);
+/// a FIFO in the project folder is refused instead of hanging the session (review #11).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agents_import_meshes_and_fifos_do_not_hang() {
+    let dir = tmpdir("import");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("tri.obj"),
+        "o Tri\nv 0 0 0\nv 10 0 0\nv 0 10 0\nv 0 0 10\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n",
+    )
+    .unwrap();
+    let mut s = Session::new(&doc_with_hostile_label(), Arc::new(MockKernel), &CmdCtx::user(0));
+    s.project_dir = Some(dir.clone());
+    let server = McpServer::new(Host::spawn(s, None));
+    let c = connect(&server, Client::new("importer", None), false).await;
+    let r = call(&c, "import_file", json!({"path": "tri.obj"})).await;
+    assert!(ok(&r)["tier"].as_str().unwrap().contains("reference mesh"));
+    let m = call(&c, "query_model", json!({})).await;
+    assert_eq!(ok(&m)["reference_meshes"][0]["triangles"], 4);
+    #[cfg(unix)]
+    if std::process::Command::new("mkfifo").arg(dir.join("pipe.stl")).status().is_ok_and(|s| s.success()) {
+        let r = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            call(&c, "import_file", json!({"path": "pipe.stl"})),
+        )
+        .await
+        .expect("import of a FIFO hung");
+        assert_eq!(err_code(&r), "not_allowed");
+        ok(&call(&c, "query_model", json!({})).await);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

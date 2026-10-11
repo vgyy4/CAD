@@ -189,10 +189,16 @@ pub struct App {
     pub agents: Agents,
 }
 
+/// The sandboxed STEP/IGES import worker installed next to the app (review H5).
+fn importer() -> Option<Arc<dyn gusset_commands::session::Importer>> {
+    gusset_worker::WorkerImporter::next_to_exe().map(|w| Arc::new(w) as Arc<dyn gusset_commands::session::Importer>)
+}
+
 impl App {
     /// A new, empty project.
     pub fn new(kernel: Arc<dyn Kernel>, dirs: Option<DataDirs>) -> App {
-        let session = Session::new(&gusset_doc::Document::default(), kernel.clone(), &CmdCtx::user(now_unix()));
+        let mut session = Session::new(&gusset_doc::Document::default(), kernel.clone(), &CmdCtx::user(now_unix()));
+        session.importer = importer();
         let project = dirs.clone().and_then(|d| Project::create(d).ok());
         let has_project = project.is_some();
         let host = Host::spawn(session, project);
@@ -631,6 +637,7 @@ impl App {
         let dirs = self.dirs.clone().ok_or("No data folder")?;
         let (project, history, report) = Project::open(&path, dirs).map_err(|e| e.to_string())?;
         let mut session = Session::from_history(history, self.kernel.clone());
+        session.importer = importer();
         session.project_dir = path.parent().map(PathBuf::from);
         if matches!(report, OpenReport::Damaged { .. }) {
             session.dirty = true;
@@ -1237,6 +1244,7 @@ impl App {
                                 None => (None, None),
                             };
                             let mut session = Session::from_history(*recovered, kernel);
+                            session.importer = importer();
                             session.project_dir = dir;
                             session.dirty = true;
                             (session, project)

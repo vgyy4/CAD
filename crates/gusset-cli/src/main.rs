@@ -1,7 +1,7 @@
 //! `gusset` — the command-line entry point.
 //!
 //! ```text
-//! gusset build <model.gus|model.gus.txt> [--branch NAME] [--export OUT]... [--tolerance MM]
+//! gusset build <model.gus|model.gus.txt> [--branch NAME] [--import FILE]... [--export OUT]... [--tolerance MM]
 //! gusset text  <model.gus> [--branch NAME]          print the code view
 //! gusset pack  <model.gus.txt> -o <model.gus>      create a project from text
 //! gusset mcp [model.gus] [--read-only] [--no-attach] MCP server on stdio (ADR 0012)
@@ -11,9 +11,9 @@
 //! Global: --force-dispatch <scalar|sse42|avx2|avx512|neon|...>
 //! ```
 
-use gusset_commands::commands::{mesh_export_bytes, mesh_format};
+use gusset_commands::commands::{mesh_export_bytes, mesh_export_bytes_with, mesh_format};
 use gusset_doc::Document;
-use gusset_eval::{BlobSource, Evaluator, FeatureStatus};
+use gusset_eval::{Evaluator, FeatureStatus};
 use gusset_history::History;
 use gusset_kernel::Kernel;
 use gusset_kernel_occt::OcctKernel;
@@ -22,7 +22,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 const USAGE: &str = "usage:
-  gusset build <model.gus|model.gus.txt> [--branch NAME] [--export OUT]... [--tolerance MM]
+  gusset build <model.gus|model.gus.txt> [--branch NAME] [--import FILE]... [--export OUT]... [--tolerance MM]
   gusset text <model.gus> [--branch NAME]
   gusset pack <model.gus.txt> -o <model.gus>
   gusset mcp [model.gus] [--read-only] [--no-attach]
@@ -81,12 +81,16 @@ struct Opts {
     file: PathBuf,
     branch: Option<String>,
     exports: Vec<PathBuf>,
+    /// Files imported into the model before building (STEP/IGES via the sandboxed
+    /// worker, STL/3MF/OBJ as reference meshes); the input file is not changed.
+    imports: Vec<PathBuf>,
     tolerance: f64,
     output: Option<PathBuf>,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { file: PathBuf::new(), branch: None, exports: vec![], tolerance: 0.01, output: None };
+    let mut o =
+        Opts { file: PathBuf::new(), branch: None, exports: vec![], imports: vec![], tolerance: 0.01, output: None };
     let mut it = args.iter();
     let mut have_file = false;
     while let Some(a) = it.next() {
@@ -94,6 +98,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         match a.as_str() {
             "--branch" => o.branch = Some(val("--branch")?),
             "--export" | "-e" => o.exports.push(PathBuf::from(val("--export")?)),
+            "--import" | "-i" => o.imports.push(PathBuf::from(val("--import")?)),
             "-o" | "--output" => o.output = Some(PathBuf::from(val("-o")?)),
             "--tolerance" => {
                 o.tolerance =
@@ -141,28 +146,44 @@ fn pick_branch(h: &History, name: Option<&str>) -> Result<gusset_history::Branch
     }
 }
 
-struct Blobs<'a>(&'a History);
-
-impl BlobSource for Blobs<'_> {
-    fn blob(&self, hex: &str) -> Option<Arc<[u8]>> {
-        self.0.objects().get(gusset_history::Hash::from_hex(hex)?).ok().cloned()
-    }
-}
-
 fn kernel() -> Result<Arc<dyn Kernel>, String> {
     OcctKernel::new().map(|k| Arc::new(k) as Arc<dyn Kernel>).map_err(|e| e.to_string())
+}
+
+/// The sandboxed STEP/IGES importer installed next to this executable, if present.
+fn importer() -> Option<Arc<dyn gusset_commands::session::Importer>> {
+    gusset_worker::WorkerImporter::next_to_exe().map(|w| Arc::new(w) as Arc<dyn gusset_commands::session::Importer>)
 }
 
 fn build(args: &[String]) -> Result<ExitCode, String> {
     let o = parse_opts(args)?;
     let h = load(&o.file)?;
     let b = pick_branch(&h, o.branch.as_deref())?;
-    let doc = h.head_document(b).map_err(|e| e.to_string())?;
-    let rollback = h.branch(b).map_err(|e| e.to_string())?.rollback;
     let k = kernel()?;
-    let mut ev = Evaluator::new(k.clone());
+    // A session (not saved) so `--import` goes through the same command, worker and
+    // off-thread path as the app and MCP.
+    let mut session = gusset_commands::Session::from_history(h, k.clone());
+    session.importer = importer();
+    session.project_dir = std::env::current_dir().ok();
+    session.switch_branch(&gusset_history::Actor::User, b).map_err(|e| e.to_string())?;
+    let host = gusset_host::Host::spawn(session, None);
+    for f in &o.imports {
+        let path = f.to_string_lossy().into_owned();
+        let r = host
+            .call(gusset_commands::CmdCtx::user(0), "import.file", serde_json::json!({ "path": path }))
+            .map_err(|e| format!("cannot import {}: {e}", f.display()))?;
+        println!(
+            "imported {} ({})",
+            f.display(),
+            r.get("tier").and_then(serde_json::Value::as_str).unwrap_or_default()
+        );
+    }
     let t0 = std::time::Instant::now();
-    let r = ev.evaluate(&doc, rollback, &Blobs(&h));
+    let r = host
+        .exec(|s, _| s.evaluate(&gusset_history::Actor::User))
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let _ = host.shutdown();
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     let mut failed = 0;
     for (name, st) in &r.statuses {
@@ -184,6 +205,11 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     println!("{} features, {} bodies, rebuilt in {ms:.1} ms", r.statuses.len(), r.bodies.len());
+    for m in &r.meshes {
+        let v = &m.validation;
+        let vol = if v.is_watertight() { format!("volume {:.3} mm³", v.signed_volume.abs()) } else { "open".into() };
+        println!("  reference mesh {}: {} triangles, {vol}", m.name, m.mesh.triangle_count());
+    }
     for body in &r.bodies {
         if let (Ok(m), Ok(bb)) = (k.mass_properties(&body.shape), k.bbox(&body.shape)) {
             let sz = bb.size();
@@ -194,10 +220,11 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     for out in &o.exports {
-        if r.bodies.is_empty() {
+        if r.bodies.is_empty() && r.meshes.is_empty() {
             return Err("there is nothing to export (no bodies)".into());
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> = r.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+        let meshes: Vec<(&gusset_kernel::Mesh, &str)> = r.meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
         let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let bytes = match ext.as_str() {
             "step" | "stp" => k.export_step(&bodies).map_err(|e| e.to_string())?,
@@ -205,7 +232,7 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
             other => {
                 let f = mesh_format(other)
                     .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj)"))?;
-                mesh_export_bytes(k.as_ref(), &bodies, f, o.tolerance).map_err(|e| e.to_string())?
+                mesh_export_bytes_with(k.as_ref(), &bodies, &meshes, f, o.tolerance).map_err(|e| e.to_string())?
             }
         };
         write_atomic(out, &bytes)?;
@@ -288,6 +315,7 @@ fn mcp(args: &[String]) -> Result<ExitCode, String> {
     options.attach = attach;
     options.read_only = read_only;
     options.renderer = Some(Arc::new(gusset_mcp::SceneRenderer::new()));
+    options.importer = importer();
     let r = match protocol_out {
         Some(out) => gusset_mcp::run_stdio_with_output(options, out),
         None => gusset_mcp::run_stdio(options),

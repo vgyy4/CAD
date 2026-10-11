@@ -54,6 +54,9 @@ pub struct StdioOptions {
     pub renderer: Option<Arc<dyn ViewRenderer>>,
     /// Headless: approval provider when the client cannot elicit (default: deny).
     pub approvals: Option<Arc<dyn ApprovalProvider>>,
+    /// Headless: the STEP/IGES importer (the CLI passes the sandboxed worker). Mesh
+    /// formats need none.
+    pub importer: Option<Arc<dyn gusset_commands::session::Importer>>,
     /// Read-only agent mode (`gusset mcp --read-only`): mutating tools are rejected.
     /// Headless it maps to `SessionConfig::read_only_agents`; when relaying to a running
     /// app the bridge itself refuses mutating `tools/call` requests.
@@ -82,6 +85,7 @@ impl StdioOptions {
             attach: true,
             renderer: None,
             approvals: None,
+            importer: None,
             read_only: false,
         }
     }
@@ -326,6 +330,7 @@ where
             }
             let mut s = Session::from_history(history, options.kernel.clone());
             s.project_dir = path.parent().map(Path::to_path_buf);
+            s.importer = options.importer.clone();
             (s, Some(p), None)
         }
         Some(path) => {
@@ -333,6 +338,7 @@ where
                 .map_err(|e| McpError::Command(gusset_commands::CommandError::new("io", e.to_string())))?;
             let mut s = Session::new(&empty()?, options.kernel.clone(), &CmdCtx::user(0));
             s.project_dir = path.parent().map(Path::to_path_buf);
+            s.importer = options.importer.clone();
             (s, Some(p), Some(path.clone()))
         }
         None => {
