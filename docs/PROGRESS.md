@@ -3,9 +3,10 @@
 Living status document. Any session should be able to resume from here and CLAUDE.md.
 
 ## Current phase
-Phase 2 (MVP vertical slice): feature-complete apart from the gaps below; the milestone
+Phase 2 (MVP vertical slice): feature-complete apart from the gaps below. The milestone
 review (code review, security review, MCP dogfooding with the real kernel) ran on
-2026-10-11 and its findings are being fixed before tagging `v0.1.0-mvp`.
+2026-10-11; nearly all findings are fixed, the rest are in progress, then the reviews
+are re-run before tagging `v0.1.0-mvp`.
 
 ## Done
 - Research and design docs: `docs/RESEARCH.md` (+5 reports), `docs/DESIGN.md`, threat
@@ -32,29 +33,28 @@ review (code review, security review, MCP dogfooding with the real kernel) ran o
   cargo-audit, license inventory, native OCCT builds + kernel tests, fuzzing (11
   targets) and Miri; release workflow (packages, SBOM, attestations; signing off).
 
-## In progress (milestone fixes; see docs/SECURITY_REVIEWS.md and docs/reviews/)
-- GPU viewport in the GUI (gusset-render via egui_wgpu) + visual fixes; app-level review
-  findings (open/close/recovery flows, file I/O off the UI thread).
-- Storage/recovery fixes (untitled recovery, Save As project ids, housekeeping/GC,
-  save modes, incremental snapshots, history limits).
-- MCP/agent security (forged elicitation, kill switch, rate limits, export names) and
-  wiring STEP/IGES/mesh import into CLI/app sessions.
-- Sandbox allow-list, Windows DLL hardening, untrusted B-rep blobs in project files.
+## In progress
+- Dogfooding friction fixes for agents (F-M1/M2/M10/M11/M14/M15/M17/M18/M19, polyline
+  tool) on a worktree branch.
+- IGES import: OCCT reads IGES only from a file, so the sandboxed worker gets a
+  Landlock read rule for one private temp file (ADR 0008 §4); in a worktree branch.
 
-## Blocked
-- **GitHub Actions has not run any job since 2026-10-11 16:48 UTC.** Every job fails
-  within about 2 s, with no log and no output. The likely cause is the private repo's
-  Actions minutes or spending limit, but this is not confirmed. The owner needs to check
-  Settings → Billing, raise the limit, or make the repository public. Local checks
-  (fmt, clippy, 491 tests) are green.
+## Done since the milestone review (2026-10-11)
+- Security, storage, sandbox, MCP and GUI review fixes merged (docs/SECURITY_REVIEWS.md).
+- Standing "always allow" approvals (ADR 0012).
+- App: start-up routine (housekeeping, cache cap), "recover unsaved work" offer,
+  SaveScheduler-driven auto-save/recovery, imported meshes drawn, cancellable imports.
+- Naming: document-level golden scenarios with mock and OCCT kernels (H7); L3, L4 fixed.
+- Solver: envelope Cholesky + Givens rank analysis, 19x faster on long chains (M4).
+- Evaluation cache bounded by estimated memory, LRU, per-branch session cache (M10).
+- History: snapshot schema 2 shares feature lists; ~370 B per parameter edit.
+- Budgets measured: save 33 ms, snapshot 34 ms, rebuild_100 3.0 s / 0.12 s.
+- CI green on all platforms (the GL backend is no longer used on Windows, ADR 0009).
 
 ## Next
-1. Modeling-core review items: persistent-naming golden tests (H7), sketch solver
-   performance (M4), evaluation cache memory bound (M10), naming robustness (L3/L4).
-2. Agent ergonomics from dogfooding (face-frame reporting, cut direction, zero-volume
-   warnings, larger code-view text, per-body export, polyline/batch sketch tools).
-3. Benchmarks + CI regression gate (rebuild_100, history_overhead, save_1000).
-4. Re-run review + dogfooding; tag `v0.1.0-mvp` when CI is green.
+1. Merge the two branches above; CI green.
+2. Re-run code review, security review and dogfooding; fix findings.
+3. Tag `v0.1.0-mvp` when CI is green; delete the auto-resume Routine.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
 - Pattern, mirror, shell, splines, offset/datum planes, body move (dogfooding F-M4..M7).
@@ -64,9 +64,13 @@ review (code review, security review, MCP dogfooding with the real kernel) ran o
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is
   also the repository's default branch, so it plays the role of "main". Feature
   branches are merged locally.
-- **Repository visibility is private:** Actions minutes are limited (Windows ×2, macOS
-  ×10). The OCCT build is cached per target.
+- **Repository visibility:** made public by the owner on 2026-10-11 (Actions minutes
+  had run out). The OCCT build is still cached per target.
 - The repository is named `CAD`, not `gusset`. Renaming is left to the owner.
+- History-overhead budget restated per edit (≤ 450 bytes); a fixed fraction of the
+  model size cannot hold for small models (PERFORMANCE.md).
+- Performance budgets are enforced by release/OCCT tests instead of criterion benches
+  (no new dependency).
 - MSRV 1.89 for libraries (std file locks, rmcp); the GUI crate needs 1.95 (egui 0.36).
 - Sketch coordinates stored in the document are snapped to 1e-6 mm when they are within
   1e-9 mm of the snapped value, for a readable code view.
