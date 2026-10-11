@@ -13,11 +13,18 @@ name = "gusset-worker"
 path = "src/main.rs"
 
 [dependencies]
-gusset-kernel.workspace = true
-gusset-kernel-occt.workspace = true
 gusset-occt-sys.workspace = true
 gusset-sandbox.workspace = true
 blake3.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+# The integration tests build shapes with the kernel. (gusset-kernel-occt depends on
+# this crate's library for the B-rep gate; a dev-dependency cycle is fine.)
+gusset-kernel.workspace = true
+gusset-kernel-occt.workspace = true
 
 [lints]
 workspace = true

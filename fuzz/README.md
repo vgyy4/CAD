@@ -12,7 +12,14 @@ crate is excluded from the workspace because libFuzzer builds need a nightly too
 | `project_decode` | `.gus` → history decoding |
 | `mesh_stl`, `mesh_obj`, `mesh_3mf` | mesh importers |
 | `mesh_any` | format sniffing, then import, re-export in every format, re-import |
-| `worker_request`, `worker_response` | the import worker's protocol codec |
+| `worker_request`, `worker_response` | the import worker's protocol codec, including B-rep validation requests |
+
+OCCT's `BinTools::Read` (B-rep blobs in project files, security review #3) is not fuzzed
+here: these targets build without OCCT, so the worker's OCCT code is a stub in them, and
+CI has no OCCT build for fuzzing. In the app that parser only sees untrusted bytes inside
+the sandboxed worker (ADR 0008 §4). Fuzzing it needs an OCCT-linked libFuzzer build of
+`gusset-occt-sys::safe::brep_read` with ASan; that is tracked as open in
+docs/SECURITY_REVIEWS.md.
 
 Run locally:
 

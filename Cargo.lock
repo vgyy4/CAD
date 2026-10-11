@@ -1665,6 +1665,8 @@ version = "0.0.1"
 dependencies = [
  "gusset-kernel",
  "gusset-occt-sys",
+ "gusset-sandbox",
+ "gusset-worker",
 ]
 
 [[package]]
@@ -1795,6 +1797,7 @@ dependencies = [
  "gusset-kernel-occt",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "libc",
 ]
 
 [[package]]

@@ -1,5 +1,8 @@
 //! The out-of-process importer (ADR 0008 §4).
 //!
+//! It also checks kernel-native B-rep blobs from project files before the app parses
+//! them in-process ([`validate_native_out_of_process`], [`trust`]; security review #3).
+//!
 //! The parent ([`import_out_of_process`]) starts `gusset-worker` from the install
 //! directory with an empty environment, sends the file bytes over stdin, and reads
 //! kernel-native B-rep bodies back over stdout. The worker sandboxes itself before
@@ -25,6 +28,8 @@ pub const MAX_BODIES: u32 = 100_000;
 pub enum Format {
     Step = 1,
     Iges = 2,
+    /// A kernel-native B-rep blob (OCCT `BinTools`) to validate and re-serialize.
+    Brep = 3,
 }
 
 impl Format {
@@ -32,6 +37,7 @@ impl Format {
         match v {
             1 => Some(Format::Step),
             2 => Some(Format::Iges),
+            3 => Some(Format::Brep),
             _ => None,
         }
     }
@@ -230,6 +236,144 @@ pub fn import_out_of_process(
     Ok(Imported { bodies, sandbox_report: report })
 }
 
+/// Parses an untrusted kernel-native B-rep blob in the sandboxed worker and returns the
+/// worker's re-serialization of it (written by OCCT's writer from the parsed shape).
+///
+/// Use the returned bytes, not `data`, for the in-process parse: then the app's
+/// `BinTools::Read` only ever sees writer-produced data. A blob that crashes, hangs or
+/// exhausts the parser only takes down the worker.
+pub fn validate_native_out_of_process(
+    worker: &Path,
+    data: &[u8],
+    limits: &gusset_sandbox::Limits,
+    timeout: Duration,
+) -> Result<Vec<u8>, ImportError> {
+    let out = import_out_of_process(worker, Format::Brep, data, limits, timeout)?;
+    let mut bodies = out.bodies.into_iter();
+    match (bodies.next(), bodies.next()) {
+        (Some(b), None) => Ok(b.brep),
+        _ => Err(ImportError::Protocol("the import worker returned an unexpected number of shapes".into())),
+    }
+}
+
+/// Blobs this process (or, with [`trust::persist_to`], this installation) produced or
+/// validated in the worker, by BLAKE3 hash. Only these are parsed in-process directly.
+pub mod trust {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError};
+
+    /// Upper bound on remembered hashes (32 bytes each); beyond it, blobs are re-checked.
+    const MAX_ENTRIES: usize = 1 << 20;
+    /// Largest trust file read at startup.
+    const MAX_FILE: u64 = 80 << 20;
+
+    #[derive(Debug, Default)]
+    struct State {
+        hashes: HashSet<[u8; 32]>,
+        file: Option<PathBuf>,
+    }
+
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
+        let mut g = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        f(g.get_or_insert_with(State::default))
+    }
+
+    /// Whether `data` was produced or validated before.
+    pub fn is_trusted(data: &[u8]) -> bool {
+        let h = *blake3::hash(data).as_bytes();
+        with(|s| s.hashes.contains(&h))
+    }
+
+    /// Records `data` as produced by this installation or validated by the worker.
+    pub fn trust(data: &[u8]) {
+        let h = *blake3::hash(data).as_bytes();
+        let file = with(|s| {
+            if s.hashes.len() >= MAX_ENTRIES || !s.hashes.insert(h) {
+                return None;
+            }
+            s.file.clone()
+        });
+        if let Some(f) = file {
+            let _ = append(&f, &h);
+        }
+    }
+
+    /// Keeps the trusted set in `path` (one hex hash per line, owner-only), so blobs are
+    /// validated once per installation instead of once per process. Loads existing
+    /// entries. A symlinked or oversized file is ignored (and not written).
+    ///
+    /// # Errors
+    /// If the file exists but cannot be read.
+    pub fn persist_to(path: &Path) -> std::io::Result<usize> {
+        let mut loaded = Vec::new();
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_file() || m.len() > MAX_FILE => {
+                return Err(std::io::Error::other("the trusted-blob list is not a regular file of sane size"));
+            }
+            Ok(_) => {
+                for line in std::fs::read_to_string(path)?.lines() {
+                    let mut h = [0u8; 32];
+                    if parse_hex(line.trim(), &mut h) {
+                        loaded.push(h);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let n = loaded.len();
+        with(|s| {
+            for h in loaded {
+                if s.hashes.len() >= MAX_ENTRIES {
+                    break;
+                }
+                s.hashes.insert(h);
+            }
+            s.file = Some(path.to_path_buf());
+        });
+        Ok(n)
+    }
+
+    fn parse_hex(s: &str, out: &mut [u8; 32]) -> bool {
+        if s.len() != 64 || !s.is_ascii() {
+            return false;
+        }
+        for (i, b) in out.iter_mut().enumerate() {
+            match s.get(i * 2..i * 2 + 2).and_then(|d| u8::from_str_radix(d, 16).ok()) {
+                Some(v) => *b = v,
+                None => return false,
+            }
+        }
+        true
+    }
+
+    fn append(path: &Path, h: &[u8; 32]) -> std::io::Result<()> {
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut f = o.open(path)?;
+        let mut line = String::with_capacity(65);
+        for b in h {
+            line.push_str(&format!("{b:02x}"));
+        }
+        line.push('\n');
+        f.write_all(line.as_bytes())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test() {
+        with(|s| *s = State::default());
+    }
+}
+
 /// How long to wait for the worker's stdout to close after the worker is gone.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -337,6 +481,31 @@ pub fn default_worker_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_set_and_persistent_store() {
+        trust::reset_for_test();
+        assert!(!trust::is_trusted(b"blob-a"));
+        trust::trust(b"blob-a");
+        assert!(trust::is_trusted(b"blob-a"));
+        let dir = std::env::temp_dir().join(format!("gusset-trust-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("trusted-blobs");
+        assert_eq!(trust::persist_to(&f).unwrap(), 0);
+        trust::trust(b"blob-b");
+        trust::reset_for_test();
+        assert!(!trust::is_trusted(b"blob-b"));
+        assert_eq!(trust::persist_to(&f).unwrap(), 1);
+        assert!(trust::is_trusted(b"blob-b") && !trust::is_trusted(b"blob-a"));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&f, &link).unwrap();
+            assert!(trust::persist_to(&link).is_err());
+        }
+        trust::reset_for_test();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn output_cap_follows_input_size() {

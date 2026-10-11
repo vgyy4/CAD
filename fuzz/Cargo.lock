@@ -231,14 +231,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gusset-kernel-occt"
-version = "0.0.1"
-dependencies = [
- "gusset-kernel",
- "gusset-occt-sys",
-]
-
-[[package]]
 name = "gusset-meshio"
 version = "0.0.1"
 dependencies = [
@@ -298,10 +290,9 @@ name = "gusset-worker"
 version = "0.0.1"
 dependencies = [
  "blake3",
- "gusset-kernel",
- "gusset-kernel-occt",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "libc",
 ]
 
 [[package]]

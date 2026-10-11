@@ -62,6 +62,32 @@
      - macOS: `sandbox_init` with a no-filesystem/no-network profile.
    - Where a platform mechanism is unavailable, the worker still runs out of process
      with resource limits, and the gap is reported in diagnostics.
+   - **B-rep blobs in project files** (security review #3, decided 2026-10-11): a
+     `.gus` file stores imported shapes as OCCT `BinTools` blobs, and any file can
+     carry any bytes there. Options considered: (a) validate untrusted blobs in the
+     worker on first sight and remember blobs this installation produced or
+     validated; (b) parse every blob in the worker on every open. We chose **(a)**:
+     - `OcctKernel::read_native` parses a blob in-process only if its BLAKE3 hash is
+       in the trusted set: blobs this process wrote (`write_native`) or the worker
+       validated. `gusset_worker::trust::persist_to` keeps that set per installation
+       (one hex hash per line, owner-only, symlinks refused); without it the set
+       lasts for the process.
+     - Any other blob goes to `gusset-worker` (request kind `Brep`), which parses it
+       under the sandbox, walks its topology and re-serializes it with OCCT's writer.
+       The app then parses the worker's output, so its `BinTools::Read` only sees
+       writer-produced data. Without a worker, untrusted blobs are refused.
+     - Why not (b): the shape is needed in the app's kernel for every later operation,
+       so (b) still ends in an in-process parse of worker output, and it costs a worker
+       run per blob on every open of every project.
+     - Residual risk: a blob that achieves code execution inside the worker can make
+       it return hostile bytes, exactly like a hostile STEP file. The sandbox makes
+       that a two-stage exploit (worker first, then the app's parser on attacker-
+       chosen output) instead of a direct one, and turns crash, hang and memory
+       exhaustion bugs (the common fuzzing finds) into a refused import. Removing the
+       residual risk needs a format the app parses in Rust or shapes that never leave
+       the worker; neither fits the MVP.
+     - `BinTools::Read` is not fuzzed in CI (the fuzz targets build without OCCT);
+       `fuzz/README.md` documents this.
 5. **MCP security** is described in ADR 0012: localhost only, bearer token, Origin/Host
    validation, project-folder path confinement, confirm flags, human approval for
    high-impact actions, audit log, rate limits, read-only mode and a kill switch.
