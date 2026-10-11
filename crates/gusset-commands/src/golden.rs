@@ -22,6 +22,7 @@ sketch Top (plane: E1/cap(end), next_id: 3) {\n  p1 = point(5, 5)\n  c2 = circle
 sketch Side (plane: E1/side(S1/l6), next_id: 3) {\n  p1 = point(5, 5)\n  c2 = circle(p1, 2)\n}\n";
 
 type R = Result<(), String>;
+type Scenario = fn(Arc<dyn Kernel>) -> R;
 
 fn session(kernel: Arc<dyn Kernel>) -> Result<Session, String> {
     let doc = Document::from_text(NAMED_DOC).map_err(|e| format!("{e:?}"))?;
@@ -117,7 +118,7 @@ pub fn unrelated_second_region(kernel: Arc<dyn Kernel>) -> R {
 /// # Errors
 /// The failures, one per line.
 pub fn all(kernel: &Arc<dyn Kernel>) -> R {
-    let scenarios: [(&str, fn(Arc<dyn Kernel>) -> R); 4] = [
+    let scenarios: [(&str, Scenario); 4] = [
         ("reorder", reorder_independent_features),
         ("branch", branch_and_edit),
         ("cherry_pick", cherry_pick),
