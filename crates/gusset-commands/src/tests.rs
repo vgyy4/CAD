@@ -734,3 +734,40 @@ fn query_body_reports_a_failed_rebuild_instead_of_no_bodies() {
         assert!(errs[0].as_str().unwrap().contains("Extrude1"), "{e:?}");
     }
 }
+
+#[test]
+fn unresolvable_references_are_rejected_up_front_with_candidates() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    // No body at all.
+    build_plate(&mut s, &u);
+    let head = s.history().head(s.history().main()).unwrap();
+    let bad_edge = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l99))";
+    for (cmd, key) in [("feature.fillet", "radius"), ("feature.chamfer", "distance")] {
+        let e = execute(&mut s, &u, cmd, json!({"edges": [bad_edge], key: "1 mm"})).unwrap_err();
+        assert_eq!(e.code, "not_found", "{cmd}: {e:?}");
+        let cands = e.details.as_ref().unwrap()["candidates"].as_array().unwrap();
+        assert!(!cands.is_empty() && cands.len() <= 12, "{e:?}");
+        assert!(cands.iter().all(|c| c.as_str().unwrap().starts_with("edge(")), "{e:?}");
+        // The suggestion is a real edge of the body.
+        let sg = e.details.as_ref().unwrap()["suggestion"].as_str().unwrap();
+        let b = run(&mut s, &u, "query.body", json!({"names": true}));
+        assert!(b["edge_names"].as_array().unwrap().iter().any(|n| n["name"] == sg), "{sg}");
+        assert!(e.hint.as_deref().unwrap().contains(sg), "{e:?}");
+    }
+    // Nothing was committed.
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
+    // A face that does not exist.
+    let e = execute(&mut s, &u, "sketch.create", json!({"plane": "Extrude9/cap(end)"})).unwrap_err();
+    assert_eq!(e.code, "not_found", "{e:?}");
+    let cands = e.details.as_ref().unwrap()["candidates"].as_array().unwrap();
+    assert!(cands.iter().any(|c| c == "Extrude1/cap(end)"), "{e:?}");
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
+    // Real references still work.
+    run(&mut s, &u, "sketch.create", json!({"plane": "Extrude1/cap(end)"}));
+    // And with no bodies the error says to create one.
+    let mut empty = session();
+    let e = execute(&mut empty, &u, "feature.fillet", json!({"edges": [bad_edge], "radius": "1 mm"})).unwrap_err();
+    assert_eq!(e.code, "not_found");
+    assert!(e.hint.as_deref().unwrap().contains("create a body"), "{e:?}");
+}

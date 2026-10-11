@@ -632,7 +632,11 @@ impl Command for SketchCreate {
             "XY" => PlaneRef::XY,
             "XZ" => PlaneRef::XZ,
             "YZ" => PlaneRef::YZ,
-            other => PlaneRef::Face(FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?),
+            other => {
+                let face = FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?;
+                check_face_resolves(s, ctx, &face)?;
+                PlaneRef::Face(face)
+            }
         };
         let created = std::cell::RefCell::new(String::new());
         edit_post(
@@ -1153,6 +1157,89 @@ impl Command for Revolve {
     }
 }
 
+/// How many candidate names a rejected reference lists.
+const MAX_CANDIDATES: usize = 12;
+
+/// Rejects edge references that name nothing in the model as it stands (at the rollback
+/// marker), listing candidate edges, instead of creating a feature that fails (F-M17).
+/// References that break later through edits keep the old behaviour: a failing feature
+/// with a suggestion.
+fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Result<(), CommandError> {
+    use gusset_naming::Resolution;
+    let ev = s.evaluate(&ctx.actor)?;
+    for r in refs {
+        let mut suggestion: Option<String> = None;
+        let mut reason = String::from("there are no bodies yet");
+        let mut resolved = false;
+        for b in ev.bodies.iter().rev() {
+            match b.names.resolve_edge(r) {
+                Resolution::Resolved(_) => {
+                    resolved = true;
+                    break;
+                }
+                Resolution::Ambiguous(c) => {
+                    let names: Vec<String> = c.iter().take(MAX_CANDIDATES).map(ToString::to_string).collect();
+                    return Err(CommandError::args(format!("edge {r} matches {} edges", c.len()))
+                        .hint(format!("use one of: {}", names.join("; ")))
+                        .details(json!({ "candidates": names, "suggestion": names.first() })));
+                }
+                Resolution::Missing { reason: why, suggestion: sg } => {
+                    reason = why;
+                    suggestion = suggestion.or(sg.map(|e| e.to_string()));
+                }
+            }
+        }
+        if resolved {
+            continue;
+        }
+        // Edges sharing a face with the wanted one first, then the rest of the latest body.
+        let latest = ev.bodies.last();
+        let mut names: Vec<(bool, String)> = latest
+            .map(|b| {
+                b.names.edges.iter().map(|e| (e.faces.iter().any(|f| r.faces.contains(f)), e.to_string())).collect()
+            })
+            .unwrap_or_default();
+        names.sort_by_key(|(near, n)| (!*near, n.clone()));
+        let candidates: Vec<String> = names.into_iter().take(MAX_CANDIDATES).map(|(_, n)| n).collect();
+        let hint = match (&suggestion, candidates.is_empty()) {
+            (Some(sg), _) => format!("did you mean {sg}? (query.body with names: true lists every edge)"),
+            (None, false) => format!("candidates: {}", candidates.join("; ")),
+            (None, true) => "create a body first; query.body with names: true lists edges".to_string(),
+        };
+        return Err(CommandError::not_found(format!("edge {r} does not exist: {reason}"))
+            .hint(hint)
+            .details(json!({ "candidates": candidates, "suggestion": suggestion })));
+    }
+    Ok(())
+}
+
+/// Like [`check_edges_resolve`], for the face a sketch is placed on.
+fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(), CommandError> {
+    let ev = s.evaluate(&ctx.actor)?;
+    if ev.bodies.iter().any(|b| b.names.face_index(r).is_some()) {
+        return Ok(());
+    }
+    // Faces of the same feature first.
+    let prefix = r.to_string().split('/').next().unwrap_or_default().to_string();
+    let mut names: Vec<(bool, String)> = ev
+        .bodies
+        .last()
+        .map(|b| {
+            b.names.faces.iter().map(|f| (f.to_string().starts_with(&format!("{prefix}/")), f.to_string())).collect()
+        })
+        .unwrap_or_default();
+    names.sort_by_key(|(near, n)| (!*near, n.clone()));
+    let candidates: Vec<String> = names.into_iter().take(MAX_CANDIDATES).map(|(_, n)| n).collect();
+    let hint = if candidates.is_empty() {
+        "create a body first, or sketch on XY, XZ or YZ".to_string()
+    } else {
+        format!("candidates: {}", candidates.join("; "))
+    };
+    Err(CommandError::not_found(format!("face {r} does not exist in the model"))
+        .hint(hint)
+        .details(json!({ "candidates": candidates })))
+}
+
 fn parse_edges(edges: &[String]) -> Result<Vec<EdgeRef>, CommandError> {
     if edges.is_empty() {
         return Err(CommandError::args("select at least one edge").hint("query.body lists edge names"));
@@ -1174,14 +1261,14 @@ pub struct Fillet {
 impl Command for Fillet {
     const ID: &'static str = "feature.fillet";
     const TITLE: &'static str = "Fillet";
-    const DESCRIPTION: &'static str =
-        "Round the given edges with a radius. Edges are persistent references (query.body lists them).";
+    const DESCRIPTION: &'static str = "Round the given edges with a radius. Edges are persistent references (query.body lists them); a reference that does not exist is rejected with candidate names.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("F");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("radius", &self.radius)?;
+        check_edges_resolve(s, ctx, &edges)?;
         edit(s, ctx, "Fillet", |doc, rb| {
             let name = feature_name(doc, self.name, "Fillet")?;
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
@@ -1203,12 +1290,14 @@ pub struct Chamfer {
 impl Command for Chamfer {
     const ID: &'static str = "feature.chamfer";
     const TITLE: &'static str = "Chamfer";
-    const DESCRIPTION: &'static str = "Bevel the given edges by a distance.";
+    const DESCRIPTION: &'static str =
+        "Bevel the given edges by a distance. A reference that does not exist is rejected with candidate names.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("distance", &self.distance)?;
+        check_edges_resolve(s, ctx, &edges)?;
         edit(s, ctx, "Chamfer", |doc, rb| {
             let name = feature_name(doc, self.name, "Chamfer")?;
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
