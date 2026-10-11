@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{App, Done, Notice, Then};
 use crate::i18n::tr;
+use crate::icons::{self, Icon};
 use crate::link::Waker;
 use crate::theme;
 use egui::{RichText, Ui};
@@ -353,7 +354,7 @@ fn compare_lines(v: &Value) -> Vec<String> {
             if change == "modified" {
                 let old = c.get("old_user_text").and_then(Value::as_str).unwrap_or("");
                 let new = c.get("new_user_text").and_then(Value::as_str).unwrap_or("");
-                line.push_str(&format!(" ({} → {})", plain(old, 80), plain(new, 80)));
+                line.push_str(&format!(" (was {}, now {})", plain(old, 80), plain(new, 80)));
             }
             out.push(line);
         }
@@ -427,15 +428,17 @@ impl App {
         let pal = *theme::palette(self.theme);
         ui.horizontal(|ui| {
             ui.heading(tr("agents.title"));
-            if ui.small_button("✕").on_hover_text(tr("dialog.close")).clicked() {
-                self.agents.show_panel = false;
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("🗙").on_hover_text(tr("dialog.close")).clicked() {
+                    self.agents.show_panel = false;
+                }
+            });
         });
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Connection.
             match (&self.agents.info, &self.agents.error) {
                 (Some(info), _) => {
-                    ui.colored_label(pal.success, format!("● {} {}", tr("agents.listening"), info.url));
+                    icons::labeled(ui, Icon::Dot, pal.success, format!("{} {}", tr("agents.listening"), info.url));
                 }
                 (None, Some(e)) => {
                     ui.colored_label(pal.danger, format!("{} {}", tr("agents.not_running"), plain(e, 300)));
@@ -487,9 +490,8 @@ impl App {
                 let name = plain(&b.name, 80);
                 ui.horizontal_wrapped(|ui| {
                     let mine = Some(b.id) == self.snapshot.branch;
-                    let label =
-                        if mine { format!("◆ {name} ({})", tr("agents.yours")) } else { format!("◆ {name}") };
-                    ui.colored_label(pal.agent, label);
+                    let label = if mine { format!("{name} ({})", tr("agents.yours")) } else { name.clone() };
+                    icons::labeled(ui, Icon::Diamond, pal.agent, label);
                     if !mine && ui.small_button(tr("agents.switch")).clicked() {
                         self.submit_command("branch.switch", json!({ "branch": b.id.to_string() }), Then::Notice);
                     }
@@ -505,7 +507,7 @@ impl App {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{} {name}", tr("agents.compared"))).strong());
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button("🗙").clicked() {
                             self.agents.compare = None;
                         }
                     });
@@ -531,7 +533,7 @@ impl App {
                     ui.weak(clock(e.time));
                     ui.colored_label(pal.agent, who);
                     let col = if e.outcome == "ok" { pal.text } else { pal.danger };
-                    ui.colored_label(col, format!("{}{on} → {}", plain(&e.command, 64), plain(&e.outcome, 120)));
+                    ui.colored_label(col, format!("{}{on}: {}", plain(&e.command, 64), plain(&e.outcome, 120)));
                 });
             }
         });

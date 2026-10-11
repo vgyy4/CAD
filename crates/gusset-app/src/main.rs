@@ -15,21 +15,6 @@ fn kernel() -> (Arc<dyn Kernel>, Option<String>) {
     }
 }
 
-struct Gui(App);
-
-impl eframe::App for Gui {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.0.ui(ui);
-    }
-
-    fn on_exit(&mut self) {
-        // Unsaved work survives a forced exit through the recovery slot.
-        self.0.maybe_snapshot(true);
-        // Stop the MCP endpoint (deletes the connection file) and deny pending approvals.
-        self.0.agents.shutdown();
-    }
-}
-
 fn main() -> eframe::Result {
     let (k, note) = kernel();
     let dirs = gusset_store::paths::DataDirs::from_os();
@@ -51,5 +36,13 @@ fn main() -> eframe::Result {
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
     };
-    eframe::run_native("Gusset", options, Box::new(|_cc| Ok(Box::new(Gui(app)))))
+    eframe::run_native(
+        "Gusset",
+        options,
+        Box::new(|cc| {
+            // The viewport renders on eframe's wgpu device; without one it uses the CPU.
+            app.set_wgpu(cc.wgpu_render_state.as_ref());
+            Ok(Box::new(app))
+        }),
+    )
 }

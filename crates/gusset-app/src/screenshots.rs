@@ -33,11 +33,13 @@ fn bracket(a: &mut App) {
     a.wait_idle();
 }
 
-fn shoot(dir: &Path, name: &str, a: App, setup: impl FnOnce(&mut Harness<'static, App>)) {
-    let mut h = Harness::builder()
-        .with_size(egui::vec2(1440.0, 900.0))
-        .wgpu()
-        .build_ui_state(|ui, app: &mut App| app.ui(ui), a);
+fn shoot(dir: &Path, name: &str, mut a: App, setup: impl FnOnce(&mut Harness<'static, App>)) {
+    // Built like the real window (eframe), so the viewport renders on the harness's wgpu
+    // device exactly as it does on eframe's.
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).wgpu().build_eframe(move |cc| {
+        a.set_wgpu(cc.wgpu_render_state.as_ref());
+        a
+    });
     h.run_steps(4);
     setup(&mut h);
     h.state_mut().wait_idle();
@@ -80,7 +82,7 @@ fn generate_gallery() {
         shoot(&dir, &format!("06-agents-panel-{t}"), a, |_| {});
         let mut a = app(theme);
         bracket(&mut a);
-        a.dialog = Some(Dialog::Close { save_failed: None });
+        a.dialog = Some(Dialog::Unsaved { pending: crate::app::Pending::Close, save_failed: None });
         shoot(&dir, &format!("07-close-dialog-{t}"), a, |_| {});
     }
 }

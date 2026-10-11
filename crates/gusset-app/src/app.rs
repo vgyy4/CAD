@@ -10,9 +10,11 @@
 use crate::agents::{Agents, plain};
 use crate::forms::{self, Form};
 use crate::i18n::tr;
+use crate::icons::{self, Icon};
 use crate::link::{self, Snapshot, Waker};
 use crate::theme::{self, ThemeKind};
-use crate::viewport::{self, Camera, DrawBody, DrawSketch, Hit};
+use crate::timeline;
+use crate::viewport::{BodyInfo, DrawSketch, Hit, Viewport};
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
 use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
@@ -40,9 +42,21 @@ pub fn now_unix() -> u64 {
 /// A modal dialog.
 #[derive(Debug)]
 pub enum Dialog {
-    /// Close requested with unsaved changes.
-    Close {
+    /// The project has unsaved changes and `pending` (close, open another file) would
+    /// drop them: Save / Don't save / Cancel.
+    Unsaved {
+        pending: Pending,
         save_failed: Option<String>,
+    },
+    /// An operation is still running: wait for it, then continue with `pending`, or
+    /// cancel.
+    Busy {
+        pending: Pending,
+    },
+    /// An export would replace an existing file.
+    Overwrite {
+        purpose: PathPurpose,
+        path: PathBuf,
     },
     /// A recovery copy newer than the saved file exists.
     Recovery {
@@ -95,12 +109,22 @@ pub enum Then {
     Compare(String),
 }
 
+/// An action that replaces or ends the open project, run once unsaved changes and
+/// running work were dealt with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// Close the window.
+    Close,
+    /// Open this file in the window.
+    Open(PathBuf),
+}
+
 /// What to do after a save finished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AfterSave {
     Nothing,
-    /// "Save and close" from the close dialog.
-    Close,
+    /// "Save" from the unsaved-changes dialog: continue with the pending action.
+    Then(Pending),
 }
 
 /// Results of host jobs, delivered to the UI thread.
@@ -121,22 +145,34 @@ pub(crate) enum Done {
         result: Result<(), String>,
     },
     Recovery(Result<Option<u64>, String>),
+    /// A project file read on a background thread (`discard`: the user chose not to keep
+    /// the current project's unsaved changes).
+    Opened {
+        path: PathBuf,
+        discard: bool,
+        result: Result<Box<(Project, Session, OpenReport)>, String>,
+    },
+    /// "Keep both" wrote the recovered work to this file.
+    KeptBoth(Result<PathBuf, String>),
     /// A job whose result needs no handling beyond refreshing the snapshot.
     Refresh(Result<(), CommandError>),
 }
 
-/// Drawable scene computed on the model thread.
+/// Drawable scene computed on the model thread (tessellation, render meshes and their
+/// BVHs are all built there).
 pub(crate) struct SceneData {
     key: (NodeId, Option<usize>),
-    bodies: Vec<DrawBody>,
+    render: gusset_render::Scene,
+    bodies: Vec<BodyInfo>,
+    /// Bodies the renderer could not take.
+    mesh_errors: Vec<String>,
     sketches: Vec<DrawSketch>,
     eval: Arc<Evaluation>,
 }
 
-/// Cached drawable scene for one evaluated state.
-struct Scene {
+/// What is drawn for one evaluated state (the bodies live in the [`Viewport`]).
+struct Drawn {
     key: (NodeId, Option<usize>),
-    bodies: Vec<DrawBody>,
     sketches: Vec<DrawSketch>,
     eval: Arc<Evaluation>,
 }
@@ -168,8 +204,8 @@ pub struct App {
     pub theme: ThemeKind,
     pub reduce_motion: bool,
     theme_applied: Option<ThemeKind>,
-    pub camera: Camera,
-    fit_pending: bool,
+    /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
+    pub viewport: Viewport,
     pub selection: Vec<Hit>,
     pub form: Option<Form>,
     pub palette: Option<String>,
@@ -178,13 +214,21 @@ pub struct App {
     pub notice: Option<Notice>,
     /// Shown once when the real kernel is unavailable.
     pub kernel_note: Option<String>,
-    scene: Option<Scene>,
+    scene: Option<Drawn>,
     scene_requested: Option<(NodeId, Option<usize>)>,
     last_snapshot: Instant,
-    close_after_save: bool,
+    /// Continue with this action after the save that is running.
+    after_save: Option<Pending>,
+    /// Continue with this action once no job is running ("Wait" in the busy dialog).
+    after_idle: Option<Pending>,
+    /// Ask the window to close on the next frame.
+    send_close: bool,
     /// Set when the window may close (after the close dialog).
     pub allow_close: bool,
     pub show_iterations: bool,
+    /// Sketch visibility the user chose in the browser (overrides the default: sketches
+    /// used as a profile are hidden, others shown).
+    pub sketch_visibility: std::collections::BTreeMap<String, bool>,
     /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
     pub agents: Agents,
 }
@@ -219,8 +263,7 @@ impl App {
             theme: ThemeKind::Dark,
             reduce_motion: false,
             theme_applied: None,
-            camera: Camera::default(),
-            fit_pending: true,
+            viewport: Viewport::default(),
             selection: Vec::new(),
             form: None,
             palette: None,
@@ -231,9 +274,12 @@ impl App {
             scene: None,
             scene_requested: None,
             last_snapshot: Instant::now(),
-            close_after_save: false,
+            after_save: None,
+            after_idle: None,
+            send_close: false,
             allow_close: false,
             show_iterations: false,
+            sketch_visibility: std::collections::BTreeMap::new(),
             agents,
         }
     }
@@ -263,6 +309,12 @@ impl App {
     /// answers with a clear "no renderer" error.
     pub fn set_renderer(&mut self, renderer: Option<Arc<dyn gusset_mcp::ViewRenderer>>) {
         self.agents.set_renderer(renderer);
+    }
+
+    /// Renders the viewport on eframe's wgpu device. Without one (`None`) the viewport
+    /// falls back to the CPU rasterizer.
+    pub fn set_wgpu(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>) {
+        self.viewport.set_gpu(render_state.map(crate::viewport_gpu::GpuTarget::from_render_state));
     }
 
     pub(crate) fn ctx() -> CmdCtx {
@@ -398,8 +450,15 @@ impl App {
                 if self.scene.as_ref().is_none_or(|s| s.key != data.key) {
                     self.selection.clear();
                 }
-                self.scene =
-                    Some(Scene { key: data.key, bodies: data.bodies, sketches: data.sketches, eval: data.eval });
+                if !data.mesh_errors.is_empty() {
+                    self.notice = Some(Notice {
+                        text: format!("Some bodies cannot be displayed: {}", data.mesh_errors.join("; ")),
+                        hint: None,
+                        error: true,
+                    });
+                }
+                self.viewport.set_scene(data.render, data.bodies);
+                self.scene = Some(Drawn { key: data.key, sketches: data.sketches, eval: data.eval });
             }
             Done::Scene(Ok(Err(e)) | Err(e)) => {
                 self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
@@ -409,13 +468,13 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
-                        if then == AfterSave::Close {
-                            self.close_after_save = true;
+                        if let AfterSave::Then(p) = then {
+                            self.after_save = Some(p);
                         }
                     }
                     Err(e) => {
-                        if then == AfterSave::Close {
-                            self.dialog = Some(Dialog::Close { save_failed: Some(e.clone()) });
+                        if let AfterSave::Then(pending) = then {
+                            self.dialog = Some(Dialog::Unsaved { pending, save_failed: Some(e.clone()) });
                         }
                         self.notice = Some(Notice { text: e, hint: None, error: true });
                     }
@@ -434,6 +493,27 @@ impl App {
                     }
                 }
             }
+            Done::Opened { path, discard, result } => match result {
+                Ok(loaded) => {
+                    let (project, session, report) = *loaded;
+                    self.finish_open(path, project, session, report, discard);
+                }
+                Err(e) => {
+                    self.dialog = Some(Dialog::Message { title: tr("open.failed").into(), body: e });
+                }
+            },
+            Done::KeptBoth(r) => match r {
+                Ok(p) => {
+                    self.notice = Some(Notice {
+                        text: format!("{} {}", tr("recovery.kept"), p.to_string_lossy()),
+                        hint: None,
+                        error: false,
+                    });
+                }
+                Err(e) => {
+                    self.dialog = Some(Dialog::Message { title: tr("recovery.keep_failed").into(), body: e });
+                }
+            },
             Done::Recovery(r) => {
                 if let Err(e) = r {
                     self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
@@ -623,23 +703,66 @@ impl App {
         self.scene = None;
         self.scene_requested = None;
         self.selection.clear();
-        self.fit_pending = true;
+        self.viewport.set_scene(gusset_render::Scene::new(), Vec::new());
+        self.viewport.fit_pending = true;
     }
 
-    /// Opens a project file in this window (replacing the current project).
-    pub fn open(&mut self, path: PathBuf) -> Result<(), String> {
-        let dirs = self.dirs.clone().ok_or("No data folder")?;
-        let (project, history, report) = Project::open(&path, dirs).map_err(|e| e.to_string())?;
-        let mut session = Session::from_history(history, self.kernel.clone());
+    /// Reads a project file and builds its session (any thread).
+    fn load(
+        path: &std::path::Path,
+        dirs: DataDirs,
+        kernel: Arc<dyn Kernel>,
+    ) -> Result<(Project, Session, OpenReport), String> {
+        let (project, history, report) = Project::open(path, dirs).map_err(|e| e.to_string())?;
+        let mut session = Session::from_history(history, kernel);
         session.project_dir = path.parent().map(PathBuf::from);
         if matches!(report, OpenReport::Damaged { .. }) {
             session.dirty = true;
         }
+        Ok((project, session, report))
+    }
+
+    /// Opens a project file in this window, waiting for it (start-up, automation and
+    /// tests; the File menu uses [`App::request`] with [`Pending::Open`]). The current
+    /// project's unsaved changes are kept in its recovery file.
+    pub fn open(&mut self, path: PathBuf) -> Result<(), String> {
+        let dirs = self.dirs.clone().ok_or("No data folder")?;
+        let (project, session, report) = Self::load(&path, dirs, self.kernel.clone())?;
+        self.finish_open(path, project, session, report, false);
+        Ok(())
+    }
+
+    /// Reads `path` on a background thread; the window switches to it when it is loaded.
+    fn open_in_background(&mut self, path: PathBuf, discard: bool) {
+        let Some(dirs) = self.dirs.clone() else {
+            self.notice = Some(Notice { text: "No data folder".into(), hint: None, error: true });
+            return;
+        };
+        let kernel = self.kernel.clone();
+        let tx = self.done_tx.clone();
+        let waker = self.waker.clone();
+        self.in_flight += 1;
+        self.notice = Some(Notice { text: tr("status.opening").into(), hint: None, error: false });
+        let spawned = std::thread::Builder::new().name("gusset-open".into()).spawn(move || {
+            let result = Self::load(&path, dirs, kernel).map(Box::new);
+            let _ = tx.send(Done::Opened { path, discard, result });
+            waker.wake();
+        });
+        if let Err(e) = spawned {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
+        }
+    }
+
+    /// Switches the window to a loaded project. The old project is closed; if it has
+    /// changes the user did not choose to discard (for example an agent edit that came
+    /// in after the question), they stay in its recovery file instead.
+    fn finish_open(&mut self, path: PathBuf, project: Project, session: Session, report: OpenReport, discard: bool) {
         self.project_risky = project.risky.as_ref().map(|r| format!("{r:?}"));
         self.project_path = Some(path);
         self.replace_host(move |old| {
-            if let Some((_, Some(p))) = old {
-                p.close();
+            if let Some((s, Some(p))) = old {
+                retire_project(&s, p, discard);
             }
             (session, Some(project))
         });
@@ -653,7 +776,6 @@ impl App {
                 });
             }
         }
-        Ok(())
     }
 
     /// Writes a recovery snapshot if there are unsaved changes and the interval passed.
@@ -685,12 +807,34 @@ impl App {
 
     /// Stops the model thread and closes the project (window closing).
     fn shutdown(&mut self, discard_recovery: bool) {
+        // Agents first, so no edit lands after the final dirty check below.
         self.agents.shutdown();
-        if let Some((_, Some(p))) = self.host.shutdown() {
-            if discard_recovery {
-                p.discard_recovery();
-            }
-            p.close();
+        if let Some((s, Some(p))) = self.host.shutdown() {
+            retire_project(&s, p, discard_recovery);
+        }
+    }
+
+    /// Runs `pending` (close, open another file) once unsaved changes and running work
+    /// were dealt with. Decides from the host's current state, not from the last
+    /// snapshot, so an agent edit or a job that just finished is not lost.
+    pub fn request(&mut self, pending: Pending) {
+        if self.busy() {
+            self.dialog = Some(Dialog::Busy { pending });
+            return;
+        }
+        match self.host.try_with_session(|s| s.dirty) {
+            Ok(Some(true)) => self.dialog = Some(Dialog::Unsaved { pending, save_failed: None }),
+            Ok(Some(false)) | Err(_) => self.proceed(pending, false),
+            // The model thread is busy (an agent's command): ask, as for our own jobs.
+            Ok(None) => self.dialog = Some(Dialog::Busy { pending }),
+        }
+    }
+
+    /// Runs `pending` now. `discard`: the user chose not to keep unsaved changes.
+    fn proceed(&mut self, pending: Pending, discard: bool) {
+        match pending {
+            Pending::Close => self.close_now(discard),
+            Pending::Open(path) => self.open_in_background(path, discard),
         }
     }
 
@@ -705,11 +849,20 @@ impl App {
             self.theme_applied = Some(self.theme);
         }
         self.poll(Some(&ctx));
-        if self.close_after_save {
-            self.close_after_save = false;
-            self.close_now(&ctx, false);
+        if let Some(p) = self.after_save.take() {
+            // Saved; check again (an agent may have edited since) before continuing.
+            self.request(p);
+        }
+        if !self.busy()
+            && let Some(p) = self.after_idle.take()
+        {
+            self.request(p);
         }
         self.handle_close(&ctx);
+        if self.send_close {
+            self.send_close = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.shortcuts(&ctx);
         self.maybe_snapshot(false);
 
@@ -717,7 +870,11 @@ impl App {
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
-        egui::Panel::left("browser").default_size(240.0).resizable(true).show(ui, |ui| self.browser(ui));
+        egui::Panel::left("browser")
+            .default_size(240.0)
+            .min_size(200.0)
+            .resizable(true)
+            .show(ui, |ui| self.browser(ui));
         if self.agents.show_panel {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
         }
@@ -735,12 +892,11 @@ impl App {
 
     fn handle_close(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
-            if self.is_dirty() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.dialog = Some(Dialog::Close { save_failed: None });
-            } else {
-                self.allow_close = true;
-                self.shutdown(false);
+            // Always cancel first: the window closes on our own Close command once the
+            // project was saved, discarded or found clean.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.dialog.is_none() {
+                self.request(Pending::Close);
             }
         }
     }
@@ -783,6 +939,7 @@ impl App {
             ui.menu_button(tr("menu.file"), |ui| {
                 if ui.button(tr("menu.open")).clicked() {
                     self.dialog = Some(Dialog::Path { purpose: PathPurpose::Open, text: String::new(), error: None });
+                    // (The path dialog then asks about unsaved changes: `request(Pending::Open)`.)
                 }
                 if ui.button(tr("menu.save")).clicked() {
                     self.save();
@@ -829,7 +986,7 @@ impl App {
                     self.toggle_code();
                 }
                 if ui.button("Fit view").clicked() {
-                    self.fit_pending = true;
+                    self.viewport.fit_pending = true;
                 }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
             });
@@ -856,6 +1013,26 @@ impl App {
             s.push_str(&format!("Storage warning: {r}\n"));
         }
         s
+    }
+
+    /// The sketch the open command form edits, if any (its sketch stays visible).
+    pub fn editing_sketch(&self) -> Option<&str> {
+        let form = self.form.as_ref().filter(|f| f.command.starts_with("sketch.") && f.command != "sketch.create")?;
+        let f = form.fields.iter().find(|f| f.name == "sketch")?;
+        let name = f.value.trim();
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// Whether a sketch is drawn in the viewport: the one being edited, one the user
+    /// made visible, or (by default) one no feature consumes as a profile.
+    pub fn sketch_visible(&self, name: &str) -> bool {
+        if self.editing_sketch() == Some(name) {
+            return true;
+        }
+        match self.sketch_visibility.get(name) {
+            Some(&v) => v,
+            None => !consumed_sketches(&self.snapshot.doc).contains(name),
+        }
     }
 
     pub fn toggle_code(&mut self) {
@@ -893,9 +1070,9 @@ impl App {
         ui.horizontal(|ui| {
             let pal = theme::palette(self.theme);
             if self.is_dirty() {
-                ui.colored_label(pal.warning, format!("● {}", tr("status.unsaved")));
+                icons::labeled(ui, Icon::Dot, pal.warning, tr("status.unsaved"));
             } else {
-                ui.colored_label(pal.success, format!("✔ {}", tr("status.saved")));
+                icons::labeled(ui, Icon::Check, pal.success, tr("status.saved"));
             }
             if self.busy() {
                 // A static indicator: an animated spinner would repaint every frame, and
@@ -905,10 +1082,15 @@ impl App {
             if let Some(eval) = self.scene.as_ref().map(|s| &s.eval)
                 && !eval.errors().is_empty()
             {
-                ui.colored_label(pal.danger, format!("⚠ {} ({})", tr("status.rebuild_errors"), eval.errors().len()));
+                icons::labeled(
+                    ui,
+                    Icon::Warning,
+                    pal.danger,
+                    format!("{} ({})", tr("status.rebuild_errors"), eval.errors().len()),
+                );
             }
             if self.snapshot.audit_total > 0 || self.agent_changes > 0 {
-                ui.colored_label(pal.agent, format!("◆ {}", tr("status.agent")));
+                icons::labeled(ui, Icon::Diamond, pal.agent, tr("status.agent"));
             }
             if let Some(n) = &self.notice {
                 ui.separator();
@@ -937,7 +1119,7 @@ impl App {
                         .and_then(|e| e.params.get(&p.name))
                         .map(|v| match v {
                             Ok(q) => q.to_string(),
-                            Err(e) => format!("⚠ {e}"),
+                            Err(e) => format!("error: {e}"),
                         })
                         .unwrap_or_default();
                     ui.horizontal(|ui| {
@@ -954,19 +1136,35 @@ impl App {
                 for f in &doc.features {
                     let status = eval.as_ref().and_then(|e| e.status(&f.name));
                     let (icon, col) = match status {
-                        Some(FeatureStatus::Ok) | None => ("✔", pal.success),
-                        Some(FeatureStatus::Failed(_)) => ("⚠", pal.danger),
-                        Some(FeatureStatus::Suppressed | FeatureStatus::RolledBack) => ("◌", pal.text_muted),
-                        Some(_) => ("…", pal.warning),
+                        Some(FeatureStatus::Ok) | None => (Icon::Check, pal.success),
+                        Some(FeatureStatus::Failed(_)) => (Icon::Warning, pal.danger),
+                        Some(FeatureStatus::Suppressed | FeatureStatus::RolledBack) => (Icon::Ring, pal.text_muted),
+                        Some(_) => (Icon::Pending, pal.warning),
                     };
                     let mut text = format!("{} {}", f.kind.keyword(), f.name);
                     if let Some(l) = &f.label {
                         text.push_str(&format!(" — {l}"));
                     }
+                    let is_sketch = matches!(f.kind, gusset_doc::FeatureKind::Sketch(_));
+                    let shown = is_sketch && self.sketch_visible(&f.name);
+                    let mut toggled = false;
                     let r = ui.horizontal(|ui| {
-                        ui.colored_label(col, icon);
+                        if is_sketch {
+                            let label = format!("{} {}", tr("browser.show_sketch"), f.name);
+                            toggled = icons::toggle(ui, shown, Icon::Eye, Icon::EyeOff, &label)
+                                .on_hover_text(tr("browser.show_sketch_help"))
+                                .clicked();
+                        } else {
+                            // Same footprint as the eye toggle, so names line up.
+                            let s = icons::toggle_size(ui);
+                            ui.allocate_exact_size(egui::Vec2::splat(s), egui::Sense::hover());
+                        }
+                        icons::icon(ui, icon, col);
                         ui.label(text)
                     });
+                    if toggled {
+                        self.sketch_visibility.insert(f.name.clone(), !shown);
+                    }
                     if let Some(FeatureStatus::Failed(e)) = status {
                         let tip = match &e.hint {
                             Some(h) => format!("{}\n{}: {h}", e.message, tr("error.fix")),
@@ -994,12 +1192,15 @@ impl App {
                 let cur = self.snapshot.branch;
                 let branches = self.snapshot.branches.clone();
                 for b in branches {
-                    let label = if b.agent.is_some() {
-                        RichText::new(format!("◆ {}", plain(&b.name, 80))).color(pal.agent)
-                    } else {
-                        RichText::new(b.name.clone())
-                    };
-                    if ui.selectable_label(Some(b.id) == cur, label).clicked() && Some(b.id) != cur {
+                    let r = ui.horizontal(|ui| {
+                        if b.agent.is_some() {
+                            icons::icon(ui, Icon::Diamond, pal.agent);
+                            ui.selectable_label(Some(b.id) == cur, RichText::new(plain(&b.name, 80)).color(pal.agent))
+                        } else {
+                            ui.selectable_label(Some(b.id) == cur, b.name.clone())
+                        }
+                    });
+                    if r.inner.clicked() && Some(b.id) != cur {
                         self.submit_command("branch.switch", json!({ "branch": b.id.to_string() }), Then::Quiet);
                     }
                 }
@@ -1018,28 +1219,45 @@ impl App {
             {
                 self.show_iterations = !self.show_iterations;
             }
-            let mut marker = rollback.unwrap_or(n);
-            let r =
-                ui.add(egui::Slider::new(&mut marker, 0..=n).show_value(false)).on_hover_text(tr("timeline.rollback"));
-            if r.changed() {
-                let m = if marker >= n { Value::Null } else { json!(marker) };
-                self.submit_command("timeline.set_rollback", json!({ "marker": m }), Then::Quiet);
+            ui.separator();
+            let pal = *theme::palette(self.theme);
+            let eval = self.scene.as_ref().map(|s| s.eval.clone());
+            let doc = &self.snapshot.doc;
+            let items: Vec<timeline::Item<'_>> = doc
+                .features
+                .iter()
+                .map(|f| timeline::Item {
+                    name: &f.name,
+                    keyword: f.kind.keyword(),
+                    suppressed: f.suppressed,
+                    status: eval.as_ref().and_then(|e| e.status(&f.name)),
+                })
+                .collect();
+            if n == 0 {
+                ui.weak(tr("timeline.empty"));
+                return;
             }
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                for (i, f) in self.snapshot.doc.features.iter().enumerate() {
-                    let active = rollback.is_none_or(|m| i < m);
-                    let t = RichText::new(&f.name);
-                    ui.label(if active { t } else { t.weak() });
-                }
-            });
+            let moved = egui::ScrollArea::horizontal()
+                .show(ui, |ui| timeline::show(ui, &items, rollback.unwrap_or(n), &pal))
+                .inner;
+            if let Some(m) = moved {
+                self.set_rollback(if m >= n { None } else { Some(m) });
+            }
         });
         if self.show_iterations {
             ui.horizontal_wrapped(|ui| {
                 for label in &self.snapshot.lineage {
-                    ui.label(RichText::new(format!("● {label}")).small());
+                    icons::labeled(ui, Icon::Dot, theme::palette(self.theme).text_muted, RichText::new(label).small());
                 }
             });
         }
+    }
+
+    /// Moves the rollback marker: `None` = all features active.
+    pub fn set_rollback(&mut self, index: Option<usize>) {
+        // Shown at once; the next snapshot confirms it (or the error is reported).
+        self.snapshot.rollback = index;
+        self.submit_command("timeline.set_rollback", json!({ "index": index }), Then::Quiet);
     }
 
     fn code_view(&mut self, ui: &mut Ui) {
@@ -1069,15 +1287,13 @@ impl App {
 
     fn viewport(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
-        let (bodies, sketches) =
-            self.scene.as_ref().map(|s| (s.bodies.as_slice(), s.sketches.as_slice())).unwrap_or_default();
-        if self.fit_pending
-            && let Some((lo, hi)) = viewport::bounds(bodies, sketches)
-        {
-            self.camera.fit(lo, hi);
-            self.fit_pending = false;
-        }
-        let out = viewport::show(ui, &mut self.camera, &pal, bodies, sketches, &self.selection);
+        let sketches: Vec<&DrawSketch> = self
+            .scene
+            .as_ref()
+            .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
+            .unwrap_or_default();
+        let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
+        let empty = self.viewport.scene().is_empty() && sketches.is_empty();
         if let Some(clicked) = out.clicked {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             match clicked {
@@ -1092,7 +1308,7 @@ impl App {
                 None => self.selection.clear(),
             }
         }
-        if bodies.is_empty() && sketches.is_empty() {
+        if empty {
             self.empty_state(ui);
         }
     }
@@ -1103,15 +1319,17 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(tr("empty.title"));
-                if ui.button(tr("empty.sketch")).clicked() {
+                ui.add_space(theme::SPACE[3]);
+                if theme::primary_button(ui, tr("empty.sketch"), 200.0).clicked() {
                     self.start_command("sketch.create");
                 }
-                if ui.button(tr("empty.import")).clicked() {
+                if ui.add(egui::Button::new(tr("empty.import")).min_size(egui::vec2(200.0, 0.0))).clicked() {
                     self.start_command("import.file");
                 }
-                if ui.button(tr("empty.code")).clicked() {
+                if ui.add(egui::Button::new(tr("empty.code")).min_size(egui::vec2(200.0, 0.0))).clicked() {
                     self.toggle_code();
                 }
+                ui.add_space(theme::SPACE[2]);
                 ui.weak(tr("empty.hint"));
             });
         });
@@ -1173,26 +1391,36 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(dialog) = self.dialog.take() else { return };
-        let modal = egui::Modal::new(egui::Id::new("dialog"));
+        let frame = egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(theme::SPACE[5] as i8));
+        let modal = egui::Modal::new(egui::Id::new("dialog")).frame(frame);
         match dialog {
-            Dialog::Close { save_failed } => {
+            Dialog::Unsaved { pending, save_failed } => {
                 let mut action = None;
                 modal.show(ctx, |ui| {
-                    ui.heading(tr("close.title"));
+                    ui.heading(match pending {
+                        Pending::Close => tr("close.title"),
+                        Pending::Open(_) => tr("open.unsaved_title"),
+                    });
                     ui.label(tr("close.body"));
                     let name = self.project_path.as_ref().map_or_else(
                         || "Untitled".to_string(),
                         |p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     );
+                    ui.set_min_width(400.0);
                     ui.label(format!("• {name}"));
                     if let Some(e) = &save_failed {
                         ui.colored_label(ui.visuals().error_fg_color, format!("{} {e}", tr("close.save_failed")));
                     }
+                    ui.add_space(theme::SPACE[4]);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("close.save")).clicked() {
+                        let (save, discard) = match pending {
+                            Pending::Close => (tr("close.save"), tr("close.discard")),
+                            Pending::Open(_) => (tr("open.save"), tr("open.discard")),
+                        };
+                        if theme::primary_button(ui, save, 72.0).clicked() {
                             action = Some(0);
                         }
-                        if ui.button(tr("close.discard")).clicked() {
+                        if ui.button(discard).clicked() {
                             action = Some(1);
                         }
                         if ui.button(tr("dialog.cancel")).clicked() {
@@ -1204,11 +1432,67 @@ impl App {
                     // Closes once the save succeeded; on failure the dialog comes back
                     // with the error, and without a file Save As takes over.
                     Some(0) => {
-                        self.save_then(AfterSave::Close);
+                        self.save_then(AfterSave::Then(pending));
                     }
-                    Some(1) => self.close_now(ctx, true),
+                    Some(1) => self.proceed(pending, true),
                     Some(_) => {}
-                    None => self.dialog = Some(Dialog::Close { save_failed }),
+                    None => self.dialog = Some(Dialog::Unsaved { pending, save_failed }),
+                }
+            }
+            Dialog::Busy { pending } => {
+                let mut action = None;
+                modal.show(ctx, |ui| {
+                    ui.heading(tr("busy.title"));
+                    ui.label(tr("busy.body"));
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("busy.wait")).clicked() {
+                            action = Some(true);
+                        }
+                        if ui.button(tr("dialog.cancel")).clicked() {
+                            action = Some(false);
+                        }
+                    });
+                });
+                match action {
+                    Some(true) => self.after_idle = Some(pending),
+                    Some(false) => {}
+                    None => {
+                        if !self.busy() && self.host.try_with_session(|_| ()).is_ok_and(|r| r.is_some()) {
+                            // The work finished while the dialog was up: go on.
+                            self.request(pending);
+                        } else {
+                            if !self.busy() {
+                                // Someone else's command (an agent) holds the model thread and
+                                // may not broadcast when it ends: look again shortly. Our own
+                                // jobs wake the window when they finish.
+                                ctx.request_repaint_after(BUSY_RETRY);
+                            }
+                            self.dialog = Some(Dialog::Busy { pending });
+                        }
+                    }
+                }
+            }
+            Dialog::Overwrite { purpose, path } => {
+                let mut action = None;
+                modal.show(ctx, |ui| {
+                    ui.heading(tr("overwrite.title"));
+                    ui.label(format!("{}\n{}", path.to_string_lossy(), tr("overwrite.body")));
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("overwrite.replace")).clicked() {
+                            action = Some(true);
+                        }
+                        if ui.button(tr("dialog.cancel")).clicked() {
+                            action = Some(false);
+                        }
+                    });
+                });
+                match action {
+                    Some(true) => self.export(purpose, &path, true),
+                    Some(false) => {
+                        let text = path.to_string_lossy().into_owned();
+                        self.dialog = Some(Dialog::Path { purpose, text, error: None });
+                    }
+                    None => self.dialog = Some(Dialog::Overwrite { purpose, path }),
                 }
             }
             Dialog::Recovery { recovered } => {
@@ -1252,22 +1536,21 @@ impl App {
                         |r| Done::Refresh(r.and_then(|x| x)),
                     ),
                     Some(_) => {
-                        // Keep both: the recovered state becomes a branch next to the saved one.
-                        if let Ok(doc) = recovered.head_document(recovered.main()) {
-                            let ctx = Self::ctx();
-                            self.submit(
-                                move |s, _| {
-                                    gusset_commands::execute(
-                                        s,
-                                        &ctx,
-                                        "branch.create",
-                                        json!({ "name": "Recovered", "switch": true }),
-                                    )?;
-                                    s.commit(&ctx, "Recovered work", &doc).map(|_| ())
-                                },
-                                |r| Done::Refresh(r.and_then(|x| x)),
-                            );
-                        }
+                        // Keep both (ADR 0007): the recovered work, with all its branches and
+                        // iterations, goes to "<name> (recovered).gus" as a separate project;
+                        // the recovery file is removed only once that copy is safely written.
+                        let dirs = self.dirs.clone();
+                        self.submit(
+                            move |_, p| -> Result<PathBuf, String> {
+                                let p = p.ok_or("No project")?;
+                                let dirs = dirs.ok_or("No data folder")?;
+                                let original = p.path().ok_or("The project has no file")?.to_path_buf();
+                                let path = keep_both(&original, &recovered, &dirs)?;
+                                p.discard_recovery();
+                                Ok(path)
+                            },
+                            |r| Done::KeptBoth(r.map_err(|e| e.message).and_then(|x| x)),
+                        );
                     }
                     None => self.dialog = Some(Dialog::Recovery { recovered }),
                 }
@@ -1333,30 +1616,62 @@ impl App {
             let base = self.snapshot.project_dir.clone().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
             base.join(path)
         };
-        let export = |app: &mut App, id: &str, extra: Value| {
-            let mut args = json!({ "path": abs.to_string_lossy(), "overwrite": true });
-            if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
-                a.extend(e.clone());
-            }
-            app.submit_command(id, args, Then::PathDialog(purpose, text.to_string()));
-            Ok(())
-        };
         match purpose {
             PathPurpose::SaveAs => {
                 self.save_as(abs);
                 Ok(())
             }
-            PathPurpose::Open => self.open(abs),
-            PathPurpose::ExportStep => export(self, "export.step", json!({})),
-            PathPurpose::ExportStl => export(self, "export.mesh", json!({ "format": "stl" })),
-            PathPurpose::Export3mf => export(self, "export.mesh", json!({ "format": "3mf" })),
+            PathPurpose::Open => {
+                if !abs.is_file() {
+                    return Err(format!("{} {}", tr("open.not_found"), abs.to_string_lossy()));
+                }
+                self.request(Pending::Open(abs));
+                Ok(())
+            }
+            PathPurpose::ExportStep | PathPurpose::ExportStl | PathPurpose::Export3mf => {
+                if abs.exists() {
+                    // Never replace a file without asking (review L7).
+                    self.dialog = Some(Dialog::Overwrite { purpose, path: abs });
+                } else {
+                    self.export(purpose, &abs, false);
+                }
+                Ok(())
+            }
         }
     }
 
-    fn close_now(&mut self, ctx: &egui::Context, discard_recovery: bool) {
+    /// Starts an export to `path`; a failure re-opens the path dialog with the error.
+    fn export(&mut self, purpose: PathPurpose, path: &std::path::Path, overwrite: bool) {
+        let (id, extra) = match purpose {
+            PathPurpose::ExportStl => ("export.mesh", json!({ "format": "stl" })),
+            PathPurpose::Export3mf => ("export.mesh", json!({ "format": "3mf" })),
+            _ => ("export.step", json!({})),
+        };
+        let text = path.to_string_lossy().into_owned();
+        let mut args = json!({ "path": text, "overwrite": overwrite });
+        if let (Some(a), Some(e)) = (args.as_object_mut(), extra.as_object()) {
+            a.extend(e.clone());
+        }
+        self.submit_command(id, args, Then::PathDialog(purpose, text));
+    }
+
+    fn close_now(&mut self, discard_recovery: bool) {
         self.allow_close = true;
         self.shutdown(discard_recovery);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.send_close = true;
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        App::ui(self, ui);
+    }
+
+    fn on_exit(&mut self) {
+        // Unsaved work survives a forced exit through the recovery slot.
+        self.maybe_snapshot(true);
+        // Stop the MCP endpoint (deletes the connection file) and deny pending approvals.
+        self.agents.shutdown();
     }
 }
 
@@ -1379,21 +1694,69 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     let eval = s.evaluate(&Actor::User)?;
     let kernel = s.kernel().clone();
     let tp = TessellationParams::default();
-    let bodies = eval
+    let meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = eval
         .bodies
         .iter()
         .filter_map(|body| {
             let mesh = kernel.tessellate(&body.shape, &tp).ok()?;
-            Some(DrawBody {
+            let info = BodyInfo {
                 name: body.name.clone(),
-                mesh,
                 face_names: body.names.faces.iter().map(ToString::to_string).collect(),
                 edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
-            })
+            };
+            Some((info, mesh))
         })
         .collect();
+    let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
     let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
-    Ok(SceneData { key: (head, rollback), bodies, sketches, eval })
+    Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+}
+
+/// Closes a project the window is done with. Changes the user did not choose to
+/// discard stay in its recovery file (the lock is still released), so nothing that
+/// arrived after the user's decision, such as an agent edit, is lost.
+fn retire_project(session: &Session, mut project: Project, discard: bool) {
+    if session.dirty && !discard {
+        let _ = project.snapshot(session.history());
+        drop(project);
+    } else {
+        project.close();
+    }
+}
+
+/// "Keep both": writes `recovered` next to `original` as "<name> (recovered).gus"
+/// (or "(recovered 2)", ...), a separate project with its own id, and returns its path.
+pub fn keep_both(original: &std::path::Path, recovered: &History, dirs: &DataDirs) -> Result<PathBuf, String> {
+    let dir = original.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = original.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+    let path = (1..1000)
+        .map(|i| {
+            let name = if i == 1 { format!("{stem} (recovered).gus") } else { format!("{stem} (recovered {i}).gus") };
+            dir.join(name)
+        })
+        .find(|p| !p.exists())
+        .ok_or("Too many recovered copies next to the project")?;
+    let id = gusset_store::paths::ProjectId::new_random().map_err(|e| e.to_string())?;
+    let meta = gusset_project::ProjectMeta { id, save_seq: 1, base_seq: 1, created: now_unix() };
+    let bytes = gusset_project::encode(recovered, &meta).map_err(|e| e.to_string())?;
+    let fs = gusset_store::fs::RealFs::default();
+    gusset_store::durable::save_project(&fs, &path, &fs, None, &bytes).map_err(|e| e.to_string())?;
+    let _ = gusset_store::housekeeping::register(dirs, id, &path);
+    Ok(path)
+}
+
+/// Sketches used as a profile by an extrude or revolve (hidden by default, as in
+/// Fusion and Onshape).
+pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeSet<String> {
+    use gusset_doc::FeatureKind;
+    doc.features
+        .iter()
+        .filter_map(|f| match &f.kind {
+            FeatureKind::Extrude(e) => Some(e.profile.sketch.clone()),
+            FeatureKind::Revolve(r) => Some(r.profile.sketch.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Builds polylines for a solved sketch on its plane.
