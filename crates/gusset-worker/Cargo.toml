@@ -17,7 +17,14 @@ gusset-kernel.workspace = true
 gusset-kernel-occt.workspace = true
 gusset-occt-sys.workspace = true
 gusset-sandbox.workspace = true
+gusset-commands.workspace = true
 blake3.workspace = true
+
+[dev-dependencies]
+# End-to-end import test through a real session and host (OCCT builds only).
+gusset-host.workspace = true
+gusset-doc.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

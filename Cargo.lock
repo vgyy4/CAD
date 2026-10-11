@@ -1795,10 +1795,14 @@ name = "gusset-worker"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "gusset-commands",
+ "gusset-doc",
+ "gusset-host",
  "gusset-kernel",
  "gusset-kernel-occt",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "serde_json",
 ]
 
 [[package]]

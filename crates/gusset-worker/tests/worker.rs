@@ -62,3 +62,27 @@ fn relative_worker_path_is_refused() {
     );
     assert!(matches!(r, Err(ImportError::Spawn(_))));
 }
+
+/// Review H5 / dogfood F-B1: STEP import end to end through a session, the host's
+/// off-thread import path and the sandboxed worker, as the CLI and the app wire it.
+#[test]
+fn step_import_end_to_end_through_a_session() {
+    use gusset_commands::{CmdCtx, Session};
+    let dir = std::env::temp_dir().join(format!("gusset-e2e-import-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("box.step"), step_box()).unwrap();
+    let k = std::sync::Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+    s.importer = Some(std::sync::Arc::new(gusset_worker::WorkerImporter::new(worker().to_path_buf())));
+    s.project_dir = Some(dir.clone());
+    let host = gusset_host::Host::spawn(s, None);
+    let a = CmdCtx::agent("e2e", 1);
+    let r = host.call(a.clone(), "import.file", serde_json::json!({"path": "box.step"})).unwrap();
+    assert_eq!(r["features"].as_array().unwrap().len(), 1, "{r}");
+    let b = host.call(a, "query.body", serde_json::json!({})).unwrap();
+    assert!((b["volume_mm3"].as_f64().unwrap() - 1000.0).abs() < 1e-6, "{b}");
+    let _ = host.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
