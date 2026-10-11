@@ -57,7 +57,10 @@ jobs:
       - name: Install pinned nightly and cargo-fuzz
         run: |
           rustup toolchain install "$NIGHTLY" --profile minimal
-          cargo +"$NIGHTLY" install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+          # cargo-fuzz itself builds with the pinned stable toolchain: its locked rustix
+          # 0.36 turns on nightly-only attributes when compiled by a nightly rustc.
+          # Only the fuzz targets need nightly (`cargo +nightly fuzz ...`).
+          cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
       # The corpus is written only by scheduled runs on the default branch; other runs
       # only read it (GitHub scopes caches by branch, so PRs cannot write it).
       - name: Restore corpus
