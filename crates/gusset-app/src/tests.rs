@@ -233,9 +233,9 @@ fn agents_panel_shows_connection_audit_and_branches() {
     host.call(gusset_commands::CmdCtx::agent("bot-2", 3_661), "param.set", json!({"name": "t", "expr": "3 mm"}))
         .unwrap();
     h.run();
-    h.get_by_label_contains("param.set on agent/bot-2 → ok");
+    h.get_by_label_contains("param.set on agent/bot-2: ok");
     h.get_by_label_contains("01:01:01");
-    h.get_by_label_contains("◆ agent/bot-2");
+    h.get_by_label("agent/bot-2");
 
     // Compare, then apply the agent branch onto the user's branch.
     h.get_by_label("Compare").click();

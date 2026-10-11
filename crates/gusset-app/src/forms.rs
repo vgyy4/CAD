@@ -182,11 +182,8 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                 ui.end_row();
             }
         });
-    if has_optional {
-        let label = format!("{} {}", if form.show_more { "▾" } else { "▸" }, tr("dialog.more"));
-        if ui.button(label).clicked() {
-            form.show_more = !form.show_more;
-        }
+    if has_optional && crate::icons::disclosure_button(ui, form.show_more, tr("dialog.more")).clicked() {
+        form.show_more = !form.show_more;
     }
     if let Some(e) = &form.error {
         ui.colored_label(ui.visuals().error_fg_color, e);

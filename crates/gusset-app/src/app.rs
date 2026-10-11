@@ -10,6 +10,7 @@
 use crate::agents::{Agents, plain};
 use crate::forms::{self, Form};
 use crate::i18n::tr;
+use crate::icons::{self, Icon};
 use crate::link::{self, Snapshot, Waker};
 use crate::theme::{self, ThemeKind};
 use crate::viewport::{BodyInfo, DrawSketch, Hit, Viewport};
@@ -909,9 +910,9 @@ impl App {
         ui.horizontal(|ui| {
             let pal = theme::palette(self.theme);
             if self.is_dirty() {
-                ui.colored_label(pal.warning, format!("● {}", tr("status.unsaved")));
+                icons::labeled(ui, Icon::Dot, pal.warning, tr("status.unsaved"));
             } else {
-                ui.colored_label(pal.success, format!("✔ {}", tr("status.saved")));
+                icons::labeled(ui, Icon::Check, pal.success, tr("status.saved"));
             }
             if self.busy() {
                 // A static indicator: an animated spinner would repaint every frame, and
@@ -921,10 +922,15 @@ impl App {
             if let Some(eval) = self.scene.as_ref().map(|s| &s.eval)
                 && !eval.errors().is_empty()
             {
-                ui.colored_label(pal.danger, format!("⚠ {} ({})", tr("status.rebuild_errors"), eval.errors().len()));
+                icons::labeled(
+                    ui,
+                    Icon::Warning,
+                    pal.danger,
+                    format!("{} ({})", tr("status.rebuild_errors"), eval.errors().len()),
+                );
             }
             if self.snapshot.audit_total > 0 || self.agent_changes > 0 {
-                ui.colored_label(pal.agent, format!("◆ {}", tr("status.agent")));
+                icons::labeled(ui, Icon::Diamond, pal.agent, tr("status.agent"));
             }
             if let Some(n) = &self.notice {
                 ui.separator();
@@ -953,7 +959,7 @@ impl App {
                         .and_then(|e| e.params.get(&p.name))
                         .map(|v| match v {
                             Ok(q) => q.to_string(),
-                            Err(e) => format!("⚠ {e}"),
+                            Err(e) => format!("error: {e}"),
                         })
                         .unwrap_or_default();
                     ui.horizontal(|ui| {
@@ -970,17 +976,17 @@ impl App {
                 for f in &doc.features {
                     let status = eval.as_ref().and_then(|e| e.status(&f.name));
                     let (icon, col) = match status {
-                        Some(FeatureStatus::Ok) | None => ("✔", pal.success),
-                        Some(FeatureStatus::Failed(_)) => ("⚠", pal.danger),
-                        Some(FeatureStatus::Suppressed | FeatureStatus::RolledBack) => ("◌", pal.text_muted),
-                        Some(_) => ("…", pal.warning),
+                        Some(FeatureStatus::Ok) | None => (Icon::Check, pal.success),
+                        Some(FeatureStatus::Failed(_)) => (Icon::Warning, pal.danger),
+                        Some(FeatureStatus::Suppressed | FeatureStatus::RolledBack) => (Icon::Ring, pal.text_muted),
+                        Some(_) => (Icon::Pending, pal.warning),
                     };
                     let mut text = format!("{} {}", f.kind.keyword(), f.name);
                     if let Some(l) = &f.label {
                         text.push_str(&format!(" — {l}"));
                     }
                     let r = ui.horizontal(|ui| {
-                        ui.colored_label(col, icon);
+                        icons::icon(ui, icon, col);
                         ui.label(text)
                     });
                     if let Some(FeatureStatus::Failed(e)) = status {
@@ -1010,12 +1016,15 @@ impl App {
                 let cur = self.snapshot.branch;
                 let branches = self.snapshot.branches.clone();
                 for b in branches {
-                    let label = if b.agent.is_some() {
-                        RichText::new(format!("◆ {}", plain(&b.name, 80))).color(pal.agent)
-                    } else {
-                        RichText::new(b.name.clone())
-                    };
-                    if ui.selectable_label(Some(b.id) == cur, label).clicked() && Some(b.id) != cur {
+                    let r = ui.horizontal(|ui| {
+                        if b.agent.is_some() {
+                            icons::icon(ui, Icon::Diamond, pal.agent);
+                            ui.selectable_label(Some(b.id) == cur, RichText::new(plain(&b.name, 80)).color(pal.agent))
+                        } else {
+                            ui.selectable_label(Some(b.id) == cur, b.name.clone())
+                        }
+                    });
+                    if r.inner.clicked() && Some(b.id) != cur {
                         self.submit_command("branch.switch", json!({ "branch": b.id.to_string() }), Then::Quiet);
                     }
                 }
@@ -1052,7 +1061,7 @@ impl App {
         if self.show_iterations {
             ui.horizontal_wrapped(|ui| {
                 for label in &self.snapshot.lineage {
-                    ui.label(RichText::new(format!("● {label}")).small());
+                    icons::labeled(ui, Icon::Dot, theme::palette(self.theme).text_muted, RichText::new(label).small());
                 }
             });
         }

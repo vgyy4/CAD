@@ -4,6 +4,7 @@ pub mod agents;
 pub mod app;
 pub mod forms;
 pub mod i18n;
+pub mod icons;
 pub mod link;
 pub mod theme;
 pub mod viewport;
