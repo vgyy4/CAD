@@ -13,10 +13,19 @@ status. Scratch harnesses referenced below lived outside the repository.
 | Dogfood S3 / Review #8 | Read-only mode writes files | **Fixed**: `writes_files` command flag; exports blocked for read-only agents and by the read-only bridge |
 | Dogfood S4 | Bulk threshold ignores parameters | **Fixed**: parameter changes count |
 | Dogfood S5 | Audit log in memory only | **Fixed**: agent changes, file writes and refusals are persisted as `AgentAction` events in the project history and reloaded on open |
-| Review #1 | Forged approval via client elicitation | Open — next |
+| Review #1 / Code review L5 | Forged approval via client elicitation | **Fixed**: when the app hosts the session, approvals use only the in-app prompt (client elicitation answers and `input_required` retries are ignored); headless, elicitation is the only channel, stated in tool descriptions, server instructions and the ADR 0012 trust model |
 | Review #2 | Windows DLL search path | Open — next |
 | Review #3 | In-process BinTools parsing of project blobs | Open — next |
-| Review #4–7, #9–20; Dogfood S6–S9 | see below | Open — next |
+| Review #4–6 | see below | Open — next |
+| Review #7 | Kill switch does not keep the bridge out | **Fixed**: revoke pauses agents (no valid token; connection file rewritten `paused` without a token); a restarted bridge refuses to start; `McpServer::allow_agents` issues a new token and file generation |
+| Review #9 / Dogfood S7 / Code review H3, L1, L2 | Export names; GUI exports fail; vacuous test; export temp files | **Fixed**: agent exports confined, extension allow-list matching the format, no hidden components, device names, trailing dots/spaces or stream syntax, no absolute paths in errors; user exports accept any path; writes use `durable_write`; `rejects_escapes` asserts every case |
+| Review #10, #15 / Dogfood S6 / Code review L6 | Rate limits bypassable, reads unlimited, sessions unbounded, identities reused after restart | **Fixed**: per-identity (client name without connection counter) and global budgets for tool calls, `render_view` (plus 2 concurrent), `get_text` and resources with `retry_after_s`; HTTP bucket shared by all connections; ≤ 32 legacy sessions, closed after 10 idle minutes; agent names in the project history are never reused |
+| Review #11, #12 / Code review M6 | FIFO import hangs; worker can force 4 GiB; import blocks the model thread | **Fixed**: files opened `O_NOFOLLOW|O_NONBLOCK`, regular files only, capped read; import parses off the model thread and is cancellable (worker killed); worker output capped at 16× input + 64 MiB (≤ 1 GiB) |
+| Review #13 | Connection-file owner; stale/squatted ports | **Fixed**: file and directory must be owned by the current user and closed to others; token-bound BLAKE3 identity challenge before anything is sent, and a proof on every response |
+| Review #14 | x32 ABI | Open — next |
+| Review #16 / Dogfood S8, S9 | Identifiers outside `user_text`; branch names | **Fixed**: identifier fields that are not strict identifiers are wrapped as flagged `user_text`; branch names kept out of messages; agent branch names are short display names (no `/`, `..`, leading dots, main-like names) |
+| Review #17–20 | see below | Open — next |
+| Dogfood F-B1 / Code review H5 | Import not wired; no mesh import | **Fixed**: the sandboxed worker is the STEP/IGES importer in `gusset mcp`, `gusset build --import` and the app; STL/3MF/OBJ import as reference mesh bodies (PROGRESS deviation); imported B-rep faces are named again (import never rebuilt before) |
 
 ## Review 1: MVP milestone (2026-10-11)
 

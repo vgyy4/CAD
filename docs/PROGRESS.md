@@ -66,6 +66,13 @@ review (code review, security review, MCP dogfooding with the real kernel) ran o
 ## Deviations from spec
 - Right-to-left text rendering is a known egui gap (ADR 0009). Strings are
   externalized; RTL rendering waits on upstream.
+- Mesh import (STL/3MF/OBJ, tier 3) produces **reference mesh bodies**, not solids: the
+  kernel cannot build a B-rep from a triangle mesh. They are stored as binary STL blobs,
+  displayed (`render_view`; the GUI viewport still has to draw `Evaluation::meshes`),
+  listed by `query.model` (`reference_meshes`, with volume when watertight) and included
+  in mesh exports; STEP export, booleans and edge/face references do not apply to them.
+  Mesh files are parsed in-process by gusset-meshio (pure Rust, with size/count limits),
+  off the model thread; STEP/IGES go to the sandboxed worker (ADR 0008 §4).
 
 ## Research gaps
 - Reddit, and direct fetches of the FreeCAD and Onshape forums and HN, were blocked from
