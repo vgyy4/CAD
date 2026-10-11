@@ -160,3 +160,132 @@ fn second_open_is_refused_while_locked() {
     let (p2, _, _) = Project::open(&file, t.dirs()).unwrap();
     p2.close();
 }
+
+#[test]
+fn untitled_crash_recovery_is_offered_and_survives_housekeeping() {
+    // Review H1.
+    let t = Tmp::new("untitled");
+    let mut h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    let id = p.meta.id;
+    let u = Ctx::user(30);
+    let main = h.main();
+    h.commit(&u, main, &doc("7 mm"), "never saved", NodeState::Ok).unwrap();
+    p.snapshot(&h).unwrap();
+    drop(p); // crash before the first save
+    let opts = housekeeping::Options { temp_min_age: std::time::Duration::ZERO, ..Default::default() };
+    housekeeping::run(&t.dirs(), &opts).unwrap();
+    assert!(t.dirs().recovery_file(&id).exists(), "housekeeping deleted an untitled project's recovery");
+    let pending = pending_recoveries(&t.dirs());
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, id);
+    assert_eq!(pending[0].path, None);
+    let (mut p, rec) = Project::recover_unsaved(t.dirs(), id).unwrap();
+    assert_eq!(rec.head_document(rec.main()).unwrap(), doc("7 mm"));
+    assert!(p.path().is_none());
+    // While it is open again, it is not offered a second time.
+    assert!(pending_recoveries(&t.dirs()).is_empty());
+    let file = t.0.join("rescued.gus");
+    p.save_as(&file, &rec).unwrap();
+    p.close();
+    assert!(pending_recoveries(&t.dirs()).is_empty());
+    assert!(files_in(&t.dirs().recovery_dir()).is_empty());
+    // Discarding instead also works.
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.snapshot(&h).unwrap();
+    let id = p.meta.id;
+    drop(p);
+    assert_eq!(pending_recoveries(&t.dirs()).len(), 1);
+    discard_pending_recovery(&t.dirs(), id).unwrap();
+    assert!(pending_recoveries(&t.dirs()).is_empty());
+}
+
+#[test]
+fn save_as_gives_the_new_file_its_own_identity() {
+    // Review H2, scenario 1.
+    let t = Tmp::new("saveas");
+    let (a, b) = (t.0.join("a.gus"), t.0.join("b.gus"));
+    let h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&a, &h).unwrap();
+    p.save(&h).unwrap();
+    let id_a = p.meta.id;
+    p.save_as(&b, &h).unwrap();
+    assert_ne!(p.meta.id, id_a, "Save As must give the new file a new project ID");
+    assert_eq!(p.path(), Some(b.as_path()));
+    // a.gus opens next to b.gus (different locks), and keeps its ID.
+    let (pa, _, rep) = Project::open(&a, t.dirs()).unwrap();
+    assert!(matches!(rep, OpenReport::Clean));
+    assert_eq!(pa.meta.id, id_a);
+    assert!(pa.reidentified_from.is_none());
+    assert_ne!(t.dirs().lkg_file(&pa.meta.id), t.dirs().lkg_file(&p.meta.id));
+    pa.close();
+    p.close();
+}
+
+#[test]
+fn file_manager_copy_is_reidentified_on_open() {
+    // Review H2, scenario 2: a copy opened beside its original.
+    let t = Tmp::new("copy");
+    let (a, b) = (t.0.join("a.gus"), t.0.join("b.gus"));
+    let h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&a, &h).unwrap();
+    let id_a = p.meta.id;
+    std::fs::copy(&a, &b).unwrap();
+    // The original is open: the copy still opens, with its own identity.
+    let (pb, hb, rep) = Project::open(&b, t.dirs()).unwrap();
+    assert!(matches!(rep, OpenReport::Clean));
+    assert_eq!(pb.reidentified_from, Some(id_a));
+    let id_b = pb.meta.id;
+    assert_ne!(id_b, id_a);
+    assert_eq!(hb.head_document(hb.main()).unwrap(), doc("2 mm"));
+    pb.close();
+    p.close();
+    // The new identity was written into the copy: it is stable from now on.
+    let (pb, _, _) = Project::open(&b, t.dirs()).unwrap();
+    assert_eq!(pb.meta.id, id_b);
+    assert!(pb.reidentified_from.is_none());
+    pb.close();
+    let (pa, _, _) = Project::open(&a, t.dirs()).unwrap();
+    assert_eq!(pa.meta.id, id_a);
+    pa.close();
+}
+
+#[test]
+fn one_copys_recovery_is_never_offered_for_another() {
+    // Review H2, scenario 2 of the report: two files share an ID (made by an older
+    // build's Save As); b crashed with unsaved work; opening a must neither offer nor
+    // delete b's recovery.
+    let t = Tmp::new("shared-id");
+    let (a, b) = (t.0.join("a.gus"), t.0.join("b.gus"));
+    let mut h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&a, &h).unwrap();
+    let id = p.meta.id;
+    p.close();
+    std::fs::copy(&a, &b).unwrap();
+    let (mut pb, _, _) = {
+        // Simulate the old build: b registered under the same ID.
+        housekeeping::register(&t.dirs(), id, &b).unwrap();
+        Project::open(&b, t.dirs()).unwrap()
+    };
+    assert_eq!(pb.meta.id, id, "b is the registered owner of the ID");
+    let main = h.main();
+    h.commit(&Ctx::user(40), main, &doc("11 mm"), "b's unsaved work", NodeState::Ok).unwrap();
+    pb.snapshot(&h).unwrap();
+    drop(pb); // crash
+    let (pa, _, rep) = Project::open(&a, t.dirs()).unwrap();
+    assert!(matches!(rep, OpenReport::Clean), "b's recovery offered for a: {rep:?}");
+    assert_ne!(pa.meta.id, id);
+    pa.close();
+    assert!(t.dirs().recovery_file(&id).exists(), "b's only recovery copy was deleted");
+    let (pb, _, rep) = Project::open(&b, t.dirs()).unwrap();
+    match rep {
+        OpenReport::RecoveryAvailable { recovered, .. } => {
+            assert_eq!(recovered.head_document(recovered.main()).unwrap(), doc("11 mm"));
+        }
+        other => panic!("{other:?}"),
+    }
+    pb.close();
+}

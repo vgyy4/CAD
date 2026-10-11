@@ -96,6 +96,18 @@ fn kind_of(k: ObjectKind) -> Kind {
 
 /// Serializes a history into a complete `.gus` image.
 pub fn encode(history: &History, meta: &ProjectMeta) -> Result<Vec<u8>, ProjectError> {
+    encode_with(history, meta, None)
+}
+
+/// Root naming the project file a recovery image belongs to (UTF-8, lossy). Lets
+/// `open` refuse to offer one copy's recovery for another copy (review H2).
+const ORIGIN_ROOT: &str = "origin";
+
+fn origin_text(path: &Path) -> String {
+    housekeeping::normalise(path).to_string_lossy().into_owned()
+}
+
+fn encode_with(history: &History, meta: &ProjectMeta, origin: Option<&Path>) -> Result<Vec<u8>, ProjectError> {
     let r = history.to_records();
     let w = |e: container::WriteError| ProjectError::Write(e.to_string());
     let mut cw = ContainerWriter::new();
@@ -109,6 +121,9 @@ pub fn encode(history: &History, meta: &ProjectMeta) -> Result<Vec<u8>, ProjectE
     cw.set_root("branches", branches.as_bytes()).map_err(w)?;
     cw.set_root("events", events.as_bytes()).map_err(w)?;
     cw.set_root("meta", meta.to_text().as_bytes()).map_err(w)?;
+    if let Some(o) = origin {
+        cw.set_root(ORIGIN_ROOT, origin_text(o).as_bytes()).map_err(w)?;
+    }
     cw.finish(&SaveInfo { save_seq: meta.save_seq, created_unix: meta.created, app_version: APP_VERSION }).map_err(w)
 }
 
@@ -240,6 +255,14 @@ pub struct Project {
     /// app, nothing may delete it: headless front ends must refuse to work on the
     /// project (see [`Project::release`]).
     pub recovery_pending: bool,
+    /// Set when the opened file turned out to be a copy of another project (same ID,
+    /// different path, the other still registered or open): it got this new identity
+    /// and the old ID stays with the original (review H2). Holds the old ID.
+    pub reidentified_from: Option<ProjectId>,
+}
+
+fn new_id() -> Result<ProjectId, ProjectError> {
+    ProjectId::new_random().map_err(|e| ProjectError::Io { path: PathBuf::new(), message: e.to_string() })
 }
 
 fn now_unix() -> u64 {
@@ -261,6 +284,7 @@ impl Project {
             risky: None,
             took_over_stale_lock: false,
             recovery_pending: false,
+            reidentified_from: None,
         };
         p.lock()?;
         Ok(p)
@@ -302,29 +326,16 @@ impl Project {
                     risky,
                     took_over_stale_lock: false,
                     recovery_pending: false,
+                    reidentified_from: None,
                 };
-                p.lock()?;
-                let _ = housekeeping::register(&p.dirs, p.meta.id, path);
-                let report = match recovery::read_newest(&RealFs::default(), &p.recovery_path(), &container::verify) {
-                    Ok(None) => OpenReport::Clean,
-                    Ok(Some(snap)) => match decode(&snap.payload) {
-                        Ok((rh, rm)) if rm.base_seq >= p.meta.save_seq => {
-                            p.recovery_pending = true;
-                            OpenReport::RecoveryAvailable { recovered: Box::new(rh), recovery_seq: snap.seq }
-                        }
-                        // Older than the file: obsolete.
-                        Ok(_) => OpenReport::Clean,
-                        Err(_) => {
-                            p.recovery_pending = true;
-                            OpenReport::Clean
-                        }
-                    },
-                    // Exists but unreadable or damaged: keep it for the user to decide.
-                    Err(_) => {
-                        p.recovery_pending = true;
-                        OpenReport::Clean
-                    }
-                };
+                let copy_of = p.copy_of(path);
+                if copy_of.is_some() {
+                    p.reidentify(path, &history)?;
+                } else {
+                    p.lock()?;
+                    let _ = housekeeping::register(&p.dirs, p.meta.id, path);
+                }
+                let report = p.check_recovery(path);
                 Ok((p, history, report))
             }
             Err(e) => {
@@ -351,6 +362,7 @@ impl Project {
                             risky,
                             took_over_stale_lock: false,
                             recovery_pending: false,
+                            reidentified_from: None,
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -366,6 +378,7 @@ impl Project {
                             risky,
                             took_over_stale_lock: false,
                             recovery_pending: false,
+                            reidentified_from: None,
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -388,12 +401,109 @@ impl Project {
         self.save_to(&path, history)
     }
 
-    /// Saves to a new path (Save As).
+    /// Saves to a new path (Save As). A project that already has a file gets a **new
+    /// project ID** for the new file, so the two files never share a lock, recovery file
+    /// or last-known-good slot (review H2); the old file keeps its ID. Saving over a
+    /// file that is open in another Gusset window is refused.
     pub fn save_as(&mut self, path: &Path, history: &History) -> Result<(), ProjectError> {
-        self.save_to(path, history)?;
+        let same = self.path.as_deref().is_some_and(|p| housekeeping::same_path(p, path));
+        if let Ok(reg) = housekeeping::Registry::load(&self.dirs.registry_file())
+            && let Some(other) = reg.find(path)
+            && other != self.meta.id
+            && gusset_store::lock::is_held(&self.dirs.lock_file(&other)).unwrap_or(false)
+        {
+            return Err(ProjectError::Locked { path: path.to_path_buf(), holder: "another Gusset window".into() });
+        }
+        if self.path.is_none() || same {
+            self.save_to(path, history)?;
+        } else {
+            let new_id = new_id()?;
+            let (new_lock, _) = ProjectLock::acquire(&self.dirs.lock_file(&new_id))
+                .map_err(|e| ProjectError::Locked { path: path.to_path_buf(), holder: e.to_string() })?;
+            let old_id = std::mem::replace(&mut self.meta.id, new_id);
+            let old_lock = self.lock.replace(new_lock);
+            if let Err(e) = self.save_to(path, history) {
+                self.meta.id = old_id;
+                if let Some(l) = std::mem::replace(&mut self.lock, old_lock) {
+                    let _ = l.release();
+                }
+                return Err(e);
+            }
+            // The unsaved work the old file's recovery copy held is in the new file now.
+            let _ = recovery::remove(&RealFs::default(), &self.dirs.recovery_file(&old_id));
+            if let Some(l) = old_lock {
+                let _ = l.release();
+            }
+        }
         self.path = Some(path.to_path_buf());
         self.risky = gusset_store::paths::classify(path);
         Ok(())
+    }
+
+    /// If the file at `path` (whose ID is `self.meta.id`) is a copy of another project,
+    /// the other project's path: the registry maps this ID to a different existing
+    /// file, or this ID's recovery copy was written for a different existing file.
+    fn copy_of(&self, path: &Path) -> Option<PathBuf> {
+        let reg = housekeeping::Registry::load(&self.dirs.registry_file()).ok()?;
+        if let Some(other) = reg.get(&self.meta.id)
+            && !housekeeping::same_path(other, path)
+            && other.exists()
+        {
+            return Some(other.to_path_buf());
+        }
+        let origin = self.recovery_origin()?;
+        (!housekeeping::same_path(&origin, path) && origin.exists()).then_some(origin)
+    }
+
+    /// The project file the recovery copy of this ID was written for, if recorded.
+    fn recovery_origin(&self) -> Option<PathBuf> {
+        let snap = recovery::read_newest(&RealFs::default(), &self.recovery_path(), &container::verify).ok()??;
+        let c = container::open(&snap.payload).ok()?;
+        let o = c.root(ORIGIN_ROOT)?;
+        Some(PathBuf::from(String::from_utf8_lossy(o).into_owned()))
+    }
+
+    /// Gives an opened copy a fresh identity, registers it and writes it into the file
+    /// right away (durably, like a save), so the copy keeps it. If the file cannot be
+    /// written (read-only), the new identity still holds for this session.
+    fn reidentify(&mut self, path: &Path, history: &History) -> Result<(), ProjectError> {
+        let old = self.meta.id;
+        self.meta.id = new_id()?;
+        self.lock()?;
+        self.reidentified_from = Some(old);
+        if self.save_to(path, history).is_err() {
+            let _ = housekeeping::register(&self.dirs, self.meta.id, path);
+        }
+        Ok(())
+    }
+
+    /// Looks for a recovery copy newer than the opened file.
+    fn check_recovery(&mut self, path: &Path) -> OpenReport {
+        match recovery::read_newest(&RealFs::default(), &self.recovery_path(), &container::verify) {
+            Ok(None) => OpenReport::Clean,
+            Ok(Some(snap)) => match decode(&snap.payload) {
+                Ok((rh, rm)) if rm.base_seq >= self.meta.save_seq => {
+                    if self.recovery_origin().is_some_and(|o| !housekeeping::same_path(&o, path)) {
+                        // Written for another file; never offer it here (and never
+                        // delete it: `copy_of` already gave this file its own ID).
+                        return OpenReport::Clean;
+                    }
+                    self.recovery_pending = true;
+                    OpenReport::RecoveryAvailable { recovered: Box::new(rh), recovery_seq: snap.seq }
+                }
+                // Older than the file: obsolete.
+                Ok(_) => OpenReport::Clean,
+                Err(_) => {
+                    self.recovery_pending = true;
+                    OpenReport::Clean
+                }
+            },
+            // Exists but unreadable or damaged: keep it for the user to decide.
+            Err(_) => {
+                self.recovery_pending = true;
+                OpenReport::Clean
+            }
+        }
     }
 
     fn save_to(&mut self, path: &Path, history: &History) -> Result<(), ProjectError> {
@@ -415,7 +525,7 @@ impl Project {
     pub fn snapshot(&mut self, history: &History) -> Result<u64, ProjectError> {
         let mut meta = self.meta.clone();
         meta.base_seq = self.meta.save_seq;
-        let bytes = encode(history, &meta)?;
+        let bytes = encode_with(history, &meta, self.path.as_deref())?;
         recovery::write_snapshot(&RealFs::default(), &self.recovery_path(), &bytes, &container::verify)
             .map_err(|e| ProjectError::Write(e.to_string()))
     }
@@ -439,6 +549,107 @@ impl Project {
         if let Some(l) = self.lock.take() {
             let _ = l.release();
         }
+    }
+}
+
+/// A crash-recovery copy found at startup that the user has not resolved yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRecovery {
+    pub id: ProjectId,
+    /// The project file it belongs to. `None`: a never-saved ("Untitled") project, or
+    /// one whose file is no longer reachable; recover it with
+    /// [`Project::recover_unsaved`].
+    pub path: Option<PathBuf>,
+    /// Sequence number of the newest valid slot.
+    pub recovery_seq: u64,
+    /// When the recovery copy was last written.
+    pub modified: Option<std::time::SystemTime>,
+}
+
+/// Every recovery copy that should be offered to the user at startup ("Recover unsaved
+/// work"), review H1: copies of never-saved projects, and copies newer than their
+/// project file. Copies held by a running Gusset instance (open projects) and copies
+/// older than their file are skipped. Damaged copies are listed too (the user decides),
+/// with `recovery_seq` 0.
+pub fn pending_recoveries(dirs: &DataDirs) -> Vec<PendingRecovery> {
+    let reg = housekeeping::Registry::load(&dirs.registry_file()).unwrap_or_default();
+    let Ok(rd) = std::fs::read_dir(dirs.recovery_dir()) else { return Vec::new() };
+    let ext = format!(".{}", recovery::EXTENSION);
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(&ext)).and_then(ProjectId::parse) else {
+            continue;
+        };
+        if !e.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if gusset_store::lock::is_held(&dirs.lock_file(&id)).unwrap_or(true) {
+            continue; // open in a running instance (or its lock is unreadable): not ours
+        }
+        let path = reg.get(&id).filter(|p| p.exists()).map(Path::to_path_buf);
+        let snap = recovery::read_newest(&RealFs::default(), &e.path(), &container::verify).ok().flatten();
+        if let (Some(p), Some(snap)) = (&path, &snap) {
+            let file_seq = std::fs::read(p).ok().and_then(|b| container::open(&b).ok().map(|c| c.header().save_seq));
+            let rec_base = decode(&snap.payload).ok().map(|(_, m)| m.base_seq);
+            if let (Some(f), Some(r)) = (file_seq, rec_base)
+                && r < f
+            {
+                continue; // older than the saved file: obsolete
+            }
+        }
+        out.push(PendingRecovery {
+            id,
+            path,
+            recovery_seq: snap.map_or(0, |s| s.seq),
+            modified: e.metadata().ok().and_then(|m| m.modified().ok()),
+        });
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.id.cmp(&b.id)));
+    out
+}
+
+/// Deletes a pending recovery copy after the user chose to discard it.
+///
+/// # Errors
+/// [`ProjectError::Locked`] if a running instance has that project open.
+pub fn discard_pending_recovery(dirs: &DataDirs, id: ProjectId) -> Result<(), ProjectError> {
+    let lp = dirs.lock_file(&id);
+    let (lock, _) =
+        ProjectLock::acquire(&lp).map_err(|e| ProjectError::Locked { path: lp.clone(), holder: e.to_string() })?;
+    let r = recovery::remove(&RealFs::default(), &dirs.recovery_file(&id))
+        .map_err(|e| ProjectError::Io { path: dirs.recovery_file(&id), message: e.to_string() });
+    let _ = lock.release();
+    r
+}
+
+impl Project {
+    /// Opens a pending recovery copy (see [`pending_recoveries`]) as an unsaved project
+    /// with the same ID, so further snapshots keep replacing the same single recovery
+    /// file. The recovery file stays until the user saves (Save As) or closes cleanly.
+    ///
+    /// # Errors
+    /// `Locked` if another instance has it open, `Damaged` if no slot is usable.
+    pub fn recover_unsaved(dirs: DataDirs, id: ProjectId) -> Result<(Project, History), ProjectError> {
+        dirs.ensure().map_err(|e| ProjectError::Io { path: dirs.data_dir().to_path_buf(), message: e.to_string() })?;
+        let file = dirs.recovery_file(&id);
+        let snap = recovery::read_newest(&RealFs::default(), &file, &container::verify)
+            .map_err(|e| ProjectError::Damaged(e.to_string()))?
+            .ok_or_else(|| ProjectError::Io { path: file.clone(), message: "no recovery copy".into() })?;
+        let (history, mut meta) = decode(&snap.payload)?;
+        meta.id = id;
+        let mut p = Project {
+            path: None,
+            meta,
+            dirs,
+            lock: None,
+            risky: None,
+            took_over_stale_lock: false,
+            recovery_pending: true,
+            reidentified_from: None,
+        };
+        p.lock()?;
+        Ok((p, history))
     }
 }
 
