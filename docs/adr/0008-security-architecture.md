@@ -12,14 +12,18 @@
 2. **Memory safety.** `#![forbid(unsafe_code)]` is the workspace default. Only these
    crates may contain `unsafe`, each with `// SAFETY:` comments on every block, and
    each has Miri runs where feasible:
-   - `gusset-occt-sys` (C++ FFI shim)
+   - `gusset-occt-sys` (C++ FFI shim, and the safe wrappers in its `safe` module that
+     `gusset-kernel-occt` and the worker use; those two crates forbid `unsafe`)
    - `gusset-store` (Windows `MoveFileExW` write-through only)
-   - `gusset-hw` (CPU feature/brand queries, thread-priority FFI, and pointing stdout at
-     stderr for the `gusset mcp` protocol stream only)
-   - `gusset-sandbox` (OS sandbox setup for the import worker)
-   - `gusset-app` (Windows DLL search-path hardening at startup)
-   
-   The reviewer checks this list against `grep -r "allow(unsafe_code)"`.
+   - `gusset-hw` (CPU feature/brand queries, thread-priority FFI, pointing stdout at
+     stderr for the `gusset mcp` protocol stream, and the Windows DLL search-path
+     hardening that the app, CLI and worker call at startup)
+   - `gusset-sandbox` (OS sandbox setup for the import worker, process-group kill)
+
+   The reviewer checks this list against `grep -r "allow(unsafe_code)"`, and
+   `crates/gusset-sandbox/tests/unsafe_allowlist.rs` enforces it: every other crate must
+   inherit the workspace lints (`unsafe_code = "forbid"`), and this list must match the
+   test's.
 3. **Code-view language sandbox:** the language is declarative and pure (ADR 0004), and
    its parser and evaluator enforce size, depth and count limits. A future scripting
    feature gets its own WASM sandbox with explicit capabilities and a per-project
@@ -31,21 +35,75 @@
      and returns results over stdout using a length-prefixed, versioned, size-limited
      message format.
    - Sandbox, applied before it reads any input:
-     - Linux: Landlock (no filesystem access), seccomp-bpf allow-list, no network
-       namespace access (the `unshare` user namespace if available), and
-       `RLIMIT_AS`/`RLIMIT_CPU`.
+     - Linux: `PR_SET_PDEATHSIG` (the worker dies with the app), Landlock (no
+       filesystem, no TCP, and with ABI 6 signals and abstract UNIX sockets scoped to
+       the worker), a seccomp-bpf allow-list, and `RLIMIT_AS`/`RLIMIT_CPU`.
+       - The allow-list was measured (2026-10-11, `strace -f`) on the real worker with
+         OCCT importing OCCT's sample STEP and IGES files and validating B-rep blobs:
+         after lockdown the worker only reads stdin, allocates memory, reads the clock,
+         probes a few resource files and writes stdout. The list is in
+         `gusset-sandbox` (`allowed_syscalls`); anything else fails with `EPERM`.
+       - Argument filters: `clone` only with `CLONE_THREAD` and no namespace flags;
+         `clone3` fails with `ENOSYS` (its flags are in memory seccomp cannot read;
+         glibc then falls back to `clone`); `kill`/`tgkill` only to the worker's own
+         pid; `mmap`/`mprotect` never with `PROT_EXEC`; `ioctl` only `TCGETS`;
+         `prctl` only the thread name. `open`/`openat` fail with `EACCES`, so files
+         stay closed even without Landlock. fork, user namespaces, io_uring, sockets,
+         ptrace and exec are not on the list.
+       - Syscall numbers with the x32 bit are not on the list, so the x32 ABI is
+         refused (seccompiler only checks `AUDIT_ARCH_X86_64`).
+     - Process lifetime (all platforms): the parent starts the worker in its own
+       process group (Unix) or job object (Windows). On exit, crash or timeout it
+       kills the whole group *before* reaping the worker (so the group id cannot have
+       been reused), and reads the worker's stdout with a deadline. A forked or
+       leftover descendant therefore cannot outlive the import or hang the app.
      - Windows: a job object (memory/CPU/kill-on-close) plus a restricted
        token/low integrity, and AppContainer when feasible.
      - macOS: `sandbox_init` with a no-filesystem/no-network profile.
    - Where a platform mechanism is unavailable, the worker still runs out of process
      with resource limits, and the gap is reported in diagnostics.
+   - **B-rep blobs in project files** (security review #3, decided 2026-10-11): a
+     `.gus` file stores imported shapes as OCCT `BinTools` blobs, and any file can
+     carry any bytes there. Options considered: (a) validate untrusted blobs in the
+     worker on first sight and remember blobs this installation produced or
+     validated; (b) parse every blob in the worker on every open. We chose **(a)**:
+     - `OcctKernel::read_native` parses a blob in-process only if its BLAKE3 hash is
+       in the trusted set: blobs this process wrote (`write_native`) or the worker
+       validated. `gusset_worker::trust::persist_to` keeps that set per installation
+       (one hex hash per line, owner-only, symlinks refused); without it the set
+       lasts for the process.
+     - Any other blob goes to `gusset-worker` (request kind `Brep`), which parses it
+       under the sandbox, walks its topology and re-serializes it with OCCT's writer.
+       The app then parses the worker's output, so its `BinTools::Read` only sees
+       writer-produced data. Without a worker, untrusted blobs are refused.
+     - Why not (b): the shape is needed in the app's kernel for every later operation,
+       so (b) still ends in an in-process parse of worker output, and it costs a worker
+       run per blob on every open of every project.
+     - Residual risk: a blob that achieves code execution inside the worker can make
+       it return hostile bytes, exactly like a hostile STEP file. The sandbox makes
+       that a two-stage exploit (worker first, then the app's parser on attacker-
+       chosen output) instead of a direct one, and turns crash, hang and memory
+       exhaustion bugs (the common fuzzing finds) into a refused import. Removing the
+       residual risk needs a format the app parses in Rust or shapes that never leave
+       the worker; neither fits the MVP.
+     - `BinTools::Read` is not fuzzed in CI (the fuzz targets build without OCCT);
+       `fuzz/README.md` documents this.
 5. **MCP security** is described in ADR 0012: localhost only, bearer token, Origin/Host
    validation, project-folder path confinement, confirm flags, human approval for
    high-impact actions, audit log, rate limits, read-only mode and a kill switch.
 6. **Code loading hardening** at the top of `main`, before any other code runs:
-   - Windows: `SetDefaultDllDirectories`, and OCCT DLLs are loaded by absolute path
-     (delay-load or explicit `LoadLibraryExW` with
-     `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`).
+   - Windows: the first statement of the app's, CLI's and worker's `main` is
+     `gusset_hw::codeload::harden()`, which calls
+     `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` and
+     `SetDllDirectoryW("")`. DLLs loaded by bare name at run time (wgpu's
+     `dxcompiler.dll` and `libEGL.dll`) are then looked up only in the install
+     directory and System32, never the current directory or `PATH`. If such an
+     optional DLL is not installed, the load fails closed: wgpu falls back from DXC to
+     FXC (`d3dcompiler_47.dll`, System32), and the GL backend reports itself
+     unavailable.
+   - The CLI and worker link with `/DEPENDENTLOADFLAG:0xA00` (application directory
+     and System32) for their load-time imports such as the OCCT DLLs. The app needs
+     the same flag in a build script (open: tracked in docs/SECURITY_REVIEWS.md).
    - Linux: RPATH `$ORIGIN/../lib/gusset` only.
    - macOS: `@executable_path/../Frameworks` plus the hardened runtime.
 7. **External programs** (only Blender for now) are launched only from an absolute path

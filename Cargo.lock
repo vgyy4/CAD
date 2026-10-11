@@ -1666,6 +1666,8 @@ version = "0.0.1"
 dependencies = [
  "gusset-kernel",
  "gusset-occt-sys",
+ "gusset-sandbox",
+ "gusset-worker",
 ]
 
 [[package]]
@@ -1765,6 +1767,7 @@ dependencies = [
  "blake3",
  "directories",
  "getrandom 0.4.3",
+ "libc",
  "trash",
  "windows-sys 0.61.2",
  "zstd",
@@ -1792,10 +1795,12 @@ name = "gusset-worker"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "libc",
 ]
 
 [[package]]

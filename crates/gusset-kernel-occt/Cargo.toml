@@ -10,16 +10,10 @@ repository.workspace = true
 [dependencies]
 gusset-kernel.workspace = true
 gusset-occt-sys.workspace = true
+# Untrusted B-rep blobs are validated in the sandboxed worker before parsing (ADR 0008).
+gusset-worker.workspace = true
+gusset-sandbox.workspace = true
 
-[lints.rust]
-# Calls into the FFI crate (ADR 0008): unsafe only in `ffi.rs`, each block with SAFETY.
-unsafe_code = "deny"
-missing_debug_implementations = "warn"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-undocumented_unsafe_blocks = "deny"
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
-indexing_slicing = "warn"
+# No `unsafe` here: the FFI wrappers live in gusset-occt-sys (ADR 0008).
+[lints]
+workspace = true

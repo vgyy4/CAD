@@ -33,6 +33,10 @@ global options: --force-dispatch LEVEL";
 
 /// Exit codes: 0 ok, 1 model has feature errors, 2 usage / IO / damaged input.
 fn main() -> ExitCode {
+    // Code-loading hardening before anything else (Windows DLL search path; ADR 0008 §6).
+    if let Some(e) = gusset_hw::codeload::harden() {
+        eprintln!("warning: {e}");
+    }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--force-dispatch") {
         let Some(level) = args.get(i + 1).cloned() else {

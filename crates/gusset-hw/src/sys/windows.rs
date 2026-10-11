@@ -1,4 +1,4 @@
-//! Windows FFI: EcoQoS / thread priority and installed RAM.
+//! Windows FFI: EcoQoS / thread priority, installed RAM and DLL search-path hardening.
 #![allow(unsafe_code)]
 
 use std::io;
@@ -45,4 +45,25 @@ pub(crate) fn set_current_thread_eco(idle: bool) -> io::Result<bool> {
     // SAFETY: pseudo-handle of the calling thread and a documented priority constant.
     let ok = unsafe { SetThreadPriority(GetCurrentThread(), prio) } != 0;
     if ok { Ok(eco) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Restricts the default DLL search path to the application directory, System32 and
+/// user-added directories, and removes the current directory from it.
+pub(crate) fn restrict_dll_search() -> Result<(), String> {
+    use windows_sys::Win32::System::LibraryLoader::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, SetDefaultDllDirectories, SetDllDirectoryW,
+    };
+    // SAFETY: takes only a flags value; affects later LoadLibrary* calls in this process.
+    let ok = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) };
+    if ok == 0 {
+        return Err(format!("SetDefaultDllDirectories failed: {}", io::Error::last_os_error()));
+    }
+    let empty: [u16; 1] = [0];
+    // SAFETY: `empty` is a valid NUL-terminated UTF-16 string that outlives the call; an
+    // empty string removes the current directory from the search path.
+    let ok = unsafe { SetDllDirectoryW(empty.as_ptr()) };
+    if ok == 0 {
+        return Err(format!("SetDllDirectoryW failed: {}", io::Error::last_os_error()));
+    }
+    Ok(())
 }

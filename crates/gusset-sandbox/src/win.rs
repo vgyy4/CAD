@@ -9,6 +9,7 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
     JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    TerminateJobObject,
 };
 
 /// An owned job object handle; closing it kills the contained worker.
@@ -22,6 +23,14 @@ impl Drop for Job {
     fn drop(&mut self) {
         // SAFETY: the handle was created by CreateJobObjectW and is closed exactly once.
         unsafe { CloseHandle(self.0) };
+    }
+}
+
+impl Job {
+    /// Terminates every process in the job now.
+    pub(crate) fn terminate(&self) {
+        // SAFETY: the handle is a live job handle owned by `self`.
+        unsafe { TerminateJobObject(self.0, 1) };
     }
 }
 
