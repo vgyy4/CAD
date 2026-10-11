@@ -95,6 +95,41 @@ fn edit(
 }
 
 /// Inserts a feature at the rollback marker (or the end).
+/// The name of the last body created before position `at` (bodies are named after the
+/// feature that created them).
+fn latest_body_before(doc: &Document, at: usize) -> Option<String> {
+    doc.features.iter().take(at).rev().find(|f| creates_body(f)).map(|f| f.name.clone())
+}
+
+/// Combines with "the latest body" because no target was stored (older documents).
+fn implicit_target(f: &Feature) -> bool {
+    match &f.kind {
+        FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
+        FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
+        _ => false,
+    }
+}
+
+/// The body an add/cut/intersect combines with, resolved when the feature is created and
+/// stored in the document, so later deletes or reorders can never silently retarget it.
+fn target_body(
+    doc: &Document,
+    rollback: Option<usize>,
+    op: BodyOp,
+    explicit: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    if op == BodyOp::New {
+        return Ok(None);
+    }
+    if explicit.is_some() {
+        return Ok(explicit);
+    }
+    let at = rollback.unwrap_or(doc.features.len()).min(doc.features.len());
+    latest_body_before(doc, at).map(Some).ok_or_else(|| {
+        CommandError::args("there is no body to add to or cut from yet").hint("use op: new for the first body")
+    })
+}
+
 fn insert_feature(doc: &mut Document, rollback: Option<usize>, f: Feature) {
     match rollback {
         Some(r) if r <= doc.features.len() => doc.features.insert(r, f),
@@ -841,6 +876,7 @@ impl Command for Extrude {
         let op = op_of(&self.op)?;
         edit(s, ctx, "Extrude", |doc, rb| {
             let name = feature_name(doc, self.name, "Extrude")?;
+            let body = target_body(doc, rb, op, self.body)?;
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Extrude(ExtrudeDef {
@@ -848,7 +884,7 @@ impl Command for Extrude {
                     distance,
                     symmetric: self.symmetric,
                     op,
-                    body: if op == BodyOp::New { None } else { self.body },
+                    body,
                 }),
             );
             insert_feature(doc, rb, f);
@@ -897,6 +933,7 @@ impl Command for Revolve {
         };
         edit(s, ctx, "Revolve", |doc, rb| {
             let name = feature_name(doc, self.name, "Revolve")?;
+            let body = target_body(doc, rb, op, self.body)?;
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Revolve(RevolveDef {
@@ -904,7 +941,7 @@ impl Command for Revolve {
                     axis,
                     angle,
                     op,
-                    body: if op == BodyOp::New { None } else { self.body },
+                    body,
                 }),
             );
             insert_feature(doc, rb, f);
@@ -1007,15 +1044,24 @@ impl Command for FeatureDelete {
                 return Err(CommandError::args(format!("{} is used by {}", self.name, users.join(", ")))
                     .hint("delete or edit those features first"));
             }
-            // A body consumed by later ops (op: add/cut without explicit body) is also a dependency.
+            // Older documents may combine with "the latest body" implicitly. Deleting that
+            // body would silently retarget them to another body, so refuse instead.
             if doc.features.get(i).is_some_and(creates_body) {
-                let later_default = doc.features.iter().skip(i + 1).find(|f| match &f.kind {
-                    FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
-                    FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
-                    _ => false,
-                });
-                if let Some(u) = later_default {
-                    let _ = u;
+                let implicit: Vec<String> = doc
+                    .features
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .filter(|(j, f)| implicit_target(f) && latest_body_before(doc, *j).as_deref() == Some(&self.name))
+                    .map(|(_, f)| f.name.clone())
+                    .collect();
+                if !implicit.is_empty() {
+                    return Err(CommandError::args(format!(
+                        "{} is the body that {} add to or cut from",
+                        self.name,
+                        implicit.join(", ")
+                    ))
+                    .hint("set an explicit target body on those features first, or delete them"));
                 }
             }
             doc.features.remove(i);

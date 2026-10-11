@@ -340,3 +340,31 @@ fn agent_audit_survives_reopening() {
     assert!(log.iter().any(|e| e.command == "param.set" && e.outcome == "ok"), "{log:?}");
     assert!(log.iter().any(|e| e.command == "branch.set_main" && e.outcome.contains("approval")), "{log:?}");
 }
+
+#[test]
+fn cuts_keep_their_target_body() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    for (i, x) in [(1, 0), (2, 100)] {
+        run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+        run(
+            &mut s,
+            &u,
+            "sketch.add_rectangle",
+            json!({"sketch": format!("Sketch{i}"), "x": x, "y": 0, "width": 10, "height": 10}),
+        );
+        run(&mut s, &u, "feature.extrude", json!({"sketch": format!("Sketch{i}"), "distance": "5 mm"}));
+    }
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_circle", json!({"sketch": "Sketch3", "cx": 105, "cy": 5, "radius": 2}));
+    let _ = execute(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch3", "distance": "5 mm", "op": "cut"}));
+    let doc = s.document(&u.actor).unwrap();
+    let cut = doc.feature("Extrude3").expect("cut created");
+    match &cut.kind {
+        gusset_doc::FeatureKind::Extrude(e) => assert_eq!(e.body.as_deref(), Some("Extrude2")),
+        other => panic!("{other:?}"),
+    }
+    // Deleting the cut's body is refused instead of silently retargeting to Extrude1.
+    let e = execute(&mut s, &u, "feature.delete", json!({"name": "Extrude2"})).unwrap_err();
+    assert!(e.message.contains("Extrude3"), "{e:?}");
+}
