@@ -7,6 +7,7 @@ pub mod i18n;
 pub mod icons;
 pub mod link;
 pub mod theme;
+pub mod timeline;
 pub mod viewport;
 pub mod viewport_gpu;
 

@@ -13,6 +13,7 @@ use crate::i18n::tr;
 use crate::icons::{self, Icon};
 use crate::link::{self, Snapshot, Waker};
 use crate::theme::{self, ThemeKind};
+use crate::timeline;
 use crate::viewport::{BodyInfo, DrawSketch, Hit, Viewport};
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
@@ -1081,20 +1082,26 @@ impl App {
             {
                 self.show_iterations = !self.show_iterations;
             }
-            let mut marker = rollback.unwrap_or(n);
-            let r =
-                ui.add(egui::Slider::new(&mut marker, 0..=n).show_value(false)).on_hover_text(tr("timeline.rollback"));
-            if r.changed() {
-                let m = if marker >= n { Value::Null } else { json!(marker) };
-                self.submit_command("timeline.set_rollback", json!({ "marker": m }), Then::Quiet);
+            ui.separator();
+            let pal = *theme::palette(self.theme);
+            let eval = self.scene.as_ref().map(|s| s.eval.clone());
+            let doc = &self.snapshot.doc;
+            let items: Vec<timeline::Item<'_>> = doc
+                .features
+                .iter()
+                .map(|f| timeline::Item {
+                    name: &f.name,
+                    keyword: f.kind.keyword(),
+                    suppressed: f.suppressed,
+                    status: eval.as_ref().and_then(|e| e.status(&f.name)),
+                })
+                .collect();
+            let moved = egui::ScrollArea::horizontal()
+                .show(ui, |ui| timeline::show(ui, &items, rollback.unwrap_or(n), &pal))
+                .inner;
+            if let Some(m) = moved {
+                self.set_rollback(if m >= n { None } else { Some(m) });
             }
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                for (i, f) in self.snapshot.doc.features.iter().enumerate() {
-                    let active = rollback.is_none_or(|m| i < m);
-                    let t = RichText::new(&f.name);
-                    ui.label(if active { t } else { t.weak() });
-                }
-            });
         });
         if self.show_iterations {
             ui.horizontal_wrapped(|ui| {
@@ -1103,6 +1110,13 @@ impl App {
                 }
             });
         }
+    }
+
+    /// Moves the rollback marker: `None` = all features active.
+    pub fn set_rollback(&mut self, index: Option<usize>) {
+        // Shown at once; the next snapshot confirms it (or the error is reported).
+        self.snapshot.rollback = index;
+        self.submit_command("timeline.set_rollback", json!({ "index": index }), Then::Quiet);
     }
 
     fn code_view(&mut self, ui: &mut Ui) {

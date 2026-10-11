@@ -307,6 +307,56 @@ fn consumed_sketches_are_hidden_until_toggled_or_edited() {
     assert!(!h.state().sketch_visible("Base"));
 }
 
+fn settle(h: &mut Harness<'static, App>) {
+    h.run();
+    h.state_mut().wait_idle();
+    h.run();
+}
+
+#[test]
+fn timeline_marker_moves_with_keys_and_drag() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    let n = h.state().snapshot.doc.features.len();
+    assert_eq!(n, 3);
+    assert_eq!(h.get_by_label("Rollback marker").accesskit_node().numeric_value(), Some(n as f64));
+    // Keyboard: focus the marker, then Left / Home / End.
+    h.get_by_label("Rollback marker").focus();
+    h.run();
+    h.key_press(egui::Key::ArrowLeft);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(n - 1));
+    let ev = h.state().evaluation().unwrap();
+    assert_eq!(ev.status("Extrude1"), Some(&gusset_eval::FeatureStatus::RolledBack));
+    h.key_press(egui::Key::Home);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(0));
+    h.key_press(egui::Key::End);
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, None);
+    // Drag the marker to the far left: everything rolled back.
+    let from = h.get_by_label("Rollback marker").rect().center();
+    let to = egui::pos2(0.0, from.y);
+    h.event(egui::Event::PointerMoved(from));
+    h.run();
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(button(from, true));
+    h.run();
+    for k in 1..=10 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 10.0)));
+        h.run();
+    }
+    h.event(button(to, false));
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(0));
+    assert!(h.state().notice.as_ref().is_none_or(|n| !n.error), "{:?}", h.state().notice);
+}
+
 #[test]
 fn viewport_renders_only_when_something_changed() {
     let mut h = harness(two_sketches());
