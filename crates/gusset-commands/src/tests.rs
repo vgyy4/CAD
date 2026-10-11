@@ -673,3 +673,43 @@ fn step_export_description_names_the_schema_that_is_written() {
     let d = find("export.step").unwrap().description;
     assert!(d.contains("AP214") && !d.contains("AP242"), "{d}");
 }
+
+#[test]
+fn exports_can_select_bodies_and_report_rebuild_errors() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 0, "y": 0, "width": 5, "height": 5}));
+    run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch2", "distance": "2 mm"}));
+    let d = std::env::temp_dir().join(format!("gusset-sel-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    let both = run(&mut s, &u, "export.mesh", json!({"path": "both.stl"}));
+    assert_eq!(both["bodies"], 2, "{both}");
+    assert_eq!(both["rebuild_ok"], true);
+    assert_eq!(std::fs::read(d.join("both.stl")).unwrap().len(), 84 + 50 * 24);
+    // One body alone.
+    let one = run(&mut s, &u, "export.mesh", json!({"path": "lid.stl", "bodies": ["Extrude2"]}));
+    assert_eq!(one["bodies"], 1, "{one}");
+    assert_eq!(std::fs::read(d.join("lid.stl")).unwrap().len(), 84 + 50 * 12);
+    // Unknown names are refused and the error lists what exists.
+    let e = execute(&mut s, &u, "export.mesh", json!({"path": "x.stl", "bodies": ["Nope"]})).unwrap_err();
+    assert_eq!(e.code, "not_found");
+    assert!(e.hint.as_deref().unwrap_or("").contains("Extrude1, Extrude2"), "{e:?}");
+    assert!(!d.join("x.stl").exists());
+    let e = execute(&mut s, &u, "export.step", json!({"path": "x.step", "bodies": ["Nope"]})).unwrap_err();
+    assert_eq!(e.code, "not_found");
+    // A failing feature does not stop the export, but the result says so.
+    run(
+        &mut s,
+        &u,
+        "feature.fillet",
+        json!({"edges": ["edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))"], "radius": "1 mm"}),
+    );
+    let r = run(&mut s, &u, "export.mesh", json!({"path": "broken.stl"}));
+    assert_eq!(r["rebuild_ok"], false, "{r}");
+    assert!(r["rebuild_errors"][0].as_str().unwrap().contains("Fillet1"), "{r}");
+    assert!(r["warnings"][0].as_str().unwrap().contains("failed to rebuild"), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -1957,6 +1957,48 @@ impl Command for QueryBody {
 
 // ------------------------------------------------------------------ exchange
 
+/// The bodies and reference meshes an export covers: all of them, or only those named in
+/// `filter` (F-M19). A name that matches nothing is an error listing what exists.
+fn export_selection<'a>(
+    ev: &'a gusset_eval::Evaluation,
+    filter: &[String],
+) -> Result<(Vec<&'a gusset_eval::Body>, Vec<&'a gusset_eval::MeshBody>), CommandError> {
+    if filter.is_empty() {
+        return Ok((ev.bodies.iter().map(|b| &**b).collect(), ev.meshes.iter().map(|m| &**m).collect()));
+    }
+    let known = || ev.bodies.iter().map(|b| b.name.as_str()).chain(ev.meshes.iter().map(|m| m.name.as_str()));
+    for n in filter {
+        if !known().any(|k| k == n) {
+            let all: Vec<&str> = known().collect();
+            return Err(CommandError::not_found(format!("no body '{n}' to export"))
+                .hint(format!("bodies: {}", if all.is_empty() { "(none yet)".to_string() } else { all.join(", ") })));
+        }
+    }
+    let wanted = |name: &str| filter.iter().any(|f| f == name);
+    Ok((
+        ev.bodies.iter().filter(|b| wanted(&b.name)).map(|b| &**b).collect(),
+        ev.meshes.iter().filter(|m| wanted(&m.name)).map(|m| &**m).collect(),
+    ))
+}
+
+/// Export results say whether the model rebuilt cleanly: the file contains whatever the
+/// failing features left behind, which may not be what the user expects (F-M14).
+fn rebuild_report(ev: &gusset_eval::Evaluation) -> Value {
+    let errors: Vec<String> = ev.errors().iter().map(|e| e.to_string()).collect();
+    if errors.is_empty() {
+        return json!({ "rebuild_ok": true });
+    }
+    json!({
+        "rebuild_ok": false,
+        "rebuild_errors": errors,
+        "warnings": [format!(
+            "{} feature(s) failed to rebuild, so the exported geometry may be incomplete or out of date; \
+             fix them (see rebuild_errors / query.model) and export again",
+            errors.len()
+        )],
+    })
+}
+
 /// Writes STEP (AP214, the OCCT default schema) of all bodies into the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1967,13 +2009,15 @@ pub struct ExportStep {
     /// Overwrite an existing file (agents need approval).
     #[serde(default)]
     pub overwrite: bool,
+    /// Export only these bodies (names from query.model); default: all bodies.
+    #[serde(default)]
+    pub bodies: Vec<String>,
 }
 
 impl Command for ExportStep {
     const ID: &'static str = "export.step";
     const TITLE: &'static str = "Export STEP";
-    const DESCRIPTION: &'static str =
-        "Export all bodies of your current branch as STEP (AP214, mm) to a file inside the project folder.";
+    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm) to a file inside the project folder. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -1988,7 +2032,8 @@ impl Command for ExportStep {
             }
         }
         let ev = s.evaluate(&ctx.actor)?;
-        if ev.bodies.is_empty() {
+        let (sel_bodies, _) = export_selection(&ev, &self.bodies)?;
+        if sel_bodies.is_empty() {
             let hint = if ev.meshes.is_empty() {
                 "create a body first"
             } else {
@@ -1997,10 +2042,10 @@ impl Command for ExportStep {
             return Err(CommandError::new("evaluation", "there is nothing to export as STEP").hint(hint));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
-            ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+            sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let bytes = s.kernel().export_step(&bodies).map_err(|e| CommandError::new("io", e.to_string()))?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
-        Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
+        Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
     }
 }
 
@@ -2018,6 +2063,10 @@ pub struct ExportMesh {
     pub tolerance_mm: Option<f64>,
     #[serde(default)]
     pub overwrite: bool,
+    /// Export only these bodies (names from query.model); default: all bodies and
+    /// reference meshes. Use it to export parts separately.
+    #[serde(default)]
+    pub bodies: Vec<String>,
 }
 
 /// Tessellates every body and encodes it, plus the reference meshes, as a mesh file.
@@ -2073,8 +2122,7 @@ pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
 impl Command for ExportMesh {
     const ID: &'static str = "export.mesh";
     const TITLE: &'static str = "Export mesh (STL/3MF/OBJ)";
-    const DESCRIPTION: &'static str =
-        "Export all bodies as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing.";
+    const DESCRIPTION: &'static str = "Export the bodies (all, or only those named in `bodies`) as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing. Overlapping bodies in one file are not merged; export them one at a time with `bodies`. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2097,15 +2145,16 @@ impl Command for ExportMesh {
             }
         }
         let ev = s.evaluate(&ctx.actor)?;
-        if ev.bodies.is_empty() && ev.meshes.is_empty() {
+        let (sel_bodies, sel_meshes) = export_selection(&ev, &self.bodies)?;
+        if sel_bodies.is_empty() && sel_meshes.is_empty() {
             return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
-            ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
-        let refs: Vec<(&gusset_kernel::Mesh, &str)> = ev.meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
+            sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+        let refs: Vec<(&gusset_kernel::Mesh, &str)> = sel_meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
         let bytes = mesh_export_bytes_with(s.kernel().as_ref(), &bodies, &refs, format, tol)?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
-        Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
+        Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
     }
 }
 
