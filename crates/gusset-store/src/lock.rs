@@ -145,7 +145,97 @@ fn open_lock_file(path: &Path, create: bool) -> Result<File, LockError> {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    Ok(o.open(path)?)
+    no_follow(&mut o);
+    // Closes the check-then-open race: whatever the path names now must be a file.
+    let file = o.open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(LockError::NotARegularFile(path.to_path_buf()));
+    }
+    Ok(file)
+}
+
+/// Opens the link itself instead of its target (`O_NOFOLLOW` fails on a symlink;
+/// `FILE_FLAG_OPEN_REPARSE_POINT` opens the reparse point, which the caller's
+/// is-a-file check then rejects).
+fn no_follow(o: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        o.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = o;
+}
+
+/// Opens an existing file for reading without following links; `None` unless it is a
+/// regular file.
+fn open_read_no_follow(path: &Path) -> Option<File> {
+    let mut o = OpenOptions::new();
+    o.read(true);
+    no_follow(&mut o);
+    let f = o.open(path).ok()?;
+    f.metadata().ok()?.file_type().is_file().then_some(f)
+}
+
+/// Publishes `text` as the sidecar without following links: written to a fresh
+/// create-new temp file in the same directory, then renamed over the sidecar (a rename
+/// replaces a link, it never writes through it).
+fn write_sidecar(path: &Path, text: &str) -> io::Result<()> {
+    let target = sidecar(path);
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(format!(".{}{SIDECAR_TMP}", crate::wire::to_hex(&crate::rng::os_random_128()?)));
+    let tmp = PathBuf::from(tmp);
+    let mut o = OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    let r = o.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes())).and_then(|()| std::fs::rename(&tmp, &target));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+const SIDECAR_EXT: &str = ".info";
+const SIDECAR_TMP: &str = ".itmp";
+
+/// Removes sidecars (and leftover sidecar temp files) in the locks directory `dir` whose
+/// lock is not held, e.g. after a crash on Windows. Returns how many were removed.
+///
+/// # Errors
+/// If `dir` cannot be listed.
+pub fn clean_stale_sidecars(dir: &Path) -> io::Result<usize> {
+    let mut removed = 0;
+    for e in std::fs::read_dir(dir)? {
+        let Ok(e) = e else { continue };
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let lock_name = match name.split_once(".lock.info") {
+            Some((stem, rest)) if rest.is_empty() || rest.ends_with(SIDECAR_TMP) => format!("{stem}.lock"),
+            _ => continue,
+        };
+        // Never follow links; only regular files and links themselves are removed.
+        let Ok(md) = std::fs::symlink_metadata(e.path()) else { continue };
+        if md.is_dir() {
+            continue;
+        }
+        if is_held(&dir.join(lock_name)).unwrap_or(true) {
+            continue;
+        }
+        if std::fs::remove_file(e.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn read_info(file: &mut File) -> Option<LockInfo> {
@@ -159,7 +249,7 @@ fn read_info(file: &mut File) -> Option<LockInfo> {
 /// holder also publishes its details in an unlocked sidecar `<lock>.info`.
 fn sidecar(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
-    s.push(".info");
+    s.push(SIDECAR_EXT);
     PathBuf::from(s)
 }
 
@@ -169,7 +259,7 @@ fn sidecar(path: &Path) -> PathBuf {
 pub fn holder_info(path: &Path) -> Option<LockInfo> {
     let read = |p: &Path| -> Option<LockInfo> {
         let mut s = String::new();
-        File::open(p).ok()?.take(MAX_LOCK_FILE).read_to_string(&mut s).ok()?;
+        open_read_no_follow(p)?.take(MAX_LOCK_FILE).read_to_string(&mut s).ok()?;
         LockInfo::parse(&s)
     };
     read(path).or_else(|| read(&sidecar(path)))
@@ -256,7 +346,7 @@ impl ProjectLock {
                     file.sync_all()?;
                     if cfg!(windows) {
                         // Best effort: only the "who holds it" display depends on it.
-                        let _ = std::fs::write(sidecar(path), info.to_text());
+                        let _ = write_sidecar(path, &info.to_text());
                     }
                     let how = if had_content { Acquired::TookOverStale(previous) } else { Acquired::Fresh };
                     return Ok((ProjectLock { file, path: path.to_path_buf(), info }, how));
@@ -422,5 +512,47 @@ mod tests {
         std::os::unix::fs::symlink(&target, &p).unwrap();
         assert!(matches!(ProjectLock::acquire(&p), Err(LockError::NotARegularFile(_))));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Security review #17: the sidecar is replaced, never written through a link, and
+    /// a linked sidecar is not read.
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_never_follows_links() {
+        let d = tmp();
+        let lock = d.join("p.lock");
+        let victim = d.join("victim");
+        let info = LockInfo { pid: 1, instance: "00".into(), host: "h".into(), start_unix: 1 }.to_text();
+        assert!(LockInfo::parse(&info).is_some());
+        std::fs::write(&victim, &info).unwrap();
+        std::os::unix::fs::symlink(&victim, sidecar(&lock)).unwrap();
+        assert_eq!(holder_info(&lock), None, "a linked sidecar must not be read");
+        write_sidecar(&lock, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), info);
+        let md = std::fs::symlink_metadata(sidecar(&lock)).unwrap();
+        assert!(md.file_type().is_file());
+        assert_eq!(std::fs::read_to_string(sidecar(&lock)).unwrap(), "new");
+        // The lock file itself is opened without following links too.
+        let linked = d.join("q.lock");
+        std::os::unix::fs::symlink(&victim, &linked).unwrap();
+        assert!(matches!(ProjectLock::acquire(&linked), Err(LockError::NotARegularFile(_))));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn housekeeping_cleans_stale_sidecars_only() {
+        let d = tmp();
+        std::fs::write(d.join("a.lock.info"), "stale").unwrap();
+        std::fs::write(d.join("b.lock.info.0123456789abcdef.itmp"), "stale temp").unwrap();
+        std::fs::write(d.join("unrelated.txt"), "keep").unwrap();
+        let (held, _) = ProjectLock::acquire(&d.join("c.lock")).unwrap();
+        write_sidecar(&d.join("c.lock"), &held.info().to_text()).unwrap();
+        assert_eq!(clean_stale_sidecars(&d).unwrap(), 2);
+        assert!(!d.join("a.lock.info").exists());
+        assert!(!d.join("b.lock.info.0123456789abcdef.itmp").exists());
+        assert!(d.join("c.lock.info").exists() && d.join("unrelated.txt").exists());
+        held.release().unwrap();
+        assert!(!d.join("c.lock.info").exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

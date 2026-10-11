@@ -1766,6 +1766,7 @@ dependencies = [
  "blake3",
  "directories",
  "getrandom 0.4.3",
+ "libc",
  "trash",
  "windows-sys 0.61.2",
  "zstd",

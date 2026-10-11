@@ -392,6 +392,8 @@ pub fn run(dirs: &DataDirs, opts: &Options) -> io::Result<Report> {
         report.unregistered = gone.len();
     }
 
+    report.stale_locks += lock::clean_stale_sidecars(&dirs.locks_dir())?;
+
     // Orphaned temp files.
     let mut temp_dirs: BTreeSet<PathBuf> = BTreeSet::new();
     temp_dirs.insert(dirs.data_dir().to_path_buf());
