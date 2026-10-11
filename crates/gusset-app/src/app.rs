@@ -189,6 +189,9 @@ pub struct App {
     /// Set when the window may close (after the close dialog).
     pub allow_close: bool,
     pub show_iterations: bool,
+    /// Sketch visibility the user chose in the browser (overrides the default: sketches
+    /// used as a profile are hidden, others shown).
+    pub sketch_visibility: std::collections::BTreeMap<String, bool>,
     /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
     pub agents: Agents,
 }
@@ -237,6 +240,7 @@ impl App {
             close_after_save: false,
             allow_close: false,
             show_iterations: false,
+            sketch_visibility: std::collections::BTreeMap::new(),
             agents,
         }
     }
@@ -875,6 +879,26 @@ impl App {
         s
     }
 
+    /// The sketch the open command form edits, if any (its sketch stays visible).
+    pub fn editing_sketch(&self) -> Option<&str> {
+        let form = self.form.as_ref().filter(|f| f.command.starts_with("sketch.") && f.command != "sketch.create")?;
+        let f = form.fields.iter().find(|f| f.name == "sketch")?;
+        let name = f.value.trim();
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// Whether a sketch is drawn in the viewport: the one being edited, one the user
+    /// made visible, or (by default) one no feature consumes as a profile.
+    pub fn sketch_visible(&self, name: &str) -> bool {
+        if self.editing_sketch() == Some(name) {
+            return true;
+        }
+        match self.sketch_visibility.get(name) {
+            Some(&v) => v,
+            None => !consumed_sketches(&self.snapshot.doc).contains(name),
+        }
+    }
+
     pub fn toggle_code(&mut self) {
         self.code = match self.code {
             Some(_) => None,
@@ -985,10 +1009,24 @@ impl App {
                     if let Some(l) = &f.label {
                         text.push_str(&format!(" — {l}"));
                     }
+                    let is_sketch = matches!(f.kind, gusset_doc::FeatureKind::Sketch(_));
+                    let shown = is_sketch && self.sketch_visible(&f.name);
+                    let mut toggled = false;
                     let r = ui.horizontal(|ui| {
+                        if is_sketch {
+                            let label = format!("{} {}", tr("browser.show_sketch"), f.name);
+                            toggled = icons::toggle(ui, shown, Icon::Eye, Icon::EyeOff, &label)
+                                .on_hover_text(tr("browser.show_sketch_help"))
+                                .clicked();
+                        } else {
+                            ui.add_space(icons::toggle_size(ui));
+                        }
                         icons::icon(ui, icon, col);
                         ui.label(text)
                     });
+                    if toggled {
+                        self.sketch_visibility.insert(f.name.clone(), !shown);
+                    }
                     if let Some(FeatureStatus::Failed(e)) = status {
                         let tip = match &e.hint {
                             Some(h) => format!("{}\n{}: {h}", e.message, tr("error.fix")),
@@ -1094,7 +1132,11 @@ impl App {
 
     fn viewport(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
-        let sketches: Vec<&DrawSketch> = self.scene.as_ref().map(|s| s.sketches.iter().collect()).unwrap_or_default();
+        let sketches: Vec<&DrawSketch> = self
+            .scene
+            .as_ref()
+            .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
+            .unwrap_or_default();
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
         let empty = self.viewport.scene().is_empty() && sketches.is_empty();
         if let Some(clicked) = out.clicked {
@@ -1427,6 +1469,20 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
     let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
     Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+}
+
+/// Sketches used as a profile by an extrude or revolve (hidden by default, as in
+/// Fusion and Onshape).
+pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeSet<String> {
+    use gusset_doc::FeatureKind;
+    doc.features
+        .iter()
+        .filter_map(|f| match &f.kind {
+            FeatureKind::Extrude(e) => Some(e.profile.sketch.clone()),
+            FeatureKind::Revolve(r) => Some(r.profile.sketch.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Builds polylines for a solved sketch on its plane.

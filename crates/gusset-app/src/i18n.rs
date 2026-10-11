@@ -31,6 +31,11 @@ const EN: &[(&str, &str)] = &[
     ("browser.parameters", "Parameters"),
     ("browser.bodies", "Bodies"),
     ("browser.add_param", "Add parameter"),
+    ("browser.show_sketch", "Visibility of"),
+    (
+        "browser.show_sketch_help",
+        "Show or hide this sketch in the viewport. Sketches used by a feature are hidden by default.",
+    ),
     ("timeline.title", "Timeline"),
     ("timeline.rollback", "Drag the marker to roll back"),
     ("timeline.expand", "Show iteration graph"),

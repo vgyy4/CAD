@@ -140,10 +140,15 @@ pub fn disclosure_button(ui: &mut Ui, open: bool, label: &str) -> Response {
     resp
 }
 
+/// Width of a [`toggle`] (to align rows that have none).
+pub fn toggle_size(ui: &Ui) -> f32 {
+    icon_size(ui) + crate::theme::SPACE[2]
+}
+
 /// A small icon toggle (e.g. the browser's sketch visibility eye). `label` names it for
 /// screen readers and tests; `on` is its checked state.
 pub fn toggle(ui: &mut Ui, on: bool, on_icon: Icon, off_icon: Icon, label: &str) -> Response {
-    let s = icon_size(ui) + crate::theme::SPACE[2];
+    let s = toggle_size(ui);
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::splat(s), Sense::click());
     resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, ui.is_enabled(), on, label));
     if ui.is_rect_visible(rect) {
