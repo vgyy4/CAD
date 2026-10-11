@@ -547,7 +547,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                     }
                 });
             }
-            other => return Err(unknown_arg(c, "sketch", other, "plane, next_id, label, suppressed")),
+            other => return Err(unknown_arg(c, "sketch", other, "plane, next_id (optional), label, suppressed")),
         }
         Ok(())
     })?;
@@ -557,10 +557,12 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
     }
     let mut def = SketchDef {
         plane: plane.ok_or_else(|| missing(c, "sketch", "plane"))?,
-        next_id: next_id.ok_or_else(|| missing(c, "sketch", "next_id"))?,
+        // Optional in hand-written text: derived from the ids once the block is read.
+        next_id: next_id.unwrap_or(0),
         entities: Vec::new(),
         constraints: Vec::new(),
     };
+    let derive_next_id = next_id.is_none();
     let open_line = c.line;
     loop {
         let Some(raw) = lines.get(i).copied() else {
@@ -650,6 +652,13 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 def.constraints.push(SkConstraint { id, kind: ck, entities, value });
             }
         }
+    }
+    if derive_next_id {
+        // Largest numeric suffix of any id (`p3`, `k12`); ids that do not look like one
+        // are left for the validator to report.
+        let suffix = |id: &str| id.get(1..).and_then(|n| n.parse::<u32>().ok());
+        let max = def.entities.iter().map(|e| e.id.as_str()).chain(def.constraints.iter().map(|k| k.id.as_str()));
+        def.next_id = max.filter_map(suffix).max().map_or(1, |m| m.saturating_add(1));
     }
     Ok((Feature { name, label, note: None, suppressed, kind: FeatureKind::Sketch(def) }, i))
 }

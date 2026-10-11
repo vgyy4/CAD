@@ -498,7 +498,7 @@ pub struct SetText {
 impl Command for SetText {
     const ID: &'static str = "document.set_text";
     const TITLE: &'static str = "Apply code";
-    const DESCRIPTION: &'static str = "Replace the model with the given code-view text. The text is parsed and validated; errors come back with line/column.";
+    const DESCRIPTION: &'static str = "Replace the model with the given code-view text. The text is parsed and validated; errors come back with line/column. A sketch's next_id may be omitted (derived as the largest id + 1).";
     const CATEGORY: Category = Category::Document;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

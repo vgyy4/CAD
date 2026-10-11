@@ -140,6 +140,21 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn next_id_is_optional_in_hand_written_text() {
+        let src = "gusset 1\nsketch S (plane: XY) {\n  p1 = point(0, 0)\n  p2 = point(5, 0)\n  l7 = line(p1, p2)\n  k9 = horizontal(l7)\n}\nsketch E (plane: XZ) {\n}\n";
+        let doc = Document::from_text(src).unwrap();
+        let printed = doc.to_text();
+        // Derived as max id + 1 (k9 -> 10; empty -> 1) and printed canonically.
+        assert!(printed.contains("sketch S (plane: XY, next_id: 10) {"), "{printed}");
+        assert!(printed.contains("sketch E (plane: XZ, next_id: 1) {"), "{printed}");
+        assert_eq!(Document::from_text(&printed).unwrap(), doc);
+        // An explicit value is kept.
+        let doc =
+            Document::from_text("gusset 1\nsketch S (plane: XY, next_id: 40) {\n  p1 = point(0, 0)\n}\n").unwrap();
+        assert!(doc.to_text().contains("next_id: 40"));
+    }
+
+    #[test]
     fn comments_ending_in_carriage_returns_are_stable() {
         // Found by fuzzing: extra `\r`s before the line end used to stay in the comment,
         // so every print/parse cycle removed one.
