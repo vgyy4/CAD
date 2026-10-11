@@ -5,6 +5,7 @@ use crate::agents::AgentRegistry;
 use crate::approval::{ApprovalDecision, ApprovalProvider, ApprovalRequest, DenyApprovals, PendingApprovals};
 use crate::guidance::{INSTRUCTIONS, SECURITY_GUIDELINES, tool_description};
 use crate::json_ext::JsonExt;
+use crate::limits::{Class, RateLimiter};
 use crate::render::{MAX_PNG_BYTES, RenderBody, RenderRequest, RenderScene, ViewRenderer, is_png};
 use crate::sanitize::{Sanitizer, TextStore, clean_short};
 use gusset_commands::{CmdCtx, CommandError, CommandSpec, registry};
@@ -41,7 +42,8 @@ pub(crate) struct Shared {
     renderer: RwLock<Option<Arc<dyn ViewRenderer>>>,
     /// The in-app prompt when the GUI hosts the session (`None`: headless).
     approvals: RwLock<Option<Arc<dyn ApprovalProvider>>>,
-    agents: AgentRegistry,
+    pub(crate) agents: AgentRegistry,
+    limits: RateLimiter,
     texts: TextStore,
     pending: PendingApprovals,
     diagnostics: RwLock<Option<String>>,
@@ -57,11 +59,15 @@ impl std::fmt::Debug for Shared {
 
 impl Shared {
     pub(crate) fn new(host: HostHandle) -> Shared {
+        let agents = AgentRegistry::default();
+        // Agent names already in the project are never handed out again (review L6).
+        agents.reserve(recorded_agents(&host));
         Shared {
             host,
             renderer: RwLock::new(None),
             approvals: RwLock::new(None),
-            agents: AgentRegistry::default(),
+            agents,
+            limits: RateLimiter::default(),
             texts: TextStore::default(),
             pending: PendingApprovals::default(),
             diagnostics: RwLock::new(None),
@@ -98,6 +104,29 @@ impl Shared {
         self.set_diagnostics(d.clone());
         d
     }
+}
+
+/// Every agent name recorded in the project: branch creators and event actors.
+fn recorded_agents(host: &HostHandle) -> Vec<String> {
+    host.with_session(|s| {
+        let h = s.history();
+        let mut out: Vec<String> = Vec::new();
+        let mut add = |a: &Actor| {
+            if let Actor::Agent(n) = a {
+                out.push(n.clone());
+            }
+        };
+        for b in h.branches().into_iter().chain(h.deleted_branches()) {
+            add(&b.created_by);
+        }
+        for e in h.events() {
+            add(&e.actor);
+        }
+        out.sort();
+        out.dedup();
+        out
+    })
+    .unwrap_or_default()
 }
 
 /// How a handler instance is reached; decides how agent identity is keyed.
@@ -285,6 +314,11 @@ impl GussetMcp {
         self.shared.agents.name_for(&key, &client)
     }
 
+    /// Counts a request against the agent's identity and the global budget.
+    fn limit(&self, agent: &str, class: Class) -> Result<(), CommandError> {
+        self.shared.limits.check(agent, class).map_err(|r| RateLimiter::error(class, r))
+    }
+
     fn sanitize(&self, agent: &str, v: Value) -> Value {
         Sanitizer::new(&self.shared.texts, agent).sanitize(v)
     }
@@ -316,6 +350,9 @@ impl GussetMcp {
         if args.get("approved").is_some() {
             let e = CommandError::new("not_allowed", "approval cannot be passed as an argument")
                 .hint("the server asks the user itself when approval is needed");
+            return self.err_result(&agent, &e).into();
+        }
+        if let Err(e) = self.limit(&agent, Class::Command) {
             return self.err_result(&agent, &e).into();
         }
         let tool = req.name.to_string();
@@ -441,6 +478,12 @@ impl GussetMcp {
         if let Err(m) = request.validate() {
             return self.err_result(&agent, &CommandError::args(m));
         }
+        if let Err(e) = self.limit(&agent, Class::Render) {
+            return self.err_result(&agent, &e);
+        }
+        let Some(_slot) = self.shared.limits.render_slot() else {
+            return self.err_result(&agent, &RateLimiter::error(Class::Render, crate::limits::RetryAfter(1)));
+        };
         let Some(renderer) = self.shared.renderer() else {
             let e = CommandError::new("renderer_unavailable", "no renderer is available in this session (headless)")
                 .hint("check your work with query_model and query_body instead");
@@ -502,6 +545,9 @@ impl GussetMcp {
             Ok(a) => a,
             Err(e) => return self.err_result(&agent, &CommandError::args(format!("get_text: {e}"))),
         };
+        if let Err(e) = self.limit(&agent, Class::Text) {
+            return self.err_result(&agent, &e);
+        }
         match self.shared.texts.get(&agent, &a.reference, &a.path, a.offset, a.limit) {
             // Already cleaned and wrapped by the store; do not re-truncate.
             Ok(v) => CallToolResult::structured(v),
@@ -710,6 +756,11 @@ impl ServerHandler for GussetMcp {
                 meta: None,
             }])
         };
+        let agent = self.agent(&context);
+        if let Err(e) = self.limit(&agent, Class::Resource) {
+            let v = self.sanitize(&agent, error_json(&e));
+            return Ok(text("application/json", serde_json::to_string_pretty(&v).unwrap_or_default()).into());
+        }
         if uri == format!("{URI_PREFIX}security-guidelines") {
             return Ok(text("text/markdown", SECURITY_GUIDELINES.to_string()).into());
         }
@@ -717,7 +768,6 @@ impl ServerHandler for GussetMcp {
             // Driver-reported names are not ours: strip hidden characters.
             return Ok(text("text/plain", crate::sanitize::strip_hidden(&self.shared.diagnostics()).text).into());
         }
-        let agent = self.agent(&context);
         let v = self.resource_json(&agent, &uri).await?;
         let v = self.sanitize(&agent, v);
         let body = serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into());

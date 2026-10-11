@@ -675,3 +675,87 @@ async fn revoked_bridge_cannot_reconnect_until_allowed() {
     server.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Security review #10/#15, dogfood S6: reads are rate-limited per agent identity, and a
+/// new connection of the same client does not get a fresh budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_limits_hold_across_connections() {
+    let server = McpServer::new(host());
+    server.set_renderer(Some(Arc::new(StubRenderer)));
+    let c = connect(&server, Client::new("viewer", None), false).await;
+    let args = json!({"view": "top", "width": 16, "height": 16});
+    let mut limited = None;
+    for _ in 0..40 {
+        let r = call(&c, "render_view", args.clone()).await;
+        if r.is_error == Some(true) {
+            limited = Some(r);
+            break;
+        }
+    }
+    let r = limited.expect("render_view was never rate-limited");
+    assert_eq!(err_code(&r), "rate_limited");
+    let retry = r.structured_content.as_ref().unwrap()["error"]["details"]["retry_after_s"].as_u64().unwrap();
+    assert!((1..=60).contains(&retry), "{retry}");
+    c.cancel().await.unwrap();
+    // Reconnecting with the same client name: still the same identity, still limited.
+    let c2 = connect(&server, Client::new("viewer", None), false).await;
+    assert_eq!(err_code(&call(&c2, "render_view", args).await), "rate_limited");
+    // Other reads have their own budgets and still work.
+    ok(&call(&c2, "query_model", json!({})).await);
+}
+
+/// Security review #10: legacy HTTP sessions are capped and expire when idle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_sessions_are_capped_and_expire() {
+    let dir = tmpdir("http-sessions");
+    let server = McpServer::new(host());
+    let info = server
+        .start_http(HttpOptions {
+            connection_dir: Some(dir.clone()),
+            max_sessions: 3,
+            session_idle: std::time::Duration::from_millis(400),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let port = info.port;
+    let token = server.bearer_token().unwrap();
+    let headers = [
+        ("host", format!("127.0.0.1:{port}")),
+        ("content-type", "application/json".to_string()),
+        ("accept", "application/json, text/event-stream".to_string()),
+        ("authorization", format!("Bearer {token}")),
+    ];
+    for _ in 0..3 {
+        assert_eq!(raw(port, &headers, INIT).await.0, 200);
+    }
+    assert_eq!(server.http_session_count(), 3);
+    assert_eq!(raw(port, &headers, INIT).await.0, 503, "a fourth session is refused");
+    assert_eq!(server.http_session_count(), 3);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_eq!(raw(port, &headers, INIT).await.0, 200, "idle sessions expired");
+    assert_eq!(server.http_session_count(), 1);
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Code review L6: after an app restart a new connection does not inherit an older
+/// agent's branch; it gets a fresh identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_identity_is_not_reused_after_restart() {
+    let first = McpServer::new(host());
+    let c = connect(&first, Client::new("bot", None), false).await;
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+    c.cancel().await.unwrap();
+    let history = first.host().with_session(|s| s.history().clone()).unwrap();
+    // "Restart": a new server on a session reopened from the same history.
+    let session = Session::from_history(history, Arc::new(MockKernel));
+    let second = McpServer::new(Host::spawn(session, None));
+    let c = connect(&second, Client::new("bot", None), false).await;
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "2 mm"})).await);
+    let names = second
+        .host()
+        .with_session(|s| s.history().branches().iter().map(|b| b.name.clone()).collect::<Vec<_>>())
+        .unwrap();
+    assert!(names.contains(&"agent/bot-1".to_string()) && names.contains(&"agent/bot-2".to_string()), "{names:?}");
+}

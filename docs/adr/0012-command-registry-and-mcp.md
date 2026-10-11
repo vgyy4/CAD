@@ -49,7 +49,17 @@ same live model.
   1. **In the GUI app:** Streamable HTTP on `127.0.0.1:<random port>` (and `[::1]`),
      path `/mcp`, with origin enforcement on (`enforce_origin_validation`, because
      rmcp's default empty allow-list does nothing), `Host` validation, a bearer token
-     (constant-time compare), request size limits and per-session rate limits.
+     (constant-time compare), request size limits, rate limits per connection and for
+     all connections together, and at most 32 legacy MCP sessions, each closed after
+     10 minutes without requests.
+- **Rate limits per agent identity** (amended 2026-10-11, security review #10/#15):
+  the identity is the agent name without its connection counter (`claude-code-3` →
+  `claude-code`), so reconnecting does not reset a budget, and every budget also has a
+  global share for all agents. Per minute (identity / all agents): tool calls 600/1200,
+  `render_view` 30/60 (and two renders at a time), `get_text` 300/600, resource reads
+  300/600. A refusal is `rate_limited` with `details.retry_after_s`. Agent names are
+  never reused, also after a restart: names recorded in the project history are
+  skipped, so a new connection never inherits an older agent's branch.
   2. **`gusset mcp [file]`** stdio bridge: if the app is running with that project (or
      any project, when no file is given), it reads the connection file
      (`<runtime_dir>/mcp/<instance>.json`: port + token, mode 0600 / user-only ACL) and

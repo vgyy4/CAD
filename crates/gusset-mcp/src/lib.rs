@@ -26,6 +26,7 @@ pub mod guidance;
 pub mod http;
 pub mod identity;
 mod json_ext;
+pub mod limits;
 pub mod render;
 pub mod sanitize;
 #[cfg(feature = "render")]
@@ -183,6 +184,16 @@ impl McpServer {
     #[must_use]
     pub fn bearer_token(&self) -> Option<String> {
         self.http.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(http::Endpoint::token)
+    }
+
+    /// Live legacy MCP sessions on the HTTP endpoint.
+    #[must_use]
+    pub fn http_session_count(&self) -> usize {
+        self.http
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, http::Endpoint::session_count)
     }
 
     /// True after [`McpServer::revoke`] until [`McpServer::allow_agents`].

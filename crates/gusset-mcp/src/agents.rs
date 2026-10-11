@@ -1,8 +1,15 @@
 //! Agent identity: every MCP connection (or, for stateless 2026-07-28 HTTP requests,
 //! every client name) gets a stable agent name `<client>-<n>`, used for
 //! `CmdCtx::agent` and thus for the agent's branch `agent/<client>-<n>`.
+//!
+//! Names are never reused, also across app restarts: the registry is seeded with every
+//! agent name already recorded in the project's history ([`AgentRegistry::reserve`]),
+//! so a new connection never silently inherits another agent's `agent/<name>` branch
+//! (code review L6). An agent that wants to continue old work switches to that branch
+//! explicitly. Rate limits are keyed by the name without `-<n>` ([`crate::limits`]),
+//! so they hold across connections and restarts of the client.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 /// Turns a client-supplied name into `[a-z0-9-]{1,32}` (default `agent`).
@@ -30,6 +37,8 @@ pub fn sanitize_client_name(name: &str) -> String {
 struct Inner {
     by_key: HashMap<String, String>,
     counters: HashMap<String, u32>,
+    /// Every name handed out or found in the project history.
+    taken: HashSet<String>,
 }
 
 /// Maps connection keys to agent names.
@@ -48,14 +57,28 @@ impl AgentRegistry {
             return n.clone();
         }
         let base = sanitize_client_name(client);
-        let c = g.counters.entry(base.clone()).or_insert(0);
-        *c += 1;
-        let name = format!("{base}-{c}");
+        let mut n = g.counters.get(&base).copied().unwrap_or(0);
+        let name = loop {
+            n = n.saturating_add(1);
+            let candidate = format!("{base}-{n}");
+            if !g.taken.contains(&candidate) || n == u32::MAX {
+                break candidate;
+            }
+        };
+        g.counters.insert(base, n);
         if g.by_key.len() >= MAX_KEYS {
             g.by_key.clear();
         }
+        g.taken.insert(name.clone());
         g.by_key.insert(key.to_string(), name.clone());
         name
+    }
+
+    /// Marks agent names as used (those recorded in the project history), so they are
+    /// never handed to a new connection.
+    pub fn reserve<I: IntoIterator<Item = String>>(&self, names: I) {
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.taken.extend(names);
     }
 
     /// Forgets connection `key` (the connection closed).
@@ -78,5 +101,9 @@ mod tests {
         assert_eq!(r.name_for("conn:1", "Claude Code"), "claude-code-1");
         assert_eq!(r.name_for("conn:2", "claude-code"), "claude-code-2");
         assert_eq!(r.name_for("conn:1", "other"), "claude-code-1");
+        // After a restart, names already in the project are skipped.
+        let r = AgentRegistry::default();
+        r.reserve(["claude-code-1".to_string(), "claude-code-2".to_string()]);
+        assert_eq!(r.name_for("conn:1", "Claude Code"), "claude-code-3");
     }
 }
