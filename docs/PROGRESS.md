@@ -24,6 +24,10 @@ review (code review, security review, MCP dogfooding with the real kernel) ran o
   in docs/screenshots/.
 - MCP: rmcp server (HTTP on localhost with token + stdio bridge), tool parity with the
   registry, `render_view`, agent branches, approvals, read-only mode, persisted audit.
+- Standing "always allow" approvals from the in-app prompt (per action / all actions,
+  optionally remembered), revocable in the Agents panel, suspended by the kill switch
+  (ADR 0012 "Standing approvals"). Milestone security fixes merged (MCP, sandbox,
+  storage, app); see docs/SECURITY_REVIEWS.md.
 - CI: fmt/clippy/test on Linux x64/ARM64, Windows x64/ARM64, macOS ARM; cargo-deny,
   cargo-audit, license inventory, native OCCT builds + kernel tests, fuzzing (11
   targets) and Miri; release workflow (packages, SBOM, attestations; signing off).
@@ -36,6 +40,13 @@ review (code review, security review, MCP dogfooding with the real kernel) ran o
 - MCP/agent security (forged elicitation, kill switch, rate limits, export names) and
   wiring STEP/IGES/mesh import into CLI/app sessions.
 - Sandbox allow-list, Windows DLL hardening, untrusted B-rep blobs in project files.
+
+## Blocked
+- **GitHub Actions has not run any job since 2026-10-11 16:48 UTC.** Every job fails
+  within about 2 s, with no log and no output. The likely cause is the private repo's
+  Actions minutes or spending limit, but this is not confirmed. The owner needs to check
+  Settings → Billing, raise the limit, or make the repository public. Local checks
+  (fmt, clippy, 491 tests) are green.
 
 ## Next
 1. Modeling-core review items: persistent-naming golden tests (H7), sketch solver
