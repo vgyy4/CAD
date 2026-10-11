@@ -1564,6 +1564,7 @@ dependencies = [
  "gusset-render",
  "gusset-store",
  "gusset-units",
+ "gusset-worker",
  "serde_json",
  "tokio",
 ]

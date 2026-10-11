@@ -22,6 +22,13 @@ fn main() -> eframe::Result {
     }
     let (k, note) = kernel();
     let dirs = gusset_store::paths::DataDirs::from_os();
+    // B-rep blobs validated by the sandboxed worker once are trusted for this
+    // installation (ADR 0008 §4); without the list they are re-validated per process.
+    if let Some(d) = &dirs
+        && let Err(e) = gusset_worker::trust::persist_to(&d.data_dir().join("trusted-blobs"))
+    {
+        eprintln!("warning: trusted-blob list unavailable: {e}");
+    }
     let mut app = App::new(k, dirs);
     app.kernel_note = note;
     if let Some(path) = std::env::args_os().nth(1)
