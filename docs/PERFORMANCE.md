@@ -13,7 +13,7 @@ under the software renderer for frame times.
 | Orbit frame time, typical part | 60 fps (16.7 ms) | not yet measured | scripted scenario |
 | Large assembly | ≥ 30 fps | not yet measured | |
 | Software renderer | ≥ 15 fps | not yet measured | CI (llvmpipe) |
-| Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | not yet measured | criterion `rebuild_100` |
+| Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | 0.12 s incremental, 3.0 s full (OCCT, plate + 49 bosses, dev build) | `gusset-cli` test `rebuild_100_budget` (OCCT CI job) |
 | Binary size (app + OCCT libs, compressed) | < 60 MB | not yet measured | release workflow |
 | History overhead | ≤ 450 bytes per single-parameter edit, independent of model size (revised from "≤ 15 % of the parametric size per 100 edits", see below) | ~370 bytes per edit (29 % of a 1,000-feature model per 100 edits; was ~7.5 KB per edit with 200 features) | `gusset-project` test `history_overhead_budget` |
 | Project save (parametric only) | < 50 ms for 1,000 features | 33 ms (was 166 ms) | `gusset-project` `perf_save_and_snapshot` (see log) |
