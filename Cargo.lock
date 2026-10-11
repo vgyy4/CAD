@@ -1561,6 +1561,7 @@ dependencies = [
  "gusset-kernel-occt",
  "gusset-mcp",
  "gusset-project",
+ "gusset-render",
  "gusset-store",
  "gusset-units",
  "serde_json",

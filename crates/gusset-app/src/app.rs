@@ -12,7 +12,7 @@ use crate::forms::{self, Form};
 use crate::i18n::tr;
 use crate::link::{self, Snapshot, Waker};
 use crate::theme::{self, ThemeKind};
-use crate::viewport::{self, Camera, DrawBody, DrawSketch, Hit};
+use crate::viewport::{BodyInfo, DrawSketch, Hit, Viewport};
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
 use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
@@ -125,18 +125,21 @@ pub(crate) enum Done {
     Refresh(Result<(), CommandError>),
 }
 
-/// Drawable scene computed on the model thread.
+/// Drawable scene computed on the model thread (tessellation, render meshes and their
+/// BVHs are all built there).
 pub(crate) struct SceneData {
     key: (NodeId, Option<usize>),
-    bodies: Vec<DrawBody>,
+    render: gusset_render::Scene,
+    bodies: Vec<BodyInfo>,
+    /// Bodies the renderer could not take.
+    mesh_errors: Vec<String>,
     sketches: Vec<DrawSketch>,
     eval: Arc<Evaluation>,
 }
 
-/// Cached drawable scene for one evaluated state.
-struct Scene {
+/// What is drawn for one evaluated state (the bodies live in the [`Viewport`]).
+struct Drawn {
     key: (NodeId, Option<usize>),
-    bodies: Vec<DrawBody>,
     sketches: Vec<DrawSketch>,
     eval: Arc<Evaluation>,
 }
@@ -168,8 +171,8 @@ pub struct App {
     pub theme: ThemeKind,
     pub reduce_motion: bool,
     theme_applied: Option<ThemeKind>,
-    pub camera: Camera,
-    fit_pending: bool,
+    /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
+    pub viewport: Viewport,
     pub selection: Vec<Hit>,
     pub form: Option<Form>,
     pub palette: Option<String>,
@@ -178,7 +181,7 @@ pub struct App {
     pub notice: Option<Notice>,
     /// Shown once when the real kernel is unavailable.
     pub kernel_note: Option<String>,
-    scene: Option<Scene>,
+    scene: Option<Drawn>,
     scene_requested: Option<(NodeId, Option<usize>)>,
     last_snapshot: Instant,
     close_after_save: bool,
@@ -219,8 +222,7 @@ impl App {
             theme: ThemeKind::Dark,
             reduce_motion: false,
             theme_applied: None,
-            camera: Camera::default(),
-            fit_pending: true,
+            viewport: Viewport::default(),
             selection: Vec::new(),
             form: None,
             palette: None,
@@ -263,6 +265,12 @@ impl App {
     /// answers with a clear "no renderer" error.
     pub fn set_renderer(&mut self, renderer: Option<Arc<dyn gusset_mcp::ViewRenderer>>) {
         self.agents.set_renderer(renderer);
+    }
+
+    /// Renders the viewport on eframe's wgpu device. Without one (`None`) the viewport
+    /// falls back to the CPU rasterizer.
+    pub fn set_wgpu(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>) {
+        self.viewport.set_gpu(render_state.map(crate::viewport_gpu::GpuTarget::from_render_state));
     }
 
     pub(crate) fn ctx() -> CmdCtx {
@@ -398,8 +406,15 @@ impl App {
                 if self.scene.as_ref().is_none_or(|s| s.key != data.key) {
                     self.selection.clear();
                 }
-                self.scene =
-                    Some(Scene { key: data.key, bodies: data.bodies, sketches: data.sketches, eval: data.eval });
+                if !data.mesh_errors.is_empty() {
+                    self.notice = Some(Notice {
+                        text: format!("Some bodies cannot be displayed: {}", data.mesh_errors.join("; ")),
+                        hint: None,
+                        error: true,
+                    });
+                }
+                self.viewport.set_scene(data.render, data.bodies);
+                self.scene = Some(Drawn { key: data.key, sketches: data.sketches, eval: data.eval });
             }
             Done::Scene(Ok(Err(e)) | Err(e)) => {
                 self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
@@ -623,7 +638,8 @@ impl App {
         self.scene = None;
         self.scene_requested = None;
         self.selection.clear();
-        self.fit_pending = true;
+        self.viewport.set_scene(gusset_render::Scene::new(), Vec::new());
+        self.viewport.fit_pending = true;
     }
 
     /// Opens a project file in this window (replacing the current project).
@@ -829,7 +845,7 @@ impl App {
                     self.toggle_code();
                 }
                 if ui.button("Fit view").clicked() {
-                    self.fit_pending = true;
+                    self.viewport.fit_pending = true;
                 }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
             });
@@ -1069,15 +1085,9 @@ impl App {
 
     fn viewport(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
-        let (bodies, sketches) =
-            self.scene.as_ref().map(|s| (s.bodies.as_slice(), s.sketches.as_slice())).unwrap_or_default();
-        if self.fit_pending
-            && let Some((lo, hi)) = viewport::bounds(bodies, sketches)
-        {
-            self.camera.fit(lo, hi);
-            self.fit_pending = false;
-        }
-        let out = viewport::show(ui, &mut self.camera, &pal, bodies, sketches, &self.selection);
+        let sketches: Vec<&DrawSketch> = self.scene.as_ref().map(|s| s.sketches.iter().collect()).unwrap_or_default();
+        let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
+        let empty = self.viewport.scene().is_empty() && sketches.is_empty();
         if let Some(clicked) = out.clicked {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             match clicked {
@@ -1092,7 +1102,7 @@ impl App {
                 None => self.selection.clear(),
             }
         }
-        if bodies.is_empty() && sketches.is_empty() {
+        if empty {
             self.empty_state(ui);
         }
     }
@@ -1360,6 +1370,19 @@ impl App {
     }
 }
 
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        App::ui(self, ui);
+    }
+
+    fn on_exit(&mut self) {
+        // Unsaved work survives a forced exit through the recovery slot.
+        self.maybe_snapshot(true);
+        // Stop the MCP endpoint (deletes the connection file) and deny pending approvals.
+        self.agents.shutdown();
+    }
+}
+
 impl Drop for App {
     fn drop(&mut self) {
         // Stop the model thread; the project's lock is released when it drops.
@@ -1379,21 +1402,22 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     let eval = s.evaluate(&Actor::User)?;
     let kernel = s.kernel().clone();
     let tp = TessellationParams::default();
-    let bodies = eval
+    let meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = eval
         .bodies
         .iter()
         .filter_map(|body| {
             let mesh = kernel.tessellate(&body.shape, &tp).ok()?;
-            Some(DrawBody {
+            let info = BodyInfo {
                 name: body.name.clone(),
-                mesh,
                 face_names: body.names.faces.iter().map(ToString::to_string).collect(),
                 edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
-            })
+            };
+            Some((info, mesh))
         })
         .collect();
+    let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
     let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
-    Ok(SceneData { key: (head, rollback), bodies, sketches, eval })
+    Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
 }
 
 /// Builds polylines for a solved sketch on its plane.
