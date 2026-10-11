@@ -92,9 +92,18 @@
    validation, project-folder path confinement, confirm flags, human approval for
    high-impact actions, audit log, rate limits, read-only mode and a kill switch.
 6. **Code loading hardening** at the top of `main`, before any other code runs:
-   - Windows: `SetDefaultDllDirectories`, and OCCT DLLs are loaded by absolute path
-     (delay-load or explicit `LoadLibraryExW` with
-     `LOAD_LIBRARY_SEARCH_APPLICATION_DIR`).
+   - Windows: the first statement of the app's, CLI's and worker's `main` is
+     `gusset_hw::codeload::harden()`, which calls
+     `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)` and
+     `SetDllDirectoryW("")`. DLLs loaded by bare name at run time (wgpu's
+     `dxcompiler.dll` and `libEGL.dll`) are then looked up only in the install
+     directory and System32, never the current directory or `PATH`. If such an
+     optional DLL is not installed, the load fails closed: wgpu falls back from DXC to
+     FXC (`d3dcompiler_47.dll`, System32), and the GL backend reports itself
+     unavailable.
+   - The CLI and worker link with `/DEPENDENTLOADFLAG:0xA00` (application directory
+     and System32) for their load-time imports such as the OCCT DLLs. The app needs
+     the same flag in a build script (open: tracked in docs/SECURITY_REVIEWS.md).
    - Linux: RPATH `$ORIGIN/../lib/gusset` only.
    - macOS: `@executable_path/../Frameworks` plus the hardened runtime.
 7. **External programs** (only Blender for now) are launched only from an absolute path

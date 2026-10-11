@@ -6,8 +6,15 @@ use std::io::{Read, Write};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // Sandbox first, before any untrusted byte is read.
-    let report = gusset_sandbox::lockdown(&gusset_sandbox::Limits::default()).to_text();
+    // Code-loading hardening first (Windows DLL search path; ADR 0008 §6). A failure is
+    // reported with the sandbox report.
+    let codeload = gusset_hw::codeload::harden();
+    // Sandbox next, before any untrusted byte is read.
+    let mut sandbox = gusset_sandbox::lockdown(&gusset_sandbox::Limits::default());
+    if let Some(e) = codeload {
+        sandbox.missing.push(format!("DLL search-path hardening ({e})"));
+    }
+    let report = sandbox.to_text();
     let mut input = Vec::new();
     if std::io::stdin().take(MAX_INPUT + 64).read_to_end(&mut input).is_err() {
         return ExitCode::from(3);

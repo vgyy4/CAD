@@ -1793,6 +1793,7 @@ name = "gusset-worker"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
  "gusset-occt-sys",

@@ -31,6 +31,10 @@ impl eframe::App for Gui {
 }
 
 fn main() -> eframe::Result {
+    // Code-loading hardening before anything else (Windows DLL search path; ADR 0008 §6).
+    if let Some(e) = gusset_hw::codeload::harden() {
+        eprintln!("warning: {e}");
+    }
     let (k, note) = kernel();
     let dirs = gusset_store::paths::DataDirs::from_os();
     let mut app = App::new(k, dirs);
