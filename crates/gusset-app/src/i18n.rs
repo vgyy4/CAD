@@ -99,6 +99,7 @@ const EN: &[(&str, &str)] = &[
     ("approval.action", "Action"),
     ("approval.reason", "Why approval is needed"),
     ("approval.arguments", "Arguments"),
+    ("approval.affects", "Affects"),
     ("approval.timeout", "Denied automatically in"),
     ("approval.queued", "more request(s) waiting"),
     ("approval.approve", "Approve"),

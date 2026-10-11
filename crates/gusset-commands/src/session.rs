@@ -121,13 +121,28 @@ impl Session {
     }
 
     pub fn from_history(history: History, kernel: Arc<dyn Kernel>) -> Session {
+        // The persisted part of the agent audit log comes back with the project.
+        let audit = history
+            .events()
+            .iter()
+            .filter_map(|e| match &e.event {
+                gusset_history::Event::AgentAction { command, branch, outcome, .. } => Some(AuditEntry {
+                    time: e.time,
+                    actor: e.actor.clone(),
+                    command: command.clone(),
+                    branch: branch.and_then(|b| history.branch(b).ok()).map(|b| b.name.clone()),
+                    outcome: outcome.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
         Session {
             importer: None,
             history,
             evaluator: Evaluator::new(kernel),
             current: BTreeMap::new(),
             config: SessionConfig::default(),
-            audit: Vec::new(),
+            audit,
             cache: None,
             rate: BTreeMap::new(),
             project_dir: None,
@@ -177,13 +192,24 @@ impl Session {
             Actor::User => self.history.main(),
             Actor::Agent(name) => {
                 let base = format!("agent/{name}");
-                let existing = self.history.branch_by_name(&base).map(|b| b.id);
+                // Only a branch this agent created, and never main: a branch merely
+                // *named* like the agent's (e.g. main renamed to it) is not reused.
+                let main = self.history.main();
+                let existing = self
+                    .history
+                    .branch_by_name(&base)
+                    .filter(|b| b.id != main && b.created_by == ctx.actor)
+                    .map(|b| b.id);
                 match existing {
                     Some(b) => b,
                     None => {
                         let head = self.history.head(self.history.main()).map_err(CommandError::history)?;
+                        let name = (1..)
+                            .map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") })
+                            .find(|n| self.history.branch_by_name_folded(n).is_none())
+                            .unwrap_or(base);
                         self.history_mut()
-                            .create_branch(&ctx.hctx(), head, Some(&base))
+                            .create_branch(&ctx.hctx(), head, Some(&name))
                             .map_err(CommandError::history)?
                     }
                 }

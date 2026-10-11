@@ -5,7 +5,7 @@
 //! can label and sanitize it as untrusted (spec: prompt injection).
 
 use crate::error::CommandError;
-use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, spec};
+use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, WRITE_FILE, spec};
 use crate::session::{CmdCtx, Session};
 use gusset_doc::validate::{creates_body, validate_feature_name};
 use gusset_doc::*;
@@ -95,6 +95,41 @@ fn edit(
 }
 
 /// Inserts a feature at the rollback marker (or the end).
+/// The name of the last body created before position `at` (bodies are named after the
+/// feature that created them).
+fn latest_body_before(doc: &Document, at: usize) -> Option<String> {
+    doc.features.iter().take(at).rev().find(|f| creates_body(f)).map(|f| f.name.clone())
+}
+
+/// Combines with "the latest body" because no target was stored (older documents).
+fn implicit_target(f: &Feature) -> bool {
+    match &f.kind {
+        FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
+        FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
+        _ => false,
+    }
+}
+
+/// The body an add/cut/intersect combines with, resolved when the feature is created and
+/// stored in the document, so later deletes or reorders can never silently retarget it.
+fn target_body(
+    doc: &Document,
+    rollback: Option<usize>,
+    op: BodyOp,
+    explicit: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    if op == BodyOp::New {
+        return Ok(None);
+    }
+    if explicit.is_some() {
+        return Ok(explicit);
+    }
+    let at = rollback.unwrap_or(doc.features.len()).min(doc.features.len());
+    latest_body_before(doc, at).map(Some).ok_or_else(|| {
+        CommandError::args("there is no body to add to or cut from yet").hint("use op: new for the first body")
+    })
+}
+
 fn insert_feature(doc: &mut Document, rollback: Option<usize>, f: Feature) {
     match rollback {
         Some(r) if r <= doc.features.len() => doc.features.insert(r, f),
@@ -209,6 +244,32 @@ fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
         .ok_or_else(|| CommandError::not_found(format!("no branch '{r}'")).hint("use branch.list to see branches"))
 }
 
+/// Plain-language description of the branches a command's arguments refer to, for
+/// approval prompts: ids alone ("b2") would let an agent hide which branch is affected.
+/// Names are user/agent text; callers show the result as plain text.
+#[must_use]
+pub fn describe_branch_args(s: &Session, args: &Value) -> String {
+    let mut out = Vec::new();
+    let main = s.history().main();
+    if let Some(map) = args.as_object() {
+        for (k, v) in map {
+            let Some(r) = v.as_str() else { continue };
+            if !matches!(k.as_str(), "branch" | "from" | "into" | "source" | "target") {
+                continue;
+            }
+            let Ok(b) = find_branch(s, r) else { continue };
+            let Ok(br) = s.history().branch(b) else { continue };
+            let who = match &br.created_by {
+                gusset_history::Actor::User => "the user".to_string(),
+                gusset_history::Actor::Agent(a) => format!("agent {a}"),
+            };
+            let role = if b == main { "THE CURRENT MAIN BRANCH" } else { "not main" };
+            out.push(format!("{k}: {b} = \"{}\", created by {who}, {role}", br.name));
+        }
+    }
+    out.join("; ")
+}
+
 /// A node by id (`n12`) or the head of a branch reference.
 fn find_node(s: &Session, r: &str) -> Result<NodeId, CommandError> {
     if let Some(n) = parse_node(r)
@@ -276,10 +337,13 @@ impl Command for SetText {
             ce.details(json!({"line": e.line, "column": e.column}))
         })?;
         let old = s.document(&ctx.actor)?;
+        let param = |d: &gusset_doc::Document, n: &str| d.params.iter().find(|p| p.name == n).cloned();
         let changed = old.features.iter().filter(|f| new.feature(&f.name) != Some(*f)).count()
-            + new.features.iter().filter(|f| old.feature(&f.name).is_none()).count();
+            + new.features.iter().filter(|f| old.feature(&f.name).is_none()).count()
+            + old.params.iter().filter(|p| param(&new, &p.name).as_ref() != Some(*p)).count()
+            + new.params.iter().filter(|p| param(&old, &p.name).is_none()).count();
         if ctx.is_agent() && s.config.approvals_required && !ctx.approved && changed > s.config.bulk_threshold {
-            return Err(CommandError::approval(&format!("changing {changed} features at once")));
+            return Err(CommandError::approval(&format!("changing {changed} features or parameters at once")));
         }
         edit(s, ctx, "Edit code", |doc, _| {
             *doc = new;
@@ -812,6 +876,7 @@ impl Command for Extrude {
         let op = op_of(&self.op)?;
         edit(s, ctx, "Extrude", |doc, rb| {
             let name = feature_name(doc, self.name, "Extrude")?;
+            let body = target_body(doc, rb, op, self.body)?;
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Extrude(ExtrudeDef {
@@ -819,7 +884,7 @@ impl Command for Extrude {
                     distance,
                     symmetric: self.symmetric,
                     op,
-                    body: if op == BodyOp::New { None } else { self.body },
+                    body,
                 }),
             );
             insert_feature(doc, rb, f);
@@ -868,6 +933,7 @@ impl Command for Revolve {
         };
         edit(s, ctx, "Revolve", |doc, rb| {
             let name = feature_name(doc, self.name, "Revolve")?;
+            let body = target_body(doc, rb, op, self.body)?;
             let f = Feature::new(
                 name.clone(),
                 FeatureKind::Revolve(RevolveDef {
@@ -875,7 +941,7 @@ impl Command for Revolve {
                     axis,
                     angle,
                     op,
-                    body: if op == BodyOp::New { None } else { self.body },
+                    body,
                 }),
             );
             insert_feature(doc, rb, f);
@@ -978,15 +1044,24 @@ impl Command for FeatureDelete {
                 return Err(CommandError::args(format!("{} is used by {}", self.name, users.join(", ")))
                     .hint("delete or edit those features first"));
             }
-            // A body consumed by later ops (op: add/cut without explicit body) is also a dependency.
+            // Older documents may combine with "the latest body" implicitly. Deleting that
+            // body would silently retarget them to another body, so refuse instead.
             if doc.features.get(i).is_some_and(creates_body) {
-                let later_default = doc.features.iter().skip(i + 1).find(|f| match &f.kind {
-                    FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
-                    FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
-                    _ => false,
-                });
-                if let Some(u) = later_default {
-                    let _ = u;
+                let implicit: Vec<String> = doc
+                    .features
+                    .iter()
+                    .enumerate()
+                    .skip(i + 1)
+                    .filter(|(j, f)| implicit_target(f) && latest_body_before(doc, *j).as_deref() == Some(&self.name))
+                    .map(|(_, f)| f.name.clone())
+                    .collect();
+                if !implicit.is_empty() {
+                    return Err(CommandError::args(format!(
+                        "{} is the body that {} add to or cut from",
+                        self.name,
+                        implicit.join(", ")
+                    ))
+                    .hint("set an explicit target body on those features first, or delete them"));
                 }
             }
             doc.features.remove(i);
@@ -1225,6 +1300,17 @@ impl Command for BranchList {
     }
 }
 
+/// Names an agent may not give a branch: anything that reads as "main" (spoofing the
+/// user's main branch).
+fn agent_branch_name_ok(name: &str) -> Result<(), CommandError> {
+    let folded: String = name.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    if folded == "main" || folded == "master" {
+        return Err(CommandError::new("not_allowed", "agents cannot name a branch like the main branch")
+            .hint("pick a descriptive name; the user decides what becomes main"));
+    }
+    Ok(())
+}
+
 /// Creates a branch from your current state (or any node) and switches to it.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1251,6 +1337,11 @@ impl Command for BranchCreate {
                 s.history().head(b).map_err(CommandError::history)?
             }
         };
+        if ctx.is_agent()
+            && let Some(n) = &self.name
+        {
+            agent_branch_name_ok(n)?;
+        }
         let b =
             s.history_mut_pub().create_branch(&ctx.hctx(), at, self.name.as_deref()).map_err(CommandError::history)?;
         s.switch_branch(&ctx.actor, b)?;
@@ -1276,6 +1367,15 @@ impl Command for BranchRename {
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
+        if ctx.is_agent() {
+            agent_branch_name_ok(&self.name)?;
+            let br = s.history().branch(b).map_err(CommandError::history)?;
+            // Agents rename only their own branches; anything else (the user's branches,
+            // main) needs approval, so an agent cannot make its branch look like main.
+            if br.created_by != ctx.actor && s.config.approvals_required && !ctx.approved {
+                return Err(CommandError::approval(&format!("renaming the branch \"{}\"", br.name)));
+            }
+        }
         s.history_mut_pub().rename_branch(&ctx.hctx(), b, &self.name).map_err(CommandError::history)?;
         s.note_change(ctx, b, "Rename iteration");
         Ok(json!({}))
@@ -1385,7 +1485,7 @@ impl Command for BranchSetMain {
     const DESCRIPTION: &'static str =
         "Make a branch the main branch (default for opening and exports). Agents need human approval.";
     const CATEGORY: Category = Category::Branches;
-    const FLAGS: Flags = Flags { mutating: true, destructive: false, agent_approval: true, user_only: false };
+    const FLAGS: Flags = Flags { agent_approval: true, ..EDIT };
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
         s.history_mut_pub().set_main(&ctx.hctx(), b).map_err(CommandError::history)?;
@@ -1409,7 +1509,7 @@ impl Command for BranchDelete {
     const TITLE: &'static str = "Delete iteration";
     const DESCRIPTION: &'static str = "Move a branch to Recently deleted (restorable). Requires confirm: true; main cannot be deleted. Agents need human approval.";
     const CATEGORY: Category = Category::Branches;
-    const FLAGS: Flags = Flags { mutating: true, destructive: true, agent_approval: true, user_only: false };
+    const FLAGS: Flags = Flags { destructive: true, agent_approval: true, ..EDIT };
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let b = find_branch(s, &self.branch)?;
         s.history_mut_pub().delete_branch(&ctx.hctx(), b, self.confirm).map_err(CommandError::history)?;
@@ -1645,7 +1745,7 @@ impl Command for ExportStep {
     const DESCRIPTION: &'static str =
         "Export all bodies of your current branch as STEP (AP242, mm) to a file inside the project folder.";
     const CATEGORY: Category = Category::Exchange;
-    const FLAGS: Flags = READ;
+    const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
         if path.exists() {
@@ -1720,7 +1820,7 @@ impl Command for ExportMesh {
     const DESCRIPTION: &'static str =
         "Export all bodies as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing.";
     const CATEGORY: Category = Category::Exchange;
-    const FLAGS: Flags = READ;
+    const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let ext = std::path::Path::new(&self.path).extension().and_then(|e| e.to_str()).unwrap_or("");
         let format = mesh_format(self.format.as_deref().unwrap_or(ext))

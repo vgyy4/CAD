@@ -337,6 +337,13 @@ impl GussetMcp {
 
         match self.run(cctx.clone(), spec.id, args.clone()).await {
             Err(e) if e.code == "approval_required" => {
+                let a2 = args.clone();
+                let context = self
+                    .shared
+                    .host
+                    .exec_async(move |s, _| gusset_commands::commands::describe_branch_args(s, &a2))
+                    .await
+                    .unwrap_or_default();
                 let request = ApprovalRequest {
                     agent: agent.clone(),
                     tool: tool.clone(),
@@ -344,6 +351,7 @@ impl GussetMcp {
                     title: spec.title.to_string(),
                     reason: clean_short(&e.message, 200),
                     arguments: clean_short(&args.to_string(), 300),
+                    context: clean_short(&context, 400),
                 };
                 self.ask(request, &agent, &tool, spec, args, cctx, ctx).await
             }

@@ -158,6 +158,13 @@ impl History {
                 Event::NameNode { node, old, new } => format!("name\t{node}\t{}\t{}", opt(old), opt(new)),
                 Event::Undo { event } => format!("undo\t{event}"),
                 Event::Redo { event } => format!("redo\t{event}"),
+                Event::AgentAction { command, branch, outcome, detail } => format!(
+                    "agent\t{}\t{}\t{}\t{}",
+                    esc(command),
+                    branch.map_or_else(|| "-".to_string(), |b| b.to_string()),
+                    esc(outcome),
+                    esc(detail)
+                ),
             };
             events.push_str(&format!("{}\t{}\t{}\n", e.time, actor(&e.actor), body));
         }
@@ -308,6 +315,15 @@ impl History {
                 "name" => Event::NameNode { node: node_id(g(3)?)?, old: unopt(g(4)?)?, new: unopt(g(5)?)? },
                 "undo" => Event::Undo { event: num(g(3)?)? },
                 "redo" => Event::Redo { event: num(g(3)?)? },
+                "agent" => Event::AgentAction {
+                    command: unesc(g(3)?)?,
+                    branch: match g(4)? {
+                        "-" => None,
+                        b => Some(branch_id(b)?),
+                    },
+                    outcome: unesc(g(5)?)?,
+                    detail: unesc(g(6)?)?,
+                },
                 _ => return Err(bad()),
             };
             events.push(EventRecord { time, actor: act, event });
