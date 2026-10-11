@@ -21,16 +21,14 @@ use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
 use gusset_history::{Actor, History, NodeId};
 use gusset_host::{Host, HostEvent, HostHandle};
 use gusset_kernel::{Kernel, TessellationParams};
-use gusset_project::{OpenReport, Project};
+use gusset_project::settings::{SaveAction, SaveScheduler, Settings};
+use gusset_project::{OpenReport, PendingRecovery, Project};
 use gusset_store::paths::DataDirs;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
-
-/// How often unsaved work is written to the recovery slot.
-pub const RECOVERY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How soon to retry a snapshot read while a long command holds the session.
 const BUSY_RETRY: Duration = Duration::from_millis(50);
@@ -57,6 +55,11 @@ pub enum Dialog {
     Overwrite {
         purpose: PathPurpose,
         path: PathBuf,
+    },
+    /// Start-up: recovery copies of projects that were not closed cleanly (never-saved
+    /// ones, or newer than their file). Recover, discard, or decide later.
+    Unrecovered {
+        items: Vec<PendingRecovery>,
     },
     /// A recovery copy newer than the saved file exists.
     Recovery {
@@ -129,6 +132,8 @@ pub enum AfterSave {
 
 /// Results of host jobs, delivered to the UI thread.
 pub(crate) enum Done {
+    /// A never-saved project was recovered from its recovery copy.
+    RecoveredUntitled(Result<Box<(Project, Session)>, String>),
     Command {
         id: String,
         then: Then,
@@ -216,7 +221,8 @@ pub struct App {
     pub kernel_note: Option<String>,
     scene: Option<Drawn>,
     scene_requested: Option<(NodeId, Option<usize>)>,
-    last_snapshot: Instant,
+    /// When to auto-save or write a recovery snapshot (settings: save mode, interval).
+    save: SaveScheduler,
     /// Continue with this action after the save that is running.
     after_save: Option<Pending>,
     /// Continue with this action once no job is running ("Wait" in the busy dialog).
@@ -243,6 +249,11 @@ impl App {
     pub fn new(kernel: Arc<dyn Kernel>, dirs: Option<DataDirs>) -> App {
         let mut session = Session::new(&gusset_doc::Document::default(), kernel.clone(), &CmdCtx::user(now_unix()));
         session.importer = importer();
+        // The single start-up routine (review M1): housekeeping, cache cap, and the
+        // recovery copies to offer. It runs before this window's own project exists.
+        let report = dirs.as_ref().and_then(|d| gusset_project::startup(d, &[]).ok());
+        let settings = report.as_ref().map_or_else(Settings::default, |r| r.settings.clone());
+        let unrecovered = report.map(|r| r.pending_recoveries).unwrap_or_default();
         let project = dirs.clone().and_then(|d| Project::create(d).ok());
         let has_project = project.is_some();
         let host = Host::spawn(session, project);
@@ -274,12 +285,12 @@ impl App {
             form: None,
             palette: None,
             code: None,
-            dialog: None,
+            dialog: (!unrecovered.is_empty()).then_some(Dialog::Unrecovered { items: unrecovered }),
             notice: None,
             kernel_note: None,
             scene: None,
             scene_requested: None,
-            last_snapshot: Instant::now(),
+            save: SaveScheduler::new(settings),
             after_save: None,
             after_idle: None,
             send_close: false,
@@ -404,6 +415,7 @@ impl App {
                     if matches!(actor, Actor::Agent(_)) {
                         self.agent_changes += 1;
                     }
+                    self.save.changed(Instant::now());
                     self.stale = true;
                 }
                 Ok(HostEvent::Saved) | Err(broadcast::error::TryRecvError::Lagged(_)) => self.stale = true,
@@ -473,6 +485,7 @@ impl App {
                 self.stale = true;
                 match result {
                     Ok(()) => {
+                        self.save.written();
                         self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
                         if let AfterSave::Then(p) = then {
                             self.after_save = Some(p);
@@ -520,7 +533,25 @@ impl App {
                     self.dialog = Some(Dialog::Message { title: tr("recovery.keep_failed").into(), body: e });
                 }
             },
+            Done::RecoveredUntitled(r) => match r {
+                Ok(loaded) => {
+                    let (project, session) = *loaded;
+                    self.project_risky = None;
+                    self.project_path = None;
+                    self.replace_host(move |old| {
+                        if let Some((s, Some(p))) = old {
+                            retire_project(&s, p, false);
+                        }
+                        (session, Some(project))
+                    });
+                    self.notice = Some(Notice { text: tr("unrecovered.done").into(), hint: None, error: false });
+                }
+                Err(e) => self.dialog = Some(Dialog::Message { title: tr("open.failed").into(), body: e }),
+            },
             Done::Recovery(r) => {
+                if r.is_ok() {
+                    self.save.written();
+                }
                 if let Err(e) = r {
                     self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
                 }
@@ -761,6 +792,34 @@ impl App {
         }
     }
 
+    /// Recovers a copy offered at start-up: a saved project opens normally (its open
+    /// path offers the newer recovery copy); a never-saved one is restored as Untitled.
+    fn recover_pending(&mut self, it: PendingRecovery) {
+        if let Some(path) = it.path {
+            self.open_in_background(path, false);
+            return;
+        }
+        let Some(dirs) = self.dirs.clone() else { return };
+        let kernel = self.kernel.clone();
+        let tx = self.done_tx.clone();
+        let waker = self.waker.clone();
+        self.in_flight += 1;
+        let spawned = std::thread::Builder::new().name("gusset-recover".into()).spawn(move || {
+            let r = Project::recover_unsaved(dirs, it.id).map_err(|e| e.to_string()).map(|(project, history)| {
+                let mut session = Session::from_history(history, kernel);
+                session.importer = importer();
+                session.dirty = true;
+                Box::new((project, session))
+            });
+            let _ = tx.send(Done::RecoveredUntitled(r));
+            waker.wake();
+        });
+        if let Err(e) = spawned {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
+        }
+    }
+
     /// Switches the window to a loaded project. The old project is closed; if it has
     /// changes the user did not choose to discard (for example an agent edit that came
     /// in after the question), they stay in its recovery file instead.
@@ -794,10 +853,17 @@ impl App {
             }
             return;
         }
-        if !self.snapshot.dirty || self.last_snapshot.elapsed() < RECOVERY_INTERVAL {
-            return;
+        let has_file = self.project_path.is_some();
+        match self.save.due(Instant::now(), has_file, !self.busy()) {
+            SaveAction::Nothing => return,
+            SaveAction::SaveProject => {
+                // Auto-save mode: the project file itself (the scheduler waits for a
+                // quiet moment after the last change).
+                self.save_then(AfterSave::Nothing);
+                return;
+            }
+            SaveAction::WriteRecovery => {}
         }
-        self.last_snapshot = Instant::now();
         self.submit(
             |s, p| match p {
                 Some(p) if s.dirty => p.snapshot(s.history()).map(Some).map_err(|e| e.to_string()),
@@ -872,6 +938,10 @@ impl App {
         }
         self.shortcuts(&ctx);
         self.maybe_snapshot(false);
+        // Wake up when an auto-save or recovery snapshot becomes due, without polling.
+        if let Some(t) = self.save.next_deadline(self.project_path.is_some()) {
+            ctx.request_repaint_after(t.saturating_duration_since(Instant::now()));
+        }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
@@ -1500,6 +1570,56 @@ impl App {
                         self.dialog = Some(Dialog::Path { purpose, text, error: None });
                     }
                     None => self.dialog = Some(Dialog::Overwrite { purpose, path }),
+                }
+            }
+            Dialog::Unrecovered { mut items } => {
+                let mut action: Option<(usize, bool)> = None;
+                let mut later = false;
+                modal.show(ctx, |ui| {
+                    ui.set_max_width(520.0);
+                    ui.heading(tr("unrecovered.title"));
+                    ui.label(tr("unrecovered.body"));
+                    for (i, it) in items.iter().enumerate() {
+                        ui.horizontal_wrapped(|ui| {
+                            let name = it.path.as_ref().map_or_else(
+                                || tr("unrecovered.untitled").to_string(),
+                                |p| plain(&p.to_string_lossy(), 200),
+                            );
+                            let when = it
+                                .modified
+                                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| format!(" · {}", crate::agents::clock_pub(d.as_secs())))
+                                .unwrap_or_default();
+                            let damaged = if it.recovery_seq == 0 { tr("unrecovered.damaged") } else { "" };
+                            ui.label(format!("{name}{when}{damaged}"));
+                            if ui.button(tr("unrecovered.recover")).clicked() {
+                                action = Some((i, true));
+                            }
+                            if ui.button(tr("unrecovered.discard")).clicked() {
+                                action = Some((i, false));
+                            }
+                        });
+                    }
+                    if ui.button(tr("unrecovered.later")).clicked() {
+                        later = true;
+                    }
+                });
+                match action {
+                    Some((i, recover)) if i < items.len() => {
+                        let it = items.remove(i);
+                        if !items.is_empty() {
+                            self.dialog = Some(Dialog::Unrecovered { items });
+                        }
+                        if recover {
+                            self.recover_pending(it);
+                        } else if let Some(d) = &self.dirs
+                            && let Err(e) = gusset_project::discard_pending_recovery(d, it.id)
+                        {
+                            self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
+                        }
+                    }
+                    _ if later => {}
+                    _ => self.dialog = Some(Dialog::Unrecovered { items }),
                 }
             }
             Dialog::Recovery { recovered } => {

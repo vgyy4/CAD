@@ -379,3 +379,37 @@ fn export_asks_before_replacing_a_file() {
     h.run();
     assert!(!matches!(h.state().dialog, Some(Dialog::Overwrite { .. })));
 }
+
+#[test]
+fn startup_offers_unsaved_work_of_a_never_saved_project() {
+    let root = temp_dir("untitled");
+    let mut a = app_with(dirs_in(&root));
+    edit(&mut a, "lost");
+    a.maybe_snapshot(true);
+    drop(a); // a crash: the recovery copy of the Untitled project stays
+
+    let b = app_with(dirs_in(&root));
+    assert!(matches!(&b.dialog, Some(Dialog::Unrecovered { items }) if items.len() == 1), "{:?}", b.dialog);
+    let mut h = harness(b);
+    h.run();
+    h.get_by_label_contains("Untitled project");
+    h.get_by_label("Recover").click();
+    settle(&mut h);
+    let a = h.state();
+    assert!(a.snapshot.doc.params.iter().any(|p| p.name == "lost"), "recovered the parameter");
+    assert!(a.snapshot.dirty);
+    assert!(a.project_file().is_none(), "still Untitled");
+    drop(h);
+
+    // Discarded copies are not offered again.
+    let c = app_with(dirs_in(&root));
+    let mut h = harness(c);
+    h.run();
+    if h.query_by_label("Discard").is_some() {
+        h.get_by_label("Discard").click();
+        settle(&mut h);
+    }
+    drop(h);
+    let d = app_with(dirs_in(&root));
+    assert!(d.dialog.is_none(), "{:?}", d.dialog);
+}

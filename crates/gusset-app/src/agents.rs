@@ -401,6 +401,11 @@ impl Drop for Agents {
 }
 
 /// `hh:mm:ss` (UTC) of a unix time.
+/// `HH:MM:SS` (UTC) of a Unix time, for lists.
+pub(crate) fn clock_pub(t: u64) -> String {
+    clock(t)
+}
+
 fn clock(t: u64) -> String {
     let d = t % 86_400;
     format!("{:02}:{:02}:{:02}", d / 3600, (d / 60) % 60, d % 60)
