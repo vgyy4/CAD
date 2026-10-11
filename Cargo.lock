@@ -1596,6 +1596,7 @@ dependencies = [
  "gusset-history",
  "gusset-kernel",
  "gusset-meshio",
+ "gusset-store",
  "gusset-units",
  "schemars",
  "serde",

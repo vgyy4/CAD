@@ -1732,7 +1732,8 @@ impl Command for QueryBody {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportStep {
-    /// File name relative to the project folder (no `..`, no absolute paths).
+    /// File name relative to the project folder (no `..`, no absolute paths, no hidden
+    /// names; extension .step or .stp). The user may give any path.
     pub path: String,
     /// Overwrite an existing file (agents need approval).
     #[serde(default)]
@@ -1747,7 +1748,7 @@ impl Command for ExportStep {
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        let path = crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, &["step", "stp"])?;
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
@@ -1764,7 +1765,7 @@ impl Command for ExportStep {
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let bytes = s.kernel().export_step(&bodies).map_err(|e| CommandError::new("io", e.to_string()))?;
-        crate::paths::write_file(&path, &bytes)?;
+        crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
     }
 }
@@ -1803,6 +1804,15 @@ pub fn mesh_export_bytes(
     gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
 }
 
+/// File extensions an agent may use for a mesh format.
+fn mesh_extensions(format: gusset_meshio::ExportFormat) -> &'static [&'static str] {
+    match format {
+        gusset_meshio::ExportFormat::StlBinary | gusset_meshio::ExportFormat::StlAscii => &["stl"],
+        gusset_meshio::ExportFormat::ThreeMf => &["3mf"],
+        gusset_meshio::ExportFormat::Obj { .. } => &["obj"],
+    }
+}
+
 /// Parses a mesh format name or file extension.
 pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
     match name.to_ascii_lowercase().as_str() {
@@ -1829,7 +1839,8 @@ impl Command for ExportMesh {
         if !(tol.is_finite() && (1e-4..=10.0).contains(&tol)) {
             return Err(CommandError::args("tolerance_mm must be between 0.0001 and 10"));
         }
-        let path = crate::paths::confined(s.project_dir.as_deref(), &self.path)?;
+        let path =
+            crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, mesh_extensions(format))?;
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
@@ -1846,7 +1857,7 @@ impl Command for ExportMesh {
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             ev.bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let bytes = mesh_export_bytes(s.kernel().as_ref(), &bodies, format, tol)?;
-        crate::paths::write_file(&path, &bytes)?;
+        crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }))
     }
 }

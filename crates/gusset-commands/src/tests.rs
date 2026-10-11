@@ -187,12 +187,43 @@ fn exports_are_confined() {
     let d = std::env::temp_dir().join(format!("gusset-cmd-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     s.project_dir = Some(d.clone());
-    let e = execute(&mut s, &u, "export.step", json!({"path": "../x.step"})).unwrap_err();
+    let a = CmdCtx::agent("exp", 2);
+    let e = execute(&mut s, &a, "export.step", json!({"path": "../x.step"})).unwrap_err();
     assert_eq!(e.code, "not_allowed");
     // The mock kernel can't write STEP: a clean structured error.
     let e = execute(&mut s, &u, "export.step", json!({"path": "x.step"})).unwrap_err();
     assert_eq!(e.code, "io");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn agent_export_names_are_restricted_but_user_exports_go_anywhere() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let d = std::env::temp_dir().join(format!("gusset-cmd-names-{}", std::process::id()));
+    let elsewhere = std::env::temp_dir().join(format!("gusset-cmd-elsewhere-{}", std::process::id()));
+    std::fs::create_dir_all(d.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    s.project_dir = Some(d.clone());
+    let a = CmdCtx::agent("exp", 2);
+    for bad in [".git/hooks/pre-commit", "evil.desktop", "CON.stl", "x.stl ", "x.stl.", ".hidden.stl", "part.obj"] {
+        let e = execute(&mut s, &a, "export.mesh", json!({"path": bad, "format": "stl"})).unwrap_err();
+        assert_eq!(e.code, "not_allowed", "{bad}");
+        assert!(!e.message.contains(d.to_str().unwrap()), "absolute path leaked: {}", e.message);
+    }
+    assert!(!d.join(".git/hooks/pre-commit").exists());
+    run(&mut s, &a, "export.mesh", json!({"path": "part.stl"}));
+    // GUI file dialog (review H3): an absolute path outside the project folder works for
+    // the user, and the export leaves no temp file behind.
+    let abs = elsewhere.join("plate.stl");
+    run(&mut s, &u, "export.mesh", json!({"path": abs.to_string_lossy(), "overwrite": true}));
+    assert!(abs.exists());
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
+    let e = execute(&mut s, &a, "export.mesh", json!({"path": abs.to_string_lossy()})).unwrap_err();
+    assert_eq!(e.code, "not_allowed");
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&elsewhere);
 }
 
 #[test]
