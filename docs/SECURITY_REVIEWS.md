@@ -16,7 +16,11 @@ status. Scratch harnesses referenced below lived outside the repository.
 | Review #1 | Forged approval via client elicitation | Open — next |
 | Review #2 | Windows DLL search path | Open — next |
 | Review #3 | In-process BinTools parsing of project blobs | Open — next |
-| Review #4–7, #9–20; Dogfood S6–S9 | see below | Open — next |
+| Review #4 | Quadratic history-graph cycle check (open-file DoS) | **Fixed**: linear check that marks every walked node (`cycle_check_is_linear_on_reversed_chain`) |
+| Review #5 | History limits enforced on load only | **Fixed**: every history change checks the exact record sizes and counts against limits within the load/container limits; compaction (oldest events, old unnamed iterations, oldest recently-deleted branches) runs first, else a `limit_reached` command error; oversized objects refused (`write_limits_keep_every_history_savable`, `history_limits_are_clean_command_errors`). Open: total file size (4 GiB) of many large blobs is not checked on import |
+| Code review C2 | Headless `gusset mcp` deletes pending crash recovery | **Fixed**: refuses projects with pending recovery or damage, releases without touching recovery (`stdio_headless_refuses_pending_recovery_and_keeps_it`) |
+| Code review H1 / H2 / M1 / M2 / M3 / M8 / M14 (storage) | Untitled recovery, shared project IDs, housekeeping/GC never run, save modes, save cost, undo name collisions, kill tests and fixtures | **Fixed** in the project/store/history layers (see `docs/adr/0007` amendments). Open: the GUI must call `gusset_project::startup`, offer `pending_recoveries`, and drive `SaveScheduler` |
+| Review #6–7, #9–20; Dogfood S6–S9 | see below | Open — next |
 
 ## Review 1: MVP milestone (2026-10-11)
 
