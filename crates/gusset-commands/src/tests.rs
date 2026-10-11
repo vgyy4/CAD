@@ -633,3 +633,36 @@ fn a_cut_that_changes_nothing_warns() {
     assert!(no_effect_warning("E", BodyOp::Add, Some("Extrude1"), &["boom".into()], &[]).is_null());
     assert!(no_effect_warning("E", BodyOp::New, None, &[], &[]).is_null());
 }
+
+#[test]
+fn get_text_pages_by_line() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let mut text = String::from("gusset 1\nunits mm\n");
+    for i in 0..700 {
+        text.push_str(&format!("param p{i} = {i} mm\n"));
+    }
+    run(&mut s, &u, "document.set_text", json!({"text": text}));
+    let full = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    let total = full.lines().count();
+    // Default page: not everything, says so, and continues where it stopped.
+    let a = run(&mut s, &u, "document.get_text", json!({}));
+    assert_eq!(a["total_lines"], total, "{a}");
+    assert_eq!(a["more_available"], true);
+    let n = a["lines"].as_u64().unwrap() as usize;
+    assert_eq!(n, 500);
+    assert_eq!(a["next_offset"], n);
+    let b = run(&mut s, &u, "document.get_text", json!({"offset": n}));
+    assert_eq!(b["more_available"], false, "{b}");
+    assert!(b["next_offset"].is_null());
+    // The pages concatenate to the whole text (no 512-character cut anywhere).
+    let joined = format!("{}{}", a["text_user_text"].as_str().unwrap(), b["text_user_text"].as_str().unwrap());
+    assert_eq!(joined.lines().collect::<Vec<_>>(), full.lines().collect::<Vec<_>>());
+    assert!(joined.len() > 512);
+    // limit is honoured and offset past the end is an error.
+    let c = run(&mut s, &u, "document.get_text", json!({"offset": 2, "limit": 3}));
+    assert_eq!(c["lines"], 3);
+    assert_eq!(c["next_offset"], 5);
+    let e = execute(&mut s, &u, "document.get_text", json!({"offset": total + 1})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+}
