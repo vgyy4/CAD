@@ -14,8 +14,9 @@ Still open or partial after the re-review:
 - **M14** (benchmarks): budgets are now enforced by tests instead of criterion benches
   (`history_overhead_budget`, `rebuild_100_budget`, the release-mode solver test,
   `perf_save_and_snapshot`); dm-flakey style fault injection is still open.
-- **L8** (evaluator clones state per rolled-back feature): open; negligible below
-  thousands of features.
+- **L8** (evaluator clones state per rolled-back feature): fixed 2026-10-12; states
+  share statuses and solved sketches, 4,000 features evaluate in 63 ms instead of
+  6.2 s (docs/PERFORMANCE.md).
 
 ## New code findings
 

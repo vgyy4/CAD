@@ -253,3 +253,47 @@ fn cache_is_bounded_by_estimated_bytes_and_is_lru() {
     ev.set_cache_limits(2, u64::MAX);
     assert!(ev.cache_len() <= 2);
 }
+
+/// Review L8: evaluating (or rolling back) n features must stay close to linear.
+/// `cargo test --release -p gusset-eval perf_many_features -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark; run in release"]
+fn perf_many_features() {
+    for n in [1000, 4000] {
+        let mut text = String::from("gusset 1\nunits mm\n\n");
+        for i in 0..n {
+            text.push_str(&format!(
+                "sketch S{i} (plane: XY, next_id: 3) {{\n  p1 = point({i}, 0)\n  k2 = fixed(p1)\n}}\n\n"
+            ));
+        }
+        let doc = Document::from_text(&text).unwrap();
+        let mut ev = Evaluator::new(Arc::new(MockKernel));
+        let t = std::time::Instant::now();
+        let r = ev.evaluate(&doc, None, &());
+        let full = t.elapsed();
+        assert_eq!(r.statuses.len(), n);
+        let t = std::time::Instant::now();
+        let r = ev.evaluate(&doc, Some(0), &());
+        let rolled = t.elapsed();
+        assert_eq!(r.statuses.len(), n);
+        let t = std::time::Instant::now();
+        ev.evaluate(&doc, None, &());
+        let cached = t.elapsed();
+        println!("PERF {n} features: full {full:?}, rolled back {rolled:?}, cached {cached:?}");
+    }
+}
+
+#[test]
+fn long_status_lists_share_and_drop_without_recursion() {
+    let mut s = Statuses::default();
+    for i in 0..500_000 {
+        s.push(format!("F{i}"), FeatureStatus::Ok);
+    }
+    let shared = s.clone();
+    s.push("Last".into(), FeatureStatus::Suppressed);
+    assert_eq!(shared.to_vec().len(), 500_000);
+    assert_eq!(s.to_vec().last(), Some(&("Last".to_string(), FeatureStatus::Suppressed)));
+    assert_eq!(s.to_vec().first(), Some(&("F0".to_string(), FeatureStatus::Ok)));
+    drop(shared);
+    drop(s); // a recursive drop would overflow the test thread's stack here
+}

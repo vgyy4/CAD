@@ -65,6 +65,19 @@ for), so a late writer never overwrites newer state or brings back an obsolete
 recovery file. Saves still write on the model thread (explicit saves and auto-save
 mode); with huge imports that is ~0.5 s.
 
+### 2026-10-12: evaluator state per feature (review L8)
+`cargo test --release -p gusset-eval perf_many_features -- --ignored --nocapture`:
+n one-point sketches, MockKernel. Each recomputed feature clones the previous state
+(states are cached per step), and that clone copied every status and solved sketch
+so far, string by string: quadratic. Statuses are now a list with a shared tail,
+solved sketches a shared base plus up to 32 recent entries, and rolled-back features
+no longer clone the state at all.
+
+| | Full, before | Full, after | Rolled back, before | Rolled back, after |
+|---|---|---|---|---|
+| 1,000 features | 198 ms | 9.8 ms | 49 ms | 0.25 ms |
+| 4,000 features | 6.16 s | 63 ms | 581 ms | 0.9 ms |
+
 ## History overhead (2026-10-11)
 
 Each history node used to store a snapshot object listing every feature hash, so a

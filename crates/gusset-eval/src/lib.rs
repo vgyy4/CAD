@@ -79,13 +79,90 @@ impl BlobSource for () {
     }
 }
 
+/// The result after one feature. Every recomputed feature clones the previous state
+/// (states are cached per step), so the parts that grow with the feature count share
+/// their contents instead of being copied (review L8).
 #[derive(Debug, Clone, Default)]
 struct State {
     bodies: Vec<Arc<Body>>,
     meshes: Vec<Arc<MeshBody>>,
-    solved: BTreeMap<String, Arc<Solved>>,
+    solved: SolvedMap,
     failed: BTreeSet<String>,
-    statuses: Vec<(String, FeatureStatus)>,
+    statuses: Statuses,
+}
+
+/// Feature statuses as a list whose earlier part is shared, newest first.
+#[derive(Debug, Clone, Default)]
+struct Statuses(Option<Arc<StatusLink>>);
+
+#[derive(Debug)]
+struct StatusLink {
+    name: String,
+    status: FeatureStatus,
+    prev: Option<Arc<StatusLink>>,
+}
+
+impl Drop for StatusLink {
+    /// Iterative, so dropping a long list cannot overflow the stack.
+    fn drop(&mut self) {
+        let mut next = self.prev.take();
+        while let Some(link) = next {
+            match Arc::try_unwrap(link) {
+                Ok(mut l) => next = l.prev.take(),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+impl Statuses {
+    fn push(&mut self, name: String, status: FeatureStatus) {
+        self.0 = Some(Arc::new(StatusLink { name, status, prev: self.0.take() }));
+    }
+
+    /// In feature order.
+    fn to_vec(&self) -> Vec<(String, FeatureStatus)> {
+        let mut out = Vec::new();
+        let mut cur = self.0.as_deref();
+        while let Some(l) = cur {
+            out.push((l.name.clone(), l.status.clone()));
+            cur = l.prev.as_deref();
+        }
+        out.reverse();
+        out
+    }
+}
+
+/// Solved sketches by name: a shared base plus a few recent entries, merged into a
+/// new base every [`SolvedMap::RECENT`] sketches.
+#[derive(Debug, Clone, Default)]
+struct SolvedMap {
+    base: Arc<BTreeMap<String, Arc<Solved>>>,
+    recent: BTreeMap<String, Arc<Solved>>,
+}
+
+impl SolvedMap {
+    const RECENT: usize = 32;
+
+    fn get(&self, name: &str) -> Option<&Arc<Solved>> {
+        self.recent.get(name).or_else(|| self.base.get(name))
+    }
+
+    fn insert(&mut self, name: String, solved: Arc<Solved>) {
+        self.recent.insert(name, solved);
+        if self.recent.len() >= Self::RECENT {
+            let mut base = (*self.base).clone();
+            base.append(&mut self.recent);
+            self.base = Arc::new(base);
+        }
+    }
+
+    /// Every entry; a name in `recent` replaces the same name in `base`.
+    fn to_map(&self) -> BTreeMap<String, Arc<Solved>> {
+        let mut all = (*self.base).clone();
+        all.extend(self.recent.iter().map(|(k, v)| (k.clone(), v.clone())));
+        all
+    }
 }
 
 /// The outcome of evaluating a document.
@@ -289,11 +366,10 @@ impl Evaluator {
         let mut key = *blake3::hash(format!("gusset-eval 1 {:?}", doc.units).as_bytes()).as_bytes();
         let mut state = Arc::new(State::default());
         let mut recomputed = 0;
+        let mut rolled_back = Vec::new();
         for (i, f) in doc.features.iter().enumerate() {
             if rollback.is_some_and(|r| i >= r) {
-                let mut s = (*state).clone();
-                s.statuses.push((f.name.clone(), FeatureStatus::RolledBack));
-                state = Arc::new(s);
+                rolled_back.push((f.name.clone(), FeatureStatus::RolledBack));
                 continue;
             }
             key = step_key(&key, f, &params);
@@ -308,10 +384,12 @@ impl Evaluator {
             self.remember(key, st.clone());
             state = st;
         }
-        let sketches = state.solved.iter().map(|(n, s)| (n.clone(), s.result.clone())).collect();
+        let sketches = state.solved.to_map().into_iter().map(|(n, s)| (n, s.result.clone())).collect();
+        let mut statuses = state.statuses.to_vec();
+        statuses.append(&mut rolled_back);
         Evaluation {
             params,
-            statuses: state.statuses.clone(),
+            statuses,
             sketches,
             bodies: state.bodies.clone(),
             meshes: state.meshes.clone(),
@@ -321,12 +399,12 @@ impl Evaluator {
 
     fn apply(&self, s: &mut State, f: &Feature, units: LengthUnit, params: &ParamValues, blobs: &dyn BlobSource) {
         if f.suppressed {
-            s.statuses.push((f.name.clone(), FeatureStatus::Suppressed));
+            s.statuses.push(f.name.clone(), FeatureStatus::Suppressed);
             return;
         }
         if let Some(dep) = f.kind.dependencies().into_iter().find(|d| s.failed.contains(d)) {
             s.failed.insert(f.name.clone());
-            s.statuses.push((f.name.clone(), FeatureStatus::Blocked { by: dep }));
+            s.statuses.push(f.name.clone(), FeatureStatus::Blocked { by: dep });
             return;
         }
         let r = self.run(s, f, units, params, blobs);
@@ -337,7 +415,7 @@ impl Evaluator {
                 FeatureStatus::Failed(e)
             }
         };
-        s.statuses.push((f.name.clone(), status));
+        s.statuses.push(f.name.clone(), status);
     }
 
     fn run(

@@ -65,7 +65,7 @@ Phase 3 has started (see Next).
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: project saves off the model thread (recovery snapshots are
    done, M3), fault-injection
-   storage tests (M14), O(n²) state clones (L8), per-agent credentials for grants and
+   storage tests (M14), per-agent credentials for grants and
    reconnect to an agent's own branch (F2-2).
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
