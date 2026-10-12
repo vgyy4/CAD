@@ -161,3 +161,20 @@ fn step_stays_on_stdin_without_a_file_argument() {
     assert!(matches!(r, Err(ImportError::Protocol(_))), "{r:?}");
     assert_eq!(rec.trim(), "argc=0");
 }
+
+#[test]
+fn stale_import_dirs_are_swept_fresh_ones_kept() {
+    // Security re-review 7 (own base directory: other tests import concurrently).
+    let base = std::env::temp_dir().join(format!("gusset-sweep-test-{}", std::process::id()));
+    let dir = base.join("gusset-import-999999999-0000000000000000");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("input.igs"), b"x").unwrap();
+    std::fs::create_dir_all(base.join("unrelated")).unwrap();
+    // Too young: kept.
+    assert_eq!(gusset_worker::sweep_stale_import_dirs_in(&base, Duration::from_secs(3600)), 0);
+    assert!(dir.exists());
+    // Old enough: removed; other directories are never touched.
+    assert_eq!(gusset_worker::sweep_stale_import_dirs_in(&base, Duration::ZERO), 1);
+    assert!(!dir.exists() && base.join("unrelated").exists());
+    let _ = std::fs::remove_dir_all(&base);
+}

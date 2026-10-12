@@ -472,6 +472,12 @@ where
                 continue;
             }
         };
+        // JSON-RPC batches would hide tool calls from the read-only check; MCP clients
+        // do not need them, so the read-only bridge refuses them (security re-review 6).
+        if read_only && msg.is_array() {
+            emit(&out, &rpc_error(&Value::Null, -32600, "batched requests are not supported in read-only mode")).await;
+            continue;
+        }
         if read_only && let Some(refusal) = read_only_refusal(&msg) {
             emit(&out, &refusal).await;
             continue;

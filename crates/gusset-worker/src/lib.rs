@@ -355,6 +355,34 @@ pub fn import_out_of_process_cancellable(
     Ok(Imported { bodies, sandbox_report: report })
 }
 
+/// Removes private import directories (`gusset-import-*` in the temp dir) left behind
+/// when a Gusset process was killed during an IGES import (security re-review 7).
+/// Only directories older than `min_age` are touched (no import runs that long), never
+/// symlinks. Returns how many were removed. Best effort.
+pub fn sweep_stale_import_dirs(min_age: Duration) -> usize {
+    match std::fs::canonicalize(std::env::temp_dir()) {
+        Ok(base) => sweep_stale_import_dirs_in(&base, min_age),
+        Err(_) => 0,
+    }
+}
+
+/// [`sweep_stale_import_dirs`] in `base` instead of the system temp directory.
+pub fn sweep_stale_import_dirs_in(base: &Path, min_age: Duration) -> usize {
+    let Ok(rd) = std::fs::read_dir(base) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        if !e.file_name().to_str().is_some_and(|s| s.starts_with("gusset-import-")) {
+            continue;
+        }
+        let Ok(md) = std::fs::symlink_metadata(e.path()) else { continue };
+        let old = md.modified().ok().and_then(|m| m.elapsed().ok()).is_some_and(|age| age >= min_age);
+        if md.file_type().is_dir() && old && std::fs::remove_dir_all(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Parses an untrusted kernel-native B-rep blob in the sandboxed worker and returns the
 /// worker's re-serialization of it (written by OCCT's writer from the parsed shape).
 ///

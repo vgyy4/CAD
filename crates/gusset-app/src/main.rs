@@ -36,6 +36,8 @@ fn main() -> eframe::Result {
         eprintln!("warning: {e}");
     }
     let (k, note) = kernel();
+    // IGES input copies of an import that was cut short by a crash of this app.
+    gusset_worker::sweep_stale_import_dirs(std::time::Duration::from_secs(24 * 3600));
     let dirs = gusset_store::paths::DataDirs::from_os();
     // B-rep blobs written by OCCT's writer (ours, or the worker's canonical output) are
     // trusted for this installation (ADR 0008 §4). "v2": the v1 list also held hashes

@@ -915,3 +915,47 @@ async fn blanket_grant_never_covers_main() {
     assert_eq!(err_code(&r), "approval_denied", "{r:?}");
     assert_eq!(prompt.asked.load(Ordering::SeqCst), 2);
 }
+
+/// Security re-review 6: a JSON-RPC batch cannot slip a tool call past the read-only
+/// bridge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stdio_bridge_read_only_refuses_batches() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let dir = tmpdir("bridge-ro-batch");
+    let project = dir.join("p.gus");
+    let host = host();
+    let server = McpServer::new(host.clone());
+    server
+        .start_http(HttpOptions {
+            connection_dir: Some(dir.join("conn")),
+            project: Some(project.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    std::fs::write(&project, b"placeholder").unwrap();
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let mut opts = StdioOptions::new(Some(project.clone()), Arc::new(MockKernel));
+    opts.connection_dir = Some(dir.join("conn"));
+    opts.read_only = true;
+    tokio::spawn(async move {
+        let (r, w) = tokio::io::split(a);
+        let _ = gusset_mcp::run_stdio_async(opts, r, w).await;
+    });
+    let (r, mut w) = tokio::io::split(b);
+    let batch = json!([{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "param_set", "arguments": {"name": "w", "expr": "1 mm"}}}]);
+    w.write_all(format!("{batch}\n").as_bytes()).await.unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), tokio::io::BufReader::new(r).read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    let v: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["error"]["code"], -32600, "{line}");
+    let n =
+        host.with_session(|s| s.history().branches().iter().filter(|b| b.name.starts_with("agent/")).count()).unwrap();
+    assert_eq!(n, 0, "nothing reached the app");
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}
