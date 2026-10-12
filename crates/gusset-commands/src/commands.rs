@@ -351,6 +351,11 @@ fn new_id(s: &mut SketchDef, prefix: char) -> String {
     id
 }
 
+/// Compact form of a list of freshly created ids: `{"first":"p12","last":"p411","count":400}`.
+fn id_range(ids: &[String]) -> Value {
+    json!({ "first": ids.first(), "last": ids.last(), "count": ids.len() })
+}
+
 fn add_point(s: &mut SketchDef, x: f64, y: f64) -> Result<String, CommandError> {
     if !(x.is_finite() && y.is_finite()) || x.abs() > 1e9 || y.abs() > 1e9 {
         return Err(CommandError::args("coordinates must be finite and within ±1e9 mm"));
@@ -848,7 +853,7 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids.";
+    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids as compact ranges: {\"first\", \"last\", \"count\"} (ids are consecutive within each kind in creation order, e.g. p12..p411 for 400 points).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -902,7 +907,7 @@ impl Command for SketchAddPolyline {
                 lines.push(add_entity(d, SkGeom::Line { a: last.clone(), b: first.clone() }, self.construction));
             }
             store_solution(doc, &sk);
-            Ok(json!({ "points": pts, "lines": lines }))
+            Ok(json!({ "points": id_range(&pts), "lines": id_range(&lines) }))
         })
     }
 }
@@ -1109,7 +1114,7 @@ impl Command for SketchAddConstraint {
             store_solution(doc, &sk);
             Ok(json!({ "constraint": k }))
         })?;
-        let status = sketch_status(s, ctx, &sk)?;
+        let status = sketch_status(s, ctx, &sk, false)?;
         Ok(merge(out, json!({ "sketch_status": status })))
     }
 }
@@ -2229,11 +2234,14 @@ impl Command for QueryModel {
     }
 }
 
-fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, CommandError> {
+/// `with_frame: false` leaves the (unchanging) world frame out of edit results; it is
+/// reported by `sketch.create` and `query.sketch` only.
+fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str, with_frame: bool) -> Result<Value, CommandError> {
     let ev = s.evaluate(&ctx.actor)?;
     let st = ev.status(name).map(status_json);
     match ev.sketches.get(name) {
-        Some(r) => Ok(json!({
+        Some(r) => {
+            let mut v = json!({
             "status": format!("{:?}", r.status),
             "dof": r.dof,
             "free_entities": r.free_entities,
@@ -2241,9 +2249,13 @@ fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, Com
             "conflicting": r.conflicting,
             "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
             "points": r.points,
-            "frame": frame_json(&r.frame),
             "feature_status": st,
-        })),
+            });
+            if with_frame && let Value::Object(m) = &mut v {
+                m.insert("frame".into(), frame_json(&r.frame));
+            }
+            Ok(v)
+        }
         None => Ok(json!({ "feature_status": st })),
     }
 }
@@ -2262,7 +2274,7 @@ impl Command for QuerySketch {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        sketch_status(s, ctx, &self.sketch)
+        sketch_status(s, ctx, &self.sketch, true)
     }
 }
 

@@ -851,14 +851,24 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
         "sketch.add_polyline",
         json!({"sketch": "Sketch1", "points": [[0, 0], [20, 0], [20, 10], [10, 15], [0, 10]], "closed": true}),
     );
-    assert_eq!(r["points"].as_array().unwrap().len(), 5, "{r}");
-    assert_eq!(r["lines"].as_array().unwrap().len(), 5, "{r}");
+    assert_eq!(r["points"], json!({"first": "p1", "last": "p5", "count": 5}), "{r}");
+    assert_eq!(r["lines"]["count"], 5, "{r}");
+    assert_eq!(r["lines"]["first"], "l6", "{r}");
     // Exactly one new history node for the whole polyline.
     let head = s.history().head(s.history().main()).unwrap();
     assert_eq!(s.history().node(head).unwrap().parent, Some(before));
     // The closed outline is one region, extrudable into a body.
     let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
     assert_eq!(q["regions"].as_array().unwrap().len(), 1, "{q}");
+    // Edit results leave the unchanging world frame to sketch.create / query.sketch.
+    let c = run(
+        &mut s,
+        &u,
+        "sketch.add_constraint",
+        json!({"sketch": "Sketch1", "kind": "horizontal", "entities": ["l6"]}),
+    );
+    assert!(c["sketch_status"].get("frame").is_none(), "{c}");
+    assert!(c["sketch_status"]["dof"].is_number(), "{c}");
     let e = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "4 mm"}));
     assert_eq!(e["rebuild_ok"], true, "{e}");
     let b = run(&mut s, &u, "query.body", json!({}));
