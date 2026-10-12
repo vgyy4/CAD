@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn agent_names_are_strict() {
-        let ok = ["part.step", "exports/part.STP", "a b.stl", "v1.2.3mf.3mf", "x.obj"];
+        let ok = ["part.step", "p.igs", "q.IGES", "exports/part.STP", "a b.stl", "v1.2.3mf.3mf", "x.obj"];
         for n in ok {
             assert!(agent_export_name(n, AGENT_EXPORT_EXTENSIONS).is_ok(), "{n}");
         }

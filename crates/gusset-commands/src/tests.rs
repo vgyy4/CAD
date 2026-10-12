@@ -886,3 +886,49 @@ fn approval_summary_shows_what_set_text_changes() {
     );
     assert!(bad.contains("does not parse"), "{bad}");
 }
+
+#[test]
+fn export_step_accepts_iges_paths_and_reports_the_kernel_error_cleanly() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let a = CmdCtx::agent("exp", 2);
+    build_plate(&mut s, &u);
+    let d = std::env::temp_dir().join(format!("gusset-iges-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    // The extension is accepted for agents (confinement rules still apply)...
+    let e = execute(&mut s, &a, "export.step", json!({"path": "../p.igs"})).unwrap_err();
+    assert_eq!(e.code, "not_allowed", "{e:?}");
+    let e = execute(&mut s, &a, "export.step", json!({"path": "p.dxf"})).unwrap_err();
+    assert!(e.message.contains(".igs"), "{e:?}");
+    // ...and reaches the kernel's IGES writer: the mock has none, which is a clean io error.
+    match execute(&mut s, &a, "export.step", json!({"path": "p.IGES"})) {
+        Ok(v) => assert!(d.join("p.IGES").exists(), "{v}"),
+        Err(e) => {
+            assert_eq!(e.code, "io", "{e:?}");
+            assert!(e.message.contains("IGES"), "{e:?}");
+            assert!(!d.join("p.IGES").exists());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn export_with_failed_rebuild_and_no_bodies_carries_rebuild_errors() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-exp-fail-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 0, "y1": 0, "x2": 10, "y2": 0}));
+    run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    for (cmd, path) in [("export.step", "x.step"), ("export.mesh", "x.stl")] {
+        let e = execute(&mut s, &u, cmd, json!({"path": path})).unwrap_err();
+        assert_eq!(e.code, "evaluation", "{e:?}");
+        let errs = e.details.as_ref().unwrap()["rebuild_errors"].as_array().unwrap();
+        assert!(errs[0].as_str().unwrap().contains("Extrude1"), "{e:?}");
+        assert!(e.hint.as_deref().unwrap_or("").contains("fix the failing features"), "{e:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
