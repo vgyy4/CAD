@@ -753,6 +753,15 @@ impl App {
             self.in_flight = self.in_flight.saturating_sub(1);
             self.apply_done(done);
         }
+        // A detached import of the old project may still be running: cancel it, and give
+        // the new project its own result channel, so a late result can neither be
+        // applied to it nor miscount its running jobs (code re-review N5).
+        if let Some(c) = self.import_cancel.take() {
+            c.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let (tx, rx) = mpsc::channel();
+        self.done_tx = tx;
+        self.done_rx = rx;
         self.in_flight = 0;
         let (session, project) = make(old);
         self.has_project = project.is_some();
@@ -1898,18 +1907,31 @@ fn retire_project(session: &Session, mut project: Project, discard: bool) {
 pub fn keep_both(original: &std::path::Path, recovered: &History, dirs: &DataDirs) -> Result<PathBuf, String> {
     let dir = original.parent().unwrap_or_else(|| std::path::Path::new("."));
     let stem = original.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
-    let path = (1..1000)
-        .map(|i| {
-            let name = if i == 1 { format!("{stem} (recovered).gus") } else { format!("{stem} (recovered {i}).gus") };
-            dir.join(name)
-        })
-        .find(|p| !p.exists())
-        .ok_or("Too many recovered copies next to the project")?;
     let id = gusset_store::paths::ProjectId::new_random().map_err(|e| e.to_string())?;
     let meta = gusset_project::ProjectMeta { id, save_seq: 1, base_seq: 1, created: now_unix() };
     let bytes = gusset_project::encode(recovered, &meta).map_err(|e| e.to_string())?;
+    // Claim the name by creating it exclusively, so another writer (or a second Gusset
+    // window) can never be overwritten between choosing the name and writing it
+    // (code re-review N7); the durable write then replaces the empty placeholder.
+    let mut path = None;
+    for i in 1..1000 {
+        let name = if i == 1 { format!("{stem} (recovered).gus") } else { format!("{stem} (recovered {i}).gus") };
+        let p = dir.join(name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+            Ok(_) => {
+                path = Some(p);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let path = path.ok_or("Too many recovered copies next to the project")?;
     let fs = gusset_store::fs::RealFs::default();
-    gusset_store::durable::save_project(&fs, &path, &fs, None, &bytes).map_err(|e| e.to_string())?;
+    if let Err(e) = gusset_store::durable::save_project(&fs, &path, &fs, None, &bytes) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e.to_string());
+    }
     let _ = gusset_store::housekeeping::register(dirs, id, &path);
     Ok(path)
 }
