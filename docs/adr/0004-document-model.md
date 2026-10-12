@@ -47,6 +47,22 @@ deterministic, readable text form for tests, golden files, agents and "Export as
    Later, OpenSCAD-style generative code becomes a `Script` feature: one opaque node in
    the tree whose body runs in a sandbox (no I/O, no clock, op/memory/recursion limits).
    It produces geometry, and its parameters are still visible.
+   **v0.2 statements** (all arguments after the name are `key: value`, `body:` optional =
+   latest body, stored explicitly by the commands):
+   ```text
+   shell Shell1 (body: Extrude1, faces: [Extrude1/cap(end)], thickness: 2 mm)
+   mirror Mirror1 (body: Extrude1, plane: YZ)                 # new body "Mirror1"
+   mirror Mirror2 (plane: Extrude1/side(Sketch1/l6), merge: true)  # united with the source
+   pattern_linear Pattern1 (body: Extrude1, direction: X, count: n_bolts, spacing: 15 mm)
+   pattern_circular Pattern2 (axis: Z, through: [0 mm, 0 mm, 0 mm], count: 6, angle: 360 deg)
+   ```
+   `thickness > 0` builds walls inward, `< 0` outward. `plane` is XY/XZ/YZ or a planar
+   face reference. A direction/axis is `X`, `Y`, `Z` or `[x, y, z]` (unitless
+   expressions). `count` includes the original and must evaluate to a whole number in
+   2..=500. For `pattern_circular`, a full turn spaces instances `angle / count` apart,
+   a smaller angle `angle / (count - 1)`; `through` (a point on the axis) is optional.
+   `merge: false` mirrors create a body named after the feature, so later features can
+   target them. Patterns repeat a whole body (not a single feature's result).
 4. **Sandboxing.** The language can only express data and pure unit-aware arithmetic
    (`gusset-units`). Parsing enforces limits on input size, nesting depth, statement
    count and name length. It is deterministic: `libm` for transcendental functions,

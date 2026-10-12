@@ -23,6 +23,17 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
      oldest loop and adding a loop later never renames existing caps (amended
      2026-10-11, review L4).
    - Faces of a fillet/chamfer: `<feature>/blend(<edge name>)`.
+   - Faces of a shell (v0.2): the inner wall made from face F is
+     `<feature>/inner(<F's name>)`; outer faces keep their names. A removed face has no
+     inner wall; the rim ring left where it was keeps the removed face's name, so
+     references and sketches on it survive.
+   - Faces of a mirror (v0.2): `<feature>/mirror(<original face name>)`. Merged into the
+     source body, faces that coincide with source faces keep the source name.
+   - Faces of pattern instance k = 1..count-1 (v0.2): `<feature>/instance(k, <original
+     face name>)`; the original (instance 0) keeps its names. Instances are united one
+     after another, so touching copies merge faces under the earlier name. Face-name
+     arguments nest, so an instance of a mirrored face reads
+     `P/instance(1, M/mirror(E/cap(end)))`; the parser limits nesting depth.
    - Primitives: `<feature>/face(top|bottom|side...)`.
    - Faces carried through a boolean or modification keep their original name. Faces
      the operation splits get `#k` suffixes, ordered by a *geometric* key (see 3).
