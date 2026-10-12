@@ -195,6 +195,70 @@ pub fn revolve(p: &ProfileData, axis_origin: [f64; 2], axis_dir: [f64; 2], angle
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// The path of a sweep: sketch curves (the only loop of the profile data) or edges of a shape.
+#[derive(Debug)]
+pub enum SweepPath<'a> {
+    Curves(&'a ProfileData),
+    Edges(&'a RawShape, &'a [u32]),
+}
+
+/// Sweeps the regions of `p` along `path`. `follow` turns the profile with the path
+/// (corrected Frenet), else it only slides; `twist` (radians) turns it about the path.
+pub fn sweep(p: &ProfileData, path: &SweepPath<'_>, follow: bool, twist: f64) -> ShimResult<OpOut> {
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let orientation = i32::from(follow);
+    let rc = match path {
+        SweepPath::Curves(c) => {
+            let craw = c.raw();
+            // SAFETY: `raw` and `craw` point into live vectors; out-params are valid.
+            unsafe {
+                sys::gs_sweep(
+                    &raw,
+                    &craw,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    orientation,
+                    twist,
+                    &mut out,
+                    &mut origins,
+                )
+            }
+        }
+        SweepPath::Edges(shape, edges) => shape.with(|sp| {
+            // SAFETY: the shape is locked and valid; `edges` and `raw` outlive the call.
+            unsafe {
+                sys::gs_sweep(
+                    &raw,
+                    std::ptr::null(),
+                    sp,
+                    edges.as_ptr(),
+                    edges.len(),
+                    orientation,
+                    twist,
+                    &mut out,
+                    &mut origins,
+                )
+            }
+        }),
+    };
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+/// Lofts through the sections (one region each).
+pub fn loft(sections: &[ProfileData], ruled: bool) -> ShimResult<OpOut> {
+    let raws: Vec<GsProfile> = sections.iter().map(ProfileData::raw).collect();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: `raws` points into the sections' vectors, alive for the call.
+    let rc = unsafe { sys::gs_loft(raws.as_ptr(), raws.len(), i32::from(ruled), &mut out, &mut origins) };
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn boolean(op: i32, a: &RawShape, b: &RawShape) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

@@ -177,6 +177,12 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "plane",
             "move",
             "combine",
+            "sweep",
+            "loft",
+            "orientation",
+            "twist",
+            "ruled",
+            "curves(",
         ] {
             assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
         }
@@ -197,8 +203,76 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "pattern_linear ",
             "spline(",
             "pattern_linear(of:",
+            "sweep Sweep1 ",
+            "loft Loft1 ",
+            "twist: 90 deg",
+            "ruled: true",
         ] {
             assert!(all.contains(kw), "no example uses {kw}");
+        }
+    }
+
+    const SWEEP_BASE: &str = "gusset 1\nunits mm\n\nparam turn = 30 deg\n\nsketch P (plane: XY, next_id: 3) {\n  p1 = point(0, 0)\n  c2 = circle(p1, 3)\n}\n\nsketch Q (plane: XZ, next_id: 7) {\n  p1 = point(0, 0)\n  p2 = point(0, 9)\n  p3 = point(5, 9)\n  l4 = line(p1, p2)\n  l5 = line(p2, p3)\n}\n\n";
+
+    #[test]
+    fn sweep_and_loft_round_trip_and_are_validated() {
+        let ok = format!(
+            "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, op: new)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sweep(d) = &doc.feature("S1").unwrap().kind else { panic!() };
+        assert_eq!(d.path, PathRef::Sketch { sketch: "Q".into(), curves: vec!["l4".into(), "l5".into()] });
+        assert_eq!(d.orientation, Orientation::Frenet);
+        assert_eq!(d.body_name.as_deref(), Some("Pipe"));
+        assert_eq!(doc.feature("S1").unwrap().kind.parameters(), ["turn"]);
+        assert_eq!(doc.feature("S1").unwrap().kind.dependencies(), ["P", "Q"]);
+        assert!(
+            validate::creates_body(doc.feature("S1").unwrap()) && !validate::creates_body(doc.feature("S2").unwrap())
+        );
+        // Every truncation and single-character deletion parses to a fixed point or fails cleanly.
+        let chars: Vec<char> = ok.chars().collect();
+        for i in 0..chars.len() {
+            for src in [chars[..i].iter().collect::<String>(), chars[..i].iter().chain(&chars[i + 1..]).collect()] {
+                if let Ok(d) = text::parse(&src) {
+                    let printed = text::print(&d);
+                    let again = text::parse(&printed).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                    assert_eq!(text::print(&again), printed, "{src:?}");
+                }
+            }
+        }
+        // Defaults: orientation frenet, op new.
+        let short = format!("{SWEEP_BASE}sweep S1 (profile: P, path: Q)\n");
+        let d = Document::from_text(&short).unwrap();
+        assert_eq!(d.to_text(), format!("{SWEEP_BASE}sweep S1 (profile: P, path: Q, orientation: frenet, op: new)\n"));
+        // Problems are reported with their feature.
+        for (bad, why) in [
+            ("sweep S1 (profile: P, path: P, op: new)", "same sketch"),
+            ("sweep S1 (profile: P, path: Q.curves(l9), op: new)", "no entity 'l9'"),
+            ("sweep S1 (profile: P, path: Q.curves(l4, l4), op: new)", "listed twice"),
+            ("sweep S1 (profile: P, path: Q, orientation: fixed, twist: 10 deg, op: new)", "follow the path"),
+            ("sweep S1 (profile: P, path: Q, op: cut)", "needs an existing body"),
+            ("sweep S1 (profile: P, path: Nope, op: new)", "does not exist"),
+            ("sweep S1 (profile: P, path: [], op: new)", "no edges"),
+            ("sweep S1 (profile: P, path: Q, body_name: B, op: add)", "only be used with op: new"),
+            ("loft L1 (profiles: [P], op: new)", "at least two"),
+            ("loft L1 (profiles: [P, Q], op: cut)", "needs an existing body"),
+        ] {
+            let d = text::parse(&format!("{SWEEP_BASE}{bad}\n")).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{bad}: {why}: {issues:?}");
+        }
+        for bad in [
+            "sweep S1 (profile: P, op: new)",
+            "sweep S1 (path: Q, op: new)",
+            "sweep S1 (profile: P, path: Q, orientation: sideways)",
+            "sweep S1 (profile: P, path: Q.wires(l4))",
+            "loft L1 (profile: P)",
+            "loft L1 (profiles: P)",
+            "loft L1 (profiles: [P, ])",
+            "loft L1 (profiles: [P, P], twist: 1 deg)",
+        ] {
+            assert!(text::parse(&format!("{SWEEP_BASE}{bad}\n")).is_err(), "{bad}");
         }
     }
 

@@ -17,6 +17,7 @@ pub mod error;
 mod ops;
 mod pattern;
 pub mod sketch;
+mod sweep;
 
 pub use error::{ErrorCode, EvalError};
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
@@ -460,7 +461,8 @@ impl Evaluator {
                 let r = k
                     .extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
                     .map_err(|ke| kernel_err(name, "extrusion", ke))?;
-                self.combine(s, name, &e.profile.sketch, &regions, r, e.op, (e.body.as_deref(), e.body_name.as_deref()))
+                let ctx = OpContext::Sweep { feature: name, sketch: &e.profile.sketch, regions: &regions };
+                self.combine(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()))
             }
             FeatureKind::Revolve(r) => {
                 let (solved, frame) = sketch_input(name, &r.profile.sketch, s)?;
@@ -492,16 +494,11 @@ impl Evaluator {
                 let res = k
                     .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
                     .map_err(|ke| kernel_err(name, "revolve", ke))?;
-                self.combine(
-                    s,
-                    name,
-                    &r.profile.sketch,
-                    &regions,
-                    res,
-                    r.op,
-                    (r.body.as_deref(), r.body_name.as_deref()),
-                )
+                let ctx = OpContext::Sweep { feature: name, sketch: &r.profile.sketch, regions: &regions };
+                self.combine(s, name, &ctx, res, r.op, (r.body.as_deref(), r.body_name.as_deref()))
             }
+            FeatureKind::Sweep(d) => self.run_sweep(s, name, d, units, params),
+            FeatureKind::Loft(d) => self.run_loft(s, name, d),
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 let fillet = matches!(f.kind, FeatureKind::Fillet(_));
                 let size = eval_expr(name, &b.size, Dim::LENGTH, params, units)?;
@@ -577,23 +574,19 @@ impl Evaluator {
     }
 
     /// Adds a swept tool as a new body or combines it with a target body.
-    #[allow(clippy::too_many_arguments)]
     fn combine(
         &self,
         s: &mut State,
         feature: &str,
-        sketch: &str,
-        regions: &[String],
+        ctx: &OpContext<'_>,
         tool: OpResult,
         op: BodyOp,
         (target, new_name): (Option<&str>, Option<&str>),
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let tool_topo = k.topology(&tool.shape).map_err(|ke| kernel_err(feature, "topology", ke))?;
-        let region_ids: Vec<String> = regions.to_vec();
-        let tool_names =
-            name_body(&OpContext::Sweep { feature, sketch, regions: &region_ids }, &tool.face_origins, &tool_topo)
-                .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
+        let tool_names = name_body(ctx, &tool.face_origins, &tool_topo)
+            .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
         if op == BodyOp::New {
             s.bodies.push(Arc::new(Body {
                 name: new_name.unwrap_or(feature).to_string(),
@@ -866,6 +859,8 @@ mod tests;
 mod tests_datum;
 #[cfg(test)]
 mod tests_ops;
+#[cfg(test)]
+mod tests_sweep;
 
 /// Solves a sketch definition on its own (no 3D placement), for commands that write
 /// solved positions back into the document after an edit.

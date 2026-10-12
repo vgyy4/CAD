@@ -14,6 +14,7 @@ gusset-kernel.workspace = true
 gusset-history.workspace = true
 gusset-eval.workspace = true
 gusset-naming.workspace = true
+gusset-sketch.workspace = true
 gusset-meshio.workspace = true
 gusset-store.workspace = true
 serde.workspace = true

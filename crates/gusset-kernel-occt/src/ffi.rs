@@ -26,6 +26,40 @@ pub(crate) fn revolve(p: &ProfileData, axis_origin: [f64; 2], axis_dir: [f64; 2]
     safe::revolve(p, axis_origin, axis_dir, angle).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn sweep(p: &ProfileData, path: &safe::SweepPath<'_>, follow: bool, twist: f64) -> KResult<OpOut> {
+    safe::sweep(p, path, follow, twist).map_err(sweep_err)
+}
+
+pub(crate) fn loft(sections: &[ProfileData], ruled: bool) -> KResult<OpOut> {
+    safe::loft(sections, ruled).map_err(|e| {
+        let ke = err(KernelErrorKind::OperationFailed)(e);
+        let hint = if ke.message.contains("no volume") {
+            "put the profiles on different planes, for example sketches on datum planes at different offsets"
+        } else {
+            "use profiles with similar outlines (the same number of corners, in the same order) on separate planes"
+        };
+        ke.with_hint(hint)
+    })
+}
+
+/// A sweep failure with a hint on how to fix the usual causes.
+fn sweep_err(e: ShimError) -> KernelError {
+    let ke = err(KernelErrorKind::OperationFailed)(e);
+    let m = ke.message.clone();
+    let hint = if m.contains("start on the profile plane") || m.contains("does not cross the path") {
+        "sketch the profile on a plane that passes through one end of the path"
+    } else if m.contains("one chain") || m.contains("connected") || m.contains("branches") {
+        "the path must be one chain of curves that meet end to end, without branches"
+    } else if m.contains("no volume") {
+        "the path must leave the profile plane, for example perpendicular to it"
+    } else if m.contains("closed path") || m.contains("twist") {
+        "remove the twist, or use an open path"
+    } else {
+        "try a gentler path (larger bend radii), a smaller profile or no twist"
+    };
+    ke.with_hint(hint)
+}
+
 pub(crate) fn boolean(op: i32, a: &RawShape, b: &RawShape) -> KResult<OpOut> {
     safe::boolean(op, a, b).map_err(err(KernelErrorKind::OperationFailed))
 }

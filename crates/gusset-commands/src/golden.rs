@@ -157,6 +157,69 @@ pub fn moved_and_combined_bodies(kernel: Arc<dyn Kernel>) -> R {
     on_plane(&mut s, &moved_side, 0, 150.0)
 }
 
+/// A swept bar (square profile along a vertical path) and a lofted frustum on a datum plane,
+/// each with sketches on its cap and side faces.
+pub const SWEEP_DOC: &str = "gusset 1\nunits mm\nparam len = 20 mm\nparam top = 12 mm\n\
+sketch Profile (plane: XY, next_id: 9) {\n\
+  p1 = point(-5, -5)\n  p2 = point(5, -5)\n  p3 = point(5, 5)\n  p4 = point(-5, 5)\n\
+  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\
+sketch Path (plane: XZ, next_id: 7) {\n  p1 = point(0, 0)\n  p2 = point(0, 20)\n  l3 = line(p1, p2)\n\
+  k4 = fixed(p1)\n  k5 = vertical(l3)\n  k6 = distance(l3, l3, len)\n}\n\
+sweep Sweep1 (profile: Profile, path: Path, orientation: frenet, twist: 30 deg, op: new)\n\
+plane Up (base: XY, offset: top)\n\
+sketch Foot (plane: XY, next_id: 9) {\n\
+  p1 = point(40, -10)\n  p2 = point(60, -10)\n  p3 = point(60, 10)\n  p4 = point(40, 10)\n\
+  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\
+sketch Head (plane: Up, next_id: 9) {\n\
+  p1 = point(46, -4)\n  p2 = point(54, -4)\n  p3 = point(54, 4)\n  p4 = point(46, 4)\n\
+  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\
+loft Loft1 (profiles: [Foot, Head], ruled: true, op: new)\n\
+sketch OnBarEnd (plane: Sweep1/cap(end), next_id: 3) {\n  p1 = point(1, 1)\n  c2 = circle(p1, 1)\n}\n\
+sketch OnBarStart (plane: Sweep1/cap(start), next_id: 3) {\n  p1 = point(1, 1)\n  c2 = circle(p1, 1)\n}\n\
+sketch OnFrustumTop (plane: Loft1/cap(end), next_id: 3) {\n  p1 = point(50, 0)\n  c2 = circle(p1, 1)\n}\n\
+sketch Profile2 (plane: XY, next_id: 9) {\n\
+  p1 = point(95, -5)\n  p2 = point(105, -5)\n  p3 = point(105, 5)\n  p4 = point(95, 5)\n\
+  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\
+sketch Path2 (plane: XZ, next_id: 7) {\n  p1 = point(100, 0)\n  p2 = point(100, 20)\n  l3 = line(p1, p2)\n\
+  k4 = fixed(p1)\n  k5 = vertical(l3)\n  k6 = distance(l3, l3, len)\n}\n\
+sweep Sweep2 (profile: Profile2, path: Path2, op: new)\n\
+sketch OnBarSide (plane: Sweep2/side(Profile2/l6), next_id: 3) {\n  p1 = point(0, 5)\n  c2 = circle(p1, 1)\n}\n";
+
+/// Sweep and loft faces keep their names through parameter edits, an unrelated feature moved to
+/// the front and a branch: sketches on the caps and sides follow the geometry (needs a kernel
+/// that sweeps and lofts, i.e. OCCT).
+///
+/// # Errors
+/// As [`reorder_independent_features`].
+pub fn sweep_and_loft_names(kernel: Arc<dyn Kernel>) -> R {
+    let doc = Document::from_text(SWEEP_DOC).map_err(|e| format!("{e:?}"))?;
+    let mut s = Session::new(&doc, kernel, &CmdCtx::user(0));
+    let at = |s: &mut Session, name: &str, axis: usize, value: f64| on_plane(s, name, axis, value);
+    at(&mut s, "OnBarEnd", 2, 20.0)?;
+    at(&mut s, "OnBarStart", 2, 0.0)?;
+    at(&mut s, "OnFrustumTop", 2, 12.0)?;
+    at(&mut s, "OnBarSide", 0, 105.0)?;
+    run(&mut s, "param.set", json!({"name": "len", "expr": "33 mm"}))?;
+    at(&mut s, "OnBarEnd", 2, 33.0)?;
+    at(&mut s, "OnBarStart", 2, 0.0)?;
+    at(&mut s, "OnFrustumTop", 2, 12.0)?;
+    run(&mut s, "param.set", json!({"name": "top", "expr": "25 mm"}))?;
+    at(&mut s, "OnFrustumTop", 2, 25.0)?;
+    at(&mut s, "OnBarEnd", 2, 33.0)?;
+    // An unrelated sketch moved to the front changes no reference.
+    let other = str_of(&run(&mut s, "sketch.create", json!({"plane": "XZ"}))?, "sketch")?;
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": other, "x": 0, "y": 0, "width": 3, "height": 3}))?;
+    run(&mut s, "feature.move", json!({"name": other, "index": 0}))?;
+    at(&mut s, "OnBarEnd", 2, 33.0)?;
+    at(&mut s, "OnFrustumTop", 2, 25.0)?;
+    // A branch edits the sweep's length and leaves the first branch alone.
+    run(&mut s, "branch.create", json!({"name": "long"}))?;
+    run(&mut s, "param.set", json!({"name": "len", "expr": "50 mm"}))?;
+    at(&mut s, "OnBarEnd", 2, 50.0)?;
+    run(&mut s, "branch.switch", json!({"branch": "main"}))?;
+    at(&mut s, "OnBarEnd", 2, 33.0)
+}
+
 /// Every scenario, for a kernel.
 ///
 /// # Errors
@@ -171,5 +234,15 @@ pub fn all(kernel: &Arc<dyn Kernel>) -> R {
     ];
     let errs: Vec<String> =
         scenarios.iter().filter_map(|(n, f)| f(kernel.clone()).err().map(|e| format!("{n}: {e}"))).collect();
+    if errs.is_empty() { Ok(()) } else { Err(errs.join("\n")) }
+}
+
+/// [`all`] plus the scenarios that need a kernel with sweeps and lofts (OCCT).
+///
+/// # Errors
+/// The failures, one per line.
+pub fn all_with_sweeps(kernel: &Arc<dyn Kernel>) -> R {
+    let mut errs: Vec<String> = all(kernel).err().into_iter().collect();
+    errs.extend(sweep_and_loft_names(kernel.clone()).err().map(|e| format!("sweep_and_loft: {e}")));
     if errs.is_empty() { Ok(()) } else { Err(errs.join("\n")) }
 }

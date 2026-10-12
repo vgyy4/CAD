@@ -14,7 +14,24 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             *body = Some(to.to_string());
         }
     };
+    let sketch_of = |s: &mut String| {
+        if s == from {
+            *s = to.to_string();
+        }
+    };
     match kind {
+        FeatureKind::Sweep(d) => {
+            sketch_of(&mut d.profile.sketch);
+            match &mut d.path {
+                PathRef::Sketch { sketch, .. } => sketch_of(sketch),
+                PathRef::Edges(edges) => edges.iter_mut().for_each(|e| e.rename_feature(from, to)),
+            }
+            body_of(&mut d.body);
+        }
+        FeatureKind::Loft(d) => {
+            d.profiles.iter_mut().for_each(|p| sketch_of(&mut p.sketch));
+            body_of(&mut d.body);
+        }
         FeatureKind::Shell(d) => {
             body_of(&mut d.body);
             for f in &mut d.faces {
@@ -63,13 +80,10 @@ fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Shell {
-    /// Faces to remove (persistent face references such as `Extrude1/cap(end)`; query_body
-    /// lists them). May be empty for a closed hollow. The ring left where a removed face
-    /// was keeps that face's name; the new inner walls are named `<feature>/inner(<face>)`.
+    /// Faces to remove (face refs from query_body, e.g. `Extrude1/cap(end)`); empty = closed hollow. Inner walls: `<feature>/inner(<face>)`.
     #[serde(default)]
     pub faces: Vec<String>,
-    /// Wall thickness expression (`2 mm`, `wall`). Positive builds the walls inward from the
-    /// existing outside; negative grows them outward.
+    /// Wall thickness (`2 mm`); positive inward, negative outward.
     pub thickness: String,
     /// Body to hollow (default: the latest body).
     #[serde(default)]
@@ -81,7 +95,7 @@ pub struct Shell {
 impl Command for Shell {
     const ID: &'static str = "feature.shell";
     const TITLE: &'static str = "Shell";
-    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint when the walls are too thick for the part. The result lists body_changes (volume and bounding box before/after).";
+    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint when the walls are too thick for the part. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -110,9 +124,7 @@ pub struct Mirror {
     /// `XY`, `XZ`, `YZ` (through the origin), a planar face reference such as
     /// `Extrude1/side(Sketch1/l6)` or a datum plane name (feature_plane).
     pub plane: String,
-    /// true: unite the mirror image with the source body (the body keeps its name). false
-    /// (default): add it as a new body named after this feature. Mirrored faces are named
-    /// `<feature>/mirror(<original face>)`.
+    /// true: unite with the source body; false (default): a new body named after the feature. Faces: `<feature>/mirror(<face>)`.
     #[serde(default)]
     pub merge: bool,
     /// Body to mirror (default: the latest body).
@@ -149,13 +161,11 @@ impl Command for Mirror {
 pub struct PatternLinear {
     /// `X`, `Y`, `Z` or a vector such as `[1, 0.5, 0]` (unitless components).
     pub direction: String,
-    /// Number of instances including the original, a whole number >= 2. May be an
-    /// expression, e.g. `n_bolts`.
+    /// Instances including the original, a whole number >= 2 (may be an expression).
     pub count: String,
-    /// Distance between neighbouring instances, e.g. `15 mm` or `pitch` (negative reverses).
+    /// Distance between neighbours, e.g. `15 mm` (negative reverses).
     pub spacing: String,
-    /// Body to repeat (default: the latest body). The copies are united with it; instance
-    /// faces are named `<feature>/instance(k, <original face>)`, k = 1..count-1.
+    /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -193,21 +203,17 @@ impl Command for PatternLinear {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PatternCircular {
-    /// Axis direction: `X`, `Y`, `Z` or a vector such as `[0, 1, 0]`.
+    /// `X`, `Y`, `Z` or a vector like `[0, 1, 0]`.
     pub axis: String,
-    /// A point on the axis as three length expressions, e.g. `["10 mm", "0 mm", "0 mm"]`.
-    /// Default: the world origin.
+    /// A point on the axis, three lengths (default: the origin).
     #[serde(default)]
     pub through: Option<[String; 3]>,
-    /// Number of instances including the original, a whole number >= 2 (may be an
-    /// expression such as `n_bolts`).
+    /// Instances including the original, a whole number >= 2 (may be an expression).
     pub count: String,
-    /// Total angle, default `360 deg`. A full turn spaces instances angle/count apart; a
-    /// smaller angle puts the last instance at that angle.
+    /// Total angle, default `360 deg` (full turn: spaced angle/count; less: last at the angle).
     #[serde(default)]
     pub angle: Option<String>,
-    /// Body to repeat (default: the latest body). Instance faces are named
-    /// `<feature>/instance(k, <original face>)`.
+    /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]

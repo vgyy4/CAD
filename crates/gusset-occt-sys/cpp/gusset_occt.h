@@ -76,6 +76,8 @@ typedef struct {
 #define GS_ORIGIN_FROM_EDGE 3   /* a = input, b = edge */
 #define GS_ORIGIN_FROM_VERTEX 4 /* a = input, b = vertex */
 #define GS_ORIGIN_OFFSET 5      /* a = input, b = face: the inner offset of that face (shell) */
+#define GS_ORIGIN_SWEPT 6       /* a = profile edge tag, b = path edge (0-based, from the path start) */
+#define GS_ORIGIN_SECTION 7     /* a = profile edge tag, b = loft section */
 
 /* Transform kinds for gs_transform; params: f64 x 7. */
 #define GS_XF_MIRROR 0    /* params: plane origin xyz, plane normal xyz */
@@ -94,6 +96,16 @@ void gs_buf_free(GsBuf* b);
 int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out, GsBuf* origins);
 int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axis_dir[2], double angle,
                GsShape** out, GsBuf* origins);
+/* Sweeps the regions of `p` along a path: either sketch curves `path_curves` (one loop, an
+ * ordered chain) or the edges `path_edges` (indices into `path_shape`'s edges). The path is
+ * directed so that it starts on the profile plane. orientation: 0 = fixed (the profile only
+ * slides along the path), 1 = follow the path (corrected Frenet). `twist` (radians) turns the
+ * profile about the path between its start and end. */
+int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* path_shape, const uint32_t* path_edges,
+             size_t npath_edges, int orientation, double twist, GsShape** out, GsBuf* origins);
+/* Lofts through `nsections` profiles (each one region without holes); ruled != 0 joins
+ * neighbouring sections with ruled surfaces instead of a smooth interpolation. */
+int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins);
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);

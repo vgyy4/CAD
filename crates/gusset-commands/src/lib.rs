@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod gear;
 #[doc(hidden)]
 pub mod golden;
 pub mod import;
@@ -21,6 +22,12 @@ mod tests;
 #[cfg(test)]
 mod tests_datum;
 #[cfg(test)]
+mod tests_gear;
+#[cfg(test)]
+mod tests_gear_math;
+#[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
 mod tests_sketch;
+#[cfg(test)]
+mod tests_sweep;

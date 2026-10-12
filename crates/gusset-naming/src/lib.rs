@@ -67,6 +67,9 @@ pub enum OpContext<'a> {
     /// An operation on existing bodies (booleans, fillet, chamfer). `inputs[i]` holds the
     /// names of input shape `i` (faces and edges).
     Modify { feature: &'a str, inputs: &'a [&'a BodyNames] },
+    /// A loft through the profiles of `sketches` (in order) by `feature`: lateral faces are
+    /// named after the section edge that generated them, `side(<sketch>/<entity>)`.
+    Loft { feature: &'a str, sketches: &'a [String] },
     /// A combined operation: sweep then boolean. Input 0 is the target body, input 1
     /// the freshly swept tool (whose own origins are named as a sweep).
     SweepInto { feature: &'a str, sketch: &'a str, regions: &'a [String], target: &'a BodyNames },
@@ -116,7 +119,9 @@ fn cap(end: CapEnd) -> CapSide {
 /// (they are the most specific), then carried-over input names.
 fn origin_rank(o: &FaceOrigin) -> u8 {
     match o {
-        FaceOrigin::Lateral { .. } | FaceOrigin::Cap { .. } => 0,
+        FaceOrigin::Lateral { .. } | FaceOrigin::Swept { .. } | FaceOrigin::Section { .. } | FaceOrigin::Cap { .. } => {
+            0
+        }
         FaceOrigin::FromEdge { .. } | FaceOrigin::FromVertex { .. } | FaceOrigin::Offset { .. } => 1,
         FaceOrigin::Input { .. } => 2,
     }
@@ -128,6 +133,15 @@ fn sweep_face(feature: &str, sketch: &str, regions: &[String], o: &FaceOrigin) -
             feature,
             FaceKey::Side { sketch: sketch.to_string(), entity: tag_entity(*tag).unwrap_or_else(|| format!("t{tag}")) },
         )),
+        // A sweep along a path of several edges makes one face per path edge: the first keeps
+        // the plain name, later ones get `_p<k>` (k = path edge, counted from the path's start).
+        FaceOrigin::Swept { tag, path } => {
+            let mut entity = tag_entity(*tag).unwrap_or_else(|| format!("t{tag}"));
+            if *path > 0 {
+                entity.push_str(&format!("_p{path}"));
+            }
+            Some(FaceRef::new(feature, FaceKey::Side { sketch: sketch.to_string(), entity }))
+        }
         FaceOrigin::Cap { end, region } => {
             // The first region (regions are ordered by identifying entity, so the oldest
             // loop) keeps the plain `cap(end)` name: adding another closed loop to the
@@ -149,9 +163,28 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
         )));
     }
     let mut faces = Vec::with_capacity(origins.len());
+    // A loft face can come from the edges of several sections (and a section edge can feed
+    // several faces when edge counts differ): a face takes the origin shared with the fewest
+    // other faces, so names stay as specific as possible.
+    let mut shared: BTreeMap<(u32, u64), usize> = BTreeMap::new();
+    if matches!(ctx, OpContext::Loft { .. }) {
+        for os in origins {
+            for o in os {
+                if let FaceOrigin::Section { section, tag } = o {
+                    *shared.entry((*section, *tag)).or_insert(0) += 1;
+                }
+            }
+        }
+    }
     for (fi, os) in origins.iter().enumerate() {
         let mut sorted = os.clone();
-        sorted.sort_by_key(origin_rank);
+        sorted.sort_by_key(|o| {
+            let n = match o {
+                FaceOrigin::Section { section, tag } => shared.get(&(*section, *tag)).copied().unwrap_or(0),
+                _ => 0,
+            };
+            (origin_rank(o), n)
+        });
         // Imported faces are named by index; they have no operation history (the
         // kernel reports none), so this must not depend on `os`.
         let mut name = match ctx {
@@ -163,6 +196,20 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
         for o in if name.is_none() { sorted.as_slice() } else { &[] } {
             name = match (ctx, o) {
                 (OpContext::Sweep { feature, sketch, regions }, o) => sweep_face(feature, sketch, regions, o),
+                (OpContext::Loft { feature, sketches }, FaceOrigin::Section { section, tag }) => {
+                    sketches.get(*section as usize).map(|sketch| {
+                        FaceRef::new(
+                            *feature,
+                            FaceKey::Side {
+                                sketch: sketch.clone(),
+                                entity: tag_entity(*tag).unwrap_or_else(|| format!("t{tag}")),
+                            },
+                        )
+                    })
+                }
+                (OpContext::Loft { feature, .. }, FaceOrigin::Cap { end, .. }) => {
+                    Some(FaceRef::new(*feature, FaceKey::Cap { side: cap(*end), region: None }))
+                }
                 (
                     OpContext::SweepInto { feature, sketch, regions, .. },
                     FaceOrigin::Lateral { .. } | FaceOrigin::Cap { .. },
@@ -619,6 +666,78 @@ mod tests {
         let n = name_body(&OpContext::Import { feature: "Import1" }, &[vec![], vec![]], &topo).unwrap();
         assert_eq!(n.faces.len(), 2);
         assert_ne!(n.faces[0], n.faces[1]);
+    }
+
+    fn flat_topo(n: usize) -> Topology {
+        let faces = (0..n)
+            .map(|i| FaceInfo {
+                kind: SurfaceKind::Plane,
+                area: 1.0,
+                centroid: [i as f64, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+            })
+            .collect();
+        Topology { faces, ..Default::default() }
+    }
+
+    #[test]
+    fn sweep_faces_get_path_edge_suffixes() {
+        let l5 = entity_tag("l5").unwrap();
+        let s9 = with_segment(entity_tag("s9").unwrap(), 2);
+        let origins = vec![
+            vec![FaceOrigin::Cap { end: CapEnd::Start, region: 0 }],
+            vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }],
+            vec![FaceOrigin::Swept { tag: l5, path: 0 }],
+            vec![FaceOrigin::Swept { tag: l5, path: 1 }],
+            vec![FaceOrigin::Swept { tag: l5, path: 2 }],
+            vec![FaceOrigin::Swept { tag: s9, path: 1 }],
+        ];
+        let ctx = OpContext::Sweep { feature: "Sweep1", sketch: "Prof", regions: &["l5".into()] };
+        let n = name_body(&ctx, &origins, &flat_topo(6)).unwrap();
+        let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            names,
+            [
+                "Sweep1/cap(start)",
+                "Sweep1/cap(end)",
+                "Sweep1/side(Prof/l5)",
+                "Sweep1/side(Prof/l5_p1)",
+                "Sweep1/side(Prof/l5_p2)",
+                "Sweep1/side(Prof/s9_g2_p1)"
+            ]
+        );
+        for f in &n.faces {
+            assert_eq!(&FaceRef::parse(&f.to_string()).unwrap(), f);
+        }
+    }
+
+    #[test]
+    fn loft_faces_take_the_most_specific_origin() {
+        let (c3, l5, l6) = (entity_tag("c3").unwrap(), entity_tag("l5").unwrap(), entity_tag("l6").unwrap());
+        let sketches = vec!["Round".to_string(), "Square".to_string()];
+        // A circle lofted to a square: the circle's one edge feeds both side faces, each
+        // square edge only one. Faces are named after the square's edges.
+        let origins = vec![
+            vec![FaceOrigin::Cap { end: CapEnd::Start, region: 0 }],
+            vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }],
+            vec![FaceOrigin::Section { section: 0, tag: c3 }, FaceOrigin::Section { section: 1, tag: l5 }],
+            vec![FaceOrigin::Section { section: 0, tag: c3 }, FaceOrigin::Section { section: 1, tag: l6 }],
+        ];
+        let ctx = OpContext::Loft { feature: "Loft1", sketches: &sketches };
+        let n = name_body(&ctx, &origins, &flat_topo(4)).unwrap();
+        let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["Loft1/cap(start)", "Loft1/cap(end)", "Loft1/side(Square/l5)", "Loft1/side(Square/l6)"]);
+        // Equal specificity: the first section wins; a shared origin gets #k indices.
+        let origins = vec![
+            vec![FaceOrigin::Section { section: 0, tag: l5 }, FaceOrigin::Section { section: 1, tag: l5 }],
+            vec![FaceOrigin::Section { section: 0, tag: l5 }, FaceOrigin::Section { section: 1, tag: l5 }],
+        ];
+        let n = name_body(&ctx, &origins, &flat_topo(2)).unwrap();
+        let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["Loft1/side(Round/l5)#1", "Loft1/side(Round/l5)#2"]);
+        // An origin outside the section list cannot be named: a clean error.
+        let bad = vec![vec![FaceOrigin::Section { section: 5, tag: l5 }]];
+        assert!(name_body(&ctx, &bad, &flat_topo(1)).is_err());
     }
 
     #[test]

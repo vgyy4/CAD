@@ -12,7 +12,7 @@ gusset 1                      # header, always first
 units mm                      # mm or in (display unit and bare numbers), at most once
 param <name> = <expr>         # parameters, any order, may refer to each other
 sketch <Name> (<args>) { ... }
-extrude|revolve|fillet|chamfer|import <Name> (<args>)
+extrude|revolve|sweep|loft|fillet|chamfer|import <Name> (<args>)
 ```
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
@@ -274,6 +274,71 @@ sketch Sketch1 (plane: XZ) {
 revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, body_name: Pin)
 ```
 
+## Sweep and loft
+
+```
+sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...])
+loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], [body_name: ...])
+```
+
+- `sweep` moves a closed profile along a path. `<path>` is a sketch (`Path`: all its curves must
+  form one chain), some of its curves (`Path.curves(l3, a4)`), or edges of an earlier body
+  (`[edge(...), edge(...)]`, in any order). One end of the path must lie in the profile's plane
+  (the sweep starts there); a closed path (a circle) makes a ring without caps. Where path
+  curves meet at an angle the corner is mitred.
+- `orientation: frenet` (the default) turns the profile with the path; `fixed` only slides it.
+  `twist` turns the profile about the path by that angle between the start and the end (it
+  needs `frenet` and an open path); a helical gear is a sweep of the tooth outline along a
+  straight line with a twist.
+- `loft` joins two or more closed profiles on different planes (a sketch on a datum plane per
+  profile; `Sketch.regions(l5)` picks the region). Each must select exactly one region without
+  holes. `ruled: true` joins neighbours with straight (ruled) surfaces, else one smooth
+  surface passes through all of them.
+- Faces: both give `<Feature>/cap(start)` and `cap(end)`. Sweep sides are
+  `<Feature>/side(<profile sketch>/<entity>)`, plus `_p1`, `_p2`, ... on the entity when the
+  path has several edges (`side(Profile/c2_p1)` is the second path edge). Loft sides are named
+  after the profile edge they come from, `side(<sketch>/<entity>)` of the first profile that has
+  one.
+
+```gusset
+gusset 1
+units mm
+
+param len = 20 mm
+
+sketch Profile (plane: XY, next_id: 9) {
+  p1 = point(-5, -5)
+  p2 = point(5, -5)
+  p3 = point(5, 5)
+  p4 = point(-5, 5)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+# the path starts at the profile's plane (z = 0) and goes up
+sketch Path (plane: XZ, next_id: 7) {
+  p1 = point(0, 0)
+  p2 = point(0, 20)
+  l3 = line(p1, p2)
+  k4 = fixed(p1)
+  k5 = vertical(l3)
+  k6 = distance(l3, l3, len)
+}
+
+sweep Sweep1 (profile: Profile, path: Path, orientation: frenet, twist: 90 deg, op: new)
+
+plane Up (base: XY, offset: len)
+
+sketch Top (plane: Up, next_id: 3) {
+  p1 = point(0, 0)
+  c2 = circle(p1, 4)
+}
+
+loft Loft1 (profiles: [Profile, Top], ruled: true, op: new, body_name: Funnel)
+```
+
 ## Datum planes, bodies and patterns
 
 ```
@@ -338,6 +403,35 @@ combine Combine1 (body: Extrude1, tools: [Extrude2], op: add)
 
 move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
 ```
+
+## Generated features (gears)
+
+There is no `gear` statement. `generate_gear` (module, teeth, pressure_angle, face_width, bore,
+shift, backlash, fillet, helix, name; every option has a default, units are required: `2 mm`,
+`20 deg`) writes ordinary statements, so read the result with `document_get_text` and edit
+parameters or text like anything else:
+
+* `param gear1_module = 2 mm  # normal module`, `gear1_teeth`, `gear1_pressure_angle`,
+  `gear1_face_width`, `gear1_bore`, `gear1_shift`, `gear1_backlash`, `gear1_fillet` (and
+  `gear1_helix` when helical), then derived ones (`gear1_pitch_diameter`, `gear1_base_diameter`,
+  `gear1_tip_diameter`, `gear1_root_diameter`, ...). Change these, not the sketch: the tooth
+  flanks follow them.
+* `sketch Gear1_profile`: one tooth in polar coordinates: construction lines from the centre,
+  each flank point placed by a `distance` and an `angle` constraint whose values are expressions of
+  the gear parameters, two splines per flank, a tip arc, a root arc, a `pattern_circular(of: [...],
+  center: p1, count: gear1_teeth, angle: 360 deg)` for all teeth and the bore circle with
+  `diameter(c, gear1_bore)`.
+* `extrude Gear1 (profile: Gear1_profile.regions(a5), distance: gear1_face_width, op: new)` for
+  a spur gear. A helical gear (helix not 0) also has `sketch Gear1_path` (a vertical line of the
+  face width on XZ) and `sweep Gear1 (profile: Gear1_profile.regions(a5), path: Gear1_path,
+  orientation: frenet, twist: gear1_face_width * tan(gear1_helix) / (gear1_pitch_diameter / 2) *
+  1 rad, op: new)`.
+* Gears mesh when their modules match, their centre distance is `m (z1 + z2) / 2` (`m / cos(helix)`
+  for helical gears), helical pairs have opposite hands (helix angles of opposite sign) and an even
+  tooth count turns half a pitch (`move_body` with an axis and angle `180 deg / z`).
+* A gear whose parameters cannot make a gear (too few teeth for the profile shift: undercut)
+  fails with the parameter that went wrong, e.g. `acos()` in `gear1_flank_roll`; give it more
+  teeth or a larger `gear1_shift`.
 
 ## Common mistakes
 

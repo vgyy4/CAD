@@ -7,7 +7,7 @@ fn naming_golden_scenarios_with_occt() {
     use std::sync::Arc;
     let kernel: Arc<dyn gusset_kernel::Kernel> =
         Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap_or_else(|e| panic!("OCCT: {e}")));
-    if let Err(e) = gusset_commands::golden::all(&kernel) {
+    if let Err(e) = gusset_commands::golden::all_with_sweeps(&kernel) {
         panic!("{e}");
     }
 }

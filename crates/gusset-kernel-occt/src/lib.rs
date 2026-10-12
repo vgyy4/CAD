@@ -174,6 +174,8 @@ mod imp {
                 sys::GS_ORIGIN_FROM_EDGE => FaceOrigin::FromEdge { input: u32_of(a), edge: u32_of(b) },
                 sys::GS_ORIGIN_FROM_VERTEX => FaceOrigin::FromVertex { input: u32_of(a), vertex: u32_of(b) },
                 sys::GS_ORIGIN_OFFSET => FaceOrigin::Offset { input: u32_of(a), face: u32_of(b) },
+                sys::GS_ORIGIN_SWEPT => FaceOrigin::Swept { tag: a as u64, path: u32_of(b) },
+                sys::GS_ORIGIN_SECTION => FaceOrigin::Section { section: u32_of(b), tag: a as u64 },
                 _ => continue,
             };
             if let Some(slot) = usize::try_from(face).ok().and_then(|f| origins.get_mut(f)) {
@@ -246,6 +248,52 @@ mod imp {
         fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
             let p = profile_data(profile)?;
             op_result(ffi::revolve(&p, spec.axis_origin, spec.axis_dir, spec.angle)?)
+        }
+
+        fn sweep(&self, profile: &Profile, path: &SweepPath, spec: &SweepSpec) -> KResult<OpResult> {
+            let p = profile_data(profile)?;
+            if !spec.twist.is_finite() {
+                return Err(invalid("sweep twist must be a finite angle"));
+            }
+            if spec.twist != 0.0 && spec.orientation == SweepOrientation::Fixed {
+                return Err(invalid("a twist needs the profile to follow the path")
+                    .with_hint("set orientation to frenet, or remove the twist"));
+            }
+            let follow = spec.orientation == SweepOrientation::Frenet;
+            let out = match path {
+                SweepPath::Curves(c) => {
+                    if c.edges.is_empty() {
+                        return Err(invalid("the sweep path has no curves").with_hint("draw the path in a sketch"));
+                    }
+                    let region = Region2 { outer: Loop2 { edges: c.edges.clone() }, holes: Vec::new() };
+                    let pd = profile_data(&Profile { frame: c.frame, regions: vec![region] })?;
+                    ffi::sweep(&p, &sys::safe::SweepPath::Curves(&pd), follow, spec.twist)?
+                }
+                SweepPath::Edges { shape, edges } => {
+                    if edges.is_empty() {
+                        return Err(invalid("the sweep path has no edges").with_hint("select the edges to sweep along"));
+                    }
+                    ffi::sweep(&p, &sys::safe::SweepPath::Edges(raw(shape)?, edges), follow, spec.twist)?
+                }
+            };
+            op_result(out)
+        }
+
+        fn loft(&self, sections: &[Profile], spec: &LoftSpec) -> KResult<OpResult> {
+            if sections.len() < 2 {
+                return Err(
+                    invalid("a loft needs at least two profiles").with_hint("add a second profile on another plane")
+                );
+            }
+            let mut data = Vec::with_capacity(sections.len());
+            for s in sections {
+                if s.regions.len() != 1 || s.regions.iter().any(|r| !r.holes.is_empty()) {
+                    return Err(invalid("each loft profile must be a single outline without holes")
+                        .with_hint("pick one region per profile"));
+                }
+                data.push(profile_data(s)?);
+            }
+            op_result(ffi::loft(&data, spec.ruled)?)
         }
 
         fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {

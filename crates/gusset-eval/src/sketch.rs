@@ -76,6 +76,10 @@ pub(crate) struct Solved {
     pub(crate) frame: Frame,
     /// Solved endpoints of every line (doc id → (a, b)), e.g. for revolve axes.
     pub(crate) line_points: BTreeMap<String, ([f64; 2], [f64; 2])>,
+    /// The solved sketch with pattern copies added, and the document id of each entity of
+    /// it: the curves a sweep path is taken from.
+    pub(crate) arranged: sk::Sketch,
+    pub(crate) ids: BTreeMap<sk::EntityId, String>,
 }
 
 fn id_key(id: &str) -> u64 {
@@ -382,7 +386,80 @@ pub(crate) fn solve_sketch(
             result.regions = Err(msg);
         }
     }
-    Ok(Solved { result, profiles, crossings, frame, line_points })
+    Ok(Solved { result, profiles, crossings, frame, line_points, arranged: arr_sketch, ids: dback })
+}
+
+/// The curves of a sweep path from sketch `sketch_name`: the named curves, or every
+/// non-construction curve when `curves` is empty, as a chain in travel order.
+pub(crate) fn path_chain(
+    feature: &str,
+    sketch_name: &str,
+    solved: &Solved,
+    curves: &[String],
+) -> Result<gusset_kernel::Path2, EvalError> {
+    let bad = |msg: String| EvalError::new(feature, ErrorCode::InvalidReference, msg);
+    let only: Option<Vec<sk::EntityId>> = if curves.is_empty() {
+        None
+    } else {
+        let mut ids = Vec::new();
+        for c in curves {
+            let Some((&id, _)) = solved.ids.iter().find(|(_, d)| *d == c) else {
+                return Err(bad(format!("path curve '{c}' does not exist in {sketch_name}"))
+                    .with_hint("name lines, arcs, circles or splines of the path sketch"));
+            };
+            ids.push(id);
+        }
+        Some(ids)
+    };
+    let names = |v: &[sk::EntityId]| v.iter().filter_map(|i| solved.ids.get(i).cloned()).collect::<Vec<_>>();
+    let chain = sk::chain(&solved.arranged, only.as_deref(), 1e-6).map_err(|e| {
+        let (msg, hint) = match &e {
+            sk::ChainError::Empty => (
+                format!("{sketch_name} has no curves for the path"),
+                "draw lines, arcs or splines (construction geometry is ignored)".to_string(),
+            ),
+            sk::ChainError::Branch { at } => (
+                format!("more than two path curves of {sketch_name} meet at ({:.3}, {:.3})", at[0], at[1]),
+                "a path is one chain without branches; name the curves to follow (Sketch.curves(...))".to_string(),
+            ),
+            sk::ChainError::Disconnected { entities } => (
+                format!(
+                    "the path curves of {sketch_name} are not one chain; not joined: {}",
+                    names(entities).join(", ")
+                ),
+                "make the curves meet end to end, or name only the curves of the path".to_string(),
+            ),
+            sk::ChainError::RingWithOthers { entity } => (
+                format!("{} is a closed curve and cannot be joined to other path curves", names(&[*entity]).join("")),
+                "use it alone as a closed path, or name the open curves".to_string(),
+            ),
+            sk::ChainError::Invalid(p) => (format!("{sketch_name}: {p}"), "check the path sketch".to_string()),
+        };
+        let mut err = EvalError::new(feature, ErrorCode::InvalidReference, msg).with_hint(hint);
+        err.reference = Some(sketch_name.to_string());
+        err
+    })?;
+    let edges = chain
+        .segments
+        .iter()
+        .map(|seg| {
+            let doc_id = solved.ids.get(&seg.entity);
+            let tag = doc_id.and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
+            let tag = if matches!(seg.curve, sk::Curve::Bezier { .. }) {
+                gusset_naming::with_segment(tag, seg.sub)
+            } else {
+                tag
+            };
+            let seg2 = match seg.curve {
+                sk::Curve::Line { start, end } => Seg2::Line { a: start, b: end },
+                sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
+                sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
+                sk::Curve::Bezier { p } => Seg2::Bezier { p },
+            };
+            ProfileEdge { seg: seg2, tag }
+        })
+        .collect();
+    Ok(gusset_kernel::Path2 { frame: solved.frame, edges })
 }
 
 /// Builds the kernel profile for the selected regions (empty selection = all).

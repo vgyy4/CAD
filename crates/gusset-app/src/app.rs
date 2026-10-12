@@ -1978,16 +1978,24 @@ pub fn keep_both(original: &std::path::Path, recovered: &History, dirs: &DataDir
     Ok(path)
 }
 
-/// Sketches used as a profile by an extrude or revolve (hidden by default, as in
+/// Sketches used as a profile or sweep path by a solid feature (hidden by default, as in
 /// Fusion and Onshape).
 pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeSet<String> {
-    use gusset_doc::FeatureKind;
+    use gusset_doc::{FeatureKind, PathRef};
     doc.features
         .iter()
-        .filter_map(|f| match &f.kind {
-            FeatureKind::Extrude(e) => Some(e.profile.sketch.clone()),
-            FeatureKind::Revolve(r) => Some(r.profile.sketch.clone()),
-            _ => None,
+        .flat_map(|f| match &f.kind {
+            FeatureKind::Extrude(e) => vec![e.profile.sketch.clone()],
+            FeatureKind::Revolve(r) => vec![r.profile.sketch.clone()],
+            FeatureKind::Sweep(d) => {
+                let mut v = vec![d.profile.sketch.clone()];
+                if let PathRef::Sketch { sketch, .. } = &d.path {
+                    v.push(sketch.clone());
+                }
+                v
+            }
+            FeatureKind::Loft(d) => d.profiles.iter().map(|p| p.sketch.clone()).collect(),
+            _ => Vec::new(),
         })
         .collect()
 }

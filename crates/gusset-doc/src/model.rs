@@ -39,6 +39,8 @@ pub enum FeatureKind {
     Sketch(SketchDef),
     Extrude(ExtrudeDef),
     Revolve(RevolveDef),
+    Sweep(SweepDef),
+    Loft(LoftDef),
     Fillet(EdgeBlendDef),
     Chamfer(EdgeBlendDef),
     Import(ImportDef),
@@ -57,6 +59,8 @@ impl FeatureKind {
             FeatureKind::Sketch(_) => "sketch",
             FeatureKind::Extrude(_) => "extrude",
             FeatureKind::Revolve(_) => "revolve",
+            FeatureKind::Sweep(_) => "sweep",
+            FeatureKind::Loft(_) => "loft",
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Import(_) => "import",
@@ -94,6 +98,18 @@ impl FeatureKind {
                 if let Some(b) = &r.body {
                     add(b);
                 }
+            }
+            FeatureKind::Sweep(d) => {
+                add(&d.profile.sketch);
+                match &d.path {
+                    PathRef::Sketch { sketch, .. } => add(sketch),
+                    PathRef::Edges(edges) => edges.iter().for_each(|e| e.features(&mut add)),
+                }
+                add_body(&mut add, &d.body);
+            }
+            FeatureKind::Loft(d) => {
+                d.profiles.iter().for_each(|p| add(&p.sketch));
+                add_body(&mut add, &d.body);
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 for e in &b.edges {
@@ -154,6 +170,8 @@ impl FeatureKind {
             }
             FeatureKind::Extrude(e) => take(&e.distance),
             FeatureKind::Revolve(r) => take(&r.angle),
+            FeatureKind::Sweep(d) => d.twist.iter().for_each(&mut take),
+            FeatureKind::Loft(_) => {}
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
@@ -497,6 +515,69 @@ pub struct RevolveDef {
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
     pub body_name: Option<String>,
 }
+
+/// How a sweep orients its profile along the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Orientation {
+    /// The profile keeps its orientation and only slides along the path.
+    Fixed,
+    /// The profile turns with the path (a corrected Frenet frame).
+    #[default]
+    Frenet,
+}
+
+impl Orientation {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Orientation::Fixed => "fixed",
+            Orientation::Frenet => "frenet",
+        }
+    }
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        [Orientation::Fixed, Orientation::Frenet].into_iter().find(|o| o.keyword() == s)
+    }
+}
+
+/// The path of a sweep.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PathRef {
+    /// Curves of a sketch that form one chain, open or closed. Empty `curves` = every
+    /// curve of the sketch that is not construction geometry.
+    Sketch { sketch: String, curves: Vec<String> },
+    /// Edges of an earlier body (persistent edge references), forming one chain.
+    Edges(Vec<EdgeRef>),
+}
+
+/// Sweeps closed sketch regions along a path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SweepDef {
+    pub profile: ProfileRef,
+    pub path: PathRef,
+    pub orientation: Orientation,
+    /// Total turn of the profile about the path from start to end (an angle); `None` = none.
+    /// Needs `orientation: frenet` and an open path.
+    pub twist: Option<Expr>,
+    pub op: BodyOp,
+    pub body: Option<String>,
+    /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
+    pub body_name: Option<String>,
+}
+
+/// Lofts a solid through two or more closed profiles, each on its own plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoftDef {
+    /// The profiles in order; each must select exactly one region without holes.
+    pub profiles: Vec<ProfileRef>,
+    /// Ruled surfaces between neighbouring profiles instead of one smooth surface.
+    pub ruled: bool,
+    pub op: BodyOp,
+    pub body: Option<String>,
+    /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
+    pub body_name: Option<String>,
+}
+
+/// Most profiles one loft may use.
+pub const MAX_LOFT_PROFILES: usize = 64;
 
 /// Fillet (size = radius) or chamfer (size = distance).
 #[derive(Debug, Clone, PartialEq)]
