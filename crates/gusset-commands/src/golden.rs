@@ -220,6 +220,56 @@ pub fn sweep_and_loft_names(kernel: Arc<dyn Kernel>) -> R {
     at(&mut s, "OnBarEnd", 2, 33.0)
 }
 
+/// A 60 x 40 plate with a counterbored through hole at each point of a sketch, a flat-bottomed
+/// blind hole at an explicit point, and sketches on the step and on the floor.
+pub const HOLE_DOC: &str = "gusset 1\nunits mm\nparam t = 12 mm\nparam d = 6.6 mm\nparam cb = 11 mm\n\
+sketch S1 (plane: XY, next_id: 9) {\n\
+  p1 = point(0, 0)\n  p2 = point(60, 0)\n  p3 = point(60, 40)\n  p4 = point(0, 40)\n\
+  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\
+extrude E1 (profile: S1, distance: t, op: new)\n\
+sketch Marks (plane: E1/cap(end), next_id: 3) {\n  p1 = point(15, 20)\n  p2 = point(45, 20)\n}\n\
+hole H1 (face: E1/cap(end), points: Marks, type: counterbore, diameter: d, through: true, cbore_diameter: cb, cbore_depth: 5 mm)\n\
+hole H2 (face: E1/cap(end), at: [[30 mm, 8 mm]], type: simple, diameter: 4 mm, depth: 6 mm, point_angle: 180 deg)\n\
+sketch OnStep (plane: H1/cbore_floor(p1), next_id: 3) {\n  p1 = point(15, 20)\n  c2 = circle(p1, 1)\n}\n\
+sketch OnStep2 (plane: H1/cbore_floor(p2), next_id: 3) {\n  p1 = point(45, 20)\n  c2 = circle(p1, 1)\n}\n\
+sketch OnFloor (plane: H2/floor(e1), next_id: 3) {\n  p1 = point(30, 8)\n  c2 = circle(p1, 1)\n}\n";
+
+/// Hole faces keep their names through parameter edits, an unrelated feature moved to the
+/// front and a branch: sketches on the step of a counterbore and on the floor of a blind hole
+/// follow the geometry (needs revolve and booleans, i.e. OCCT).
+///
+/// # Errors
+/// As [`reorder_independent_features`].
+pub fn hole_names(kernel: Arc<dyn Kernel>) -> R {
+    let doc = Document::from_text(HOLE_DOC).map_err(|e| format!("{e:?}"))?;
+    let mut s = Session::new(&doc, kernel, &CmdCtx::user(0));
+    let at = |s: &mut Session, name: &str, axis: usize, value: f64| on_plane(s, name, axis, value);
+    at(&mut s, "OnStep", 2, 7.0)?;
+    at(&mut s, "OnStep2", 2, 7.0)?;
+    at(&mut s, "OnFloor", 2, 6.0)?;
+    // The dimensions of the holes and of the plate.
+    run(&mut s, "param.set", json!({"name": "d", "expr": "8 mm"}))?;
+    run(&mut s, "param.set", json!({"name": "cb", "expr": "14 mm"}))?;
+    at(&mut s, "OnStep", 2, 7.0)?;
+    run(&mut s, "param.set", json!({"name": "t", "expr": "20 mm"}))?;
+    at(&mut s, "OnStep", 2, 15.0)?;
+    at(&mut s, "OnStep2", 2, 15.0)?;
+    at(&mut s, "OnFloor", 2, 14.0)?;
+    // An unrelated sketch moved to the front changes no reference.
+    let other = str_of(&run(&mut s, "sketch.create", json!({"plane": "XZ"}))?, "sketch")?;
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": other, "x": 0, "y": 0, "width": 3, "height": 3}))?;
+    run(&mut s, "feature.move", json!({"name": other, "index": 0}))?;
+    at(&mut s, "OnStep", 2, 15.0)?;
+    at(&mut s, "OnFloor", 2, 14.0)?;
+    // A branch edits the plate and leaves the first branch alone.
+    run(&mut s, "branch.create", json!({"name": "thin"}))?;
+    run(&mut s, "param.set", json!({"name": "t", "expr": "9 mm"}))?;
+    at(&mut s, "OnStep", 2, 4.0)?;
+    at(&mut s, "OnFloor", 2, 3.0)?;
+    run(&mut s, "branch.switch", json!({"branch": "main"}))?;
+    at(&mut s, "OnStep", 2, 15.0)
+}
+
 /// Every scenario, for a kernel.
 ///
 /// # Errors
@@ -237,12 +287,13 @@ pub fn all(kernel: &Arc<dyn Kernel>) -> R {
     if errs.is_empty() { Ok(()) } else { Err(errs.join("\n")) }
 }
 
-/// [`all`] plus the scenarios that need a kernel with sweeps and lofts (OCCT).
+/// [`all`] plus the scenarios that need a kernel with sweeps, lofts, revolve and booleans (OCCT).
 ///
 /// # Errors
 /// The failures, one per line.
 pub fn all_with_sweeps(kernel: &Arc<dyn Kernel>) -> R {
     let mut errs: Vec<String> = all(kernel).err().into_iter().collect();
     errs.extend(sweep_and_loft_names(kernel.clone()).err().map(|e| format!("sweep_and_loft: {e}")));
+    errs.extend(hole_names(kernel.clone()).err().map(|e| format!("hole_names: {e}")));
     if errs.is_empty() { Ok(()) } else { Err(errs.join("\n")) }
 }
