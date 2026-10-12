@@ -304,6 +304,27 @@ mod tests {
     }
 
     #[test]
+    fn gc_keeps_everything_when_a_snapshot_is_damaged() {
+        // Review N6: a snapshot whose list chunk is missing cannot name its features;
+        // GC must not delete them (or anything else) on that basis.
+        let u = Ctx::user(0);
+        let base = with_feature(with_feature(doc(&[("a", "1 mm")]), "S1"), "S2");
+        let mut h = History::new(&base, &u);
+        let main = h.main();
+        let head = h.head(main).unwrap();
+        let snap = h.node(head).unwrap().snapshot;
+        let chunk = *h.objects().snapshot(snap).unwrap().chunks.last().unwrap();
+        let keep: std::collections::BTreeSet<_> =
+            h.objects().iter().map(|(k, _, _)| k).filter(|k| *k != chunk).collect();
+        h.objects_mut().retain(&keep);
+        let remaining = h.objects().len();
+        assert!(h.objects().snapshot(snap).is_err());
+        let rep = h.gc(1_000_000_000, &GcPolicy::default());
+        assert_eq!(rep.objects_removed, 0);
+        assert_eq!(h.objects().len(), remaining);
+    }
+
+    #[test]
     fn squash_keeps_heads_and_stars() {
         let u = Ctx::user(0);
         let mut h = History::new(&doc(&[]), &u);

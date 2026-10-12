@@ -356,22 +356,31 @@ impl ObjectStore {
         Ok(Document { units: snap.units, params, features })
     }
 
-    /// Hashes of every object a snapshot references (including itself).
-    pub fn snapshot_closure(&self, snapshot: Hash, out: &mut std::collections::BTreeSet<Hash>) {
+    /// Hashes of every object a snapshot references (including itself). Returns false
+    /// when the snapshot (or one of its features) could not be read, so the set may be
+    /// incomplete and must not be used to delete objects (review N6).
+    pub fn snapshot_closure(&self, snapshot: Hash, out: &mut std::collections::BTreeSet<Hash>) -> bool {
         if !out.insert(snapshot) {
-            return;
+            return true;
         }
-        if let Ok(s) = self.snapshot(snapshot) {
-            out.insert(s.params);
-            out.extend(s.chunks.iter().copied());
-            out.extend(s.features.iter().copied());
-            for f in &s.features {
-                if let Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) = self.feature(*f)
-                    && let Some(b) = Hash::from_hex(&i.blob)
-                {
-                    out.insert(b);
+        let Ok(s) = self.snapshot(snapshot) else {
+            return false;
+        };
+        out.insert(s.params);
+        out.extend(s.chunks.iter().copied());
+        out.extend(s.features.iter().copied());
+        let mut complete = true;
+        for f in &s.features {
+            match self.feature(*f) {
+                Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) => {
+                    if let Some(b) = Hash::from_hex(&i.blob) {
+                        out.insert(b);
+                    }
                 }
+                Ok(_) => {}
+                Err(_) => complete = false,
             }
         }
+        complete
     }
 }
