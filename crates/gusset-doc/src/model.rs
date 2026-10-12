@@ -51,6 +51,7 @@ pub enum FeatureKind {
     Plane(PlaneDef),
     Move(MoveDef),
     Combine(CombineDef),
+    Hole(HoleDef),
 }
 
 impl FeatureKind {
@@ -71,6 +72,7 @@ impl FeatureKind {
             FeatureKind::Plane(_) => "plane",
             FeatureKind::Move(_) => "move",
             FeatureKind::Combine(_) => "combine",
+            FeatureKind::Hole(_) => "hole",
         }
     }
 
@@ -140,6 +142,12 @@ impl FeatureKind {
                 add_body(&mut add, &d.body);
                 d.tools.iter().for_each(|t| add(t));
             }
+            FeatureKind::Hole(d) => {
+                d.face.features(&mut add);
+                if let HoleSites::Sketch(s) = &d.sites {
+                    add(s);
+                }
+            }
         }
         out
     }
@@ -196,6 +204,7 @@ impl FeatureKind {
                 translate.chain(rot).for_each(&mut take);
             }
             FeatureKind::Combine(_) => {}
+            FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
         }
         out
     }
@@ -764,4 +773,136 @@ pub struct CombineDef {
     pub tools: Vec<String>,
     /// `Add` (unite), `Cut` (subtract) or `Intersect`; never `New`.
     pub op: BodyOp,
+}
+
+// ------------------------------------------------------------------ holes
+
+/// What kind of hole: how the mouth and the thread are made (ADR 0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum HoleType {
+    /// A plain drilled hole.
+    #[default]
+    Simple,
+    /// A cylindrical recess for a screw head (`cbore_diameter`, `cbore_depth`).
+    Counterbore,
+    /// A conical recess for a flat head (`csink_diameter`, `csink_angle`).
+    Countersink,
+    /// Modelled at the tap-drill diameter, with a cosmetic thread record (`thread`, `pitch`,
+    /// `thread_depth`); no helical geometry.
+    Tapped,
+}
+
+impl HoleType {
+    pub const ALL: [HoleType; 4] = [HoleType::Simple, HoleType::Counterbore, HoleType::Countersink, HoleType::Tapped];
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            HoleType::Simple => "simple",
+            HoleType::Counterbore => "counterbore",
+            HoleType::Countersink => "countersink",
+            HoleType::Tapped => "tapped",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.keyword() == s)
+    }
+}
+
+/// Where the holes of one `hole` feature go.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HoleSites {
+    /// The points of a sketch: every point that is not construction geometry and not an
+    /// end or fit point of a line, arc or spline, plus the centre of every circle (its size
+    /// is ignored). Pattern copies count. The sketch must be parallel to the face; points
+    /// are projected onto the face along its normal. Hole ids are the point ids (`p5`).
+    Sketch(String),
+    /// Explicit points `(u, v)` in the face's own sketch frame (the frame a sketch placed on
+    /// that face gets), as lengths. Hole ids are `e1`, `e2`, ... in list order.
+    Points(Vec<[Expr; 2]>),
+}
+
+/// How deep a hole goes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HoleDepth {
+    /// To the end of the full-diameter part, measured from the face; the drill point (cone)
+    /// comes on top of it.
+    Blind(Expr),
+    /// All the way through the body, with a flat end.
+    Through,
+}
+
+/// A counterbore: a cylindrical recess at the mouth.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterboreDef {
+    pub diameter: Expr,
+    pub depth: Expr,
+}
+
+/// A countersink: a conical recess at the mouth.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CountersinkDef {
+    pub diameter: Expr,
+    /// The full cone angle (90 deg for ISO 10642 screws).
+    pub angle: Expr,
+}
+
+/// The cosmetic thread of a tapped hole: recorded, not modelled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadDef {
+    /// Designation such as `M6` (untrusted text; at most [`MAX_THREAD_DESIGNATION`]
+    /// printable characters).
+    pub designation: String,
+    pub pitch: Expr,
+    /// Threaded length from the face; `None` = the whole hole.
+    pub depth: Option<Expr>,
+}
+
+/// Longest thread designation.
+pub const MAX_THREAD_DESIGNATION: usize = 32;
+/// Most holes one feature may make (each costs a boolean operation).
+pub const MAX_HOLE_SITES: usize = 1000;
+
+/// Holes on a planar face of a body, cut with one boolean per hole (ADR 0019).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HoleDef {
+    /// The planar face the holes start on; they go into the material, against the outward
+    /// normal. The face names the body.
+    pub face: FaceRef,
+    pub sites: HoleSites,
+    pub kind: HoleType,
+    /// Drilled diameter (the tap-drill diameter for a tapped hole).
+    pub diameter: Expr,
+    pub depth: HoleDepth,
+    /// Full angle of the drill point of a blind hole; `None` = 118 deg.
+    pub point_angle: Option<Expr>,
+    pub counterbore: Option<CounterboreDef>,
+    pub countersink: Option<CountersinkDef>,
+    pub thread: Option<ThreadDef>,
+}
+
+impl HoleDef {
+    /// Every expression of the feature.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut v: Vec<&Expr> = Vec::new();
+        if let HoleSites::Points(p) = &self.sites {
+            v.extend(p.iter().flat_map(|[a, b]| [a, b]));
+        }
+        v.push(&self.diameter);
+        if let HoleDepth::Blind(d) = &self.depth {
+            v.push(d);
+        }
+        v.extend(self.point_angle.iter());
+        if let Some(c) = &self.counterbore {
+            v.extend([&c.diameter, &c.depth]);
+        }
+        if let Some(c) = &self.countersink {
+            v.extend([&c.diameter, &c.angle]);
+        }
+        if let Some(t) = &self.thread {
+            v.push(&t.pitch);
+            v.extend(t.depth.iter());
+        }
+        v
+    }
 }

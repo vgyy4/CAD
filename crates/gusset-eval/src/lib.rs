@@ -14,12 +14,14 @@
 
 mod datum;
 pub mod error;
+mod hole;
 mod ops;
 mod pattern;
 pub mod sketch;
 mod sweep;
 
 pub use error::{ErrorCode, EvalError};
+pub use hole::{DEFAULT_POINT_ANGLE, Dims as HoleDims, HoleInfo, ThreadInfo};
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
 
 use gusset_doc::text::print_feature_object;
@@ -45,6 +47,9 @@ pub struct Body {
     pub shape: Shape,
     pub names: BodyNames,
     pub topology: Topology,
+    /// The holes made by `hole` features, with their cosmetic threads (ADR 0019). A body
+    /// made by mirroring, moving a copy or patterning starts without records.
+    pub holes: Vec<HoleInfo>,
 }
 
 /// A reference mesh body from an imported STL, 3MF or OBJ file (spec import tier 3).
@@ -528,6 +533,7 @@ impl Evaluator {
                     shape: res.shape,
                     names,
                     topology: topo,
+                    holes: body.holes.clone(),
                 });
                 if let Some(slot) = s.bodies.get_mut(bi) {
                     *slot = nb;
@@ -541,6 +547,7 @@ impl Evaluator {
             FeatureKind::Plane(d) => self.run_plane(s, name, d, units, params),
             FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
             FeatureKind::Combine(d) => self.run_combine(s, name, d),
+            FeatureKind::Hole(d) => self.run_hole(s, name, d, units, params),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
                     EvalError::new(name, ErrorCode::MissingBlob, "the imported data is missing from the project")
@@ -567,6 +574,7 @@ impl Evaluator {
                     shape,
                     names,
                     topology: topo,
+                    holes: Vec::new(),
                 }));
                 Ok(())
             }
@@ -594,6 +602,7 @@ impl Evaluator {
                 shape: tool.shape,
                 names: tool_names,
                 topology: tool_topo,
+                holes: Vec::new(),
             }));
             return Ok(());
         }
@@ -638,6 +647,7 @@ impl Evaluator {
             shape: res.shape,
             names,
             topology: topo,
+            holes: body.holes.clone(),
         });
         if let Some(slot) = s.bodies.get_mut(bi) {
             *slot = nb;
@@ -857,6 +867,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 mod tests;
 #[cfg(test)]
 mod tests_datum;
+#[cfg(test)]
+mod tests_hole;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]

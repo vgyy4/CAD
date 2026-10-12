@@ -62,7 +62,12 @@ Phase 3 has started (see Next).
      sketch patterns (ADR 0016; OCCT golden tests in `modeling_sketch.rs`), sweep and
      loft (ADR 0017: profile along a sketch chain or edges, fixed/Frenet, twist; loft
      through sketches on datum planes; persistent names; OCCT only, golden tests in
-     `modeling_sweep.rs` and the naming golden). Next: holes.
+     `modeling_sweep.rs` and the naming golden), holes (ADR 0019: `hole` statement and
+     `feature.hole`; simple, counterbore, countersink and tapped with a cosmetic thread record
+     in `query_body`; blind with drill point or through; `standard` presets, ISO 273 / 261-262 /
+     2306 / 4762 + DIN 974-1 / 10642, written as named parameters; names `Hole1/wall(p5)`;
+     OCCT golden tests in `modeling_hole.rs` and the naming golden `hole_names`). Next:
+     DIN 974-1 / ISO 4762 / 10642 table values to be checked against the standards (ADR 0019 §5).
    - v0.2: generators (DESIGN.md §1, owner request): `generate.gear` (ADR 0018) writes
      named parameters, a parametric tooth sketch and an extrude/sweep for involute spur
      and helical gears (OCCT golden tests in `modeling_gear.rs`: volume 6e-6, tooth

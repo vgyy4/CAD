@@ -51,6 +51,7 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             }
         }
         FeatureKind::Move(d) => body_of(&mut d.body),
+        FeatureKind::Hole(d) => super::hole::rename_refs(d, from, to),
         FeatureKind::Combine(d) => {
             body_of(&mut d.body);
             for t in &mut d.tools {

@@ -34,6 +34,48 @@ pub enum FaceKey {
     /// Face of pattern instance `k` (1-based; 0 is the source) copied from the named
     /// face (`Pattern1/instance(2, <face>)`).
     Instance { k: u32, face: Box<FaceRef> },
+    /// A face of one hole of a `hole` feature (`Hole1/wall(p5)`): `at` is the id of the
+    /// sketch point the hole sits at (`p5`, `p5_2` for a pattern copy) or `e1`, `e2`, ...
+    /// for the explicit points of the feature, in list order.
+    Hole { part: HolePart, at: String },
+}
+
+/// Which face of a hole (ADR 0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum HolePart {
+    /// The tool's disc in the mouth plane. It lies in the face the hole starts on, so it
+    /// never survives as a face of its own.
+    Top,
+    /// The cylindrical wall of the full-diameter part.
+    Wall,
+    /// The bottom: the drill-point cone, or the flat end of a hole that ends in a plane.
+    Floor,
+    /// The wall of a counterbore.
+    CboreWall,
+    /// The flat step between a counterbore and the hole.
+    CboreFloor,
+    /// The cone of a countersink.
+    Csink,
+}
+
+impl HolePart {
+    pub const ALL: [HolePart; 6] =
+        [HolePart::Top, HolePart::Wall, HolePart::Floor, HolePart::CboreWall, HolePart::CboreFloor, HolePart::Csink];
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            HolePart::Top => "top",
+            HolePart::Wall => "wall",
+            HolePart::Floor => "floor",
+            HolePart::CboreWall => "cbore_wall",
+            HolePart::CboreFloor => "cbore_floor",
+            HolePart::Csink => "csink",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.keyword() == s)
+    }
 }
 
 /// A named face: `<feature>/<key>[#k]`.
@@ -66,7 +108,7 @@ impl FaceRef {
             FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
                 r.features(f);
             }
-            FaceKey::Cap { .. } | FaceKey::Imported(_) => {}
+            FaceKey::Cap { .. } | FaceKey::Imported(_) | FaceKey::Hole { .. } => {}
         }
     }
 
@@ -153,6 +195,7 @@ impl fmt::Display for FaceRef {
             FaceKey::Mirror(r) => write!(f, "mirror({r})")?,
             FaceKey::Copy(r) => write!(f, "copy({r})")?,
             FaceKey::Instance { k, face } => write!(f, "instance({k}, {face})")?,
+            FaceKey::Hole { part, at } => write!(f, "{}({at})", part.keyword())?,
         }
         if let Some(i) = self.index {
             write!(f, "#{i}")?;
@@ -198,6 +241,10 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
     let kind = c.ident()?;
     c.expect('(')?;
     let key = match kind {
+        k if HolePart::from_keyword(k).is_some() => {
+            let part = HolePart::from_keyword(k).unwrap_or(HolePart::Wall);
+            FaceKey::Hole { part, at: c.ident()?.to_string() }
+        }
         "side" => {
             let sketch = c.ident()?.to_string();
             c.expect('/')?;
@@ -229,7 +276,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         other => {
             return Err(c.err_hint(
                 format!("unknown face kind '{other}'"),
-                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), instance(k, <face>) or face(N)",
+                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), instance(k, <face>), face(N) or a hole face such as wall(p5)",
             ));
         }
     };
@@ -275,6 +322,10 @@ mod tests {
             "Mirror1/mirror(Extrude1/side(Sketch1/l3))",
             "Move1/copy(Extrude1/side(Sketch1/l3))",
             "Pattern1/instance(3, Extrude1/cap(start, l4)#2)",
+            "Hole1/wall(p5)",
+            "Hole1/cbore_floor(p5_2)#2",
+            "Hole2/csink(e1)",
+            "Pattern1/instance(1, Hole1/floor(p5))",
             "Pattern2/instance(1, Mirror1/mirror(Fillet1/blend(edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3)))))",
         ] {
             let r = FaceRef::parse(s).unwrap();

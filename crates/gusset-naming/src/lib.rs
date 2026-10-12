@@ -7,7 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef};
+use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart};
 use gusset_kernel::{CapEnd, FaceOrigin, Topology, V3};
 use std::collections::BTreeMap;
 
@@ -56,6 +56,16 @@ pub fn tag_entity(tag: u64) -> Option<String> {
     Some(id)
 }
 
+/// The profile tag of a hole tool's edge that makes face `part` (ADR 0019).
+pub fn hole_tag(part: HolePart) -> u64 {
+    HolePart::ALL.iter().position(|p| *p == part).map_or(u64::MAX, |i| i as u64)
+}
+
+/// The face part a hole tool's profile tag stands for.
+pub fn tag_hole_part(tag: u64) -> Option<HolePart> {
+    HolePart::ALL.get(usize::try_from(tag).ok()?).copied()
+}
+
 // ------------------------------------------------------------------ naming context
 
 /// What the naming layer needs to know about the operation that produced a body.
@@ -73,6 +83,9 @@ pub enum OpContext<'a> {
     /// A combined operation: sweep then boolean. Input 0 is the target body, input 1
     /// the freshly swept tool (whose own origins are named as a sweep).
     SweepInto { feature: &'a str, sketch: &'a str, regions: &'a [String], target: &'a BodyNames },
+    /// The tool of one hole of a `hole` feature, a revolved profile whose edge tags are
+    /// [`hole_tag`]s: faces are named `feature/<part>(at)`, `at` being the id of the hole.
+    Hole { feature: &'a str, at: &'a str },
     /// An imported body; faces are named by index.
     Import { feature: &'a str },
     /// A shell of the body whose names are `input`: surviving faces keep their names,
@@ -207,6 +220,8 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
                         )
                     })
                 }
+                (OpContext::Hole { feature, at }, FaceOrigin::Lateral { tag }) => tag_hole_part(*tag)
+                    .map(|part| FaceRef::new(*feature, FaceKey::Hole { part, at: (*at).to_string() })),
                 (OpContext::Loft { feature, .. }, FaceOrigin::Cap { end, .. }) => {
                     Some(FaceRef::new(*feature, FaceKey::Cap { side: cap(*end), region: None }))
                 }
@@ -738,6 +753,37 @@ mod tests {
         // An origin outside the section list cannot be named: a clean error.
         let bad = vec![vec![FaceOrigin::Section { section: 5, tag: l5 }]];
         assert!(name_body(&ctx, &bad, &flat_topo(1)).is_err());
+    }
+
+    #[test]
+    fn hole_tool_faces_are_named_after_their_part_and_site() {
+        let origins: Vec<Vec<FaceOrigin>> = [HolePart::Top, HolePart::Wall, HolePart::Floor, HolePart::CboreFloor]
+            .iter()
+            .map(|p| vec![FaceOrigin::Lateral { tag: hole_tag(*p) }])
+            .collect();
+        let ctx = OpContext::Hole { feature: "Hole1", at: "p5_2" };
+        let n = name_body(&ctx, &origins, &flat_topo(4)).unwrap();
+        let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["Hole1/top(p5_2)", "Hole1/wall(p5_2)", "Hole1/floor(p5_2)", "Hole1/cbore_floor(p5_2)"]);
+        for p in HolePart::ALL {
+            assert_eq!(tag_hole_part(hole_tag(p)), Some(p));
+        }
+        assert_eq!(tag_hole_part(99), None);
+        // The names survive a round trip through the text form.
+        for f in &n.faces {
+            assert_eq!(&FaceRef::parse(&f.to_string()).unwrap(), f);
+        }
+        // A cut keeps the target's names and takes the tool's for the new faces.
+        let target = BodyNames { faces: vec![FaceRef::parse("E/cap(end)").unwrap()], edges: vec![], corners: vec![] };
+        let tool = BodyNames { faces: n.faces.clone(), edges: vec![], corners: vec![] };
+        let origins = vec![
+            vec![FaceOrigin::Input { input: 0, face: 0 }, FaceOrigin::Input { input: 1, face: 0 }],
+            vec![FaceOrigin::Input { input: 1, face: 1 }],
+        ];
+        let ctx = OpContext::Modify { feature: "Hole1", inputs: &[&target, &tool] };
+        let n = name_body(&ctx, &origins, &flat_topo(2)).unwrap();
+        let names: Vec<String> = n.faces.iter().map(ToString::to_string).collect();
+        assert_eq!(names, ["E/cap(end)", "Hole1/wall(p5_2)"]);
     }
 
     #[test]

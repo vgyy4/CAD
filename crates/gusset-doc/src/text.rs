@@ -294,6 +294,40 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("tools: [{}]", d.tools.join(", ")));
             args.push(format!("op: {}", d.op.keyword()));
         }
+        FeatureKind::Hole(d) => {
+            args.push(format!("face: {}", d.face));
+            match &d.sites {
+                HoleSites::Sketch(s) => args.push(format!("points: {s}")),
+                HoleSites::Points(p) => {
+                    let list: Vec<String> = p.iter().map(|[u, v]| format!("[{u}, {v}]")).collect();
+                    args.push(format!("at: [{}]", list.join(", ")));
+                }
+            }
+            args.push(format!("type: {}", d.kind.keyword()));
+            args.push(format!("diameter: {}", d.diameter));
+            match &d.depth {
+                HoleDepth::Blind(e) => args.push(format!("depth: {e}")),
+                HoleDepth::Through => args.push("through: true".into()),
+            }
+            if let Some(a) = &d.point_angle {
+                args.push(format!("point_angle: {a}"));
+            }
+            if let Some(c) = &d.counterbore {
+                args.push(format!("cbore_diameter: {}", c.diameter));
+                args.push(format!("cbore_depth: {}", c.depth));
+            }
+            if let Some(c) = &d.countersink {
+                args.push(format!("csink_diameter: {}", c.diameter));
+                args.push(format!("csink_angle: {}", c.angle));
+            }
+            if let Some(t) = &d.thread {
+                args.push(format!("thread: {}", quote(&t.designation)));
+                args.push(format!("pitch: {}", t.pitch));
+                if let Some(depth) = &t.depth {
+                    args.push(format!("thread_depth: {depth}"));
+                }
+            }
+        }
         FeatureKind::Import(i) => {
             args.push(format!("blob: {}", quote(&i.blob)));
             args.push(format!("format: {}", i.format.keyword()));
@@ -423,7 +457,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" => {
+            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -437,6 +471,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_feature_ext2(kw, &mut c)?
                 } else if matches!(kw, "sweep" | "loft") {
                     parse_feature_ext3(kw, &mut c)?
+                } else if kw == "hole" {
+                    parse_hole(&mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -452,7 +488,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole",
                 ));
             }
         }
@@ -932,6 +968,126 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             body_name,
         }),
     };
+    Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+/// The hole statement (ADR 0019).
+fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let mut label = None;
+    let mut suppressed = false;
+    let mut face = None;
+    let mut sites: Option<HoleSites> = None;
+    let mut kind = None;
+    let mut diameter = None;
+    let mut depth = None;
+    let mut through = None;
+    let mut point_angle = None;
+    let (mut cbore_diameter, mut cbore_depth) = (None, None);
+    let (mut csink_diameter, mut csink_angle) = (None, None);
+    let mut designation = None;
+    let mut pitch = None;
+    let mut thread_depth = None;
+    let allowed = "face, points, at, type, diameter, depth, through, point_angle, cbore_diameter, cbore_depth, \
+                   csink_diameter, csink_angle, thread, pitch, thread_depth, label, suppressed";
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "face" => face = Some(parse_face(c)?),
+            "points" | "at" => {
+                if sites.is_some() {
+                    return Err(c.err_hint("a hole has either 'points' or 'at'", "use a sketch, or a list of points"));
+                }
+                sites = Some(if key == "points" {
+                    HoleSites::Sketch(c.ident()?.to_string())
+                } else {
+                    c.expect('[')?;
+                    let mut list = Vec::new();
+                    if !c.eat(']') {
+                        loop {
+                            c.expect('[')?;
+                            let u = c.expr()?;
+                            c.expect(',')?;
+                            let v = c.expr()?;
+                            c.expect(']')?;
+                            list.push([u, v]);
+                            if list.len() > MAX_HOLE_SITES {
+                                return Err(c.err(format!("more than {MAX_HOLE_SITES} hole points")));
+                            }
+                            if c.eat(',') {
+                                continue;
+                            }
+                            c.expect(']')?;
+                            break;
+                        }
+                    }
+                    HoleSites::Points(list)
+                });
+            }
+            "type" => {
+                let w = c.ident()?;
+                kind = Some(HoleType::from_keyword(w).ok_or_else(|| {
+                    c.err_hint(format!("unknown hole type '{w}'"), "use simple, counterbore, countersink or tapped")
+                })?);
+            }
+            "diameter" => diameter = Some(c.expr()?),
+            "depth" => depth = Some(c.expr()?),
+            "through" => through = Some(parse_bool(c)?),
+            "point_angle" => point_angle = Some(c.expr()?),
+            "cbore_diameter" => cbore_diameter = Some(c.expr()?),
+            "cbore_depth" => cbore_depth = Some(c.expr()?),
+            "csink_diameter" => csink_diameter = Some(c.expr()?),
+            "csink_angle" => csink_angle = Some(c.expr()?),
+            "thread" => designation = Some(c.string()?),
+            "pitch" => pitch = Some(c.expr()?),
+            "thread_depth" => thread_depth = Some(c.expr()?),
+            other => return Err(unknown_arg(c, "hole", other, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let depth = match (depth, through) {
+        (Some(d), None | Some(false)) => HoleDepth::Blind(d),
+        (None, Some(true)) => HoleDepth::Through,
+        (None, None | Some(false)) => {
+            return Err(c.err_hint("'hole' needs a depth", "give depth: <length>, or through: true"));
+        }
+        (Some(_), Some(true)) => {
+            return Err(c.err_hint("a hole has either a depth or through: true", "remove one of them"));
+        }
+    };
+    let pair = |a: Option<_>, b: Option<_>, first: &str, second: &str| match (a, b) {
+        (Some(a), Some(b)) => Ok(Some((a, b))),
+        (None, None) => Ok(None),
+        (Some(_), None) => Err(c.err(format!("'hole' needs '{second}' next to '{first}'"))),
+        (None, Some(_)) => Err(c.err(format!("'hole' needs '{first}' next to '{second}'"))),
+    };
+    let counterbore = pair(cbore_diameter, cbore_depth, "cbore_diameter", "cbore_depth")?
+        .map(|(diameter, depth)| CounterboreDef { diameter, depth });
+    let countersink = pair(csink_diameter, csink_angle, "csink_diameter", "csink_angle")?
+        .map(|(diameter, angle)| CountersinkDef { diameter, angle });
+    let thread = match (designation, pitch) {
+        (Some(designation), Some(pitch)) => Some(ThreadDef { designation, pitch, depth: thread_depth }),
+        (None, None) if thread_depth.is_none() => None,
+        (Some(_), None) => return Err(missing(c, "hole", "pitch")),
+        (None, _) => return Err(missing(c, "hole", "thread")),
+    };
+    let kind = FeatureKind::Hole(HoleDef {
+        face: face.ok_or_else(|| missing(c, "hole", "face"))?,
+        sites: sites.ok_or_else(|| {
+            c.err_hint("'hole' needs 'points' or 'at'", "points: <sketch>, or at: [[10 mm, 5 mm], ...]")
+        })?,
+        kind: kind.unwrap_or_default(),
+        diameter: diameter.ok_or_else(|| missing(c, "hole", "diameter"))?,
+        depth,
+        point_angle,
+        counterbore,
+        countersink,
+        thread,
+    });
     Ok(Feature { name, label, note: None, suppressed, kind })
 }
 

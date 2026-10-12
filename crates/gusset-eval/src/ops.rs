@@ -79,6 +79,7 @@ impl Evaluator {
                 shape: res.shape,
                 names,
                 topology: topo,
+                holes: Vec::new(),
             }));
             return Ok(());
         }
@@ -207,14 +208,21 @@ fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize,
 }
 
 fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
-    let nb = Arc::new(Body { name: old.name.clone(), feature: old.feature.clone(), shape, names, topology });
+    let nb = Arc::new(Body {
+        name: old.name.clone(),
+        feature: old.feature.clone(),
+        shape,
+        names,
+        topology,
+        holes: old.holes.clone(),
+    });
     if let Some(slot) = s.bodies.get_mut(bi) {
         *slot = nb;
     }
 }
 
 /// A face of the same feature as `missing` (preferring the same kind) as a suggestion.
-fn closest_face(names: &BodyNames, missing: &FaceRef) -> Option<FaceRef> {
+pub(crate) fn closest_face(names: &BodyNames, missing: &FaceRef) -> Option<FaceRef> {
     names
         .faces
         .iter()
@@ -337,6 +345,7 @@ impl Evaluator {
                 shape: res.shape,
                 names,
                 topology: topo,
+                holes: Vec::new(),
             }));
         } else {
             // A rigid move changes where the faces are, not what they are: names stay.
@@ -417,7 +426,22 @@ impl Evaluator {
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
             shape = res.shape;
         }
+        let tool_holes: Vec<_> = tools.iter().flat_map(|t| t.holes.iter().cloned()).collect();
         replace_body(s, bi, &body, shape, names, topo);
+        if !tool_holes.is_empty()
+            && let Some(slot) = s.bodies.get_mut(bi)
+        {
+            let mut b = Body {
+                name: slot.name.clone(),
+                feature: slot.feature.clone(),
+                shape: slot.shape.clone(),
+                names: slot.names.clone(),
+                topology: slot.topology.clone(),
+                holes: slot.holes.clone(),
+            };
+            b.holes.extend(tool_holes);
+            *slot = Arc::new(b);
+        }
         s.bodies.retain(|b| !is_tool(b));
         Ok(())
     }

@@ -227,6 +227,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     }
                 }
             }
+            FeatureKind::Hole(d) => check_hole(n, d, &seen, &mut out),
             FeatureKind::Import(i) => {
                 if i.blob.len() != 64 || !i.blob.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
                     out.push(issue(n, "blob must be a 64-character lowercase hex hash"));
@@ -244,6 +245,63 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         seen.insert(n, f);
     }
     out
+}
+
+/// A hole feature: its sites exist and its arguments fit its type.
+fn check_hole(n: &str, d: &HoleDef, seen: &BTreeMap<&str, &Feature>, out: &mut Vec<Issue>) {
+    match &d.sites {
+        HoleSites::Sketch(s) => {
+            if let Some(f) = seen.get(s.as_str())
+                && !matches!(f.kind, FeatureKind::Sketch(_))
+            {
+                out.push(issue(n, format!("points: '{s}' is not a sketch")));
+            }
+        }
+        HoleSites::Points(p) if p.is_empty() => {
+            out.push(issue_h(n, "the hole has no points", "give at: [[10 mm, 5 mm]] or points: <sketch>"));
+        }
+        HoleSites::Points(p) if p.len() > MAX_HOLE_SITES => {
+            out.push(issue(n, format!("{} hole points; at most {MAX_HOLE_SITES} per feature", p.len())));
+        }
+        HoleSites::Points(_) => {}
+    }
+    let extra = |has: bool, wanted: bool, what: &str, ty: &str, out: &mut Vec<Issue>| {
+        if wanted && !has {
+            out.push(issue_h(n, format!("type: {ty} needs {what}"), format!("add {what}, or change the type")));
+        } else if has && !wanted {
+            out.push(issue_h(
+                n,
+                format!("{what} only apply to type: {ty}"),
+                format!("remove {what}, or use type: {ty}"),
+            ));
+        }
+    };
+    extra(
+        d.counterbore.is_some(),
+        d.kind == HoleType::Counterbore,
+        "cbore_diameter and cbore_depth",
+        "counterbore",
+        out,
+    );
+    extra(
+        d.countersink.is_some(),
+        d.kind == HoleType::Countersink,
+        "csink_diameter and csink_angle",
+        "countersink",
+        out,
+    );
+    extra(d.thread.is_some(), d.kind == HoleType::Tapped, "thread and pitch", "tapped", out);
+    if let Some(t) = &d.thread {
+        let bad = t.designation.is_empty()
+            || t.designation.chars().count() > MAX_THREAD_DESIGNATION
+            || t.designation.chars().any(|c| c.is_control() || c == '"');
+        if bad {
+            out.push(issue_h(n, "the thread designation must be 1 to 32 printable characters", "write it like \"M6\""));
+        }
+    }
+    if d.point_angle.is_some() && d.depth == HoleDepth::Through {
+        out.push(issue_h(n, "point_angle only applies to a blind hole", "remove it, or give a depth"));
+    }
 }
 
 /// The body arguments of a feature that creates a swept tool and combines it with a body.

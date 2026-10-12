@@ -80,6 +80,8 @@ pub(crate) struct Solved {
     /// it: the curves a sweep path is taken from.
     pub(crate) arranged: sk::Sketch,
     pub(crate) ids: BTreeMap<sk::EntityId, String>,
+    /// Where holes can go: see [`hole_sites`].
+    pub(crate) hole_sites: Vec<(String, [f64; 2])>,
 }
 
 fn id_key(id: &str) -> u64 {
@@ -386,7 +388,51 @@ pub(crate) fn solve_sketch(
             result.regions = Err(msg);
         }
     }
-    Ok(Solved { result, profiles, crossings, frame, line_points, arranged: arr_sketch, ids: dback })
+    let hole_sites = hole_sites(def, &derived, &result.points);
+    Ok(Solved { result, profiles, crossings, frame, line_points, arranged: arr_sketch, ids: dback, hole_sites })
+}
+
+/// The places a `hole` feature can use (ADR 0019): the points that are not construction
+/// geometry and not part of a curve, and the centre of every circle (pattern copies of
+/// circles included), in id order.
+fn hole_sites(
+    def: &SketchDef,
+    derived: &pattern::Derived,
+    points: &BTreeMap<String, [f64; 2]>,
+) -> Vec<(String, [f64; 2])> {
+    let mut on_curve: BTreeSet<&str> = BTreeSet::new();
+    let mut centres: BTreeSet<&str> = BTreeSet::new();
+    for e in def.entities.iter().filter(|e| !e.construction) {
+        match &e.geom {
+            SkGeom::Circle { center, .. } => {
+                centres.insert(center);
+            }
+            g @ (SkGeom::Line { .. } | SkGeom::Arc { .. } | SkGeom::Spline { .. }) => on_curve.extend(g.refs()),
+            SkGeom::Point { .. } => {}
+        }
+    }
+    for c in derived.curves.iter().filter(|c| !c.construction) {
+        if let SkGeom::Circle { center, .. } = &c.geom {
+            centres.insert(center);
+        }
+    }
+    let mut out: Vec<(String, [f64; 2])> = Vec::new();
+    let candidates = def
+        .entities
+        .iter()
+        .filter(|e| matches!(e.geom, SkGeom::Point { .. }) && !e.construction)
+        .map(|e| e.id.as_str())
+        .filter(|id| !on_curve.contains(id))
+        .chain(centres.iter().copied());
+    for id in candidates {
+        if !out.iter().any(|(o, _)| o == id)
+            && let Some(p) = points.get(id)
+        {
+            out.push((id.to_string(), *p));
+        }
+    }
+    out.sort_by_key(|(id, _)| (id_key(id), id.clone()));
+    out
 }
 
 /// The curves of a sweep path from sketch `sketch_name`: the named curves, or every

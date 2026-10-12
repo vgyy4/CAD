@@ -21,7 +21,7 @@ pub const TEXT_GRAMMAR: &str = include_str!("grammar.md");
 
 pub use cursor::ParseError;
 pub use model::*;
-pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef};
+pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart};
 pub use validate::Issue;
 
 /// Why text could not be turned into a valid document.
@@ -183,8 +183,17 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "twist",
             "ruled",
             "curves(",
+            "hole",
+            "point_angle",
+            "thread_depth",
         ] {
             assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
+        }
+        for t in HoleType::ALL {
+            assert!(TEXT_GRAMMAR.contains(t.keyword()), "{}", t.keyword());
+        }
+        for p in HolePart::ALL.into_iter().filter(|p| *p != HolePart::Top) {
+            assert!(TEXT_GRAMMAR.contains(&format!("{}(", p.keyword())), "{}", p.keyword());
         }
         // The examples between them use these statement kinds.
         let all = blocks.join("\n");
@@ -207,8 +216,91 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "loft Loft1 ",
             "twist: 90 deg",
             "ruled: true",
+            "hole Hole1 ",
+            "type: tapped",
+            "type: countersink",
+            "through: true",
+            "at: [[",
         ] {
             assert!(all.contains(kw), "no example uses {kw}");
+        }
+    }
+
+    const HOLE_BASE: &str = "gusset 1\nunits mm\n\nparam d = 6.6 mm\nparam deep = 12 mm\n\nsketch P (plane: XY, next_id: 6) {\n  p1 = point(0, 0)\n  p2 = point(30, 0)\n  p3 = point(30, 20)\n  l4 = line(p1, p2)\n  l5 = line(p2, p3)\n}\n\nextrude E (profile: P, distance: deep, op: new)\n\nsketch S (plane: E/cap(end), next_id: 3) {\n  p1 = point(5, 5)\n  c2 = circle(p1, 2)\n}\n\n";
+
+    #[test]
+    fn hole_round_trips_and_is_validated() {
+        let ok = format!(
+            "{HOLE_BASE}hole H1 (face: E/cap(end), points: S, type: counterbore, diameter: d, through: true, cbore_diameter: d * 1.7, cbore_depth: 6 mm)\n\nhole H2 (face: E/cap(end), at: [[10 mm, 5 mm], [2 * d, 4 mm]], type: tapped, diameter: 5 mm, depth: deep, point_angle: 120 deg, thread: \"M6\", pitch: 1 mm, thread_depth: 8 mm)\n\nhole H3 (face: H1/cbore_floor(p1), at: [[0 mm, 0 mm]], type: countersink, diameter: 3 mm, depth: 5 mm, csink_diameter: 6 mm, csink_angle: 90 deg)\n\nhole H4 (face: E/side(P/l5)#2, at: [], type: simple, diameter: 1 mm, depth: 2 mm)\n"
+        );
+        // The last statement is invalid (no points) but must print and parse.
+        let doc = text::parse(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(text::print(&doc), ok);
+        let FeatureKind::Hole(h) = &doc.feature("H2").unwrap().kind else { panic!() };
+        assert_eq!(h.kind, HoleType::Tapped);
+        assert_eq!(h.thread.as_ref().map(|t| t.designation.as_str()), Some("M6"));
+        assert!(matches!(&h.sites, HoleSites::Points(p) if p.len() == 2));
+        assert_eq!(doc.feature("H2").unwrap().kind.parameters(), ["d", "deep"]);
+        assert_eq!(doc.feature("H1").unwrap().kind.dependencies(), ["E", "S"]);
+        assert_eq!(doc.feature("H3").unwrap().kind.dependencies(), ["H1"]);
+        assert!(!validate::creates_body(doc.feature("H1").unwrap()));
+        // Defaults: type simple.
+        let short = format!("{HOLE_BASE}hole H1 (face: E/cap(end), points: S, diameter: d, depth: 5 mm)\n");
+        let d = Document::from_text(&short).unwrap_or_else(|e| panic!("{e}"));
+        assert!(d.to_text().contains("type: simple, diameter: d, depth: 5 mm"));
+        // Every truncation and single-character deletion parses to a fixed point or fails cleanly.
+        let chars: Vec<char> = ok.chars().collect();
+        for i in 0..chars.len() {
+            for src in [chars[..i].iter().collect::<String>(), chars[..i].iter().chain(&chars[i + 1..]).collect()] {
+                if let Ok(d) = text::parse(&src) {
+                    let printed = text::print(&d);
+                    let again = text::parse(&printed).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                    assert_eq!(text::print(&again), printed, "{src:?}");
+                }
+            }
+        }
+        for (bad, why) in [
+            ("hole H (face: E/cap(end), at: [], diameter: 1 mm, depth: 2 mm)", "no points"),
+            ("hole H (face: E/cap(end), points: E, diameter: 1 mm, depth: 2 mm)", "is not a sketch"),
+            (
+                "hole H (face: E/cap(end), points: S, type: counterbore, diameter: 1 mm, depth: 2 mm)",
+                "needs cbore_diameter",
+            ),
+            (
+                "hole H (face: E/cap(end), points: S, type: tapped, diameter: 1 mm, depth: 2 mm)",
+                "needs thread and pitch",
+            ),
+            (
+                "hole H (face: E/cap(end), points: S, type: simple, diameter: 1 mm, depth: 2 mm, thread: \"M3\", pitch: 1 mm)",
+                "only apply to type: tapped",
+            ),
+            ("hole H (face: E/cap(end), points: S, diameter: 1 mm, through: true, point_angle: 90 deg)", "blind"),
+            (
+                "hole H (face: E/cap(end), points: S, type: tapped, diameter: 1 mm, depth: 2 mm, thread: \"\", pitch: 1 mm)",
+                "printable",
+            ),
+            ("hole H (face: E/cap(end), points: S, diameter: nope, depth: 2 mm)", "unknown parameter"),
+            ("hole H (face: Later/cap(end), points: S, diameter: 1 mm, depth: 2 mm)", "does not exist"),
+        ] {
+            let d = text::parse(&format!("{HOLE_BASE}{bad}\n")).unwrap_or_else(|e| panic!("{bad}: {e}"));
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{bad}: {why}: {issues:?}");
+        }
+        for bad in [
+            "hole H (points: S, diameter: 1 mm, depth: 2 mm)",
+            "hole H (face: E/cap(end), diameter: 1 mm, depth: 2 mm)",
+            "hole H (face: E/cap(end), points: S, depth: 2 mm)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm)",
+            "hole H (face: E/cap(end), points: S, at: [], diameter: 1 mm, depth: 2 mm)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, through: true)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, type: drilled)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, cbore_diameter: 3 mm)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, thread: \"M3\")",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, thread_depth: 1 mm)",
+            "hole H (face: E/cap(end), at: [[1 mm]], diameter: 1 mm, depth: 2 mm)",
+            "hole H (face: E/cap(end), points: S, diameter: 1 mm, depth: 2 mm, speed: 3)",
+        ] {
+            assert!(text::parse(&format!("{HOLE_BASE}{bad}\n")).is_err(), "{bad}");
         }
     }
 

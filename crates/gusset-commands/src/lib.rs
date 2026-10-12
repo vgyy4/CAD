@@ -8,6 +8,7 @@ pub mod error;
 pub mod gear;
 #[doc(hidden)]
 pub mod golden;
+pub mod hole_standards;
 pub mod import;
 pub mod paths;
 pub mod registry;
@@ -25,6 +26,8 @@ mod tests_datum;
 mod tests_gear;
 #[cfg(test)]
 mod tests_gear_math;
+#[cfg(test)]
+mod tests_hole;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
