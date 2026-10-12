@@ -62,3 +62,29 @@ fn build_imports_step_and_stl() {
     assert!(text.contains("reference mesh Import2"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// IGES goes to the worker as a private temp file it may read (ADR 0008 §4): export
+/// bracket to IGES and import it back. Skipped where Landlock is unavailable (the import
+/// is then refused with a clear message, never run unsandboxed).
+#[cfg(gusset_occt)]
+#[test]
+fn build_imports_iges_through_the_sandboxed_worker() {
+    let dir = std::env::temp_dir().join(format!("gusset-cli-import-iges-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ex = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/bracket.gus.txt");
+    let iges = dir.join("b.igs");
+    let out = gusset().args(["build", ex, "--export"]).arg(&iges).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let empty = dir.join("empty.gus.txt");
+    std::fs::write(&empty, "gusset 1\nunits mm\n").unwrap();
+    let out = gusset().arg("build").arg(&empty).arg("--import").arg(&iges).output().unwrap();
+    let (text, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+    if format!("{text}{err}").contains("needs Linux Landlock") {
+        eprintln!("skipped: no Landlock on this kernel");
+        return;
+    }
+    assert!(out.status.success(), "{text}\n{err}");
+    assert!(text.contains("exact geometry"), "{text}");
+    assert!(text.contains("volume 11272.584 mm³"), "{text}");
+}

@@ -866,12 +866,22 @@ int gs_step_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t*
   GS_GUARD_END
 }
 
-int gs_iges_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t* n) {
+/* IGES readers cannot read from a stream (IGESSelect_WorkLibrary has no ReadStream and
+ * IGESFile_Read takes a file name), so this reads a file. The sandboxed worker is allowed
+ * exactly this one file read-only. */
+int gs_iges_read_file(const char* path, GsShape*** out_shapes, size_t* n) {
   GS_GUARD_BEGIN
-  if (!data || !out_shapes || !n) return fail("null argument");
+  if (!path || !out_shapes || !n) return fail("null argument");
   IGESControl_Controller::Init();
   IGESControl_Reader r;
-  std::vector<GsShape*> v = read_with(r, data, len, "import.igs");
+  IFSelect_ReturnStatus st = r.ReadFile(path);
+  if (st != IFSelect_RetDone) throw Standard_Failure("the file could not be parsed");
+  r.TransferRoots();
+  std::vector<GsShape*> v;
+  for (int i = 1; i <= r.NbShapes(); ++i) {
+    TopoDS_Shape s = r.Shape(i);
+    if (!s.IsNull()) v.push_back(new GsShape{s});
+  }
   return shapes_out(v, out_shapes, n);
   GS_GUARD_END
 }

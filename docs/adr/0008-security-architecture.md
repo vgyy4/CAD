@@ -62,6 +62,43 @@
      - macOS: `sandbox_init` with a no-filesystem/no-network profile.
    - Where a platform mechanism is unavailable, the worker still runs out of process
      with resource limits, and the gap is reported in diagnostics.
+   - **IGES input file** (decided 2026-10-11): OCCT's IGES reader cannot read from
+     a stream (`IGESSelect_WorkLibrary` has no `ReadStream`; `IGESFile_Read` takes a
+     file name), so IGES is the one format that does not travel over stdin.
+     - The parent writes the bytes to a fresh private directory under the system temp
+       directory (mode 0700, unpredictable name, created exclusively) as one file
+       (mode 0600, created exclusively) and removes the directory on every outcome
+       (success, failure, crash, timeout, cancel: it is a drop guard that runs after
+       the worker has been killed and reaped). STEP keeps using stdin.
+     - The path goes to the worker on its command line (`--input-file <abs path>`),
+       not in the request frame: the sandbox must know it before it is applied, and
+       nothing may be read from the (untrusted-for-the-worker) request first. The
+       worker accepts no other arguments.
+     - `gusset_sandbox::Limits::read_file` asks for exactly that allowance. Linux:
+       Landlock grants `ReadFile` on that single file (no directory, no write, no
+       other file) and seccomp then allows `open`/`openat`, only without
+       `O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_TMPFILE`. Seccomp cannot see paths,
+       so Landlock is what confines *which* file; therefore the filesystem rights of
+       Landlock ABI V1 (kernel 5.13+) are a hard requirement for this ruleset. If
+       they cannot be enforced, nothing is opened up: `openat` keeps failing with
+       `EACCES`, `Report::read_file` is `None`, and the worker answers "IGES import
+       needs Linux Landlock (kernel 5.13+)..." instead of reading the file. It never
+       runs an IGES import unsandboxed. Newer filesystem rights, TCP rules and scopes
+       stay best-effort, in a second ruleset, so their partial support (kernels
+       before 6.12) does not block IGES.
+     - `Report::read_file` and `Report::to_text` list the allowance (shown in
+       Diagnostics). macOS and Windows have no filesystem sandbox (resource limits /
+       job object only), so the worker simply reads the file there; the report lists
+       the allowance as not enforced.
+     - Limits of this allowance: the worker can read that one file, which the parent
+       just wrote from the same bytes it would have sent over stdin, so it reveals
+       nothing new. The file lives in the temp directory for the duration of the
+       import, readable only by the current user; another process of the same user
+       could read it (as it could read the original file). A same-user process that
+       swaps the file mid-import cannot widen the worker's access (Landlock is bound
+       to the opened inode) but could change what is parsed; the parent does not
+       re-hash it. The OCCT IGES parser now runs with a file descriptor open to the
+       input, which is the only change to what a parser exploit could touch.
    - **B-rep blobs in project files** (security review #3, decided 2026-10-11): a
      `.gus` file stores imported shapes as OCCT `BinTools` blobs, and any file can
      carry any bytes there. Options considered: (a) validate untrusted blobs in the

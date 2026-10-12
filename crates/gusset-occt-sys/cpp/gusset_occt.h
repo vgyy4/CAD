@@ -112,7 +112,8 @@ int gs_iges_write(const GsShape* const* shapes, size_t n, GsBuf* out);
 /* Reads every root shape; *out_shapes is a malloc'd array of `*n` shape pointers (free with
  * gs_shape_array_free, which also frees the shapes). */
 int gs_step_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t* n);
-int gs_iges_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t* n);
+/* IGES is read from a file (the reader has no stream support); `path` is NUL-terminated. */
+int gs_iges_read_file(const char* path, GsShape*** out_shapes, size_t* n);
 void gs_shape_array_free(GsShape** shapes, size_t n);
 
 /* Lossless native (BRep binary) serialization. */

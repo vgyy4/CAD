@@ -306,7 +306,7 @@ mod imp {
         }
 
         fn import_step(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
-            Ok(ffi::read_shapes(data, false)?
+            Ok(ffi::read_shapes(data)?
                 .into_iter()
                 .enumerate()
                 .map(|(i, s)| (Shape::new(OcctShape(s)), format!("Body {}", i + 1)))
@@ -319,7 +319,14 @@ mod imp {
         }
 
         fn import_iges(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
-            Ok(ffi::read_shapes(data, true)?
+            // OCCT's IGES reader needs a file: use a private temporary one (this in-process
+            // path is for trusted bytes; untrusted files go through the sandboxed worker).
+            let dir = gusset_worker::PrivateDir::new()
+                .map_err(|e| KernelError::new(KernelErrorKind::Io, format!("no temporary directory ({e})")))?;
+            let file = dir.write_file("input.igs", data).map_err(|e| {
+                KernelError::new(KernelErrorKind::Io, format!("could not write a temporary file ({e})"))
+            })?;
+            Ok(ffi::read_iges_file(&file)?
                 .into_iter()
                 .enumerate()
                 .map(|(i, s)| (Shape::new(OcctShape(s)), format!("Body {}", i + 1)))

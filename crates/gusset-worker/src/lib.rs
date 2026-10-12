@@ -5,7 +5,11 @@
 //!
 //! The parent ([`import_out_of_process`]) starts `gusset-worker` from the install
 //! directory with an empty environment, sends the file bytes over stdin, and reads
-//! kernel-native B-rep bodies back over stdout. The worker sandboxes itself before
+//! kernel-native B-rep bodies back over stdout. IGES is the exception: OCCT's IGES reader
+//! only reads from a file name, so the parent writes the bytes to a fresh private
+//! directory ([`PrivateDir`]), tells the worker the path on its command line (it must be
+//! known before the sandbox is applied), and the sandbox allows read access to that one
+//! file; the directory is deleted whatever the outcome. The worker sandboxes itself before
 //! reading anything. A malicious file can only crash or time out the worker; the parent
 //! turns that into an [`ImportError`].
 //!
@@ -48,6 +52,87 @@ impl Format {
             "iges" | "igs" => Some(Format::Iges),
             _ => None,
         }
+    }
+}
+
+/// Command-line flag naming the one input file the worker may read (IGES).
+pub const INPUT_FILE_FLAG: &str = "--input-file";
+
+/// Why an IGES import cannot run when the sandbox could not confine the worker to its
+/// input file. The worker never falls back to running unsandboxed.
+pub const IGES_NEEDS_LANDLOCK: &str = "IGES import needs Linux Landlock (kernel 5.13+) to read the file inside the \
+sandbox, and it is not available here; the file was not read. Convert the file to STEP and import that instead";
+
+/// Worker side: the file an IGES import may read. `requested` is the path from the
+/// command line, `granted` the file the sandbox actually confined the worker to
+/// ([`gusset_sandbox::Report::read_file`]). Both must name the same file.
+///
+/// # Errors
+/// If no file was passed or the sandbox did not grant it.
+pub fn iges_input<'a>(requested: Option<&'a Path>, granted: Option<&Path>) -> Result<&'a Path, String> {
+    let file = requested.ok_or("IGES import needs an input file")?;
+    if granted == Some(file) { Ok(file) } else { Err(IGES_NEEDS_LANDLOCK.into()) }
+}
+
+/// A fresh temporary directory only the current user can enter (mode 0700 on Unix),
+/// deleted with everything in it when dropped.
+#[derive(Debug)]
+pub struct PrivateDir {
+    path: PathBuf,
+}
+
+impl PrivateDir {
+    /// Creates the directory under the system temp directory with an unpredictable name.
+    ///
+    /// # Errors
+    /// If no directory could be created.
+    pub fn new() -> std::io::Result<PrivateDir> {
+        use std::hash::{BuildHasher, Hasher};
+        // Canonical, so the path handed to the sandbox has no symlinks in it.
+        let base = std::fs::canonicalize(std::env::temp_dir())?;
+        let mut last = None;
+        for _ in 0..32 {
+            let rnd = std::collections::hash_map::RandomState::new().build_hasher().finish();
+            let path = base.join(format!("gusset-import-{}-{rnd:016x}", std::process::id()));
+            let mut b = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            match b.create(&path) {
+                Ok(()) => return Ok(PrivateDir { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| std::io::Error::other("could not create a private directory")))
+    }
+
+    /// The directory.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Writes `data` to a new file `name` in the directory (mode 0600 on Unix) and
+    /// returns its path.
+    ///
+    /// # Errors
+    /// If the file cannot be created or written.
+    pub fn write_file(&self, name: &str, data: &[u8]) -> std::io::Result<PathBuf> {
+        let path = self.path.join(name);
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&path)?;
+        f.write_all(data)?;
+        f.flush()?;
+        Ok(path)
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
@@ -249,7 +334,21 @@ pub fn import_out_of_process_cancellable(
     if data.len() as u64 > MAX_INPUT {
         return Err(ImportError::TooLarge);
     }
-    let out = run_worker(worker, encode_request(format, data), output_cap(data.len() as u64), limits, timeout, cancel)?;
+    let cap = output_cap(data.len() as u64);
+    let out = if format == Format::Iges {
+        // The reader needs a file name: hand over a private file the sandbox lets the
+        // worker read, and delete it afterwards whatever happens (drop).
+        let dir = PrivateDir::new().map_err(|e| ImportError::Spawn(format!("no private temp directory ({e})")))?;
+        let file = dir
+            .write_file("input.igs", data)
+            .map_err(|e| ImportError::Spawn(format!("could not write the temporary IGES file ({e})")))?;
+        let limits = limits.clone().with_read_file(file.clone());
+        let args = [INPUT_FILE_FLAG.into(), file.into_os_string()];
+        // No bytes on stdin: the request carries the format only.
+        run_worker(worker, &args, encode_request(format, &[]), cap, &limits, timeout, cancel)?
+    } else {
+        run_worker(worker, &[], encode_request(format, data), cap, limits, timeout, cancel)?
+    };
     let (result, report) = decode_response(&out).map_err(ImportError::Protocol)?;
     let bodies = result.map_err(ImportError::Failed)?;
     Ok(Imported { bodies, sandbox_report: report })
@@ -404,6 +503,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// stdout has a deadline.
 fn run_worker(
     worker: &Path,
+    args: &[std::ffi::OsString],
     request: Vec<u8>,
     cap: u64,
     limits: &gusset_sandbox::Limits,
@@ -414,7 +514,8 @@ fn run_worker(
         return Err(ImportError::Spawn("worker path must be absolute".into()));
     }
     let mut cmd = std::process::Command::new(worker);
-    cmd.env_clear()
+    cmd.args(args)
+        .env_clear()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -573,6 +674,31 @@ mod tests {
         }
         trust::reset_for_test();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn iges_needs_an_enforced_file_allowance() {
+        let f = Path::new("/tmp/x/input.igs");
+        assert_eq!(iges_input(Some(f), Some(f)), Ok(f));
+        assert_eq!(iges_input(Some(f), None).unwrap_err(), IGES_NEEDS_LANDLOCK);
+        assert_eq!(iges_input(Some(f), Some(Path::new("/other"))).unwrap_err(), IGES_NEEDS_LANDLOCK);
+        assert!(iges_input(None, Some(f)).is_err());
+        assert!(IGES_NEEDS_LANDLOCK.contains("Landlock (kernel 5.13+)"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_dir_is_private_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = PrivateDir::new().unwrap();
+        let path = d.path().to_path_buf();
+        let f = d.write_file("input.igs", b"data").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(d.write_file("input.igs", b"again").is_err(), "files are created exclusively");
+        assert_ne!(PrivateDir::new().unwrap().path(), path);
+        drop(d);
+        assert!(!path.exists());
     }
 
     #[test]
