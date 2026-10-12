@@ -710,8 +710,12 @@ impl gusset_commands::session::Importer for WorkerImporter {
 mod tests {
     use super::*;
 
+    /// The trust set is process-wide: tests that use it run one at a time.
+    static TRUST_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn untrusted_originals_are_never_trusted_only_their_canonical_bytes() {
+        let _g = TRUST_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Security re-review 2.
         let original = b"hostile original bytes for the canonical test".to_vec();
         let canonical = b"writer-produced canonical bytes for the test".to_vec();
@@ -725,6 +729,7 @@ mod tests {
 
     #[test]
     fn trust_set_and_persistent_store() {
+        let _g = TRUST_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         trust::reset_for_test();
         assert!(!trust::is_trusted(b"blob-a"));
         trust::trust(b"blob-a");

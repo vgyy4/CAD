@@ -272,6 +272,10 @@ impl HeadlessRenderer {
         backends: wgpu::Backends,
         force_fallback_adapter: bool,
     ) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
+        // One device creation at a time in this process: concurrent creation crashed the
+        // WARP software adapter on Windows ARM64 (render_view requests can overlap).
+        static CREATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = CREATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Release builds never take behavior from environment variables (spec), so the
         // descriptor is built explicitly rather than with `from_env`.
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();

@@ -63,6 +63,14 @@ fn camera(s: &Scene) -> Camera {
     c
 }
 
+/// One GPU test at a time: several devices created concurrently crash the WARP
+/// software adapter on Windows ARM64 runners (access violation inside the driver).
+static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    GPU.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn gpu(pref: AdapterPreference) -> Option<HeadlessRenderer> {
     match HeadlessRenderer::with_preference(pref) {
         Ok(r) => {
@@ -111,6 +119,7 @@ fn render(r: &mut HeadlessRenderer, s: &Scene, theme: Theme) -> RgbaImage {
 
 #[test]
 fn golden_dark_light_and_highlight() {
+    let _g = serial();
     let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
     let s = scene();
     check_golden("box_cylinder_dark", &render(&mut r, &s, Theme::Dark), DiffTolerance::SCREENSHOT);
@@ -123,6 +132,7 @@ fn golden_dark_light_and_highlight() {
 /// slightly differently), and must also resemble the GPU image.
 #[test]
 fn software_golden_and_resemblance() {
+    let _g = serial();
     let s = highlighted_scene();
     let sw = SoftwareRenderer::new().render_rgba(&s, &camera(&s), SIZE).expect("software render");
     check_golden("software_highlight_dark", &sw, DiffTolerance::SCREENSHOT);
@@ -136,6 +146,7 @@ fn software_golden_and_resemblance() {
 /// Every adapter class available here renders the same image within tolerance.
 #[test]
 fn each_available_adapter_matches_golden() {
+    let _g = serial();
     let s = scene();
     let mut any = false;
     for pref in [AdapterPreference::Primary, AdapterPreference::SoftwareFallback, AdapterPreference::Gl] {
@@ -160,6 +171,7 @@ fn each_available_adapter_matches_golden() {
 
 #[test]
 fn wide_edges_msaa_scale_and_ortho_render_without_errors() {
+    let _g = serial();
     let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
     let s = highlighted_scene();
     let cam = camera(&s);
@@ -214,6 +226,7 @@ fn wide_edges_msaa_scale_and_ortho_render_without_errors() {
 
 #[test]
 fn diagnostics_report_tier() {
+    let _g = serial();
     let Some(r) = gpu(AdapterPreference::Auto) else { return };
     let mut d = gusset_hw::Diagnostics::collect();
     d.set_gpu(r.gpu_diagnostics(None));
