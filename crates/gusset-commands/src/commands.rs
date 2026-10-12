@@ -18,11 +18,13 @@ use serde_json::{Value, json};
 
 mod datum;
 mod generate;
+mod hole;
 mod ops;
 mod sketch_ops;
 mod sweep;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
+pub use hole::Hole;
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
@@ -31,6 +33,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
     v.extend(sweep::specs());
     v.extend(generate::specs());
+    v.extend(hole::specs());
     v.extend(ops::specs());
     v.extend(datum::specs());
     v.extend(sketch_ops::specs());
@@ -2492,6 +2495,9 @@ impl Command for QueryBody {
                 })
                 .collect();
             v = merge(v, json!({ "face_names": faces, "edge_names": edges }));
+        }
+        if !body.holes.is_empty() {
+            v = merge(v, json!({ "holes": body.holes.iter().map(hole::hole_json).collect::<Vec<_>>() }));
         }
         snap_zeros(&mut v);
         Ok(v)

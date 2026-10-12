@@ -1995,6 +1995,10 @@ pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeS
                 v
             }
             FeatureKind::Loft(d) => d.profiles.iter().map(|p| p.sketch.clone()).collect(),
+            FeatureKind::Hole(d) => match &d.sites {
+                gusset_doc::HoleSites::Sketch(s) => vec![s.clone()],
+                gusset_doc::HoleSites::Points(_) => Vec::new(),
+            },
             _ => Vec::new(),
         })
         .collect()
