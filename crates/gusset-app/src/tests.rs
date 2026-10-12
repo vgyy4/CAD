@@ -334,6 +334,23 @@ fn agents_panel_shows_connection_audit_and_branches() {
     let after = h.state().agents.server().and_then(gusset_mcp::McpServer::bearer_token);
     assert!(before.is_some() && after.is_none());
     h.get_by_label_contains("Token revoked");
+    // Opening another project restarts the endpoint, still paused (security re-review 1).
+    let file = conn.join("other.gus");
+    let mut other = app();
+    other.save_as(file.clone());
+    other.wait_idle();
+    drop(other);
+    h.state_mut().open(file).unwrap();
+    h.run();
+    let server = h.state().agents.server().cloned().unwrap();
+    assert!(server.agents_paused() && server.bearer_token().is_none(), "still paused after opening a project");
+    let cf = h.state().agents.info.as_ref().and_then(|i| i.connection_file.clone()).unwrap();
+    let text = std::fs::read_to_string(cf).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["paused"], true);
+    assert!(v["token"].is_null());
+    h.state_mut().agents.allow_again().unwrap();
+    assert!(server.bearer_token().is_some());
     drop(h);
     let _ = std::fs::remove_dir_all(conn);
 }

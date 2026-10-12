@@ -202,6 +202,9 @@ pub struct Agents {
     pub grants: Arc<gusset_mcp::grants::Grants>,
     /// The approval modal's "always allow" choices for the request it shows.
     pub always: AlwaysChoice,
+    /// The kill switch is on for this window: endpoints for later projects start
+    /// paused too, until the user allows agents again.
+    killed: bool,
 }
 
 /// The "always allow" checkboxes of the approval modal (reset for every request).
@@ -254,6 +257,7 @@ impl Agents {
             compare: None,
             grants: Arc::default(),
             always: AlwaysChoice::default(),
+            killed: false,
         };
         a.attach(host);
         a
@@ -319,6 +323,7 @@ impl Agents {
             }
         }
         let (Some(rt), Some(server)) = (self.runtime.as_ref(), self.server.as_ref()) else { return };
+        let options = HttpOptions { start_paused: self.killed, ..options };
         match rt.block_on(server.start_http(options)) {
             Ok(info) => {
                 self.info = Some(info);
@@ -335,9 +340,11 @@ impl Agents {
     ///
     /// # Errors
     /// A message for the status bar.
-    pub fn revoke(&self) -> Result<(), String> {
-        // Standing approvals are suspended with the token (the server does it too).
+    pub fn revoke(&mut self) -> Result<(), String> {
+        // Standing approvals are suspended with the token (the server does it too), and
+        // the pause outlives this project (security re-review 1).
         let _ = self.grants.set_suspended(true);
+        self.killed = true;
         match &self.server {
             Some(s) => s.revoke().map_err(|e| e.to_string()),
             None => Ok(()),
@@ -364,7 +371,8 @@ impl Agents {
     ///
     /// # Errors
     /// A message for the status bar.
-    pub fn allow_again(&self) -> Result<(), String> {
+    pub fn allow_again(&mut self) -> Result<(), String> {
+        self.killed = false;
         match &self.server {
             Some(s) => s.allow_agents().map_err(|e| e.to_string()),
             None => Ok(()),

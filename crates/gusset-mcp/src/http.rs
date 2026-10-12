@@ -90,6 +90,10 @@ pub struct HttpOptions {
     pub max_sessions: usize,
     /// A legacy MCP session without requests for this long is closed.
     pub session_idle: Duration,
+    /// Start with agents paused (no token, connection file marked `paused`), e.g. when
+    /// the user pressed the kill switch and then opened another project; agents get in
+    /// only after [`crate::McpServer::allow_agents`].
+    pub start_paused: bool,
 }
 
 impl Default for HttpOptions {
@@ -106,6 +110,7 @@ impl Default for HttpOptions {
             global_requests_per_second: 100,
             max_sessions: 32,
             session_idle: Duration::from_secs(10 * 60),
+            start_paused: false,
         }
     }
 }
@@ -585,11 +590,12 @@ impl Endpoint {
             last: Instant::now(),
         });
         let (epoch, _) = tokio::sync::watch::channel(0u64);
+        let start_paused = options.start_paused;
         let st = Arc::new(State {
             port,
             options,
-            token: RwLock::new(Some(token)),
-            paused: AtomicBool::new(false),
+            token: RwLock::new((!start_paused).then_some(token)),
+            paused: AtomicBool::new(start_paused),
             generation: AtomicU64::new(1),
             epoch,
             service: RwLock::new(service),
