@@ -43,6 +43,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Extrude(e) => e.op == BodyOp::New,
         FeatureKind::Revolve(r) => r.op == BodyOp::New,
         FeatureKind::Import(_) => true,
+        FeatureKind::Mirror(m) => !m.merge,
         _ => false,
     }
 }
@@ -150,6 +151,14 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     out.push(issue_h(n, "no edges selected", "select at least one edge"));
                 }
             }
+            FeatureKind::Shell(d) => check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out),
+            FeatureKind::Mirror(d) => check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out),
+            FeatureKind::PatternLinear(d) => {
+                check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out);
+            }
+            FeatureKind::PatternCircular(d) => {
+                check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out);
+            }
             FeatureKind::Import(i) => {
                 if i.blob.len() != 64 || !i.blob.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
                     out.push(issue(n, "blob must be a 64-character lowercase hex hash"));
@@ -167,6 +176,34 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         seen.insert(n, f);
     }
     out
+}
+
+/// A feature that modifies an existing body: the named body must be created by an earlier
+/// feature, or (without a name) some body must exist.
+fn check_body_target(
+    n: &str,
+    body: Option<&str>,
+    any_body_before: bool,
+    seen: &BTreeMap<&str, &Feature>,
+    out: &mut Vec<Issue>,
+) {
+    match body {
+        Some(b) => {
+            if let Some(t) = seen.get(b)
+                && !creates_body(t)
+            {
+                out.push(issue_h(
+                    n,
+                    format!("'{b}' does not create a body"),
+                    "target a feature with op: new, a mirror without merge, or an import",
+                ));
+            }
+        }
+        None if !any_body_before => {
+            out.push(issue_h(n, "there is no body to work on", "create a body first, for example with extrude"));
+        }
+        None => {}
+    }
 }
 
 /// Feature names follow parameter-name rules.

@@ -308,3 +308,138 @@ mod object_tests {
         assert!(text::parse_feature_object(&format!("{obj}{obj}")).is_err());
     }
 }
+
+#[cfg(test)]
+mod shell_mirror_pattern_tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"gusset 1
+units mm
+
+param n_bolts = 6
+param pitch = 12 mm
+
+sketch Sketch1 (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
+
+shell Shell1 (body: Extrude1, faces: [Extrude1/cap(end)], thickness: 2 mm)
+
+shell Shell2 (faces: [], thickness: 1 mm)
+
+mirror Mirror1 (body: Extrude1, plane: YZ)
+
+mirror Mirror2 (plane: Extrude1/side(Sketch1/l6), merge: true)
+
+pattern_linear Pattern1 (body: Extrude1, direction: X, count: 4, spacing: pitch)
+
+pattern_linear Pattern2 (direction: [1, 0.5, 0], count: n_bolts - 1, spacing: -2 * pitch, suppressed: true)
+
+pattern_circular Pattern3 (body: Extrude1, axis: Z, count: n_bolts, angle: 360 deg)
+
+pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count: 3, angle: 90 deg, label: "Fan")
+"#;
+
+    #[test]
+    fn canonical_roundtrip() {
+        // The text parser accepts the sample; validation is checked as well.
+        let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), SAMPLE);
+        assert_eq!(text::parse(&doc.to_text()).unwrap(), doc);
+        for f in &doc.features {
+            let obj = text::print_feature_object(f);
+            assert_eq!(&text::parse_feature_object(&obj).unwrap(), f, "{obj}");
+        }
+        assert_eq!(doc.feature("Pattern4").unwrap().label.as_deref(), Some("Fan"));
+        assert!(doc.feature("Pattern2").unwrap().suppressed);
+        assert_eq!(validate::validate(&doc), vec![]);
+    }
+
+    #[test]
+    fn dependencies_and_parameters() {
+        let doc = text::parse(SAMPLE).unwrap();
+        let deps = |n: &str| doc.feature(n).unwrap().kind.dependencies();
+        assert_eq!(deps("Shell1"), vec!["Extrude1".to_string()]);
+        assert!(deps("Shell2").is_empty());
+        assert_eq!(deps("Mirror2"), vec!["Extrude1".to_string(), "Sketch1".to_string()]);
+        assert_eq!(deps("Pattern1"), vec!["Extrude1".to_string()]);
+        let params = |n: &str| doc.feature(n).unwrap().kind.parameters();
+        assert_eq!(params("Pattern1"), vec!["pitch".to_string()]);
+        assert_eq!(params("Pattern2"), vec!["n_bolts".to_string(), "pitch".to_string()]);
+        assert_eq!(params("Pattern3"), vec!["n_bolts".to_string()]);
+        assert!(params("Mirror1").is_empty());
+    }
+
+    #[test]
+    fn mirror_without_merge_creates_a_body() {
+        let doc = text::parse(SAMPLE).unwrap();
+        assert!(validate::creates_body(doc.feature("Mirror1").unwrap()));
+        assert!(!validate::creates_body(doc.feature("Mirror2").unwrap()));
+        let mut ok = SAMPLE.to_string();
+        ok.push_str("\nshell Shell3 (body: Mirror1, faces: [], thickness: 1 mm)\n");
+        assert!(Document::from_text(&ok).is_ok());
+        let mut bad = SAMPLE.to_string();
+        bad.push_str("\nshell Shell3 (body: Mirror2, faces: [], thickness: 1 mm)\n");
+        assert!(Document::from_text(&bad).is_err());
+    }
+
+    #[test]
+    fn validation_problems() {
+        let e = Document::from_text("gusset 1\nunits mm\npattern_linear P (direction: X, count: 2, spacing: 5 mm)\n");
+        assert!(e.unwrap_err().to_string().contains("no body"));
+        let t = "gusset 1\nsketch S (plane: XY, next_id: 1) {\n}\nextrude E (profile: S, distance: 1 mm, op: new)\npattern_linear P (direction: X, count: nn, spacing: 5 mm)\n";
+        assert!(Document::from_text(t).unwrap_err().to_string().contains("unknown parameter 'nn'"));
+        let t = "gusset 1\nsketch S (plane: XY, next_id: 1) {\n}\nextrude E (profile: S, distance: 1 mm, op: new)\nshell H (faces: [Z/cap(end)], thickness: 1 mm)\n";
+        assert!(Document::from_text(t).unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn damaged_text_never_panics_and_prints_to_a_fixed_point() {
+        // A cheap deterministic stand-in for the fuzzer: every truncation and every
+        // single-character deletion of the sample.
+        let chars: Vec<char> = SAMPLE.chars().collect();
+        let check = |src: String| {
+            if let Ok(doc) = text::parse(&src) {
+                let printed = text::print(&doc);
+                let again = text::parse(&printed).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                assert_eq!(text::print(&again), printed, "{src:?}");
+            }
+        };
+        for i in 0..chars.len() {
+            check(chars[..i].iter().collect());
+            check(chars[..i].iter().chain(&chars[i + 1..]).collect());
+        }
+    }
+
+    #[test]
+    fn parse_errors() {
+        let bad = [
+            "shell S (thickness: 1 mm)",
+            "shell S (faces: [], thickness: 1 mm, count: 2)",
+            "shell S (faces: [Extrude1/cap(end)], thickness: )",
+            "shell S (faces: [Extrude1/cap(end), thickness: 1 mm)",
+            "mirror M (merge: maybe, plane: XY)",
+            "mirror M (merge: true)",
+            "mirror M (plane: ZZ)",
+            "pattern_linear P (direction: W, count: 2, spacing: 1 mm)",
+            "pattern_linear P (direction: [1, 0], count: 2, spacing: 1)",
+            "pattern_linear P (direction: X, count: 2)",
+            "pattern_circular P (axis: Z, count: 3)",
+            "pattern_circular P (axis: Z, through: [1, 2], count: 3, angle: 90 deg)",
+            "pattern_circular P (axis: Z, count: 3, angle: 90 deg, spacing: 1 mm)",
+            "pattern_circular P (axis: Z, count: 3, count: 4, angle: 90 deg)",
+        ];
+        for b in bad {
+            assert!(text::parse(&format!("gusset 1\n{b}\n")).is_err(), "{b}");
+        }
+    }
+}

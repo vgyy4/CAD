@@ -16,7 +16,16 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod ops;
+pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
+
 pub(crate) fn all() -> Vec<CommandSpec> {
+    let mut v = base_specs();
+    v.extend(ops::specs());
+    v
+}
+
+fn base_specs() -> Vec<CommandSpec> {
     vec![
         spec::<GetText>(),
         spec::<SetText>(),
@@ -1757,6 +1766,7 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
                 }
             }
             FeatureKind::Import(_) => {}
+            other => ops::rename_refs(other, from, to),
         }
         if let FeatureKind::Revolve(RevolveDef { axis: AxisRef::SketchLine { sketch, .. }, .. }) = &mut f.kind
             && sketch == from

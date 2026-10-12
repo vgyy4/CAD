@@ -24,6 +24,13 @@ pub enum FaceKey {
     Blend(Box<EdgeRef>),
     /// Face of an imported body, by its stable import index.
     Imported(u32),
+    /// Inner wall face made by a shell from the named face (`Shell1/inner(<face>)`).
+    Inner(Box<FaceRef>),
+    /// Mirror image of the named face (`Mirror1/mirror(<face>)`).
+    Mirror(Box<FaceRef>),
+    /// Face of pattern instance `k` (1-based; 0 is the source) copied from the named
+    /// face (`Pattern1/instance(2, <face>)`).
+    Instance { k: u32, face: Box<FaceRef> },
 }
 
 /// A named face: `<feature>/<key>[#k]`.
@@ -53,6 +60,7 @@ impl FaceRef {
         match &self.key {
             FaceKey::Side { sketch, .. } => f(sketch),
             FaceKey::Blend(e) => e.features(f),
+            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Instance { face: r, .. } => r.features(f),
             FaceKey::Cap { .. } | FaceKey::Imported(_) => {}
         }
     }
@@ -65,6 +73,7 @@ impl FaceRef {
         match &mut self.key {
             FaceKey::Side { sketch, .. } if sketch == from => *sketch = to.to_string(),
             FaceKey::Blend(e) => e.rename_feature(from, to),
+            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Instance { face: r, .. } => r.rename_feature(from, to),
             _ => {}
         }
     }
@@ -133,6 +142,9 @@ impl fmt::Display for FaceRef {
             }
             FaceKey::Blend(e) => write!(f, "blend({e})")?,
             FaceKey::Imported(i) => write!(f, "face({i})")?,
+            FaceKey::Inner(r) => write!(f, "inner({r})")?,
+            FaceKey::Mirror(r) => write!(f, "mirror({r})")?,
+            FaceKey::Instance { k, face } => write!(f, "instance({k}, {face})")?,
         }
         if let Some(i) = self.index {
             write!(f, "#{i}")?;
@@ -195,10 +207,20 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         }
         "blend" => FaceKey::Blend(Box::new(parse_edge(c)?)),
         "face" => FaceKey::Imported(c.uint()?),
+        "inner" => FaceKey::Inner(Box::new(parse_face(c)?)),
+        "mirror" => FaceKey::Mirror(Box::new(parse_face(c)?)),
+        "instance" => {
+            let k = c.uint()?;
+            if k == 0 {
+                return Err(c.err("pattern instances are numbered from 1"));
+            }
+            c.expect(',')?;
+            FaceKey::Instance { k, face: Box::new(parse_face(c)?) }
+        }
         other => {
             return Err(c.err_hint(
                 format!("unknown face kind '{other}'"),
-                "use side(...), cap(start|end), blend(edge(...)) or face(N)",
+                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), instance(k, <face>) or face(N)",
             ));
         }
     };
@@ -239,6 +261,11 @@ mod tests {
             "Extrude1/cap(start, l4)#2",
             "Fillet1/blend(edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3)))",
             "Import1/face(12)",
+            "Shell1/inner(Extrude1/cap(end))",
+            "Shell1/inner(Extrude1/side(Sketch1/l3)#2)#1",
+            "Mirror1/mirror(Extrude1/side(Sketch1/l3))",
+            "Pattern1/instance(3, Extrude1/cap(start, l4)#2)",
+            "Pattern2/instance(1, Mirror1/mirror(Fillet1/blend(edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3)))))",
         ] {
             let r = FaceRef::parse(s).unwrap();
             assert_eq!(r.to_string(), s);
@@ -256,6 +283,12 @@ mod tests {
         assert!(names.contains(&"Sketch1".to_string()));
         e.rename_feature("Sketch1", "Base");
         assert!(e.to_string().contains("side(Base/l3)"));
+        let mut m = FaceRef::parse("Mirror1/mirror(Extrude1/side(Sketch1/l3))").unwrap();
+        let mut names = Vec::new();
+        m.features(&mut |n| names.push(n.to_string()));
+        assert_eq!(names, ["Mirror1", "Extrude1", "Sketch1"]);
+        m.rename_feature("Extrude1", "Base");
+        assert_eq!(m.to_string(), "Mirror1/mirror(Base/side(Sketch1/l3))");
     }
 
     #[test]
@@ -263,6 +296,9 @@ mod tests {
         assert!(FaceRef::parse("Extrude1/cap(middle)").is_err());
         assert!(FaceRef::parse("Extrude1/wat(1)").is_err());
         assert!(FaceRef::parse("Extrude1/face(1)#0").is_err());
+        assert!(FaceRef::parse("P/instance(0, E/cap(end))").is_err());
+        assert!(FaceRef::parse("P/instance(1 E/cap(end))").is_err());
+        assert!(FaceRef::parse("P/mirror()").is_err());
         assert!(EdgeRef::parse("edge(Extrude1/cap(end)").is_err());
         let deep = format!("{}Extrude1/cap(end){}", "Fillet1/blend(edge(".repeat(20), ")))".repeat(20));
         assert!(FaceRef::parse(&deep).is_err());

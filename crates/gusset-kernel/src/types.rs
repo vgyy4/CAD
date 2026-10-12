@@ -166,6 +166,26 @@ pub enum FaceOrigin {
     FromEdge { input: u32, edge: u32 },
     /// A face generated from a vertex (e.g. corner blends).
     FromVertex { input: u32, vertex: u32 },
+    /// The inner offset of face `face` of input `input` (the wall's inside after a shell).
+    Offset { input: u32, face: u32 },
+}
+
+/// A rigid or mirror transform applied to a copy of a shape. Lengths in millimetres,
+/// angles in radians.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Transform {
+    /// Reflection across the plane through `origin` with unit-length-able `normal`.
+    Mirror {
+        origin: V3,
+        normal: V3,
+    },
+    Translate(V3),
+    /// Rotation about the axis through `origin` along `axis` (right-hand rule).
+    Rotate {
+        origin: V3,
+        axis: V3,
+        angle: f64,
+    },
 }
 
 /// Coarse surface classification, used for naming keys and UI.

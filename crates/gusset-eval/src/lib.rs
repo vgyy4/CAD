@@ -13,6 +13,7 @@
 #![allow(clippy::result_large_err, reason = "cold-path errors with rich context")]
 
 pub mod error;
+mod ops;
 pub mod sketch;
 
 pub use error::{ErrorCode, EvalError};
@@ -530,6 +531,10 @@ impl Evaluator {
                 }
                 Ok(())
             }
+            FeatureKind::Shell(d) => self.run_shell(s, name, d, units, params),
+            FeatureKind::Mirror(d) => self.run_mirror(s, name, d, units, params),
+            FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),
+            FeatureKind::PatternCircular(d) => self.run_pattern_circular(s, name, d, units, params),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
                     EvalError::new(name, ErrorCode::MissingBlob, "the imported data is missing from the project")
@@ -841,6 +846,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ops;
 
 /// Solves a sketch definition on its own (no 3D placement), for commands that write
 /// solved positions back into the document after an edit.

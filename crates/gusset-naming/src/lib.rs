@@ -49,6 +49,13 @@ pub enum OpContext<'a> {
     SweepInto { feature: &'a str, sketch: &'a str, regions: &'a [String], target: &'a BodyNames },
     /// An imported body; faces are named by index.
     Import { feature: &'a str },
+    /// A shell of the body whose names are `input`: surviving faces keep their names,
+    /// the inner wall faces become `feature/inner(<face>)`.
+    Shell { feature: &'a str, input: &'a BodyNames },
+    /// A mirrored copy of a body: face *i* is `feature/mirror(<face i>)`.
+    Mirror { feature: &'a str, input: &'a BodyNames },
+    /// Instance `k` (1-based) of a pattern: face *i* is `feature/instance(k, <face i>)`.
+    Instance { feature: &'a str, k: u32, input: &'a BodyNames },
 }
 
 /// Names of every face and edge of one body.
@@ -84,7 +91,7 @@ fn cap(end: CapEnd) -> CapSide {
 fn origin_rank(o: &FaceOrigin) -> u8 {
     match o {
         FaceOrigin::Lateral { .. } | FaceOrigin::Cap { .. } => 0,
-        FaceOrigin::FromEdge { .. } | FaceOrigin::FromVertex { .. } => 1,
+        FaceOrigin::FromEdge { .. } | FaceOrigin::FromVertex { .. } | FaceOrigin::Offset { .. } => 1,
         FaceOrigin::Input { .. } => 2,
     }
 }
@@ -149,6 +156,26 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
                     let b = inputs.get(*input as usize);
                     b.and_then(|b| corner_edge(b, *vertex)).map(|e| FaceRef::new(*feature, FaceKey::Blend(Box::new(e))))
                 }
+                (OpContext::Shell { input, .. }, FaceOrigin::Input { input: 0, face }) => {
+                    input.faces.get(*face as usize).cloned()
+                }
+                (OpContext::Shell { feature, input }, FaceOrigin::Offset { input: 0, face }) => {
+                    input.faces.get(*face as usize).map(|f| FaceRef::new(*feature, FaceKey::Inner(Box::new(f.clone()))))
+                }
+                (OpContext::Shell { feature, input }, FaceOrigin::FromEdge { input: 0, edge }) => {
+                    input.edges.get(*edge as usize).map(|e| FaceRef::new(*feature, FaceKey::Blend(Box::new(e.clone()))))
+                }
+                (OpContext::Shell { feature, input }, FaceOrigin::FromVertex { input: 0, vertex }) => {
+                    corner_edge(input, *vertex).map(|e| FaceRef::new(*feature, FaceKey::Blend(Box::new(e))))
+                }
+                (OpContext::Mirror { feature, input }, FaceOrigin::Input { input: 0, face }) => input
+                    .faces
+                    .get(*face as usize)
+                    .map(|f| FaceRef::new(*feature, FaceKey::Mirror(Box::new(f.clone())))),
+                (OpContext::Instance { feature, k, input }, FaceOrigin::Input { input: 0, face }) => input
+                    .faces
+                    .get(*face as usize)
+                    .map(|f| FaceRef::new(*feature, FaceKey::Instance { k: *k, face: Box::new(f.clone()) })),
                 (OpContext::Import { feature }, _) => {
                     Some(FaceRef::new(*feature, FaceKey::Imported(u32::try_from(fi).unwrap_or(u32::MAX))))
                 }
@@ -502,6 +529,45 @@ mod tests {
             let c = c.as_ref().unwrap();
             let ei = n.edges.iter().position(|e| e == c).unwrap();
             assert!(t.edges[ei].vertices.contains(&(v as u32)), "corner {v} named after a far edge");
+        }
+    }
+
+    #[test]
+    fn transform_and_shell_names() {
+        let k = MockKernel;
+        let base = named_box(40.0);
+        let b = k
+            .extrude(
+                &rect_profile(40.0, 20.0, ["l5", "l6", "l7", "l8"]),
+                &ExtrudeSpec { distance: 10.0, symmetric: false },
+            )
+            .unwrap();
+        let mir = k.transform(&b.shape, &Transform::Mirror { origin: [0.0; 3], normal: [1.0, 0.0, 0.0] }).unwrap();
+        let t = k.topology(&mir.shape).unwrap();
+        let n = name_body(&OpContext::Mirror { feature: "Mirror1", input: &base }, &mir.face_origins, &t).unwrap();
+        assert_eq!(n.faces[0].to_string(), "Mirror1/mirror(Extrude1/cap(start))");
+        assert_eq!(n.faces[2].to_string(), "Mirror1/mirror(Extrude1/side(Sketch1/l5))");
+        assert_eq!(n.edges.len(), 12);
+        let inst = name_body(&OpContext::Instance { feature: "P", k: 2, input: &base }, &mir.face_origins, &t).unwrap();
+        assert_eq!(inst.faces[1].to_string(), "P/instance(2, Extrude1/cap(end))");
+        // Shell: 6 survivors + 5 inner faces; the inner face of cap(end) is named after it.
+        let mut origins: Vec<Vec<FaceOrigin>> = (0..6).map(|f| vec![FaceOrigin::Input { input: 0, face: f }]).collect();
+        origins.extend((0..5).map(|f| vec![FaceOrigin::Offset { input: 0, face: f }]));
+        let mut topo = Topology::default();
+        for i in 0..11 {
+            topo.faces.push(FaceInfo {
+                kind: SurfaceKind::Plane,
+                area: 1.0,
+                centroid: [i as f64, 0.0, 0.0],
+                normal: [0.0; 3],
+            });
+        }
+        let n = name_body(&OpContext::Shell { feature: "Shell1", input: &base }, &origins, &topo).unwrap();
+        assert_eq!(n.faces[1], base.faces[1]);
+        assert_eq!(n.faces[7].to_string(), "Shell1/inner(Extrude1/cap(end))");
+        // Names survive a print/parse round trip.
+        for f in &n.faces {
+            assert_eq!(&FaceRef::parse(&f.to_string()).unwrap(), f);
         }
     }
 

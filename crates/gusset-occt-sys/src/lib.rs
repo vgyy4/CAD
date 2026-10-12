@@ -24,6 +24,11 @@ pub const GS_ORIGIN_CAP: i64 = 1;
 pub const GS_ORIGIN_INPUT: i64 = 2;
 pub const GS_ORIGIN_FROM_EDGE: i64 = 3;
 pub const GS_ORIGIN_FROM_VERTEX: i64 = 4;
+pub const GS_ORIGIN_OFFSET: i64 = 5;
+
+pub const GS_XF_MIRROR: i32 = 0;
+pub const GS_XF_TRANSLATE: i32 = 1;
+pub const GS_XF_ROTATE: i32 = 2;
 
 pub const GS_BOOL_UNION: i32 = 0;
 pub const GS_BOOL_CUT: i32 = 1;
@@ -132,6 +137,21 @@ mod raw {
             edges: *const u32,
             nedges: usize,
             dist: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_shell(
+            s: *const GsShape,
+            faces: *const u32,
+            nfaces: usize,
+            thickness: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_transform(
+            kind: i32,
+            params: *const f64,
+            s: *const GsShape,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

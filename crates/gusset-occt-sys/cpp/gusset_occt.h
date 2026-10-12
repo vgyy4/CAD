@@ -70,6 +70,12 @@ typedef struct {
 #define GS_ORIGIN_INPUT 2       /* a = input, b = face */
 #define GS_ORIGIN_FROM_EDGE 3   /* a = input, b = edge */
 #define GS_ORIGIN_FROM_VERTEX 4 /* a = input, b = vertex */
+#define GS_ORIGIN_OFFSET 5      /* a = input, b = face: the inner offset of that face (shell) */
+
+/* Transform kinds for gs_transform; params: f64 x 7. */
+#define GS_XF_MIRROR 0    /* params: plane origin xyz, plane normal xyz */
+#define GS_XF_TRANSLATE 1 /* params: vector xyz */
+#define GS_XF_ROTATE 2    /* params: axis origin xyz, axis direction xyz, angle (radians) */
 
 #define GS_BOOL_UNION 0
 #define GS_BOOL_CUT 1
@@ -86,6 +92,12 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);
+/* Hollows `s` to a wall of `thickness` (> 0 inward, < 0 outward), removing the faces
+ * `faces` (indices into the shape's face order). */
+int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,
+             GsBuf* origins);
+/* Returns a transformed copy; output face i is input face i (INPUT origins, input 0). */
+int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins);
 int gs_compound(const GsShape* const* shapes, size_t n, GsShape** out, GsBuf* origins);
 
 /* Topology. faces: f64 x 8 per face (kind, area, cx, cy, cz, nx, ny, nz);

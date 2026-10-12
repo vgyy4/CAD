@@ -73,6 +73,21 @@ fn print_profile(p: &ProfileRef) -> String {
     if p.regions.is_empty() { p.sketch.clone() } else { format!("{}.regions({})", p.sketch, p.regions.join(", ")) }
 }
 
+fn push_body(args: &mut Vec<String>, body: &Option<String>) {
+    if let Some(b) = body {
+        args.push(format!("body: {b}"));
+    }
+}
+
+fn print_dir(d: &DirRef) -> String {
+    match d {
+        DirRef::X => "X".into(),
+        DirRef::Y => "Y".into(),
+        DirRef::Z => "Z".into(),
+        DirRef::Vector([x, y, z]) => format!("[{x}, {y}, {z}]"),
+    }
+}
+
 fn print_common(f: &Feature, args: &mut Vec<String>) {
     if let Some(l) = &f.label {
         args.push(format!("label: {}", quote(l)));
@@ -155,6 +170,42 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("edges: [{}]", edges.join(", ")));
             let key = if matches!(f.kind, FeatureKind::Fillet(_)) { "radius" } else { "distance" };
             args.push(format!("{key}: {}", b.size));
+        }
+        FeatureKind::Shell(d) => {
+            push_body(&mut args, &d.body);
+            let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
+            args.push(format!("faces: [{}]", faces.join(", ")));
+            args.push(format!("thickness: {}", d.thickness));
+        }
+        FeatureKind::Mirror(d) => {
+            push_body(&mut args, &d.body);
+            args.push(format!(
+                "plane: {}",
+                match &d.plane {
+                    PlaneRef::XY => "XY".to_string(),
+                    PlaneRef::XZ => "XZ".to_string(),
+                    PlaneRef::YZ => "YZ".to_string(),
+                    PlaneRef::Face(r) => r.to_string(),
+                }
+            ));
+            if d.merge {
+                args.push("merge: true".into());
+            }
+        }
+        FeatureKind::PatternLinear(d) => {
+            push_body(&mut args, &d.body);
+            args.push(format!("direction: {}", print_dir(&d.direction)));
+            args.push(format!("count: {}", d.count));
+            args.push(format!("spacing: {}", d.spacing));
+        }
+        FeatureKind::PatternCircular(d) => {
+            push_body(&mut args, &d.body);
+            args.push(format!("axis: {}", print_dir(&d.axis)));
+            if let Some([x, y, z]) = &d.through {
+                args.push(format!("through: [{x}, {y}, {z}]"));
+            }
+            args.push(format!("count: {}", d.count));
+            args.push(format!("angle: {}", d.angle));
         }
         FeatureKind::Import(i) => {
             args.push(format!("blob: {}", quote(&i.blob)));
@@ -284,7 +335,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 }
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
-            "sketch" | "extrude" | "revolve" | "fillet" | "chamfer" | "import" => {
+            "sketch" | "extrude" | "revolve" | "fillet" | "chamfer" | "import" | "shell" | "mirror"
+            | "pattern_linear" | "pattern_circular" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -292,6 +344,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     let (f, consumed) = parse_sketch(&mut c, &lines, i)?;
                     i = consumed;
                     f
+                } else if matches!(kw, "shell" | "mirror" | "pattern_linear" | "pattern_circular") {
+                    parse_feature_ext(kw, &mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -307,7 +361,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, fillet, chamfer, import",
+                    "statements are: param, sketch, extrude, revolve, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular",
                 ));
             }
         }
@@ -510,6 +564,141 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             blob: blob.ok_or_else(|| missing(c, kw, "blob"))?,
             format: format.ok_or_else(|| missing(c, kw, "format"))?,
             file_name: file.unwrap_or_default(),
+        }),
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+fn parse_dir(c: &mut Cursor<'_>) -> Result<DirRef, ParseError> {
+    if c.eat('[') {
+        let x = c.expr()?;
+        c.expect(',')?;
+        let y = c.expr()?;
+        c.expect(',')?;
+        let z = c.expr()?;
+        c.expect(']')?;
+        return Ok(DirRef::Vector([x, y, z]));
+    }
+    match c.ident()? {
+        "X" => Ok(DirRef::X),
+        "Y" => Ok(DirRef::Y),
+        "Z" => Ok(DirRef::Z),
+        other => Err(c.err_hint(format!("unknown direction '{other}'"), "use X, Y, Z or a vector like [1, 0, 0]")),
+    }
+}
+
+/// Parses a direction given outside a document (`X`, `Y`, `Z` or `[1, 0.5, 0]`).
+pub fn parse_direction(s: &str) -> Result<DirRef, ParseError> {
+    let mut c = Cursor::new(s, 1);
+    let d = parse_dir(&mut c)?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after direction"));
+    }
+    Ok(d)
+}
+
+/// Shell, mirror and pattern statements.
+fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let mut label = None;
+    let mut suppressed = false;
+    let mut body = None;
+    let mut faces: Option<Vec<FaceRef>> = None;
+    let mut thickness = None;
+    let mut plane = None;
+    let mut merge = false;
+    let mut dir = None;
+    let mut through = None;
+    let mut count = None;
+    let mut spacing = None;
+    let mut angle = None;
+    let allowed = match kw {
+        "shell" => "body, faces, thickness, label, suppressed",
+        "mirror" => "body, plane, merge, label, suppressed",
+        "pattern_linear" => "body, direction, count, spacing, label, suppressed",
+        _ => "body, axis, through, count, angle, label, suppressed",
+    };
+    parse_args(c, |key, c| {
+        match (kw, key) {
+            (_, "label") => label = Some(c.string()?),
+            (_, "suppressed") => suppressed = parse_bool(c)?,
+            (_, "body") => body = Some(c.ident()?.to_string()),
+            ("shell", "faces") => {
+                c.expect('[')?;
+                let mut list = Vec::new();
+                if !c.eat(']') {
+                    loop {
+                        list.push(parse_face(c)?);
+                        if list.len() > MAX_LIST_ITEMS {
+                            return Err(c.err("too many faces"));
+                        }
+                        if c.eat(',') {
+                            continue;
+                        }
+                        c.expect(']')?;
+                        break;
+                    }
+                }
+                faces = Some(list);
+            }
+            ("shell", "thickness") => thickness = Some(c.expr()?),
+            ("mirror", "plane") => {
+                let save = c.pos;
+                let w = c.ident()?;
+                let after = c.peek();
+                plane = Some(match (w, after) {
+                    ("XY", _) if after != Some('/') => PlaneRef::XY,
+                    ("XZ", _) if after != Some('/') => PlaneRef::XZ,
+                    ("YZ", _) if after != Some('/') => PlaneRef::YZ,
+                    _ => {
+                        c.pos = save;
+                        PlaneRef::Face(parse_face(c)?)
+                    }
+                });
+            }
+            ("mirror", "merge") => merge = parse_bool(c)?,
+            ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
+            ("pattern_circular", "through") => {
+                c.expect('[')?;
+                let x = c.expr()?;
+                c.expect(',')?;
+                let y = c.expr()?;
+                c.expect(',')?;
+                let z = c.expr()?;
+                c.expect(']')?;
+                through = Some([x, y, z]);
+            }
+            ("pattern_linear" | "pattern_circular", "count") => count = Some(c.expr()?),
+            ("pattern_linear", "spacing") => spacing = Some(c.expr()?),
+            ("pattern_circular", "angle") => angle = Some(c.expr()?),
+            (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let kind = match kw {
+        "shell" => FeatureKind::Shell(ShellDef {
+            body,
+            faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,
+            thickness: thickness.ok_or_else(|| missing(c, kw, "thickness"))?,
+        }),
+        "mirror" => {
+            FeatureKind::Mirror(MirrorDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))?, merge })
+        }
+        "pattern_linear" => FeatureKind::PatternLinear(PatternLinearDef {
+            body,
+            direction: dir.ok_or_else(|| missing(c, kw, "direction"))?,
+            count: count.ok_or_else(|| missing(c, kw, "count"))?,
+            spacing: spacing.ok_or_else(|| missing(c, kw, "spacing"))?,
+        }),
+        _ => FeatureKind::PatternCircular(PatternCircularDef {
+            body,
+            axis: dir.ok_or_else(|| missing(c, kw, "axis"))?,
+            through,
+            count: count.ok_or_else(|| missing(c, kw, "count"))?,
+            angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
         }),
     };
     Ok(Feature { name, label, note: None, suppressed, kind })
