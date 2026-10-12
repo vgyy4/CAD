@@ -805,6 +805,8 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
         json!({"sketch": "Sketch2", "points": [[0, 0]]}),
         json!({"sketch": "Sketch2", "points": [[0, 0], [1, 1]], "closed": true}),
         json!({"sketch": "Sketch2", "points": [[0, 0], [1e12, 1]]}),
+        json!({"sketch": "Sketch2", "points": [[0, 0], [1, 0], [1, 0], [2, 2]]}),
+        json!({"sketch": "Sketch2", "points": [[0, 0], [1, 0], [1, 1], [0, 0]], "closed": true}),
     ] {
         assert_eq!(execute(&mut s, &u, "sketch.add_polyline", bad).unwrap_err().code, "invalid_args");
     }
