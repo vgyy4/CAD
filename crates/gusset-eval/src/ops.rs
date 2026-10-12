@@ -73,7 +73,13 @@ impl Evaluator {
         let names = name_body(&OpContext::Mirror { feature: name, input: &body.names }, &res.face_origins, &topo)
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
         if !d.merge {
-            s.bodies.push(Arc::new(Body { name: name.to_string(), shape: res.shape, names, topology: topo }));
+            s.bodies.push(Arc::new(Body {
+                name: name.to_string(),
+                feature: name.to_string(),
+                shape: res.shape,
+                names,
+                topology: topo,
+            }));
             return Ok(());
         }
         let united = self.unite(name, &body.shape, &body.names, &res.shape, &names)?;
@@ -193,7 +199,7 @@ impl Evaluator {
 /// The body a modifying feature works on: the named body, or the most recent one.
 fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize, Arc<Body>), EvalError> {
     let bi = match target {
-        Some(t) => s.bodies.iter().position(|b| b.name == t).ok_or_else(|| {
+        Some(t) => s.bodies.iter().position(|b| b.feature == t).ok_or_else(|| {
             EvalError::new(
                 feature,
                 ErrorCode::NoTargetBody,
@@ -210,7 +216,7 @@ fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize,
 }
 
 fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
-    let nb = Arc::new(Body { name: old.name.clone(), shape, names, topology });
+    let nb = Arc::new(Body { name: old.name.clone(), feature: old.feature.clone(), shape, names, topology });
     if let Some(slot) = s.bodies.get_mut(bi) {
         *slot = nb;
     }

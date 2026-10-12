@@ -110,3 +110,39 @@ fn bad_arguments_are_rejected_with_messages() {
             .unwrap_err();
     assert!(e.message.contains("no body"), "{e:?}");
 }
+
+#[test]
+fn ops_target_bodies_by_body_name() {
+    // F2-11 meets v0.2: a body named with body_name can be mirrored and patterned by
+    // that name; the document stores the creating feature's name.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "10 mm", "body_name": "Plate"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let r = run(
+        &mut s,
+        &u,
+        "feature.pattern_linear",
+        json!({"direction": "[0, 1, 0]", "count": "3", "spacing": "60 mm", "body": "Plate"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let r = run(&mut s, &u, "feature.mirror", json!({"plane": "YZ", "body": "Plate"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("pattern_linear Pattern1 (body: Extrude1,"), "{text}");
+    assert!(text.contains("mirror Mirror1 (body: Extrude1,"), "{text}");
+    let b = run(&mut s, &u, "query.body", json!({"body": "Plate"}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 3.0 * 8000.0).abs() < 1e-6, "{b}");
+    // The mirror is a new body named after its feature; it can be targeted by that name.
+    let r = run(
+        &mut s,
+        &u,
+        "feature.pattern_linear",
+        json!({"direction": "[0, 0, 1]", "count": "2", "spacing": "50 mm", "body": "Mirror1"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let b = run(&mut s, &u, "query.body", json!({"body": "Mirror1"}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 2.0 * 3.0 * 8000.0).abs() < 1e-6, "{b}");
+}

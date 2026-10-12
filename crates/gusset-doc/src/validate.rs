@@ -57,6 +57,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
             Some(body_name.as_deref().unwrap_or(&f.name))
         }
         FeatureKind::Import(_) => Some(&f.name),
+        FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
         _ => None,
     }
 }
