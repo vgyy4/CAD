@@ -177,6 +177,31 @@ fn registry_is_consistent() {
     assert!(find("feature.extrude").is_some());
 }
 
+/// True when `text` contains `id` as a whole dotted token (not part of a longer name).
+fn mentions_dotted_id(text: &str, id: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(id).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + id.len()..].chars().next();
+        !before.is_some_and(|c| ident(c) || c == '.') && !after.is_some_and(ident)
+    })
+}
+
+/// MCP tools are named with underscores (F2-13): descriptions, schema field docs and
+/// hints must not name another command by its dotted id.
+#[test]
+fn descriptions_name_tools_by_their_mcp_names() {
+    for c in registry() {
+        let schema = (c.schema)().to_string();
+        for other in registry() {
+            assert!(!mentions_dotted_id(c.description, other.id), "{}: description mentions {}", c.id, other.id);
+            assert!(!mentions_dotted_id(&schema, other.id), "{}: schema mentions {}", c.id, other.id);
+        }
+    }
+    assert!(mentions_dotted_id("use query.body now", "query.body"));
+    assert!(!mentions_dotted_id("use query_body now", "query.body"));
+}
+
 #[test]
 fn exports_are_confined() {
     let mut s = session();
