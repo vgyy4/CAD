@@ -59,6 +59,9 @@ Phase 3 has started (see Next).
      combine (a single feature is patterned as its own body, then combined into the
      part; OCCT golden tests). Next: sketch patterns, sketch trim and spline curves,
      sweep/loft, holes.
+   - v0.2/v0.3: generators (DESIGN.md §1, owner request): involute spur and helical
+     gears first, then threads/fasteners and springs; each writes ordinary features
+     and parameters, and is a command, a form and a text statement.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

@@ -65,6 +65,23 @@ never feels slowed down. We get there through progressive disclosure, not modes.
     toolkit's accessibility tree (AccessKit), WCAG AA contrast in both themes, UI scale
     from 75 % to 250 %, and "reduce motion" respected.
 
+### Easy for beginners, never in the way of experts (owner request, 2026-10-12)
+Hard or intimidating tasks (gears, threads, fasteners, springs, sheet-metal flanges)
+get **generators**: a short form with sensible defaults and a live preview, such as
+module, tooth count and pressure angle for a gear. A generator never produces a
+black box. It writes ordinary parametric features and named parameters into the
+document (an involute gear is a sketch plus an extrude, driven by `gear_module`,
+`gear_teeth` and so on). Afterwards:
+- every value stays editable in the parameters table, the code view and over MCP, and
+  the user can open the generated sketch and change anything by hand;
+- experts skip the form entirely: the same generator is a registry command
+  (palette, keyboard, MCP) and a text-language statement, with all options as
+  arguments, so there is no wizard to click through;
+- advanced options (profile shift, backlash, root fillet, helix angle) sit behind an
+  "Advanced" disclosure with the defaults shown, never hidden or locked;
+- defaults come from the standards (ISO 53 gear profile, ISO metric threads) and are
+  named in the form, so beginners learn the vocabulary instead of guessing.
+
 ## 2. Layout
 
 ```
