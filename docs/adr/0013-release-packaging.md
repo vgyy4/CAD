@@ -49,3 +49,12 @@ natively on its own runner:
   `Swatinem/rust-cache` and sccache are used. The download page/README detects the
   OS and architecture with a small static JS snippet on the GitHub Pages site (later).
   The README lists the files per platform.
+
+## Amendment (2026-10-12): manual releases by tag name
+The session environment cannot push tags, and the owner could not edit tags by hand,
+so the Release workflow also runs on `workflow_dispatch` with a `tag` input. Only
+users with write access can start it. The tag must match `v<semver>` and the
+workspace version, exactly as for tag pushes. The build uses the dispatched commit
+(the default branch head), and the publish job (protected `release` environment)
+checks that the commit is on the default branch, points the tag at it through the
+GitHub API, and uploads into an existing release for the tag or creates a draft.

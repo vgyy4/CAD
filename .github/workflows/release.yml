@@ -18,14 +18,23 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Maintainers can also release the head of the default branch by tag name: the
+  # publish job then points the tag at the built commit (ADR 0013 amendment). Used when
+  # tags cannot be pushed directly.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0-mvp (must match the workspace version)"
+        required: true
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   # Pinned packaging tools (ADR 0013). Hashes were recorded on 2026-10-10 from the
@@ -72,10 +81,14 @@ jobs:
       - name: Version from tag
         id: version
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::not a release tag: $RELEASE_TAG"
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
           cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
           if [ "$version" != "$cargo_version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $cargo_version"
+            echo "::error::tag $RELEASE_TAG does not match the workspace version $cargo_version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -330,9 +343,21 @@ jobs:
         run: |
           git fetch --no-tags origin "$DEFAULT_BRANCH"
           if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "::error::$GITHUB_REF_NAME is not on $DEFAULT_BRANCH; refusing to publish"
+            echo "::error::$RELEASE_TAG is not on $DEFAULT_BRANCH; refusing to publish"
             exit 1
           fi
+
+      - name: Point the tag at the built commit (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" > /dev/null
+          fi
+          echo "$RELEASE_TAG -> $GITHUB_SHA"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -362,16 +387,16 @@ jobs:
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
           for f in dist/*.AppImage dist/*.deb dist/*.zip dist/*.msi dist/*.dmg; do
             [ -e "$f" ] || continue
-            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "gusset ${GITHUB_REF_NAME} $(basename "$f")" < /dev/null
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "gusset ${RELEASE_TAG} $(basename "$f")" < /dev/null
           done
           rm -f "$key"
 
       - name: Update manifest
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           channel=stable
           case "$version" in *-*) channel=nightly ;; esac
-          python3 -I packaging/make_update_manifest.py dist "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "$channel" \
+          python3 -I packaging/make_update_manifest.py dist "$version" "$RELEASE_TAG" "$GITHUB_REPOSITORY" "$channel" \
             > dist/update-manifest.json
 
       - name: Sign update manifest (only when the update key exists)
@@ -383,7 +408,7 @@ jobs:
           key="$RUNNER_TEMP/update.key"
           printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
           minisign -S -s "$key" -m dist/update-manifest.json -x dist/update-manifest.json.minisig \
-            -t "gusset update manifest ${GITHUB_REF_NAME}" < /dev/null
+            -t "gusset update manifest ${RELEASE_TAG}" < /dev/null
           rm -f "$key"
 
       - name: Checksums
@@ -403,12 +428,12 @@ jobs:
         run: |
           # A release the owner already made for this tag (for example before the tag
           # was moved to a fixed commit) gets the files; otherwise a draft is created.
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
             exit 0
           fi
           prerelease=()
-          case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
-            "${prerelease[@]}" --title "Gusset ${GITHUB_REF_NAME#v}" \
+          case "$RELEASE_TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+            "${prerelease[@]}" --title "Gusset ${RELEASE_TAG#v}" \
             --notes "Unsigned build (ADR 0015). Verify downloads with SHA256SUMS and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
