@@ -17,6 +17,9 @@ gusset-units.workspace = true
 gusset-doc.workspace = true
 gusset-kernel.workspace = true
 gusset-kernel-occt.workspace = true
+# Direct dependency only so build.rs receives DEP_GUSSET_OCCT_LIB_DIR: GNU ld (Linux
+# arm64) resolves OCCT's inter-library dependencies through the RPATH.
+gusset-occt-sys.workspace = true
 gusset-history.workspace = true
 gusset-eval.workspace = true
 gusset-commands.workspace = true

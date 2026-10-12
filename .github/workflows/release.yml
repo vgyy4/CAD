@@ -277,8 +277,9 @@ jobs:
           if (Test-Path "$env:ProgramFiles\Gusset") { throw 'files installed machine-wide' }
           if (Get-Service | Where-Object { $_.Name -like '*gusset*' }) { throw 'a service was installed' }
           if (Get-ScheduledTask | Where-Object { $_.TaskName -like '*gusset*' }) { throw 'a scheduled task was installed' }
-          if (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue |
-              Select-Object -Property *gusset*) { throw 'an autostart entry was installed' }
+          # Compare value names: the runner may have unrelated autostart entries.
+          $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue
+          if ($run -and ($run.PSObject.Properties.Name -match 'gusset')) { throw 'an autostart entry was installed' }
           $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/x `"$msi`" /qn /l*v `"$env:RUNNER_TEMP\uninstall.log`""
           if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
           if (Test-Path $dir) { Get-ChildItem -Recurse $dir; throw 'install directory left behind' }

@@ -89,11 +89,12 @@ case "$os" in
     done
     for f in "$app"/MacOS/* "$app"/Frameworks/*.dylib; do
       [ -L "$f" ] && continue
-      otool -L "$f" | awk 'NR > 1 { print $1 }' | grep -E '/libTK[^/]*\.dylib$' | while read -r dep; do
+      # (`|| true`: no match is normal, and grep's exit 1 would end the script under pipefail.)
+      otool -L "$f" | awk 'NR > 1 { print $1 }' | { grep -E '/libTK[^/]*\.dylib$' || true; } | while read -r dep; do
         install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$f"
       done
       # Drop absolute LC_RPATHs added for CI tests, then add the bundle-relative one.
-      otool -l "$f" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | grep '^/' | while read -r rp; do
+      otool -l "$f" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | { grep '^/' || true; } | while read -r rp; do
         install_name_tool -delete_rpath "$rp" "$f"
       done
     done
