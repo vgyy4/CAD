@@ -512,6 +512,13 @@ pub fn parse(src: &str) -> Result<Expr, ExprError> {
     let mut p = Parser { toks, pos: 0, depth: 0 };
     let e = p.expr(0)?;
     match p.peek().clone() {
+        // Documents store the canonical form (spaces around operators), which can be
+        // longer than compact input: refuse what could not be read back once printed.
+        (Tok::End, _) if e.to_string().len() > MAX_EXPR_LEN => {
+            Err(err(ExprErrorKind::TooComplex, Span { start: 0, end: src.len() }, "expression is too long").hint(
+                format!("keep expressions under {MAX_EXPR_LEN} characters (counted with spaces around operators)"),
+            ))
+        }
         (Tok::End, _) => Ok(e),
         (Tok::Ident(n), s) if matches!(e, Expr::Number { unit: None, .. }) => {
             Err(err(ExprErrorKind::UnknownUnit, s, format!("unknown unit '{n}'"))
@@ -821,6 +828,20 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn accepted_expressions_stay_parseable_once_printed() {
+        // Fuzz (doc_text): compact input under the limit whose canonical form, with
+        // spaces around operators, was over it, so the printed document did not parse.
+        let compact = format!("s{}", "-z-sin".repeat(MAX_EXPR_LEN / 6 - 1));
+        assert!(compact.len() <= MAX_EXPR_LEN);
+        let e = parse(&compact).err().map(|e| e.kind);
+        assert_eq!(e, Some(ExprErrorKind::TooComplex));
+        // Whatever is accepted prints to something that parses to the same text.
+        let ok = format!("s{}", "-z".repeat(600));
+        let printed = parse(&ok).unwrap().to_string();
+        assert_eq!(parse(&printed).unwrap().to_string(), printed);
     }
 
     #[test]
