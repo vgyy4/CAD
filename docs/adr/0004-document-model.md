@@ -62,7 +62,22 @@ deterministic, readable text form for tests, golden files, agents and "Export as
    2..=500. For `pattern_circular`, a full turn spaces instances `angle / count` apart,
    a smaller angle `angle / (count - 1)`; `through` (a point on the axis) is optional.
    `merge: false` mirrors create a body named after the feature, so later features can
-   target them. Patterns repeat a whole body (not a single feature's result).
+   target them. Patterns repeat a whole body (not a single feature's result); use
+   `combine` to merge a patterned feature-body into the part:
+   ```text
+   plane Plane1 (base: Extrude1/cap(end), offset: 2 mm)            # datum plane, no body
+   plane Plane2 (base: Plane1, axis: X, angle: 30 deg)             # turned about X or an edge
+   move Move1 (body: Extrude2, translate: [10 mm, 0 mm, 0 mm], axis: Z, angle: 45 deg, copy: true)
+   combine Combine1 (body: Extrude1, tools: [Extrude2], op: cut)   # tools are consumed
+   ```
+   A `plane` has either `offset` (along the base plane's normal) or `axis` + `angle`; its
+   base is XY/XZ/YZ, a planar face or another datum plane. A sketch's or mirror's
+   `plane:` may be a datum plane's name (resolved by name, not by `/`, so a feature must
+   not be called XY, XZ or YZ). `move` turns first (about `axis` through `through`,
+   default the origin), then translates along the world axes; `copy: true` creates a body
+   named after the feature. `combine` takes `tools` (the creating features' names) and
+   `op: add|cut|intersect`; later features cannot target a consumed tool body (validation
+   reports it, unless the combine is suppressed).
 4. **Sandboxing.** The language can only express data and pure unit-aware arithmetic
    (`gusset-units`). Parsing enforces limits on input size, nesting depth, statement
    count and name length. It is deterministic: `libm` for transcendental functions,

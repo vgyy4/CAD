@@ -88,6 +88,20 @@ fn print_dir(d: &DirRef) -> String {
     }
 }
 
+fn print_plane(p: &PlaneRef) -> String {
+    match p {
+        PlaneRef::XY => "XY".to_string(),
+        PlaneRef::XZ => "XZ".to_string(),
+        PlaneRef::YZ => "YZ".to_string(),
+        PlaneRef::Face(r) => r.to_string(),
+        PlaneRef::Datum(n) => n.clone(),
+    }
+}
+
+fn print_vec3(v: &[gusset_units::expr::Expr; 3]) -> String {
+    format!("[{}, {}, {}]", v[0], v[1], v[2])
+}
+
 fn print_common(f: &Feature, args: &mut Vec<String>) {
     if let Some(l) = &f.label {
         args.push(format!("label: {}", quote(l)));
@@ -104,13 +118,7 @@ fn print_feature(out: &mut String, f: &Feature) {
     let mut args: Vec<String> = Vec::new();
     match &f.kind {
         FeatureKind::Sketch(s) => {
-            let plane = match &s.plane {
-                PlaneRef::XY => "XY".to_string(),
-                PlaneRef::XZ => "XZ".to_string(),
-                PlaneRef::YZ => "YZ".to_string(),
-                PlaneRef::Face(r) => r.to_string(),
-            };
-            args.push(format!("plane: {plane}"));
+            args.push(format!("plane: {}", print_plane(&s.plane)));
             args.push(format!("next_id: {}", s.next_id));
             print_common(f, &mut args);
             let _ = writeln!(out, "sketch {} ({}) {{", f.name, args.join(", "));
@@ -179,15 +187,7 @@ fn print_feature(out: &mut String, f: &Feature) {
         }
         FeatureKind::Mirror(d) => {
             push_body(&mut args, &d.body);
-            args.push(format!(
-                "plane: {}",
-                match &d.plane {
-                    PlaneRef::XY => "XY".to_string(),
-                    PlaneRef::XZ => "XZ".to_string(),
-                    PlaneRef::YZ => "YZ".to_string(),
-                    PlaneRef::Face(r) => r.to_string(),
-                }
-            ));
+            args.push(format!("plane: {}", print_plane(&d.plane)));
             if d.merge {
                 args.push("merge: true".into());
             }
@@ -206,6 +206,45 @@ fn print_feature(out: &mut String, f: &Feature) {
             }
             args.push(format!("count: {}", d.count));
             args.push(format!("angle: {}", d.angle));
+        }
+        FeatureKind::Plane(d) => {
+            args.push(format!("base: {}", print_plane(&d.base)));
+            match &d.kind {
+                PlaneKind::Offset(e) => args.push(format!("offset: {e}")),
+                PlaneKind::Angle { axis, angle } => {
+                    args.push(format!(
+                        "axis: {}",
+                        match axis {
+                            PlaneAxis::X => "X".to_string(),
+                            PlaneAxis::Y => "Y".to_string(),
+                            PlaneAxis::Z => "Z".to_string(),
+                            PlaneAxis::Edge(e) => e.to_string(),
+                        }
+                    ));
+                    args.push(format!("angle: {angle}"));
+                }
+            }
+        }
+        FeatureKind::Move(d) => {
+            push_body(&mut args, &d.body);
+            if let Some(t) = &d.translate {
+                args.push(format!("translate: {}", print_vec3(t)));
+            }
+            if let Some(r) = &d.rotation {
+                args.push(format!("axis: {}", print_dir(&r.axis)));
+                args.push(format!("angle: {}", r.angle));
+                if let Some(t) = &r.through {
+                    args.push(format!("through: {}", print_vec3(t)));
+                }
+            }
+            if d.copy {
+                args.push("copy: true".into());
+            }
+        }
+        FeatureKind::Combine(d) => {
+            push_body(&mut args, &d.body);
+            args.push(format!("tools: [{}]", d.tools.join(", ")));
+            args.push(format!("op: {}", d.op.keyword()));
         }
         FeatureKind::Import(i) => {
             args.push(format!("blob: {}", quote(&i.blob)));
@@ -336,7 +375,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
             "sketch" | "extrude" | "revolve" | "fillet" | "chamfer" | "import" | "shell" | "mirror"
-            | "pattern_linear" | "pattern_circular" => {
+            | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -346,6 +385,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     f
                 } else if matches!(kw, "shell" | "mirror" | "pattern_linear" | "pattern_circular") {
                     parse_feature_ext(kw, &mut c)?
+                } else if matches!(kw, "plane" | "move" | "combine") {
+                    parse_feature_ext2(kw, &mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -361,7 +402,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular",
+                    "statements are: param, sketch, extrude, revolve, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine",
                 ));
             }
         }
@@ -642,20 +683,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
                 faces = Some(list);
             }
             ("shell", "thickness") => thickness = Some(c.expr()?),
-            ("mirror", "plane") => {
-                let save = c.pos;
-                let w = c.ident()?;
-                let after = c.peek();
-                plane = Some(match (w, after) {
-                    ("XY", _) if after != Some('/') => PlaneRef::XY,
-                    ("XZ", _) if after != Some('/') => PlaneRef::XZ,
-                    ("YZ", _) if after != Some('/') => PlaneRef::YZ,
-                    _ => {
-                        c.pos = save;
-                        PlaneRef::Face(parse_face(c)?)
-                    }
-                });
-            }
+            ("mirror", "plane") => plane = Some(parse_plane(c)?),
             ("mirror", "merge") => merge = parse_bool(c)?,
             ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
             ("pattern_circular", "through") => {
@@ -704,6 +732,166 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     Ok(Feature { name, label, note: None, suppressed, kind })
 }
 
+/// A plane: `XY`, `XZ`, `YZ`, a face reference (`Extrude1/cap(end)`) or the name of a
+/// datum plane feature.
+fn parse_plane(c: &mut Cursor<'_>) -> Result<PlaneRef, ParseError> {
+    let save = c.pos;
+    let w = c.ident()?;
+    if c.peek() == Some('/') {
+        c.pos = save;
+        return Ok(PlaneRef::Face(parse_face(c)?));
+    }
+    Ok(match w {
+        "XY" => PlaneRef::XY,
+        "XZ" => PlaneRef::XZ,
+        "YZ" => PlaneRef::YZ,
+        datum => PlaneRef::Datum(datum.to_string()),
+    })
+}
+
+/// Parses a plane given outside a document (`XY`, a face reference or a datum plane name).
+pub fn parse_plane_ref(s: &str) -> Result<PlaneRef, ParseError> {
+    let mut c = Cursor::new(s, 1);
+    let p = parse_plane(&mut c)?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after plane"));
+    }
+    Ok(p)
+}
+
+fn parse_vec3(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 3], ParseError> {
+    c.expect('[')?;
+    let x = c.expr()?;
+    c.expect(',')?;
+    let y = c.expr()?;
+    c.expect(',')?;
+    let z = c.expr()?;
+    c.expect(']')?;
+    Ok([x, y, z])
+}
+
+/// Datum plane, move and combine statements.
+fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let mut label = None;
+    let mut suppressed = false;
+    let mut body = None;
+    let mut base = None;
+    let mut offset = None;
+    let mut plane_axis = None;
+    let mut axis = None;
+    let mut angle = None;
+    let mut through = None;
+    let mut translate = None;
+    let mut copy = false;
+    let mut tools: Option<Vec<String>> = None;
+    let mut op = None;
+    let allowed = match kw {
+        "plane" => "base, offset, axis, angle, label, suppressed",
+        "move" => "body, translate, axis, angle, through, copy, label, suppressed",
+        _ => "body, tools, op, label, suppressed",
+    };
+    parse_args(c, |key, c| {
+        match (kw, key) {
+            (_, "label") => label = Some(c.string()?),
+            (_, "suppressed") => suppressed = parse_bool(c)?,
+            ("move" | "combine", "body") => body = Some(c.ident()?.to_string()),
+            ("plane", "base") => base = Some(parse_plane(c)?),
+            ("plane", "offset") => offset = Some(c.expr()?),
+            ("plane", "axis") => {
+                let save = c.pos;
+                plane_axis = Some(match c.ident()? {
+                    "X" => PlaneAxis::X,
+                    "Y" => PlaneAxis::Y,
+                    "Z" => PlaneAxis::Z,
+                    _ => {
+                        c.pos = save;
+                        PlaneAxis::Edge(parse_edge(c)?)
+                    }
+                });
+            }
+            ("plane" | "move", "angle") => angle = Some(c.expr()?),
+            ("move", "translate") => translate = Some(parse_vec3(c)?),
+            ("move", "axis") => axis = Some(parse_dir(c)?),
+            ("move", "through") => through = Some(parse_vec3(c)?),
+            ("move", "copy") => copy = parse_bool(c)?,
+            ("combine", "tools") => {
+                c.expect('[')?;
+                let mut list = Vec::new();
+                if !c.eat(']') {
+                    loop {
+                        list.push(c.ident()?.to_string());
+                        if list.len() > MAX_LIST_ITEMS {
+                            return Err(c.err("too many tools"));
+                        }
+                        if c.eat(',') {
+                            continue;
+                        }
+                        c.expect(']')?;
+                        break;
+                    }
+                }
+                tools = Some(list);
+            }
+            ("combine", "op") => {
+                let w = c.ident()?;
+                op = Some(match BodyOp::from_keyword(w) {
+                    Some(o) if o != BodyOp::New => o,
+                    _ => {
+                        return Err(c.err_hint(format!("unknown combine operation '{w}'"), "use add, cut or intersect"));
+                    }
+                });
+            }
+            (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let kind = match kw {
+        "plane" => {
+            let kind = match (offset, plane_axis, angle) {
+                (Some(o), None, None) => PlaneKind::Offset(o),
+                (None, Some(axis), Some(angle)) => PlaneKind::Angle { axis, angle },
+                (None, Some(_), None) => return Err(missing(c, kw, "angle")),
+                (None, None, Some(_)) => return Err(missing(c, kw, "axis")),
+                (None, None, None) => {
+                    return Err(c.err_hint("'plane' needs an offset, or an axis and an angle", "e.g. offset: 10 mm"));
+                }
+                _ => {
+                    return Err(c.err_hint(
+                        "'plane' takes either an offset, or an axis and an angle",
+                        "use two plane features to do both",
+                    ));
+                }
+            };
+            FeatureKind::Plane(PlaneDef { base: base.ok_or_else(|| missing(c, kw, "base"))?, kind })
+        }
+        "move" => {
+            let rotation = match (axis, angle) {
+                (Some(axis), Some(angle)) => Some(MoveRotation { axis, angle, through }),
+                (None, None) if through.is_none() => None,
+                (Some(_), None) => return Err(missing(c, kw, "angle")),
+                _ => return Err(missing(c, kw, "axis")),
+            };
+            if translate.is_none() && rotation.is_none() {
+                return Err(c.err_hint(
+                    "'move' needs a translate, or an axis and an angle",
+                    "e.g. translate: [10 mm, 0 mm, 0 mm]",
+                ));
+            }
+            FeatureKind::Move(MoveDef { body, translate, rotation, copy })
+        }
+        _ => FeatureKind::Combine(CombineDef {
+            body,
+            tools: tools.ok_or_else(|| missing(c, kw, "tools"))?,
+            op: op.unwrap_or(BodyOp::Add),
+        }),
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
 impl Cursor<'_> {
     /// An identifier that may start with a digit (`3mf`).
     fn ident_or_digits(&mut self) -> Result<String, ParseError> {
@@ -732,20 +920,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
             "label" => label = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "next_id" => next_id = Some(c.uint()?),
-            "plane" => {
-                let save = c.pos;
-                let w = c.ident()?;
-                let after = c.peek();
-                plane = Some(match (w, after) {
-                    ("XY", _) if after != Some('/') => PlaneRef::XY,
-                    ("XZ", _) if after != Some('/') => PlaneRef::XZ,
-                    ("YZ", _) if after != Some('/') => PlaneRef::YZ,
-                    _ => {
-                        c.pos = save;
-                        PlaneRef::Face(parse_face(c)?)
-                    }
-                });
-            }
+            "plane" => plane = Some(parse_plane(c)?),
             other => return Err(unknown_arg(c, "sketch", other, "plane, next_id (optional), label, suppressed")),
         }
         Ok(())

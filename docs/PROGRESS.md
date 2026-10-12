@@ -55,9 +55,10 @@ Phase 3 has started (see Next).
 1. Phase 3, in the feature-matrix order (docs/RESEARCH.md "v1" tier), starting with
    the modeling gaps agents and users hit first (dogfooding F-M4..M8):
    - v0.2: done: shell, mirror, linear/circular body patterns (OCCT golden tests;
-     agent ergonomics F2-5..F2-11). Next: offset and angled datum planes, body
-     move/copy and combine (patterning a single feature such as one hole needs it),
-     sketch patterns, sketch trim and spline curves, sweep/loft, holes.
+     agent ergonomics F2-5..F2-11), offset/angled datum planes, body move/copy and
+     combine (a single feature is patterned as its own body, then combined into the
+     part; OCCT golden tests). Next: sketch patterns, sketch trim and spline curves,
+     sweep/loft, holes.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
@@ -71,7 +72,8 @@ Phase 3 has started (see Next).
    fixed in e05714d. The owner re-creates v0.1.0-mvp on a green head.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
-- Splines, offset/datum planes, body move, feature (not body) patterns (dogfooding F-M4..M7).
+- Splines and feature-level patterns (patterns repeat whole bodies; combine merges one
+  feature's body into the part) (dogfooding F-M4..M7).
 - Sketch trim / region arrangement from crossing curves (F-M8).
 
 ## Decisions made without the owner (easy to reverse)

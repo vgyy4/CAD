@@ -34,6 +34,19 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
      after another, so touching copies merge faces under the earlier name. Face-name
      arguments nest, so an instance of a mirrored face reads
      `P/instance(1, M/mirror(E/cap(end)))`; the parser limits nesting depth.
+   - Moved bodies (v0.2): a `move` without `copy` is a rigid change of place, so every
+     face keeps its name (references made later see the new position, earlier sketches
+     stay where the timeline put them). A moved copy is a new body whose faces are
+     `<feature>/copy(<original face name>)`.
+   - Combined bodies (v0.2): `combine` unites, subtracts or intersects its tool bodies
+     into the target one tool after one; faces of the target and of the tools keep their
+     names (a cut leaves the tool's face names on the walls it carved, e.g.
+     `Pattern1/instance(2, Extrude2/side(Sketch2/c2))` for the second bore of a drilled
+     pattern). The tool bodies are consumed. This is how a single feature is patterned:
+     the feature is its own body (`op: new`), the body is patterned, then combined.
+   - Datum planes (v0.2) have no faces. Their frame is derived from the base plane, face
+     or straight edge they reference (edge direction made canonical: towards +X, else +Y,
+     else +Z), so they follow parameter edits like any other reference.
    - Primitives: `<feature>/face(top|bottom|side...)`.
    - Faces carried through a boolean or modification keep their original name. Faces
      the operation splits get `#k` suffixes, ordered by a *geometric* key (see 3).

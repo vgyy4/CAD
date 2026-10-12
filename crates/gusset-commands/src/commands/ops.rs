@@ -23,18 +23,35 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
         }
         FeatureKind::Mirror(d) => {
             body_of(&mut d.body);
-            if let PlaneRef::Face(f) = &mut d.plane {
-                f.rename_feature(from, to);
-            }
+            d.plane.rename_feature(from, to);
         }
         FeatureKind::PatternLinear(d) => body_of(&mut d.body),
         FeatureKind::PatternCircular(d) => body_of(&mut d.body),
+        FeatureKind::Plane(d) => {
+            d.base.rename_feature(from, to);
+            if let PlaneKind::Angle { axis: PlaneAxis::Edge(e), .. } = &mut d.kind {
+                e.rename_feature(from, to);
+            }
+        }
+        FeatureKind::Move(d) => body_of(&mut d.body),
+        FeatureKind::Combine(d) => {
+            body_of(&mut d.body);
+            for t in &mut d.tools {
+                if t == from {
+                    *t = to.to_string();
+                }
+            }
+        }
         _ => {}
     }
 }
 
 /// Resolves the body to work on now and stores its name in the feature.
-fn body_for(doc: &Document, rb: Option<usize>, explicit: Option<String>) -> Result<Option<String>, CommandError> {
+pub(super) fn body_for(
+    doc: &Document,
+    rb: Option<usize>,
+    explicit: Option<String>,
+) -> Result<Option<String>, CommandError> {
     target_body(doc, rb, BodyOp::Add, explicit)
 }
 
@@ -90,8 +107,8 @@ impl Command for Shell {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mirror {
-    /// `XY`, `XZ`, `YZ` (through the origin) or a planar face reference such as
-    /// `Extrude1/side(Sketch1/l6)`.
+    /// `XY`, `XZ`, `YZ` (through the origin), a planar face reference such as
+    /// `Extrude1/side(Sketch1/l6)` or a datum plane name (feature_plane).
     pub plane: String,
     /// true: unite the mirror image with the source body (the body keeps its name). false
     /// (default): add it as a new body named after this feature. Mirrored faces are named
@@ -108,20 +125,11 @@ pub struct Mirror {
 impl Command for Mirror {
     const ID: &'static str = "feature.mirror";
     const TITLE: &'static str = "Mirror";
-    const DESCRIPTION: &'static str = "Mirror a body across XY/XZ/YZ or a planar face, as a new body or united with the source. Uniting needs the OCCT kernel.";
+    const DESCRIPTION: &'static str = "Mirror a body across XY/XZ/YZ, a planar face or a datum plane, as a new body or united with the source. Uniting needs the OCCT kernel.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let plane = match self.plane.as_str() {
-            "XY" => PlaneRef::XY,
-            "XZ" => PlaneRef::XZ,
-            "YZ" => PlaneRef::YZ,
-            other => {
-                let face = FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?;
-                check_face_resolves(s, ctx, &face)?;
-                PlaneRef::Face(face)
-            }
-        };
+        let plane = super::datum::parse_plane_arg(s, ctx, &self.plane)?;
         edit(s, ctx, "Mirror", |doc, rb| {
             let name = feature_name(doc, self.name, "Mirror")?;
             let body = body_for(doc, rb, self.body)?;

@@ -12,6 +12,7 @@
 // does not matter for performance.
 #![allow(clippy::result_large_err, reason = "cold-path errors with rich context")]
 
+mod datum;
 pub mod error;
 mod ops;
 pub mod sketch;
@@ -90,6 +91,7 @@ struct State {
     bodies: Vec<Arc<Body>>,
     meshes: Vec<Arc<MeshBody>>,
     solved: SolvedMap,
+    planes: datum::Planes,
     failed: BTreeSet<String>,
     statuses: Statuses,
 }
@@ -174,6 +176,8 @@ pub struct Evaluation {
     pub params: ParamValues,
     pub statuses: Vec<(String, FeatureStatus)>,
     pub sketches: BTreeMap<String, SketchResult>,
+    /// Datum planes (`plane` features) in feature order, with their placement.
+    pub planes: Vec<(String, Frame)>,
     pub bodies: Vec<Arc<Body>>,
     /// Reference mesh bodies (imported meshes; not solids).
     pub meshes: Vec<Arc<MeshBody>>,
@@ -394,6 +398,7 @@ impl Evaluator {
             params,
             statuses,
             sketches,
+            planes: state.planes.to_vec(),
             bodies: state.bodies.clone(),
             meshes: state.meshes.clone(),
             recomputed,
@@ -433,7 +438,7 @@ impl Evaluator {
         let name = f.name.as_str();
         match &f.kind {
             FeatureKind::Sketch(def) => {
-                let frame = plane_frame(name, &def.plane, &s.bodies)?;
+                let frame = plane_frame(name, &def.plane, s)?;
                 match sketch::solve_sketch(name, def, params, units, frame) {
                     Ok(solved) => {
                         s.solved.insert(f.name.clone(), Arc::new(solved));
@@ -535,6 +540,9 @@ impl Evaluator {
             FeatureKind::Mirror(d) => self.run_mirror(s, name, d, units, params),
             FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),
             FeatureKind::PatternCircular(d) => self.run_pattern_circular(s, name, d, units, params),
+            FeatureKind::Plane(d) => self.run_plane(s, name, d, units, params),
+            FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
+            FeatureKind::Combine(d) => self.run_combine(s, name, d),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
                     EvalError::new(name, ErrorCode::MissingBlob, "the imported data is missing from the project")
@@ -739,12 +747,19 @@ fn sketch_input(feature: &str, sketch: &str, s: &State) -> Result<(Arc<Solved>, 
     Ok((solved, frame))
 }
 
-fn plane_frame(feature: &str, plane: &PlaneRef, bodies: &[Arc<Body>]) -> Result<Frame, EvalError> {
+fn plane_frame(feature: &str, plane: &PlaneRef, s: &State) -> Result<Frame, EvalError> {
     match plane {
         PlaneRef::XY => Ok(Frame::XY),
         PlaneRef::XZ => Ok(Frame::XZ),
         PlaneRef::YZ => Ok(Frame::YZ),
-        PlaneRef::Face(r) => face_frame(feature, r, bodies),
+        PlaneRef::Face(r) => face_frame(feature, r, &s.bodies),
+        PlaneRef::Datum(n) => s.planes.get(n).copied().ok_or_else(|| {
+            let mut e =
+                EvalError::new(feature, ErrorCode::MissingReference, format!("datum plane '{n}' does not exist"))
+                    .with_hint("create it with a plane feature before this one");
+            e.reference = Some(n.clone());
+            e
+        }),
     }
 }
 
@@ -846,6 +861,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_datum;
 #[cfg(test)]
 mod tests_ops;
 

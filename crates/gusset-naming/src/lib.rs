@@ -54,6 +54,9 @@ pub enum OpContext<'a> {
     Shell { feature: &'a str, input: &'a BodyNames },
     /// A mirrored copy of a body: face *i* is `feature/mirror(<face i>)`.
     Mirror { feature: &'a str, input: &'a BodyNames },
+    /// A moved copy of a body (`move` with `copy: true`): face *i* is
+    /// `feature/copy(<face i>)`. A plain move keeps names and uses [`OpContext::Modify`].
+    Copy { feature: &'a str, input: &'a BodyNames },
     /// Instance `k` (1-based) of a pattern: face *i* is `feature/instance(k, <face i>)`.
     Instance { feature: &'a str, k: u32, input: &'a BodyNames },
 }
@@ -172,6 +175,9 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
                     .faces
                     .get(*face as usize)
                     .map(|f| FaceRef::new(*feature, FaceKey::Mirror(Box::new(f.clone())))),
+                (OpContext::Copy { feature, input }, FaceOrigin::Input { input: 0, face }) => {
+                    input.faces.get(*face as usize).map(|f| FaceRef::new(*feature, FaceKey::Copy(Box::new(f.clone()))))
+                }
                 (OpContext::Instance { feature, k, input }, FaceOrigin::Input { input: 0, face }) => input
                     .faces
                     .get(*face as usize)
@@ -548,6 +554,13 @@ mod tests {
         assert_eq!(n.faces[0].to_string(), "Mirror1/mirror(Extrude1/cap(start))");
         assert_eq!(n.faces[2].to_string(), "Mirror1/mirror(Extrude1/side(Sketch1/l5))");
         assert_eq!(n.edges.len(), 12);
+        let moved = k.transform(&b.shape, &Transform::Translate([5.0, 0.0, 0.0])).unwrap();
+        let t2 = k.topology(&moved.shape).unwrap();
+        let c = name_body(&OpContext::Copy { feature: "Move1", input: &base }, &moved.face_origins, &t2).unwrap();
+        assert_eq!(c.faces[1].to_string(), "Move1/copy(Extrude1/cap(end))");
+        let same =
+            name_body(&OpContext::Modify { feature: "Move1", inputs: &[&base] }, &moved.face_origins, &t2).unwrap();
+        assert_eq!(same.faces, base.faces, "a plain move keeps every name");
         let inst = name_body(&OpContext::Instance { feature: "P", k: 2, input: &base }, &mir.face_origins, &t).unwrap();
         assert_eq!(inst.faces[1].to_string(), "P/instance(2, Extrude1/cap(end))");
         // Shell: 6 survivors + 5 inner faces; the inner face of cap(end) is named after it.

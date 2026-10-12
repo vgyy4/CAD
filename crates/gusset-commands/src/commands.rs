@@ -16,12 +16,15 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod datum;
 mod ops;
+pub use datum::{Combine, DatumPlane, MoveBody};
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
     v.extend(ops::specs());
+    v.extend(datum::specs());
     v
 }
 
@@ -322,7 +325,23 @@ pub(crate) fn snap_zeros(v: &mut Value) {
 /// The name of the last body created before position `at` (bodies are named after the
 /// feature that created them).
 fn latest_body_before(doc: &Document, at: usize) -> Option<String> {
-    doc.features.iter().take(at).rev().find(|f| creates_body(f)).map(|f| f.name.clone())
+    live_body_features(doc, at).last().map(|f| f.name.clone())
+}
+
+/// The features before position `at` that create a body which still exists there: a
+/// `combine` consumes the tool bodies it merges.
+fn live_body_features(doc: &Document, at: usize) -> Vec<&Feature> {
+    let before = doc.features.iter().take(at);
+    let consumed: Vec<&str> = before
+        .clone()
+        .filter(|f| !f.suppressed)
+        .filter_map(|f| match &f.kind {
+            FeatureKind::Combine(c) => Some(c.tools.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    before.filter(|f| creates_body(f) && !consumed.contains(&f.name.as_str())).collect()
 }
 
 /// Combines with "the latest body" because no target was stored (older documents).
@@ -803,7 +822,8 @@ impl Command for ParamDelete {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SketchCreate {
-    /// `XY`, `XZ`, `YZ`, or a face reference such as `Extrude1/cap(end)`.
+    /// `XY`, `XZ`, `YZ`, a face reference such as `Extrude1/cap(end)`, or the name of a datum
+    /// plane (feature_plane).
     pub plane: String,
     /// Optional name (default `SketchN`).
     #[serde(default)]
@@ -813,21 +833,12 @@ pub struct SketchCreate {
 impl Command for SketchCreate {
     const ID: &'static str = "sketch.create";
     const TITLE: &'static str = "New sketch";
-    const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ or on a planar face (persistent face reference). The result's `frame` gives the sketch plane in world mm: origin_mm, x_axis, y_axis and normal (sketch (u,v) maps to origin + u*x_axis + v*y_axis).";
+    const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ, a planar face (persistent face reference) or a datum plane. The result's `frame` gives the sketch plane in world mm: origin_mm, x_axis, y_axis and normal (sketch (u,v) maps to origin + u*x_axis + v*y_axis).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("S");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let plane = match self.plane.as_str() {
-            "XY" => PlaneRef::XY,
-            "XZ" => PlaneRef::XZ,
-            "YZ" => PlaneRef::YZ,
-            other => {
-                let face = FaceRef::parse(other).map_err(|e| CommandError::args(format!("plane: {e}")))?;
-                check_face_resolves(s, ctx, &face)?;
-                PlaneRef::Face(face)
-            }
-        };
+        let plane = datum::parse_plane_arg(s, ctx, &self.plane)?;
         let created = std::cell::RefCell::new(String::new());
         edit_post(
             s,
@@ -1746,11 +1757,7 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             f.name = to.to_string();
         }
         match &mut f.kind {
-            FeatureKind::Sketch(s) => {
-                if let PlaneRef::Face(r) = &mut s.plane {
-                    r.rename_feature(from, to);
-                }
-            }
+            FeatureKind::Sketch(s) => s.plane.rename_feature(from, to),
             FeatureKind::Extrude(ExtrudeDef { profile, body, .. })
             | FeatureKind::Revolve(RevolveDef { profile, body, .. }) => {
                 if profile.sketch == from {
@@ -2254,8 +2261,7 @@ pub struct QueryModel {}
 impl Command for QueryModel {
     const ID: &'static str = "query.model";
     const TITLE: &'static str = "Model overview";
-    const DESCRIPTION: &'static str =
-        "Feature tree with rebuild status and errors, parameter values, and bodies on your current branch.";
+    const DESCRIPTION: &'static str = "Feature tree with rebuild status and errors, parameter values, bodies and datum planes (origin, normal) on your current branch.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2295,6 +2301,15 @@ impl Command for QueryModel {
             .iter()
             .map(|b| json!({"name": b.name, "faces": b.topology.faces.len(), "edges": b.topology.edges.len()}))
             .collect();
+        let planes: Vec<Value> = ev
+            .planes
+            .iter()
+            .map(|(name, f)| {
+                let mut v = json!({"name": name, "origin_mm": f.origin, "normal": f.normal(), "x_axis": f.x});
+                snap_zeros(&mut v);
+                v
+            })
+            .collect();
         let meshes: Vec<Value> = ev
             .meshes
             .iter()
@@ -2312,6 +2327,7 @@ impl Command for QueryModel {
             "features": features,
             "parameters": params,
             "bodies": bodies,
+            "datum_planes": planes,
             "reference_meshes": meshes,
             "errors": ev.errors().iter().map(|e| e.to_string()).collect::<Vec<_>>(),
         }))
