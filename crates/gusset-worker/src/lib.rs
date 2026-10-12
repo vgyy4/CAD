@@ -392,7 +392,13 @@ pub mod trust {
     struct State {
         hashes: HashSet<[u8; 32]>,
         file: Option<PathBuf>,
+        /// This process only: hash of an untrusted blob -> the worker's canonical
+        /// re-serialization of it (most recent last). Never persisted.
+        canonical: Vec<([u8; 32], std::sync::Arc<Vec<u8>>)>,
     }
+
+    /// Canonical blobs remembered per process.
+    const MAX_CANONICAL: usize = 64;
 
     static STATE: Mutex<Option<State>> = Mutex::new(None);
 
@@ -401,7 +407,31 @@ pub mod trust {
         f(g.get_or_insert_with(State::default))
     }
 
-    /// Whether `data` was produced or validated before.
+    /// The worker's canonical bytes for an untrusted blob validated earlier in this
+    /// process. Callers parse these, never the untrusted original (security re-review 2).
+    pub fn canonical_for(data: &[u8]) -> Option<std::sync::Arc<Vec<u8>>> {
+        let h = *blake3::hash(data).as_bytes();
+        with(|s| s.canonical.iter().rev().find(|(k, _)| *k == h).map(|(_, v)| v.clone()))
+    }
+
+    /// Remembers the canonical bytes of a validated untrusted blob (this process only)
+    /// and trusts the canonical bytes, which OCCT's writer produced.
+    pub fn remember_canonical(data: &[u8], canonical: Vec<u8>) -> std::sync::Arc<Vec<u8>> {
+        let h = *blake3::hash(data).as_bytes();
+        let c = std::sync::Arc::new(canonical);
+        with(|s| {
+            s.canonical.retain(|(k, _)| *k != h);
+            if s.canonical.len() >= MAX_CANONICAL {
+                s.canonical.remove(0);
+            }
+            s.canonical.push((h, c.clone()));
+        });
+        trust(&c);
+        c
+    }
+
+    /// Whether `data` was produced by this installation's writer (in-process or as a
+    /// worker's canonical output). Untrusted originals are never recorded here.
     pub fn is_trusted(data: &[u8]) -> bool {
         let h = *blake3::hash(data).as_bytes();
         with(|s| s.hashes.contains(&h))
@@ -651,6 +681,19 @@ impl gusset_commands::session::Importer for WorkerImporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untrusted_originals_are_never_trusted_only_their_canonical_bytes() {
+        // Security re-review 2.
+        let original = b"hostile original bytes for the canonical test".to_vec();
+        let canonical = b"writer-produced canonical bytes for the test".to_vec();
+        assert!(trust::canonical_for(&original).is_none());
+        let c = trust::remember_canonical(&original, canonical.clone());
+        assert_eq!(*c, canonical);
+        assert!(!trust::is_trusted(&original), "the original must stay untrusted");
+        assert!(trust::is_trusted(&canonical));
+        assert_eq!(trust::canonical_for(&original).as_deref(), Some(&canonical));
+    }
 
     #[test]
     fn trust_set_and_persistent_store() {

@@ -37,10 +37,11 @@ fn main() -> eframe::Result {
     }
     let (k, note) = kernel();
     let dirs = gusset_store::paths::DataDirs::from_os();
-    // B-rep blobs validated by the sandboxed worker once are trusted for this
-    // installation (ADR 0008 §4); without the list they are re-validated per process.
+    // B-rep blobs written by OCCT's writer (ours, or the worker's canonical output) are
+    // trusted for this installation (ADR 0008 §4). "v2": the v1 list also held hashes
+    // of untrusted originals, which must not be trusted (security re-review 2).
     if let Some(d) = &dirs
-        && let Err(e) = gusset_worker::trust::persist_to(&d.data_dir().join("trusted-blobs"))
+        && let Err(e) = gusset_worker::trust::persist_to(&d.data_dir().join("trusted-blobs-v2"))
     {
         eprintln!("warning: trusted-blob list unavailable: {e}");
     }

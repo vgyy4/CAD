@@ -340,8 +340,14 @@ mod imp {
         }
 
         fn read_native(&self, data: &[u8]) -> KResult<Shape> {
+            // Only writer-produced bytes are parsed in this process: our own output, or
+            // the worker's canonical re-serialization of an untrusted blob. The
+            // untrusted original itself never reaches BinTools::Read here.
             if gusset_worker::trust::is_trusted(data) {
                 return Ok(Shape::new(OcctShape(ffi::brep_read(data)?)));
+            }
+            if let Some(c) = gusset_worker::trust::canonical_for(data) {
+                return Ok(Shape::new(OcctShape(ffi::brep_read(&c)?)));
             }
             let Some(worker) = &self.worker else {
                 return Err(KernelError::new(
@@ -360,10 +366,8 @@ mod imp {
                 KernelError::new(KernelErrorKind::InvalidInput, format!("imported geometry is damaged or unsafe ({e})"))
                     .with_hint("re-import the original file")
             })?;
-            let shape = ffi::brep_read(&canonical)?;
-            gusset_worker::trust::trust(data);
-            gusset_worker::trust::trust(&canonical);
-            Ok(Shape::new(OcctShape(shape)))
+            let canonical = gusset_worker::trust::remember_canonical(data, canonical);
+            Ok(Shape::new(OcctShape(ffi::brep_read(&canonical)?)))
         }
     }
 }

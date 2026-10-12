@@ -105,10 +105,14 @@
      worker on first sight and remember blobs this installation produced or
      validated; (b) parse every blob in the worker on every open. We chose **(a)**:
      - `OcctKernel::read_native` parses a blob in-process only if its BLAKE3 hash is
-       in the trusted set: blobs this process wrote (`write_native`) or the worker
-       validated. `gusset_worker::trust::persist_to` keeps that set per installation
-       (one hex hash per line, owner-only, symlinks refused); without it the set
-       lasts for the process.
+       in the trusted set, which holds only writer-produced bytes: blobs this
+       installation wrote (`write_native`) and the worker's canonical output.
+       `gusset_worker::trust::persist_to` keeps that set per installation
+       (`trusted-blobs-v2`, one hex hash per line, owner-only, symlinks refused).
+       The hash of an untrusted original is never trusted (security re-review
+       2026-10-12: the v1 list did, so the worker acted as a one-shot oracle). A
+       validated original maps to its canonical bytes for the rest of the process
+       only; after a restart it is validated again.
      - Any other blob goes to `gusset-worker` (request kind `Brep`), which parses it
        under the sandbox, walks its topology and re-serializes it with OCCT's writer.
        The app then parses the worker's output, so its `BinTools::Read` only sees
