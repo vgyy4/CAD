@@ -97,8 +97,9 @@ fn recording_body(tail: &str) -> String {
         "rec=\"$(dirname \"$0\")/rec\"\n\
          echo \"$1\" > \"$rec\"\n\
          echo \"$2\" >> \"$rec\"\n\
-         stat -c '%a' \"$(dirname \"$2\")\" >> \"$rec\"\n\
-         stat -c '%a' \"$2\" >> \"$rec\"\n\
+         mode() {{ stat -c '%a' \"$1\" 2>/dev/null || stat -f '%Lp' \"$1\"; }}\n\
+         mode \"$(dirname \"$2\")\" >> \"$rec\"\n\
+         mode \"$2\" >> \"$rec\"\n\
          cat \"$2\" >> \"$rec\"\n\
          {tail}"
     )
