@@ -84,8 +84,29 @@ fn bad_edits_fail_cleanly_or_record_broken_nodes() {
         json!({"edges": ["edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))"], "radius": "1 mm"}),
     );
     assert_eq!(r["rebuild_ok"], false);
+    assert_eq!(r["committed_with_errors"], true, "{r}");
+    assert!(r["undo_hint"].as_str().unwrap().contains("history_undo"), "{r}");
     let head = s.history().head(s.history().main()).unwrap();
     assert!(matches!(s.history().node(head).unwrap().state, gusset_history::NodeState::Broken { .. }));
+}
+
+#[test]
+fn impossible_blend_sizes_are_rejected_before_committing() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let head = s.history().head(s.history().main()).unwrap();
+    let edge = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))";
+    for (cmd, key) in [("feature.fillet", "radius"), ("feature.chamfer", "distance")] {
+        for bad in ["0 mm", "-2 mm", "500 mm", "width * 2"] {
+            let e = execute(&mut s, &u, cmd, json!({"edges": [edge], key: bad})).unwrap_err();
+            assert_eq!(e.code, "invalid_args", "{cmd} {bad}: {e:?}");
+        }
+    }
+    let e = execute(&mut s, &u, "feature.fillet", json!({"edges": [edge], "radius": "500 mm"})).unwrap_err();
+    assert!(e.hint.as_deref().unwrap().contains("40 mm"), "{e:?}");
+    assert!(e.details.as_ref().unwrap()["max_usable_mm"].as_f64().unwrap() > 39.0, "{e:?}");
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
 }
 
 #[test]

@@ -1447,6 +1447,74 @@ fn parse_edges(edges: &[String]) -> Result<Vec<EdgeRef>, CommandError> {
     edges.iter().map(|e| EdgeRef::parse(e).map_err(|err| CommandError::args(format!("edge '{e}': {err}")))).collect()
 }
 
+/// Rejects a fillet radius / chamfer distance that cannot work, before committing a
+/// broken feature (F2-5): it must be a positive length and smaller than the largest
+/// extent of the body the edges belong to. Subtler failures (a radius over half a short
+/// edge, say) still commit and are flagged by [`blend_outcome`].
+fn check_blend_size(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    refs: &[EdgeRef],
+    size: &gusset_units::expr::Expr,
+    what: &str,
+) -> Result<(), CommandError> {
+    use gusset_naming::Resolution;
+    let ev = s.evaluate(&ctx.actor)?;
+    let units = s.document(&ctx.actor)?.units;
+    let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let q = gusset_units::expr::eval(size, &scope).map_err(|e| {
+        let mut ce = CommandError::args(format!("{what}: {}", e.message));
+        ce.hint = e.hint;
+        ce
+    })?;
+    let value = params::coerce(q, gusset_units::Dim::LENGTH, units)
+        .map_err(|m| CommandError::args(format!("{what}: {m}")))?
+        .value;
+    if !(value.is_finite() && value > 0.0) {
+        return Err(CommandError::args(format!("{what} must be positive")));
+    }
+    let body = ev
+        .bodies
+        .iter()
+        .rev()
+        .find(|b| refs.iter().any(|r| matches!(b.names.resolve_edge(r), Resolution::Resolved(_))));
+    let Some(body) = body else { return Ok(()) };
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for v in &body.topology.vertices {
+        for (i, c) in v.point.iter().enumerate() {
+            if let (Some(l), Some(h)) = (lo.get_mut(i), hi.get_mut(i)) {
+                *l = l.min(*c);
+                *h = h.max(*c);
+            }
+        }
+    }
+    let extent = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0_f64, f64::max);
+    if extent.is_finite() && extent > 0.0 && value >= extent {
+        let fmt = |v: f64| gusset_units::Quantity::mm(v).display(units);
+        return Err(CommandError::args(format!(
+            "{what} {} is larger than the body '{}' (largest extent {})",
+            fmt(value),
+            body.name,
+            fmt(extent)
+        ))
+        .hint(format!("use a {what} well below {}; half the shortest selected edge is a safe start", fmt(extent)))
+        .details(json!({ "max_usable_mm": extent, "value_mm": value })));
+    }
+    Ok(())
+}
+
+/// Result fields for a fillet/chamfer that was committed although the rebuild failed.
+fn blend_outcome(out: &crate::session::CommitOutcome) -> Value {
+    if out.new_errors.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "committed_with_errors": true,
+        "undo_hint": "the feature was committed but fails to rebuild: call history_undo to remove it, then retry with a smaller value",
+    })
+}
+
 /// Rounds edges.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1469,11 +1537,18 @@ impl Command for Fillet {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("radius", &self.radius)?;
         check_edges_resolve(s, ctx, &edges)?;
-        edit(s, ctx, "Fillet", |doc, rb| {
-            let name = feature_name(doc, self.name, "Fillet")?;
-            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
-            Ok(json!({ "feature": name }))
-        })
+        check_blend_size(s, ctx, &edges, &size, "radius")?;
+        edit_post(
+            s,
+            ctx,
+            "Fillet",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Fillet")?;
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, _| blend_outcome(out),
+        )
     }
 }
 
@@ -1498,11 +1573,18 @@ impl Command for Chamfer {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("distance", &self.distance)?;
         check_edges_resolve(s, ctx, &edges)?;
-        edit(s, ctx, "Chamfer", |doc, rb| {
-            let name = feature_name(doc, self.name, "Chamfer")?;
-            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
-            Ok(json!({ "feature": name }))
-        })
+        check_blend_size(s, ctx, &edges, &size, "distance")?;
+        edit_post(
+            s,
+            ctx,
+            "Chamfer",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Chamfer")?;
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, _| blend_outcome(out),
+        )
     }
 }
 
