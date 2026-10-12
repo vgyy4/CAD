@@ -2586,7 +2586,7 @@ pub struct ExportStep {
 impl Command for ExportStep {
     const ID: &'static str = "export.step";
     const TITLE: &'static str = "Export STEP/IGES";
-    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file inside the project folder. Reports rebuild_ok/rebuild_errors; features that fail to rebuild are missing from the file.";
+    const DESCRIPTION: &'static str = "Export bodies of your branch (all, or those in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file in the project folder. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2698,7 +2698,7 @@ pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
 impl Command for ExportMesh {
     const ID: &'static str = "export.mesh";
     const TITLE: &'static str = "Export mesh (STL/3MF/OBJ)";
-    const DESCRIPTION: &'static str = "Export the bodies (all, or only those named in `bodies`) as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing. Overlapping bodies in one file are not merged; export them one at a time with `bodies`. Reports rebuild_ok/rebuild_errors; features that fail to rebuild are missing from the file.";
+    const DESCRIPTION: &'static str = "Export bodies (all, or those in `bodies`) as STL, 3MF or OBJ (mm) to a file in the project folder, for 3D printing. Overlapping bodies are not merged; export them separately. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2745,7 +2745,7 @@ pub struct ImportFile {
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES become exact (B-rep) bodies, parsed in a sandboxed worker process; STL/3MF/OBJ become reference mesh bodies (display, measurement and mesh export only, not solids). Runs in the background and can be cancelled. Names inside the file are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES become exact bodies (parsed in a sandboxed worker); STL/3MF/OBJ become reference meshes (display, measuring, mesh export; not solids). Runs in the background, cancellable. Names in the file are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");

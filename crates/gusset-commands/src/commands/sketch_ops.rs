@@ -58,7 +58,7 @@ pub struct SketchTrim {
 impl Command for SketchTrim {
     const ID: &'static str = "sketch.trim";
     const TITLE: &'static str = "Trim";
-    const DESCRIPTION: &'static str = "Delete the piece of a line/arc/circle at (x, y) between the curves crossing it. New ends sit on the crossing curve (on_line/on_circle) or reuse a point there; a circle becomes an arc, a mid-cut line two collinear lines. A trimmed line loses length/midpoint/equal constraints; others stay. One undo step.";
+    const DESCRIPTION: &'static str = "Delete the piece of a line/arc/circle at (x, y) between crossing curves. New ends sit on the crossing curve or reuse a point there; a circle becomes an arc, a line cut mid-way two lines. A trimmed line loses length/midpoint/equal constraints. One undo step.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("T");

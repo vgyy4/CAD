@@ -346,7 +346,8 @@ fn command_tool(spec: &CommandSpec) -> Tool {
     if read_only {
         ann = ann.read_only(true).idempotent(true);
     }
-    Tool::new(spec.tool_name(), tool_description(spec), Arc::new(schema)).with_title(spec.title).with_annotations(ann)
+    // No `title`: it repeated the (readable) name in every definition; clients show the name.
+    Tool::new(spec.tool_name(), tool_description(spec), Arc::new(schema)).with_annotations(ann)
 }
 
 fn schema_object<T: JsonSchema>() -> Arc<JsonObject> {

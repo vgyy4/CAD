@@ -185,8 +185,9 @@ list/create/switch) plus `render_view`, `get_text` and two generic tools:
   the stdio bridge, which resolves `run`'s target), rate limits, argument checks and
   the refusal of a smuggled `approved` argument are identical.
 Non-core commands can also still be called by their own tool names. New commands are
-non-core by default. The size test caps tools/list at 18 KB (31 tools, 17.8 KB on
+non-core by default. The size test caps tools/list at 18 KB (31 tools, 17.2 KB on
 2026-10-13), each command definition at 1,300 bytes, and keeps the average-definition
-cap of 600 bytes. Trade-off: an agent needs one `commands` call before using a rare
+cap of 600 bytes. Command definitions carry no `title` (it repeated the readable tool
+name); clients show the name. Trade-off: an agent needs one `commands` call before using a rare
 command for the first time; the server instructions and the `commands` description
 name the categories so it knows they exist.

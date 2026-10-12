@@ -58,7 +58,7 @@ pub struct DatumPlane {
 impl Command for DatumPlane {
     const ID: &'static str = "feature.plane";
     const TITLE: &'static str = "Datum plane";
-    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or another datum plane by a length, or turned about an axis (X/Y/Z or a straight edge) by an angle. Use its name as the plane of sketch_create and feature_mirror. No body; the result has its frame.";
+    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or a datum plane by a length, or turned about an axis (X/Y/Z or a straight edge) by an angle. Usable as the plane of sketch_create and feature_mirror. No body; returns its frame.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
