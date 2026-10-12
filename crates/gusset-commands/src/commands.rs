@@ -1316,7 +1316,7 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body). A sketch on a face extrudes along the face's outward normal, so a cut into the material needs a negative distance. Optional body_name (op new only) names the new body instead of the feature name; add/cut targets accept the body name. The result lists body_changes (volume and bounding box before/after) and warns when an add/cut changed nothing.";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions (new body, or add/cut/intersect). A sketch on a face extrudes along its outward normal, so a cut needs a negative distance. body_name (op new) names the new body. Result: body_changes (volume/bbox before/after); warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
