@@ -103,16 +103,16 @@ planes, body move: later phases), F-M13 (see F2-2). Not exercised: F-M12, F-M16.
 
 | ID | Sev | Item | Fix |
 |---|---|---|---|
-| F2-1 | major | No IGES export through MCP (the CLI has it) | Export IGES via MCP |
+| F2-1 | major | No IGES export through MCP (the CLI has it) | Fixed: `export_step` writes IGES for `.igs`/`.iges` |
 | F2-2 | major | A reconnecting agent starts on Main; its earlier undo stack is gone | By design for now: names are never reused (code review L6), so an agent continues old work with `branch_switch`; undo is session-only (ADR 0006). Revisit with per-agent credentials |
-| F2-3 | major | Relative project path breaks exports | Absolutize at start-up |
-| F2-4 | major | `op: add` with a disjoint region silently makes a multi-solid body | Warn when the solid count grows |
+| F2-3 | major | Relative project path breaks exports | Fixed: absolutized at start-up |
+| F2-4 | major | `op: add` with a disjoint region silently makes a multi-solid body | Fixed: warning when the solid count grows |
 | F2-5 | minor | Over-large fillet radius commits a broken feature | Later: validate radii up front |
-| F2-6 | minor | "Nothing to export" does not mention rebuild errors | Include `rebuild_errors` |
+| F2-6 | minor | "Nothing to export" does not mention rebuild errors | Fixed: `details.rebuild_errors` |
 | F2-7 | minor | No pattern/mirror/shell | Later phases (F-M4/M5) |
 | F2-8 | minor | Polyline result lists every id; frame repeated in constraint results | Later: ranges |
 | F2-9 | minor | Numeric noise (−5e−22), normals on curved faces, seam edges | Later |
 | F2-10 | minor | Text grammar not published as a resource; directed-angle convention inferred | Later: grammar resource |
 | F2-11 | minor | No `body_name` argument | Later |
 | F2-12 | minor | STEP is AP214 (documented) | Later: AP242 |
-| F2-13 | minor | Descriptions use dotted command ids, tools use underscores | Fix descriptions |
+| F2-13 | minor | Descriptions use dotted command ids, tools use underscores | Fixed (with a test) |
