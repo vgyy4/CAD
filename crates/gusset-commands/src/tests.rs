@@ -177,6 +177,31 @@ fn registry_is_consistent() {
     assert!(find("feature.extrude").is_some());
 }
 
+/// True when `text` contains `id` as a whole dotted token (not part of a longer name).
+fn mentions_dotted_id(text: &str, id: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(id).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + id.len()..].chars().next();
+        !before.is_some_and(|c| ident(c) || c == '.') && !after.is_some_and(ident)
+    })
+}
+
+/// MCP tools are named with underscores (F2-13): descriptions, schema field docs and
+/// hints must not name another command by its dotted id.
+#[test]
+fn descriptions_name_tools_by_their_mcp_names() {
+    for c in registry() {
+        let schema = (c.schema)().to_string();
+        for other in registry() {
+            assert!(!mentions_dotted_id(c.description, other.id), "{}: description mentions {}", c.id, other.id);
+            assert!(!mentions_dotted_id(&schema, other.id), "{}: schema mentions {}", c.id, other.id);
+        }
+    }
+    assert!(mentions_dotted_id("use query.body now", "query.body"));
+    assert!(!mentions_dotted_id("use query_body now", "query.body"));
+}
+
 #[test]
 fn exports_are_confined() {
     let mut s = session();
@@ -624,7 +649,7 @@ fn edit_results_report_body_volume_changes() {
 fn a_cut_that_changes_nothing_warns() {
     use crate::commands::{BodyChange, no_effect_warning};
     use gusset_doc::BodyOp;
-    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None };
+    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None, solids: None };
     let w = no_effect_warning("Extrude2", BodyOp::Cut, Some("Extrude1"), &[], &[]);
     let msg = w["warnings"][0].as_str().unwrap();
     assert!(msg.contains("did not change body 'Extrude1'") && msg.contains("negative distance"), "{w}");
@@ -632,6 +657,27 @@ fn a_cut_that_changes_nothing_warns() {
     assert!(no_effect_warning("E", BodyOp::Cut, Some("Extrude1"), &[], &[changed]).is_null());
     assert!(no_effect_warning("E", BodyOp::Add, Some("Extrude1"), &["boom".into()], &[]).is_null());
     assert!(no_effect_warning("E", BodyOp::New, None, &[], &[]).is_null());
+}
+
+#[test]
+fn an_add_that_does_not_touch_the_body_warns() {
+    use crate::commands::{BodyChange, disjoint_add_warning};
+    use gusset_doc::BodyOp;
+    let ch = |solids| BodyChange {
+        body: "Extrude1".into(),
+        change: "changed",
+        before: None,
+        after: None,
+        solids: Some(solids),
+    };
+    let w = disjoint_add_warning("Extrude2", BodyOp::Add, Some("Extrude1"), &[], &[ch((1, 2))]);
+    let msg = w["warnings"][0].as_str().unwrap();
+    assert!(msg.contains("does not touch Extrude1") && msg.contains("now has 2 separate solids"), "{w}");
+    // Not when the count did not grow, the op is not add, or the feature failed.
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &[], &[ch((2, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Cut, Some("Extrude1"), &[], &[ch((1, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &["x".into()], &[ch((1, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &[], &[]).is_null());
 }
 
 #[test]
@@ -864,4 +910,50 @@ fn approval_summary_shows_what_set_text_changes() {
         &json!({"text": "nope"}),
     );
     assert!(bad.contains("does not parse"), "{bad}");
+}
+
+#[test]
+fn export_step_accepts_iges_paths_and_reports_the_kernel_error_cleanly() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let a = CmdCtx::agent("exp", 2);
+    build_plate(&mut s, &u);
+    let d = std::env::temp_dir().join(format!("gusset-iges-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    // The extension is accepted for agents (confinement rules still apply)...
+    let e = execute(&mut s, &a, "export.step", json!({"path": "../p.igs"})).unwrap_err();
+    assert_eq!(e.code, "not_allowed", "{e:?}");
+    let e = execute(&mut s, &a, "export.step", json!({"path": "p.dxf"})).unwrap_err();
+    assert!(e.message.contains(".igs"), "{e:?}");
+    // ...and reaches the kernel's IGES writer: the mock has none, which is a clean io error.
+    match execute(&mut s, &a, "export.step", json!({"path": "p.IGES"})) {
+        Ok(v) => assert!(d.join("p.IGES").exists(), "{v}"),
+        Err(e) => {
+            assert_eq!(e.code, "io", "{e:?}");
+            assert!(e.message.contains("IGES"), "{e:?}");
+            assert!(!d.join("p.IGES").exists());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn export_with_failed_rebuild_and_no_bodies_carries_rebuild_errors() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-exp-fail-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 0, "y1": 0, "x2": 10, "y2": 0}));
+    run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    for (cmd, path) in [("export.step", "x.step"), ("export.mesh", "x.stl")] {
+        let e = execute(&mut s, &u, cmd, json!({"path": path})).unwrap_err();
+        assert_eq!(e.code, "evaluation", "{e:?}");
+        let errs = e.details.as_ref().unwrap()["rebuild_errors"].as_array().unwrap();
+        assert!(errs[0].as_str().unwrap().contains("Extrude1"), "{e:?}");
+        assert!(e.hint.as_deref().unwrap_or("").contains("fix the failing features"), "{e:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
 }
