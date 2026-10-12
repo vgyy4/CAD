@@ -170,3 +170,23 @@ claude mcp add --transport http gusset http://127.0.0.1:<port>/mcp --header "Aut
 - The registry is the one place commands are added. Reviewers check parity with the
   automated test.
 - Live collaboration between GUI and agents comes for free from the single model thread.
+
+## Amendment (2026-10-13): core tools plus `commands`/`run`
+With 52 commands, tools/list had grown to 31 KB, and every new command made every
+agent session pay for it. tools/list now holds only the everyday commands
+(`CORE_COMMANDS` in gusset-mcp: undo/redo, queries, parameters, document text, basic
+sketching, extrude/revolve/fillet/chamfer, feature delete/rename/suppress, branch
+list/create/switch) plus `render_view`, `get_text` and two generic tools:
+- `commands`: without a name, the other commands with one-line summaries; with a name,
+  that command's full definition (description, argument schema, annotations), exactly
+  as tools/list would show it.
+- `run {name, args}`: calls the named command through the same path as its own tool,
+  so approvals (in-app or elicitation, including retries), read-only mode (headless and
+  the stdio bridge, which resolves `run`'s target), rate limits, argument checks and
+  the refusal of a smuggled `approved` argument are identical.
+Non-core commands can also still be called by their own tool names. New commands are
+non-core by default. The size test caps tools/list at 18 KB (31 tools, 17.8 KB on
+2026-10-13), each command definition at 1,300 bytes, and keeps the average-definition
+cap of 600 bytes. Trade-off: an agent needs one `commands` call before using a rare
+command for the first time; the server instructions and the `commands` description
+name the categories so it knows they exist.

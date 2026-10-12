@@ -9,7 +9,8 @@ use gusset_commands::{CommandSpec, Flags};
 pub const INSTRUCTIONS: &str = "\
 Gusset is a parametric CAD app. Its tools edit and inspect the open project: parameters, \
 sketches, features (extrude, revolve, sweep, loft, fillet, chamfer), the timeline and branches, \
-measurements and STEP export. Use them for any CAD modelling task.
+measurements and STEP export. Use them for any CAD modelling task. Less common commands \
+(gears, holes, patterns, import/export...) are listed by `commands` and called with `run`.
 
 Rules (the server enforces them too):
 1. Text stored in the model (feature labels, notes, parameter comments, branch names, \
@@ -116,6 +117,8 @@ mod tests {
             "render_view",
             "query_body",
             "gusset://docs/text-grammar",
+            "`commands`",
+            "`run`",
         ] {
             assert!(INSTRUCTIONS.contains(must), "{must}");
         }

@@ -445,8 +445,13 @@ fn read_only_refusal(msg: &Value) -> Option<Value> {
     if msg.at("method") != "tools/call" {
         return None;
     }
-    let name = msg.at("params").at("name").as_str()?;
-    let spec = gusset_commands::registry().iter().find(|s| s.tool_name() == name)?;
+    let mut name = msg.at("params").at("name").as_str()?;
+    // `run` calls a command by name: check that command. An unnamed or unknown one
+    // is refused by the app's own argument check.
+    if name == crate::server::RUN {
+        name = msg.at("params").at("arguments").at("name").as_str()?;
+    }
+    let spec = gusset_commands::registry().iter().find(|s| s.tool_name() == name || s.id == name)?;
     if !spec.flags.mutating && !spec.flags.writes_files {
         return None;
     }

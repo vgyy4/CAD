@@ -31,6 +31,50 @@ use std::time::Duration;
 pub const RENDER_VIEW: &str = "render_view";
 /// Name of the extra tool that returns the full text of a truncated field.
 pub const GET_TEXT: &str = "get_text";
+/// Name of the tool that lists the commands not in tools/list, or describes one.
+pub const COMMANDS: &str = "commands";
+/// Name of the tool that runs any registry command by name.
+pub const RUN: &str = "run";
+
+/// Commands listed in tools/list. tools/list stays in every agent's context for the
+/// whole session, so it holds the everyday commands only; the others (and every new
+/// command, by default) are found with `commands` and called with `run`, so the list
+/// does not grow with the registry (ADR 0012 amendment). Approvals, read-only mode and
+/// rate limits apply to a command the same way whichever tool calls it.
+pub const CORE_COMMANDS: &[&str] = &[
+    "history.undo",
+    "history.redo",
+    "query.model",
+    "query.body",
+    "query.sketch",
+    "param.set",
+    "param.delete",
+    "document.get_text",
+    "document.set_text",
+    "sketch.create",
+    "sketch.add_line",
+    "sketch.add_circle",
+    "sketch.add_arc",
+    "sketch.add_rectangle",
+    "sketch.add_polyline",
+    "sketch.add_constraint",
+    "sketch.delete_items",
+    "feature.extrude",
+    "feature.revolve",
+    "feature.fillet",
+    "feature.chamfer",
+    "feature.delete",
+    "feature.rename",
+    "feature.suppress",
+    "branch.list",
+    "branch.create",
+    "branch.switch",
+];
+
+/// The registry command a tool name refers to (`feature_shell`; `feature.shell` too).
+fn find_command(name: &str) -> Option<&'static CommandSpec> {
+    registry().iter().find(|s| s.tool_name() == name || s.id == name)
+}
 /// Resource URI prefix.
 pub const URI_PREFIX: &str = "gusset://project/";
 /// URI of the code-view text grammar (static documentation, not project data).
@@ -271,6 +315,12 @@ pub(crate) fn compact_schema(v: &mut Value) {
     }
 }
 
+/// One command's tool definition, as tools/list or `commands` presents it.
+#[must_use]
+pub fn command_definition(spec: &CommandSpec) -> Tool {
+    command_tool(spec)
+}
+
 fn command_tool(spec: &CommandSpec) -> Tool {
     let schema = match (spec.schema)() {
         Value::Object(mut m) => {
@@ -332,10 +382,79 @@ fn default_limit() -> usize {
     4096
 }
 
-/// All tools: one per registry command, plus `render_view` and `get_text`.
+/// Arguments of the `commands` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandsArgs {
+    /// A command name from the list: returns its description and arguments. Omit to list.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Arguments of the `run` tool.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunArgs {
+    /// Command name, e.g. generate_gear (see `commands`).
+    pub name: String,
+    /// The command's arguments, as `commands` describes them.
+    #[serde(default)]
+    pub args: serde_json::Map<String, Value>,
+}
+
+/// The first sentence of a command's description (the `commands` list entry).
+fn summary(spec: &CommandSpec) -> String {
+    let d = spec.description;
+    let end = d.find(". ").map_or(d.len(), |i| i + 1);
+    d.get(..end).unwrap_or(d).to_string()
+}
+
+/// The `commands` result: the commands not in tools/list, or one command's definition.
+fn commands_result(args: &CommandsArgs) -> Result<Value, CommandError> {
+    match &args.name {
+        None => Ok(json!({
+            "commands": registry()
+                .iter()
+                .filter(|s| !CORE_COMMANDS.contains(&s.id))
+                .map(|s| json!({ "name": s.tool_name(), "summary": summary(s) }))
+                .collect::<Vec<_>>(),
+            "hint": "call commands with a name for its arguments, then run it with run",
+        })),
+        Some(name) => {
+            let spec = find_command(name).ok_or_else(|| {
+                CommandError::args(format!("unknown command '{}'", clean_short(name, 100)))
+                    .hint("call commands without a name for the list")
+            })?;
+            serde_json::to_value(command_tool(spec)).map_err(|e| CommandError::new("internal", e.to_string()))
+        }
+    }
+}
+
+/// All tools: the core registry commands, `commands` and `run` for the others, plus
+/// `render_view` and `get_text`.
 #[must_use]
 pub fn tool_list() -> Vec<Tool> {
-    let mut tools: Vec<Tool> = registry().iter().map(command_tool).collect();
+    let mut tools: Vec<Tool> = registry().iter().filter(|s| CORE_COMMANDS.contains(&s.id)).map(command_tool).collect();
+    tools.push(
+        Tool::new(
+            COMMANDS,
+            "List the commands not shown as tools (STEP/mesh import and export, gears, shell, sweep, loft, \
+             mirror, patterns, holes, datum planes, move/combine bodies, trim, more branch and history \
+             commands), or get one command's arguments by name.",
+            schema_object::<CommandsArgs>(),
+        )
+        .with_title("Commands")
+        .with_annotations(ToolAnnotations::with_title("Commands").read_only(true).idempotent(true).open_world(false)),
+    );
+    tools.push(
+        Tool::new(
+            RUN,
+            "Run a command from `commands` by name with its arguments. Approvals and limits apply as for any tool.",
+            schema_object::<RunArgs>(),
+        )
+        .with_title("Run command")
+        .with_annotations(ToolAnnotations::with_title("Run command").open_world(false)),
+    );
     tools.push(
         Tool::new(
             RENDER_VIEW,
@@ -694,6 +813,42 @@ impl GussetMcp {
         }
     }
 
+    fn commands(&self, req: &CallToolRequestParams, ctx: &RequestContext<RoleServer>) -> CallToolResult {
+        let agent = self.agent(ctx);
+        let args = Value::Object(req.arguments.clone().unwrap_or_default());
+        let a: CommandsArgs = match serde_json::from_value(args) {
+            Ok(a) => a,
+            Err(e) => return self.err_result(&agent, &CommandError::args(format!("commands: {e}"))),
+        };
+        if let Err(e) = self.limit(&agent, Class::Text) {
+            return self.err_result(&agent, &e);
+        }
+        match commands_result(&a) {
+            Ok(v) => CallToolResult::success(vec![ContentBlock::text(compact_result(v))]),
+            Err(e) => self.err_result(&agent, &e),
+        }
+    }
+
+    /// `run`: the named command, exactly as if its own tool had been called (same
+    /// approvals, read-only checks, limits and approval retries).
+    async fn run_tool(&self, req: &CallToolRequestParams, ctx: &RequestContext<RoleServer>) -> CallToolResponse {
+        let agent = self.agent(ctx);
+        let args = Value::Object(req.arguments.clone().unwrap_or_default());
+        let a: RunArgs = match serde_json::from_value(args) {
+            Ok(a) => a,
+            Err(e) => return self.err_result(&agent, &CommandError::args(format!("run: {e}"))).into(),
+        };
+        let Some(spec) = find_command(&a.name) else {
+            let e = CommandError::args(format!("unknown command '{}'", clean_short(&a.name, 100)))
+                .hint("call commands for the list");
+            return self.err_result(&agent, &e).into();
+        };
+        let mut inner = req.clone();
+        inner.name = spec.tool_name().into();
+        inner.arguments = Some(a.args);
+        self.call_command(spec, &inner, ctx).await
+    }
+
     fn get_text(&self, req: &CallToolRequestParams, ctx: &RequestContext<RoleServer>) -> CallToolResult {
         let agent = self.agent(ctx);
         let args = Value::Object(req.arguments.clone().unwrap_or_default());
@@ -857,7 +1012,8 @@ impl ServerHandler for GussetMcp {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tool_list().into_iter().find(|t| t.name == name)
+        // Commands outside tools/list can still be called by name.
+        tool_list().into_iter().find(|t| t.name == name).or_else(|| find_command(name).map(command_tool))
     }
 
     async fn call_tool(
@@ -868,6 +1024,8 @@ impl ServerHandler for GussetMcp {
         match request.name.as_ref() {
             RENDER_VIEW => Ok(self.render_view(&request, &context).await.into()),
             GET_TEXT => Ok(self.get_text(&request, &context).into()),
+            COMMANDS => Ok(self.commands(&request, &context).into()),
+            RUN => Ok(self.run_tool(&request, &context).await),
             name => match registry().iter().find(|s| s.tool_name() == name) {
                 Some(spec) => Ok(self.call_command(spec, &request, &context).await),
                 None => Err(McpError::invalid_params(
@@ -942,6 +1100,18 @@ mod size_tests {
     /// (owner request: do not fill the model's context like many MCP servers do).
     #[test]
     fn tool_list_fits_its_budget() {
+        // What every session pays: the listed tools. Measured 2026-10-13 before the
+        // core/`commands` split: 52 command tools, 31 KB; the cap keeps it bounded as
+        // commands are added (they are not listed by default).
+        let listed = serde_json::to_string(&tool_list()).map(|s| s.len()).unwrap_or(usize::MAX);
+        eprintln!("tools/list: {} tools, {listed} bytes", tool_list().len());
+        if std::env::var("GUSSET_TOOL_SIZES").is_ok() {
+            for t in tool_list() {
+                eprintln!("LISTED {} {}", serde_json::to_string(&t).map_or(0, |s| s.len()), t.name);
+            }
+        }
+        assert!(listed <= 18_000, "tools/list is {listed} bytes");
+        // What one `commands` lookup costs, and the per-command noise rules.
         let tools: Vec<Tool> = gusset_commands::registry().iter().map(command_tool).collect();
         let bytes = serde_json::to_string(&tools).map(|s| s.len()).unwrap_or(usize::MAX);
         let per_tool = bytes / tools.len().max(1);
@@ -955,6 +1125,10 @@ mod size_tests {
         }
         eprintln!("tools/list command tools: {} tools, {bytes} bytes ({per_tool} per tool)", tools.len());
         assert!(per_tool <= 600, "{per_tool} bytes per tool");
+        for t in &tools {
+            let n = serde_json::to_string(t).map_or(usize::MAX, |s| s.len());
+            assert!(n <= 1_300, "{}: {n} bytes", t.name);
+        }
         let text = serde_json::to_string(&tools).unwrap_or_default();
         for noise in ["\"format\"", "\"$schema\"", "\"additionalProperties\"", "\"null\"", "\"default\":null"] {
             assert!(!text.contains(noise), "{noise} in tools/list");

@@ -117,14 +117,26 @@ fn err_code(r: &CallToolResult) -> String {
 
 #[test]
 fn tool_list_matches_the_registry() {
-    let tools = gusset_mcp::server::tool_list();
-    let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-    let mut expected: Vec<String> = registry().iter().map(|s| s.tool_name()).collect();
-    expected.push("render_view".into());
-    expected.push("get_text".into());
+    use gusset_mcp::server::CORE_COMMANDS;
+    let listed = gusset_mcp::server::tool_list();
+    let mut names: Vec<String> = listed.iter().map(|t| t.name.to_string()).collect();
+    let mut expected: Vec<String> =
+        registry().iter().filter(|s| CORE_COMMANDS.contains(&s.id)).map(|s| s.tool_name()).collect();
+    for extra in ["render_view", "get_text", "commands", "run"] {
+        expected.push(extra.into());
+    }
     names.sort();
     expected.sort();
     assert_eq!(names, expected);
+    // Every core id exists (a typo would silently drop a tool).
+    for id in CORE_COMMANDS {
+        assert!(registry().iter().any(|s| s.id == *id), "{id}");
+    }
+    // Every command's definition (listed or served by `commands`) meets the same rules.
+    let mut tools = listed.clone();
+    tools.extend(
+        registry().iter().filter(|s| !CORE_COMMANDS.contains(&s.id)).map(gusset_mcp::server::command_definition),
+    );
     for t in &tools {
         // Schema validity basics required by MCP clients (Claude Code).
         assert_eq!(t.input_schema.get("type"), Some(&json!("object")), "{}", t.name);
@@ -166,7 +178,7 @@ async fn full_session(modern: bool) {
     let info = c.peer_info().unwrap();
     assert!(info.instructions.as_deref().unwrap().contains("untrusted"));
     let tools = c.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), registry().len() + 2);
+    assert_eq!(tools.len(), gusset_mcp::server::tool_list().len());
     build_plate(&c).await;
     let b = call(&c, "query_body", json!({"names": true})).await;
     let v = ok(&b);
@@ -247,6 +259,34 @@ async fn set_main_needs_approval_headless_denies() {
     // Switching to main and editing it is also refused without approval.
     ok(&call(&c, "branch_switch", json!({"branch": "main"})).await);
     assert_eq!(err_code(&call(&c, "param_set", json!({"name": "w", "expr": "2 mm"})).await), "approval_denied");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commands_and_run_reach_every_command_with_the_same_checks() {
+    let server = McpServer::new(host());
+    let c = connect(&server, Client::new("bot", None), false).await;
+    // The list holds the commands that are not tools, with one-line summaries.
+    let list = ok(&call(&c, "commands", json!({})).await);
+    let names: Vec<&str> = list["commands"].as_array().unwrap().iter().filter_map(|e| e["name"].as_str()).collect();
+    assert!(names.contains(&"generate_gear") && names.contains(&"feature_shell"), "{list}");
+    assert!(!names.contains(&"feature_extrude"), "core commands are tools already");
+    // One command's definition: description and argument schema.
+    let gear = ok(&call(&c, "commands", json!({"name": "generate_gear"})).await);
+    assert!(gear["inputSchema"]["properties"].is_object(), "{gear}");
+    assert_eq!(err_code(&call(&c, "commands", json!({"name": "no_such"})).await), "invalid_args");
+    // `run` edits like the tool itself (on the agent's branch) ...
+    ok(&call(&c, "run", json!({"name": "param_set", "args": {"name": "w", "expr": "1 mm"}})).await);
+    let on_agent_branch =
+        server.host().with_session(|s| s.history().branches().iter().any(|b| b.name.starts_with("agent/"))).unwrap();
+    assert!(on_agent_branch);
+    // ... with the same approvals: setting main still needs the user.
+    let r = call(&c, "run", json!({"name": "branch_set_main", "args": {"branch": "agent/bot-1"}})).await;
+    assert_eq!(err_code(&r), "approval_denied");
+    // Unknown commands and smuggled approvals are refused.
+    assert_eq!(err_code(&call(&c, "run", json!({"name": "rm_rf"})).await), "invalid_args");
+    let r =
+        call(&c, "run", json!({"name": "branch_set_main", "args": {"branch": "agent/bot-1", "approved": true}})).await;
+    assert_eq!(err_code(&r), "not_allowed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -536,7 +576,7 @@ async fn bridge_session(modern: bool) {
     } else {
         client.serve(b).await.unwrap()
     };
-    assert_eq!(c.list_all_tools().await.unwrap().len(), registry().len() + 2);
+    assert_eq!(c.list_all_tools().await.unwrap().len(), gusset_mcp::server::tool_list().len());
     build_plate(&c).await;
     // The edits reached the app's live session.
     let n = host
@@ -586,6 +626,12 @@ async fn stdio_bridge_read_only_refuses_edits() {
     let c = Client::new("bridged-ro", None).serve(b).await.unwrap();
     ok(&call(&c, "query_model", json!({})).await);
     assert_eq!(err_code(&call(&c, "param_set", json!({"name": "width", "expr": "40 mm"})).await), "read_only");
+    // The generic `run` tool cannot reach a mutating command either, by either name form.
+    for name in ["param_set", "param.set"] {
+        let r = call(&c, "run", json!({"name": name, "args": {"name": "width", "expr": "40 mm"}})).await;
+        assert_eq!(err_code(&r), "read_only", "{name}");
+    }
+    ok(&call(&c, "run", json!({"name": "branch_list"})).await);
     let n =
         host.with_session(|s| s.history().branches().iter().filter(|b| b.name.starts_with("agent/")).count()).unwrap();
     assert_eq!(n, 0, "nothing reached the app");
