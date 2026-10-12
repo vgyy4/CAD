@@ -109,7 +109,7 @@ sketch Sketch2 (plane: Extrude1/cap(end), next_id: 4) {
 
 extrude Extrude2 (profile: Sketch2.regions(c2), distance: -5 mm, op: cut, body: Extrude1)
 
-revolve Revolve1 (profile: Sketch2, axis: X, angle: 180 deg, op: new, suppressed: true)
+revolve Revolve1 (profile: Sketch2, axis: X, angle: 180 deg, op: new, body_name: Ring, suppressed: true)
 
 fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5)), edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))#2], radius: 2 mm)
 
@@ -130,6 +130,35 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         assert_eq!(doc.params[0].comment, "overall width");
         assert_eq!(doc.params[1].comment, "depth is derived\nfrom the width");
         assert!(doc.feature("Revolve1").unwrap().suppressed);
+        assert!(
+            matches!(&doc.feature("Revolve1").unwrap().kind, FeatureKind::Revolve(r) if r.body_name.as_deref() == Some("Ring"))
+        );
+    }
+
+    #[test]
+    fn body_names_round_trip_and_are_validated() {
+        let base = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 1) {\n}\n\n";
+        let ok = format!("{base}extrude A (profile: S, distance: 1 mm, op: new, body_name: Bracket)\n");
+        let doc = Document::from_text(&ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        // Old files without body_name stay valid and print unchanged.
+        let old = format!("{base}extrude A (profile: S, distance: 1 mm, op: new)\n");
+        assert_eq!(Document::from_text(&old).unwrap().to_text(), old);
+        let bad = |extra: &str| Document::from_text(&format!("{base}{extra}")).unwrap_err().to_string();
+        // Duplicate between an explicit name and another feature's default body name.
+        let e = bad(
+            "extrude A (profile: S, distance: 1 mm, op: new, body_name: B)\nextrude B (profile: S, distance: 1 mm, op: new)\n",
+        );
+        assert!(e.contains("body name 'B' is used twice"), "{e}");
+        let e = bad(
+            "extrude A (profile: S, distance: 1 mm, op: new)\nextrude B (profile: S, distance: 1 mm, op: cut, body_name: C)\n",
+        );
+        assert!(e.contains("only be used with op: new"), "{e}");
+        assert!(
+            Document::from_text(&format!("{base}extrude A (profile: S, distance: 1 mm, body_name: 9x)\n")).is_err()
+        );
+        let e = bad("revolve R (profile: S, axis: X, angle: 90 deg, body_name: R2, body_name: R3)\n");
+        assert!(e.contains("given twice"), "{e}");
     }
 
     #[test]

@@ -47,6 +47,19 @@ pub fn creates_body(f: &Feature) -> bool {
     }
 }
 
+/// The name of the body a body-creating feature produces: its `body_name`, else the
+/// feature name. `None` for features that create no body.
+pub fn created_body_name(f: &Feature) -> Option<&str> {
+    match &f.kind {
+        FeatureKind::Extrude(ExtrudeDef { op: BodyOp::New, body_name, .. })
+        | FeatureKind::Revolve(RevolveDef { op: BodyOp::New, body_name, .. }) => {
+            Some(body_name.as_deref().unwrap_or(&f.name))
+        }
+        FeatureKind::Import(_) => Some(&f.name),
+        _ => None,
+    }
+}
+
 pub fn validate(doc: &Document) -> Vec<Issue> {
     let mut out = Vec::new();
 
@@ -64,6 +77,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
     // Features: unique names, earlier-only references.
     let mut seen: BTreeMap<&str, &Feature> = BTreeMap::new();
     let mut any_body_before = false;
+    let mut body_names: BTreeSet<&str> = BTreeSet::new();
     for f in &doc.features {
         let n = f.name.as_str();
         if let Err(e) = validate_feature_name(n) {
@@ -95,8 +109,16 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         }
         match &f.kind {
             FeatureKind::Sketch(s) => validate_sketch(n, s, &mut out),
-            FeatureKind::Extrude(ExtrudeDef { profile, op, body, .. })
-            | FeatureKind::Revolve(RevolveDef { profile, op, body, .. }) => {
+            FeatureKind::Extrude(ExtrudeDef { profile, op, body, body_name, .. })
+            | FeatureKind::Revolve(RevolveDef { profile, op, body, body_name, .. }) => {
+                if let Some(bn) = body_name {
+                    if let Err(e) = validate_name(bn) {
+                        out.push(issue(n, e.replace("parameter", "body")));
+                    }
+                    if *op != BodyOp::New {
+                        out.push(issue(n, "'body_name' can only be used with op: new"));
+                    }
+                }
                 check_profile(n, profile, &seen, &mut out);
                 if let FeatureKind::Revolve(r) = &f.kind
                     && let AxisRef::SketchLine { sketch, entity } = &r.axis
@@ -136,6 +158,11 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         }
         if creates_body(f) {
             any_body_before = true;
+        }
+        if let Some(bn) = created_body_name(f)
+            && !body_names.insert(bn)
+        {
+            out.push(issue_h(n, format!("body name '{bn}' is used twice"), "give the body a different body_name"));
         }
         seen.insert(n, f);
     }

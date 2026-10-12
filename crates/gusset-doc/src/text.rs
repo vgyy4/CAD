@@ -128,6 +128,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(b) = &e.body {
                 args.push(format!("body: {b}"));
             }
+            if let Some(b) = &e.body_name {
+                args.push(format!("body_name: {b}"));
+            }
         }
         FeatureKind::Revolve(r) => {
             args.push(format!("profile: {}", print_profile(&r.profile)));
@@ -142,6 +145,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("op: {}", r.op.keyword()));
             if let Some(b) = &r.body {
                 args.push(format!("body: {b}"));
+            }
+            if let Some(b) = &r.body_name {
+                args.push(format!("body_name: {b}"));
             }
         }
         FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
@@ -396,6 +402,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut symmetric = false;
     let mut op = None;
     let mut body = None;
+    let mut body_name = None;
     let mut axis = None;
     let mut angle = None;
     let mut edges: Option<Vec<EdgeRef>> = None;
@@ -404,8 +411,8 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
-        "extrude" => "profile, distance, symmetric, op, body, label, suppressed",
-        "revolve" => "profile, axis, angle, op, body, label, suppressed",
+        "extrude" => "profile, distance, symmetric, op, body, body_name, label, suppressed",
+        "revolve" => "profile, axis, angle, op, body, body_name, label, suppressed",
         "fillet" => "edges, radius, label, suppressed",
         "chamfer" => "edges, distance, label, suppressed",
         _ => "blob, format, file, label, suppressed",
@@ -423,6 +430,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                     })?);
             }
             ("extrude" | "revolve", "body") => body = Some(c.ident()?.to_string()),
+            ("extrude" | "revolve", "body_name") => body_name = Some(c.ident()?.to_string()),
             ("extrude", "distance") | ("chamfer", "distance") => {
                 let e = c.expr()?;
                 if kw == "extrude" { distance = Some(e) } else { size = Some(e) }
@@ -481,6 +489,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             symmetric,
             op: op.unwrap_or(BodyOp::New),
             body,
+            body_name,
         }),
         "revolve" => FeatureKind::Revolve(RevolveDef {
             profile: profile.ok_or_else(|| missing(c, kw, "profile"))?,
@@ -488,6 +497,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
             op: op.unwrap_or(BodyOp::New),
             body,
+            body_name,
         }),
         "fillet" | "chamfer" => {
             let def = EdgeBlendDef {

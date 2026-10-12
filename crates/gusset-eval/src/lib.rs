@@ -34,8 +34,10 @@ use std::sync::Arc;
 /// A solid body produced by evaluation.
 #[derive(Debug)]
 pub struct Body {
-    /// Stable body name: the feature that created it.
+    /// Body name: the creating feature's `body_name`, else the feature's name.
     pub name: String,
+    /// The feature that created the body (what `body:` targets refer to).
+    pub feature: String,
     pub shape: Shape,
     pub names: BodyNames,
     pub topology: Topology,
@@ -373,7 +375,7 @@ impl Evaluator {
                 let r = k
                     .extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
                     .map_err(|ke| kernel_err(name, "extrusion", ke))?;
-                self.combine(s, name, &e.profile.sketch, &regions, r, e.op, e.body.as_deref())
+                self.combine(s, name, &e.profile.sketch, &regions, r, e.op, (e.body.as_deref(), e.body_name.as_deref()))
             }
             FeatureKind::Revolve(r) => {
                 let (solved, frame) = sketch_input(name, &r.profile.sketch, s)?;
@@ -405,7 +407,15 @@ impl Evaluator {
                 let res = k
                     .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
                     .map_err(|ke| kernel_err(name, "revolve", ke))?;
-                self.combine(s, name, &r.profile.sketch, &regions, res, r.op, r.body.as_deref())
+                self.combine(
+                    s,
+                    name,
+                    &r.profile.sketch,
+                    &regions,
+                    res,
+                    r.op,
+                    (r.body.as_deref(), r.body_name.as_deref()),
+                )
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 let fillet = matches!(f.kind, FeatureKind::Fillet(_));
@@ -430,7 +440,13 @@ impl Evaluator {
                 let names =
                     name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
                         .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-                let nb = Arc::new(Body { name: body.name.clone(), shape: res.shape, names, topology: topo });
+                let nb = Arc::new(Body {
+                    name: body.name.clone(),
+                    feature: body.feature.clone(),
+                    shape: res.shape,
+                    names,
+                    topology: topo,
+                });
                 if let Some(slot) = s.bodies.get_mut(bi) {
                     *slot = nb;
                 }
@@ -456,7 +472,13 @@ impl Evaluator {
                 let origins: Vec<Vec<gusset_kernel::FaceOrigin>> = vec![Vec::new(); topo.faces.len()];
                 let names = name_body(&OpContext::Import { feature: name }, &origins, &topo)
                     .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-                s.bodies.push(Arc::new(Body { name: name.to_string(), shape, names, topology: topo }));
+                s.bodies.push(Arc::new(Body {
+                    name: name.to_string(),
+                    feature: name.to_string(),
+                    shape,
+                    names,
+                    topology: topo,
+                }));
                 Ok(())
             }
         }
@@ -472,7 +494,7 @@ impl Evaluator {
         regions: &[String],
         tool: OpResult,
         op: BodyOp,
-        target: Option<&str>,
+        (target, new_name): (Option<&str>, Option<&str>),
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let tool_topo = k.topology(&tool.shape).map_err(|ke| kernel_err(feature, "topology", ke))?;
@@ -482,7 +504,8 @@ impl Evaluator {
                 .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
         if op == BodyOp::New {
             s.bodies.push(Arc::new(Body {
-                name: feature.to_string(),
+                name: new_name.unwrap_or(feature).to_string(),
+                feature: feature.to_string(),
                 shape: tool.shape,
                 names: tool_names,
                 topology: tool_topo,
@@ -490,7 +513,7 @@ impl Evaluator {
             return Ok(());
         }
         let bi = match target {
-            Some(t) => s.bodies.iter().position(|b| b.name == t).ok_or_else(|| {
+            Some(t) => s.bodies.iter().position(|b| b.feature == t).ok_or_else(|| {
                 EvalError::new(
                     feature,
                     ErrorCode::NoTargetBody,
@@ -524,7 +547,13 @@ impl Evaluator {
         let names =
             name_body(&OpContext::Modify { feature, inputs: &[&body.names, &tool_names] }, &res.face_origins, &topo)
                 .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
-        let nb = Arc::new(Body { name: body.name.clone(), shape: res.shape, names, topology: topo });
+        let nb = Arc::new(Body {
+            name: body.name.clone(),
+            feature: body.feature.clone(),
+            shape: res.shape,
+            names,
+            topology: topo,
+        });
         if let Some(slot) = s.bodies.get_mut(bi) {
             *slot = nb;
         }

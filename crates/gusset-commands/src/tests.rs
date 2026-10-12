@@ -890,6 +890,59 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
 }
 
 #[test]
+fn body_name_names_the_new_body_and_persists_in_the_text() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 30, "height": 20}));
+    let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "body_name": "Base"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert_eq!(r["body"], "Base", "{r}");
+    let q = run(&mut s, &u, "query.body", json!({"body": "Base"}));
+    assert_eq!(q["body"], "Base", "{q}");
+    assert!(execute(&mut s, &u, "query.body", json!({"body": "Extrude1"})).is_err());
+    let text = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(text["text_user_text"].as_str().unwrap().contains("op: new, body_name: Base)"), "{text}");
+    // Same name again, bad identifiers and body_name with a non-new op are refused.
+    for (bad, op) in [("Base", "new"), ("1x", "new"), ("a b", "new"), ("Other", "add")] {
+        let e = execute(
+            &mut s,
+            &u,
+            "feature.extrude",
+            json!({"sketch": "Sketch1", "distance": "5 mm", "body_name": bad, "op": op}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "invalid_args", "{bad} {op}: {e:?}");
+    }
+    // The default name is also checked: a feature called like an existing body.
+    let e = execute(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "name": "Base"}))
+        .unwrap_err();
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    // Add/cut target the body by its body name or its feature name; both store the feature.
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 40, "y": 0, "width": 5, "height": 5}));
+    let r = run(
+        &mut s,
+        &u,
+        "feature.extrude",
+        json!({"sketch": "Sketch2", "distance": "5 mm", "op": "new", "name": "Lid"}),
+    );
+    assert_eq!(r["body"], "Lid", "{r}");
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch3", "x": 1, "y": 1, "width": 5, "height": 5}));
+    let r = run(
+        &mut s,
+        &u,
+        "feature.extrude",
+        json!({"sketch": "Sketch3", "distance": "2 mm", "op": "add", "body": "Base"}),
+    );
+    // The mock kernel has no booleans; what matters is that the target resolved to a body.
+    assert!(!r["new_errors"].to_string().contains("does not exist"), "{r}");
+    let text = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(text["text_user_text"].as_str().unwrap().contains("op: add, body: Extrude1)"), "{text}");
+}
+
+#[test]
 fn query_results_snap_noise_and_flag_seams_and_curved_normals() {
     let mut v = json!({"a": -5e-22, "b": [1e-12, 2.5, 3], "c": {"d": -0.0}});
     crate::commands::snap_zeros(&mut v);

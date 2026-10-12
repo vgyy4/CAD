@@ -7,7 +7,7 @@
 use crate::error::CommandError;
 use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, WRITE_FILE, spec};
 use crate::session::{CmdCtx, Session};
-use gusset_doc::validate::{creates_body, validate_feature_name};
+use gusset_doc::validate::{created_body_name, creates_body, validate_feature_name};
 use gusset_doc::*;
 use gusset_eval::{FeatureStatus, solve_sketch_def};
 use gusset_history::{BranchId, NodeId};
@@ -325,6 +325,43 @@ fn implicit_target(f: &Feature) -> bool {
     }
 }
 
+/// The name of the body created by the feature `feature` (a body target is stored as the
+/// creating feature's name).
+fn body_display_name(doc: &Document, feature: &str) -> String {
+    doc.features
+        .iter()
+        .find(|f| f.name == feature)
+        .and_then(created_body_name)
+        .map_or_else(|| feature.to_string(), str::to_string)
+}
+
+/// Validates an optional `body_name` for a new feature `feature`: only with op new, a
+/// valid identifier, and unique among the bodies (also against the feature's own default
+/// body name).
+fn check_new_body_name(
+    doc: &Document,
+    op: BodyOp,
+    feature: &str,
+    requested: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    let effective = requested.as_deref().unwrap_or(feature);
+    if let Some(n) = &requested {
+        if op != BodyOp::New {
+            return Err(CommandError::args("body_name can only be set with op: new")
+                .hint("add/cut/intersect modify the target body and keep its name"));
+        }
+        params::validate_name(n)
+            .map_err(|e| CommandError::args(format!("body_name: {}", e.replace("parameter", "body"))))?;
+    }
+    if op == BodyOp::New
+        && let Some(other) = doc.features.iter().find(|f| created_body_name(f) == Some(effective))
+    {
+        return Err(CommandError::args(format!("a body named '{effective}' already exists (feature {})", other.name))
+            .hint("choose another body_name"));
+    }
+    Ok(requested)
+}
+
 /// The body an add/cut/intersect combines with, resolved when the feature is created and
 /// stored in the document, so later deletes or reorders can never silently retarget it.
 fn target_body(
@@ -336,8 +373,11 @@ fn target_body(
     if op == BodyOp::New {
         return Ok(None);
     }
-    if explicit.is_some() {
-        return Ok(explicit);
+    if let Some(e) = explicit {
+        // Accept the body's name as well as its feature's name; store the feature's.
+        let by_feature = doc.features.iter().find(|f| f.name == e && creates_body(f));
+        let by_body = || doc.features.iter().find(|f| created_body_name(f) == Some(e.as_str()));
+        return Ok(Some(by_feature.or_else(by_body).map_or(e, |f| f.name.clone())));
     }
     let at = rollback.unwrap_or(doc.features.len()).min(doc.features.len());
     latest_body_before(doc, at).map(Some).ok_or_else(|| {
@@ -1266,6 +1306,9 @@ pub struct Extrude {
     /// Target body for add/cut/intersect (default: the latest body).
     #[serde(default)]
     pub body: Option<String>,
+    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    #[serde(default)]
+    pub body_name: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -1273,7 +1316,7 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body). A sketch on a face extrudes along the face's outward normal, so a cut into the material needs a negative distance. The result lists body_changes (volume and bounding box before/after) and warns when an add/cut changed nothing.";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body). A sketch on a face extrudes along the face's outward normal, so a cut into the material needs a negative distance. Optional body_name (op new only) names the new body instead of the feature name; add/cut targets accept the body name. The result lists body_changes (volume and bounding box before/after) and warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
@@ -1288,7 +1331,9 @@ impl Command for Extrude {
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Extrude")?;
                 let body = target_body(doc, rb, op, self.body)?;
-                *seen.borrow_mut() = (name.clone(), body.clone());
+                let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
+                *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
+                let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
@@ -1297,10 +1342,11 @@ impl Command for Extrude {
                         symmetric: self.symmetric,
                         op,
                         body,
+                        body_name,
                     }),
                 );
                 insert_feature(doc, rb, f);
-                Ok(json!({ "feature": name }))
+                Ok(json!({ "feature": name, "body": created }))
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
@@ -1326,6 +1372,9 @@ pub struct Revolve {
     pub op: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
+    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    #[serde(default)]
+    pub body_name: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -1333,7 +1382,7 @@ pub struct Revolve {
 impl Command for Revolve {
     const ID: &'static str = "feature.revolve";
     const TITLE: &'static str = "Revolve";
-    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line.";
+    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line. Optional body_name (op new only) names the new body instead of the feature name.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -1356,7 +1405,9 @@ impl Command for Revolve {
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Revolve")?;
                 let body = target_body(doc, rb, op, self.body)?;
-                *seen.borrow_mut() = (name.clone(), body.clone());
+                let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
+                *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
+                let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Revolve(RevolveDef {
@@ -1365,10 +1416,11 @@ impl Command for Revolve {
                         angle,
                         op,
                         body,
+                        body_name,
                     }),
                 );
                 insert_feature(doc, rb, f);
-                Ok(json!({ "feature": name }))
+                Ok(json!({ "feature": name, "body": created }))
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
