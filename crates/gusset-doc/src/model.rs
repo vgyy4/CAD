@@ -42,6 +42,10 @@ pub enum FeatureKind {
     Fillet(EdgeBlendDef),
     Chamfer(EdgeBlendDef),
     Import(ImportDef),
+    Shell(ShellDef),
+    Mirror(MirrorDef),
+    PatternLinear(PatternLinearDef),
+    PatternCircular(PatternCircularDef),
 }
 
 impl FeatureKind {
@@ -53,6 +57,10 @@ impl FeatureKind {
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Import(_) => "import",
+            FeatureKind::Shell(_) => "shell",
+            FeatureKind::Mirror(_) => "mirror",
+            FeatureKind::PatternLinear(_) => "pattern_linear",
+            FeatureKind::PatternCircular(_) => "pattern_circular",
         }
     }
 
@@ -91,6 +99,20 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Import(_) => {}
+            FeatureKind::Shell(d) => {
+                add_body(&mut add, &d.body);
+                for f in &d.faces {
+                    f.features(&mut add);
+                }
+            }
+            FeatureKind::Mirror(d) => {
+                add_body(&mut add, &d.body);
+                if let PlaneRef::Face(f) = &d.plane {
+                    f.features(&mut add);
+                }
+            }
+            FeatureKind::PatternLinear(d) => add_body(&mut add, &d.body),
+            FeatureKind::PatternCircular(d) => add_body(&mut add, &d.body),
         }
         out
     }
@@ -111,8 +133,23 @@ impl FeatureKind {
             FeatureKind::Revolve(r) => take(&r.angle),
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
             FeatureKind::Import(_) => {}
+            FeatureKind::Shell(d) => take(&d.thickness),
+            FeatureKind::Mirror(_) => {}
+            FeatureKind::PatternLinear(d) => {
+                d.direction.exprs().into_iter().chain([&d.count, &d.spacing]).for_each(&mut take);
+            }
+            FeatureKind::PatternCircular(d) => {
+                let through = d.through.iter().flatten();
+                d.axis.exprs().into_iter().chain(through).chain([&d.count, &d.angle]).for_each(&mut take);
+            }
         }
         out
+    }
+}
+
+fn add_body(add: &mut impl FnMut(&str), body: &Option<String>) {
+    if let Some(b) = body {
+        add(b);
     }
 }
 
@@ -404,4 +441,76 @@ pub struct ImportDef {
     pub format: ImportFormat,
     /// Original file name (untrusted).
     pub file_name: String,
+}
+
+// ------------------------------------------------------------------ shell, mirror, patterns
+
+/// Hollows a body: removes `faces` and leaves walls of `thickness` (positive = inward,
+/// negative = outward).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellDef {
+    /// Target body (named after the feature that created it); `None` = the most recent body.
+    pub body: Option<String>,
+    /// Faces to open (face references, ADR 0003). May be empty for a fully closed hollow.
+    pub faces: Vec<FaceRef>,
+    pub thickness: Expr,
+}
+
+/// Mirrors a body across a plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirrorDef {
+    /// Source body; `None` = the most recent body.
+    pub body: Option<String>,
+    /// A base plane through the origin or a planar face reference.
+    pub plane: PlaneRef,
+    /// `true`: unite the mirror image with the source body. `false`: add it as a new body
+    /// named after this feature.
+    pub merge: bool,
+}
+
+/// A direction or axis direction: a base axis or an explicit vector (components are
+/// unitless numbers/expressions; the vector need not be normalized).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DirRef {
+    X,
+    Y,
+    Z,
+    Vector([Expr; 3]),
+}
+
+impl DirRef {
+    /// Expressions inside the direction.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        match self {
+            DirRef::Vector(v) => v.iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Repeats a body along a direction and unites the copies with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternLinearDef {
+    /// Body to repeat (and to unite the copies into); `None` = the most recent body.
+    pub body: Option<String>,
+    pub direction: DirRef,
+    /// Total number of instances including the original (>= 2); a unitless expression
+    /// that must evaluate to a whole number.
+    pub count: Expr,
+    /// Distance between neighbouring instances (negative reverses the direction).
+    pub spacing: Expr,
+}
+
+/// Repeats a body around an axis and unites the copies with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PatternCircularDef {
+    pub body: Option<String>,
+    pub axis: DirRef,
+    /// A point on the axis (lengths); `None` = the world origin.
+    pub through: Option<[Expr; 3]>,
+    /// Total number of instances including the original (>= 2).
+    pub count: Expr,
+    /// Total angle covered. A full turn (360 deg) spaces instances `angle / count` apart;
+    /// a partial angle puts the last instance at `angle` (spacing `angle / (count - 1)`).
+    pub angle: Expr,
 }
