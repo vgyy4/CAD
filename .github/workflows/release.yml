@@ -401,6 +401,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A release the owner already made for this tag (for example before the tag
+          # was moved to a fixed commit) gets the files; otherwise a draft is created.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
           prerelease=()
           case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
