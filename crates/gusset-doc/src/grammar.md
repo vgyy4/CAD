@@ -187,6 +187,71 @@ sketch Sketch1 (plane: XZ) {
 revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, body_name: Pin)
 ```
 
+## Datum planes, bodies and patterns
+
+```
+plane  <Name> (base: <plane>, offset: <length>)
+plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
+move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
+combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>])
+shell, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
+```
+
+- `<plane>` is `XY`, `XZ`, `YZ`, a planar face reference or the name of an earlier `plane`.
+  A datum plane creates no body. A sketch or a mirror can use it: `plane: Plane1`.
+- `offset` moves the plane along its normal (XY: +Z, XZ: -Y, YZ: +X; a negative value goes
+  the other way). `axis` + `angle` turns the base plane about that axis (right-hand rule);
+  X, Y, Z pass through the origin, an edge reference must be a straight edge and points
+  towards +X (else +Y, else +Z).
+- `move` turns a body about `axis` (through `through`, default the origin), then translates
+  it. With `copy: true` the original stays and the moved copy is a new body named after the
+  feature (its faces: `Move1/copy(<face>)`); otherwise the body moves and keeps its names.
+  `body:` defaults to the latest body.
+- `combine` merges the tool bodies (named by the feature that created them) into the target
+  with a boolean operation and consumes them: a tool cannot be used afterwards. `body:`
+  defaults to the latest body that is not a tool. This is how one feature is patterned: make
+  it as its own body (`op: new`), pattern that body, then `combine` it into the base part.
+- `shell (faces: [<face>], thickness: <length>)` hollows a body; `mirror (plane: <plane>,
+  [merge: true])` copies it across a plane; `pattern_linear (direction: X|Y|Z|[x, y, z],
+  count: <n>, spacing: <length>)` and `pattern_circular (axis: ..., [through: [x, y, z]],
+  count: <n>, angle: <angle>)` repeat a body. All take an optional `body:`.
+
+```gusset
+gusset 1
+units mm
+
+param pitch = 12 mm
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 30)
+  p4 = point(0, 30)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new, body_name: Base)
+
+plane Plane1 (base: Extrude1/cap(end), offset: 0 mm)
+
+# one pin, patterned, then united with the base
+sketch Sketch2 (plane: Plane1) {
+  p1 = point(10, 10)
+  c2 = circle(p1, 3)
+}
+
+extrude Extrude2 (profile: Sketch2, distance: 8 mm, op: new, body_name: Pin)
+
+pattern_linear Pattern1 (body: Extrude2, direction: X, count: 4, spacing: pitch)
+
+combine Combine1 (body: Extrude1, tools: [Extrude2], op: add)
+
+move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
+```
+
 ## Common mistakes
 
 - A header other than `gusset 1`, a second `units`, a duplicate feature or id.

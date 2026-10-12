@@ -46,6 +46,9 @@ pub enum FeatureKind {
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
     PatternCircular(PatternCircularDef),
+    Plane(PlaneDef),
+    Move(MoveDef),
+    Combine(CombineDef),
 }
 
 impl FeatureKind {
@@ -61,6 +64,9 @@ impl FeatureKind {
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::PatternLinear(_) => "pattern_linear",
             FeatureKind::PatternCircular(_) => "pattern_circular",
+            FeatureKind::Plane(_) => "plane",
+            FeatureKind::Move(_) => "move",
+            FeatureKind::Combine(_) => "combine",
         }
     }
 
@@ -73,11 +79,7 @@ impl FeatureKind {
             }
         };
         match self {
-            FeatureKind::Sketch(s) => {
-                if let PlaneRef::Face(f) = &s.plane {
-                    f.features(&mut add);
-                }
-            }
+            FeatureKind::Sketch(s) => s.plane.features(&mut add),
             FeatureKind::Extrude(e) => {
                 add(&e.profile.sketch);
                 if let Some(b) = &e.body {
@@ -107,12 +109,21 @@ impl FeatureKind {
             }
             FeatureKind::Mirror(d) => {
                 add_body(&mut add, &d.body);
-                if let PlaneRef::Face(f) = &d.plane {
-                    f.features(&mut add);
-                }
+                d.plane.features(&mut add);
             }
             FeatureKind::PatternLinear(d) => add_body(&mut add, &d.body),
             FeatureKind::PatternCircular(d) => add_body(&mut add, &d.body),
+            FeatureKind::Plane(d) => {
+                d.base.features(&mut add);
+                if let PlaneKind::Angle { axis: PlaneAxis::Edge(e), .. } = &d.kind {
+                    e.features(&mut add);
+                }
+            }
+            FeatureKind::Move(d) => add_body(&mut add, &d.body),
+            FeatureKind::Combine(d) => {
+                add_body(&mut add, &d.body);
+                d.tools.iter().for_each(|t| add(t));
+            }
         }
         out
     }
@@ -142,6 +153,19 @@ impl FeatureKind {
                 let through = d.through.iter().flatten();
                 d.axis.exprs().into_iter().chain(through).chain([&d.count, &d.angle]).for_each(&mut take);
             }
+            FeatureKind::Plane(d) => match &d.kind {
+                PlaneKind::Offset(e) => take(e),
+                PlaneKind::Angle { angle, .. } => take(angle),
+            },
+            FeatureKind::Move(d) => {
+                let translate = d.translate.iter().flatten();
+                let rot = d
+                    .rotation
+                    .iter()
+                    .flat_map(|r| r.axis.exprs().into_iter().chain(r.through.iter().flatten()).chain([&r.angle]));
+                translate.chain(rot).for_each(&mut take);
+            }
+            FeatureKind::Combine(_) => {}
         }
         out
     }
@@ -163,6 +187,28 @@ pub enum PlaneRef {
     YZ,
     /// A planar face of an earlier body.
     Face(FaceRef),
+    /// A datum plane: the name of an earlier `plane` feature.
+    Datum(String),
+}
+
+impl PlaneRef {
+    /// Calls `f` with every feature name the plane refers to.
+    pub fn features(&self, f: &mut dyn FnMut(&str)) {
+        match self {
+            PlaneRef::Face(r) => r.features(f),
+            PlaneRef::Datum(n) => f(n),
+            PlaneRef::XY | PlaneRef::XZ | PlaneRef::YZ => {}
+        }
+    }
+
+    /// Renames every occurrence of feature `from` to `to`.
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        match self {
+            PlaneRef::Face(r) => r.rename_feature(from, to),
+            PlaneRef::Datum(n) if n == from => *n = to.to_string(),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -517,4 +563,67 @@ pub struct PatternCircularDef {
     /// Total angle covered. A full turn (360 deg) spaces instances `angle / count` apart;
     /// a partial angle puts the last instance at `angle` (spacing `angle / (count - 1)`).
     pub angle: Expr,
+}
+
+// ------------------------------------------------------------------ datum planes, move, combine
+
+/// A construction plane. Creates no body; sketches and mirrors can use it as their plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaneDef {
+    /// The plane this one is derived from: a base plane, a planar face or another datum plane.
+    pub base: PlaneRef,
+    pub kind: PlaneKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaneKind {
+    /// Parallel to the base plane, moved along its normal by a length (negative = against it).
+    Offset(Expr),
+    /// The base plane turned about `axis` by an angle (right-hand rule about the axis
+    /// direction).
+    Angle { axis: PlaneAxis, angle: Expr },
+}
+
+/// The rotation axis of an angled datum plane.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaneAxis {
+    /// A world axis through the origin.
+    X,
+    Y,
+    Z,
+    /// A straight edge of an earlier body. Its direction points towards +X (else +Y, else +Z).
+    Edge(EdgeRef),
+}
+
+/// Turns a body about an axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveRotation {
+    pub axis: DirRef,
+    pub angle: Expr,
+    /// A point on the axis (lengths); `None` = the world origin.
+    pub through: Option<[Expr; 3]>,
+}
+
+/// Moves a body: first turns it about an axis, then translates it (world axes). With
+/// `copy` the original stays and the moved copy is a new body named after the feature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveDef {
+    /// Body to move (named after the feature that created it); `None` = the most recent body.
+    pub body: Option<String>,
+    /// Translation along the world X, Y and Z axes (lengths).
+    pub translate: Option<[Expr; 3]>,
+    pub rotation: Option<MoveRotation>,
+    pub copy: bool,
+}
+
+/// Combines tool bodies into a target body; the tool bodies are consumed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombineDef {
+    /// Target body; `None` = the most recent body that is not a tool.
+    pub body: Option<String>,
+    /// The bodies to combine into the target, as the names of the features that created
+    /// them. Not empty, without duplicates, and never the target.
+    pub tools: Vec<String>,
+    /// `Add` (unite), `Cut` (subtract) or `Intersect`; never `New`.
+    pub op: BodyOp,
 }

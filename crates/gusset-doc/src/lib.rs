@@ -165,12 +165,37 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         for k in SkConstraintKind::ALL {
             assert!(TEXT_GRAMMAR.contains(&format!("`{}`", k.keyword())), "{}", k.keyword());
         }
-        for kw in ["extrude", "revolve", "fillet", "chamfer", "import", "body_name", "construction", "next_id"] {
+        for kw in [
+            "extrude",
+            "revolve",
+            "fillet",
+            "chamfer",
+            "import",
+            "body_name",
+            "construction",
+            "next_id",
+            "plane",
+            "move",
+            "combine",
+        ] {
             assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
         }
         // The examples between them use these statement kinds.
         let all = blocks.join("\n");
-        for kw in ["extrude ", "revolve ", "fillet ", "chamfer ", "angle(", "circle(", "op: cut", "body_name:"] {
+        for kw in [
+            "extrude ",
+            "revolve ",
+            "fillet ",
+            "chamfer ",
+            "angle(",
+            "circle(",
+            "op: cut",
+            "body_name:",
+            "plane Plane1 ",
+            "move Move1 ",
+            "combine Combine1 ",
+            "pattern_linear ",
+        ] {
             assert!(all.contains(kw), "no example uses {kw}");
         }
     }
@@ -394,6 +419,9 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
 
     #[test]
     fn validation_problems() {
+        // An unknown plane name reads as a datum plane, which does not exist.
+        let e = Document::from_text("gusset 1\nunits mm\nmirror M (plane: ZZ)\n").unwrap_err().to_string();
+        assert!(e.contains("'ZZ', which does not exist"), "{e}");
         let e = Document::from_text("gusset 1\nunits mm\npattern_linear P (direction: X, count: 2, spacing: 5 mm)\n");
         assert!(e.unwrap_err().to_string().contains("no body"));
         let t = "gusset 1\nsketch S (plane: XY, next_id: 1) {\n}\nextrude E (profile: S, distance: 1 mm, op: new)\npattern_linear P (direction: X, count: nn, spacing: 5 mm)\n";
@@ -429,7 +457,6 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
             "shell S (faces: [Extrude1/cap(end), thickness: 1 mm)",
             "mirror M (merge: maybe, plane: XY)",
             "mirror M (merge: true)",
-            "mirror M (plane: ZZ)",
             "pattern_linear P (direction: W, count: 2, spacing: 1 mm)",
             "pattern_linear P (direction: [1, 0], count: 2, spacing: 1)",
             "pattern_linear P (direction: X, count: 2)",
@@ -441,5 +468,227 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
         for b in bad {
             assert!(text::parse(&format!("gusset 1\n{b}\n")).is_err(), "{b}");
         }
+    }
+}
+
+#[cfg(test)]
+mod datum_move_combine_tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"gusset 1
+units mm
+
+param lift = 12 mm
+param tilt = 30 deg
+
+sketch Sketch1 (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
+
+plane Plane1 (base: XY, offset: lift)
+
+plane Plane2 (base: Extrude1/cap(end), offset: -2 * lift)
+
+plane Plane3 (base: Plane1, axis: X, angle: tilt)
+
+plane Plane4 (base: XZ, axis: edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5)), angle: 45 deg, label: "Slope")
+
+sketch Sketch2 (plane: Plane3, next_id: 3) {
+  p1 = point(5, 5)
+  c2 = circle(p1, 2)
+}
+
+extrude Extrude2 (profile: Sketch2, distance: 5 mm, op: new)
+
+mirror Mirror1 (body: Extrude1, plane: Plane2)
+
+move Move1 (body: Extrude2, translate: [10 mm, 0 mm, lift], copy: true)
+
+move Move2 (translate: [1 mm, 2 mm, 3 mm], suppressed: true)
+
+move Move3 (body: Extrude1, axis: [0, 0, 1], angle: tilt, through: [20 mm, 10 mm, 0 mm])
+
+move Move4 (translate: [0 mm, 0 mm, 5 mm], axis: X, angle: 90 deg)
+
+combine Combine1 (body: Extrude1, tools: [Extrude2, Move1], op: cut)
+
+combine Combine2 (tools: [Mirror1], op: add, label: "Weld")
+"#;
+
+    #[test]
+    fn canonical_roundtrip() {
+        let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), SAMPLE);
+        assert_eq!(text::parse(&doc.to_text()).unwrap(), doc);
+        for f in &doc.features {
+            let obj = text::print_feature_object(f);
+            assert_eq!(&text::parse_feature_object(&obj).unwrap(), f, "{obj}");
+        }
+        assert_eq!(validate::validate(&doc), vec![]);
+        assert!(matches!(
+            &doc.feature("Sketch2").unwrap().kind,
+            FeatureKind::Sketch(s) if s.plane == PlaneRef::Datum("Plane3".into())
+        ));
+        assert!(matches!(
+            &doc.feature("Mirror1").unwrap().kind,
+            FeatureKind::Mirror(m) if m.plane == PlaneRef::Datum("Plane2".into())
+        ));
+        // The default operation is add and is printed.
+        let d = text::parse("gusset 1\ncombine C (tools: [A])\n").unwrap();
+        assert_eq!(d.to_text(), "gusset 1\nunits mm\n\ncombine C (tools: [A], op: add)\n");
+    }
+
+    #[test]
+    fn dependencies_and_parameters() {
+        let doc = text::parse(SAMPLE).unwrap();
+        let deps = |n: &str| doc.feature(n).unwrap().kind.dependencies();
+        let strs = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(deps("Plane1").is_empty());
+        assert_eq!(deps("Plane2"), strs(&["Extrude1"]));
+        assert_eq!(deps("Plane3"), strs(&["Plane1"]));
+        assert_eq!(deps("Plane4"), strs(&["Extrude1", "Sketch1"]));
+        assert_eq!(deps("Sketch2"), strs(&["Plane3"]));
+        assert_eq!(deps("Mirror1"), strs(&["Extrude1", "Plane2"]));
+        assert_eq!(deps("Move1"), strs(&["Extrude2"]));
+        assert_eq!(deps("Combine1"), strs(&["Extrude1", "Extrude2", "Move1"]));
+        let params = |n: &str| doc.feature(n).unwrap().kind.parameters();
+        assert_eq!(params("Plane1"), strs(&["lift"]));
+        assert_eq!(params("Plane3"), strs(&["tilt"]));
+        assert_eq!(params("Move1"), strs(&["lift"]));
+        assert_eq!(params("Move3"), strs(&["tilt"]));
+        assert!(params("Combine1").is_empty());
+    }
+
+    #[test]
+    fn bodies_created_and_consumed() {
+        let doc = text::parse(SAMPLE).unwrap();
+        let creates = |n: &str| validate::creates_body(doc.feature(n).unwrap());
+        let body = |n: &str| validate::created_body_name(doc.feature(n).unwrap()).map(str::to_string);
+        assert!(!creates("Plane1") && !creates("Move2") && !creates("Combine1"));
+        assert!(creates("Move1"));
+        assert_eq!(body("Move1").as_deref(), Some("Move1"));
+        assert_eq!(body("Move3"), None);
+        // A combined tool no longer exists as a target; the target keeps existing.
+        let ok = |extra: &str| Document::from_text(&format!("{SAMPLE}\n{extra}\n"));
+        let e = ok("shell Shell1 (body: Extrude2, faces: [], thickness: 1 mm)").unwrap_err().to_string();
+        assert!(e.contains("body 'Extrude2' was consumed by Combine1"), "{e}");
+        let e = ok("combine C3 (body: Extrude1, tools: [Move1], op: add)").unwrap_err().to_string();
+        assert!(e.contains("'Move1' was consumed by Combine1"), "{e}");
+        assert!(ok("shell Shell1 (body: Extrude1, faces: [], thickness: 1 mm)").is_ok());
+        // A suppressed combine consumes nothing, so its tools stay available.
+        let sup = SAMPLE.replace("op: cut)", "op: cut, suppressed: true)");
+        assert!(
+            Document::from_text(&format!("{sup}\nshell Shell1 (body: Extrude2, faces: [], thickness: 1 mm)\n")).is_ok()
+        );
+        // A body created by a copy can be targeted before it is consumed.
+        let early = SAMPLE.replace(
+            "combine Combine1",
+            "pattern_linear P1 (body: Move1, direction: X, count: 2, spacing: 5 mm)\n\ncombine Combine1",
+        );
+        assert!(Document::from_text(&early).is_ok());
+    }
+
+    #[test]
+    fn validation_problems() {
+        let base = "gusset 1\nunits mm\nsketch S (plane: XY, next_id: 1) {\n}\nextrude E (profile: S, distance: 1 mm, op: new)\nextrude F (profile: S, distance: 1 mm, op: new)\n";
+        let bad = |extra: &str| Document::from_text(&format!("{base}{extra}\n")).unwrap_err().to_string();
+        let has = |extra: &str, want: &str| {
+            let e = bad(extra);
+            assert!(e.contains(want), "{extra}: {e}");
+        };
+        has("plane P (base: Q, offset: 1 mm)", "'Q', which does not exist");
+        has("plane P (base: S, offset: 1 mm)", "'S' is not a datum plane");
+        has("plane XY (base: XY, offset: 1 mm)", "base plane");
+        has("plane P (base: XY, offset: depth)", "unknown parameter 'depth'");
+        has("sketch T (plane: E, next_id: 1) {\n}", "'E' is not a datum plane");
+        has("mirror M (plane: Nope)", "'Nope', which does not exist");
+        has("move M (body: S, translate: [1, 2, 3])", "does not create a body");
+        has("move M (body: Z, translate: [1, 2, 3])", "'Z', which does not exist");
+        has("combine C (tools: [], body: E)", "no tool bodies");
+        has("combine C (body: E, tools: [F, F])", "listed twice");
+        has("combine C (body: E, tools: [E])", "both the target and a tool");
+        has("combine C (body: E, tools: [S])", "does not create a body");
+        has("combine C (body: E, tools: [Missing])", "'Missing', which does not exist");
+        has("move M (translate: [1, 2, 3], copy: true)\nmove M (translate: [1, 2, 3])", "used twice");
+        // Another combine cannot reuse a consumed tool, but its target survives.
+        has("combine C (body: E, tools: [F])\ncombine D (body: E, tools: [F])", "consumed by C");
+        assert!(Document::from_text(&format!("{base}combine C (body: E, tools: [F])\n")).is_ok());
+        assert!(
+            Document::from_text(&format!("{base}combine C (tools: [E])\n")).is_ok(),
+            "the target defaults to the other body"
+        );
+        has("combine C (tools: [E, F])", "there is no body to work on");
+    }
+
+    #[test]
+    fn parse_errors() {
+        let bad = [
+            "plane P (offset: 1 mm)",
+            "plane P (base: XY)",
+            "plane P (base: XY, offset: 1 mm, angle: 3 deg, axis: X)",
+            "plane P (base: XY, axis: X)",
+            "plane P (base: XY, angle: 3 deg)",
+            "plane P (base: XY, axis: W, angle: 3 deg)",
+            "plane P (base: XY, axis: edge(), angle: 3 deg)",
+            "plane P (base: XY, offset: 1 mm, color: red)",
+            "plane P (base: Extrude1/wat(1), offset: 1 mm)",
+            "plane P (base: XY, offset: )",
+            "move M ()",
+            "move M (body: E)",
+            "move M (axis: Z)",
+            "move M (angle: 3 deg)",
+            "move M (through: [1 mm, 2 mm, 3 mm], translate: [1, 2, 3])",
+            "move M (translate: [1, 2], copy: true)",
+            "move M (translate: [1, 2, 3], copy: maybe)",
+            "move M (translate: [1, 2, 3], op: add)",
+            "combine C (op: add)",
+            "combine C (tools: [A], op: new)",
+            "combine C (tools: [A], op: sideways)",
+            "combine C (tools: [A, ])",
+            "combine C (tools: A)",
+            "combine C (tools: [A], tools: [B])",
+        ];
+        for b in bad {
+            assert!(text::parse(&format!("gusset 1\n{b}\n")).is_err(), "{b}");
+        }
+        let e = text::parse("gusset 1\ncombine C (tools: [A], op: new)\n").unwrap_err();
+        assert!(e.hint.unwrap().contains("add, cut or intersect"));
+    }
+
+    #[test]
+    fn damaged_text_never_panics_and_prints_to_a_fixed_point() {
+        let chars: Vec<char> = SAMPLE.chars().collect();
+        let check = |src: String| {
+            if let Ok(doc) = text::parse(&src) {
+                let printed = text::print(&doc);
+                let again = text::parse(&printed).unwrap_or_else(|e| panic!("{src:?}: {e}"));
+                assert_eq!(text::print(&again), printed, "{src:?}");
+            }
+        };
+        for i in 0..chars.len() {
+            check(chars[..i].iter().collect());
+            check(chars[..i].iter().chain(&chars[i + 1..]).collect());
+        }
+    }
+
+    #[test]
+    fn plane_references_parse_outside_documents() {
+        assert_eq!(text::parse_plane_ref("YZ").unwrap(), PlaneRef::YZ);
+        assert_eq!(text::parse_plane_ref("Plane1").unwrap(), PlaneRef::Datum("Plane1".into()));
+        assert!(matches!(text::parse_plane_ref("Extrude1/cap(end)").unwrap(), PlaneRef::Face(_)));
+        assert!(text::parse_plane_ref("Plane1 extra").is_err());
+        assert!(text::parse_plane_ref("").is_err());
+        let mut p = PlaneRef::Datum("Plane1".into());
+        p.rename_feature("Plane1", "Datum");
+        assert_eq!(p, PlaneRef::Datum("Datum".into()));
     }
 }

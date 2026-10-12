@@ -19,4 +19,6 @@ pub use session::{AuditEntry, CmdCtx, CommitOutcome, Session, SessionConfig};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_datum;
+#[cfg(test)]
 mod tests_ops;

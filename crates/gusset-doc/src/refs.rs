@@ -28,6 +28,9 @@ pub enum FaceKey {
     Inner(Box<FaceRef>),
     /// Mirror image of the named face (`Mirror1/mirror(<face>)`).
     Mirror(Box<FaceRef>),
+    /// Face of the moved copy made by a `move` with `copy: true`
+    /// (`Move1/copy(<face>)`).
+    Copy(Box<FaceRef>),
     /// Face of pattern instance `k` (1-based; 0 is the source) copied from the named
     /// face (`Pattern1/instance(2, <face>)`).
     Instance { k: u32, face: Box<FaceRef> },
@@ -60,7 +63,9 @@ impl FaceRef {
         match &self.key {
             FaceKey::Side { sketch, .. } => f(sketch),
             FaceKey::Blend(e) => e.features(f),
-            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Instance { face: r, .. } => r.features(f),
+            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
+                r.features(f);
+            }
             FaceKey::Cap { .. } | FaceKey::Imported(_) => {}
         }
     }
@@ -73,7 +78,9 @@ impl FaceRef {
         match &mut self.key {
             FaceKey::Side { sketch, .. } if sketch == from => *sketch = to.to_string(),
             FaceKey::Blend(e) => e.rename_feature(from, to),
-            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Instance { face: r, .. } => r.rename_feature(from, to),
+            FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
+                r.rename_feature(from, to);
+            }
             _ => {}
         }
     }
@@ -144,6 +151,7 @@ impl fmt::Display for FaceRef {
             FaceKey::Imported(i) => write!(f, "face({i})")?,
             FaceKey::Inner(r) => write!(f, "inner({r})")?,
             FaceKey::Mirror(r) => write!(f, "mirror({r})")?,
+            FaceKey::Copy(r) => write!(f, "copy({r})")?,
             FaceKey::Instance { k, face } => write!(f, "instance({k}, {face})")?,
         }
         if let Some(i) = self.index {
@@ -209,6 +217,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         "face" => FaceKey::Imported(c.uint()?),
         "inner" => FaceKey::Inner(Box::new(parse_face(c)?)),
         "mirror" => FaceKey::Mirror(Box::new(parse_face(c)?)),
+        "copy" => FaceKey::Copy(Box::new(parse_face(c)?)),
         "instance" => {
             let k = c.uint()?;
             if k == 0 {
@@ -220,7 +229,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         other => {
             return Err(c.err_hint(
                 format!("unknown face kind '{other}'"),
-                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), instance(k, <face>) or face(N)",
+                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), instance(k, <face>) or face(N)",
             ));
         }
     };
@@ -264,6 +273,7 @@ mod tests {
             "Shell1/inner(Extrude1/cap(end))",
             "Shell1/inner(Extrude1/side(Sketch1/l3)#2)#1",
             "Mirror1/mirror(Extrude1/side(Sketch1/l3))",
+            "Move1/copy(Extrude1/side(Sketch1/l3))",
             "Pattern1/instance(3, Extrude1/cap(start, l4)#2)",
             "Pattern2/instance(1, Mirror1/mirror(Fillet1/blend(edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3)))))",
         ] {

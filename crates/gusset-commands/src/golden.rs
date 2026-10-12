@@ -113,16 +113,61 @@ pub fn unrelated_second_region(kernel: Arc<dyn Kernel>) -> R {
     on_plane(&mut s, "Side", 0, 40.0)
 }
 
+/// Datum planes, moved copies and combined bodies keep their names: references to the
+/// faces of a datum plane, a moved copy and the body it was combined into resolve to the
+/// moved geometry and follow parameter edits and later moves.
+///
+/// # Errors
+/// As [`reorder_independent_features`].
+pub fn moved_and_combined_bodies(kernel: Arc<dyn Kernel>) -> R {
+    let mut s = session(kernel)?;
+    run(&mut s, "feature.plane", json!({"base": "E1/cap(end)", "offset": "5 mm", "name": "Up"}))?;
+    let on_up = str_of(&run(&mut s, "sketch.create", json!({"plane": "Up"}))?, "sketch")?;
+    on_plane(&mut s, &on_up, 2, 15.0)?;
+    let dup = json!({"body": "E1", "translate": ["100 mm", "0 mm", "0 mm"], "copy": true, "name": "Dup"});
+    run(&mut s, "feature.move_body", dup)?;
+    run(&mut s, "feature.combine", json!({"tools": ["Dup"], "body": "E1"}))?;
+    // The copy's faces are now faces of E1, still under the names the copy gave them.
+    let dup_side = str_of(&run(&mut s, "sketch.create", json!({"plane": "Dup/copy(E1/side(S1/l6))"}))?, "sketch")?;
+    let dup_top = str_of(&run(&mut s, "sketch.create", json!({"plane": "Dup/copy(E1/cap(end))"}))?, "sketch")?;
+    on_plane(&mut s, &dup_side, 0, 140.0)?;
+    on_plane(&mut s, &dup_top, 2, 10.0)?;
+    on_plane(&mut s, "Side", 0, 40.0)?;
+    // A parameter edit moves the top faces and the datum plane with them.
+    run(&mut s, "param.set", json!({"name": "d", "expr": "15 mm"}))?;
+    on_plane(&mut s, &on_up, 2, 20.0)?;
+    on_plane(&mut s, &dup_top, 2, 15.0)?;
+    on_plane(&mut s, &dup_side, 0, 140.0)?;
+    on_plane(&mut s, "Top", 2, 15.0)?;
+    // Moving the combined body carries every name along.
+    run(&mut s, "feature.move_body", json!({"body": "E1", "translate": ["10 mm", "0 mm", "0 mm"]}))?;
+    // Sketches made before the move are unaffected: the timeline runs in order.
+    on_plane(&mut s, "Side", 0, 40.0)?;
+    on_plane(&mut s, &dup_side, 0, 140.0)?;
+    let side = str_of(&run(&mut s, "sketch.create", json!({"plane": "E1/side(S1/l6)"}))?, "sketch")?;
+    let moved_side = str_of(&run(&mut s, "sketch.create", json!({"plane": "Dup/copy(E1/side(S1/l6))"}))?, "sketch")?;
+    let moved_top = str_of(&run(&mut s, "sketch.create", json!({"plane": "Dup/copy(E1/cap(end))"}))?, "sketch")?;
+    on_plane(&mut s, &side, 0, 50.0)?;
+    on_plane(&mut s, &moved_side, 0, 150.0)?;
+    on_plane(&mut s, &moved_top, 2, 15.0)?;
+    run(&mut s, "param.set", json!({"name": "d", "expr": "8 mm"}))?;
+    on_plane(&mut s, &moved_top, 2, 8.0)?;
+    on_plane(&mut s, &dup_top, 2, 8.0)?;
+    on_plane(&mut s, &on_up, 2, 13.0)?;
+    on_plane(&mut s, &moved_side, 0, 150.0)
+}
+
 /// Every scenario, for a kernel.
 ///
 /// # Errors
 /// The failures, one per line.
 pub fn all(kernel: &Arc<dyn Kernel>) -> R {
-    let scenarios: [(&str, Scenario); 4] = [
+    let scenarios: [(&str, Scenario); 5] = [
         ("reorder", reorder_independent_features),
         ("branch", branch_and_edit),
         ("cherry_pick", cherry_pick),
         ("second_region", unrelated_second_region),
+        ("moved_and_combined", moved_and_combined_bodies),
     ];
     let errs: Vec<String> =
         scenarios.iter().filter_map(|(n, f)| f(kernel.clone()).err().map(|e| format!("{n}: {e}"))).collect();

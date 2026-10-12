@@ -44,6 +44,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Revolve(r) => r.op == BodyOp::New,
         FeatureKind::Import(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
+        FeatureKind::Move(m) => m.copy,
         _ => false,
     }
 }
@@ -58,6 +59,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         }
         FeatureKind::Import(_) => Some(&f.name),
         FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
+        FeatureKind::Move(m) if m.copy => Some(&f.name),
         _ => None,
     }
 }
@@ -78,7 +80,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
 
     // Features: unique names, earlier-only references.
     let mut seen: BTreeMap<&str, &Feature> = BTreeMap::new();
-    let mut any_body_before = false;
+    // Bodies that exist at this point (a combine consumes its tool bodies).
+    let mut live_bodies = 0usize;
+    let mut consumed: BTreeMap<&str, &str> = BTreeMap::new();
     let mut body_names: BTreeSet<&str> = BTreeSet::new();
     for f in &doc.features {
         let n = f.name.as_str();
@@ -110,7 +114,10 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             }
         }
         match &f.kind {
-            FeatureKind::Sketch(s) => validate_sketch(n, s, &mut out),
+            FeatureKind::Sketch(s) => {
+                check_plane(n, &s.plane, &seen, &mut out);
+                validate_sketch(n, s, &mut out);
+            }
             FeatureKind::Extrude(ExtrudeDef { profile, op, body, body_name, .. })
             | FeatureKind::Revolve(RevolveDef { profile, op, body, body_name, .. }) => {
                 if let Some(bn) = body_name {
@@ -136,10 +143,11 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                         )),
                         _ => {}
                     }
+                    check_not_consumed(n, b, &consumed, &mut out);
                     if *op == BodyOp::New {
                         out.push(issue(n, "'body' cannot be combined with op: new"));
                     }
-                } else if *op != BodyOp::New && !any_body_before {
+                } else if *op != BodyOp::New && live_bodies == 0 {
                     out.push(issue_h(
                         n,
                         format!("op: {} needs an existing body", op.keyword()),
@@ -152,13 +160,63 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     out.push(issue_h(n, "no edges selected", "select at least one edge"));
                 }
             }
-            FeatureKind::Shell(d) => check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out),
-            FeatureKind::Mirror(d) => check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out),
+            FeatureKind::Shell(d) => {
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Mirror(d) => {
+                check_plane(n, &d.plane, &seen, &mut out);
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
             FeatureKind::PatternLinear(d) => {
-                check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out);
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
             FeatureKind::PatternCircular(d) => {
-                check_body_target(n, d.body.as_deref(), any_body_before, &seen, &mut out);
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Plane(d) => {
+                if matches!(n, "XY" | "XZ" | "YZ") {
+                    out.push(issue_h(n, "this name is a base plane", "choose another name for the datum plane"));
+                }
+                check_plane(n, &d.base, &seen, &mut out);
+            }
+            FeatureKind::Move(d) => {
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Combine(d) => {
+                // Without a named target there must be a body besides the tools.
+                let spare = live_bodies > d.tools.len();
+                check_body_target(n, d.body.as_deref(), spare, &seen, &consumed, &mut out);
+                if d.tools.is_empty() {
+                    out.push(issue_h(n, "no tool bodies", "list the bodies to combine in tools: [Extrude2]"));
+                }
+                let mut listed = BTreeSet::new();
+                for t in &d.tools {
+                    if !listed.insert(t.as_str()) {
+                        out.push(issue(n, format!("tool '{t}' is listed twice")));
+                    }
+                    if d.body.as_deref() == Some(t.as_str()) {
+                        out.push(issue_h(
+                            n,
+                            format!("'{t}' is both the target and a tool"),
+                            "a body cannot be combined with itself",
+                        ));
+                    }
+                    if seen.get(t.as_str()).is_some_and(|f| !creates_body(f)) {
+                        out.push(issue_h(
+                            n,
+                            format!("tool '{t}' does not create a body"),
+                            "name the feature that created the body, e.g. an extrude with op: new",
+                        ));
+                    }
+                    check_not_consumed(n, t, &consumed, &mut out);
+                }
+                // A suppressed combine is skipped by the evaluator, so it consumes nothing.
+                for t in d.tools.iter().filter(|_| !f.suppressed) {
+                    if seen.get(t.as_str()).is_some_and(|g| creates_body(g)) && !consumed.contains_key(t.as_str()) {
+                        consumed.insert(t, n);
+                        live_bodies = live_bodies.saturating_sub(1);
+                    }
+                }
             }
             FeatureKind::Import(i) => {
                 if i.blob.len() != 64 || !i.blob.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
@@ -167,7 +225,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             }
         }
         if creates_body(f) {
-            any_body_before = true;
+            live_bodies += 1;
         }
         if let Some(bn) = created_body_name(f)
             && !body_names.insert(bn)
@@ -184,8 +242,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
 fn check_body_target(
     n: &str,
     body: Option<&str>,
-    any_body_before: bool,
+    body_available: bool,
     seen: &BTreeMap<&str, &Feature>,
+    consumed: &BTreeMap<&str, &str>,
     out: &mut Vec<Issue>,
 ) {
     match body {
@@ -196,14 +255,41 @@ fn check_body_target(
                 out.push(issue_h(
                     n,
                     format!("'{b}' does not create a body"),
-                    "target a feature with op: new, a mirror without merge, or an import",
+                    "target a feature with op: new, a mirror without merge, a move with copy, or an import",
                 ));
             }
+            check_not_consumed(n, b, consumed, out);
         }
-        None if !any_body_before => {
+        None if !body_available => {
             out.push(issue_h(n, "there is no body to work on", "create a body first, for example with extrude"));
         }
         None => {}
+    }
+}
+
+/// A body that an earlier `combine` used as a tool no longer exists.
+fn check_not_consumed(n: &str, body: &str, consumed: &BTreeMap<&str, &str>, out: &mut Vec<Issue>) {
+    if let Some(by) = consumed.get(body) {
+        out.push(issue_h(
+            n,
+            format!("body '{body}' was consumed by {by}"),
+            format!("target the body {by} combined it into, or move this feature before {by}"),
+        ));
+    }
+}
+
+/// A datum plane reference must name an earlier `plane` feature (a missing one is reported
+/// as a missing dependency).
+fn check_plane(n: &str, plane: &PlaneRef, seen: &BTreeMap<&str, &Feature>, out: &mut Vec<Issue>) {
+    if let PlaneRef::Datum(d) = plane
+        && let Some(f) = seen.get(d.as_str())
+        && !matches!(f.kind, FeatureKind::Plane(_))
+    {
+        out.push(issue_h(
+            n,
+            format!("'{d}' is not a datum plane"),
+            "use XY, XZ, YZ, a face reference or a plane feature",
+        ));
     }
 }
 
