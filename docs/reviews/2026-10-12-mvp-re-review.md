@@ -22,14 +22,14 @@ Still open or partial after the re-review:
 | # | Severity | Finding | Status |
 |---|---|---|---|
 | N1 | medium | Insert while rolled back evaluated as rolled back (wrong errors, node state, body changes) | Fixed |
-| N2 | low-medium | Eval cache charges only bodies a state added; prefix eviction frees nothing | Fix in progress |
-| N3 | low | Up-front edge check rejects on the first ambiguous body | Fix in progress |
+| N2 | low-medium | Eval cache charges only bodies a state added; prefix eviction frees nothing | Fixed: bytes per unique live body |
+| N3 | low | Up-front edge check rejects on the first ambiguous body | Fixed (no mock-kernel test possible) |
 | N4 | low | Grants keyed by self-declared client name | By design, documented in ADR 0012 (token holder = local user) |
 | N5 | low | Late detached-import result after opening another project | Fixed |
-| N6 | low | GC of a damaged v2 snapshot could delete its children | Fix in progress |
+| N6 | low | GC of a damaged v2 snapshot could delete its children | Fixed: GC deletes nothing then |
 | N7 | low | "Keep both" check-then-write race | Fixed |
-| N8 | low | Polyline accepts zero-length segments | Fix in progress |
-| N9 | unverified | Row-echelon pivot may be round-off | Fix in progress |
+| N8 | low | Polyline accepts zero-length segments | Fixed |
+| N9 | unverified | Row-echelon pivot may be round-off | Fixed (relative pivot tolerance; regression test) |
 
 ## New security findings
 
