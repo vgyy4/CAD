@@ -56,7 +56,7 @@ Phase 3 has started (see Next).
    the modeling gaps agents and users hit first (dogfooding F-M4..M8):
    - v0.2: shell, mirror, linear/circular patterns (feature and sketch), offset and
      angled datum planes, body move/copy, sketch trim and spline/polyline curves,
-     sweep/loft, holes; agent ergonomics F2-5..F2-11.
+     sweep/loft, holes (agent ergonomics F2-5..F2-11 done).
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
