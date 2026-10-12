@@ -207,6 +207,7 @@ dependencies = [
  "gusset-history",
  "gusset-kernel",
  "gusset-meshio",
+ "gusset-naming",
  "gusset-store",
  "gusset-units",
  "libc",

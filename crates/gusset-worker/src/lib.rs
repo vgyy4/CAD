@@ -94,6 +94,7 @@ impl PrivateDir {
         for _ in 0..32 {
             let rnd = std::collections::hash_map::RandomState::new().build_hasher().finish();
             let path = base.join(format!("gusset-import-{}-{rnd:016x}", std::process::id()));
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut b = std::fs::DirBuilder::new();
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
