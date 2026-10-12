@@ -29,6 +29,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const MAX_FIELD_CHARS: usize = 512;
 /// User text longer than this is flagged as suspicious ("excessive length").
 pub const SUSPICIOUS_LEN: usize = 2000;
+/// The code-view page of `document.get_text` (`text_user_text`) is shown up to this many
+/// characters instead of [`MAX_FIELD_CHARS`]; the command pages by line below it.
+pub const MAX_DOC_TEXT_CHARS: usize = 32_768;
 /// Maximum characters `get_text` returns per call.
 pub const MAX_GET_TEXT_CHARS: usize = 16_384;
 /// Object keys longer than this are cut (keys come from our own code, but be safe).
@@ -170,6 +173,10 @@ fn normalize(s: &str) -> String {
 /// with `"; "`) when the text looks suspicious. An aid only, never the defense.
 #[must_use]
 pub fn detect_injection(text: &str, hidden_removed: bool) -> Option<String> {
+    detect_injection_with(text, hidden_removed, SUSPICIOUS_LEN)
+}
+
+fn detect_injection_with(text: &str, hidden_removed: bool, max_len: usize) -> Option<String> {
     let mut reasons: Vec<String> = Vec::new();
     if hidden_removed {
         reasons.push("hidden Unicode characters (zero-width, bidi or control) were removed".into());
@@ -188,7 +195,7 @@ pub fn detect_injection(text: &str, hidden_removed: bool) -> Option<String> {
         reasons.push("text that looks like a tool call or protocol message".into());
     }
     let n = text.chars().count();
-    if n > SUSPICIOUS_LEN {
+    if n > max_len {
         reasons.push(format!("excessive length ({n} characters)"));
     }
     if reasons.is_empty() { None } else { Some(reasons.join("; ")) }
@@ -382,7 +389,7 @@ impl<'a> Sanitizer<'a> {
         }
     }
 
-    fn pointer(&mut self, path: &str, text: String, user: bool) -> Value {
+    fn pointer(&mut self, path: &str, text: String, user: bool, offset: usize) -> Value {
         let reference = match &self.reference {
             Some(r) => r.clone(),
             None => {
@@ -393,30 +400,36 @@ impl<'a> Sanitizer<'a> {
         };
         let total = text.chars().count();
         self.store.put(&reference, path, self.owner, text, user);
-        json!({"tool": "get_text", "ref": reference, "path": path, "offset": MAX_FIELD_CHARS, "total_chars": total})
+        json!({"tool": "get_text", "ref": reference, "path": path, "offset": offset, "total_chars": total})
     }
 
     fn string(&mut self, s: &str, path: &str, user: bool, extra: Option<String>) -> Value {
         let st = strip_hidden(s);
-        let reason = match (detect_injection(&st.text, st.hidden_removed), extra) {
+        // The paged code view is legitimately long; its length is not a red flag.
+        let (cap, len_flag) = if path == "/text_user_text" {
+            (MAX_DOC_TEXT_CHARS, usize::MAX)
+        } else {
+            (MAX_FIELD_CHARS, SUSPICIOUS_LEN)
+        };
+        let reason = match (detect_injection_with(&st.text, st.hidden_removed, len_flag), extra) {
             (Some(a), Some(b)) => Some(format!("{b}; {a}")),
             (a, b) => a.or(b),
         };
-        let long = st.text.chars().count() > MAX_FIELD_CHARS;
+        let long = st.text.chars().count() > cap;
         if user || reason.is_some() {
-            let shown = take_chars(&st.text, MAX_FIELD_CHARS).to_string();
+            let shown = take_chars(&st.text, cap).to_string();
             let mut m = Map::new();
             m.insert("user_text".into(), Value::String(shown));
             m.insert("suspicious".into(), Value::Bool(reason.is_some()));
             m.insert("reason".into(), reason.map_or(Value::Null, Value::String));
             if long {
                 m.insert("truncated".into(), Value::Bool(true));
-                m.insert("full_text".into(), self.pointer(path, st.text, true));
+                m.insert("full_text".into(), self.pointer(path, st.text, true, cap));
             }
             Value::Object(m)
         } else if long {
-            let shown = take_chars(&st.text, MAX_FIELD_CHARS).to_string();
-            json!({"text": shown, "truncated": true, "full_text": self.pointer(path, st.text, false)})
+            let shown = take_chars(&st.text, cap).to_string();
+            json!({"text": shown, "truncated": true, "full_text": self.pointer(path, st.text, false, cap)})
         } else {
             Value::String(st.text)
         }
@@ -503,6 +516,22 @@ mod tests {
         assert_eq!(v["list_user_text"][0]["suspicious"], false);
         assert_eq!(v["list_user_text"][1]["user_text"], "b");
         assert_eq!(v["list_user_text"][1]["suspicious"], true);
+    }
+
+    #[test]
+    fn code_view_page_is_not_cut_at_512_characters() {
+        let page = "param w = 40 mm\n".repeat(1000);
+        let v = san(json!({"text_user_text": page.clone(), "other_user_text": "x".repeat(600)}));
+        let w = &v["text_user_text"];
+        assert_eq!(w["user_text"].as_str().unwrap(), page);
+        assert!(w["truncated"].is_null());
+        assert_eq!(w["suspicious"], false, "length alone is no red flag for the code view");
+        assert_eq!(v["other_user_text"]["truncated"], true);
+        // Beyond the larger cap it is still cut, with a pointer to the rest.
+        let huge = "a".repeat(MAX_DOC_TEXT_CHARS + 10);
+        let v = san(json!({"text_user_text": huge}));
+        assert_eq!(v["text_user_text"]["truncated"], true);
+        assert_eq!(v["text_user_text"]["full_text"]["offset"], MAX_DOC_TEXT_CHARS);
     }
 
     #[test]
