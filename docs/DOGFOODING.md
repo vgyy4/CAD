@@ -74,3 +74,45 @@ Failures (tracked in docs/SECURITY_REVIEWS.md):
 | S7 | minor | Export file names: any extension, Windows reserved names, trailing spaces accepted; io errors show absolute home paths. |
 | S8 | minor | Client-supplied agent name appears outside `user_text` (created_by, audit, prompts). |
 | S9 | info | Agent branches may be named `main` or `../../evil`. |
+
+## Run 2 — after the milestone fixes (2026-10-12)
+
+Same setup as run 1 (real OCCT 8.0.1, `gusset mcp --no-attach`, stdlib Python client,
+tools learned from the tool list, resources, errors and docs).
+
+### Parts
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | L-bracket | success | ~20 | Fully constrained profile via `document_set_text`; holes on a face sketch (frame reported, right first time); volume 11272.58 mm³ exact; parameter change rebuilds. |
+| 2 | Flanged fitting | success | ~12 | Revolve + 6-hole bolt circle in one sketch (generated text); fillet and chamfer; volumes hand-checked. |
+| 3 | Phone stand | success | ~10 | First try; `tilt` 60/70° rebuild without flipping. |
+| 4 | Enclosure + lid | success (no shell) | ~12 | Nested regions extruded by region id; lid as a separate body; wall change rebuilds both. |
+| 5 | Spur gear m2 z20 | success (approximate) | ~8 | 400-point involute in ONE `sketch_add_polyline` call; bore + keyway. Not parametric in module/teeth. |
+
+STEP/STL exports with the `bodies` filter worked; STEP re-import gives exact volume;
+STL imports as a reference mesh.
+
+### Run-1 items
+Fixed: F-B1, F-M1, F-M2, F-M6/F-m1 (polyline), F-M10, F-M11, F-M14, F-M15 (description),
+F-M17, F-M18, F-M19, F-m6. Partly: F-M3 (cuts still need a negative distance, now
+documented and warned about). Still open: F-M4/M5/M7 (pattern, mirror, shell, offset
+planes, body move: later phases), F-M13 (see F2-2). Not exercised: F-M12, F-M16.
+
+### New friction
+
+| ID | Sev | Item | Fix |
+|---|---|---|---|
+| F2-1 | major | No IGES export through MCP (the CLI has it) | Export IGES via MCP |
+| F2-2 | major | A reconnecting agent starts on Main; its earlier undo stack is gone | By design for now: names are never reused (code review L6), so an agent continues old work with `branch_switch`; undo is session-only (ADR 0006). Revisit with per-agent credentials |
+| F2-3 | major | Relative project path breaks exports | Absolutize at start-up |
+| F2-4 | major | `op: add` with a disjoint region silently makes a multi-solid body | Warn when the solid count grows |
+| F2-5 | minor | Over-large fillet radius commits a broken feature | Later: validate radii up front |
+| F2-6 | minor | "Nothing to export" does not mention rebuild errors | Include `rebuild_errors` |
+| F2-7 | minor | No pattern/mirror/shell | Later phases (F-M4/M5) |
+| F2-8 | minor | Polyline result lists every id; frame repeated in constraint results | Later: ranges |
+| F2-9 | minor | Numeric noise (−5e−22), normals on curved faces, seam edges | Later |
+| F2-10 | minor | Text grammar not published as a resource; directed-angle convention inferred | Later: grammar resource |
+| F2-11 | minor | No `body_name` argument | Later |
+| F2-12 | minor | STEP is AP214 (documented) | Later: AP242 |
+| F2-13 | minor | Descriptions use dotted command ids, tools use underscores | Fix descriptions |
