@@ -37,6 +37,9 @@ fn issue_h(subject: &str, message: impl Into<String>, hint: impl Into<String>) -
     Issue { subject: Some(subject.to_string()), message: message.into(), hint: Some(hint.into()) }
 }
 
+/// Most tool bodies one `combine` may merge (each costs a boolean operation).
+pub const MAX_COMBINE_TOOLS: usize = 500;
+
 /// Does this feature create a body others can target?
 pub fn creates_body(f: &Feature) -> bool {
     match &f.kind {
@@ -186,6 +189,13 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 // Without a named target there must be a body besides the tools.
                 let spare = live_bodies > d.tools.len();
                 check_body_target(n, d.body.as_deref(), spare, &seen, &consumed, &mut out);
+                if d.tools.len() > MAX_COMBINE_TOOLS {
+                    out.push(issue_h(
+                        n,
+                        format!("{} tools; at most {MAX_COMBINE_TOOLS} per combine", d.tools.len()),
+                        "combine in several steps",
+                    ));
+                }
                 if d.tools.is_empty() {
                     out.push(issue_h(n, "no tool bodies", "list the bodies to combine in tools: [Extrude2]"));
                 }

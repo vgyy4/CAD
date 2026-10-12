@@ -627,6 +627,8 @@ combine Combine2 (tools: [Mirror1], op: add, label: "Weld")
             "the target defaults to the other body"
         );
         has("combine C (tools: [E, F])", "there is no body to work on");
+        let many = (0..=validate::MAX_COMBINE_TOOLS).map(|i| format!("T{i}")).collect::<Vec<_>>().join(", ");
+        has(&format!("combine C (body: E, tools: [{many}])"), "at most 500 per combine");
     }
 
     #[test]
