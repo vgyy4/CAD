@@ -877,7 +877,7 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
     // Open polylines have n-1 segments; too few points and bad input are refused.
     run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
     let r = run(&mut s, &u, "sketch.add_polyline", json!({"sketch": "Sketch2", "points": [[0, 0], [1, 0], [1, 1]]}));
-    assert_eq!(r["lines"].as_array().unwrap().len(), 2);
+    assert_eq!(r["lines"]["count"], 2);
     for bad in [
         json!({"sketch": "Sketch2", "points": [[0, 0]]}),
         json!({"sketch": "Sketch2", "points": [[0, 0], [1, 1]], "closed": true}),
