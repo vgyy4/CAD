@@ -21,7 +21,7 @@ mod ops;
 mod sketch_ops;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
-pub use sketch_ops::SketchTrim;
+pub use sketch_ops::{SketchPattern, SketchTrim};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
@@ -878,7 +878,13 @@ impl Command for SketchCreate {
                     rb,
                     Feature::new(
                         name.clone(),
-                        FeatureKind::Sketch(SketchDef { plane, next_id: 1, entities: vec![], constraints: vec![] }),
+                        FeatureKind::Sketch(SketchDef {
+                            plane,
+                            next_id: 1,
+                            entities: vec![],
+                            constraints: vec![],
+                            patterns: vec![],
+                        }),
                     ),
                 );
                 *created.borrow_mut() = name.clone();

@@ -78,6 +78,16 @@ deterministic, readable text form for tests, golden files, agents and "Export as
    named after the feature. `combine` takes `tools` (the creating features' names) and
    `op: add|cut|intersect`; later features cannot target a consumed tool body (validation
    reports it, unless the combine is suppressed).
+   **Sketch items (v0.2, ADR 0016):** besides points, lines, circles, arcs and constraints a
+   sketch has splines and patterns:
+   ```text
+   s5 = spline(p1, p2, p3, p4) closed
+   g9 = pattern_linear(of: [l5, c7], count: n, dx: 10 mm, dy: 0 mm)
+   g10 = pattern_circular(of: [l5], center: p3, count: 6, angle: 360 deg)
+   ```
+   `Sketch1.regions(l5_r1, c7_2)` names regions by id (entity ids, `_rN` ranks, pattern
+   copies `l5_2`). Patterns hold expressions, so they are parameter-driven declarative data
+   and keep the text isomorphic to the tree.
 4. **Sandboxing.** The language can only express data and pure unit-aware arithmetic
    (`gusset-units`). Parsing enforces limits on input size, nesting depth, statement
    count and name length. It is deterministic: `libm` for transcendental functions,

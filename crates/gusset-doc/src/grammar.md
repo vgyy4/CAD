@@ -149,6 +149,48 @@ sketch Sketch1 (plane: XY) {
 }
 ```
 
+### Sketch patterns
+
+```
+g9 = pattern_linear(of: [l5, c7], count: n, dx: 10 mm, dy: 0 mm)
+g10 = pattern_circular(of: [l5], center: p3, count: 6, angle: 360 deg)
+```
+
+A pattern repeats lines, circles, arcs and splines (not points); `count` includes the
+original and must evaluate to a whole number from 2 to 500. Copy `j` (1, 2, ...) of entity
+`l5` is `l5_j`, of point `p3` is `p3_j`: they are derived after solving, move with the
+sources and parameters, take part in regions (`regions(l5_2)`) and extrusions, and have
+lateral faces `side(Sketch1/l5_2)`. A circular pattern spaces copies `angle / count` apart
+for a full turn, else `angle / (count - 1)`; its centre is an ordinary point (it can be
+constrained). Copies are not solver geometry: constraints cannot refer to them. A curve
+belongs to at most one pattern. Ids `g<n>` share the sketch's counter.
+
+```gusset
+gusset 1
+units mm
+
+param holes = 4
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 40)
+  p4 = point(0, 40)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+  p9 = point(12, 20)
+  c10 = circle(p9, 4)
+  g11 = pattern_linear(of: [c10], count: holes, dx: 12 mm, dy: 0 mm)
+  p12 = point(30, 20)
+  p13 = point(30, 32)
+  l14 = line(p12, p13) construction
+}
+
+extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
+```
+
 ## Features
 
 ```

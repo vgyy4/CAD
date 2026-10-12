@@ -255,3 +255,71 @@ fn a_spline_hole_in_a_plate_and_an_open_spline_across_a_rectangle() {
     }
     assert!((total - 1600.0).abs() < 1e-3, "{total}");
 }
+
+#[test]
+fn sketch_patterns_drill_a_plate_and_follow_parameters() {
+    let mut r = Rig::new();
+    r.run("param.set", json!({"name": "holes", "expr": "4"}));
+    r.run("param.set", json!({"name": "pitch", "expr": "11 mm"}));
+    r.run("sketch.create", json!({"plane": "XY"}));
+    r.run(
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 80, "height": 60, "width_expr": "80 mm", "height_expr": "60 mm"}),
+    );
+    let c = r.run("sketch.add_circle", json!({"sketch": "Sketch1", "cx": 12, "cy": 12, "radius": 4}));
+    let circle = c["circle"].as_str().unwrap().to_string();
+    let p = r.run(
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": [circle], "count": "holes", "dx": "pitch"}),
+    );
+    assert_eq!(p["sketch_status"]["regions"].as_array().unwrap().len(), 5, "{p}");
+    let plate_id = |r: &mut Rig| {
+        let regs = r.regions("Sketch1");
+        regs.iter().find(|(_, a)| *a > 1000.0).unwrap().0.clone()
+    };
+    let id = plate_id(&mut r);
+    let e = r.run(
+        "feature.extrude",
+        json!({"sketch": "Sketch1", "regions": [id], "distance": "5 mm", "body_name": "Plate"}),
+    );
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    assert!(near(r.volume("Plate"), (4800.0 - 4.0 * PI * 16.0) * 5.0), "{}", r.volume("Plate"));
+    let names = r.face_names("Plate");
+    for k in 1..4 {
+        assert!(names.contains(&format!("Extrude1/side(Sketch1/{circle}_{k})")), "{k}: {names:?}");
+    }
+    // More holes, wider pitch: the solid follows and the copies keep their names.
+    r.run("param.set", json!({"name": "holes", "expr": "6"}));
+    r.run("param.set", json!({"name": "pitch", "expr": "12 mm"}));
+    assert!(near(r.volume("Plate"), (4800.0 - 6.0 * PI * 16.0) * 5.0), "{}", r.volume("Plate"));
+    assert!(r.face_names("Plate").contains(&format!("Extrude1/side(Sketch1/{circle}_5)")));
+    // A bolt circle: 5 holes round the plate's centre (a construction point), 270 degrees.
+    r.run("sketch.create", json!({"plane": "XY"}));
+    r.run(
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch2", "x": -30, "y": -30, "width": 60, "height": 60, "width_expr": "60 mm", "height_expr": "60 mm"}),
+    );
+    let hub = r.run("sketch.add_circle", json!({"sketch": "Sketch2", "cx": 20, "cy": 0, "radius": 3}));
+    let hole = hub["circle"].as_str().unwrap().to_string();
+    let centre = r
+        .run("sketch.add_line", json!({"sketch": "Sketch2", "x1": 0, "y1": 0, "x2": 1, "y2": 0, "construction": true}));
+    let origin = centre["points"][0].as_str().unwrap().to_string();
+    r.run(
+        "sketch.pattern",
+        json!({"sketch": "Sketch2", "kind": "circular", "entities": [hole], "count": "5", "center": origin, "angle": "270 deg"}),
+    );
+    let regs = r.regions("Sketch2");
+    assert_eq!(regs.len(), 6, "{regs:?}");
+    let id2 = regs.iter().find(|(_, a)| *a > 1000.0).unwrap().0.clone();
+    let e = r.run(
+        "feature.extrude",
+        json!({"sketch": "Sketch2", "regions": [id2], "distance": "2 mm", "body_name": "Flange"}),
+    );
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    assert!(near(r.volume("Flange"), (3600.0 - 5.0 * PI * 9.0) * 2.0), "{}", r.volume("Flange"));
+    // The last hole sits 270 deg round: at (0, -20) (a partial angle spans first to last copy).
+    let q = r.run("query.sketch", json!({"sketch": "Sketch2"}));
+    let hub_centre = hub["center"].as_str().unwrap().to_string();
+    let last = &q["points"][format!("{hub_centre}_4")];
+    assert!(last[0].as_f64().unwrap().abs() < 1e-9 && (last[1].as_f64().unwrap() + 20.0).abs() < 1e-9, "{q}");
+}

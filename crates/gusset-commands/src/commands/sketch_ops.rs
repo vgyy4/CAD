@@ -4,7 +4,7 @@ use super::*;
 use gusset_eval::{PartnerKind, TrimCut, TrimPlan};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<SketchTrim>()]
+    vec![spec::<SketchTrim>(), spec::<SketchPattern>()]
 }
 
 /// Deletes entities and everything that depends on them. Returns the deleted ids (the
@@ -24,6 +24,14 @@ pub(super) fn delete_with_dependents(d: &mut SketchDef, ids: &[String]) -> (Vec<
         dead.extend(more);
     }
     d.entities.retain(|e| !dead.contains(&e.id));
+    // Patterns lose deleted sources; a pattern without sources or centre goes away.
+    for p in &mut d.patterns {
+        p.of.retain(|o| !dead.contains(o));
+    }
+    d.patterns.retain(|p| {
+        let centre_gone = matches!(&p.kind, SkPatternKind::Circular { center, .. } if dead.contains(center));
+        !(p.of.is_empty() || centre_gone || dead.contains(&p.id))
+    });
     let mut removed = Vec::new();
     d.constraints.retain(|c| {
         let gone = dead.contains(&c.id) || c.entities.iter().any(|e| dead.contains(e));
@@ -97,6 +105,7 @@ fn geom_of<'a>(d: &'a SketchDef, id: &str) -> Option<&'a SkGeom> {
 
 fn is_used(d: &SketchDef, point: &str) -> bool {
     d.entities.iter().any(|e| e.geom.refs().contains(&point))
+        || d.patterns.iter().any(|p| matches!(&p.kind, SkPatternKind::Circular { center, .. } if center == point))
 }
 
 /// The point that ends a remaining piece at `cut`: an existing point if one is there,
@@ -297,6 +306,17 @@ fn apply_trim(d: &mut SketchDef, id: &str, plan: &TrimPlan) -> Result<Value, Com
             );
         }
     }
+    // Pieces made from a pattern source join its pattern; a deleted source leaves it.
+    let pieces: Vec<String> = rep.created.iter().filter(|c| !c.starts_with('p')).cloned().collect();
+    for p in &mut d.patterns {
+        if p.of.iter().any(|o| o == id) {
+            if rep.deleted.iter().any(|x| x == id) {
+                p.of.retain(|o| o != id);
+            }
+            p.of.extend(pieces.iter().cloned());
+        }
+    }
+    d.patterns.retain(|p| !p.of.is_empty());
     rep.constraints_dropped.sort();
     rep.constraints_dropped.dedup();
     Ok(json!({
@@ -349,4 +369,138 @@ fn retarget_line_constraints(d: &mut SketchDef, id: &str, kept_points: &[String]
         !about_length
     });
     retarget_fixed(d, id, kept_points, rep);
+}
+
+/// Most copies one sketch pattern may make (the count includes the original).
+const MAX_COPIES: f64 = 500.0;
+
+/// Repeats sketch curves in a line or round a point.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchPattern {
+    pub sketch: String,
+    /// `linear` (dx, dy) or `circular` (center, angle).
+    pub kind: String,
+    /// Source lines, circles, arcs or splines (one pattern each).
+    pub entities: Vec<String>,
+    /// Copies including the original, 2..=500 (expression).
+    pub count: String,
+    /// Linear: shift per copy (expressions, default 0).
+    #[serde(default)]
+    pub dx: Option<String>,
+    #[serde(default)]
+    pub dy: Option<String>,
+    /// Circular: centre point id.
+    #[serde(default)]
+    pub center: Option<String>,
+    /// Circular: total angle (default 360 deg).
+    #[serde(default)]
+    pub angle: Option<String>,
+    /// Id of an existing pattern to replace.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+impl Command for SketchPattern {
+    const ID: &'static str = "sketch.pattern";
+    const TITLE: &'static str = "Sketch pattern";
+    const DESCRIPTION: &'static str = "Repeat sketch curves linearly or round a point; copies (ids like l5_2) follow parameters and take part in regions and extrusions. Count and spacing are expressions. Replace one with id.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let sk = self.sketch.clone();
+        let count = parse_expr("count", &self.count)?;
+        let kind_name = self.kind.as_str();
+        let out = edit(s, ctx, "Sketch pattern", |doc, _| {
+            let values = params::evaluate(&doc.params);
+            let units = doc.units;
+            let scope = |n: &str| values.get(n).and_then(|r| r.as_ref().ok().copied());
+            let eval =
+                |what: &str, e: &gusset_units::expr::Expr, dim: gusset_units::Dim| -> Result<f64, CommandError> {
+                    let q = gusset_units::expr::eval(e, &scope)
+                        .map_err(|err| CommandError::args(format!("{what}: {}", err.message)))?;
+                    gusset_units::params::coerce(q, dim, units)
+                        .map(|q| q.value)
+                        .map_err(|m| CommandError::args(format!("{what}: {m}")))
+                };
+            let n = eval("count", &count, gusset_units::Dim::NONE)?;
+            if !n.is_finite() || (n - n.round()).abs() > 1e-6 || !(2.0..=MAX_COPIES).contains(&n.round()) {
+                return Err(CommandError::args(format!(
+                    "count is {n}; it must be a whole number from 2 to {MAX_COPIES}"
+                ))
+                .hint("the count includes the original"));
+            }
+            let d = sketch_mut(doc, &sk)?;
+            for e in &self.entities {
+                match d.entities.iter().find(|x| &x.id == e).map(|x| &x.geom) {
+                    None => return Err(CommandError::not_found(format!("no entity '{e}' in {sk}"))),
+                    Some(SkGeom::Point { .. }) => {
+                        return Err(CommandError::args(format!(
+                            "'{e}' is a point; patterns repeat lines, circles, arcs and splines"
+                        )));
+                    }
+                    Some(_) => {}
+                }
+                if let Some(p) = d.patterns.iter().find(|p| p.of.contains(e) && Some(&p.id) != self.id.as_ref()) {
+                    return Err(CommandError::args(format!("'{e}' already belongs to pattern {}", p.id))
+                        .hint("pass that id to replace it, or delete it first"));
+                }
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            if self.entities.is_empty() || !self.entities.iter().all(|e| seen.insert(e)) {
+                return Err(CommandError::args("entities must be a non-empty list without repeats"));
+            }
+            let kind = match kind_name {
+                "linear" => {
+                    let dx = parse_expr("dx", self.dx.as_deref().unwrap_or("0 mm"))?;
+                    let dy = parse_expr("dy", self.dy.as_deref().unwrap_or("0 mm"))?;
+                    let (x, y) =
+                        (eval("dx", &dx, gusset_units::Dim::LENGTH)?, eval("dy", &dy, gusset_units::Dim::LENGTH)?);
+                    if x.hypot(y) < 1e-9 {
+                        return Err(CommandError::args("dx and dy are both zero, so the copies would overlap")
+                            .hint("give a spacing, for example dx: 10 mm"));
+                    }
+                    SkPatternKind::Linear { dx, dy }
+                }
+                "circular" => {
+                    let center = self
+                        .center
+                        .clone()
+                        .ok_or_else(|| CommandError::args("a circular pattern needs a center point"))?;
+                    if !matches!(
+                        d.entities.iter().find(|x| x.id == center).map(|x| &x.geom),
+                        Some(SkGeom::Point { .. })
+                    ) {
+                        return Err(CommandError::args(format!("center '{center}' is not a point of {sk}")));
+                    }
+                    let angle = parse_expr("angle", self.angle.as_deref().unwrap_or("360 deg"))?;
+                    if eval("angle", &angle, gusset_units::Dim::ANGLE)?.abs() < 1e-9 {
+                        return Err(
+                            CommandError::args("the angle is zero").hint("enter the total angle, for example 360 deg")
+                        );
+                    }
+                    SkPatternKind::Circular { center, angle }
+                }
+                other => return Err(CommandError::args(format!("kind must be linear or circular, not '{other}'"))),
+            };
+            let id = match &self.id {
+                Some(id) => {
+                    if !d.patterns.iter().any(|p| &p.id == id) {
+                        return Err(CommandError::not_found(format!("no pattern '{id}' in {sk}")));
+                    }
+                    id.clone()
+                }
+                None => new_id(d, 'g'),
+            };
+            let pattern = SkPattern { id: id.clone(), kind, of: self.entities.clone(), count: count.clone() };
+            match d.patterns.iter_mut().find(|p| p.id == id) {
+                Some(slot) => *slot = pattern,
+                None => d.patterns.push(pattern),
+            }
+            store_solution(doc, &sk);
+            Ok(json!({ "pattern": id, "copies": n.round() - 1.0 }))
+        })?;
+        let status = sketch_status(s, ctx, &sk, false)?;
+        Ok(merge(out, json!({ "sketch_status": status })))
+    }
 }

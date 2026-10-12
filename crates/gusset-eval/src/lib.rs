@@ -15,6 +15,7 @@
 mod datum;
 pub mod error;
 mod ops;
+mod pattern;
 pub mod sketch;
 
 pub use error::{ErrorCode, EvalError};

@@ -182,8 +182,10 @@ about the solved centre point (`step = angle / count` for a full turn, else
   take part in regions (so a pattern of holes in a plate is a pattern of circles inside the
   plate outline) and in extrusions. Their lateral faces are named
   `side(<sketch>/<copy id>)`, e.g. `Extrude1/side(Sketch1/c7_2)`; `entity_tag` encodes the
-  copy number in the tag's upper bits. Copy ids are stable for a given `j`; lowering the
-  count removes the highest `j`.
+  copy number in tag bits 40..52 (spline segments use 52..64). Copy numbers `j = 1..count-1`
+  are stable; lowering the count removes the highest `j`, so references to the remaining
+  copies survive. A region's id can name a copy (`regions(l5_2)`), the validator accepts
+  `<source>_<j>` when `<source>` is in a pattern.
 * A source curve may belong to one pattern only; patterns of patterns (grids) are not
   supported yet (use two sketches or a body pattern). Sources are lines, circles, arcs and
   splines, not points. Deleting a source removes it from the pattern; deleting the centre

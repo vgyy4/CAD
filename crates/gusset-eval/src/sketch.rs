@@ -1,6 +1,7 @@
 //! Turning a document sketch into a solved sketch and kernel profiles.
 
 use crate::error::{ErrorCode, EvalError};
+use crate::pattern;
 use gusset_doc::{SkConstraintKind, SkGeom, SketchDef};
 use gusset_kernel::{Frame, Loop2, Profile, ProfileEdge, Region2, Seg2};
 use gusset_naming::entity_tag;
@@ -266,18 +267,65 @@ pub(crate) fn solve_sketch(
             line_points.insert(e.id.clone(), (*pa, *pb));
         }
     }
+    // Pattern copies: derived from the solved sources (ADR 0016 §4), part of the arrangement.
+    let derived = pattern::derive(name, def, params, units, &result.points, &result.radii)?;
+    let mut arr_sketch = r.sketch.clone();
+    let mut dback: BTreeMap<sk::EntityId, String> = back.iter().map(|(k, v)| (*k, (*v).to_string())).collect();
+    let mut dids: BTreeMap<String, sk::EntityId> = BTreeMap::new();
+    let bad = |what: &str, e: sk::SketchError| err(ErrorCode::InvalidSketch, format!("pattern copy {what}: {e}"));
+    for (id, pos) in &derived.points {
+        let e = arr_sketch.add_point(*pos).map_err(|e| bad(id, e))?;
+        dids.insert(id.clone(), e);
+        dback.insert(e, id.clone());
+        result.points.insert(id.clone(), *pos);
+    }
+    for c in &derived.curves {
+        let get = |dids: &BTreeMap<String, sk::EntityId>, p: &String| {
+            dids.get(p)
+                .copied()
+                .ok_or_else(|| err(ErrorCode::InvalidSketch, format!("pattern copy {}: no point {p}", c.id)))
+        };
+        let added = match &c.geom {
+            SkGeom::Line { a, b } => {
+                result.lines.push((c.id.clone(), a.clone(), b.clone()));
+                arr_sketch.add_line_between(get(&dids, a)?, get(&dids, b)?)
+            }
+            SkGeom::Circle { center, radius } => {
+                result.circles.push((c.id.clone(), center.clone()));
+                result.radii.insert(c.id.clone(), *radius);
+                arr_sketch.add_circle_at(get(&dids, center)?, *radius)
+            }
+            SkGeom::Arc { center, start, end } => {
+                result.arcs.push((c.id.clone(), center.clone(), start.clone(), end.clone()));
+                arr_sketch.add_arc_between(get(&dids, center)?, get(&dids, start)?, get(&dids, end)?)
+            }
+            SkGeom::Spline { points, closed } => {
+                let fit = points.iter().map(|p| get(&dids, p)).collect::<Result<Vec<_>, _>>()?;
+                let pts: Vec<[f64; 2]> = points.iter().filter_map(|p| result.points.get(p).copied()).collect();
+                result.splines.push((c.id.clone(), sk::spline_polyline(&pts, *closed, 16)));
+                arr_sketch.add_spline(&fit, *closed)
+            }
+            SkGeom::Point { .. } => continue,
+        }
+        .map_err(|e| bad(&c.id, e))?;
+        if c.construction {
+            arr_sketch.set_construction(added, true).map_err(|e| bad(&c.id, e))?;
+        }
+        dback.insert(added, c.id.clone());
+    }
+    let dnames = |v: &[sk::EntityId]| v.iter().filter_map(|i| dback.get(i).cloned()).collect::<Vec<_>>();
     let mut profiles = Vec::new();
     let mut crossings = false;
-    match sk::arrange(&r.sketch, 1e-6) {
+    match sk::arrange(&arr_sketch, 1e-6) {
         Ok(arr) if arr.profiles.is_empty() && !arr.open_ends.is_empty() => {
-            result.open_ends = names(&arr.open_ends);
+            result.open_ends = dnames(&arr.open_ends);
             result.regions = Err(format!("the profile is not closed (open at {})", result.open_ends.join(", ")));
         }
         Ok(arr) => {
             crossings = arr.crossings;
-            result.open_ends = names(&arr.open_ends);
+            result.open_ends = dnames(&arr.open_ends);
             let seg_of = |seg: &sk::Segment| -> ProfileEdge {
-                let tag = back.get(&seg.entity).and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
+                let tag = dback.get(&seg.entity).and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
                 let tag = if matches!(seg.curve, sk::Curve::Bezier { .. }) {
                     gusset_naming::with_segment(tag, seg.sub)
                 } else {
@@ -296,13 +344,12 @@ pub(crate) fn solve_sketch(
             let mut order: Vec<(String, Rank, usize)> = Vec::new();
             let mut outers: Vec<Vec<String>> = Vec::new();
             for (pi, p) in arr.profiles.iter().enumerate() {
-                let mut outer: Vec<String> =
-                    p.outer.entities().iter().filter_map(|e| back.get(e).map(|s| (*s).to_string())).collect();
+                let mut outer: Vec<String> = p.outer.entities().iter().filter_map(|e| dback.get(e).cloned()).collect();
                 outer.sort_by_key(|i| id_key(i));
                 outer.dedup();
                 let primary = outer.first().cloned().unwrap_or_default();
                 let mut rank: Vec<(u64, u32)> =
-                    p.pieces.iter().map(|(e, piece)| (back.get(e).map_or(u64::MAX, |d| id_key(d)), *piece)).collect();
+                    p.pieces.iter().map(|(e, piece)| (dback.get(e).map_or(u64::MAX, |d| id_key(d)), *piece)).collect();
                 rank.sort_unstable();
                 order.push((primary, rank, pi));
                 outers.push(outer);
@@ -325,10 +372,10 @@ pub(crate) fn solve_sketch(
         Err(e) => {
             let msg = match &e {
                 sk::ProfileError::Open { entities } => {
-                    format!("the profile is not closed (open at {})", names(entities).join(", "))
+                    format!("the profile is not closed (open at {})", dnames(entities).join(", "))
                 }
                 sk::ProfileError::SelfIntersecting { a, b, .. } => {
-                    format!("{} and {} overlap along a stretch", names(&[*a]).join(""), names(&[*b]).join(""))
+                    format!("{} and {} overlap along a stretch", dnames(&[*a]).join(""), dnames(&[*b]).join(""))
                 }
                 other => other.to_string(),
             };

@@ -141,6 +141,18 @@ fn print_feature(out: &mut String, f: &Feature) {
                 }
                 let _ = writeln!(out, "  {} = {}({})", c.id, c.kind.keyword(), parts.join(", "));
             }
+            for p in &s.patterns {
+                let of = p.of.join(", ");
+                let line = match &p.kind {
+                    SkPatternKind::Linear { dx, dy } => {
+                        format!("pattern_linear(of: [{of}], count: {}, dx: {dx}, dy: {dy})", p.count)
+                    }
+                    SkPatternKind::Circular { center, angle } => {
+                        format!("pattern_circular(of: [{of}], center: {center}, count: {}, angle: {angle})", p.count)
+                    }
+                };
+                let _ = writeln!(out, "  {} = {line}", p.id);
+            }
             out.push_str("}\n");
             return;
         }
@@ -938,6 +950,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         next_id: next_id.unwrap_or(0),
         entities: Vec::new(),
         constraints: Vec::new(),
+        patterns: Vec::new(),
     };
     let derive_next_id = next_id.is_none();
     let open_line = c.line;
@@ -956,13 +969,21 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         if code.trim() == "}" {
             break;
         }
-        if def.entities.len() + def.constraints.len() >= MAX_SKETCH_ITEMS {
+        if def.entities.len() + def.constraints.len() + def.patterns.len() >= MAX_SKETCH_ITEMS {
             return Err(perr(lineno, format!("sketch has more than {MAX_SKETCH_ITEMS} items")));
         }
         let mut lc = Cursor::new(code, lineno);
         let id = lc.ident()?.to_string();
         lc.expect('=')?;
         let kind = lc.ident()?;
+        if kind == "pattern_linear" || kind == "pattern_circular" {
+            let pattern = parse_sketch_pattern(&mut lc, id, kind == "pattern_circular")?;
+            if !lc.at_end() {
+                return Err(lc.err("unexpected text after pattern"));
+            }
+            def.patterns.push(pattern);
+            continue;
+        }
         lc.expect('(')?;
         match kind {
             "point" | "line" | "circle" | "arc" | "spline" => {
@@ -1022,7 +1043,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 let Some(ck) = SkConstraintKind::from_keyword(other) else {
                     return Err(lc.err_hint(
                         format!("unknown sketch item '{other}'"),
-                        "entities: point, line, circle, arc, spline; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric",
+                        "entities: point, line, circle, arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric",
                     ));
                 };
                 let (n, has_value) = ck.arity();
@@ -1051,10 +1072,74 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         // Largest numeric suffix of any id (`p3`, `k12`); ids that do not look like one
         // are left for the validator to report.
         let suffix = |id: &str| id.get(1..).and_then(|n| n.parse::<u32>().ok());
-        let max = def.entities.iter().map(|e| e.id.as_str()).chain(def.constraints.iter().map(|k| k.id.as_str()));
+        let max = def
+            .entities
+            .iter()
+            .map(|e| e.id.as_str())
+            .chain(def.constraints.iter().map(|k| k.id.as_str()))
+            .chain(def.patterns.iter().map(|g| g.id.as_str()));
         def.next_id = max.filter_map(suffix).max().map_or(1, |m| m.saturating_add(1));
     }
     Ok((Feature { name, label, note: None, suppressed, kind: FeatureKind::Sketch(def) }, i))
+}
+
+/// Parses the arguments of `pattern_linear(...)` / `pattern_circular(...)` (the cursor is at `(`).
+fn parse_sketch_pattern(c: &mut Cursor<'_>, id: String, circular: bool) -> Result<SkPattern, ParseError> {
+    let (mut of, mut count, mut dx, mut dy, mut center, mut angle) = (None, None, None, None, None, None);
+    parse_args(c, |key, c| {
+        match (key, circular) {
+            ("of", _) => {
+                c.expect('[')?;
+                let mut list = Vec::new();
+                if !c.eat(']') {
+                    loop {
+                        list.push(c.ident()?.to_string());
+                        if list.len() > MAX_LIST_ITEMS {
+                            return Err(c.err("too many pattern sources"));
+                        }
+                        if !c.eat(',') {
+                            break;
+                        }
+                    }
+                    c.expect(']')?;
+                }
+                of = Some(list);
+            }
+            ("count", _) => count = Some(c.expr()?),
+            ("dx", false) => dx = Some(c.expr()?),
+            ("dy", false) => dy = Some(c.expr()?),
+            ("center", true) => center = Some(c.ident()?.to_string()),
+            ("angle", true) => angle = Some(c.expr()?),
+            (other, _) => {
+                let allowed = if circular { "of, center, count, angle" } else { "of, count, dx, dy" };
+                return Err(unknown_arg(
+                    c,
+                    if circular { "pattern_circular" } else { "pattern_linear" },
+                    other,
+                    allowed,
+                ));
+            }
+        }
+        Ok(())
+    })?;
+    let kw = if circular { "pattern_circular" } else { "pattern_linear" };
+    let kind = if circular {
+        SkPatternKind::Circular {
+            center: center.ok_or_else(|| missing(c, kw, "center"))?,
+            angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
+        }
+    } else {
+        SkPatternKind::Linear {
+            dx: dx.ok_or_else(|| missing(c, kw, "dx"))?,
+            dy: dy.ok_or_else(|| missing(c, kw, "dy"))?,
+        }
+    };
+    Ok(SkPattern {
+        id,
+        kind,
+        of: of.ok_or_else(|| missing(c, kw, "of"))?,
+        count: count.ok_or_else(|| missing(c, kw, "count"))?,
+    })
 }
 
 /// Convenience: parse a single face reference (for MCP/GUI input).

@@ -341,6 +341,20 @@ fn check_sketch_entity(
         out.push(issue(n, format!("'{sketch}' is not a sketch")));
         return;
     };
+    // A pattern copy (`l5_2`) is named by its source entity plus the copy number.
+    let copy_of = |id: &str| -> Option<String> {
+        let (base, k) = id.rsplit_once('_')?;
+        let ok = !k.is_empty()
+            && k.bytes().all(|b| b.is_ascii_digit())
+            && s.patterns.iter().any(|p| p.of.iter().any(|o| o == base));
+        ok.then(|| base.to_string())
+    };
+    let entity = if s.entities.iter().any(|e| e.id == entity) {
+        entity.to_string()
+    } else {
+        copy_of(entity).unwrap_or_else(|| entity.to_string())
+    };
+    let entity = entity.as_str();
     match s.entities.iter().find(|e| e.id == entity) {
         None => out.push(issue(n, format!("sketch '{sketch}' has no entity '{entity}'"))),
         Some(e) => {
@@ -446,7 +460,45 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
             }
         }
     }
+    let mut sourced: BTreeSet<&str> = BTreeSet::new();
+    for p in &s.patterns {
+        check_id(&p.id, &['g'], out);
+        if !ids.insert(p.id.as_str()) {
+            out.push(issue(n, format!("sketch id '{}' is used twice", p.id)));
+        }
+        if p.of.is_empty() {
+            out.push(issue(n, format!("pattern '{}' has no source curves", p.id)));
+        }
+        if p.of.len() > MAX_PATTERN_SOURCES {
+            out.push(issue(n, format!("pattern '{}' has more than {MAX_PATTERN_SOURCES} sources", p.id)));
+        }
+        for o in &p.of {
+            match kinds.get(o.as_str()) {
+                Some('l' | 'c' | 'a' | 's') => {
+                    if !sourced.insert(o.as_str()) {
+                        out.push(issue_h(
+                            n,
+                            format!("'{o}' is a source of two patterns (or twice in one)"),
+                            "a curve can belong to one pattern only",
+                        ));
+                    }
+                }
+                Some(_) => {
+                    out.push(issue(n, format!("pattern '{}': '{o}' is not a line, circle, arc or spline", p.id)))
+                }
+                None => out.push(issue(n, format!("pattern '{}' refers to unknown entity '{o}'", p.id))),
+            }
+        }
+        if let SkPatternKind::Circular { center, .. } = &p.kind
+            && kinds.get(center.as_str()) != Some(&'p')
+        {
+            out.push(issue(n, format!("pattern '{}': centre '{center}' is not a point of this sketch", p.id)));
+        }
+    }
 }
+
+/// Most source curves one sketch pattern may name.
+pub const MAX_PATTERN_SOURCES: usize = 1000;
 
 #[cfg(test)]
 mod tests {

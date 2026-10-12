@@ -57,7 +57,9 @@ Phase 3 has started (see Next).
    - v0.2: done: shell, mirror, linear/circular body patterns (OCCT golden tests;
      agent ergonomics F2-5..F2-11), offset/angled datum planes, body move/copy and
      combine (a single feature is patterned as its own body, then combined into the
-     part; OCCT golden tests). Next: sketch patterns, sketch trim and spline curves,
+     part; OCCT golden tests), sketch region arrangement (crossing curves form regions),
+     `sketch.trim`, spline curves (centripetal Catmull-Rom through ordinary points) and
+     sketch patterns (ADR 0016; OCCT golden tests in `modeling_sketch.rs`). Next:
      sweep/loft, holes.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
@@ -72,9 +74,11 @@ Phase 3 has started (see Next).
    fixed in e05714d. The owner re-creates v0.1.0-mvp on a green head.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
-- Splines and feature-level patterns (patterns repeat whole bodies; combine merges one
-  feature's body into the part) (dogfooding F-M4..M7).
-- Sketch trim / region arrangement from crossing curves (F-M8).
+- Feature-level patterns (patterns repeat whole bodies; combine merges one feature's body
+  into the part) (dogfooding F-M4..M7). Sketch-level patterns exist (ADR 0016).
+- Sketch arrangement limits (ADR 0016): curves that overlap along a stretch are an error;
+  a spline's tangential touch with another curve is not detected; splines cannot be
+  trimmed; pattern copies cannot carry constraints or be trimmed; no patterns of patterns.
 
 ## Decisions made without the owner (easy to reverse)
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is

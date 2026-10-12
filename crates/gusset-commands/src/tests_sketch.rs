@@ -267,3 +267,125 @@ fn the_mock_kernel_reports_splines_as_unsupported_not_a_panic() {
     assert_eq!(e["rebuild_ok"], false, "{e}");
     assert!(e["new_errors"].to_string().contains("straight edges"), "{e}");
 }
+
+fn rect_sketch(s: &mut Session, u: &CmdCtx) {
+    run(s, u, "param.set", json!({"name": "n", "expr": "3"}));
+    run(s, u, "param.set", json!({"name": "pitch", "expr": "30 mm"}));
+    run(s, u, "sketch.create", json!({"plane": "XY"}));
+    run(
+        s,
+        u,
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 6, "width_expr": "10 mm", "height_expr": "6 mm"}),
+    );
+}
+
+#[test]
+fn linear_sketch_pattern_makes_copies_that_follow_parameters() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    rect_sketch(&mut s, &u);
+    // The rectangle's lines are l5..l8.
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5", "l6", "l7", "l8"], "count": "n", "dx": "pitch"}),
+    );
+    assert_eq!(r["pattern"], "g15", "{r}");
+    assert_eq!(r["copies"], 2.0, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("g15 = pattern_linear(of: [l5, l6, l7, l8], count: n, dx: pitch, dy: 0 mm)"), "{text}");
+    let regs = regions(&mut s, &u, "Sketch1");
+    assert_eq!(regs.len(), 3, "{regs:?}");
+    assert!(regs.iter().all(|r| (r.1 - 60.0).abs() < 1e-6), "{regs:?}");
+    assert!(regs.iter().any(|r| r.0 == "l5_2"), "copy ids are l5_2 etc: {regs:?}");
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
+    assert_eq!(q["points"]["p1_2"], json!([60.0, 0.0]), "{q}");
+    // Extrude all three copies, then change count and spacing: the solid follows.
+    let e = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "2 mm"}));
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    assert!((volume(&mut s, &u) - 3.0 * 60.0 * 2.0).abs() < 1e-6);
+    run(&mut s, &u, "param.set", json!({"name": "n", "expr": "5"}));
+    assert!((volume(&mut s, &u) - 5.0 * 60.0 * 2.0).abs() < 1e-6, "{}", volume(&mut s, &u));
+    run(&mut s, &u, "param.set", json!({"name": "pitch", "expr": "12 mm"}));
+    // 12 mm pitch overlaps 10 mm wide copies? no: they are 2 mm apart, still separate.
+    assert!((volume(&mut s, &u) - 5.0 * 60.0 * 2.0).abs() < 1e-6);
+    // One copy by id.
+    let e = run(
+        &mut s,
+        &u,
+        "feature.extrude",
+        json!({"sketch": "Sketch1", "regions": ["l5_3"], "distance": "1 mm", "body_name": "One"}),
+    );
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    // A count that is not a whole number fails the sketch with a hint instead of rounding.
+    let bad = run(&mut s, &u, "param.set", json!({"name": "n", "expr": "2.5"}));
+    assert_eq!(bad["rebuild_ok"], false, "{bad}");
+    assert!(bad["new_errors"].to_string().contains("whole number"), "{bad}");
+    run(&mut s, &u, "history.undo", json!({}));
+    // Deleting the pattern's sources is refused while a feature names one of its copies.
+    let e = fail(&mut s, &u, "sketch.delete_items", json!({"sketch": "Sketch1", "ids": ["l5", "l6", "l7", "l8"]}));
+    assert_eq!(e.code, "invalid_document", "{e:?}");
+    run(&mut s, &u, "history.undo", json!({}));
+    // Deleting a source removes it from the pattern; deleting all removes the pattern.
+    let d = run(&mut s, &u, "sketch.delete_items", json!({"sketch": "Sketch1", "ids": ["l5", "l6", "l7", "l8"]}));
+    assert!(d["deleted"].to_string().contains("l5"), "{d}");
+    assert!(!s.document(&gusset_history::Actor::User).unwrap().to_text().contains("pattern_linear"));
+}
+
+#[test]
+fn circular_sketch_pattern_and_clean_errors() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    rect_sketch(&mut s, &u);
+    let c = run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 50, "y1": 50, "x2": 51, "y2": 50}));
+    let _ = c;
+    // Centre: the origin point of the rectangle's first corner is p1; rotate the rectangle
+    // about a far point p9 four times.
+    let p = run(
+        &mut s,
+        &u,
+        "sketch.add_line",
+        json!({"sketch": "Sketch1", "x1": 100, "y1": 100, "x2": 101, "y2": 100, "construction": true}),
+    );
+    let centre = p["points"][0].as_str().unwrap().to_string();
+    for (args, why) in [
+        (json!({"kind": "linear", "entities": ["l5"], "count": "1", "dx": "5 mm"}), "whole number from 2"),
+        (json!({"kind": "linear", "entities": ["l5"], "count": "2.5", "dx": "5 mm"}), "whole number"),
+        (json!({"kind": "linear", "entities": ["l5"], "count": "2"}), "overlap"),
+        (json!({"kind": "linear", "entities": ["p1"], "count": "2", "dx": "5 mm"}), "point"),
+        (json!({"kind": "linear", "entities": ["l99"], "count": "2", "dx": "5 mm"}), "no entity"),
+        (json!({"kind": "linear", "entities": [], "count": "2", "dx": "5 mm"}), "non-empty"),
+        (json!({"kind": "circular", "entities": ["l5"], "count": "3"}), "center"),
+        (json!({"kind": "circular", "entities": ["l5"], "count": "3", "center": "l6"}), "not a point"),
+        (json!({"kind": "spiral", "entities": ["l5"], "count": "3"}), "linear or circular"),
+        (json!({"kind": "linear", "entities": ["l5"], "count": "501", "dx": "5 mm"}), "from 2 to"),
+        (json!({"kind": "linear", "entities": ["l5"], "count": "3", "dx": "5 foo"}), "dx"),
+    ] {
+        let mut a = args.clone();
+        a["sketch"] = json!("Sketch1");
+        let e = fail(&mut s, &u, "sketch.pattern", a);
+        assert!(e.message.contains(why), "{why}: {e:?}");
+        assert!(matches!(e.code.as_str(), "invalid_args" | "not_found"), "{e:?}");
+    }
+    run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "circular", "entities": ["l5", "l6", "l7", "l8"], "count": "4", "center": centre, "angle": "270 deg"}),
+    );
+    assert_eq!(regions(&mut s, &u, "Sketch1").len(), 4);
+    // A curve belongs to one pattern.
+    let e = fail(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5"], "count": "2", "dx": "5 mm"}),
+    );
+    assert!(e.message.contains("already belongs"), "{e:?}");
+    // The text round-trips.
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    let again = gusset_doc::Document::from_text(&text).unwrap();
+    assert_eq!(again.to_text(), text);
+}
