@@ -136,8 +136,14 @@ const EN: &[(&str, &str)] = &[
     ("unrecovered.done", "Unsaved work recovered. Save it to keep it."),
     ("approval.always_action", "Always allow this action for"),
     ("approval.always_all", "Always allow all actions for"),
-    ("approval.always_all_help", "Except deleting branches and overwriting files, which always ask"),
-    ("approval.always_all_excluded", "Deleting and overwriting always ask; grant this action on its own instead"),
+    (
+        "approval.always_all_help",
+        "Except setting or editing the main branch, deleting branches and overwriting files, which always ask",
+    ),
+    (
+        "approval.always_all_excluded",
+        "Main-branch changes, deleting and overwriting always ask; grant this action on its own instead",
+    ),
     ("approval.always_remember", "Remember after restart"),
     (
         "approval.always_remember_help",

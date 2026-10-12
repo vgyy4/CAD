@@ -378,6 +378,54 @@ fn find_branch(s: &Session, r: &str) -> Result<BranchId, CommandError> {
 /// approval prompts: ids alone ("b2") would let an agent hide which branch is affected.
 /// Names are user/agent text; callers show the result as plain text.
 #[must_use]
+/// What an approval prompt should show beside the raw arguments (resolved by the
+/// server, so an agent cannot dress it up): the branches the arguments name, whether
+/// the change targets main, and for `document.set_text` what the new text actually
+/// changes (security re-review 4: raw arguments are clipped in the prompt).
+pub fn describe_approval(s: &Session, actor: &gusset_history::Actor, command: &str, args: &Value) -> String {
+    let mut parts = Vec::new();
+    let branches = describe_branch_args(s, args);
+    if !branches.is_empty() {
+        parts.push(branches);
+    }
+    if s.current_branch(actor) == s.history().main() {
+        parts.push("target: the main branch".to_string());
+    }
+    if command == "document.set_text"
+        && let Some(text) = args.get("text").and_then(Value::as_str)
+    {
+        match (Document::from_text(text), s.document(actor)) {
+            (Ok(new), Ok(cur)) => {
+                let d = gusset_history::diff::diff_documents(&cur, &new);
+                let count = |v: &[gusset_history::ItemChange], want: fn(&gusset_history::Change) -> bool| {
+                    let names: Vec<&str> = v.iter().filter(|c| want(&c.change)).map(|c| c.name.as_str()).collect();
+                    let shown: Vec<&str> = names.iter().take(8).copied().collect();
+                    let more = if names.len() > shown.len() { ", …" } else { "" };
+                    if names.is_empty() { None } else { Some(format!("{} ({}{more})", names.len(), shown.join(", "))) }
+                };
+                let add = |c: &gusset_history::Change| matches!(c, gusset_history::Change::Added);
+                let rem = |c: &gusset_history::Change| matches!(c, gusset_history::Change::Removed);
+                let modi = |c: &gusset_history::Change| matches!(c, gusset_history::Change::Modified { .. });
+                let mut ch = Vec::new();
+                for (what, v) in [("features", &d.features), ("parameters", &d.params)] {
+                    for (verb, f) in [("added", add as fn(&_) -> bool), ("changed", modi), ("removed", rem)] {
+                        if let Some(c) = count(v, f) {
+                            ch.push(format!("{what} {verb}: {c}"));
+                        }
+                    }
+                }
+                if d.units_changed {
+                    ch.push("units changed".into());
+                }
+                parts.push(if ch.is_empty() { "no changes".into() } else { ch.join("; ") });
+            }
+            (Err(_), _) => parts.push("the new text does not parse".into()),
+            (_, Err(_)) => {}
+        }
+    }
+    parts.join("; ")
+}
+
 pub fn describe_branch_args(s: &Session, args: &Value) -> String {
     let mut out = Vec::new();
     let main = s.history().main();

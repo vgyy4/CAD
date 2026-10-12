@@ -699,7 +699,7 @@ impl App {
             let a = &mut self.agents.always;
             ui.add_space(theme::SPACE[2]);
             ui.checkbox(&mut a.this_action, format!("{} \"{who}\"", tr("approval.always_action")));
-            let blanket = gusset_mcp::grants::blanket_ok(&r.command);
+            let blanket = gusset_mcp::grants::blanket_ok(&r.command) && !r.main_edit;
             ui.add_enabled_ui(blanket, |ui| {
                 ui.checkbox(&mut a.all_actions, format!("{} \"{who}\"", tr("approval.always_all")))
                     .on_hover_text(tr("approval.always_all_help"))

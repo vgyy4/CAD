@@ -838,3 +838,28 @@ fn inserting_while_rolled_back_is_evaluated_and_undone_as_one_step() {
     assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n + 1);
     assert_eq!(s.history().branch(b).unwrap().rollback, Some(n));
 }
+
+#[test]
+fn approval_summary_shows_what_set_text_changes() {
+    // Security re-review 4: the prompt shows a server-computed summary of the change.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let mut text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    text.push_str("param extra = 3 mm\n");
+    let d = crate::commands::describe_approval(
+        &s,
+        &gusset_history::Actor::User,
+        "document.set_text",
+        &json!({"text": text}),
+    );
+    assert!(d.contains("target: the main branch"), "{d}");
+    assert!(d.contains("parameters added: 1 (extra)"), "{d}");
+    let bad = crate::commands::describe_approval(
+        &s,
+        &gusset_history::Actor::User,
+        "document.set_text",
+        &json!({"text": "nope"}),
+    );
+    assert!(bad.contains("does not parse"), "{bad}");
+}

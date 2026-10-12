@@ -67,6 +67,12 @@ impl CommandError {
             .details(serde_json::json!({ "issues": msgs }))
     }
 
+    /// Approval for a change to the main branch: never covered by an agent's blanket
+    /// "always allow all actions" grant (details `approval: main_branch`).
+    pub fn approval_main() -> Self {
+        Self::approval("editing the main branch").details(serde_json::json!({ "approval": "main_branch" }))
+    }
+
     pub fn approval(action: &str) -> Self {
         CommandError::new("approval_required", format!("{action} needs the user's approval"))
             .hint("the request was sent to the user; do not try to work around it")

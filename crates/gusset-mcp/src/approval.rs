@@ -27,6 +27,9 @@ pub struct ApprovalRequest {
     pub arguments: String,
     /// What the arguments refer to, resolved by the server (e.g. which branch is main).
     pub context: String,
+    /// The approval is for changing the main branch: "all actions" grants never cover
+    /// it, and the in-app prompt does not offer that choice.
+    pub main_edit: bool,
 }
 
 impl ApprovalRequest {

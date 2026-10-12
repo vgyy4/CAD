@@ -890,9 +890,28 @@ async fn blanket_grant_still_asks_for_destructive_actions() {
     server.set_approval_provider(prompt.clone());
     let c = connect(&server, Client::new("bot", None), false).await;
     ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
-    ok(&call(&c, "branch_set_main", json!({"branch": "agent/bot-1"})).await);
     ok(&call(&c, "branch_create", json!({"name": "scratch"})).await);
+    // The in-app answer to this prompt creates the "all actions" grant.
+    ok(&call(&c, "branch_set_main", json!({"branch": "agent/bot-1"})).await);
     let r = call(&c, "branch_delete", json!({"branch": "scratch", "confirm": true})).await;
     assert_eq!(err_code(&r), "approval_denied", "destructive: asked, not covered");
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blanket_grant_never_covers_main() {
+    // Security re-review 3: "all actions" does not cover set main or edits of main.
+    use gusset_mcp::grants::GrantScope;
+    let server = McpServer::new(host());
+    let prompt = Arc::new(AlwaysOnce { scope: GrantScope::All, asked: AtomicUsize::new(0) });
+    server.set_approval_provider(prompt.clone());
+    let c = connect(&server, Client::new("bot", None), false).await;
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+    // First approval (set main) creates the grant through the in-app answer.
+    ok(&call(&c, "branch_set_main", json!({"branch": "agent/bot-1"})).await);
+    assert_eq!(prompt.asked.load(Ordering::SeqCst), 1);
+    // Editing main (now agent/bot-1 is main, so the agent edits main): asked again.
+    let r = call(&c, "param_set", json!({"name": "w", "expr": "2 mm"})).await;
+    assert_eq!(err_code(&r), "approval_denied", "{r:?}");
     assert_eq!(prompt.asked.load(Ordering::SeqCst), 2);
 }

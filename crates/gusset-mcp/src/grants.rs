@@ -74,16 +74,19 @@ impl Grant {
     }
 }
 
-/// Whether "all actions" may cover `command`: registered, and neither destructive nor
-/// writing files.
+/// Whether "all actions" may cover `command`: registered, and neither destructive,
+/// writing files, nor a command that always needs approval (set main). Edits to the
+/// main branch are excluded too, by the caller ([`Grants::covering`] `main_edit`).
 #[must_use]
 pub fn blanket_ok(command: &str) -> bool {
-    gusset_commands::find(command).is_some_and(|s| !s.flags.destructive && !s.flags.writes_files && !s.flags.user_only)
+    gusset_commands::find(command)
+        .is_some_and(|s| !s.flags.destructive && !s.flags.writes_files && !s.flags.user_only && !s.flags.agent_approval)
 }
 
 fn valid(g: &Grant) -> bool {
+    // The identity is stored as derived once from the agent name (`identity_of`); it is
+    // not re-derived here, so a client named e.g. "gpt-5" keeps identity "gpt-5".
     crate::agents::sanitize_client_name(&g.agent) == g.agent
-        && crate::limits::identity_of(&g.agent) == g.agent
         && match &g.scope {
             GrantScope::Command(c) => gusset_commands::find(c).is_some_and(|s| !s.flags.user_only),
             GrantScope::All => true,
@@ -210,7 +213,9 @@ impl Grants {
     /// The grant that approves `command` for the agent named `agent`, if any (none while
     /// suspended).
     #[must_use]
-    pub fn covering(&self, agent: &str, command: &str) -> Option<Grant> {
+    /// `main_edit`: the approval is for changing the main branch, which only a grant
+    /// for exactly that command may cover (security re-review 3).
+    pub fn covering(&self, agent: &str, command: &str, main_edit: bool) -> Option<Grant> {
         let g = self.lock();
         if g.suspended {
             return None;
@@ -220,7 +225,7 @@ impl Grants {
         g.grants
             .iter()
             .find(|x| matches!(x.scope, GrantScope::Command(_)) && x.covers(id, command))
-            .or_else(|| g.grants.iter().find(|x| x.covers(id, command)))
+            .or_else(|| if main_edit { None } else { g.grants.iter().find(|x| x.covers(id, command)) })
             .cloned()
     }
 
@@ -282,25 +287,36 @@ mod tests {
         let g = Grants::default();
         g.add("claude-code-3", GrantScope::Command("branch.set_main".into()), false, 1).unwrap();
         // Another connection of the same client is the same identity.
-        assert!(g.covering("claude-code-7", "branch.set_main").is_some());
-        assert!(g.covering("claude-code-7", "branch.rename").is_none(), "other action");
-        assert!(g.covering("cursor-1", "branch.set_main").is_none(), "other agent");
-        assert!(g.covering("claude-code-x-1", "branch.set_main").is_none(), "prefix is not the identity");
+        assert!(g.covering("claude-code-7", "branch.set_main", false).is_some());
+        assert!(g.covering("claude-code-7", "branch.rename", false).is_none(), "other action");
+        assert!(g.covering("cursor-1", "branch.set_main", false).is_none(), "other agent");
+        assert!(g.covering("claude-code-x-1", "branch.set_main", false).is_none(), "prefix is not the identity");
     }
 
     #[test]
     fn blanket_grant_excludes_destructive_and_file_writes() {
         let g = Grants::default();
         g.add("claude-code-1", GrantScope::All, false, 1).unwrap();
-        assert!(g.covering("claude-code-2", "branch.set_main").is_some());
-        assert!(g.covering("claude-code-2", "document.set_text").is_some());
-        assert!(g.covering("claude-code-2", "branch.delete").is_none(), "destructive");
+        assert!(g.covering("claude-code-2", "document.set_text", false).is_some());
+        // Never by "all actions": set main, and any edit of the main branch.
+        assert!(g.covering("claude-code-2", "branch.set_main", false).is_none(), "set main");
+        assert!(g.covering("claude-code-2", "document.set_text", true).is_none(), "main-branch edit");
+        assert!(g.covering("claude-code-2", "branch.delete", false).is_none(), "destructive");
         let export = gusset_commands::registry().iter().find(|s| s.flags.writes_files).unwrap();
-        assert!(g.covering("claude-code-2", export.id).is_none(), "file write");
-        assert!(g.covering("claude-code-2", "no.such.command").is_none());
+        assert!(g.covering("claude-code-2", export.id, false).is_none(), "file write");
+        assert!(g.covering("claude-code-2", "no.such.command", false).is_none());
         // ...but a grant for exactly that action is honored.
         g.add("claude-code-1", GrantScope::Command("branch.delete".into()), false, 1).unwrap();
-        assert!(g.covering("claude-code-2", "branch.delete").is_some());
+        assert!(g.covering("claude-code-2", "branch.delete", false).is_some());
+    }
+
+    #[test]
+    fn clients_named_with_digits_keep_grants() {
+        // Security re-review 5: connection "gpt-5-1" has identity "gpt-5".
+        let g = Grants::default();
+        g.add("gpt-5-1", GrantScope::Command("branch.set_main".into()), false, 1).unwrap();
+        assert!(g.covering("gpt-5-2", "branch.set_main", false).is_some());
+        assert!(g.covering("gpt-1", "branch.set_main", false).is_none());
     }
 
     #[test]
@@ -321,12 +337,12 @@ mod tests {
         g.load(&p).unwrap();
         g.add("claude-code-1", GrantScope::All, true, 1).unwrap();
         g.set_suspended(true).unwrap();
-        assert!(g.covering("claude-code-1", "branch.set_main").is_none());
+        assert!(g.covering("claude-code-1", "document.set_text", false).is_none());
         let g2 = Grants::default();
         assert_eq!(g2.load(&p).unwrap(), 1);
-        assert!(g2.suspended() && g2.covering("claude-code-1", "branch.set_main").is_none());
+        assert!(g2.suspended() && g2.covering("claude-code-1", "document.set_text", false).is_none());
         g2.set_suspended(false).unwrap();
-        assert!(g2.covering("claude-code-1", "branch.set_main").is_some());
+        assert!(g2.covering("claude-code-1", "document.set_text", false).is_some());
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -359,8 +375,8 @@ mod tests {
         let g = Grants::default();
         assert!(g.load(&p).is_err());
         assert!(g.list().is_empty());
-        // Entries with an unsanitized agent, a numbered connection name, an unknown or
-        // user-only command, or not remembered are dropped.
+        // Entries with an unsanitized agent, an unknown or user-only command, or not
+        // remembered are dropped.
         let forged = serde_json::json!({"version": 1, "suspended": false, "grants": [
             {"agent": "Claude Code", "scope": "all", "remember": true, "created": 0},
             {"agent": "claude-code-1", "scope": "all", "remember": true, "created": 0},
@@ -369,8 +385,9 @@ mod tests {
             {"agent": "ok", "scope": "all", "remember": true, "created": 0}
         ]});
         std::fs::write(&p, forged.to_string()).unwrap();
-        assert_eq!(g.load(&p).unwrap(), 1);
-        assert_eq!(g.list().first().map(|x| x.agent.as_str()), Some("ok"));
+        // "claude-code-1" is a valid identity (a client may be named that way).
+        assert_eq!(g.load(&p).unwrap(), 2);
+        assert!(g.list().iter().any(|x| x.agent == "ok"));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

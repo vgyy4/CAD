@@ -105,15 +105,17 @@ same live model.
     `ApprovalDecision::ApprovedAlways`; tool arguments, elicitation answers and the
     headless server can neither create nor use a grant (headless ignores the store).
   - *Identity:* a grant names the agent identity, the sanitized client name without
-    the per-connection `-<n>` (the key rate limits use), so it covers reconnects and
-    restarts. Limit: the client name is self-declared, so any client holding the
+    the per-connection `-<n>` (the key rate limits use), derived once when the grant is
+    made, so it covers reconnects and restarts. Limit: the client name is self-declared, so any client holding the
     bearer token can claim it. Per the trust model above, a token holder already is
     the local user; grants are a convenience boundary against a well-behaved agent
     overreaching, not a defense against hostile same-user code. Per-agent
     credentials would not change that and are not worth their setup cost now.
-  - *Scope:* one command, or all commands that are neither destructive nor write files.
-    Deleting branches and overwriting exports always ask unless that exact action was
-    granted; the prompt disables "all actions" for such requests.
+  - *Scope:* one command, or "all actions": every command that is not destructive,
+    does not write files and does not always need approval, and never an edit of the
+    main branch. Setting main, editing main, deleting branches and overwriting exports
+    always ask unless that exact action was granted; the prompt disables "all actions"
+    for such requests (amended after the 2026-10-12 security re-review).
   - *Lifetime:* session-only unless "remember" is ticked. Remembered grants live in
     `<data dir>/agent-grants.json`, owner-only (0600 file in a 0700 directory), written
     with `durable_write`. A symlink, an oversized file or bad JSON gives no grants;

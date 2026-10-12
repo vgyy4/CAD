@@ -159,6 +159,7 @@ fn approval_request(args: &str) -> ApprovalRequest {
         reason: "Agents need human approval to change the main branch".into(),
         arguments: args.into(),
         context: "branch: b2 = \"agent/x\", created by agent x, not main".into(),
+        main_edit: false,
     }
 }
 
@@ -269,10 +270,10 @@ fn agents_panel_lists_and_revokes_grants() {
     h.get_by_label("Revoke token").click();
     h.run();
     h.get_by_label_contains("Suspended by the kill switch");
-    assert!(grants.covering("claude-code-1", "branch.set_main").is_none());
+    assert!(grants.covering("claude-code-1", "document.set_text", false).is_none());
     h.get_by_label("Resume grants").click();
     h.run();
-    assert!(grants.covering("claude-code-1", "branch.set_main").is_some());
+    assert!(grants.covering("claude-code-1", "document.set_text", false).is_some());
     h.get_by_label("Revoke").click();
     h.run();
     h.get_by_label("No standing approvals");

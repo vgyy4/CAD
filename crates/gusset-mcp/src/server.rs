@@ -388,10 +388,12 @@ impl GussetMcp {
         match self.run(cctx.clone(), spec.id, args.clone()).await {
             Err(e) if e.code == "approval_required" => {
                 let a2 = args.clone();
+                let actor = cctx.actor.clone();
+                let id = spec.id;
                 let context = self
                     .shared
                     .host
-                    .exec_async(move |s, _| gusset_commands::commands::describe_branch_args(s, &a2))
+                    .exec_async(move |s, _| gusset_commands::commands::describe_approval(s, &actor, id, &a2))
                     .await
                     .unwrap_or_default();
                 let request = ApprovalRequest {
@@ -401,7 +403,9 @@ impl GussetMcp {
                     title: spec.title.to_string(),
                     reason: clean_short(&e.message, 200),
                     arguments: clean_short(&args.to_string(), 300),
-                    context: clean_short(&context, 400),
+                    context: clean_short(&context, 800),
+                    main_edit: e.details.as_ref().and_then(|d| d.get("approval")).and_then(Value::as_str)
+                        == Some("main_branch"),
                 };
                 self.ask(request, &agent, &tool, spec, args, cctx, ctx).await
             }
@@ -427,7 +431,7 @@ impl GussetMcp {
         if let Some(provider) = self.shared.approvals() {
             // Standing approvals ("always allow") exist only in the app, were made only
             // through its prompt, and are void while suspended by the kill switch.
-            if let Some(g) = self.shared.grants().covering(agent, spec.id) {
+            if let Some(g) = self.shared.grants().covering(agent, spec.id, request.main_edit) {
                 let ctx = CmdCtx {
                     approved: true,
                     approved_by: Some(format!("auto-approved by grant: {}", g.describe())),

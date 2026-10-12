@@ -204,7 +204,7 @@ pub(crate) fn check_policy(
     if spec.flags.mutating && s.config.approvals_required && !ctx.approved {
         // Agents edit their own branch by default; writing to main needs approval.
         if s.current_is_explicit(&ctx.actor) && s.current_branch(&ctx.actor) == s.history().main() {
-            return Err(CommandError::approval("editing the main branch"));
+            return Err(CommandError::approval_main());
         }
     }
     Ok(())
