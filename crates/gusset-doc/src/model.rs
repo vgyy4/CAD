@@ -329,8 +329,10 @@ pub struct ExtrudeDef {
     pub distance: Expr,
     pub symmetric: bool,
     pub op: BodyOp,
-    /// Target body (named after the feature that created it); `None` = the most recent body.
+    /// Target body, as the name of the feature that created it; `None` = the most recent body.
     pub body: Option<String>,
+    /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
+    pub body_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -352,6 +354,8 @@ pub struct RevolveDef {
     pub angle: Expr,
     pub op: BodyOp,
     pub body: Option<String>,
+    /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
+    pub body_name: Option<String>,
 }
 
 /// Fillet (size = radius) or chamfer (size = distance).

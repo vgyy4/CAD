@@ -182,6 +182,7 @@ async fn full_session(modern: bool) {
     // Resources.
     let res = c.list_all_resources().await.unwrap();
     assert!(res.iter().any(|r| r.uri == "gusset://project/security-guidelines"));
+    assert!(res.iter().any(|r| r.uri == "gusset://docs/text-grammar"));
     for uri in [
         "gusset://project/feature-tree",
         "gusset://project/parameters",
@@ -194,6 +195,7 @@ async fn full_session(modern: bool) {
         "gusset://project/security-guidelines",
         "gusset://project/document-text",
         "gusset://project/sketch/Sketch1/status",
+        "gusset://docs/text-grammar",
     ] {
         let r = c.read_resource(ReadResourceRequestParams::new(uri)).await.unwrap();
         let ResourceContents::TextResourceContents { text, .. } = &r.contents[0] else { panic!("{uri}") };

@@ -7,7 +7,7 @@
 use crate::error::CommandError;
 use crate::registry::{Category, Command, CommandSpec, EDIT, Flags, READ, WRITE_FILE, spec};
 use crate::session::{CmdCtx, Session};
-use gusset_doc::validate::{creates_body, validate_feature_name};
+use gusset_doc::validate::{created_body_name, creates_body, validate_feature_name};
 use gusset_doc::*;
 use gusset_eval::{FeatureStatus, solve_sketch_def};
 use gusset_history::{BranchId, NodeId};
@@ -283,7 +283,30 @@ pub(crate) fn combine_effect_warnings(
 
 /// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
 fn frame_json(f: &gusset_kernel::Frame) -> Value {
-    json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() })
+    let mut v = json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() });
+    snap_zeros(&mut v);
+    v
+}
+
+/// Numeric noise below this is reported as exactly 0 (F2-9).
+const ZERO_SNAP: f64 = 1e-9;
+
+/// Replaces every number within [`ZERO_SNAP`] of zero (including `-0.0`) by `0.0`, so
+/// results do not carry values like -5e-22.
+pub(crate) fn snap_zeros(v: &mut Value) {
+    match v {
+        Value::Number(n) => {
+            if n.is_f64()
+                && let Some(f) = n.as_f64()
+                && f.abs() < ZERO_SNAP
+            {
+                *v = json!(0.0);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(snap_zeros),
+        Value::Object(m) => m.values_mut().for_each(snap_zeros),
+        _ => {}
+    }
 }
 
 /// Inserts a feature at the rollback marker (or the end).
@@ -302,6 +325,43 @@ fn implicit_target(f: &Feature) -> bool {
     }
 }
 
+/// The name of the body created by the feature `feature` (a body target is stored as the
+/// creating feature's name).
+fn body_display_name(doc: &Document, feature: &str) -> String {
+    doc.features
+        .iter()
+        .find(|f| f.name == feature)
+        .and_then(created_body_name)
+        .map_or_else(|| feature.to_string(), str::to_string)
+}
+
+/// Validates an optional `body_name` for a new feature `feature`: only with op new, a
+/// valid identifier, and unique among the bodies (also against the feature's own default
+/// body name).
+fn check_new_body_name(
+    doc: &Document,
+    op: BodyOp,
+    feature: &str,
+    requested: Option<String>,
+) -> Result<Option<String>, CommandError> {
+    let effective = requested.as_deref().unwrap_or(feature);
+    if let Some(n) = &requested {
+        if op != BodyOp::New {
+            return Err(CommandError::args("body_name can only be set with op: new")
+                .hint("add/cut/intersect modify the target body and keep its name"));
+        }
+        params::validate_name(n)
+            .map_err(|e| CommandError::args(format!("body_name: {}", e.replace("parameter", "body"))))?;
+    }
+    if op == BodyOp::New
+        && let Some(other) = doc.features.iter().find(|f| created_body_name(f) == Some(effective))
+    {
+        return Err(CommandError::args(format!("a body named '{effective}' already exists (feature {})", other.name))
+            .hint("choose another body_name"));
+    }
+    Ok(requested)
+}
+
 /// The body an add/cut/intersect combines with, resolved when the feature is created and
 /// stored in the document, so later deletes or reorders can never silently retarget it.
 fn target_body(
@@ -313,8 +373,11 @@ fn target_body(
     if op == BodyOp::New {
         return Ok(None);
     }
-    if explicit.is_some() {
-        return Ok(explicit);
+    if let Some(e) = explicit {
+        // Accept the body's name as well as its feature's name; store the feature's.
+        let by_feature = doc.features.iter().find(|f| f.name == e && creates_body(f));
+        let by_body = || doc.features.iter().find(|f| created_body_name(f) == Some(e.as_str()));
+        return Ok(Some(by_feature.or_else(by_body).map_or(e, |f| f.name.clone())));
     }
     let at = rollback.unwrap_or(doc.features.len()).min(doc.features.len());
     latest_body_before(doc, at).map(Some).ok_or_else(|| {
@@ -349,6 +412,11 @@ fn new_id(s: &mut SketchDef, prefix: char) -> String {
     let id = format!("{prefix}{}", s.next_id);
     s.next_id += 1;
     id
+}
+
+/// Compact form of a list of freshly created ids: `{"first":"p12","last":"p411","count":400}`.
+fn id_range(ids: &[String]) -> Value {
+    json!({ "first": ids.first(), "last": ids.last(), "count": ids.len() })
 }
 
 fn add_point(s: &mut SketchDef, x: f64, y: f64) -> Result<String, CommandError> {
@@ -848,7 +916,7 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids.";
+    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids as compact ranges: {\"first\", \"last\", \"count\"} (ids are consecutive within each kind in creation order, e.g. p12..p411 for 400 points).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -902,7 +970,7 @@ impl Command for SketchAddPolyline {
                 lines.push(add_entity(d, SkGeom::Line { a: last.clone(), b: first.clone() }, self.construction));
             }
             store_solution(doc, &sk);
-            Ok(json!({ "points": pts, "lines": lines }))
+            Ok(json!({ "points": id_range(&pts), "lines": id_range(&lines) }))
         })
     }
 }
@@ -1077,8 +1145,7 @@ pub struct SketchAddConstraint {
 impl Command for SketchAddConstraint {
     const ID: &'static str = "sketch.add_constraint";
     const TITLE: &'static str = "Constraint";
-    const DESCRIPTION: &'static str =
-        "Add a geometric or dimensional constraint. The result reports degrees of freedom and any conflict.";
+    const DESCRIPTION: &'static str = "Add a constraint (kinds and entity types: resource gusset://docs/text-grammar). angle(a, b, v): lines a and b, v turns a onto b counter-clockwise in the sketch's u/v frame. The result reports DOF and conflicts.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("D");
@@ -1109,7 +1176,7 @@ impl Command for SketchAddConstraint {
             store_solution(doc, &sk);
             Ok(json!({ "constraint": k }))
         })?;
-        let status = sketch_status(s, ctx, &sk)?;
+        let status = sketch_status(s, ctx, &sk, false)?;
         Ok(merge(out, json!({ "sketch_status": status })))
     }
 }
@@ -1238,6 +1305,9 @@ pub struct Extrude {
     /// Target body for add/cut/intersect (default: the latest body).
     #[serde(default)]
     pub body: Option<String>,
+    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    #[serde(default)]
+    pub body_name: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -1245,7 +1315,7 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions by a distance (new body, or add/cut/intersect an existing body). A sketch on a face extrudes along the face's outward normal, so a cut into the material needs a negative distance. The result lists body_changes (volume and bounding box before/after) and warns when an add/cut changed nothing.";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions (new body, or add/cut/intersect). A sketch on a face extrudes along its outward normal, so a cut needs a negative distance. body_name (op new) names the new body. Result: body_changes (volume/bbox before/after); warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
@@ -1260,7 +1330,9 @@ impl Command for Extrude {
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Extrude")?;
                 let body = target_body(doc, rb, op, self.body)?;
-                *seen.borrow_mut() = (name.clone(), body.clone());
+                let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
+                *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
+                let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
@@ -1269,10 +1341,11 @@ impl Command for Extrude {
                         symmetric: self.symmetric,
                         op,
                         body,
+                        body_name,
                     }),
                 );
                 insert_feature(doc, rb, f);
-                Ok(json!({ "feature": name }))
+                Ok(json!({ "feature": name, "body": created }))
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
@@ -1298,6 +1371,9 @@ pub struct Revolve {
     pub op: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
+    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    #[serde(default)]
+    pub body_name: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -1305,7 +1381,7 @@ pub struct Revolve {
 impl Command for Revolve {
     const ID: &'static str = "feature.revolve";
     const TITLE: &'static str = "Revolve";
-    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line.";
+    const DESCRIPTION: &'static str = "Revolve closed sketch regions around a sketch axis or line. Optional body_name (op new only) names the new body instead of the feature name.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -1328,7 +1404,9 @@ impl Command for Revolve {
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Revolve")?;
                 let body = target_body(doc, rb, op, self.body)?;
-                *seen.borrow_mut() = (name.clone(), body.clone());
+                let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
+                *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
+                let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
                 let f = Feature::new(
                     name.clone(),
                     FeatureKind::Revolve(RevolveDef {
@@ -1337,10 +1415,11 @@ impl Command for Revolve {
                         angle,
                         op,
                         body,
+                        body_name,
                     }),
                 );
                 insert_feature(doc, rb, f);
-                Ok(json!({ "feature": name }))
+                Ok(json!({ "feature": name, "body": created }))
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
@@ -1447,6 +1526,74 @@ fn parse_edges(edges: &[String]) -> Result<Vec<EdgeRef>, CommandError> {
     edges.iter().map(|e| EdgeRef::parse(e).map_err(|err| CommandError::args(format!("edge '{e}': {err}")))).collect()
 }
 
+/// Rejects a fillet radius / chamfer distance that cannot work, before committing a
+/// broken feature (F2-5): it must be a positive length and smaller than the largest
+/// extent of the body the edges belong to. Subtler failures (a radius over half a short
+/// edge, say) still commit and are flagged by [`blend_outcome`].
+fn check_blend_size(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    refs: &[EdgeRef],
+    size: &gusset_units::expr::Expr,
+    what: &str,
+) -> Result<(), CommandError> {
+    use gusset_naming::Resolution;
+    let ev = s.evaluate(&ctx.actor)?;
+    let units = s.document(&ctx.actor)?.units;
+    let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let q = gusset_units::expr::eval(size, &scope).map_err(|e| {
+        let mut ce = CommandError::args(format!("{what}: {}", e.message));
+        ce.hint = e.hint;
+        ce
+    })?;
+    let value = params::coerce(q, gusset_units::Dim::LENGTH, units)
+        .map_err(|m| CommandError::args(format!("{what}: {m}")))?
+        .value;
+    if !(value.is_finite() && value > 0.0) {
+        return Err(CommandError::args(format!("{what} must be positive")));
+    }
+    let body = ev
+        .bodies
+        .iter()
+        .rev()
+        .find(|b| refs.iter().any(|r| matches!(b.names.resolve_edge(r), Resolution::Resolved(_))));
+    let Some(body) = body else { return Ok(()) };
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for v in &body.topology.vertices {
+        for (i, c) in v.point.iter().enumerate() {
+            if let (Some(l), Some(h)) = (lo.get_mut(i), hi.get_mut(i)) {
+                *l = l.min(*c);
+                *h = h.max(*c);
+            }
+        }
+    }
+    let extent = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0_f64, f64::max);
+    if extent.is_finite() && extent > 0.0 && value >= extent {
+        let fmt = |v: f64| gusset_units::Quantity::mm(v).display(units);
+        return Err(CommandError::args(format!(
+            "{what} {} is larger than the body '{}' (largest extent {})",
+            fmt(value),
+            body.name,
+            fmt(extent)
+        ))
+        .hint(format!("use a {what} well below {}; half the shortest selected edge is a safe start", fmt(extent)))
+        .details(json!({ "max_usable_mm": extent, "value_mm": value })));
+    }
+    Ok(())
+}
+
+/// Result fields for a fillet/chamfer that was committed although the rebuild failed.
+fn blend_outcome(out: &crate::session::CommitOutcome) -> Value {
+    if out.new_errors.is_empty() {
+        return Value::Null;
+    }
+    json!({
+        "committed_with_errors": true,
+        "undo_hint": "the feature was committed but fails to rebuild: call history_undo to remove it, then retry with a smaller value",
+    })
+}
+
 /// Rounds edges.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1469,11 +1616,18 @@ impl Command for Fillet {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("radius", &self.radius)?;
         check_edges_resolve(s, ctx, &edges)?;
-        edit(s, ctx, "Fillet", |doc, rb| {
-            let name = feature_name(doc, self.name, "Fillet")?;
-            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
-            Ok(json!({ "feature": name }))
-        })
+        check_blend_size(s, ctx, &edges, &size, "radius")?;
+        edit_post(
+            s,
+            ctx,
+            "Fillet",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Fillet")?;
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, _| blend_outcome(out),
+        )
     }
 }
 
@@ -1498,11 +1652,18 @@ impl Command for Chamfer {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("distance", &self.distance)?;
         check_edges_resolve(s, ctx, &edges)?;
-        edit(s, ctx, "Chamfer", |doc, rb| {
-            let name = feature_name(doc, self.name, "Chamfer")?;
-            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
-            Ok(json!({ "feature": name }))
-        })
+        check_blend_size(s, ctx, &edges, &size, "distance")?;
+        edit_post(
+            s,
+            ctx,
+            "Chamfer",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "Chamfer")?;
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, _| blend_outcome(out),
+        )
     }
 }
 
@@ -2147,11 +2308,14 @@ impl Command for QueryModel {
     }
 }
 
-fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, CommandError> {
+/// `with_frame: false` leaves the (unchanging) world frame out of edit results; it is
+/// reported by `sketch.create` and `query.sketch` only.
+fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str, with_frame: bool) -> Result<Value, CommandError> {
     let ev = s.evaluate(&ctx.actor)?;
     let st = ev.status(name).map(status_json);
     match ev.sketches.get(name) {
-        Some(r) => Ok(json!({
+        Some(r) => {
+            let mut v = json!({
             "status": format!("{:?}", r.status),
             "dof": r.dof,
             "free_entities": r.free_entities,
@@ -2159,9 +2323,14 @@ fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<Value, Com
             "conflicting": r.conflicting,
             "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
             "points": r.points,
-            "frame": frame_json(&r.frame),
             "feature_status": st,
-        })),
+            });
+            if with_frame && let Value::Object(m) = &mut v {
+                m.insert("frame".into(), frame_json(&r.frame));
+            }
+            snap_zeros(&mut v);
+            Ok(v)
+        }
         None => Ok(json!({ "feature_status": st })),
     }
 }
@@ -2180,7 +2349,7 @@ impl Command for QuerySketch {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        sketch_status(s, ctx, &self.sketch)
+        sketch_status(s, ctx, &self.sketch, true)
     }
 }
 
@@ -2199,7 +2368,7 @@ pub struct QueryBody {
 impl Command for QueryBody {
     const ID: &'static str = "query.body";
     const TITLE: &'static str = "Measure body";
-    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body.";
+    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, face normals are given for planar faces only (null otherwise) and edges carry seam: true when they border the same face on both sides (a cylinder's cut line).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     const SHORTCUT: Option<&'static str> = Some("M");
@@ -2239,17 +2408,27 @@ impl Command for QueryBody {
                 .faces
                 .iter()
                 .zip(&body.topology.faces)
-                .map(|(n, f)| json!({"name": n.to_string(), "kind": format!("{:?}", f.kind), "area_mm2": f.area, "centroid_mm": f.centroid, "normal": f.normal}))
+                .map(|(n, f)| {
+                    // A normal is only meaningful on a plane; curved faces have none.
+                    let normal = if f.kind == gusset_kernel::SurfaceKind::Plane { json!(f.normal) } else { Value::Null };
+                    json!({"name": n.to_string(), "kind": format!("{:?}", f.kind), "area_mm2": f.area, "centroid_mm": f.centroid, "normal": normal})
+                })
                 .collect();
             let edges: Vec<Value> = body
                 .names
                 .edges
                 .iter()
                 .zip(&body.topology.edges)
-                .map(|(n, e)| json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint}))
+                .map(|(n, e)| {
+                    // A seam edge borders one face on both sides (a cylinder's cut line).
+                    let mut faces = e.faces.clone();
+                    faces.dedup();
+                    json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint, "seam": faces.len() < 2})
+                })
                 .collect();
             v = merge(v, json!({ "face_names": faces, "edge_names": edges }));
         }
+        snap_zeros(&mut v);
         Ok(v)
     }
 }

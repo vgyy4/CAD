@@ -84,8 +84,29 @@ fn bad_edits_fail_cleanly_or_record_broken_nodes() {
         json!({"edges": ["edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))"], "radius": "1 mm"}),
     );
     assert_eq!(r["rebuild_ok"], false);
+    assert_eq!(r["committed_with_errors"], true, "{r}");
+    assert!(r["undo_hint"].as_str().unwrap().contains("history_undo"), "{r}");
     let head = s.history().head(s.history().main()).unwrap();
     assert!(matches!(s.history().node(head).unwrap().state, gusset_history::NodeState::Broken { .. }));
+}
+
+#[test]
+fn impossible_blend_sizes_are_rejected_before_committing() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let head = s.history().head(s.history().main()).unwrap();
+    let edge = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))";
+    for (cmd, key) in [("feature.fillet", "radius"), ("feature.chamfer", "distance")] {
+        for bad in ["0 mm", "-2 mm", "500 mm", "width * 2"] {
+            let e = execute(&mut s, &u, cmd, json!({"edges": [edge], key: bad})).unwrap_err();
+            assert_eq!(e.code, "invalid_args", "{cmd} {bad}: {e:?}");
+        }
+    }
+    let e = execute(&mut s, &u, "feature.fillet", json!({"edges": [edge], "radius": "500 mm"})).unwrap_err();
+    assert!(e.hint.as_deref().unwrap().contains("40 mm"), "{e:?}");
+    assert!(e.details.as_ref().unwrap()["max_usable_mm"].as_f64().unwrap() > 39.0, "{e:?}");
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
 }
 
 #[test]
@@ -830,14 +851,24 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
         "sketch.add_polyline",
         json!({"sketch": "Sketch1", "points": [[0, 0], [20, 0], [20, 10], [10, 15], [0, 10]], "closed": true}),
     );
-    assert_eq!(r["points"].as_array().unwrap().len(), 5, "{r}");
-    assert_eq!(r["lines"].as_array().unwrap().len(), 5, "{r}");
+    assert_eq!(r["points"], json!({"first": "p1", "last": "p5", "count": 5}), "{r}");
+    assert_eq!(r["lines"]["count"], 5, "{r}");
+    assert_eq!(r["lines"]["first"], "l6", "{r}");
     // Exactly one new history node for the whole polyline.
     let head = s.history().head(s.history().main()).unwrap();
     assert_eq!(s.history().node(head).unwrap().parent, Some(before));
     // The closed outline is one region, extrudable into a body.
     let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
     assert_eq!(q["regions"].as_array().unwrap().len(), 1, "{q}");
+    // Edit results leave the unchanging world frame to sketch.create / query.sketch.
+    let c = run(
+        &mut s,
+        &u,
+        "sketch.add_constraint",
+        json!({"sketch": "Sketch1", "kind": "horizontal", "entities": ["l6"]}),
+    );
+    assert!(c["sketch_status"].get("frame").is_none(), "{c}");
+    assert!(c["sketch_status"]["dof"].is_number(), "{c}");
     let e = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "4 mm"}));
     assert_eq!(e["rebuild_ok"], true, "{e}");
     let b = run(&mut s, &u, "query.body", json!({}));
@@ -846,7 +877,7 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
     // Open polylines have n-1 segments; too few points and bad input are refused.
     run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
     let r = run(&mut s, &u, "sketch.add_polyline", json!({"sketch": "Sketch2", "points": [[0, 0], [1, 0], [1, 1]]}));
-    assert_eq!(r["lines"].as_array().unwrap().len(), 2);
+    assert_eq!(r["lines"]["count"], 2);
     for bad in [
         json!({"sketch": "Sketch2", "points": [[0, 0]]}),
         json!({"sketch": "Sketch2", "points": [[0, 0], [1, 1]], "closed": true}),
@@ -856,6 +887,72 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
     ] {
         assert_eq!(execute(&mut s, &u, "sketch.add_polyline", bad).unwrap_err().code, "invalid_args");
     }
+}
+
+#[test]
+fn body_name_names_the_new_body_and_persists_in_the_text() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 30, "height": 20}));
+    let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "body_name": "Base"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert_eq!(r["body"], "Base", "{r}");
+    let q = run(&mut s, &u, "query.body", json!({"body": "Base"}));
+    assert_eq!(q["body"], "Base", "{q}");
+    assert!(execute(&mut s, &u, "query.body", json!({"body": "Extrude1"})).is_err());
+    let text = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(text["text_user_text"].as_str().unwrap().contains("op: new, body_name: Base)"), "{text}");
+    // Same name again, bad identifiers and body_name with a non-new op are refused.
+    for (bad, op) in [("Base", "new"), ("1x", "new"), ("a b", "new"), ("Other", "add")] {
+        let e = execute(
+            &mut s,
+            &u,
+            "feature.extrude",
+            json!({"sketch": "Sketch1", "distance": "5 mm", "body_name": bad, "op": op}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, "invalid_args", "{bad} {op}: {e:?}");
+    }
+    // The default name is also checked: a feature called like an existing body.
+    let e = execute(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "name": "Base"}))
+        .unwrap_err();
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    // Add/cut target the body by its body name or its feature name; both store the feature.
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 40, "y": 0, "width": 5, "height": 5}));
+    let r = run(
+        &mut s,
+        &u,
+        "feature.extrude",
+        json!({"sketch": "Sketch2", "distance": "5 mm", "op": "new", "name": "Lid"}),
+    );
+    assert_eq!(r["body"], "Lid", "{r}");
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "sketch.add_rectangle", json!({"sketch": "Sketch3", "x": 1, "y": 1, "width": 5, "height": 5}));
+    let r = run(
+        &mut s,
+        &u,
+        "feature.extrude",
+        json!({"sketch": "Sketch3", "distance": "2 mm", "op": "add", "body": "Base"}),
+    );
+    // The mock kernel has no booleans; what matters is that the target resolved to a body.
+    assert!(!r["new_errors"].to_string().contains("does not exist"), "{r}");
+    let text = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(text["text_user_text"].as_str().unwrap().contains("op: add, body: Extrude1)"), "{text}");
+}
+
+#[test]
+fn query_results_snap_noise_and_flag_seams_and_curved_normals() {
+    let mut v = json!({"a": -5e-22, "b": [1e-12, 2.5, 3], "c": {"d": -0.0}});
+    crate::commands::snap_zeros(&mut v);
+    assert_eq!(v, json!({"a": 0.0, "b": [0.0, 2.5, 3], "c": {"d": 0.0}}));
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let b = run(&mut s, &u, "query.body", json!({"names": true}));
+    assert!(b["edge_names"].as_array().unwrap().iter().all(|e| e["seam"] == false), "{b}");
+    assert!(b["face_names"].as_array().unwrap().iter().all(|f| f["normal"].is_array()), "{b}");
 }
 
 #[test]

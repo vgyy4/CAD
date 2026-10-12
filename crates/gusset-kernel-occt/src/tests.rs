@@ -103,6 +103,21 @@ fn revolve_cylinder() {
         .revolve(&p, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::PI })
         .unwrap();
     assert!(half.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Cap { end: CapEnd::End, .. })));
+    // Seams (F2-9): the full cylinder's cut line borders its side face on both sides;
+    // the half cylinder has no seam.
+    let seams = |shape: &Shape| {
+        let t = k().topology(shape).unwrap();
+        t.edges
+            .iter()
+            .filter(|e| {
+                let mut f = e.faces.clone();
+                f.dedup();
+                f.len() < 2
+            })
+            .count()
+    };
+    assert_eq!(seams(&full.shape), 1);
+    assert_eq!(seams(&half.shape), 0);
 }
 
 #[test]

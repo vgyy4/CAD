@@ -33,6 +33,8 @@ pub const RENDER_VIEW: &str = "render_view";
 pub const GET_TEXT: &str = "get_text";
 /// Resource URI prefix.
 pub const URI_PREFIX: &str = "gusset://project/";
+/// URI of the code-view text grammar (static documentation, not project data).
+pub const TEXT_GRAMMAR_URI: &str = "gusset://docs/text-grammar";
 /// Key of the approval request inside a 2026-07-28 `input_required` result.
 const APPROVAL_INPUT: &str = "approval";
 
@@ -394,6 +396,12 @@ pub fn resource_list() -> Vec<Resource> {
             "Rules for AI agents working in Gusset. Read first.",
             "text/markdown",
         ),
+        Resource::new(TEXT_GRAMMAR_URI, "text-grammar")
+            .with_description(
+                "Grammar of the code-view text (document_get_text / document_set_text): ids, constraints, \
+                 features, the directed angle convention, with examples. Read before writing text.",
+            )
+            .with_mime_type("text/markdown"),
         r(
             "document-text",
             "document-text",
@@ -906,6 +914,9 @@ impl ServerHandler for GussetMcp {
         if let Err(e) = self.limit(&agent, Class::Resource) {
             let v = self.sanitize(&agent, error_json(&e));
             return Ok(text("application/json", serde_json::to_string_pretty(&v).unwrap_or_default()).into());
+        }
+        if uri == TEXT_GRAMMAR_URI {
+            return Ok(text("text/markdown", gusset_doc::TEXT_GRAMMAR.to_string()).into());
         }
         if uri == format!("{URI_PREFIX}security-guidelines") {
             return Ok(text("text/markdown", SECURITY_GUIDELINES.to_string()).into());

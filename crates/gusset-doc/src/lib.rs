@@ -14,6 +14,11 @@ pub mod refs;
 pub mod text;
 pub mod validate;
 
+/// The code-view text grammar for agents (published as the MCP resource
+/// `gusset://docs/text-grammar`). Every ```gusset block in it is a complete document that
+/// parses and validates (checked by a test).
+pub const TEXT_GRAMMAR: &str = include_str!("grammar.md");
+
 pub use cursor::ParseError;
 pub use model::*;
 pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef};
@@ -109,7 +114,7 @@ sketch Sketch2 (plane: Extrude1/cap(end), next_id: 4) {
 
 extrude Extrude2 (profile: Sketch2.regions(c2), distance: -5 mm, op: cut, body: Extrude1)
 
-revolve Revolve1 (profile: Sketch2, axis: X, angle: 180 deg, op: new, suppressed: true)
+revolve Revolve1 (profile: Sketch2, axis: X, angle: 180 deg, op: new, body_name: Ring, suppressed: true)
 
 fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5)), edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))#2], radius: 2 mm)
 
@@ -130,6 +135,70 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         assert_eq!(doc.params[0].comment, "overall width");
         assert_eq!(doc.params[1].comment, "depth is derived\nfrom the width");
         assert!(doc.feature("Revolve1").unwrap().suppressed);
+        assert!(
+            matches!(&doc.feature("Revolve1").unwrap().kind, FeatureKind::Revolve(r) if r.body_name.as_deref() == Some("Ring"))
+        );
+    }
+
+    #[test]
+    fn grammar_examples_parse_and_cover_the_language() {
+        let mut blocks = Vec::new();
+        let mut cur: Option<String> = None;
+        for line in TEXT_GRAMMAR.lines() {
+            match (&mut cur, line.trim_end()) {
+                (None, "```gusset") => cur = Some(String::new()),
+                (Some(_), "```") => blocks.extend(cur.take()),
+                (Some(b), l) => {
+                    b.push_str(l);
+                    b.push('\n');
+                }
+                (None, _) => {}
+            }
+        }
+        assert!(blocks.len() >= 3, "{} examples", blocks.len());
+        for b in &blocks {
+            let doc = Document::from_text(b).unwrap_or_else(|e| panic!("{e}\n{b}"));
+            // Canonical printing reads back to the same document.
+            assert_eq!(Document::from_text(&doc.to_text()).unwrap(), doc);
+        }
+        // Every constraint kind, feature keyword and entity id prefix is documented.
+        for k in SkConstraintKind::ALL {
+            assert!(TEXT_GRAMMAR.contains(&format!("`{}`", k.keyword())), "{}", k.keyword());
+        }
+        for kw in ["extrude", "revolve", "fillet", "chamfer", "import", "body_name", "construction", "next_id"] {
+            assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
+        }
+        // The examples between them use these statement kinds.
+        let all = blocks.join("\n");
+        for kw in ["extrude ", "revolve ", "fillet ", "chamfer ", "angle(", "circle(", "op: cut", "body_name:"] {
+            assert!(all.contains(kw), "no example uses {kw}");
+        }
+    }
+
+    #[test]
+    fn body_names_round_trip_and_are_validated() {
+        let base = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 1) {\n}\n\n";
+        let ok = format!("{base}extrude A (profile: S, distance: 1 mm, op: new, body_name: Bracket)\n");
+        let doc = Document::from_text(&ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        // Old files without body_name stay valid and print unchanged.
+        let old = format!("{base}extrude A (profile: S, distance: 1 mm, op: new)\n");
+        assert_eq!(Document::from_text(&old).unwrap().to_text(), old);
+        let bad = |extra: &str| Document::from_text(&format!("{base}{extra}")).unwrap_err().to_string();
+        // Duplicate between an explicit name and another feature's default body name.
+        let e = bad(
+            "extrude A (profile: S, distance: 1 mm, op: new, body_name: B)\nextrude B (profile: S, distance: 1 mm, op: new)\n",
+        );
+        assert!(e.contains("body name 'B' is used twice"), "{e}");
+        let e = bad(
+            "extrude A (profile: S, distance: 1 mm, op: new)\nextrude B (profile: S, distance: 1 mm, op: cut, body_name: C)\n",
+        );
+        assert!(e.contains("only be used with op: new"), "{e}");
+        assert!(
+            Document::from_text(&format!("{base}extrude A (profile: S, distance: 1 mm, body_name: 9x)\n")).is_err()
+        );
+        let e = bad("revolve R (profile: S, axis: X, angle: 90 deg, body_name: R2, body_name: R3)\n");
+        assert!(e.contains("given twice"), "{e}");
     }
 
     #[test]
