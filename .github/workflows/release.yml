@@ -183,6 +183,7 @@ jobs:
           wixarch="x64"; [ "${{ matrix.arch }}" = "aarch64" ] && wixarch="arm64"
           wix build packaging/windows/gusset.wxs -arch "$wixarch" \
             -d "Version=${{ steps.version.outputs.numeric }}" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
+          rm -f "$DIST/$name.wixpdb" # installer debug data, not shipped
           cp "$STAGE.files.json" "$DIST/$name.msi.files.json"
 
       - name: Package (macOS)

@@ -78,8 +78,11 @@ Phase 3 has started (see Next).
 2. Post-MVP leftovers: project saves off the model thread (recovery snapshots are
    done, M3), fault-injection storage tests (M14), per-agent credentials for grants
    and reconnect to an agent's own branch (F2-2).
-3. Release: the first Release run failed at the version check (workspace was 0.0.1);
-   fixed in e05714d. The owner re-creates v0.1.0-mvp on a green head.
+3. Release: v0.1.0-mvp is published (pre-release, tag at e3ee7e0, run 38271195031):
+   AppImage/deb/tar.gz for Linux x64+arm64, MSI/zip for Windows x64+arm64, dmg for
+   macOS arm64, SBOMs, OCCT source, SHA256SUMS, update manifest. Releases can be
+   started by tag name through workflow_dispatch (ADR 0013 amendment). Unsigned
+   (ADR 0015); no update signing key yet, so the in-app updater refuses the manifest.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
 - Feature-level patterns (patterns repeat whole bodies; combine merges one feature's body
