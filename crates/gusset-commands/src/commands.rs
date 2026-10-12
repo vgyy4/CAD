@@ -87,15 +87,17 @@ pub(crate) fn edit_post(
     let before = doc.features.len();
     let before_eval = s.evaluate_branch(branch)?;
     let extra = f(&mut doc, rollback)?;
-    let out = s.commit(ctx, label, &doc)?;
+    // Inserting while rolled back keeps the marker just after the new feature; the new
+    // feature is evaluated as active, and one undo reverts both (reviews N1, M9).
+    let moved = match rollback {
+        Some(r) if doc.features.len() > before => Some(Some(r + (doc.features.len() - before))),
+        _ => None,
+    };
+    let out = s.commit_with_rollback(ctx, label, &doc, moved)?;
     let changes = body_changes(s.kernel().as_ref(), &before_eval, &out.evaluation);
-    // Inserting while rolled back keeps the marker just after the new feature.
-    if let Some(r) = rollback
-        && doc.features.len() > before
-    {
-        let new = r + (doc.features.len() - before);
+    if let Some(new) = moved {
         let hctx = ctx.hctx();
-        let _ = s.history_mut_pub().set_rollback(&hctx, branch, Some(new));
+        let _ = s.history_mut_pub().set_rollback_grouped(&hctx, branch, new, true);
     }
     let mut v = json!({
         "node": out.node.to_string(),

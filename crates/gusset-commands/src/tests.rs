@@ -809,3 +809,32 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
         assert_eq!(execute(&mut s, &u, "sketch.add_polyline", bad).unwrap_err().code, "invalid_args");
     }
 }
+
+#[test]
+fn inserting_while_rolled_back_is_evaluated_and_undone_as_one_step() {
+    // Reviews N1 and M9: the inserted feature is active (evaluated, its errors recorded)
+    // and one undo removes it and restores the marker.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let n = s.document(&gusset_history::Actor::User).unwrap().features.len();
+    run(&mut s, &u, "timeline.set_rollback", json!({"index": n - 1}));
+    // A sketch inserted at the marker (before the extrude) must evaluate as active.
+    let r = run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
+    let name = r["sketch"].as_str().unwrap().to_string();
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    assert!(
+        matches!(ev.status(&name), Some(gusset_eval::FeatureStatus::Ok)),
+        "inserted feature is active: {:?}",
+        ev.status(&name)
+    );
+    let b = s.current_branch(&gusset_history::Actor::User);
+    assert_eq!(s.history().branch(b).unwrap().rollback, Some(n));
+    run(&mut s, &u, "history.undo", json!({}));
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert_eq!(doc.features.len(), n, "one undo removes the insert");
+    assert_eq!(s.history().branch(b).unwrap().rollback, Some(n - 1), "and restores the marker");
+    run(&mut s, &u, "history.redo", json!({}));
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n + 1);
+    assert_eq!(s.history().branch(b).unwrap().rollback, Some(n));
+}

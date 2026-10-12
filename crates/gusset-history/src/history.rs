@@ -356,6 +356,10 @@ pub struct History {
     /// Session-only undo/redo stacks per actor (indices into `events`).
     undo: BTreeMap<Actor, Vec<usize>>,
     redo: BTreeMap<Actor, Vec<usize>>,
+    /// Session-only: events undone and redone together with the event just before them
+    /// (one user action recorded as two events, e.g. an insert while rolled back that
+    /// also moves the marker; review M9).
+    continues: std::collections::BTreeSet<usize>,
     pub(crate) sizes: RecordSizes,
     limits: HistoryLimits,
 }
@@ -424,6 +428,7 @@ impl History {
             next_branch: 2,
             undo: BTreeMap::new(),
             redo: BTreeMap::new(),
+            continues: std::collections::BTreeSet::new(),
             sizes: RecordSizes::default(),
             limits: HistoryLimits::default(),
         };
@@ -901,6 +906,18 @@ impl History {
     }
 
     pub fn set_rollback(&mut self, ctx: &Ctx, branch: BranchId, marker: Option<usize>) -> HResult<()> {
+        self.set_rollback_grouped(ctx, branch, marker, false)
+    }
+
+    /// [`History::set_rollback`]; with `with_previous`, undo and redo treat it as part of
+    /// the event recorded just before (the edit that made the marker move).
+    pub fn set_rollback_grouped(
+        &mut self,
+        ctx: &Ctx,
+        branch: BranchId,
+        marker: Option<usize>,
+        with_previous: bool,
+    ) -> HResult<()> {
         let n = self.head_document(branch)?.features.len();
         let marker = marker.filter(|&m| m < n);
         let old = self.live_branch_mut(branch)?.rollback;
@@ -911,7 +928,10 @@ impl History {
             };
             self.room(ctx.time, need, false)?;
             self.live_branch_mut(branch)?.rollback = marker;
-            self.record(ctx, Event::SetRollback { branch, old, new: marker });
+            let idx = self.record(ctx, Event::SetRollback { branch, old, new: marker });
+            if with_previous && idx > 0 {
+                self.continues.insert(idx);
+            }
         }
         Ok(())
     }
@@ -1003,6 +1023,12 @@ impl History {
         }
         self.redo.entry(ctx.actor.clone()).or_default().push(idx);
         self.record(ctx, Event::Undo { event: idx });
+        // Part of one action with the event before it: undo that too.
+        if self.continues.contains(&idx)
+            && self.undo.get(&ctx.actor).and_then(|s| s.last()).is_some_and(|&p| p + 1 == idx)
+        {
+            return self.undo(ctx, branch);
+        }
         Ok(format!("Undo: {}", ev.describe()))
     }
 
@@ -1025,6 +1051,11 @@ impl History {
         }
         self.undo.entry(ctx.actor.clone()).or_default().push(idx);
         self.push_event(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event: Event::Redo { event: idx } });
+        if self.continues.contains(&(idx + 1))
+            && self.redo.get(&ctx.actor).and_then(|s| s.last()).is_some_and(|&n| n == idx + 1)
+        {
+            self.redo(ctx, branch)?;
+        }
         Ok(format!("Redo: {}", ev.describe()))
     }
 
@@ -1422,6 +1453,7 @@ impl History {
                 *stack = stack.iter().filter_map(|i| map.get(i).copied()).collect();
             }
         }
+        self.continues = self.continues.iter().filter_map(|i| map.get(i).copied()).collect();
     }
 
     // ------------------------------------------------------------ persistence helpers
@@ -1445,6 +1477,7 @@ impl History {
             next_branch,
             undo: BTreeMap::new(),
             redo: BTreeMap::new(),
+            continues: std::collections::BTreeSet::new(),
             sizes: RecordSizes::default(),
             limits: HistoryLimits::default(),
         };

@@ -297,13 +297,27 @@ impl Session {
     /// node is marked broken if the edit introduced feature errors (the history keeps it
     /// so the user can fix or discard it; spec "Robustness").
     pub fn commit(&mut self, ctx: &CmdCtx, label: &str, doc: &Document) -> Result<CommitOutcome, CommandError> {
+        self.commit_with_rollback(ctx, label, doc, None)
+    }
+
+    /// [`Session::commit`]; `new_rollback` is the marker the branch will have after this
+    /// edit (set by the caller right after), so the new document is evaluated, its errors
+    /// recorded and its node state decided as it will actually be shown (review N1).
+    pub(crate) fn commit_with_rollback(
+        &mut self,
+        ctx: &CmdCtx,
+        label: &str,
+        doc: &Document,
+        new_rollback: Option<Option<usize>>,
+    ) -> Result<CommitOutcome, CommandError> {
         let issues = gusset_doc::validate::validate(doc);
         if !issues.is_empty() {
             return Err(CommandError::invalid_document(&issues));
         }
         let branch = self.branch_for(ctx)?;
         let before: Vec<String> = self.evaluate_branch(branch)?.errors().iter().map(|e| e.to_string()).collect();
-        let rollback = self.history.branch(branch).map_err(CommandError::history)?.rollback;
+        let current = self.history.branch(branch).map_err(CommandError::history)?.rollback;
+        let rollback = new_rollback.unwrap_or(current);
         let eval = Arc::new(self.evaluate_doc(doc, rollback));
         let new_errors: Vec<String> =
             eval.errors().iter().map(|e| e.to_string()).filter(|e| !before.contains(e)).collect();
