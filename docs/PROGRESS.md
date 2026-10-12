@@ -4,8 +4,8 @@ Living status document. Any session should be able to resume from here and CLAUD
 
 ## Current phase
 Phase 2 is done: `v0.1.0-mvp` was tagged on 2026-10-12 on commit cfc0e35 (CI and
-Fuzz + Miri green). The session's git proxy refuses tag pushes, so the owner pushes or
-creates the tag on GitHub (Releases → new tag `v0.1.0-mvp` at cfc0e35) after the milestone review, the re-review and two dogfooding runs.
+Fuzz + Miri green). The owner published it on GitHub as a pre-release (the session's git proxy
+refuses tag pushes); the tag triggers the release workflow after the milestone review, the re-review and two dogfooding runs.
 Phase 3 has started (see Next).
 
 ## Done
