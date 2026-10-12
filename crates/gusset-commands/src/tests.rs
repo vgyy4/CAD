@@ -624,7 +624,7 @@ fn edit_results_report_body_volume_changes() {
 fn a_cut_that_changes_nothing_warns() {
     use crate::commands::{BodyChange, no_effect_warning};
     use gusset_doc::BodyOp;
-    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None };
+    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None, solids: None };
     let w = no_effect_warning("Extrude2", BodyOp::Cut, Some("Extrude1"), &[], &[]);
     let msg = w["warnings"][0].as_str().unwrap();
     assert!(msg.contains("did not change body 'Extrude1'") && msg.contains("negative distance"), "{w}");
@@ -632,6 +632,27 @@ fn a_cut_that_changes_nothing_warns() {
     assert!(no_effect_warning("E", BodyOp::Cut, Some("Extrude1"), &[], &[changed]).is_null());
     assert!(no_effect_warning("E", BodyOp::Add, Some("Extrude1"), &["boom".into()], &[]).is_null());
     assert!(no_effect_warning("E", BodyOp::New, None, &[], &[]).is_null());
+}
+
+#[test]
+fn an_add_that_does_not_touch_the_body_warns() {
+    use crate::commands::{BodyChange, disjoint_add_warning};
+    use gusset_doc::BodyOp;
+    let ch = |solids| BodyChange {
+        body: "Extrude1".into(),
+        change: "changed",
+        before: None,
+        after: None,
+        solids: Some(solids),
+    };
+    let w = disjoint_add_warning("Extrude2", BodyOp::Add, Some("Extrude1"), &[], &[ch((1, 2))]);
+    let msg = w["warnings"][0].as_str().unwrap();
+    assert!(msg.contains("does not touch Extrude1") && msg.contains("now has 2 separate solids"), "{w}");
+    // Not when the count did not grow, the op is not add, or the feature failed.
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &[], &[ch((2, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Cut, Some("Extrude1"), &[], &[ch((1, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &["x".into()], &[ch((1, 2))]).is_null());
+    assert!(disjoint_add_warning("E", BodyOp::Add, Some("Extrude1"), &[], &[]).is_null());
 }
 
 #[test]

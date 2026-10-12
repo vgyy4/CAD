@@ -130,6 +130,8 @@ pub(crate) struct BodyChange {
     pub change: &'static str,
     pub before: Option<Metrics>,
     pub after: Option<Metrics>,
+    /// Number of separate solids in the body before and after (for `changed`).
+    pub solids: Option<(u32, u32)>,
 }
 
 impl BodyChange {
@@ -169,6 +171,7 @@ fn body_changes(
                 change: "created",
                 before: None,
                 after: body_metrics(k, b),
+                solids: None,
             }),
             Some(o) if std::ptr::addr_eq(std::sync::Arc::as_ptr(&o.shape.0), std::sync::Arc::as_ptr(&b.shape.0)) => {}
             Some(o) => {
@@ -182,14 +185,26 @@ fn body_changes(
                     _ => false,
                 };
                 if !same {
-                    out.push(BodyChange { body: b.name.clone(), change: "changed", before: ma, after: mb });
+                    out.push(BodyChange {
+                        body: b.name.clone(),
+                        change: "changed",
+                        before: ma,
+                        after: mb,
+                        solids: Some((o.topology.solids, b.topology.solids)),
+                    });
                 }
             }
         }
     }
     for o in &before.bodies {
         if after.body(&o.name).is_none() {
-            out.push(BodyChange { body: o.name.clone(), change: "removed", before: body_metrics(k, o), after: None });
+            out.push(BodyChange {
+                body: o.name.clone(),
+                change: "removed",
+                before: body_metrics(k, o),
+                after: None,
+                solids: None,
+            });
         }
     }
     out
@@ -217,6 +232,53 @@ pub(crate) fn no_effect_warning(
          Check that the sketch region overlaps the body and that the direction is right (a sketch on a face \
          extrudes along the face's outward normal, so a cut needs a negative distance, or symmetric: true)."
     )] })
+}
+
+/// A warning when an add left its target body with more separate solids than before,
+/// i.e. the added region does not touch the body (F2-4).
+pub(crate) fn disjoint_add_warning(
+    feature: &str,
+    op: BodyOp,
+    target: Option<&str>,
+    new_errors: &[String],
+    changes: &[BodyChange],
+) -> Value {
+    let Some(target) = target else { return Value::Null };
+    if op != BodyOp::Add || !new_errors.is_empty() {
+        return Value::Null;
+    }
+    let Some((before, after)) =
+        changes.iter().find(|c| c.body == target && c.change == "changed").and_then(|c| c.solids)
+    else {
+        return Value::Null;
+    };
+    if after <= before {
+        return Value::Null;
+    }
+    json!({ "warnings": [format!(
+        "{feature}: the added region does not touch {target}; the body now has {after} separate solids. \
+         Move or enlarge the sketch region so it overlaps {target}, or use op: new for a separate body."
+    )] })
+}
+
+/// Both post-edit warnings of an add/cut/intersect, merged into one `warnings` list.
+pub(crate) fn combine_effect_warnings(
+    feature: &str,
+    op: BodyOp,
+    target: Option<&str>,
+    new_errors: &[String],
+    changes: &[BodyChange],
+) -> Value {
+    let mut all = Vec::new();
+    for w in [
+        no_effect_warning(feature, op, target, new_errors, changes),
+        disjoint_add_warning(feature, op, target, new_errors, changes),
+    ] {
+        if let Some(a) = w.get("warnings").and_then(Value::as_array) {
+            all.extend(a.iter().cloned());
+        }
+    }
+    if all.is_empty() { Value::Null } else { json!({ "warnings": all }) }
 }
 
 /// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
@@ -1214,7 +1276,7 @@ impl Command for Extrude {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                no_effect_warning(name, op, body.as_deref(), &out.new_errors, ch)
+                combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch)
             },
         )
     }
@@ -1282,7 +1344,7 @@ impl Command for Revolve {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                no_effect_warning(name, op, body.as_deref(), &out.new_errors, ch)
+                combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch)
             },
         )
     }
