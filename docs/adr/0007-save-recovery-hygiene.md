@@ -116,6 +116,14 @@ BLAKE3 hash of each record is verified once, when the record is first encoded
 `RecordCache` instead of being recompressed. Opening a file (and reading a recovery
 slot on open) still performs the full verification. Measurements: `docs/PERFORMANCE.md`.
 
+## Amendment (2026-10-12): recovery writes off the model thread (review M3)
+A recovery snapshot is encoded on the model thread (a consistent point) and written by
+another thread. Writes are ordered by a per-project generation counter: preparing a
+snapshot, saving, discarding the recovery file, closing and releasing the project bump
+it under a lock that writers hold while writing, and a writer whose generation is no
+longer current skips its write. The recovery file format and the write procedure
+(two slots, `durable_write`, read-back) are unchanged.
+
 ## Amendment (2026-10-11): identity, untitled recovery, save modes (reviews H1, H2, M1, M2)
 - Save As to a new path gives the project a new ID; opening a copy (same ID, the
   registry or the recovery copy names another existing file) re-identifies it and

@@ -13,7 +13,7 @@ use gusset_store::paths::{DataDirs, ProjectId, RiskyStorage};
 use gusset_store::{Hash as StoreHash, durable, housekeeping, recovery};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub mod settings;
 mod startup;
@@ -294,6 +294,46 @@ pub struct Project {
     pub overrides: ProjectSettings,
     /// Encoded records of the last save or snapshot, reused by the next one (M3).
     records: RecordCache,
+    /// Orders recovery-copy writes made on other threads (see [`SnapshotWrite`]).
+    gate: WriteGate,
+}
+
+/// The generation of the newest recovery-copy state: bumped by every prepared snapshot
+/// and by everything that makes pending snapshots obsolete (save, discard, close).
+/// Writers hold the lock while writing, so bumping also waits for a write in progress.
+type WriteGate = Arc<Mutex<u64>>;
+
+fn lock_gate(gate: &WriteGate) -> MutexGuard<'_, u64> {
+    gate.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A recovery snapshot encoded on the model thread, to be written on another thread
+/// so the disk write does not block edits (M3). A write that something newer has
+/// superseded (a later snapshot, a save, a discard or a close) is skipped, so a late
+/// writer can neither overwrite newer state nor bring back an obsolete recovery file.
+#[derive(Debug)]
+#[must_use = "a prepared snapshot does nothing until written"]
+pub struct SnapshotWrite {
+    bytes: Vec<u8>,
+    path: PathBuf,
+    generation: u64,
+    gate: WriteGate,
+}
+
+impl SnapshotWrite {
+    /// Writes the snapshot unless it was superseded (then `Ok(None)`). Returns the
+    /// sequence number of the written slot.
+    pub fn write(self) -> Result<Option<u64>, ProjectError> {
+        let current = lock_gate(&self.gate);
+        if *current != self.generation {
+            return Ok(None);
+        }
+        // Records were verified when encoded; the image is checked for framing and CRCs
+        // and the read-back is compared byte-for-byte (ADR 0007, amended for M3).
+        recovery::write_snapshot(&RealFs::default(), &self.path, &self.bytes, &container::verify_framing)
+            .map(Some)
+            .map_err(|e| ProjectError::Write(e.to_string()))
+    }
 }
 
 /// The retention part of history GC (ADR 0006), run when a project is opened: purges
@@ -329,6 +369,7 @@ impl Project {
             reidentified_from: None,
             overrides: ProjectSettings::default(),
             records: RecordCache::new(),
+            gate: WriteGate::default(),
         };
         p.lock()?;
         Ok(p)
@@ -374,6 +415,7 @@ impl Project {
                     reidentified_from: None,
                     overrides,
                     records,
+                    gate: WriteGate::default(),
                 };
                 let copy_of = p.copy_of(path);
                 if copy_of.is_some() {
@@ -417,6 +459,7 @@ impl Project {
                             reidentified_from: None,
                             overrides: ProjectSettings::default(),
                             records: RecordCache::new(),
+                            gate: WriteGate::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -435,6 +478,7 @@ impl Project {
                             reidentified_from: None,
                             overrides: ProjectSettings::default(),
                             records: RecordCache::new(),
+                            gate: WriteGate::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -573,24 +617,40 @@ impl Project {
             .map_err(|e| ProjectError::Write(e.to_string()))?;
         self.meta = meta;
         let _ = housekeeping::register(&self.dirs, self.meta.id, path);
-        // The project file now holds everything: the recovery file is obsolete.
+        // The project file now holds everything: the recovery file is obsolete, and so
+        // are snapshots still waiting to be written.
+        let _gate = self.supersede_snapshots();
         let _ = recovery::remove(&fs, &self.recovery_path());
         Ok(())
     }
 
+    /// Makes every prepared snapshot obsolete; waits for a write in progress. Hold the
+    /// returned guard while removing the recovery file.
+    fn supersede_snapshots(&self) -> MutexGuard<'_, u64> {
+        let mut g = lock_gate(&self.gate);
+        *g += 1;
+        g
+    }
+
     /// Writes a recovery snapshot (call only at consistent points).
     pub fn snapshot(&mut self, history: &History) -> Result<u64, ProjectError> {
+        // Nothing can supersede it between these two calls (both need this project).
+        Ok(self.prepare_snapshot(history)?.write()?.unwrap_or_default())
+    }
+
+    /// Encodes a recovery snapshot (call only at consistent points); write it with
+    /// [`SnapshotWrite::write`], on any thread. Supersedes snapshots prepared earlier.
+    pub fn prepare_snapshot(&mut self, history: &History) -> Result<SnapshotWrite, ProjectError> {
         let mut meta = self.meta.clone();
         meta.base_seq = self.meta.save_seq;
         let bytes = encode_with(history, &meta, self.path.as_deref(), &self.overrides, &mut self.records)?;
-        // Records were verified when encoded; the image is checked for framing and CRCs
-        // and the read-back is compared byte-for-byte (ADR 0007, amended for M3).
-        recovery::write_snapshot(&RealFs::default(), &self.recovery_path(), &bytes, &container::verify_framing)
-            .map_err(|e| ProjectError::Write(e.to_string()))
+        let generation = *self.supersede_snapshots();
+        Ok(SnapshotWrite { bytes, path: self.recovery_path(), generation, gate: Arc::clone(&self.gate) })
     }
 
     /// Discards a pending recovery snapshot (after the user chose what to keep).
     pub fn discard_recovery(&self) {
+        let _gate = self.supersede_snapshots();
         let _ = recovery::remove(&RealFs::default(), &self.recovery_path());
     }
 
@@ -610,6 +670,8 @@ impl Project {
     /// Releases the lock **without** touching the recovery file (headless front ends
     /// that must not resolve a pending recovery, and error paths).
     pub fn release(mut self) {
+        // Another window may take the project over: no late writes into its recovery.
+        drop(self.supersede_snapshots());
         if let Some(l) = self.lock.take() {
             let _ = l.release();
         }
@@ -721,6 +783,7 @@ impl Project {
             reidentified_from: None,
             overrides,
             records: RecordCache::new(),
+            gate: WriteGate::default(),
         };
         p.lock()?;
         retention_gc(&mut history, &p.settings());

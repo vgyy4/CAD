@@ -117,6 +117,46 @@ fn crash_leaves_recovery_that_is_offered() {
 }
 
 #[test]
+fn late_snapshot_writes_never_win_over_newer_state() {
+    // M3: snapshots are written off the model thread, possibly out of order.
+    let t = Tmp::new("late-write");
+    let file = t.0.join("part.gus");
+    let mut h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&file, &h).unwrap();
+    let (u, main) = (Ctx::user(20), h.main());
+    let recovered_head = |p: &Project| {
+        let snap = recovery::read_newest(&RealFs::default(), &p.recovery_path(), &container::verify).unwrap();
+        snap.map(|s| decode(&s.payload).unwrap().0).map(|rh| rh.head_document(rh.main()).unwrap())
+    };
+
+    // Older prepared, newer prepared, newer written first: the older one is skipped.
+    h.commit(&u, main, &doc("9 mm"), "old", NodeState::Ok).unwrap();
+    let old = p.prepare_snapshot(&h).unwrap();
+    h.commit(&u, main, &doc("10 mm"), "new", NodeState::Ok).unwrap();
+    let new = p.prepare_snapshot(&h).unwrap();
+    assert!(new.write().unwrap().is_some());
+    assert_eq!(old.write().unwrap(), None);
+    assert_eq!(recovered_head(&p), Some(doc("10 mm")));
+
+    // A save makes a pending snapshot obsolete: it must not bring the recovery file back.
+    h.commit(&u, main, &doc("11 mm"), "pending", NodeState::Ok).unwrap();
+    let pending = p.prepare_snapshot(&h).unwrap();
+    p.save(&h).unwrap();
+    assert_eq!(pending.write().unwrap(), None);
+    assert!(files_in(&t.dirs().recovery_dir()).is_empty());
+
+    // Same for a discard, and for a write that runs on another thread after close.
+    let pending = p.prepare_snapshot(&h).unwrap();
+    p.discard_recovery();
+    assert_eq!(pending.write().unwrap(), None);
+    let pending = p.prepare_snapshot(&h).unwrap();
+    p.close();
+    assert_eq!(std::thread::spawn(move || pending.write().unwrap()).join().unwrap(), None);
+    assert!(files_in(&t.dirs().recovery_dir()).is_empty());
+}
+
+#[test]
 fn damaged_file_falls_back_to_lkg_or_salvage() {
     let t = Tmp::new("damage");
     let file = t.0.join("part.gus");
@@ -412,8 +452,17 @@ fn perf_save_and_snapshot() {
             h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
             p.save(&h).unwrap();
         });
+        let mut cache = RecordCache::new();
+        let meta = p.meta.clone();
+        let _ = encode_with(&h, &meta, None, &ProjectSettings::default(), &mut cache).unwrap();
+        let enc = time(&mut || {
+            n += 1;
+            d.params[0].expr = gusset_units::expr::parse(&format!("{n} mm")).unwrap();
+            h.commit(&u, main, &d, "edit", NodeState::Ok).unwrap();
+            let _ = encode_with(&h, &meta, None, &ProjectSettings::default(), &mut cache).unwrap();
+        });
         let size = std::fs::metadata(&file).unwrap().len();
-        println!("PERF {label}: snapshot {snap:?}, save {save:?}, file {} KiB", size >> 10);
+        println!("PERF {label}: snapshot {snap:?}, save {save:?}, encode only {enc:?}, file {} KiB", size >> 10);
         p.close();
     }
 }

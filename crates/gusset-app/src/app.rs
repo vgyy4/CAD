@@ -22,7 +22,7 @@ use gusset_history::{Actor, History, NodeId};
 use gusset_host::{Host, HostEvent, HostHandle};
 use gusset_kernel::{Kernel, TessellationParams};
 use gusset_project::settings::{SaveAction, SaveScheduler, Settings};
-use gusset_project::{OpenReport, PendingRecovery, Project};
+use gusset_project::{OpenReport, PendingRecovery, Project, SnapshotWrite};
 use gusset_store::paths::DataDirs;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -149,6 +149,8 @@ pub(crate) enum Done {
         text: String,
         result: Result<(), String>,
     },
+    /// A recovery snapshot encoded on the model thread, to be written off it (M3).
+    RecoveryPrepared(Result<Option<SnapshotWrite>, String>),
     Recovery(Result<Option<u64>, String>),
     /// A project file read on a background thread (`discard`: the user chose not to keep
     /// the current project's unsaved changes).
@@ -199,6 +201,8 @@ pub struct App {
     done_rx: mpsc::Receiver<Done>,
     /// Host jobs sent and not yet answered.
     in_flight: usize,
+    /// Recovery-copy writers running on their own threads (also counted in `in_flight`).
+    recovery_writers: usize,
     pub(crate) waker: Arc<Waker>,
     /// Number of change events from agents seen (for the status bar and tests).
     pub agent_changes: u64,
@@ -273,6 +277,7 @@ impl App {
             done_tx,
             done_rx,
             in_flight: 0,
+            recovery_writers: 0,
             waker,
             agent_changes: 0,
             has_project,
@@ -413,6 +418,13 @@ impl App {
             self.poll(None);
             if self.in_flight == 0 && !self.stale {
                 break;
+            }
+            // Recovery copies are written outside the model thread: wait for them too.
+            if self.recovery_writers > 0
+                && let Ok(done) = self.done_rx.recv_timeout(std::time::Duration::from_secs(10))
+            {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                self.apply_done(done);
             }
         }
     }
@@ -572,7 +584,13 @@ impl App {
                 }
                 Err(e) => self.dialog = Some(Dialog::Message { title: tr("open.failed").into(), body: e }),
             },
+            Done::RecoveryPrepared(Ok(None)) => {}
+            Done::RecoveryPrepared(Ok(Some(w))) => self.write_recovery(w),
+            Done::RecoveryPrepared(Err(e)) => {
+                self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
+            }
             Done::Recovery(r) => {
+                self.recovery_writers = self.recovery_writers.saturating_sub(1);
                 if r.is_ok() {
                     self.save.written();
                 }
@@ -763,6 +781,9 @@ impl App {
         self.done_tx = tx;
         self.done_rx = rx;
         self.in_flight = 0;
+        // The old project's writers report to the old channel; closing it (below, in
+        // `make`) waits for a write in progress and cancels the others.
+        self.recovery_writers = 0;
         let (session, project) = make(old);
         self.has_project = project.is_some();
         self.host = Host::spawn(session, project);
@@ -897,13 +918,34 @@ impl App {
             }
             SaveAction::WriteRecovery => {}
         }
+        // Only the encoding runs on the model thread; the disk write (up to half a
+        // second for large imports) runs on its own thread (M3).
         self.submit(
             |s, p| match p {
-                Some(p) if s.dirty => p.snapshot(s.history()).map(Some).map_err(|e| e.to_string()),
+                Some(p) if s.dirty => p.prepare_snapshot(s.history()).map(Some).map_err(|e| e.to_string()),
                 _ => Ok(None),
             },
-            |r| Done::Recovery(r.map_err(|e| e.message).and_then(|x| x)),
+            |r| Done::RecoveryPrepared(r.map_err(|e| e.message).and_then(|x| x)),
         );
+    }
+
+    /// Writes a prepared recovery snapshot on its own thread. A newer snapshot, a save
+    /// or closing the project makes it skip the write (see [`SnapshotWrite`]).
+    fn write_recovery(&mut self, w: SnapshotWrite) {
+        let (tx, waker) = (self.done_tx.clone(), self.waker.clone());
+        let spawned = std::thread::Builder::new().name("gusset-recovery".into()).spawn(move || {
+            let _ = tx.send(Done::Recovery(w.write().map_err(|e| e.to_string())));
+            waker.wake();
+        });
+        match spawned {
+            Ok(_) => {
+                self.in_flight += 1;
+                self.recovery_writers += 1;
+            }
+            Err(e) => {
+                self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
+            }
+        }
     }
 
     /// The evaluation of the drawn state (as of the last scene the host delivered).

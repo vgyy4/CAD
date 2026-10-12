@@ -16,8 +16,8 @@ under the software renderer for frame times.
 | Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | 0.12 s incremental, 3.0 s full (OCCT, plate + 49 bosses, dev build) | `gusset-cli` test `rebuild_100_budget` (OCCT CI job) |
 | Binary size (app + OCCT libs, compressed) | < 60 MB | not yet measured | release workflow |
 | History overhead | ≤ 450 bytes per single-parameter edit, independent of model size (revised from "≤ 15 % of the parametric size per 100 edits", see below) | ~370 bytes per edit (29 % of a 1,000-feature model per 100 edits; was ~7.5 KB per edit with 200 features) | `gusset-project` test `history_overhead_budget` |
-| Project save (parametric only) | < 50 ms for 1,000 features | 33 ms (was 166 ms) | `gusset-project` `perf_save_and_snapshot` (see log) |
-| Recovery snapshot | < 100 ms for 1,000 features; never blocks the UI | 34 ms (was 168 ms); 0.65 s with a 64 MiB blob (was 2.8 s) | `gusset-project` `perf_save_and_snapshot` (see log) |
+| Project save (parametric only) | < 50 ms for 1,000 features | 7 ms (was 166 ms) | `gusset-project` `perf_save_and_snapshot` (see log) |
+| Recovery snapshot | < 100 ms for 1,000 features; never blocks the UI | 6.5 ms (was 168 ms), of which 3 ms on the model thread; with a 64 MiB blob 37 ms on the model thread, the 0.5 s write on its own thread (was 2.8 s, all blocking) | `gusset-project` `perf_save_and_snapshot` (see log) |
 
 ## Rules
 - A CI benchmark regression of more than 10 % fails the build unless the commit
@@ -52,6 +52,18 @@ What changed:
   the append-only journal slot ADR 0007 leaves room for, a chunked snapshot vector
   (the 100 snapshot objects of 73 KB each dominate the parametric file), and running
   the encode off the model thread.
+
+### 2026-10-12: recovery writes off the model thread (review M3)
+Same benchmark, after snapshot format 2. 1,000 features: snapshot 6.5 ms, save 7.0 ms,
+encoding alone 3.1 ms. With the 64 MiB blob: snapshot 545 ms, save 496 ms, encoding
+alone 37 ms, so the disk write (two slots, fsync, read-back) is over 90 % of the cost.
+The app now only encodes on the model thread (`Project::prepare_snapshot`); the write
+runs on a short-lived thread (`SnapshotWrite::write`). A shared generation counter
+keeps the writes ordered: a later snapshot, a save, a discard or closing the project
+supersedes pending writes (a superseded write is skipped; one in progress is waited
+for), so a late writer never overwrites newer state or brings back an obsolete
+recovery file. Saves still write on the model thread (explicit saves and auto-save
+mode); with huge imports that is ~0.5 s.
 
 ## History overhead (2026-10-11)
 

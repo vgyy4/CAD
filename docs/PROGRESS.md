@@ -63,7 +63,8 @@ Phase 3 has started (see Next).
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
-2. Post-MVP leftovers: save/snapshot off the model thread (M3), fault-injection
+2. Post-MVP leftovers: project saves off the model thread (recovery snapshots are
+   done, M3), fault-injection
    storage tests (M14), O(n²) state clones (L8), per-agent credentials for grants and
    reconnect to an agent's own branch (F2-2).
 
