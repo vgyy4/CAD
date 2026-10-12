@@ -514,6 +514,11 @@ impl History {
         &self.objects
     }
 
+    #[cfg(test)]
+    pub(crate) fn objects_mut(&mut self) -> &mut ObjectStore {
+        &mut self.objects
+    }
+
     /// Sizes of the history text records as they would be saved.
     pub fn record_sizes(&self) -> RecordSizes {
         self.sizes
@@ -1348,11 +1353,16 @@ impl History {
         self.nodes.retain(|id, _| reachable.contains(id));
         let nodes_removed = before - self.nodes.len();
         let mut keep = BTreeSet::new();
+        let mut complete = true;
         for n in self.nodes.values() {
-            self.objects.snapshot_closure(n.snapshot, &mut keep);
+            complete &= self.objects.snapshot_closure(n.snapshot, &mut keep);
         }
         let before = self.objects.len();
-        self.objects.retain(&keep);
+        // An unreadable snapshot may reference objects we cannot see: keep everything
+        // rather than delete data a repair could still use (review N6).
+        if complete {
+            self.objects.retain(&keep);
+        }
         (nodes_removed, before - self.objects.len())
     }
 

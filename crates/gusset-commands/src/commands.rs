@@ -800,6 +800,27 @@ impl Command for SketchAddPolyline {
         if self.points.len() > MAX_POLYLINE_POINTS {
             return Err(CommandError::args(format!("at most {MAX_POLYLINE_POINTS} points per polyline")));
         }
+        // Zero-length segments would be degenerate lines (review N8).
+        const MIN_SEGMENT: f64 = 1e-6;
+        let close = |a: &[f64; 2], b: &[f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < MIN_SEGMENT;
+        for (i, w) in self.points.windows(2).enumerate() {
+            if let [a, b] = w
+                && close(a, b)
+            {
+                return Err(CommandError::args(format!(
+                    "points {i} and {} are closer than {MIN_SEGMENT} mm (zero-length line)",
+                    i + 1
+                ))
+                .hint("remove the duplicate point"));
+            }
+        }
+        if self.closed
+            && let (Some(first), Some(last)) = (self.points.first(), self.points.last())
+            && close(first, last)
+        {
+            return Err(CommandError::args("the last point equals the first; with closed: true it must not repeat")
+                .hint("drop the repeated last point, closed: true connects it for you"));
+        }
         let sk = self.sketch.clone();
         edit(s, ctx, "Add polyline", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
@@ -1281,6 +1302,7 @@ fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Resul
         let mut suggestion: Option<String> = None;
         let mut reason = String::from("there are no bodies yet");
         let mut resolved = false;
+        let mut ambiguous: Option<CommandError> = None;
         for b in ev.bodies.iter().rev() {
             match b.names.resolve_edge(r) {
                 Resolution::Resolved(_) => {
@@ -1289,9 +1311,12 @@ fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Resul
                 }
                 Resolution::Ambiguous(c) => {
                     let names: Vec<String> = c.iter().take(MAX_CANDIDATES).map(ToString::to_string).collect();
-                    return Err(CommandError::args(format!("edge {r} matches {} edges", c.len()))
-                        .hint(format!("use one of: {}", names.join("; ")))
-                        .details(json!({ "candidates": names, "suggestion": names.first() })));
+                    // Another body may still resolve the reference (review N3).
+                    ambiguous.get_or_insert_with(|| {
+                        CommandError::args(format!("edge {r} matches {} edges", c.len()))
+                            .hint(format!("use one of: {}", names.join("; ")))
+                            .details(json!({ "candidates": names, "suggestion": names.first() }))
+                    });
                 }
                 Resolution::Missing { reason: why, suggestion: sg } => {
                     reason = why;
@@ -1301,6 +1326,9 @@ fn check_edges_resolve(s: &mut Session, ctx: &CmdCtx, refs: &[EdgeRef]) -> Resul
         }
         if resolved {
             continue;
+        }
+        if let Some(e) = ambiguous {
+            return Err(e);
         }
         // Edges sharing a face with the wanted one first, then the rest of the latest body.
         let latest = ev.bodies.last();
