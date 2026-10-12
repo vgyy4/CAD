@@ -35,6 +35,7 @@ typedef struct {
 #define GS_SEG_LINE 0
 #define GS_SEG_ARC 1    /* center c, from a to b; ccw != 0 for counter-clockwise */
 #define GS_SEG_CIRCLE 2 /* center c, radius r */
+#define GS_SEG_BEZIER 3 /* cubic Bezier: the 4 points GsProfile.poles[pole_first ..] */
 
 typedef struct {
   int32_t kind;
@@ -44,6 +45,8 @@ typedef struct {
   double c[2];
   double r;
   uint64_t tag;
+  uint32_t pole_first; /* Bezier only: index into GsProfile.poles (points, not doubles) */
+  uint32_t pole_count;
 } GsSeg;
 
 /* A loop: segs[first .. first+count). `outer` != 0 for the outer loop of `region`. */
@@ -62,6 +65,8 @@ typedef struct {
   size_t nsegs;
   const GsLoop* loops;
   size_t nloops;
+  const double* poles; /* x, y pairs of all Bezier segments */
+  size_t npoles;       /* number of points */
 } GsProfile;
 
 /* Face-origin records: GsBuf of int64 quads (face, kind, a, b). */

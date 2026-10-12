@@ -35,6 +35,7 @@ sketch Sketch1 (plane: XY, next_id: 12) {
   l5 = line(p1, p2)            # between two points
   c7 = circle(p1, 5)           # centre point, radius in mm
   a9 = arc(p1, p2, p3)         # centre, start, end: counter-clockwise from start to end
+  s4 = spline(p1, p2, p3) closed   # smooth curve through the points (see "Splines")
   k10 = horizontal(l5)         # constraints
 }
 ```
@@ -49,7 +50,51 @@ sketch Sketch1 (plane: XY, next_id: 12) {
 - An entity can be followed by `construction` (solved but never part of a profile):
   `p3 = point(5, 5) construction`.
 - Lines, circles and arcs refer to points by id; lines that share a point are connected.
-  Closed loops of lines/arcs and circles form the regions that features extrude.
+  Closed loops of lines/arcs and circles form the regions that features extrude. Curves
+  may cross, touch or end on one another: the sketch is split at every crossing and each
+  bounded face is a region (two overlapping rectangles give three regions, a line across
+  a circle two). Dangling stubs bound nothing and are ignored; two curves that overlap
+  along a stretch are an error.
+
+### Regions
+
+`query_sketch` lists the regions with `id`, `area_mm2`, `outer` (entities on the outer
+boundary) and `at` (a point inside, in sketch mm). A region's id is its *primary entity*,
+the smallest id on its outer boundary (`l5`), plus `_r1`, `_r2`, ... when crossing curves
+give several regions with the same primary entity. Pass ids in `regions(...)` or the
+`regions` argument of `feature_extrude`/`feature_revolve`. Ids survive dimension and
+parameter edits; they can change when edits change which curves cross. An entity id that
+is not itself a region id selects the one region it bounds, and fails (listing the ids)
+if it bounds several. In a sketch where no curve is cut by another, an entity selects
+every region whose boundary contains it, as before.
+
+`sketch_trim(sketch, entity, x, y)` deletes the piece of a line/arc/circle around (x, y)
+between the nearest crossings, keeping the new ends on the crossing curves.
+
+### Splines
+
+`s5 = spline(p1, p2, p3, p4)` is a smooth curve (centripetal Catmull-Rom) through at least
+three ordinary sketch points; add `closed` to join the last point back to the first. The
+points are normal points, so constraints (`fixed`, `coincident`, `distance`, `on_line`, ...)
+apply to them; the spline itself takes no constraints and cannot be trimmed. A closed spline
+is a region; an open one cuts regions like any other curve. It must not cross itself. Create
+one with `sketch_add_polyline` and `spline: true`.
+
+```gusset
+gusset 1
+units mm
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(10, 6)
+  p3 = point(20, 0)
+  p4 = point(10, -8)
+  s5 = spline(p1, p2, p3, p4) closed
+  k6 = fixed(p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 4 mm, op: new)
+```
 
 Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 
@@ -104,6 +149,48 @@ sketch Sketch1 (plane: XY) {
 }
 ```
 
+### Sketch patterns
+
+```
+g9 = pattern_linear(of: [l5, c7], count: n, dx: 10 mm, dy: 0 mm)
+g10 = pattern_circular(of: [l5], center: p3, count: 6, angle: 360 deg)
+```
+
+A pattern repeats lines, circles, arcs and splines (not points); `count` includes the
+original and must evaluate to a whole number from 2 to 500. Copy `j` (1, 2, ...) of entity
+`l5` is `l5_j`, of point `p3` is `p3_j`: they are derived after solving, move with the
+sources and parameters, take part in regions (`regions(l5_2)`) and extrusions, and have
+lateral faces `side(Sketch1/l5_2)`. A circular pattern spaces copies `angle / count` apart
+for a full turn, else `angle / (count - 1)`; its centre is an ordinary point (it can be
+constrained). Copies are not solver geometry: constraints cannot refer to them. A curve
+belongs to at most one pattern. Ids `g<n>` share the sketch's counter.
+
+```gusset
+gusset 1
+units mm
+
+param holes = 4
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 40)
+  p4 = point(0, 40)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+  p9 = point(12, 20)
+  c10 = circle(p9, 4)
+  g11 = pattern_linear(of: [c10], count: holes, dx: 12 mm, dy: 0 mm)
+  p12 = point(30, 20)
+  p13 = point(30, 32)
+  l14 = line(p12, p13) construction
+}
+
+extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
+```
+
 ## Features
 
 ```
@@ -115,7 +202,7 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
 ```
 
 - Profile `<P>` is a sketch name (all its closed regions) or `Sketch1.regions(l5, c7)`
-  with one entity on the outer boundary of each wanted region.
+  naming the wanted regions (see "Regions" below).
 - `op` defaults to `new`, which creates a body named after the feature, or after
   `body_name` when given (a unique identifier; only with `op: new`). `add`, `cut` and
   `intersect` combine with the body created by the feature named in `body:` (default:

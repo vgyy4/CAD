@@ -18,6 +18,7 @@ pub const GS_ERR: i32 = 1;
 pub const GS_SEG_LINE: i32 = 0;
 pub const GS_SEG_ARC: i32 = 1;
 pub const GS_SEG_CIRCLE: i32 = 2;
+pub const GS_SEG_BEZIER: i32 = 3;
 
 pub const GS_ORIGIN_LATERAL: i64 = 0;
 pub const GS_ORIGIN_CAP: i64 = 1;
@@ -65,6 +66,10 @@ pub struct GsSeg {
     pub c: [f64; 2],
     pub r: f64,
     pub tag: u64,
+    /// Bézier only: the four control points are `poles[pole_first .. pole_first + pole_count]`
+    /// of the profile (x, y pairs; `pole_count` is 4).
+    pub pole_first: u32,
+    pub pole_count: u32,
 }
 
 #[repr(C)]
@@ -86,6 +91,9 @@ pub struct GsProfile {
     pub nsegs: usize,
     pub loops: *const GsLoop,
     pub nloops: usize,
+    /// Control points of all spline segments, as x, y pairs; `npoles` counts points.
+    pub poles: *const f64,
+    pub npoles: usize,
 }
 
 #[cfg(gusset_occt)]

@@ -338,7 +338,7 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
                     error = Some(SolveError::NonPositiveRadius(e.id));
                 }
             }
-            Geom::Line { .. } | Geom::Arc { .. } => {}
+            Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => {}
         }
     }
     let free_entities = free_entities(sketch, &lay, &free_param, &ids);
@@ -390,8 +390,8 @@ fn free_entities(sketch: &Sketch, lay: &Layout, free_param: &[bool], ids: &[Enti
         }
     };
     let mut out = Vec::new();
-    for (e, &id) in sketch.entities().iter().zip(ids) {
-        let free = entity_free(id) || e.geom.referenced_points().into_iter().any(entity_free);
+    for &id in ids {
+        let free = entity_free(id) || sketch.referenced_points(id).into_iter().any(entity_free);
         if free {
             out.push(id);
         }

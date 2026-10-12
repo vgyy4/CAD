@@ -139,7 +139,19 @@ impl FeatureKind {
             }
         };
         match self {
-            FeatureKind::Sketch(s) => s.constraints.iter().flat_map(|c| c.value.iter()).for_each(&mut take),
+            FeatureKind::Sketch(s) => {
+                s.constraints.iter().flat_map(|c| c.value.iter()).for_each(&mut take);
+                for p in &s.patterns {
+                    take(&p.count);
+                    match &p.kind {
+                        SkPatternKind::Linear { dx, dy } => {
+                            take(dx);
+                            take(dy);
+                        }
+                        SkPatternKind::Circular { angle, .. } => take(angle),
+                    }
+                }
+            }
             FeatureKind::Extrude(e) => take(&e.distance),
             FeatureKind::Revolve(r) => take(&r.angle),
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
@@ -218,6 +230,8 @@ pub struct SketchDef {
     pub next_id: u32,
     pub entities: Vec<SkEntity>,
     pub constraints: Vec<SkConstraint>,
+    /// Patterns of curves: copies derived after solving (ADR 0016 §4).
+    pub patterns: Vec<SkPattern>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,7 +264,16 @@ pub enum SkGeom {
         start: String,
         end: String,
     },
+    /// Interpolating spline (centripetal Catmull-Rom) through the fit points, which are
+    /// ordinary sketch points; `closed` joins the last point back to the first.
+    Spline {
+        points: Vec<String>,
+        closed: bool,
+    },
 }
+
+/// Most fit points one spline may have.
+pub const MAX_SPLINE_POINTS: usize = 1000;
 
 impl SkGeom {
     pub fn keyword(&self) -> &'static str {
@@ -259,6 +282,7 @@ impl SkGeom {
             SkGeom::Line { .. } => "line",
             SkGeom::Circle { .. } => "circle",
             SkGeom::Arc { .. } => "arc",
+            SkGeom::Spline { .. } => "spline",
         }
     }
     pub fn id_prefix(&self) -> char {
@@ -267,6 +291,7 @@ impl SkGeom {
             SkGeom::Line { .. } => 'l',
             SkGeom::Circle { .. } => 'c',
             SkGeom::Arc { .. } => 'a',
+            SkGeom::Spline { .. } => 's',
         }
     }
     /// Entity ids this geometry refers to.
@@ -276,6 +301,7 @@ impl SkGeom {
             SkGeom::Line { a, b } => vec![a, b],
             SkGeom::Circle { center, .. } => vec![center],
             SkGeom::Arc { center, start, end } => vec![center, start, end],
+            SkGeom::Spline { points, .. } => points.iter().map(String::as_str).collect(),
         }
     }
 }
@@ -368,6 +394,37 @@ pub struct SkConstraint {
     pub entities: Vec<String>,
     /// Dimension value for dimensional constraints.
     pub value: Option<Expr>,
+}
+
+/// A pattern of sketch curves: `count` copies (the source included) laid out by `kind`.
+/// Copy `j` of entity `l5` is `l5_j` and of point `p3` is `p3_j` (derived, not stored).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkPattern {
+    /// `g7` — shares the sketch's id counter.
+    pub id: String,
+    pub kind: SkPatternKind,
+    /// Source curves (lines, circles, arcs, splines).
+    pub of: Vec<String>,
+    /// Number of instances including the original: a whole number from 2 to 500.
+    pub count: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkPatternKind {
+    /// Copy `j` is shifted by `j * (dx, dy)`.
+    Linear { dx: Expr, dy: Expr },
+    /// Copy `j` is turned about the point `center` by `j * step`: `angle / count` for a
+    /// full turn, `angle / (count - 1)` otherwise.
+    Circular { center: String, angle: Expr },
+}
+
+impl SkPatternKind {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            SkPatternKind::Linear { .. } => "pattern_linear",
+            SkPatternKind::Circular { .. } => "pattern_circular",
+        }
+    }
 }
 
 // ------------------------------------------------------------------ solid features

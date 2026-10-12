@@ -58,6 +58,8 @@
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <TColgp_Array1OfPnt.hxx>
 #include <Standard_Version.hxx>
 #include <TDataStd_Name.hxx>
 #include <TDocStd_Document.hxx>
@@ -176,6 +178,15 @@ double loop_area(const GsProfile* p, const GsLoop& l) {
         double t = 2.0 * M_PI * k / 32.0;
         pts.emplace_back(s.c[0] + s.r * std::cos(t), s.c[1] + s.r * std::sin(t));
       }
+    } else if (s.kind == GS_SEG_BEZIER) {
+      if (s.pole_count == 4 && p->poles && size_t(s.pole_first) + 4 <= p->npoles) {
+        const double* q = p->poles + 2 * size_t(s.pole_first);
+        for (int j = 0; j < 12; ++j) {
+          double t = j / 12.0, u = 1.0 - t;
+          double w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
+          pts.emplace_back(w0 * q[0] + w1 * q[2] + w2 * q[4] + w3 * q[6], w0 * q[1] + w1 * q[3] + w2 * q[5] + w3 * q[7]);
+        }
+      }
     } else {
       double a0 = std::atan2(s.a[1] - s.c[1], s.a[0] - s.c[0]);
       double a1 = std::atan2(s.b[1] - s.c[1], s.b[0] - s.c[0]);
@@ -231,6 +242,18 @@ std::vector<TopoDS_Face> build_faces(const GsProfile* p, const Frame& f, std::ve
         if (!(s.r > 0)) throw Standard_Failure("circle with non-positive radius in profile");
         gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), f.n, f.x), s.r);
         e = BRepBuilderAPI_MakeEdge(c).Edge();
+      } else if (s.kind == GS_SEG_BEZIER) {
+        if (s.pole_count != 4 || !p->poles || size_t(s.pole_first) + 4 > p->npoles)
+          throw Standard_Failure("Bezier segment has an invalid control polygon");
+        TColgp_Array1OfPnt poles(1, 4);
+        for (int i = 0; i < 4; ++i) {
+          const double* q = p->poles + 2 * (size_t(s.pole_first) + size_t(i));
+          poles.SetValue(i + 1, f.at(q[0], q[1]));
+        }
+        Handle(Geom_BezierCurve) crv = new Geom_BezierCurve(poles);
+        BRepBuilderAPI_MakeEdge me(crv);
+        if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the profile");
+        e = me.Edge();
       } else if (s.kind == GS_SEG_ARC) {
         double r = std::hypot(s.a[0] - s.c[0], s.a[1] - s.c[1]);
         if (!(r > 0)) throw Standard_Failure("arc with zero radius in profile");

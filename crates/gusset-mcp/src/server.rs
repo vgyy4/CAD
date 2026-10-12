@@ -943,6 +943,14 @@ mod size_tests {
         let tools: Vec<Tool> = gusset_commands::registry().iter().map(command_tool).collect();
         let bytes = serde_json::to_string(&tools).map(|s| s.len()).unwrap_or(usize::MAX);
         let per_tool = bytes / tools.len().max(1);
+        if std::env::var("GUSSET_TOOL_SIZES").is_ok() {
+            let mut sizes: Vec<(usize, String)> =
+                tools.iter().map(|t| (serde_json::to_string(t).map_or(0, |s| s.len()), t.name.to_string())).collect();
+            sizes.sort();
+            for (n, name) in sizes {
+                eprintln!("TOOLSIZE {n} {name}");
+            }
+        }
         eprintln!("tools/list command tools: {} tools, {bytes} bytes ({per_tool} per tool)", tools.len());
         assert!(per_tool <= 600, "{per_tool} bytes per tool");
         let text = serde_json::to_string(&tools).unwrap_or_default();

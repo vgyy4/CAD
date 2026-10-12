@@ -30,9 +30,9 @@ tool list, server instructions, resources, README/ADRs and error messages.
 | F-M3 | major | Cut direction follows the face's outward normal (cuts need negative distance), undocumented | Cuts default into material, or explicit `direction` |
 | F-M4 | major | No pattern / mirror | Add features |
 | F-M5 | major | No shell | Add shell |
-| F-M6 | major | No spline / polyline / equation curve | Add polyline + spline |
+| F-M6 | major | No spline / polyline / equation curve | Add polyline + spline (both done; no equation curves) |
 | F-M7 | major | No offset planes or body move | Add `plane.offset`, `body.move` |
-| F-M8 | major | Crossing curves don't form regions; no trim | Planar arrangement / `sketch.trim` |
+| F-M8 | major | Crossing curves don't form regions; no trim | Planar arrangement / `sketch.trim` (done, ADR 0016) |
 | F-M9 | major | Multi-region `add` fails with a generic "invalid solid" | Fuse regions first; better hint |
 | F-M10 | major | `document.get_text` truncated at 512 chars | Raise the limit for code text; page by line |
 | F-M11 | major | `next_id` required in hand-written text; grammar not published | Make `next_id` optional; publish a grammar resource |

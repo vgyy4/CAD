@@ -107,7 +107,7 @@ impl Layout {
                     first.push(Some(x0.len()));
                     x0.push(radius);
                 }
-                Geom::Line { .. } | Geom::Arc { .. } => first.push(None),
+                Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => first.push(None),
             }
         }
         Layout { x0, first }
@@ -409,6 +409,11 @@ fn constraint_eqs(
                     push_point(center)?;
                     push_point(start)?;
                     push_point(end)?;
+                }
+                Geom::Spline { .. } => {
+                    for p in s.spline_points(e)? {
+                        push_point(*p)?;
+                    }
                 }
             }
             for g in params {

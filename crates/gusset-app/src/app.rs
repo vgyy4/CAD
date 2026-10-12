@@ -2030,6 +2030,9 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
             d.polylines.push(arc(c, r, a0, a1));
         }
     }
+    for (_, pts) in &s.splines {
+        d.polylines.push(pts.iter().map(|&p| w(p)).collect());
+    }
     d.points = s.points.values().map(|&p| w(p)).collect();
     d
 }

@@ -153,6 +153,8 @@ pub struct ProfileData {
     pub y: [f64; 3],
     pub segs: Vec<GsSeg>,
     pub loops: Vec<GsLoop>,
+    /// Spline control points (x, y pairs) referenced by `GsSeg::pole_first`.
+    pub poles: Vec<f64>,
 }
 
 impl ProfileData {
@@ -165,6 +167,8 @@ impl ProfileData {
             nsegs: self.segs.len(),
             loops: self.loops.as_ptr(),
             nloops: self.loops.len(),
+            poles: self.poles.as_ptr(),
+            npoles: self.poles.len() / 2,
         }
     }
 }

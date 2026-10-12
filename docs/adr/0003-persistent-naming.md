@@ -44,6 +44,13 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
      `Pattern1/instance(2, Extrude2/side(Sketch2/c2))` for the second bore of a drilled
      pattern). The tool bodies are consumed. This is how a single feature is patterned:
      the feature is its own body (`op: new`), the body is patterned, then combined.
+   - Sketch arrangement (v0.2, ADR 0016): when sketch curves cross, regions are faces of
+     the planar arrangement. A region's id is its primary entity (smallest id on its outer
+     loop), with `_r1`, `_r2`, ... when several regions share it (ranked by boundary
+     pieces, stable under dimension edits); cap names use that id as before. An entity cut
+     into pieces sweeps several lateral faces with the same `side(...)` name, told apart by
+     `#k`. Pattern copies of sketch curves are `side(<sketch>/l5_2)`; each Bézier segment of
+     a spline is `side(<sketch>/s9_g3)`.
    - Datum planes (v0.2) have no faces. Their frame is derived from the base plane, face
      or straight edge they reference (edge direction made canonical: towards +X, else +Y,
      else +Z), so they follow parameter edits like any other reference.

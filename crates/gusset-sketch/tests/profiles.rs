@@ -6,7 +6,7 @@ mod common;
 
 use common::rect;
 use core::f64::consts::PI;
-use gusset_sketch::{Curve, EntityId, Profile, ProfileError, Sketch, profiles};
+use gusset_sketch::{Curve, EntityId, Profile, ProfileError, Sketch, arrange, profiles};
 
 const TOL: f64 = 1e-6;
 
@@ -18,7 +18,7 @@ fn approx(a: f64, b: f64) -> bool {
 fn assert_closed(p: &Profile) {
     let ends = |c: &Curve| match *c {
         Curve::Line { start, end } | Curve::Arc { start, end, .. } => Some((start, end)),
-        Curve::Circle { .. } => None,
+        Curve::Circle { .. } | Curve::Bezier { .. } => None,
     };
     for l in std::iter::once(&p.outer).chain(&p.holes) {
         let n = l.segments.len();
@@ -150,29 +150,36 @@ fn open_polyline_is_an_error() {
 }
 
 #[test]
-fn crossing_lines_are_an_error() {
+fn crossing_outlines_split_into_regions() {
     let mut s = Sketch::new();
     rect(&mut s, 0.0, 0.0, 10.0, 10.0);
-    // A closed triangle poking into the square, so the error is the crossing.
+    // A closed triangle poking into the square (its long side passes through the corner).
     let t: Vec<EntityId> = [[-5.0, 5.0], [5.0, 5.0], [5.0, -5.0]].iter().map(|&q| s.add_point(q).unwrap()).collect();
     for i in 0..3 {
         s.add_line_between(t[i], t[(i + 1) % 3]).unwrap();
     }
-    match profiles(&s, TOL) {
-        Err(ProfileError::SelfIntersecting { a: x, b: y, .. }) => assert!(x < y),
-        other => panic!("{other:?}"),
+    let a = arrange(&s, TOL).unwrap();
+    assert!(a.crossings);
+    let mut areas: Vec<f64> = a.profiles.iter().map(|p| p.area).collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 4, "{areas:?}");
+    for (got, want) in areas.iter().zip([12.5, 12.5, 25.0, 75.0]) {
+        assert!(approx(*got, want), "{areas:?}");
     }
+    a.profiles.iter().for_each(assert_closed);
 }
 
 #[test]
-fn circle_touching_a_line_is_an_error() {
+fn circle_touching_a_line_splits_off_the_disc() {
     let mut s = Sketch::new();
-    let r = rect(&mut s, 0.0, 0.0, 40.0, 40.0);
-    let c = s.add_circle([20.0, 10.0], 10.0).unwrap();
-    assert!(matches!(
-        profiles(&s, TOL),
-        Err(ProfileError::SelfIntersecting { a, b, at }) if a == r.l[0] && b == c && (at[0] - 20.0).abs() < 1e-3
-    ));
+    rect(&mut s, 0.0, 0.0, 40.0, 40.0);
+    s.add_circle([20.0, 10.0], 10.0).unwrap();
+    let a = arrange(&s, TOL).unwrap();
+    assert!(a.crossings);
+    let mut areas: Vec<f64> = a.profiles.iter().map(|p| p.area).collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 2, "{areas:?}");
+    assert!((areas[0] - 100.0 * PI).abs() < 1e-6 && (areas[1] - (1600.0 - 100.0 * PI)).abs() < 1e-6, "{areas:?}");
 }
 
 #[test]

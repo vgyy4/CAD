@@ -195,6 +195,8 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "move Move1 ",
             "combine Combine1 ",
             "pattern_linear ",
+            "spline(",
+            "pattern_linear(of:",
         ] {
             assert!(all.contains(kw), "no example uses {kw}");
         }
@@ -231,6 +233,60 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         let messy = "gusset 1\r\nunits in\n\n\n   param   a=1+2   \nsketch S (next_id: 1,plane:XZ) {\n\n}\n";
         let doc = Document::from_text(messy).unwrap();
         assert_eq!(doc.to_text(), "gusset 1\nunits in\n\nparam a = 1 + 2\n\nsketch S (plane: XZ, next_id: 1) {\n}\n");
+    }
+
+    #[test]
+    fn splines_round_trip_and_are_validated() {
+        let ok = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 8) {\n  p1 = point(0, 0)\n  p2 = point(5, 3)\n  p3 = point(9, 0)\n  s4 = spline(p1, p2, p3)\n  s5 = spline(p1, p2, p3) closed construction\n}\n";
+        let doc = Document::from_text(ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(
+            s.entities[3].geom,
+            SkGeom::Spline { points: vec!["p1".into(), "p2".into(), "p3".into()], closed: false }
+        );
+        assert!(s.entities[4].construction);
+        // Too few points, a repeated point, an unknown point and a bad id are reported.
+        for (bad, why) in [
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2)\n"), "at least 3"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2, p2)\n"), "twice"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2, p9)\n"), "p9"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "l4 = spline(p1, p2, p3)\n"), "l4"),
+        ] {
+            let d = text::parse(&bad).unwrap();
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn sketch_patterns_round_trip_and_are_validated() {
+        let ok = "gusset 1\nunits mm\n\nparam n = 3\n\nsketch S (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  p2 = point(5, 0)\n  l3 = line(p1, p2)\n  p4 = point(1, 1)\n  c5 = circle(p4, 1)\n  g6 = pattern_linear(of: [l3], count: n, dx: 10 mm, dy: 2 mm)\n  g7 = pattern_circular(of: [c5], center: p1, count: 6, angle: 360 deg)\n}\n\nextrude E (profile: S.regions(c5_2), distance: 1 mm, op: new)\n";
+        let doc = Document::from_text(ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(s.patterns.len(), 2);
+        assert_eq!(doc.features[0].kind.parameters(), vec!["n".to_string()]);
+        for (bad, why) in [
+            (ok.replace("of: [l3], count: n", "of: [], count: n"), "no source"),
+            (ok.replace("of: [l3], count: n", "of: [p1], count: n"), "not a line"),
+            (ok.replace("of: [l3], count: n", "of: [l9], count: n"), "unknown entity"),
+            (ok.replace("of: [c5], center: p1", "of: [l3], center: p1"), "two patterns"),
+            (ok.replace("center: p1", "center: l3"), "centre"),
+            (ok.replace("g7 = ", "g6 = "), "twice"),
+            (ok.replace("g7 = ", "k7 = "), "k7"),
+            (ok.replace("regions(c5_2)", "regions(c9_2)"), "c9"),
+            (ok.replace("count: n, dx", "count: m, dx"), "unknown parameter"),
+        ] {
+            let d = text::parse(&bad).unwrap();
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
+        // Syntax errors have positions and hints.
+        let e = text::parse(&ok.replace("dx: 10 mm, dy: 2 mm", "dx: 10 mm")).unwrap_err();
+        assert!(e.message.contains("dy"), "{e:?}");
+        let e = text::parse(&ok.replace("count: 6, angle", "count: 6, dz: 1, angle")).unwrap_err();
+        assert!(e.message.contains("dz"), "{e:?}");
     }
 
     #[test]

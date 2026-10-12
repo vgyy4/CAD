@@ -13,24 +13,47 @@ use std::collections::BTreeMap;
 
 // ------------------------------------------------------------------ entity tags
 
-/// Encodes a sketch entity id (`l3`) as a kernel profile tag.
+/// Encodes a sketch entity id (`l3`, or copy 2 of it made by a sketch pattern, `l3_2`) as a
+/// kernel profile tag: number in bits 0..32, prefix letter in 32..40, copy number in 40..52
+/// (0 = the entity itself), spline segment in 52..64 (see [`with_segment`]).
 pub fn entity_tag(id: &str) -> Option<u64> {
     let mut c = id.chars();
     let p = c.next()?;
     if !p.is_ascii_lowercase() {
         return None;
     }
-    let n: u32 = c.as_str().parse().ok()?;
-    Some((u64::from(p as u8) << 32) | u64::from(n))
+    let (num, copy) = match c.as_str().split_once('_') {
+        Some((n, k)) => (n, k.parse::<u64>().ok().filter(|k| (1..0x1000).contains(k))?),
+        None => (c.as_str(), 0),
+    };
+    let n: u32 = num.parse().ok()?;
+    Some((copy << 40) | (u64::from(p as u8) << 32) | u64::from(n))
 }
 
-/// Decodes a profile tag back into a sketch entity id.
+/// Tag of Bézier segment `seg` of a spline whose entity tag is `tag` (`s9` → `s9_g3`):
+/// every segment of a spline sweeps its own lateral face. Stored in the top 12 bits
+/// (`seg + 1`; splines have at most 1000 segments).
+pub fn with_segment(tag: u64, seg: u32) -> u64 {
+    (tag & !(0xfff_u64 << 52)) | (u64::from(seg.min(0xffe) + 1) << 52)
+}
+
+/// Decodes a profile tag back into a sketch entity id (`l5`, a spline segment `s9_g3`).
 pub fn tag_entity(tag: u64) -> Option<String> {
-    let p = u8::try_from(tag >> 32).ok()?;
+    let low = tag & 0xff_ffff_ffff;
+    let p = u8::try_from(low >> 32).ok()?;
     if !p.is_ascii_lowercase() {
         return None;
     }
-    Some(format!("{}{}", p as char, tag & 0xffff_ffff))
+    let seg = tag >> 52;
+    let copy = (tag >> 40) & 0xfff;
+    let mut id = format!("{}{}", p as char, low & 0xffff_ffff);
+    if copy > 0 {
+        id.push_str(&format!("_{copy}"));
+    }
+    if seg > 0 {
+        id.push_str(&format!("_g{}", seg - 1));
+    }
+    Some(id)
 }
 
 // ------------------------------------------------------------------ naming context
@@ -359,11 +382,15 @@ mod tests {
 
     #[test]
     fn tags_roundtrip() {
-        for id in ["l3", "p1", "a42", "c4294967295"] {
+        for id in ["l3", "p1", "a42", "c4294967295", "l3_2", "c7_499"] {
             assert_eq!(tag_entity(entity_tag(id).unwrap()).unwrap(), id);
         }
         assert!(entity_tag("L3").is_none());
         assert!(entity_tag("l").is_none());
+        assert!(entity_tag("l3_0").is_none() && entity_tag("l3_x").is_none());
+        let seg = with_segment(entity_tag("s9").unwrap(), 3);
+        assert_eq!(tag_entity(seg).unwrap(), "s9_g3");
+        assert_eq!(tag_entity(with_segment(entity_tag("s9_2").unwrap(), 0)).unwrap(), "s9_2_g0");
     }
 
     #[test]

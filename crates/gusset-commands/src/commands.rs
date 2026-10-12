@@ -18,13 +18,16 @@ use serde_json::{Value, json};
 
 mod datum;
 mod ops;
+mod sketch_ops;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
+pub use sketch_ops::{SketchPattern, SketchTrim};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
     v.extend(ops::specs());
     v.extend(datum::specs());
+    v.extend(sketch_ops::specs());
     v
 }
 
@@ -291,6 +294,24 @@ pub(crate) fn combine_effect_warnings(
         }
     }
     if all.is_empty() { Value::Null } else { json!({ "warnings": all }) }
+}
+
+/// Adds a warning when a sketch used with all its regions has free ends: their dangling
+/// pieces bound no region and were ignored (an unclosed outline next to a closed one).
+fn open_ends_warning(mut w: Value, ev: &gusset_eval::Evaluation, sketch: &str, all_regions: bool) -> Value {
+    let Some(r) = ev.sketches.get(sketch) else { return w };
+    if !all_regions || r.open_ends.is_empty() || r.regions.as_ref().map_or(true, Vec::is_empty) {
+        return w;
+    }
+    let msg = format!(
+        "{sketch} has free ends at {} that bound no region; they were ignored (close the outline or delete them)",
+        r.open_ends.join(", ")
+    );
+    match w.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(a) => a.push(json!(msg)),
+        None => w = json!({ "warnings": [msg] }),
+    }
+    w
 }
 
 /// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
@@ -857,7 +878,13 @@ impl Command for SketchCreate {
                     rb,
                     Feature::new(
                         name.clone(),
-                        FeatureKind::Sketch(SketchDef { plane, next_id: 1, entities: vec![], constraints: vec![] }),
+                        FeatureKind::Sketch(SketchDef {
+                            plane,
+                            next_id: 1,
+                            entities: vec![],
+                            constraints: vec![],
+                            patterns: vec![],
+                        }),
                     ),
                 );
                 *created.borrow_mut() = name.clone();
@@ -929,6 +956,9 @@ pub struct SketchAddPolyline {
     /// extruded).
     #[serde(default)]
     pub closed: bool,
+    /// Draw one smooth spline through the points (at least 3) instead of line segments.
+    #[serde(default)]
+    pub spline: bool,
     #[serde(default)]
     pub construction: bool,
 }
@@ -936,16 +966,18 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids as compact ranges: {\"first\", \"last\", \"count\"} (ids are consecutive within each kind in creation order, e.g. p12..p411 for 400 points).";
+    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm) as ONE undo step; neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns ids as ranges {first, last, count} (consecutive per kind, e.g. p12..p411).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let min = if self.closed { 3 } else { 2 };
+        let min = if self.closed || self.spline { 3 } else { 2 };
         if self.points.len() < min {
             return Err(CommandError::args(format!(
-                "a {} polyline needs at least {min} points",
-                if self.closed { "closed" } else { "open" }
-            )));
+                "a {} {} needs at least {min} points",
+                if self.closed { "closed" } else { "open" },
+                if self.spline { "spline" } else { "polyline" }
+            ))
+            .hint(if self.spline { "use sketch_add_line for two points" } else { "add more points" }));
         }
         if self.points.len() > MAX_POLYLINE_POINTS {
             return Err(CommandError::args(format!("at most {MAX_POLYLINE_POINTS} points per polyline")));
@@ -977,6 +1009,12 @@ impl Command for SketchAddPolyline {
             let mut pts = Vec::with_capacity(self.points.len());
             for [x, y] in &self.points {
                 pts.push(add_point(d, *x, *y)?);
+            }
+            if self.spline {
+                let spline =
+                    add_entity(d, SkGeom::Spline { points: pts.clone(), closed: self.closed }, self.construction);
+                store_solution(doc, &sk);
+                return Ok(json!({ "points": id_range(&pts), "spline": spline }));
             }
             let mut lines = Vec::new();
             for w in pts.windows(2) {
@@ -1226,23 +1264,8 @@ impl Command for SketchDeleteItems {
         let sk = self.sketch.clone();
         edit(s, ctx, "Delete sketch items", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
-            let mut dead: Vec<String> = self.ids.clone();
-            loop {
-                let more: Vec<String> = d
-                    .entities
-                    .iter()
-                    .filter(|e| !dead.contains(&e.id) && e.geom.refs().iter().any(|r| dead.iter().any(|x| x == r)))
-                    .map(|e| e.id.clone())
-                    .collect();
-                if more.is_empty() {
-                    break;
-                }
-                dead.extend(more);
-            }
-            d.entities.retain(|e| !dead.contains(&e.id));
-            let before = d.constraints.len();
-            d.constraints.retain(|c| !dead.contains(&c.id) && !c.entities.iter().any(|e| dead.contains(e)));
-            let removed_constraints = before - d.constraints.len();
+            let (dead, removed) = sketch_ops::delete_with_dependents(d, &self.ids);
+            let removed_constraints = removed.len();
             store_solution(doc, &sk);
             Ok(json!({ "deleted": dead, "constraints_removed": removed_constraints }))
         })
@@ -1312,7 +1335,7 @@ fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<Stri
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
     pub sketch: String,
-    /// Regions by an entity on their outer boundary; empty = all regions.
+    /// Region ids from query_sketch (or an entity bounding one region); empty = all.
     #[serde(default)]
     pub regions: Vec<String>,
     /// Distance expression (`10 mm`, `depth`, negative to flip).
@@ -1342,6 +1365,7 @@ impl Command for Extrude {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let distance = parse_expr("distance", &self.distance)?;
         let op = op_of(&self.op)?;
+        let (sketch_name, all_regions) = (self.sketch.clone(), self.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
         edit_post(
             s,
@@ -1369,7 +1393,8 @@ impl Command for Extrude {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch)
+                let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+                open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
             },
         )
     }
@@ -1416,6 +1441,7 @@ impl Command for Revolve {
                 AxisRef::SketchLine { sketch: sk.to_string(), entity: ent.to_string() }
             }
         };
+        let (sketch_name, all_regions) = (self.sketch.clone(), self.regions.is_empty());
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
         edit_post(
             s,
@@ -1443,7 +1469,8 @@ impl Command for Revolve {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch)
+                let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+                open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
             },
         )
     }
@@ -2347,12 +2374,17 @@ fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str, with_frame: bool) ->
             "free_entities": r.free_entities,
             "redundant": r.redundant,
             "conflicting": r.conflicting,
-            "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
+            "regions": match &r.regions { Ok(v) => json!(v.iter().map(|x| json!({"id": x.id, "area_mm2": x.area, "outer": x.outer, "at": x.at})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) },
             "points": r.points,
             "feature_status": st,
             });
             if with_frame && let Value::Object(m) = &mut v {
                 m.insert("frame".into(), frame_json(&r.frame));
+            }
+            if !r.open_ends.is_empty()
+                && let Value::Object(m) = &mut v
+            {
+                m.insert("open_ends".into(), json!(r.open_ends));
             }
             snap_zeros(&mut v);
             Ok(v)
