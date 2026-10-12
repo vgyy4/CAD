@@ -35,6 +35,7 @@ sketch Sketch1 (plane: XY, next_id: 12) {
   l5 = line(p1, p2)            # between two points
   c7 = circle(p1, 5)           # centre point, radius in mm
   a9 = arc(p1, p2, p3)         # centre, start, end: counter-clockwise from start to end
+  s4 = spline(p1, p2, p3) closed   # smooth curve through the points (see "Splines")
   k10 = horizontal(l5)         # constraints
 }
 ```
@@ -69,6 +70,31 @@ every region whose boundary contains it, as before.
 
 `sketch_trim(sketch, entity, x, y)` deletes the piece of a line/arc/circle around (x, y)
 between the nearest crossings, keeping the new ends on the crossing curves.
+
+### Splines
+
+`s5 = spline(p1, p2, p3, p4)` is a smooth curve (centripetal Catmull-Rom) through at least
+three ordinary sketch points; add `closed` to join the last point back to the first. The
+points are normal points, so constraints (`fixed`, `coincident`, `distance`, `on_line`, ...)
+apply to them; the spline itself takes no constraints and cannot be trimmed. A closed spline
+is a region; an open one cuts regions like any other curve. It must not cross itself. Create
+one with `sketch_add_polyline` and `spline: true`.
+
+```gusset
+gusset 1
+units mm
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(10, 6)
+  p3 = point(20, 0)
+  p4 = point(10, -8)
+  s5 = spline(p1, p2, p3, p4) closed
+  k6 = fixed(p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 4 mm, op: new)
+```
 
 Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 

@@ -147,3 +147,111 @@ fn trim_builds_a_rectangle_with_a_round_bump() {
     r.run("history.undo", json!({}));
     assert_eq!(r.regions("Sketch1").len(), 2);
 }
+
+/// Area of the polygon through many samples of the exact spline (the "high-resolution
+/// estimate" the solid is compared with).
+fn spline_area(pts: &[[f64; 2]], closed: bool) -> f64 {
+    let poly = gusset_sketch::spline_polyline(pts, closed, 4000);
+    let n = poly.len();
+    0.5 * (0..n).map(|i| poly[i][0] * poly[(i + 1) % n][1] - poly[(i + 1) % n][0] * poly[i][1]).sum::<f64>()
+}
+
+fn ring(n: u32, r: f64, c: [f64; 2]) -> Vec<[f64; 2]> {
+    (0..n)
+        .map(|k| {
+            let t = std::f64::consts::TAU * f64::from(k) / f64::from(n);
+            [c[0] + r * t.cos(), c[1] + r * t.sin()]
+        })
+        .collect()
+}
+
+#[test]
+fn a_closed_spline_profile_extrudes_to_the_volume_of_its_curve() {
+    let mut r = Rig::new();
+    r.run("sketch.create", json!({"plane": "XY"}));
+    let pts = ring(12, 10.0, [0.0, 0.0]);
+    let sp = r.run("sketch.add_polyline", json!({"sketch": "Sketch1", "points": pts, "spline": true, "closed": true}));
+    let spline = sp["spline"].as_str().unwrap().to_string();
+    let e = r.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "7 mm"}));
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    let want = spline_area(&pts, true) * 7.0;
+    let got = r.volume("Extrude1");
+    eprintln!(
+        "spline golden: kernel volume {got:.6} mm3, polygon estimate {want:.6} mm3, circle {:.6}",
+        PI * 100.0 * 7.0
+    );
+    assert!((got - want).abs() < 1e-5 * want, "{got} vs {want}");
+    // Close to the circle through the same points (the spline bulges slightly).
+    assert!((got - PI * 100.0 * 7.0).abs() < 0.003 * PI * 100.0 * 7.0, "{got}");
+    // One lateral face per Bézier segment (segment k runs from fit point k+1), plus the caps.
+    let names = r.face_names("Extrude1");
+    assert_eq!(names.len(), 12 + 2, "{names:?}");
+    for k in 0..12 {
+        assert!(names.contains(&format!("Extrude1/side(Sketch1/{spline}_g{k})")), "{k}: {names:?}");
+    }
+    // Moving a fit point reshapes the solid and keeps the names.
+    r.run("sketch.move_point", json!({"sketch": "Sketch1", "point": "p4", "x": 0.0, "y": 13.0}));
+    let got2 = r.volume("Extrude1");
+    assert!(got2 > got, "{got2} > {got}");
+    // Recompute the estimate from the document's points.
+    let q = r.run("query.sketch", json!({"sketch": "Sketch1"}));
+    let fit: Vec<[f64; 2]> = (1..=12)
+        .map(|k| {
+            let p = &q["points"][format!("p{k}")];
+            [p[0].as_f64().unwrap(), p[1].as_f64().unwrap()]
+        })
+        .collect();
+    let want2 = spline_area(&fit, true) * 7.0;
+    assert!((got2 - want2).abs() < 1e-5 * want2, "{got2} vs {want2}");
+    assert_eq!(r.face_names("Extrude1"), names);
+}
+
+#[test]
+fn a_spline_hole_in_a_plate_and_an_open_spline_across_a_rectangle() {
+    let mut r = Rig::new();
+    r.run("sketch.create", json!({"plane": "XY"}));
+    r.run(
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": -20, "y": -15, "width": 40, "height": 30, "width_expr": "40 mm", "height_expr": "30 mm"}),
+    );
+    let pts = ring(8, 6.0, [0.0, 0.0]);
+    r.run("sketch.add_polyline", json!({"sketch": "Sketch1", "points": pts, "spline": true, "closed": true}));
+    let regs = r.regions("Sketch1");
+    assert_eq!(regs.len(), 2, "{regs:?}");
+    let hole = spline_area(&pts, true);
+    let plate = regs.iter().find(|(_, a)| *a > 1000.0).unwrap().clone();
+    assert!((plate.1 - (1200.0 - hole)).abs() < 1e-5 * 1200.0, "{regs:?}");
+    let e = r.run(
+        "feature.extrude",
+        json!({"sketch": "Sketch1", "regions": [plate.0], "distance": "3 mm", "body_name": "Plate"}),
+    );
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    let got = r.volume("Plate");
+    assert!((got - (1200.0 - hole) * 3.0).abs() < 1e-5 * 3600.0, "{got} vs {}", (1200.0 - hole) * 3.0);
+    // An open spline across a second sketch's rectangle splits it into two solids' worth of regions.
+    r.run("sketch.create", json!({"plane": "XY"}));
+    r.run(
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch2", "x": 0, "y": 0, "width": 40, "height": 20, "width_expr": "40 mm", "height_expr": "20 mm"}),
+    );
+    r.run(
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch2", "points": [[-10, 10], [10, 5], [25, 15], [50, 10]], "spline": true}),
+    );
+    let regs2 = r.regions("Sketch2");
+    assert_eq!(regs2.len(), 2, "{regs2:?}");
+    assert!((regs2.iter().map(|x| x.1).sum::<f64>() - 800.0).abs() < 1e-6, "{regs2:?}");
+    let mut total = 0.0;
+    for (i, (id, area)) in regs2.iter().enumerate() {
+        let name = format!("Half{i}");
+        let e = r.run(
+            "feature.extrude",
+            json!({"sketch": "Sketch2", "regions": [id], "distance": "2 mm", "body_name": name}),
+        );
+        assert_eq!(e["rebuild_ok"], true, "{e}");
+        let v = r.volume(&name);
+        assert!((v - area * 2.0).abs() < 1e-5 * area * 2.0, "{v} vs {}", area * 2.0);
+        total += v;
+    }
+    assert!((total - 1600.0).abs() < 1e-3, "{total}");
+}

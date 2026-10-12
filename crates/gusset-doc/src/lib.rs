@@ -195,6 +195,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "move Move1 ",
             "combine Combine1 ",
             "pattern_linear ",
+            "spline(",
         ] {
             assert!(all.contains(kw), "no example uses {kw}");
         }
@@ -231,6 +232,30 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         let messy = "gusset 1\r\nunits in\n\n\n   param   a=1+2   \nsketch S (next_id: 1,plane:XZ) {\n\n}\n";
         let doc = Document::from_text(messy).unwrap();
         assert_eq!(doc.to_text(), "gusset 1\nunits in\n\nparam a = 1 + 2\n\nsketch S (plane: XZ, next_id: 1) {\n}\n");
+    }
+
+    #[test]
+    fn splines_round_trip_and_are_validated() {
+        let ok = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 8) {\n  p1 = point(0, 0)\n  p2 = point(5, 3)\n  p3 = point(9, 0)\n  s4 = spline(p1, p2, p3)\n  s5 = spline(p1, p2, p3) closed construction\n}\n";
+        let doc = Document::from_text(ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(
+            s.entities[3].geom,
+            SkGeom::Spline { points: vec!["p1".into(), "p2".into(), "p3".into()], closed: false }
+        );
+        assert!(s.entities[4].construction);
+        // Too few points, a repeated point, an unknown point and a bad id are reported.
+        for (bad, why) in [
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2)\n"), "at least 3"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2, p2)\n"), "twice"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "s4 = spline(p1, p2, p9)\n"), "p9"),
+            (ok.replace("s4 = spline(p1, p2, p3)\n", "l4 = spline(p1, p2, p3)\n"), "l4"),
+        ] {
+            let d = text::parse(&bad).unwrap();
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
     }
 
     #[test]

@@ -90,6 +90,12 @@ pub enum Seg2 {
         center: P2,
         radius: f64,
     },
+    /// One cubic Bézier segment from `p[0]` to `p[3]`. A spline is a chain of these (one
+    /// profile edge each, so every segment gets its own lateral face and exact mass
+    /// properties: OCCT integrates multi-span B-spline edges too coarsely).
+    Bezier {
+        p: [P2; 4],
+    },
 }
 
 /// A profile edge plus the persistent tag of the sketch entity it came from.

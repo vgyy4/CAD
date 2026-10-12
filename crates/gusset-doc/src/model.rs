@@ -250,7 +250,16 @@ pub enum SkGeom {
         start: String,
         end: String,
     },
+    /// Interpolating spline (centripetal Catmull-Rom) through the fit points, which are
+    /// ordinary sketch points; `closed` joins the last point back to the first.
+    Spline {
+        points: Vec<String>,
+        closed: bool,
+    },
 }
+
+/// Most fit points one spline may have.
+pub const MAX_SPLINE_POINTS: usize = 1000;
 
 impl SkGeom {
     pub fn keyword(&self) -> &'static str {
@@ -259,6 +268,7 @@ impl SkGeom {
             SkGeom::Line { .. } => "line",
             SkGeom::Circle { .. } => "circle",
             SkGeom::Arc { .. } => "arc",
+            SkGeom::Spline { .. } => "spline",
         }
     }
     pub fn id_prefix(&self) -> char {
@@ -267,6 +277,7 @@ impl SkGeom {
             SkGeom::Line { .. } => 'l',
             SkGeom::Circle { .. } => 'c',
             SkGeom::Arc { .. } => 'a',
+            SkGeom::Spline { .. } => 's',
         }
     }
     /// Entity ids this geometry refers to.
@@ -276,6 +287,7 @@ impl SkGeom {
             SkGeom::Line { a, b } => vec![a, b],
             SkGeom::Circle { center, .. } => vec![center],
             SkGeom::Arc { center, start, end } => vec![center, start, end],
+            SkGeom::Spline { points, .. } => points.iter().map(String::as_str).collect(),
         }
     }
 }

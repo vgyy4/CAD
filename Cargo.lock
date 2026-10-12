@@ -1585,6 +1585,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-occt-sys",
  "gusset-project",
+ "gusset-sketch",
  "gusset-store",
  "gusset-units",
  "gusset-worker",

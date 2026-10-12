@@ -128,6 +128,9 @@ fn print_feature(out: &mut String, f: &Feature) {
                     SkGeom::Line { a, b } => format!("line({a}, {b})"),
                     SkGeom::Circle { center, radius } => format!("circle({center}, {})", format_exact(*radius)),
                     SkGeom::Arc { center, start, end } => format!("arc({center}, {start}, {end})"),
+                    SkGeom::Spline { points, closed } => {
+                        format!("spline({}){}", points.join(", "), if *closed { " closed" } else { "" })
+                    }
                 };
                 let _ = writeln!(out, "  {} = {}{}", e.id, body, if e.construction { " construction" } else { "" });
             }
@@ -962,7 +965,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         let kind = lc.ident()?;
         lc.expect('(')?;
         match kind {
-            "point" | "line" | "circle" | "arc" => {
+            "point" | "line" | "circle" | "arc" | "spline" => {
                 let geom = match kind {
                     "point" => {
                         let x = lc.number()?;
@@ -982,6 +985,19 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                         let radius = lc.number()?;
                         SkGeom::Circle { center, radius }
                     }
+                    "spline" => {
+                        let mut points = Vec::new();
+                        loop {
+                            points.push(lc.ident()?.to_string());
+                            if points.len() > MAX_SPLINE_POINTS {
+                                return Err(lc.err(format!("a spline has at most {MAX_SPLINE_POINTS} points")));
+                            }
+                            if !lc.eat(',') {
+                                break;
+                            }
+                        }
+                        SkGeom::Spline { points, closed: false }
+                    }
                     _ => {
                         let center = lc.ident()?.to_string();
                         lc.expect(',')?;
@@ -992,6 +1008,10 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                     }
                 };
                 lc.expect(')')?;
+                let geom = match geom {
+                    SkGeom::Spline { points, .. } => SkGeom::Spline { points, closed: lc.eat_kw("closed") },
+                    other => other,
+                };
                 let construction = lc.eat_kw("construction");
                 if !lc.at_end() {
                     return Err(lc.err("unexpected text after sketch entity"));
@@ -1002,7 +1022,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 let Some(ck) = SkConstraintKind::from_keyword(other) else {
                     return Err(lc.err_hint(
                         format!("unknown sketch item '{other}'"),
-                        "entities: point, line, circle, arc; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric",
+                        "entities: point, line, circle, arc, spline; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric",
                     ));
                 };
                 let (n, has_value) = ck.arity();

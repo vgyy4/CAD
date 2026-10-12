@@ -950,6 +950,9 @@ pub struct SketchAddPolyline {
     /// extruded).
     #[serde(default)]
     pub closed: bool,
+    /// Draw one smooth spline through the points (at least 3) instead of line segments.
+    #[serde(default)]
+    pub spline: bool,
     #[serde(default)]
     pub construction: bool,
 }
@@ -957,16 +960,18 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through a list of points [[x, y], ...] (mm) as ONE undo step; neighbours share their points. With closed: true the last point connects back to the first. Returns the point and line ids as compact ranges: {\"first\", \"last\", \"count\"} (ids are consecutive within each kind in creation order, e.g. p12..p411 for 400 points).";
+    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm) as ONE undo step; neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns ids as ranges {first, last, count} (consecutive per kind, e.g. p12..p411).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let min = if self.closed { 3 } else { 2 };
+        let min = if self.closed || self.spline { 3 } else { 2 };
         if self.points.len() < min {
             return Err(CommandError::args(format!(
-                "a {} polyline needs at least {min} points",
-                if self.closed { "closed" } else { "open" }
-            )));
+                "a {} {} needs at least {min} points",
+                if self.closed { "closed" } else { "open" },
+                if self.spline { "spline" } else { "polyline" }
+            ))
+            .hint(if self.spline { "use sketch_add_line for two points" } else { "add more points" }));
         }
         if self.points.len() > MAX_POLYLINE_POINTS {
             return Err(CommandError::args(format!("at most {MAX_POLYLINE_POINTS} points per polyline")));
@@ -998,6 +1003,12 @@ impl Command for SketchAddPolyline {
             let mut pts = Vec::with_capacity(self.points.len());
             for [x, y] in &self.points {
                 pts.push(add_point(d, *x, *y)?);
+            }
+            if self.spline {
+                let spline =
+                    add_entity(d, SkGeom::Spline { points: pts.clone(), closed: self.closed }, self.construction);
+                store_solution(doc, &sk);
+                return Ok(json!({ "points": id_range(&pts), "spline": spline }));
             }
             let mut lines = Vec::new();
             for w in pts.windows(2) {
@@ -1318,7 +1329,7 @@ fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<Stri
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
     pub sketch: String,
-    /// Regions by id as listed by query_sketch (an entity on the outer boundary works when it bounds one region); empty = all.
+    /// Region ids from query_sketch (or an entity bounding one region); empty = all.
     #[serde(default)]
     pub regions: Vec<String>,
     /// Distance expression (`10 mm`, `depth`, negative to flip).

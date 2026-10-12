@@ -32,6 +32,8 @@ pub struct SketchResult {
     pub lines: Vec<(String, String, String)>,
     pub circles: Vec<(String, String)>,
     pub arcs: Vec<(String, String, String, String)>,
+    /// Splines (id → points along the curve in sketch mm), for drawing.
+    pub splines: Vec<(String, Vec<[f64; 2]>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +106,10 @@ fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: Length
             SkGeom::Circle { center, radius } => s.add_circle_at(get(&ids, center)?, *radius),
             SkGeom::Arc { center, start, end } => {
                 s.add_arc_between(get(&ids, center)?, get(&ids, start)?, get(&ids, end)?)
+            }
+            SkGeom::Spline { points, closed } => {
+                let fit = points.iter().map(|p| get(&ids, p)).collect::<Result<Vec<_>, _>>()?;
+                s.add_spline(&fit, *closed)
             }
         }
         .map_err(|e2| err(ErrorCode::InvalidSketch, format!("entity '{}': {e2}", e.id)))?;
@@ -225,7 +231,19 @@ pub(crate) fn solve_sketch(
                 _ => None,
             })
             .collect(),
+        splines: Vec::new(),
     };
+    result.splines = def
+        .entities
+        .iter()
+        .filter_map(|e| match &e.geom {
+            SkGeom::Spline { points, closed } => {
+                let fit: Option<Vec<[f64; 2]>> = points.iter().map(|p| result.points.get(p).copied()).collect();
+                fit.map(|f| (e.id.clone(), sk::spline_polyline(&f, *closed, 16)))
+            }
+            _ => None,
+        })
+        .collect();
     if status == SketchStatus::Failed {
         let why = r.error.map_or_else(|| "the solver did not converge".to_string(), |e| e.to_string());
         result.regions = Err(why.clone());
@@ -260,10 +278,16 @@ pub(crate) fn solve_sketch(
             result.open_ends = names(&arr.open_ends);
             let seg_of = |seg: &sk::Segment| -> ProfileEdge {
                 let tag = back.get(&seg.entity).and_then(|d| entity_tag(d)).unwrap_or(u64::MAX);
+                let tag = if matches!(seg.curve, sk::Curve::Bezier { .. }) {
+                    gusset_naming::with_segment(tag, seg.sub)
+                } else {
+                    tag
+                };
                 let seg2 = match seg.curve {
                     sk::Curve::Line { start, end } => Seg2::Line { a: start, b: end },
                     sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                     sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
+                    sk::Curve::Bezier { p } => Seg2::Bezier { p },
                 };
                 ProfileEdge { seg: seg2, tag }
             };
@@ -427,7 +451,7 @@ pub fn trim_plan(
     };
     let wrong = || {
         err(ErrorCode::InvalidReference, format!("'{entity}' cannot be trimmed: it is not a line, arc or circle"))
-            .with_hint("pick a line, arc or circle that is not construction geometry")
+            .with_hint("pick a line, arc or circle that is not construction geometry (splines cannot be trimmed)")
     };
     let solved = sk::solve(&s, &sk::SolveOptions::default());
     if solved.status == sk::SolveStatus::Failed {

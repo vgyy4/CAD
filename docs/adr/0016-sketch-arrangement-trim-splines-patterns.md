@@ -122,11 +122,26 @@ periodic. Why this and not a B-spline with control points:
 * The Béziers are exact in both worlds: the arrangement and the kernel see the same
   control points, so the solid's edge is the sketch's curve to rounding, not a tessellation.
 
-### Kernel
-`Seg2::Spline { poles }` is a clamped cubic B-spline made from the chain: `3m + 1`
-control points, knots `0..m` with multiplicity 3 inside (C0 joints with the geometry of the
-chain) and 4 at the ends. The OCCT shim builds a `Geom_BSplineCurve` edge; the mock
-kernel does not support splines (it only does straight edges), as for arcs.
+### Kernel and naming: one profile edge per Bézier segment
+A spline reaches the kernel as `Seg2::Bezier { p }` edges, one per Bézier segment (a piece
+cut out of a spline by the arrangement keeps whole segments plus the sub-segments at its
+cuts). The OCCT shim builds a `Geom_BezierCurve` edge for each. We tried the obvious
+alternative, one clamped cubic B-spline edge per spline piece (knots with multiplicity 3),
+and it is geometrically exact (a tessellation agrees to 5e-5) but **OCCT's mass
+properties are wrong for it**: the volume of a spline prism was off by 1-3 % with the
+default integrator and still by 1.8 % with the adaptive one (`BRepGProp` integrates a
+multi-span edge/face with too few Gauss points); one edge per segment is exact (3e-9).
+Volume and area are part of the contract (query tools, exports, golden tests), so the
+representation follows the integrator.
+
+Consequences for naming (ADR 0003): every Bézier segment sweeps its own lateral face,
+named `<feature>/side(<sketch>/s9_g3)` where `g3` is the segment (segment `k` runs from
+fit point `k` to the next one; the tag keeps `seg + 1` in the top 12 bits). The name
+depends only on the spline and the fit point index, not on coordinates, so it survives
+moving points; inserting a point in the middle renumbers the following segments (the
+usual case of a deleted/renumbered input). A segment cut in two by a crossing curve
+yields two faces with the same name, told apart by the usual `#k`. The mock kernel does
+not support splines (only straight edges, as for arcs).
 
 ### In the arrangement
 Splines are intersected numerically with every other curve: both curves are flattened to
@@ -136,7 +151,8 @@ curves (accepted when the residual is below `tol / 10`). Known limits: a *tangen
 touch of a spline with another curve is not detected (no sign change in the polyline);
 overlap of a spline with another curve along a stretch is not detected; a spline that
 crosses itself is an error (`SelfIntersecting`). Pieces are exact sub-curves of the chain
-(de Casteljau). A closed spline without cuts is a loop of its own (like a circle); one cut
+(de Casteljau); a piece is a run of Bézier segments (`Segment::sub` is the segment's
+index). A closed spline without cuts is a loop of its own (like a circle); one cut
 adds a second cut at the opposite parameter.
 
 ### Limits

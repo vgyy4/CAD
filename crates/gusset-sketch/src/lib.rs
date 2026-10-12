@@ -19,6 +19,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 mod arrange;
+mod curves;
 mod dual;
 mod equations;
 mod geom2;
@@ -26,8 +27,10 @@ mod linalg;
 pub mod profile;
 pub mod sketch;
 pub mod solver;
+pub mod spline;
 
 pub use arrange::{Cut, Cuts, cuts};
 pub use profile::{Arrangement, Curve, Loop, Profile, ProfileError, Segment, arrange, profiles};
 pub use sketch::{Constraint, ConstraintId, Entity, EntityId, EntityKind, Geom, Sketch, SketchError};
 pub use solver::{Drag, SolveError, SolveOptions, SolveResult, SolveStatus, solve, solve_drag};
+pub use spline::polyline as spline_polyline;

@@ -40,10 +40,9 @@ pub(super) fn delete_with_dependents(d: &mut SketchDef, ids: &[String]) -> (Vec<
 #[serde(deny_unknown_fields)]
 pub struct SketchTrim {
     pub sketch: String,
-    /// The line, arc or circle to trim.
+    /// Line, arc or circle id.
     pub entity: String,
-    /// A point on (or near) the piece to delete, sketch mm. The piece is the stretch of
-    /// `entity` between the nearest crossings on each side of this point.
+    /// Pick point (sketch mm) on the piece to delete.
     pub x: f64,
     pub y: f64,
 }
@@ -51,7 +50,7 @@ pub struct SketchTrim {
 impl Command for SketchTrim {
     const ID: &'static str = "sketch.trim";
     const TITLE: &'static str = "Trim";
-    const DESCRIPTION: &'static str = "Delete the piece of a line/arc/circle nearest (x, y) between the curves crossing it. New ends sit on the crossing curve (point_on constraint) or reuse a point already there; a circle becomes an arc, a line cut in the middle becomes two collinear lines. Length, midpoint and equal-length constraints of a trimmed line are dropped; other constraints stay. One undo step.";
+    const DESCRIPTION: &'static str = "Delete the piece of a line/arc/circle at (x, y) between the curves crossing it. New ends sit on the crossing curve (on_line/on_circle) or reuse a point there; a circle becomes an arc, a mid-cut line two collinear lines. A trimmed line loses length/midpoint/equal constraints; others stay. One undo step.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("T");
@@ -167,6 +166,10 @@ fn apply_trim(d: &mut SketchDef, id: &str, plan: &TrimPlan) -> Result<Value, Com
     let construction = d.entities.iter().find(|e| e.id == id).is_some_and(|e| e.construction);
     match (&geom, &plan.lo, &plan.hi) {
         (SkGeom::Point { .. }, _, _) => return Err(CommandError::args(format!("'{id}' is a point, not a curve"))),
+        (SkGeom::Spline { .. }, _, _) => {
+            return Err(CommandError::args(format!("'{id}' is a spline, which cannot be trimmed"))
+                .hint("trim the curves that cross it, or delete it and draw a spline through other points"));
+        }
         // The piece is the whole entity: nothing crosses it (or a circle is cut only once).
         (SkGeom::Line { a, b }, None, None) => {
             let (dead, gone) = delete_with_dependents(d, &[id.to_string()]);

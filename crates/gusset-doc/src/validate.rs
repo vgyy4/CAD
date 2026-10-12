@@ -419,6 +419,20 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
         {
             out.push(issue(n, format!("line '{}' starts and ends at the same point", e.id)));
         }
+        if let SkGeom::Spline { points, closed } = &e.geom {
+            if points.len() < 3 {
+                out.push(issue_h(n, format!("spline '{}' needs at least 3 points", e.id), "use a line for two points"));
+            }
+            if points.len() > MAX_SPLINE_POINTS {
+                out.push(issue(n, format!("spline '{}' has more than {MAX_SPLINE_POINTS} points", e.id)));
+            }
+            let wrap = usize::from(*closed && points.len() > 1);
+            let twice = points.windows(2).any(|w| matches!(w, [a, b] if a == b))
+                || (wrap == 1 && points.first() == points.last());
+            if twice {
+                out.push(issue(n, format!("spline '{}' uses the same point twice in a row", e.id)));
+            }
+        }
         defined.insert(e.id.as_str());
     }
     for c in &s.constraints {

@@ -59,6 +59,15 @@ pub enum Geom {
         start: EntityId,
         end: EntityId,
     },
+    /// Interpolating spline through the fit points `count` entries of the sketch's spline
+    /// point table starting at `first` (see [`Sketch::spline_points`]). The list lives in a
+    /// side table so that `Geom` stays `Copy`. The spline adds no solver equations: its
+    /// points are ordinary points.
+    Spline {
+        first: u32,
+        count: u32,
+        closed: bool,
+    },
 }
 
 /// The kind of an entity, without its data.
@@ -68,6 +77,7 @@ pub enum EntityKind {
     Line,
     Circle,
     Arc,
+    Spline,
 }
 
 impl Geom {
@@ -77,16 +87,19 @@ impl Geom {
             Geom::Line { .. } => EntityKind::Line,
             Geom::Circle { .. } => EntityKind::Circle,
             Geom::Arc { .. } => EntityKind::Arc,
+            Geom::Spline { .. } => EntityKind::Spline,
         }
     }
 
-    /// The point entities this geometry refers to (empty for a point).
+    /// The point entities this geometry refers to (empty for a point). A spline's fit
+    /// points are in [`Sketch::spline_points`] instead.
     pub fn referenced_points(&self) -> Vec<EntityId> {
         match *self {
             Geom::Point { .. } => Vec::new(),
             Geom::Line { a, b } => vec![a, b],
             Geom::Circle { center, .. } => vec![center],
             Geom::Arc { center, start, end } => vec![center, start, end],
+            Geom::Spline { .. } => Vec::new(),
         }
     }
 }
@@ -221,6 +234,9 @@ pub struct Sketch {
     constraints: Vec<(ConstraintId, Constraint)>,
     next_entity: u32,
     next_constraint: u32,
+    /// Fit points of all splines, appended when a spline is added (slots of removed splines
+    /// stay behind, unused).
+    spline_pts: Vec<EntityId>,
 }
 
 impl Sketch {
@@ -264,6 +280,28 @@ impl Sketch {
         match self.entity(id)?.geom {
             Geom::Line { a, b } => Some((a, b)),
             _ => None,
+        }
+    }
+
+    /// Fit points of a spline entity, in order.
+    pub fn spline_points(&self, id: EntityId) -> Option<&[EntityId]> {
+        match self.entity(id)?.geom {
+            Geom::Spline { first, count, .. } => {
+                let (a, b) = (first as usize, (first as usize).checked_add(count as usize)?);
+                self.spline_pts.get(a..b)
+            }
+            _ => None,
+        }
+    }
+
+    /// Every point entity an entity refers to (a spline's fit points included).
+    pub fn referenced_points(&self, id: EntityId) -> Vec<EntityId> {
+        match self.entity(id) {
+            Some(e) => match e.geom {
+                Geom::Spline { .. } => self.spline_points(id).map(<[EntityId]>::to_vec).unwrap_or_default(),
+                g => g.referenced_points(),
+            },
+            None => Vec::new(),
         }
     }
 
@@ -418,6 +456,39 @@ impl Sketch {
         self.push(g)
     }
 
+    /// Adds a spline through existing points: at least 3, at most
+    /// [`crate::spline::MAX_SPLINE_POINTS`], no point twice in a row (nor first = last when
+    /// closed). A closed spline connects the last point back to the first.
+    pub fn add_spline(&mut self, points: &[EntityId], closed: bool) -> Result<EntityId, SketchError> {
+        if points.len() < 3 {
+            return Err(SketchError::InvalidValue { what: "a spline needs at least 3 points (use a line for 2)" });
+        }
+        if points.len() > crate::spline::MAX_SPLINE_POINTS {
+            return Err(SketchError::InvalidValue { what: "a spline has too many points" });
+        }
+        for &p in points {
+            self.expect_point(p)?;
+        }
+        for w in points.windows(2) {
+            if let &[a, b] = w
+                && a == b
+            {
+                return Err(SketchError::RepeatedEntity(a));
+            }
+        }
+        if closed
+            && let (Some(&f), Some(&l)) = (points.first(), points.last())
+            && f == l
+        {
+            return Err(SketchError::RepeatedEntity(f));
+        }
+        let first = u32::try_from(self.spline_pts.len()).map_err(|_| SketchError::TooManyEntities)?;
+        let count = u32::try_from(points.len()).map_err(|_| SketchError::TooManyEntities)?;
+        let id = self.push(Geom::Spline { first, count, closed })?;
+        self.spline_pts.extend_from_slice(points);
+        Ok(id)
+    }
+
     fn check_room(&self, n: usize) -> Result<(), SketchError> {
         if self.entities.len().saturating_add(n) > MAX_ENTITIES
             || u64::from(self.next_entity).saturating_add(n as u64) >= u64::from(u32::MAX)
@@ -456,6 +527,16 @@ impl Sketch {
                 }
                 if start == end {
                     return Err(SketchError::RepeatedEntity(start));
+                }
+            }
+            Geom::Spline { first, count, .. } => {
+                let (a, b) = (first as usize, (first as usize).saturating_add(count as usize));
+                let pts = self.spline_pts.get(a..b).ok_or(SketchError::InvalidValue { what: "spline point list" })?;
+                if pts.len() < 3 {
+                    return Err(SketchError::InvalidValue { what: "a spline needs at least 3 points" });
+                }
+                for &p in pts {
+                    self.expect_point(p)?;
                 }
             }
         }
@@ -506,7 +587,9 @@ impl Sketch {
                 match self.kind(a)? {
                     EntityKind::Line => self.expect_line(b),
                     EntityKind::Circle | EntityKind::Arc => self.expect_curve(b),
-                    EntityKind::Point => Err(SketchError::WrongKind { entity: a, expected: "a line, circle or arc" }),
+                    EntityKind::Point | EntityKind::Spline => {
+                        Err(SketchError::WrongKind { entity: a, expected: "a line, circle or arc" })
+                    }
                 }
             }
             Constraint::Distance { a, b, value } => {
@@ -574,7 +657,7 @@ impl Sketch {
         }
         let mut removed: Vec<EntityId> = vec![id];
         for e in &self.entities {
-            if e.geom.referenced_points().contains(&id) {
+            if self.referenced_points(e.id).contains(&id) {
                 removed.push(e.id);
             }
         }

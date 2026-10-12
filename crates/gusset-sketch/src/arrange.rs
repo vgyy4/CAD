@@ -11,7 +11,6 @@ use crate::profile::{Cv, ProfileError, Shape};
 use crate::sketch::EntityId;
 
 const TAU: f64 = core::f64::consts::TAU;
-const PI: f64 = core::f64::consts::PI;
 
 /// Most vertices an arrangement may have (bounds memory on hostile input).
 pub(crate) const MAX_VERTICES: usize = 200_000;
@@ -154,31 +153,33 @@ pub(crate) fn arc_overlap(a0: f64, sa: f64, b0: f64, sb: f64) -> f64 {
 fn curve_on(cv: &Cv, p: V2, tol: f64) -> bool {
     match cv.shape {
         Shape::Arc { c, r, a0, span } => on_arc(p, c, a0, span, tol / r),
-        Shape::Line | Shape::Circle { .. } => true,
+        Shape::Line | Shape::Circle { .. } | Shape::Spline { .. } => true,
     }
 }
 
 /// Where `p` lies along the curve: a fraction in `[0, 1]` for lines, a counter-clockwise
 /// angle from the start (arcs) or from the +x axis (circles) otherwise.
 fn param_on(cv: &Cv, p: V2) -> f64 {
-    match cv.shape {
+    match &cv.shape {
         Shape::Line => {
             let d = sub(cv.p[1], cv.p[0]);
             dot(sub(p, cv.p[0]), d) / dot(d, d)
         }
-        Shape::Arc { c, a0, .. } => wrap_2pi(angle(sub(p, c)) - a0),
-        Shape::Circle { c, .. } => wrap_2pi(angle(sub(p, c))),
+        Shape::Arc { c, a0, .. } => wrap_2pi(angle(sub(p, *c)) - a0),
+        Shape::Circle { c, .. } => wrap_2pi(angle(sub(p, *c))),
+        Shape::Spline { .. } => crate::curves::nearest_param(cv, p),
     }
 }
 
 /// Direction of travel (increasing parameter) at `p`.
 fn direction_at(cv: &Cv, p: V2) -> V2 {
-    match cv.shape {
+    match &cv.shape {
         Shape::Line => sub(cv.p[1], cv.p[0]),
         Shape::Arc { c, .. } | Shape::Circle { c, .. } => {
-            let q = sub(p, c);
+            let q = sub(p, *c);
             [-q[1], q[0]]
         }
+        Shape::Spline { .. } => crate::curves::eval(cv, crate::curves::nearest_param(cv, p)).1,
     }
 }
 
@@ -197,9 +198,12 @@ fn crossing_sign(a: &Cv, b: &Cv, p: V2) -> i8 {
 
 /// Points where two curves meet. `Err(at)` when they overlap along a stretch.
 fn raw_points(a: &Cv, b: &Cv, tol: f64) -> Result<Vec<V2>, V2> {
+    if matches!(a.shape, Shape::Spline { .. }) || matches!(b.shape, Shape::Spline { .. }) {
+        return Ok(crate::curves::numeric_hits(a, b, tol));
+    }
     let circ = |s: &Shape| match *s {
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => Some((c, r)),
-        Shape::Line => None,
+        Shape::Line | Shape::Spline { .. } => None,
     };
     let (ca, cb) = (circ(&a.shape), circ(&b.shape));
     let mut pts = match (ca, cb) {
@@ -217,8 +221,8 @@ fn raw_points(a: &Cv, b: &Cv, tol: f64) -> Result<Vec<V2>, V2> {
             None => {
                 // Same circle: overlapping unless two arcs only share endpoints.
                 let at = add(c1, [r1, 0.0]);
-                return match (a.shape, b.shape) {
-                    (Shape::Arc { a0, span, .. }, Shape::Arc { a0: b0, span: sb, .. }) => {
+                return match (&a.shape, &b.shape) {
+                    (&Shape::Arc { a0, span, .. }, &Shape::Arc { a0: b0, span: sb, .. }) => {
                         if arc_overlap(a0, span, b0, sb) > tol / r1 {
                             let mid = a0 + 0.5 * span;
                             Err(add(c1, [r1 * libm::cos(mid), r1 * libm::sin(mid)]))
@@ -286,7 +290,7 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
                 .iter()
                 .map(|s| match **s {
                     Shape::Arc { r, .. } | Shape::Circle { r, .. } => r,
-                    Shape::Line => 0.0,
+                    Shape::Line | Shape::Spline { .. } => 0.0,
                 })
                 .fold(0.0, f64::max);
             let near = if rmax > 0.0 { tol + (2.0 * tol * rmax).sqrt() } else { tol };
@@ -318,8 +322,8 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
     Ok(Splits { per_curve, crossings })
 }
 
-/// Cuts a curve at its splits. Pieces are appended to `out`; a circle without a cut
-/// is returned unchanged (`Some`).
+/// Cuts a curve at its splits. Pieces are appended to `out`; a circle or closed spline
+/// without a cut is returned unchanged (`Some`).
 pub(crate) fn make_pieces(
     cv: &Cv,
     mut splits: Vec<Split>,
@@ -327,60 +331,62 @@ pub(crate) fn make_pieces(
     out: &mut Vec<Cv>,
 ) -> Result<Option<Cv>, ProfileError> {
     splits.sort_by(|x, y| x.param.total_cmp(&y.param).then(x.vertex.cmp(&y.vertex)));
-    match cv.shape {
-        Shape::Line | Shape::Arc { .. } => {
-            let mut chain: Vec<usize> = vec![cv.v[0]];
-            for s in &splits {
-                if chain.last() != Some(&s.vertex) {
-                    chain.push(s.vertex);
-                }
+    let (d0, d1) = crate::curves::domain(cv);
+    if !cv.shape.is_ring() {
+        let mut chain: Vec<(usize, f64)> = vec![(cv.v[0], d0)];
+        for s in &splits {
+            if chain.last().map(|l| l.0) != Some(s.vertex) {
+                chain.push((s.vertex, s.param));
             }
-            if chain.last() != Some(&cv.v[1]) {
-                chain.push(cv.v[1]);
-            }
-            for (ord, w) in chain.windows(2).enumerate() {
-                if let &[v0, v1] = w {
-                    out.push(piece_of(cv, [v0, v1], verts, u32::try_from(ord).unwrap_or(u32::MAX)));
-                }
-            }
-            Ok(None)
         }
-        Shape::Circle { c, r } => {
-            // One entry per vertex: the best (lowest partner, then entering) split.
-            let mut best: BTreeMap<usize, Split> = BTreeMap::new();
-            for s in &splits {
-                match best.get(&s.vertex) {
-                    Some(old) if cmp_split(s, old).is_ge() => {}
-                    _ => {
-                        best.insert(s.vertex, *s);
-                    }
-                }
+        if chain.last().map(|l| l.0) != Some(cv.v[1]) {
+            chain.push((cv.v[1], d1));
+        }
+        for (ord, w) in chain.windows(2).enumerate() {
+            if let &[(v0, u0), (v1, u1)] = w {
+                out.push(piece_of(cv, [v0, v1], [u0, u1], verts, u32::try_from(ord).unwrap_or(u32::MAX)));
             }
-            let mut ring: Vec<Split> = best.into_values().collect();
-            if ring.is_empty() {
-                return Ok(Some(*cv));
+        }
+        return Ok(None);
+    }
+    // A circle or closed spline: pieces run between consecutive cuts round the ring.
+    let len = d1 - d0;
+    // One entry per vertex: the best (lowest partner, then entering) split.
+    let mut best: BTreeMap<usize, Split> = BTreeMap::new();
+    for s in &splits {
+        match best.get(&s.vertex) {
+            Some(old) if cmp_split(s, old).is_ge() => {}
+            _ => {
+                best.insert(s.vertex, *s);
             }
-            if let [only] = ring.as_slice() {
-                // A single touch point: add the opposite point so every piece is a proper arc.
-                let q = sub(verts.at(only.vertex), c);
-                let anti = verts.intern(sub(c, q))?;
-                ring.push(Split { param: wrap_2pi(only.param + PI), vertex: anti, partner: only.partner, sign: 0 });
-            }
-            ring.sort_by(|x, y| x.param.total_cmp(&y.param).then(x.vertex.cmp(&y.vertex)));
-            // The piece numbered 0 starts at the most "canonical" cut, so numbers survive
-            // moving or rotating the circle.
-            let origin = ring.iter().enumerate().min_by(|(_, x), (_, y)| cmp_split(x, y)).map_or(0, |(i, _)| i);
-            let n = ring.len();
-            for j in 0..n {
-                let (Some(s0), Some(s1)) = (ring.get((origin + j) % n), ring.get((origin + j + 1) % n)) else {
-                    continue;
-                };
-                let shape_cv = Cv { shape: Shape::Circle { c, r }, ..*cv };
-                out.push(piece_of(&shape_cv, [s0.vertex, s1.vertex], verts, u32::try_from(j).unwrap_or(u32::MAX)));
-            }
-            Ok(None)
         }
     }
+    let mut ring: Vec<Split> = best.into_values().collect();
+    if ring.is_empty() {
+        return Ok(Some(cv.clone()));
+    }
+    if let [only] = ring.as_slice() {
+        // A single touch point: add the opposite point so every piece is a proper curve.
+        let u = d0 + (only.param - d0 + 0.5 * len) % len;
+        let anti = match cv.shape {
+            Shape::Circle { c, .. } => verts.intern(sub(c, sub(verts.at(only.vertex), c)))?,
+            _ => verts.intern(crate::curves::eval(cv, u).0)?,
+        };
+        ring.push(Split { param: u, vertex: anti, partner: only.partner, sign: 0 });
+    }
+    ring.sort_by(|x, y| x.param.total_cmp(&y.param).then(x.vertex.cmp(&y.vertex)));
+    // The piece numbered 0 starts at the most "canonical" cut, so numbers survive moving
+    // or rotating the sketch.
+    let origin = ring.iter().enumerate().min_by(|(_, x), (_, y)| cmp_split(x, y)).map_or(0, |(i, _)| i);
+    let n = ring.len();
+    for j in 0..n {
+        let (Some(s0), Some(s1)) = (ring.get((origin + j) % n), ring.get((origin + j + 1) % n)) else {
+            continue;
+        };
+        let u1 = if s1.param > s0.param { s1.param } else { s1.param + len };
+        out.push(piece_of(cv, [s0.vertex, s1.vertex], [s0.param, u1], verts, u32::try_from(j).unwrap_or(u32::MAX)));
+    }
+    Ok(None)
 }
 
 /// Canonical order of cuts of one circle: lowest partner first, entering before leaving,
@@ -390,16 +396,29 @@ fn cmp_split(x: &Split, y: &Split) -> core::cmp::Ordering {
     key(x).cmp(&key(y)).then(x.param.total_cmp(&y.param))
 }
 
-/// The piece of `cv` running from vertex `v[0]` to vertex `v[1]` (counter-clockwise for
-/// arcs and circles).
-fn piece_of(cv: &Cv, v: [usize; 2], verts: &Verts, piece: u32) -> Cv {
+/// The piece of `cv` running from vertex `v[0]` (parameter `u[0]`) to vertex `v[1]`
+/// (parameter `u[1]`), counter-clockwise for arcs and circles.
+fn piece_of(cv: &Cv, v: [usize; 2], u: [f64; 2], verts: &Verts, piece: u32) -> Cv {
     let p = [verts.at(v[0]), verts.at(v[1])];
-    let shape = match cv.shape {
+    let shape = match &cv.shape {
         Shape::Line => Shape::Line,
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => {
-            let a0 = angle(sub(p[0], c));
-            let span = wrap_2pi(angle(sub(p[1], c)) - a0);
-            Shape::Arc { c, r, a0, span }
+            let a0 = angle(sub(p[0], *c));
+            let span = wrap_2pi(angle(sub(p[1], *c)) - a0);
+            Shape::Arc { c: *c, r: *r, a0, span }
+        }
+        Shape::Spline { chain, total, closed, first } => {
+            // Chain parameters are relative to this shape's first segment.
+            let mut sub_chain = crate::spline::sub_chain(chain, u[0], u[1], *closed);
+            let seg0 = (*first as usize + libm::floor(u[0]).max(0.0) as usize) % (*total as usize).max(1);
+            // Make the piece end exactly on the vertices it joins.
+            if let Some(first) = sub_chain.first_mut() {
+                first[0] = p[0];
+            }
+            if let Some(last) = sub_chain.last_mut() {
+                last[3] = p[1];
+            }
+            Shape::Spline { chain: sub_chain, first: u32::try_from(seg0).unwrap_or(0), total: *total, closed: false }
         }
     };
     let bbox = crate::profile::bbox_of(&shape, p);
@@ -409,7 +428,9 @@ fn piece_of(cv: &Cv, v: [usize; 2], verts: &Verts, piece: u32) -> Cv {
 /// Rejects zero-length pieces the tolerance cannot represent.
 pub(crate) fn check_pieces(pieces: &[Cv]) -> Result<(), ProfileError> {
     for p in pieces {
-        if p.v[0] == p.v[1] || not_gt(dist(p.p[0], p.p[1]), 0.0) {
+        let empty = matches!(&p.shape, Shape::Spline { chain, .. } if chain.is_empty());
+        if empty || (p.v[0] == p.v[1] && !matches!(p.shape, Shape::Spline { .. })) || not_gt(dist(p.p[0], p.p[1]), 0.0)
+        {
             return Err(ProfileError::Degenerate { entity: p.id });
         }
     }
@@ -450,6 +471,12 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
     }
     sketch.validate().map_err(ProfileError::Invalid)?;
     let mut cvs = crate::profile::collect(sketch, tol)?;
+    if matches!(sketch.entity(entity).map(|e| e.geom), Some(Geom::Spline { .. })) {
+        return Err(ProfileError::Invalid(SketchError::WrongKind {
+            entity,
+            expected: "a line, arc or circle (splines cannot be trimmed)",
+        }));
+    }
     let Some(idx) = cvs.iter().position(|c| c.id == entity) else {
         return Err(ProfileError::Invalid(SketchError::WrongKind {
             entity,
@@ -506,7 +533,7 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
                 pick_param = if pick_param - span < TAU - pick_param { span } else { 0.0 };
             }
         }
-        Shape::Circle { .. } => {}
+        Shape::Circle { .. } | Shape::Spline { .. } => {}
     }
     Ok(Cuts { cuts: out, pick: pick_param, span })
 }

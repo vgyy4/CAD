@@ -24,13 +24,26 @@ pub fn entity_tag(id: &str) -> Option<u64> {
     Some((u64::from(p as u8) << 32) | u64::from(n))
 }
 
-/// Decodes a profile tag back into a sketch entity id.
+/// Tag of Bézier segment `seg` of a spline whose entity tag is `tag` (`s9` → `s9_g3`):
+/// every segment of a spline sweeps its own lateral face. Stored in the top 12 bits
+/// (`seg + 1`; splines have at most 1000 segments).
+pub fn with_segment(tag: u64, seg: u32) -> u64 {
+    (tag & !(0xfff << 52)) | (u64::from(seg.min(0xffe) + 1) << 52)
+}
+
+/// Decodes a profile tag back into a sketch entity id (`l5`, a spline segment `s9_g3`).
 pub fn tag_entity(tag: u64) -> Option<String> {
-    let p = u8::try_from(tag >> 32).ok()?;
+    let low = tag & 0xff_ffff_ffff;
+    let p = u8::try_from(low >> 32).ok()?;
     if !p.is_ascii_lowercase() {
         return None;
     }
-    Some(format!("{}{}", p as char, tag & 0xffff_ffff))
+    let seg = tag >> 52;
+    let mut id = format!("{}{}", p as char, low & 0xffff_ffff);
+    if seg > 0 {
+        id.push_str(&format!("_g{}", seg - 1));
+    }
+    Some(id)
 }
 
 // ------------------------------------------------------------------ naming context

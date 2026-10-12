@@ -199,3 +199,71 @@ fn trim_keeps_the_end_on_an_existing_point_at_a_t_junction() {
         "{r}"
     );
 }
+
+#[test]
+fn splines_are_ordinary_points_plus_a_curve_and_form_regions() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    let e = fail(
+        &mut s,
+        &u,
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch1", "points": [[0, 0], [5, 5]], "spline": true}),
+    );
+    assert_eq!(e.code, "invalid_args");
+    assert!(e.hint.is_some(), "{e:?}");
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch1", "points": [[10, 0], [7, 7], [0, 10], [-7, 7], [-10, 0], [-7, -7], [0, -10], [7, -7]], "spline": true, "closed": true}),
+    );
+    assert_eq!(r["spline"], "s9", "{r}");
+    assert_eq!(r["points"]["count"], 8, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("s9 = spline(p1, p2, p3, p4, p5, p6, p7, p8) closed"), "{text}");
+    let regs = regions(&mut s, &u, "Sketch1");
+    assert_eq!(regs.len(), 1, "{regs:?}");
+    // Close to a circle of radius ~10 through the same points.
+    assert!(regs[0].1 > 280.0 && regs[0].1 < 330.0, "{regs:?}");
+    // The fit points are ordinary points: constrain one and move another.
+    run(&mut s, &u, "sketch.add_constraint", json!({"sketch": "Sketch1", "kind": "fixed", "entities": ["p1"]}));
+    run(&mut s, &u, "sketch.move_point", json!({"sketch": "Sketch1", "point": "p3", "x": 0, "y": 14}));
+    let regs2 = regions(&mut s, &u, "Sketch1");
+    assert!(regs2[0].1 > regs[0].1, "{regs2:?}");
+    // Splines take no trim and no line constraints, with clear errors.
+    let e = fail(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": "s9", "x": 10, "y": 0}));
+    assert!(e.message.contains("spline") || e.message.contains("trimmed"), "{e:?}");
+    let e = run(
+        &mut s,
+        &u,
+        "sketch.add_constraint",
+        json!({"sketch": "Sketch1", "kind": "horizontal", "entities": ["s9"]}),
+    );
+    assert_eq!(e["rebuild_ok"], false, "{e}");
+    assert!(e["new_errors"].to_string().contains("must be a line"), "{e}");
+    run(&mut s, &u, "history.undo", json!({}));
+    // A line crossing it makes two regions.
+    run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": -20, "y1": 2, "x2": 20, "y2": 2}));
+    assert_eq!(regions(&mut s, &u, "Sketch1").len(), 2);
+    // Deleting a fit point deletes the spline.
+    let d = run(&mut s, &u, "sketch.delete_items", json!({"sketch": "Sketch1", "ids": ["p5"]}));
+    assert!(d["deleted"].to_string().contains("s9"), "{d}");
+}
+
+#[test]
+fn the_mock_kernel_reports_splines_as_unsupported_not_a_panic() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(
+        &mut s,
+        &u,
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch1", "points": [[10, 0], [0, 10], [-10, 0], [0, -10]], "spline": true, "closed": true}),
+    );
+    let e = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "2 mm"}));
+    assert_eq!(e["rebuild_ok"], false, "{e}");
+    assert!(e["new_errors"].to_string().contains("straight edges"), "{e}");
+}

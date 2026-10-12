@@ -15,6 +15,7 @@ use std::fmt;
 use crate::arrange::{self, Verts};
 use crate::geom2::{V2, angle, cross, dist, dot, not_gt, sub, wrap_2pi};
 use crate::sketch::{EntityId, Geom, Sketch, SketchError};
+use crate::spline::{self, Bez};
 
 /// Most non-construction curves [`profiles`] accepts.
 pub const MAX_PROFILE_CURVES: usize = 10_000;
@@ -46,6 +47,11 @@ pub enum Curve {
         radius: f64,
         ccw: bool,
     },
+    /// One cubic Bézier segment of a spline, with its four control points. A spline piece
+    /// is several of these in a row (see [`Segment::sub`]).
+    Bezier {
+        p: [[f64; 2]; 4],
+    },
 }
 
 /// One segment of a loop, referring to the sketch entity it comes from.
@@ -56,6 +62,9 @@ pub struct Segment {
     /// pieces are numbered from 0 along it (lines from `a`, arcs from `start`, circles
     /// from their canonical first cut). An uncut entity has piece 0.
     pub piece: u32,
+    /// For a spline: which Bézier segment of the spline this is (segment `k` runs from fit
+    /// point `k` to the next one); 0 for every other entity.
+    pub sub: u32,
     /// True when the loop runs against the entity's own direction (line `b → a`,
     /// arc clockwise, circle clockwise).
     pub reversed: bool,
@@ -165,7 +174,7 @@ impl fmt::Display for ProfileError {
 
 impl std::error::Error for ProfileError {}
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum Shape {
     Line,
     /// `a0`: start angle, `span`: CCW sweep in `(0, 2π)`.
@@ -179,10 +188,25 @@ pub(crate) enum Shape {
         c: V2,
         r: f64,
     },
+    /// A chain of cubic Béziers (a whole spline, or a piece of one with `closed: false`).
+    /// `chain[j]` is segment `(first + j) % total` of the spline.
+    Spline {
+        chain: Vec<Bez>,
+        first: u32,
+        total: u32,
+        closed: bool,
+    },
+}
+
+impl Shape {
+    /// A curve without end points: a circle or a closed spline.
+    pub(crate) fn is_ring(&self) -> bool {
+        matches!(self, Shape::Circle { .. } | Shape::Spline { closed: true, .. })
+    }
 }
 
 /// A curve of the sketch, or (after cutting) one piece of it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Cv {
     pub(crate) id: EntityId,
     pub(crate) shape: Shape,
@@ -196,9 +220,16 @@ pub(crate) struct Cv {
 }
 
 pub(crate) fn bbox_of(shape: &Shape, p: [V2; 2]) -> [f64; 4] {
-    match *shape {
+    match shape {
         Shape::Line => [p[0][0].min(p[1][0]), p[0][1].min(p[1][1]), p[0][0].max(p[1][0]), p[0][1].max(p[1][1])],
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => [c[0] - r, c[1] - r, c[0] + r, c[1] + r],
+        Shape::Spline { chain, .. } => {
+            let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            for q in chain.iter().flatten() {
+                b = [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[0]), b[3].max(q[1])];
+            }
+            b
+        }
     }
 }
 
@@ -242,13 +273,34 @@ pub(crate) fn collect(s: &Sketch, tol: f64) -> Result<Vec<Cv>, ProfileError> {
                 }
                 (Shape::Arc { c, r, a0, span }, [ps, pe])
             }
+            Geom::Spline { closed, .. } => {
+                let fit: Vec<V2> =
+                    s.spline_points(e.id).unwrap_or(&[]).iter().map(|&q| pt_of(s, q)).collect::<Result<Vec<_>, _>>()?;
+                let n = fit.len();
+                let gap = |i: usize| match (fit.get(i), fit.get((i + 1) % n.max(1))) {
+                    (Some(&a), Some(&b)) => dist(a, b),
+                    _ => 0.0,
+                };
+                let last = if closed { n } else { n.saturating_sub(1) };
+                if n < 3 || (0..last).any(|i| not_gt(gap(i), tol)) {
+                    return Err(deg);
+                }
+                let chain = spline::chain(&fit, closed);
+                let ends = match (chain.first(), chain.last()) {
+                    (Some(f), Some(l)) => [f[0], l[3]],
+                    _ => return Err(deg),
+                };
+                let total = u32::try_from(chain.len()).unwrap_or(u32::MAX);
+                (Shape::Spline { chain, first: 0, total, closed }, ends)
+            }
         };
         if out.len() >= MAX_PROFILE_CURVES {
             let count =
                 s.entities().iter().filter(|e| !e.construction && !matches!(e.geom, Geom::Point { .. })).count();
             return Err(ProfileError::TooManyCurves { count, limit: MAX_PROFILE_CURVES });
         }
-        out.push(Cv { id: e.id, shape, p, v: [usize::MAX; 2], bbox: bbox_of(&shape, p), piece: 0 });
+        let bbox = bbox_of(&shape, p);
+        out.push(Cv { id: e.id, shape, p, v: [usize::MAX; 2], bbox, piece: 0 });
     }
     Ok(out)
 }
@@ -260,10 +312,32 @@ struct Use {
     rev: bool,
 }
 
+/// The loop segments for one use of a curve: one, except for a spline piece (one per Bézier).
+fn make_segments(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Vec<Segment>> {
+    let cv = cvs.get(u.cv)?;
+    if let Shape::Spline { chain, first, total, .. } = &cv.shape {
+        let n = chain.len();
+        let make = |j: usize, p: [V2; 4]| Segment {
+            entity: cv.id,
+            piece: cv.piece,
+            sub: ((*first as usize + j) % (*total as usize).max(1)) as u32,
+            reversed: u.rev,
+            curve: Curve::Bezier { p },
+        };
+        return Some(if u.rev {
+            chain.iter().enumerate().rev().map(|(j, b)| make(j, [b[3], b[2], b[1], b[0]])).collect()
+        } else {
+            let _ = n;
+            chain.iter().enumerate().map(|(j, b)| make(j, *b)).collect()
+        });
+    }
+    make_segment(cvs, verts, u).map(|s| vec![s])
+}
+
 fn make_segment(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Segment> {
     let cv = cvs.get(u.cv)?;
     let vp = |k: usize| cv.v.get(k).and_then(|&v| verts.get(v)).copied();
-    let curve = match cv.shape {
+    let curve = match &cv.shape {
         Shape::Line => {
             let (s, e) = (vp(0)?, vp(1)?);
             if u.rev { Curve::Line { start: e, end: s } } else { Curve::Line { start: s, end: e } }
@@ -271,30 +345,33 @@ fn make_segment(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Segment> {
         Shape::Arc { c, r, .. } => {
             let (s, e) = (vp(0)?, vp(1)?);
             if u.rev {
-                Curve::Arc { center: c, radius: r, start: e, end: s, ccw: false }
+                Curve::Arc { center: *c, radius: *r, start: e, end: s, ccw: false }
             } else {
-                Curve::Arc { center: c, radius: r, start: s, end: e, ccw: true }
+                Curve::Arc { center: *c, radius: *r, start: s, end: e, ccw: true }
             }
         }
-        Shape::Circle { c, r } => Curve::Circle { center: c, radius: r, ccw: !u.rev },
+        Shape::Circle { c, r } => Curve::Circle { center: *c, radius: *r, ccw: !u.rev },
+        // Splines are handled by `make_segments`.
+        Shape::Spline { .. } => return None,
     };
-    Some(Segment { entity: cv.id, piece: cv.piece, reversed: u.rev, curve })
+    Some(Segment { entity: cv.id, piece: cv.piece, sub: 0, reversed: u.rev, curve })
 }
 
 fn seg_area(s: &Segment) -> f64 {
-    match s.curve {
-        Curve::Line { start, end } => 0.5 * cross(start, end),
+    match &s.curve {
+        Curve::Line { start, end } => 0.5 * cross(*start, *end),
         Curve::Arc { center, radius, start, end, ccw } => {
             // Area term of the underlying counter-clockwise arc (s0 → e0).
-            let (s0, e0) = if ccw { (start, end) } else { (end, start) };
-            let span = wrap_2pi(angle(sub(e0, center)) - angle(sub(s0, center)));
+            let (s0, e0) = if *ccw { (*start, *end) } else { (*end, *start) };
+            let span = wrap_2pi(angle(sub(e0, *center)) - angle(sub(s0, *center)));
             let t = 0.5 * (radius * radius * span + center[0] * (e0[1] - s0[1]) - center[1] * (e0[0] - s0[0]));
-            if ccw { t } else { -t }
+            if *ccw { t } else { -t }
         }
         Curve::Circle { radius, ccw, .. } => {
             let a = PI * radius * radius;
-            if ccw { a } else { -a }
+            if *ccw { a } else { -a }
         }
+        Curve::Bezier { p } => spline::area_term(p),
     }
 }
 
@@ -305,10 +382,15 @@ fn line_angle(p: V2, a: V2, b: V2) -> f64 {
 
 /// Angle swept around `p` by one segment (exact for arcs and circles).
 fn seg_winding(s: &Segment, p: V2) -> f64 {
-    match s.curve {
-        Curve::Line { start, end } => line_angle(p, start, end),
+    match &s.curve {
+        Curve::Line { start, end } => line_angle(p, *start, *end),
+        Curve::Bezier { p: bez } => {
+            let pts = spline::flatten(std::slice::from_ref(bez), 32);
+            pts.windows(2).map(|w| if let &[a, b] = w { line_angle(p, a, b) } else { 0.0 }).sum()
+        }
         Curve::Arc { center, radius, start, end, ccw } => {
-            let (s0, e0) = if ccw { (start, end) } else { (end, start) };
+            let (ccw, center, radius) = (*ccw, *center, *radius);
+            let (s0, e0) = if ccw { (*start, *end) } else { (*end, *start) };
             let base = line_angle(p, s0, e0);
             let inside = dist(p, center) < radius;
             let side = cross(sub(e0, s0), sub(p, s0));
@@ -322,8 +404,8 @@ fn seg_winding(s: &Segment, p: V2) -> f64 {
             if ccw { fwd } else { -fwd }
         }
         Curve::Circle { center, radius, ccw } => {
-            let w = if dist(p, center) < radius { TAU } else { 0.0 };
-            if ccw { w } else { -w }
+            let w = if dist(p, *center) < *radius { TAU } else { 0.0 };
+            if *ccw { w } else { -w }
         }
     }
 }
@@ -342,21 +424,22 @@ fn loop_bbox(l: &Loop) -> [f64; 4] {
         b[3] = b[3].max(p[1] + r);
     };
     for s in &l.segments {
-        match s.curve {
+        match &s.curve {
             Curve::Line { start, end } => {
-                grow(start, 0.0);
-                grow(end, 0.0);
+                grow(*start, 0.0);
+                grow(*end, 0.0);
             }
-            Curve::Arc { center, radius, .. } | Curve::Circle { center, radius, .. } => grow(center, radius),
+            Curve::Arc { center, radius, .. } | Curve::Circle { center, radius, .. } => grow(*center, *radius),
+            Curve::Bezier { p } => p.iter().for_each(|q| grow(*q, 0.0)),
         }
     }
     b
 }
 
-type SegKey = (EntityId, u32, bool);
+type SegKey = (EntityId, u32, u32, bool);
 
 fn seg_key(s: &Segment) -> SegKey {
-    (s.entity, s.piece, s.reversed)
+    (s.entity, s.piece, s.sub, s.reversed)
 }
 
 /// Rotates a loop to start at its smallest `(entity, piece, reversed)` segment.
@@ -367,7 +450,7 @@ fn canonical(mut l: Loop) -> Loop {
 }
 
 fn key(l: &Loop) -> SegKey {
-    l.segments.first().map_or((EntityId(u32::MAX), u32::MAX, true), seg_key)
+    l.segments.first().map_or((EntityId(u32::MAX), u32::MAX, u32::MAX, true), seg_key)
 }
 
 /// Half-edge `h` of edge `k`: `2k` runs from vertex `v[0]` to `v[1]`, `2k+1` back.
@@ -396,21 +479,31 @@ impl Graph {
 /// Outgoing tangent direction and signed curvature of half-edge `h`.
 fn tangent(cv: &Cv, verts: &[V2], rev: bool) -> (f64, f64) {
     let vp = |k: usize| cv.v.get(k).and_then(|&v| verts.get(v)).copied().unwrap_or([0.0, 0.0]);
-    match cv.shape {
+    match &cv.shape {
         Shape::Line => {
             let d = if rev { sub(vp(0), vp(1)) } else { sub(vp(1), vp(0)) };
             (angle(d), 0.0)
         }
         Shape::Arc { c, r, .. } => {
             if rev {
-                let q = sub(vp(1), c);
-                (angle([q[1], -q[0]]), -1.0 / r)
+                let q = sub(vp(1), *c);
+                (angle([q[1], -q[0]]), -1.0 / *r)
             } else {
-                let q = sub(vp(0), c);
-                (angle([-q[1], q[0]]), 1.0 / r)
+                let q = sub(vp(0), *c);
+                (angle([-q[1], q[0]]), 1.0 / *r)
             }
         }
         Shape::Circle { .. } => (0.0, 0.0),
+        Shape::Spline { chain, .. } => match (chain.first(), chain.last()) {
+            (Some(first), Some(_)) if !rev => {
+                (angle(spline::tangent_dir(first, false)), spline::curvature(first, false))
+            }
+            (Some(_), Some(last)) => {
+                let d = spline::tangent_dir(last, true);
+                (angle([-d[0], -d[1]]), -spline::curvature(last, true))
+            }
+            _ => (0.0, 0.0),
+        },
     }
 }
 
@@ -473,9 +566,15 @@ fn trace_faces(g: &Graph, edges: &[Cv]) -> (Vec<Vec<usize>>, Vec<usize>) {
 fn polygon(l: &Loop) -> Vec<V2> {
     let mut pts = Vec::new();
     for s in &l.segments {
-        match s.curve {
-            Curve::Line { start, .. } => pts.push(start),
+        match &s.curve {
+            Curve::Line { start, .. } => pts.push(*start),
+            Curve::Bezier { p } => {
+                let mut f = spline::flatten(std::slice::from_ref(p), 12);
+                f.pop();
+                pts.extend(f);
+            }
             Curve::Arc { center, radius, start, end, ccw } => {
+                let (center, radius, start, end, ccw) = (*center, *radius, *start, *end, *ccw);
                 let a0 = angle(sub(start, center));
                 let sweep =
                     if ccw { wrap_2pi(angle(sub(end, center)) - a0) } else { -wrap_2pi(a0 - angle(sub(end, center))) };
@@ -486,6 +585,7 @@ fn polygon(l: &Loop) -> Vec<V2> {
                 }
             }
             Curve::Circle { center, radius, .. } => {
+                let (center, radius) = (*center, *radius);
                 const N: usize = 64;
                 for k in 0..N {
                     let t = TAU * k as f64 / N as f64;
@@ -529,9 +629,10 @@ fn interior_point(outer: &Loop, holes: &[Loop]) -> V2 {
     }
     best.map_or_else(
         || {
-            outer.segments.first().map_or([0.0, 0.0], |s| match s.curve {
-                Curve::Line { start, .. } | Curve::Arc { start, .. } => start,
+            outer.segments.first().map_or([0.0, 0.0], |s| match &s.curve {
+                Curve::Line { start, .. } | Curve::Arc { start, .. } => *start,
                 Curve::Circle { center, radius, .. } => [center[0] + radius, center[1]],
+                Curve::Bezier { p } => p[0],
             })
         },
         |(_, p)| p,
@@ -567,13 +668,21 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
     let mut cvs = collect(sketch, tol)?;
     let mut verts = Verts::new(tol);
     for cv in &mut cvs {
-        if matches!(cv.shape, Shape::Circle { .. }) {
+        if cv.shape.is_ring() {
             continue;
         }
         for k in 0..2 {
             if let (Some(&p), Some(slot)) = (cv.p.get(k), cv.v.get_mut(k)) {
                 *slot = verts.intern(p)?;
             }
+        }
+        if let Some(at) = crate::curves::self_crossing(cv) {
+            return Err(ProfileError::SelfIntersecting { a: cv.id, b: cv.id, at });
+        }
+    }
+    for cv in cvs.iter().filter(|c| c.shape.is_ring()) {
+        if let Some(at) = crate::curves::self_crossing(cv) {
+            return Err(ProfileError::SelfIntersecting { a: cv.id, b: cv.id, at });
         }
     }
     let splits = arrange::find_splits(&cvs, &mut verts, tol)?;
@@ -662,11 +771,11 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
     let mut bounded: Vec<Face> = Vec::new();
     let mut outer_face: BTreeMap<usize, (f64, Loop)> = BTreeMap::new();
     for face in &faces {
-        let segs: Option<Vec<Segment>> = face
+        let segs: Option<Vec<Vec<Segment>>> = face
             .iter()
-            .map(|&h| make_segment(&edges, &verts, Use { cv: *g.edge.get(h / 2)?, rev: h % 2 == 1 }))
+            .map(|&h| make_segments(&edges, &verts, Use { cv: *g.edge.get(h / 2)?, rev: h % 2 == 1 }))
             .collect();
-        let Some(segs) = segs else { continue };
+        let Some(segs) = segs.map(|v| v.concat()) else { continue };
         let Some(v0) = face.first().and_then(|&h| g.origin(&edges, h)) else { continue };
         let root = find(&mut parent, v0);
         let comp = *comp_index.entry(root).or_insert_with(|| {
@@ -696,16 +805,22 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
             c.outer = Some(lp);
         }
     }
-    // Circles that nothing touches are components of their own.
+    // Circles and closed splines that nothing touches are components of their own.
     for (i, cv) in circles.iter().enumerate() {
-        if let Shape::Circle { c, r } = cv.shape {
-            let comp = comps.len();
-            let mk = |rev| make_segment(&circles, &verts, Use { cv: i, rev });
-            let (Some(fwd), Some(bwd)) = (mk(false), mk(true)) else { continue };
-            comps.push(Comp { sample: [c[0] + r, c[1]], outer: Some(Loop { segments: vec![bwd] }) });
-            let lp = Loop { segments: vec![fwd] };
-            bounded.push(Face { bbox: loop_bbox(&lp), area: lp.signed_area(), lp, comp });
-        }
+        let (sample, ccw) = match &cv.shape {
+            Shape::Circle { c, r } => ([c[0] + r, c[1]], true),
+            Shape::Spline { chain, .. } => {
+                (chain.first().map_or([0.0, 0.0], |b| b[0]), chain.iter().map(spline::area_term).sum::<f64>() > 0.0)
+            }
+            _ => continue,
+        };
+        let comp = comps.len();
+        let mk = |rev| make_segments(&circles, &verts, Use { cv: i, rev });
+        let (Some(fwd), Some(bwd)) = (mk(false), mk(true)) else { continue };
+        let (face_seg, boundary_seg) = if ccw { (fwd, bwd) } else { (bwd, fwd) };
+        comps.push(Comp { sample, outer: Some(Loop { segments: boundary_seg }) });
+        let lp = Loop { segments: face_seg };
+        bounded.push(Face { bbox: loop_bbox(&lp), area: lp.signed_area(), lp, comp });
     }
 
     // Nesting: each component's outer boundary is a hole of the smallest bounded
@@ -738,6 +853,7 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
             let outer = canonical(f.lp);
             let mut pieces: Vec<(EntityId, u32)> = outer.segments.iter().map(|s| (s.entity, s.piece)).collect();
             pieces.sort_unstable();
+            pieces.dedup();
             let label = interior_point(&outer, &hs);
             Profile { outer, holes: hs, area, pieces, label }
         })
@@ -763,12 +879,14 @@ mod tests {
         let arc = Segment {
             entity: EntityId(0),
             piece: 0,
+            sub: 0,
             reversed: false,
             curve: Curve::Arc { center: [0.0, 0.0], radius: 1.0, start: [1.0, 0.0], end: [-1.0, 0.0], ccw: true },
         };
         let line = Segment {
             entity: EntityId(1),
             piece: 0,
+            sub: 0,
             reversed: false,
             curve: Curve::Line { start: [-1.0, 0.0], end: [1.0, 0.0] },
         };

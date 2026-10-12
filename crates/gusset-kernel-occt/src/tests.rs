@@ -274,3 +274,96 @@ fn transform_golden() {
     let rm = k().mass_properties(&rot.shape).unwrap();
     assert!(close(rm.centroid[0], -20.0, 1e-9) && close(rm.centroid[1], -10.0, 1e-9));
 }
+
+/// A closed Bézier chain through `n` points of a circle of radius `r` (Catmull-Rom tangents).
+fn circle_chain(n: usize, r: f64) -> Vec<[f64; 2]> {
+    let pt = |i: usize| {
+        let t = std::f64::consts::TAU * (i % n) as f64 / n as f64;
+        [r * t.cos(), r * t.sin()]
+    };
+    let mut poles = vec![pt(0)];
+    for i in 0..n {
+        let (p0, p1, p2, p3) = (pt(i + n - 1), pt(i), pt(i + 1), pt(i + 2));
+        // Uniform Catmull-Rom (equal spacing): tangents (p2 - p0) / 2 and (p3 - p1) / 2.
+        let b1 = [p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0];
+        let b2 = [p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0];
+        poles.extend([b1, b2, p2]);
+    }
+    poles
+}
+
+fn bezier_area(poles: &[[f64; 2]]) -> f64 {
+    let mut pts = Vec::new();
+    for seg in poles.windows(4).step_by(3) {
+        for k in 0..4000 {
+            let t = f64::from(k) / 4000.0;
+            let s = 1.0 - t;
+            let w = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+            pts.push([
+                w[0] * seg[0][0] + w[1] * seg[1][0] + w[2] * seg[2][0] + w[3] * seg[3][0],
+                w[0] * seg[0][1] + w[1] * seg[1][1] + w[2] * seg[2][1] + w[3] * seg[3][1],
+            ]);
+        }
+    }
+    let n = pts.len();
+    0.5 * (0..n).map(|i| pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]).sum::<f64>()
+}
+
+/// Signed volume of a closed triangle mesh.
+fn mesh_volume(m: &Mesh) -> f64 {
+    let p = |i: u32| m.positions[i as usize].map(f64::from);
+    m.indices
+        .chunks_exact(3)
+        .map(|t| {
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.0
+        })
+        .sum()
+}
+
+#[test]
+fn closed_spline_extrusion_has_the_volume_of_its_curve() {
+    for n in [6usize, 12] {
+        let poles = circle_chain(n, 10.0);
+        assert_eq!(poles.len(), 3 * n + 1);
+        // One profile edge per Bézier segment, each with its own tag.
+        let edges = poles
+            .windows(4)
+            .step_by(3)
+            .enumerate()
+            .map(|(i, w)| ProfileEdge { seg: Seg2::Bezier { p: [w[0], w[1], w[2], w[3]] }, tag: 100 + i as u64 })
+            .collect();
+        let profile = Profile { frame: Frame::XY, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+        let r = k().extrude(&profile, &ExtrudeSpec { distance: 7.0, symmetric: false }).unwrap();
+        let t = k().topology(&r.shape).unwrap();
+        assert_eq!((t.faces.len(), t.solids), (n + 2, 1), "n={n}");
+        let lat: Vec<u64> = {
+            let mut v: Vec<u64> = r
+                .face_origins
+                .iter()
+                .flatten()
+                .filter_map(|o| if let FaceOrigin::Lateral { tag } = o { Some(*tag) } else { None })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(lat, (100..100 + n as u64).collect::<Vec<_>>());
+        let want = bezier_area(&poles) * 7.0;
+        let m = k().mass_properties(&r.shape).unwrap();
+        let mesh = k()
+            .tessellate(&r.shape, &TessellationParams { linear_deflection: 0.001, angular_deflection: 0.05 })
+            .unwrap();
+        eprintln!(
+            "spline prism n={n}: mass {:.6} mm3, mesh {:.6}, polygon estimate {want:.6}",
+            m.volume,
+            mesh_volume(&mesh)
+        );
+        assert!(close(m.volume, want, 1e-6), "n={n}: {} vs {want}", m.volume);
+        // An independent check: the tessellated volume agrees to the tessellation accuracy.
+        assert!(close(mesh_volume(&mesh), want, 2e-4), "n={n}: mesh {} vs {want}", mesh_volume(&mesh));
+        // Centroid on the axis of this symmetric prism, half way up.
+        assert!(m.centroid[0].abs() < 1e-3 && m.centroid[1].abs() < 1e-3 && close(m.centroid[2], 3.5, 1e-6));
+    }
+}
