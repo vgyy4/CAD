@@ -455,7 +455,9 @@ fn read_only_refusal(msg: &Value) -> Option<Value> {
             .hint(
                 "use the read tools (query_*, render_view, get_text); restart the bridge without --read-only to edit",
             );
-    let result = rmcp::model::CallToolResult::structured_error(json!({ "error": e }));
+    let result = rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+        crate::server::compact_result(json!({ "error": e })),
+    )]);
     let result = serde_json::to_value(result).ok()?;
     Some(json!({"jsonrpc": "2.0", "id": msg.at("id"), "result": result}))
 }

@@ -169,36 +169,138 @@ fn supports_form_elicitation(ctx: &RequestContext<RoleServer>) -> bool {
     ctx.client_capabilities().and_then(|c| c.elicitation).is_some_and(|e| e.form.is_some() || e.url.is_none())
 }
 
+/// A tool result as compact JSON text. Results are sent once, as text: no tool declares
+/// an output schema, so `structuredContent` would only duplicate the same JSON in the
+/// agent's context. Floats are rounded to 1e-6 (geometry is in mm) so they carry no
+/// noise like 7999.999999999998, and null fields are dropped.
+pub(crate) fn compact_result(mut v: Value) -> String {
+    fn walk(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.retain(|_, x| !x.is_null());
+                m.values_mut().for_each(walk);
+            }
+            Value::Array(a) => a.iter_mut().for_each(walk),
+            Value::Number(n) if n.is_f64() => {
+                if let Some(f) = n.as_f64() {
+                    let r = (f * 1e6).round() / 1e6;
+                    let r = if r == 0.0 { 0.0 } else { r };
+                    if r.is_finite()
+                        && f.abs() < 1e12
+                        && let Some(x) = serde_json::Number::from_f64(r)
+                    {
+                        *n = x;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut v);
+    v.to_string()
+}
+
 fn error_json(e: &CommandError) -> Value {
     json!({ "error": e })
+}
+
+/// Removes what costs an agent's context but tells it nothing (tools/list is sent once
+/// per session and stays in the context): JSON-schema bookkeeping, number formats,
+/// `null` in optional types and null/false/empty defaults. Recursive.
+pub(crate) fn compact_schema(v: &mut Value) {
+    match v {
+        Value::Object(m) => {
+            m.remove("$schema");
+            m.remove("title");
+            m.remove("format");
+            m.remove("additionalProperties");
+            if m.get("default").is_some_and(|d| {
+                d.is_null() || d == &json!(false) || d == &json!([]) || d == &json!("") || d == &json!({})
+            }) {
+                m.remove("default");
+            }
+            // "type": ["string", "null"] -> "string" (optional = not in `required`).
+            if let Some(Value::Array(ts)) = m.get("type") {
+                let rest: Vec<Value> = ts.iter().filter(|t| t.as_str() != Some("null")).cloned().collect();
+                if let [one] = rest.as_slice() {
+                    let one = one.clone();
+                    m.insert("type".into(), one);
+                }
+            }
+            // "anyOf": [X, {"type": "null"}] -> X (optional fields are simply omitted).
+            if let Some(Value::Array(alts)) = m.get("anyOf") {
+                let rest: Vec<Value> = alts.iter().filter(|a| a.get("type") != Some(&json!("null"))).cloned().collect();
+                if let [Value::Object(one)] = rest.as_slice() {
+                    let one = one.clone();
+                    m.remove("anyOf");
+                    for (k, x) in one {
+                        m.entry(k).or_insert(x);
+                    }
+                }
+            }
+            // "oneOf" of string constants/enums -> one "enum" (same values, less text).
+            if let Some(Value::Array(alts)) = m.get("oneOf") {
+                let mut values = Vec::new();
+                let all_strings = alts.iter().all(|a| {
+                    if let Some(c) = a.get("const") {
+                        values.push(c.clone());
+                        true
+                    } else if let Some(Value::Array(e)) = a.get("enum") {
+                        values.extend(e.iter().cloned());
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if all_strings && !values.is_empty() {
+                    m.remove("oneOf");
+                    m.insert("type".into(), json!("string"));
+                    m.insert("enum".into(), Value::Array(values));
+                }
+            }
+            for x in m.values_mut() {
+                compact_schema(x);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(compact_schema),
+        _ => {}
+    }
 }
 
 fn command_tool(spec: &CommandSpec) -> Tool {
     let schema = match (spec.schema)() {
         Value::Object(mut m) => {
-            // Keep the schema self-contained and clean for clients.
-            m.remove("$schema");
-            m.remove("title");
-            m.entry("type").or_insert_with(|| json!("object"));
-            m
+            // The schema-level description repeats the tool description.
+            m.remove("description");
+            let mut v = Value::Object(m);
+            compact_schema(&mut v);
+            match v {
+                Value::Object(mut m) => {
+                    m.entry("type").or_insert_with(|| json!("object"));
+                    m
+                }
+                _ => JsonObject::new(),
+            }
         }
         _ => JsonObject::from_iter([("type".to_string(), json!("object"))]),
     };
     let read_only = !spec.flags.mutating && spec.category != gusset_commands::Category::Exchange;
-    let ann = ToolAnnotations::with_title(spec.title)
-        .read_only(read_only)
-        .destructive(spec.flags.destructive || spec.flags.agent_approval)
-        .idempotent(read_only)
-        .open_world(false);
+    // Only hints that differ from the MCP defaults (readOnly false, idempotent false,
+    // destructive true, openWorld true); the title is already the tool's title.
+    let mut ann =
+        ToolAnnotations::new().destructive(spec.flags.destructive || spec.flags.agent_approval).open_world(false);
+    if read_only {
+        ann = ann.read_only(true).idempotent(true);
+    }
     Tool::new(spec.tool_name(), tool_description(spec), Arc::new(schema)).with_title(spec.title).with_annotations(ann)
 }
 
 fn schema_object<T: JsonSchema>() -> Arc<JsonObject> {
     let mut v = serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| json!({"type": "object"}));
     if let Value::Object(m) = &mut v {
-        m.remove("$schema");
-        m.remove("title");
+        m.remove("description");
     }
+    compact_schema(&mut v);
     match v {
         Value::Object(m) => Arc::new(m),
         _ => Arc::new(JsonObject::new()),
@@ -339,11 +441,11 @@ impl GussetMcp {
             Value::Object(_) => v,
             other => json!({ "result": other }),
         };
-        CallToolResult::structured(self.sanitize(agent, v))
+        CallToolResult::success(vec![ContentBlock::text(compact_result(self.sanitize(agent, v)))])
     }
 
     fn err_result(&self, agent: &str, e: &CommandError) -> CallToolResult {
-        CallToolResult::structured_error(self.sanitize(agent, error_json(e)))
+        CallToolResult::error(vec![ContentBlock::text(compact_result(self.sanitize(agent, error_json(e))))])
     }
 
     async fn run(&self, ctx: CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
@@ -594,8 +696,8 @@ impl GussetMcp {
         }
         match self.shared.texts.get(&agent, &a.reference, &a.path, a.offset, a.limit) {
             // Already cleaned and wrapped by the store; do not re-truncate.
-            Ok(v) => CallToolResult::structured(v),
-            Err(e) => CallToolResult::structured_error(json!({ "error": e })),
+            Ok(v) => CallToolResult::success(vec![ContentBlock::text(compact_result(v))]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(compact_result(json!({ "error": e })))]),
         }
     }
 
@@ -816,5 +918,31 @@ impl ServerHandler for GussetMcp {
         let v = self.sanitize(&agent, v);
         let body = serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into());
         Ok(text("application/json", body).into())
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    /// tools/list stays in every agent's context for the whole session: keep it small
+    /// (owner request: do not fill the model's context like many MCP servers do).
+    #[test]
+    fn tool_list_fits_its_budget() {
+        let tools: Vec<Tool> = gusset_commands::registry().iter().map(command_tool).collect();
+        let bytes = serde_json::to_string(&tools).map(|s| s.len()).unwrap_or(usize::MAX);
+        let per_tool = bytes / tools.len().max(1);
+        eprintln!("tools/list command tools: {} tools, {bytes} bytes ({per_tool} per tool)", tools.len());
+        assert!(per_tool <= 600, "{per_tool} bytes per tool");
+        let text = serde_json::to_string(&tools).unwrap_or_default();
+        for noise in ["\"format\"", "\"$schema\"", "\"additionalProperties\"", "\"null\"", "\"default\":null"] {
+            assert!(!text.contains(noise), "{noise} in tools/list");
+        }
+    }
+
+    #[test]
+    fn results_are_compact() {
+        let s = compact_result(json!({"v": 7999.999999999998, "z": -5e-22, "none": null, "keep": [], "n": 3}));
+        assert_eq!(s, r#"{"keep":[],"n":3,"v":8000.0,"z":0.0}"#);
     }
 }

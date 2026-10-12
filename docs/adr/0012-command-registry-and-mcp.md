@@ -127,6 +127,15 @@ same live model.
   - *Audit:* each auto-approved call is recorded with outcome
     `ok (auto-approved by grant: <grant>)` in the persisted agent audit log, and the
     approving call with the grant it created.
+- **Context economy** (owner request, 2026-10-12): everything the server sends stays in
+  the agent's context, so it is kept small. `tools/list` schemas are compacted (no
+  schema bookkeeping, number formats, `null` alternatives, empty defaults or
+  duplicated descriptions; string choices as one `enum`); tool descriptions only flag
+  rules the server instructions explain once; annotations carry only non-default
+  hints. Results are sent once, as compact JSON text (no duplicate
+  `structuredContent`, since no tool declares an output schema), with floats rounded
+  to 1e-6 and null fields dropped. A test keeps command tools at ≤ 600 bytes each
+  (2026-10-12: 22.5 KB for 42 tools, was 33 KB; typical results 45-55 % smaller).
 - **Untrusted text in output:** every user-authored string (labels, notes, comments,
   file names, imported names) appears only in fields named `user_text` or ending in
   `_user_text`. Control, zero-width and bidi-override characters are stripped, values

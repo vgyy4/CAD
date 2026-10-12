@@ -98,14 +98,21 @@ async fn call(c: &RunningService<RoleClient, Client>, tool: &str, args: Value) -
     c.call_tool(CallToolRequestParams::new(tool.to_string()).with_arguments(m)).await.unwrap()
 }
 
-fn ok(r: &CallToolResult) -> &Value {
-    assert_ne!(r.is_error, Some(true), "{:?}", r.structured_content);
-    r.structured_content.as_ref().unwrap()
+/// The JSON a tool returned (sent once, as text content).
+fn json_of(r: &CallToolResult) -> Value {
+    assert!(r.structured_content.is_none(), "results are not duplicated as structuredContent");
+    let text = r.content.iter().find_map(|c| c.as_text().map(|t| t.text.clone())).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+fn ok(r: &CallToolResult) -> Value {
+    assert_ne!(r.is_error, Some(true), "{:?}", r.content);
+    json_of(r)
 }
 
 fn err_code(r: &CallToolResult) -> String {
-    assert_eq!(r.is_error, Some(true), "{:?}", r.structured_content);
-    r.structured_content.as_ref().unwrap()["error"]["code"].as_str().unwrap().to_string()
+    assert_eq!(r.is_error, Some(true), "{:?}", r.content);
+    json_of(r)["error"]["code"].as_str().unwrap().to_string()
 }
 
 #[test]
@@ -694,7 +701,7 @@ async fn read_limits_hold_across_connections() {
     }
     let r = limited.expect("render_view was never rate-limited");
     assert_eq!(err_code(&r), "rate_limited");
-    let retry = r.structured_content.as_ref().unwrap()["error"]["details"]["retry_after_s"].as_u64().unwrap();
+    let retry = json_of(&r)["error"]["details"]["retry_after_s"].as_u64().unwrap();
     assert!((1..=60).contains(&retry), "{retry}");
     c.cancel().await.unwrap();
     // Reconnecting with the same client name: still the same identity, still limited.

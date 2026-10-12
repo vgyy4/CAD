@@ -149,7 +149,7 @@ fn mcp_stdio_handshake_tools_and_read_only() {
     // A read tool works.
     let r = p.call_tool("query_model", json!({}));
     assert_ne!(r["isError"], true, "{r}");
-    assert_eq!(r["structuredContent"]["units"], "mm", "{r}");
+    assert_eq!(text_json(&r)["units"], "mm", "{r}");
 
     // render_view goes through the real renderer (GPU or CPU fallback) and returns a PNG.
     let r = p.call_tool("render_view", json!({"width": 64, "height": 48}));
@@ -161,7 +161,7 @@ fn mcp_stdio_handshake_tools_and_read_only() {
     // --read-only rejects mutating tools.
     let r = p.call_tool("param_set", json!({"name": "width", "expr": "40 mm"}));
     assert_eq!(r["isError"], true, "{r}");
-    assert_eq!(r["structuredContent"]["error"]["code"], "read_only", "{r}");
+    assert_eq!(text_json(&r)["error"]["code"], "read_only", "{r}");
 
     p.finish();
     let _ = std::fs::remove_dir_all(&home);
@@ -184,4 +184,10 @@ fn mcp_stdio_headless_saves_agent_work() {
     let out = Command::new(env!("CARGO_BIN_EXE_gusset")).arg("text").arg(&project).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A tool result's JSON, sent once as text content.
+fn text_json(r: &Value) -> Value {
+    let t = r["content"].as_array().and_then(|c| c.iter().find(|x| x["type"] == "text")).map(|x| x["text"].clone());
+    serde_json::from_str(t.as_ref().and_then(Value::as_str).unwrap_or("null")).unwrap_or(Value::Null)
 }
