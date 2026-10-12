@@ -52,9 +52,21 @@ are re-run before tagging `v0.1.0-mvp`.
 - CI green on all platforms (the GL backend is no longer used on Windows, ADR 0009).
 
 ## Next
-1. Merge the two branches above; CI green.
-2. Re-run code review, security review and dogfooding; fix findings.
-3. Tag `v0.1.0-mvp` when CI is green; delete the auto-resume Routine.
+1. CI green on the latest commit, then tag `v0.1.0-mvp`; delete the auto-resume Routine.
+2. Phase 3, in the feature-matrix order (docs/RESEARCH.md "v1" tier), starting with
+   the modeling gaps agents and users hit first (dogfooding F-M4..M8):
+   - v0.2: shell, mirror, linear/circular patterns (feature and sketch), offset and
+     angled datum planes, body move/copy, sketch trim and spline/polyline curves,
+     sweep/loft, holes; agent ergonomics F2-5..F2-11.
+   - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
+     branch merge, configurations/customizer.
+   - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
+   - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
+     plugins.
+   Every milestone goes through the reviewer, security reviewer and dogfooding.
+3. Post-MVP leftovers: save/snapshot off the model thread (M3), fault-injection
+   storage tests (M14), O(n²) state clones (L8), per-agent credentials for grants and
+   reconnect to an agent's own branch (F2-2).
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
 - Pattern, mirror, shell, splines, offset/datum planes, body move (dogfooding F-M4..M7).
