@@ -49,7 +49,26 @@ sketch Sketch1 (plane: XY, next_id: 12) {
 - An entity can be followed by `construction` (solved but never part of a profile):
   `p3 = point(5, 5) construction`.
 - Lines, circles and arcs refer to points by id; lines that share a point are connected.
-  Closed loops of lines/arcs and circles form the regions that features extrude.
+  Closed loops of lines/arcs and circles form the regions that features extrude. Curves
+  may cross, touch or end on one another: the sketch is split at every crossing and each
+  bounded face is a region (two overlapping rectangles give three regions, a line across
+  a circle two). Dangling stubs bound nothing and are ignored; two curves that overlap
+  along a stretch are an error.
+
+### Regions
+
+`query_sketch` lists the regions with `id`, `area_mm2`, `outer` (entities on the outer
+boundary) and `at` (a point inside, in sketch mm). A region's id is its *primary entity*,
+the smallest id on its outer boundary (`l5`), plus `_r1`, `_r2`, ... when crossing curves
+give several regions with the same primary entity. Pass ids in `regions(...)` or the
+`regions` argument of `feature_extrude`/`feature_revolve`. Ids survive dimension and
+parameter edits; they can change when edits change which curves cross. An entity id that
+is not itself a region id selects the one region it bounds, and fails (listing the ids)
+if it bounds several. In a sketch where no curve is cut by another, an entity selects
+every region whose boundary contains it, as before.
+
+`sketch_trim(sketch, entity, x, y)` deletes the piece of a line/arc/circle around (x, y)
+between the nearest crossings, keeping the new ends on the crossing curves.
 
 Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 
@@ -115,7 +134,7 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
 ```
 
 - Profile `<P>` is a sketch name (all its closed regions) or `Sketch1.regions(l5, c7)`
-  with one entity on the outer boundary of each wanted region.
+  naming the wanted regions (see "Regions" below).
 - `op` defaults to `new`, which creates a body named after the feature, or after
   `body_name` when given (a unique identifier; only with `op: new`). `add`, `cut` and
   `intersect` combine with the body created by the feature named in `body:` (default:

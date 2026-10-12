@@ -22,3 +22,5 @@ mod tests;
 mod tests_datum;
 #[cfg(test)]
 mod tests_ops;
+#[cfg(test)]
+mod tests_sketch;

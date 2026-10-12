@@ -1,15 +1,19 @@
-//! Closed-region ("profile") extraction from a solved sketch.
+//! Closed-region ("profile") extraction from a solved sketch: the planar arrangement
+//! of its curves.
 //!
 //! Non-construction lines, arcs and circles are merged at shared endpoints (within
-//! `tol`), checked for crossings, and turned into a planar graph. Faces of that
-//! graph are traced with the usual "turn most clockwise" rule; every bounded face
-//! becomes a profile whose holes are the outer boundaries of the components nested
-//! directly inside it. Results are ordered deterministically.
+//! `tol`), cut at every crossing, touch or T-junction ([`crate::arrange`]) and turned
+//! into a planar graph whose edges are *pieces* of the entities. Edges that do not bound
+//! two different faces (dangling stubs, bridges between loops) are dropped. Faces of the
+//! rest are traced with the usual "turn most clockwise" rule; every bounded face becomes
+//! a profile whose holes are the outer boundaries of the components nested directly
+//! inside it. Results are ordered deterministically.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::geom2::{V2, add, angle, cross, dist, dot, norm, not_gt, scale, sub, wrap_2pi};
+use crate::arrange::{self, Verts};
+use crate::geom2::{V2, angle, cross, dist, dot, not_gt, sub, wrap_2pi};
 use crate::sketch::{EntityId, Geom, Sketch, SketchError};
 
 /// Most non-construction curves [`profiles`] accepts.
@@ -48,6 +52,10 @@ pub enum Curve {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Segment {
     pub entity: EntityId,
+    /// Which piece of the entity this is: the entity is cut at its crossings and the
+    /// pieces are numbered from 0 along it (lines from `a`, arcs from `start`, circles
+    /// from their canonical first cut). An uncut entity has piece 0.
+    pub piece: u32,
     /// True when the loop runs against the entity's own direction (line `b → a`,
     /// arc clockwise, circle clockwise).
     pub reversed: bool,
@@ -79,6 +87,24 @@ pub struct Profile {
     pub holes: Vec<Loop>,
     /// Enclosed area (outer minus holes), mm².
     pub area: f64,
+    /// `(entity, piece)` of every segment of the outer loop, sorted. This is what
+    /// identifies the region across parameter edits (see [`Arrangement::crossings`]).
+    pub pieces: Vec<(EntityId, u32)>,
+    /// A point strictly inside the region (and outside its holes).
+    pub label: [f64; 2],
+}
+
+/// The arrangement of a sketch's curves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Arrangement {
+    /// Every bounded face, ordered by the `(entity, piece, reversed)` key of its outer loop.
+    pub profiles: Vec<Profile>,
+    /// Entities with a free end (an endpoint where nothing else attaches). Their dangling
+    /// pieces bound no region and are ignored.
+    pub open_ends: Vec<EntityId>,
+    /// Some curve is cut in its interior by another one. When false, every region is
+    /// bounded by whole entities (the classic "closed outline" case).
+    pub crossings: bool,
 }
 
 /// Why profiles could not be extracted.
@@ -96,15 +122,20 @@ pub enum ProfileError {
     Degenerate {
         entity: EntityId,
     },
-    /// Geometry with free ends (the entities touching a dangling endpoint).
+    /// No closed region, and geometry with free ends (the entities touching a dangling
+    /// endpoint).
     Open {
         entities: Vec<EntityId>,
     },
-    /// Two curves cross, touch or overlap away from a shared endpoint.
+    /// Two curves overlap along a stretch (instead of crossing at points).
     SelfIntersecting {
         a: EntityId,
         b: EntityId,
         at: [f64; 2],
+    },
+    /// More vertices than the arrangement may hold.
+    TooComplex {
+        limit: usize,
     },
 }
 
@@ -125,8 +156,9 @@ impl fmt::Display for ProfileError {
                 Ok(())
             }
             ProfileError::SelfIntersecting { a, b, at } => {
-                write!(f, "{a} and {b} intersect at ({}, {})", at[0], at[1])
+                write!(f, "{a} and {b} overlap along a stretch near ({}, {})", at[0], at[1])
             }
+            ProfileError::TooComplex { limit } => write!(f, "the sketch has more than {limit} crossings"),
         }
     }
 }
@@ -134,7 +166,7 @@ impl fmt::Display for ProfileError {
 impl std::error::Error for ProfileError {}
 
 #[derive(Debug, Clone, Copy)]
-enum Shape {
+pub(crate) enum Shape {
     Line,
     /// `a0`: start angle, `span`: CCW sweep in `(0, 2π)`.
     Arc {
@@ -149,18 +181,21 @@ enum Shape {
     },
 }
 
+/// A curve of the sketch, or (after cutting) one piece of it.
 #[derive(Debug, Clone, Copy)]
-struct Cv {
-    id: EntityId,
-    shape: Shape,
-    /// Original endpoint positions (unused for circles).
-    p: [V2; 2],
+pub(crate) struct Cv {
+    pub(crate) id: EntityId,
+    pub(crate) shape: Shape,
+    /// Endpoint positions (unused for circles).
+    pub(crate) p: [V2; 2],
     /// Merged vertex index of each endpoint (`usize::MAX` for circles).
-    v: [usize; 2],
-    bbox: [f64; 4],
+    pub(crate) v: [usize; 2],
+    pub(crate) bbox: [f64; 4],
+    /// Number of this piece along its entity.
+    pub(crate) piece: u32,
 }
 
-fn bbox_of(shape: &Shape, p: [V2; 2]) -> [f64; 4] {
+pub(crate) fn bbox_of(shape: &Shape, p: [V2; 2]) -> [f64; 4] {
     match *shape {
         Shape::Line => [p[0][0].min(p[1][0]), p[0][1].min(p[1][1]), p[0][0].max(p[1][0]), p[0][1].max(p[1][1])],
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => [c[0] - r, c[1] - r, c[0] + r, c[1] + r],
@@ -171,7 +206,7 @@ fn pt_of(s: &Sketch, id: EntityId) -> Result<V2, ProfileError> {
     s.point(id).ok_or(ProfileError::Invalid(SketchError::UnknownEntity(id)))
 }
 
-fn collect(s: &Sketch, tol: f64) -> Result<Vec<Cv>, ProfileError> {
+pub(crate) fn collect(s: &Sketch, tol: f64) -> Result<Vec<Cv>, ProfileError> {
     let mut out = Vec::new();
     for e in s.entities() {
         if e.construction {
@@ -213,212 +248,9 @@ fn collect(s: &Sketch, tol: f64) -> Result<Vec<Cv>, ProfileError> {
                 s.entities().iter().filter(|e| !e.construction && !matches!(e.geom, Geom::Point { .. })).count();
             return Err(ProfileError::TooManyCurves { count, limit: MAX_PROFILE_CURVES });
         }
-        out.push(Cv { id: e.id, shape, p, v: [usize::MAX; 2], bbox: bbox_of(&shape, p) });
+        out.push(Cv { id: e.id, shape, p, v: [usize::MAX; 2], bbox: bbox_of(&shape, p), piece: 0 });
     }
     Ok(out)
-}
-
-/// Merges endpoints closer than `tol` into shared vertices (first come, first
-/// served, in entity order). Returns vertex positions.
-fn merge_vertices(cvs: &mut [Cv], tol: f64) -> Vec<V2> {
-    let mut verts: Vec<V2> = Vec::new();
-    let mut grid: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
-    let cell = |x: f64| libm::floor(x / tol) as i64;
-    for cv in cvs.iter_mut() {
-        if matches!(cv.shape, Shape::Circle { .. }) {
-            continue;
-        }
-        for k in 0..2 {
-            let Some(&p) = cv.p.get(k) else { continue };
-            let (gx, gy) = (cell(p[0]), cell(p[1]));
-            let mut found = None;
-            'search: for dx in -1..=1i64 {
-                for dy in -1..=1i64 {
-                    if let Some(list) = grid.get(&(gx.saturating_add(dx), gy.saturating_add(dy))) {
-                        for &vi in list {
-                            if verts.get(vi).is_some_and(|&q| dist(p, q) <= tol) && found.is_none_or(|f| vi < f) {
-                                found = Some(vi);
-                            }
-                        }
-                    }
-                    if found.is_some() && dx == 1 && dy == 1 {
-                        break 'search;
-                    }
-                }
-            }
-            let vi = found.unwrap_or_else(|| {
-                verts.push(p);
-                grid.entry((gx, gy)).or_default().push(verts.len() - 1);
-                verts.len() - 1
-            });
-            if let Some(slot) = cv.v.get_mut(k) {
-                *slot = vi;
-            }
-        }
-    }
-    verts
-}
-
-fn on_arc(p: V2, c: V2, a0: f64, span: f64, slack: f64) -> bool {
-    let rel = wrap_2pi(angle(sub(p, c)) - a0);
-    rel <= span + slack || rel >= TAU - slack
-}
-
-/// Candidate intersection points of two curves, or an overlap point.
-struct Hits {
-    points: Vec<V2>,
-    overlap: Option<V2>,
-}
-
-fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Hits {
-    let mut h = Hits { points: Vec::new(), overlap: None };
-    let (d1, d2) = (sub(a1, a0), sub(b1, b0));
-    let (l1, l2) = (norm(d1), norm(d2));
-    let den = cross(d1, d2);
-    let w = sub(b0, a0);
-    if den.abs() <= 1e-12 * l1 * l2 {
-        if (cross(d1, w) / l1).abs() > tol {
-            return h;
-        }
-        let t0 = dot(w, d1) / l1;
-        let t1 = dot(sub(b1, a0), d1) / l1;
-        let lo = t0.min(t1).max(0.0);
-        let hi = t0.max(t1).min(l1);
-        let at = add(a0, scale(d1, (lo + hi) * 0.5 / l1));
-        if hi - lo > tol {
-            h.overlap = Some(at);
-        } else if hi - lo >= -tol {
-            h.points.push(at);
-        }
-        return h;
-    }
-    let t = cross(w, d2) / den;
-    let u = cross(w, d1) / den;
-    let (et, eu) = (tol / l1, tol / l2);
-    if (-et..=1.0 + et).contains(&t) && (-eu..=1.0 + eu).contains(&u) {
-        h.points.push(add(a0, scale(d1, t)));
-    }
-    h
-}
-
-fn seg_circle(a0: V2, a1: V2, c: V2, r: f64, tol: f64) -> Vec<V2> {
-    let d = sub(a1, a0);
-    let l = norm(d);
-    let u = scale(d, 1.0 / l);
-    let tf = dot(sub(c, a0), u);
-    let hgt = cross(u, sub(c, a0)).abs();
-    if hgt > r + tol {
-        return Vec::new();
-    }
-    let ts = if hgt >= r - tol {
-        vec![tf]
-    } else {
-        let half = (r * r - hgt * hgt).sqrt();
-        vec![tf - half, tf + half]
-    };
-    ts.into_iter().filter(|t| (-tol..=l + tol).contains(t)).map(|t| add(a0, scale(u, t))).collect()
-}
-
-/// Intersections of two circles; `None` when they coincide.
-fn circle_circle(c1: V2, r1: f64, c2: V2, r2: f64, tol: f64) -> Option<Vec<V2>> {
-    let d = dist(c1, c2);
-    if d <= tol {
-        return if (r1 - r2).abs() <= tol { None } else { Some(Vec::new()) };
-    }
-    if d > r1 + r2 + tol || d < (r1 - r2).abs() - tol {
-        return Some(Vec::new());
-    }
-    let a = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
-    let u = scale(sub(c2, c1), 1.0 / d);
-    let m = add(c1, scale(u, a));
-    let h2 = r1 * r1 - a * a;
-    if h2 <= tol * tol {
-        return Some(vec![m]);
-    }
-    let h = h2.sqrt();
-    let perp = [-u[1], u[0]];
-    Some(vec![add(m, scale(perp, h)), sub(m, scale(perp, h))])
-}
-
-/// Angular length of the overlap of two CCW arcs `[a0, a0+sa]` and `[b0, b0+sb]`.
-fn arc_overlap(a0: f64, sa: f64, b0: f64, sb: f64) -> f64 {
-    let rb = wrap_2pi(b0 - a0);
-    let ov = |lo: f64, hi: f64| (hi.min(sa) - lo.max(0.0)).max(0.0);
-    ov(rb, rb + sb) + ov(rb - TAU, rb + sb - TAU)
-}
-
-fn curve_on(cv: &Cv, p: V2, tol: f64) -> bool {
-    match cv.shape {
-        Shape::Arc { c, r, a0, span } => on_arc(p, c, a0, span, tol / r),
-        Shape::Line | Shape::Circle { .. } => true,
-    }
-}
-
-/// Finds a crossing/touching/overlap of two curves that is not at a shared vertex.
-fn intersection(a: &Cv, b: &Cv, verts: &[V2], tol: f64) -> Option<V2> {
-    let circ = |s: &Shape| match *s {
-        Shape::Arc { c, r, .. } | Shape::Circle { c, r } => Some((c, r)),
-        Shape::Line => None,
-    };
-    let (ca, cb) = (circ(&a.shape), circ(&b.shape));
-    let rmax = ca.map_or(0.0, |x| x.1).max(cb.map_or(0.0, |x| x.1));
-    let mut pts = match (ca, cb) {
-        (None, None) => {
-            let h = seg_seg(a.p[0], a.p[1], b.p[0], b.p[1], tol);
-            if let Some(o) = h.overlap {
-                return Some(o);
-            }
-            h.points
-        }
-        (None, Some((c, r))) => seg_circle(a.p[0], a.p[1], c, r, tol),
-        (Some((c, r)), None) => seg_circle(b.p[0], b.p[1], c, r, tol),
-        (Some((c1, r1)), Some((c2, r2))) => match circle_circle(c1, r1, c2, r2, tol) {
-            Some(p) => p,
-            None => {
-                // Same circle: overlapping unless two arcs only share endpoints.
-                let at = add(c1, [r1, 0.0]);
-                return match (a.shape, b.shape) {
-                    (Shape::Arc { a0, span, .. }, Shape::Arc { a0: b0, span: sb, .. }) => {
-                        (arc_overlap(a0, span, b0, sb) > tol / r1).then(|| {
-                            let mid = a0 + 0.5 * span;
-                            add(c1, [r1 * libm::cos(mid), r1 * libm::sin(mid)])
-                        })
-                    }
-                    _ => Some(at),
-                };
-            }
-        },
-    };
-    pts.retain(|&p| curve_on(a, p, tol) && curve_on(b, p, tol));
-    // Intersections near a shared endpoint are the joint itself. Near tangency the
-    // computed points scatter by about sqrt(2·r·tol), so allow that much.
-    let near = if rmax > 0.0 { tol + (2.0 * tol * rmax).sqrt() } else { tol };
-    let shared: Vec<V2> =
-        a.v.iter().filter(|v| **v != usize::MAX && b.v.contains(v)).filter_map(|&v| verts.get(v).copied()).collect();
-    pts.into_iter().find(|&p| !shared.iter().any(|&v| dist(p, v) <= near))
-}
-
-fn check_intersections(cvs: &[Cv], verts: &[V2], tol: f64) -> Result<(), ProfileError> {
-    let mut order: Vec<usize> = (0..cvs.len()).collect();
-    let minx = |i: usize| cvs.get(i).map_or(0.0, |c| c.bbox[0]);
-    order.sort_by(|&i, &j| minx(i).total_cmp(&minx(j)).then(i.cmp(&j)));
-    for (k, &i) in order.iter().enumerate() {
-        let Some(a) = cvs.get(i) else { continue };
-        for &j in order.iter().skip(k + 1) {
-            let Some(b) = cvs.get(j) else { continue };
-            if b.bbox[0] > a.bbox[2] + tol {
-                break;
-            }
-            if b.bbox[1] > a.bbox[3] + tol || b.bbox[3] < a.bbox[1] - tol {
-                continue;
-            }
-            if let Some(at) = intersection(a, b, verts, tol) {
-                let (x, y) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
-                return Err(ProfileError::SelfIntersecting { a: x, b: y, at });
-            }
-        }
-    }
-    Ok(())
 }
 
 /// A curve used in a loop, in a direction.
@@ -446,7 +278,7 @@ fn make_segment(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Segment> {
         }
         Shape::Circle { c, r } => Curve::Circle { center: c, radius: r, ccw: !u.rev },
     };
-    Some(Segment { entity: cv.id, reversed: u.rev, curve })
+    Some(Segment { entity: cv.id, piece: cv.piece, reversed: u.rev, curve })
 }
 
 fn seg_area(s: &Segment) -> f64 {
@@ -521,21 +353,27 @@ fn loop_bbox(l: &Loop) -> [f64; 4] {
     b
 }
 
-/// Rotates a loop to start at its smallest `(entity, reversed)` segment.
+type SegKey = (EntityId, u32, bool);
+
+fn seg_key(s: &Segment) -> SegKey {
+    (s.entity, s.piece, s.reversed)
+}
+
+/// Rotates a loop to start at its smallest `(entity, piece, reversed)` segment.
 fn canonical(mut l: Loop) -> Loop {
-    let start = l.segments.iter().enumerate().min_by_key(|(_, s)| (s.entity, s.reversed)).map_or(0, |(i, _)| i);
+    let start = l.segments.iter().enumerate().min_by_key(|(_, s)| seg_key(s)).map_or(0, |(i, _)| i);
     l.segments.rotate_left(start);
     l
 }
 
-fn key(l: &Loop) -> (EntityId, bool) {
-    l.segments.first().map_or((EntityId(u32::MAX), true), |s| (s.entity, s.reversed))
+fn key(l: &Loop) -> SegKey {
+    l.segments.first().map_or((EntityId(u32::MAX), u32::MAX, true), seg_key)
 }
 
 /// Half-edge `h` of edge `k`: `2k` runs from vertex `v[0]` to `v[1]`, `2k+1` back.
 struct Graph {
-    /// Curve index of each edge.
-    edge_cv: Vec<usize>,
+    /// Index into the edge list of each graph edge.
+    edge: Vec<usize>,
     /// Outgoing half-edges of each vertex, sorted counter-clockwise.
     out: Vec<Vec<usize>>,
     /// Position of each half-edge in its origin's `out` list.
@@ -543,13 +381,13 @@ struct Graph {
 }
 
 impl Graph {
-    fn origin(&self, cvs: &[Cv], h: usize) -> Option<usize> {
-        cvs.get(*self.edge_cv.get(h / 2)?)?.v.get(h % 2).copied()
+    fn origin(&self, edges: &[Cv], h: usize) -> Option<usize> {
+        edges.get(*self.edge.get(h / 2)?)?.v.get(h % 2).copied()
     }
 
-    fn next(&self, cvs: &[Cv], h: usize) -> Option<usize> {
+    fn next(&self, edges: &[Cv], h: usize) -> Option<usize> {
         let t = h ^ 1;
-        let list = self.out.get(self.origin(cvs, t)?)?;
+        let list = self.out.get(self.origin(edges, t)?)?;
         let i = *self.pos.get(t)?;
         list.get((i + list.len() - 1) % list.len()).copied()
     }
@@ -576,15 +414,10 @@ fn tangent(cv: &Cv, verts: &[V2], rev: bool) -> (f64, f64) {
     }
 }
 
-fn build_graph(cvs: &[Cv], verts: &[V2]) -> Result<Graph, ProfileError> {
-    let edge_cv: Vec<usize> =
-        cvs.iter().enumerate().filter(|(_, c)| !matches!(c.shape, Shape::Circle { .. })).map(|(i, _)| i).collect();
+fn build_graph(edges: &[Cv], active: &[usize], verts: &[V2]) -> Graph {
     let mut out: Vec<Vec<(i64, f64, usize)>> = vec![Vec::new(); verts.len()];
-    for (k, &ci) in edge_cv.iter().enumerate() {
-        let Some(cv) = cvs.get(ci) else { continue };
-        if cv.v[0] == cv.v[1] {
-            return Err(ProfileError::Degenerate { entity: cv.id });
-        }
+    for (k, &ci) in active.iter().enumerate() {
+        let Some(cv) = edges.get(ci) else { continue };
         for side in 0..2usize {
             let (ang, curv) = tangent(cv, verts, side == 1);
             let mut q = libm::round(ang * 1e9) as i64;
@@ -596,22 +429,7 @@ fn build_graph(cvs: &[Cv], verts: &[V2]) -> Result<Graph, ProfileError> {
             }
         }
     }
-    let mut dangling: Vec<EntityId> = Vec::new();
-    for list in &out {
-        if list.len() == 1 {
-            for &(_, _, h) in list {
-                if let Some(cv) = edge_cv.get(h / 2).and_then(|&ci| cvs.get(ci)) {
-                    dangling.push(cv.id);
-                }
-            }
-        }
-    }
-    if !dangling.is_empty() {
-        dangling.sort_unstable();
-        dangling.dedup();
-        return Err(ProfileError::Open { entities: dangling });
-    }
-    let mut pos = vec![0usize; 2 * edge_cv.len()];
+    let mut pos = vec![0usize; 2 * active.len()];
     let mut sorted = Vec::with_capacity(out.len());
     for mut list in out {
         list.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
@@ -622,49 +440,186 @@ fn build_graph(cvs: &[Cv], verts: &[V2]) -> Result<Graph, ProfileError> {
         }
         sorted.push(list.into_iter().map(|e| e.2).collect());
     }
-    Ok(Graph { edge_cv, out: sorted, pos })
+    Graph { edge: active.to_vec(), out: sorted, pos }
 }
 
-/// Closed regions of a (solved) sketch, ignoring construction geometry.
-///
-/// `tol` (mm) is the distance below which endpoints are considered joined; it
-/// must be in [`MIN_PROFILE_TOL`]..=[`MAX_PROFILE_TOL`]. Profiles are ordered by
-/// the `(entity, reversed)` key of their outer loop's first segment; every loop
-/// starts at its smallest such key. Points are ignored. Circles and arcs must not
-/// touch or cross other curves except at shared arc/line endpoints.
-pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError> {
-    if !(MIN_PROFILE_TOL..=MAX_PROFILE_TOL).contains(&tol) {
-        return Err(ProfileError::BadTolerance);
-    }
-    sketch.validate().map_err(ProfileError::Invalid)?;
-    let mut cvs = collect(sketch, tol)?;
-    let verts = merge_vertices(&mut cvs, tol);
-    // Open ends first: a small gap is reported as a gap, not as a touch.
-    let g = build_graph(&cvs, &verts)?;
-    check_intersections(&cvs, &verts, tol)?;
-
-    // Trace faces.
-    let nh = 2 * g.edge_cv.len();
-    let mut visited = vec![false; nh];
+/// Traces every face. Returns the half-edges of each face, and the face of each half-edge.
+fn trace_faces(g: &Graph, edges: &[Cv]) -> (Vec<Vec<usize>>, Vec<usize>) {
+    let nh = 2 * g.edge.len();
+    let mut face_of = vec![usize::MAX; nh];
     let mut faces: Vec<Vec<usize>> = Vec::new();
     for h0 in 0..nh {
-        if visited.get(h0).copied().unwrap_or(true) {
+        if face_of.get(h0).copied() != Some(usize::MAX) {
             continue;
         }
         let mut face = Vec::new();
         let mut h = h0;
         for _ in 0..=nh {
-            if let Some(v) = visited.get_mut(h) {
-                *v = true;
+            if let Some(v) = face_of.get_mut(h) {
+                *v = faces.len();
             }
             face.push(h);
-            match g.next(&cvs, h) {
+            match g.next(edges, h) {
                 Some(n) if n != h0 => h = n,
                 _ => break,
             }
         }
         faces.push(face);
     }
+    (faces, face_of)
+}
+
+/// Samples a loop as a polygon (arcs and circles approximated).
+fn polygon(l: &Loop) -> Vec<V2> {
+    let mut pts = Vec::new();
+    for s in &l.segments {
+        match s.curve {
+            Curve::Line { start, .. } => pts.push(start),
+            Curve::Arc { center, radius, start, end, ccw } => {
+                let a0 = angle(sub(start, center));
+                let sweep =
+                    if ccw { wrap_2pi(angle(sub(end, center)) - a0) } else { -wrap_2pi(a0 - angle(sub(end, center))) };
+                const N: usize = 24;
+                for k in 0..N {
+                    let t = a0 + sweep * k as f64 / N as f64;
+                    pts.push([center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)]);
+                }
+            }
+            Curve::Circle { center, radius, .. } => {
+                const N: usize = 64;
+                for k in 0..N {
+                    let t = TAU * k as f64 / N as f64;
+                    pts.push([center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)]);
+                }
+            }
+        }
+    }
+    pts
+}
+
+/// A point inside the region: the middle of the widest stretch of a few horizontal scan
+/// lines that lies inside the outer loop and outside the holes.
+fn interior_point(outer: &Loop, holes: &[Loop]) -> V2 {
+    let polys: Vec<Vec<V2>> = std::iter::once(outer).chain(holes).map(polygon).collect();
+    let (mut y0, mut y1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for q in polys.first().into_iter().flatten() {
+        y0 = y0.min(q[1]);
+        y1 = y1.max(q[1]);
+    }
+    let mut best: Option<(f64, V2)> = None;
+    for frac in [0.5, 0.37, 0.63, 0.23, 0.77, 0.11, 0.89] {
+        let y = y0 + frac * (y1 - y0);
+        let mut xs: Vec<f64> = Vec::new();
+        for poly in &polys {
+            for (i, &p) in poly.iter().enumerate() {
+                let q = poly.get((i + 1) % poly.len()).copied().unwrap_or(p);
+                if (p[1] <= y) != (q[1] <= y) {
+                    xs.push(p[0] + (y - p[1]) * (q[0] - p[0]) / (q[1] - p[1]));
+                }
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        for w in xs.chunks_exact(2) {
+            if let &[x0, x1] = w
+                && best.is_none_or(|(width, _)| x1 - x0 > width)
+            {
+                best = Some((x1 - x0, [0.5 * (x0 + x1), y]));
+            }
+        }
+    }
+    best.map_or_else(
+        || {
+            outer.segments.first().map_or([0.0, 0.0], |s| match s.curve {
+                Curve::Line { start, .. } | Curve::Arc { start, .. } => start,
+                Curve::Circle { center, radius, .. } => [center[0] + radius, center[1]],
+            })
+        },
+        |(_, p)| p,
+    )
+}
+
+/// Closed regions of a (solved) sketch, ignoring construction geometry.
+///
+/// `tol` (mm) is the distance below which endpoints are considered joined; it
+/// must be in [`MIN_PROFILE_TOL`]..=[`MAX_PROFILE_TOL`]. See [`arrange`]; this is its
+/// regions, with "no region but free ends" reported as [`ProfileError::Open`].
+pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError> {
+    let a = arrange(sketch, tol)?;
+    if a.profiles.is_empty() && !a.open_ends.is_empty() {
+        return Err(ProfileError::Open { entities: a.open_ends });
+    }
+    Ok(a.profiles)
+}
+
+/// The planar arrangement of the non-construction curves of a (solved) sketch.
+///
+/// Curves are cut wherever they cross, touch or meet at a T-junction; every bounded
+/// face is a region, whatever combination of pieces bounds it. Dangling stubs and
+/// bridges bound nothing and are ignored (the entities with free ends are reported in
+/// [`Arrangement::open_ends`]). Profiles are ordered by the `(entity, piece, reversed)`
+/// key of their outer loop's smallest segment; every loop starts at its smallest such key.
+/// Points are ignored. Two curves must not overlap along a stretch.
+pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
+    if !(MIN_PROFILE_TOL..=MAX_PROFILE_TOL).contains(&tol) {
+        return Err(ProfileError::BadTolerance);
+    }
+    sketch.validate().map_err(ProfileError::Invalid)?;
+    let mut cvs = collect(sketch, tol)?;
+    let mut verts = Verts::new(tol);
+    for cv in &mut cvs {
+        if matches!(cv.shape, Shape::Circle { .. }) {
+            continue;
+        }
+        for k in 0..2 {
+            if let (Some(&p), Some(slot)) = (cv.p.get(k), cv.v.get_mut(k)) {
+                *slot = verts.intern(p)?;
+            }
+        }
+    }
+    let splits = arrange::find_splits(&cvs, &mut verts, tol)?;
+    let crossings = splits.crossings;
+    let mut edges: Vec<Cv> = Vec::new();
+    let mut circles: Vec<Cv> = Vec::new();
+    for (cv, sp) in cvs.iter().zip(splits.per_curve) {
+        if let Some(c) = arrange::make_pieces(cv, sp, &mut verts, &mut edges)? {
+            circles.push(c);
+        }
+    }
+    arrange::check_pieces(&edges)?;
+    let verts = verts.pts;
+
+    // Drop edges that have the same face on both sides (dangling stubs and bridges); they
+    // bound nothing. Removing them does not change the other faces.
+    let mut active: Vec<usize> = (0..edges.len()).collect();
+    let mut open_ends: Vec<EntityId> = Vec::new();
+    let mut first = true;
+    let (g, faces) = loop {
+        let g = build_graph(&edges, &active, &verts);
+        if first {
+            first = false;
+            for list in &g.out {
+                if let [h] = list.as_slice()
+                    && let Some(cv) = g.edge.get(h / 2).and_then(|&ci| edges.get(ci))
+                {
+                    open_ends.push(cv.id);
+                }
+            }
+            open_ends.sort_unstable();
+            open_ends.dedup();
+        }
+        let (faces, face_of) = trace_faces(&g, &edges);
+        let keep: Vec<usize> = g
+            .edge
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| face_of.get(2 * k) != face_of.get(2 * k + 1))
+            .map(|(_, &ci)| ci)
+            .collect();
+        if keep.len() == active.len() {
+            break (g, faces);
+        }
+        active = keep;
+    };
 
     // Connected components of the edge graph (union-find over vertices).
     let mut parent: Vec<usize> = (0..verts.len()).collect();
@@ -682,8 +637,8 @@ pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError>
         }
         i
     }
-    for &ci in &g.edge_cv {
-        if let Some(cv) = cvs.get(ci) {
+    for &ci in &g.edge {
+        if let Some(cv) = edges.get(ci) {
             let (a, b) = (find(&mut parent, cv.v[0]), find(&mut parent, cv.v[1]));
             let (lo, hi) = if a < b { (a, b) } else { (b, a) };
             if let Some(s) = parent.get_mut(hi) {
@@ -709,10 +664,10 @@ pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError>
     for face in &faces {
         let segs: Option<Vec<Segment>> = face
             .iter()
-            .map(|&h| make_segment(&cvs, &verts, Use { cv: *g.edge_cv.get(h / 2)?, rev: h % 2 == 1 }))
+            .map(|&h| make_segment(&edges, &verts, Use { cv: *g.edge.get(h / 2)?, rev: h % 2 == 1 }))
             .collect();
         let Some(segs) = segs else { continue };
-        let Some(v0) = face.first().and_then(|&h| g.origin(&cvs, h)) else { continue };
+        let Some(v0) = face.first().and_then(|&h| g.origin(&edges, h)) else { continue };
         let root = find(&mut parent, v0);
         let comp = *comp_index.entry(root).or_insert_with(|| {
             comps.push(Comp { sample: verts.get(root).copied().unwrap_or([0.0, 0.0]), outer: None });
@@ -741,11 +696,11 @@ pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError>
             c.outer = Some(lp);
         }
     }
-    // Circles are components of their own.
-    for (i, cv) in cvs.iter().enumerate() {
+    // Circles that nothing touches are components of their own.
+    for (i, cv) in circles.iter().enumerate() {
         if let Shape::Circle { c, r } = cv.shape {
             let comp = comps.len();
-            let mk = |rev| make_segment(&cvs, &verts, Use { cv: i, rev });
+            let mk = |rev| make_segment(&circles, &verts, Use { cv: i, rev });
             let (Some(fwd), Some(bwd)) = (mk(false), mk(true)) else { continue };
             comps.push(Comp { sample: [c[0] + r, c[1]], outer: Some(Loop { segments: vec![bwd] }) });
             let lp = Loop { segments: vec![fwd] };
@@ -780,11 +735,15 @@ pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError>
         .map(|(f, mut hs)| {
             hs.sort_by_key(key);
             let area = f.area + hs.iter().map(Loop::signed_area).sum::<f64>();
-            Profile { outer: canonical(f.lp), holes: hs, area }
+            let outer = canonical(f.lp);
+            let mut pieces: Vec<(EntityId, u32)> = outer.segments.iter().map(|s| (s.entity, s.piece)).collect();
+            pieces.sort_unstable();
+            let label = interior_point(&outer, &hs);
+            Profile { outer, holes: hs, area, pieces, label }
         })
         .collect();
     result.sort_by_key(|p| key(&p.outer));
-    Ok(result)
+    Ok(Arrangement { profiles: result, open_ends, crossings })
 }
 
 #[cfg(test)]
@@ -793,9 +752,9 @@ mod tests {
 
     #[test]
     fn arc_overlap_measures_shared_sweep() {
-        assert!((arc_overlap(0.0, 1.0, 0.5, 1.0) - 0.5).abs() < 1e-12);
-        assert!(arc_overlap(0.0, 1.0, 1.0, 1.0).abs() < 1e-12);
-        assert!((arc_overlap(6.0, 1.0, 0.0, 0.5) - 0.5).abs() < 1e-12);
+        assert!((arrange::arc_overlap(0.0, 1.0, 0.5, 1.0) - 0.5).abs() < 1e-12);
+        assert!(arrange::arc_overlap(0.0, 1.0, 1.0, 1.0).abs() < 1e-12);
+        assert!((arrange::arc_overlap(6.0, 1.0, 0.0, 0.5) - 0.5).abs() < 1e-12);
     }
 
     #[test]
@@ -803,11 +762,13 @@ mod tests {
         // Upper half circle CCW from (1,0) to (-1,0), closed by the diameter.
         let arc = Segment {
             entity: EntityId(0),
+            piece: 0,
             reversed: false,
             curve: Curve::Arc { center: [0.0, 0.0], radius: 1.0, start: [1.0, 0.0], end: [-1.0, 0.0], ccw: true },
         };
         let line = Segment {
             entity: EntityId(1),
+            piece: 0,
             reversed: false,
             curve: Curve::Line { start: [-1.0, 0.0], end: [1.0, 0.0] },
         };

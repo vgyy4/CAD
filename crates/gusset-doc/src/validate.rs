@@ -316,7 +316,15 @@ fn check_profile(n: &str, p: &ProfileRef, seen: &BTreeMap<&str, &Feature>, out: 
         _ => {}
     }
     for r in &p.regions {
-        check_sketch_entity(n, &p.sketch, r, None, seen, out);
+        check_sketch_entity(n, &p.sketch, region_entity(r), None, seen, out);
+    }
+}
+
+/// The entity a region token starts from: `l5_r2` (region rank) names entity `l5`.
+fn region_entity(token: &str) -> &str {
+    match token.rsplit_once("_r") {
+        Some((base, rank)) if !base.is_empty() && !rank.is_empty() && rank.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => token,
     }
 }
 

@@ -18,6 +18,7 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+mod arrange;
 mod dual;
 mod equations;
 mod geom2;
@@ -26,6 +27,7 @@ pub mod profile;
 pub mod sketch;
 pub mod solver;
 
-pub use profile::{Curve, Loop, Profile, ProfileError, Segment, profiles};
+pub use arrange::{Cut, Cuts, cuts};
+pub use profile::{Arrangement, Curve, Loop, Profile, ProfileError, Segment, arrange, profiles};
 pub use sketch::{Constraint, ConstraintId, Entity, EntityId, EntityKind, Geom, Sketch, SketchError};
 pub use solver::{Drag, SolveError, SolveOptions, SolveResult, SolveStatus, solve, solve_drag};
