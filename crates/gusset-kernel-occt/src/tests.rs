@@ -367,3 +367,99 @@ fn closed_spline_extrusion_has_the_volume_of_its_curve() {
         assert!(m.centroid[0].abs() < 1e-3 && m.centroid[1].abs() < 1e-3 && close(m.centroid[2], 3.5, 1e-6));
     }
 }
+
+fn line_path(from: [f64; 2], to: [f64; 2]) -> SweepPath {
+    SweepPath::Curves(Path2 {
+        frame: Frame::XZ,
+        edges: vec![ProfileEdge { seg: Seg2::Line { a: from, b: to }, tag: 0 }],
+    })
+}
+
+fn centred_square(h: f64, frame: Frame) -> Profile {
+    let pts = [[-h, -h], [h, -h], [h, h], [-h, h]];
+    let edges = (0..4)
+        .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % 4] }, tag: 20 + i as u64 })
+        .collect();
+    Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] }
+}
+
+#[test]
+fn sweep_golden_volumes_history_and_errors() {
+    let frenet = SweepSpec { orientation: SweepOrientation::Frenet, twist: 0.0 };
+    let r = k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 0.0], [0.0, 20.0]), &frenet).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, 2000.0, 1e-9), "{}", m.volume);
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (6, 1));
+    // Four swept sides (path edge 0) and the two caps.
+    let mut sides: Vec<(u64, u32)> = r
+        .face_origins
+        .iter()
+        .flatten()
+        .filter_map(|o| if let FaceOrigin::Swept { tag, path } = o { Some((*tag, *path)) } else { None })
+        .collect();
+    sides.sort_unstable();
+    assert_eq!(sides, vec![(20, 0), (21, 0), (22, 0), (23, 0)]);
+    assert_eq!(r.face_origins.iter().flatten().filter(|o| matches!(o, FaceOrigin::Cap { .. })).count(), 2);
+    // The path may be drawn from the far end: it is turned around.
+    let r2 = k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 20.0], [0.0, 0.0]), &frenet).unwrap();
+    assert!(close(k().mass_properties(&r2.shape).unwrap().volume, 2000.0, 1e-9));
+    let bb = k().bbox(&r2.shape).unwrap();
+    assert!(bb.min[2].abs() < 1e-6 && close(bb.max[2], 20.0, 1e-6));
+    // A twist of a quarter turn keeps the volume (adaptive integration for freeform faces).
+    let twisted = SweepSpec { orientation: SweepOrientation::Frenet, twist: std::f64::consts::FRAC_PI_2 };
+    let r3 = k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 0.0], [0.0, 20.0]), &twisted).unwrap();
+    assert!(close(k().mass_properties(&r3.shape).unwrap().volume, 2000.0, 1e-6));
+    // Errors: a path away from the profile plane, an empty path, a twist with fixed orientation.
+    let e = k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 4.0], [0.0, 24.0]), &frenet).unwrap_err();
+    assert!(e.message.contains("profile plane") && e.hint.is_some(), "{e}");
+    let empty = SweepPath::Curves(Path2 { frame: Frame::XZ, edges: vec![] });
+    assert_eq!(
+        k().sweep(&centred_square(5.0, Frame::XY), &empty, &frenet).unwrap_err().kind,
+        KernelErrorKind::InvalidInput
+    );
+    let bad = SweepSpec { orientation: SweepOrientation::Fixed, twist: 0.3 };
+    let e = k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 0.0], [0.0, 20.0]), &bad).unwrap_err();
+    assert!(e.hint.is_some(), "{e}");
+    let nan = SweepSpec { orientation: SweepOrientation::Frenet, twist: f64::NAN };
+    assert!(k().sweep(&centred_square(5.0, Frame::XY), &line_path([0.0, 0.0], [0.0, 20.0]), &nan).is_err());
+    // A path of disconnected pieces is an error, not a crash.
+    let gap = SweepPath::Curves(Path2 {
+        frame: Frame::XZ,
+        edges: vec![
+            ProfileEdge { seg: Seg2::Line { a: [0.0, 0.0], b: [0.0, 5.0] }, tag: 0 },
+            ProfileEdge { seg: Seg2::Line { a: [3.0, 9.0], b: [3.0, 20.0] }, tag: 1 },
+        ],
+    });
+    let e = k().sweep(&centred_square(5.0, Frame::XY), &gap, &frenet).unwrap_err();
+    assert!(e.message.contains("connected") || e.message.contains("chain"), "{e}");
+}
+
+#[test]
+fn loft_golden_volumes_history_and_errors() {
+    let up = Frame { origin: [0.0, 0.0, 15.0], ..Frame::XY };
+    let spec = LoftSpec { ruled: true };
+    let r = k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, up)], &spec).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, 3500.0, 1e-9), "{}", m.volume);
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (6, 1));
+    let sections: Vec<(u32, u64)> = {
+        let mut v: Vec<(u32, u64)> = r
+            .face_origins
+            .iter()
+            .flatten()
+            .filter_map(|o| if let FaceOrigin::Section { section, tag } = o { Some((*section, *tag)) } else { None })
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    assert!(sections.contains(&(0, 20)) && sections.contains(&(0, 23)), "{sections:?}");
+    // Needs two profiles; holes are refused; the same plane twice fails cleanly.
+    assert!(k().loft(&[centred_square(5.0, up)], &spec).is_err());
+    let mut holed = centred_square(8.0, up);
+    holed.regions[0].holes.push(rect(2.0, 2.0, 50));
+    let e = k().loft(&[centred_square(10.0, Frame::XY), holed], &spec).unwrap_err();
+    assert_eq!(e.kind, KernelErrorKind::InvalidInput);
+    assert!(k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, Frame::XY)], &spec).is_err());
+}

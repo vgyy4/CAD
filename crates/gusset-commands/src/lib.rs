@@ -24,3 +24,5 @@ mod tests_datum;
 mod tests_ops;
 #[cfg(test)]
 mod tests_sketch;
+#[cfg(test)]
+mod tests_sweep;

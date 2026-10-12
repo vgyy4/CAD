@@ -238,9 +238,18 @@ fn pt_of(s: &Sketch, id: EntityId) -> Result<V2, ProfileError> {
 }
 
 pub(crate) fn collect(s: &Sketch, tol: f64) -> Result<Vec<Cv>, ProfileError> {
+    collect_with(s, tol, |e| !e.construction)
+}
+
+/// The curves of the sketch for which `include` holds (points are never curves).
+pub(crate) fn collect_with(
+    s: &Sketch,
+    tol: f64,
+    include: impl Fn(&crate::sketch::Entity) -> bool,
+) -> Result<Vec<Cv>, ProfileError> {
     let mut out = Vec::new();
     for e in s.entities() {
-        if e.construction {
+        if !include(e) {
             continue;
         }
         let deg = ProfileError::Degenerate { entity: e.id };
@@ -862,6 +871,150 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
     Ok(Arrangement { profiles: result, open_ends, crossings })
 }
 
+/// A path: curves joined end to end into one chain, open or closed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chain {
+    /// The segments in travel order (a spline gives one segment per Bézier). The first
+    /// segment starts at the free end whose curve has the smallest entity id; a closed chain
+    /// starts at its smallest entity.
+    pub segments: Vec<Segment>,
+    /// The chain ends where it began.
+    pub closed: bool,
+}
+
+/// Why curves do not form a chain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChainError {
+    Invalid(ProfileError),
+    /// There are no curves to follow.
+    Empty,
+    /// More than two curves meet at this point.
+    Branch {
+        at: [f64; 2],
+    },
+    /// Some curves are not connected to the first ones.
+    Disconnected {
+        entities: Vec<EntityId>,
+    },
+    /// A circle or closed spline cannot be joined to other curves.
+    RingWithOthers {
+        entity: EntityId,
+    },
+}
+
+impl fmt::Display for ChainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChainError::Invalid(e) => write!(f, "{e}"),
+            ChainError::Empty => f.write_str("there are no curves to follow"),
+            ChainError::Branch { at } => write!(f, "more than two curves meet at ({}, {})", at[0], at[1]),
+            ChainError::Disconnected { entities } => {
+                f.write_str("the curves are not one connected chain; not joined:")?;
+                for e in entities {
+                    write!(f, " {e}")?;
+                }
+                Ok(())
+            }
+            ChainError::RingWithOthers { entity } => {
+                write!(f, "{entity} is a closed curve on its own and cannot be joined to other curves")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChainError {}
+
+/// Joins curves end to end into a chain.
+///
+/// With `only` = `None` every non-construction curve is used; with a list exactly these
+/// curves (construction or not). Endpoints closer than `tol` are one joint. The chain starts
+/// at the free end whose curve has the smallest entity id (a closed chain at its smallest
+/// entity), so the order is the same after parameter edits. A lone circle or closed spline
+/// is a closed chain on its own.
+pub fn chain(sketch: &Sketch, only: Option<&[EntityId]>, tol: f64) -> Result<Chain, ChainError> {
+    if !(MIN_PROFILE_TOL..=MAX_PROFILE_TOL).contains(&tol) {
+        return Err(ChainError::Invalid(ProfileError::BadTolerance));
+    }
+    sketch.validate().map_err(|e| ChainError::Invalid(ProfileError::Invalid(e)))?;
+    let mut cvs = collect_with(sketch, tol, |e| match only {
+        Some(list) => list.contains(&e.id),
+        None => !e.construction,
+    })
+    .map_err(ChainError::Invalid)?;
+    if cvs.is_empty() {
+        return Err(ChainError::Empty);
+    }
+    if let Some(ring) = cvs.iter().find(|c| c.shape.is_ring()) {
+        if cvs.len() > 1 {
+            return Err(ChainError::RingWithOthers { entity: ring.id });
+        }
+        let segs = make_segments(&cvs, &[], Use { cv: 0, rev: false }).unwrap_or_default();
+        return Ok(Chain { segments: segs, closed: true });
+    }
+    let mut verts = Verts::new(tol);
+    for cv in &mut cvs {
+        for k in 0..2 {
+            if let (Some(&p), Some(slot)) = (cv.p.get(k), cv.v.get_mut(k)) {
+                *slot = verts.intern(p).map_err(ChainError::Invalid)?;
+            }
+        }
+    }
+    let mut degree: BTreeMap<usize, usize> = BTreeMap::new();
+    for cv in &cvs {
+        for v in cv.v {
+            *degree.entry(v).or_insert(0) += 1;
+        }
+    }
+    if let Some((&v, _)) = degree.iter().find(|(_, d)| **d > 2) {
+        return Err(ChainError::Branch { at: verts.at(v) });
+    }
+    // Start at a free end (smallest entity id), else at the smallest entity.
+    let mut order: Vec<usize> = (0..cvs.len()).collect();
+    order.sort_by_key(|&i| cvs.get(i).map(|c| c.id));
+    let free_end = order.iter().find_map(|&i| {
+        let [v0, v1] = cvs.get(i)?.v;
+        if degree.get(&v0) == Some(&1) {
+            Some((i, v0))
+        } else if degree.get(&v1) == Some(&1) {
+            Some((i, v1))
+        } else {
+            None
+        }
+    });
+    let (first, mut at) = match free_end {
+        Some(x) => x,
+        None => {
+            let i = order.first().copied().unwrap_or(0);
+            (i, cvs.get(i).map_or(0, |c| c.v[0]))
+        }
+    };
+    let start = at;
+    let mut used = vec![false; cvs.len()];
+    let mut uses: Vec<Use> = Vec::new();
+    let mut next = Some(first);
+    while let Some(i) = next {
+        let Some(cv) = cvs.get(i) else { break };
+        if let Some(u) = used.get_mut(i) {
+            *u = true;
+        }
+        let rev = cv.v[0] != at;
+        uses.push(Use { cv: i, rev });
+        at = if rev { cv.v[0] } else { cv.v[1] };
+        next = (0..cvs.len())
+            .find(|&j| !used.get(j).copied().unwrap_or(true) && cvs.get(j).is_some_and(|c| c.v.contains(&at)));
+    }
+    let unused: Vec<EntityId> = used.iter().zip(&cvs).filter(|(u, _)| !**u).map(|(_, c)| c.id).collect();
+    if !unused.is_empty() {
+        return Err(ChainError::Disconnected { entities: unused });
+    }
+    let closed = at == start;
+    let mut segments = Vec::new();
+    for u in uses {
+        segments.extend(make_segments(&cvs, &verts.pts, u).unwrap_or_default());
+    }
+    Ok(Chain { segments, closed })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,5 +1049,101 @@ mod tests {
         assert_eq!(winding(&l, [0.0, -0.5]), 0);
         assert_eq!(winding(&l, [0.0, 1.5]), 0);
         assert!((l.signed_area() - PI / 2.0).abs() < 1e-12);
+    }
+
+    fn ends(s: &Segment) -> ([f64; 2], [f64; 2]) {
+        match s.curve {
+            Curve::Line { start, end } | Curve::Arc { start, end, .. } => (start, end),
+            Curve::Bezier { p } => (p[0], p[3]),
+            Curve::Circle { center, radius, .. } => ([center[0] + radius, center[1]], [center[0] + radius, center[1]]),
+        }
+    }
+
+    #[test]
+    fn open_chain_runs_end_to_end_from_the_lowest_id() {
+        let mut s = Sketch::new();
+        // Entity order is not travel order: l3 is the middle piece, drawn backwards.
+        let (a, b, c, d) = (
+            s.add_point([0.0, 0.0]).unwrap(),
+            s.add_point([10.0, 0.0]).unwrap(),
+            s.add_point([10.0, 5.0]).unwrap(),
+            s.add_point([20.0, 5.0]).unwrap(),
+        );
+        let l1 = s.add_line_between(c, b).unwrap();
+        let l2 = s.add_line_between(d, c).unwrap();
+        let l3 = s.add_line_between(a, b).unwrap();
+        let ch = chain(&s, None, 1e-6).unwrap();
+        assert!(!ch.closed);
+        // The free end of the lowest id (l1 = c -> b) is not free: its end b joins l3, but
+        // c joins l2, so the free ends belong to l2 (point d) and l3 (point a): l2 comes first.
+        let order: Vec<EntityId> = ch.segments.iter().map(|g| g.entity).collect();
+        assert_eq!(order, [l2, l1, l3]);
+        assert_eq!(ends(&ch.segments[0]).0, [20.0, 5.0]);
+        for w in ch.segments.windows(2) {
+            assert_eq!(ends(&w[0]).1, ends(&w[1]).0);
+        }
+        assert_eq!(ends(&ch.segments[2]).1, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn closed_chains_rings_and_splines() {
+        let mut s = Sketch::new();
+        let pts: Vec<EntityId> =
+            [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0]].iter().map(|&p| s.add_point(p).unwrap()).collect();
+        for i in 0..3 {
+            s.add_line_between(pts[i], pts[(i + 1) % 3]).unwrap();
+        }
+        let ch = chain(&s, None, 1e-6).unwrap();
+        assert!(ch.closed && ch.segments.len() == 3);
+        // A circle on its own is a closed chain.
+        let mut c = Sketch::new();
+        c.add_circle([1.0, 1.0], 2.0).unwrap();
+        let ch = chain(&c, None, 1e-6).unwrap();
+        assert!(ch.closed && matches!(ch.segments[..], [Segment { curve: Curve::Circle { .. }, .. }]));
+        // A spline contributes one segment per Bezier.
+        let mut sp = Sketch::new();
+        let q: Vec<EntityId> =
+            [[0.0, 0.0], [3.0, 2.0], [6.0, 0.0], [9.0, 2.0]].iter().map(|&p| sp.add_point(p).unwrap()).collect();
+        sp.add_spline(&q, false).unwrap();
+        let ch = chain(&sp, None, 1e-6).unwrap();
+        assert!(!ch.closed && ch.segments.len() == 3);
+        assert_eq!(ends(&ch.segments[0]).0, [0.0, 0.0]);
+        assert_eq!(ends(&ch.segments[2]).1, [9.0, 2.0]);
+    }
+
+    #[test]
+    fn chain_errors() {
+        let mut s = Sketch::new();
+        let (o, a, b, far1, far2) = (
+            s.add_point([0.0, 0.0]).unwrap(),
+            s.add_point([5.0, 0.0]).unwrap(),
+            s.add_point([0.0, 5.0]).unwrap(),
+            s.add_point([20.0, 0.0]).unwrap(),
+            s.add_point([25.0, 0.0]).unwrap(),
+        );
+        assert_eq!(chain(&s, None, 1e-6), Err(ChainError::Empty));
+        let l1 = s.add_line_between(o, a).unwrap();
+        let l2 = s.add_line_between(o, b).unwrap();
+        let l3 = s.add_line_between(far1, far2).unwrap();
+        // Two separate pieces.
+        assert_eq!(chain(&s, None, 1e-6), Err(ChainError::Disconnected { entities: vec![l3] }));
+        // Naming only the connected ones works, in either order of the list.
+        assert!(chain(&s, Some(&[l2, l1]), 1e-6).is_ok());
+        // A third curve at the same point is a branch.
+        let c = s.add_point([-5.0, 0.0]).unwrap();
+        let l4 = s.add_line_between(o, c).unwrap();
+        assert_eq!(chain(&s, Some(&[l1, l2, l4]), 1e-6), Err(ChainError::Branch { at: [0.0, 0.0] }));
+        // A circle next to a line.
+        let mut r = Sketch::new();
+        let circle = r.add_circle([0.0, 0.0], 1.0).unwrap();
+        r.add_line([5.0, 5.0], [6.0, 6.0]).unwrap();
+        assert_eq!(chain(&r, None, 1e-6), Err(ChainError::RingWithOthers { entity: circle }));
+        // Construction geometry is skipped unless named.
+        let mut k = Sketch::new();
+        let line = k.add_line([0.0, 0.0], [1.0, 0.0]).unwrap();
+        k.set_construction(line, true).unwrap();
+        assert_eq!(chain(&k, None, 1e-6), Err(ChainError::Empty));
+        assert!(chain(&k, Some(&[line]), 1e-6).is_ok());
+        assert!(chain(&k, None, 0.0).is_err());
     }
 }

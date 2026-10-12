@@ -19,12 +19,15 @@ use serde_json::{Value, json};
 mod datum;
 mod ops;
 mod sketch_ops;
+mod sweep;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
+pub use sweep::{Loft, Sweep};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
+    v.extend(sweep::specs());
     v.extend(ops::specs());
     v.extend(datum::specs());
     v.extend(sketch_ops::specs());
@@ -370,6 +373,8 @@ fn implicit_target(f: &Feature) -> bool {
     match &f.kind {
         FeatureKind::Extrude(e) => e.op != BodyOp::New && e.body.is_none(),
         FeatureKind::Revolve(r) => r.op != BodyOp::New && r.body.is_none(),
+        FeatureKind::Sweep(d) => d.op != BodyOp::New && d.body.is_none(),
+        FeatureKind::Loft(d) => d.op != BodyOp::New && d.body.is_none(),
         _ => false,
     }
 }

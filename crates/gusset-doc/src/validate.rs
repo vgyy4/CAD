@@ -45,6 +45,8 @@ pub fn creates_body(f: &Feature) -> bool {
     match &f.kind {
         FeatureKind::Extrude(e) => e.op == BodyOp::New,
         FeatureKind::Revolve(r) => r.op == BodyOp::New,
+        FeatureKind::Sweep(d) => d.op == BodyOp::New,
+        FeatureKind::Loft(d) => d.op == BodyOp::New,
         FeatureKind::Import(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
@@ -57,7 +59,9 @@ pub fn creates_body(f: &Feature) -> bool {
 pub fn created_body_name(f: &Feature) -> Option<&str> {
     match &f.kind {
         FeatureKind::Extrude(ExtrudeDef { op: BodyOp::New, body_name, .. })
-        | FeatureKind::Revolve(RevolveDef { op: BodyOp::New, body_name, .. }) => {
+        | FeatureKind::Revolve(RevolveDef { op: BodyOp::New, body_name, .. })
+        | FeatureKind::Sweep(SweepDef { op: BodyOp::New, body_name, .. })
+        | FeatureKind::Loft(LoftDef { op: BodyOp::New, body_name, .. }) => {
             Some(body_name.as_deref().unwrap_or(&f.name))
         }
         FeatureKind::Import(_) => Some(&f.name),
@@ -122,41 +126,36 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 validate_sketch(n, s, &mut out);
             }
             FeatureKind::Extrude(ExtrudeDef { profile, op, body, body_name, .. })
-            | FeatureKind::Revolve(RevolveDef { profile, op, body, body_name, .. }) => {
-                if let Some(bn) = body_name {
-                    if let Err(e) = validate_name(bn) {
-                        out.push(issue(n, e.replace("parameter", "body")));
-                    }
-                    if *op != BodyOp::New {
-                        out.push(issue(n, "'body_name' can only be used with op: new"));
-                    }
-                }
+            | FeatureKind::Revolve(RevolveDef { profile, op, body, body_name, .. })
+            | FeatureKind::Sweep(SweepDef { profile, op, body, body_name, .. }) => {
                 check_profile(n, profile, &seen, &mut out);
                 if let FeatureKind::Revolve(r) = &f.kind
                     && let AxisRef::SketchLine { sketch, entity } = &r.axis
                 {
                     check_sketch_entity(n, sketch, entity, Some('l'), &seen, &mut out);
                 }
-                if let Some(b) = body {
-                    match seen.get(b.as_str()) {
-                        Some(t) if !creates_body(t) => out.push(issue_h(
-                            n,
-                            format!("'{b}' does not create a body"),
-                            "target a feature with op: new, or an import",
-                        )),
-                        _ => {}
-                    }
-                    check_not_consumed(n, b, &consumed, &mut out);
-                    if *op == BodyOp::New {
-                        out.push(issue(n, "'body' cannot be combined with op: new"));
-                    }
-                } else if *op != BodyOp::New && live_bodies == 0 {
+                if let FeatureKind::Sweep(d) = &f.kind {
+                    check_sweep(n, d, &seen, &mut out);
+                }
+                let target = BodyTarget { op: *op, body: body.as_deref(), body_name: body_name.as_deref() };
+                check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Loft(LoftDef { profiles, op, body, body_name, .. }) => {
+                if profiles.len() < 2 {
                     out.push(issue_h(
                         n,
-                        format!("op: {} needs an existing body", op.keyword()),
-                        "use op: new for the first body",
+                        "a loft needs at least two profiles",
+                        "list them in order: profiles: [Sketch1, Sketch2]",
                     ));
                 }
+                if profiles.len() > MAX_LOFT_PROFILES {
+                    out.push(issue(n, format!("{} profiles; at most {MAX_LOFT_PROFILES} per loft", profiles.len())));
+                }
+                for p in profiles {
+                    check_profile(n, p, &seen, &mut out);
+                }
+                let target = BodyTarget { op: *op, body: body.as_deref(), body_name: body_name.as_deref() };
+                check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 if b.edges.is_empty() {
@@ -245,6 +244,87 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         seen.insert(n, f);
     }
     out
+}
+
+/// The body arguments of a feature that creates a swept tool and combines it with a body.
+struct BodyTarget<'a> {
+    op: BodyOp,
+    body: Option<&'a str>,
+    body_name: Option<&'a str>,
+}
+
+fn check_body_op(
+    n: &str,
+    t: &BodyTarget<'_>,
+    live_bodies: usize,
+    seen: &BTreeMap<&str, &Feature>,
+    consumed: &BTreeMap<&str, &str>,
+    out: &mut Vec<Issue>,
+) {
+    if let Some(bn) = t.body_name {
+        if let Err(e) = validate_name(bn) {
+            out.push(issue(n, e.replace("parameter", "body")));
+        }
+        if t.op != BodyOp::New {
+            out.push(issue(n, "'body_name' can only be used with op: new"));
+        }
+    }
+    if let Some(b) = t.body {
+        match seen.get(b) {
+            Some(g) if !creates_body(g) => out.push(issue_h(
+                n,
+                format!("'{b}' does not create a body"),
+                "target a feature with op: new, or an import",
+            )),
+            _ => {}
+        }
+        check_not_consumed(n, b, consumed, out);
+        if t.op == BodyOp::New {
+            out.push(issue(n, "'body' cannot be combined with op: new"));
+        }
+    } else if t.op != BodyOp::New && live_bodies == 0 {
+        out.push(issue_h(
+            n,
+            format!("op: {} needs an existing body", t.op.keyword()),
+            "use op: new for the first body",
+        ));
+    }
+}
+
+/// The path of a sweep: a sketch (or some of its curves) or edges of earlier bodies.
+fn check_sweep(n: &str, d: &SweepDef, seen: &BTreeMap<&str, &Feature>, out: &mut Vec<Issue>) {
+    match &d.path {
+        PathRef::Sketch { sketch, curves } => {
+            if sketch == &d.profile.sketch {
+                out.push(issue_h(
+                    n,
+                    "the path and the profile are in the same sketch",
+                    "sketch the path in its own sketch, on a plane that crosses the profile",
+                ));
+            }
+            for c in curves {
+                check_sketch_entity(n, sketch, c, None, seen, out);
+            }
+            let mut listed = BTreeSet::new();
+            for c in curves {
+                if !listed.insert(c.as_str()) {
+                    out.push(issue(n, format!("path curve '{c}' is listed twice")));
+                }
+            }
+        }
+        PathRef::Edges(edges) => {
+            if edges.is_empty() {
+                out.push(issue_h(n, "the path lists no edges", "select the edges to sweep along"));
+            }
+        }
+    }
+    if d.twist.is_some() && d.orientation == Orientation::Fixed {
+        out.push(issue_h(
+            n,
+            "a twist needs the profile to follow the path",
+            "set orientation: frenet, or remove the twist",
+        ));
+    }
 }
 
 /// A feature that modifies an existing body: the named body must be created by an earlier

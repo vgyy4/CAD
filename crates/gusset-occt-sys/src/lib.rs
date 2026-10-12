@@ -26,6 +26,8 @@ pub const GS_ORIGIN_INPUT: i64 = 2;
 pub const GS_ORIGIN_FROM_EDGE: i64 = 3;
 pub const GS_ORIGIN_FROM_VERTEX: i64 = 4;
 pub const GS_ORIGIN_OFFSET: i64 = 5;
+pub const GS_ORIGIN_SWEPT: i64 = 6;
+pub const GS_ORIGIN_SECTION: i64 = 7;
 
 pub const GS_XF_MIRROR: i32 = 0;
 pub const GS_XF_TRANSLATE: i32 = 1;
@@ -122,6 +124,24 @@ mod raw {
             axis_origin: *const f64,
             axis_dir: *const f64,
             angle: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_sweep(
+            p: *const GsProfile,
+            path_curves: *const GsProfile,
+            path_shape: *const GsShape,
+            path_edges: *const u32,
+            npath_edges: usize,
+            orientation: i32,
+            twist: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_loft(
+            sections: *const GsProfile,
+            nsections: usize,
+            ruled: i32,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

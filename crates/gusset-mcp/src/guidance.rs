@@ -8,7 +8,7 @@ use gusset_commands::{CommandSpec, Flags};
 /// characters (Claude Code's documented limit); the critical rules come first.
 pub const INSTRUCTIONS: &str = "\
 Gusset is a parametric CAD app. Its tools edit and inspect the open project: parameters, \
-sketches, features (extrude, revolve, fillet, chamfer), the timeline and branches, \
+sketches, features (extrude, revolve, sweep, loft, fillet, chamfer), the timeline and branches, \
 measurements and STEP export. Use them for any CAD modelling task.
 
 Rules (the server enforces them too):

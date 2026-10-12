@@ -188,6 +188,39 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push(format!("body_name: {b}"));
             }
         }
+        FeatureKind::Sweep(d) => {
+            args.push(format!("profile: {}", print_profile(&d.profile)));
+            let path = match &d.path {
+                PathRef::Sketch { sketch, curves } if curves.is_empty() => sketch.clone(),
+                PathRef::Sketch { sketch, curves } => format!("{sketch}.curves({})", curves.join(", ")),
+                PathRef::Edges(edges) => {
+                    let list: Vec<String> = edges.iter().map(EdgeRef::to_string).collect();
+                    format!("[{}]", list.join(", "))
+                }
+            };
+            args.push(format!("path: {path}"));
+            args.push(format!("orientation: {}", d.orientation.keyword()));
+            if let Some(t) = &d.twist {
+                args.push(format!("twist: {t}"));
+            }
+            args.push(format!("op: {}", d.op.keyword()));
+            push_body(&mut args, &d.body);
+            if let Some(b) = &d.body_name {
+                args.push(format!("body_name: {b}"));
+            }
+        }
+        FeatureKind::Loft(d) => {
+            let list: Vec<String> = d.profiles.iter().map(print_profile).collect();
+            args.push(format!("profiles: [{}]", list.join(", ")));
+            if d.ruled {
+                args.push("ruled: true".into());
+            }
+            args.push(format!("op: {}", d.op.keyword()));
+            push_body(&mut args, &d.body);
+            if let Some(b) = &d.body_name {
+                args.push(format!("body_name: {b}"));
+            }
+        }
         FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
             let edges: Vec<String> = b.edges.iter().map(EdgeRef::to_string).collect();
             args.push(format!("edges: [{}]", edges.join(", ")));
@@ -389,8 +422,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 }
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
-            "sketch" | "extrude" | "revolve" | "fillet" | "chamfer" | "import" | "shell" | "mirror"
-            | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" => {
+            "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
+            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -402,6 +435,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_feature_ext(kw, &mut c)?
                 } else if matches!(kw, "plane" | "move" | "combine") {
                     parse_feature_ext2(kw, &mut c)?
+                } else if matches!(kw, "sweep" | "loft") {
+                    parse_feature_ext3(kw, &mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -417,7 +452,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine",
                 ));
             }
         }
@@ -742,6 +777,159 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             through,
             count: count.ok_or_else(|| missing(c, kw, "count"))?,
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
+        }),
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+/// `[edge(...), edge(...)]`.
+fn parse_edge_list(c: &mut Cursor<'_>) -> Result<Vec<EdgeRef>, ParseError> {
+    c.expect('[')?;
+    let mut list = Vec::new();
+    if !c.eat(']') {
+        loop {
+            list.push(parse_edge(c)?);
+            if list.len() > MAX_LIST_ITEMS {
+                return Err(c.err("too many edges"));
+            }
+            if c.eat(',') {
+                continue;
+            }
+            c.expect(']')?;
+            break;
+        }
+    }
+    Ok(list)
+}
+
+/// A sweep path: `Sketch2`, `Sketch2.curves(l3, a4)` or `[edge(...), ...]`.
+fn parse_path(c: &mut Cursor<'_>) -> Result<PathRef, ParseError> {
+    c.ws();
+    if c.peek() == Some('[') {
+        return Ok(PathRef::Edges(parse_edge_list(c)?));
+    }
+    let sketch = c.ident()?.to_string();
+    let mut curves = Vec::new();
+    if c.eat('.') {
+        if !c.eat_kw("curves") {
+            return Err(c.err_hint("expected 'curves(...)' after '.'", "e.g. Sketch2.curves(l3, a4)"));
+        }
+        c.expect('(')?;
+        loop {
+            curves.push(c.ident()?.to_string());
+            if curves.len() > MAX_LIST_ITEMS {
+                return Err(c.err("too many path curves"));
+            }
+            if !c.eat(',') {
+                break;
+            }
+        }
+        c.expect(')')?;
+    }
+    Ok(PathRef::Sketch { sketch, curves })
+}
+
+/// Parses a sweep path given outside a document (`Sketch2`, `Sketch2.curves(l3, a4)` or
+/// `[edge(...), ...]`).
+pub fn parse_path_ref(s: &str) -> Result<PathRef, ParseError> {
+    let mut c = Cursor::new(s, 1);
+    let p = parse_path(&mut c)?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after the path"));
+    }
+    Ok(p)
+}
+
+/// Parses a profile given outside a document (`Sketch1` or `Sketch1.regions(l3, c7)`).
+pub fn parse_profile_ref(s: &str) -> Result<ProfileRef, ParseError> {
+    let mut c = Cursor::new(s, 1);
+    let p = parse_profile(&mut c)?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after the profile"));
+    }
+    Ok(p)
+}
+
+/// Sweep and loft statements.
+fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let mut label = None;
+    let mut suppressed = false;
+    let mut profile = None;
+    let mut profiles: Option<Vec<ProfileRef>> = None;
+    let mut path = None;
+    let mut orientation = Orientation::default();
+    let mut twist = None;
+    let mut ruled = false;
+    let mut op = None;
+    let mut body = None;
+    let mut body_name = None;
+    let allowed = match kw {
+        "sweep" => "profile, path, orientation, twist, op, body, body_name, label, suppressed",
+        _ => "profiles, ruled, op, body, body_name, label, suppressed",
+    };
+    parse_args(c, |key, c| {
+        match (kw, key) {
+            (_, "label") => label = Some(c.string()?),
+            (_, "suppressed") => suppressed = parse_bool(c)?,
+            (_, "op") => {
+                let w = c.ident()?;
+                op =
+                    Some(BodyOp::from_keyword(w).ok_or_else(|| {
+                        c.err_hint(format!("unknown operation '{w}'"), "use new, add, cut or intersect")
+                    })?);
+            }
+            (_, "body") => body = Some(c.ident()?.to_string()),
+            (_, "body_name") => body_name = Some(c.ident()?.to_string()),
+            ("sweep", "profile") => profile = Some(parse_profile(c)?),
+            ("sweep", "path") => path = Some(parse_path(c)?),
+            ("sweep", "orientation") => {
+                let w = c.ident()?;
+                orientation = Orientation::from_keyword(w)
+                    .ok_or_else(|| c.err_hint(format!("unknown orientation '{w}'"), "use fixed or frenet"))?;
+            }
+            ("sweep", "twist") => twist = Some(c.expr()?),
+            ("loft", "profiles") => {
+                c.expect('[')?;
+                let mut list = Vec::new();
+                loop {
+                    list.push(parse_profile(c)?);
+                    if list.len() > MAX_LIST_ITEMS {
+                        return Err(c.err("too many profiles"));
+                    }
+                    if c.eat(',') {
+                        continue;
+                    }
+                    c.expect(']')?;
+                    break;
+                }
+                profiles = Some(list);
+            }
+            ("loft", "ruled") => ruled = parse_bool(c)?,
+            (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let op = op.unwrap_or(BodyOp::New);
+    let kind = match kw {
+        "sweep" => FeatureKind::Sweep(SweepDef {
+            profile: profile.ok_or_else(|| missing(c, kw, "profile"))?,
+            path: path.ok_or_else(|| missing(c, kw, "path"))?,
+            orientation,
+            twist,
+            op,
+            body,
+            body_name,
+        }),
+        _ => FeatureKind::Loft(LoftDef {
+            profiles: profiles.ok_or_else(|| missing(c, kw, "profiles"))?,
+            ruled,
+            op,
+            body,
+            body_name,
         }),
     };
     Ok(Feature { name, label, note: None, suppressed, kind })

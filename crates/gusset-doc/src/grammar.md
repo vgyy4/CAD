@@ -12,7 +12,7 @@ gusset 1                      # header, always first
 units mm                      # mm or in (display unit and bare numbers), at most once
 param <name> = <expr>         # parameters, any order, may refer to each other
 sketch <Name> (<args>) { ... }
-extrude|revolve|fillet|chamfer|import <Name> (<args>)
+extrude|revolve|sweep|loft|fillet|chamfer|import <Name> (<args>)
 ```
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
@@ -272,6 +272,71 @@ sketch Sketch1 (plane: XZ) {
 }
 
 revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, body_name: Pin)
+```
+
+## Sweep and loft
+
+```
+sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...])
+loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], [body_name: ...])
+```
+
+- `sweep` moves a closed profile along a path. `<path>` is a sketch (`Path`: all its curves must
+  form one chain), some of its curves (`Path.curves(l3, a4)`), or edges of an earlier body
+  (`[edge(...), edge(...)]`, in any order). One end of the path must lie in the profile's plane
+  (the sweep starts there); a closed path (a circle) makes a ring without caps. Where path
+  curves meet at an angle the corner is mitred.
+- `orientation: frenet` (the default) turns the profile with the path; `fixed` only slides it.
+  `twist` turns the profile about the path by that angle between the start and the end (it
+  needs `frenet` and an open path); a helical gear is a sweep of the tooth outline along a
+  straight line with a twist.
+- `loft` joins two or more closed profiles on different planes (a sketch on a datum plane per
+  profile; `Sketch.regions(l5)` picks the region). Each must select exactly one region without
+  holes. `ruled: true` joins neighbours with straight (ruled) surfaces, else one smooth
+  surface passes through all of them.
+- Faces: both give `<Feature>/cap(start)` and `cap(end)`. Sweep sides are
+  `<Feature>/side(<profile sketch>/<entity>)`, plus `_p1`, `_p2`, ... on the entity when the
+  path has several edges (`side(Profile/c2_p1)` is the second path edge). Loft sides are named
+  after the profile edge they come from, `side(<sketch>/<entity>)` of the first profile that has
+  one.
+
+```gusset
+gusset 1
+units mm
+
+param len = 20 mm
+
+sketch Profile (plane: XY, next_id: 9) {
+  p1 = point(-5, -5)
+  p2 = point(5, -5)
+  p3 = point(5, 5)
+  p4 = point(-5, 5)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+# the path starts at the profile's plane (z = 0) and goes up
+sketch Path (plane: XZ, next_id: 7) {
+  p1 = point(0, 0)
+  p2 = point(0, 20)
+  l3 = line(p1, p2)
+  k4 = fixed(p1)
+  k5 = vertical(l3)
+  k6 = distance(l3, l3, len)
+}
+
+sweep Sweep1 (profile: Profile, path: Path, orientation: frenet, twist: 90 deg, op: new)
+
+plane Up (base: XY, offset: len)
+
+sketch Top (plane: Up, next_id: 3) {
+  p1 = point(0, 0)
+  c2 = circle(p1, 4)
+}
+
+loft Loft1 (profiles: [Profile, Top], ruled: true, op: new, body_name: Funnel)
 ```
 
 ## Datum planes, bodies and patterns

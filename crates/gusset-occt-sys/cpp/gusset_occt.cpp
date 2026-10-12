@@ -14,6 +14,18 @@
 #include <string>
 #include <vector>
 
+#include <BRepAdaptor_CompCurve.hxx>
+#include <BRepBuilderAPI_TransitionMode.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <GeomConvert_CompCurveToBSplineCurve.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <NCollection_HArray1.hxx>
+#include <TopExp_Explorer.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
@@ -212,6 +224,46 @@ double loop_area(const GsProfile* p, const GsLoop& l) {
   return a * 0.5;
 }
 
+Handle(Geom_BezierCurve) bezier_curve(const GsProfile* p, const GsSeg& s, const Frame& f) {
+  if (s.pole_count != 4 || !p->poles || size_t(s.pole_first) + 4 > p->npoles)
+    throw Standard_Failure("Bezier segment has an invalid control polygon");
+  TColgp_Array1OfPnt poles(1, 4);
+  for (int i = 0; i < 4; ++i) {
+    const double* q = p->poles + 2 * (size_t(s.pole_first) + size_t(i));
+    poles.SetValue(i + 1, f.at(q[0], q[1]));
+  }
+  return new Geom_BezierCurve(poles);
+}
+
+// One edge of a profile or path segment, placed in the frame `f`.
+TopoDS_Edge make_seg_edge(const GsProfile* p, const GsSeg& s, const Frame& f) {
+  TopoDS_Edge e;
+  if (s.kind == GS_SEG_LINE) {
+    BRepBuilderAPI_MakeEdge me(f.at(s.a[0], s.a[1]), f.at(s.b[0], s.b[1]));
+    if (!me.IsDone()) throw Standard_Failure("degenerate line in profile");
+    e = me.Edge();
+  } else if (s.kind == GS_SEG_CIRCLE) {
+    if (!(s.r > 0)) throw Standard_Failure("circle with non-positive radius in profile");
+    gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), f.n, f.x), s.r);
+    e = BRepBuilderAPI_MakeEdge(c).Edge();
+  } else if (s.kind == GS_SEG_BEZIER) {
+    BRepBuilderAPI_MakeEdge me(bezier_curve(p, s, f));
+    if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the profile");
+    e = me.Edge();
+  } else if (s.kind == GS_SEG_ARC) {
+    double r = std::hypot(s.a[0] - s.c[0], s.a[1] - s.c[1]);
+    if (!(r > 0)) throw Standard_Failure("arc with zero radius in profile");
+    gp_Dir axis = s.ccw ? f.n : f.n.Reversed();
+    gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), axis, f.x), r);
+    BRepBuilderAPI_MakeEdge me(c, f.at(s.a[0], s.a[1]), f.at(s.b[0], s.b[1]));
+    if (!me.IsDone()) throw Standard_Failure("could not build an arc of the profile");
+    e = me.Edge();
+  } else {
+    throw Standard_Failure("unknown profile segment kind");
+  }
+  return e;
+}
+
 struct TaggedEdge {
   TopoDS_Edge e;
   uint64_t tag;
@@ -233,38 +285,7 @@ std::vector<TopoDS_Face> build_faces(const GsProfile* p, const Frame& f, std::ve
     BRepBuilderAPI_MakeWire mw;
     for (uint32_t i = 0; i < l.count; ++i) {
       const GsSeg& s = p->segs[l.first + i];
-      TopoDS_Edge e;
-      if (s.kind == GS_SEG_LINE) {
-        BRepBuilderAPI_MakeEdge me(f.at(s.a[0], s.a[1]), f.at(s.b[0], s.b[1]));
-        if (!me.IsDone()) throw Standard_Failure("degenerate line in profile");
-        e = me.Edge();
-      } else if (s.kind == GS_SEG_CIRCLE) {
-        if (!(s.r > 0)) throw Standard_Failure("circle with non-positive radius in profile");
-        gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), f.n, f.x), s.r);
-        e = BRepBuilderAPI_MakeEdge(c).Edge();
-      } else if (s.kind == GS_SEG_BEZIER) {
-        if (s.pole_count != 4 || !p->poles || size_t(s.pole_first) + 4 > p->npoles)
-          throw Standard_Failure("Bezier segment has an invalid control polygon");
-        TColgp_Array1OfPnt poles(1, 4);
-        for (int i = 0; i < 4; ++i) {
-          const double* q = p->poles + 2 * (size_t(s.pole_first) + size_t(i));
-          poles.SetValue(i + 1, f.at(q[0], q[1]));
-        }
-        Handle(Geom_BezierCurve) crv = new Geom_BezierCurve(poles);
-        BRepBuilderAPI_MakeEdge me(crv);
-        if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the profile");
-        e = me.Edge();
-      } else if (s.kind == GS_SEG_ARC) {
-        double r = std::hypot(s.a[0] - s.c[0], s.a[1] - s.c[1]);
-        if (!(r > 0)) throw Standard_Failure("arc with zero radius in profile");
-        gp_Dir axis = s.ccw ? f.n : f.n.Reversed();
-        gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), axis, f.x), r);
-        BRepBuilderAPI_MakeEdge me(c, f.at(s.a[0], s.a[1]), f.at(s.b[0], s.b[1]));
-        if (!me.IsDone()) throw Standard_Failure("could not build an arc of the profile");
-        e = me.Edge();
-      } else {
-        throw Standard_Failure("unknown profile segment kind");
-      }
+      TopoDS_Edge e = make_seg_edge(p, s, f);
       mw.Add(e);
       if (!mw.IsDone()) throw Standard_Failure("profile loop is not connected");
       // MakeWire may replace the edge (to share vertices); tag the edge actually used.
@@ -427,6 +448,272 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
   return GS_OK;
 }
 
+// Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
+bool has_freeform_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    switch (BRepAdaptor_Surface(TopoDS::Face(ex.Current()), false).GetType()) {
+      case GeomAbs_Plane:
+      case GeomAbs_Cylinder:
+      case GeomAbs_Cone:
+      case GeomAbs_Sphere:
+      case GeomAbs_Torus: break;
+      default: return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- sweep and loft helpers
+
+// How far a path may start from the profile plane (mm).
+const double kPathTol = 1e-3;
+// The spline-segment bits of an entity tag (gusset-naming `with_segment`): the Bezier
+// segments of one spline share the other bits.
+const uint64_t kSegMask = 0xfffULL << 52;
+
+// An origin record in terms of shapes; converted to face indices once the result is known.
+struct Rec {
+  TopoDS_Shape face;
+  int64_t kind, a, b;
+};
+
+void emit_recs(const std::vector<Rec>& recs, const ShapeMap& out_faces, std::vector<int64_t>& o) {
+  for (const auto& r : recs) {
+    int idx = out_faces.FindIndex(r.face);
+    if (idx > 0) push_origin(o, idx - 1, r.kind, r.a, r.b);
+  }
+}
+
+double signed_volume(const TopoDS_Shape& s) {
+  GProp_GProps g;
+  BRepGProp::VolumeProperties(s, g);
+  return g.Mass();
+}
+
+std::vector<TopoDS_Edge> ordered_edges(const TopoDS_Wire& w) {
+  std::vector<TopoDS_Edge> v;
+  for (BRepTools_WireExplorer ex(w); ex.More(); ex.Next()) v.push_back(ex.Current());
+  ShapeMap all;
+  TopExp::MapShapes(w, TopAbs_EDGE, all);
+  if (int(v.size()) != all.Extent()) throw Standard_Failure("the path branches or has a gap, so it is not one chain");
+  return v;
+}
+
+gp_Pnt edge_start(const TopoDS_Edge& e) { return BRep_Tool::Pnt(TopExp::FirstVertex(e, true)); }
+gp_Pnt edge_end(const TopoDS_Edge& e) { return BRep_Tool::Pnt(TopExp::LastVertex(e, true)); }
+
+TopoDS_Wire wire_from_edges(const std::vector<TopoDS_Edge>& es) {
+  BRepBuilderAPI_MakeWire mw;
+  for (const auto& e : es) {
+    mw.Add(e);
+    if (!mw.IsDone()) throw Standard_Failure("the path curves are not connected end to end");
+  }
+  return mw.Wire();
+}
+
+// The edges of a chain of sketch curves; the Bezier segments of one spline become one edge.
+std::vector<TopoDS_Edge> curve_edges(const GsProfile* p) {
+  if (!p->segs || !p->loops || p->nloops != 1) throw Standard_Failure("the path must be one chain of curves");
+  const GsLoop& l = p->loops[0];
+  if (l.count == 0 || size_t(l.first) + l.count > p->nsegs) throw Standard_Failure("path out of range");
+  Frame f = make_frame(p, 0.0);
+  std::vector<TopoDS_Edge> out;
+  uint32_t i = 0;
+  while (i < l.count) {
+    const GsSeg& s = p->segs[l.first + i];
+    if (s.kind != GS_SEG_BEZIER) {
+      out.push_back(make_seg_edge(p, s, f));
+      ++i;
+      continue;
+    }
+    uint64_t base = s.tag & ~kSegMask;
+    GeomConvert_CompCurveToBSplineCurve cc(bezier_curve(p, s, f));
+    uint32_t j = i + 1;
+    for (; j < l.count; ++j) {
+      const GsSeg& t = p->segs[l.first + j];
+      if (t.kind != GS_SEG_BEZIER || (t.tag & ~kSegMask) != base) break;
+      if (!cc.Add(bezier_curve(p, t, f), 1e-6)) throw Standard_Failure("could not join the segments of a spline in the path");
+    }
+    BRepBuilderAPI_MakeEdge me(cc.BSplineCurve());
+    if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the path");
+    out.push_back(me.Edge());
+    i = j;
+  }
+  return out;
+}
+
+struct Spine {
+  TopoDS_Wire wire;
+  std::vector<TopoDS_Edge> edges;  // in travel order, each oriented along the travel
+  bool closed = false;
+};
+
+// The spine of a sweep from sketch curves or from edges of a shape, directed so that it
+// starts on the profile plane (a closed path stays as it is).
+Spine make_spine(const GsProfile* curves, const GsShape* shape, const uint32_t* eidx, size_t n, const Frame& pf) {
+  TopoDS_Wire w;
+  if (curves) {
+    w = wire_from_edges(curve_edges(curves));
+  } else {
+    if (!shape || !eidx || n == 0) throw Standard_Failure("the path has no edges");
+    ShapeList l;
+    for (size_t i = 0; i < n; ++i) l.Append(edge_by_index(shape->s, eidx[i]));
+    BRepBuilderAPI_MakeWire mw;
+    mw.Add(l);
+    if (!mw.IsDone()) throw Standard_Failure("the selected edges do not form one connected chain");
+    w = mw.Wire();
+  }
+  Spine sp;
+  sp.edges = ordered_edges(w);
+  if (sp.edges.empty()) throw Standard_Failure("the path has no edges");
+  gp_Pnt p0 = edge_start(sp.edges.front());
+  gp_Pnt p1 = edge_end(sp.edges.back());
+  sp.closed = p0.Distance(p1) < 1e-6;
+  if (!sp.closed) {
+    auto off = [&](const gp_Pnt& q) { return std::fabs(gp_Vec(pf.o, q).Dot(gp_Vec(pf.n))); };
+    double d0 = off(p0), d1 = off(p1);
+    if (std::min(d0, d1) > kPathTol) {
+      std::ostringstream m;
+      m << "the path does not start on the profile plane (its nearest end is " << std::min(d0, d1) << " mm away)";
+      throw Standard_Failure(m.str().c_str());
+    }
+    if (d1 < d0) {
+      std::vector<TopoDS_Edge> rev;
+      for (size_t i = sp.edges.size(); i-- > 0;) rev.push_back(TopoDS::Edge(sp.edges[i].Reversed()));
+      sp.edges = rev;
+      w = wire_from_edges(sp.edges);
+    }
+  }
+  sp.wire = w;
+  return sp;
+}
+
+// An auxiliary spine that makes a sweep turn about the path: the point at distance `r`
+// from the path in a rotation-minimising frame, turned by `twist` * (arc length fraction).
+// The sweep's trihedron points at this curve, so the profile follows the turn.
+TopoDS_Wire twist_guide(const Spine& sp, const Frame& pf, double twist) {
+  BRepAdaptor_CompCurve cc(sp.wire);
+  double len = GCPnts_AbscissaPoint::Length(cc);
+  if (!(len > 1e-6)) throw Standard_Failure("the path is too short");
+  int m = int(std::ceil(std::fabs(twist) / 0.05)) + 6 * int(sp.edges.size()) + 48;
+  m = std::min(m, 600);
+  double r = std::min(std::max(0.05 * len, 0.05), 5.0);
+  std::vector<gp_Pnt> pts;
+  std::vector<gp_Vec> tan;
+  std::vector<double> prm;  // the path's own parameter at each station
+  for (int i = 0; i <= m; ++i) {
+    GCPnts_AbscissaPoint ap(cc, len * i / m, cc.FirstParameter());
+    gp_Pnt p;
+    gp_Vec d;
+    cc.D1(ap.Parameter(), p, d);
+    if (d.Magnitude() < 1e-12) throw Standard_Failure("the path has a zero-length tangent");
+    d.Normalize();
+    pts.push_back(p);
+    tan.push_back(d);
+    prm.push_back(ap.Parameter());
+  }
+  gp_Vec hint(pf.x);
+  gp_Vec e1 = hint - tan[0] * hint.Dot(tan[0]);
+  if (e1.Magnitude() < 1e-9) e1 = gp_Vec(pf.y) - tan[0] * gp_Vec(pf.y).Dot(tan[0]);
+  e1.Normalize();
+  occ::handle<NCollection_HArray1<gp_Pnt>> hp = new NCollection_HArray1<gp_Pnt>(1, m + 1);
+  for (int i = 0; i <= m; ++i) {
+    if (i > 0) {
+      gp_Vec a = tan[i - 1], b = tan[i];
+      gp_Vec ax = a.Crossed(b);
+      double sn = ax.Magnitude(), cs = a.Dot(b);
+      if (sn > 1e-14) {
+        ax /= sn;
+        gp_Trsf tr;
+        tr.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(ax)), std::atan2(sn, cs));
+        e1.Transform(tr);
+      }
+      e1 = e1 - tan[i] * e1.Dot(tan[i]);
+      e1.Normalize();
+    }
+    gp_Vec e2 = tan[i].Crossed(e1);
+    double ph = twist * i / m;
+    gp_Vec o = e1 * (r * std::cos(ph)) + e2 * (r * std::sin(ph));
+    hp->SetValue(i + 1, gp_Pnt(pts[i].X() + o.X(), pts[i].Y() + o.Y(), pts[i].Z() + o.Z()));
+  }
+  // The guide shares the path's parameter, so the sweep pairs them station by station.
+  occ::handle<NCollection_HArray1<double>> hq = new NCollection_HArray1<double>(1, m + 1);
+  for (int i = 0; i <= m; ++i) hq->SetValue(i + 1, prm[i]);
+  GeomAPI_Interpolate ip(hp, hq, false, 1e-9);
+  ip.Perform();
+  if (!ip.IsDone()) throw Standard_Failure("could not build the twist guide of the sweep");
+  return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(ip.Curve())).Wire();
+}
+
+const char* pipe_error_text(BRepBuilderAPI_PipeError e) {
+  switch (e) {
+    case BRepBuilderAPI_PlaneNotIntersectGuide: return "the profile plane does not cross the path";
+    case BRepBuilderAPI_ImpossibleContact: return "the profile cannot be placed on the path";
+    default: return "the sweep failed (the path may bend too sharply for the profile, or be too short)";
+  }
+}
+
+struct Swept {
+  TopoDS_Shape solid;
+  std::vector<Rec> recs;
+};
+
+// Sweeps one closed profile wire along the spine into a solid.
+Swept sweep_loop(const TopoDS_Wire& prof, const std::vector<TaggedEdge>& tagged, const Spine& sp, const Frame& pf,
+                 int orientation, const TopoDS_Wire& guide, uint32_t region) {
+  BRepOffsetAPI_MakePipeShell mk(sp.wire);
+  if (!guide.IsNull()) {
+    // Parametric (not curvilinear) correspondence: the guide carries the path's parameter,
+    // and OCCT's curvilinear pairing loses a few tenths of a percent of volume on twists.
+    mk.SetMode(guide, false, BRepFill_NoContact);
+  } else if (orientation == 0) {
+    mk.SetMode(gp_Ax2(pf.o, pf.n, pf.x));
+  } else {
+    mk.SetMode(false);
+  }
+  mk.SetTransitionMode(BRepBuilderAPI_RightCorner);
+  mk.Add(prof, false, false);
+  mk.Build();
+  if (!mk.IsDone()) throw Standard_Failure(pipe_error_text(mk.GetStatus()));
+  if (!mk.MakeSolid()) throw Standard_Failure("the swept surface could not be closed into a solid");
+  Swept out;
+  out.solid = mk.Shape();
+  double vol = signed_volume(out.solid);
+  if (std::fabs(vol) < 1e-9) throw Standard_Failure("the sweep has no volume (does the path leave the profile plane?)");
+  if (vol < 0) out.solid.Reverse();
+  ShapeMap wire_edges;
+  TopExp::MapShapes(prof, TopAbs_EDGE, wire_edges);
+  for (const auto& te : tagged) {
+    if (!wire_edges.Contains(te.e)) continue;
+    int64_t j = 0;
+    const ShapeList& gen = mk.Generated(te.e);
+    for (ShapeList::Iterator it(gen); it.More(); it.Next(), ++j) {
+      if (it.Value().ShapeType() == TopAbs_FACE) out.recs.push_back(Rec{it.Value(), GS_ORIGIN_SWEPT, int64_t(te.tag), j});
+    }
+  }
+  if (!sp.closed) {
+    TopoDS_Shape a = mk.FirstShape(), b = mk.LastShape();
+    if (!a.IsNull() && a.ShapeType() == TopAbs_FACE) out.recs.push_back(Rec{a, GS_ORIGIN_CAP, 0, int64_t(region)});
+    if (!b.IsNull() && b.ShapeType() == TopAbs_FACE) out.recs.push_back(Rec{b, GS_ORIGIN_CAP, 1, int64_t(region)});
+  }
+  return out;
+}
+
+// The recs of faces that a boolean replaced or removed, carried over to the result.
+void carry_recs(BRepAlgoAPI_BuilderAlgo& op, std::vector<Rec>& recs) {
+  std::vector<Rec> out;
+  for (const auto& r : recs) {
+    if (op.IsDeleted(r.face)) continue;
+    const ShapeList& mods = op.Modified(r.face);
+    if (mods.IsEmpty()) {
+      out.push_back(r);
+      continue;
+    }
+    for (ShapeList::Iterator it(mods); it.More(); it.Next()) out.push_back(Rec{it.Value(), r.kind, r.a, r.b});
+  }
+  recs = out;
+}
+
 }  // namespace
 
 extern "C" {
@@ -573,6 +860,151 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
   }
   for (auto* op : ops) delete op;
   check_valid(result, "revolve");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* path_shape, const uint32_t* path_edges,
+             size_t npath_edges, int orientation, double twist, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !out || !origins) return fail("null argument");
+  if (!path_curves && !path_shape) return fail("the sweep has no path");
+  if (!std::isfinite(twist)) return fail("sweep twist must be a finite angle");
+  Frame f = make_frame(p, 0.0);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+  Spine sp = make_spine(path_curves, path_shape, path_edges, npath_edges, f);
+  TopoDS_Wire guide;
+  if (std::fabs(twist) > 1e-12) {
+    if (sp.closed) return fail("a twist needs an open path (a closed path has no start and end to turn between)");
+    guide = twist_guide(sp, f, twist);
+  }
+
+  std::vector<TopoDS_Shape> solids;
+  std::vector<Rec> recs;
+  for (size_t ri = 0; ri < faces.size(); ++ri) {
+    TopoDS_Wire outer = BRepTools::OuterWire(faces[ri]);
+    std::vector<TopoDS_Wire> holes;
+    for (TopExp_Explorer ex(faces[ri], TopAbs_WIRE); ex.More(); ex.Next()) {
+      if (!ex.Current().IsSame(outer)) holes.push_back(TopoDS::Wire(ex.Current()));
+    }
+    Swept body = sweep_loop(outer, tagged, sp, f, orientation, guide, face_region[ri]);
+    if (holes.empty()) {
+      solids.push_back(body.solid);
+      recs.insert(recs.end(), body.recs.begin(), body.recs.end());
+      continue;
+    }
+    // Holes: sweep each hole loop on its own and subtract it from the outer solid.
+    ShapeList tools;
+    std::vector<Rec> all = body.recs;
+    for (const auto& h : holes) {
+      Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri]);
+      tools.Append(hole.solid);
+      all.insert(all.end(), hole.recs.begin(), hole.recs.end());
+    }
+    ShapeList args;
+    args.Append(body.solid);
+    BRepAlgoAPI_Cut cut;
+    cut.SetArguments(args);
+    cut.SetTools(tools);
+    cut.SetRunParallel(false);
+    cut.Build();
+    if (!cut.IsDone() || cut.HasErrors()) return fail("could not cut the profile's holes out of the sweep");
+    cut.SimplifyResult(true, true);
+    carry_recs(cut, all);
+    solids.push_back(cut.Shape());
+    recs.insert(recs.end(), all.begin(), all.end());
+  }
+  TopoDS_Shape result;
+  if (solids.size() == 1) {
+    result = solids[0];
+  } else {
+    TopoDS_Compound comp;
+    BRep_Builder b;
+    b.MakeCompound(comp);
+    for (const auto& s : solids) b.Add(comp, s);
+    result = comp;
+  }
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  emit_recs(recs, out_faces, o);
+  check_valid(result, "sweep");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!sections || !out || !origins) return fail("null argument");
+  if (nsections < 2) return fail("a loft needs at least two profiles");
+  BRepOffsetAPI_ThruSections ts(true, ruled != 0);
+  std::vector<std::vector<TaggedEdge>> tags(nsections);
+  std::vector<TopoDS_Wire> wires;
+  std::vector<gp_Dir> normals;
+  std::vector<gp_Pnt> centres;
+  for (size_t k = 0; k < nsections; ++k) {
+    const GsProfile* sp = sections + k;
+    Frame f = make_frame(sp, 0.0);
+    std::vector<uint32_t> face_region;
+    std::vector<TopoDS_Face> faces = build_faces(sp, f, tags[k], face_region);
+    if (faces.size() != 1 || sp->nloops != 1)
+      return fail("each loft profile must be one outline without holes (pick a single region)");
+    TopoDS_Wire w = BRepTools::OuterWire(faces[0]);
+    GProp_GProps g;
+    BRepGProp::LinearProperties(w, g);
+    wires.push_back(w);
+    normals.push_back(f.n);
+    centres.push_back(g.CentreOfMass());
+  }
+  // Profiles are counter-clockwise about their own normals; make them run the same way
+  // round the direction of the loft so the sections do not twist against each other.
+  gp_Vec d(centres.front(), centres.back());
+  if (d.Magnitude() > 1e-9) {
+    bool first_fwd = gp_Vec(normals.front()).Dot(d) >= 0;
+    for (size_t k = 1; k < nsections; ++k) {
+      if ((gp_Vec(normals[k]).Dot(d) >= 0) != first_fwd) wires[k].Reverse();
+    }
+  }
+  for (const auto& w : wires) ts.AddWire(w);
+  ts.Build();
+  if (!ts.IsDone()) return fail("the profiles cannot be lofted (are they similar, in a sensible order and not twisted?)");
+  TopoDS_Shape result = ts.Shape();
+  if (result.IsNull()) return fail("the loft produced no shape");
+  double vol = signed_volume(result);
+  if (std::fabs(vol) < 1e-9) return fail("the loft has no volume (are all the profiles on the same plane?)");
+  if (vol < 0) result.Reverse();
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<Rec> recs;
+  for (size_t k = 0; k < nsections; ++k) {
+    ShapeMap wire_edges;
+    TopExp::MapShapes(wires[k], TopAbs_EDGE, wire_edges);
+    for (const auto& te : tags[k]) {
+      if (!wire_edges.Contains(te.e)) continue;
+      TopoDS_Shape gf = ts.GeneratedFace(te.e);
+      if (!gf.IsNull()) {
+        recs.push_back(Rec{gf, GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
+        continue;
+      }
+      const ShapeList& gen = ts.Generated(te.e);
+      for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
+        if (it.Value().ShapeType() == TopAbs_FACE) recs.push_back(Rec{it.Value(), GS_ORIGIN_SECTION, int64_t(te.tag), int64_t(k)});
+      }
+    }
+  }
+  const TopoDS_Shape& a = ts.FirstShape();
+  const TopoDS_Shape& b = ts.LastShape();
+  if (!a.IsNull()) recs.push_back(Rec{a, GS_ORIGIN_CAP, 0, 0});
+  if (!b.IsNull()) recs.push_back(Rec{b, GS_ORIGIN_CAP, 1, 0});
+  std::vector<int64_t> o;
+  emit_recs(recs, out_faces, o);
+  check_valid(result, "loft");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -853,8 +1285,15 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_BEGIN
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
-  BRepGProp::VolumeProperties(s->s, vol);
-  BRepGProp::SurfaceProperties(s->s, area);
+  if (has_freeform_face(s->s)) {
+    // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
+    // percent on twisted surfaces, so integrate adaptively.
+    BRepGProp::VolumeProperties(s->s, vol, 1e-7);
+    BRepGProp::SurfaceProperties(s->s, area, 1e-7);
+  } else {
+    BRepGProp::VolumeProperties(s->s, vol);
+    BRepGProp::SurfaceProperties(s->s, area);
+  }
   gp_Pnt c = vol.CentreOfMass();
   std::vector<double> v = {vol.Mass(), area.Mass(), c.X(), c.Y(), c.Z()};
   to_buf(v, mass);

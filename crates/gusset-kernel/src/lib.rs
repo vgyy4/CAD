@@ -52,6 +52,15 @@ impl Shape {
 
 pub type KResult<T> = Result<T, KernelError>;
 
+/// The path of a sweep.
+#[derive(Debug, Clone)]
+pub enum SweepPath {
+    /// A chain of sketch curves.
+    Curves(Path2),
+    /// Edges of an existing shape (indices into its topology), in any order, forming one chain.
+    Edges { shape: Shape, edges: Vec<u32> },
+}
+
 fn unsupported<T>(what: &str, kernel: &str) -> KResult<T> {
     Err(KernelError::new(KernelErrorKind::Unsupported, format!("{what} is not supported by the {kernel} kernel")))
 }
@@ -76,6 +85,23 @@ pub trait Kernel: Send + Sync + Debug {
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         let _ = (profile, spec);
         unsupported("revolve", self.name())
+    }
+
+    /// Sweeps a planar profile along a path. The path must start on the profile's plane
+    /// (the end that does is taken as its start); a closed path may cross it anywhere.
+    /// Lateral faces report [`FaceOrigin::Swept`], the caps [`FaceOrigin::Cap`] (a closed
+    /// path has none).
+    fn sweep(&self, profile: &Profile, path: &SweepPath, spec: &SweepSpec) -> KResult<OpResult> {
+        let _ = (profile, path, spec);
+        unsupported("sweep", self.name())
+    }
+
+    /// Lofts a solid through two or more profiles (one region without holes each), in
+    /// order. Lateral faces report [`FaceOrigin::Section`] (possibly from several
+    /// sections), the first and last profile give [`FaceOrigin::Cap`] start and end.
+    fn loft(&self, sections: &[Profile], spec: &LoftSpec) -> KResult<OpResult> {
+        let _ = (sections, spec);
+        unsupported("loft", self.name())
     }
 
     fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
