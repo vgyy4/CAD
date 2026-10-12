@@ -890,6 +890,19 @@ fn polyline_is_one_history_node_and_closes_into_a_profile() {
 }
 
 #[test]
+fn query_results_snap_noise_and_flag_seams_and_curved_normals() {
+    let mut v = json!({"a": -5e-22, "b": [1e-12, 2.5, 3], "c": {"d": -0.0}});
+    crate::commands::snap_zeros(&mut v);
+    assert_eq!(v, json!({"a": 0.0, "b": [0.0, 2.5, 3], "c": {"d": 0.0}}));
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let b = run(&mut s, &u, "query.body", json!({"names": true}));
+    assert!(b["edge_names"].as_array().unwrap().iter().all(|e| e["seam"] == false), "{b}");
+    assert!(b["face_names"].as_array().unwrap().iter().all(|f| f["normal"].is_array()), "{b}");
+}
+
+#[test]
 fn inserting_while_rolled_back_is_evaluated_and_undone_as_one_step() {
     // Reviews N1 and M9: the inserted feature is active (evaluated, its errors recorded)
     // and one undo removes it and restores the marker.

@@ -283,7 +283,30 @@ pub(crate) fn combine_effect_warnings(
 
 /// A sketch frame as agents need it to place geometry: all in mm, world coordinates.
 fn frame_json(f: &gusset_kernel::Frame) -> Value {
-    json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() })
+    let mut v = json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() });
+    snap_zeros(&mut v);
+    v
+}
+
+/// Numeric noise below this is reported as exactly 0 (F2-9).
+const ZERO_SNAP: f64 = 1e-9;
+
+/// Replaces every number within [`ZERO_SNAP`] of zero (including `-0.0`) by `0.0`, so
+/// results do not carry values like -5e-22.
+pub(crate) fn snap_zeros(v: &mut Value) {
+    match v {
+        Value::Number(n) => {
+            if n.is_f64()
+                && let Some(f) = n.as_f64()
+                && f.abs() < ZERO_SNAP
+            {
+                *v = json!(0.0);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(snap_zeros),
+        Value::Object(m) => m.values_mut().for_each(snap_zeros),
+        _ => {}
+    }
 }
 
 /// Inserts a feature at the rollback marker (or the end).
@@ -2254,6 +2277,7 @@ fn sketch_status(s: &mut Session, ctx: &CmdCtx, name: &str, with_frame: bool) ->
             if with_frame && let Value::Object(m) = &mut v {
                 m.insert("frame".into(), frame_json(&r.frame));
             }
+            snap_zeros(&mut v);
             Ok(v)
         }
         None => Ok(json!({ "feature_status": st })),
@@ -2293,7 +2317,7 @@ pub struct QueryBody {
 impl Command for QueryBody {
     const ID: &'static str = "query.body";
     const TITLE: &'static str = "Measure body";
-    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body.";
+    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, face normals are given for planar faces only (null otherwise) and edges carry seam: true when they border the same face on both sides (a cylinder's cut line).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     const SHORTCUT: Option<&'static str> = Some("M");
@@ -2333,17 +2357,27 @@ impl Command for QueryBody {
                 .faces
                 .iter()
                 .zip(&body.topology.faces)
-                .map(|(n, f)| json!({"name": n.to_string(), "kind": format!("{:?}", f.kind), "area_mm2": f.area, "centroid_mm": f.centroid, "normal": f.normal}))
+                .map(|(n, f)| {
+                    // A normal is only meaningful on a plane; curved faces have none.
+                    let normal = if f.kind == gusset_kernel::SurfaceKind::Plane { json!(f.normal) } else { Value::Null };
+                    json!({"name": n.to_string(), "kind": format!("{:?}", f.kind), "area_mm2": f.area, "centroid_mm": f.centroid, "normal": normal})
+                })
                 .collect();
             let edges: Vec<Value> = body
                 .names
                 .edges
                 .iter()
                 .zip(&body.topology.edges)
-                .map(|(n, e)| json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint}))
+                .map(|(n, e)| {
+                    // A seam edge borders one face on both sides (a cylinder's cut line).
+                    let mut faces = e.faces.clone();
+                    faces.dedup();
+                    json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint, "seam": faces.len() < 2})
+                })
                 .collect();
             v = merge(v, json!({ "face_names": faces, "edge_names": edges }));
         }
+        snap_zeros(&mut v);
         Ok(v)
     }
 }
