@@ -234,6 +234,7 @@ dependencies = [
  "gusset-naming",
  "gusset-sketch",
  "gusset-units",
+ "libm",
 ]
 
 [[package]]
