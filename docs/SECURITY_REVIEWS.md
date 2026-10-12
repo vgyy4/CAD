@@ -325,3 +325,11 @@ No prompt-injection attempts were found in repository files, fixtures or tool ou
 
 ### Scratch artefacts
 Under `scratchpad/security/`: `harness/` (Rust crate: `history_dos`, `http_server`, `sandbox_probe`, `fake_worker`, `worker_hang`), `mcp_stdio.py`, `mcp_fifo.py`, `mcp_query.py`, `rate.py`, and `inputs/` (`chain20k.gus`, `chain170k.gus`, `branches100001.gus`, `param_*.gus.txt`).
+
+## Re-review 2026-10-12
+
+Security re-review of the fixes and of the surface added since (standing approvals,
+IGES temp-file allowance, longer code text for agents, export filters, start-up
+recovery). Findings S1–S7 and their fixes: docs/reviews/2026-10-12-mvp-re-review.md.
+Review #3 and #7 were only partly fixed before; both are complete now (S2, S1). No
+prompt-injection attempts were seen.
