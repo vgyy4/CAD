@@ -124,7 +124,7 @@ pub struct MoveBody {
     /// A point on the axis, three length expressions (default: the origin).
     #[serde(default)]
     pub through: Option<[String; 3]>,
-    /// true: keep the original and add the moved copy as a new body named after the feature.
+    /// Keep the original and add the moved copy.
     #[serde(default)]
     pub copy: bool,
     /// Body to move (default: the latest).

@@ -404,6 +404,35 @@ combine Combine1 (body: Extrude1, tools: [Extrude2], op: add)
 move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
 ```
 
+## Generated features (gears)
+
+There is no `gear` statement. `generate_gear` (module, teeth, pressure_angle, face_width, bore,
+shift, backlash, fillet, helix, name; every option has a default, units are required: `2 mm`,
+`20 deg`) writes ordinary statements, so read the result with `document_get_text` and edit
+parameters or text like anything else:
+
+* `param gear1_module = 2 mm  # normal module`, `gear1_teeth`, `gear1_pressure_angle`,
+  `gear1_face_width`, `gear1_bore`, `gear1_shift`, `gear1_backlash`, `gear1_fillet` (and
+  `gear1_helix` when helical), then derived ones (`gear1_pitch_diameter`, `gear1_base_diameter`,
+  `gear1_tip_diameter`, `gear1_root_diameter`, ...). Change these, not the sketch: the tooth
+  flanks follow them.
+* `sketch Gear1_profile`: one tooth in polar coordinates: construction lines from the centre,
+  each flank point placed by a `distance` and an `angle` constraint whose values are expressions of
+  the gear parameters, two splines per flank, a tip arc, a root arc, a `pattern_circular(of: [...],
+  center: p1, count: gear1_teeth, angle: 360 deg)` for all teeth and the bore circle with
+  `diameter(c, gear1_bore)`.
+* `extrude Gear1 (profile: Gear1_profile.regions(a5), distance: gear1_face_width, op: new)` for
+  a spur gear. A helical gear (helix not 0) also has `sketch Gear1_path` (a vertical line of the
+  face width on XZ) and `sweep Gear1 (profile: Gear1_profile.regions(a5), path: Gear1_path,
+  orientation: frenet, twist: gear1_face_width * tan(gear1_helix) / (gear1_pitch_diameter / 2) *
+  1 rad, op: new)`.
+* Gears mesh when their modules match, their centre distance is `m (z1 + z2) / 2` (`m / cos(helix)`
+  for helical gears), helical pairs have opposite hands (helix angles of opposite sign) and an even
+  tooth count turns half a pitch (`move_body` with an axis and angle `180 deg / z`).
+* A gear whose parameters cannot make a gear (too few teeth for the profile shift: undercut)
+  fails with the parameter that went wrong, e.g. `acos()` in `gear1_flank_roll`; give it more
+  teeth or a larger `gear1_shift`.
+
 ## Common mistakes
 
 - A header other than `gusset 1`, a second `units`, a duplicate feature or id.

@@ -92,7 +92,7 @@ impl Form {
                     label: humanize(name),
                     help: prop.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
                     kind,
-                    required: required.contains(&name.as_str()),
+                    required: required.contains(&name.as_str()) || prop.get("x-essential") == Some(&Value::Bool(true)),
                     value,
                 });
             }
@@ -211,6 +211,18 @@ mod tests {
                 assert!(form.to_args().is_ok(), "{}", spec.id);
             }
         }
+    }
+
+    #[test]
+    fn gear_form_shows_the_five_essentials_first_with_defaults() {
+        let spec = gusset_commands::find("generate.gear").unwrap();
+        let form = Form::new(spec);
+        let first: Vec<&str> = form.fields.iter().take_while(|f| f.required).map(|f| f.name.as_str()).collect();
+        assert_eq!(first.len(), 5, "{first:?}");
+        assert!(first.contains(&"module") && first.contains(&"teeth") && first.contains(&"bore"), "{first:?}");
+        let args = form.to_args().unwrap();
+        assert_eq!(args["module"], "2 mm");
+        assert_eq!(args["teeth"], "20");
     }
 
     #[test]

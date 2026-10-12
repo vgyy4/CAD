@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod gear;
 #[doc(hidden)]
 pub mod golden;
 pub mod import;
@@ -20,6 +21,10 @@ pub use session::{AuditEntry, CmdCtx, CommitOutcome, Session, SessionConfig};
 mod tests;
 #[cfg(test)]
 mod tests_datum;
+#[cfg(test)]
+mod tests_gear;
+#[cfg(test)]
+mod tests_gear_math;
 #[cfg(test)]
 mod tests_ops;
 #[cfg(test)]

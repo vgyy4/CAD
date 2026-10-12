@@ -17,10 +17,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod datum;
+mod generate;
 mod ops;
 mod sketch_ops;
 mod sweep;
 pub use datum::{Combine, DatumPlane, MoveBody};
+pub use generate::GenerateGear;
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
@@ -28,6 +30,7 @@ pub use sweep::{Loft, Sweep};
 pub(crate) fn all() -> Vec<CommandSpec> {
     let mut v = base_specs();
     v.extend(sweep::specs());
+    v.extend(generate::specs());
     v.extend(ops::specs());
     v.extend(datum::specs());
     v.extend(sketch_ops::specs());
@@ -957,8 +960,7 @@ pub struct SketchAddPolyline {
     pub sketch: String,
     /// Vertices in order, each `[x, y]` in mm (sketch coordinates); at least 2 (3 if closed).
     pub points: Vec<[f64; 2]>,
-    /// Also connect the last point back to the first (a closed outline that can be
-    /// extruded).
+    /// Connect the last point back to the first.
     #[serde(default)]
     pub closed: bool,
     /// Draw one smooth spline through the points (at least 3) instead of line segments.
@@ -971,7 +973,7 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm) as ONE undo step; neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns ids as ranges {first, last, count} (consecutive per kind, e.g. p12..p411).";
+    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm) (one undo step); neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns id ranges {first, last, count}.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -1353,7 +1355,7 @@ pub struct Extrude {
     /// Target body for add/cut/intersect (default: the latest body).
     #[serde(default)]
     pub body: Option<String>,
-    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    /// New body's name (op new); default: the feature name.
     #[serde(default)]
     pub body_name: Option<String>,
     #[serde(default)]
@@ -1421,7 +1423,7 @@ pub struct Revolve {
     pub op: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
-    /// Name of the new body (op new only; a unique identifier). Default: the feature name.
+    /// New body's name (op new); default: the feature name.
     #[serde(default)]
     pub body_name: Option<String>,
     #[serde(default)]
@@ -2565,8 +2567,7 @@ fn is_iges(path: &str) -> bool {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportStep {
-    /// File name relative to the project folder (no `..`, no absolute paths, no hidden
-    /// names; extension .step/.stp for STEP or .igs/.iges for IGES). The user may give any path.
+    /// File name in the project folder (no `..`, absolute or hidden names; .step/.stp or .igs/.iges). The user may give any path.
     pub path: String,
     /// Overwrite an existing file (agents need approval).
     #[serde(default)]
@@ -2579,7 +2580,7 @@ pub struct ExportStep {
 impl Command for ExportStep {
     const ID: &'static str = "export.step";
     const TITLE: &'static str = "Export STEP/IGES";
-    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file inside the project folder. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
+    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file inside the project folder. Reports rebuild_ok/rebuild_errors; features that fail to rebuild are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2691,7 +2692,7 @@ pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
 impl Command for ExportMesh {
     const ID: &'static str = "export.mesh";
     const TITLE: &'static str = "Export mesh (STL/3MF/OBJ)";
-    const DESCRIPTION: &'static str = "Export the bodies (all, or only those named in `bodies`) as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing. Overlapping bodies in one file are not merged; export them one at a time with `bodies`. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
+    const DESCRIPTION: &'static str = "Export the bodies (all, or only those named in `bodies`) as STL, 3MF or OBJ (mm) to a file inside the project folder, for 3D printing. Overlapping bodies in one file are not merged; export them one at a time with `bodies`. Reports rebuild_ok/rebuild_errors; features that fail to rebuild are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

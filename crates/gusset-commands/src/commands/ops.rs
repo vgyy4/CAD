@@ -95,7 +95,7 @@ pub struct Shell {
 impl Command for Shell {
     const ID: &'static str = "feature.shell";
     const TITLE: &'static str = "Shell";
-    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint when the walls are too thick for the part. The result lists body_changes (volume and bounding box before/after).";
+    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint when the walls are too thick for the part. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -210,7 +210,7 @@ pub struct PatternCircular {
     pub through: Option<[String; 3]>,
     /// Instances including the original, a whole number >= 2 (may be an expression).
     pub count: String,
-    /// Total angle, default `360 deg`; a full turn spaces instances angle/count apart, less puts the last one at the angle.
+    /// Total angle, default `360 deg` (full turn: spaced angle/count; less: last at the angle).
     #[serde(default)]
     pub angle: Option<String>,
     /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.

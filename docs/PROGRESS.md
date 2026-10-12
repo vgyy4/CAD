@@ -59,11 +59,16 @@ Phase 3 has started (see Next).
      combine (a single feature is patterned as its own body, then combined into the
      part; OCCT golden tests), sketch region arrangement (crossing curves form regions),
      `sketch.trim`, spline curves (centripetal Catmull-Rom through ordinary points) and
-     sketch patterns (ADR 0016; OCCT golden tests in `modeling_sketch.rs`). Next:
-     sweep/loft, holes.
-   - v0.2/v0.3: generators (DESIGN.md §1, owner request): involute spur and helical
-     gears first, then threads/fasteners and springs; each writes ordinary features
-     and parameters, and is a command, a form and a text statement.
+     sketch patterns (ADR 0016; OCCT golden tests in `modeling_sketch.rs`), sweep and
+     loft (ADR 0017: profile along a sketch chain or edges, fixed/Frenet, twist; loft
+     through sketches on datum planes; persistent names; OCCT only, golden tests in
+     `modeling_sweep.rs` and the naming golden). Next: holes.
+   - v0.2: generators (DESIGN.md §1, owner request): `generate.gear` (ADR 0018) writes
+     named parameters, a parametric tooth sketch and an extrude/sweep for involute spur
+     and helical gears (OCCT golden tests in `modeling_gear.rs`: volume 6e-6, tooth
+     thickness, meshing). It is a command and a form but deliberately no text statement
+     (ADR 0018 §6). Next generators: threads/fasteners and springs; gear gaps: internal
+     gears, racks, bevel/worm, standard-centre-distance shifts.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

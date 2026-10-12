@@ -215,6 +215,8 @@ pub(crate) fn compact_schema(v: &mut Value) {
             m.remove("$schema");
             m.remove("title");
             m.remove("format");
+            // Form-only hint (which fields the GUI shows before "More").
+            m.remove("x-essential");
             m.remove("additionalProperties");
             if m.get("default").is_some_and(|d| {
                 d.is_null() || d == &json!(false) || d == &json!([]) || d == &json!("") || d == &json!({})
