@@ -192,3 +192,70 @@ fn rejects_bad_profiles() {
     let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: open, holes: vec![] }] };
     assert!(k().extrude(&p, &ExtrudeSpec { distance: 1.0, symmetric: false }).is_err());
 }
+
+fn plain_box(w: f64, h: f64, d: f64) -> OpResult {
+    k().extrude(&boxp(w, h), &ExtrudeSpec { distance: d, symmetric: false }).unwrap()
+}
+
+#[test]
+fn shell_box_golden() {
+    let b = plain_box(40.0, 20.0, 10.0);
+    let t = k().topology(&b.shape).unwrap();
+    // Remove the top cap (outward normal +Z).
+    let top = t.faces.iter().position(|f| f.normal[2] > 0.9).unwrap() as u32;
+    let r = k().shell(&b.shape, &[top], 2.0).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    // Outer 40x20x10 minus the cavity 36x16x8 = 8000 - 4608.
+    assert!(close(m.volume, 3392.0, 1e-9), "{}", m.volume);
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!((rt.solids, rt.faces.len()), (1, 11));
+    assert_eq!(r.face_origins.len(), rt.faces.len());
+    let inner: Vec<usize> =
+        (0..rt.faces.len()).filter(|&i| matches!(r.face_origins[i].as_slice(), [FaceOrigin::Offset { .. }])).collect();
+    assert_eq!(inner.len(), 5);
+    // The ring left where the top face was keeps that face's identity (a 224 mm2 plane).
+    let ring = r.face_origins.iter().position(|o| o == &vec![FaceOrigin::Input { input: 0, face: top }]).unwrap();
+    assert!(close(rt.faces[ring].area, 40.0 * 20.0 - 36.0 * 16.0, 1e-9));
+    // Every other original face survives exactly once as an outer face.
+    assert!(r.face_origins.iter().all(|o| o.len() == 1));
+    // Growing outward adds material: (44x24x12 minus the 40x20x10 top-open hull) volume.
+    let g = k().shell(&b.shape, &[top], -2.0).unwrap();
+    let gm = k().mass_properties(&g.shape).unwrap();
+    assert!(close(gm.volume, 44.0 * 24.0 * 12.0 - 40.0 * 20.0 * 10.0, 1e-9), "{}", gm.volume);
+    // A shell needs a real thickness and valid faces.
+    assert!(k().shell(&b.shape, &[top], 0.0).is_err());
+    assert!(k().shell(&b.shape, &[99], 2.0).is_err());
+    // Too thick for the part.
+    let thick = k().shell(&b.shape, &[top], 8.0).unwrap();
+    assert!(close(k().mass_properties(&thick.shape).unwrap().volume, 8000.0 - 24.0 * 4.0 * 2.0, 1e-9));
+    assert!(k().shell(&b.shape, &[top], 12.0).is_err());
+}
+
+#[test]
+fn transform_golden() {
+    let b = plain_box(40.0, 20.0, 10.0);
+    let tb = k().topology(&b.shape).unwrap();
+    let mir = k().transform(&b.shape, &Transform::Mirror { origin: [0.0; 3], normal: [1.0, 0.0, 0.0] }).unwrap();
+    let m = k().mass_properties(&mir.shape).unwrap();
+    assert!(close(m.volume, 8000.0, 1e-9), "{}", m.volume);
+    assert!(close(m.centroid[0], -20.0, 1e-9));
+    let mt = k().topology(&mir.shape).unwrap();
+    assert_eq!(mt.faces.len(), 6);
+    for (i, o) in mir.face_origins.iter().enumerate() {
+        let &[FaceOrigin::Input { input: 0, face }] = o.as_slice() else { panic!("{o:?}") };
+        let (a, c) = (&tb.faces[face as usize], &mt.faces[i]);
+        assert!(close(c.normal[0], -a.normal[0], 1e-9) && close(c.normal[2], a.normal[2], 1e-9), "{i}");
+        assert!(close(c.centroid[0], -a.centroid[0], 1e-9));
+    }
+    let tr = k().transform(&b.shape, &Transform::Translate([100.0, 0.0, 0.0])).unwrap();
+    let bb = k().bbox(&tr.shape).unwrap();
+    assert!(close(bb.min[0], 100.0, 1e-6));
+    let rot = k()
+        .transform(
+            &b.shape,
+            &Transform::Rotate { origin: [0.0; 3], axis: [0.0, 0.0, 1.0], angle: std::f64::consts::PI },
+        )
+        .unwrap();
+    let rm = k().mass_properties(&rot.shape).unwrap();
+    assert!(close(rm.centroid[0], -20.0, 1e-9) && close(rm.centroid[1], -10.0, 1e-9));
+}

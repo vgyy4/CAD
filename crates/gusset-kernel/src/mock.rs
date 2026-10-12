@@ -150,6 +150,43 @@ impl Kernel for MockKernel {
         Ok(OpResult { shape: Shape::new(shape), face_origins })
     }
 
+    fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
+        let m = shape.downcast::<MockShape>()?;
+        let finite = |v: V3| v.iter().all(|c| c.is_finite());
+        let prisms = m.prisms.iter().map(|p| transform_prism(p, t)).collect::<KResult<Vec<_>>>()?;
+        let shape = MockShape { prisms };
+        if !shape.prisms.iter().all(|p| finite(p.frame.origin)) {
+            return Err(invalid("transform has non-finite parameters"));
+        }
+        let face_origins =
+            (0..topology(&shape).faces.len()).map(|f| vec![FaceOrigin::Input { input: 0, face: f as u32 }]).collect();
+        Ok(OpResult { shape: Shape::new(shape), face_origins })
+    }
+
+    /// Only the union of bodies that do not touch (their bounding boxes are apart) works:
+    /// the result is the two bodies side by side.
+    fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
+        let (a, b) = (target.downcast::<MockShape>()?, tool.downcast::<MockShape>()?);
+        let apart = |p: &Prism, q: &Prism| {
+            let (u, v) = (prism_bbox(p), prism_bbox(q));
+            (0..3).any(|k| u.max[k] < v.min[k] - 1e-9 || v.max[k] < u.min[k] - 1e-9)
+        };
+        if op != BoolOp::Union || !a.prisms.iter().all(|p| b.prisms.iter().all(|q| apart(p, q))) {
+            return Err(crate::KernelError::new(
+                KernelErrorKind::Unsupported,
+                "the mock kernel can only unite bodies that do not touch",
+            ));
+        }
+        let mut origins = Vec::new();
+        for (input, m) in [(0u32, a), (1u32, b)] {
+            for f in 0..topology(m).faces.len() {
+                origins.push(vec![FaceOrigin::Input { input, face: f as u32 }]);
+            }
+        }
+        let prisms = a.prisms.iter().chain(&b.prisms).cloned().collect();
+        Ok(OpResult { shape: Shape::new(MockShape { prisms }), face_origins: origins })
+    }
+
     fn compound(&self, shapes: &[Shape]) -> KResult<OpResult> {
         let mut prisms = Vec::new();
         let mut origins = Vec::new();
@@ -203,14 +240,10 @@ impl Kernel for MockKernel {
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
         for p in &m.prisms {
-            for &q in &p.poly {
-                for h in [p.lo, p.hi] {
-                    let w = p.at(q, h);
-                    for k in 0..3 {
-                        min[k] = min[k].min(w[k]);
-                        max[k] = max[k].max(w[k]);
-                    }
-                }
+            let b = prism_bbox(p);
+            for k in 0..3 {
+                min[k] = min[k].min(b.min[k]);
+                max[k] = max[k].max(b.max[k]);
             }
         }
         Ok(BBox { min, max })
@@ -261,6 +294,49 @@ impl Kernel for MockKernel {
         }
         Ok(mesh)
     }
+}
+
+fn prism_bbox(p: &Prism) -> BBox {
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for &q in &p.poly {
+        for h in [p.lo, p.hi] {
+            let w = p.at(q, h);
+            for k in 0..3 {
+                min[k] = min[k].min(w[k]);
+                max[k] = max[k].max(w[k]);
+            }
+        }
+    }
+    BBox { min, max }
+}
+
+/// Applies a transform to the frame of a prism. A mirror reverses the handedness of the
+/// frame vectors, so the frame normal now points against the mirrored sweep direction:
+/// the sweep range is negated and the cap at the low end swaps.
+fn transform_prism(p: &Prism, t: &Transform) -> KResult<Prism> {
+    let mut q = p.clone();
+    match *t {
+        Transform::Translate(v) => q.frame.origin = add(p.frame.origin, v),
+        Transform::Rotate { origin, axis, angle } => {
+            let k = normalize(axis).ok_or_else(|| invalid("rotation axis has no direction"))?;
+            let (s, c) = angle.sin_cos();
+            let rot = |v: V3| add(add(scale(v, c), scale(cross(k, v), s)), scale(k, dot(k, v) * (1.0 - c)));
+            q.frame.origin = add(origin, rot(sub(p.frame.origin, origin)));
+            q.frame.x = rot(p.frame.x);
+            q.frame.y = rot(p.frame.y);
+        }
+        Transform::Mirror { origin, normal } => {
+            let n = normalize(normal).ok_or_else(|| invalid("mirror plane has no normal"))?;
+            let refl = |v: V3| sub(v, scale(n, 2.0 * dot(v, n)));
+            q.frame.origin = add(origin, refl(sub(p.frame.origin, origin)));
+            q.frame.x = refl(p.frame.x);
+            q.frame.y = refl(p.frame.y);
+            (q.lo, q.hi) = (-p.hi, -p.lo);
+            q.lo_end = if p.lo_end == CapEnd::Start { CapEnd::End } else { CapEnd::Start };
+        }
+    }
+    Ok(q)
 }
 
 fn dist2(a: P2, b: P2) -> f64 {
@@ -497,6 +573,77 @@ mod tests {
             .kind,
             KernelErrorKind::Unsupported
         );
+    }
+
+    fn mock_box() -> OpResult {
+        MockKernel.extrude(&rect(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap()
+    }
+
+    #[test]
+    fn mirror_keeps_faces_and_outward_normals() {
+        let k = MockKernel;
+        let b = mock_box();
+        let tb = k.topology(&b.shape).unwrap();
+        // Mirror across the plane x = -5 (not through the origin).
+        let m =
+            k.transform(&b.shape, &Transform::Mirror { origin: [-5.0, 0.0, 0.0], normal: [1.0, 0.0, 0.0] }).unwrap();
+        let tm = k.topology(&m.shape).unwrap();
+        assert_eq!(tm.faces.len(), 6);
+        assert_eq!(m.face_origins[3], vec![FaceOrigin::Input { input: 0, face: 3 }]);
+        let mp = k.mass_properties(&m.shape).unwrap();
+        assert!((mp.volume - 8000.0).abs() < 1e-9);
+        // Centroid x: 20 -> -30.
+        assert!((mp.centroid[0] + 30.0).abs() < 1e-9, "{:?}", mp.centroid);
+        for (a, c) in tb.faces.iter().zip(&tm.faces) {
+            assert!((c.normal[0] + a.normal[0]).abs() < 1e-9 && (c.normal[1] - a.normal[1]).abs() < 1e-9);
+            assert!((c.normal[2] - a.normal[2]).abs() < 1e-9);
+            assert!((c.centroid[0] - (-10.0 - a.centroid[0])).abs() < 1e-9);
+            assert!((c.area - a.area).abs() < 1e-9);
+        }
+        // Mirroring across a horizontal plane flips the caps: cap(start) (z = 0, faces -Z)
+        // lands at z = 20 and faces +Z.
+        let m =
+            k.transform(&b.shape, &Transform::Mirror { origin: [0.0, 0.0, 10.0], normal: [0.0, 0.0, 1.0] }).unwrap();
+        let tm = k.topology(&m.shape).unwrap();
+        assert!((tm.faces[0].centroid[2] - 20.0).abs() < 1e-9 && (tm.faces[0].normal[2] - 1.0).abs() < 1e-9);
+        assert!(tm.edges.iter().all(|e| e.faces.len() == 2));
+        let bb = k.bbox(&m.shape).unwrap();
+        assert_eq!((bb.min[2], bb.max[2]), (10.0, 20.0));
+    }
+
+    #[test]
+    fn translate_and_rotate() {
+        let k = MockKernel;
+        let b = mock_box();
+        let t = k.transform(&b.shape, &Transform::Translate([100.0, 5.0, 0.0])).unwrap();
+        let bb = k.bbox(&t.shape).unwrap();
+        assert_eq!((bb.min[0], bb.min[1], bb.max[0]), (100.0, 5.0, 140.0));
+        let r = k
+            .transform(
+                &b.shape,
+                &Transform::Rotate { origin: [0.0; 3], axis: [0.0, 0.0, 1.0], angle: std::f64::consts::FRAC_PI_2 },
+            )
+            .unwrap();
+        let bb = k.bbox(&r.shape).unwrap();
+        assert!((bb.min[0] + 20.0).abs() < 1e-9 && bb.max[0].abs() < 1e-9 && (bb.max[1] - 40.0).abs() < 1e-9);
+        let mp = k.mass_properties(&r.shape).unwrap();
+        assert!((mp.volume - 8000.0).abs() < 1e-9);
+        assert!(k.transform(&b.shape, &Transform::Mirror { origin: [0.0; 3], normal: [0.0; 3] }).is_err());
+        assert!(k.transform(&b.shape, &Transform::Rotate { origin: [0.0; 3], axis: [0.0; 3], angle: 1.0 }).is_err());
+    }
+
+    #[test]
+    fn union_of_apart_bodies_only() {
+        let k = MockKernel;
+        let a = mock_box();
+        let far = k.transform(&a.shape, &Transform::Translate([100.0, 0.0, 0.0])).unwrap();
+        let u = k.boolean(BoolOp::Union, &a.shape, &far.shape).unwrap();
+        assert_eq!(k.topology(&u.shape).unwrap().faces.len(), 12);
+        assert_eq!(u.face_origins[7], vec![FaceOrigin::Input { input: 1, face: 1 }]);
+        let near = k.transform(&a.shape, &Transform::Translate([10.0, 0.0, 0.0])).unwrap();
+        assert_eq!(k.boolean(BoolOp::Union, &a.shape, &near.shape).unwrap_err().kind, KernelErrorKind::Unsupported);
+        assert_eq!(k.boolean(BoolOp::Cut, &a.shape, &far.shape).unwrap_err().kind, KernelErrorKind::Unsupported);
+        assert_eq!(k.shell(&a.shape, &[1], 1.0).unwrap_err().kind, KernelErrorKind::Unsupported);
     }
 
     #[test]

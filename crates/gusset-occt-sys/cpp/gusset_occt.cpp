@@ -23,6 +23,10 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <GeomAbs_JoinType.hxx>
+#include <gp_Trsf.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -598,6 +602,123 @@ int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double rad
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   return blend<BRepFilletAPI_MakeChamfer>(s, edges, nedges, dist, false, out, origins);
+  GS_GUARD_END
+}
+
+int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,
+             GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!faces && nfaces)) return fail("null argument");
+  if (!std::isfinite(thickness) || std::fabs(thickness) < 1e-9) return fail("shell thickness must be non-zero");
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  ShapeList closing;
+  for (size_t i = 0; i < nfaces; ++i) {
+    if (int(faces[i]) >= in_faces.Extent()) return fail("face index out of range");
+    closing.Append(in_faces(int(faces[i]) + 1));
+  }
+  // OCCT: a negative offset builds the wall inside the solid.
+  BRepOffsetAPI_MakeThickSolid mk;
+  mk.MakeThickSolidByJoin(s->s, closing, -thickness, 1e-4, BRepOffset_Skin, false, false, GeomAbs_Intersection);
+  if (!mk.IsDone()) return fail("shell failed");
+  TopoDS_Shape result = mk.Shape();
+  if (result.IsNull()) return fail("shell produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    bool removed = false;
+    for (size_t k = 0; k < nfaces; ++k) removed = removed || faces[k] == uint32_t(i - 1);
+    const TopoDS_Shape& g = in_faces(i);
+    if (removed) {
+      // The ring left where a removed face was inherits that face's identity.
+      const ShapeList& mods = mk.Modified(g);
+      for (ShapeList::Iterator it(mods); it.More(); it.Next()) {
+        int idx = out_faces.FindIndex(it.Value());
+        if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      }
+      const ShapeList& gen = mk.Generated(g);
+      for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
+        if (it.Value().ShapeType() != TopAbs_FACE) continue;
+        int idx = out_faces.FindIndex(it.Value());
+        if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      }
+      continue;
+    }
+    {
+      const ShapeList& mods = mk.Modified(g);
+      if (mods.IsEmpty()) {
+        int idx = out_faces.FindIndex(g);
+        if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+      } else {
+        for (ShapeList::Iterator it(mods); it.More(); it.Next()) {
+          int idx = out_faces.FindIndex(it.Value());
+          if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+        }
+      }
+    }
+    const ShapeList& gen = mk.Generated(g);
+    for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
+      if (it.Value().ShapeType() != TopAbs_FACE) continue;
+      int idx = out_faces.FindIndex(it.Value());
+      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_OFFSET, 0, i - 1);
+    }
+  }
+  check_valid(result, "shell");
+  // Offsets that collapse (walls thicker than the part allows) can still give a "valid"
+  // but wrong solid; require the volume to move the right way.
+  {
+    GProp_GProps before, after;
+    BRepGProp::VolumeProperties(s->s, before);
+    BRepGProp::VolumeProperties(result, after);
+    double vb = before.Mass(), va = after.Mass();
+    if (!(va > 1e-9) || (thickness > 0 && !(va < vb - 1e-9)))
+      throw Standard_Failure("the walls are too thick for this part");
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!params || !s || !out || !origins) return fail("null argument");
+  for (int i = 0; i < 7; ++i)
+    if (!std::isfinite(params[i])) return fail("transform has non-finite parameters");
+  gp_Trsf t;
+  switch (kind) {
+    case GS_XF_MIRROR: {
+      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12) return fail("mirror plane has no normal");
+      t.SetMirror(gp_Ax2(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])));
+      break;
+    }
+    case GS_XF_TRANSLATE: t.SetTranslation(gp_Vec(params[0], params[1], params[2])); break;
+    case GS_XF_ROTATE: {
+      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12)
+        return fail("rotation axis has no direction");
+      t.SetRotation(gp_Ax1(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])),
+                    params[6]);
+      break;
+    }
+    default: return fail("unknown transform");
+  }
+  BRepBuilderAPI_Transform xf(s->s, t, true);
+  if (!xf.IsDone()) return fail("transform failed");
+  TopoDS_Shape result = xf.Shape();
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    int idx = out_faces.FindIndex(xf.ModifiedShape(in_faces(i)));
+    if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+  }
+  check_valid(result, "transform");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
   GS_GUARD_END
 }
 

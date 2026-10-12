@@ -34,6 +34,14 @@ pub(crate) fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> KRe
     safe::blend(s, edges, size, fillet).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> KResult<OpOut> {
+    safe::shell(s, faces, thickness).map_err(err(KernelErrorKind::OperationFailed))
+}
+
+pub(crate) fn transform(kind: i32, params: &[f64; 7], s: &RawShape) -> KResult<OpOut> {
+    safe::transform(kind, params, s).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn compound(shapes: &[&RawShape]) -> KResult<OpOut> {
     safe::compound(shapes).map_err(err(KernelErrorKind::OperationFailed))
 }

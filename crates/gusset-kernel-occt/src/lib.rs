@@ -159,6 +159,7 @@ mod imp {
                 sys::GS_ORIGIN_INPUT => FaceOrigin::Input { input: u32_of(a), face: u32_of(b) },
                 sys::GS_ORIGIN_FROM_EDGE => FaceOrigin::FromEdge { input: u32_of(a), edge: u32_of(b) },
                 sys::GS_ORIGIN_FROM_VERTEX => FaceOrigin::FromVertex { input: u32_of(a), vertex: u32_of(b) },
+                sys::GS_ORIGIN_OFFSET => FaceOrigin::Offset { input: u32_of(a), face: u32_of(b) },
                 _ => continue,
             };
             if let Some(slot) = usize::try_from(face).ok().and_then(|f| origins.get_mut(f)) {
@@ -248,6 +249,23 @@ mod imp {
 
         fn chamfer(&self, shape: &Shape, edges: &[u32], distance: f64) -> KResult<OpResult> {
             op_result(ffi::blend(raw(shape)?, edges, distance, false)?)
+        }
+
+        fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
+            op_result(ffi::shell(raw(shape)?, remove, thickness)?)
+        }
+
+        fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
+            let (kind, p) = match *t {
+                Transform::Mirror { origin, normal } => {
+                    (sys::GS_XF_MIRROR, [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2], 0.0])
+                }
+                Transform::Translate(v) => (sys::GS_XF_TRANSLATE, [v[0], v[1], v[2], 0.0, 0.0, 0.0, 0.0]),
+                Transform::Rotate { origin, axis, angle } => {
+                    (sys::GS_XF_ROTATE, [origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], angle])
+                }
+            };
+            op_result(ffi::transform(kind, &p, raw(shape)?)?)
         }
 
         fn compound(&self, shapes: &[Shape]) -> KResult<OpResult> {

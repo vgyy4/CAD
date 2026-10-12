@@ -93,6 +93,23 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("chamfer", self.name())
     }
 
+    /// Hollows a solid: removes the faces `remove` (indices into the shape's topology) and
+    /// leaves walls of `thickness` mm (> 0 grows inward, < 0 outward). Faces that
+    /// remain on the outside report [`FaceOrigin::Input`]; the new inner faces report
+    /// [`FaceOrigin::Offset`] (or `FromEdge`/`FromVertex` for joins).
+    fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
+        let _ = (shape, remove, thickness);
+        unsupported("shell", self.name())
+    }
+
+    /// A transformed copy of a shape. Output face *i* is input face *i*
+    /// (`face_origins[i] == [Input { input: 0, face: i }]`); a mirror keeps outward
+    /// normals outward.
+    fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
+        let _ = (shape, t);
+        unsupported("transform", self.name())
+    }
+
     /// Combines several solids into one multi-body shape without merging them.
     fn compound(&self, shapes: &[Shape]) -> KResult<OpResult>;
 

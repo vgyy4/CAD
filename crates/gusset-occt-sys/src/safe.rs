@@ -219,6 +219,24 @@ pub fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> ShimResult
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+pub fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; `faces` alive for the call; out-params valid.
+    let rc = s.with(|p| unsafe { sys::gs_shell(p, faces.as_ptr(), faces.len(), thickness, &mut out, &mut origins) });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+pub fn transform(kind: i32, params: &[f64; 7], s: &RawShape) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; `params` points to 7 doubles alive for the call.
+    let rc = s.with(|p| unsafe { sys::gs_transform(kind, params.as_ptr(), p, &mut out, &mut origins) });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn compound(shapes: &[&RawShape]) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();
