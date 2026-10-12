@@ -14,7 +14,7 @@ use gusset_history::Actor;
 use std::path::{Component, Path, PathBuf};
 
 /// Extensions agents may export to.
-pub const AGENT_EXPORT_EXTENSIONS: &[&str] = &["step", "stp", "stl", "3mf", "obj"];
+pub const AGENT_EXPORT_EXTENSIONS: &[&str] = &["step", "stp", "igs", "iges", "stl", "3mf", "obj"];
 
 /// Windows device names, reserved in any folder and with any extension.
 const RESERVED: &[&str] = &[

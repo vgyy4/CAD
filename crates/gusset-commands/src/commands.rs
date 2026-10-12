@@ -2236,12 +2236,33 @@ fn rebuild_report(ev: &gusset_eval::Evaluation) -> Value {
     })
 }
 
-/// Writes STEP (AP214, the OCCT default schema) of all bodies into the project folder.
+/// The error for an export with no solid bodies. When the rebuild failed, it carries
+/// `details.rebuild_errors` and says to fix the failing features (F2-6).
+fn nothing_to_export(ev: &gusset_eval::Evaluation, what: &str, no_body_hint: &str) -> CommandError {
+    let errors: Vec<String> = ev.errors().iter().map(|e| e.to_string()).collect();
+    if errors.is_empty() {
+        return CommandError::new("evaluation", format!("there is nothing to export{what}")).hint(no_body_hint);
+    }
+    CommandError::new(
+        "evaluation",
+        format!("there is nothing to export{what}: {} feature(s) failed to rebuild", errors.len()),
+    )
+    .hint("fix the failing features (or undo the last edit); see details.rebuild_errors and query_model")
+    .details(json!({ "rebuild_errors": errors }))
+}
+
+/// Whether an export path asks for IGES (`.igs` / `.iges`).
+fn is_iges(path: &str) -> bool {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    ext.eq_ignore_ascii_case("igs") || ext.eq_ignore_ascii_case("iges")
+}
+
+/// Writes STEP (AP214, the OCCT default schema) or IGES of all bodies into the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportStep {
     /// File name relative to the project folder (no `..`, no absolute paths, no hidden
-    /// names; extension .step or .stp). The user may give any path.
+    /// names; extension .step/.stp for STEP or .igs/.iges for IGES). The user may give any path.
     pub path: String,
     /// Overwrite an existing file (agents need approval).
     #[serde(default)]
@@ -2253,12 +2274,18 @@ pub struct ExportStep {
 
 impl Command for ExportStep {
     const ID: &'static str = "export.step";
-    const TITLE: &'static str = "Export STEP";
-    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm) to a file inside the project folder. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
+    const TITLE: &'static str = "Export STEP/IGES";
+    const DESCRIPTION: &'static str = "Export the bodies of your current branch (all, or only those named in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file inside the project folder. The result reports rebuild_ok and rebuild_errors: features that fail to rebuild are not in the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let path = crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, &["step", "stp"])?;
+        let path = crate::paths::export_target(
+            s.project_dir.as_deref(),
+            &self.path,
+            &ctx.actor,
+            &["step", "stp", "igs", "iges"],
+        )?;
+        let iges = is_iges(&self.path);
         if path.exists() {
             if !self.overwrite {
                 return Err(CommandError::new("confirmation_required", format!("'{}' already exists", self.path))
@@ -2274,13 +2301,14 @@ impl Command for ExportStep {
             let hint = if ev.meshes.is_empty() {
                 "create a body first"
             } else {
-                "reference meshes (imported STL/3MF/OBJ) are not solids; export them with export.mesh"
+                "reference meshes (imported STL/3MF/OBJ) are not solids; export them with export_mesh"
             };
-            return Err(CommandError::new("evaluation", "there is nothing to export as STEP").hint(hint));
+            return Err(nothing_to_export(&ev, if iges { " as IGES" } else { " as STEP" }, hint));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
-        let bytes = s.kernel().export_step(&bodies).map_err(|e| CommandError::new("io", e.to_string()))?;
+        let bytes = if iges { s.kernel().export_iges(&bodies) } else { s.kernel().export_step(&bodies) }
+            .map_err(|e| CommandError::new("io", e.to_string()))?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
     }
@@ -2384,7 +2412,7 @@ impl Command for ExportMesh {
         let ev = s.evaluate(&ctx.actor)?;
         let (sel_bodies, sel_meshes) = export_selection(&ev, &self.bodies)?;
         if sel_bodies.is_empty() && sel_meshes.is_empty() {
-            return Err(CommandError::new("evaluation", "there is nothing to export").hint("create a body first"));
+            return Err(nothing_to_export(&ev, "", "create a body first"));
         }
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
