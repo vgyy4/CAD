@@ -3,10 +3,9 @@
 Living status document. Any session should be able to resume from here and CLAUDE.md.
 
 ## Current phase
-Phase 2 (MVP vertical slice): feature-complete apart from the gaps below. The milestone
-review (code review, security review, MCP dogfooding with the real kernel) ran on
-2026-10-11; nearly all findings are fixed, the rest are in progress, then the reviews
-are re-run before tagging `v0.1.0-mvp`.
+Phase 2 is done: `v0.1.0-mvp` was tagged on 2026-10-12 (commit cfc0e35, CI and
+Fuzz + Miri green) after the milestone review, the re-review and two dogfooding runs.
+Phase 3 has started (see Next).
 
 ## Done
 - Research and design docs: `docs/RESEARCH.md` (+5 reports), `docs/DESIGN.md`, threat
@@ -52,8 +51,7 @@ are re-run before tagging `v0.1.0-mvp`.
 - CI green on all platforms (the GL backend is no longer used on Windows, ADR 0009).
 
 ## Next
-1. CI green on the latest commit, then tag `v0.1.0-mvp`; delete the auto-resume Routine.
-2. Phase 3, in the feature-matrix order (docs/RESEARCH.md "v1" tier), starting with
+1. Phase 3, in the feature-matrix order (docs/RESEARCH.md "v1" tier), starting with
    the modeling gaps agents and users hit first (dogfooding F-M4..M8):
    - v0.2: shell, mirror, linear/circular patterns (feature and sketch), offset and
      angled datum planes, body move/copy, sketch trim and spline/polyline curves,
@@ -64,7 +62,7 @@ are re-run before tagging `v0.1.0-mvp`.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
-3. Post-MVP leftovers: save/snapshot off the model thread (M3), fault-injection
+2. Post-MVP leftovers: save/snapshot off the model thread (M3), fault-injection
    storage tests (M14), O(n²) state clones (L8), per-agent credentials for grants and
    reconnect to an agent's own branch (F2-2).
 
