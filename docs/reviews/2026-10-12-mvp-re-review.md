@@ -9,8 +9,8 @@ Verified fixed in code: C1–C4, H1–H8, M1, M2, M4–M8, M10–M12, L1–L4, L
 Still open or partial after the re-review:
 - **M9** (insert while rolled back recorded as two undo steps): fixed (one undo step).
 - **M3** (save/snapshot as model-thread jobs, repeated verifies): partial. Saves are
-  33 ms for 1,000 features (PERFORMANCE.md); moving them off the model thread is
-  left for after the MVP.
+  7 ms for 1,000 features (PERFORMANCE.md); recovery snapshots write off the model
+  thread since 2026-10-12; project saves still write on it.
 - **M14** (benchmarks): budgets are now enforced by tests instead of criterion benches
   (`history_overhead_budget`, `rebuild_100_budget`, the release-mode solver test,
   `perf_save_and_snapshot`); dm-flakey style fault injection is still open.
