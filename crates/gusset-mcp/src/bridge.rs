@@ -118,11 +118,14 @@ pub fn run_stdio_with_output(options: StdioOptions, protocol_out: std::fs::File)
 ///
 /// # Errors
 /// As [`run_stdio`].
-pub async fn run_stdio_async<R, W>(options: StdioOptions, read: R, write: W) -> Result<(), McpError>
+pub async fn run_stdio_async<R, W>(mut options: StdioOptions, read: R, write: W) -> Result<(), McpError>
 where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
+    // A relative project path has the empty path as its parent, which is no project
+    // folder at all (exports failed with "entity not found", F2-3).
+    options.project = options.project.take().map(|p| absolutize(&p));
     if options.attach {
         let dir = options.connection_dir.clone().or_else(crate::http::default_connection_dir);
         if let Some(dir) = dir {
@@ -307,6 +310,12 @@ async fn verify_identity(app: &AppInstance) -> Identity {
         })
     };
     tokio::time::timeout(Duration::from_secs(2), attempt).await.ok().flatten().unwrap_or(Identity::Unverified)
+}
+
+/// `path` made absolute against the current directory (symlinks are left alone; the
+/// export path checks canonicalize the folder themselves).
+fn absolutize(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 async fn headless<R, W>(options: StdioOptions, read: R, write: W) -> Result<(), McpError>
@@ -651,6 +660,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         gusset_store::fs::create_private_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn relative_project_paths_get_a_real_project_folder() {
+        let rel = absolutize(Path::new("p1.gus"));
+        assert!(rel.is_absolute(), "{rel:?}");
+        let parent = rel.parent().unwrap();
+        assert!(!parent.as_os_str().is_empty() && parent.is_dir(), "{parent:?}");
+        assert_eq!(rel.file_name().unwrap(), "p1.gus");
+        let abs = std::env::temp_dir().join("x.gus");
+        assert_eq!(absolutize(&abs), abs);
     }
 
     fn write_conn(dir: &Path, port: u16, token: Option<&str>) -> PathBuf {
