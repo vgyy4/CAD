@@ -226,7 +226,11 @@ impl RowEchelon {
         }
         // The remainder is zero in every pivot column: it becomes the row of its first
         // non-zero column.
-        let Some(p) = v.iter().position(|x| x.abs() > 0.0) else { return false };
+        // Leading entries at round-off level are not pivots: dividing by one later
+        // (`free_columns`) would blow up, so they are zeroed (review N9).
+        let vmax = v.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+        let Some(p) = v.iter().position(|x| x.abs() > self.tol * vmax) else { return false };
+        v.iter_mut().take(p).for_each(|x| *x = 0.0);
         let last = v.iter().rposition(|x| *x != 0.0).unwrap_or(p);
         if let Some(slot) = self.rows.get_mut(p) {
             *slot = Some(v);
@@ -321,6 +325,43 @@ mod tests {
         let mut rb = RowEchelon::new(2, 1e-10);
         assert!(rb.add(&[1.0, 1.0]));
         assert_eq!(rb.free_columns(1e-9), vec![true, true]);
+    }
+
+    #[test]
+    fn row_echelon_large_rank_deficient_chain() {
+        // A long chain x_i - x_{i+1} = 0, every row repeated, plus sums of rows: rank
+        // n-1, and every unknown stays free (all equal, but not fixed).
+        let n = 300;
+        let mut rb = RowEchelon::new(n, 1e-10);
+        let chain = |i: usize| {
+            let mut r = vec![0.0; n];
+            r[i] = 1.0;
+            r[i + 1] = -1.0;
+            r
+        };
+        let mut independent = 0;
+        for rep in 0..3 {
+            for i in 0..n - 1 {
+                let mut r = chain(i);
+                if rep == 2 && i + 2 < n {
+                    for (a, b) in r.iter_mut().zip(chain(i + 1)) {
+                        *a += 0.37 * b;
+                    }
+                }
+                if rb.add(&r) {
+                    independent += 1;
+                }
+            }
+        }
+        assert_eq!(independent, n - 1);
+        assert_eq!(rb.rank(), n - 1);
+        let free = rb.free_columns(1e-9);
+        assert!(free.iter().all(|f| *f), "{}", free.iter().filter(|f| !**f).count());
+        // Pinning one unknown fixes all of them.
+        let mut pin = vec![0.0; n];
+        pin[n / 2] = 1.0;
+        assert!(rb.add(&pin));
+        assert!(rb.free_columns(1e-9).iter().all(|f| !*f));
     }
 
     #[test]
