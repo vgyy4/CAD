@@ -12,7 +12,7 @@ gusset 1                      # header, always first
 units mm                      # mm or in (display unit and bare numbers), at most once
 param <name> = <expr>         # parameters, any order, may refer to each other
 sketch <Name> (<args>) { ... }
-extrude|revolve|sweep|loft|fillet|chamfer|import <Name> (<args>)
+extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
 ```
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
@@ -402,6 +402,74 @@ pattern_linear Pattern1 (body: Extrude2, direction: X, count: 4, spacing: pitch)
 combine Combine1 (body: Extrude1, tools: [Extrude2], op: add)
 
 move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
+```
+
+## Holes
+
+```
+hole <Name> (face: <face>, points: <Sketch> | at: [[<u>, <v>], ...], [type: simple|counterbore|countersink|tapped],
+             diameter: <length>, depth: <length> | through: true, [point_angle: <angle>],
+             [cbore_diameter: <length>, cbore_depth: <length>], [csink_diameter: <length>, csink_angle: <angle>],
+             [thread: "M6", pitch: <length>, thread_depth: <length>])
+```
+
+- One `hole` makes a hole at every site, cutting the body that owns `face` (a planar face; the
+  holes go into the material, against the outward normal). Sites are the points of a sketch
+  (`points: Sketch2`: every point that is not construction geometry and not an end of a line,
+  arc or spline, plus the centre of every circle, whose size is ignored; pattern copies count;
+  the sketch must be parallel to the face and its points are projected onto it), or explicit
+  `(u, v)` lengths in the face's own sketch frame (`at: [[10 mm, 5 mm], ...]`, the frame a
+  sketch placed on that face gets). A hole must lie within the face.
+- `depth` is measured from the face to the end of the full-diameter part; a blind hole adds the
+  drill point (a cone of `point_angle`, default 118 deg; 180 deg is flat). `through: true` cuts
+  all the way through with a flat end.
+- `counterbore` needs `cbore_diameter` (larger than `diameter`) and `cbore_depth` (less than
+  `depth`); `countersink` needs `csink_diameter` and the full cone angle `csink_angle` (90 deg
+  for ISO 10642); `tapped` is modelled at the tap-drill `diameter` and records a cosmetic thread
+  (`thread` designation, `pitch`, `thread_depth` from the face, default the whole hole) that
+  `query_body` lists under `holes`; there is no helical geometry. Other combinations are errors.
+- Faces of hole `p5` (the id of its sketch point; `e1`, `e2`, ... for `at:` points in order):
+  `Hole1/wall(p5)` (the full-diameter cylinder), `Hole1/floor(p5)` (drill-point cone, or the flat
+  end), `Hole1/cbore_wall(p5)`, `Hole1/cbore_floor(p5)` (the step), `Hole1/csink(p5)`. A wall cut
+  into several faces by the material gets `#1`, `#2`, ... The face the hole starts on keeps its name.
+- `feature_hole` with a `standard` such as `"ISO M6 clearance normal"` fills the dimensions from a
+  built-in table and writes them as ordinary parameters (`hole1_diameter`, ...) that the statement
+  refers to. Like the gear generator there is no `standard` in the text: the statement only holds
+  expressions, so edit those parameters (or the text) to change a preset hole.
+
+```gusset
+gusset 1
+units mm
+
+param hole1_diameter = 6.6 mm   # ISO 273 clearance for M6, normal series
+param hole1_cbore_diameter = 11 mm
+param hole1_cbore_depth = 6.5 mm
+
+sketch Sketch1 (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 40)
+  p4 = point(0, 40)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 12 mm, op: new, body_name: Plate)
+
+sketch Sketch2 (plane: Extrude1/cap(end)) {
+  p1 = point(15, 20)
+  p2 = point(45, 20)
+}
+
+hole Hole1 (face: Extrude1/cap(end), points: Sketch2, type: counterbore, diameter: hole1_diameter, through: true, cbore_diameter: hole1_cbore_diameter, cbore_depth: hole1_cbore_depth)
+
+hole Hole2 (face: Extrude1/cap(end), at: [[10 mm, 5 mm], [50 mm, 35 mm]], type: tapped, diameter: 5 mm, depth: 9 mm, point_angle: 118 deg, thread: "M6", pitch: 1 mm, thread_depth: 7 mm)
+
+hole Hole3 (face: Extrude1/cap(end), at: [[30 mm, 8 mm]], type: countersink, diameter: 4.5 mm, depth: 10 mm, csink_diameter: 9 mm, csink_angle: 90 deg)
+
+fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))], radius: 1 mm)
 ```
 
 ## Generated features (gears)
