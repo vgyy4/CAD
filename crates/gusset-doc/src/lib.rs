@@ -14,6 +14,11 @@ pub mod refs;
 pub mod text;
 pub mod validate;
 
+/// The code-view text grammar for agents (published as the MCP resource
+/// `gusset://docs/text-grammar`). Every ```gusset block in it is a complete document that
+/// parses and validates (checked by a test).
+pub const TEXT_GRAMMAR: &str = include_str!("grammar.md");
+
 pub use cursor::ParseError;
 pub use model::*;
 pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef};
@@ -133,6 +138,41 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         assert!(
             matches!(&doc.feature("Revolve1").unwrap().kind, FeatureKind::Revolve(r) if r.body_name.as_deref() == Some("Ring"))
         );
+    }
+
+    #[test]
+    fn grammar_examples_parse_and_cover_the_language() {
+        let mut blocks = Vec::new();
+        let mut cur: Option<String> = None;
+        for line in TEXT_GRAMMAR.lines() {
+            match (&mut cur, line.trim_end()) {
+                (None, "```gusset") => cur = Some(String::new()),
+                (Some(_), "```") => blocks.extend(cur.take()),
+                (Some(b), l) => {
+                    b.push_str(l);
+                    b.push('\n');
+                }
+                (None, _) => {}
+            }
+        }
+        assert!(blocks.len() >= 3, "{} examples", blocks.len());
+        for b in &blocks {
+            let doc = Document::from_text(b).unwrap_or_else(|e| panic!("{e}\n{b}"));
+            // Canonical printing reads back to the same document.
+            assert_eq!(Document::from_text(&doc.to_text()).unwrap(), doc);
+        }
+        // Every constraint kind, feature keyword and entity id prefix is documented.
+        for k in SkConstraintKind::ALL {
+            assert!(TEXT_GRAMMAR.contains(&format!("`{}`", k.keyword())), "{}", k.keyword());
+        }
+        for kw in ["extrude", "revolve", "fillet", "chamfer", "import", "body_name", "construction", "next_id"] {
+            assert!(TEXT_GRAMMAR.contains(kw), "{kw}");
+        }
+        // The examples between them use these statement kinds.
+        let all = blocks.join("\n");
+        for kw in ["extrude ", "revolve ", "fillet ", "chamfer ", "angle(", "circle(", "op: cut", "body_name:"] {
+            assert!(all.contains(kw), "no example uses {kw}");
+        }
     }
 
     #[test]

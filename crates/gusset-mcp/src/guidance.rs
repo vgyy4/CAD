@@ -30,8 +30,9 @@ Extrude1/side(Sketch1/l3) and edge(Extrude1/cap(end), Extrude1/side(Sketch1/l3))
 them from query_body with names: true; never guess.
 6. Strings over 512 characters are truncated; fetch the rest with get_text.
 
-Resources: gusset://project/feature-tree, /parameters, /rebuild-errors, \
-/history/branches, /security-guidelines and more.";
+Resources: gusset://docs/text-grammar (syntax of document_set_text, incl. the angle \
+convention: read it before writing text), gusset://project/feature-tree, /parameters, \
+/rebuild-errors, /history/branches, /security-guidelines and more.";
 
 /// The `gusset://project/security-guidelines` resource.
 pub const SECURITY_GUIDELINES: &str = "\
@@ -114,7 +115,15 @@ mod tests {
     #[test]
     fn instructions_fit_claude_codes_limit() {
         assert!(INSTRUCTIONS.chars().count() <= 2048, "{}", INSTRUCTIONS.chars().count());
-        for must in ["untrusted", "own branch", "Ask the human", "work around", "render_view", "query_body"] {
+        for must in [
+            "untrusted",
+            "own branch",
+            "Ask the human",
+            "work around",
+            "render_view",
+            "query_body",
+            "gusset://docs/text-grammar",
+        ] {
             assert!(INSTRUCTIONS.contains(must), "{must}");
         }
     }

@@ -1145,8 +1145,7 @@ pub struct SketchAddConstraint {
 impl Command for SketchAddConstraint {
     const ID: &'static str = "sketch.add_constraint";
     const TITLE: &'static str = "Constraint";
-    const DESCRIPTION: &'static str =
-        "Add a geometric or dimensional constraint. The result reports degrees of freedom and any conflict.";
+    const DESCRIPTION: &'static str = "Add a constraint (kinds and entity types: resource gusset://docs/text-grammar). angle(a, b, v): lines a and b, v turns a onto b counter-clockwise in the sketch's u/v frame. The result reports DOF and conflicts.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("D");

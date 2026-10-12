@@ -253,3 +253,41 @@ fn cache_is_bounded_by_estimated_bytes_and_is_lru() {
     ev.set_cache_limits(2, u64::MAX);
     assert!(ev.cache_len() <= 2);
 }
+
+/// The directed-angle convention published in the text grammar: `angle(a, b, v)` turns the
+/// direction of line `a` onto line `b` counter-clockwise in the sketch's u/v frame.
+#[test]
+fn angle_constraint_is_counter_clockwise_from_first_to_second_line() {
+    let sketch = |angle: &str| {
+        format!(
+            "gusset 1
+units mm
+
+sketch S (plane: XY) {{
+  p1 = point(0, 0)
+  p2 = point(10, 0)
+  p3 = point(0, 0)
+  p4 = point(6, 2)
+  l5 = line(p1, p2)
+  l6 = line(p3, p4)
+  k7 = fixed(p1)
+  k8 = fixed(p2)
+  k9 = coincident(p3, p1)
+  k10 = {angle}
+  k11 = distance(l6, l6, 5 mm)
+}}
+"
+        )
+    };
+    let tip = |angle: &str| {
+        let (_, r) = eval(&sketch(angle));
+        assert!(r.errors().is_empty(), "{:?}", r.errors());
+        r.sketches["S"].points["p4"]
+    };
+    let [x, y] = tip("angle(l5, l6, 90 deg)");
+    assert!(x.abs() < 1e-6 && (y - 5.0).abs() < 1e-6, "{x} {y}");
+    let [x, y] = tip("angle(l6, l5, 90 deg)");
+    assert!(x.abs() < 1e-6 && (y + 5.0).abs() < 1e-6, "{x} {y}");
+    let [x, y] = tip("angle(l5, l6, 30 deg)");
+    assert!((x - 5.0 * 30f64.to_radians().cos()).abs() < 1e-6 && y > 2.0, "{x} {y}");
+}
