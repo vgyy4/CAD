@@ -79,6 +79,9 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # MSI ProductVersion and CFBundleVersion accept only dotted numbers: the
+          # pre-release suffix (0.1.0-mvp) is dropped there and kept in file names.
+          echo "numeric=${version%%-*}" >> "$GITHUB_OUTPUT"
 
       - run: rustup show active-toolchain || rustup toolchain install
 
@@ -166,7 +169,7 @@ jobs:
           cp "$STAGE.files.json" "$DIST/$name.zip.files.json"
           wixarch="x64"; [ "${{ matrix.arch }}" = "aarch64" ] && wixarch="arm64"
           wix build packaging/windows/gusset.wxs -arch "$wixarch" \
-            -d "Version=$v" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
+            -d "Version=${{ steps.version.outputs.numeric }}" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
           cp "$STAGE.files.json" "$DIST/$name.msi.files.json"
 
       - name: Package (macOS)

@@ -5,7 +5,7 @@ members = ["crates/*"]
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0-mvp"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
@@ -74,28 +74,28 @@ minisign-verify = "0.3.0"
 semver = "1.0.28"
 
 # Internal crates (versioned so cargo-deny's wildcard check passes)
-gusset-units = { path = "crates/gusset-units", version = "0.0.1" }
-gusset-kernel = { path = "crates/gusset-kernel", version = "0.0.1" }
-gusset-doc = { path = "crates/gusset-doc", version = "0.0.1" }
-gusset-history = { path = "crates/gusset-history", version = "0.0.1" }
-gusset-naming = { path = "crates/gusset-naming", version = "0.0.1" }
-gusset-sketch = { path = "crates/gusset-sketch", version = "0.0.1" }
-gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.0.1" }
-gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.0.1" }
-gusset-eval = { path = "crates/gusset-eval", version = "0.0.1" }
-gusset-hw = { path = "crates/gusset-hw", version = "0.0.1" }
-gusset-commands = { path = "crates/gusset-commands", version = "0.0.1" }
-gusset-store = { path = "crates/gusset-store", version = "0.0.1" }
-gusset-meshio = { path = "crates/gusset-meshio", version = "0.0.1" }
-gusset-project = { path = "crates/gusset-project", version = "0.0.1" }
-gusset-cli = { path = "crates/gusset-cli", version = "0.0.1" }
-gusset-sandbox = { path = "crates/gusset-sandbox", version = "0.0.1" }
-gusset-worker = { path = "crates/gusset-worker", version = "0.0.1" }
-gusset-app = { path = "crates/gusset-app", version = "0.0.1" }
-gusset-render = { path = "crates/gusset-render", version = "0.0.1" }
-gusset-host = { path = "crates/gusset-host", version = "0.0.1" }
-gusset-mcp = { path = "crates/gusset-mcp", version = "0.0.1" }
-gusset-update = { path = "crates/gusset-update", version = "0.0.1" }
+gusset-units = { path = "crates/gusset-units", version = "0.1.0-mvp" }
+gusset-kernel = { path = "crates/gusset-kernel", version = "0.1.0-mvp" }
+gusset-doc = { path = "crates/gusset-doc", version = "0.1.0-mvp" }
+gusset-history = { path = "crates/gusset-history", version = "0.1.0-mvp" }
+gusset-naming = { path = "crates/gusset-naming", version = "0.1.0-mvp" }
+gusset-sketch = { path = "crates/gusset-sketch", version = "0.1.0-mvp" }
+gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }
+gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.1.0-mvp" }
+gusset-eval = { path = "crates/gusset-eval", version = "0.1.0-mvp" }
+gusset-hw = { path = "crates/gusset-hw", version = "0.1.0-mvp" }
+gusset-commands = { path = "crates/gusset-commands", version = "0.1.0-mvp" }
+gusset-store = { path = "crates/gusset-store", version = "0.1.0-mvp" }
+gusset-meshio = { path = "crates/gusset-meshio", version = "0.1.0-mvp" }
+gusset-project = { path = "crates/gusset-project", version = "0.1.0-mvp" }
+gusset-cli = { path = "crates/gusset-cli", version = "0.1.0-mvp" }
+gusset-sandbox = { path = "crates/gusset-sandbox", version = "0.1.0-mvp" }
+gusset-worker = { path = "crates/gusset-worker", version = "0.1.0-mvp" }
+gusset-app = { path = "crates/gusset-app", version = "0.1.0-mvp" }
+gusset-render = { path = "crates/gusset-render", version = "0.1.0-mvp" }
+gusset-host = { path = "crates/gusset-host", version = "0.1.0-mvp" }
+gusset-mcp = { path = "crates/gusset-mcp", version = "0.1.0-mvp" }
+gusset-update = { path = "crates/gusset-update", version = "0.1.0-mvp" }
 
 [profile.release]
 lto = "fat"

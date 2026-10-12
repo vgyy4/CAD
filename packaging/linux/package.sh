@@ -49,9 +49,11 @@ mkdir -p "$deb/usr/share/applications" "$deb/usr/share/icons/hicolor/scalable/ap
 cp "$here/gusset.desktop" "$deb/usr/share/applications/gusset.desktop"
 cp "$here/gusset.svg" "$deb/usr/share/icons/hicolor/scalable/apps/gusset.svg"
 size_kb="$(du -sk "$deb/usr" | cut -f1)"
+# Debian reads "-" as a revision separator; "~" sorts a pre-release before the release.
+debversion="${version//-/\~}"
 cat > "$deb/DEBIAN/control" <<EOF
 Package: gusset
-Version: $version
+Version: $debversion
 Architecture: $debarch
 Maintainer: Gusset contributors
 Installed-Size: $size_kb

@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "gusset-commands"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "gusset-doc",
  "gusset-eval",
@@ -218,14 +218,14 @@ dependencies = [
 
 [[package]]
 name = "gusset-doc"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "gusset-units",
 ]
 
 [[package]]
 name = "gusset-eval"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "blake3",
  "gusset-doc",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "gusset-history"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "blake3",
  "gusset-doc",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "gusset-hw"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "libc",
  "windows-sys",
@@ -270,14 +270,14 @@ dependencies = [
 
 [[package]]
 name = "gusset-kernel"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "gusset-meshio"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "gusset-kernel",
  "miniz_oxide",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "gusset-naming"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "gusset-doc",
  "gusset-kernel",
@@ -294,14 +294,14 @@ dependencies = [
 
 [[package]]
 name = "gusset-occt-sys"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "gusset-project"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "gusset-doc",
  "gusset-history",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "gusset-sandbox"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "landlock",
  "libc",
@@ -321,14 +321,14 @@ dependencies = [
 
 [[package]]
 name = "gusset-sketch"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "gusset-store"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "blake3",
  "directories",
@@ -341,14 +341,14 @@ dependencies = [
 
 [[package]]
 name = "gusset-units"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "gusset-worker"
-version = "0.0.1"
+version = "0.1.0-mvp"
 dependencies = [
  "blake3",
  "gusset-commands",

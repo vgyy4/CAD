@@ -100,7 +100,8 @@ case "$os" in
     for b in "${bins[@]}"; do
       install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/MacOS/$b"
     done
-    sed -e "s|@VERSION@|$version|g" "$here/macos/Info.plist" > "$app/Info.plist"
+    # Bundle versions must be dotted numbers: drop a pre-release suffix (0.1.0-mvp).
+    sed -e "s|@VERSION@|${version%%-*}|g" "$here/macos/Info.plist" > "$app/Info.plist"
     write_docs "$app/Resources/doc"
     # Ad-hoc signature (required on Apple Silicon after editing load commands). Real
     # Developer ID signing is a separate, disabled step (ADR 0015).
