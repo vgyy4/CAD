@@ -136,11 +136,14 @@ fn mesh_bytes(m: &MeshBody) -> u64 {
     256 + (mesh.positions.len() + mesh.normals.len()) as u64 * 12 + mesh.indices.len() as u64 * 4
 }
 
+/// Fixed overhead charged per cached state.
+const ENTRY_BYTES: u64 = 256;
+
 #[derive(Debug)]
 struct Cached {
     state: Arc<State>,
-    /// Estimated bytes of the bodies this state added over the previous one.
-    bytes: u64,
+    /// Body/mesh allocations this state references (pointer, estimated bytes).
+    refs: Vec<(usize, u64)>,
     /// Last use (for LRU eviction).
     stamp: u64,
 }
@@ -154,6 +157,8 @@ pub struct Evaluator {
     lru: BTreeMap<u64, [u8; 32]>,
     clock: u64,
     bytes: u64,
+    /// Live body/mesh allocation -> (cached states referencing it, bytes).
+    live: HashMap<usize, (usize, u64)>,
     capacity: usize,
     max_bytes: u64,
 }
@@ -166,6 +171,7 @@ impl Evaluator {
             lru: BTreeMap::new(),
             clock: 0,
             bytes: 0,
+            live: HashMap::new(),
             capacity: DEFAULT_CACHE_ENTRIES,
             max_bytes: DEFAULT_CACHE_BYTES,
         }
@@ -178,6 +184,7 @@ impl Evaluator {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
         self.lru.clear();
+        self.live.clear();
         self.bytes = 0;
     }
 
@@ -214,28 +221,54 @@ impl Evaluator {
         Some(c.state.clone())
     }
 
-    fn remember(&mut self, key: [u8; 32], st: Arc<State>, prev: &State) {
-        let added = |ptrs: &[*const ()], p: *const ()| !ptrs.contains(&p);
-        let old_bodies: Vec<*const ()> = prev.bodies.iter().map(|b| Arc::as_ptr(b).cast()).collect();
-        let old_meshes: Vec<*const ()> = prev.meshes.iter().map(|m| Arc::as_ptr(m).cast()).collect();
-        let bytes = 256
-            + st.bodies
-                .iter()
-                .filter(|b| added(&old_bodies, Arc::as_ptr(b).cast()))
-                .map(|b| body_bytes(b))
-                .sum::<u64>()
-            + st.meshes
-                .iter()
-                .filter(|m| added(&old_meshes, Arc::as_ptr(m).cast()))
-                .map(|m| mesh_bytes(m))
-                .sum::<u64>();
+    /// Charges one reference to a body/mesh allocation; bytes count on 0 -> 1.
+    fn retain(&mut self, ptr: usize, bytes: u64) {
+        let e = self.live.entry(ptr).or_insert((0, bytes));
+        if e.0 == 0 {
+            self.bytes += bytes;
+        }
+        e.0 += 1;
+    }
+
+    /// Releases one reference; bytes are freed on 1 -> 0.
+    fn release(&mut self, ptr: usize) {
+        if let Some(e) = self.live.get_mut(&ptr) {
+            e.0 -= 1;
+            if e.0 == 0 {
+                self.bytes = self.bytes.saturating_sub(e.1);
+                self.live.remove(&ptr);
+            }
+        }
+    }
+
+    fn remove_entry(&mut self, c: Cached) {
+        self.bytes = self.bytes.saturating_sub(ENTRY_BYTES);
+        for (ptr, _) in c.refs {
+            self.release(ptr);
+        }
+    }
+
+    fn remember(&mut self, key: [u8; 32], st: Arc<State>) {
+        // Account by unique live allocations: a body shared by many cached states
+        // (or kept alive by later states after its own state was evicted) is charged
+        // once, until the last state holding it goes (review N2).
+        let mut refs: Vec<(usize, u64)> = Vec::new();
+        for b in &st.bodies {
+            refs.push((Arc::as_ptr(b) as *const () as usize, body_bytes(b)));
+        }
+        for m in &st.meshes {
+            refs.push((Arc::as_ptr(m) as *const () as usize, mesh_bytes(m)));
+        }
         let stamp = self.tick();
-        if let Some(old) = self.cache.insert(key, Cached { state: st, bytes, stamp }) {
+        for &(p, b) in &refs {
+            self.retain(p, b);
+        }
+        self.bytes += ENTRY_BYTES;
+        if let Some(old) = self.cache.insert(key, Cached { state: st, refs, stamp }) {
             self.lru.remove(&old.stamp);
-            self.bytes = self.bytes.saturating_sub(old.bytes);
+            self.remove_entry(old);
         }
         self.lru.insert(stamp, key);
-        self.bytes += bytes;
         self.evict();
     }
 
@@ -245,7 +278,7 @@ impl Evaluator {
         while self.cache.len() > 1 && (self.cache.len() > self.capacity || self.bytes > self.max_bytes) {
             let Some((_, key)) = self.lru.pop_first() else { break };
             if let Some(c) = self.cache.remove(&key) {
-                self.bytes = self.bytes.saturating_sub(c.bytes);
+                self.remove_entry(c);
             }
         }
     }
@@ -272,7 +305,7 @@ impl Evaluator {
             let mut s = (*state).clone();
             self.apply(&mut s, f, doc.units, &params, blobs);
             let st = Arc::new(s);
-            self.remember(key, st.clone(), &state);
+            self.remember(key, st.clone());
             state = st;
         }
         let sketches = state.solved.iter().map(|(n, s)| (n.clone(), s.result.clone())).collect();
