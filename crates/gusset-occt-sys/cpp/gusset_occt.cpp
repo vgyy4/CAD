@@ -78,6 +78,10 @@
 #include <TDocStd_Document.hxx>
 #include <TopAbs.hxx>
 #include <TopExp.hxx>
+#include <OSD_Parallel.hxx>
+#include <array>
+#include <Geom_Plane.hxx>
+#include <atomic>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -325,7 +329,8 @@ void push_origin(std::vector<int64_t>& v, int64_t face, int64_t kind, int64_t a,
 }
 
 void check_valid(const TopoDS_Shape& s, const char* what) {
-  BRepCheck_Analyzer an(s);
+  // Sub-shapes are checked on all cores; the verdict does not depend on the order.
+  BRepCheck_Analyzer an(s, true, true);
   if (!an.IsValid()) throw Standard_Failure((std::string(what) + " produced an invalid solid").c_str());
 }
 
@@ -727,6 +732,98 @@ Swept sweep_loop(const TopoDS_Wire& prof, const std::vector<TaggedEdge>& tagged,
   return out;
 }
 
+// The holes of a swept profile are swept along the same spine as its outer loop, so their
+// end sections lie in the outer sweep's end planes, inside its caps. The holed solid is then
+// the outer sweep's side faces, the holes' side faces turned inside out, and the two caps
+// with the holes' end wires as inner loops: no boolean (a gear's bore cut took 2.6-3.4 s,
+// dogfooding F3-5). Returns false when anything does not fit; the caller then cuts.
+bool cut_coaxial_holes(const Swept& body, const std::vector<Swept>& holes, TopoDS_Shape& result,
+                       std::vector<Rec>& recs) {
+  auto caps_of = [](const Swept& sw, TopoDS_Face (&caps)[2]) {
+    bool have[2] = {false, false};
+    for (const auto& r : sw.recs) {
+      if (r.kind == GS_ORIGIN_CAP && (r.a == 0 || r.a == 1) && r.face.ShapeType() == TopAbs_FACE) {
+        caps[r.a] = TopoDS::Face(r.face);
+        have[r.a] = true;
+      }
+    }
+    return have[0] && have[1];
+  };
+  auto plane_normal = [](const TopoDS_Face& f, gp_Dir& n) {
+    occ::handle<Geom_Plane> pl = occ::down_cast<Geom_Plane>(BRep_Tool::Surface(f));
+    if (pl.IsNull()) return false;
+    n = pl->Axis().Direction();
+    return true;
+  };
+  TopoDS_Face caps[2];
+  if (holes.empty() || !caps_of(body, caps)) return false;
+  std::vector<std::array<TopoDS_Face, 2>> hole_caps;
+  for (const auto& h : holes) {
+    TopoDS_Face hc[2];
+    if (!caps_of(h, hc)) return false;
+    hole_caps.push_back({hc[0], hc[1]});
+  }
+  TopoDS_Face new_caps[2];
+  for (int k = 0; k < 2; ++k) {
+    TopoDS_Face base = TopoDS::Face(caps[k].Oriented(TopAbs_FORWARD));
+    gp_Dir n;
+    if (!plane_normal(base, n)) return false;
+    BRepBuilderAPI_MakeFace mf(BRep_Tool::Surface(base), BRepTools::OuterWire(base), true);
+    for (const auto& hc : hole_caps) {
+      TopoDS_Face hf = TopoDS::Face(hc[size_t(k)].Oriented(TopAbs_FORWARD));
+      gp_Dir hn;
+      if (!plane_normal(hf, hn)) return false;
+      // The hole's own cap runs its loop counter-clockwise about its normal; as an inner
+      // loop of the cap it must run clockwise about the cap's normal.
+      TopoDS_Wire w = BRepTools::OuterWire(hf);
+      mf.Add(n.Dot(hn) > 0 ? TopoDS::Wire(w.Reversed()) : w);
+    }
+    if (!mf.IsDone()) return false;
+    new_caps[k] = mf.Face();
+  }
+  BRep_Builder b;
+  TopoDS_Shell shell;
+  b.MakeShell(shell);
+  for (TopExp_Explorer ex(body.solid, TopAbs_FACE); ex.More(); ex.Next()) {
+    const TopoDS_Shape& f = ex.Current();
+    int k = f.IsSame(caps[0]) ? 0 : f.IsSame(caps[1]) ? 1 : -1;
+    b.Add(shell, k < 0 ? f : new_caps[k].Oriented(f.Orientation()));
+  }
+  for (size_t hi = 0; hi < holes.size(); ++hi) {
+    for (TopExp_Explorer ex(holes[hi].solid, TopAbs_FACE); ex.More(); ex.Next()) {
+      const TopoDS_Shape& f = ex.Current();
+      if (f.IsSame(hole_caps[hi][0]) || f.IsSame(hole_caps[hi][1])) continue;
+      b.Add(shell, f.Reversed());
+    }
+  }
+  shell.Closed(true);
+  TopoDS_Solid solid;
+  b.MakeSolid(solid);
+  b.Add(solid, shell);
+  try {
+    check_closed(solid, "sweep");
+  } catch (const Standard_Failure&) {
+    return false;
+  }
+  double expect = signed_volume(body.solid);
+  for (const auto& h : holes) expect -= std::fabs(signed_volume(h.solid));
+  double got = signed_volume(solid);
+  if (!(expect > 0) || std::fabs(got - expect) > 1e-6 * expect) return false;
+  recs.clear();
+  for (Rec r : body.recs) {
+    if (r.face.IsSame(caps[0])) r.face = new_caps[0];
+    if (r.face.IsSame(caps[1])) r.face = new_caps[1];
+    recs.push_back(r);
+  }
+  for (const auto& h : holes) {
+    for (const auto& r : h.recs) {
+      if (r.kind != GS_ORIGIN_CAP) recs.push_back(r);
+    }
+  }
+  result = solid;
+  return true;
+}
+
 // The recs of faces that a boolean replaced or removed, carried over to the result.
 void carry_recs(BRepAlgoAPI_BuilderAlgo& op, std::vector<Rec>& recs) {
   std::vector<Rec> out;
@@ -929,10 +1026,19 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
     // Holes: sweep each hole loop on its own and subtract it from the outer solid.
     ShapeList tools;
     std::vector<Rec> all = body.recs;
+    std::vector<Swept> swept_holes;
     for (const auto& h : holes) {
       Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri]);
       tools.Append(hole.solid);
       all.insert(all.end(), hole.recs.begin(), hole.recs.end());
+      swept_holes.push_back(hole);
+    }
+    TopoDS_Shape direct;
+    std::vector<Rec> direct_recs;
+    if (!sp.closed && cut_coaxial_holes(body, swept_holes, direct, direct_recs)) {
+      solids.push_back(direct);
+      recs.insert(recs.end(), direct_recs.begin(), direct_recs.end());
+      continue;
     }
     ShapeList args;
     args.Append(body.solid);
@@ -1275,6 +1381,39 @@ int gs_compound(const GsShape* const* shapes, size_t n, GsShape** out, GsBuf* or
   GS_GUARD_END
 }
 
+// Kind, area, centroid and outward normal (at the parameter-space middle) of a face.
+void measure_face(const TopoDS_Face& f, double* out) {
+  GProp_GProps g;
+  BRepGProp::SurfaceProperties(f, g);
+  gp_Pnt c = g.CentreOfMass();
+  BRepAdaptor_Surface sa(f, true);
+  double u = 0.5 * (sa.FirstUParameter() + sa.LastUParameter());
+  double v = 0.5 * (sa.FirstVParameter() + sa.LastVParameter());
+  BRepLProp_SLProps props(sa, u, v, 1, 1e-7);
+  gp_Dir n(0, 0, 1);
+  if (props.IsNormalDefined()) n = props.Normal();
+  if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
+  const double vals[8] = {double(surface_kind(f)), g.Mass(), c.X(), c.Y(), c.Z(), n.X(), n.Y(), n.Z()};
+  std::copy(vals, vals + 8, out);
+}
+
+// Length and midpoint of an edge (a degenerated edge: zero length at its vertex).
+void measure_edge(const TopoDS_Edge& e, double* out) {
+  double length = 0;
+  gp_Pnt mid(0, 0, 0);
+  if (!BRep_Tool::Degenerated(e)) {
+    BRepAdaptor_Curve c(e);
+    length = GCPnts_AbscissaPoint::Length(c);
+    mid = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
+  } else {
+    TopoDS_Vertex v1, v2;
+    TopExp::Vertices(e, v1, v2);
+    if (!v1.IsNull()) mid = BRep_Tool::Pnt(v1);
+  }
+  const double vals[4] = {length, mid.X(), mid.Y(), mid.Z()};
+  std::copy(vals, vals + 4, out);
+}
+
 int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, GsBuf* verts, GsBuf* counts) {
   GS_GUARD_BEGIN
   if (!s || !faces || !edges || !edge_adj || !verts || !counts) return fail("null argument");
@@ -1284,40 +1423,35 @@ int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, G
   TopExp::MapShapes(s->s, TopAbs_VERTEX, vm);
   TopExp::MapShapes(s->s, TopAbs_SOLID, sm);
   TopExp::MapShapes(s->s, TopAbs_SHELL, shm);
-  std::vector<double> fv;
-  fv.reserve(size_t(fm.Extent()) * 8);
-  for (int i = 1; i <= fm.Extent(); ++i) {
-    TopoDS_Face f = TopoDS::Face(fm(i));
-    GProp_GProps g;
-    BRepGProp::SurfaceProperties(f, g);
-    gp_Pnt c = g.CentreOfMass();
-    BRepAdaptor_Surface sa(f, true);
-    double u = 0.5 * (sa.FirstUParameter() + sa.LastUParameter());
-    double v = 0.5 * (sa.FirstVParameter() + sa.LastVParameter());
-    BRepLProp_SLProps props(sa, u, v, 1, 1e-7);
-    gp_Dir n(0, 0, 1);
-    if (props.IsNormalDefined()) n = props.Normal();
-    if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
-    fv.insert(fv.end(), {double(surface_kind(f)), g.Mass(), c.X(), c.Y(), c.Z(), n.X(), n.Y(), n.Z()});
-  }
+  // Per-face and per-edge measures are independent: computed on all cores, each into its
+  // own slot, so the result is identical to a sequential pass (determinism, PROMPT.md).
+  std::vector<double> fv(size_t(fm.Extent()) * 8);
+  std::atomic<bool> failed{false};
+  OSD_Parallel::For(1, fm.Extent() + 1, [&](int i) {
+    try {
+      measure_face(TopoDS::Face(fm(i)), fv.data() + size_t(i - 1) * 8);
+    } catch (...) {
+      failed = true;
+    }
+  });
+  if (failed) throw Standard_Failure("could not measure a face of the shape");
+  std::vector<double> lens(size_t(em.Extent()) * 4);
+  OSD_Parallel::For(1, em.Extent() + 1, [&](int i) {
+    try {
+      measure_edge(TopoDS::Edge(em(i)), lens.data() + size_t(i - 1) * 4);
+    } catch (...) {
+      failed = true;
+    }
+  });
+  if (failed) throw Standard_Failure("could not measure an edge of the shape");
   AncMap anc;
   TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
   std::vector<double> ev;
   std::vector<int64_t> adj;
   for (int i = 1; i <= em.Extent(); ++i) {
     TopoDS_Edge e = TopoDS::Edge(em(i));
-    double length = 0;
-    gp_Pnt mid(0, 0, 0);
-    if (!BRep_Tool::Degenerated(e)) {
-      BRepAdaptor_Curve c(e);
-      length = GCPnts_AbscissaPoint::Length(c);
-      mid = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
-    } else {
-      TopoDS_Vertex v1, v2;
-      TopExp::Vertices(e, v1, v2);
-      if (!v1.IsNull()) mid = BRep_Tool::Pnt(v1);
-    }
-    ev.insert(ev.end(), {double(curve_kind(e)), length, mid.X(), mid.Y(), mid.Z()});
+    const double* l = lens.data() + size_t(i - 1) * 4;
+    ev.insert(ev.end(), {double(curve_kind(e)), l[0], l[1], l[2], l[3]});
     std::vector<int64_t> fidx;
     int ai = anc.FindIndex(e);
     if (ai > 0) {

@@ -1,0 +1,46 @@
+diff --git a/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx b/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
+index 65b06ad..5210f19 100644
+--- a/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
++++ b/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
+@@ -35,6 +35,9 @@
+ #include <BRepFill_ShapeLaw.hxx>
+ #include <BRepFill_Sweep.hxx>
+ #include <BRepGProp.hxx>
++#include <cmath>
++#include <Bnd_Box.hxx>
++#include <BRepBndLib.hxx>
+ #include <BRepLib_MakeFace.hxx>
+ #include <GeomAdaptor_Surface.hxx>
+ #include <GeomFill_ConstantBiNormal.hxx>
+@@ -900,9 +903,28 @@ bool BRepFill_PipeShell::MakeSolid()
+     TopoDS_Solid solid;
+     BS.MakeSolid(solid);
+     BS.Add(solid, TopoDS::Shell(myShape));
+-    BRepClass3d_SolidClassifier SC(solid);
+-    SC.PerformInfinitePoint(Precision::Confusion());
+-    if (SC.State() == TopAbs_IN)
++    // The sign of a closed shell's volume tells whether its faces point inwards, much
++    // faster than classifying a point at infinity against every face (seconds for shells
++    // of a few hundred faces). The classifier still decides when the volume is too small
++    // compared with the bounding box for its sign to be trusted.
++    bool isInverted = false;
++    GProp_GProps aProps;
++    BRepGProp::VolumeProperties(solid, aProps);
++    const double aVolume = aProps.Mass();
++    Bnd_Box      aBox;
++    BRepBndLib::Add(solid, aBox, false);
++    const double aBoxVolume = aBox.IsVoid() ? 0.0 : aBox.SquareExtent() * std::sqrt(aBox.SquareExtent());
++    if (std::abs(aVolume) > 1.0e-6 * aBoxVolume && aBoxVolume > 0.0)
++    {
++      isInverted = aVolume < 0.0;
++    }
++    else
++    {
++      BRepClass3d_SolidClassifier SC(solid);
++      SC.PerformInfinitePoint(Precision::Confusion());
++      isInverted = SC.State() == TopAbs_IN;
++    }
++    if (isInverted)
+     {
+       BS.MakeSolid(solid);
+       myShape.Reverse();

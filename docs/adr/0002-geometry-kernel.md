@@ -77,3 +77,8 @@ release's OCCT source archive carries the patches next to the unmodified source
   index, quadratic in the number of edges. It now lists the wire's edges once per
   section. A helical gear (280 profile edges) sweeps in 8 s instead of 12 s; the
   result is the same shape (volumes and naming goldens unchanged). To offer upstream.
+- `gusset-0002-pipeshell-solid-orientation.patch`: `BRepFill_PipeShell::MakeSolid`
+  classified a point at infinity against every face to orient the solid (1-1.8 s for a
+  gear). It now uses the sign of the closed shell's volume, and keeps the classifier
+  when the volume is too small relative to the bounding box to trust its sign. Same
+  solids (OCCT goldens unchanged). To offer upstream.

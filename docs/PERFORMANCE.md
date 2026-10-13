@@ -126,8 +126,9 @@ samples and timers around the shim's entry points showed where:
 
 | | Before | After |
 |---|---|---|
-| Spur pair (20 + 30 teeth), full rebuild | 8.6 s | 2.2 s |
-| Helical pair, full rebuild | 27.1 s | 15.3 s (with the OCCT patch; 24 s without) |
+| Spur pair (20 + 30 teeth), full rebuild | 8.6 s | 1.4 s |
+| Helical pair, full rebuild | 27.1 s | 8.7 s |
+| Generating one helical gear (`perf_gears`) | 12-15 s | 5.3-6.7 s |
 | Edit on the gear model (`param.set`, `feature.delete` of the last feature) | 11-18 s (debug, dogfooding) | 8-14 ms |
 
 What changed:
@@ -144,11 +145,19 @@ What changed:
   quadratic in the profile's edge count. Fixed with our first OCCT patch (ADR 0002
   amendment): helical pair rebuild 24 s -> 15 s, generating one helical gear 12-15 s ->
   8-11 s, same shapes.
-- Left: in a helical gear sweep, the boolean that cuts the bore (about a third; the bore
-  sweep's caps lie on the gear's caps) and the solid classification in `MakeSolid`; the
-  adaptive mass integration of freeform faces (1-1.7 s per gear, once per shape now).
-  Next step if needed: build the bored solid from the two sweeps' faces and shared cap
-  faces instead of a boolean.
+- Holes in a swept profile were cut with a boolean (2.6-3.4 s per gear bore). They are
+  swept along the same spine, so their ends lie in the outer sweep's end planes: the
+  holed solid is now assembled from the side faces and two caps with the holes as inner
+  loops, checked for closure and exact volume, with the boolean as the fallback.
+  Applies to every sweep with holes.
+- Second OCCT patch: `MakeSolid` orients the solid by the sign of its volume instead of
+  classifying a point at infinity (1-1.8 s per gear).
+- Validity checks (`BRepCheck_Analyzer`) and the per-face/per-edge measures of the
+  topology summary now run on all cores; every value is computed into its own slot,
+  so results do not depend on the thread count. This speeds up every operation on
+  large shapes, scaling with the machine.
+- Left per helical gear: the pipe shell itself (~1 s), the validity check (~1 s), the
+  topology summary and mass properties (0.3-1.7 s, once per shape).
 
 ## History overhead (2026-10-11)
 

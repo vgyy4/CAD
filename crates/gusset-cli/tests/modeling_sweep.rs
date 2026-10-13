@@ -246,6 +246,59 @@ sweep Sweep1 (profile: Ring.regions(c2), path: Path, orientation: frenet, op: ne
     );
 }
 
+/// The holes are swept with the outer loop and joined by shared caps, without a boolean
+/// (dogfooding F3-5): along a bend, with a twist, and with two holes.
+#[test]
+fn holed_profiles_along_bends_and_twists_keep_exact_volumes_and_names() {
+    let ring = "sketch Ring (plane: XY, next_id: 6) {
+  p1 = point(0, 0)
+  c2 = circle(p1, 5)
+  c3 = circle(p1, 3)
+}";
+    let (ev, r) = eval(
+        "gusset 1\nunits mm\n",
+        &format!(
+            "{ring}\n{ARC_PATH}\nsweep Sweep1 (profile: Ring.regions(c2), path: Bend, orientation: frenet, op: new)"
+        ),
+    );
+    ok(&r);
+    // Pappus: the annulus' centroid travels the quarter circle of radius 20.
+    let v = volume(&ev, &r, "Sweep1");
+    assert!(rel(v, PI * (25.0 - 9.0) * PI / 2.0 * 20.0, 1e-5), "{v}");
+    let n = names(&r, "Sweep1");
+    assert_eq!(n.len(), 4, "{n:?}");
+    assert!(n.iter().any(|x| x.contains("cap(start)")) && n.iter().any(|x| x.contains("cap(end)")), "{n:?}");
+    // Two holes in a square, twisted half a turn along a straight path: the volume is the
+    // profile area times the length.
+    let plate = "sketch Plate (plane: XY, next_id: 12) {
+  p1 = point(-10, -6)
+  p2 = point(10, -6)
+  p3 = point(10, 6)
+  p4 = point(-10, 6)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+  p9 = point(-5, 0)
+  c10 = circle(p9, 2)
+  c11 = circle(p1, 1)
+}";
+    let plate = plate
+        .replace("c11 = circle(p1, 1)", "p11 = point(5, 0)\n  c12 = circle(p11, 2)")
+        .replace("next_id: 12", "next_id: 13");
+    let (ev, r) = eval(
+        "gusset 1\nunits mm\n",
+        &format!(
+            "{plate}\nsketch Path (plane: XZ, next_id: 4) {{\n  p1 = point(0, 0)\n  p2 = point(0, 20)\n  l3 = line(p1, p2)\n}}\n\
+             sweep Sweep1 (profile: Plate.regions(l5), path: Path, orientation: frenet, twist: 180 deg, op: new)"
+        ),
+    );
+    ok(&r);
+    let v = volume(&ev, &r, "Sweep1");
+    assert!(rel(v, (240.0 - 2.0 * PI * 4.0) * 20.0, 1e-5), "{v}");
+    assert_eq!(names(&r, "Sweep1").len(), 8, "{:?}", names(&r, "Sweep1"));
+}
+
 #[test]
 fn polyline_path_is_mitred_and_faces_get_path_suffixes() {
     // An L path: up 20 mm, then along +X 30 mm. A circle r = 2 swept around the corner.
