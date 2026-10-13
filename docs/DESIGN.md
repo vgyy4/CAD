@@ -124,8 +124,9 @@ design system:
 │ ▸ Params   │                                                   │              │
 │ ▸ Branches │                                                   │              │
 ├────────────┴───────────────────────────────────────────────────┴──────────────┤
-│ › type a command, e.g. extrude {distance: 20} — or press S to search          │  command line
-│ ⏮ ◀ ▶ ⏭  [▱S1][⬆Ext1][◜Fil1]│ rollback marker              (expand ▴ graph)   │  timeline
+│ ⏮ ◀ ▶ ⏭ ╭[▱S1][⬆Ext1][◜Fil1]┃ rollback marker ─────────────────────────╮ (ⓘ) │  timeline
+│ › feature.extrude sketch=S1 distance="10 mm"            (only when shown)     │  command line
+│ ● Unsaved changes │ Building Fillet1 (3/12) [Stop] │ notices (fade)           │  status bar
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 - Title bar: app mark, open/save/undo/redo, the document tab(s), agent activity, version.
@@ -140,9 +141,13 @@ design system:
   Sketches (with DOF), Parameters, Branches; "show unused sketches" toggle.
 - Viewport: view cube (top right, clickable faces/edges/corners), navigation bar (bottom
   centre: orbit, pan, zoom, fit, home, view style, settings), axis triad.
-- Command line: typed commands with JSON-ish arguments, the same registry as MCP.
-- Timeline: playback controls, one icon per feature, rollback marker; expands into the
-  full iteration graph (branches, stars, colors).
+- Timeline: one bar: playback controls, the features as icon chips in a recessed track
+  (newest kept in view), rollback marker; the button at the right end expands the full
+  iteration graph (branches, stars, colors).
+- Command line: typed commands with key=value or JSON arguments, the same registry as
+  MCP. Hidden by default (View menu, Ctrl+Shift+K).
+- Status bar: saved state, rebuild progress with Stop, errors; confirmations fade after
+  5 s, errors stay.
 - Icons are code-drawn (no image assets) and themed with our tokens. Widgets adapted from
   SolidCraft keep its MIT/Apache attribution (ADR 0023).
 

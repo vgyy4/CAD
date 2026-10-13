@@ -184,10 +184,12 @@ pub fn playback(ui: &mut Ui, marker: usize, n: usize, pal: &Palette) -> Option<u
     result
 }
 
-const GAP: f32 = 14.0;
-const CHIP_H: f32 = 26.0;
-const CHIP_W: f32 = 30.0;
-const CHIP_ICON: f32 = 18.0;
+const GAP: f32 = 8.0;
+const CHIP_H: f32 = 24.0;
+const CHIP_W: f32 = 28.0;
+const CHIP_ICON: f32 = 16.0;
+/// Height of the track the chips sit in.
+pub const TRACK_H: f32 = CHIP_H + 8.0;
 
 /// Draws the strip. `marker` is the number of active features (`items.len()` = all).
 /// Returns the new marker when the user moved it (drag released, or a key press).
@@ -196,7 +198,7 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Op
     let marker = marker.min(n);
     let id = ui.make_persistent_id("timeline-marker");
     // Gap centers (marker positions) and chip rects, left to right.
-    let height = CHIP_H + 2.0 * theme::SPACE[2];
+    let height = TRACK_H;
     let width = GAP * (n as f32 + 1.0) + CHIP_W * n as f32;
     let (strip, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let mut gaps = Vec::with_capacity(n + 1);

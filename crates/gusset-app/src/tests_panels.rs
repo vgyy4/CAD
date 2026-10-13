@@ -167,6 +167,12 @@ fn playback_buttons_move_the_rollback_marker() {
 
 fn type_line(h: &mut Harness<'static, App>, line: &str) {
     let input = || egui::accesskit::Role::TextInput;
+    // Hidden by default; Ctrl+Shift+K shows it.
+    if !h.state().cmdline.visible {
+        h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::K);
+        h.run();
+        h.run();
+    }
     h.get_by_role(input()).focus();
     h.run();
     h.get_by_role(input()).type_text(line);
@@ -241,6 +247,14 @@ fn command_line_is_toggled_from_the_view_menu() {
     let input = egui::accesskit::Role::TextInput;
     let mut h = harness(app());
     h.run();
+    // Hidden by default, shown and hidden again from the View menu.
+    assert!(h.query_by_role(input).is_none());
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Command line").click();
+    h.run();
+    h.run();
+    assert!(h.state().cmdline.visible);
     assert!(h.query_by_role(input).is_some());
     h.get_by_label("View").click();
     h.run();

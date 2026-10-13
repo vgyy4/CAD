@@ -99,6 +99,9 @@ pub struct Notice {
     pub error: bool,
 }
 
+/// How long a confirmation stays in the status bar.
+const NOTICE_SECONDS: f64 = 5.0;
+
 /// What to do with the result of a command the GUI sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Then {
@@ -261,6 +264,8 @@ pub struct App {
     pub browser: browser::State,
     /// The command line above the status bar.
     pub cmdline: cmdline::State,
+    /// The success notice on show and when it appeared (UI time): it fades after a while.
+    notice_since: Option<(String, f64)>,
     /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
     pub agents: Agents,
 }
@@ -329,6 +334,7 @@ impl App {
             sketch_visibility: std::collections::BTreeMap::new(),
             browser: browser::State::default(),
             cmdline: cmdline::State::default(),
+            notice_since: None,
             agents,
         }
     }
@@ -1104,11 +1110,18 @@ impl App {
             .show_separator_line(false)
             .show(ui, |ui| self.workspace_tabs(ui));
         egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        // Bottom, from the edge up: status bar, command line (when shown), timeline.
+        egui::Panel::bottom("status").frame(bar(pal.bg_app, 3, 3)).show(ui, |ui| self.status_bar(ui));
         if self.cmdline.visible {
-            egui::Panel::bottom("cmdline").frame(bar(pal.bg_panel, 3, 3)).show(ui, |ui| self.command_line(ui));
+            egui::Panel::bottom("cmdline")
+                .frame(bar(pal.bg_panel, 4, 4))
+                .show_separator_line(false)
+                .show(ui, |ui| self.command_line(ui));
         }
-        egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
+        egui::Panel::bottom("timeline")
+            .resizable(false)
+            .frame(bar(pal.bg_panel, 4, 4))
+            .show(ui, |ui| self.timeline(ui));
         egui::Panel::left("browser")
             .default_size(240.0)
             .min_size(200.0)
@@ -1143,6 +1156,11 @@ impl App {
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
         let sc = |m, k| KeyboardShortcut::new(m, k);
+        // Ctrl+Shift+K shows the command line and puts the cursor in it.
+        if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::K))) {
+            self.cmdline.visible = true;
+            self.cmdline.focus = true;
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND, Key::K))) {
             self.palette = Some(String::new());
         }
@@ -1481,6 +1499,27 @@ impl App {
             if self.snapshot.audit_total > 0 || self.agent_changes > 0 {
                 icons::labeled(ui, Icon::Diamond, pal.agent, tr("status.agent"));
             }
+            // Confirmations ("saved", "done") go away after a few seconds; errors stay.
+            let now = ui.input(|i| i.time);
+            match &self.notice {
+                Some(n) if !n.error => match &self.notice_since {
+                    Some((text, t)) if *text == n.text => {
+                        if now - t > NOTICE_SECONDS {
+                            self.notice = None;
+                            self.notice_since = None;
+                        } else {
+                            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                                NOTICE_SECONDS + 0.1 - (now - t),
+                            ));
+                        }
+                    }
+                    _ => {
+                        self.notice_since = Some((n.text.clone(), now));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(NOTICE_SECONDS + 0.1));
+                    }
+                },
+                _ => self.notice_since = None,
+            }
             if let Some(n) = &self.notice {
                 ui.separator();
                 let col = if n.error { pal.danger } else { pal.text_muted };
@@ -1547,20 +1586,17 @@ impl App {
         let n = self.snapshot.doc.features.len();
         let rollback = self.snapshot.rollback;
         let pal = *theme::palette(self.theme);
+        // One bar: playback controls, the feature track, and the iteration-graph toggle at
+        // the right end (Fusion-style).
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::SPACE[2];
             // Playback moves the rollback marker one feature at a time.
             if let Some(m) = timeline::playback(ui, rollback.unwrap_or(n), n, &pal) {
                 self.set_rollback(if m >= n { None } else { Some(m) });
             }
-            ui.separator();
-            ui.label(RichText::new(tr("timeline.title")).strong());
-            if ui
-                .small_button(if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") })
-                .clicked()
-            {
-                self.show_iterations = !self.show_iterations;
-            }
-            ui.separator();
+            ui.add_space(theme::SPACE[2]);
+            let toggle_w = 26.0 + theme::SPACE[3];
+            let track_w = (ui.available_width() - toggle_w).max(80.0);
             let eval = self.scene.as_ref().map(|s| s.eval.clone());
             let doc = &self.snapshot.doc;
             let items: Vec<timeline::Item<'_>> = doc
@@ -1573,15 +1609,37 @@ impl App {
                     status: eval.as_ref().and_then(|e| e.status(&f.name)),
                 })
                 .collect();
-            if n == 0 {
-                ui.weak(tr("timeline.empty"));
-                return;
-            }
-            let moved = egui::ScrollArea::horizontal()
-                .show(ui, |ui| timeline::show(ui, &items, rollback.unwrap_or(n), &pal))
+            let track = egui::Frame::new()
+                .fill(pal.bg_app)
+                .stroke(egui::Stroke::new(1.0, pal.border))
+                .corner_radius(theme::RADIUS_MD)
+                .inner_margin(egui::Margin::symmetric(4, 0));
+            let moved = track
+                .show(ui, |ui| {
+                    ui.set_width(track_w - 10.0);
+                    ui.set_height(timeline::TRACK_H);
+                    if n == 0 {
+                        ui.centered_and_justified(|ui| ui.weak(tr("timeline.empty")));
+                        return None;
+                    }
+                    egui::ScrollArea::horizontal()
+                        .stick_to_right(true)
+                        .show(ui, |ui| timeline::show(ui, &items, rollback.unwrap_or(n), &pal))
+                        .inner
+                })
                 .inner;
             if let Some(m) = moved {
                 self.set_rollback(if m >= n { None } else { Some(m) });
+            }
+            let label = if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") };
+            let on = self.show_iterations;
+            let ink = icons::Ink::new(&pal);
+            if crate::ribbon::icon_button_with(ui, &pal, label, Some(on), |p, r| {
+                icons::paint_tool(p, r.shrink(5.0), icons::Tool::Info, ink);
+            })
+            .clicked()
+            {
+                self.show_iterations = !on;
             }
         });
         if self.show_iterations {

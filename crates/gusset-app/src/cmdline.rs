@@ -199,8 +199,9 @@ pub fn hint(input: &str) -> String {
     parts.join(" ")
 }
 
-/// The command line's state: whether it is shown, its text and the commands run before.
-#[derive(Debug, Clone)]
+/// The command line's state: whether it is shown (hidden by default: View menu or
+/// Ctrl+Shift+K), its text and the commands run before.
+#[derive(Debug, Clone, Default)]
 pub struct State {
     pub visible: bool,
     pub text: String,
@@ -210,12 +211,6 @@ pub struct State {
     recall: Option<usize>,
     /// Focus the text field on the next frame.
     pub focus: bool,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        State { visible: true, text: String::new(), history: Vec::new(), recall: None, focus: false }
-    }
 }
 
 impl State {
@@ -285,7 +280,9 @@ pub fn show(ui: &mut Ui, st: &mut State, pal: &Palette) -> Option<String> {
                 set_cursor_to_end(ui, id, &st.text);
             }
         }
-        let hint_width = (ui.available_width() * 0.4).clamp(120.0, 520.0);
+        // The field takes the whole bar; the hint (when there is one) gets the right part.
+        let h = hint(&st.text);
+        let hint_width = if h.is_empty() { 0.0 } else { (ui.available_width() * 0.4).clamp(120.0, 520.0) };
         let edit = egui::TextEdit::singleline(&mut st.text)
             .id(id)
             .font(egui::TextStyle::Monospace)
@@ -307,7 +304,6 @@ pub fn show(ui: &mut Ui, st: &mut State, pal: &Palette) -> Option<String> {
             }
             r.request_focus();
         }
-        let h = hint(&st.text);
         if !h.is_empty() {
             ui.add(egui::Label::new(egui::RichText::new(h).monospace().small().color(pal.text_muted)).truncate());
         }
