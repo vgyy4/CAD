@@ -14,6 +14,8 @@
 
 mod budget;
 mod datum;
+#[allow(dead_code)] // wired into the evaluator in ADR 0024 phase 1b
+mod deps;
 pub mod error;
 pub mod gear;
 mod hole;
