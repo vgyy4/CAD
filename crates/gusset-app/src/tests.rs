@@ -357,7 +357,7 @@ fn agents_panel_shows_connection_audit_and_branches() {
 }
 
 /// A part with one sketch used by an extrude and one free sketch.
-fn two_sketches() -> App {
+pub(crate) fn two_sketches() -> App {
     let mut a = app();
     for (name, x) in [("Base", 0.0), ("Free", 60.0)] {
         a.run("sketch.create", json!({"plane": "XY", "name": name})).unwrap();
@@ -394,7 +394,7 @@ fn consumed_sketches_are_hidden_until_toggled_or_edited() {
     assert!(!h.state().sketch_visible("Base"));
 }
 
-fn settle(h: &mut Harness<'static, App>) {
+pub(crate) fn settle(h: &mut Harness<'static, App>) {
     // Host change events wake the UI from another thread, so step a fixed number of
     // frames rather than waiting for the UI to go idle.
     h.run_steps(4);
