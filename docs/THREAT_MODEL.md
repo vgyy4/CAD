@@ -49,6 +49,7 @@ Last full revision: 2026-10-10 (Phase 1).
 | R | — | — |
 | I | File makes the app read other files (paths in imports) | Projects carry blobs *inside* the file; no external paths are dereferenced on open |
 | D | Decompression bombs, huge counts, deep nesting | Limits on size, records, decompressed sizes, nesting and statement counts; parsers fuzzed |
+| D | Small files that are expensive to rebuild (500-copy patterns, chained patterns that double the body, many holes, splines that intersect many curves) | Per-feature and per-evaluation work budgets with clean errors, multi-tool booleans instead of one per copy, a cancellable rebuild, bounded spline intersection (security review V1/V2) |
 | E | Code execution through the file | The document language is declarative and pure (ADR 0004): no I/O, no process, no network, no clock; parsing never executes anything |
 
 ### B2: Importing foreign files
@@ -68,6 +69,7 @@ Last full revision: 2026-10-10 (Phase 1).
 | R | Agent denies doing something | Audit log of every agent action, visible in the app and stored in the project event log |
 | I | Token leakage | The token is never logged, never in URLs, and rotated per session; the kill switch revokes it immediately |
 | D | Flooding | Per-session rate limits, size limits on requests, timeouts |
+| E | Rare commands reached through the generic `commands`/`run` tools escape a check | `run` calls the command through the same path as its own tool (approvals and their retries, read-only mode in the app and in the bridge, main-branch protection, limits, argument checks). A client's "always allow `run`" covers every non-core command, so Gusset's own approvals are what protect edits (ADR 0012) |
 | E | An agent changes security settings, deletes data permanently, runs commands | No such tools exist. Settings for the updater, MCP, sandbox and permissions are not exposed. Destructive actions need confirm flags and human approval (elicitation or in-app prompt), and agents work on their own branch by default |
 
 ### B4: Prompt injection via model content (T5)
@@ -100,7 +102,10 @@ when one is added it gets a WASM sandbox with capabilities.
 `Cargo.lock` is committed. `cargo-deny` (licenses, advisories, bans, sources) and
 `cargo-audit` run in CI; Dependabot is enabled. Every GitHub Action is pinned to a full
 SHA; default `permissions: contents: read`. No `pull_request_target`. Release secrets
-live only in a `release` environment restricted to tags on main. OCCT source is pinned
+live only in a `release` environment restricted to `v*` tags and the default branch
+(manual releases by tag name, ADR 0013), with a required reviewer; manual runs from any
+other branch are skipped, release only the default branch head and move a tag forward
+only. OCCT source is pinned
 by commit and verified by tarball SHA-256. New dependencies are verified by hand (name,
 repository, maintainers, downloads, license, advisories).
 

@@ -58,3 +58,13 @@ workspace version, exactly as for tag pushes. The build uses the dispatched comm
 (the default branch head), and the publish job (protected `release` environment)
 checks that the commit is on the default branch, points the tag at it through the
 GitHub API, and uploads into an existing release for the tag or creates a draft.
+
+Hardening after the v0.2 security review (V3/V4, L5/L6): the build and publish jobs run
+for a manual trigger only on the default branch; the publish job re-validates the tag,
+requires the dispatched commit to be the current branch head, moves an existing tag
+only forward (the old commit must be an ancestor), and removes assets of an existing
+release that the new build does not produce (so SHA256SUMS covers every file). Version
+strings reach scripts as environment variables, not expressions. Both triggers share a
+concurrency group. MSIs allow same-version upgrades, since a pre-release and its release
+share a numeric ProductVersion. The owner configures the `release` environment to admit
+only `v*` tags and the default branch, with a required reviewer.

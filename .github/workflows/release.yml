@@ -30,7 +30,8 @@ on:
 permissions: {}
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref }}
+  # Same key for both triggers, so a tag push and a manual run cannot overlap (review L5).
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -52,6 +53,8 @@ env:
 jobs:
   build:
     name: build (${{ matrix.name }})
+    # Manual runs build the default branch only (security review V3).
+    if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ${{ matrix.os }}
     # macOS is best effort (PROMPT.md "Hard requirements").
     continue-on-error: ${{ matrix.optional }}
@@ -91,10 +94,12 @@ jobs:
             echo "::error::tag $RELEASE_TAG does not match the workspace version $cargo_version"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Later steps read these as environment variables, never spliced into
+          # scripts as expressions (security review V4).
+          echo "VERSION=$version" >> "$GITHUB_ENV"
           # MSI ProductVersion and CFBundleVersion accept only dotted numbers: the
           # pre-release suffix (0.1.0-mvp) is dropped there and kept in file names.
-          echo "numeric=${version%%-*}" >> "$GITHUB_OUTPUT"
+          echo "NUMERIC=${version%%-*}" >> "$GITHUB_ENV"
 
       - run: rustup show active-toolchain || rustup toolchain install
 
@@ -147,7 +152,7 @@ jobs:
 
       - name: Stage install tree
         run: |
-          packaging/stage.sh "${{ matrix.os_id }}" "${{ matrix.arch }}" "${{ steps.version.outputs.version }}" \
+          packaging/stage.sh "${{ matrix.os_id }}" "${{ matrix.arch }}" "$VERSION" \
             "$RUNNER_TEMP/occt-install" target "$STAGE"
 
       - name: Check install-relative library paths (Linux)
@@ -169,27 +174,27 @@ jobs:
       - name: Package (Linux)
         if: matrix.os_id == 'linux'
         run: |
-          packaging/linux/package.sh "${{ steps.version.outputs.version }}" "${{ matrix.arch }}" "$STAGE" "$DIST" \
+          packaging/linux/package.sh "$VERSION" "${{ matrix.arch }}" "$STAGE" "$DIST" \
             "$RUNNER_TEMP/tools/appimagetool" "$RUNNER_TEMP/tools/runtime"
 
       - name: Package (Windows)
         if: matrix.os_id == 'windows'
         run: |
-          v="${{ steps.version.outputs.version }}"
+          v="$VERSION"
           name="gusset-$v-windows-${{ matrix.arch }}"
           mkdir -p "$DIST"
           (cd "$STAGE" && 7z a -tzip -mx=9 "$DIST/$name.zip" . > /dev/null)
           cp "$STAGE.files.json" "$DIST/$name.zip.files.json"
           wixarch="x64"; [ "${{ matrix.arch }}" = "aarch64" ] && wixarch="arm64"
           wix build packaging/windows/gusset.wxs -arch "$wixarch" \
-            -d "Version=${{ steps.version.outputs.numeric }}" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
+            -d "Version=$NUMERIC" -d "StageDir=$(cygpath -w "$STAGE")" -o "$DIST/$name.msi"
           rm -f "$DIST/$name.wixpdb" # installer debug data, not shipped
           cp "$STAGE.files.json" "$DIST/$name.msi.files.json"
 
       - name: Package (macOS)
         if: matrix.os_id == 'macos'
         run: |
-          v="${{ steps.version.outputs.version }}"
+          v="$VERSION"
           mkdir -p "$DIST"
           hdiutil create -volname Gusset -srcfolder "$STAGE/Gusset.app" -fs HFS+ -format UDZO \
             "$DIST/Gusset-$v-macos-${{ matrix.arch }}.dmg"
@@ -321,10 +326,12 @@ jobs:
   publish:
     name: publish release
     needs: build
+    if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # The only job with secrets. The environment's protection rules (set by the owner)
-    # restrict it to tags on the default branch.
+    # must admit only `v*` tags and the default branch (manual runs), with a required
+    # reviewer (ADR 0013; security review V3).
     environment: release
     permissions:
       contents: write # create the GitHub release
@@ -343,9 +350,18 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::not a release tag: $RELEASE_TAG"
+            exit 1
+          fi
           git fetch --no-tags origin "$DEFAULT_BRANCH"
           if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
             echo "::error::$RELEASE_TAG is not on $DEFAULT_BRANCH; refusing to publish"
+            exit 1
+          fi
+          # A manual run releases the branch head it was started on, nothing older.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_SHA" != "$(git rev-parse FETCH_HEAD)" ]; then
+            echo "::error::$DEFAULT_BRANCH moved on since this run started; start a new run"
             exit 1
           fi
 
@@ -354,7 +370,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" > /dev/null 2>&1; then
+          if old="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null)"; then
+            # Forward only: the tag may move to a newer commit, never back (review V3).
+            git fetch --no-tags origin "$old"
+            if ! git merge-base --is-ancestor "$old" "$GITHUB_SHA"; then
+              echo "::error::$RELEASE_TAG is at $old, which $GITHUB_SHA does not descend from"
+              exit 1
+            fi
             gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
           else
             gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" > /dev/null
@@ -431,6 +453,12 @@ jobs:
           # A release the owner already made for this tag (for example before the tag
           # was moved to a fixed commit) gets the files; otherwise a draft is created.
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Files of an earlier build that this one does not produce would not be in
+            # SHA256SUMS: remove them (security review V3).
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+              while read -r a; do
+                [ -e "dist/$a" ] || gh release delete-asset "$RELEASE_TAG" "$a" --repo "$GITHUB_REPOSITORY" --yes
+              done
             gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
             exit 0
           fi

@@ -17,7 +17,9 @@
       Scope="perUser"
       Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Gusset is already installed." />
+    <!-- Pre-releases share the numeric version of their release (0.1.0-mvp and 0.1.0
+         are both 0.1.0): allow same-version upgrades so the release replaces them. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Gusset is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <StandardDirectory Id="LocalAppDataFolder">
