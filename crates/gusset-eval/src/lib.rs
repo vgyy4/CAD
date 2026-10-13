@@ -14,6 +14,7 @@
 
 mod datum;
 pub mod error;
+pub mod gear;
 mod hole;
 mod ops;
 mod pattern;
