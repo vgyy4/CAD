@@ -38,6 +38,9 @@ fn bracket_golden_volume_and_exports() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("volume 11272.584 mm³"));
     let out = gusset().arg("self-test").output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // The kernel runs in its worker process (built next to `gusset`, ADR 0022).
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("in its worker process"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

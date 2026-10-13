@@ -82,6 +82,14 @@ pub fn cache_bytes(total_ram: Option<u64>) -> u64 {
     (total_ram.unwrap_or(ASSUMED_RAM_BYTES) / 16).clamp(128 * MIB, 4 * GIB)
 }
 
+/// Memory budget of the geometry kernel worker (ADR 0022): 3/4 of RAM, at least 2 GiB.
+/// It caps address space, which runs ahead of resident memory, so the share is generous;
+/// what it prevents is one runaway operation taking the whole machine down with the app.
+#[must_use]
+pub fn kernel_worker_bytes(total_ram: Option<u64>) -> u64 {
+    (total_ram.unwrap_or(ASSUMED_RAM_BYTES) / 4 * 3).max(2 * GIB)
+}
+
 /// Default tessellation quality from cores and RAM.
 #[must_use]
 pub fn tessellation_quality(logical: usize, total_ram: Option<u64>) -> TessellationQuality {
@@ -176,6 +184,9 @@ mod tests {
         assert_eq!(cache_bytes(Some(gib(1))), 128 * MIB);
         assert_eq!(cache_bytes(Some(gib(256))), 4 * GIB);
         assert_eq!(cache_bytes(None), 256 * MIB);
+        assert_eq!(kernel_worker_bytes(Some(gib(1))), 2 * GIB);
+        assert_eq!(kernel_worker_bytes(Some(gib(16))), gib(12));
+        assert_eq!(kernel_worker_bytes(None), 3 * GIB);
     }
 
     #[test]

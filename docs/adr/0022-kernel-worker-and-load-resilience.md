@@ -100,6 +100,23 @@ fillet radius against the shortest edge, already checked in `feature.fillet`).
 4. Fault-injection tests; GUI: progress, Stop, the crash and memory errors in the feature
    tree; docs (HARDWARE.md budgets, USER guide).
 
+### State (2026-10-13)
+- Phase 1 done: `gusset-kernel-remote` (protocol, server, `RemoteKernel`) and
+  `gusset-kernel-worker` (the sandboxed OCCT process); OCCT parity and fault-injection tests
+  (abort, stack overflow, memory exhaustion, exit) pass.
+- Phase 2 done: the evaluator fails only the feature whose call crashed the worker
+  (`kernel_crashed`), memoises it, and rebuilds the rest on the new worker.
+- Wiring done: the app, `gusset mcp`, `gusset build` and `gusset self-test` use
+  `gusset_kernel_worker::production_kernel()`: the worker next to the executable with a
+  memory budget of 3/4 of RAM (at least 2 GiB), else OCCT in-process with a visible note
+  (`GUSSET_KERNEL_IN_PROCESS=1` forces it). Every installer ships the worker; the release
+  smoke tests require `self-test` to report "in its worker process".
+- Native B-rep trust stays in the app (ADR 0008 §4): `RemoteKernel` takes a `NativeGate`;
+  `OcctGate` vets blobs (trusted, or re-serialized by the import worker) before they are
+  sent, and records the worker's own `write_native` output as trusted. The worker parses
+  what it is sent (`OcctKernel::with_vetted_inputs`), inside its sandbox.
+- Still open: phase 3 (deadlines, Stop kills the worker), phase 4 (GUI progress/Stop).
+
 ## Consequences
 - The app survives anything OCCT does; a crash costs a rebuild of the earlier features.
 - Memory per session roughly doubles for meshes (the worker keeps shapes, the app keeps

@@ -22,6 +22,7 @@ gusset-kernel-remote.workspace = true
 gusset-kernel-occt.workspace = true
 gusset-occt-sys.workspace = true
 gusset-sandbox.workspace = true
+gusset-worker.workspace = true
 gusset-hw.workspace = true
 
 [lints]

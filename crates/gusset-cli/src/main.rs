@@ -152,8 +152,10 @@ fn pick_branch(h: &History, name: Option<&str>) -> Result<gusset_history::Branch
     }
 }
 
-fn kernel() -> Result<Arc<dyn Kernel>, String> {
-    OcctKernel::new().map(|k| Arc::new(k) as Arc<dyn Kernel>).map_err(|e| e.to_string())
+/// OCCT in the kernel worker process when installed (ADR 0022), else in this process; the
+/// note says why it is not in the worker.
+fn kernel() -> Result<(Arc<dyn Kernel>, Option<String>), String> {
+    gusset_kernel_worker::production_kernel()
 }
 
 /// The sandboxed STEP/IGES importer installed next to this executable, if present.
@@ -165,7 +167,7 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
     let o = parse_opts(args)?;
     let h = load(&o.file)?;
     let b = pick_branch(&h, o.branch.as_deref())?;
-    let k = kernel()?;
+    let (k, _) = kernel()?;
     // A session (not saved) so `--import` goes through the same command, worker and
     // off-thread path as the app and MCP.
     let mut session = gusset_commands::Session::from_history(h, k.clone());
@@ -323,8 +325,13 @@ fn mcp(args: &[String]) -> Result<ExitCode, String> {
             Err(e) => eprintln!("gusset mcp: warning: startup housekeeping failed: {e}"),
         }
     }
-    let kernel: Arc<dyn Kernel> = match OcctKernel::new() {
-        Ok(k) => Arc::new(k),
+    let kernel: Arc<dyn Kernel> = match gusset_kernel_worker::production_kernel() {
+        Ok((k, note)) => {
+            if let Some(n) = note {
+                eprintln!("gusset mcp: note: {n}");
+            }
+            k
+        }
         Err(e) => {
             eprintln!(
                 "gusset mcp: warning: {e}; falling back to the mock kernel (simple prisms only, not for real models)"
@@ -360,7 +367,7 @@ fn info() -> Result<ExitCode, String> {
 /// End-to-end check used by the installer smoke tests and the updater (ADR 0014):
 /// kernel loads, a parametric part rebuilds, STEP and STL export work.
 fn self_test() -> Result<ExitCode, String> {
-    let k = kernel()?;
+    let (k, note) = kernel()?;
     let doc = Document::from_text(SELF_TEST_MODEL).map_err(|e| format!("built-in sample: {e}"))?;
     let mut ev = Evaluator::new(k.clone());
     let r = ev.evaluate(&doc, None, &());
@@ -377,8 +384,9 @@ fn self_test() -> Result<ExitCode, String> {
     let stl = mesh_export_bytes(k.as_ref(), &[(&body.shape, "SelfTest")], gusset_meshio::ExportFormat::StlBinary, 0.05)
         .map_err(|e| e.to_string())?;
     println!(
-        "self-test ok: kernel {}, volume {:.3} mm³, STEP {} B, STL {} B",
+        "self-test ok: kernel {} {}, volume {:.3} mm³, STEP {} B, STL {} B",
         OcctKernel::version(),
+        note.map_or_else(|| "in its worker process".to_owned(), |n| format!("in process ({n})")),
         m.volume,
         step.len(),
         stl.len()

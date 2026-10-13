@@ -28,6 +28,7 @@ gusset-store.workspace = true
 gusset-hw.workspace = true
 gusset-meshio.workspace = true
 gusset-worker.workspace = true
+gusset-kernel-worker.workspace = true
 gusset-host.workspace = true
 gusset-mcp = { workspace = true, features = ["render"] }
 serde_json.workspace = true

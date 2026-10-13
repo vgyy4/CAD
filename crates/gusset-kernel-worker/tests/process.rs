@@ -59,6 +59,24 @@ fn a_missing_worker_binary_is_a_clear_error() {
     assert!(e.message.contains("could not start"), "{e}");
 }
 
+#[test]
+fn native_blobs_are_vetted_in_the_app_before_the_worker_parses_them() {
+    let k = remote(1024).with_native_gate(Box::new(gusset_kernel_worker::OcctGate::next_to_exe()));
+    let spec = ExtrudeSpec { distance: 10.0, symmetric: false };
+    let a = k.extrude(&square(10.0), &spec).unwrap();
+    // The worker's own output is trusted in the app and goes back as is.
+    let blob = k.write_native(&a.shape).unwrap();
+    let b = k.read_native(&blob).unwrap();
+    assert!((k.mass_properties(&b).unwrap().volume - 1000.0).abs() < 1e-6);
+    // A blob from elsewhere needs the import worker (not next to the test binary): refused
+    // in the app, never sent.
+    let mut foreign = blob.clone();
+    foreign.push(0);
+    let e = k.read_native(&foreign).unwrap_err();
+    assert!(e.message.contains("import worker is missing"), "{e}");
+    assert_eq!(k.generation(), 1);
+}
+
 #[cfg(feature = "fault-injection")]
 mod faults {
     use super::*;

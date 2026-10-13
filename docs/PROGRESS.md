@@ -86,6 +86,8 @@ Phase 3 has started (see Next).
    - v0.3 first: load resilience (owner request 2026-10-13, DESIGN.md §1 "Heavy or
      impossible work never crashes the app"): kernel work in a supervised worker process,
      memory/time budgets per rebuild, cancel inside OCCT operations, fault-injection tests.
+     Done: worker process, crash containment and restart, evaluator crash handling,
+     app/MCP/CLI wiring and packaging (ADR 0022 "State"). Next: deadlines and Stop.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

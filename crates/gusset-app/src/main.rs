@@ -4,10 +4,11 @@ use gusset_app::app::App;
 use gusset_kernel::Kernel;
 use std::sync::Arc;
 
-/// The real kernel, or the mock one with a visible warning when OCCT is not available.
+/// The real kernel (in its worker process when installed, ADR 0022), or the mock one with
+/// a visible warning when OCCT is not available.
 fn kernel() -> (Arc<dyn Kernel>, Option<String>) {
-    match gusset_kernel_occt::OcctKernel::new() {
-        Ok(k) => (Arc::new(k), None),
+    match gusset_kernel_worker::production_kernel() {
+        Ok((k, note)) => (k, note.map(|n| format!("Geometry kernel: {n}"))),
         Err(e) => (
             Arc::new(gusset_kernel::mock::MockKernel),
             Some(format!("Geometry kernel unavailable ({e}); using the preview kernel")),

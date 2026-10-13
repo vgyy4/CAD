@@ -8,8 +8,8 @@
 #   arch: x86_64 | aarch64
 #
 # Layout written to <out-dir>:
-#   linux:   bin/{gusset,gusset-gui,gusset-worker}  lib/gusset/libTK*.so*  share/doc/gusset/*
-#   windows: gusset.exe gusset-gui.exe gusset-worker.exe TK*.dll <MSVC runtime> doc/*
+#   linux:   bin/{gusset,gusset-gui,gusset-worker,gusset-kernel-worker}  lib/gusset/libTK*.so*  share/doc/gusset/*
+#   windows: gusset.exe gusset-gui.exe gusset-worker.exe gusset-kernel-worker.exe TK*.dll <MSVC runtime> doc/*
 #   macos:   Gusset.app/Contents/{MacOS,Frameworks,Resources}
 # plus <out-dir>.files.json: every installed file with its SHA-256 and size (the
 # per-file list the updater checks after extraction, ADR 0014).
@@ -21,7 +21,7 @@ repo="$(cd "$here/.." && pwd)"
 # shellcheck source=/dev/null
 . "$repo/deps/occt/occt.env"
 
-bins=(gusset gusset-gui gusset-worker)
+bins=(gusset gusset-gui gusset-worker gusset-kernel-worker)
 rm -rf "$out"
 mkdir -p "$out"
 

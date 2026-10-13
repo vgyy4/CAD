@@ -10,6 +10,7 @@ use gusset_kernel::{
     Profile, RevolveSpec, Shape, ShapeData, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
 };
 use std::any::Any;
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 /// How a request reaches the worker and its reply comes back.
@@ -73,12 +74,25 @@ struct Link {
     calls: u64,
 }
 
+/// The app side of native B-rep blobs (ADR 0022): the worker parses whatever it is sent,
+/// so blobs are vetted here first, and blobs the worker wrote are recorded here as ours.
+pub trait NativeGate: Send + Sync {
+    /// `bytes` came from the worker's [`Kernel::write_native`].
+    fn written(&self, bytes: &[u8]);
+    /// The bytes the worker may parse for `bytes`: themselves, or a vetted copy.
+    ///
+    /// # Errors
+    /// The blob must not be parsed.
+    fn vet<'a>(&self, bytes: &'a [u8]) -> KResult<Cow<'a, [u8]>>;
+}
+
 /// A [`Kernel`] whose work happens in a worker process.
 pub struct RemoteKernel {
     link: Mutex<Link>,
     connect: Connect,
     frees: Arc<Frees>,
     name: &'static str,
+    gate: Option<Box<dyn NativeGate>>,
 }
 
 impl std::fmt::Debug for RemoteKernel {
@@ -125,7 +139,15 @@ impl RemoteKernel {
             connect,
             frees: Arc::new(Mutex::new(Vec::new())),
             name,
+            gate: None,
         }
+    }
+
+    /// Vets native blobs with `gate` before the worker parses them.
+    #[must_use]
+    pub fn with_native_gate(mut self, gate: Box<dyn NativeGate>) -> RemoteKernel {
+        self.gate = Some(gate);
+        self
     }
 
     /// The current worker generation (it increases with every restart).
@@ -336,11 +358,19 @@ impl Kernel for RemoteKernel {
     }
 
     fn write_native(&self, shape: &Shape) -> KResult<Vec<u8>> {
-        self.bytes(&Request::WriteNative(shape.clone()))
+        let bytes = self.bytes(&Request::WriteNative(shape.clone()))?;
+        if let Some(g) = &self.gate {
+            g.written(&bytes);
+        }
+        Ok(bytes)
     }
 
     fn read_native(&self, data: &[u8]) -> KResult<Shape> {
-        match self.call(&Request::ReadNative(data.to_vec()))? {
+        let data = match &self.gate {
+            Some(g) => g.vet(data)?,
+            None => Cow::Borrowed(data),
+        };
+        match self.call(&Request::ReadNative(data.into_owned()))? {
             Reply::Shape(s) => Ok(s),
             _ => Err(unexpected()),
         }

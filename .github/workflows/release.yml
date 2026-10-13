@@ -118,7 +118,7 @@ jobs:
           echo "$RUNNER_TEMP/occt-install/bin" >> "$GITHUB_PATH"
 
       - name: Build
-        run: cargo build --release --locked -p gusset-cli -p gusset-app -p gusset-worker
+        run: cargo build --release --locked -p gusset-cli -p gusset-app -p gusset-worker -p gusset-kernel-worker
 
       - name: Install packaging tools (Linux)
         if: matrix.os_id == 'linux'
@@ -226,7 +226,8 @@ jobs:
           tar -xzf "$DIST"/gusset-*-linux-*.tar.gz -C "$t"
           root="$(echo "$t"/gusset-*)"
           env -i HOME="$t/home" "$root/bin/gusset" --version
-          env -i HOME="$t/home" "$root/bin/gusset" self-test
+          out="$(env -i HOME="$t/home" "$root/bin/gusset" self-test)" && echo "$out"
+          grep -q "in its worker process" <<< "$out"  # the kernel runs in its worker (ADR 0022)
           env -i HOME="$t/home" "$root/bin/gusset" build examples/bracket.gus.txt --export "$t/out.step"
           test -s "$t/out.step"
           rm -rf "$t"
@@ -250,7 +251,7 @@ jobs:
           gusset build examples/bracket.gus.txt --export "$RUNNER_TEMP/out.step"
           test -s "$RUNNER_TEMP/out.step"
           sudo dpkg --purge gusset
-          for p in /usr/bin/gusset /usr/bin/gusset-gui /usr/bin/gusset-worker /usr/lib/gusset /usr/share/doc/gusset \
+          for p in /usr/bin/gusset /usr/bin/gusset-gui /usr/bin/gusset-worker /usr/bin/gusset-kernel-worker /usr/lib/gusset /usr/share/doc/gusset \
                    /usr/share/applications/gusset.desktop; do
             if [ -e "$p" ]; then echo "::error::$p left behind after removal"; exit 1; fi
           done
@@ -262,7 +263,8 @@ jobs:
           mkdir -p "$t"
           7z x -o"$t" "$DIST"/gusset-*-windows-*.zip > /dev/null
           "$t/gusset.exe" --version
-          "$t/gusset.exe" self-test
+          out="$("$t/gusset.exe" self-test)" && echo "$out"
+          grep -q "in its worker process" <<< "$out"  # the kernel runs in its worker (ADR 0022)
           "$t/gusset.exe" build examples/bracket.gus.txt --export "$t/out.step"
           test -s "$t/out.step"
 
@@ -301,7 +303,8 @@ jobs:
         run: |
           app="$STAGE/Gusset.app/Contents/MacOS"
           "$app/gusset" --version
-          "$app/gusset" self-test
+          out="$("$app/gusset" self-test)" && echo "$out"
+          grep -q "in its worker process" <<< "$out"  # the kernel runs in its worker (ADR 0022)
           "$app/gusset" build examples/bracket.gus.txt --export "$RUNNER_TEMP/out.step"
           test -s "$RUNNER_TEMP/out.step"
 
@@ -312,7 +315,7 @@ jobs:
           cargo cyclonedx --format json --spec-version 1.5 --all --no-build-deps --target "${{ matrix.triple }}" \
             --override-filename sbom
           mkdir -p "$DIST"
-          for c in gusset-cli gusset-app gusset-worker; do
+          for c in gusset-cli gusset-app gusset-worker gusset-kernel-worker; do
             cp "crates/$c/sbom.json" "$DIST/sbom-$c-${{ matrix.name }}.cdx.json"
           done
 

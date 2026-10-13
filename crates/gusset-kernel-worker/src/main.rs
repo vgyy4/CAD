@@ -40,7 +40,8 @@ fn main() -> ExitCode {
 
 #[cfg(gusset_occt)]
 fn serve() -> ExitCode {
-    let kernel = match gusset_kernel_occt::OcctKernel::new() {
+    // The app vets B-rep blobs before sending them (`OcctGate`); this process is the sandbox.
+    let kernel = match gusset_kernel_occt::OcctKernel::with_vetted_inputs() {
         Ok(k) => k,
         Err(e) => {
             eprintln!("gusset-kernel-worker: {e}");

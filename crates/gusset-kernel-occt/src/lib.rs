@@ -20,6 +20,9 @@ use gusset_kernel::*;
 pub struct OcctKernel {
     #[cfg_attr(not(gusset_occt), allow(dead_code))]
     worker: Option<std::path::PathBuf>,
+    /// Parse every blob: the caller vetted it with [`vet_native`] (the kernel worker).
+    #[cfg_attr(not(gusset_occt), allow(dead_code))]
+    inputs_vetted: bool,
 }
 
 /// Time allowed for validating one B-rep blob in the worker.
@@ -38,11 +41,18 @@ impl OcctKernel {
     /// to refuse every B-rep blob that is not already trusted.
     pub fn with_worker(worker: Option<std::path::PathBuf>) -> KResult<OcctKernel> {
         if cfg!(gusset_occt) {
-            Ok(OcctKernel { worker })
+            Ok(OcctKernel { worker, inputs_vetted: false })
         } else {
             Err(KernelError::new(KernelErrorKind::Unsupported, "this build of Gusset does not include the OCCT kernel")
                 .with_hint("build with GUSSET_OCCT_DIR pointing to an OCCT 8 installation"))
         }
+    }
+
+    /// A kernel that parses every B-rep blob it is given, for the kernel worker process
+    /// (ADR 0022): the app vets each blob with [`vet_native`] before sending it, and the
+    /// worker's sandbox contains whatever the parse does.
+    pub fn with_vetted_inputs() -> KResult<OcctKernel> {
+        Self::with_worker(None).map(|k| OcctKernel { inputs_vetted: true, ..k })
     }
 
     /// The OCCT version string (empty without OCCT).
@@ -473,33 +483,47 @@ mod imp {
             // Only writer-produced bytes are parsed in this process: our own output, or
             // the worker's canonical re-serialization of an untrusted blob. The
             // untrusted original itself never reaches BinTools::Read here.
-            if gusset_worker::trust::is_trusted(data) {
+            if self.inputs_vetted {
                 return Ok(Shape::new(OcctShape::new(ffi::brep_read(data)?)));
             }
-            if let Some(c) = gusset_worker::trust::canonical_for(data) {
-                return Ok(Shape::new(OcctShape::new(ffi::brep_read(&c)?)));
-            }
-            let Some(worker) = &self.worker else {
-                return Err(KernelError::new(
-                    KernelErrorKind::Unsupported,
-                    "imported geometry in this project cannot be checked because the import worker is missing",
-                )
-                .with_hint("reinstall Gusset so that gusset-worker is next to the app"));
-            };
-            let canonical = gusset_worker::validate_native_out_of_process(
-                worker,
-                data,
-                &gusset_sandbox::Limits::default(),
-                VALIDATE_TIMEOUT,
-            )
-            .map_err(|e| {
-                KernelError::new(KernelErrorKind::InvalidInput, format!("imported geometry is damaged or unsafe ({e})"))
-                    .with_hint("re-import the original file")
-            })?;
-            let canonical = gusset_worker::trust::remember_canonical(data, canonical);
-            Ok(Shape::new(OcctShape::new(ffi::brep_read(&canonical)?)))
+            let vetted = vet_native(self.worker.as_deref(), data)?;
+            Ok(Shape::new(OcctShape::new(ffi::brep_read(&vetted)?)))
         }
     }
+}
+
+/// The bytes of a B-rep blob that may be parsed in a trusted process: the blob itself if
+/// this process wrote it or already had it validated ([`gusset_worker::trust`]), else the
+/// canonical re-serialization made by the sandboxed `gusset-worker` at `worker`.
+///
+/// # Errors
+/// The blob is untrusted and there is no worker, or the worker rejected it.
+pub fn vet_native<'a>(worker: Option<&std::path::Path>, data: &'a [u8]) -> KResult<std::borrow::Cow<'a, [u8]>> {
+    use std::borrow::Cow;
+    if gusset_worker::trust::is_trusted(data) {
+        return Ok(Cow::Borrowed(data));
+    }
+    if let Some(c) = gusset_worker::trust::canonical_for(data) {
+        return Ok(Cow::Owned(c.as_ref().clone()));
+    }
+    let Some(worker) = worker else {
+        return Err(KernelError::new(
+            KernelErrorKind::Unsupported,
+            "imported geometry in this project cannot be checked because the import worker is missing",
+        )
+        .with_hint("reinstall Gusset so that gusset-worker is next to the app"));
+    };
+    let canonical = gusset_worker::validate_native_out_of_process(
+        worker,
+        data,
+        &gusset_sandbox::Limits::default(),
+        VALIDATE_TIMEOUT,
+    )
+    .map_err(|e| {
+        KernelError::new(KernelErrorKind::InvalidInput, format!("imported geometry is damaged or unsafe ({e})"))
+            .with_hint("re-import the original file")
+    })?;
+    Ok(Cow::Owned(gusset_worker::trust::remember_canonical(data, canonical).as_ref().clone()))
 }
 
 #[cfg(not(gusset_occt))]

@@ -1559,6 +1559,7 @@ dependencies = [
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
+ "gusset-kernel-worker",
  "gusset-mcp",
  "gusset-occt-sys",
  "gusset-project",
@@ -1582,6 +1583,7 @@ dependencies = [
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
+ "gusset-kernel-worker",
  "gusset-mcp",
  "gusset-meshio",
  "gusset-occt-sys",
@@ -1700,6 +1702,7 @@ dependencies = [
  "gusset-kernel-remote",
  "gusset-occt-sys",
  "gusset-sandbox",
+ "gusset-worker",
 ]
 
 [[package]]
