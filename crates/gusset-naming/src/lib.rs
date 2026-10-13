@@ -290,16 +290,20 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
         .map(|e| EdgeRef::new(e.faces.iter().filter_map(|&f| faces.get(f as usize).cloned()).collect(), None))
         .collect();
     disambiguate(&mut edges, |i| topo.edges.get(i).map(|e| geo_key(e.midpoint, e.length)), |e, k| e.index = k);
-    let mut corners: Vec<Option<EdgeRef>> = vec![None; topo.vertices.len()];
-    for (e, info) in edges.iter().zip(&topo.edges) {
+    // The smallest-named edge at each vertex (each name formatted once: names nest, so
+    // formatting them per comparison was quadratic in large patterned bodies).
+    let texts: Vec<String> = edges.iter().map(ToString::to_string).collect();
+    let mut best: Vec<Option<usize>> = vec![None; topo.vertices.len()];
+    for (i, info) in topo.edges.iter().enumerate().take(edges.len()) {
         for &v in &info.vertices {
-            if let Some(slot) = corners.get_mut(v as usize)
-                && slot.as_ref().is_none_or(|c| e.to_string() < c.to_string())
+            if let Some(slot) = best.get_mut(v as usize)
+                && slot.and_then(|c| texts.get(c)).is_none_or(|c| texts.get(i).is_some_and(|t| t < c))
             {
-                *slot = Some(e.clone());
+                *slot = Some(i);
             }
         }
     }
+    let corners = best.into_iter().map(|b| b.and_then(|i| edges.get(i).cloned())).collect();
     Ok(BodyNames { faces, edges, corners })
 }
 

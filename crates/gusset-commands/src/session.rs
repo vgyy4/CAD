@@ -264,6 +264,14 @@ impl Session {
         self.history.head_document(self.current_branch(actor)).map_err(CommandError::history)
     }
 
+    /// The flag that stops the running rebuild ([`Evaluator::cancel_flag`]; security review
+    /// V1). Set it from any thread; whoever set it clears it (the host does when its next
+    /// job starts). Cancelled evaluations are not cached and do not mark nodes broken.
+    #[must_use]
+    pub fn rebuild_cancel_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.evaluator.cancel_flag()
+    }
+
     /// Evaluates the head of `branch`, cached by node and rollback marker.
     pub fn evaluate_branch(&mut self, branch: BranchId) -> Result<Arc<Evaluation>, CommandError> {
         let b = self.history.branch(branch).map_err(CommandError::history)?;
@@ -319,8 +327,14 @@ impl Session {
         let current = self.history.branch(branch).map_err(CommandError::history)?.rollback;
         let rollback = new_rollback.unwrap_or(current);
         let eval = Arc::new(self.evaluate_doc(doc, rollback));
-        let new_errors: Vec<String> =
-            eval.errors().iter().map(|e| e.to_string()).filter(|e| !before.contains(e)).collect();
+        // A cancelled rebuild says nothing about the edit: it is rebuilt with the next one.
+        let new_errors: Vec<String> = eval
+            .errors()
+            .iter()
+            .filter(|e| e.code != gusset_eval::ErrorCode::Cancelled)
+            .map(|e| e.to_string())
+            .filter(|e| !before.contains(e))
+            .collect();
         let state = if new_errors.is_empty() {
             NodeState::Ok
         } else {
@@ -359,6 +373,9 @@ impl Session {
     }
 
     fn remember_eval(&mut self, node: NodeId, rollback: Option<usize>, e: Arc<Evaluation>) {
+        if e.cancelled {
+            return;
+        }
         self.cache.retain(|(n, r, _)| !(*n == node && *r == rollback));
         self.cache.push_front((node, rollback, e));
         self.cache.truncate(EVAL_CACHE_BRANCHES);

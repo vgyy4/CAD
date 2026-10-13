@@ -271,6 +271,24 @@ pub fn boolean(op: i32, a: &RawShape, b: &RawShape) -> ShimResult<OpOut> {
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Union or cut of `target` with all `tools` in one operation (origins: input 0 is the
+/// target, `i + 1` is `tools[i]`).
+pub fn boolean_many(op: i32, target: &RawShape, tools: &[&RawShape]) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let mut all: Vec<&RawShape> = Vec::with_capacity(tools.len() + 1);
+    all.push(target);
+    all.extend_from_slice(tools);
+    let rc = with_many(&all, |p| {
+        let (first, rest) = p.split_first().map_or((std::ptr::null(), &[][..]), |(f, r)| (*f, r));
+        // SAFETY: every shape is locked and valid; `rest` holds `tools.len()` pointers and
+        // stays alive for the call; out-params are valid.
+        unsafe { sys::gs_boolean_many(op, first, rest.as_ptr(), rest.len(), &mut out, &mut origins) }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

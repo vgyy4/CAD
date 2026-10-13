@@ -146,6 +146,11 @@ pub enum ProfileError {
     TooComplex {
         limit: usize,
     },
+    /// Intersecting the curves would take more than `limit` steps: splines run too close
+    /// to each other along long stretches (security review V2).
+    TooMuchWork {
+        limit: u64,
+    },
 }
 
 impl fmt::Display for ProfileError {
@@ -168,6 +173,11 @@ impl fmt::Display for ProfileError {
                 write!(f, "{a} and {b} overlap along a stretch near ({}, {})", at[0], at[1])
             }
             ProfileError::TooComplex { limit } => write!(f, "the sketch has more than {limit} crossings"),
+            ProfileError::TooMuchWork { limit } => write!(
+                f,
+                "the sketch's splines run too close to each other to find their crossings \
+                 (more than {limit} steps); move them apart or use fewer fit points"
+            ),
         }
     }
 }

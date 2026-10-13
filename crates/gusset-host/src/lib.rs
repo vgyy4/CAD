@@ -37,6 +37,14 @@
 //!   thread) and can be cancelled ([`gusset_commands::import`]).
 //! - [`HostHandle::shutdown`] drains already-queued jobs, stops the thread and hands the
 //!   session and project back to the caller (who decides whether to save and close).
+//! - A long rebuild can be stopped (security review V1): [`HostHandle::cancel_rebuild`]
+//!   stops the evaluation of the running job ("Stop rebuild"); queueing a mutating command
+//!   with [`HostHandle::call`], [`HostHandle::call_async`] or
+//!   [`HostHandle::supersede_rebuild`] while another job runs does the same (the newer
+//!   edit makes that rebuild moot), and so do [`HostHandle::shutdown`] and dropping the
+//!   future of a running [`HostHandle::call_async`] (an MCP client cancelling its request).
+//!   The job itself still finishes: an edit is committed, its evaluation is reported as
+//!   cancelled, and the next job rebuilds. The flag is cleared when the next job starts.
 
 use gusset_commands::import::{CancelFlag, begin_import, complete_import};
 use gusset_commands::session::Change;
@@ -104,6 +112,8 @@ struct Inner {
     quiescent: AtomicBool,
     thread: Mutex<Option<JoinHandle<()>>>,
     model_thread: Mutex<Option<ThreadId>>,
+    /// The session evaluator's cancel flag ([`gusset_commands::Session::rebuild_cancel_flag`]).
+    rebuild_cancel: Arc<AtomicBool>,
 }
 
 /// Namespace for [`Host::spawn`].
@@ -188,6 +198,29 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// Cancels the rebuild of its job when dropped while that job runs.
+struct CancelRunning {
+    running: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for CancelRunning {
+    fn drop(&mut self) {
+        if self.running.load(Ordering::SeqCst) {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Clears its flag when dropped (also when the job panics).
+struct ClearOnDrop(Arc<AtomicBool>);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 fn lock(m: &Mutex<Option<State>>) -> MutexGuard<'_, Option<State>> {
     // A panic inside a job is caught before it can poison the lock, but be robust anyway.
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -201,6 +234,7 @@ impl Host {
     pub fn spawn(session: Session, project: Option<Project>) -> HostHandle {
         let (tx, rx) = mpsc::channel::<Msg>();
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let rebuild_cancel = session.rebuild_cancel_flag();
         let inner = Arc::new(Inner {
             state: Mutex::new(Some(State { session, project })),
             tx: Mutex::new(Some(tx)),
@@ -208,6 +242,7 @@ impl Host {
             quiescent: AtomicBool::new(true),
             thread: Mutex::new(None),
             model_thread: Mutex::new(None),
+            rebuild_cancel,
         });
         let worker = Arc::downgrade(&inner);
         let spawned = std::thread::Builder::new().name("gusset-model".into()).spawn(move || model_loop(&worker, &rx));
@@ -230,6 +265,8 @@ fn model_loop(inner: &std::sync::Weak<Inner>, rx: &mpsc::Receiver<Msg>) {
         match msg {
             Msg::Shutdown => return,
             Msg::Job(job) => {
+                // A cancel was meant for the job before this one.
+                inner.rebuild_cancel.store(false, Ordering::SeqCst);
                 inner.quiescent.store(false, Ordering::SeqCst);
                 let (reply, changes) = {
                     let _g = InHostGuard::enter();
@@ -371,8 +408,26 @@ impl HostHandle {
         if is_import(id) {
             return self.import(ctx, args, &CancelFlag::default());
         }
+        self.supersede_rebuild(id);
         let id = id.to_string();
         self.exec(move |s, _| execute(s, &ctx, &id, args))?
+    }
+
+    /// Stops the evaluation of the running job, if any, at its next check (between
+    /// features, before each boolean feature). The job still completes; its evaluation is
+    /// reported as cancelled and not cached. Callable from any thread, never waits.
+    pub fn cancel_rebuild(&self) {
+        if !self.is_quiescent() {
+            self.inner.rebuild_cancel.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Called before queueing command `id`: if it changes the model and another job is
+    /// running, that job's rebuild is cancelled (this edit makes it moot).
+    pub fn supersede_rebuild(&self, id: &str) {
+        if gusset_commands::find(id).is_some_and(|s| s.flags.mutating) {
+            self.cancel_rebuild();
+        }
     }
 
     /// Async version of [`HostHandle::call`] for tokio (MCP connections).
@@ -383,8 +438,18 @@ impl HostHandle {
         if is_import(id) {
             return self.import_async(ctx, args).await;
         }
+        self.supersede_rebuild(id);
+        // Dropping this future while its job runs (the client cancelled the request) stops
+        // that job's rebuild.
+        let running = Arc::new(AtomicBool::new(false));
+        let _guard = CancelRunning { running: running.clone(), cancel: self.inner.rebuild_cancel.clone() };
         let id = id.to_string();
-        self.exec_async(move |s, _| execute(s, &ctx, &id, args)).await?
+        self.exec_async(move |s, _| {
+            running.store(true, Ordering::SeqCst);
+            let _done = ClearOnDrop(running);
+            execute(s, &ctx, &id, args)
+        })
+        .await?
     }
 
     /// `import.file` with the parsing on the **calling** thread (never the model thread):
@@ -529,6 +594,8 @@ impl HostHandle {
         }
         let tx = self.inner.tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(tx) = tx {
+            // Closing does not wait for a long rebuild (queued jobs still run in full).
+            self.cancel_rebuild();
             let _ = tx.send(Msg::Shutdown);
         }
         let join = self.inner.thread.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();

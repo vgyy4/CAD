@@ -305,6 +305,21 @@ mod imp {
             op_result(ffi::boolean(code, raw(target)?, raw(tool)?)?)
         }
 
+        fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+            let code = match op {
+                BoolOp::Union => sys::GS_BOOL_UNION,
+                BoolOp::Cut => sys::GS_BOOL_CUT,
+                // OCCT's common with a tool list keeps what is inside *any* tool; the trait
+                // means every tool, so intersect one tool at a time.
+                BoolOp::Intersect => return gusset_kernel::sequential_boolean(self, op, target, tools),
+            };
+            if tools.is_empty() {
+                return gusset_kernel::sequential_boolean(self, op, target, tools);
+            }
+            let raws = tools.iter().map(raw).collect::<KResult<Vec<_>>>()?;
+            op_result(ffi::boolean_many(code, raw(target)?, &raws)?)
+        }
+
         fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {
             op_result(ffi::blend(raw(shape)?, edges, radius, true)?)
         }

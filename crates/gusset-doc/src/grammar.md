@@ -407,7 +407,7 @@ move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
 ## Holes
 
 ```
-hole <Name> (face: <face>, points: <Sketch> | at: [[<u>, <v>], ...], [type: simple|counterbore|countersink|tapped],
+hole <Name> (face: <face>, points: <Sketch> | at: [e1: [<u>, <v>], ...], [type: simple|counterbore|countersink|tapped],
              diameter: <length>, depth: <length> | through: true, [point_angle: <angle>],
              [cbore_diameter: <length>, cbore_depth: <length>], [csink_diameter: <length>, csink_angle: <angle>],
              [thread: "M6", pitch: <length>, thread_depth: <length>])
@@ -418,8 +418,11 @@ hole <Name> (face: <face>, points: <Sketch> | at: [[<u>, <v>], ...], [type: simp
   (`points: Sketch2`: every point that is not construction geometry and not an end of a line,
   arc or spline, plus the centre of every circle, whose size is ignored; pattern copies count;
   the sketch must be parallel to the face and its points are projected onto it), or explicit
-  `(u, v)` lengths in the face's own sketch frame (`at: [[10 mm, 5 mm], ...]`, the frame a
-  sketch placed on that face gets). A hole must lie within the face.
+  `(u, v)` lengths in the face's own sketch frame (`at: [e1: [10 mm, 5 mm], e2: [...]]`, the
+  frame a sketch placed on that face gets). Each point carries its id (`e1`, `e2`, ...), which
+  names its hole's faces; deleting or reordering points keeps the ids of the others. Give a
+  new point an id the list does not use yet. A bare `[u, v]` (files from before the ids) is
+  `e<position in the list>`. A hole must lie within the face.
 - `depth` is measured from the face to the end of the full-diameter part; a blind hole adds the
   drill point (a cone of `point_angle`, default 118 deg; 180 deg is flat). `through: true` cuts
   all the way through with a flat end.
@@ -428,7 +431,7 @@ hole <Name> (face: <face>, points: <Sketch> | at: [[<u>, <v>], ...], [type: simp
   for ISO 10642); `tapped` is modelled at the tap-drill `diameter` and records a cosmetic thread
   (`thread` designation, `pitch`, `thread_depth` from the face, default the whole hole) that
   `query_body` lists under `holes`; there is no helical geometry. Other combinations are errors.
-- Faces of hole `p5` (the id of its sketch point; `e1`, `e2`, ... for `at:` points in order):
+- Faces of hole `p5` (the id of its sketch point, or the `e<n>` id of an `at:` point):
   `Hole1/wall(p5)` (the full-diameter cylinder), `Hole1/floor(p5)` (drill-point cone, or the flat
   end), `Hole1/cbore_wall(p5)`, `Hole1/cbore_floor(p5)` (the step), `Hole1/csink(p5)`. A wall cut
   into several faces by the material gets `#1`, `#2`, ... The face the hole starts on keeps its name.
@@ -465,9 +468,9 @@ sketch Sketch2 (plane: Extrude1/cap(end)) {
 
 hole Hole1 (face: Extrude1/cap(end), points: Sketch2, type: counterbore, diameter: hole1_diameter, through: true, cbore_diameter: hole1_cbore_diameter, cbore_depth: hole1_cbore_depth)
 
-hole Hole2 (face: Extrude1/cap(end), at: [[10 mm, 5 mm], [50 mm, 35 mm]], type: tapped, diameter: 5 mm, depth: 9 mm, point_angle: 118 deg, thread: "M6", pitch: 1 mm, thread_depth: 7 mm)
+hole Hole2 (face: Extrude1/cap(end), at: [e1: [10 mm, 5 mm], e2: [50 mm, 35 mm]], type: tapped, diameter: 5 mm, depth: 9 mm, point_angle: 118 deg, thread: "M6", pitch: 1 mm, thread_depth: 7 mm)
 
-hole Hole3 (face: Extrude1/cap(end), at: [[30 mm, 8 mm]], type: countersink, diameter: 4.5 mm, depth: 10 mm, csink_diameter: 9 mm, csink_angle: 90 deg)
+hole Hole3 (face: Extrude1/cap(end), at: [e1: [30 mm, 8 mm]], type: countersink, diameter: 4.5 mm, depth: 10 mm, csink_diameter: 9 mm, csink_angle: 90 deg)
 
 fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))], radius: 1 mm)
 ```

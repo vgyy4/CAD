@@ -107,6 +107,10 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
  * neighbouring sections with ruled surfaces instead of a smooth interpolation. */
 int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins);
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins);
+/* Union or cut of `target` with all `tools` in one operation. INPUT origins: 0 = target,
+ * i + 1 = tools[i]. */
+int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, GsShape** out,
+                    GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);
 /* Hollows `s` to a wall of `thickness` (> 0 inward, < 0 outward), removing the faces

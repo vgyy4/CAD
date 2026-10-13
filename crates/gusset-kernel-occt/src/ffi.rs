@@ -64,6 +64,10 @@ pub(crate) fn boolean(op: i32, a: &RawShape, b: &RawShape) -> KResult<OpOut> {
     safe::boolean(op, a, b).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn boolean_many(op: i32, target: &RawShape, tools: &[&RawShape]) -> KResult<OpOut> {
+    safe::boolean_many(op, target, tools).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> KResult<OpOut> {
     safe::blend(s, edges, size, fillet).map_err(err(KernelErrorKind::OperationFailed))
 }

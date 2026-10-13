@@ -390,6 +390,8 @@ impl App {
             }
             return;
         }
+        // A newer edit stops the rebuild of the one still running (security review V1).
+        self.host.supersede_rebuild(id);
         let id = id.to_string();
         let id2 = id.clone();
         self.submit(

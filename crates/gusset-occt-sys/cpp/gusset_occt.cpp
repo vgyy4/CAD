@@ -6,6 +6,7 @@
 
 #include "gusset_occt.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -366,7 +367,8 @@ void record_generated(Op& op, const TopoDS_Shape& input, TopAbs_ShapeEnum type, 
 TopoDS_Edge edge_by_index(const TopoDS_Shape& s, uint32_t i) {
   ShapeMap edges;
   TopExp::MapShapes(s, TopAbs_EDGE, edges);
-  if (int(i) >= edges.Extent()) throw Standard_Failure("edge index out of range");
+  // Compare unsigned: an index above INT_MAX must not wrap negative (security review V6).
+  if (edges.Extent() <= 0 || i >= uint32_t(edges.Extent())) throw Standard_Failure("edge index out of range");
   return TopoDS::Edge(edges(int(i) + 1));
 }
 
@@ -1051,6 +1053,50 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   GS_GUARD_END
 }
 
+int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, GsShape** out,
+                    GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!target || !out || !origins || (!tools && ntools)) return fail("null argument");
+  if (ntools > size_t(INT_MAX) - 1) return fail("too many tools");
+  for (size_t i = 0; i < ntools; ++i) {
+    if (!tools[i]) return fail("null argument");
+  }
+  // One operation with all tools (review H3): the general fuse intersects every pair once,
+  // instead of re-intersecting a growing result once per tool.
+  ShapeList args, tool_list;
+  args.Append(target->s);
+  for (size_t i = 0; i < ntools; ++i) tool_list.Append(tools[i]->s);
+  BRepAlgoAPI_BooleanOperation* b = nullptr;
+  BRepAlgoAPI_Fuse fuse;
+  BRepAlgoAPI_Cut cut;
+  switch (op) {
+    case GS_BOOL_UNION: b = &fuse; break;
+    case GS_BOOL_CUT: b = &cut; break;
+    default: return fail("only union and cut take several tools at once");
+  }
+  b->SetArguments(args);
+  b->SetTools(tool_list);
+  // Sequential on purpose: model-defining operations must give the same topology order
+  // on every run and machine (spec "Determinism").
+  b->SetRunParallel(false);
+  b->Build();
+  if (!b->IsDone() || b->HasErrors()) return fail("boolean operation failed");
+  b->SimplifyResult(true, true);
+  TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("boolean operation produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  if (out_faces.Extent() == 0) return fail("boolean operation removed all material");
+  std::vector<int64_t> o;
+  record_input_faces(*b, target->s, 0, out_faces, o);
+  for (size_t i = 0; i < ntools; ++i) record_input_faces(*b, tools[i]->s, int64_t(i) + 1, out_faces, o);
+  check_valid(result, "boolean operation");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   return blend<BRepFilletAPI_MakeFillet>(s, edges, nedges, radius, true, out, origins);
@@ -1072,7 +1118,7 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
   TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
   ShapeList closing;
   for (size_t i = 0; i < nfaces; ++i) {
-    if (int(faces[i]) >= in_faces.Extent()) return fail("face index out of range");
+    if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
     closing.Append(in_faces(int(faces[i]) + 1));
   }
   // OCCT: a negative offset builds the wall inside the solid.

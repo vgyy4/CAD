@@ -302,7 +302,8 @@ fn print_feature(out: &mut String, f: &Feature) {
             match &d.sites {
                 HoleSites::Sketch(s) => args.push(format!("points: {s}")),
                 HoleSites::Points(p) => {
-                    let list: Vec<String> = p.iter().map(|[u, v]| format!("[{u}, {v}]")).collect();
+                    let list: Vec<String> =
+                        p.iter().map(|h| format!("{}: [{}, {}]", h.name(), h.at[0], h.at[1])).collect();
                     args.push(format!("at: [{}]", list.join(", ")));
                 }
             }
@@ -1006,15 +1007,42 @@ fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                     HoleSites::Sketch(c.ident()?.to_string())
                 } else {
                     c.expect('[')?;
-                    let mut list = Vec::new();
+                    let mut list: Vec<HolePoint> = Vec::new();
                     if !c.eat(']') {
                         loop {
+                            // `e3: [u, v]`, or a bare `[u, v]` (files from before the ids were
+                            // stored), which is `e<position>`.
+                            c.ws();
+                            let id = if c.peek() == Some('[') {
+                                u32::try_from(list.len() + 1).unwrap_or(u32::MAX)
+                            } else {
+                                let w = c.ident()?;
+                                let id = w
+                                    .strip_prefix('e')
+                                    .filter(|d| !d.starts_with('0'))
+                                    .and_then(|d| d.parse::<u32>().ok())
+                                    .filter(|&n| n >= 1)
+                                    .ok_or_else(|| {
+                                        c.err_hint(
+                                            format!("'{w}' is not a hole point id"),
+                                            "write e1: [10 mm, 5 mm] (ids are e1, e2, ...)",
+                                        )
+                                    })?;
+                                c.expect(':')?;
+                                id
+                            };
+                            if list.iter().any(|h| h.id == id) {
+                                return Err(c.err_hint(
+                                    format!("hole point e{id} is listed twice"),
+                                    "give every point its own id",
+                                ));
+                            }
                             c.expect('[')?;
                             let u = c.expr()?;
                             c.expect(',')?;
                             let v = c.expr()?;
                             c.expect(']')?;
-                            list.push([u, v]);
+                            list.push(HolePoint { id, at: [u, v] });
                             if list.len() > MAX_HOLE_SITES {
                                 return Err(c.err(format!("more than {MAX_HOLE_SITES} hole points")));
                             }

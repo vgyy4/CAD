@@ -242,3 +242,59 @@ fn import_parses_off_the_model_thread_and_cancels() {
     let _ = h.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Security review V1: a running rebuild can be stopped, explicitly or by a newer edit, and
+/// the cancel never leaks into the next job.
+#[test]
+fn rebuilds_are_cancelled_by_request_and_by_newer_edits() {
+    let text = "gusset 1\nunits mm\n\nsketch S1 (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  \
+                p2 = point(10, 0)\n  p3 = point(10, 10)\n  p4 = point(0, 10)\n  l5 = line(p1, p2)\n  \
+                l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\n\
+                extrude E1 (profile: S1, distance: 10 mm, op: new)\n";
+    let doc = Document::from_text(text).unwrap();
+    let host = Host::spawn(session(), None);
+    // A job that waits for the test, then evaluates.
+    let run_blocked = |doc: Document| {
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        host.exec_detached(
+            move |s, _| {
+                let _ = go_rx.recv();
+                s.evaluate_doc(&doc, None)
+            },
+            move |r| {
+                let _ = done_tx.send(r.unwrap());
+            },
+        )
+        .unwrap();
+        while host.is_quiescent() {
+            std::thread::yield_now();
+        }
+        (go_tx, done_rx)
+    };
+
+    let (go, done) = run_blocked(doc.clone());
+    host.cancel_rebuild();
+    go.send(()).unwrap();
+    let ev = done.recv().unwrap();
+    assert!(ev.cancelled);
+    assert!(ev.bodies.is_empty());
+
+    // A read-only command does not supersede; an edit does.
+    let (go, done) = run_blocked(doc.clone());
+    host.supersede_rebuild("document.get_text");
+    go.send(()).unwrap();
+    let ev = done.recv().unwrap();
+    assert!(!ev.cancelled && ev.errors().is_empty(), "{:?}", ev.errors());
+    // (A document not evaluated yet: cached features cost nothing and are not cancelled.)
+    let other = Document::from_text(&text.replace("10 mm, op", "12 mm, op")).unwrap();
+    let (go, done) = run_blocked(other);
+    host.supersede_rebuild("param.set");
+    go.send(()).unwrap();
+    assert!(done.recv().unwrap().cancelled);
+
+    // The next job starts with the flag cleared, and an idle host ignores a cancel.
+    host.cancel_rebuild();
+    let ev = host.exec(move |s, _| s.evaluate_doc(&doc, None)).unwrap();
+    assert!(!ev.cancelled && ev.bodies.len() == 1);
+}

@@ -139,11 +139,10 @@ impl Hole {
                     return Err(CommandError::args(format!("at most {MAX_HOLE_SITES} holes per feature")));
                 }
                 HoleSites::Points(
-                    list.iter().map(|[u, v]| Ok([parse_expr("at", u)?, parse_expr("at", v)?])).collect::<Result<
-                        _,
-                        CommandError,
-                    >>(
-                    )?,
+                    (1..)
+                        .zip(list)
+                        .map(|(id, [u, v])| Ok(HolePoint { id, at: [parse_expr("at", u)?, parse_expr("at", v)?] }))
+                        .collect::<Result<_, CommandError>>()?,
                 )
             }
             _ => {
@@ -427,6 +426,7 @@ impl Command for Hole {
                     | ErrorCode::InvalidSketch
                     | ErrorCode::SketchSolve
                     | ErrorCode::SketchConflict
+                    | ErrorCode::TooComplex
             );
             if user_input {
                 let mut err = CommandError::args(e.message.clone());

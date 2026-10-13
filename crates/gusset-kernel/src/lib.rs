@@ -65,6 +65,50 @@ fn unsupported<T>(what: &str, kernel: &str) -> KResult<T> {
     Err(KernelError::new(KernelErrorKind::Unsupported, format!("{what} is not supported by the {kernel} kernel")))
 }
 
+/// [`Kernel::boolean_many`] as one [`Kernel::boolean`] per tool, with the face history of
+/// every step composed so that origins refer to the original target and tools.
+pub fn sequential_boolean<K: Kernel + ?Sized>(k: &K, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+    let internal = |what: &str| KernelError::new(KernelErrorKind::Internal, what.to_string());
+    let mut cur: Option<OpResult> = None;
+    for (i, tool) in tools.iter().enumerate() {
+        let tool_no = u32::try_from(i + 1).map_err(|_| internal("too many tools"))?;
+        let from = cur.as_ref().map_or(target, |r| &r.shape);
+        let step = k.boolean(op, from, tool)?;
+        let mut origins = Vec::with_capacity(step.face_origins.len());
+        for os in &step.face_origins {
+            let mut out: Vec<FaceOrigin> = Vec::new();
+            for o in os {
+                match (*o, cur.as_ref()) {
+                    // A face of the previous result: its own origins.
+                    (FaceOrigin::Input { input: 0, face }, Some(prev)) => {
+                        let before =
+                            prev.face_origins.get(face as usize).ok_or_else(|| internal("bad face history"))?;
+                        out.extend(before.iter().copied());
+                    }
+                    (FaceOrigin::Input { input: 0, face }, None) => out.push(FaceOrigin::Input { input: 0, face }),
+                    (FaceOrigin::Input { input: 1, face }, _) => out.push(FaceOrigin::Input { input: tool_no, face }),
+                    _ => return Err(internal("a boolean operation reported a face origin it cannot have")),
+                }
+            }
+            out.sort_unstable();
+            out.dedup();
+            origins.push(out);
+        }
+        cur = Some(OpResult { shape: step.shape, face_origins: origins });
+    }
+    match cur {
+        Some(r) => Ok(r),
+        None => {
+            let faces = k.topology(target)?.faces.len();
+            let face_origins = (0..faces)
+                .map(|f| u32::try_from(f).map(|face| vec![FaceOrigin::Input { input: 0, face }]))
+                .collect::<Result<_, _>>()
+                .map_err(|_| internal("too many faces"))?;
+            Ok(OpResult { shape: target.clone(), face_origins })
+        }
+    }
+}
+
 /// The geometry kernel interface.
 ///
 /// Conventions:
@@ -107,6 +151,18 @@ pub trait Kernel: Send + Sync + Debug {
     fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
         let _ = (op, target, tool);
         unsupported("boolean operations", self.name())
+    }
+
+    /// Applies `op` to `target` with every shape of `tools`, as if one tool after the
+    /// other were applied with [`Kernel::boolean`] (review H3: kernels should do it in one
+    /// operation). [`FaceOrigin::Input`] index 0 is the target and `i + 1` is `tools[i]`.
+    ///
+    /// For [`BoolOp::Intersect`] this means the part of the target inside *every* tool.
+    /// With no tools, the result is the target itself.
+    ///
+    /// The default runs [`Kernel::boolean`] once per tool and composes the face histories.
+    fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+        sequential_boolean(self, op, target, tools)
     }
 
     fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {

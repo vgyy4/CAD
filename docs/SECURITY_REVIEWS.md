@@ -355,12 +355,12 @@ prompt-injection attempts were seen.
 
 | # | Severity | Finding | Status |
 |---|---|---|---|
-| V1 | Medium | Body patterns: one `pattern_linear` line takes minutes; chained patterns grow exponentially; evaluation has no CPU or size budget and cannot be cancelled | verified |
-| V2 | Medium | Sketch arrangement: spline-vs-spline intersection is quadratic in the number of nearby splines; one spline plus one sketch pattern is hours of CPU | verified |
+| V1 | Medium | Body patterns: one `pattern_linear` line takes minutes; chained patterns grow exponentially; evaluation has no CPU or size budget and cannot be cancelled | fixed: one boolean per feature, work limits, cancellation (ADR 0020) |
+| V2 | Medium | Sketch arrangement: spline-vs-spline intersection is quadratic in the number of nearby splines; one spline plus one sketch pattern is hours of CPU | fixed: spatial index and work limit (ADR 0020 §3) |
 | V3 | Medium | Manual (`workflow_dispatch`) releases are branch builds, but the spec and threat model allow release secrets only for tag builds from main; the in-workflow guards are not a boundary | verified by reading; environment settings not visible (suspicion) |
 | V4 | Info | Publish job does not re-validate `RELEASE_TAG`; `steps.version.outputs.*` is spliced into shell with `${{ }}` | verified by reading |
 | V5 | Info | `run` folds every non-core command into one client-side permission | verified by reading |
-| V6 | Info | Shim index checks `int(i) >= Extent()` turn indices above `INT_MAX` negative | verified by reading (not reachable today) |
+| V6 | Info | Shim index checks `int(i) >= Extent()` turn indices above `INT_MAX` negative | fixed: unsigned comparisons |
 | V7 | Info | A `Project` dropped without `release()`/`close()` does not supersede prepared recovery writes | verified by code trace |
 | V8 | Info | THREAT_MODEL.md not updated for the `commands`/`run` tools and the manual release entry point | verified |
 

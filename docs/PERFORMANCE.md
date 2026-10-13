@@ -78,6 +78,46 @@ no longer clone the state at all.
 | 1,000 features | 198 ms | 9.8 ms | 49 ms | 0.25 ms |
 | 4,000 features | 6.16 s | 63 ms | 581 ms | 0.9 ms |
 
+### 2026-10-13: many-tool booleans and evaluation limits (review H3, security review V1, V2)
+Benchmark: `cargo test --release -p gusset-cli --test perf_booleans -- --include-ignored
+--nocapture --test-threads 1` (OCCT, release build, 4 vCPU container; wall clock of one
+evaluation without cache). Holes: a 5 mm plate with an n x n grid of 3 mm through holes
+from one sketch. Pattern: disjoint copies of a 10 mm cube. Combine: one cut of a bar with
+n pin bodies.
+
+| Document | Before | After |
+|---|---|---|
+| 25 holes | 0.47 s | 0.08 s |
+| 100 holes | 6.25 s | 0.34 s |
+| 400 holes | 109.7 s | 1.98 s |
+| 961 holes | (about 10 min) | 6.08 s |
+| `pattern_linear` count 100 | 9.94 s | 0.52 s |
+| `pattern_linear` count 500 | 345.5 s | 2.35 s |
+| `combine` cut, 10 tools | 0.16 s | 0.04 s |
+| `combine` cut, 50 tools | 1.49 s | 0.17 s |
+| 30 chained count-2 patterns | never finishes (x2.1 per line) | 8.5 s, fails at line 11 (`too_complex`) |
+
+What changed (ADR 0020):
+- Holes, body patterns, mirror with merge and `combine` (union, cut) build all tools first and
+  run one OCCT boolean with the tool list (`Kernel::boolean_many`) instead of one boolean per
+  tool on the growing body, then name the result once. Face names are unchanged (naming
+  goldens). `SetRunParallel` stays off: model-defining operations must be deterministic, and
+  the speedup comes from the single operation anyway.
+- The hole fit check builds the face's triangles and boundary once per feature instead of
+  once per hole.
+- Corner names of a body format each edge name once (they were formatted twice per
+  comparison, quadratic in the name depth of patterns of patterns).
+- Work limits stop what is still too big: a feature may put at most 10,000 faces into its
+  boolean, an evaluation at most 1,000,000 in all and 20,000 tools. The mock-kernel test
+  `chained_doubling_patterns_hit_the_budget_quickly` (40 chained lines) stops in about
+  0.3 s (release) / 0.9 s (debug); `holes_400_budget` (< 15 s) and
+  `chained_patterns_stop_at_the_budget` enforce the OCCT side.
+- Sketch arrangement (V2): twenty 1,000-point splines 0.0001 mm apart took 106 s (35 s after
+  the spatial index alone); with the work limit they fail cleanly after about 1 s (release),
+  2.7 s (debug). Six crossing 60-point splines arrange bit-identically to before (test
+  `crossing_splines_arrange_as_before`); six parallel 1,000-point splines 1 mm apart take
+  0.08 s.
+
 ## History overhead (2026-10-11)
 
 Each history node used to store a snapshot object listing every feature hash, so a
