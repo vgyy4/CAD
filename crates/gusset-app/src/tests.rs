@@ -8,7 +8,7 @@ use gusset_mcp::{ApprovalDecision, ApprovalProvider, ApprovalRequest};
 use serde_json::json;
 use std::sync::Arc;
 
-fn app() -> App {
+pub(crate) fn app() -> App {
     let dir = std::env::temp_dir().join(format!("gusset-app-test-{}-{}", std::process::id(), rand_suffix()));
     let dirs = gusset_store::paths::DataDirs::at(dir.join("data"), dir.join("cache"));
     App::new(Arc::new(MockKernel), Some(dirs))
@@ -18,7 +18,7 @@ fn rand_suffix() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
 }
 
-fn harness(app: App) -> Harness<'static, App> {
+pub(crate) fn harness(app: App) -> Harness<'static, App> {
     // Host change events wake the UI from another thread and can add a frame or two.
     Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))

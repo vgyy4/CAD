@@ -8,13 +8,18 @@
 //! Picking uses the scene's BVH ([`Scene::pick`]) and occlusion-aware edge picking.
 //! Sketches and the axis triad are drawn on top with egui's painter.
 //!
-//! Orbit: middle/right drag. Pan: Shift + drag. Zoom: scroll (to cursor). Pick: click.
+//! Orbit: middle/right drag. Pan: Shift + right drag. Zoom: scroll (to cursor). Pick: click.
+//! The navigation bar's Orbit, Pan and Zoom tools make the left drag do the same.
+//! The view cube (top right) and the navigation bar (bottom centre) are overlays drawn
+//! last; camera moves they cause are animated (DESIGN.md §3 motion) unless the user chose
+//! "reduce motion".
 
-use crate::theme::{Palette, ThemeKind};
+use crate::theme::{self, Palette, ThemeKind};
 use crate::viewport_gpu::{self, GpuTarget};
+use crate::viewport_nav::{self, CubeTarget, NavButton, NavMode, NavState};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
-use gusset_render::math::{Aabb, Vec3, dot};
-use gusset_render::{Camera, Highlight, MeshId, Scene, SoftwareRenderer, Theme, ViewOptions};
+use gusset_render::math::{Aabb, Vec3, cross, dot, normalize_or, rotate};
+use gusset_render::{Camera, Highlight, MeshId, NamedView, Projection, Scene, SoftwareRenderer, Theme, ViewOptions};
 use std::sync::Arc;
 
 /// Names of one body's faces and edges, indexed like its mesh (`MeshId` = body index).
@@ -77,6 +82,53 @@ pub(crate) struct FrameKey {
     pub interacting: bool,
 }
 
+/// A camera move the UI asked for (the view cube, the navigation bar, the app).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NavRequest {
+    /// Look at the model from a standard view or direction (keeps target and distance).
+    View(CubeTarget),
+    /// Frame the whole model, keeping the orientation.
+    Fit,
+    /// The isometric view, framed.
+    Home,
+}
+
+/// A camera move in progress.
+#[derive(Debug, Clone, Copy)]
+struct CameraAnim {
+    from: Camera,
+    to: Camera,
+    /// Frame time at which it started (set on the first frame that sees it).
+    start: Option<f64>,
+}
+
+/// The camera `t` (0..1) of the way from `a` to `b`: the view direction turns along the
+/// shortest arc while the up vector follows, then the remaining roll is blended in.
+pub(crate) fn blend(a: &Camera, b: &Camera, t: f64) -> Camera {
+    let mix = |p: Vec3, q: Vec3| {
+        let ([px, py, pz], [qx, qy, qz]) = (p, q);
+        [px + (qx - px) * t, py + (qy - py) * t, pz + (qz - pz) * t]
+    };
+    let mut cam = *b;
+    cam.target = mix(a.target, b.target);
+    cam.distance = a.distance + (b.distance - a.distance) * t;
+    let c = dot(a.forward, b.forward).clamp(-1.0, 1.0);
+    let angle = c.acos();
+    let axis = normalize_or(cross(a.forward, b.forward), a.up);
+    let (f, u) = if angle < 1e-6 {
+        (a.forward, a.up)
+    } else {
+        (rotate(a.forward, axis, angle * t), rotate(a.up, axis, angle * t))
+    };
+    // Roll left over once the direction arrived: the angle from the rotated up to b's up.
+    let end_up = if angle < 1e-6 { a.up } else { rotate(a.up, axis, angle) };
+    let roll = dot(cross(end_up, b.up), b.forward).atan2(dot(end_up, b.up));
+    cam.forward = f;
+    cam.up = rotate(u, f, roll * t);
+    cam.orthonormalize();
+    cam
+}
+
 /// CPU-rendered image and the key it was rendered for.
 struct SoftwareImage {
     texture: egui::TextureHandle,
@@ -98,6 +150,16 @@ pub struct Viewport {
     hover_for: Option<(Pos2, u64, u64, Camera)>,
     interacting: bool,
     pub fit_pending: bool,
+    /// What a plain left drag does (the navigation bar's Orbit, Pan and Zoom tools).
+    pub nav_mode: NavMode,
+    /// Draw model edges (the navigation bar's view style toggle).
+    pub show_edges: bool,
+    /// Camera moves jump instead of animating.
+    pub reduce_motion: bool,
+    request: Option<NavRequest>,
+    anim: Option<CameraAnim>,
+    /// Bottom of the view cube in screen coordinates (windows stay below it).
+    pub overlay_bottom: f32,
     gpu: Option<GpuTarget>,
     software: Option<SoftwareImage>,
     /// Number of CPU renders so far (tests check that idle frames render nothing).
@@ -127,6 +189,12 @@ impl Default for Viewport {
             hover_for: None,
             interacting: false,
             fit_pending: true,
+            nav_mode: NavMode::Select,
+            show_edges: true,
+            reduce_motion: false,
+            request: None,
+            anim: None,
+            overlay_bottom: 0.0,
             gpu: None,
             software: None,
             software_renders: 0,
@@ -224,16 +292,93 @@ impl Viewport {
 
     /// Frames the model and the given sketches.
     fn fit(&mut self, sketches: &[&DrawSketch], aspect: f64) {
+        if let Some(c) = self.fitted(&self.camera, sketches, aspect) {
+            self.camera = c;
+            self.fit_pending = false;
+        }
+    }
+
+    /// `cam` framing the model and the given sketches (`None` when there is nothing).
+    fn fitted(&self, cam: &Camera, sketches: &[&DrawSketch], aspect: f64) -> Option<Camera> {
         let mut b = self.scene.bounds();
         for s in sketches {
             for p in s.polylines.iter().flatten().chain(&s.points) {
                 b.include(p.map(f64::from));
             }
         }
-        if !b.is_empty() {
-            self.camera.fit(&b, aspect);
-            self.fit_pending = false;
+        if b.is_empty() {
+            return None;
         }
+        let mut c = *cam;
+        c.fit(&b, aspect);
+        Some(c)
+    }
+
+    /// Asks for a camera move; it is carried out (animated) on the next frame.
+    pub fn request(&mut self, r: NavRequest) {
+        self.request = Some(r);
+    }
+
+    /// Moves the camera to `to`: animated, or at once under "reduce motion".
+    fn go_to(&mut self, to: Camera) {
+        if self.reduce_motion || to == self.camera {
+            self.camera = to;
+            self.anim = None;
+        } else {
+            self.anim = Some(CameraAnim { from: self.camera, to, start: None });
+        }
+    }
+
+    /// The camera looking from `t` (keeps target, distance and projection).
+    fn camera_for(&self, t: CubeTarget) -> Camera {
+        let mut c = self.camera;
+        match t {
+            CubeTarget::Named(v) => c.set_view(v),
+            CubeTarget::Dir(d) => {
+                c.forward = d.map(|v| -v);
+                c.up = [0.0, 0.0, 1.0];
+                c.orthonormalize();
+            }
+        }
+        c
+    }
+
+    fn carry_out(&mut self, r: NavRequest, sketches: &[&DrawSketch], aspect: f64) {
+        match r {
+            NavRequest::View(t) => {
+                let to = self.camera_for(t);
+                self.go_to(to);
+            }
+            NavRequest::Fit => {
+                if let Some(c) = self.fitted(&self.camera, sketches, aspect) {
+                    self.go_to(c);
+                }
+            }
+            NavRequest::Home => {
+                let mut base = self.camera;
+                base.set_view(NamedView::Iso);
+                let to = self.fitted(&base, sketches, aspect).unwrap_or(base);
+                self.go_to(to);
+            }
+        }
+    }
+
+    /// Advances a running camera move; true while one is running.
+    fn step_anim(&mut self, ui: &egui::Ui) -> bool {
+        let Some(a) = self.anim.as_mut() else { return false };
+        let now = ui.input(|i| i.time);
+        let start = *a.start.get_or_insert(now);
+        let t = ((now - start) / f64::from(theme::MOTION_SLOW)).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let (from, to) = (a.from, a.to);
+        if t >= 1.0 {
+            self.camera = to;
+            self.anim = None;
+        } else {
+            self.camera = blend(&from, &to, eased);
+            ui.ctx().request_repaint();
+        }
+        true
     }
 
     /// Bounds used for the near/far planes (the meshes; sketches lie within them or are
@@ -246,6 +391,16 @@ impl Viewport {
         let mut moved = false;
         let shift = ui.input(|i| i.modifiers.shift);
         let h = f64::from(rect.height());
+        if self.nav_mode != NavMode::Select && resp.dragged_by(egui::PointerButton::Primary) {
+            let d = resp.drag_delta();
+            match self.nav_mode {
+                NavMode::Orbit => self.camera.orbit_pixels(f64::from(d.x), f64::from(d.y), h),
+                NavMode::Pan => self.camera.pan_pixels(f64::from(d.x), f64::from(d.y), h),
+                NavMode::Zoom => self.camera.zoom((-f64::from(d.y) * 0.01).exp()),
+                NavMode::Select => {}
+            }
+            moved = true;
+        }
         if resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary) {
             let d = resp.drag_delta();
             if d != Vec2::ZERO {
@@ -289,8 +444,12 @@ impl Viewport {
         if self.fit_pending {
             self.fit(sketches, aspect);
         }
+        if let Some(r) = self.request.take() {
+            self.carry_out(r, sketches, aspect);
+        }
+        let animating = self.step_anim(ui);
         let was_interacting = self.interacting;
-        self.interacting = self.camera_input(ui, &resp, rect);
+        self.interacting = self.camera_input(ui, &resp, rect) || animating;
         if self.interacting {
             // Refine the image once the view stops moving (the renderer never schedules
             // frames on its own).
@@ -328,6 +487,7 @@ impl Viewport {
                 ThemeKind::Light => Theme::Light,
             },
             pixels_per_point: ppp,
+            edges: self.show_edges,
             ..ViewOptions::default()
         };
         let key = FrameKey {
@@ -365,15 +525,58 @@ impl Viewport {
             }
         }
         self.paint_triad(&painter, rect, pal);
+        self.overlays(ui, rect, pal);
 
         if let Some(h) = &self.hover {
             resp.clone().on_hover_text_at_pointer(h.label());
         }
-        if resp.clicked() {
+        if resp.clicked() && self.nav_mode == NavMode::Select {
             out.clicked = Some(self.hover.clone());
         }
         out.hover = self.hover.clone();
         out
+    }
+
+    /// The view cube and the navigation bar, and what they ask for.
+    fn overlays(&mut self, ui: &mut egui::Ui, rect: Rect, pal: &Palette) {
+        let cube = viewport_nav::view_cube(ui, rect, &self.camera, pal);
+        self.overlay_bottom = cube.rect.bottom();
+        if let Some(t) = cube.clicked {
+            self.request = Some(NavRequest::View(t));
+            ui.ctx().request_repaint();
+        }
+        if let Some(d) = cube.orbit {
+            self.anim = None;
+            self.camera.orbit_pixels(f64::from(d.x), f64::from(d.y), f64::from(rect.height()));
+        }
+        let state = NavState {
+            mode: self.nav_mode,
+            orthographic: self.camera.projection == Projection::Orthographic,
+            edges: self.show_edges,
+        };
+        if let Some(b) = viewport_nav::nav_bar(ui, rect, state, pal) {
+            self.nav_button(b);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// A navigation bar button was pressed.
+    pub fn nav_button(&mut self, b: NavButton) {
+        let toggle = |cur: NavMode, to: NavMode| if cur == to { NavMode::Select } else { to };
+        match b {
+            NavButton::Orbit => self.nav_mode = toggle(self.nav_mode, NavMode::Orbit),
+            NavButton::Pan => self.nav_mode = toggle(self.nav_mode, NavMode::Pan),
+            NavButton::Zoom => self.nav_mode = toggle(self.nav_mode, NavMode::Zoom),
+            NavButton::Fit => self.request = Some(NavRequest::Fit),
+            NavButton::Home => self.request = Some(NavRequest::Home),
+            NavButton::Projection => {
+                self.camera.projection = match self.camera.projection {
+                    Projection::Perspective => Projection::Orthographic,
+                    Projection::Orthographic => Projection::Perspective,
+                };
+            }
+            NavButton::Edges => self.show_edges = !self.show_edges,
+        }
     }
 
     /// CPU path: re-rasterizes only when the frame key changed.

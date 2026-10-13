@@ -12,9 +12,11 @@ use crate::forms::{self, Form};
 use crate::i18n::tr;
 use crate::icons::{self, Icon};
 use crate::link::{self, Snapshot, Waker};
+use crate::ribbon::{self, Action, Ribbon};
 use crate::theme::{self, ThemeKind};
 use crate::timeline;
-use crate::viewport::{BodyInfo, DrawSketch, Hit, Viewport};
+use crate::viewport::{BodyInfo, DrawSketch, Hit, NavRequest, Viewport};
+use crate::viewport_nav::NavMode;
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
 use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
@@ -102,6 +104,9 @@ pub enum Then {
     Notice,
     /// It came from the open form: close the form, or show the error in it.
     Form,
+    /// A read-only inspection (measure, overview): like `Form`, then show the result in a
+    /// dialog.
+    Show,
     /// It came from the code view: clear or show the parse error there.
     Code,
     /// Only report errors.
@@ -241,6 +246,10 @@ pub struct App {
     /// Set when the window may close (after the close dialog).
     pub allow_close: bool,
     pub show_iterations: bool,
+    /// The sketch being edited: the Sketch tab and its tools are active (DESIGN.md §2).
+    active_sketch: Option<String>,
+    /// The active sketch was seen in the document (a new one is not in the snapshot yet).
+    active_sketch_seen: bool,
     /// Sketch visibility the user chose in the browser (overrides the default: sketches
     /// used as a profile are hidden, others shown).
     pub sketch_visibility: std::collections::BTreeMap<String, bool>,
@@ -307,6 +316,8 @@ impl App {
             send_close: false,
             allow_close: false,
             show_iterations: false,
+            active_sketch: None,
+            active_sketch_seen: false,
             sketch_visibility: std::collections::BTreeMap::new(),
             agents,
         }
@@ -620,16 +631,46 @@ impl App {
                     self.report(id, &result);
                 }
             }
+            Then::Show => {
+                let title = gusset_commands::find(id).map_or(id, |s| s.title);
+                match result {
+                    Ok(v) => {
+                        if self.form.as_ref().is_some_and(|f| f.command == id) {
+                            self.form = None;
+                        }
+                        self.dialog = Some(Dialog::Message { title: title.into(), body: inspect_text(&v) });
+                    }
+                    Err(e) => match self.form.as_mut().filter(|f| f.command == id) {
+                        Some(form) => {
+                            form.error = Some(match &e.hint {
+                                Some(h) => format!("{} — {}: {h}", e.message, tr("error.fix")),
+                                None => e.message.clone(),
+                            });
+                        }
+                        None => self.report(id, &Err(e)),
+                    },
+                }
+            }
             Then::Form => {
                 let Some(form) = self.form.as_mut().filter(|f| f.command == id) else {
                     self.report(id, &result);
                     return;
                 };
                 match result {
-                    Ok(_) => {
+                    Ok(v) => {
                         let title = form.title;
                         self.form = None;
                         self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
+                        if id == "sketch.create"
+                            && let Some(name) = v.get("sketch").and_then(Value::as_str)
+                        {
+                            // A new sketch is edited right away.
+                            self.active_sketch = Some(name.to_string());
+                            self.active_sketch_seen = false;
+                        } else if id.starts_with("feature.") && self.active_sketch.is_some() {
+                            // A solid feature made from the sketch: its editing is over.
+                            self.active_sketch = None;
+                        }
                     }
                     Err(e) => {
                         form.error = Some(match &e.hint {
@@ -666,7 +707,8 @@ impl App {
         let Some(spec) = gusset_commands::find(id) else { return };
         let mut form = Form::new(spec);
         if form.fields.is_empty() {
-            self.submit_command(spec.id, json!({}), Then::Notice);
+            let then = if inspects(spec.id) { Then::Show } else { Then::Notice };
+            self.submit_command(spec.id, json!({}), then);
             return;
         }
         self.prefill(&mut form);
@@ -697,6 +739,10 @@ impl App {
         let face =
             self.selection.iter().find_map(|h| if let Hit::Face { name, .. } = h { Some(name.as_str()) } else { None });
         form.set("plane", face.unwrap_or("XY"));
+        // The sketch being edited wins over "the latest sketch".
+        if let Some(s) = &self.active_sketch {
+            form.set("sketch", s);
+        }
     }
 
     /// Sends the open form's command; the form closes when it succeeded.
@@ -706,7 +752,7 @@ impl App {
             Ok(args) => {
                 form.error = None;
                 let id = form.command;
-                self.submit_command(id, args, Then::Form);
+                self.submit_command(id, args, if inspects(id) { Then::Show } else { Then::Form });
             }
             Err(msg) => form.error = Some(msg),
         }
@@ -1025,8 +1071,18 @@ impl App {
             ctx.request_repaint_after(t.saturating_duration_since(Instant::now()));
         }
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        self.viewport.reduce_motion = self.reduce_motion;
+        self.check_active_sketch();
+        let pal = *theme::palette(self.theme);
+        let bar = |fill: egui::Color32, top: i8, bottom: i8| {
+            egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 8, right: 8, top, bottom })
+        };
+        egui::Panel::top("titlebar").frame(bar(pal.bg_app, 3, 3)).show(ui, |ui| self.title_bar(ui));
+        egui::Panel::top("tabs")
+            .frame(bar(pal.bg_panel, 4, 2))
+            .show_separator_line(false)
+            .show(ui, |ui| self.workspace_tabs(ui));
+        egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
         egui::Panel::left("browser")
@@ -1081,6 +1137,7 @@ impl App {
             self.form = None;
             self.palette = None;
             self.selection.clear();
+            self.viewport.nav_mode = NavMode::Select;
         }
         // Single-key command shortcuts only when no text field has focus.
         if !ctx.egui_wants_keyboard_input() && self.form.is_none() && self.palette.is_none() {
@@ -1093,8 +1150,14 @@ impl App {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut Ui) {
+    /// The title bar: app mark, menus, open/save/undo/redo, the document tab, the agents
+    /// toggle and the version.
+    fn title_bar(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
         egui::MenuBar::new().ui(ui, |ui| {
+            icons::icon(ui, Icon::Diamond, pal.accent);
+            ui.label(RichText::new(tr("app.title")).strong());
+            ui.add_space(theme::SPACE[2]);
             ui.menu_button(tr("menu.file"), |ui| {
                 if ui.button(tr("menu.open")).clicked() {
                     self.dialog = Some(Dialog::Path { purpose: PathPurpose::Open, text: String::new(), error: None });
@@ -1145,7 +1208,7 @@ impl App {
                     self.toggle_code();
                 }
                 if ui.button("Fit view").clicked() {
-                    self.viewport.fit_pending = true;
+                    self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
             });
@@ -1158,7 +1221,124 @@ impl App {
                     self.agents.show_panel = true;
                 }
             });
+            ui.separator();
+            if ribbon::icon_button(ui, &pal, icons::Tool::Open, "Open project").clicked() {
+                self.dialog = Some(Dialog::Path { purpose: PathPurpose::Open, text: String::new(), error: None });
+            }
+            if ribbon::icon_button(ui, &pal, icons::Tool::Save, "Save project (Ctrl+S)").clicked() {
+                self.save();
+            }
+            if ribbon::icon_button(ui, &pal, icons::Tool::Undo, "Undo (Ctrl+Z)").clicked() {
+                self.submit_command("history.undo", json!({}), Then::Notice);
+            }
+            if ribbon::icon_button(ui, &pal, icons::Tool::Redo, "Redo (Ctrl+Shift+Z)").clicked() {
+                self.submit_command("history.redo", json!({}), Then::Notice);
+            }
+            ui.separator();
+            let name = self
+                .project_path
+                .as_deref()
+                .and_then(|p| p.file_stem())
+                .map_or_else(|| tr("title.untitled").to_string(), |n| n.to_string_lossy().into_owned());
+            egui::Frame::new()
+                .fill(pal.bg_panel)
+                .stroke(egui::Stroke::new(1.0, pal.border))
+                .corner_radius(theme::RADIUS_SM)
+                .inner_margin(egui::Margin::symmetric(10, 1))
+                .show(ui, |ui| {
+                    ui.label(name);
+                    if self.is_dirty() {
+                        icons::icon(ui, Icon::Dot, pal.warning);
+                    }
+                });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+                let shown = self.agents.show_panel;
+                let agents = ribbon::icon_button_with(ui, &pal, "Agents panel", Some(shown), |p, r| {
+                    icons::paint(p, r.shrink(6.0), Icon::Diamond, pal.agent);
+                });
+                if agents.clicked() {
+                    self.agents.show_panel = !self.agents.show_panel;
+                }
+            });
         });
+    }
+
+    /// The Design workspace switcher, the SOLID / SKETCH tabs and the command search.
+    fn workspace_tabs(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
+        let action = ribbon::tabs(ui, &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref() });
+        if let Some(a) = action {
+            self.ribbon_action(a);
+        }
+    }
+
+    /// The ribbon of the active tab.
+    fn ribbon(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
+        let action = ribbon::show(ui, &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref() });
+        if let Some(a) = action {
+            self.ribbon_action(a);
+        }
+    }
+
+    /// Carries out what the tabs or the ribbon reported.
+    pub fn ribbon_action(&mut self, action: Action) {
+        match action {
+            Action::Run(id) => self.start_command(id),
+            Action::Search => self.palette = Some(String::new()),
+            Action::SolidTab | Action::FinishSketch => self.finish_sketch(),
+            Action::SketchTab => {
+                let latest = self
+                    .snapshot
+                    .doc
+                    .features
+                    .iter()
+                    .rev()
+                    .find(|f| matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)))
+                    .map(|f| f.name.clone());
+                match latest {
+                    Some(name) => self.edit_sketch(&name),
+                    None => self.start_command("sketch.create"),
+                }
+            }
+        }
+    }
+
+    /// The sketch being edited, if any.
+    pub fn active_sketch(&self) -> Option<&str> {
+        self.active_sketch.as_deref()
+    }
+
+    /// Starts editing an existing sketch: the Sketch tab and its tools become active.
+    pub fn edit_sketch(&mut self, name: &str) {
+        self.active_sketch = Some(name.to_string());
+        self.active_sketch_seen = true;
+        self.sketch_visibility.insert(name.to_string(), true);
+    }
+
+    /// Ends sketch editing (the Solid tab comes back).
+    pub fn finish_sketch(&mut self) {
+        self.active_sketch = None;
+        if self.form.as_ref().is_some_and(|f| f.command.starts_with("sketch.")) {
+            self.form = None;
+        }
+    }
+
+    /// Leaves sketch editing when the sketch is gone (undo, another document).
+    fn check_active_sketch(&mut self) {
+        let Some(name) = &self.active_sketch else { return };
+        let present = self
+            .snapshot
+            .doc
+            .features
+            .iter()
+            .any(|f| &f.name == name && matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)));
+        if present {
+            self.active_sketch_seen = true;
+        } else if self.active_sketch_seen {
+            self.active_sketch = None;
+        }
     }
 
     pub fn diagnostics(&self) -> String {
@@ -1176,10 +1356,14 @@ impl App {
 
     /// The sketch the open command form edits, if any (its sketch stays visible).
     pub fn editing_sketch(&self) -> Option<&str> {
-        let form = self.form.as_ref().filter(|f| f.command.starts_with("sketch.") && f.command != "sketch.create")?;
-        let f = form.fields.iter().find(|f| f.name == "sketch")?;
-        let name = f.value.trim();
-        (!name.is_empty()).then_some(name)
+        let from_form = self
+            .form
+            .as_ref()
+            .filter(|f| f.command.starts_with("sketch.") && f.command != "sketch.create")
+            .and_then(|form| form.fields.iter().find(|f| f.name == "sketch"))
+            .map(|f| f.value.trim())
+            .filter(|n| !n.is_empty());
+        from_form.or(self.active_sketch.as_deref())
     }
 
     /// Whether a sketch is drawn in the viewport: the one being edited, one the user
@@ -1199,30 +1383,6 @@ impl App {
             Some(_) => None,
             None => Some((self.snapshot.doc.to_text(), None)),
         };
-    }
-
-    fn toolbar(&mut self, ui: &mut Ui) {
-        use gusset_commands::Category;
-        ui.horizontal_wrapped(|ui| {
-            for (cat, label) in [
-                (Category::Sketch, tr("tab.sketch")),
-                (Category::Solid, tr("tab.solid")),
-                (Category::Parameters, tr("browser.parameters")),
-                (Category::Exchange, tr("menu.export")),
-            ] {
-                ui.label(RichText::new(label).small().weak());
-                for spec in registry().iter().filter(|s| s.category == cat && s.flags.mutating) {
-                    let b = ui.button(spec.title).on_hover_text(spec.description);
-                    if b.clicked() {
-                        self.start_command(spec.id);
-                    }
-                }
-                ui.separator();
-            }
-            if ui.button(format!("🔍 {}", tr("search.hint"))).clicked() {
-                self.palette = Some(String::new());
-            }
-        });
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -1276,6 +1436,7 @@ impl App {
         let doc = self.snapshot.doc.clone();
         let eval = self.scene.as_ref().map(|s| s.eval.clone());
         let pal = *theme::palette(self.theme);
+        let mut edit: Option<String> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::CollapsingHeader::new(tr("browser.parameters")).default_open(true).show(ui, |ui| {
                 for p in &doc.params {
@@ -1325,7 +1486,15 @@ impl App {
                             ui.allocate_exact_size(egui::Vec2::splat(s), egui::Sense::hover());
                         }
                         icons::icon(ui, icon, col);
-                        ui.label(text)
+                        let label = egui::Label::new(text);
+                        let resp = ui.add(if is_sketch { label.sense(egui::Sense::click()) } else { label });
+                        if is_sketch {
+                            if resp.double_clicked() {
+                                edit = Some(f.name.clone());
+                            }
+                            return resp.on_hover_text(tr("browser.edit_sketch"));
+                        }
+                        resp
                     });
                     if toggled {
                         self.sketch_visibility.insert(f.name.clone(), !shown);
@@ -1371,6 +1540,9 @@ impl App {
                 }
             });
         });
+        if let Some(name) = edit {
+            self.edit_sketch(&name);
+        }
     }
 
     fn timeline(&mut self, ui: &mut Ui) {
@@ -1501,6 +1673,8 @@ impl App {
     }
 
     fn form_window(&mut self, ctx: &egui::Context) {
+        // Below the view cube, which sits at the viewport's top right.
+        let form_top = (self.viewport.overlay_bottom + 8.0).max(80.0);
         let Some(form) = self.form.as_mut() else { return };
         let mut open = true;
         let mut submit = false;
@@ -1509,7 +1683,7 @@ impl App {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 80.0))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, form_top))
             .show(ctx, |ui| submit = forms::show(ui, form));
         if submit {
             self.apply_form();
@@ -1807,7 +1981,7 @@ impl App {
                 let mut keep = true;
                 modal.show(ctx, |ui| {
                     ui.heading(&title);
-                    ui.label(&body);
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| ui.label(&body));
                     if ui.button(tr("dialog.ok")).clicked() {
                         keep = false;
                     }
@@ -2054,6 +2228,25 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
     }
     d.points = s.points.values().map(|&p| w(p)).collect();
     d
+}
+
+/// Whether a command only reads the model and reports a result (measure, overview).
+fn inspects(id: &str) -> bool {
+    gusset_commands::find(id).is_some_and(|s| s.category == gusset_commands::Category::Inspect)
+}
+
+/// A command result as readable text for the inspection dialog.
+fn inspect_text(v: &Value) -> String {
+    const MAX_LINES: usize = 60;
+    let text = serde_json::to_string_pretty(v).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let more = lines.len().saturating_sub(MAX_LINES);
+    lines.truncate(MAX_LINES);
+    let mut out = lines.join("\n");
+    if more > 0 {
+        out.push_str(&format!("\n… {more} more lines"));
+    }
+    out
 }
 
 /// Command search: every query word must appear in the title, id or description;
