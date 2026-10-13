@@ -104,23 +104,47 @@ they were. It never crashes, freezes without a way out, or exhausts the computer
 
 ## 2. Layout
 
+Fusion-style, after SolidCraft's layout which the owner likes (ADR 0023), in Gusset's own
+design system:
+
 ```
-┌───────────────────────────────────────────────────────────────────────┐
-│ [Workspace ▾ Design]  Solid │ Sketch │ Inspect      (Ctrl+K search)   │  contextual tabbed toolbar
-├────────────┬──────────────────────────────────────────┬───────────────┤
-│ Browser    │                                          │ Properties /  │
-│ - Bodies   │              viewport                    │ command panel │
-│ - Sketches │                         [view cube]      │ (essentials,  │
-│ - Params   │                                          │  "More" ▸)    │
-├────────────┴──────────────────────────────────────────┴───────────────┤
-│ ◀ timeline: [S1][Ext1][Fil1]│▶ rollback marker     (expand ▴ graph)   │
-└───────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ ◆ Gusset  📂 💾 ↶ ↷        [ document tab ]                     agents ● v0.x │  title bar
+├───────────────────────────────────────────────────────────────────────────────┤
+│        SOLID   SURFACE   SKETCH   INSPECT   (tabs appear as features ship)     │  workspace tabs
+│ [DESIGN ▾]  ⬚ ⬆ ↻ ⬡ │ ◜ ◇ ⧉ ✥ │ ⊞ │ 📏 │ ⇩ │ ⌖     (Ctrl+K search)          │  ribbon: icon tools
+│ workspace   CREATE ▾  MODIFY ▾ CONSTRUCT▾ INSPECT▾ INSERT▾ SELECT▾             │  in dropdown groups
+├────────────┬───────────────────────────────────────────────────┬──────────────┤
+│ BROWSER    │                                         ┌──────┐  │ Properties / │
+│ ▾ Document │                                         │ TOP  │  │ command panel│
+│ ▸ Settings │                 viewport                │FRONT │  │ (essentials, │
+│ ▸ Origin   │                                         └──────┘  │  "More" ▸)   │
+│ ▾ Bodies   │                                                   │              │
+│ ▾ Sketches │            ⟳ ✥ 🔍 ⛶ ⌂ ◫ ⚙   (navigation bar)       │              │
+│ ▸ Params   │                                                   │              │
+│ ▸ Branches │                                                   │              │
+├────────────┴───────────────────────────────────────────────────┴──────────────┤
+│ › type a command, e.g. extrude {distance: 20} — or press S to search          │  command line
+│ ⏮ ◀ ▶ ⏭  [▱S1][⬆Ext1][◜Fil1]│ rollback marker              (expand ▴ graph)   │  timeline
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
-- The workspace switcher shows Design first. Assemble, Drawing, Render and Manufacture
-  appear as they ship.
-- The toolbar switches to sketch tools when a sketch is active, with a prominent
-  "Finish sketch".
-- The timeline expands into the full iteration graph (branches, stars, colors).
+- Title bar: app mark, open/save/undo/redo, the document tab(s), agent activity, version.
+- Workspace tabs switch tool sets: Solid first; Sketch replaces the ribbon while a sketch
+  is active (with a prominent "Finish sketch"); Surface, Assemble, Drawing, Render and
+  Manufacture appear as they ship. The workspace switcher (Design ▾) sits at the left.
+- Ribbon: large icon tools for the most used commands, each group a dropdown with the
+  rest (Create: sketch, extrude, revolve, sweep, loft, hole, generators...; Modify:
+  fillet, chamfer, shell, combine, move, pattern, mirror; Construct: planes; Inspect:
+  measure, section; Insert: import; Select: filters). Every tool is also in Ctrl+K search.
+- Browser: Document settings (units), Origin (planes, axes), Bodies (visibility eye),
+  Sketches (with DOF), Parameters, Branches; "show unused sketches" toggle.
+- Viewport: view cube (top right, clickable faces/edges/corners), navigation bar (bottom
+  centre: orbit, pan, zoom, fit, home, view style, settings), axis triad.
+- Command line: typed commands with JSON-ish arguments, the same registry as MCP.
+- Timeline: playback controls, one icon per feature, rollback marker; expands into the
+  full iteration graph (branches, stars, colors).
+- Icons are code-drawn (no image assets) and themed with our tokens. Widgets adapted from
+  SolidCraft keep its MIT/Apache attribution (ADR 0023).
 
 ## 3. Design tokens
 
