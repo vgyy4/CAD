@@ -197,10 +197,21 @@ fn crossing_sign(a: &Cv, b: &Cv, p: V2) -> i8 {
 }
 
 /// Points where two curves meet. `Err(at)` when they overlap along a stretch.
-fn raw_points(a: &Cv, b: &Cv, tol: f64) -> Result<Vec<V2>, V2> {
+/// What stops [`raw_points`]: two curves overlap along a stretch (at this point), or the
+/// intersection work limit was reached.
+enum Stop {
+    Overlap(V2),
+    TooMuchWork,
+}
+
+fn raw_points(a: &Cv, b: &Cv, tol: f64, work: &mut crate::curves::Work) -> Result<Vec<V2>, Stop> {
     if matches!(a.shape, Shape::Spline { .. }) || matches!(b.shape, Shape::Spline { .. }) {
-        return Ok(crate::curves::numeric_hits(a, b, tol));
+        return crate::curves::numeric_hits(a, b, tol, work).map_err(|_| Stop::TooMuchWork);
     }
+    raw_points_analytic(a, b, tol).map_err(Stop::Overlap)
+}
+
+fn raw_points_analytic(a: &Cv, b: &Cv, tol: f64) -> Result<Vec<V2>, V2> {
     let circ = |s: &Shape| match *s {
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => Some((c, r)),
         Shape::Line | Shape::Spline { .. } => None,
@@ -267,6 +278,8 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
     let minx = |i: usize| cvs.get(i).map_or(0.0, |c| c.bbox[0]);
     order.sort_by(|&i, &j| minx(i).total_cmp(&minx(j)).then(i.cmp(&j)));
     let mut count = 0usize;
+    let mut work = crate::curves::Work::default();
+    let too_much = || ProfileError::TooMuchWork { limit: crate::curves::MAX_INTERSECT_WORK };
     for (k, &i) in order.iter().enumerate() {
         let Some(a) = cvs.get(i) else { continue };
         for &j in order.iter().skip(k + 1) {
@@ -277,9 +290,12 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
             if b.bbox[1] > a.bbox[3] + tol || b.bbox[3] < a.bbox[1] - tol {
                 continue;
             }
-            let pts = raw_points(a, b, tol).map_err(|at| {
-                let (x, y) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
-                ProfileError::SelfIntersecting { a: x, b: y, at }
+            let pts = raw_points(a, b, tol, &mut work).map_err(|stop| match stop {
+                Stop::Overlap(at) => {
+                    let (x, y) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
+                    ProfileError::SelfIntersecting { a: x, b: y, at }
+                }
+                Stop::TooMuchWork => too_much(),
             })?;
             if pts.is_empty() {
                 continue;
@@ -319,6 +335,7 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
             }
         }
     }
+
     Ok(Splits { per_curve, crossings })
 }
 

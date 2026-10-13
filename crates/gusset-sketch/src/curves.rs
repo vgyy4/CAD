@@ -12,6 +12,29 @@ use crate::spline;
 
 const TAU: f64 = core::f64::consts::TAU;
 
+/// Most elementary steps (cell-pair tests, segment-pair tests and Newton iterations; about
+/// 0.2 µs each in a release build) one arrangement may spend intersecting curves with
+/// splines (security review V2). Splines that run close together along long stretches cost
+/// work in proportion to their length for every pair of them: twenty 1,000-point splines
+/// 0.0001 mm apart needed 193 million steps (35 s). The densest sketches in the tests (six
+/// crossing 60-point splines, six parallel 1,000-point ones 1 mm apart) need at most 70,000.
+pub(crate) const MAX_INTERSECT_WORK: u64 = 5_000_000;
+
+/// The intersection work limit was reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TooMuchWork;
+
+/// Work spent so far against [`MAX_INTERSECT_WORK`].
+#[derive(Debug, Default)]
+pub(crate) struct Work(u64);
+
+impl Work {
+    pub(crate) fn charge(&mut self, n: u64) -> Result<(), TooMuchWork> {
+        self.0 = self.0.saturating_add(n);
+        if self.0 > MAX_INTERSECT_WORK { Err(TooMuchWork) } else { Ok(()) }
+    }
+}
+
 /// Parameter range of a curve.
 pub(crate) fn domain(cv: &Cv) -> (f64, f64) {
     match &cv.shape {
@@ -107,11 +130,12 @@ fn seg_dist(a0: V2, a1: V2, b0: V2, b1: V2) -> f64 {
 }
 
 /// Newton refinement of `a(ua) = b(ub)`. `None` when it does not converge to a point of both
-/// curves (or the curves are tangent there).
-fn refine(a: &Cv, b: &Cv, mut ua: f64, mut ub: f64, tol: f64) -> Option<(f64, f64, V2)> {
+/// curves (or the curves are tangent there). Every iteration is one unit of `work`.
+fn refine(a: &Cv, b: &Cv, mut ua: f64, mut ub: f64, tol: f64, work: &mut u64) -> Option<(f64, f64, V2)> {
     let (da, db) = (domain(a), domain(b));
     let slack = |cv: &Cv, u: f64| tol / norm(eval(cv, u).1).max(1e-12);
     for _ in 0..50 {
+        *work += 1;
         let ((pa, va), (pb, vb)) = (eval(a, ua), eval(b, ub));
         let f = sub(pa, pb);
         if norm(f) <= tol * 0.01 {
@@ -140,36 +164,100 @@ fn refine(a: &Cv, b: &Cv, mut ua: f64, mut ub: f64, tol: f64) -> Option<(f64, f6
     Some((ua.clamp(da.0, da.1), ub.clamp(db.0, db.1), scale(add(pa, pb), 0.5)))
 }
 
-/// Intersections of two curves of which at least one is a spline. Tangential touches (no
-/// transversal crossing) are not found.
-pub(crate) fn numeric_hits(a: &Cv, b: &Cv, tol: f64) -> Vec<V2> {
-    let (ca, cb) = (cells(a), cells(b));
-    let mut out: Vec<V2> = Vec::new();
-    for x in &ca {
-        for y in &cb {
-            // Flattening error is well below this; Newton decides what is a real hit.
-            let diag = |c: &Cell| norm([c.bbox[2] - c.bbox[0], c.bbox[3] - c.bbox[1]]);
-            let eps = 2e-3 * diag(x).max(diag(y)) + tol;
-            if !overlap(&x.bbox, &y.bbox, eps) {
-                continue;
-            }
-            for sa in x.pts.windows(2) {
-                let &[(ua0, pa0), (ua1, pa1)] = sa else { continue };
-                for sb in y.pts.windows(2) {
-                    let &[(ub0, pb0), (ub1, pb1)] = sb else { continue };
-                    if seg_dist(pa0, pa1, pb0, pb1) > eps {
-                        continue;
-                    }
-                    if let Some((_, _, p)) = refine(a, b, 0.5 * (ua0 + ua1), 0.5 * (ub0 + ub1), tol)
-                        && !out.iter().any(|q| dist(*q, p) <= 10.0 * tol)
-                    {
-                        out.push(p);
-                    }
+fn diag(c: &Cell) -> f64 {
+    norm([c.bbox[2] - c.bbox[0], c.bbox[3] - c.bbox[1]])
+}
+
+/// How close two cells must come to be searched for hits. Flattening error is well below
+/// this; Newton decides what is a real hit.
+fn cell_eps(x: &Cell, y: &Cell, tol: f64) -> f64 {
+    2e-3 * diag(x).max(diag(y)) + tol
+}
+
+/// The pairs `(i, j)` of cells of `ca` and `cb` whose boxes overlap (within [`cell_eps`]),
+/// in `(i, j)` order. The cells of `cb` are sorted by their left edge, so each cell of `ca`
+/// only meets those within reach in x (security review V2: every pair was tested before).
+fn overlapping_cells(ca: &[Cell], cb: &[Cell], tol: f64, work: &mut Work) -> Result<Vec<(usize, usize)>, TooMuchWork> {
+    let finite = ca.iter().chain(cb).all(|c| c.bbox.iter().all(|v| v.is_finite()));
+    let mut pairs = Vec::new();
+    if !finite {
+        // Unreachable for validated sketches; keep the plain all-pairs search for them.
+        for (i, x) in ca.iter().enumerate() {
+            work.charge(cb.len() as u64)?;
+            for (j, y) in cb.iter().enumerate() {
+                if overlap(&x.bbox, &y.bbox, cell_eps(x, y, tol)) {
+                    pairs.push((i, j));
                 }
             }
         }
+        return Ok(pairs);
     }
-    out
+    // Every pair's eps is at most `pad`; a cell of `cb` that reaches back to `x` starts at
+    // most its width (at most `wide`) before `x`'s left edge minus `pad`.
+    let pad = 2e-3 * ca.iter().chain(cb).map(diag).fold(0.0, f64::max) + tol;
+    let wide = cb.iter().map(|c| c.bbox[2] - c.bbox[0]).fold(0.0, f64::max);
+    let mut order: Vec<usize> = (0..cb.len()).collect();
+    order.sort_by(|&i, &j| {
+        let key = |k: usize| cb.get(k).map_or(0.0, |c| c.bbox[0]);
+        key(i).total_cmp(&key(j)).then(i.cmp(&j))
+    });
+    let left: Vec<f64> = order.iter().map(|&j| cb.get(j).map_or(0.0, |c| c.bbox[0])).collect();
+    for (i, x) in ca.iter().enumerate() {
+        let lo = left.partition_point(|&m| m < x.bbox[0] - pad - wide);
+        let hi = left.partition_point(|&m| m <= x.bbox[2] + pad);
+        let near = order.get(lo..hi.max(lo)).unwrap_or(&[]);
+        work.charge(near.len() as u64 + 1)?;
+        for &j in near {
+            if let Some(y) = cb.get(j)
+                && overlap(&x.bbox, &y.bbox, cell_eps(x, y, tol))
+            {
+                pairs.push((i, j));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    Ok(pairs)
+}
+
+/// Intersections of two curves of which at least one is a spline. Tangential touches (no
+/// transversal crossing) are not found. Fails when `work` passes [`MAX_INTERSECT_WORK`].
+pub(crate) fn numeric_hits(a: &Cv, b: &Cv, tol: f64, work: &mut Work) -> Result<Vec<V2>, TooMuchWork> {
+    let (ca, cb) = (cells(a), cells(b));
+    let mut out: Vec<V2> = Vec::new();
+    for (i, j) in overlapping_cells(&ca, &cb, tol, work)? {
+        let (Some(x), Some(y)) = (ca.get(i), cb.get(j)) else { continue };
+        let eps = cell_eps(x, y, tol);
+        // A cell pair costs a few units for the box tests below; each distance test and
+        // Newton iteration one more.
+        let mut steps = 4u64;
+        // Segments whose boxes are more than `eps` apart are further apart than that.
+        let apart = |p0: V2, p1: V2, q0: V2, q1: V2| {
+            p0[0].max(p1[0]) + eps < q0[0].min(q1[0])
+                || q0[0].max(q1[0]) + eps < p0[0].min(p1[0])
+                || p0[1].max(p1[1]) + eps < q0[1].min(q1[1])
+                || q0[1].max(q1[1]) + eps < p0[1].min(p1[1])
+        };
+        for sa in x.pts.windows(2) {
+            let &[(ua0, pa0), (ua1, pa1)] = sa else { continue };
+            for sb in y.pts.windows(2) {
+                let &[(ub0, pb0), (ub1, pb1)] = sb else { continue };
+                if apart(pa0, pa1, pb0, pb1) {
+                    continue;
+                }
+                steps += 1;
+                if seg_dist(pa0, pa1, pb0, pb1) > eps {
+                    continue;
+                }
+                if let Some((_, _, p)) = refine(a, b, 0.5 * (ua0 + ua1), 0.5 * (ub0 + ub1), tol, &mut steps)
+                    && !out.iter().any(|q| dist(*q, p) <= 10.0 * tol)
+                {
+                    out.push(p);
+                }
+            }
+        }
+        work.charge(steps)?;
+    }
+    Ok(out)
 }
 
 /// Parameter of the curve point nearest to `p` (for a spline, a hit position found earlier).
