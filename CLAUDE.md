@@ -49,4 +49,6 @@ Without `GUSSET_OCCT_DIR` everything else builds and tests against `MockKernel`.
 - Offloading (ADR 0021): mechanical tasks may go to Codex via the isolated wrapper in the
   scratch `tools/` dir (`--sandbox workspace-write`, a remote-less copy); review and
   commit its output yourself. `scripts/check-secrets.sh` must stay green (CI + pre-push).
+  Owner rule: Codex/Gemini get only simple, mechanical tasks (they are weaker models);
+  anything complex is done directly or by a Sonnet subagent.
 - Branch: this session pushes only to `claude/new-session-nedlj5`, which plays "main".
