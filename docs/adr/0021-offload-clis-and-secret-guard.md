@@ -59,6 +59,16 @@ It runs as the first CI job (full history) and as a local `pre-push` hook in the
 development container. A failure means removing the data; unpublished commits may be
 rewritten, published history is not (PROMPT.md), and a leaked token is revoked instead.
 
+### 5. State on 2026-10-13
+- Codex: signed in with the owner's ChatGPT account (device code). Models offered:
+  GPT-6-Luna (default, fast), GPT-5.6-Terra, GPT-5.6-Luna. The Linux sandbox needs
+  bubblewrap, installed from the Ubuntu archive; checked: inside `workspace-write` a
+  command can write only its working copy and has no network.
+- Gemini CLI: signed in, but Google refuses the account's tier ("Gemini Code Assist
+  for individuals" free tier is no longer supported by this client). Not usable unless
+  the owner adds a paid plan or a `GEMINI_API_KEY` environment secret.
+- The OpenAI hosts were added to the environment's network allow list by the owner.
+
 ## Consequences
 - Repository content (not secrets) is shared with Google and OpenAI under the owner's
   accounts and their terms.
