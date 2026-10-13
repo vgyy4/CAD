@@ -11,20 +11,28 @@ pub const MAX_RENDER_SIZE: u32 = 2048;
 /// Largest PNG we pass back to an agent.
 pub const MAX_PNG_BYTES: usize = 16 << 20;
 
-/// A camera given explicitly (model coordinates, mm).
+/// An explicit eye/target camera or an orbit camera in degrees.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Camera {
-    /// Eye position.
-    pub eye: [f64; 3],
-    /// Point looked at.
-    pub target: [f64; 3],
+    /// Eye position in model coordinates; give with `target` instead of orbit angles.
+    #[serde(default)]
+    pub eye: Option<[f64; 3]>,
+    /// Point looked at in model coordinates; give with `eye` instead of orbit angles.
+    #[serde(default)]
+    pub target: Option<[f64; 3]>,
     /// Up direction (default +Z).
     #[serde(default = "default_up")]
     pub up: [f64; 3],
     /// Orthographic projection instead of perspective.
     #[serde(default)]
     pub orthographic: bool,
+    /// Orbit azimuth in degrees, counter-clockwise from +X in the XY plane.
+    #[serde(default)]
+    pub azimuth: Option<f64>,
+    /// Orbit elevation in degrees above the XY plane.
+    #[serde(default)]
+    pub elevation: Option<f64>,
 }
 
 fn default_up() -> [f64; 3] {
@@ -49,6 +57,8 @@ pub enum NamedView {
     /// Isometric (default).
     #[default]
     Iso,
+    /// Isometric view from the opposite azimuth to `iso`.
+    IsoBack,
     Front,
     Back,
     Top,
@@ -101,12 +111,39 @@ impl RenderRequest {
         if self.highlight.len() > 1000 || self.highlight.iter().any(|h| h.len() > 512) {
             return Err("too many or too long highlight references".into());
         }
-        if let Some(c) = &self.camera
-            && c.eye.iter().chain(&c.target).chain(&c.up).any(|v| !v.is_finite())
-        {
-            return Err("camera coordinates must be finite numbers".into());
+        if let Some(c) = &self.camera {
+            let explicit = c.eye.is_some() || c.target.is_some();
+            let orbit = c.azimuth.is_some() || c.elevation.is_some();
+            if explicit && orbit {
+                return Err("camera must use eye/target or azimuth/elevation, not both".into());
+            }
+            match (c.eye, c.target, c.azimuth, c.elevation) {
+                (Some(eye), Some(target), None, None) => {
+                    if eye.iter().chain(&target).chain(&c.up).any(|v| !v.is_finite()) {
+                        return Err("camera coordinates must be finite numbers".into());
+                    }
+                }
+                (None, None, Some(azimuth), Some(elevation)) => {
+                    if !azimuth.is_finite() || !elevation.is_finite() {
+                        return Err("camera angles must be finite numbers".into());
+                    }
+                    if !c.up.iter().all(|v| v.is_finite()) {
+                        return Err("camera coordinates must be finite numbers".into());
+                    }
+                }
+                _ => return Err("camera needs eye and target, or azimuth and elevation".into()),
+            }
         }
         Ok(())
+    }
+}
+
+impl Camera {
+    /// Unit vector from the orbit target toward the eye.
+    #[must_use]
+    pub fn orbit_eye_direction(azimuth: f64, elevation: f64) -> [f64; 3] {
+        let (a, e) = (azimuth.to_radians(), elevation.to_radians());
+        [libm::cos(e) * libm::cos(a), libm::cos(e) * libm::sin(a), libm::sin(e)]
     }
 }
 
@@ -164,4 +201,49 @@ impl ViewRenderer for StubRenderer {
 #[must_use]
 pub fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orbit_angles_give_expected_eye_direction() {
+        let direction = Camera::orbit_eye_direction(90.0, 30.0);
+        assert!(direction[0].abs() < 1e-12);
+        assert!((direction[1] - libm::cos(30.0_f64.to_radians())).abs() < 1e-12);
+        assert!((direction[2] - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn camera_forms_are_mutually_exclusive() {
+        let request: RenderRequest = serde_json::from_value(serde_json::json!({
+            "camera": {
+                "eye": [1.0, 2.0, 3.0], "target": [0.0, 0.0, 0.0],
+                "azimuth": 30.0, "elevation": 20.0
+            }
+        }))
+        .unwrap();
+        assert!(request.validate().unwrap_err().contains("not both"));
+    }
+
+    #[test]
+    fn non_finite_orbit_angles_are_refused() {
+        let request = RenderRequest {
+            view: NamedView::default(),
+            camera: Some(Camera {
+                eye: None,
+                target: None,
+                up: default_up(),
+                orthographic: false,
+                azimuth: Some(30.0),
+                elevation: Some(f64::NAN),
+            }),
+            width: default_size(),
+            height: default_height(),
+            style: RenderStyle::default(),
+            highlight: Vec::new(),
+        };
+        assert!(request.validate().unwrap_err().contains("finite"));
+    }
 }

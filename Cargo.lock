@@ -1704,6 +1704,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libm",
  "rmcp",
  "schemars",
  "serde",

@@ -32,11 +32,11 @@ pub struct Hole {
     /// e.g. Extrude1/cap(end)
     #[schemars(extend("x-essential" = true))]
     pub face: String,
-    /// Sketch: points, circle centres.
+    /// A sketch whose points and circle centres are the hole sites (any number).
     #[serde(default)]
     #[schemars(extend("x-essential" = true))]
     pub points: Option<String>,
-    /// Or [["10 mm","5 mm"]].
+    /// Or sites as [u, v] in the face's own sketch frame, any number: [["10 mm", "5 mm"], ...].
     #[serde(default)]
     pub at: Option<Vec<[String; 2]>>,
     /// "ISO M6 clearance normal"

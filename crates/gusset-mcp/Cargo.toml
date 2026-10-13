@@ -29,6 +29,7 @@ http.workspace = true
 http-body-util.workspace = true
 bytes.workspace = true
 tokio-util.workspace = true
+libm.workspace = true
 schemars.workspace = true
 directories.workspace = true
 # `render` feature: the real `render_view` renderer (GPU with CPU fallback).

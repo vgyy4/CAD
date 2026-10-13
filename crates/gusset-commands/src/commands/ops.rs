@@ -176,7 +176,7 @@ pub struct PatternLinear {
 impl Command for PatternLinear {
     const ID: &'static str = "feature.pattern_linear";
     const TITLE: &'static str = "Linear pattern";
-    const DESCRIPTION: &'static str = "Repeat a whole body along a direction (count, spacing) and unite the copies with it. Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a whole body along a direction (count, spacing) and unite the copies with it. For holes, use `feature_hole` with several `at` points in one call. Uniting needs the OCCT kernel unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -224,7 +224,7 @@ pub struct PatternCircular {
 impl Command for PatternCircular {
     const ID: &'static str = "feature.pattern_circular";
     const TITLE: &'static str = "Circular pattern";
-    const DESCRIPTION: &'static str = "Repeat a whole body around an axis (count, total angle) and unite the copies with it, e.g. a bolt circle. Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a whole body around an axis (count, total angle) and unite the copies with it, e.g. a bolt circle. For holes, use `feature_hole` with several `at` points in one call. Uniting needs the OCCT kernel unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

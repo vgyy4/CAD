@@ -199,7 +199,7 @@ pub struct Combine {
 impl Command for Combine {
     const ID: &'static str = "feature.combine";
     const TITLE: &'static str = "Combine bodies";
-    const DESCRIPTION: &'static str = "Unite (add), subtract (cut) or intersect tool bodies with a target body; the tools are consumed. To pattern one feature: extrude it as its own body (op new), pattern that body, combine it into the base (cut for holes).";
+    const DESCRIPTION: &'static str = "Unite (add), subtract (cut) or intersect tool bodies with a target body; the tools are consumed. For holes, use `feature_hole` with several `at` points in one call. To pattern one feature: extrude it as its own body (op new), pattern that body, combine it into the base (cut for holes).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

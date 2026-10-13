@@ -33,6 +33,8 @@ pub enum NamedView {
     Right,
     /// Isometric from front-right-top.
     Iso,
+    /// Isometric from the opposite azimuth to `Iso`.
+    IsoBack,
 }
 
 impl NamedView {
@@ -45,6 +47,7 @@ impl NamedView {
         NamedView::Left,
         NamedView::Right,
         NamedView::Iso,
+        NamedView::IsoBack,
     ];
 
     /// Lower-case name (used by MCP `render_view`).
@@ -58,6 +61,7 @@ impl NamedView {
             Self::Left => "left",
             Self::Right => "right",
             Self::Iso => "iso",
+            Self::IsoBack => "iso_back",
         }
     }
 
@@ -80,6 +84,11 @@ impl NamedView {
             Self::Right => ([-1.0, 0.0, 0.0], z),
             Self::Iso => {
                 let f = normalize_or([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0]);
+                let right = normalize_or(cross(f, z), [1.0, 0.0, 0.0]);
+                (f, cross(right, f))
+            }
+            Self::IsoBack => {
+                let f = normalize_or([1.0, -1.0, -1.0], [0.0, -1.0, 0.0]);
                 let right = normalize_or(cross(f, z), [1.0, 0.0, 0.0]);
                 (f, cross(right, f))
             }

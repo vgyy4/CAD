@@ -115,7 +115,7 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
 pub fn build_camera(request: &RenderRequest, scene: &Scene) -> Result<gusset_render::Camera, String> {
     let mut cam = gusset_render::Camera::default();
     match &request.camera {
-        Some(Camera { eye, target, up, orthographic }) => {
+        Some(Camera { eye: Some(eye), target: Some(target), up, orthographic, .. }) => {
             let dir = math::sub(*target, *eye);
             let dist = math::length(dir);
             if !(dist.is_finite() && dist > 1e-9) {
@@ -128,9 +128,19 @@ pub fn build_camera(request: &RenderRequest, scene: &Scene) -> Result<gusset_ren
             cam.orthonormalize();
             cam.projection = if *orthographic { Projection::Orthographic } else { Projection::Perspective };
         }
+        Some(Camera { azimuth: Some(azimuth), elevation: Some(elevation), up, orthographic, .. }) => {
+            let eye_direction = Camera::orbit_eye_direction(*azimuth, *elevation);
+            cam.forward = math::scale(eye_direction, -1.0);
+            cam.up = *up;
+            cam.orthonormalize();
+            cam.projection = if *orthographic { Projection::Orthographic } else { Projection::Perspective };
+            cam.fit(&scene.bounds(), f64::from(request.width) / f64::from(request.height.max(1)));
+        }
+        Some(_) => return Err("camera needs eye and target, or azimuth and elevation".into()),
         None => {
             let (view, ortho) = match request.view {
                 NamedView::Iso => (gusset_render::NamedView::Iso, false),
+                NamedView::IsoBack => (gusset_render::NamedView::IsoBack, false),
                 NamedView::Front => (gusset_render::NamedView::Front, true),
                 NamedView::Back => (gusset_render::NamedView::Back, true),
                 NamedView::Top => (gusset_render::NamedView::Top, true),
