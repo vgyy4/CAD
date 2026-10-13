@@ -427,6 +427,7 @@ impl Command for Hole {
                     | ErrorCode::InvalidSketch
                     | ErrorCode::SketchSolve
                     | ErrorCode::SketchConflict
+                    | ErrorCode::TooComplex
             );
             if user_input {
                 let mut err = CommandError::args(e.message.clone());

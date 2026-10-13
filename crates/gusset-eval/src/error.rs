@@ -18,6 +18,10 @@ pub enum ErrorCode {
     EmptyResult,
     Unsupported,
     MissingBlob,
+    /// The feature exceeds an evaluation work limit ([`crate::EvalLimits`], security review V1).
+    TooComplex,
+    /// The rebuild was cancelled before this feature ran ([`crate::Evaluator::cancel_flag`]).
+    Cancelled,
 }
 
 impl ErrorCode {
@@ -37,6 +41,8 @@ impl ErrorCode {
             ErrorCode::EmptyResult => "empty_result",
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::MissingBlob => "missing_blob",
+            ErrorCode::TooComplex => "too_complex",
+            ErrorCode::Cancelled => "cancelled",
         }
     }
 }

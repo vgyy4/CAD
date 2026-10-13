@@ -1,8 +1,10 @@
-//! Hole feature (ADR 0019): each hole is a revolved profile (mouth, steps, wall, drill point)
-//! cut from the body that owns the face with one boolean.
+//! Hole feature (ADR 0019): each hole is a revolved profile (mouth, steps, wall, drill point);
+//! all of a feature's holes are cut from the body that owns the face in one boolean
+//! (review H3).
 
 use super::*;
-use gusset_doc::{FaceKey, HoleDef, HoleDepth, HolePart, HoleSites, HoleType};
+use crate::ops::Tool;
+use gusset_doc::{FaceKey, HoleDef, HoleDepth, HolePart, HoleSites, HoleType, MAX_HOLE_SITES};
 use gusset_kernel::{Loop2, Mesh, Profile, ProfileEdge, Region2, Seg2, TessellationParams, V3, norm};
 use gusset_naming::hole_tag;
 use std::f64::consts::{PI, TAU};
@@ -145,6 +147,14 @@ impl Evaluator {
             return Err(EvalError::new(name, ErrorCode::InvalidReference, "there are no points to drill")
                 .with_hint("add points to the sketch (circle centres count), or give at: [[u, v]]"));
         }
+        if sites.len() > MAX_HOLE_SITES {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::TooComplex,
+                format!("{} hole positions (at most {MAX_HOLE_SITES} per feature)", sites.len()),
+            )
+            .with_hint("split the holes over several hole features, or use fewer points"));
+        }
         for (i, (a, pa)) in sites.iter().enumerate() {
             if let Some((b, _)) = sites.iter().skip(i + 1).find(|(_, pb)| dist(*pa, *pb) < 1e-6) {
                 return Err(EvalError::new(
@@ -161,8 +171,9 @@ impl Evaluator {
         let mesh = k
             .tessellate(&body.shape, &TessellationParams { linear_deflection: 0.01, angular_deflection: 0.5 })
             .map_err(|ke| kernel_err(name, "face check", ke))?;
+        let outline = FaceOutline::new(&mesh, fi, &frame);
         for (id, pos) in &sites {
-            if !mouth_in_face(&mesh, fi, &frame, *pos, mouth) {
+            if !outline.holds_disc(frame_uv(&frame, *pos), mouth) {
                 let at = frame_uv(&frame, *pos);
                 return Err(EvalError::new(
                     name,
@@ -179,11 +190,13 @@ impl Evaluator {
             }
         }
 
-        // Cut them one after the other.
+        // Every tool has one face per outline edge but the one on the axis.
+        let tool_faces = (dims.outline(1.0).len().saturating_sub(1) * sites.len()) as u64;
+        self.charge(s, name, "the holes", sites.len(), body.topology.faces.len() as u64 + tool_faces)?;
+
+        // Build every tool, then cut them all at once.
         let bbox = k.bbox(&body.shape).map_err(|ke| kernel_err(name, "bounding box", ke))?;
-        let mut shape = body.shape.clone();
-        let mut names = body.names.clone();
-        let mut topo = body.topology.clone();
+        let mut tools = Vec::with_capacity(sites.len());
         let mut infos = Vec::with_capacity(sites.len());
         for (id, pos) in &sites {
             let through_len = if dims.depth.is_none() {
@@ -219,24 +232,7 @@ impl Evaluator {
             let tool_topo = k.topology(&tool.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
             let tool_names = name_body(&OpContext::Hole { feature: name, at: id }, &tool.face_origins, &tool_topo)
                 .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-            let res = k.boolean(BoolOp::Cut, &shape, &tool.shape).map_err(|ke| {
-                let mut e = kernel_err(name, &format!("cutting hole {id}"), ke);
-                e.hint.get_or_insert_with(|| {
-                    "check that the hole fits the part and does not run into other features".into()
-                });
-                e
-            })?;
-            topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
-            if topo.faces.is_empty() {
-                return Err(EvalError::new(name, ErrorCode::EmptyResult, format!("hole {id} removed the whole body")));
-            }
-            names = name_body(
-                &OpContext::Modify { feature: name, inputs: &[&names, &tool_names] },
-                &res.face_origins,
-                &topo,
-            )
-            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-            shape = res.shape;
+            tools.push(Tool { shape: tool.shape, names: tool_names });
             infos.push(HoleInfo {
                 feature: name.to_string(),
                 at: id.clone(),
@@ -254,6 +250,24 @@ impl Evaluator {
                 wall: FaceRef::new(name, FaceKey::Hole { part: HolePart::Wall, at: id.clone() }),
             });
         }
+        let on_error = |i: Option<usize>, ke: KernelError| {
+            let what = match i.and_then(|i| sites.get(i)) {
+                Some((id, _)) => format!("cutting hole {id}"),
+                None => "cutting the holes".to_string(),
+            };
+            let mut e = kernel_err(name, &what, ke);
+            e.hint
+                .get_or_insert_with(|| "check that the hole fits the part and does not run into other features".into());
+            e
+        };
+        let (shape, names, topo) = self.boolean_tools(
+            name,
+            BoolOp::Cut,
+            (&body.shape, &body.names),
+            &tools,
+            "the holes removed the whole body",
+            &on_error,
+        )?;
         let mut holes = body.holes.clone();
         holes.extend(infos);
         if let Some(slot) = s.bodies.get_mut(bi) {
@@ -480,32 +494,70 @@ fn corners(b: &gusset_kernel::BBox) -> [V3; 8] {
     ]
 }
 
-/// Whether the disc of radius `radius` around `centre` (in the plane of face `fi`) lies on
-/// that face: the centre and points on the circle (a little inside it, to allow for the
-/// chord error of curved face edges and single-precision mesh coordinates) are covered by
-/// the face's triangles.
-fn mouth_in_face(mesh: &Mesh, fi: u32, frame: &Frame, centre: V3, radius: f64) -> bool {
-    let Some(range) = mesh.face_ranges.get(fi as usize) else { return false };
-    let tri = |i: usize| -> Option<[[f64; 2]; 3]> {
-        let idx = mesh.indices.get(i * 3..i * 3 + 3)?;
-        let mut out = [[0.0; 2]; 3];
-        for (slot, &vi) in out.iter_mut().zip(idx) {
-            let p = mesh.positions.get(vi as usize)?;
-            *slot = frame_uv(frame, [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+/// A mesh position as bits (shared corners of a face's triangles compare equal).
+type MeshPoint = [u32; 3];
+/// A triangle edge (in (u, v)) and how many triangles of the face have it.
+type EdgeUse = (usize, [[f64; 2]; 2]);
+
+/// A face's triangles and boundary, in the (u, v) coordinates of its frame, for the check
+/// that a hole's mouth fits on the face (review L7).
+struct FaceOutline {
+    tris: Vec<[[f64; 2]; 3]>,
+    /// The triangle edges that only one triangle of the face has: the face's outer and
+    /// inner boundary loops (edges of existing holes and slots included).
+    boundary: Vec<[[f64; 2]; 2]>,
+}
+
+impl FaceOutline {
+    fn new(mesh: &Mesh, fi: u32, frame: &Frame) -> Self {
+        let mut tris = Vec::new();
+        // Each edge by its end positions (as bits, unordered) -> how many triangles have it.
+        let mut uses: BTreeMap<(MeshPoint, MeshPoint), EdgeUse> = BTreeMap::new();
+        if let Some(range) = mesh.face_ranges.get(fi as usize) {
+            for t in range.start as usize..range.end as usize {
+                let Some(idx) = mesh.indices.get(t * 3..t * 3 + 3) else { continue };
+                let mut corners = [([0_u32; 3], [0.0; 2]); 3];
+                let mut ok = true;
+                for (slot, &vi) in corners.iter_mut().zip(idx) {
+                    match mesh.positions.get(vi as usize) {
+                        Some(p) => {
+                            let uv = frame_uv(frame, [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
+                            *slot = (p.map(f32::to_bits), uv);
+                        }
+                        None => ok = false,
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                tris.push(corners.map(|c| c.1));
+                let [c0, c1, c2] = corners;
+                for (a, b) in [(c0, c1), (c1, c2), (c2, c0)] {
+                    let key = if a.0 <= b.0 { (a.0, b.0) } else { (b.0, a.0) };
+                    uses.entry(key).or_insert((0, [a.1, b.1])).0 += 1;
+                }
+            }
         }
-        Some(out)
-    };
-    let tris: Vec<[[f64; 2]; 3]> = (range.start as usize..range.end as usize).filter_map(tri).collect();
-    let inside = |p: [f64; 2]| tris.iter().any(|t| in_triangle(p, t));
-    let c = frame_uv(frame, centre);
-    let margin = (0.01_f64).min(radius * 0.2);
-    let r = radius - margin;
-    const SAMPLES: usize = 32;
-    inside(c)
-        && (0..SAMPLES).all(|i| {
-            let a = TAU * i as f64 / SAMPLES as f64;
-            inside([c[0] + r * a.cos(), c[1] + r * a.sin()])
-        })
+        let boundary = uses.into_values().filter(|(n, _)| *n == 1).map(|(_, seg)| seg).collect();
+        FaceOutline { tris, boundary }
+    }
+
+    /// Whether the disc of radius `radius` around `c` lies on the face: the centre is on
+    /// one of its triangles and no boundary edge comes closer than the radius (less a
+    /// little, for the chord error of curved edges and single-precision mesh coordinates).
+    fn holds_disc(&self, c: [f64; 2], radius: f64) -> bool {
+        let margin = (0.01_f64).min(radius * 0.2);
+        let r = radius - margin;
+        self.tris.iter().any(|t| in_triangle(c, t)) && self.boundary.iter().all(|[a, b]| point_seg_dist(c, *a, *b) >= r)
+    }
+}
+
+/// Distance from `p` to the segment `a`-`b`.
+fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
 }
 
 /// Point in triangle (edges included, with a tolerance of 1e-6 mm).

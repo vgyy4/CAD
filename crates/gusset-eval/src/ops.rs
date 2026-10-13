@@ -2,11 +2,18 @@
 
 use super::*;
 use gusset_doc::{CombineDef, DirRef, MirrorDef, MoveDef, PatternCircularDef, PatternLinearDef, ShellDef};
-use gusset_kernel::Transform;
+use gusset_kernel::{KernelError, Transform};
 use gusset_naming::BodyNames;
 
-/// Most instances one pattern may create (each costs a boolean operation).
+/// Most instances one pattern may create (the evaluation's work limits also apply,
+/// [`crate::EvalLimits`]).
 pub(crate) const MAX_INSTANCES: u32 = 500;
+
+/// A tool for [`Evaluator::boolean_tools`]: its shape, names and face count.
+pub(crate) struct Tool {
+    pub(crate) shape: Shape,
+    pub(crate) names: BodyNames,
+}
 
 impl Evaluator {
     pub(crate) fn run_shell(
@@ -83,7 +90,10 @@ impl Evaluator {
             }));
             return Ok(());
         }
-        let united = self.unite(name, &body.shape, &body.names, &res.shape, &names)?;
+        let faces_in = (body.topology.faces.len() + topo.faces.len()) as u64;
+        self.charge(s, name, "the mirror", 1, faces_in)?;
+        let united =
+            self.unite(name, &body.shape, &body.names, &[Tool { shape: res.shape, names }], |_| String::new())?;
         replace_body(s, bi, &body, united.0, united.1, united.2);
         Ok(())
     }
@@ -143,9 +153,10 @@ impl Evaluator {
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let (bi, body) = target_body(s, name, body)?;
-        let mut shape = body.shape.clone();
-        let mut names = body.names.clone();
-        let mut topo = body.topology.clone();
+        let per_copy = body.topology.faces.len() as u64;
+        let copies_in = u64::try_from(transforms.len()).unwrap_or(u64::MAX).saturating_add(1);
+        self.charge(s, name, "the pattern", transforms.len(), per_copy.saturating_mul(copies_in))?;
+        let mut copies = Vec::with_capacity(transforms.len());
         for (i, t) in transforms.iter().enumerate() {
             let inst_no = u32::try_from(i + 1).unwrap_or(u32::MAX);
             let copy = k.transform(&body.shape, t).map_err(|ke| kernel_err(name, "pattern", ke))?;
@@ -156,35 +167,83 @@ impl Evaluator {
                 &ctopo,
             )
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-            let united = self.unite(name, &shape, &names, &copy.shape, &cnames).map_err(|mut e| {
-                e.message = format!("instance {inst_no}: {}", e.message);
-                e
-            })?;
-            (shape, names, topo) = united;
+            copies.push(Tool { shape: copy.shape, names: cnames });
         }
+        let (shape, names, topo) =
+            self.unite(name, &body.shape, &body.names, &copies, |i| format!("instance {}: ", i + 1))?;
         replace_body(s, bi, &body, shape, names, topo);
         Ok(())
     }
 
-    /// Unites two named shapes and names the result (`Modify` with inputs `[a, b]`).
+    /// Unites named shapes with a target and names the result (`Modify` with inputs
+    /// `[target, tool_1, ...]`). `label(i)` prefixes the error of tool `i`.
     fn unite(
         &self,
         feature: &str,
         a: &Shape,
         a_names: &BodyNames,
-        b: &Shape,
-        b_names: &BodyNames,
+        tools: &[Tool],
+        label: impl Fn(usize) -> String,
     ) -> Result<(Shape, BodyNames, Topology), EvalError> {
-        let k = self.kernel.as_ref();
-        let res = k.boolean(BoolOp::Union, a, b).map_err(|ke| {
+        self.boolean_tools(feature, BoolOp::Union, (a, a_names), tools, "", &|i, ke| {
             let mut e = kernel_err(feature, "union", ke);
+            if let Some(i) = i {
+                e.message = format!("{}{}", label(i), e.message);
+            }
             e.hint.get_or_insert_with(|| "the copies must overlap or touch cleanly; check the spacing".into());
             e
-        })?;
-        let topo = k.topology(&res.shape).map_err(|ke| kernel_err(feature, "topology", ke))?;
-        let names = name_body(&OpContext::Modify { feature, inputs: &[a_names, b_names] }, &res.face_origins, &topo)
-            .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
-        Ok((res.shape, names, topo))
+        })
+    }
+
+    /// Applies `op` to a named target with all `tools` in one kernel operation
+    /// ([`gusset_kernel::Kernel::boolean_many`], review H3) and names the result (`Modify`
+    /// with inputs `[target, tool_1, ...]`).
+    ///
+    /// If that fails, the tools are applied one at a time, so the error says which tool
+    /// fails: `on_error(Some(i), ..)` for tool `i`, `on_error(None, ..)` for the single
+    /// operation. A result without faces fails with `EmptyResult` and the message `empty`.
+    pub(crate) fn boolean_tools(
+        &self,
+        feature: &str,
+        op: BoolOp,
+        (target, target_names): (&Shape, &BodyNames),
+        tools: &[Tool],
+        empty: &str,
+        on_error: &dyn Fn(Option<usize>, KernelError) -> EvalError,
+    ) -> Result<(Shape, BodyNames, Topology), EvalError> {
+        let k = self.kernel.as_ref();
+        let shapes: Vec<Shape> = tools.iter().map(|t| t.shape.clone()).collect();
+        let named = |res: OpResult, inputs: &[&BodyNames]| -> Result<(Shape, BodyNames, Topology), EvalError> {
+            let topo = k.topology(&res.shape).map_err(|ke| kernel_err(feature, "topology", ke))?;
+            if topo.faces.is_empty() {
+                return Err(EvalError::new(feature, ErrorCode::EmptyResult, empty.to_string()));
+            }
+            let names = name_body(&OpContext::Modify { feature, inputs }, &res.face_origins, &topo)
+                .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
+            Ok((res.shape, names, topo))
+        };
+        let first = match k.boolean_many(op, target, &shapes) {
+            Ok(res) => {
+                let mut inputs: Vec<&BodyNames> = Vec::with_capacity(tools.len() + 1);
+                inputs.push(target_names);
+                inputs.extend(tools.iter().map(|t| &t.names));
+                return named(res, &inputs);
+            }
+            Err(ke) => ke,
+        };
+        if tools.len() < 2 {
+            return Err(on_error(if tools.is_empty() { None } else { Some(0) }, first));
+        }
+        // Find the tool that fails (or, if the kernel copes one tool at a time, use that).
+        let mut cur: (Shape, BodyNames, Topology) = (target.clone(), target_names.clone(), Topology::default());
+        for (i, t) in tools.iter().enumerate() {
+            if self.is_cancelled() {
+                return Err(budget::cancelled(feature));
+            }
+            let res = k.boolean(op, &cur.0, &t.shape).map_err(|ke| on_error(Some(i), ke))?;
+            cur = named(res, &[&cur.1, &t.names])?;
+        }
+        Ok(cur)
     }
 }
 
@@ -357,9 +416,9 @@ impl Evaluator {
         Ok(())
     }
 
-    /// Combines the tool bodies into the target one after the other and removes the tools.
+    /// Combines the tool bodies into the target (in one kernel operation for union and cut)
+    /// and removes the tools.
     pub(crate) fn run_combine(&self, s: &mut State, name: &str, d: &CombineDef) -> Result<(), EvalError> {
-        let k = self.kernel.as_ref();
         let mut tools: Vec<Arc<Body>> = Vec::new();
         for t in &d.tools {
             let b = s.bodies.iter().find(|b| &b.feature == t).cloned().ok_or_else(|| {
@@ -393,40 +452,47 @@ impl Evaluator {
             BodyOp::Intersect => (BoolOp::Intersect, "intersect"),
             BodyOp::Add | BodyOp::New => (BoolOp::Union, "union"),
         };
-        let mut shape = body.shape.clone();
-        let mut names = body.names.clone();
-        let mut topo = body.topology.clone();
-        for tool in &tools {
-            let res = k.boolean(bop, &shape, &tool.shape).map_err(|ke| {
-                let mut e = kernel_err(name, verb, ke);
-                e.message = format!("{} (tool body '{}')", e.message, tool.name);
-                if bop != BoolOp::Union {
-                    e.hint.get_or_insert_with(|| "check that the tool body overlaps the target".into());
+        let faces_in =
+            tools.iter().map(|t| t.topology.faces.len() as u64).sum::<u64>() + body.topology.faces.len() as u64;
+        self.charge(s, name, "the combination", tools.len(), faces_in)?;
+        let tool_list: Vec<Tool> =
+            tools.iter().map(|t| Tool { shape: t.shape.clone(), names: t.names.clone() }).collect();
+        let on_error = |i: Option<usize>, ke: KernelError| {
+            let mut e = kernel_err(name, verb, ke);
+            if let Some(t) = i.and_then(|i| tools.get(i)) {
+                e.message = format!("{} (tool body '{}')", e.message, t.name);
+            }
+            if bop != BoolOp::Union {
+                e.hint.get_or_insert_with(|| "check that the tool body overlaps the target".into());
+            }
+            e
+        };
+        let (shape, names, topo) = self
+            .boolean_tools(
+                name,
+                bop,
+                (&body.shape, &body.names),
+                &tool_list,
+                "combining the tool bodies left no body",
+                &on_error,
+            )
+            .map_err(|e| {
+                if e.code != ErrorCode::EmptyResult {
+                    return e;
                 }
-                e
-            })?;
-            topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
-            if topo.faces.is_empty() {
-                return Err(EvalError::new(
-                    name,
-                    ErrorCode::EmptyResult,
-                    format!("combining '{}' left no body", tool.name),
-                )
-                .with_hint(if bop == BoolOp::Intersect {
+                e.with_hint(if bop == BoolOp::Intersect {
                     "the tool bodies must overlap the target to intersect"
                 } else {
                     "the tool bodies remove the whole target"
-                }));
-            }
-            names = name_body(
-                &OpContext::Modify { feature: name, inputs: &[&names, &tool.names] },
-                &res.face_origins,
-                &topo,
-            )
-            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-            shape = res.shape;
-        }
-        let tool_holes: Vec<_> = tools.iter().flat_map(|t| t.holes.iter().cloned()).collect();
+                })
+            })?;
+        // Only a union adds the tools' holes; a cut or intersection keeps the target's
+        // (review L1). Records whose wall is gone are dropped after every feature.
+        let tool_holes: Vec<_> = if bop == BoolOp::Union {
+            tools.iter().flat_map(|t| t.holes.iter().cloned()).collect()
+        } else {
+            Vec::new()
+        };
         replace_body(s, bi, &body, shape, names, topo);
         if !tool_holes.is_empty()
             && let Some(slot) = s.bodies.get_mut(bi)

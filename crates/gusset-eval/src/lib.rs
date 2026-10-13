@@ -12,6 +12,7 @@
 // does not matter for performance.
 #![allow(clippy::result_large_err, reason = "cold-path errors with rich context")]
 
+mod budget;
 mod datum;
 pub mod error;
 mod hole;
@@ -20,6 +21,7 @@ mod pattern;
 pub mod sketch;
 mod sweep;
 
+pub use budget::{DEFAULT_MAX_BODY_FACES, DEFAULT_MAX_BOOLEAN_WORK, DEFAULT_MAX_TOOLS, EvalLimits};
 pub use error::{ErrorCode, EvalError};
 pub use hole::{DEFAULT_POINT_ANGLE, Dims as HoleDims, HoleInfo, ThreadInfo};
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
@@ -36,6 +38,7 @@ use gusset_units::{Dim, LengthUnit, Quantity};
 use sketch::Solved;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A solid body produced by evaluation.
 #[derive(Debug)]
@@ -101,6 +104,8 @@ struct State {
     planes: datum::Planes,
     failed: BTreeSet<String>,
     statuses: Statuses,
+    /// Work charged so far ([`budget`]); kept per state so limits do not depend on the cache.
+    work: budget::Work,
 }
 
 /// Feature statuses as a list whose earlier part is shared, newest first.
@@ -190,6 +195,10 @@ pub struct Evaluation {
     pub meshes: Vec<Arc<MeshBody>>,
     /// How many features were recomputed (the rest came from the cache).
     pub recomputed: usize,
+    /// The rebuild was cancelled ([`Evaluator::cancel_flag`]): the features from the first
+    /// one not finished on are [`ErrorCode::Cancelled`] failures, and nothing of them was
+    /// cached. Do not keep or report such an evaluation as the document's state.
+    pub cancelled: bool,
 }
 
 impl Evaluation {
@@ -252,6 +261,8 @@ pub struct Evaluator {
     live: HashMap<usize, (usize, u64)>,
     capacity: usize,
     max_bytes: u64,
+    limits: EvalLimits,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Evaluator {
@@ -265,7 +276,55 @@ impl Evaluator {
             live: HashMap::new(),
             capacity: DEFAULT_CACHE_ENTRIES,
             max_bytes: DEFAULT_CACHE_BYTES,
+            limits: EvalLimits::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The work limits ([`EvalLimits`]).
+    #[must_use]
+    pub fn limits(&self) -> EvalLimits {
+        self.limits
+    }
+
+    /// Changes the work limits. Cached results were decided under the old limits, so the
+    /// cache is cleared when they change.
+    pub fn set_limits(&mut self, limits: EvalLimits) {
+        if limits != self.limits {
+            self.limits = limits;
+            self.clear_cache();
+        }
+    }
+
+    /// A flag that stops evaluations when set from any thread (a host sets it for "Stop
+    /// rebuild" or when a newer edit makes the running rebuild moot). It is checked between
+    /// features and before every charged boolean, so one kernel operation still runs to its
+    /// end. A cancelled evaluation has [`Evaluation::cancelled`] set and caches nothing it
+    /// did after the cancel. The flag stays set (so every evaluation of the command being
+    /// cancelled stops) until its owner clears it: `gusset-host` clears it when the next
+    /// job starts.
+    #[must_use]
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Charges a boolean feature against the limits ([`budget`]) and checks for cancellation.
+    pub(crate) fn charge(
+        &self,
+        s: &mut State,
+        feature: &str,
+        what: &str,
+        tools: usize,
+        faces_in: u64,
+    ) -> Result<(), EvalError> {
+        if self.is_cancelled() {
+            return Err(budget::cancelled(feature));
+        }
+        s.work.charge(&self.limits, feature, what, tools, faces_in)
     }
 
     pub fn kernel(&self) -> &Arc<dyn Kernel> {
@@ -381,9 +440,14 @@ impl Evaluator {
         let mut state = Arc::new(State::default());
         let mut recomputed = 0;
         let mut rolled_back = Vec::new();
+        let mut cancelled = false;
         for (i, f) in doc.features.iter().enumerate() {
             if rollback.is_some_and(|r| i >= r) {
                 rolled_back.push((f.name.clone(), FeatureStatus::RolledBack));
+                continue;
+            }
+            if cancelled {
+                rolled_back.push((f.name.clone(), FeatureStatus::Failed(budget::cancelled(&f.name))));
                 continue;
             }
             key = step_key(&key, f, &params);
@@ -391,9 +455,17 @@ impl Evaluator {
                 state = cached;
                 continue;
             }
-            recomputed += 1;
             let mut s = (*state).clone();
-            self.apply(&mut s, f, doc.units, &params, blobs);
+            if !self.is_cancelled() {
+                recomputed += 1;
+                self.apply(&mut s, f, doc.units, &params, blobs);
+            }
+            if self.is_cancelled() {
+                // The feature may have stopped part way: neither keep nor cache its state.
+                cancelled = true;
+                rolled_back.push((f.name.clone(), FeatureStatus::Failed(budget::cancelled(&f.name))));
+                continue;
+            }
             let st = Arc::new(s);
             self.remember(key, st.clone());
             state = st;
@@ -409,6 +481,7 @@ impl Evaluator {
             bodies: state.bodies.clone(),
             meshes: state.meshes.clone(),
             recomputed,
+            cancelled,
         }
     }
 
@@ -422,7 +495,9 @@ impl Evaluator {
             s.statuses.push(f.name.clone(), FeatureStatus::Blocked { by: dep });
             return;
         }
+        let before: Vec<usize> = s.bodies.iter().map(|b| Arc::as_ptr(b) as usize).collect();
         let r = self.run(s, f, units, params, blobs);
+        prune_holes(s, &before);
         let status = match r {
             Ok(()) => FeatureStatus::Ok,
             Err(e) => {
@@ -627,6 +702,11 @@ impl Evaluator {
             BodyOp::Intersect => BoolOp::Intersect,
             BodyOp::New => BoolOp::Union,
         };
+        // One tool from a sketch cannot multiply the body, so this is not charged; only stop
+        // here when the rebuild was cancelled.
+        if self.is_cancelled() {
+            return Err(budget::cancelled(feature));
+        }
         let res = k.boolean(bop, &body.shape, &tool.shape).map_err(|ke| {
             let mut e = kernel_err(feature, "boolean", ke);
             if op == BodyOp::Cut || op == BodyOp::Intersect {
@@ -653,6 +733,31 @@ impl Evaluator {
             *slot = nb;
         }
         Ok(())
+    }
+}
+
+/// Drops the hole records of changed bodies whose wall face no longer exists (a later cut
+/// or shell removed the hole; review L1). `before` holds the bodies before the feature.
+fn prune_holes(s: &mut State, before: &[usize]) {
+    for slot in &mut s.bodies {
+        if slot.holes.is_empty() || before.contains(&(Arc::as_ptr(slot) as usize)) {
+            continue;
+        }
+        let live: std::collections::HashSet<(&str, &gusset_doc::FaceKey)> =
+            slot.names.faces.iter().map(|f| (f.feature.as_str(), &f.key)).collect();
+        let keep = |h: &HoleInfo| live.contains(&(h.wall.feature.as_str(), &h.wall.key));
+        if slot.holes.iter().all(&keep) {
+            continue;
+        }
+        let holes = slot.holes.iter().filter(|h| keep(h)).cloned().collect();
+        *slot = Arc::new(Body {
+            name: slot.name.clone(),
+            feature: slot.feature.clone(),
+            shape: slot.shape.clone(),
+            names: slot.names.clone(),
+            topology: slot.topology.clone(),
+            holes,
+        });
     }
 }
 
@@ -865,6 +970,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_budget;
 #[cfg(test)]
 mod tests_datum;
 #[cfg(test)]
