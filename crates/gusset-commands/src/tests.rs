@@ -793,6 +793,9 @@ fn query_body_reports_a_failed_rebuild_instead_of_no_bodies() {
     run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 0, "y1": 0, "x2": 10, "y2": 0}));
     let r = run(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
     assert_eq!(r["rebuild_ok"], false, "{r}");
+    // Dogfooding F3-3: every broken commit says how to back out, not only fillets.
+    assert_eq!(r["committed_with_errors"], true, "{r}");
+    assert!(r["undo_hint"].as_str().unwrap().contains("history_undo"), "{r}");
     for args in [json!({}), json!({"body": "Extrude1"})] {
         let e = execute(&mut s, &u, "query.body", args).unwrap_err();
         assert_eq!(e.code, "evaluation", "{e:?}");

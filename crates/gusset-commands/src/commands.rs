@@ -134,6 +134,18 @@ pub(crate) fn edit_post(
     {
         m.insert("body_changes".into(), Value::Array(changes.iter().map(BodyChange::to_json).collect()));
     }
+    // Every edit that breaks the rebuild is still committed (it can be fixed in place);
+    // say so and how to back out, as fillets did (F2-5, dogfooding F3-3). Commands with
+    // a more specific hint override it in `post`.
+    if !out.new_errors.is_empty()
+        && let Value::Object(m) = &mut v
+    {
+        m.insert("committed_with_errors".into(), json!(true));
+        m.insert(
+            "undo_hint".into(),
+            json!("the change was committed but does not rebuild (see new_errors): fix it, or call history_undo to revert it"),
+        );
+    }
     if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
         m.extend(e);
     }
@@ -2190,9 +2202,17 @@ impl Command for BranchCherryPick {
         let b = s.branch_for(ctx)?;
         let doc = s.history().cherry_pick(src, b, &self.features, &self.params).map_err(CommandError::history)?;
         let out = s.commit(ctx, "Cherry-pick", &doc)?;
-        Ok(
-            json!({ "node": out.node.to_string(), "rebuild_ok": out.new_errors.is_empty(), "new_errors": out.new_errors }),
-        )
+        let mut v = json!({ "node": out.node.to_string(), "rebuild_ok": out.new_errors.is_empty(), "new_errors": out.new_errors });
+        if !out.new_errors.is_empty()
+            && let Value::Object(m) = &mut v
+        {
+            m.insert("committed_with_errors".into(), json!(true));
+            m.insert(
+                "undo_hint".into(),
+                json!("the cherry-pick was committed but does not rebuild: call history_undo to revert it"),
+            );
+        }
+        Ok(v)
     }
 }
 
