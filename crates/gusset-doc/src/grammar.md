@@ -287,7 +287,7 @@ loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], 
   (the sweep starts there); a closed path (a circle) makes a ring without caps. Where path
   curves meet at an angle the corner is mitred.
 - `orientation: frenet` (the default) turns the profile with the path; `fixed` only slides it.
-  `twist` turns the profile about the path by that angle between the start and the end (it
+  `twist` turns the profile about the path by that angle (at most 100 turns) between the start and the end (it
   needs `frenet` and an open path); a helical gear is a sweep of the tooth outline along a
   straight line with a twist.
 - `loft` joins two or more closed profiles on different planes (a sketch on a datum plane per

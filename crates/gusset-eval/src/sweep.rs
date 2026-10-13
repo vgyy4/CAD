@@ -4,6 +4,9 @@ use super::*;
 use gusset_doc::{LoftDef, Orientation, PathRef, SweepDef};
 use gusset_kernel::{LoftSpec, SweepOrientation, SweepPath, SweepSpec};
 
+/// Largest sweep twist, in turns (the kernel refuses more as well).
+pub const MAX_TWIST_TURNS: f64 = 100.0;
+
 impl Evaluator {
     pub(crate) fn run_sweep(
         &self,
@@ -20,6 +23,11 @@ impl Evaluator {
             Some(e) => eval_expr(name, e, Dim::ANGLE, params, units)?,
             None => 0.0,
         };
+        // Review H2: absurd twists reached the kernel (and overflowed its sampling).
+        if !twist.is_finite() || twist.abs() > MAX_TWIST_TURNS * std::f64::consts::TAU {
+            return Err(EvalError::new(name, ErrorCode::Expression, "the twist is too large")
+                .with_hint(format!("use at most {MAX_TWIST_TURNS} turns ({} deg)", MAX_TWIST_TURNS * 360.0)));
+        }
         if twist != 0.0 && d.orientation == Orientation::Fixed {
             return Err(EvalError::new(name, ErrorCode::Expression, "a twist needs the profile to follow the path")
                 .with_hint("set orientation: frenet, or remove the twist"));

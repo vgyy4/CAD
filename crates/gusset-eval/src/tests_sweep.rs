@@ -133,3 +133,15 @@ mirror Mirror1 (body: Sweep1, plane: YZ)");
     );
     assert_eq!(r.status("Top"), Some(&FeatureStatus::Ok));
 }
+
+#[test]
+fn absurd_twists_are_refused_before_the_kernel() {
+    // Review H2: `twist: 1e15 deg` overflowed the kernel's sampling and crashed.
+    for twist in ["1e15 deg", "36001 deg"] {
+        let r =
+            run(&format!("sweep Sweep1 (profile: Profile, path: Path, orientation: frenet, twist: {twist}, op: new)"));
+        let e = failure(&r, "Sweep1");
+        assert_eq!(e.code, ErrorCode::Expression, "{twist}: {e:?}");
+        assert!(e.message.contains("too large"), "{twist}: {e:?}");
+    }
+}

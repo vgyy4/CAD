@@ -595,8 +595,10 @@ TopoDS_Wire twist_guide(const Spine& sp, const Frame& pf, double twist) {
   BRepAdaptor_CompCurve cc(sp.wire);
   double len = GCPnts_AbscissaPoint::Length(cc);
   if (!(len > 1e-6)) throw Standard_Failure("the path is too short");
-  int m = int(std::ceil(std::fabs(twist) / 0.05)) + 6 * int(sp.edges.size()) + 48;
-  m = std::min(m, 600);
+  // Sized in floating point and clamped before converting (review H2: a huge twist
+  // overflowed the int conversion).
+  double md = std::ceil(std::fabs(twist) / 0.05) + 6.0 * double(sp.edges.size()) + 48.0;
+  int m = int(std::min(md, 600.0));
   double r = std::min(std::max(0.05 * len, 0.05), 5.0);
   std::vector<gp_Pnt> pts;
   std::vector<gp_Vec> tan;
@@ -872,6 +874,7 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
   if (!p || !out || !origins) return fail("null argument");
   if (!path_curves && !path_shape) return fail("the sweep has no path");
   if (!std::isfinite(twist)) return fail("sweep twist must be a finite angle");
+  if (std::fabs(twist) > 100.0 * 2.0 * M_PI) return fail("sweep twist is over 100 turns");
   Frame f = make_frame(p, 0.0);
   std::vector<TaggedEdge> tagged;
   std::vector<uint32_t> face_region;
