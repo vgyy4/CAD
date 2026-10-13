@@ -3,7 +3,7 @@
 //! meshing pairs without interference, helical twist, and parameter edits.
 
 #![cfg(gusset_occt)]
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::disallowed_methods)]
 
 use gusset_commands::gear::{GearValues, Geometry};
 use gusset_commands::{CmdCtx, Session, execute};

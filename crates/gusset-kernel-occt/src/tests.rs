@@ -1,6 +1,6 @@
 //! Golden geometry tests against real OCCT (volume, area, topology counts, history).
 
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::float_cmp, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::float_cmp, clippy::panic, clippy::disallowed_methods)]
 
 use super::OcctKernel;
 use gusset_kernel::*;
