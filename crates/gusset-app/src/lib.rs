@@ -13,6 +13,7 @@ pub mod theme;
 pub mod timeline;
 pub mod viewport;
 pub mod viewport_gpu;
+pub mod viewport_nav;
 
 #[cfg(test)]
 mod screenshots;
