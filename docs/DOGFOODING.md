@@ -183,7 +183,7 @@ made the plane sign conventions checkable without reading the source. Missing na
 | F3-8 | fixed: `cx_expr`/`cy_expr`, `x_expr`/`y_expr`; new `h_distance`, `v_distance`, `at_x`, `at_y` constraints |
 | F3-9, F3-11 to F3-14 | fixed |
 | F3-10 | fixed: `azimuth`/`elevation` camera and the `iso_back` view |
-| F3-15 | large results are paged through `get_text`; the edge-overlay ticks are still open |
+| F3-15 | large results are paged through `get_text`; the "ticks" are real 1 mm edges of the model (the gusset profile's corner sits at z 5.5 mm, 0.5 mm above the plate; `query_body` lists `edge(Gusset/cap(start))`, 1 mm), not a renderer fault |
 
 Not seen in this run: crashes in the kernel, wrong volumes, mirror/pattern/combine/datum
 plane errors, or a confusing error from the new commands beyond the items above. Not

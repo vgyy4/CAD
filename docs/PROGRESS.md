@@ -41,8 +41,8 @@ Phase 3 has started (see Next).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.
-- Dogfooding run 3 (docs/DOGFOODING.md): 14 of 15 findings fixed, the render edge
-  ticks (F3-15) remain. New: `param_rename`, horizontal/vertical distance and position
+- Dogfooding run 3 (docs/DOGFOODING.md): all 15 findings closed (the render "ticks"
+  of F3-15 were real edges of the test model). New: `param_rename`, horizontal/vertical distance and position
   constraints, expression positions for circles and rectangles, orbit camera, paged
   large results, cancel = no effect, gear rebuilds 4x faster.
 - Development: Codex offloading for simple tasks and the secret guard in CI and
