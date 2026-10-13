@@ -110,6 +110,14 @@ Phase 3 has started (see Next).
 - MSRV 1.89 for libraries (std file locks, rmcp); the GUI crate needs 1.95 (egui 0.36).
 - Sketch coordinates stored in the document are snapped to 1e-6 mm when they are within
   1e-9 mm of the snapped value, for a readable code view.
+- Parametric sketches after large edits (v0.2 review H1, ADR 0016 §5): `fixed` unknowns are
+  held during the solve and a failed solve retries by dimension continuation; `param.set`
+  does not write solved coordinates back (would turn parameter edits into sketch edits and
+  cause branch-merge conflicts).
+- Generated gears are re-checked on every rebuild through an explicit `gear: <prefix>` key
+  on the profile sketch (v0.2 review M1, ADR 0018 §3), not by parameter naming conventions.
+- The `doc_text` fuzz seeds live in `fuzz/seeds-src/` and grammar.md, copied by
+  `make_seeds`; `fuzz/corpus/` stays CI-managed and untracked (v0.2 review L10).
 - Container: a custom checksummed format instead of SQLite (ADR 0005). Two-slot
   recovery file with an extra slot marker; the Windows cache path follows the
   `directories` crate layout.
