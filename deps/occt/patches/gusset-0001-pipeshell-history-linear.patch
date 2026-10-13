@@ -1,0 +1,53 @@
+diff --git a/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx b/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
+index 7fe33223..65b06ad2 100644
+--- a/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
++++ b/src/ModelingAlgorithms/TKBool/BRepFill/BRepFill_PipeShell.cxx
+@@ -28,6 +28,7 @@
+ #include <BRepFill_LocationLaw.hxx>
+ #include <BRepFill_NSections.hxx>
+ #include <BRepFill_PipeShell.hxx>
++#include <NCollection_Vector.hxx>
+ #include <BRepFill_Section.hxx>
+ #include <BRepFill_SectionLaw.hxx>
+ #include <BRepFill_SectionPlacement.hxx>
+@@ -1318,6 +1319,14 @@ void BRepFill_PipeShell::BuildHistory(const BRepFill_Sweep& theSweep)
+     // Take the real index of section on the path
+     int                    IndOfW  = myIndOfSec(indw);
+     const TopoDS_Wire&     theWire = TopoDS::Wire(WSeq(IndOfW));
++    // The edges of <theWire> in explorer order, collected once: restarting the explorer
++    // for every edge of the section to find the inde-th one was quadratic in the number
++    // of edges (seconds for sections with a few hundred edges).
++    NCollection_Vector<TopoDS_Edge> aWireEdges;
++    for (BRepTools_WireExplorer wexpAll(theWire); wexpAll.More(); wexpAll.Next())
++    {
++      aWireEdges.Append(TopoDS::Edge(wexpAll.Current()));
++    }
+     BRepTools_WireExplorer wexp_sec(aSection);
+     for (inde = 1; wexp_sec.More(); wexp_sec.Next())
+     {
+@@ -1335,21 +1344,11 @@ void BRepFill_PipeShell::BuildHistory(const BRepFill_Sweep& theSweep)
+       int SignOfAnEdge = (anOriginalEdge.Orientation() == TopAbs_FORWARD) ? 1 : -1;
+ 
+       // For each non-degenerated inde-th edge of <aSection>
+-      // we find inde-th edge in <theWire>
+-      TopoDS_Edge            theEdge;
+-      BRepTools_WireExplorer wexp(theWire);
+-      for (int i = 1; wexp.More(); wexp.Next())
++      // we find inde-th edge in <theWire> (the last one if <theWire> has fewer edges)
++      TopoDS_Edge theEdge;
++      if (!aWireEdges.IsEmpty())
+       {
+-        theEdge = TopoDS::Edge(wexp.Current());
+-        if (BRep_Tool::Degenerated(anEdge))
+-        {
+-          continue;
+-        }
+-        if (i == inde)
+-        {
+-          break;
+-        }
+-        i++;
++        theEdge = aWireEdges.Value(std::min(inde, aWireEdges.Length()) - 1);
+       }
+ 
+       // Take the list of splits for <theEdge>

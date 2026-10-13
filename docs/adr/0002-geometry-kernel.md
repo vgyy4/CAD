@@ -62,3 +62,18 @@ best effort. It must be license-compatible (ADR 0001) and swappable.
 - Binary size grows by about 30–50 MB (OCCT modeling + data exchange). This is recorded
   in `docs/PERFORMANCE.md` as part of the binary-size budget.
 - LGPL obligations are handled by the release workflow (notice, source link, recipe).
+
+## Amendment (2026-10-13): our own OCCT patches
+OCCT stays pinned to `V8_0_1` (deps/occt/occt.env), but we may fix it: a patch in
+`deps/occt/patches/` (applied in name order by `deps/occt/build-occt.sh` after the source
+commit is verified; skipped when a reused tree already has it) changes OCCT's behaviour
+only to fix a bug or a performance problem we measured, keeps results identical (the
+OCCT golden tests must pass unchanged), and is small enough to offer upstream. The
+release's OCCT source archive carries the patches next to the unmodified source
+(LGPL 2.1 §6), and the CI cache key covers them, so every platform rebuilds with them.
+
+- `gusset-0001-pipeshell-history-linear.patch`: `BRepFill_PipeShell::BuildHistory`
+  restarted a wire explorer for every edge of the section to find the edge with the same
+  index, quadratic in the number of edges. It now lists the wire's edges once per
+  section. A helical gear (280 profile edges) sweeps in 8 s instead of 12 s; the
+  result is the same shape (volumes and naming goldens unchanged). To offer upstream.

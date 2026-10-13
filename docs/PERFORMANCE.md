@@ -127,7 +127,7 @@ samples and timers around the shim's entry points showed where:
 | | Before | After |
 |---|---|---|
 | Spur pair (20 + 30 teeth), full rebuild | 8.6 s | 2.2 s |
-| Helical pair, full rebuild | 27.1 s | ~24 s (the two sweeps: 9 s + 15 s in OCCT) |
+| Helical pair, full rebuild | 27.1 s | 15.3 s (with the OCCT patch; 24 s without) |
 | Edit on the gear model (`param.set`, `feature.delete` of the last feature) | 11-18 s (debug, dogfooding) | 8-14 ms |
 
 What changed:
@@ -140,9 +140,15 @@ What changed:
 - Every operation extracted the full topology (per-face area integrals, 0.3-0.6 s on a
   gear) just to count faces, and the evaluator then extracted it again. The OCCT shape
   now computes its topology, mass properties and bounding box at most once.
-- Left: OCCT's pipe shell (`BRepFill_PipeShell::BuildHistory`) takes 9-15 s for a
-  helical gear's twisted sweep, and the adaptive mass integration of freeform faces
-  1-1.7 s per gear (computed once per shape now).
+- OCCT's pipe shell spent 40 % of a helical gear's sweep in `BuildHistory`, which was
+  quadratic in the profile's edge count. Fixed with our first OCCT patch (ADR 0002
+  amendment): helical pair rebuild 24 s -> 15 s, generating one helical gear 12-15 s ->
+  8-11 s, same shapes.
+- Left: in a helical gear sweep, the boolean that cuts the bore (about a third; the bore
+  sweep's caps lie on the gear's caps) and the solid classification in `MakeSolid`; the
+  adaptive mass integration of freeform faces (1-1.7 s per gear, once per shape now).
+  Next step if needed: build the bored solid from the two sweeps' faces and shared cap
+  faces instead of a boolean.
 
 ## History overhead (2026-10-11)
 
