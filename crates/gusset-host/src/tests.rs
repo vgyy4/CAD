@@ -298,3 +298,56 @@ fn rebuilds_are_cancelled_by_request_and_by_newer_edits() {
     let ev = host.exec(move |s, _| s.evaluate_doc(&doc, None)).unwrap();
     assert!(!ev.cancelled && ev.bodies.len() == 1);
 }
+
+/// Dogfooding F3-4: a request the client cancelled has no effect. Its commits are undone
+/// (the running case) ...
+#[test]
+fn revert_undoes_the_callers_commits() {
+    let mut s = session();
+    let ctx = CmdCtx::user(1);
+    let point = revert_point(&mut s, &ctx, "param.set").unwrap();
+    execute(&mut s, &ctx, "param.set", json!({"name": "a", "expr": "1 mm"})).unwrap();
+    assert_ne!(s.history().head(point.0).unwrap(), point.1);
+    revert_to(&mut s, &ctx, point);
+    assert_eq!(s.history().head(point.0).unwrap(), point.1);
+    assert!(s.document(&ctx.actor).unwrap().params.is_empty());
+    // History and branch commands are not reverted (undoing an undo would redo it).
+    assert!(revert_point(&mut s, &ctx, "history.undo").is_none());
+    assert!(revert_point(&mut s, &ctx, "branch.create").is_none());
+    // Queries never look up (and so never create) an agent's branch.
+    let bot = CmdCtx::agent("bot-1", 5);
+    assert!(revert_point(&mut s, &bot, "query.model").is_none());
+    assert!(!s.history().branches().iter().any(|b| b.name.starts_with("agent/")));
+}
+
+/// ... and a queued one never runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_cancelled_queued_request_never_runs() {
+    let host = Host::spawn(session(), None);
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let h = host.clone();
+    let blocker = std::thread::spawn(move || {
+        h.exec(move |_, _| {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        })
+    });
+    started_rx.recv().unwrap();
+    let h2 = host.clone();
+    let task =
+        tokio::spawn(
+            async move { h2.call_async(CmdCtx::user(1), "param.set", json!({"name": "a", "expr": "1 mm"})).await },
+        );
+    // Let the request reach the model thread's queue, then cancel it.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    task.abort();
+    let _ = task.await;
+    release_tx.send(()).unwrap();
+    blocker.join().unwrap().unwrap();
+    let n = host.exec(|s, _| s.document(&gusset_history::Actor::User).unwrap().params.len()).unwrap();
+    assert_eq!(n, 0);
+    drop(host.shutdown());
+}

@@ -1061,18 +1061,30 @@ impl ServerHandler for GussetMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        match request.name.as_ref() {
-            RENDER_VIEW => Ok(self.render_view(&request, &context).await.into()),
-            GET_TEXT => Ok(self.get_text(&request, &context).into()),
-            COMMANDS => Ok(self.commands(&request, &context).into()),
-            RUN => Ok(self.run_tool(&request, &context).await),
-            name => match registry().iter().find(|s| s.tool_name() == name) {
-                Some(spec) => Ok(self.call_command(spec, &request, &context).await),
-                None => Err(McpError::invalid_params(
-                    format!("unknown tool '{}'", clean_short(name, 100)),
-                    Some(json!({"hint": "list the tools with tools/list"})),
-                )),
-            },
+        let ct = context.ct.clone();
+        let work = async {
+            match request.name.as_ref() {
+                RENDER_VIEW => Ok(self.render_view(&request, &context).await.into()),
+                GET_TEXT => Ok(self.get_text(&request, &context).into()),
+                COMMANDS => Ok(self.commands(&request, &context).into()),
+                RUN => Ok(self.run_tool(&request, &context).await),
+                name => match registry().iter().find(|s| s.tool_name() == name) {
+                    Some(spec) => Ok(self.call_command(spec, &request, &context).await),
+                    None => Err(McpError::invalid_params(
+                        format!("unknown tool '{}'", clean_short(name, 100)),
+                        Some(json!({"hint": "list the tools with tools/list"})),
+                    )),
+                },
+            }
+        };
+        // rmcp only fires the token on `notifications/cancelled`; dropping the call here is
+        // what makes the host skip the queued command or undo the running one (F3-4).
+        tokio::select! {
+            r = work => r,
+            () = ct.cancelled() => Ok(CallToolResult::error(vec![ContentBlock::text(compact_result(json!({
+                "error": { "code": "cancelled", "message": "the request was cancelled; it has no effect" }
+            })))])
+            .into()),
         }
     }
 

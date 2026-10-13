@@ -198,16 +198,43 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// Cancels the rebuild of its job when dropped while that job runs.
+/// Marks its job abandoned when dropped (the caller stopped waiting), and cancels the
+/// job's rebuild if it is running.
 struct CancelRunning {
     running: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    abandoned: Arc<AtomicBool>,
 }
 
 impl Drop for CancelRunning {
     fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::SeqCst);
         if self.running.load(Ordering::SeqCst) {
             self.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The caller's branch and its head, for commands whose commits a cancel reverts. Only
+/// for editing commands: looking up an agent's branch creates it.
+fn revert_point(s: &mut Session, ctx: &CmdCtx, id: &str) -> Option<(BranchId, NodeId)> {
+    let edits = gusset_commands::registry::find(id).is_some_and(|c| c.flags.mutating);
+    if !edits || id.starts_with("history.") || id.starts_with("branch.") {
+        return None;
+    }
+    let b = s.branch_for(ctx).ok()?;
+    Some((b, s.history().head(b).ok()?))
+}
+
+/// Undoes the caller's commits until its branch is back at `head` (a few at most: one
+/// command commits once, or a short group).
+fn revert_to(s: &mut Session, ctx: &CmdCtx, (branch, head): (BranchId, NodeId)) {
+    for _ in 0..8 {
+        if s.branch_for(ctx).ok() != Some(branch) || s.history().head(branch).ok() == Some(head) {
+            return;
+        }
+        if execute(s, ctx, "history.undo", Value::Object(serde_json::Map::new())).is_err() {
+            return;
         }
     }
 }
@@ -439,15 +466,33 @@ impl HostHandle {
             return self.import_async(ctx, args).await;
         }
         self.supersede_rebuild(id);
-        // Dropping this future while its job runs (the client cancelled the request) stops
-        // that job's rebuild.
+        // Dropping this future (the client cancelled the request) means "no effect": a job
+        // that has not started is skipped, a running one has its rebuild stopped and its
+        // commits undone before the model thread takes the next job (dogfooding F3-4: the
+        // edit used to be committed although the client saw the request cancelled).
         let running = Arc::new(AtomicBool::new(false));
-        let _guard = CancelRunning { running: running.clone(), cancel: self.inner.rebuild_cancel.clone() };
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let _guard = CancelRunning {
+            running: running.clone(),
+            cancel: self.inner.rebuild_cancel.clone(),
+            abandoned: abandoned.clone(),
+        };
         let id = id.to_string();
         self.exec_async(move |s, _| {
+            if abandoned.load(Ordering::SeqCst) {
+                return Err(CommandError::new("cancelled", "the request was cancelled before it ran"));
+            }
             running.store(true, Ordering::SeqCst);
             let _done = ClearOnDrop(running);
-            execute(s, &ctx, &id, args)
+            let point = revert_point(s, &ctx, &id);
+            let r = execute(s, &ctx, &id, args);
+            if abandoned.load(Ordering::SeqCst)
+                && let Some(p) = point
+            {
+                revert_to(s, &ctx, p);
+                return Err(CommandError::new("cancelled", "the request was cancelled; its changes were undone"));
+            }
+            r
         })
         .await?
     }
