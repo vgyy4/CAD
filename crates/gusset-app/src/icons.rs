@@ -220,6 +220,19 @@ pub enum Tool {
     Edges,
     Search,
     Params,
+    /// A solid body (the browser's Bodies).
+    Body,
+    /// The coordinate origin with its axes.
+    Origin,
+    /// A history branch.
+    Branch,
+    /// Document settings.
+    Settings,
+    /// Timeline playback: to the start, one step back, one step forward, to the end.
+    ToStart,
+    StepBack,
+    StepForward,
+    ToEnd,
 }
 
 impl Tool {
@@ -269,6 +282,14 @@ impl Tool {
         Tool::Edges,
         Tool::Search,
         Tool::Params,
+        Tool::Body,
+        Tool::Origin,
+        Tool::Branch,
+        Tool::Settings,
+        Tool::ToStart,
+        Tool::StepBack,
+        Tool::StepForward,
+        Tool::ToEnd,
     ];
 }
 
@@ -312,8 +333,31 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
     })
 }
 
+/// The icon for a feature kind, by its document keyword (`FeatureKind::keyword`).
+pub fn tool_for_keyword(keyword: &str) -> Tool {
+    match keyword {
+        "sketch" => Tool::Sketch,
+        "extrude" => Tool::Extrude,
+        "revolve" => Tool::Revolve,
+        "sweep" => Tool::Sweep,
+        "loft" => Tool::Loft,
+        "fillet" => Tool::Fillet,
+        "chamfer" => Tool::Chamfer,
+        "import" => Tool::Import,
+        "shell" => Tool::Shell,
+        "mirror" => Tool::Mirror,
+        "pattern_linear" => Tool::PatternLinear,
+        "pattern_circular" => Tool::PatternCircular,
+        "plane" => Tool::Plane,
+        "move" => Tool::MoveBody,
+        "combine" => Tool::Combine,
+        "hole" => Tool::Hole,
+        _ => Tool::Body,
+    }
+}
+
 /// Colors an icon is drawn with: all from the theme tokens.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ink {
     /// Outlines.
     pub stroke: Color32,
@@ -696,6 +740,36 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.line(&[(6.0, 11.0), (12.0, 11.0)], ink);
             pen.line(&[(14.0, 13.0), (20.0, 20.0)], a);
             pen.line(&[(20.0, 13.0), (14.0, 20.0)], a);
+        }
+        Tool::Body => pen.iso_box(4.0, 8.0, 9.0, 8.0, 8.0),
+        Tool::Origin => {
+            pen.arrow((12.0, 12.0), (21.0, 12.0), a);
+            pen.arrow((12.0, 12.0), (12.0, 3.0), ink);
+            pen.arrow((12.0, 12.0), (5.0, 19.0), ink);
+            pen.circle(12.0, 12.0, 2.0, pen.fill, ink);
+        }
+        Tool::Branch => {
+            pen.line(&[(7.0, 5.0), (7.0, 19.0)], ink);
+            pen.line(&[(7.0, 15.0), (7.0, 12.0), (17.0, 8.0)], a);
+            pen.circle(7.0, 5.0, 2.4, pen.fill, ink);
+            pen.circle(7.0, 19.0, 2.4, pen.fill, ink);
+            pen.circle(17.0, 8.0, 2.4, pen.fill, a);
+        }
+        Tool::Settings => {
+            for (y, x) in [(6.0f32, 15.0f32), (12.0, 8.0), (18.0, 13.0)] {
+                pen.line(&[(4.0, y), (20.0, y)], ink);
+                pen.circle(x, y, 2.4, pen.hole, a);
+            }
+        }
+        Tool::ToStart => {
+            pen.line(&[(6.0, 5.0), (6.0, 19.0)], ink);
+            pen.poly(&[(19.0, 5.0), (19.0, 19.0), (9.0, 12.0)], pen.fill, ink);
+        }
+        Tool::StepBack => pen.poly(&[(17.0, 5.0), (17.0, 19.0), (7.0, 12.0)], pen.fill, ink),
+        Tool::StepForward => pen.poly(&[(7.0, 5.0), (7.0, 19.0), (17.0, 12.0)], pen.fill, ink),
+        Tool::ToEnd => {
+            pen.line(&[(18.0, 5.0), (18.0, 19.0)], ink);
+            pen.poly(&[(5.0, 5.0), (5.0, 19.0), (15.0, 12.0)], pen.fill, ink);
         }
         Tool::Edges => {
             pen.poly(&[(12.0, 3.0), (20.0, 7.5), (12.0, 12.0), (4.0, 7.5)], pen.fill, ink);
