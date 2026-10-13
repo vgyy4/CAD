@@ -15,9 +15,13 @@
 //! - ISO 10642 (hexagon socket countersunk head screws, 90 degrees): theoretical head
 //!   diameter `dk` of the countersink.
 //!
-//! Sizes a standard does not cover (for example M1.6 in DIN 974-1, or M24 in ISO 10642) are
-//! refused with the list of sizes that exist. The default hole depth of a tapped hole is not
-//! from a standard: the thread is 1.5 d long and the drill goes 0.5 d deeper than that.
+//! Sizes the table has no row for are refused with the list of sizes it has. That is either
+//! because the standard does not cover them (M24 in ISO 10642) or because their values are
+//! not in the table yet: DIN 974-1 lists counterbores for ISO 4762 screws from M1.6, but the
+//! table has only M3, M4, M5, M6, M8 to M16, M20 and M24 (review v0.2 L8: the other sizes
+//! wait until their values are checked against the standard). The default hole depth of a
+//! tapped hole is not from a standard: the thread is 1.5 d long and the drill goes 0.5 d
+//! deeper than that.
 //! Every value ends up as an ordinary parameter, so it can be changed afterwards.
 
 use gusset_doc::HoleType;
@@ -357,7 +361,7 @@ pub fn parse(text: &str) -> Result<Preset, StandardError> {
         HoleType::Counterbore if row.cbore.is_none() => {
             let sizes: Vec<&str> = ROWS.iter().filter(|r| r.cbore.is_some()).map(|r| r.size).collect();
             Err(err(
-                format!("ISO 4762 / DIN 974-1 has no counterbore for {}", row.size),
+                format!("the counterbore table (DIN 974-1 for ISO 4762) has no counterbore for {} yet", row.size),
                 format!("sizes with a counterbore: {}", sizes.join(", ")),
             ))
         }
@@ -492,5 +496,16 @@ mod tests {
         assert_eq!(mm(0.35), "0.35 mm");
         assert_eq!(mm(1.5 * 3.5), "5.25 mm");
         assert_eq!(mm(12.0 + 0.1 + 0.2 - 0.3), "12 mm");
+    }
+
+    /// Review v0.2 L8: DIN 974-1 does list small counterbores; a size missing from the
+    /// table is reported as missing from the table, not from the standard.
+    #[test]
+    fn missing_counterbores_are_the_tables_gap() {
+        for size in ["M1.6", "M2", "M2.5", "M3.5", "M18", "M22"] {
+            let e = parse(&format!("{size} counterbore")).unwrap_err();
+            assert!(e.message.contains("table") && e.message.contains(size), "{e:?}");
+            assert!(!e.message.contains("DIN 974-1 has no"), "{e:?}");
+        }
     }
 }
