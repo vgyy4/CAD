@@ -82,6 +82,26 @@ document (an involute gear is a sketch plus an extrude, driven by `gear_module`,
 - defaults come from the standards (ISO 53 gear profile, ISO metric threads) and are
   named in the form, so beginners learn the vocabulary instead of guessing.
 
+### Heavy or impossible work never crashes the app (owner request, 2026-10-13)
+When an operation is too heavy for the machine, or impossible in a way that only shows
+during the computation, Gusset stops it and says why, and the model and the app stay as
+they were. It never crashes, freezes without a way out, or exhausts the computer's memory.
+- **Limits before work:** operations predicted too large are refused up front with the
+  numbers and how to reduce them (done: evaluation work limits, `too_complex`, ADR 0020).
+- **Stop at any time:** every long operation shows progress and can be cancelled; a
+  cancel has no effect on the model (done between features and for MCP requests;
+  inside a single OCCT operation still open, through OCCT's progress/user-break hook).
+- **Bounded memory and time:** each rebuild runs under a memory and time budget derived
+  from the machine (docs/HARDWARE.md tiers); exceeding it stops the rebuild with "needs
+  more memory than available (about N GB)" instead of swapping or being killed.
+- **Crashes stay contained:** a fault inside the geometry kernel (OCCT segfault, abort,
+  stack overflow) cannot be caught in-process, so kernel work moves to a supervised
+  worker process, like imports already are. A dead worker becomes an error on the
+  feature that triggered it ("the geometry kernel crashed while building Fillet3"),
+  the worker restarts, and the rest of the model keeps working.
+- **Tested:** fault-injection tests kill the worker, exhaust its memory and time it out
+  mid-operation, and check that the app reports it and keeps the model intact.
+
 ## 2. Layout
 
 ```
