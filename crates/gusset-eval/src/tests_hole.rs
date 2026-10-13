@@ -242,3 +242,25 @@ fn text_edit_keeps_the_hole_in_a_state_the_cache_understands() {
     assert_eq!(a.statuses, b.statuses);
     assert_eq!(b.recomputed, 0);
 }
+
+/// Review H3: holes from a sketch are limited like explicit points (a sketch pattern could
+/// give 20,000 sites, each a boolean tool).
+#[test]
+fn sketch_sites_are_limited() {
+    let sketch = |extra: &str| {
+        format!(
+            "sketch Many (plane: {TOP}, next_id: 9) {{\n  p1 = point(1, 1)\n  c2 = circle(p1, 0.01)\n  \
+             p3 = point(1, 3)\n  c4 = circle(p3, 0.01)\n{extra}  \
+             g6 = pattern_linear(of: [c2], count: 500, dx: 0.03 mm, dy: 0 mm)\n  \
+             g7 = pattern_linear(of: [c4], count: 500, dx: 0.03 mm, dy: 0 mm)\n}}\n\n\
+             hole Hole1 (face: {TOP}, points: Many, diameter: 0.01 mm, through: true)"
+        )
+    };
+    // 1,000 sites pass the count check (and then need a kernel with revolve).
+    let e = failure(&run(&sketch("")), "Hole1");
+    assert_eq!(e.code, ErrorCode::KernelFailure, "{e}");
+    // 1,001 do not.
+    let e = failure(&run(&sketch("  p5 = point(1, 5)\n")), "Hole1");
+    assert_eq!(e.code, ErrorCode::TooComplex);
+    assert!(e.message.contains("1001 hole positions") && e.hint.is_some(), "{e}");
+}

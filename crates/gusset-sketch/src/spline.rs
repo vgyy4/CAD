@@ -59,6 +59,9 @@ pub(crate) fn chain(pts: &[V2], closed: bool) -> Vec<Bez> {
         let (d0, d1, d2) = (d(p0, p1), d(p1, p2), d(p2, p3));
         const EPS: f64 = 1e-12;
         if d1 < EPS {
+            // Only drawings get here: profiles refuse neighbouring fit points closer than the
+            // tolerance before building the chain (review L11), so the kernel never receives
+            // this zero-length segment.
             out.push([p1, p1, p2, p2]);
             continue;
         }

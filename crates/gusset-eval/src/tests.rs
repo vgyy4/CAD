@@ -335,3 +335,27 @@ sketch S (plane: XY) {{
     let [x, y] = tip("angle(l5, l6, 30 deg)");
     assert!((x - 5.0 * 30f64.to_radians().cos()).abs() < 1e-6 && y > 2.0, "{x} {y}");
 }
+
+/// Review L11: neighbouring spline fit points pulled onto one place (here by a constraint)
+/// never reach the kernel as a zero-length Bézier: the profile is refused, naming the spline.
+#[test]
+fn a_spline_with_coincident_fit_points_is_refused_by_name() {
+    let text = "gusset 1
+units mm
+
+sketch S (plane: XY, next_id: 7) {
+  p1 = point(0, 0)
+  p2 = point(10, 0)
+  p3 = point(10.5, 0.5)
+  p4 = point(0, 10)
+  s5 = spline(p1, p2, p3, p4) closed
+  k6 = coincident(p2, p3)
+}
+
+extrude E (profile: S, distance: 5 mm, op: new)
+";
+    let (_, r) = eval(text);
+    let e = r.errors().first().map(|e| (*e).clone()).unwrap_or_else(|| panic!("no error"));
+    assert!(e.message.contains("s5") && e.message.contains("same place"), "{e}");
+    assert!(r.bodies.is_empty());
+}

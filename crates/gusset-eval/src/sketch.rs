@@ -383,6 +383,12 @@ pub(crate) fn solve_sketch(
                 sk::ProfileError::SelfIntersecting { a, b, .. } => {
                     format!("{} and {} overlap along a stretch", dnames(&[*a]).join(""), dnames(&[*b]).join(""))
                 }
+                // Review L11: say which entity, and what makes a spline degenerate.
+                sk::ProfileError::Degenerate { entity } => format!(
+                    "{} has no length (a zero-length line, a zero radius, or a spline with two \
+                     neighbouring fit points at the same place)",
+                    dnames(&[*entity]).first().map_or("an entity", String::as_str)
+                ),
                 other => other.to_string(),
             };
             result.regions = Err(msg);
