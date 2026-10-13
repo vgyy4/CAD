@@ -5,8 +5,8 @@
      CI fails if this file is out of date. -->
 
 Gusset itself is licensed under `MIT OR Apache-2.0` (see `LICENSE-MIT` and
-`LICENSE-APACHE`). The shipped programs (`gusset`, `gusset-gui` and `gusset-worker`)
-also contain or load the third-party software listed below.
+`LICENSE-APACHE`). The shipped programs (`gusset`, `gusset-gui`, `gusset-worker` and
+`gusset-kernel-worker`) also contain or load the third-party software listed below.
 
 ## Open CASCADE Technology (OCCT)
 
