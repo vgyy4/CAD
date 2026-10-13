@@ -415,8 +415,38 @@ pub struct RunArgs {
 /// The first sentence of a command's description (the `commands` list entry).
 fn summary(spec: &CommandSpec) -> String {
     let d = spec.description;
-    let end = d.find(". ").map_or(d.len(), |i| i + 1);
-    d.get(..end).unwrap_or(d).to_string()
+    const LIMIT: usize = 160;
+    let mut depth = 0_usize;
+    let mut boundary = None;
+    for (i, c) in d.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            '.' | '!' | '?' if depth == 0 => {
+                let prefix = d.get(..i).unwrap_or_default();
+                let word = prefix.split_whitespace().next_back().unwrap_or_default();
+                let next = d.get(i + c.len_utf8()..).and_then(|s| s.chars().next());
+                if !matches!(word, "e.g" | "i.e") && (next.is_none() || next.is_some_and(char::is_whitespace)) {
+                    let end = i + c.len_utf8();
+                    if end <= LIMIT {
+                        boundary = Some(end);
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(end) = boundary {
+        return d.get(..end).unwrap_or(d).to_string();
+    }
+    if d.len() <= LIMIT {
+        return d.to_string();
+    }
+    let limit = d.char_indices().take_while(|(i, _)| *i <= LIMIT).last().map_or(0, |(i, _)| i);
+    let cut = d.get(..limit).unwrap_or_default();
+    let end = cut.rfind(char::is_whitespace).unwrap_or(cut.len());
+    format!("{}…", cut.get(..end).unwrap_or(cut).trim_end())
 }
 
 /// The `commands` result: the commands not in tools/list, or one command's definition.
@@ -1105,6 +1135,20 @@ impl ServerHandler for GussetMcp {
 #[cfg(test)]
 mod size_tests {
     use super::*;
+
+    #[test]
+    fn command_summaries_end_at_complete_sentences() {
+        let shell = registry().iter().find(|s| s.id == "feature.shell").expect("shell command");
+        assert_eq!(
+            summary(shell),
+            "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box)."
+        );
+        let pattern = registry().iter().find(|s| s.id == "feature.pattern_circular").expect("circular pattern command");
+        assert_eq!(
+            summary(pattern),
+            "Repeat a whole body around an axis (count, total angle) and unite the copies with it, e.g. a bolt circle."
+        );
+    }
 
     /// tools/list stays in every agent's context for the whole session: keep it small
     /// (owner request: do not fill the model's context like many MCP servers do).

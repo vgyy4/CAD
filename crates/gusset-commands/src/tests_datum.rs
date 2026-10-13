@@ -260,6 +260,16 @@ fn combine_merges_and_consumes_bodies() {
 }
 
 #[test]
+fn combine_self_target_error_uses_the_caller_body_name() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "body_name": "Bracket"}));
+    let error = fail(&mut s, "feature.combine", json!({"body": "Bracket", "tools": ["Bracket"]}));
+    assert!(error.message.contains("'Bracket' is both the target and a tool"), "{error:?}");
+}
+
+#[test]
 fn a_patterned_feature_combines_into_the_base_by_commands() {
     let mut s = session();
     plate_and_block(&mut s);

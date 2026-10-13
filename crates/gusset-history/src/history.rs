@@ -1034,7 +1034,13 @@ impl History {
         {
             return self.undo(ctx, branch);
         }
-        Ok(format!("Undo: {}", ev.describe()))
+        let head = self.head(branch)?;
+        match ev {
+            Event::Edit { branch: edited_branch, to, .. } => {
+                Ok(format!("Undid {to} (edited {edited_branch}); now at {head}"))
+            }
+            _ => Ok(format!("Undid {}; now at {head}", ev.describe())),
+        }
     }
 
     pub fn redo(&mut self, ctx: &Ctx, branch: BranchId) -> HResult<String> {

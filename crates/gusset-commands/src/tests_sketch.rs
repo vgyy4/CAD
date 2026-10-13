@@ -31,6 +31,28 @@ fn regions(s: &mut Session, ctx: &CmdCtx, sketch: &str) -> Vec<(String, f64)> {
     v
 }
 
+#[test]
+fn rectangle_dimensions_can_come_from_expressions() {
+    let mut s = session();
+    let ctx = CmdCtx::user(1);
+    run(&mut s, &ctx, "param.set", json!({"name": "w", "expr": "20 mm"}));
+    run(&mut s, &ctx, "sketch.create", json!({"plane": "XY"}));
+    let result = run(
+        &mut s,
+        &ctx,
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width_expr": "w", "height_expr": "10 mm"}),
+    );
+    assert!(result["lines"].as_array().is_some(), "{result}");
+    for args in [
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "height": 10}),
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10}),
+    ] {
+        let error = fail(&mut s, &ctx, "sketch.add_rectangle", args);
+        assert!(error.message.contains("rectangle"), "{error:?}");
+    }
+}
+
 fn volume(s: &mut Session, ctx: &CmdCtx) -> f64 {
     run(s, ctx, "query.body", json!({}))["volume_mm3"].as_f64().unwrap()
 }

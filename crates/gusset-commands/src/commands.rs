@@ -1064,8 +1064,10 @@ pub struct SketchAddRectangle {
     /// Corner x (mm).
     pub x: f64,
     pub y: f64,
-    pub width: f64,
-    pub height: f64,
+    #[serde(default)]
+    pub width: Option<f64>,
+    #[serde(default)]
+    pub height: Option<f64>,
     /// Also add width/height dimensions (expressions, e.g. `width` or `40 mm`).
     #[serde(default)]
     pub width_expr: Option<String>,
@@ -1082,7 +1084,15 @@ impl Command for SketchAddRectangle {
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("R");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        if self.width.abs() < 1e-9 || self.height.abs() < 1e-9 {
+        let width = self
+            .width
+            .or_else(|| self.width_expr.as_ref().map(|_| 1.0))
+            .ok_or_else(|| CommandError::args("rectangle width is required when width_expr is not given"))?;
+        let height = self
+            .height
+            .or_else(|| self.height_expr.as_ref().map(|_| 1.0))
+            .ok_or_else(|| CommandError::args("rectangle height is required when height_expr is not given"))?;
+        if width.abs() < 1e-9 || height.abs() < 1e-9 {
             return Err(CommandError::args("rectangle width and height must be non-zero"));
         }
         let wexpr = self.width_expr.as_deref().map(|e| parse_expr("width_expr", e)).transpose()?;
@@ -1090,7 +1100,7 @@ impl Command for SketchAddRectangle {
         let sk = self.sketch.clone();
         edit(s, ctx, "Add rectangle", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
-            let (x, y, w, h) = (self.x, self.y, self.width, self.height);
+            let (x, y, w, h) = (self.x, self.y, width, height);
             let p =
                 [add_point(d, x, y)?, add_point(d, x + w, y)?, add_point(d, x + w, y + h)?, add_point(d, x, y + h)?];
             let [p0, p1, p2, p3] = p.clone();

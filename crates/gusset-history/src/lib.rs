@@ -65,6 +65,17 @@ mod tests {
     }
 
     #[test]
+    fn undo_message_names_the_undone_node_and_new_head() {
+        let ctx = Ctx::user(1);
+        let mut history = History::new(&doc(&[]), &ctx);
+        let branch = history.main();
+        let old_head = history.head(branch).unwrap();
+        let new_head = history.commit(&ctx, branch, &doc(&[("a", "1 mm")]), "edit", NodeState::Ok).unwrap();
+        let message = history.undo(&ctx, branch).unwrap();
+        assert_eq!(message, format!("Undid {new_head} (edited {branch}); now at {old_head}"));
+    }
+
+    #[test]
     fn per_actor_and_per_branch_undo() {
         let u = Ctx::user(1);
         let a = Ctx::agent("claude-1", 2);

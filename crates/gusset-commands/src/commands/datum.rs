@@ -58,7 +58,7 @@ pub struct DatumPlane {
 impl Command for DatumPlane {
     const ID: &'static str = "feature.plane";
     const TITLE: &'static str = "Datum plane";
-    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or a datum plane by a length, or turned about an axis (X/Y/Z or a straight edge) by an angle. Usable as the plane of sketch_create and feature_mirror. No body; returns its frame.";
+    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or a datum plane along its normal (XY +Z, XZ -Y, YZ +X), or turned about an axis (X/Y/Z or a straight edge). Usable by sketch_create and feature_mirror; returns its frame.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -249,7 +249,8 @@ impl Command for Combine {
                 }
             };
             if tools.contains(&body) {
-                return Err(CommandError::args(format!("'{body}' is both the target and a tool"))
+                let target = self.body.as_deref().unwrap_or(&body);
+                return Err(CommandError::args(format!("'{target}' is both the target and a tool"))
                     .hint("a body cannot be combined with itself"));
             }
             let name = feature_name(doc, self.name, "Combine")?;
