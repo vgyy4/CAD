@@ -162,3 +162,91 @@ fn playback_buttons_move_the_rollback_marker() {
     h.run();
     h.get_by_label("Hide iteration graph");
 }
+
+// ------------------------------------------------------------------------- command line
+
+fn type_line(h: &mut Harness<'static, App>, line: &str) {
+    let input = || egui::accesskit::Role::TextInput;
+    h.get_by_role(input()).focus();
+    h.run();
+    h.get_by_role(input()).type_text(line);
+    h.run();
+}
+
+#[test]
+fn command_line_runs_registry_commands_with_key_value_args() {
+    let mut h = harness(app());
+    h.run();
+    type_line(&mut h, "sketch.create plane=XY name=Plate");
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    assert!(h.state().snapshot.doc.features.iter().any(|f| f.name == "Plate"), "{:?}", h.state().notice);
+    // The result is in the status bar and the field is empty and remembered.
+    assert!(h.state().notice.as_ref().is_some_and(|n| !n.error && n.text.starts_with("sketch.create: ok")));
+    assert_eq!(h.state().cmdline.text, "");
+    assert_eq!(h.state().cmdline.history, ["sketch.create plane=XY name=Plate"]);
+    h.get_by_label_contains("sketch.create: ok");
+}
+
+#[test]
+fn command_line_goes_through_the_same_path_as_the_ribbon() {
+    // The same command typed as JSON and as key=value gives what the registry gives.
+    let mut typed = app();
+    typed.run_command_line(r#"param.set {"name": "w", "expr": "12 mm"}"#);
+    typed.run_command_line("param.set name=v expr=\"3 mm\"");
+    typed.wait_idle();
+    let mut direct = app();
+    direct.run("param.set", json!({"name": "w", "expr": "12 mm"})).unwrap();
+    direct.run("param.set", json!({"name": "v", "expr": "3 mm"})).unwrap();
+    direct.wait_idle();
+    assert_eq!(typed.snapshot.doc.to_text(), direct.snapshot.doc.to_text());
+    assert!(typed.notice.as_ref().is_some_and(|n| !n.error), "{:?}", typed.notice);
+}
+
+#[test]
+fn command_line_reports_parse_and_registry_errors() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    type_line(&mut h, "no.such_command x=1");
+    h.key_press(egui::Key::Enter);
+    settle(&mut h);
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error && n.text.contains("unknown command")));
+    h.get_by_label_contains("unknown command");
+    // An argument the command does not have.
+    h.state_mut().run_command_line("feature.extrude bogus=1");
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error && n.text.contains("unknown argument 'bogus'")));
+    // A well-formed line the registry rejects (no such sketch) is reported from the command.
+    let before = h.state().snapshot.doc.features.len();
+    h.state_mut().run_command_line("feature.extrude sketch=Nope distance=\"5 mm\"");
+    h.state_mut().wait_idle();
+    h.run();
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error), "{:?}", h.state().notice);
+    assert_eq!(h.state().snapshot.doc.features.len(), before);
+}
+
+#[test]
+fn command_line_tab_completes_command_ids() {
+    let mut h = harness(app());
+    h.run();
+    type_line(&mut h, "feature.extr");
+    h.key_press(egui::Key::Tab);
+    h.run();
+    assert_eq!(h.state().cmdline.text, "feature.extrude ");
+    // The hint lists the arguments of the command.
+    h.get_by_label_contains("distance=");
+}
+
+#[test]
+fn command_line_is_toggled_from_the_view_menu() {
+    let input = egui::accesskit::Role::TextInput;
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_role(input).is_some());
+    h.get_by_label("View").click();
+    h.run();
+    h.get_by_label("Command line").click();
+    h.run();
+    h.run();
+    assert!(!h.state().cmdline.visible);
+    assert!(h.query_by_role(input).is_none());
+}

@@ -9,6 +9,7 @@
 
 use crate::agents::{Agents, plain};
 use crate::browser;
+use crate::cmdline;
 use crate::forms::{self, Form};
 use crate::i18n::tr;
 use crate::icons::{self, Icon};
@@ -112,6 +113,8 @@ pub enum Then {
     Code,
     /// Only report errors.
     Quiet,
+    /// It came from the command line: report the result (or the error) in the status bar.
+    CmdLine,
     /// A path dialog action: re-open the dialog with the error on failure.
     PathDialog(PathPurpose, String),
     /// A branch comparison for the agents panel (branch name, plain text).
@@ -256,6 +259,8 @@ pub struct App {
     pub sketch_visibility: std::collections::BTreeMap<String, bool>,
     /// Which browser categories are expanded.
     pub browser: browser::State,
+    /// The command line above the status bar.
+    pub cmdline: cmdline::State,
     /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
     pub agents: Agents,
 }
@@ -323,6 +328,7 @@ impl App {
             active_sketch_seen: false,
             sketch_visibility: std::collections::BTreeMap::new(),
             browser: browser::State::default(),
+            cmdline: cmdline::State::default(),
             agents,
         }
     }
@@ -635,6 +641,17 @@ impl App {
                     self.report(id, &result);
                 }
             }
+            Then::CmdLine => match &result {
+                Ok(v) => {
+                    let mut text = format!("{id}: ok");
+                    let shown = v.to_string();
+                    if shown != "null" && shown != "{}" {
+                        text.push_str(&format!(" {}", clip_result(&shown, 160)));
+                    }
+                    self.notice = Some(Notice { text, hint: None, error: false });
+                }
+                Err(_) => self.report(id, &result),
+            },
             Then::Show => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
                 match result {
@@ -1088,6 +1105,9 @@ impl App {
             .show(ui, |ui| self.workspace_tabs(ui));
         egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if self.cmdline.visible {
+            egui::Panel::bottom("cmdline").frame(bar(pal.bg_panel, 3, 3)).show(ui, |ui| self.command_line(ui));
+        }
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
         egui::Panel::left("browser")
             .default_size(240.0)
@@ -1215,6 +1235,9 @@ impl App {
                     self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
+                if ui.checkbox(&mut self.cmdline.visible, tr("menu.cmdline")).changed() && self.cmdline.visible {
+                    self.cmdline.focus = true;
+                }
             });
             ui.menu_button(tr("menu.help"), |ui| {
                 if ui.button(tr("menu.diagnostics")).clicked() {
@@ -1387,6 +1410,27 @@ impl App {
             Some(_) => None,
             None => Some((self.snapshot.doc.to_text(), None)),
         };
+    }
+
+    /// The command line: parses what was typed and runs it through the registry like the
+    /// ribbon does.
+    fn command_line(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
+        if let Some(line) = cmdline::show(ui, &mut self.cmdline, &pal) {
+            self.run_command_line(&line);
+        }
+    }
+
+    /// Runs a command line (`feature.extrude sketch=S1 distance="10 mm"`) through
+    /// [`App::submit_command`]; a line that does not parse is reported in the status bar.
+    pub fn run_command_line(&mut self, line: &str) {
+        match cmdline::parse(line) {
+            Ok(p) => {
+                let then = if inspects(p.id) { Then::Show } else { Then::CmdLine };
+                self.submit_command(p.id, p.args, then);
+            }
+            Err(msg) => self.notice = Some(Notice { text: msg, hint: None, error: true }),
+        }
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -2181,6 +2225,15 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
 }
 
 /// Whether a command only reads the model and reports a result (measure, overview).
+/// A command result on one line, cut to `max` characters.
+fn clip_result(s: &str, max: usize) -> String {
+    let mut out: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        out.push_str("...");
+    }
+    out
+}
+
 fn inspects(id: &str) -> bool {
     gusset_commands::find(id).is_some_and(|s| s.category == gusset_commands::Category::Inspect)
 }
