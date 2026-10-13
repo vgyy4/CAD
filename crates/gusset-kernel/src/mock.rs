@@ -166,24 +166,47 @@ impl Kernel for MockKernel {
     /// Only the union of bodies that do not touch (their bounding boxes are apart) works:
     /// the result is the two bodies side by side.
     fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
-        let (a, b) = (target.downcast::<MockShape>()?, tool.downcast::<MockShape>()?);
-        let apart = |p: &Prism, q: &Prism| {
-            let (u, v) = (prism_bbox(p), prism_bbox(q));
-            (0..3).any(|k| u.max[k] < v.min[k] - 1e-9 || v.max[k] < u.min[k] - 1e-9)
-        };
-        if op != BoolOp::Union || !a.prisms.iter().all(|p| b.prisms.iter().all(|q| apart(p, q))) {
+        self.boolean_many(op, target, std::slice::from_ref(tool))
+    }
+
+    /// The union of bodies none of which touch another: all of them side by side.
+    fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+        let mut inputs = vec![target.downcast::<MockShape>()?];
+        for t in tools {
+            inputs.push(t.downcast::<MockShape>()?);
+        }
+        // Every prism's box, with its input; sorted by min x for a sweep.
+        let mut boxes: Vec<(BBox, usize)> =
+            inputs.iter().enumerate().flat_map(|(i, m)| m.prisms.iter().map(move |p| (prism_bbox(p), i))).collect();
+        boxes.sort_by(|a, b| a.0.min[0].total_cmp(&b.0.min[0]));
+        let apart = |u: &BBox, v: &BBox| (0..3).any(|k| u.max[k] < v.min[k] - 1e-9 || v.max[k] < u.min[k] - 1e-9);
+        let mut touching = false;
+        for (k, (u, i)) in boxes.iter().enumerate() {
+            for (v, j) in boxes.iter().skip(k + 1) {
+                if v.min[0] > u.max[0] + 1e-9 {
+                    break;
+                }
+                if i != j && !apart(u, v) {
+                    touching = true;
+                }
+            }
+        }
+        if op != BoolOp::Union || touching {
             return Err(crate::KernelError::new(
                 KernelErrorKind::Unsupported,
                 "the mock kernel can only unite bodies that do not touch",
             ));
         }
         let mut origins = Vec::new();
-        for (input, m) in [(0u32, a), (1u32, b)] {
+        let mut prisms = Vec::new();
+        for (input, m) in inputs.iter().enumerate() {
+            let input = u32::try_from(input).map_err(|_| invalid("too many shapes"))?;
             for f in 0..topology(m).faces.len() {
-                origins.push(vec![FaceOrigin::Input { input, face: f as u32 }]);
+                let face = u32::try_from(f).map_err(|_| invalid("too many faces"))?;
+                origins.push(vec![FaceOrigin::Input { input, face }]);
             }
+            prisms.extend(m.prisms.iter().cloned());
         }
-        let prisms = a.prisms.iter().chain(&b.prisms).cloned().collect();
         Ok(OpResult { shape: Shape::new(MockShape { prisms }), face_origins: origins })
     }
 

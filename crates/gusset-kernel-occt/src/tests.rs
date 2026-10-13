@@ -135,6 +135,50 @@ fn boolean_cut_and_history() {
     assert!(c.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Input { input: 1, .. })));
 }
 
+/// Review H3: several tools in one operation, with per-tool history, the same volume as one
+/// tool at a time, and the same result for every op the trait allows.
+#[test]
+fn boolean_many_cuts_and_fuses_with_history() {
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let tool_at = |x: f64| {
+        let mut p = boxp(5.0, 5.0);
+        p.frame.origin = [x, 5.0, 0.0];
+        k().extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap().shape
+    };
+    let tools = [tool_at(2.0), tool_at(12.0), tool_at(22.0)];
+    let c = k().boolean_many(BoolOp::Cut, &a.shape, &tools).unwrap();
+    let seq = gusset_kernel::sequential_boolean(&k(), BoolOp::Cut, &a.shape, &tools).unwrap();
+    let vol = |s: &Shape| k().mass_properties(s).unwrap().volume;
+    assert!(close(vol(&c.shape), 8000.0 - 3.0 * 250.0, 1e-6), "{}", vol(&c.shape));
+    assert!(close(vol(&seq.shape), vol(&c.shape), 1e-9));
+    assert_eq!(k().topology(&c.shape).unwrap().faces.len(), k().topology(&seq.shape).unwrap().faces.len());
+    // Each pocket's walls come from its own tool (inputs 1, 2, 3); input 0 is the target.
+    for input in 0..=3u32 {
+        assert!(
+            c.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Input { input: i, .. } if *i == input))
+        );
+    }
+    assert!(c.face_origins.iter().all(|o| !o.is_empty()));
+    let mut seq_o = seq.face_origins.clone();
+    let mut many_o: Vec<_> = c.face_origins.clone();
+    seq_o.sort();
+    many_o.sort();
+    assert_eq!(seq_o, many_o, "the same faces come from the same inputs either way");
+    // A fuse of disjoint copies keeps them all; intersect goes one tool at a time.
+    let far = |x: f64| {
+        let mut p = boxp(5.0, 5.0);
+        p.frame.origin = [x, 50.0, 0.0];
+        k().extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap().shape
+    };
+    let u = k().boolean_many(BoolOp::Union, &a.shape, &[far(0.0), far(10.0)]).unwrap();
+    assert!(close(vol(&u.shape), 8000.0 + 500.0, 1e-6));
+    let i = k().boolean_many(BoolOp::Intersect, &a.shape, &[tool_at(2.0), tool_at(4.0)]).unwrap();
+    assert!(close(vol(&i.shape), 3.0 * 5.0 * 10.0, 1e-6), "{}", vol(&i.shape));
+    // No tools: the target itself.
+    let same = k().boolean_many(BoolOp::Cut, &a.shape, &[]).unwrap();
+    assert!(close(vol(&same.shape), 8000.0, 1e-9));
+}
+
 #[test]
 fn fillet_and_chamfer_history() {
     let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();

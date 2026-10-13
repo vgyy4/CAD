@@ -152,6 +152,14 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_boolean_many(
+            op: i32,
+            target: *const GsShape,
+            tools: *const *const GsShape,
+            ntools: usize,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_fillet(
             s: *const GsShape,
             edges: *const u32,
