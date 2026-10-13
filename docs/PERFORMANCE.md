@@ -118,6 +118,32 @@ What changed (ADR 0020):
   `crossing_splines_arrange_as_before`); six parallel 1,000-point splines 1 mm apart take
   0.08 s.
 
+### 2026-10-13: gear models (dogfooding F3-5)
+`gusset build` of the dogfooding gear pairs (release, OCCT, 4 vCPU container) and
+`cargo test --release -p gusset-cli --test perf_gears -- --ignored --nocapture`.
+Release was barely faster than debug, so the time was in OCCT, not in Rust; gdb stack
+samples and timers around the shim's entry points showed where:
+
+| | Before | After |
+|---|---|---|
+| Spur pair (20 + 30 teeth), full rebuild | 8.6 s | 2.2 s |
+| Helical pair, full rebuild | 27.1 s | ~24 s (the two sweeps: 9 s + 15 s in OCCT) |
+| Edit on the gear model (`param.set`, `feature.delete` of the last feature) | 11-18 s (debug, dogfooding) | 8-14 ms |
+
+What changed:
+- `BRepCheck_Analyzer` took 1-2 s per operation on a gear (the 280-edge cap wires; even
+  the topology-only check took over 1 s). Extrusions are now checked for closed shells
+  in linear time (every edge bounds two face sides): the prism of a planar face whose
+  loops the sketch arrangement already checked is valid by construction. A rigid move,
+  rotation or mirror of a valid shape is not re-checked. Every other operation (booleans,
+  fillets, shells, revolve, sweep, loft) keeps the full check.
+- Every operation extracted the full topology (per-face area integrals, 0.3-0.6 s on a
+  gear) just to count faces, and the evaluator then extracted it again. The OCCT shape
+  now computes its topology, mass properties and bounding box at most once.
+- Left: OCCT's pipe shell (`BRepFill_PipeShell::BuildHistory`) takes 9-15 s for a
+  helical gear's twisted sweep, and the adaptive mass integration of freeform faces
+  1-1.7 s per gear (computed once per shape now).
+
 ## History overhead (2026-10-11)
 
 Each history node used to store a snapshot object listing every feature hash, so a

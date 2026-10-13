@@ -78,6 +78,7 @@
 #include <TDocStd_Document.hxx>
 #include <TopAbs.hxx>
 #include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
@@ -326,6 +327,29 @@ void push_origin(std::vector<int64_t>& v, int64_t face, int64_t kind, int64_t a,
 void check_valid(const TopoDS_Shape& s, const char* what) {
   BRepCheck_Analyzer an(s);
   if (!an.IsValid()) throw Standard_Failure((std::string(what) + " produced an invalid solid").c_str());
+}
+
+// For operations whose result is valid by construction when the input is (the prism of a
+// planar profile face whose loops the sketch arrangement already checked): every edge
+// bounds exactly two face sides, i.e. the shells are closed. Linear in the shape size;
+// BRepCheck_Analyzer took 1-2 s on a gear with 280-edge caps (dogfooding F3-5).
+void check_closed(const TopoDS_Shape& s, const char* what) {
+  TopTools_IndexedMapOfShape edges;
+  std::vector<int> uses;
+  bool any_solid = false;
+  for (TopExp_Explorer sx(s, TopAbs_SOLID); sx.More(); sx.Next()) any_solid = true;
+  for (TopExp_Explorer fx(s, TopAbs_FACE); fx.More(); fx.Next()) {
+    for (TopExp_Explorer ex(fx.Current(), TopAbs_EDGE); ex.More(); ex.Next()) {
+      const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+      if (BRep_Tool::Degenerated(e)) continue;
+      int i = edges.Add(e);
+      if (size_t(i) > uses.size()) uses.resize(size_t(i), 0);
+      uses[size_t(i) - 1] += 1;
+    }
+  }
+  bool closed = any_solid && !uses.empty();
+  for (int n : uses) closed = closed && n == 2;
+  if (!closed) throw Standard_Failure((std::string(what) + " produced an open or invalid solid").c_str());
 }
 
 // Records Input/Modified history of every face of input `input_idx`.
@@ -796,7 +820,7 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
     if (b > 0) push_origin(o, b - 1, GS_ORIGIN_CAP, 1, face_region[ri]);
   }
   for (auto* op : ops) delete op;
-  check_valid(result, "extrusion");
+  check_closed(result, "extrusion");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -1219,7 +1243,8 @@ int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** o
     int idx = out_faces.FindIndex(xf.ModifiedShape(in_faces(i)));
     if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
   }
-  check_valid(result, "transform");
+  // A rigid motion (move, rotate, mirror) of a valid shape is valid: no re-check (it took
+  // as long as the operation that made the shape, F3-5).
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;

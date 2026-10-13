@@ -65,8 +65,37 @@ mod imp {
     use gusset_occt_sys as sys;
     use std::any::Any;
 
+    /// A shape and its derived summaries, each computed at most once (shapes are
+    /// immutable). Every operation needs the face count and the evaluator then asks for the
+    /// same topology to name the result; edits report the volume of the bodies before and
+    /// after. On a gear each of these took 0.2-1.7 s and was repeated (dogfooding F3-5).
     #[derive(Debug)]
-    pub(crate) struct OcctShape(pub(crate) RawShape);
+    pub(crate) struct OcctShape(pub(crate) RawShape, Derived);
+
+    #[derive(Debug, Default)]
+    pub(crate) struct Derived {
+        topology: std::sync::OnceLock<Topology>,
+        mass: std::sync::OnceLock<MassProps>,
+        bbox: std::sync::OnceLock<BBox>,
+    }
+
+    fn once<T: Clone>(cell: &std::sync::OnceLock<T>, f: impl FnOnce() -> KResult<T>) -> KResult<T> {
+        if let Some(v) = cell.get() {
+            return Ok(v.clone());
+        }
+        let v = f()?;
+        Ok(cell.get_or_init(|| v).clone())
+    }
+
+    impl OcctShape {
+        pub(crate) fn new(raw: RawShape) -> OcctShape {
+            OcctShape(raw, Derived::default())
+        }
+
+        fn topology(&self) -> KResult<Topology> {
+            once(&self.1.topology, || topology(&self.0))
+        }
+    }
 
     impl ShapeData for OcctShape {
         fn as_any(&self) -> &dyn Any {
@@ -160,8 +189,8 @@ mod imp {
 
     pub(crate) fn op_result(out: ffi::OpOut) -> KResult<OpResult> {
         let (shape, recs) = out;
-        let topo = ffi::topology(&shape)?;
-        let nfaces = topo.faces.len() / 8;
+        let shape = OcctShape::new(shape);
+        let nfaces = shape.topology()?.faces.len();
         let mut origins: Vec<Vec<FaceOrigin>> = vec![Vec::new(); nfaces];
         for q in recs.chunks_exact(4) {
             let &[face, kind, a, b] = q else { continue };
@@ -186,7 +215,7 @@ mod imp {
             o.sort();
             o.dedup();
         }
-        Ok(OpResult { shape: Shape::new(OcctShape(shape)), face_origins: origins })
+        Ok(OpResult { shape: Shape::new(shape), face_origins: origins })
     }
 
     fn surface_kind(k: f64) -> SurfaceKind {
@@ -351,23 +380,29 @@ mod imp {
         }
 
         fn topology(&self, shape: &Shape) -> KResult<Topology> {
-            topology(raw(shape)?)
+            shape.downcast::<OcctShape>()?.topology()
         }
 
         fn mass_properties(&self, shape: &Shape) -> KResult<MassProps> {
-            let m = ffi::mass(raw(shape)?)?;
-            match m.as_slice() {
-                [v, a, x, y, z] => Ok(MassProps { volume: *v, area: *a, centroid: [*x, *y, *z] }),
-                _ => Err(KernelError::new(KernelErrorKind::Internal, "malformed mass properties")),
-            }
+            let s = shape.downcast::<OcctShape>()?;
+            once(&s.1.mass, || {
+                let m = ffi::mass(&s.0)?;
+                match m.as_slice() {
+                    [v, a, x, y, z] => Ok(MassProps { volume: *v, area: *a, centroid: [*x, *y, *z] }),
+                    _ => Err(KernelError::new(KernelErrorKind::Internal, "malformed mass properties")),
+                }
+            })
         }
 
         fn bbox(&self, shape: &Shape) -> KResult<BBox> {
-            let b = ffi::bbox(raw(shape)?)?;
-            match b.as_slice() {
-                [x0, y0, z0, x1, y1, z1] => Ok(BBox { min: [*x0, *y0, *z0], max: [*x1, *y1, *z1] }),
-                _ => Err(KernelError::new(KernelErrorKind::Internal, "malformed bounding box")),
-            }
+            let s = shape.downcast::<OcctShape>()?;
+            once(&s.1.bbox, || {
+                let b = ffi::bbox(&s.0)?;
+                match b.as_slice() {
+                    [x0, y0, z0, x1, y1, z1] => Ok(BBox { min: [*x0, *y0, *z0], max: [*x1, *y1, *z1] }),
+                    _ => Err(KernelError::new(KernelErrorKind::Internal, "malformed bounding box")),
+                }
+            })
         }
 
         fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh> {
@@ -404,7 +439,7 @@ mod imp {
             Ok(ffi::read_shapes(data)?
                 .into_iter()
                 .enumerate()
-                .map(|(i, s)| (Shape::new(OcctShape(s)), format!("Body {}", i + 1)))
+                .map(|(i, s)| (Shape::new(OcctShape::new(s)), format!("Body {}", i + 1)))
                 .collect())
         }
 
@@ -424,7 +459,7 @@ mod imp {
             Ok(ffi::read_iges_file(&file)?
                 .into_iter()
                 .enumerate()
-                .map(|(i, s)| (Shape::new(OcctShape(s)), format!("Body {}", i + 1)))
+                .map(|(i, s)| (Shape::new(OcctShape::new(s)), format!("Body {}", i + 1)))
                 .collect())
         }
 
@@ -439,10 +474,10 @@ mod imp {
             // the worker's canonical re-serialization of an untrusted blob. The
             // untrusted original itself never reaches BinTools::Read here.
             if gusset_worker::trust::is_trusted(data) {
-                return Ok(Shape::new(OcctShape(ffi::brep_read(data)?)));
+                return Ok(Shape::new(OcctShape::new(ffi::brep_read(data)?)));
             }
             if let Some(c) = gusset_worker::trust::canonical_for(data) {
-                return Ok(Shape::new(OcctShape(ffi::brep_read(&c)?)));
+                return Ok(Shape::new(OcctShape::new(ffi::brep_read(&c)?)));
             }
             let Some(worker) = &self.worker else {
                 return Err(KernelError::new(
@@ -462,7 +497,7 @@ mod imp {
                     .with_hint("re-import the original file")
             })?;
             let canonical = gusset_worker::trust::remember_canonical(data, canonical);
-            Ok(Shape::new(OcctShape(ffi::brep_read(&canonical)?)))
+            Ok(Shape::new(OcctShape::new(ffi::brep_read(&canonical)?)))
         }
     }
 }
