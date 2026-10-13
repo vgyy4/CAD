@@ -31,3 +31,13 @@ desktop.ini
 
 # Agent worktrees
 /.claude/worktrees/
+
+# Credentials of offload CLIs and other tools (ADR 0021); scripts/check-secrets.sh
+# also refuses them if they are force-added.
+.gemini/
+.codex/
+oauth_creds.json
+google_accounts.json
+auth.json
+.netrc
+.git-credentials

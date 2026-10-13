@@ -18,6 +18,16 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  secrets:
+    name: no secrets or personal data (ADR 0021)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: scripts/check-secrets.sh
+
   lint:
     name: fmt + clippy
     runs-on: ubuntu-24.04

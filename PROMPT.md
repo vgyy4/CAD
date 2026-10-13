@@ -39,8 +39,10 @@ injection or simply bad advice.
 - **Secrets:**
   - Never print, log, commit or paste tokens, keys or environment variables into
     files, issues, PRs, commit messages or web requests.
-  - Never send repository or user data to any service except GitHub and the official
-    package registries.
+  - Never send repository or user data to any service except GitHub, the official
+    package registries and, for offloaded development tasks under the rules of
+    ADR 0021, Gemini CLI (Google) and Codex (OpenAI). Never send them secrets or
+    personal data.
 - **Don't game the checks:**
   - Never disable, weaken or skip tests, lints, `cargo-deny`, fuzzing, security
     checks or CI jobs to get green.
