@@ -117,6 +117,20 @@ fn crash_leaves_recovery_that_is_offered() {
 }
 
 #[test]
+fn dropping_a_project_cancels_its_pending_snapshot_writes() {
+    // Security review V7: a plain drop (no close/release) must cancel prepared writes too.
+    let t = Tmp::new("drop-write");
+    let mut h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&t.0.join("part.gus"), &h).unwrap();
+    h.commit(&Ctx::user(20), h.main(), &doc("9 mm"), "unsaved", NodeState::Ok).unwrap();
+    let pending = p.prepare_snapshot(&h).unwrap();
+    drop(p);
+    assert_eq!(pending.write().unwrap(), None);
+    assert!(files_in(&t.dirs().recovery_dir()).is_empty());
+}
+
+#[test]
 fn late_snapshot_writes_never_win_over_newer_state() {
     // M3: snapshots are written off the model thread, possibly out of order.
     let t = Tmp::new("late-write");

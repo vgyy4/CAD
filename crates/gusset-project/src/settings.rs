@@ -259,10 +259,12 @@ pub enum SaveAction {
 #[derive(Debug, Clone)]
 pub struct SaveScheduler {
     settings: Settings,
-    /// Changes not yet in the project file or a recovery snapshot.
-    pending: u32,
-    /// When the first of those changes completed.
-    pending_since: Option<Instant>,
+    /// Changes not yet in the project file or a recovery snapshot: sequence number and
+    /// completion time, oldest first. A write clears only the changes up to the mark
+    /// taken when it started (review M2: edits during a background write stay pending).
+    unwritten: std::collections::VecDeque<(u64, Instant)>,
+    /// Sequence number of the latest change.
+    seq: u64,
     /// When the last change completed.
     last_change: Option<Instant>,
 }
@@ -271,7 +273,7 @@ impl SaveScheduler {
     /// A scheduler using `settings` (already merged with project overrides).
     #[must_use]
     pub fn new(settings: Settings) -> Self {
-        SaveScheduler { settings, pending: 0, pending_since: None, last_change: None }
+        SaveScheduler { settings, unwritten: std::collections::VecDeque::new(), seq: 0, last_change: None }
     }
 
     /// The settings in effect.
@@ -287,8 +289,8 @@ impl SaveScheduler {
 
     /// An operation completed and changed the project.
     pub fn changed(&mut self, now: Instant) {
-        self.pending = self.pending.saturating_add(1);
-        self.pending_since.get_or_insert(now);
+        self.seq += 1;
+        self.unwritten.push_back((self.seq, now));
         self.last_change = Some(now);
     }
 
@@ -296,7 +298,7 @@ impl SaveScheduler {
     /// needs a file; never-saved projects get recovery snapshots).
     #[must_use]
     pub fn due(&self, now: Instant, has_file: bool, quiescent: bool) -> SaveAction {
-        if !quiescent || self.pending == 0 {
+        if !quiescent || self.unwritten.is_empty() {
             return SaveAction::Nothing;
         }
         let s = &self.settings;
@@ -304,33 +306,56 @@ impl SaveScheduler {
             let quiet = self.last_change.is_none_or(|t| now.saturating_duration_since(t) >= s.autosave_debounce);
             return if quiet { SaveAction::SaveProject } else { SaveAction::Nothing };
         }
-        let old = self.pending_since.is_some_and(|t| now.saturating_duration_since(t) >= s.recovery_interval);
-        if old || self.pending >= s.recovery_after_changes { SaveAction::WriteRecovery } else { SaveAction::Nothing }
+        let old = self.pending_since().is_some_and(|t| now.saturating_duration_since(t) >= s.recovery_interval);
+        if old || self.pending_changes() >= s.recovery_after_changes {
+            SaveAction::WriteRecovery
+        } else {
+            SaveAction::Nothing
+        }
     }
 
     /// When [`SaveScheduler::due`] next becomes true without further changes, so an idle
     /// front end can sleep until then instead of polling. `None` = nothing pending.
     #[must_use]
     pub fn next_deadline(&self, has_file: bool) -> Option<Instant> {
-        if self.pending == 0 {
+        if self.unwritten.is_empty() {
             return None;
         }
         if self.settings.save_mode == SaveMode::Auto && has_file {
             return self.last_change.map(|t| t + self.settings.autosave_debounce);
         }
-        self.pending_since.map(|t| t + self.settings.recovery_interval)
+        self.pending_since().map(|t| t + self.settings.recovery_interval)
     }
 
     /// The due action (or a manual save) succeeded: everything so far is on disk.
     pub fn written(&mut self) {
-        self.pending = 0;
-        self.pending_since = None;
+        self.written_up_to(self.seq);
+    }
+
+    /// Marks the changes so far, when a write (save or recovery snapshot) starts; pass
+    /// the mark to [`SaveScheduler::written_up_to`] when it succeeds.
+    #[must_use]
+    pub fn mark(&self) -> u64 {
+        self.seq
+    }
+
+    /// A write that started at `mark` succeeded: the changes up to it are on disk, later
+    /// ones (made while it was running) stay pending with their own times.
+    pub fn written_up_to(&mut self, mark: u64) {
+        while self.unwritten.front().is_some_and(|&(n, _)| n <= mark) {
+            self.unwritten.pop_front();
+        }
+    }
+
+    /// When the oldest unwritten change completed.
+    fn pending_since(&self) -> Option<Instant> {
+        self.unwritten.front().map(|&(_, t)| t)
     }
 
     /// Changes not yet written anywhere.
     #[must_use]
     pub fn pending_changes(&self) -> u32 {
-        self.pending
+        u32::try_from(self.unwritten.len()).unwrap_or(u32::MAX)
     }
 }
 
@@ -364,6 +389,28 @@ mod tests {
         assert_eq!(ProjectSettings::parse(&o.to_text()), o);
         let m = Settings::default().with_overrides(&o);
         assert_eq!((m.save_mode, m.recovery_after_changes), (SaveMode::Auto, 3));
+    }
+
+    #[test]
+    fn edits_during_a_write_stay_pending() {
+        // Review M2: a background recovery write that finishes must not mark edits made
+        // while it ran as written.
+        let t0 = Instant::now();
+        let mut s = SaveScheduler::new(Settings::default());
+        s.changed(t0);
+        s.changed(t0 + Duration::from_secs(1));
+        let mark = s.mark();
+        s.changed(t0 + Duration::from_secs(5)); // during the write
+        s.written_up_to(mark);
+        assert_eq!(s.pending_changes(), 1);
+        // Its own clock: due 60 s after *that* change, not after the first one.
+        assert_eq!(s.next_deadline(true), Some(t0 + Duration::from_secs(65)));
+        // An older write finishing late changes nothing more; a full write clears all.
+        s.written_up_to(mark - 1);
+        assert_eq!(s.pending_changes(), 1);
+        s.written();
+        assert_eq!(s.pending_changes(), 0);
+        assert_eq!(s.next_deadline(true), None);
     }
 
     #[test]

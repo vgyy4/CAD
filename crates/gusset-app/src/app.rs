@@ -143,6 +143,8 @@ pub(crate) enum Done {
     Saved {
         result: Result<(), String>,
         then: AfterSave,
+        /// The save scheduler's mark when the save was queued (review M2).
+        mark: u64,
     },
     SavedAs {
         path: PathBuf,
@@ -150,8 +152,9 @@ pub(crate) enum Done {
         result: Result<(), String>,
     },
     /// A recovery snapshot encoded on the model thread, to be written off it (M3).
-    RecoveryPrepared(Result<Option<SnapshotWrite>, String>),
-    Recovery(Result<Option<u64>, String>),
+    RecoveryPrepared(Result<Option<SnapshotWrite>, String>, u64),
+    /// A recovery write finished; the second field is the scheduler mark it covers.
+    Recovery(Result<Option<u64>, String>, u64),
     /// A project file read on a background thread (`discard`: the user chose not to keep
     /// the current project's unsaved changes).
     Opened {
@@ -517,11 +520,11 @@ impl App {
             Done::Scene(Ok(Err(e)) | Err(e)) => {
                 self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
             }
-            Done::Saved { result, then } => {
+            Done::Saved { result, then, mark } => {
                 self.stale = true;
                 match result {
                     Ok(()) => {
-                        self.save.written();
+                        self.save.written_up_to(mark);
                         self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
                         if let AfterSave::Then(p) = then {
                             self.after_save = Some(p);
@@ -584,15 +587,15 @@ impl App {
                 }
                 Err(e) => self.dialog = Some(Dialog::Message { title: tr("open.failed").into(), body: e }),
             },
-            Done::RecoveryPrepared(Ok(None)) => {}
-            Done::RecoveryPrepared(Ok(Some(w))) => self.write_recovery(w),
-            Done::RecoveryPrepared(Err(e)) => {
+            Done::RecoveryPrepared(Ok(None), _) => {}
+            Done::RecoveryPrepared(Ok(Some(w)), mark) => self.write_recovery(w, mark),
+            Done::RecoveryPrepared(Err(e), _) => {
                 self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
             }
-            Done::Recovery(r) => {
+            Done::Recovery(r, mark) => {
                 self.recovery_writers = self.recovery_writers.saturating_sub(1);
                 if r.is_ok() {
-                    self.save.written();
+                    self.save.written_up_to(mark);
                 }
                 if let Err(e) = r {
                     self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
@@ -727,6 +730,7 @@ impl App {
             return false;
         }
         self.notice = Some(Notice { text: "Saving…".into(), hint: None, error: false });
+        let mark = self.save.mark();
         self.submit(
             |s, p| {
                 let p = p.ok_or("No data folder: cannot save")?;
@@ -734,7 +738,7 @@ impl App {
                 s.dirty = false;
                 Ok(())
             },
-            move |r| Done::Saved { result: r.map_err(|e| e.message).and_then(|x: Result<(), String>| x), then },
+            move |r| Done::Saved { result: r.map_err(|e| e.message).and_then(|x: Result<(), String>| x), then, mark },
         );
         true
     }
@@ -920,21 +924,22 @@ impl App {
         }
         // Only the encoding runs on the model thread; the disk write (up to half a
         // second for large imports) runs on its own thread (M3).
+        let mark = self.save.mark();
         self.submit(
             |s, p| match p {
                 Some(p) if s.dirty => p.prepare_snapshot(s.history()).map(Some).map_err(|e| e.to_string()),
                 _ => Ok(None),
             },
-            |r| Done::RecoveryPrepared(r.map_err(|e| e.message).and_then(|x| x)),
+            move |r| Done::RecoveryPrepared(r.map_err(|e| e.message).and_then(|x| x), mark),
         );
     }
 
     /// Writes a prepared recovery snapshot on its own thread. A newer snapshot, a save
     /// or closing the project makes it skip the write (see [`SnapshotWrite`]).
-    fn write_recovery(&mut self, w: SnapshotWrite) {
+    fn write_recovery(&mut self, w: SnapshotWrite, mark: u64) {
         let (tx, waker) = (self.done_tx.clone(), self.waker.clone());
         let spawned = std::thread::Builder::new().name("gusset-recovery".into()).spawn(move || {
-            let _ = tx.send(Done::Recovery(w.write().map_err(|e| e.to_string())));
+            let _ = tx.send(Done::Recovery(w.write().map_err(|e| e.to_string()), mark));
             waker.wake();
         });
         match spawned {

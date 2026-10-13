@@ -686,6 +686,15 @@ impl Project {
     }
 }
 
+impl Drop for Project {
+    /// However the project goes (close, release or a plain drop, e.g. after a failed
+    /// final snapshot), recovery writes prepared earlier must not land after the lock is
+    /// gone (security review V7). Waits for a write in progress.
+    fn drop(&mut self) {
+        drop(self.supersede_snapshots());
+    }
+}
+
 /// A crash-recovery copy found at startup that the user has not resolved yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingRecovery {
