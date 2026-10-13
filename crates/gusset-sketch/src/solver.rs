@@ -199,9 +199,11 @@ fn dimension_offsets(sketch: &Sketch) -> Option<Vec<(usize, f64)>> {
         // takes half the value; angles are wrapped into (-pi, pi] around the value).
         let r0 = equations::eval(eq, &lay.x0).v;
         let (value, off) = match *c {
-            Constraint::Distance { value, .. } | Constraint::Radius { value, .. } | Constraint::Angle { value, .. } => {
-                (value, r0)
-            }
+            Constraint::Distance { value, .. }
+            | Constraint::Radius { value, .. }
+            | Constraint::Angle { value, .. }
+            | Constraint::HDistance { value, .. }
+            | Constraint::VDistance { value, .. } => (value, r0),
             Constraint::Diameter { value, .. } => (value, 2.0 * r0),
             _ => continue,
         };
@@ -212,6 +214,7 @@ fn dimension_offsets(sketch: &Sketch) -> Option<Vec<(usize, f64)>> {
         let ok = match c {
             Constraint::Angle { .. } => measured.is_finite(),
             Constraint::Distance { .. } => measured.is_finite() && measured >= 0.0,
+            Constraint::HDistance { .. } | Constraint::VDistance { .. } => measured.is_finite(),
             _ => measured.is_finite() && measured > 0.0,
         };
         if ok && (measured - value).abs() > 1e-12 * (1.0 + value.abs()) {
@@ -233,7 +236,9 @@ fn continuation(sketch: &Sketch, opts: &SolveOptions) -> Option<SolveResult> {
                 Constraint::Distance { value, .. }
                 | Constraint::Angle { value, .. }
                 | Constraint::Radius { value, .. }
-                | Constraint::Diameter { value, .. },
+                | Constraint::Diameter { value, .. }
+                | Constraint::HDistance { value, .. }
+                | Constraint::VDistance { value, .. },
             ) => Some((ci, value)),
             _ => None,
         })

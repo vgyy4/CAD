@@ -156,6 +156,11 @@ pub enum Constraint {
     Fixed(EntityId),
     /// Points `a` and `b` are mirror images across the line `axis`.
     Symmetric { a: EntityId, b: EntityId, axis: EntityId },
+    /// Signed horizontal distance: `x(to) − x(from)`, or `x(to)` itself (from the sketch
+    /// origin) when `from` is `None`. Drives a position by a parameter.
+    HDistance { from: Option<EntityId>, to: EntityId, value: f64 },
+    /// Signed vertical distance: `y(to) − y(from)`, or `y(to)` when `from` is `None`.
+    VDistance { from: Option<EntityId>, to: EntityId, value: f64 },
 }
 
 impl Constraint {
@@ -178,6 +183,9 @@ impl Constraint {
             | Constraint::Radius { c: a, .. }
             | Constraint::Diameter { c: a, .. } => vec![a],
             Constraint::Symmetric { a, b, axis } => vec![a, b, axis],
+            Constraint::HDistance { from, to, .. } | Constraint::VDistance { from, to, .. } => {
+                from.into_iter().chain([to]).collect()
+            }
         }
     }
 }
@@ -627,6 +635,19 @@ impl Sketch {
                 self.expect_line(axis)?;
                 distinct(a, b)
             }
+            Constraint::HDistance { from, to, value } | Constraint::VDistance { from, to, value } => {
+                if !value.is_finite() || value.abs() > 2.0 * MAX_COORD {
+                    return Err(SketchError::InvalidValue { what: "horizontal/vertical distance must be finite" });
+                }
+                self.expect_point(to)?;
+                match from {
+                    Some(f) => {
+                        self.expect_point(f)?;
+                        distinct(f, to)
+                    }
+                    None => Ok(()),
+                }
+            }
         }
     }
 
@@ -651,7 +672,9 @@ impl Sketch {
             Constraint::Distance { value, .. }
             | Constraint::Angle { value, .. }
             | Constraint::Radius { value, .. }
-            | Constraint::Diameter { value, .. },
+            | Constraint::Diameter { value, .. }
+            | Constraint::HDistance { value, .. }
+            | Constraint::VDistance { value, .. },
         )) = self.constraints.get_mut(index)
         {
             *value = v;

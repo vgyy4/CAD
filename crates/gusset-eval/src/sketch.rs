@@ -160,6 +160,10 @@ fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: Length
             K::Diameter => sk::Constraint::Diameter { c: ent(0)?, value: value(Dim::LENGTH)? },
             K::Fixed => sk::Constraint::Fixed(ent(0)?),
             K::Symmetric => sk::Constraint::Symmetric { a: ent(0)?, b: ent(1)?, axis: ent(2)? },
+            K::HDistance => sk::Constraint::HDistance { from: Some(ent(0)?), to: ent(1)?, value: value(Dim::LENGTH)? },
+            K::VDistance => sk::Constraint::VDistance { from: Some(ent(0)?), to: ent(1)?, value: value(Dim::LENGTH)? },
+            K::AtX => sk::Constraint::HDistance { from: None, to: ent(0)?, value: value(Dim::LENGTH)? },
+            K::AtY => sk::Constraint::VDistance { from: None, to: ent(0)?, value: value(Dim::LENGTH)? },
         };
         let cid =
             s.add_constraint(con).map_err(|e| err(ErrorCode::InvalidSketch, format!("constraint '{}': {e}", c.id)))?;

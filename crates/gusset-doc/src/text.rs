@@ -1423,7 +1423,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 let Some(ck) = SkConstraintKind::from_keyword(other) else {
                     return Err(lc.err_hint(
                         format!("unknown sketch item '{other}'"),
-                        "entities: point, line, circle, arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric",
+                        "entities: point, line, circle, arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle, radius, diameter, fixed, symmetric",
                     ));
                 };
                 let (n, has_value) = ck.arity();

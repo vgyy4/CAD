@@ -35,6 +35,8 @@ pub(crate) enum Kind {
     Diff { a: u8, b: u8 },
     /// `x[a] − v`
     Value { a: u8, v: f64 },
+    /// `x[b] − x[a] − v`
+    DiffV { a: u8, b: u8, v: f64 },
     /// `x[p] − (x[a] + x[b]) / 2`
     Mid { p: u8, a: u8, b: u8 },
     /// `|p − q| − v`
@@ -279,6 +281,16 @@ fn constraint_eqs(
                 })?;
             }
         }
+        Constraint::HDistance { from, to, value } | Constraint::VDistance { from, to, value } => {
+            let ax = u8::from(matches!(c, Constraint::VDistance { .. }));
+            one(&|b| {
+                let t = b.pt(to)? + ax;
+                Some(match from {
+                    Some(f) => Kind::DiffV { a: b.pt(f)? + ax, b: t, v: value },
+                    None => Kind::Value { a: t, v: value },
+                })
+            })?;
+        }
         Constraint::Horizontal(l) | Constraint::Vertical(l) => {
             let ax = u8::from(matches!(c, Constraint::Horizontal(_)));
             one(&|b| {
@@ -481,6 +493,7 @@ pub(crate) fn eval(eq: &Equation, x: &[f64]) -> Dual {
     match eq.kind {
         Kind::Diff { a, b } => at(&v, a) - at(&v, b),
         Kind::Value { a, v: val } => at(&v, a) - Dual::cst(val),
+        Kind::DiffV { a, b, v: val } => at(&v, b) - at(&v, a) - Dual::cst(val),
         Kind::Mid { p, a, b } => at(&v, p) - (at(&v, a) + at(&v, b)).scale(0.5),
         Kind::PtPt { p, q, v: val } => {
             let (dx, dy) = dir(&v, q, p);

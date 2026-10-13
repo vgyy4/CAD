@@ -38,13 +38,14 @@ fn user_builds_and_measures_a_plate() {
     let b = run(&mut s, &u, "query.body", json!({"names": true}));
     assert!((b["volume_mm3"].as_f64().unwrap() - 40.0 * 20.0 * 10.0).abs() < 1e-6, "{b}");
     assert_eq!(b["edge_names"].as_array().unwrap().len(), 12);
-    // Sketch positions were written back (the solver stretches symmetrically, moving
-    // geometry as little as possible) and snapped to clean values.
+    // Sketch positions were written back and snapped to clean values; the dimensioned
+    // corner stays at the origin (dogfooding F3-2: it used to stretch to -5..35).
     let doc = s.document(&gusset_history::Actor::User).unwrap();
-    assert!(doc.to_text().contains("p1 = point(-5, 0)"), "{}", doc.to_text());
-    assert!(doc.to_text().contains("p2 = point(35, 0)"), "{}", doc.to_text());
+    assert!(doc.to_text().contains("p1 = point(0, 0)"), "{}", doc.to_text());
+    assert!(doc.to_text().contains("p2 = point(40, 0)"), "{}", doc.to_text());
+    // The corner dimensions leave nothing free (it had 2 DOF of position before F3-2).
     let st = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
-    assert_eq!(st["status"], "UnderConstrained");
+    assert_eq!(st["status"], "WellConstrained");
     // Parametric change propagates.
     run(&mut s, &u, "param.set", json!({"name": "width", "expr": "60 mm"}));
     let b = run(&mut s, &u, "query.body", json!({}));

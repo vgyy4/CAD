@@ -49,7 +49,7 @@ fn rectangle_dimensions_can_come_from_expressions() {
         json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10}),
     ] {
         let error = fail(&mut s, &ctx, "sketch.add_rectangle", args);
-        assert!(error.message.contains("rectangle"), "{error:?}");
+        assert!(error.message.contains("_expr"), "{error:?}");
     }
 }
 
@@ -102,8 +102,9 @@ fn overlapping_rectangles_are_selectable_regions_with_stable_ids() {
         x
     };
     assert_eq!(ids(&before), ids(&after));
-    // The solver widens the first rectangle symmetrically, so the overlap is now 12.5 x 5.
-    assert!((volume(&mut s, &u) - 125.0).abs() < 1e-6, "{}", volume(&mut s, &u));
+    // The first rectangle's corner is dimensioned, so it widens to the right: the overlap
+    // is now 15 x 5.
+    assert!((volume(&mut s, &u) - 150.0).abs() < 1e-6, "{}", volume(&mut s, &u));
     // An unknown region is reported with the ids that exist.
     let e = fail(&mut s, &u, "feature.extrude", json!({"sketch": "Sketch1", "regions": ["l99"], "distance": "1 mm"}));
     assert_eq!(e.code, "invalid_document", "{e}");
@@ -314,10 +315,10 @@ fn linear_sketch_pattern_makes_copies_that_follow_parameters() {
         "sketch.pattern",
         json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5", "l6", "l7", "l8"], "count": "n", "dx": "pitch"}),
     );
-    assert_eq!(r["pattern"], "g15", "{r}");
+    assert_eq!(r["pattern"], "g17", "{r}");
     assert_eq!(r["copies"], 2.0, "{r}");
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
-    assert!(text.contains("g15 = pattern_linear(of: [l5, l6, l7, l8], count: n, dx: pitch, dy: 0 mm)"), "{text}");
+    assert!(text.contains("g17 = pattern_linear(of: [l5, l6, l7, l8], count: n, dx: pitch, dy: 0 mm)"), "{text}");
     let regs = regions(&mut s, &u, "Sketch1");
     assert_eq!(regs.len(), 3, "{regs:?}");
     assert!(regs.iter().all(|r| (r.1 - 60.0).abs() < 1e-6), "{regs:?}");
@@ -410,4 +411,45 @@ fn circular_sketch_pattern_and_clean_errors() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     let again = gusset_doc::Document::from_text(&text).unwrap();
     assert_eq!(again.to_text(), text);
+}
+
+/// Dogfooding F3-2 / F3-8: a plate sized by a parameter keeps its corner, and a pin placed
+/// by an expression follows the parameter.
+#[test]
+fn parameter_driven_rectangle_and_circle_follow_the_parameter() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "base_w", "expr": "60 mm"}));
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.add_rectangle",
+        json!({"sketch": "Sketch1", "x": 0, "y": 0, "width_expr": "base_w", "height": 20, "height_expr": "20 mm"}),
+    );
+    assert_eq!(r["constraints"].as_array().unwrap().len(), 8, "{r}");
+    let c = run(
+        &mut s,
+        &u,
+        "sketch.add_circle",
+        json!({"sketch": "Sketch1", "cx_expr": "base_w / 2", "cy": 10, "radius": 3, "construction": false}),
+    );
+    assert_eq!(c["position_constraints"].as_array().unwrap().len(), 1, "{c}");
+    let center = c["center"].as_str().unwrap().to_string();
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
+    assert_eq!(q["points"]["p1"], json!([0.0, 0.0]), "{q}");
+    assert_eq!(q["points"][&center], json!([30.0, 10.0]), "{q}");
+    run(&mut s, &u, "param.set", json!({"name": "base_w", "expr": "80 mm"}));
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
+    assert_eq!(q["points"]["p1"], json!([0.0, 0.0]), "{q}");
+    assert_eq!(q["points"]["p2"], json!([80.0, 0.0]), "{q}");
+    assert_eq!(q["points"][&center], json!([40.0, 10.0]), "{q}");
+    assert!(sketch_text(&s).contains("at_x(p1, 0 mm)"), "{}", sketch_text(&s));
+    // Position without a number or an expression is refused.
+    let e = fail(&mut s, &u, "sketch.add_circle", json!({"sketch": "Sketch1", "cy": 0, "radius": 1}));
+    assert!(e.message.contains("cx"), "{e:?}");
+}
+
+fn sketch_text(s: &Session) -> String {
+    s.document(&gusset_history::Actor::User).unwrap().to_text()
 }

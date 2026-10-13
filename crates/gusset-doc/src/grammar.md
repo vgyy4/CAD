@@ -111,6 +111,8 @@ Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 | `distance` | point, point + value | Euclidean distance |
 | `distance` | point, line (either order) + value | perpendicular distance |
 | `distance` | line, same line + value | the line's length |
+| `h_distance`, `v_distance` | point a, point b + value | signed `u(b) − u(a)` / `v(b) − v(a)` |
+| `at_x`, `at_y` | point + value | the point's u / v coordinate in the sketch: drives a position by a parameter, e.g. `at_x(p5, width / 2)` |
 | `angle` | line a, line b + value | directed angle, see below |
 | `radius`, `diameter` | circle/arc + value | |
 | `fixed` | point or circle | keep at its current position |

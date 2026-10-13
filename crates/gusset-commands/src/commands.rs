@@ -1194,45 +1194,50 @@ impl Command for SketchAddPolyline {
 pub struct SketchAddRectangle {
     pub sketch: String,
     /// Corner x (mm).
-    pub x: f64,
-    pub y: f64,
+    #[serde(default)]
+    pub x: Option<f64>,
+    #[serde(default)]
+    pub y: Option<f64>,
     #[serde(default)]
     pub width: Option<f64>,
     #[serde(default)]
     pub height: Option<f64>,
-    /// Also add width/height dimensions (expressions, e.g. `width` or `40 mm`).
+    /// Dimensions by expressions (e.g. `width` or `40 mm`); numbers may then be omitted.
     #[serde(default)]
     pub width_expr: Option<String>,
     #[serde(default)]
     pub height_expr: Option<String>,
+    #[serde(default)]
+    pub x_expr: Option<String>,
+    #[serde(default)]
+    pub y_expr: Option<String>,
 }
 
 impl Command for SketchAddRectangle {
     const ID: &'static str = "sketch.add_rectangle";
     const TITLE: &'static str = "Rectangle";
-    const DESCRIPTION: &'static str =
-        "Add a rectangle with horizontal/vertical constraints, optionally dimensioned by expressions.";
+    const DESCRIPTION: &'static str = "Add a rectangle with horizontal/vertical constraints. With any *_expr the corner is dimensioned too (at_x/at_y), so it stays put when sizes change.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("R");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let width = self
-            .width
-            .or_else(|| self.width_expr.as_ref().map(|_| 1.0))
-            .ok_or_else(|| CommandError::args("rectangle width is required when width_expr is not given"))?;
-        let height = self
-            .height
-            .or_else(|| self.height_expr.as_ref().map(|_| 1.0))
-            .ok_or_else(|| CommandError::args("rectangle height is required when height_expr is not given"))?;
-        if width.abs() < 1e-9 || height.abs() < 1e-9 {
-            return Err(CommandError::args("rectangle width and height must be non-zero"));
-        }
         let wexpr = self.width_expr.as_deref().map(|e| parse_expr("width_expr", e)).transpose()?;
         let hexpr = self.height_expr.as_deref().map(|e| parse_expr("height_expr", e)).transpose()?;
+        let xexpr = self.x_expr.as_deref().map(|e| parse_expr("x_expr", e)).transpose()?;
+        let yexpr = self.y_expr.as_deref().map(|e| parse_expr("y_expr", e)).transpose()?;
         let sk = self.sketch.clone();
         edit(s, ctx, "Add rectangle", |doc, _| {
+            let x = start_value(doc, self.x, xexpr.as_ref(), 0.0, "x")?;
+            let y = start_value(doc, self.y, yexpr.as_ref(), 0.0, "y")?;
+            let w = start_value(doc, self.width, wexpr.as_ref(), 1.0, "width")?;
+            let h = start_value(doc, self.height, hexpr.as_ref(), 1.0, "height")?;
+            if w.abs() < 1e-9 || h.abs() < 1e-9 {
+                return Err(CommandError::args("rectangle width and height must be non-zero"));
+            }
+            // A rectangle sized by parameters but free to move drifts when they change: the
+            // solver spreads the change over both sides (dogfooding F3-2).
+            let anchor = [&wexpr, &hexpr, &xexpr, &yexpr].iter().any(|e| e.is_some());
             let d = sketch_mut(doc, &sk)?;
-            let (x, y, w, h) = (self.x, self.y, width, height);
             let p =
                 [add_point(d, x, y)?, add_point(d, x + w, y)?, add_point(d, x + w, y + h)?, add_point(d, x, y + h)?];
             let [p0, p1, p2, p3] = p.clone();
@@ -1240,7 +1245,7 @@ impl Command for SketchAddRectangle {
                 add_entity(d, SkGeom::Line { a: p0.clone(), b: p1.clone() }, false),
                 add_entity(d, SkGeom::Line { a: p1, b: p2.clone() }, false),
                 add_entity(d, SkGeom::Line { a: p2, b: p3.clone() }, false),
-                add_entity(d, SkGeom::Line { a: p3, b: p0 }, false),
+                add_entity(d, SkGeom::Line { a: p3, b: p0.clone() }, false),
             ];
             let [l0, l1, l2, l3] = &lines;
             let mut cons = vec![
@@ -1255,10 +1260,46 @@ impl Command for SketchAddRectangle {
             if let Some(e) = hexpr {
                 cons.push(add_constraint(d, SkConstraintKind::Distance, &[l1, l1], Some(e)));
             }
+            if anchor {
+                let ex = xexpr.map_or_else(|| mm_expr(x), Ok)?;
+                let ey = yexpr.map_or_else(|| mm_expr(y), Ok)?;
+                cons.push(add_constraint(d, SkConstraintKind::AtX, &[&p0], Some(ex)));
+                cons.push(add_constraint(d, SkConstraintKind::AtY, &[&p0], Some(ey)));
+            }
             store_solution(doc, &sk);
             Ok(json!({ "points": p, "lines": lines, "constraints": cons }))
         })
     }
+}
+
+/// Where a new point or size starts: the number if given, else the expression's current
+/// value (the dimension added for it then holds it), else `fallback` when the expression
+/// does not evaluate yet.
+fn start_value(
+    doc: &Document,
+    n: Option<f64>,
+    e: Option<&gusset_units::expr::Expr>,
+    fallback: f64,
+    what: &str,
+) -> Result<f64, CommandError> {
+    if let Some(v) = n {
+        return if v.is_finite() { Ok(v) } else { Err(CommandError::args(format!("{what} must be finite"))) };
+    }
+    let Some(e) = e else {
+        return Err(CommandError::args(format!("give {what} (mm) or {what}_expr")));
+    };
+    let values = params::evaluate(&doc.params);
+    let scope = |n: &str| values.get(n).and_then(|r| r.as_ref().ok().copied());
+    let v = gusset_units::expr::eval(e, &scope)
+        .ok()
+        .and_then(|q| params::coerce(q, gusset_units::Dim::LENGTH, doc.units).ok())
+        .map(|q| q.value);
+    Ok(v.filter(|v| v.is_finite()).unwrap_or(fallback))
+}
+
+/// A length in mm as an expression (for dimensions that keep a numeric position).
+fn mm_expr(v: f64) -> Result<gusset_units::expr::Expr, CommandError> {
+    parse_expr("position", &format!("{v} mm"))
 }
 
 /// Adds a circle.
@@ -1266,8 +1307,15 @@ impl Command for SketchAddRectangle {
 #[serde(deny_unknown_fields)]
 pub struct SketchAddCircle {
     pub sketch: String,
-    pub cx: f64,
-    pub cy: f64,
+    #[serde(default)]
+    pub cx: Option<f64>,
+    #[serde(default)]
+    pub cy: Option<f64>,
+    /// Centre by expressions (adds at_x/at_y), e.g. `width / 2`.
+    #[serde(default)]
+    pub cx_expr: Option<String>,
+    #[serde(default)]
+    pub cy_expr: Option<String>,
     pub radius: f64,
     /// Also add a radius dimension (expression).
     #[serde(default)]
@@ -1279,7 +1327,7 @@ pub struct SketchAddCircle {
 impl Command for SketchAddCircle {
     const ID: &'static str = "sketch.add_circle";
     const TITLE: &'static str = "Circle";
-    const DESCRIPTION: &'static str = "Add a circle (center and radius in mm), optionally with a radius dimension.";
+    const DESCRIPTION: &'static str = "Add a circle (mm); cx_expr/cy_expr/radius_expr drive it by expressions.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("C");
@@ -1288,14 +1336,22 @@ impl Command for SketchAddCircle {
             return Err(CommandError::args("radius must be positive"));
         }
         let rexpr = self.radius_expr.as_deref().map(|e| parse_expr("radius_expr", e)).transpose()?;
+        let xexpr = self.cx_expr.as_deref().map(|e| parse_expr("cx_expr", e)).transpose()?;
+        let yexpr = self.cy_expr.as_deref().map(|e| parse_expr("cy_expr", e)).transpose()?;
         let sk = self.sketch.clone();
         edit(s, ctx, "Add circle", |doc, _| {
+            let cx = start_value(doc, self.cx, xexpr.as_ref(), 0.0, "cx")?;
+            let cy = start_value(doc, self.cy, yexpr.as_ref(), 0.0, "cy")?;
             let d = sketch_mut(doc, &sk)?;
-            let c = add_point(d, self.cx, self.cy)?;
+            let c = add_point(d, cx, cy)?;
             let circ = add_entity(d, SkGeom::Circle { center: c.clone(), radius: self.radius }, self.construction);
             let k = rexpr.map(|e| add_constraint(d, SkConstraintKind::Radius, &[&circ], Some(e)));
+            let at: Vec<String> = [(SkConstraintKind::AtX, xexpr), (SkConstraintKind::AtY, yexpr)]
+                .into_iter()
+                .filter_map(|(kind, e)| e.map(|e| add_constraint(d, kind, &[&c], Some(e))))
+                .collect();
             store_solution(doc, &sk);
-            Ok(json!({ "circle": circ, "center": c, "constraint": k }))
+            Ok(json!({ "circle": circ, "center": c, "constraint": k, "position_constraints": at }))
         })
     }
 }
@@ -1356,7 +1412,8 @@ impl Command for SketchAddArc {
 pub struct SketchAddConstraint {
     pub sketch: String,
     /// One of: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel,
-    /// perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric.
+    /// perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle,
+    /// radius, diameter, fixed, symmetric.
     pub kind: String,
     /// Entity ids (e.g. `["p1", "p2"]`; for a line length use the line twice).
     pub entities: Vec<String>,

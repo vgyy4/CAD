@@ -425,10 +425,18 @@ pub enum SkConstraintKind {
     Diameter,
     Fixed,
     Symmetric,
+    /// Signed horizontal distance between two points: `x(b) − x(a)`.
+    HDistance,
+    /// Signed vertical distance between two points: `y(b) − y(a)`.
+    VDistance,
+    /// A point's x coordinate in the sketch (its horizontal distance from the origin).
+    AtX,
+    /// A point's y coordinate in the sketch.
+    AtY,
 }
 
 impl SkConstraintKind {
-    pub const ALL: [SkConstraintKind; 16] = [
+    pub const ALL: [SkConstraintKind; 20] = [
         SkConstraintKind::Coincident,
         SkConstraintKind::PointOnLine,
         SkConstraintKind::PointOnCircle,
@@ -445,6 +453,10 @@ impl SkConstraintKind {
         SkConstraintKind::Diameter,
         SkConstraintKind::Fixed,
         SkConstraintKind::Symmetric,
+        SkConstraintKind::HDistance,
+        SkConstraintKind::VDistance,
+        SkConstraintKind::AtX,
+        SkConstraintKind::AtY,
     ];
 
     pub fn keyword(self) -> &'static str {
@@ -465,6 +477,10 @@ impl SkConstraintKind {
             SkConstraintKind::Diameter => "diameter",
             SkConstraintKind::Fixed => "fixed",
             SkConstraintKind::Symmetric => "symmetric",
+            SkConstraintKind::HDistance => "h_distance",
+            SkConstraintKind::VDistance => "v_distance",
+            SkConstraintKind::AtX => "at_x",
+            SkConstraintKind::AtY => "at_y",
         }
     }
 
@@ -477,11 +493,11 @@ impl SkConstraintKind {
         use SkConstraintKind::*;
         match self {
             Horizontal | Vertical | Fixed => (1, false),
-            Radius | Diameter => (1, true),
+            Radius | Diameter | AtX | AtY => (1, true),
             Coincident | PointOnLine | PointOnCircle | Midpoint | Parallel | Perpendicular | Tangent | Equal => {
                 (2, false)
             }
-            Distance | Angle => (2, true),
+            Distance | Angle | HDistance | VDistance => (2, true),
             Symmetric => (3, false),
         }
     }

@@ -664,3 +664,46 @@ fn continuation_keeps_real_conflicts() {
     assert_eq!(res, solve(&s, &opts()));
     assert_eq!(res.status, SolveStatus::OverConstrained);
 }
+
+/// Horizontal/vertical distances position points by value (dogfooding F3-2, F3-8): a
+/// rectangle with a dimensioned corner and size is well constrained, and changing the
+/// width moves only the right side.
+#[test]
+fn horizontal_and_vertical_distances_place_points() {
+    let build = |w: f64| {
+        let mut s = Sketch::new();
+        let r = rect(&mut s, 0.0, 0.0, 60.0, 20.0);
+        for l in [r.l[0], r.l[2]] {
+            s.add_constraint(C::Horizontal(l)).unwrap();
+        }
+        for l in [r.l[1], r.l[3]] {
+            s.add_constraint(C::Vertical(l)).unwrap();
+        }
+        s.add_constraint(C::HDistance { from: None, to: r.p[0], value: 0.0 }).unwrap();
+        s.add_constraint(C::VDistance { from: None, to: r.p[0], value: 0.0 }).unwrap();
+        s.add_constraint(C::HDistance { from: Some(r.p[0]), to: r.p[1], value: w }).unwrap();
+        s.add_constraint(C::VDistance { from: Some(r.p[1]), to: r.p[2], value: -20.0 }).unwrap();
+        let c = s.add_point([30.0, 10.0]).unwrap();
+        s.add_constraint(C::HDistance { from: None, to: c, value: w / 2.0 }).unwrap();
+        s.add_constraint(C::VDistance { from: None, to: c, value: 10.0 }).unwrap();
+        (s, r, c)
+    };
+    let (s, r, c) = build(80.0);
+    let res = solve_continued(&s, &opts());
+    assert_eq!(res.status, SolveStatus::WellConstrained, "{res:?}");
+    assert_eq!(res.dof, 0);
+    for (p, e) in r.p.iter().zip([[0.0, 0.0], [80.0, 0.0], [80.0, -20.0], [0.0, -20.0]]) {
+        assert!(close(pos(&res, *p), e, 1e-9), "{:?} vs {e:?}", pos(&res, *p));
+    }
+    assert!(close(pos(&res, c), [40.0, 10.0], 1e-9));
+    // A conflicting second position for the same coordinate is reported.
+    let (mut s, r, _) = build(60.0);
+    s.add_constraint(C::HDistance { from: None, to: r.p[0], value: 5.0 }).unwrap();
+    assert_eq!(solve(&s, &opts()).status, SolveStatus::OverConstrained);
+    // Validation.
+    let mut s = Sketch::new();
+    let r = rect(&mut s, 0.0, 0.0, 1.0, 1.0);
+    assert!(s.add_constraint(C::HDistance { from: None, to: r.l[0], value: 1.0 }).is_err());
+    assert!(s.add_constraint(C::VDistance { from: Some(r.p[0]), to: r.p[0], value: 1.0 }).is_err());
+    assert!(s.add_constraint(C::VDistance { from: None, to: r.p[0], value: f64::NAN }).is_err());
+}
