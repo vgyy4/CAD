@@ -394,7 +394,9 @@ jobs:
           . deps/occt/occt.env
           git clone --quiet --depth 1 --branch "$OCCT_TAG" "$OCCT_REPO" "$RUNNER_TEMP/occt-src"
           test "$(git -C "$RUNNER_TEMP/occt-src" rev-parse HEAD)" = "$OCCT_COMMIT"
+          # The unmodified source plus our patches (applied by deps/occt/build-occt.sh).
           git -C "$RUNNER_TEMP/occt-src" archive --format=tar.gz --prefix="occt-$OCCT_TAG/" \
+            $(for p in deps/occt/patches/*.patch; do [ -e "$p" ] && printf -- '--add-file=%s ' "$GITHUB_WORKSPACE/$p"; done) \
             -o "$GITHUB_WORKSPACE/dist/occt-src-$OCCT_TAG.tar.gz" "$OCCT_COMMIT"
 
       - name: Sign update packages (only when the update key exists, ADR 0014)

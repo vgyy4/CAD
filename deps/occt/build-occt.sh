@@ -17,6 +17,16 @@ if [ "$actual" != "$OCCT_COMMIT" ]; then
   echo "OCCT source commit mismatch: expected $OCCT_COMMIT, got $actual" >&2
   exit 1
 fi
+# Our fixes to OCCT (ADR 0002 amendment): applied in name order, skipped when a reused
+# work tree already has them. Released with the OCCT source (LGPL 2.1 section 6).
+for patch in "$here"/patches/*.patch; do
+  [ -e "$patch" ] || continue
+  if git -C "$work/src" apply --reverse --check "$patch" 2>/dev/null; then
+    continue
+  fi
+  git -C "$work/src" apply "$patch"
+  echo "applied $(basename "$patch")"
+done
 args=(
   -DCMAKE_BUILD_TYPE=Release
   -DBUILD_LIBRARY_TYPE=Shared
