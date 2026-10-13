@@ -93,6 +93,11 @@ const EN: &[(&str, &str)] = &[
     ("status.rebuild_errors", "Rebuild errors"),
     ("status.agent", "Agent activity"),
     ("status.working", "Working…"),
+    ("status.stop", "Stop"),
+    (
+        "status.stop_hint",
+        "Stop the rebuild now; heavy operations are interrupted, and the features not built yet show as stopped",
+    ),
     ("code.title", "Code"),
     ("code.apply", "Apply code"),
     ("code.revert", "Revert"),

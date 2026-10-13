@@ -9,6 +9,7 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+pub mod cancel;
 pub mod mock;
 pub mod types;
 pub mod wire;

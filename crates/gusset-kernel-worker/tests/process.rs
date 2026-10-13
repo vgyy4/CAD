@@ -120,6 +120,36 @@ mod faults {
     }
 
     #[test]
+    fn a_cancel_stops_the_call_in_progress() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let k = remote(1024);
+        k.ping().unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        let setter = {
+            let f = flag.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                f.store(true, Ordering::SeqCst);
+            })
+        };
+        let start = std::time::Instant::now();
+        let e = gusset_kernel::cancel::scope(&flag, || k.inject_fault(Fault::Sleep(60_000))).unwrap_err();
+        setter.join().unwrap();
+        assert_eq!(e.kind, KernelErrorKind::Cancelled, "{e}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "{:?}", start.elapsed());
+        assert_eq!(k.generation(), 2);
+        // While the flag stays set, no call reaches a worker.
+        let e = gusset_kernel::cancel::scope(&flag, || k.ping()).unwrap_err();
+        assert_eq!(e.kind, KernelErrorKind::Cancelled);
+        assert_eq!(k.generation(), 2);
+        // Cleared, work goes on with a new worker.
+        flag.store(false, Ordering::SeqCst);
+        gusset_kernel::cancel::scope(&flag, || k.ping()).unwrap();
+        assert_eq!(k.generation(), 2);
+    }
+
+    #[test]
     fn a_slow_call_still_answers() {
         let k = remote(1024);
         k.inject_fault(Fault::Sleep(50)).unwrap();

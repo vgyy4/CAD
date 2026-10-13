@@ -1014,3 +1014,21 @@ async fn stdio_bridge_read_only_refuses_batches() {
     server.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_past_its_deadline_is_stopped_with_a_clear_error() {
+    let server = McpServer::new(host());
+    let c = connect(&server, Client::new("bot", None), false).await;
+    let nodes = || server.host().with_session(|s| s.history().nodes().count()).unwrap();
+    let before = nodes();
+    // The model thread is busy for longer than the deadline, so the call cannot finish.
+    server.host().exec_detached(|_, _| std::thread::sleep(std::time::Duration::from_millis(1500)), |_| {}).unwrap();
+    server.set_request_deadline(std::time::Duration::from_secs(1));
+    let r = call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await;
+    assert_eq!(err_code(&r), "deadline_exceeded");
+    assert!(json_of(&r).to_string().contains("did not finish within 1 s"), "{}", json_of(&r));
+    // It had no effect: the queued job was skipped.
+    assert_eq!(nodes(), before);
+    server.set_request_deadline(gusset_mcp::server::DEFAULT_REQUEST_DEADLINE);
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+}

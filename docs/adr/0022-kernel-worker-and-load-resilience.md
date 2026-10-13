@@ -115,7 +115,18 @@ fillet radius against the shortest edge, already checked in `feature.fillet`).
   `OcctGate` vets blobs (trusted, or re-serialized by the import worker) before they are
   sent, and records the worker's own `write_native` output as trusted. The worker parses
   what it is sent (`OcctKernel::with_vetted_inputs`), inside its sandbox.
-- Still open: phase 3 (deadlines, Stop kills the worker), phase 4 (GUI progress/Stop).
+- Phase 3 done: callers that can be stopped run their kernel calls in a cancel scope
+  (`gusset_kernel::cancel`; the evaluator uses its cancel flag). While a call runs,
+  `RemoteKernel` watches the flag on one helper thread (10 ms polling, only during a
+  watched call) and kills the worker when it is set: the call fails as `Cancelled`, the
+  generation moves on, and the next rebuild starts from scratch on a new worker. A Stop
+  ends even an operation that would never return. MCP tool calls have a deadline
+  (`DEFAULT_REQUEST_DEADLINE`, 300 s, from queueing to result, approval waits excluded):
+  past it the call is dropped, which stops its rebuild and undoes its changes, and the
+  agent gets `deadline_exceeded` with a hint.
+- Phase 4 started: the status bar offers Stop while a job runs (`cancel_rebuild`).
+  Still open: progress for long rebuilds, crash and memory errors styled in the feature
+  tree, USER guide and HARDWARE.md budget lines.
 
 ## Consequences
 - The app survives anything OCCT does; a crash costs a rebuild of the earlier features.

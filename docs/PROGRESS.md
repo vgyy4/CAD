@@ -95,7 +95,8 @@ Phase 3 has started (see Next).
      impossible work never crashes the app"): kernel work in a supervised worker process,
      memory/time budgets per rebuild, cancel inside OCCT operations, fault-injection tests.
      Done: worker process, crash containment and restart, evaluator crash handling,
-     app/MCP/CLI wiring and packaging (ADR 0022 "State"). Next: deadlines and Stop.
+     app/MCP/CLI wiring and packaging, Stop that kills a running kernel operation, MCP
+     deadlines, a Stop button (ADR 0022 "State"). Next: rebuild progress, docs.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

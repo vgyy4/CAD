@@ -128,6 +128,12 @@ impl McpServer {
         self.shared.set_diagnostics(text);
     }
 
+    /// Longest a tool call may run before it is stopped and undone
+    /// ([`server::DEFAULT_REQUEST_DEADLINE`] unless set).
+    pub fn set_request_deadline(&self, deadline: std::time::Duration) {
+        self.shared.set_request_deadline(deadline);
+    }
+
     /// Read-only agent mode (maps to `SessionConfig::read_only_agents`).
     ///
     /// # Errors

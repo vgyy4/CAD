@@ -323,8 +323,8 @@ impl Evaluator {
 
     /// A flag that stops evaluations when set from any thread (a host sets it for "Stop
     /// rebuild" or when a newer edit makes the running rebuild moot). It is checked between
-    /// features and before every charged boolean, so one kernel operation still runs to its
-    /// end. A cancelled evaluation has [`Evaluation::cancelled`] set and caches nothing it
+    /// features and before every charged boolean; a kernel running in a worker process
+    /// also stops the operation in progress (ADR 0022 §3), an in-process one finishes it. A cancelled evaluation has [`Evaluation::cancelled`] set and caches nothing it
     /// did after the cancel. The flag stays set (so every evaluation of the command being
     /// cancelled stops) until its owner clears it: `gusset-host` clears it when the next
     /// job starts.
@@ -460,17 +460,22 @@ impl Evaluator {
 
     /// Evaluates `doc`, stopping before feature index `rollback` (if any).
     pub fn evaluate(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> Evaluation {
-        let mut restarts = 0;
-        loop {
-            self.sync_epoch();
-            let (e, crashed) = self.evaluate_pass(doc, rollback, blobs);
-            // A crash ended the worker and every shape of this pass: rebuild once more
-            // from the document, now skipping the feature that crashed (memoised).
-            if !crashed || restarts >= MAX_CRASH_RESTARTS {
-                return e;
+        // The cancel flag also stops a kernel operation in progress where the kernel can
+        // (the worker process is killed, ADR 0022 §3); its shapes are then gone too.
+        let cancel = self.cancel.clone();
+        gusset_kernel::cancel::scope(&cancel, || {
+            let mut restarts = 0;
+            loop {
+                self.sync_epoch();
+                let (e, crashed) = self.evaluate_pass(doc, rollback, blobs);
+                // A crash ended the worker and every shape of this pass: rebuild once more
+                // from the document, now skipping the feature that crashed (memoised).
+                if !crashed || restarts >= MAX_CRASH_RESTARTS {
+                    return e;
+                }
+                restarts += 1;
             }
-            restarts += 1;
-        }
+        })
     }
 
     fn evaluate_pass(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> (Evaluation, bool) {

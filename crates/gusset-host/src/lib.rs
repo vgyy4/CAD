@@ -441,8 +441,10 @@ impl HostHandle {
     }
 
     /// Stops the evaluation of the running job, if any, at its next check (between
-    /// features, before each boolean feature). The job still completes; its evaluation is
-    /// reported as cancelled and not cached. Callable from any thread, never waits.
+    /// features, before each boolean feature), or at once inside a kernel operation when
+    /// the kernel runs in its worker process (which is killed, ADR 0022 §3). The job still
+    /// completes; its evaluation is reported as cancelled and not cached. Callable from
+    /// any thread, never waits.
     pub fn cancel_rebuild(&self) {
         if !self.is_quiescent() {
             self.inner.rebuild_cancel.store(true, Ordering::SeqCst);

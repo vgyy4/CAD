@@ -8,7 +8,7 @@ use std::fmt;
 pub struct CommandError {
     /// Stable machine-readable code: `invalid_args`, `not_found`, `invalid_document`,
     /// `approval_required`, `confirmation_required`, `read_only`, `rate_limited`,
-    /// `not_allowed`, `history`, `evaluation`, `io`.
+    /// `not_allowed`, `history`, `evaluation`, `io`, `cancelled`, `deadline_exceeded` (MCP).
     pub code: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]

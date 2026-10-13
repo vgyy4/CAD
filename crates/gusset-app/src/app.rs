@@ -1397,6 +1397,13 @@ impl App {
                 // A static indicator: an animated spinner would repaint every frame, and
                 // the finished job wakes the UI anyway.
                 ui.weak(format!("⏳ {}", tr("status.working")));
+                // Stops the rebuild, also inside a long kernel operation (the kernel worker
+                // is killed, ADR 0022 §3). Imports have their own Cancel below.
+                if self.import_cancel.is_none()
+                    && ui.small_button(tr("status.stop")).on_hover_text(tr("status.stop_hint")).clicked()
+                {
+                    self.host.cancel_rebuild();
+                }
             }
             if let Some(c) = &self.import_cancel {
                 ui.weak(tr("status.importing"));

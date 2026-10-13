@@ -11,7 +11,9 @@ use gusset_kernel::{
 };
 use std::any::Any;
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 /// How a request reaches the worker and its reply comes back.
 pub trait Transport: Send + std::fmt::Debug {
@@ -21,6 +23,81 @@ pub trait Transport: Send + std::fmt::Debug {
     /// [`TransportError::Died`] when the worker is gone (crashed, killed, or its stream
     /// broke); the client then starts a new one for the next call.
     fn call(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
+
+    /// A function that ends the call in progress from another thread by stopping the
+    /// worker (the call then fails), or `None` when calls cannot be interrupted.
+    fn interrupter(&self) -> Option<Interrupt> {
+        None
+    }
+}
+
+/// Stops the worker of the call in progress; see [`Transport::interrupter`].
+pub type Interrupt = Arc<dyn Fn() + Send + Sync>;
+
+/// Interrupts the call in progress when its cancel flag ([`gusset_kernel::cancel`]) is
+/// set (ADR 0022 §3). One thread per kernel, started on the first watched call; it polls
+/// only while such a call runs.
+#[derive(Default)]
+struct Watch {
+    state: Mutex<WatchState>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct WatchState {
+    call: Option<(Arc<AtomicBool>, Interrupt)>,
+    /// The watched call was interrupted.
+    fired: bool,
+    started: bool,
+    closed: bool,
+}
+
+const WATCH_POLL: Duration = Duration::from_millis(10);
+
+impl Watch {
+    fn begin(self: &Arc<Watch>, flag: Arc<AtomicBool>, interrupt: Interrupt) {
+        let mut st = lock(&self.state);
+        st.call = Some((flag, interrupt));
+        st.fired = false;
+        if !st.started {
+            let me = Arc::clone(self);
+            st.started = std::thread::Builder::new().name("gusset-kernel-watch".into()).spawn(move || me.run()).is_ok();
+        }
+        self.wake.notify_all();
+    }
+
+    /// Ends the watched call; whether it was interrupted.
+    fn end(&self) -> bool {
+        let mut st = lock(&self.state);
+        st.call = None;
+        std::mem::take(&mut st.fired)
+    }
+
+    fn close(&self) {
+        lock(&self.state).closed = true;
+        self.wake.notify_all();
+    }
+
+    fn run(&self) {
+        let mut st = lock(&self.state);
+        while !st.closed {
+            let poll = match &st.call {
+                None => false,
+                Some((flag, interrupt)) => {
+                    if !st.fired && flag.load(Ordering::SeqCst) {
+                        interrupt();
+                        st.fired = true;
+                    }
+                    true
+                }
+            };
+            st = if poll {
+                self.wake.wait_timeout(st, WATCH_POLL).map_or_else(|e| e.into_inner().0, |(g, _)| g)
+            } else {
+                self.wake.wait(st).unwrap_or_else(PoisonError::into_inner)
+            };
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +170,13 @@ pub struct RemoteKernel {
     frees: Arc<Frees>,
     name: &'static str,
     gate: Option<Box<dyn NativeGate>>,
+    watch: Arc<Watch>,
+}
+
+impl Drop for RemoteKernel {
+    fn drop(&mut self) {
+        self.watch.close();
+    }
 }
 
 impl std::fmt::Debug for RemoteKernel {
@@ -140,6 +224,7 @@ impl RemoteKernel {
             frees: Arc::new(Mutex::new(Vec::new())),
             name,
             gate: None,
+            watch: Arc::new(Watch::default()),
         }
     }
 
@@ -203,19 +288,39 @@ impl RemoteKernel {
         let payload = req.encode(&refs).map_err(|e| {
             if e.0 == STALE { crashed(STALE.into()).with_hint("rebuild the model") } else { KernelError::from(e) }
         })?;
+        let cancel = gusset_kernel::cancel::current();
         let send = |link: &mut Link, payload: &[u8]| -> KResult<Vec<u8>> {
+            if cancel.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
+                return Err(stopped());
+            }
             let Some(t) = link.transport.as_mut() else {
                 return Err(crashed("the geometry kernel is not running".into()));
             };
             link.calls += 1;
-            match t.call(payload) {
+            let watched = match (&cancel, t.interrupter()) {
+                (Some(flag), Some(interrupt)) => {
+                    self.watch.begin(flag.clone(), interrupt);
+                    true
+                }
+                _ => false,
+            };
+            let r = t.call(payload);
+            let interrupted = watched && self.watch.end();
+            match r {
+                // Stopped just after it answered: the worker is gone all the same.
+                Ok(_) if interrupted => {
+                    link.transport = None;
+                    link.generation += 1;
+                    Err(stopped())
+                }
                 Ok(reply) => Ok(reply),
                 Err(e) => {
                     // The worker and every shape it held are gone.
                     link.transport = None;
                     link.generation += 1;
                     Err(match e {
-                        TransportError::Cancelled => KernelError::new(KernelErrorKind::Cancelled, "stopped"),
+                        _ if interrupted => stopped(),
+                        TransportError::Cancelled => stopped(),
                         TransportError::Died { reason } => crashed(format!("the geometry kernel stopped: {reason}")),
                     })
                 }
@@ -250,6 +355,10 @@ impl RemoteKernel {
             _ => Err(unexpected()),
         }
     }
+}
+
+fn stopped() -> KernelError {
+    KernelError::new(KernelErrorKind::Cancelled, "stopped on request")
 }
 
 fn unexpected() -> KernelError {

@@ -5,12 +5,12 @@
 //! Use [`production_kernel`], or [`connector`] with [`RemoteKernel::new`].
 
 use gusset_kernel::Kernel;
-use gusset_kernel_remote::{Connect, NativeGate, RemoteKernel, StreamTransport, Transport, TransportError};
+use gusset_kernel_remote::{Connect, Interrupt, NativeGate, RemoteKernel, StreamTransport, Transport, TransportError};
 use std::borrow::Cow;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Command-line flag carrying the memory budget in MiB.
 pub const MEMORY_FLAG: &str = "--memory-mb";
@@ -31,8 +31,28 @@ pub fn default_worker_path() -> Option<PathBuf> {
 #[derive(Debug)]
 pub struct KernelProcess {
     child: Child,
-    guard: gusset_sandbox::ChildGuard,
+    guard: Arc<Mutex<Guard>>,
     stream: StreamTransport<ChildStdin, BufReader<ChildStdout>>,
+}
+
+/// The containment, shared with [`Transport::interrupter`]: killing goes through it only
+/// until the worker is reaped (after that its process group id may be reused).
+#[derive(Debug)]
+struct Guard {
+    guard: gusset_sandbox::ChildGuard,
+    reaped: bool,
+}
+
+impl Guard {
+    fn kill(&self) {
+        if !self.reaped {
+            self.guard.kill_all();
+        }
+    }
+}
+
+fn lock(g: &Mutex<Guard>) -> std::sync::MutexGuard<'_, Guard> {
+    g.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl KernelProcess {
@@ -69,7 +89,11 @@ impl KernelProcess {
             let _ = child.wait();
             return Err("the kernel worker has no stdin/stdout".into());
         };
-        Ok(KernelProcess { child, guard, stream: StreamTransport::new(stdin, BufReader::new(stdout)) })
+        Ok(KernelProcess {
+            child,
+            guard: Arc::new(Mutex::new(Guard { guard, reaped: false })),
+            stream: StreamTransport::new(stdin, BufReader::new(stdout)),
+        })
     }
 
     /// Kills the worker (and anything it started) and returns how it ended.
@@ -82,9 +106,13 @@ impl KernelProcess {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        self.guard.kill_all();
+        let mut g = lock(&self.guard);
+        g.kill();
         let _ = self.child.kill();
-        match self.child.wait() {
+        let r = self.child.wait();
+        g.reaped = true;
+        drop(g);
+        match r {
             Ok(status) => exit_reason(status),
             Err(e) => format!("could not be reaped ({e})"),
         }
@@ -105,13 +133,20 @@ impl Transport for KernelProcess {
             }
         }
     }
+
+    fn interrupter(&self) -> Option<Interrupt> {
+        let g = Arc::clone(&self.guard);
+        Some(Arc::new(move || lock(&g).kill()))
+    }
 }
 
 impl Drop for KernelProcess {
     fn drop(&mut self) {
-        self.guard.kill_all();
+        let mut g = lock(&self.guard);
+        g.kill();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        g.reaped = true;
     }
 }
 

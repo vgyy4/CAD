@@ -23,11 +23,15 @@ extrude E1 (profile: S1, distance: 5 mm, op: new)
 ";
 
 /// Crashes (bumps its epoch and fails with `Crashed`) on extrudes of exactly `crash_at` mm.
+/// The first extrude of 6 mm is stopped like a worker killed by "Stop rebuild": it sets
+/// the caller's cancel flag ([`gusset_kernel::cancel`]), bumps the epoch and fails with
+/// `Cancelled`.
 #[derive(Debug)]
 struct CrashingKernel {
     epoch: AtomicU64,
     crashes: AtomicUsize,
     crash_at: f64,
+    stops: AtomicUsize,
 }
 
 impl Kernel for CrashingKernel {
@@ -45,6 +49,12 @@ impl Kernel for CrashingKernel {
                 KernelErrorKind::Crashed,
                 "the geometry kernel stopped: crashed (segmentation fault)",
             ));
+        }
+        if (spec.distance - 6.0).abs() < 1e-9 && self.stops.fetch_add(1, Ordering::SeqCst) == 0 {
+            let flag = gusset_kernel::cancel::current().unwrap_or_else(|| panic!("no cancel scope"));
+            flag.store(true, Ordering::SeqCst);
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+            return Err(KernelError::new(KernelErrorKind::Cancelled, "stopped on request"));
         }
         MockKernel.extrude(profile, spec)
     }
@@ -80,7 +90,12 @@ fn doc(e2: &str) -> Document {
 
 #[test]
 fn a_crash_fails_the_feature_rebuilds_the_rest_and_is_not_repeated() {
-    let kernel = Arc::new(CrashingKernel { epoch: AtomicU64::new(1), crashes: AtomicUsize::new(0), crash_at: 7.0 });
+    let kernel = Arc::new(CrashingKernel {
+        epoch: AtomicU64::new(1),
+        crashes: AtomicUsize::new(0),
+        crash_at: 7.0,
+        stops: AtomicUsize::new(0),
+    });
     let mut ev = Evaluator::new(kernel.clone());
     let r = ev.evaluate(&doc("7 mm"), None, &());
     match r.status("E2") {
@@ -109,7 +124,12 @@ fn a_crash_fails_the_feature_rebuilds_the_rest_and_is_not_repeated() {
 
 #[test]
 fn a_restart_outside_the_evaluator_drops_the_cache() {
-    let kernel = Arc::new(CrashingKernel { epoch: AtomicU64::new(1), crashes: AtomicUsize::new(0), crash_at: -1.0 });
+    let kernel = Arc::new(CrashingKernel {
+        epoch: AtomicU64::new(1),
+        crashes: AtomicUsize::new(0),
+        crash_at: -1.0,
+        stops: AtomicUsize::new(0),
+    });
     let mut ev = Evaluator::new(kernel.clone());
     let d = doc("4 mm");
     let r = ev.evaluate(&d, None, &());
@@ -120,4 +140,27 @@ fn a_restart_outside_the_evaluator_drops_the_cache() {
     let r = ev.evaluate(&d, None, &());
     assert_eq!(r.recomputed, 4, "everything rebuilt (S1, E1, E2, E3)");
     assert_eq!(r.epoch, 2);
+}
+
+#[test]
+fn a_stop_inside_a_kernel_call_cancels_the_rebuild_without_memoising_it() {
+    let kernel = Arc::new(CrashingKernel {
+        epoch: AtomicU64::new(1),
+        crashes: AtomicUsize::new(0),
+        crash_at: -1.0,
+        stops: AtomicUsize::new(0),
+    });
+    let mut ev = Evaluator::new(kernel.clone());
+    let d = doc("6 mm");
+    let r = ev.evaluate(&d, None, &());
+    assert!(r.cancelled);
+    assert!(matches!(r.status("E2"), Some(FeatureStatus::Failed(e)) if e.code == ErrorCode::Cancelled));
+    assert!(matches!(r.status("E3"), Some(FeatureStatus::Failed(e)) if e.code == ErrorCode::Cancelled));
+    assert_eq!(r.epoch, 1, "the evaluation holds shapes of the stopped worker");
+    // The next rebuild (flag cleared by the host) runs on the new worker and does E2 again.
+    ev.cancel_flag().store(false, Ordering::SeqCst);
+    let r = ev.evaluate(&d, None, &());
+    assert!(!r.cancelled && r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.epoch, 2);
+    assert_eq!(r.recomputed, 4, "the cache died with the worker");
 }

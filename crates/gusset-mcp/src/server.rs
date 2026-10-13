@@ -82,6 +82,11 @@ pub const TEXT_GRAMMAR_URI: &str = "gusset://docs/text-grammar";
 /// Key of the approval request inside a 2026-07-28 `input_required` result.
 const APPROVAL_INPUT: &str = "approval";
 
+/// Longest a tool call may run, from queueing to result, before it is stopped and undone
+/// (ADR 0022 §3): the kernel worker is killed, so even one endless operation ends. Waiting
+/// for the user's approval is not counted.
+pub const DEFAULT_REQUEST_DEADLINE: Duration = Duration::from_secs(300);
+
 /// Shared state of one MCP server (all connections).
 pub(crate) struct Shared {
     pub(crate) host: HostHandle,
@@ -96,6 +101,7 @@ pub(crate) struct Shared {
     grants: RwLock<Arc<crate::grants::Grants>>,
     diagnostics: RwLock<Option<String>>,
     elicitation_timeout: Duration,
+    request_deadline: RwLock<Duration>,
     next_instance: AtomicU64,
 }
 
@@ -121,6 +127,7 @@ impl Shared {
             grants: RwLock::new(Arc::default()),
             diagnostics: RwLock::new(None),
             elicitation_timeout: Duration::from_secs(600),
+            request_deadline: RwLock::new(DEFAULT_REQUEST_DEADLINE),
             next_instance: AtomicU64::new(1),
         }
     }
@@ -139,6 +146,14 @@ impl Shared {
 
     pub(crate) fn set_grants(&self, g: Arc<crate::grants::Grants>) {
         *self.grants.write().unwrap_or_else(std::sync::PoisonError::into_inner) = g;
+    }
+
+    pub(crate) fn set_request_deadline(&self, d: Duration) {
+        *self.request_deadline.write().unwrap_or_else(std::sync::PoisonError::into_inner) = d;
+    }
+
+    fn request_deadline(&self) -> Duration {
+        *self.request_deadline.read().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn set_diagnostics(&self, text: String) {
@@ -655,7 +670,18 @@ impl GussetMcp {
     }
 
     async fn run(&self, ctx: CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
-        self.shared.host.call_async(ctx, id, args).await
+        let limit = self.shared.request_deadline();
+        // On expiry the call future is dropped: the host skips the job if it has not
+        // started, or stops its rebuild (killing the kernel worker's operation) and undoes
+        // its changes.
+        match tokio::time::timeout(limit, self.shared.host.call_async(ctx, id, args)).await {
+            Ok(r) => r,
+            Err(_) => Err(CommandError::new(
+                "deadline_exceeded",
+                format!("'{id}' did not finish within {} s and was stopped; it has no effect", limit.as_secs()),
+            )
+            .hint("simplify the model or the request (fewer pattern instances, holes or faces), or split it")),
+        }
     }
 
     async fn call_command(

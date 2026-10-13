@@ -14,7 +14,7 @@ mod frame;
 mod proto;
 mod server;
 
-pub use client::{Connect, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError};
+pub use client::{Connect, Interrupt, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError};
 pub use frame::MAX_FRAME;
 pub use proto::{Fault, VERSION};
 pub use server::Server;
