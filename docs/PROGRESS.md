@@ -39,13 +39,19 @@ Phase 3 has started (see Next).
 - IGES import: OCCT reads IGES only from a file, so the sandboxed worker gets a
   Landlock read rule for one private temp file (ADR 0008 §4); in a worktree branch.
 
-- GUI phase 1 of the Fusion-style layout (ADR 0023 §4, DESIGN.md §2): title bar,
-  SOLID/SKETCH tabs, ribbon with dropdown groups, view cube and navigation bar are done.
-  Still to do in later phases: browser tree (Document settings, Origin, Bodies...),
-  timeline with playback controls and feature icons, the command line, a properties
-  panel instead of the floating command form, the SURFACE/INSPECT tabs, the SELECT group,
-  and a wireframe view style (gusset-render has no wireframe mode; the navigation bar
-  toggles edges instead).
+- GUI phases 1 and 2 of the Fusion-style layout (ADR 0023 §4, DESIGN.md §2): title bar,
+  SOLID/SKETCH tabs, ribbon with dropdown groups, view cube and navigation bar (phase 1);
+  browser tree with collapsible icon categories (Document settings, Origin, Bodies,
+  Sketches, Features, Construction, Parameters, Branches), timeline icon chips with status
+  badges and playback buttons that move the rollback marker, and a command line above the
+  status bar (View menu toggle; registry id plus JSON or `key=value` args through
+  `submit_command`, Tab completes ids, Up/Down recall) (phase 2).
+  Origin, bodies and datum planes are read-only in the browser (the scene has no
+  visibility for them yet). Still to do: a properties panel instead of the floating
+  command form, the SURFACE/INSPECT tabs, the SELECT group, and a wireframe view style
+  (gusset-render has no wireframe mode; the navigation bar toggles edges instead). The
+  screenshot gallery in docs/screenshots was not regenerated (it needs the real kernel
+  for the bracket model); phase 2 looks were checked with mock-kernel renders.
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

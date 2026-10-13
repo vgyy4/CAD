@@ -5,6 +5,8 @@
 
 pub mod agents;
 pub mod app;
+pub mod browser;
+pub mod cmdline;
 pub mod forms;
 pub mod i18n;
 pub mod icons;
@@ -22,5 +24,7 @@ mod screenshots;
 mod tests;
 #[cfg(test)]
 mod tests_lifecycle;
+#[cfg(test)]
+mod tests_panels;
 #[cfg(test)]
 mod tests_ribbon;

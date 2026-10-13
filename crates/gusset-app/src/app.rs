@@ -8,6 +8,8 @@
 //! UI is a plain function of [`App`] state, which is what the kittest automation drives.
 
 use crate::agents::{Agents, plain};
+use crate::browser;
+use crate::cmdline;
 use crate::forms::{self, Form};
 use crate::i18n::tr;
 use crate::icons::{self, Icon};
@@ -19,7 +21,7 @@ use crate::viewport::{BodyInfo, DrawSketch, Hit, NavRequest, Viewport};
 use crate::viewport_nav::NavMode;
 use egui::{RichText, Ui};
 use gusset_commands::{CmdCtx, CommandError, Session, registry};
-use gusset_eval::{Evaluation, FeatureStatus, SketchStatus};
+use gusset_eval::Evaluation;
 use gusset_history::{Actor, History, NodeId};
 use gusset_host::{Host, HostEvent, HostHandle};
 use gusset_kernel::{Kernel, TessellationParams};
@@ -111,6 +113,8 @@ pub enum Then {
     Code,
     /// Only report errors.
     Quiet,
+    /// It came from the command line: report the result (or the error) in the status bar.
+    CmdLine,
     /// A path dialog action: re-open the dialog with the error on failure.
     PathDialog(PathPurpose, String),
     /// A branch comparison for the agents panel (branch name, plain text).
@@ -253,6 +257,10 @@ pub struct App {
     /// Sketch visibility the user chose in the browser (overrides the default: sketches
     /// used as a profile are hidden, others shown).
     pub sketch_visibility: std::collections::BTreeMap<String, bool>,
+    /// Which browser categories are expanded.
+    pub browser: browser::State,
+    /// The command line above the status bar.
+    pub cmdline: cmdline::State,
     /// The MCP server, its HTTP endpoint, approvals and the "AI agents" panel.
     pub agents: Agents,
 }
@@ -319,6 +327,8 @@ impl App {
             active_sketch: None,
             active_sketch_seen: false,
             sketch_visibility: std::collections::BTreeMap::new(),
+            browser: browser::State::default(),
+            cmdline: cmdline::State::default(),
             agents,
         }
     }
@@ -631,6 +641,17 @@ impl App {
                     self.report(id, &result);
                 }
             }
+            Then::CmdLine => match &result {
+                Ok(v) => {
+                    let mut text = format!("{id}: ok");
+                    let shown = v.to_string();
+                    if shown != "null" && shown != "{}" {
+                        text.push_str(&format!(" {}", clip_result(&shown, 160)));
+                    }
+                    self.notice = Some(Notice { text, hint: None, error: false });
+                }
+                Err(_) => self.report(id, &result),
+            },
             Then::Show => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
                 match result {
@@ -1084,6 +1105,9 @@ impl App {
             .show(ui, |ui| self.workspace_tabs(ui));
         egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if self.cmdline.visible {
+            egui::Panel::bottom("cmdline").frame(bar(pal.bg_panel, 3, 3)).show(ui, |ui| self.command_line(ui));
+        }
         egui::Panel::bottom("timeline").resizable(false).show(ui, |ui| self.timeline(ui));
         egui::Panel::left("browser")
             .default_size(240.0)
@@ -1211,6 +1235,9 @@ impl App {
                     self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
+                if ui.checkbox(&mut self.cmdline.visible, tr("menu.cmdline")).changed() && self.cmdline.visible {
+                    self.cmdline.focus = true;
+                }
             });
             ui.menu_button(tr("menu.help"), |ui| {
                 if ui.button(tr("menu.diagnostics")).clicked() {
@@ -1385,6 +1412,27 @@ impl App {
         };
     }
 
+    /// The command line: parses what was typed and runs it through the registry like the
+    /// ribbon does.
+    fn command_line(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
+        if let Some(line) = cmdline::show(ui, &mut self.cmdline, &pal) {
+            self.run_command_line(&line);
+        }
+    }
+
+    /// Runs a command line (`feature.extrude sketch=S1 distance="10 mm"`) through
+    /// [`App::submit_command`]; a line that does not parse is reported in the status bar.
+    pub fn run_command_line(&mut self, line: &str) {
+        match cmdline::parse(line) {
+            Ok(p) => {
+                let then = if inspects(p.id) { Then::Show } else { Then::CmdLine };
+                self.submit_command(p.id, p.args, then);
+            }
+            Err(msg) => self.notice = Some(Notice { text: msg, hint: None, error: true }),
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let pal = theme::palette(self.theme);
@@ -1452,119 +1500,59 @@ impl App {
         let doc = self.snapshot.doc.clone();
         let eval = self.scene.as_ref().map(|s| s.eval.clone());
         let pal = *theme::palette(self.theme);
-        let mut edit: Option<String> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::CollapsingHeader::new(tr("browser.parameters")).default_open(true).show(ui, |ui| {
-                for p in &doc.params {
-                    let value = eval
-                        .as_ref()
-                        .and_then(|e| e.params.get(&p.name))
-                        .map(|v| match v {
-                            Ok(q) => q.to_string(),
-                            Err(e) => format!("error: {e}"),
-                        })
-                        .unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        ui.monospace(&p.name);
-                        ui.label(format!("= {}", p.expr));
-                        ui.weak(value);
-                    });
+        let mut state = std::mem::take(&mut self.browser);
+        let actions = egui::ScrollArea::vertical()
+            .show(ui, |ui| {
+                let visible = |name: &str| self.sketch_visible(name);
+                let view = browser::View {
+                    pal: &pal,
+                    doc: &doc,
+                    eval: eval.as_deref(),
+                    sketch_visible: &visible,
+                    branch: self.snapshot.branch,
+                    branches: &self.snapshot.branches,
+                };
+                browser::show(ui, &mut state, &view)
+            })
+            .inner;
+        self.browser = state;
+        for a in actions {
+            self.browser_action(a);
+        }
+    }
+
+    /// Applies what the user chose in the browser tree.
+    pub fn browser_action(&mut self, action: browser::Action) {
+        match action {
+            browser::Action::SetSketchVisible(name, on) => {
+                self.sketch_visibility.insert(name, on);
+            }
+            browser::Action::EditSketch(name) => self.edit_sketch(&name),
+            browser::Action::AddParam => self.start_command("param.set"),
+            browser::Action::EditParam(name) => {
+                self.start_command("param.set");
+                let expr = self.snapshot.doc.params.iter().find(|p| p.name == name).map(|p| p.expr.to_string());
+                if let (Some(form), Some(expr)) = (self.form.as_mut(), expr) {
+                    form.set("name", &name);
+                    form.set("expr", &expr);
                 }
-                if ui.small_button(format!("+ {}", tr("browser.add_param"))).clicked() {
-                    self.start_command("param.set");
-                }
-            });
-            egui::CollapsingHeader::new(tr("browser.features")).default_open(true).show(ui, |ui| {
-                for f in &doc.features {
-                    let status = eval.as_ref().and_then(|e| e.status(&f.name));
-                    let (icon, col) = match status {
-                        Some(FeatureStatus::Ok) | None => (Icon::Check, pal.success),
-                        Some(FeatureStatus::Failed(_)) => (Icon::Warning, pal.danger),
-                        Some(FeatureStatus::Suppressed | FeatureStatus::RolledBack) => (Icon::Ring, pal.text_muted),
-                        Some(_) => (Icon::Pending, pal.warning),
-                    };
-                    let mut text = format!("{} {}", f.kind.keyword(), f.name);
-                    if let Some(l) = &f.label {
-                        text.push_str(&format!(" — {l}"));
-                    }
-                    let is_sketch = matches!(f.kind, gusset_doc::FeatureKind::Sketch(_));
-                    let shown = is_sketch && self.sketch_visible(&f.name);
-                    let mut toggled = false;
-                    let r = ui.horizontal(|ui| {
-                        if is_sketch {
-                            let label = format!("{} {}", tr("browser.show_sketch"), f.name);
-                            toggled = icons::toggle(ui, shown, Icon::Eye, Icon::EyeOff, &label)
-                                .on_hover_text(tr("browser.show_sketch_help"))
-                                .clicked();
-                        } else {
-                            // Same footprint as the eye toggle, so names line up.
-                            let s = icons::toggle_size(ui);
-                            ui.allocate_exact_size(egui::Vec2::splat(s), egui::Sense::hover());
-                        }
-                        icons::icon(ui, icon, col);
-                        let label = egui::Label::new(text);
-                        let resp = ui.add(if is_sketch { label.sense(egui::Sense::click()) } else { label });
-                        if is_sketch {
-                            if resp.double_clicked() {
-                                edit = Some(f.name.clone());
-                            }
-                            return resp.on_hover_text(tr("browser.edit_sketch"));
-                        }
-                        resp
-                    });
-                    if toggled {
-                        self.sketch_visibility.insert(f.name.clone(), !shown);
-                    }
-                    if let Some(FeatureStatus::Failed(e)) = status {
-                        let tip = match &e.hint {
-                            Some(h) => format!("{}\n{}: {h}", e.message, tr("error.fix")),
-                            None => e.message.clone(),
-                        };
-                        r.inner.on_hover_text(tip);
-                    }
-                    if let Some(sk) = eval.as_ref().and_then(|e| e.sketches.get(&f.name)) {
-                        let (t, c) = match sk.status {
-                            SketchStatus::WellConstrained => ("fully constrained".to_string(), pal.success),
-                            SketchStatus::UnderConstrained => (format!("{} DOF free", sk.dof), pal.text_muted),
-                            SketchStatus::OverConstrained => ("over-constrained".to_string(), pal.danger),
-                            SketchStatus::Failed => ("solve failed".to_string(), pal.danger),
-                        };
-                        ui.indent(&f.name, |ui| ui.colored_label(c, RichText::new(t).small()));
-                    }
-                }
-            });
-            egui::CollapsingHeader::new(tr("browser.bodies")).default_open(true).show(ui, |ui| {
-                for b in eval.iter().flat_map(|e| e.bodies.iter()) {
-                    ui.label(&b.name);
-                }
-            });
-            egui::CollapsingHeader::new("Branches").default_open(false).show(ui, |ui| {
-                let cur = self.snapshot.branch;
-                let branches = self.snapshot.branches.clone();
-                for b in branches {
-                    let r = ui.horizontal(|ui| {
-                        if b.agent.is_some() {
-                            icons::icon(ui, Icon::Diamond, pal.agent);
-                            ui.selectable_label(Some(b.id) == cur, RichText::new(plain(&b.name, 80)).color(pal.agent))
-                        } else {
-                            ui.selectable_label(Some(b.id) == cur, b.name.clone())
-                        }
-                    });
-                    if r.inner.clicked() && Some(b.id) != cur {
-                        self.submit_command("branch.switch", json!({ "branch": b.id.to_string() }), Then::Quiet);
-                    }
-                }
-            });
-        });
-        if let Some(name) = edit {
-            self.edit_sketch(&name);
+            }
+            browser::Action::SwitchBranch(id) => {
+                self.submit_command("branch.switch", json!({ "branch": id.to_string() }), Then::Quiet);
+            }
         }
     }
 
     fn timeline(&mut self, ui: &mut Ui) {
         let n = self.snapshot.doc.features.len();
         let rollback = self.snapshot.rollback;
+        let pal = *theme::palette(self.theme);
         ui.horizontal(|ui| {
+            // Playback moves the rollback marker one feature at a time.
+            if let Some(m) = timeline::playback(ui, rollback.unwrap_or(n), n, &pal) {
+                self.set_rollback(if m >= n { None } else { Some(m) });
+            }
+            ui.separator();
             ui.label(RichText::new(tr("timeline.title")).strong());
             if ui
                 .small_button(if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") })
@@ -1573,7 +1561,6 @@ impl App {
                 self.show_iterations = !self.show_iterations;
             }
             ui.separator();
-            let pal = *theme::palette(self.theme);
             let eval = self.scene.as_ref().map(|s| s.eval.clone());
             let doc = &self.snapshot.doc;
             let items: Vec<timeline::Item<'_>> = doc
@@ -1600,7 +1587,7 @@ impl App {
         if self.show_iterations {
             ui.horizontal_wrapped(|ui| {
                 for label in &self.snapshot.lineage {
-                    icons::labeled(ui, Icon::Dot, theme::palette(self.theme).text_muted, RichText::new(label).small());
+                    icons::labeled(ui, Icon::Dot, pal.text_muted, RichText::new(label).small());
                 }
             });
         }
@@ -2247,6 +2234,15 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
 }
 
 /// Whether a command only reads the model and reports a result (measure, overview).
+/// A command result on one line, cut to `max` characters.
+fn clip_result(s: &str, max: usize) -> String {
+    let mut out: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        out.push_str("...");
+    }
+    out
+}
+
 fn inspects(id: &str) -> bool {
     gusset_commands::find(id).is_some_and(|s| s.category == gusset_commands::Category::Inspect)
 }

@@ -68,6 +68,30 @@ pub fn humanize(name: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
+impl Field {
+    /// The field's text as a JSON value of its kind (not for empty optional fields).
+    pub fn to_value(&self) -> Result<Value, String> {
+        let (f, t) = (self, self.value.trim());
+        Ok(match f.kind {
+            FieldKind::Text => Value::String(f.value.clone()),
+            FieldKind::Bool => Value::Bool(t == "true"),
+            FieldKind::Number => t
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .ok_or_else(|| format!("{} must be a number", f.label))?,
+            FieldKind::Integer => {
+                t.parse::<i64>().map(Value::from).map_err(|_| format!("{} must be a whole number", f.label))?
+            }
+            FieldKind::StringList => Value::Array(
+                t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::String(s.into())).collect(),
+            ),
+            FieldKind::Json => serde_json::from_str(t).map_err(|e| format!("{}: {e}", f.label))?,
+        })
+    }
+}
+
 impl Form {
     pub fn new(spec: &gusset_commands::CommandSpec) -> Form {
         let schema = (spec.schema)();
@@ -130,23 +154,7 @@ impl Form {
                 }
                 continue;
             }
-            let v = match f.kind {
-                FieldKind::Text => Value::String(f.value.clone()),
-                FieldKind::Bool => Value::Bool(t == "true"),
-                FieldKind::Number => t
-                    .parse::<f64>()
-                    .ok()
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Value::Number)
-                    .ok_or_else(|| format!("{} must be a number", f.label))?,
-                FieldKind::Integer => {
-                    t.parse::<i64>().map(Value::from).map_err(|_| format!("{} must be a whole number", f.label))?
-                }
-                FieldKind::StringList => Value::Array(
-                    t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::String(s.into())).collect(),
-                ),
-                FieldKind::Json => serde_json::from_str(t).map_err(|e| format!("{}: {e}", f.label))?,
-            };
+            let v = f.to_value()?;
             m.insert(f.name.clone(), v);
         }
         Ok(Value::Object(m))
