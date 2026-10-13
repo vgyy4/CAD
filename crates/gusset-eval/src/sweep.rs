@@ -5,7 +5,7 @@ use gusset_doc::{LoftDef, Orientation, PathRef, SweepDef};
 use gusset_kernel::{LoftSpec, SweepOrientation, SweepPath, SweepSpec};
 
 /// Largest sweep twist, in turns (the kernel refuses more as well).
-pub const MAX_TWIST_TURNS: f64 = 100.0;
+pub(crate) const MAX_TWIST_TURNS: f64 = 100.0;
 
 impl Evaluator {
     pub(crate) fn run_sweep(
