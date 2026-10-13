@@ -52,6 +52,38 @@ fn user_builds_and_measures_a_plate() {
 }
 
 #[test]
+fn parameter_rename_updates_parameter_and_feature_expressions() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    run(&mut s, &u, "param.set", json!({"name": "half_depth", "expr": "depth / 2"}));
+    let r = run(&mut s, &u, "param.rename", json!({"from": "depth", "to": "thickness"}));
+    assert_eq!(r["renamed"], json!([["depth", "thickness"]]));
+    assert!(r["node"].is_string() && r["branch"].is_string(), "{r}");
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert!(doc.to_text().contains("param half_depth = thickness / 2"), "{}", doc.to_text());
+    assert!(doc.to_text().contains("distance: thickness"), "{}", doc.to_text());
+    let b = run(&mut s, &u, "query.body", json!({}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 40.0 * 20.0 * 10.0).abs() < 1e-6, "{b}");
+    run(&mut s, &u, "history.undo", json!({}));
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert!(doc.to_text().contains("param half_depth = depth / 2"), "{}", doc.to_text());
+}
+
+#[test]
+fn parameter_rename_rejects_collisions_and_missing_sources() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "left", "expr": "1 mm"}));
+    run(&mut s, &u, "param.set", json!({"name": "right", "expr": "2 mm"}));
+    let e = execute(&mut s, &u, "param.rename", json!({"from": "left", "to": "right"})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+    assert!(e.message.contains("right"), "{e:?}");
+    let e = execute(&mut s, &u, "param.rename", json!({"from": "missing", "to": "present"})).unwrap_err();
+    assert_eq!(e.code, "not_found");
+}
+
+#[test]
 fn undo_redo_through_commands() {
     let mut s = session();
     let u = CmdCtx::user(1);

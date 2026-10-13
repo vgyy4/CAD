@@ -216,6 +216,61 @@ impl FeatureKind {
         }
         out
     }
+
+    /// Mutable expressions referenced by this feature.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = Vec::new();
+        match self {
+            FeatureKind::Sketch(s) => {
+                out.extend(s.constraints.iter_mut().filter_map(|c| c.value.as_mut()));
+                for p in &mut s.patterns {
+                    out.push(&mut p.count);
+                    match &mut p.kind {
+                        SkPatternKind::Linear { dx, dy } => out.extend([dx, dy]),
+                        SkPatternKind::Circular { angle, .. } => out.push(angle),
+                    }
+                }
+            }
+            FeatureKind::Extrude(e) => out.push(&mut e.distance),
+            FeatureKind::Revolve(r) => out.push(&mut r.angle),
+            FeatureKind::Sweep(d) => out.extend(d.twist.iter_mut()),
+            FeatureKind::Loft(_) => {}
+            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => out.push(&mut b.size),
+            FeatureKind::Import(_) => {}
+            FeatureKind::Shell(d) => out.push(&mut d.thickness),
+            FeatureKind::Mirror(_) => {}
+            FeatureKind::PatternLinear(d) => {
+                out.extend(d.direction.exprs_mut());
+                out.extend([&mut d.count, &mut d.spacing]);
+            }
+            FeatureKind::PatternCircular(d) => {
+                out.extend(d.axis.exprs_mut());
+                if let Some(through) = &mut d.through {
+                    out.extend(through.iter_mut());
+                }
+                out.extend([&mut d.count, &mut d.angle]);
+            }
+            FeatureKind::Plane(d) => match &mut d.kind {
+                PlaneKind::Offset(e) => out.push(e),
+                PlaneKind::Angle { angle, .. } => out.push(angle),
+            },
+            FeatureKind::Move(d) => {
+                if let Some(translate) = &mut d.translate {
+                    out.extend(translate.iter_mut());
+                }
+                if let Some(rotation) = &mut d.rotation {
+                    out.extend(rotation.axis.exprs_mut());
+                    if let Some(through) = &mut rotation.through {
+                        out.extend(through.iter_mut());
+                    }
+                    out.push(&mut rotation.angle);
+                }
+            }
+            FeatureKind::Combine(_) => {}
+            FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
+        }
+        out
+    }
 }
 
 fn add_body(add: &mut impl FnMut(&str), body: &Option<String>) {
@@ -702,6 +757,14 @@ impl DirRef {
             _ => Vec::new(),
         }
     }
+
+    /// Mutable expressions inside the direction.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            DirRef::Vector(v) => v.iter_mut().collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// Repeats a body along a direction and unites the copies with it.
@@ -938,6 +1001,30 @@ impl HoleDef {
         if let Some(t) = &self.thread {
             v.push(&t.pitch);
             v.extend(t.depth.iter());
+        }
+        v
+    }
+
+    /// Mutable expressions of the feature.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut v: Vec<&mut Expr> = Vec::new();
+        if let HoleSites::Points(p) = &mut self.sites {
+            v.extend(p.iter_mut().flat_map(|h| h.at.iter_mut()));
+        }
+        v.push(&mut self.diameter);
+        if let HoleDepth::Blind(d) = &mut self.depth {
+            v.push(d);
+        }
+        v.extend(self.point_angle.iter_mut());
+        if let Some(c) = &mut self.counterbore {
+            v.extend([&mut c.diameter, &mut c.depth]);
+        }
+        if let Some(c) = &mut self.countersink {
+            v.extend([&mut c.diameter, &mut c.angle]);
+        }
+        if let Some(t) = &mut self.thread {
+            v.push(&mut t.pitch);
+            v.extend(t.depth.iter_mut());
         }
         v
     }

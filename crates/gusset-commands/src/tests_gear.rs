@@ -143,6 +143,30 @@ fn parameter_edits_reshape_the_teeth() {
 }
 
 #[test]
+fn prefix_rename_keeps_a_generated_gear_sketch_rebuilding() {
+    let mut s = session();
+    run(&mut s, "generate.gear", json!({}));
+    let area = tooth_area(&mut s, "Gear1_profile");
+    let r = run(&mut s, "param.rename", json!({"from": "gear1_", "to": "pinion_", "prefix": true}));
+    assert!(r["renamed"].as_array().unwrap().len() > 9);
+    let t = text(&s);
+    assert!(t.contains("sketch Gear1_profile (plane: XY") && t.contains("gear: pinion"), "{t}");
+    assert!(
+        t.contains("param pinion_module")
+            && t.contains("param pinion_pitch_diameter = pinion_transverse_module * pinion_teeth"),
+        "{t}"
+    );
+    assert!(!t.contains("gear1_"), "{t}");
+    assert!((tooth_area(&mut s, "Gear1_profile") - area).abs() < 1e-9);
+    // Without the trailing underscore the key follows too; one gear input alone cannot move.
+    run(&mut s, "param.rename", json!({"from": "pinion", "to": "wheel", "prefix": true}));
+    assert!(text(&s).contains("gear: wheel"), "{}", text(&s));
+    let e = execute(&mut s, &CmdCtx::user(1), "param.rename", json!({"from": "wheel_teeth", "to": "z"})).unwrap_err();
+    assert!(e.message.contains("belongs to the gear") && e.hint.as_deref().unwrap_or("").contains("prefix"), "{e:?}");
+    assert!((tooth_area(&mut s, "Gear1_profile") - area).abs() < 1e-9);
+}
+
+#[test]
 fn options_and_names() {
     let mut s = session();
     let r = run(

@@ -141,6 +141,23 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn mutable_expression_visitor_matches_parameter_references() {
+        let mut doc = text::parse(SAMPLE).unwrap();
+        for feature in &mut doc.features {
+            let expected = feature.kind.parameters();
+            let mut actual = Vec::new();
+            for expr in feature.kind.exprs_mut() {
+                for variable in expr.variables() {
+                    if !actual.contains(&variable) {
+                        actual.push(variable);
+                    }
+                }
+            }
+            assert_eq!(actual, expected, "{}", feature.name);
+        }
+    }
+
+    #[test]
     fn grammar_examples_parse_and_cover_the_language() {
         let mut blocks = Vec::new();
         let mut cur: Option<String> = None;
@@ -157,9 +174,21 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         }
         assert!(blocks.len() >= 3, "{} examples", blocks.len());
         for b in &blocks {
-            let doc = Document::from_text(b).unwrap_or_else(|e| panic!("{e}\n{b}"));
+            let mut doc = Document::from_text(b).unwrap_or_else(|e| panic!("{e}\n{b}"));
             // Canonical printing reads back to the same document.
             assert_eq!(Document::from_text(&doc.to_text()).unwrap(), doc);
+            for feature in &mut doc.features {
+                let expected = feature.kind.parameters();
+                let mut actual = Vec::new();
+                for expr in feature.kind.exprs_mut() {
+                    for variable in expr.variables() {
+                        if !actual.contains(&variable) {
+                            actual.push(variable);
+                        }
+                    }
+                }
+                assert_eq!(actual, expected, "{}", feature.name);
+            }
         }
         // Every constraint kind, feature keyword and entity id prefix is documented.
         for k in SkConstraintKind::ALL {
@@ -665,6 +694,23 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
         assert_eq!(params("Pattern2"), vec!["n_bolts".to_string(), "pitch".to_string()]);
         assert_eq!(params("Pattern3"), vec!["n_bolts".to_string()]);
         assert!(params("Mirror1").is_empty());
+    }
+
+    #[test]
+    fn mutable_expression_visitor_matches_pattern_references() {
+        let mut doc = text::parse(SAMPLE).unwrap();
+        for feature in &mut doc.features {
+            let expected = feature.kind.parameters();
+            let mut actual = Vec::new();
+            for expr in feature.kind.exprs_mut() {
+                for variable in expr.variables() {
+                    if !actual.contains(&variable) {
+                        actual.push(variable);
+                    }
+                }
+            }
+            assert_eq!(actual, expected, "{}", feature.name);
+        }
     }
 
     #[test]

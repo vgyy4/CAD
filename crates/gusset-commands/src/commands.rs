@@ -45,6 +45,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<GetText>(),
         spec::<SetText>(),
         spec::<ParamSet>(),
+        spec::<ParamRename>(),
         spec::<ParamDelete>(),
         spec::<SketchCreate>(),
         spec::<SketchAddLine>(),
@@ -820,6 +821,137 @@ impl Command for ParamSet {
                 None => Value::Null,
             };
             Ok(json!({ "value": val }))
+        })
+    }
+}
+
+/// Renames a parameter and every expression that refers to it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParamRename {
+    /// Existing parameter name or prefix.
+    pub from: String,
+    /// Replacement name or prefix.
+    pub to: String,
+    /// Rename every parameter beginning with `from`.
+    #[serde(default)]
+    pub prefix: bool,
+}
+
+impl Command for ParamRename {
+    const ID: &'static str = "param.rename";
+    const TITLE: &'static str = "Rename parameter";
+    const DESCRIPTION: &'static str = "Rename a parameter or prefix and update every expression that refers to it.";
+    const CATEGORY: Category = Category::Parameters;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        edit(s, ctx, "Rename parameter(s)", |doc, _| {
+            let renamed: Vec<(String, String)> = doc
+                .params
+                .iter()
+                .filter(|p| if self.prefix { p.name.starts_with(&self.from) } else { p.name == self.from })
+                .map(|p| {
+                    let new = if self.prefix {
+                        format!("{}{}", self.to, p.name.strip_prefix(&self.from).unwrap_or_default())
+                    } else {
+                        self.to.clone()
+                    };
+                    (p.name.clone(), new)
+                })
+                .collect();
+            if renamed.is_empty() {
+                return Err(CommandError::not_found(format!("no parameter matches '{}'", self.from)));
+            }
+            for (_, name) in &renamed {
+                params::validate_name(name).map_err(CommandError::args)?;
+            }
+            let sources: Vec<&str> = renamed.iter().map(|(old, _)| old.as_str()).collect();
+            let mut collisions: Vec<String> = renamed
+                .iter()
+                .filter(|(_, new)| doc.params.iter().any(|p| p.name == *new && !sources.contains(&p.name.as_str())))
+                .map(|(_, new)| new.clone())
+                .collect();
+            collisions.sort();
+            collisions.dedup();
+            if !collisions.is_empty() {
+                return Err(CommandError::args(format!(
+                    "target parameter name(s) already exist: {}",
+                    collisions.join(", ")
+                )));
+            }
+
+            let mut used: Vec<String> = doc.params.iter().map(|p| p.name.clone()).collect();
+            for p in &doc.params {
+                used.extend(p.expr.variables());
+            }
+            for feature in &doc.features {
+                used.extend(feature.kind.parameters());
+            }
+            used.extend(renamed.iter().map(|(_, new)| new.clone()));
+            let mut temporary = Vec::with_capacity(renamed.len());
+            for (i, _) in renamed.iter().enumerate() {
+                let mut name = format!("__gusset_rename_{i}");
+                while used.contains(&name) {
+                    name.push('_');
+                }
+                used.push(name.clone());
+                temporary.push(name);
+            }
+            let rewrite = |expr: &mut gusset_units::expr::Expr| {
+                for ((old, _), temp) in renamed.iter().zip(&temporary) {
+                    *expr = expr.rename_var(old, temp);
+                }
+                for ((_, new), temp) in renamed.iter().zip(&temporary) {
+                    *expr = expr.rename_var(temp, new);
+                }
+            };
+            for param in &mut doc.params {
+                rewrite(&mut param.expr);
+            }
+            // A generated gear sketch names its parameters `<key>_module` etc. (ADR 0018):
+            // they move together, and the key follows them.
+            let mut gear_keys: Vec<(usize, String)> = Vec::new();
+            for (i, f) in doc.features.iter().enumerate() {
+                let FeatureKind::Sketch(SketchDef { gear: Some(g), .. }) = &f.kind else { continue };
+                let mut new_key: Option<String> = None;
+                for input in gusset_doc::gear_inputs(g) {
+                    let Some((_, new)) = renamed.iter().find(|(old, _)| *old == input) else { continue };
+                    let word = input.get(g.len()..).unwrap_or_default();
+                    let key = new.strip_suffix(word).filter(|k| !k.is_empty());
+                    match (key, &new_key) {
+                        (Some(k), None) => new_key = Some(k.to_string()),
+                        (Some(k), Some(n)) if k == n => {}
+                        _ => {
+                            return Err(CommandError::args(format!(
+                                "'{input}' belongs to the gear {} and can only be renamed with its other parameters",
+                                f.name
+                            ))
+                            .hint(format!("rename them together: from: \"{g}_\", to: \"<new>_\", prefix: true")));
+                        }
+                    }
+                }
+                if let Some(k) = new_key {
+                    gear_keys.push((i, k));
+                }
+            }
+            for feature in &mut doc.features {
+                for expr in feature.kind.exprs_mut() {
+                    rewrite(expr);
+                }
+            }
+            for (i, key) in gear_keys {
+                if let Some(Feature { kind: FeatureKind::Sketch(SketchDef { gear: Some(g), .. }), .. }) =
+                    doc.features.get_mut(i)
+                {
+                    *g = key;
+                }
+            }
+            for (old, new) in &renamed {
+                if let Some(param) = doc.params.iter_mut().find(|p| p.name == *old) {
+                    param.name = new.clone();
+                }
+            }
+            Ok(json!({ "renamed": renamed }))
         })
     }
 }
