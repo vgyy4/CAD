@@ -17,10 +17,19 @@
 //! `m / cos(beta)` and pressure angle `atan(tan(a) / cos(beta))`; radial dimensions keep
 //! the normal module.
 
+use crate::error::{ErrorCode, EvalError};
+use gusset_units::params::{ParamValues, coerce};
+use gusset_units::{Dim, LengthUnit};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 pub const MIN_TEETH: u32 = 6;
 pub const MAX_TEETH: u32 = 500;
+
+/// Narrowest tip land a gear may have, in modules: below it the teeth count as pointed.
+pub const MIN_TIP_LAND: f64 = 0.1;
+/// Below this tip land (in modules) the generator warns: narrow tips chip easily,
+/// especially on hardened gears, where about 0.2 to 0.4 modules are usual.
+pub const NARROW_TIP_LAND: f64 = 0.25;
 
 /// A gear's numeric inputs: millimetres and radians.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,7 +47,9 @@ pub struct GearValues {
     pub fillet: f64,
     /// Helix angle at the pitch cylinder (0 = spur).
     pub helix: f64,
+    /// Not part of the transverse profile: [`Geometry::new`] does not look at it.
     pub face_width: f64,
+    /// Checked by [`check_bore`].
     pub bore: f64,
 }
 
@@ -83,7 +94,7 @@ pub struct Geometry {
 impl Geometry {
     /// Checks the inputs and works out the profile.
     pub fn new(v: &GearValues) -> Result<Geometry, GearError> {
-        let finite = [v.module, v.pressure_angle, v.shift, v.backlash, v.fillet, v.helix, v.face_width, v.bore];
+        let finite = [v.module, v.pressure_angle, v.shift, v.backlash, v.fillet, v.helix];
         if finite.iter().any(|x| !x.is_finite()) {
             return Err(err("a gear value is not a finite number", "check the parameters of the gear"));
         }
@@ -125,9 +136,6 @@ impl Geometry {
                 format!("backlash {} mm is out of range", v.backlash),
                 "use 0 to half a module; it thins each tooth by that much at the pitch circle",
             ));
-        }
-        if v.face_width <= 0.0 {
-            return Err(err("the face width must be positive", "give the gear a width such as 10 mm"));
         }
         let z = f64::from(v.teeth);
         let cb = v.helix.cos();
@@ -188,11 +196,13 @@ impl Geometry {
             junction_radius,
         };
         // The tooth must have a tip land, and the fillet must run cleanly down to the root.
-        let (_, tip_angle) = g.involute_polar(tip_roll);
-        if -tip_angle * tip_radius * 2.0 < 0.1 * v.module {
+        if g.tip_land() < MIN_TIP_LAND * v.module {
             return Err(err(
-                "the teeth come to a point at the tip",
-                "use a smaller profile shift, more backlash is not needed; try fewer shift or more teeth",
+                format!(
+                    "the teeth come to a point at the tip (tip land {:.3} mm, less than {MIN_TIP_LAND} x module)",
+                    g.tip_land().max(0.0)
+                ),
+                "use a smaller profile shift, less backlash or more teeth",
             ));
         }
         let mut last = g.fillet_polar(at);
@@ -215,6 +225,11 @@ impl Geometry {
             ));
         }
         Ok(g)
+    }
+
+    /// Width of the tooth tip on the tip circle (arc length, mm).
+    pub fn tip_land(&self) -> f64 {
+        -self.involute_polar(self.tip_roll).1 * self.tip_radius * 2.0
     }
 
     /// Polar position (radius, angle) of the lower flank where the involute has rolled
@@ -287,6 +302,18 @@ pub fn polar((r, th): (f64, f64)) -> [f64; 2] {
     [r * th.cos(), r * th.sin()]
 }
 
+/// Checks that the bore fits inside the root circle, leaving a quarter module of material.
+pub fn check_bore(v: &GearValues, g: &Geometry) -> Result<(), GearError> {
+    if !v.bore.is_finite() || v.bore < 0.0 || (v.bore > 0.0 && v.bore / 2.0 > g.root_radius - 0.25 * v.module) {
+        let max = 2.0 * (g.root_radius - 0.25 * v.module);
+        return Err(err(
+            format!("bore {} mm does not fit inside the root circle", v.bore),
+            format!("use a bore of 0 (solid) up to {:.2} mm", max.max(0.0)),
+        ));
+    }
+    Ok(())
+}
+
 /// Smallest tooth count without undercut for these settings (searching upwards).
 pub fn min_teeth(v: &GearValues) -> u32 {
     (MIN_TEETH..=MAX_TEETH).find(|&z| undercut_free(&GearValues { teeth: z, ..*v })).unwrap_or(MAX_TEETH)
@@ -335,4 +362,65 @@ pub fn exact_flank(g: &Geometry) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
     let fillet = (0..=FILLET_SAMPLES).map(|k| g.fillet_xy(g.psi_at(at(k, FILLET_SAMPLES)))).collect();
     let involute = (0..=INVOLUTE_SAMPLES).map(|k| g.involute_xy(g.roll_at(at(k, INVOLUTE_SAMPLES)))).collect();
     (fillet, involute)
+}
+
+/// The checks of [`Geometry::new`] and [`check_bore`] for the profile sketch `name` of a
+/// generated gear whose parameters start with `prefix` (the sketch's `gear:` key; the
+/// parameters are [`gusset_doc::gear_inputs`]). Runs on every rebuild of the sketch, so a
+/// parameter edit that makes the gear impossible (undercut, pointed teeth, a bore too
+/// large, ...) fails the sketch with the generator's message and hint instead of solving to
+/// a wrong profile (review v0.2 M1).
+///
+/// The helix angle is taken as the sketch sees it, from `cos(helix) = module /
+/// transverse_module`: a spur gear's sketch uses `transverse_module = module`.
+pub(crate) fn check_sketch(name: &str, prefix: &str, params: &ParamValues, units: LengthUnit) -> Result<(), EvalError> {
+    let fail = |msg: String, hint: String| EvalError::new(name, ErrorCode::InvalidGear, msg).with_hint(hint);
+    let gear_key = || format!("this sketch is a generated gear (gear: {prefix})");
+    let value = |what: &str, dim: Dim| -> Result<f64, EvalError> {
+        let p = format!("{prefix}_{what}");
+        match params.get(&p) {
+            None => Err(fail(
+                format!("the gear parameter '{p}' is missing"),
+                format!("{}: add the parameter again, or remove 'gear: {prefix}' from the sketch", gear_key()),
+            )),
+            Some(Err(e)) => Err(fail(
+                format!("the gear parameter '{p}' failed: {}", e.message),
+                e.hint.clone().unwrap_or_else(|| format!("fix '{p}'")),
+            )),
+            Some(Ok(q)) => coerce(*q, dim, units)
+                .map(|q| q.value)
+                .map_err(|m| fail(format!("the gear parameter '{p}': {m}"), gear_key())),
+        }
+    };
+    let teeth = value("teeth", Dim::NONE)?;
+    if !(teeth.is_finite() && teeth >= 0.0 && teeth.fract() == 0.0 && teeth <= f64::from(u32::MAX)) {
+        return Err(fail(
+            format!("{prefix}_teeth is {teeth}, not a whole number"),
+            "give the number of teeth, for example 24".into(),
+        ));
+    }
+    let module = value("module", Dim::LENGTH)?;
+    let transverse = value("transverse_module", Dim::LENGTH)?;
+    let ratio = module / transverse;
+    if !(ratio.is_finite() && ratio > 0.0 && ratio <= 1.0 + 1e-12) {
+        return Err(fail(
+            format!("{prefix}_transverse_module ({transverse} mm) does not fit {prefix}_module ({module} mm)"),
+            format!("{prefix}_transverse_module is {prefix}_module / cos(helix angle), at least the module"),
+        ));
+    }
+    // teeth is a whole number in u32 range (checked above).
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let v = GearValues {
+        module,
+        teeth: teeth as u32,
+        pressure_angle: value("pressure_angle", Dim::ANGLE)?,
+        shift: value("shift", Dim::NONE)?,
+        backlash: value("backlash", Dim::LENGTH)?,
+        fillet: value("fillet", Dim::NONE)?,
+        helix: libm::acos(ratio.min(1.0)),
+        face_width: 0.0,
+        bore: value("bore", Dim::LENGTH)?,
+    };
+    let g = Geometry::new(&v).map_err(|e| fail(e.message, e.hint))?;
+    check_bore(&v, &g).map_err(|e| fail(e.message, e.hint))
 }

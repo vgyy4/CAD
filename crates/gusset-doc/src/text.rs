@@ -120,6 +120,9 @@ fn print_feature(out: &mut String, f: &Feature) {
         FeatureKind::Sketch(s) => {
             args.push(format!("plane: {}", print_plane(&s.plane)));
             args.push(format!("next_id: {}", s.next_id));
+            if let Some(g) = &s.gear {
+                args.push(format!("gear: {g}"));
+            }
             print_common(f, &mut args);
             let _ = writeln!(out, "sketch {} ({}) {{", f.name, args.join(", "));
             for e in &s.entities {
@@ -1274,13 +1277,17 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
     let mut suppressed = false;
     let mut plane = None;
     let mut next_id = None;
+    let mut gear = None;
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "next_id" => next_id = Some(c.uint()?),
             "plane" => plane = Some(parse_plane(c)?),
-            other => return Err(unknown_arg(c, "sketch", other, "plane, next_id (optional), label, suppressed")),
+            "gear" => gear = Some(c.ident()?.to_string()),
+            other => {
+                return Err(unknown_arg(c, "sketch", other, "plane, next_id (optional), gear, label, suppressed"));
+            }
         }
         Ok(())
     })?;
@@ -1295,6 +1302,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         entities: Vec::new(),
         constraints: Vec::new(),
         patterns: Vec::new(),
+        gear,
     };
     let derive_next_id = next_id.is_none();
     let open_line = c.line;

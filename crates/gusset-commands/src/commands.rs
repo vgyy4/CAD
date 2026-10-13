@@ -895,6 +895,7 @@ impl Command for SketchCreate {
                             entities: vec![],
                             constraints: vec![],
                             patterns: vec![],
+                            gear: None,
                         }),
                     ),
                 );

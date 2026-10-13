@@ -497,9 +497,14 @@ parameters or text like anything else:
 * Gears mesh when their modules match, their centre distance is `m (z1 + z2) / 2` (`m / cos(helix)`
   for helical gears), helical pairs have opposite hands (helix angles of opposite sign) and an even
   tooth count turns half a pitch (`move_body` with an axis and angle `180 deg / z`).
-* A gear whose parameters cannot make a gear (too few teeth for the profile shift: undercut)
-  fails with the parameter that went wrong, e.g. `acos()` in `gear1_flank_roll`; give it more
-  teeth or a larger `gear1_shift`.
+* The profile sketch carries `gear: gear1` (`sketch Gear1_profile (plane: XY, next_id: 412, gear:
+  gear1)`): on every rebuild the gear's inputs (`gear1_module`, `_teeth`, `_pressure_angle`,
+  `_shift`, `_backlash`, `_fillet`, `_bore`, and `_transverse_module` for the helix) are checked as
+  `generate_gear` checks them. Parameters that cannot make a gear (undercut, pointed teeth, a
+  fillet that folds over, a bore larger than the root circle, a tooth count that is not whole)
+  fail the sketch with error code `invalid_gear` and the generator's hint, e.g. "use at least N
+  teeth, or a profile shift of about X or more". These parameters count as used by the sketch
+  (they cannot be deleted while it has the key). Remove `gear: ...` to turn the check off.
 
 ## Common mistakes
 

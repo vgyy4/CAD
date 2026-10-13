@@ -206,6 +206,14 @@ impl FeatureKind {
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
         }
+        // A generated gear sketch is checked with its gear's parameters (ADR 0018 §3).
+        if let FeatureKind::Sketch(SketchDef { gear: Some(g), .. }) = self {
+            for p in gear_inputs(g) {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
         out
     }
 }
@@ -259,6 +267,17 @@ pub struct SketchDef {
     pub constraints: Vec<SkConstraint>,
     /// Patterns of curves: copies derived after solving (ADR 0016 §4).
     pub patterns: Vec<SkPattern>,
+    /// Set on the profile sketch `generate.gear` writes: the parameter prefix of the gear
+    /// (`gear1` for `gear1_module`, ...). The evaluator then checks the gear's parameters
+    /// on every rebuild, as the generator does (ADR 0018 §3); see [`gear_inputs`].
+    pub gear: Option<String>,
+}
+
+/// The parameters a generated gear sketch with prefix `p` is checked with: the gear's
+/// inputs, and `<p>_transverse_module` for the helix angle as the sketch sees it.
+pub fn gear_inputs(p: &str) -> [String; 8] {
+    ["module", "teeth", "pressure_angle", "shift", "backlash", "fillet", "bore", "transverse_module"]
+        .map(|w| format!("{p}_{w}"))
 }
 
 #[derive(Debug, Clone, PartialEq)]

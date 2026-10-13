@@ -18,6 +18,8 @@ pub enum ErrorCode {
     EmptyResult,
     Unsupported,
     MissingBlob,
+    /// The parameters of a generated gear do not make a gear (ADR 0018 §3).
+    InvalidGear,
 }
 
 impl ErrorCode {
@@ -37,6 +39,7 @@ impl ErrorCode {
             ErrorCode::EmptyResult => "empty_result",
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::MissingBlob => "missing_blob",
+            ErrorCode::InvalidGear => "invalid_gear",
         }
     }
 }

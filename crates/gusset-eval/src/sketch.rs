@@ -178,6 +178,9 @@ pub(crate) fn solve_sketch(
     frame: Frame,
 ) -> Result<Solved, EvalError> {
     let err = |code, msg: String| EvalError::new(name, code, msg);
+    if let Some(prefix) = &def.gear {
+        crate::gear::check_sketch(name, prefix, params, units)?;
+    }
     let Built { s, back, cback, .. } = build(name, def, params, units)?;
     let r = sk::solve_continued(&s, &sk::SolveOptions::default());
     let names = |v: &[sk::EntityId]| v.iter().filter_map(|i| back.get(i).map(|s| (*s).to_string())).collect::<Vec<_>>();

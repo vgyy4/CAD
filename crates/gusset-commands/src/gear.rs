@@ -259,7 +259,7 @@ pub fn derived_params(nm: &Names, helical: bool) -> Vec<NewParam> {
         (
             n("flank_roll"),
             format!("acos({bd} / 2 / sqrt(({pd} / 2 - {dj}) ^ 2 + ({dj} / tan({ta})) ^ 2))"),
-            "where the involute starts (fails when the teeth would be undercut)",
+            "where the involute starts (above the base circle)",
         ),
         (n("tip_roll"), format!("acos({bd} / {td})"), "where the involute ends, at the tip circle"),
     ]
@@ -434,6 +434,7 @@ pub fn profile_sketch(nm: &Names, g: &Geometry, flank: &Flank, bore_radius: f64)
         entities: b.entities,
         constraints: b.constraints,
         patterns: vec![pattern],
+        gear: Some(nm.0.clone()),
     };
     Ok(GearSketch { def, region })
 }
