@@ -39,6 +39,15 @@ Phase 3 has started (see Next).
 - IGES import: OCCT reads IGES only from a file, so the sandboxed worker gets a
   Landlock read rule for one private temp file (ADR 0008 §4); in a worktree branch.
 
+## Done for v0.2 after its reviews (2026-10-13)
+- Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.
+- Dogfooding run 3 (docs/DOGFOODING.md): 14 of 15 findings fixed, the render edge
+  ticks (F3-15) remain. New: `param_rename`, horizontal/vertical distance and position
+  constraints, expression positions for circles and rectangles, orbit camera, paged
+  large results, cancel = no effect, gear rebuilds 4x faster.
+- Development: Codex offloading for simple tasks and the secret guard in CI and
+  pre-push (ADR 0021).
+
 ## Done since the milestone review (2026-10-11)
 - Security, storage, sandbox, MCP and GUI review fixes merged (docs/SECURITY_REVIEWS.md).
 - Standing "always allow" approvals (ADR 0012).

@@ -170,6 +170,21 @@ made the plane sign conventions checkable without reading the source. Missing na
 | F3-14 | low | `sketch_add_rectangle` marks `width` and `height` (numbers) required even when `width_expr`/`height_expr` are given; the first call with only the expressions failed `missing field width`. | Make the numbers optional when an expression is given. |
 | F3-15 | low | Render: small tick marks and an edge line continuing past the gusset corner on the base plate in `p6_gussets.png`; the default colours are dark grey on dark grey. A 56 KB `run` response (call 234 of the first agent's last session) and 30 KB `document_get_text` pages cost context. | Clip edge overlays at silhouette ends; cap or summarise very large `run` results. |
 
+### Status of the run 3 findings (2026-10-13)
+| ID | Status |
+|---|---|
+| F3-1 | fixed: geometry revisions unique per process (`render` regression test reproduces the panic) |
+| F3-2 | fixed: a rectangle with any `*_expr` gets its corner dimensioned (`at_x`/`at_y`) |
+| F3-3 | fixed: every edit that breaks the rebuild returns `committed_with_errors` and `undo_hint` |
+| F3-4 | fixed: a cancelled tool call is skipped if queued, undone if it was running |
+| F3-5 | fixed for edits (8-14 ms on the gear pair) and spur rebuilds (8.6 s -> 2.2 s); helical sweeps are OCCT-bound (see PERFORMANCE.md) |
+| F3-6 | fixed: `param_rename` with prefix mode (a gear's parameters move together) |
+| F3-7 | fixed: pattern/combine descriptions point to `feature_hole` |
+| F3-8 | fixed: `cx_expr`/`cy_expr`, `x_expr`/`y_expr`; new `h_distance`, `v_distance`, `at_x`, `at_y` constraints |
+| F3-9, F3-11 to F3-14 | fixed |
+| F3-10 | fixed: `azimuth`/`elevation` camera and the `iso_back` view |
+| F3-15 | large results are paged through `get_text`; the edge-overlay ticks are still open |
+
 Not seen in this run: crashes in the kernel, wrong volumes, mirror/pattern/combine/datum
 plane errors, or a confusing error from the new commands beyond the items above. Not
 exercised by part 6: `feature_move_body`, `pattern_circular`, `sketch_trim`,
