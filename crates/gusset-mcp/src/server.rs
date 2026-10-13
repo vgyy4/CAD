@@ -217,8 +217,10 @@ fn supports_form_elicitation(ctx: &RequestContext<RoleServer>) -> bool {
 
 /// A tool result as compact JSON text. Results are sent once, as text: no tool declares
 /// an output schema, so `structuredContent` would only duplicate the same JSON in the
-/// agent's context. Floats are rounded to 1e-6 (geometry is in mm) so they carry no
-/// noise like 7999.999999999998, and null fields are dropped.
+/// agent's context. Floats of magnitude 1 or more are rounded to 1e-6 (geometry is in
+/// mm) so they carry no noise like 7999.999999999998; smaller ones keep 9 significant
+/// digits, so small areas, errors and angles do not become 0 (review L4). Null fields
+/// are dropped.
 pub(crate) fn compact_result(mut v: Value) -> String {
     fn walk(v: &mut Value) {
         match v {
@@ -229,7 +231,14 @@ pub(crate) fn compact_result(mut v: Value) -> String {
             Value::Array(a) => a.iter_mut().for_each(walk),
             Value::Number(n) if n.is_f64() => {
                 if let Some(f) = n.as_f64() {
-                    let r = (f * 1e6).round() / 1e6;
+                    let r = if f.abs() >= 1.0 {
+                        (f * 1e6).round() / 1e6
+                    } else if f.abs() < 1e-12 {
+                        // Floating-point noise around zero.
+                        0.0
+                    } else {
+                        format!("{f:.8e}").parse().unwrap_or(f)
+                    };
                     let r = if r == 0.0 { 0.0 } else { r };
                     if r.is_finite()
                         && f.abs() < 1e12
@@ -1140,5 +1149,8 @@ mod size_tests {
     fn results_are_compact() {
         let s = compact_result(json!({"v": 7999.999999999998, "z": -5e-22, "none": null, "keep": [], "n": 3}));
         assert_eq!(s, r#"{"keep":[],"n":3,"v":8000.0,"z":0.0}"#);
+        // Small values keep 9 significant digits (review L4).
+        let s = compact_result(json!({"err": 4.123456789123e-7, "a": 0.000123456789123}));
+        assert_eq!(s, r#"{"a":0.000123456789,"err":4.12345679e-7}"#);
     }
 }
