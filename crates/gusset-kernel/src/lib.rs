@@ -123,6 +123,14 @@ pub fn sequential_boolean<K: Kernel + ?Sized>(k: &K, op: BoolOp, target: &Shape,
 pub trait Kernel: Send + Sync + Debug {
     fn name(&self) -> &'static str;
 
+    /// Changes whenever shapes made earlier became invalid: a kernel running in a worker
+    /// process returns its worker generation, which increases with every restart
+    /// (ADR 0022). Callers that cache shapes drop them when it changes. In-process
+    /// kernels never invalidate their shapes.
+    fn epoch(&self) -> u64 {
+        0
+    }
+
     /// Linear sweep of a planar profile along its normal.
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult>;
 

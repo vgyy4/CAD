@@ -37,7 +37,7 @@ use gusset_naming::{BodyNames, OpContext, Resolution, name_body};
 use gusset_units::params::{self, ParamValues, coerce};
 use gusset_units::{Dim, LengthUnit, Quantity};
 use sketch::Solved;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -200,6 +200,9 @@ pub struct Evaluation {
     /// one not finished on are [`ErrorCode::Cancelled`] failures, and nothing of them was
     /// cached. Do not keep or report such an evaluation as the document's state.
     pub cancelled: bool,
+    /// The kernel epoch ([`Kernel::epoch`]) the bodies' shapes belong to: an evaluation
+    /// whose epoch is no longer the kernel's holds shapes of a restarted kernel worker.
+    pub epoch: u64,
 }
 
 impl Evaluation {
@@ -264,7 +267,17 @@ pub struct Evaluator {
     max_bytes: u64,
     limits: EvalLimits,
     cancel: Arc<AtomicBool>,
+    /// Kernel epoch the cached states belong to.
+    epoch: u64,
+    /// Features that crashed the kernel, by step key (the feature and everything before
+    /// it), oldest first: not run again until something in that chain changes (ADR 0022).
+    crashes: VecDeque<([u8; 32], EvalError)>,
 }
+
+/// Remembered kernel crashes.
+const MAX_CRASH_MEMO: usize = 64;
+/// Rebuilds restarted after a crash in one evaluation (each skips one more feature).
+const MAX_CRASH_RESTARTS: usize = 4;
 
 impl Evaluator {
     pub fn new(kernel: Arc<dyn Kernel>) -> Self {
@@ -279,6 +292,17 @@ impl Evaluator {
             max_bytes: DEFAULT_CACHE_BYTES,
             limits: EvalLimits::default(),
             cancel: Arc::new(AtomicBool::new(false)),
+            epoch: 0,
+            crashes: VecDeque::new(),
+        }
+    }
+
+    /// Drops cached states whose shapes died with a kernel worker.
+    fn sync_epoch(&mut self) {
+        let now = self.kernel.epoch();
+        if now != self.epoch {
+            self.clear_cache();
+            self.epoch = now;
         }
     }
 
@@ -436,6 +460,20 @@ impl Evaluator {
 
     /// Evaluates `doc`, stopping before feature index `rollback` (if any).
     pub fn evaluate(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> Evaluation {
+        let mut restarts = 0;
+        loop {
+            self.sync_epoch();
+            let (e, crashed) = self.evaluate_pass(doc, rollback, blobs);
+            // A crash ended the worker and every shape of this pass: rebuild once more
+            // from the document, now skipping the feature that crashed (memoised).
+            if !crashed || restarts >= MAX_CRASH_RESTARTS {
+                return e;
+            }
+            restarts += 1;
+        }
+    }
+
+    fn evaluate_pass(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> (Evaluation, bool) {
         let params = params::evaluate(&doc.params);
         let mut key = *blake3::hash(format!("gusset-eval 1 {:?}", doc.units).as_bytes()).as_bytes();
         let mut state = Arc::new(State::default());
@@ -457,9 +495,38 @@ impl Evaluator {
                 continue;
             }
             let mut s = (*state).clone();
+            if let Some((_, err)) = self.crashes.iter().find(|(k, _)| *k == key) {
+                s.failed.insert(f.name.clone());
+                s.statuses.push(f.name.clone(), FeatureStatus::Failed(err.clone()));
+                state = Arc::new(s);
+                continue;
+            }
+            let epoch = self.kernel.epoch();
             if !self.is_cancelled() {
                 recomputed += 1;
                 self.apply(&mut s, f, doc.units, &params, blobs);
+            }
+            if !self.is_cancelled() && self.kernel.epoch() != epoch {
+                if let Some(FeatureStatus::Failed(e)) = s.statuses.to_vec().last().map(|(_, st)| st.clone())
+                    && e.code == ErrorCode::KernelCrashed
+                {
+                    self.crashes.push_back((key, e));
+                    while self.crashes.len() > MAX_CRASH_MEMO {
+                        self.crashes.pop_front();
+                    }
+                }
+                let crashed = Evaluation {
+                    params,
+                    statuses: s.statuses.to_vec(),
+                    sketches: BTreeMap::new(),
+                    planes: Vec::new(),
+                    bodies: Vec::new(),
+                    meshes: Vec::new(),
+                    recomputed,
+                    cancelled: false,
+                    epoch: self.kernel.epoch(),
+                };
+                return (crashed, true);
             }
             if self.is_cancelled() {
                 // The feature may have stopped part way: neither keep nor cache its state.
@@ -474,7 +541,7 @@ impl Evaluator {
         let sketches = state.solved.to_map().into_iter().map(|(n, s)| (n, s.result.clone())).collect();
         let mut statuses = state.statuses.to_vec();
         statuses.append(&mut rolled_back);
-        Evaluation {
+        let e = Evaluation {
             params,
             statuses,
             sketches,
@@ -483,7 +550,9 @@ impl Evaluator {
             meshes: state.meshes.clone(),
             recomputed,
             cancelled,
-        }
+            epoch: self.epoch,
+        };
+        (e, false)
     }
 
     fn apply(&self, s: &mut State, f: &Feature, units: LengthUnit, params: &ParamValues, blobs: &dyn BlobSource) {
@@ -803,6 +872,18 @@ fn eval_expr(
 }
 
 fn kernel_err(feature: &str, what: &str, ke: KernelError) -> EvalError {
+    if ke.kind == gusset_kernel::KernelErrorKind::Crashed {
+        // The app survived; the operation did not (ADR 0022 §2).
+        return EvalError::new(
+            feature,
+            ErrorCode::KernelCrashed,
+            format!("the geometry kernel crashed while building {feature} ({what}): {}", ke.message),
+        )
+        .with_hint(
+            "the rest of the model is rebuilt without it; change this feature's inputs \
+             (a smaller size, fewer copies, a simpler profile) and it is tried again",
+        );
+    }
     let mut e = EvalError::new(feature, ErrorCode::KernelFailure, format!("{what} failed: {}", ke.message));
     e.hint = ke.hint;
     e
@@ -973,6 +1054,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 mod tests;
 #[cfg(test)]
 mod tests_budget;
+#[cfg(test)]
+mod tests_crash;
 #[cfg(test)]
 mod tests_datum;
 #[cfg(test)]

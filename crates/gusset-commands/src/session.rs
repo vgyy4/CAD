@@ -276,6 +276,9 @@ impl Session {
     pub fn evaluate_branch(&mut self, branch: BranchId) -> Result<Arc<Evaluation>, CommandError> {
         let b = self.history.branch(branch).map_err(CommandError::history)?;
         let (node, rollback) = (b.head, b.rollback);
+        // Evaluations of an earlier kernel epoch hold shapes of a dead kernel worker.
+        let epoch = self.kernel().epoch();
+        self.cache.retain(|(_, _, e)| e.epoch == epoch);
         if let Some(i) = self.cache.iter().position(|(n, r, _)| *n == node && *r == rollback)
             && let Some(hit) = self.cache.remove(i)
         {

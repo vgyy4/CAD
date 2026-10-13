@@ -243,6 +243,10 @@ impl Kernel for RemoteKernel {
         self.name
     }
 
+    fn epoch(&self) -> u64 {
+        self.generation()
+    }
+
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
         self.op(&Request::Extrude(profile.clone(), *spec))
     }

@@ -24,6 +24,8 @@ pub enum ErrorCode {
     TooComplex,
     /// The rebuild was cancelled before this feature ran ([`crate::Evaluator::cancel_flag`]).
     Cancelled,
+    /// The geometry kernel's process died while building this feature (ADR 0022 §2).
+    KernelCrashed,
 }
 
 impl ErrorCode {
@@ -46,6 +48,7 @@ impl ErrorCode {
             ErrorCode::InvalidGear => "invalid_gear",
             ErrorCode::TooComplex => "too_complex",
             ErrorCode::Cancelled => "cancelled",
+            ErrorCode::KernelCrashed => "kernel_crashed",
         }
     }
 }
