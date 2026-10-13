@@ -45,6 +45,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Code-view text and unit expressions.
     write(out, "doc_text", "bracket.gus.txt", BRACKET.as_bytes())?;
     write(out, "doc_text", "minimal.gus.txt", b"gusset 1\nunits in\n\nparam w = 2 in / 3\n")?;
+    // Every complete example of grammar.md, and the extra v0.2 documents in seeds-src (body
+    // operations, face keys, holes, splines, sketch patterns, a generated helical gear; the
+    // test gusset-doc/tests/fuzz_seeds.rs keeps them valid and covering the grammar).
+    let mut block: Option<String> = None;
+    let mut n = 0;
+    for line in gusset_doc::TEXT_GRAMMAR.lines() {
+        match (&mut block, line.trim_end()) {
+            (None, "```gusset") => block = Some(String::new()),
+            (Some(_), "```") => {
+                if let Some(b) = block.take() {
+                    n += 1;
+                    write(out, "doc_text", &format!("grammar{n}.gus.txt"), b.as_bytes())?;
+                }
+            }
+            (Some(b), l) => {
+                b.push_str(l);
+                b.push('\n');
+            }
+            (None, _) => {}
+        }
+    }
+    let extra = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds-src/doc_text");
+    for entry in std::fs::read_dir(extra)? {
+        let path = entry?.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            write(out, "doc_text", name, &std::fs::read(&path)?)?;
+        }
+    }
     for (i, e) in ["width/2 + 0.5 in", "atan2(h, w) * 2", "30 deg", "-(1 + 2) ^ 3 ^ 2", "sqrt(4 mm^2)", "1e-7 m"]
         .iter()
         .enumerate()
