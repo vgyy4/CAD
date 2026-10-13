@@ -237,3 +237,18 @@ fn diagnostics_report_tier() {
     let o = r.gpu_diagnostics(Some(gusset_hw::QualityTier::High));
     assert!(o.tier_overridden && o.tier == gusset_hw::QualityTier::High);
 }
+
+/// Dogfooding F3-1: a fresh scene per frame (as the MCP server builds) reusing a mesh id
+/// with a larger mesh made the edge pass slice past the cached buffer and panic.
+#[test]
+fn fresh_scene_with_a_larger_mesh_under_the_same_id() {
+    let _g = serial();
+    let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
+    let mut small = Scene::new();
+    small.insert_mesh(MeshId(1), &demo::box_mesh([20.0, 20.0, 20.0])).expect("box");
+    let (_, s1) = r.render_rgba(&small, &camera(&small), SIZE).expect("render small");
+    let mut large = Scene::new();
+    large.insert_mesh(MeshId(1), &demo::cylinder_mesh(9.0, 24.0, 256)).expect("cylinder");
+    let (_, s2) = r.render_rgba(&large, &camera(&large), SIZE).expect("render large");
+    assert!(s2.triangles > s1.triangles && s2.edge_segments > s1.edge_segments);
+}

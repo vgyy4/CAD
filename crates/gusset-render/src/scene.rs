@@ -126,7 +126,15 @@ impl SceneMesh {
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     meshes: BTreeMap<MeshId, SceneMesh>,
-    next_rev: u64,
+}
+
+/// Geometry revisions are unique in the process, not per scene: GPU renderers cache
+/// uploads by (mesh id, revision), and callers that build a fresh scene per frame (the
+/// MCP server) reuse mesh ids. Per-scene counters restarted at 1, so a larger mesh hit
+/// the smaller cached buffers and the edge pass sliced past their end (dogfooding F3-1).
+fn next_geometry_rev() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Scene {
@@ -144,8 +152,7 @@ impl Scene {
     /// The mesh is invalid (see [`MeshError`]); the scene is unchanged.
     pub fn insert_mesh(&mut self, id: MeshId, mesh: &gusset_kernel::Mesh) -> Result<(), MeshError> {
         let data = MeshData::from_mesh(mesh)?;
-        self.next_rev += 1;
-        let rev = self.next_rev;
+        let rev = next_geometry_rev();
         match self.meshes.get_mut(&id) {
             Some(m) => {
                 m.data = data;
@@ -277,6 +284,18 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn revisions_are_unique_across_scenes() {
+        // Renderers cache uploads by (id, revision); fresh scenes must not repeat one.
+        let mut a = Scene::new();
+        a.insert_mesh(MeshId(1), &demo::box_mesh([1.0; 3])).expect("ok");
+        let mut b = Scene::new();
+        b.insert_mesh(MeshId(1), &demo::cylinder_mesh(1.0, 1.0, 64)).expect("ok");
+        let ra = a.mesh(MeshId(1)).expect("a").geometry_rev;
+        let rb = b.mesh(MeshId(1)).expect("b").geometry_rev;
+        assert_ne!(ra, rb);
+    }
 
     #[test]
     fn insert_replace_remove() {
