@@ -100,13 +100,18 @@ impl KernelProcess {
     fn reap(&mut self) -> String {
         // A worker that broke its stream on purpose has usually exited already; give it a
         // moment so its real exit status (signal, code) is reported rather than our kill.
+        let mut exited = false;
         for _ in 0..50 {
             if matches!(gusset_sandbox::has_exited(&mut self.child), Ok(true)) {
+                exited = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let mut g = lock(&self.guard);
+        // Outside Linux `has_exited` reaps the worker, after which its process group id may
+        // be reused: no group kill then (the worker starts no processes of its own).
+        g.reaped |= exited && !cfg!(target_os = "linux");
         g.kill();
         let _ = self.child.kill();
         let r = self.child.wait();
@@ -132,6 +137,14 @@ impl Transport for KernelProcess {
                 Err(e)
             }
         }
+    }
+
+    fn is_alive(&mut self) -> bool {
+        let exited = matches!(gusset_sandbox::has_exited(&mut self.child), Ok(true));
+        if exited && !cfg!(target_os = "linux") {
+            lock(&self.guard).reaped = true;
+        }
+        !exited
     }
 
     fn interrupter(&self) -> Option<Interrupt> {
@@ -188,38 +201,89 @@ pub fn exit_reason(status: ExitStatus) -> String {
     }
 }
 
+type SpawnReply = std::sync::mpsc::Sender<Result<KernelProcess, String>>;
+
 /// A [`Connect`] that starts the worker at `worker` with `memory_bytes` each time the
 /// kernel needs a new one.
+///
+/// Workers are started from one thread that lives as long as the connector: on Linux the
+/// sandbox ends a worker when the *thread* that started it exits (`PR_SET_PDEATHSIG`), so
+/// a worker started from a short-lived thread (a project's model thread) would be killed
+/// with it (review H1).
 #[must_use]
 pub fn connector(worker: PathBuf, memory_bytes: u64) -> Connect {
-    Box::new(move || KernelProcess::spawn(&worker, memory_bytes).map(|p| Box::new(p) as Box<dyn Transport>))
+    let (tx, rx) = std::sync::mpsc::channel::<SpawnReply>();
+    let path = worker.clone();
+    let spawner = std::thread::Builder::new().name("gusset-kernel-spawn".into()).spawn(move || {
+        while let Ok(reply) = rx.recv() {
+            let _ = reply.send(KernelProcess::spawn(&path, memory_bytes));
+        }
+    });
+    let tx = Mutex::new(spawner.is_ok().then_some(tx));
+    Box::new(move || {
+        let via_spawner = lock_any(&tx).as_ref().and_then(|tx| {
+            let (reply, result) = std::sync::mpsc::channel();
+            tx.send(reply).ok()?;
+            result.recv().ok()
+        });
+        let p = match via_spawner {
+            Some(r) => r?,
+            None => KernelProcess::spawn(&worker, memory_bytes)?,
+        };
+        Ok(Box::new(p) as Box<dyn Transport>)
+    })
+}
+
+fn lock_any<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Vets B-rep blobs in the app before the worker parses them, exactly as the in-process
 /// kernel does (ADR 0008 §4): trusted when this process wrote or validated them, else
 /// re-serialized by the sandboxed import worker first.
-#[derive(Debug, Clone)]
+///
+/// Blobs the kernel worker wrote may go back to it as they are, but they are not added to
+/// the app's trust list: the worker is a sandbox whose output the app never parses itself
+/// (review L3).
+#[derive(Debug)]
 pub struct OcctGate {
     import_worker: Option<PathBuf>,
+    worker_written: Mutex<std::collections::HashSet<[u8; 32]>>,
 }
+
+/// Most remembered worker-written blobs; the oldest are forgotten (then vetted again).
+const MAX_WORKER_WRITTEN: usize = 4096;
 
 impl OcctGate {
     /// With the import worker installed next to the current executable, if any.
     #[must_use]
     pub fn next_to_exe() -> OcctGate {
-        OcctGate { import_worker: gusset_worker::default_worker_path().filter(|p| p.is_file()) }
+        OcctGate {
+            import_worker: gusset_worker::default_worker_path().filter(|p| p.is_file()),
+            worker_written: Mutex::new(std::collections::HashSet::new()),
+        }
     }
 }
 
 impl NativeGate for OcctGate {
     fn written(&self, bytes: &[u8]) {
-        gusset_worker::trust::trust(bytes);
+        let mut set = lock_any(&self.worker_written);
+        if set.len() >= MAX_WORKER_WRITTEN {
+            set.clear();
+        }
+        set.insert(*blake3::hash(bytes).as_bytes());
     }
 
     fn vet<'a>(&self, bytes: &'a [u8]) -> gusset_kernel::KResult<Cow<'a, [u8]>> {
+        if lock_any(&self.worker_written).contains(blake3::hash(bytes).as_bytes()) {
+            return Ok(Cow::Borrowed(bytes));
+        }
         gusset_kernel_occt::vet_native(self.import_worker.as_deref(), bytes)
     }
 }
+
+/// How long the first start of the worker may take before the app falls back.
+const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Environment variable that runs the kernel in the app process instead of the worker
 /// (debugging, or a platform where the worker cannot start). Any non-empty value.
@@ -243,7 +307,16 @@ pub fn production_kernel() -> Result<(Arc<dyn Kernel>, Option<String>), String> 
                 let ram = gusset_hw::CpuInfo::detect().total_ram_bytes;
                 let remote = RemoteKernel::new("occt", connector(worker, gusset_hw::budgets::kernel_worker_bytes(ram)))
                     .with_native_gate(Box::new(OcctGate::next_to_exe()));
-                match remote.ping() {
+                // A worker that hangs on start must not hang the app: stop it after a while.
+                let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let timer = Arc::clone(&flag);
+                let _ = std::thread::Builder::new().name("gusset-kernel-ping".into()).spawn(move || {
+                    std::thread::sleep(PING_TIMEOUT);
+                    timer.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+                let pinged = gusset_kernel::cancel::scope(&flag, || remote.ping());
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                match pinged {
                     Ok(()) => return Ok((Arc::new(remote), None)),
                     Err(e) => format!("the kernel worker did not start: {}", e.message),
                 }

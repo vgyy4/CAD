@@ -207,6 +207,9 @@ pub struct Evaluation {
     /// one not finished on are [`ErrorCode::Cancelled`] failures, and nothing of them was
     /// cached. Do not keep or report such an evaluation as the document's state.
     pub cancelled: bool,
+    /// The result holds a failure that may not repeat (the kernel worker could not start,
+    /// or kept crashing): it is not cached here, and callers should not cache it either.
+    pub transient: bool,
     /// The kernel epoch ([`Kernel::epoch`]) the bodies' shapes belong to: an evaluation
     /// whose epoch is no longer the kernel's holds shapes of a restarted kernel worker.
     pub epoch: u64,
@@ -309,8 +312,12 @@ pub struct Evaluator {
 
 /// Remembered kernel crashes.
 const MAX_CRASH_MEMO: usize = 64;
-/// Rebuilds restarted after a crash in one evaluation (each skips one more feature).
-const MAX_CRASH_RESTARTS: usize = 4;
+/// Rebuilds restarted after a crash in one evaluation. Each restart memoises one more
+/// crashing feature and skips it, so this only bounds a document with many of them.
+const MAX_CRASH_RESTARTS: usize = 32;
+
+const CRASH_HINT: &str = "the rest of the model is rebuilt without it; change this feature's inputs \
+                          (a smaller size, fewer copies, a simpler profile) and it is tried again";
 
 impl Evaluator {
     pub fn new(kernel: Arc<dyn Kernel>) -> Self {
@@ -394,6 +401,12 @@ impl Evaluator {
 
     pub fn kernel(&self) -> &Arc<dyn Kernel> {
         &self.kernel
+    }
+
+    /// Forgets the features remembered as crashing the kernel, so the next evaluation tries
+    /// them again (a crash may have come from memory pressure or an outside kill).
+    pub fn forget_crashes(&mut self) {
+        self.crashes.clear();
     }
 
     pub fn clear_cache(&mut self) {
@@ -530,6 +543,7 @@ impl Evaluator {
         let e = gusset_kernel::cancel::scope(&cancel, || {
             let mut restarts = 0;
             loop {
+                self.kernel.probe();
                 self.sync_epoch();
                 let (e, crashed) = self.evaluate_pass(doc, rollback, blobs);
                 // A crash ended the worker and every shape of this pass: rebuild once more
@@ -551,6 +565,8 @@ impl Evaluator {
         let mut recomputed = 0;
         let mut rolled_back = Vec::new();
         let mut cancelled = false;
+        // Set by a kernel failure that may not repeat: nothing after it is cached.
+        let mut transient = false;
         // Dependency keys (ADR 0024): a feature's own text and parameters plus the keys of
         // the features it depends on, so what it did can be reused when only features it
         // does not depend on changed.
@@ -597,14 +613,26 @@ impl Evaluator {
                 set_progress(&self.progress, Some(Progress { feature: f.name.clone(), index, total }));
                 self.apply(&mut s, f, doc.units, &params, blobs);
             }
+            let crash_status = match s.statuses.newest() {
+                Some((n, FeatureStatus::Failed(e))) if n == f.name && e.code == ErrorCode::KernelCrashed => {
+                    Some(e.clone())
+                }
+                _ => None,
+            };
             if !self.is_cancelled() && self.kernel.epoch() != epoch {
-                if let Some(FeatureStatus::Failed(e)) = s.statuses.to_vec().last().map(|(_, st)| st.clone())
-                    && e.code == ErrorCode::KernelCrashed
-                {
-                    self.crashes.push_back((dkey, e));
-                    while self.crashes.len() > MAX_CRASH_MEMO {
-                        self.crashes.pop_front();
-                    }
+                // Always memoised, whatever error the feature turned the crash into (a
+                // fillet reports a too-large radius, review H2): the restart must skip it.
+                let e = crash_status.unwrap_or_else(|| {
+                    EvalError::new(
+                        &f.name,
+                        ErrorCode::KernelCrashed,
+                        format!("the geometry kernel crashed while building {}", f.name),
+                    )
+                    .with_hint(CRASH_HINT)
+                });
+                self.crashes.push_back((dkey, e));
+                while self.crashes.len() > MAX_CRASH_MEMO {
+                    self.crashes.pop_front();
                 }
                 let crashed = Evaluation {
                     params,
@@ -615,10 +643,15 @@ impl Evaluator {
                     meshes: Vec::new(),
                     recomputed,
                     cancelled: false,
+                    transient: true,
                     epoch: self.kernel.epoch(),
                 };
                 return (crashed, true);
             }
+            // A crash without a new worker generation: the worker could not be started
+            // (review M2). It may work next time, so neither this nor anything after it
+            // is cached.
+            transient |= crash_status.is_some();
             if self.is_cancelled() {
                 // The feature may have stopped part way: neither keep nor cache its state.
                 cancelled = true;
@@ -626,10 +659,12 @@ impl Evaluator {
                 continue;
             }
             let st = Arc::new(s);
-            if let Some(d) = delta::Delta::diff(&state, &st, &f.name) {
-                self.remember_delta(dkey, d);
+            if !transient {
+                if let Some(d) = delta::Delta::diff(&state, &st, &f.name) {
+                    self.remember_delta(dkey, d);
+                }
+                self.remember(key, st.clone());
             }
-            self.remember(key, st.clone());
             state = st;
         }
         let sketches = state.solved.to_map().into_iter().map(|(n, s)| (n, s.result.clone())).collect();
@@ -644,6 +679,7 @@ impl Evaluator {
             meshes: state.meshes.clone(),
             recomputed,
             cancelled,
+            transient,
             epoch: self.epoch,
         };
         (e, false)
@@ -989,10 +1025,7 @@ fn kernel_err(feature: &str, what: &str, ke: KernelError) -> EvalError {
             ErrorCode::KernelCrashed,
             format!("the geometry kernel crashed while building {feature} ({what}): {}", ke.message),
         )
-        .with_hint(
-            "the rest of the model is rebuilt without it; change this feature's inputs \
-             (a smaller size, fewer copies, a simpler profile) and it is tried again",
-        );
+        .with_hint(CRASH_HINT);
     }
     let mut e = EvalError::new(feature, ErrorCode::KernelFailure, format!("{what} failed: {}", ke.message));
     e.hint = ke.hint;

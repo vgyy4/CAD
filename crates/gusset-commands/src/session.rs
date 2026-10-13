@@ -273,6 +273,14 @@ impl Session {
         self.evaluator.cancel_flag()
     }
 
+    /// Drops every cached result and remembered kernel crash, so the next evaluation
+    /// builds everything again ("Rebuild all").
+    pub fn forget_results(&mut self) {
+        self.evaluator.forget_crashes();
+        self.evaluator.clear_cache();
+        self.cache.clear();
+    }
+
     /// The running rebuild's progress ([`gusset_eval::Evaluator::progress_cell`]).
     #[must_use]
     pub fn rebuild_progress_cell(&self) -> ProgressCell {
@@ -284,6 +292,7 @@ impl Session {
         let b = self.history.branch(branch).map_err(CommandError::history)?;
         let (node, rollback) = (b.head, b.rollback);
         // Evaluations of an earlier kernel epoch hold shapes of a dead kernel worker.
+        self.kernel().probe();
         let epoch = self.kernel().epoch();
         self.cache.retain(|(_, _, e)| e.epoch == epoch);
         if let Some(i) = self.cache.iter().position(|(n, r, _)| *n == node && *r == rollback)
@@ -383,7 +392,7 @@ impl Session {
     }
 
     fn remember_eval(&mut self, node: NodeId, rollback: Option<usize>, e: Arc<Evaluation>) {
-        if e.cancelled {
+        if e.cancelled || e.transient {
             return;
         }
         self.cache.retain(|(n, r, _)| !(*n == node && *r == rollback));

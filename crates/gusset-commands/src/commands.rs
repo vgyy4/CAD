@@ -78,6 +78,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<BranchRestore>(),
         spec::<NodeStar>(),
         spec::<QueryModel>(),
+        spec::<ModelRebuild>(),
         spec::<QuerySketch>(),
         spec::<QueryBody>(),
         spec::<ExportStep>(),
@@ -2509,6 +2510,24 @@ impl Command for NodeStar {
 }
 
 // ------------------------------------------------------------------ queries
+
+/// Rebuild everything from scratch, retrying features remembered as crashing the kernel.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRebuild {}
+
+impl Command for ModelRebuild {
+    const ID: &'static str = "model.rebuild";
+    const TITLE: &'static str = "Rebuild all";
+    const DESCRIPTION: &'static str = "Rebuild the whole model from scratch, also retrying features that crashed the geometry kernel before (they are otherwise skipped until edited). Slow on big models; normal edits rebuild on their own.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        s.forget_results();
+        let ev = s.evaluate(&ctx.actor)?;
+        Ok(rebuild_report(&ev))
+    }
+}
 
 /// Feature tree, parameters, statuses and bodies of your current branch.
 #[derive(Debug, Deserialize, JsonSchema)]

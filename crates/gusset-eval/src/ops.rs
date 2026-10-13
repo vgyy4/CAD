@@ -231,7 +231,9 @@ impl Evaluator {
             }
             Err(ke) => ke,
         };
-        if tools.len() < 2 {
+        // After a crash every shape is gone: trying the tools one by one would only report
+        // the stale target instead of the crash (review L8).
+        if tools.len() < 2 || first.kind == gusset_kernel::KernelErrorKind::Crashed {
             return Err(on_error(if tools.is_empty() { None } else { Some(0) }, first));
         }
         // Find the tool that fails (or, if the kernel copes one tool at a time, use that).

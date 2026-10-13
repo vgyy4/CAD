@@ -82,6 +82,18 @@ pub const TEXT_GRAMMAR_URI: &str = "gusset://docs/text-grammar";
 /// Key of the approval request inside a 2026-07-28 `input_required` result.
 const APPROVAL_INPUT: &str = "approval";
 
+fn deadline_error(id: &str, limit: Duration) -> CommandError {
+    CommandError::new(
+        "deadline_exceeded",
+        format!(
+            "'{id}' did not finish within {} s and was stopped; a model edit it made was undone, \
+             other changes (undo/redo, branches) may remain: check with query_model",
+            limit.as_secs()
+        ),
+    )
+    .hint("simplify the model or the request (fewer pattern instances, holes or faces), or split it")
+}
+
 /// Longest a tool call may run, from queueing to result, before it is stopped and undone
 /// (ADR 0022 §3): the kernel worker is killed, so even one endless operation ends. Waiting
 /// for the user's approval is not counted.
@@ -676,11 +688,7 @@ impl GussetMcp {
         // its changes.
         match tokio::time::timeout(limit, self.shared.host.call_async(ctx, id, args)).await {
             Ok(r) => r,
-            Err(_) => Err(CommandError::new(
-                "deadline_exceeded",
-                format!("'{id}' did not finish within {} s and was stopped; it has no effect", limit.as_secs()),
-            )
-            .hint("simplify the model or the request (fewer pattern instances, holes or faces), or split it")),
+            Err(_) => Err(deadline_error(id, limit)),
         }
     }
 
@@ -858,38 +866,38 @@ impl GussetMcp {
             return self.err_result(&agent, &e);
         };
         let actor = Actor::Agent(agent.clone());
-        let scene = self
-            .shared
-            .host
-            .exec_async(move |s, _| -> Result<RenderScene, CommandError> {
-                let ev = s.evaluate(&actor)?;
-                let k = s.kernel().clone();
-                let mut bodies = Vec::new();
-                for b in &ev.bodies {
-                    let mesh = k
-                        .tessellate(&b.shape, &gusset_kernel::TessellationParams::default())
-                        .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-                    bodies.push(RenderBody {
-                        name: b.name.clone(),
-                        mesh,
-                        face_names: b.names.faces.iter().map(ToString::to_string).collect(),
-                        edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
-                    });
-                }
-                // Reference meshes (imported STL/3MF/OBJ) are drawn too; they have no
-                // persistent face or edge names.
-                for m in &ev.meshes {
-                    bodies.push(RenderBody {
-                        name: m.name.clone(),
-                        mesh: m.mesh.clone(),
-                        face_names: Vec::new(),
-                        edge_names: Vec::new(),
-                    });
-                }
-                Ok(RenderScene { bodies })
-            })
-            .await
-            .and_then(|r| r);
+        let limit = self.shared.request_deadline();
+        let job = self.shared.host.exec_async_stoppable(move |s, _| -> Result<RenderScene, CommandError> {
+            let ev = s.evaluate(&actor)?;
+            let k = s.kernel().clone();
+            let mut bodies = Vec::new();
+            for b in &ev.bodies {
+                let mesh = k
+                    .tessellate(&b.shape, &gusset_kernel::TessellationParams::default())
+                    .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                bodies.push(RenderBody {
+                    name: b.name.clone(),
+                    mesh,
+                    face_names: b.names.faces.iter().map(ToString::to_string).collect(),
+                    edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
+                });
+            }
+            // Reference meshes (imported STL/3MF/OBJ) are drawn too; they have no
+            // persistent face or edge names.
+            for m in &ev.meshes {
+                bodies.push(RenderBody {
+                    name: m.name.clone(),
+                    mesh: m.mesh.clone(),
+                    face_names: Vec::new(),
+                    edge_names: Vec::new(),
+                });
+            }
+            Ok(RenderScene { bodies })
+        });
+        let scene = match tokio::time::timeout(limit, job).await {
+            Ok(r) => r.and_then(|r| r),
+            Err(_) => Err(deadline_error("render_view", limit)),
+        };
         let scene = match scene {
             Ok(s) => s,
             Err(e) => return self.err_result(&agent, &e),

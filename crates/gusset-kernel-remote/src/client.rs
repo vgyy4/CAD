@@ -13,7 +13,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How a request reaches the worker and its reply comes back.
 pub trait Transport: Send + std::fmt::Debug {
@@ -28,6 +28,11 @@ pub trait Transport: Send + std::fmt::Debug {
     /// worker (the call then fails), or `None` when calls cannot be interrupted.
     fn interrupter(&self) -> Option<Interrupt> {
         None
+    }
+
+    /// Whether the worker still runs (checked between calls, without a request).
+    fn is_alive(&mut self) -> bool {
+        true
     }
 }
 
@@ -48,17 +53,24 @@ struct WatchState {
     call: Option<(Arc<AtomicBool>, Interrupt)>,
     /// The watched call was interrupted.
     fired: bool,
+    /// When the watched call's flag was first seen set.
+    seen: Option<Instant>,
     started: bool,
     closed: bool,
 }
 
 const WATCH_POLL: Duration = Duration::from_millis(10);
+/// How long a call may go on after its cancel flag was set before the worker is killed
+/// (ADR 0022 §3): a short call finishes, the caller stops at its next check, and the
+/// worker and its shapes survive (review M1).
+pub const CANCEL_GRACE: Duration = Duration::from_millis(200);
 
 impl Watch {
     fn begin(self: &Arc<Watch>, flag: Arc<AtomicBool>, interrupt: Interrupt) {
         let mut st = lock(&self.state);
         st.call = Some((flag, interrupt));
         st.fired = false;
+        st.seen = None;
         if !st.started {
             let me = Arc::clone(self);
             st.started = std::thread::Builder::new().name("gusset-kernel-watch".into()).spawn(move || me.run()).is_ok();
@@ -85,8 +97,12 @@ impl Watch {
                 None => false,
                 Some((flag, interrupt)) => {
                     if !st.fired && flag.load(Ordering::SeqCst) {
-                        interrupt();
-                        st.fired = true;
+                        let interrupt = interrupt.clone();
+                        let seen = *st.seen.get_or_insert_with(Instant::now);
+                        if seen.elapsed() >= CANCEL_GRACE {
+                            interrupt();
+                            st.fired = true;
+                        }
                     }
                     true
                 }
@@ -278,16 +294,18 @@ impl RemoteKernel {
         }
         let generation = link.generation;
         let refs = Refs { generation, frees: &self.frees };
+        let payload = req.encode(&refs).map_err(|e| {
+            if e.0 == STALE { crashed(STALE.into()).with_hint("rebuild the model") } else { KernelError::from(e) }
+        })?;
         // Frees of this generation ride along first; older ones died with their worker.
+        // Taken only once the request is ready, so a request that cannot be sent does
+        // not lose them (review L1).
         let ids: Vec<u64> = {
             let mut f = lock(&self.frees);
             let mine = f.iter().filter(|(g, _)| *g == generation).map(|(_, id)| *id).collect();
             f.clear();
             mine
         };
-        let payload = req.encode(&refs).map_err(|e| {
-            if e.0 == STALE { crashed(STALE.into()).with_hint("rebuild the model") } else { KernelError::from(e) }
-        })?;
         let cancel = gusset_kernel::cancel::current();
         let send = |link: &mut Link, payload: &[u8]| -> KResult<Vec<u8>> {
             if cancel.as_ref().is_some_and(|f| f.load(Ordering::SeqCst)) {
@@ -332,7 +350,7 @@ impl RemoteKernel {
             Reply::decode(&reply, &refs).map_err(KernelError::from)??;
         }
         let reply = send(&mut link, &payload)?;
-        Reply::decode(&reply, &refs).map_err(KernelError::from)?
+        Reply::decode(&reply, &refs).map_err(KernelError::from)?.map_err(capped)
     }
 
     fn op(&self, req: &Request) -> KResult<OpResult> {
@@ -357,6 +375,40 @@ impl RemoteKernel {
     }
 }
 
+/// A mesh from the worker is checked before the app uses it (review L9): indices inside
+/// the vertices, normals per vertex, face ranges inside the triangles and in order.
+fn check_mesh(m: Mesh) -> KResult<Mesh> {
+    let vertices = m.positions.len();
+    let triangles = u32::try_from(m.indices.len() / 3).unwrap_or(u32::MAX);
+    let ok = m.indices.len().is_multiple_of(3)
+        && (m.normals.is_empty() || m.normals.len() == vertices)
+        && m.indices.iter().all(|&i| (i as usize) < vertices)
+        && m.face_ranges.iter().all(|r| r.start <= r.end && r.end <= triangles);
+    if ok {
+        Ok(m)
+    } else {
+        Err(KernelError::new(KernelErrorKind::Internal, "the geometry kernel returned a malformed mesh"))
+    }
+}
+
+/// Error text from the worker reaches users and agents: bounded, so a misbehaving
+/// worker cannot flood them (review N5).
+fn capped(mut e: KernelError) -> KernelError {
+    const MAX: usize = 1000;
+    let cut = |t: &mut String| {
+        if t.len() > MAX {
+            let end = (0..=MAX).rev().find(|&i| t.is_char_boundary(i)).unwrap_or(0);
+            t.truncate(end);
+            t.push('…');
+        }
+    };
+    cut(&mut e.message);
+    if let Some(h) = e.hint.as_mut() {
+        cut(h);
+    }
+    e
+}
+
 fn stopped() -> KernelError {
     KernelError::new(KernelErrorKind::Cancelled, "stopped on request")
 }
@@ -376,6 +428,16 @@ impl Kernel for RemoteKernel {
 
     fn epoch(&self) -> u64 {
         self.generation()
+    }
+
+    fn probe(&self) {
+        let mut link = lock(&self.link);
+        if link.transport.as_mut().is_some_and(|t| !t.is_alive()) {
+            // Ended while idle (killed from outside, out of memory): its shapes are gone,
+            // but no call caused it.
+            link.transport = None;
+            link.generation += 1;
+        }
     }
 
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
@@ -445,7 +507,7 @@ impl Kernel for RemoteKernel {
 
     fn tessellate(&self, shape: &Shape, params: &TessellationParams) -> KResult<Mesh> {
         match self.call(&Request::Tessellate(shape.clone(), *params))? {
-            Reply::Mesh(m) => Ok(m),
+            Reply::Mesh(m) => check_mesh(m),
             _ => Err(unexpected()),
         }
     }

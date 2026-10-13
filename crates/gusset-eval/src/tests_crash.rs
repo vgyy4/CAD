@@ -35,6 +35,10 @@ struct CrashingKernel {
     /// The evaluator's progress, and what it said at each extrude.
     progress: std::sync::OnceLock<ProgressCell>,
     seen: std::sync::Mutex<Vec<Option<Progress>>>,
+    /// Report crashes as an ordinary failure (as a fillet's "radius too large" mapping does).
+    disguise: bool,
+    /// Calls left that fail like a worker that cannot start (Crashed, same epoch).
+    start_failures: AtomicUsize,
 }
 
 impl CrashingKernel {
@@ -46,6 +50,8 @@ impl CrashingKernel {
             stops: AtomicUsize::new(0),
             progress: std::sync::OnceLock::new(),
             seen: std::sync::Mutex::new(Vec::new()),
+            disguise: false,
+            start_failures: AtomicUsize::new(0),
         }
     }
 }
@@ -62,9 +68,16 @@ impl Kernel for CrashingKernel {
             let now = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
             self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(now);
         }
+        if self.start_failures.load(Ordering::SeqCst) > 0 {
+            self.start_failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(KernelError::new(KernelErrorKind::Crashed, "could not start the geometry kernel: EAGAIN"));
+        }
         if (spec.distance - self.crash_at).abs() < 1e-9 {
             self.crashes.fetch_add(1, Ordering::SeqCst);
             self.epoch.fetch_add(1, Ordering::SeqCst);
+            if self.disguise {
+                return Err(KernelError::new(KernelErrorKind::OperationFailed, "radius too large"));
+            }
             return Err(KernelError::new(
                 KernelErrorKind::Crashed,
                 "the geometry kernel stopped: crashed (segmentation fault)",
@@ -181,4 +194,28 @@ fn progress_names_the_feature_being_built_and_clears_at_the_end() {
     let names: Vec<_> = seen.iter().map(|p| p.as_ref().map(|p| (p.feature.as_str(), p.index, p.total))).collect();
     assert_eq!(names, [Some(("E1", 2, 4)), Some(("E2", 3, 4)), Some(("E3", 4, 4))]);
     assert_eq!(*ev.progress_cell().lock().unwrap_or_else(std::sync::PoisonError::into_inner), None);
+}
+
+#[test]
+fn a_crash_reported_as_another_error_is_still_memoised() {
+    let kernel = Arc::new(CrashingKernel { disguise: true, ..CrashingKernel::new(7.0) });
+    let mut ev = Evaluator::new(kernel.clone());
+    let r = ev.evaluate(&doc("7 mm"), None, &());
+    assert!(matches!(r.status("E2"), Some(FeatureStatus::Failed(e)) if e.code == ErrorCode::KernelCrashed));
+    assert!(r.body("E1").is_some() && r.body("E3").is_some(), "the model must not vanish");
+    assert_eq!(kernel.crashes.load(Ordering::SeqCst), 1, "one crash, then skipped");
+}
+
+#[test]
+fn a_worker_that_cannot_start_is_not_cached_as_a_failure() {
+    let kernel = Arc::new(CrashingKernel::new(-1.0));
+    kernel.start_failures.store(1, Ordering::SeqCst);
+    let mut ev = Evaluator::new(kernel.clone());
+    let d = doc("4 mm");
+    let r = ev.evaluate(&d, None, &());
+    assert!(r.transient);
+    assert!(matches!(r.status("E1"), Some(FeatureStatus::Failed(e)) if e.code == ErrorCode::KernelCrashed));
+    // The worker starts now: nothing of the failed pass was kept.
+    let r = ev.evaluate(&d, None, &());
+    assert!(!r.transient && r.errors().is_empty(), "{:?}", r.errors());
 }

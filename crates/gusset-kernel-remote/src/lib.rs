@@ -14,8 +14,8 @@ mod frame;
 mod proto;
 mod server;
 
-pub use client::{Connect, Interrupt, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError};
-pub use frame::MAX_FRAME;
+pub use client::{CANCEL_GRACE, Connect, Interrupt, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError};
+pub use frame::{MAX_FRAME, MAX_REPLY};
 pub use proto::{Fault, VERSION};
 pub use server::Server;
 
@@ -38,7 +38,7 @@ impl<W: Write + Send + std::fmt::Debug, R: Read + Send + std::fmt::Debug> Transp
     fn call(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
         let died = |e: std::io::Error| TransportError::Died { reason: e.to_string() };
         frame::write_frame(&mut self.to_worker, frame::REQUEST_MAGIC, request).map_err(died)?;
-        match frame::read_frame(&mut self.from_worker, frame::RESPONSE_MAGIC) {
+        match frame::read_frame(&mut self.from_worker, frame::RESPONSE_MAGIC, frame::MAX_REPLY) {
             Ok(Some(reply)) => Ok(reply),
             Ok(None) => Err(TransportError::Died { reason: "the worker closed its output".into() }),
             Err(e) => Err(died(e)),

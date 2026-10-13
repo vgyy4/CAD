@@ -1697,6 +1697,7 @@ dependencies = [
 name = "gusset-kernel-worker"
 version = "0.1.0-mvp"
 dependencies = [
+ "blake3",
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",

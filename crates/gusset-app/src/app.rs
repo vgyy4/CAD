@@ -24,7 +24,7 @@ use gusset_commands::{CmdCtx, CommandError, Session, registry};
 use gusset_eval::Evaluation;
 use gusset_history::{Actor, History, NodeId};
 use gusset_host::{Host, HostEvent, HostHandle};
-use gusset_kernel::{Kernel, TessellationParams};
+use gusset_kernel::{Kernel, KernelErrorKind, TessellationParams};
 use gusset_project::settings::{SaveAction, SaveScheduler, Settings};
 use gusset_project::{OpenReport, PendingRecovery, Project, SnapshotWrite};
 use gusset_store::paths::DataDirs;
@@ -2087,21 +2087,27 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     let eval = s.evaluate(&Actor::User)?;
     let kernel = s.kernel().clone();
     let tp = TessellationParams::default();
-    let meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = eval
-        .bodies
-        .iter()
-        .filter_map(|body| {
-            let mesh = kernel.tessellate(&body.shape, &tp).ok()?;
-            let info = BodyInfo {
-                name: body.name.clone(),
-                face_names: body.names.faces.iter().map(ToString::to_string).collect(),
-                edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
-            };
-            Some((info, mesh))
-        })
-        .collect();
+    let mut meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = Vec::with_capacity(eval.bodies.len());
+    for body in &eval.bodies {
+        let mesh = match kernel.tessellate(&body.shape, &tp) {
+            Ok(m) => m,
+            // The kernel worker crashed or was stopped: the other bodies' shapes went with
+            // it. Keep the scene on screen and say why (review H3).
+            Err(e) if matches!(e.kind, KernelErrorKind::Crashed | KernelErrorKind::Cancelled) => {
+                let code = if e.kind == KernelErrorKind::Crashed { "kernel_crashed" } else { "cancelled" };
+                return Err(CommandError::new(code, format!("showing {} failed: {}", body.name, e.message))
+                    .hint("the view keeps the last picture; edit or rebuild the model to try again"));
+            }
+            Err(_) => continue,
+        };
+        let info = BodyInfo {
+            name: body.name.clone(),
+            face_names: body.names.faces.iter().map(ToString::to_string).collect(),
+            edge_names: body.names.edges.iter().map(ToString::to_string).collect(),
+        };
+        meshes.push((info, mesh));
+    }
     // Imported reference meshes (STL/3MF/OBJ) are drawn and pickable as one face each.
-    let mut meshes = meshes;
     for m in &eval.meshes {
         let mut mesh = m.mesh.clone();
         if mesh.face_ranges.is_empty() {

@@ -72,6 +72,12 @@ the model shows again, without the failing feature.
   OCCT's `Standard_OutOfMemory` (caught: an ordinary error) or as a crash; either way the
   error says "needs more memory than the N GB allowed" when the worker's peak was within
   10 % of the budget.
+- Amendment (2026-10-13, review L6): as built, the budget is 3/4 of RAM, at least 2 GiB
+  (`gusset_hw::budgets::kernel_worker_bytes`), enforced with `RLIMIT_AS` on Linux
+  (`RLIMIT_DATA` on macOS, where `RLIMIT_AS` is not enforced) and the job object's
+  per-process limit on Windows; TBB is not used by our OCCT build, so address-space
+  reservations stay small. macOS RSS polling and the "needs more memory than N GB"
+  message are not implemented yet: running out shows as an abort or an OCCT error.
 - Time: no silent timeout for interactive work: the user sees progress and a Stop button.
   MCP calls already have a cancel (ADR 0012) and agents get a per-call deadline (default
   10 minutes, server setting) after which the worker is stopped like a cancel.

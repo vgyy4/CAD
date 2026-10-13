@@ -132,6 +132,11 @@ pub trait Kernel: Send + Sync + Debug {
         0
     }
 
+    /// Notices a kernel worker that ended while idle, so that [`Kernel::epoch`] changes
+    /// before the next operation instead of that operation being blamed for the crash.
+    /// Callers that cache shapes call it before building. In-process kernels do nothing.
+    fn probe(&self) {}
+
     /// Linear sweep of a planar profile along its normal.
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult>;
 

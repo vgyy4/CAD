@@ -23,6 +23,7 @@ gusset-kernel-occt.workspace = true
 gusset-occt-sys.workspace = true
 gusset-sandbox.workspace = true
 gusset-worker.workspace = true
+blake3.workspace = true
 gusset-hw.workspace = true
 
 [lints]

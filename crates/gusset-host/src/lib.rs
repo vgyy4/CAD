@@ -200,10 +200,18 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// Whether a job is running, behind a lock: the cancel below is set while holding it, so
+/// it cannot land after the job ended and hit the next one (review L7).
+type Running = Arc<Mutex<bool>>;
+
+fn lock_running(r: &Mutex<bool>) -> MutexGuard<'_, bool> {
+    r.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Marks its job abandoned when dropped (the caller stopped waiting), and cancels the
 /// job's rebuild if it is running.
 struct CancelRunning {
-    running: Arc<AtomicBool>,
+    running: Running,
     cancel: Arc<AtomicBool>,
     abandoned: Arc<AtomicBool>,
 }
@@ -211,7 +219,8 @@ struct CancelRunning {
 impl Drop for CancelRunning {
     fn drop(&mut self) {
         self.abandoned.store(true, Ordering::SeqCst);
-        if self.running.load(Ordering::SeqCst) {
+        let running = lock_running(&self.running);
+        if *running {
             self.cancel.store(true, Ordering::SeqCst);
         }
     }
@@ -242,11 +251,11 @@ fn revert_to(s: &mut Session, ctx: &CmdCtx, (branch, head): (BranchId, NodeId)) 
 }
 
 /// Clears its flag when dropped (also when the job panics).
-struct ClearOnDrop(Arc<AtomicBool>);
+struct ClearOnDrop(Running);
 
 impl Drop for ClearOnDrop {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        *lock_running(&self.0) = false;
     }
 }
 
@@ -306,7 +315,12 @@ fn model_loop(inner: &std::sync::Weak<Inner>, rx: &mpsc::Receiver<Msg>) {
                         Some(state) => {
                             // A panicking job drops its reply sender; the caller sees
                             // `internal`. Catching keeps the model thread alive.
-                            let reply = std::panic::catch_unwind(AssertUnwindSafe(|| job(state))).ok();
+                            // Every kernel call of the job, not only rebuilds (scene meshes,
+                            // exports, measures), can be stopped by `cancel_rebuild` and the
+                            // MCP deadline (review H3).
+                            let reply = gusset_kernel::cancel::scope(&inner.rebuild_cancel, || {
+                                std::panic::catch_unwind(AssertUnwindSafe(|| job(state))).ok()
+                            });
                             (reply, state.session.take_changes())
                         }
                         None => (None, Vec::new()),
@@ -470,6 +484,35 @@ impl HostHandle {
         }
     }
 
+    /// Like [`HostHandle::exec_async`], but dropping the future (the caller stopped
+    /// waiting, or a deadline passed) skips the job if it has not started and stops its
+    /// kernel work if it runs (`cancel_rebuild`). For read-only jobs such as rendering.
+    ///
+    /// # Errors
+    /// As [`HostHandle::exec_async`], and `cancelled` when the job was skipped.
+    pub async fn exec_async_stoppable<R, F>(&self, f: F) -> Result<R, CommandError>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Session, Option<&mut Project>) -> R + Send + 'static,
+    {
+        let running: Running = Arc::default();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let _guard = CancelRunning {
+            running: running.clone(),
+            cancel: self.inner.rebuild_cancel.clone(),
+            abandoned: abandoned.clone(),
+        };
+        self.exec_async(move |s, p| {
+            if abandoned.load(Ordering::SeqCst) {
+                return Err(CommandError::new("cancelled", "the request was cancelled before it ran"));
+            }
+            *lock_running(&running) = true;
+            let _done = ClearOnDrop(running);
+            Ok(f(s, p))
+        })
+        .await?
+    }
+
     /// Async version of [`HostHandle::call`] for tokio (MCP connections).
     ///
     /// # Errors
@@ -483,7 +526,7 @@ impl HostHandle {
         // that has not started is skipped, a running one has its rebuild stopped and its
         // commits undone before the model thread takes the next job (dogfooding F3-4: the
         // edit used to be committed although the client saw the request cancelled).
-        let running = Arc::new(AtomicBool::new(false));
+        let running: Running = Arc::default();
         let abandoned = Arc::new(AtomicBool::new(false));
         let _guard = CancelRunning {
             running: running.clone(),
@@ -495,7 +538,7 @@ impl HostHandle {
             if abandoned.load(Ordering::SeqCst) {
                 return Err(CommandError::new("cancelled", "the request was cancelled before it ran"));
             }
-            running.store(true, Ordering::SeqCst);
+            *lock_running(&running) = true;
             let _done = ClearOnDrop(running);
             let point = revert_point(s, &ctx, &id);
             let r = execute(s, &ctx, &id, args);

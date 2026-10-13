@@ -65,7 +65,7 @@ impl<K: Kernel> Server<K> {
     /// # Errors
     /// A broken stream or a malformed frame.
     pub fn serve(&self, input: &mut dyn Read, output: &mut dyn Write) -> io::Result<()> {
-        while let Some(frame) = read_frame(input, REQUEST_MAGIC)? {
+        while let Some(frame) = read_frame(input, REQUEST_MAGIC, crate::frame::MAX_FRAME)? {
             write_frame(output, RESPONSE_MAGIC, &self.handle(&frame))?;
         }
         Ok(())
