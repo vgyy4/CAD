@@ -11,6 +11,7 @@
 
 pub mod mock;
 pub mod types;
+pub mod wire;
 
 pub use types::*;
 
