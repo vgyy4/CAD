@@ -1493,7 +1493,13 @@ impl App {
     fn timeline(&mut self, ui: &mut Ui) {
         let n = self.snapshot.doc.features.len();
         let rollback = self.snapshot.rollback;
+        let pal = *theme::palette(self.theme);
         ui.horizontal(|ui| {
+            // Playback moves the rollback marker one feature at a time.
+            if let Some(m) = timeline::playback(ui, rollback.unwrap_or(n), n, &pal) {
+                self.set_rollback(if m >= n { None } else { Some(m) });
+            }
+            ui.separator();
             ui.label(RichText::new(tr("timeline.title")).strong());
             if ui
                 .small_button(if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") })
@@ -1502,7 +1508,6 @@ impl App {
                 self.show_iterations = !self.show_iterations;
             }
             ui.separator();
-            let pal = *theme::palette(self.theme);
             let eval = self.scene.as_ref().map(|s| s.eval.clone());
             let doc = &self.snapshot.doc;
             let items: Vec<timeline::Item<'_>> = doc
@@ -1529,7 +1534,7 @@ impl App {
         if self.show_iterations {
             ui.horizontal_wrapped(|ui| {
                 for label in &self.snapshot.lineage {
-                    icons::labeled(ui, Icon::Dot, theme::palette(self.theme).text_muted, RichText::new(label).small());
+                    icons::labeled(ui, Icon::Dot, pal.text_muted, RichText::new(label).small());
                 }
             });
         }

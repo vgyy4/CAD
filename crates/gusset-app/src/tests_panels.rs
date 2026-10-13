@@ -5,7 +5,7 @@ use crate::app::App;
 use crate::browser::Category;
 use crate::tests::{app, harness, settle, two_sketches};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use serde_json::json;
 
 /// A harness whose frames are short, so two clicks (four events, one frame each) fall
@@ -128,4 +128,37 @@ fn browser_branch_rows_switch_branches() {
     h.get_by_label(&other).click();
     settle(&mut h);
     assert_ne!(h.state().snapshot.branch, before);
+}
+
+// ------------------------------------------------------------------------- timeline
+
+#[test]
+fn playback_buttons_move_the_rollback_marker() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    let n = h.state().snapshot.doc.features.len();
+    assert_eq!(n, 3);
+    // At the end: forward and to-end are disabled, back and to-start work.
+    assert!(h.get_by_label("Step forward one feature").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("Step back one feature").accesskit_node().is_disabled());
+    h.get_by_label("Step back one feature").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(2));
+    // The chip of the rolled-back feature says so.
+    h.get_by_label("Extrude1 (rolled back)");
+    h.get_by_label("Roll back to the start").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(0));
+    assert!(h.get_by_label("Roll back to the start").accesskit_node().is_disabled());
+    h.get_by_label("Step forward one feature").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(1));
+    h.get_by_label("Roll forward to the end").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, None);
+    h.get_by_label("Extrude1 (ok)");
+    // The iteration graph toggle stays.
+    h.get_by_label("Show iteration graph").click();
+    h.run();
+    h.get_by_label("Hide iteration graph");
 }
