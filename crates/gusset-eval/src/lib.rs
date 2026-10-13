@@ -252,6 +252,23 @@ struct Cached {
     stamp: u64,
 }
 
+/// Where a running evaluation is (ADR 0022 §4): the feature being built, its position and
+/// the number of features. Readable from any thread through [`Evaluator::progress_cell`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub feature: String,
+    /// 1-based position of the feature in the document.
+    pub index: usize,
+    pub total: usize,
+}
+
+/// Shared [`Progress`] of an evaluator: `None` while no evaluation builds a feature.
+pub type ProgressCell = Arc<std::sync::Mutex<Option<Progress>>>;
+
+fn set_progress(cell: &ProgressCell, p: Option<Progress>) {
+    *cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = p;
+}
+
 /// Incremental evaluator; keep one per open project.
 #[derive(Debug)]
 pub struct Evaluator {
@@ -267,6 +284,7 @@ pub struct Evaluator {
     max_bytes: u64,
     limits: EvalLimits,
     cancel: Arc<AtomicBool>,
+    progress: ProgressCell,
     /// Kernel epoch the cached states belong to.
     epoch: u64,
     /// Features that crashed the kernel, by step key (the feature and everything before
@@ -292,6 +310,7 @@ impl Evaluator {
             max_bytes: DEFAULT_CACHE_BYTES,
             limits: EvalLimits::default(),
             cancel: Arc::new(AtomicBool::new(false)),
+            progress: ProgressCell::default(),
             epoch: 0,
             crashes: VecDeque::new(),
         }
@@ -331,6 +350,12 @@ impl Evaluator {
     #[must_use]
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         self.cancel.clone()
+    }
+
+    /// The progress of the running evaluation, for display from another thread.
+    #[must_use]
+    pub fn progress_cell(&self) -> ProgressCell {
+        self.progress.clone()
     }
 
     fn is_cancelled(&self) -> bool {
@@ -463,7 +488,8 @@ impl Evaluator {
         // The cancel flag also stops a kernel operation in progress where the kernel can
         // (the worker process is killed, ADR 0022 §3); its shapes are then gone too.
         let cancel = self.cancel.clone();
-        gusset_kernel::cancel::scope(&cancel, || {
+        let progress = self.progress.clone();
+        let e = gusset_kernel::cancel::scope(&cancel, || {
             let mut restarts = 0;
             loop {
                 self.sync_epoch();
@@ -475,7 +501,9 @@ impl Evaluator {
                 }
                 restarts += 1;
             }
-        })
+        });
+        set_progress(&progress, None);
+        e
     }
 
     fn evaluate_pass(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> (Evaluation, bool) {
@@ -509,6 +537,8 @@ impl Evaluator {
             let epoch = self.kernel.epoch();
             if !self.is_cancelled() {
                 recomputed += 1;
+                let (index, total) = (i + 1, doc.features.len());
+                set_progress(&self.progress, Some(Progress { feature: f.name.clone(), index, total }));
                 self.apply(&mut s, f, doc.units, &params, blobs);
             }
             if !self.is_cancelled() && self.kernel.epoch() != epoch {

@@ -93,6 +93,7 @@ const EN: &[(&str, &str)] = &[
     ("status.rebuild_errors", "Rebuild errors"),
     ("status.agent", "Agent activity"),
     ("status.working", "Working…"),
+    ("status.building", "Building"),
     ("status.stop", "Stop"),
     (
         "status.stop_hint",

@@ -1395,8 +1395,17 @@ impl App {
             }
             if self.busy() {
                 // A static indicator: an animated spinner would repaint every frame, and
-                // the finished job wakes the UI anyway.
-                ui.weak(format!("⏳ {}", tr("status.working")));
+                // the finished job wakes the UI anyway. During a rebuild it names the
+                // feature being built, refreshed a few times a second (ADR 0022 §4).
+                match self.host.rebuild_progress() {
+                    Some(p) => {
+                        ui.weak(format!("⏳ {} {} ({}/{})", tr("status.building"), p.feature, p.index, p.total));
+                        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                    }
+                    None => {
+                        ui.weak(format!("⏳ {}", tr("status.working")));
+                    }
+                }
                 // Stops the rebuild, also inside a long kernel operation (the kernel worker
                 // is killed, ADR 0022 §3). Imports have their own Cancel below.
                 if self.import_cancel.is_none()

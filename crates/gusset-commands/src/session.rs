@@ -3,6 +3,7 @@
 use crate::error::CommandError;
 use gusset_doc::Document;
 use gusset_eval::{BlobSource, Evaluation, Evaluator};
+pub use gusset_eval::{Progress, ProgressCell};
 use gusset_history::{Actor, BranchId, Ctx, Hash, History, NodeId, NodeState};
 use gusset_kernel::Kernel;
 use std::collections::{BTreeMap, VecDeque};
@@ -270,6 +271,12 @@ impl Session {
     #[must_use]
     pub fn rebuild_cancel_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.evaluator.cancel_flag()
+    }
+
+    /// The running rebuild's progress ([`gusset_eval::Evaluator::progress_cell`]).
+    #[must_use]
+    pub fn rebuild_progress_cell(&self) -> ProgressCell {
+        self.evaluator.progress_cell()
     }
 
     /// Evaluates the head of `branch`, cached by node and rollback marker.

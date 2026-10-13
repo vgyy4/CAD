@@ -124,9 +124,10 @@ fillet radius against the shortest edge, already checked in `feature.fillet`).
   (`DEFAULT_REQUEST_DEADLINE`, 300 s, from queueing to result, approval waits excluded):
   past it the call is dropped, which stops its rebuild and undoes its changes, and the
   agent gets `deadline_exceeded` with a hint.
-- Phase 4 started: the status bar offers Stop while a job runs (`cancel_rebuild`).
-  Still open: progress for long rebuilds, crash and memory errors styled in the feature
-  tree, USER guide and HARDWARE.md budget lines.
+- Phase 4 started: while a job runs the status bar names the feature being built
+  ("Building Fillet1 (3/12)", from `Evaluator::progress_cell` through
+  `HostHandle::rebuild_progress`) and offers Stop (`cancel_rebuild`). Still open: crash
+  and memory errors styled in the feature tree, USER guide and HARDWARE.md budget lines.
 
 ## Consequences
 - The app survives anything OCCT does; a crash costs a rebuild of the earlier features.

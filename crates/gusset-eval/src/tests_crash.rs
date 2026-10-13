@@ -32,6 +32,22 @@ struct CrashingKernel {
     crashes: AtomicUsize,
     crash_at: f64,
     stops: AtomicUsize,
+    /// The evaluator's progress, and what it said at each extrude.
+    progress: std::sync::OnceLock<ProgressCell>,
+    seen: std::sync::Mutex<Vec<Option<Progress>>>,
+}
+
+impl CrashingKernel {
+    fn new(crash_at: f64) -> CrashingKernel {
+        CrashingKernel {
+            epoch: AtomicU64::new(1),
+            crashes: AtomicUsize::new(0),
+            crash_at,
+            stops: AtomicUsize::new(0),
+            progress: std::sync::OnceLock::new(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl Kernel for CrashingKernel {
@@ -42,6 +58,10 @@ impl Kernel for CrashingKernel {
         self.epoch.load(Ordering::SeqCst)
     }
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> gusset_kernel::KResult<OpResult> {
+        if let Some(cell) = self.progress.get() {
+            let now = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(now);
+        }
         if (spec.distance - self.crash_at).abs() < 1e-9 {
             self.crashes.fetch_add(1, Ordering::SeqCst);
             self.epoch.fetch_add(1, Ordering::SeqCst);
@@ -90,12 +110,7 @@ fn doc(e2: &str) -> Document {
 
 #[test]
 fn a_crash_fails_the_feature_rebuilds_the_rest_and_is_not_repeated() {
-    let kernel = Arc::new(CrashingKernel {
-        epoch: AtomicU64::new(1),
-        crashes: AtomicUsize::new(0),
-        crash_at: 7.0,
-        stops: AtomicUsize::new(0),
-    });
+    let kernel = Arc::new(CrashingKernel::new(7.0));
     let mut ev = Evaluator::new(kernel.clone());
     let r = ev.evaluate(&doc("7 mm"), None, &());
     match r.status("E2") {
@@ -124,12 +139,7 @@ fn a_crash_fails_the_feature_rebuilds_the_rest_and_is_not_repeated() {
 
 #[test]
 fn a_restart_outside_the_evaluator_drops_the_cache() {
-    let kernel = Arc::new(CrashingKernel {
-        epoch: AtomicU64::new(1),
-        crashes: AtomicUsize::new(0),
-        crash_at: -1.0,
-        stops: AtomicUsize::new(0),
-    });
+    let kernel = Arc::new(CrashingKernel::new(-1.0));
     let mut ev = Evaluator::new(kernel.clone());
     let d = doc("4 mm");
     let r = ev.evaluate(&d, None, &());
@@ -144,12 +154,7 @@ fn a_restart_outside_the_evaluator_drops_the_cache() {
 
 #[test]
 fn a_stop_inside_a_kernel_call_cancels_the_rebuild_without_memoising_it() {
-    let kernel = Arc::new(CrashingKernel {
-        epoch: AtomicU64::new(1),
-        crashes: AtomicUsize::new(0),
-        crash_at: -1.0,
-        stops: AtomicUsize::new(0),
-    });
+    let kernel = Arc::new(CrashingKernel::new(-1.0));
     let mut ev = Evaluator::new(kernel.clone());
     let d = doc("6 mm");
     let r = ev.evaluate(&d, None, &());
@@ -163,4 +168,17 @@ fn a_stop_inside_a_kernel_call_cancels_the_rebuild_without_memoising_it() {
     assert!(!r.cancelled && r.errors().is_empty(), "{:?}", r.errors());
     assert_eq!(r.epoch, 2);
     assert_eq!(r.recomputed, 4, "the cache died with the worker");
+}
+
+#[test]
+fn progress_names_the_feature_being_built_and_clears_at_the_end() {
+    let kernel = Arc::new(CrashingKernel::new(-1.0));
+    let mut ev = Evaluator::new(kernel.clone());
+    let _ = kernel.progress.set(ev.progress_cell());
+    let r = ev.evaluate(&doc("4 mm"), None, &());
+    assert!(r.errors().is_empty());
+    let seen = kernel.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let names: Vec<_> = seen.iter().map(|p| p.as_ref().map(|p| (p.feature.as_str(), p.index, p.total))).collect();
+    assert_eq!(names, [Some(("E1", 2, 4)), Some(("E2", 3, 4)), Some(("E3", 4, 4))]);
+    assert_eq!(*ev.progress_cell().lock().unwrap_or_else(std::sync::PoisonError::into_inner), None);
 }

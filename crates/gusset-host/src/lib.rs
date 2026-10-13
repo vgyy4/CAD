@@ -114,6 +114,8 @@ struct Inner {
     model_thread: Mutex<Option<ThreadId>>,
     /// The session evaluator's cancel flag ([`gusset_commands::Session::rebuild_cancel_flag`]).
     rebuild_cancel: Arc<AtomicBool>,
+    /// The session evaluator's progress ([`gusset_commands::Session::rebuild_progress_cell`]).
+    rebuild_progress: gusset_commands::session::ProgressCell,
 }
 
 /// Namespace for [`Host::spawn`].
@@ -262,6 +264,7 @@ impl Host {
         let (tx, rx) = mpsc::channel::<Msg>();
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let rebuild_cancel = session.rebuild_cancel_flag();
+        let rebuild_progress = session.rebuild_progress_cell();
         let inner = Arc::new(Inner {
             state: Mutex::new(Some(State { session, project })),
             tx: Mutex::new(Some(tx)),
@@ -270,6 +273,7 @@ impl Host {
             thread: Mutex::new(None),
             model_thread: Mutex::new(None),
             rebuild_cancel,
+            rebuild_progress,
         });
         let worker = Arc::downgrade(&inner);
         let spawned = std::thread::Builder::new().name("gusset-model".into()).spawn(move || model_loop(&worker, &rx));
@@ -449,6 +453,13 @@ impl HostHandle {
         if !self.is_quiescent() {
             self.inner.rebuild_cancel.store(true, Ordering::SeqCst);
         }
+    }
+
+    /// The feature the running rebuild is building, if any (ADR 0022 §4). Callable from
+    /// any thread, never waits for the model thread.
+    #[must_use]
+    pub fn rebuild_progress(&self) -> Option<gusset_commands::session::Progress> {
+        self.inner.rebuild_progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Called before queueing command `id`: if it changes the model and another job is
