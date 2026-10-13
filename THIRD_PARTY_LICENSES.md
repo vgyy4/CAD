@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (362)
+- MIT License (364)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5500,6 +5500,8 @@ Used by:
 - [gusset-hw 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-kernel 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-kernel-occt 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-kernel-remote 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-kernel-worker 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-mcp 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-meshio 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-naming 0.1.0-mvp](https://github.com/vgyy4/CAD)
