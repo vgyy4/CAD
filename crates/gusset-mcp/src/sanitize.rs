@@ -262,6 +262,15 @@ impl TextStore {
         }
     }
 
+    /// Stores `text` (not user text) for `owner` under a fresh reference and returns the
+    /// pointer an agent passes to `get_text`.
+    pub fn put_new(&self, owner: &str, path: &str, text: String) -> Value {
+        let reference = self.new_ref();
+        let total = text.chars().count();
+        self.put(&reference, path, owner, text, false);
+        json!({"tool": "get_text", "ref": reference, "path": path, "offset": 0, "total_chars": total})
+    }
+
     /// The `get_text` tool: up to `limit` characters of a truncated field, from `offset`.
     ///
     /// # Errors
@@ -283,7 +292,8 @@ impl TextStore {
             let reason = detect_injection(&e.text, false).or_else(|| detect_injection(&chunk, false));
             json!({"user_text": chunk, "suspicious": reason.is_some(), "reason": reason})
         } else {
-            match detect_injection(&chunk, false) {
+            // Our own output (a paged field or result): its length is not a red flag.
+            match detect_injection_with(&chunk, false, usize::MAX) {
                 Some(reason) => json!({"user_text": chunk, "suspicious": true, "reason": reason}),
                 None => json!({"text": chunk}),
             }

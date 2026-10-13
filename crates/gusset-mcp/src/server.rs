@@ -221,6 +221,42 @@ fn supports_form_elicitation(ctx: &RequestContext<RoleServer>) -> bool {
 /// mm) so they carry no noise like 7999.999999999998; smaller ones keep 9 significant
 /// digits, so small areas, errors and angles do not become 0 (review L4). Null fields
 /// are dropped.
+/// A result longer than this (characters of JSON) has its largest top-level fields moved
+/// to the paged text store, so one call does not fill the agent's context (dogfooding
+/// F3-15: a 56 KB `query_sketch` of a gear profile).
+const MAX_RESULT_CHARS: usize = 24_000;
+/// Fields at most this long always stay inline (ids, status, errors, hints).
+const MAX_INLINE_FIELD_CHARS: usize = 2_000;
+
+fn page_large_fields(store: &crate::sanitize::TextStore, agent: &str, mut v: Value) -> Value {
+    let total = compact_result(v.clone()).chars().count();
+    if total <= MAX_RESULT_CHARS {
+        return v;
+    }
+    let Value::Object(m) = &mut v else { return v };
+    // The code view pages itself (document_get_text offset/limit).
+    let mut sizes: Vec<(String, usize)> = m
+        .iter()
+        .filter(|(k, _)| k.as_str() != "text_user_text")
+        .map(|(k, x)| (k.clone(), compact_result(x.clone()).chars().count()))
+        .filter(|(_, n)| *n > MAX_INLINE_FIELD_CHARS)
+        .collect();
+    sizes.sort_by_key(|f| std::cmp::Reverse(f.1));
+    let mut left = total;
+    for (key, n) in sizes {
+        if left <= MAX_RESULT_CHARS {
+            break;
+        }
+        let Some(field) = m.get_mut(&key) else { continue };
+        let text = compact_result(field.take());
+        let pointer = store.put_new(agent, &format!("/{key}"), text);
+        *field =
+            json!({"omitted": "too large for one response; page it with get_text", "chars": n, "full_text": pointer});
+        left = left.saturating_sub(n);
+    }
+    v
+}
+
 pub(crate) fn compact_result(mut v: Value) -> String {
     fn walk(v: &mut Value) {
         match v {
@@ -610,7 +646,8 @@ impl GussetMcp {
             Value::Object(_) => v,
             other => json!({ "result": other }),
         };
-        CallToolResult::success(vec![ContentBlock::text(compact_result(self.sanitize(agent, v)))])
+        let v = page_large_fields(&self.shared.texts, agent, self.sanitize(agent, v));
+        CallToolResult::success(vec![ContentBlock::text(compact_result(v))])
     }
 
     fn err_result(&self, agent: &str, e: &CommandError) -> CallToolResult {
@@ -1147,6 +1184,34 @@ impl ServerHandler for GussetMcp {
 #[cfg(test)]
 mod size_tests {
     use super::*;
+
+    #[test]
+    fn oversized_fields_are_paged_through_get_text() {
+        let store = crate::sanitize::TextStore::default();
+        let points: Vec<Value> = (0..3000).map(|i| json!([f64::from(i), 1.5])).collect();
+        let v = json!({"status": "WellConstrained", "dof": 0, "points": points.clone(), "small": [1, 2, 3]});
+        let out = page_large_fields(&store, "bot", v);
+        assert_eq!(out["status"], "WellConstrained");
+        assert_eq!(out["small"], json!([1, 2, 3]));
+        let ptr = &out["points"]["full_text"];
+        assert!(compact_result(out.clone()).len() <= MAX_RESULT_CHARS, "{out}");
+        let (r, path) = (ptr["ref"].as_str().unwrap(), ptr["path"].as_str().unwrap());
+        let mut text = String::new();
+        let mut offset = 0;
+        loop {
+            let page = store.get("bot", r, path, offset, 16_384).unwrap();
+            text.push_str(page["chunk"]["text"].as_str().unwrap());
+            match page["next_offset"].as_u64() {
+                Some(n) => offset = usize::try_from(n).unwrap(),
+                None => break,
+            }
+        }
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), Value::Array(points));
+        // Another agent cannot read it; small results are untouched.
+        assert!(store.get("other", r, path, 0, 100).is_err());
+        let small = json!({"points": [[0, 0]]});
+        assert_eq!(page_large_fields(&store, "bot", small.clone()), small);
+    }
 
     #[test]
     fn command_summaries_end_at_complete_sentences() {
