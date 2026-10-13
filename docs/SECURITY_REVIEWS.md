@@ -333,3 +333,248 @@ IGES temp-file allowance, longer code text for agents, export filters, start-up
 recovery). Findings S1–S7 and their fixes: docs/reviews/2026-10-12-mvp-re-review.md.
 Review #3 and #7 were only partly fixed before; both are complete now (S2, S1). No
 prompt-injection attempts were seen.
+
+## v0.2 milestone security review (2026-10-13)
+
+- Reviewer: fresh, independent security-review subagent. Scope: `git diff cfc0e35..HEAD`
+  (`a4e5141`), read against PROMPT.md "Security", docs/THREAT_MODEL.md, ADRs 0008, 0012
+  (incl. the 2026-10-13 `commands`/`run` amendment), 0013 (incl. the `workflow_dispatch`
+  amendment), 0014 and 0015, and the earlier reviews (#1–#20, S1–S7). Duplicates of the v0.2
+  code review (docs/reviews/2026-10-13-v0.2-code-review.md) are referenced, not repeated.
+- Method: code review plus reproductions in a standalone scratch crate
+  (`scratchpad/secreview2`, path dependencies on gusset-doc/eval/kernel/kernel-occt, its own
+  target dir, deleted afterwards) that parses and evaluates text documents with the mock
+  kernel or OCCT 8 (dev profile at opt-level 1; OCCT is a release build). Also a mutation
+  fuzzer over the `grammar.md` examples that parses, evaluates and round-trips each mutant:
+  100,000 runs with the mock kernel and about 20 minutes with OCCT found no panic, no crash
+  and no round-trip failure.
+- Repository files modified: this section only. No prompt-injection attempts were seen in
+  repository files, fixtures or tool output.
+
+### Summary
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| V1 | Medium | Body patterns: one `pattern_linear` line takes minutes; chained patterns grow exponentially; evaluation has no CPU or size budget and cannot be cancelled | verified |
+| V2 | Medium | Sketch arrangement: spline-vs-spline intersection is quadratic in the number of nearby splines; one spline plus one sketch pattern is hours of CPU | verified |
+| V3 | Medium | Manual (`workflow_dispatch`) releases are branch builds, but the spec and threat model allow release secrets only for tag builds from main; the in-workflow guards are not a boundary | verified by reading; environment settings not visible (suspicion) |
+| V4 | Info | Publish job does not re-validate `RELEASE_TAG`; `steps.version.outputs.*` is spliced into shell with `${{ }}` | verified by reading |
+| V5 | Info | `run` folds every non-core command into one client-side permission | verified by reading |
+| V6 | Info | Shim index checks `int(i) >= Extent()` turn indices above `INT_MAX` negative | verified by reading (not reachable today) |
+| V7 | Info | A `Project` dropped without `release()`/`close()` does not supersede prepared recovery writes | verified by code trace |
+| V8 | Info | THREAT_MODEL.md not updated for the `commands`/`run` tools and the manual release entry point | verified |
+
+Counts: **0 critical, 0 high, 3 medium, 0 low, 5 info** (new). Already reported by the
+code review and reproduced here independently: H2 (sweep `twist` segfault; the threshold
+is about |twist| > 6.2e9 deg, where `int(ceil(|twist| / 0.05))` overflows; `7e9 deg` and
+`-7e9 deg` give exit 139 with OCCT, `6e9 deg` evaluates cleanly). Also already reported:
+H3 (holes cut one boolean at a time), M2 (recovery write clears the change counter),
+M3 (manual release moves a tag and clobbers a published release) and L5 (concurrency
+group differs per trigger).
+
+### V1. Medium: body patterns are a CPU/memory DoS; evaluation has no budget [verified]
+- **Where:**
+  - `crates/gusset-eval/src/ops.rs:137` (`run_pattern`): one `boolean(Union)` per instance
+    against the whole growing body, plus `topology` and `name_body` over the whole body each
+    time.
+  - `ops.rs:282` caps one pattern at 500 instances, but nothing bounds the total:
+    `MAX_FEATURES` is 100,000, and `Evaluator::evaluate` (`crates/gusset-eval/src/lib.rs:378`)
+    has no time, face-count or memory budget and no cancellation.
+  - It runs synchronously on the session's model thread (`crates/gusset-commands/src/session.rs:280`).
+- **Reproduction** (OCCT; 10 mm box, `extrude`, then the line(s) shown):
+
+  | Document | Evaluation | Faces |
+  |---|---|---|
+  | `pattern_linear PP (direction: X, count: 500, spacing: 20 mm)` (copies do not touch) | **314.6 s** | 3,000 |
+  | 6 chained `pattern_linear Pi (direction: X, count: 2, spacing: 20·2^i mm)` | 0.36 s | 384 |
+  | 8 chained | 1.43 s | 1,536 |
+  | 10 chained (888-byte file) | 6.43 s | 6,144 |
+
+  The chain doubles the body per line and the time by about 2.1 per line. Extrapolated:
+  20 lines take about 3 h, 30 lines never finish, and memory grows with the 2^k copies.
+  The code review measured overlapping copies (linear in practice). Disjoint copies are the
+  worst case. H3 (holes) is the same pattern.
+- **Impact:**
+  - T1: a small hostile `.gus` freezes the app's model thread on open, and again on every
+    reopen or recovery. Saving, closing and agents all wait on that thread.
+  - T5: one `document_set_text` or `feature_pattern_linear` from an agent (own branch, no
+    approval needed) does the same.
+  - The spec requires "CPU-time, memory and recursion limits" for the code-view language.
+    The parser has them; geometric evaluation does not.
+- **Fix:**
+  - Give the evaluator a work budget per evaluation: total kernel operations, total faces
+    across bodies (for example 200k), and wall time. Exceeding it fails the feature with a
+    clear error, like the parser limits.
+  - Check a cancellation flag between features and between pattern instances, so the GUI
+    can offer "Stop rebuild" and closing the project does not wait.
+  - Pattern with one multi-argument fuse (or a compound of disjoint copies, then one
+    fuse), as H3 suggests for holes.
+  - Bound the face count of a pattern's result before running it (instances x input faces).
+
+### V2. Medium: spline intersections in the sketch arrangement are a quadratic CPU DoS [verified]
+- **Where:**
+  - `crates/gusset-sketch/src/curves.rs:145` (`numeric_hits`): for every pair of spline
+    cells whose boxes overlap, every flattened segment pair is tested and refined with Newton.
+  - `crates/gusset-sketch/src/arrange.rs:270` (`find_splits`): the sweep-and-prune pass
+    prunes on x only. The 4 x `MAX_VERTICES` cap counts real hits, not work, so close
+    splines that never cross pay the full cost.
+  - Pure Rust, mock kernel: no OCCT needed, and it runs whenever the sketch is solved.
+- **Reproduction:** one 1,000-point spline (a sine) plus
+  `g2000 = pattern_linear(of: [s1001], count: N, dx: 0 mm, dy: 0.0001 mm)`. The file is
+  about 35 KB.
+
+  | Count N | Evaluation |
+  |---|---|
+  | 5 | 5.4 s |
+  | 10 | 24.5 s |
+  | 20 | 106 s |
+
+  20 separate 1,000-point splines offset by 0.0001 mm: 106 s. The pattern count may be 500,
+  which extrapolates (N²) to about 18 h for one sketch.
+- **Impact:** the same as V1 (T1 file open, T5 agent edit), from a few lines of text.
+  `MAX_DERIVED_CURVES = 20,000` bounds the curve count, not the pairwise work.
+- **Fix:**
+  - Budget the arrangement: count segment-pair tests and Newton refinements, and fail with
+    `TooComplex` past a limit (for example 10^7).
+  - Index cells in a 2D grid or R-tree instead of comparing every cell pair.
+  - Stop refining once two nearly coincident spline runs are found (report an overlap).
+  - Add a regression test with a patterned dense spline.
+
+### V3. Medium: manual releases run secrets from branch refs; the spec allows only tag builds from main [verified by reading; settings suspicion]
+- **Where:**
+  - `.github/workflows/release.yml:24` (`workflow_dispatch`), `:328` (`environment: release`),
+    `:347` (`merge-base --is-ancestor`) and `:352` (tag move).
+  - PROMPT.md: "Signing keys and release secrets live only in a protected `release`
+    environment, usable only by tag builds from main".
+  - THREAT_MODEL.md: "a `release` environment restricted to tags on main".
+- **Problem:**
+  - A dispatched run has `github.ref = refs/heads/<branch>`, and **the workflow file comes
+    from that branch**. So for the ADR 0013 amendment to publish at all, the environment's
+    deployment rule must admit branch refs.
+  - If it admits more than the default branch (for example "all branches" or "protected
+    branches"), anyone with write access can push a branch with an edited `release.yml` and
+    dispatch it. That run gets `UPDATE_SIGNING_KEY` (and the future signing secrets of
+    ADR 0015), `contents: write` and `id-token: write`, because the ancestor check and the tag
+    regex are part of the file being run.
+  - Even unedited, the ancestor check accepts any commit on the default branch's history,
+    not its head. A branch whose head is an old commit with the same workspace version can be
+    released, and the tag is force-moved back to it (combined with M3).
+  - The repository's environment settings could not be read from this session (the API
+    path is blocked), so whether the rule admits only the default branch is unverified.
+- **Fix:**
+  - Set the `release` environment's deployment rule to exactly the default branch plus `v*`
+    tags, and require a reviewer. Record both in ADR 0013 and THREAT_MODEL.md as the actual
+    boundary.
+  - Add `if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)`
+    to both jobs, and in publish compare `GITHUB_SHA` with the default branch head, not just
+    ancestry. This is defence in depth only.
+  - Consider repository tag rulesets for `v*` (no update or delete except by the release
+    workflow), and GitHub immutable releases.
+  - Remaining release-integrity points not in M3: the tag is moved before the files are
+    uploaded, so a failed later step leaves the tag on the new commit with the old assets.
+    `--clobber` leaves assets from earlier runs that this run did not produce (for example a
+    macOS DMG when the optional macOS build failed), next to a `SHA256SUMS` that does not
+    list them.
+
+### V4. Info: publish trusts the build job's tag validation [verified by reading]
+- **Where:** `release.yml:81-97` validates `RELEASE_TAG` against
+  `^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`. `steps.version.outputs.version` is then
+  spliced with `${{ }}` into shell (`:150`, `:172`, `:178`, `:192`).
+- **Problem:** this is safe today: the regex excludes shell metacharacters and must match
+  `Cargo.toml`, and publish only runs when every required build passed. The publish job uses
+  `$RELEASE_TAG` (from `inputs.tag`) in `gh api` paths and `gh release` without
+  re-validating it, so one edit to the build job's check would turn `inputs.tag` into an
+  injection.
+- **Fix:** repeat the regex as the first publish step. Pass step outputs through `env:`
+  instead of `${{ }}` in `run:`.
+
+### V5. Info: `run` collapses client-side per-tool permissions [verified by reading]
+- **Where:** `crates/gusset-mcp/src/server.rs:450-457` (`run`), and the ADR 0012 amendment.
+- **Problem:** server-side enforcement through `run` matches the direct tools. Checked:
+  - approvals: in-app grants keyed by `spec.id`; elicitation and `request_state` retries
+    bound to agent, tool name and arguments, and refused when the app hosts the session;
+  - read-only mode: `check_policy`, and the bridge's `read_only_refusal` resolves `run`'s
+    target by tool name or id, the same as `find_command`; batches stay refused;
+  - main-branch protection, rate limits (counted once), and the `approved` argument
+    refusal (checked on the inner args; `RunArgs` has `deny_unknown_fields`);
+  - `user_only`, and untrusted-text sanitising of results.
+
+  The registry has no tool-name collisions (`a.b` vs `a_b`). However, MCP clients grant
+  permissions per tool name. A user who answers "always allow" for `run` once now allows
+  every non-core command (exports, imports, branch delete, set main), where before each had
+  its own prompt in the client. The server still asks for approval where required. Only the
+  client-side layer is coarser.
+- **Fix:** mention this in the `run` description and the security guidelines resource
+  ("approving `run` in your client approves all commands"). Optionally, keep
+  `agent_approval`, `destructive` and `writes_files` commands off `run` and in tools/list.
+
+### V6. Info: signed index checks in the OCCT shim [verified by reading, not reachable]
+- **Where:** `crates/gusset-occt-sys/cpp/gusset_occt.cpp:369` (`edge_by_index`) and `:1072`
+  (`gs_shell`): `if (int(i) >= map.Extent())` with `uint32_t i`.
+- **Problem:** indices above `INT_MAX` become negative, pass the check and index the map
+  out of range. OCCT release builds drop the range check. Today every index comes from the
+  evaluator's own topology, so this is not reachable from documents or agents.
+- **Fix:** compare unsigned (`i >= uint32_t(map.Extent())`), together with the H2 audit.
+
+### V7. Info: recovery writes are superseded only by `release()`/`close()`/save [verified by code trace]
+- **Where:** `crates/gusset-project/src/lib.rs:643` (`prepare_snapshot`), `:672`
+  (`release`), and `crates/gusset-app/src/app.rs:1938` (`retire_project`). The latter
+  ignores a `snapshot()` error, then `drop(project)`.
+- **Problem:**
+  - `Project` has no `Drop` that bumps the write gate. If `snapshot()` fails during
+    encoding (before it bumps the gate), the project is dropped and its lock released, but
+    a `SnapshotWrite` prepared earlier can still be written by its thread.
+  - That write goes into this project's own recovery file (the path is fixed at prepare
+    time, so never another project's file). It may come after another window or instance
+    has taken the lock. A stale copy can then become the newest slot.
+  - Narrow (needs an encode failure and a quick reopen), and same-user only.
+- **Fix:** bump the gate in `Drop for Project` (or before every lock release), and test the
+  "prepared, then dropped" order.
+
+### V8. Info: threat model not updated for the new entry points [verified]
+- **Problem:** THREAT_MODEL.md is unchanged since `cfc0e35`. The spec requires an update
+  whenever an entry point is added. Missing:
+  - MCP: the generic `run`/`commands` tools (one tool name reaches every command);
+  - CI: the manual release trigger, which publishes from a branch ref and rewrites tags;
+  - the evaluation-cost risk of V1/V2 under the STRIDE "D" rows for documents and agents.
+- **Fix:** add these rows and state the release-environment rule (see V3).
+
+### Checked and found solid
+- **MCP `commands`/`run` (see V5):**
+  - `run` cannot name `run`, `commands`, `render_view` or `get_text`.
+  - An unknown name is refused before any work is done.
+  - Direct calls by id (`feature.shell`) are not routed (tool names only), but the bridge
+    refuses them in read-only mode anyway.
+  - The bridge forwards the re-serialised `Value`, so duplicate JSON keys cannot be read
+    differently by the bridge and the app.
+  - `request_state` from a `run` retry binds to the inner tool name, so retries are
+    interchangeable only for the same command, agent and arguments.
+- **New commands:** every new command (shell, mirror, patterns, move, combine, datum, sweep,
+  loft, gear, hole, sketch trim/patterns/splines) is `EDIT`. None is mis-flagged `READ`, so
+  read-only mode, main protection and the bulk threshold apply.
+- **Numeric edge cases into OCCT:** these all fail cleanly with errors:
+  - pattern spacing `1e300 mm` / `1e20 mm`, and `move` by `1e300 mm` ("invalid solid");
+  - shell thickness `±1e300 mm`;
+  - hole diameter `1e-300 mm` / `1e-9 mm` and depth `1e300 mm`;
+  - direction vectors `[1e308, 1e308, 0]` and `[1e-300, 0, 0]`. The first reports
+    "no length" because the norm overflows, which is cosmetic.
+
+  `gs_transform`, `gs_shell` and `gs_sweep` check finiteness. Expressions reject non-finite
+  values, and sketch coordinates are capped at 1e9.
+- **Untrusted text in new result fields:** thread designations are validated (1–32
+  printable characters, no quotes or controls) and returned as `designation_user_text`. The
+  hole standards table is compiled in (no file or environment input). The `commands` output
+  is static registry text.
+- **Off-thread recovery writes:**
+  - The generation gate is held during the write, so a save, discard, close or newer snapshot
+    waits for a write in progress and voids older ones.
+  - The path is fixed at prepare time from the project's own ID.
+  - Late results go to the replaced project's dropped channel.
+  - Permissions are unchanged (`recovery::write_snapshot`, private data directory).
+  - Only V7 and the code review's M2 remain.
+
+### Scratch artefacts
+`scratchpad/secreview2/` (deleted target dir): `src/main.rs` (parse and evaluate a document
+with `mock` or `occt`), `src/fuzz.rs` (mutation fuzzer), `scripts/gen_spl.py`, and `inputs/`
+(`twist.gus.txt`, `p500.gus.txt`, `dbl{6,8,10}.gus.txt`, `splpat{5,10,20}.gus.txt`,
+`spl{2,20}.gus.txt`, `num*.gus.txt`).
