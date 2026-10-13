@@ -39,6 +39,14 @@ Phase 3 has started (see Next).
 - IGES import: OCCT reads IGES only from a file, so the sandboxed worker gets a
   Landlock read rule for one private temp file (ADR 0008 §4); in a worktree branch.
 
+- GUI phase 1 of the Fusion-style layout (ADR 0023 §4, DESIGN.md §2): title bar,
+  SOLID/SKETCH tabs, ribbon with dropdown groups, view cube and navigation bar are done.
+  Still to do in later phases: browser tree (Document settings, Origin, Bodies...),
+  timeline with playback controls and feature icons, the command line, a properties
+  panel instead of the floating command form, the SURFACE/INSPECT tabs, the SELECT group,
+  and a wireframe view style (gusset-render has no wireframe mode; the navigation bar
+  toggles edges instead).
+
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.
 - Dogfooding run 3 (docs/DOGFOODING.md): all 15 findings closed (the render "ticks"
