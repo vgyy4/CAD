@@ -159,6 +159,20 @@ What changed:
 - Left per helical gear: the pipe shell itself (~1 s), the validity check (~1 s), the
   topology summary and mass properties (0.3-1.7 s, once per shape).
 
+### 2026-10-13: the kernel in its worker process (ADR 0022)
+`perf_gears` in release, same container, in-process kernel vs the kernel worker (shapes
+stay in the worker; requests, topology summaries and meshes cross a pipe):
+
+| Step | In process | In the worker |
+|---|---|---|
+| Spur gear 20 / 30 teeth | 1.64 / 2.06 s | 1.75 / 2.14 s |
+| Helical gear 20 / 30 teeth | 5.06 / 7.09 s | 5.39 / 6.43 s |
+| `param.set`, `feature.delete`, undo, queries | 2-21 ms | 2-16 ms |
+
+The process boundary costs 0-6 % on heavy operations (within run-to-run noise) and
+nothing measurable on edits; a worker starts in ~30 ms (`gusset build` of the bracket:
+62 ms in process, 90 ms with the worker).
+
 ## History overhead (2026-10-11)
 
 Each history node used to store a snapshot object listing every feature hash, so a

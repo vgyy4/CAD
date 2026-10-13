@@ -1583,6 +1583,7 @@ dependencies = [
  "gusset-hw",
  "gusset-kernel",
  "gusset-kernel-occt",
+ "gusset-kernel-remote",
  "gusset-kernel-worker",
  "gusset-mcp",
  "gusset-meshio",

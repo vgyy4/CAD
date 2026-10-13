@@ -37,4 +37,5 @@ serde_json.workspace = true
 workspace = true
 
 [dev-dependencies]
+gusset-kernel-remote.workspace = true
 gusset-sketch.workspace = true

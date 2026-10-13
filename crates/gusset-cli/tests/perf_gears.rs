@@ -3,6 +3,9 @@
 //! docs/PERFORMANCE.md:
 //!
 //! `cargo test --release -p gusset-cli --test perf_gears -- --ignored --nocapture`
+//!
+//! Build `gusset-kernel-worker` in release first to also time the kernel in its worker
+//! process (ADR 0022): `cargo build --release -p gusset-kernel-worker`.
 
 #![cfg(gusset_occt)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
@@ -13,9 +16,22 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Instant;
 
-fn session() -> Session {
-    let kernel: Arc<dyn gusset_kernel::Kernel> =
-        Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap_or_else(|e| panic!("OCCT: {e}")));
+/// The kernel worker built next to the test's target directory, if any.
+fn worker() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let w =
+        exe.parent()?.parent()?.join(if cfg!(windows) { "gusset-kernel-worker.exe" } else { "gusset-kernel-worker" });
+    w.is_file().then_some(w)
+}
+
+fn session(in_worker: bool) -> Session {
+    let kernel: Arc<dyn gusset_kernel::Kernel> = match worker().filter(|_| in_worker) {
+        Some(w) => Arc::new(
+            gusset_kernel_remote::RemoteKernel::new("occt", gusset_kernel_worker::connector(w, 4 << 30))
+                .with_native_gate(Box::new(gusset_kernel_worker::OcctGate::next_to_exe())),
+        ),
+        None => Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap_or_else(|e| panic!("OCCT: {e}"))),
+    };
     Session::new(&Document::from_text("gusset 1\nunits mm\n").unwrap(), kernel, &CmdCtx::user(0))
 }
 
@@ -29,9 +45,10 @@ fn timed(s: &mut Session, what: &str, id: &str, args: Value) -> Value {
 #[test]
 #[ignore = "timing report; run in release mode"]
 fn perf_gears_report() {
-    for helix in ["0 deg", "20 deg"] {
-        eprintln!("-- gear pair, helix {helix}");
-        let mut s = session();
+    let modes: &[bool] = if worker().is_some() { &[false, true] } else { &[false] };
+    for (&in_worker, helix) in modes.iter().flat_map(|m| [(m, "0 deg"), (m, "20 deg")]) {
+        eprintln!("-- gear pair, helix {helix}, kernel {}", if in_worker { "in its worker" } else { "in process" });
+        let mut s = session(in_worker);
         let r = timed(&mut s, "generate.gear 20 teeth", "generate.gear", json!({"teeth": "20", "helix": helix}));
         assert_eq!(r["rebuild_ok"], true, "{r}");
         let r = timed(&mut s, "generate.gear 30 teeth", "generate.gear", json!({"teeth": "30", "helix": helix}));
