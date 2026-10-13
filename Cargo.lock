@@ -1691,6 +1691,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-kernel-worker"
+version = "0.1.0-mvp"
+dependencies = [
+ "gusset-hw",
+ "gusset-kernel",
+ "gusset-kernel-occt",
+ "gusset-kernel-remote",
+ "gusset-occt-sys",
+ "gusset-sandbox",
+]
+
+[[package]]
 name = "gusset-mcp"
 version = "0.1.0-mvp"
 dependencies = [

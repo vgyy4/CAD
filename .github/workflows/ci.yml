@@ -165,13 +165,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: occt-${{ matrix.name }}
-      - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker --all-targets --locked -- -D warnings
+      - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker -p gusset-kernel-worker --all-targets --locked -- -D warnings
       # The CLI tests run `gusset`, which starts `gusset-worker` from its own directory.
-      - run: cargo build -p gusset-cli -p gusset-worker --bins --locked
+      - run: cargo build -p gusset-cli -p gusset-worker -p gusset-kernel-worker --bins --locked
       - name: Put the OCCT DLLs next to the binaries (Windows)
         if: runner.os == 'Windows'
         # The binaries are linked with /DEPENDENTLOADFLAG (System32 + application
         # directory only, security review #2), so PATH is not searched for them.
         run: cp "$RUNNER_TEMP"/occt-install/bin/*.dll target/debug/
       - run: cargo test -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker --locked
+      # The kernel worker process, including crashes it must survive (ADR 0022 §5).
+      - run: cargo test -p gusset-kernel-worker --features fault-injection --locked
       - run: cargo run -p gusset-cli --locked -- self-test

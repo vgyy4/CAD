@@ -3,8 +3,10 @@
 
 use crate::frame::{REQUEST_MAGIC, RESPONSE_MAGIC, read_frame, write_frame};
 use crate::proto::{Fault, Reply, Request, VERSION};
+#[cfg(not(feature = "fault-injection"))]
+use gusset_kernel::KernelErrorKind;
 use gusset_kernel::wire::{NoShapes, ShapeRefs, WireError};
-use gusset_kernel::{Kernel, KernelError, KernelErrorKind, Shape};
+use gusset_kernel::{Kernel, KernelError, Shape};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -117,6 +119,7 @@ fn inject(f: Fault) -> Result<Reply, KernelError> {
     match f {
         Fault::Abort => std::process::abort(),
         Fault::StackOverflow => {
+            #[allow(unconditional_recursion)] // the point: overflow the stack
             fn deeper(n: u64) -> u64 {
                 let pad = std::hint::black_box([n; 64]);
                 deeper(n + 1).wrapping_add(pad.iter().sum::<u64>())

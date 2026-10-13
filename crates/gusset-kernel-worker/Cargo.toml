@@ -1,0 +1,28 @@
+[package]
+name = "gusset-kernel-worker"
+description = "The geometry kernel in its own sandboxed process, and the app side that runs it (ADR 0022)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "gusset-kernel-worker"
+path = "src/main.rs"
+
+[features]
+# Test-only fault requests (ADR 0022 §5). Never in release builds.
+fault-injection = ["gusset-kernel-remote/fault-injection"]
+
+[dependencies]
+gusset-kernel.workspace = true
+gusset-kernel-remote.workspace = true
+gusset-kernel-occt.workspace = true
+gusset-occt-sys.workspace = true
+gusset-sandbox.workspace = true
+gusset-hw.workspace = true
+
+[lints]
+workspace = true
