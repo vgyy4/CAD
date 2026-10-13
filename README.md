@@ -41,3 +41,19 @@ claude mcp add --transport http gusset http://127.0.0.1:<port>/mcp \
 The app can revoke the token at once (kill switch) and switch agents to read-only mode.
 Agents never get shell, network or settings access, and file commands stay inside the
 project folder. Read `gusset://project/security-guidelines` for the rules agents follow.
+
+## Heavy or impossible operations
+
+The geometry kernel runs in its own sandboxed process (`gusset-kernel-worker`, ADR 0022)
+with a memory budget of 3/4 of your RAM. When an operation is too heavy for the machine,
+or the kernel crashes on it, only that feature fails, with the reason (for example "the
+geometry kernel crashed while building Fillet1 (segmentation fault)" or "ran out of
+memory"); the app stays open and the rest of the model is rebuilt. A feature that crashed
+is not tried again until you change it or something before it.
+
+While a rebuild runs, the status bar names the feature being built and offers **Stop**,
+which ends even an operation that would never finish. Agents get the same protection:
+an MCP request that runs longer than 5 minutes is stopped and undone, with a
+`deadline_exceeded` error. `gusset self-test` reports whether the kernel runs in its
+worker process; `GUSSET_KERNEL_IN_PROCESS=1` runs it inside the app instead (for
+debugging; then a kernel crash closes the app).
