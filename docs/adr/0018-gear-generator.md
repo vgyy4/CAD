@@ -60,13 +60,31 @@ at the base circle shrinks by `b / (m_n z)` per flank).
   and the root circle tangentially; the flat tip of the rack gives the root circle.
 * **Undercut**: when the rack flank reaches below the tangent point of the line of action
   (`D_J > r sin^2 alpha`) the foot of the involute would be cut away and the profile is not a
-  clean involute plus fillet. The generator refuses (also while editing parameters) with a hint
-  naming the smallest tooth count and the profile shift that fix it. Other geometric limits are
-  checked the same way: pointed teeth, a fillet that folds over itself or leaves no root land,
-  a rack tip with no flat (pressure angle too large for the chosen fillet), a bore too large for the
-  root circle. All are `invalid_args` with a hint; when a later parameter edit makes the gear
-  impossible, the sketch reports the parameter that failed (e.g. `acos()` of a value above 1 in
-  `gear1_flank_roll`) and the rebuild goes on.
+  clean involute plus fillet. The generator refuses with a hint naming the smallest tooth count
+  and the profile shift that fix it. Other geometric limits are checked the same way: pointed
+  teeth (a tip land below 0.1 m; below 0.25 m the generator warns, `warnings` in its result,
+  because narrow tips chip, especially on hardened gears), a fillet that folds over itself or
+  leaves no root land, a rack tip with no flat (pressure angle too large for the chosen fillet),
+  a bore too large for the root circle. All are `invalid_args` with a hint.
+* **Parameter edits are checked the same way** (review v0.2 M1, 2026-10-13). The first
+  version relied on the derived parameters failing (`acos()` of a value above 1 in
+  `gear1_flank_roll`); that never happens: `R(D)^2 = (r - D)^2 + D^2 / tan^2 a` is smallest
+  at `D = r sin^2 a`, where `R = r cos a = r_b`, so the `acos` argument never exceeds 1 and an
+  undercut gear solved to a wrong profile without a word. Now the profile sketch carries the
+  key `gear: <prefix>` (`gear1`), and the evaluator runs the generator's checks
+  (`gusset_eval::gear`, the same code) before solving it, on every rebuild: an impossible edit
+  fails the sketch with error code `invalid_gear` and the generator's message and hint. The
+  checked parameters are `<prefix>_module`, `_teeth`, `_pressure_angle`, `_shift`, `_backlash`,
+  `_fillet`, `_bore` and `_transverse_module`; the helix angle is taken from `cos(beta) = m /
+  m_t`, i.e. as the sketch sees it (a spur gear has no `_helix` parameter and its sketch uses
+  `m_t = m`). They count as parameters of the sketch, so the incremental evaluator re-checks
+  when one changes and they cannot be deleted while the key is there. The key is explicit
+  text, not a naming convention: removing it turns the check off, renaming the parameters
+  without it is an "unknown parameter" error. Alternatives rejected: a guard parameter whose
+  expression fails (`sqrt()` of a negative margin) gives "sqrt() of a negative value" instead
+  of the hint, and the hint's numbers (smallest tooth count, smallest shift) come from a
+  search no expression can express; recognising gears by parameter names would be hidden
+  semantics.
 
 ### 4. The sketch is driven by the parameters
 Fit points cannot be solver variables with expressions, but their position can be constrained in
@@ -80,6 +98,12 @@ gear1_teeth` repeats one tooth, and the bore is a circle with `diameter(c, gear1
 Result: the sketch is well constrained (0 DOF, no redundant constraint, tested), editing
 `gear1_module`, `gear1_teeth`, `gear1_shift`, ... in the parameter table reshapes the teeth, and
 the region to extrude is named by the curve with the smallest id on its outline.
+
+Edits in either direction solve from the coordinates stored at generation time, however far
+they go (tested: 30 → 28 and 100 → 20 teeth, 20 → 100 teeth, module 2 → 1 mm and 2 → 5 mm,
+as parameter edits and as text): the solver holds the fixed centre while it iterates and falls
+back to dimension continuation (ADR 0016 §5, review v0.2 H1). Parameter edits do not write the
+solved coordinates back into the sketch.
 
 The flanks are Catmull-Rom splines (ADR 0016 §3), two per flank, one for the fillet and one for
 the involute: their curvature jumps where they meet, which a single spline would smooth over

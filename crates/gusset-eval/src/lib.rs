@@ -14,6 +14,7 @@
 
 mod datum;
 pub mod error;
+pub mod gear;
 mod hole;
 mod ops;
 mod pattern;
@@ -801,7 +802,7 @@ fn line_axis(feature: &str, sketch: &str, entity: &str, sv: &Solved) -> Result<(
     })?;
     let (a, b) = *pts;
     let d = [b[0] - a[0], b[1] - a[1]];
-    if d[0].hypot(d[1]) < 1e-9 {
+    if libm::hypot(d[0], d[1]) < 1e-9 {
         return Err(EvalError::new(feature, ErrorCode::InvalidReference, "the axis line has zero length"));
     }
     Ok((a, d))

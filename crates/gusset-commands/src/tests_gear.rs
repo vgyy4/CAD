@@ -1,7 +1,9 @@
 //! The `generate.gear` command (mock kernel: the sketch is solved and its regions measured;
 //! solids need OCCT, see gusset-cli/tests/modeling_gear.rs).
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 
-use crate::gear::{GearValues, Geometry};
+use crate::gear::{self, GearValues, Geometry};
 use crate::*;
 use gusset_doc::Document;
 use gusset_eval::SketchStatus;
@@ -231,4 +233,139 @@ fn bad_options_are_clean_errors() {
     // Names that are taken.
     let e = fail(&mut s, json!({"name": "Gear1"}));
     assert!(e.contains("already exists"), "{e}");
+}
+
+/// Replaces `param <name> = ...` in the code view text (no stored solution: the evaluator
+/// must reach the new shape from the generation-time coordinates).
+fn set_param_text(s: &mut Session, name: &str, value: &str) {
+    let t = text(s);
+    let start = t.find(&format!("param {name} = ")).unwrap();
+    let end = start + t[start..].find("  #").unwrap();
+    let new = format!("{}param {name} = {value}{}", &t[..start], &t[end..]);
+    run(s, "document.set_text", json!({ "text": new }));
+}
+
+/// Review v0.2 H1: edits that make the gear smaller (and large jumps either way) solve,
+/// whether the change comes as a parameter edit or as text.
+#[test]
+fn smaller_and_far_parameter_edits_solve() {
+    let cases: [(&str, &str, &str, f64, u32); 9] = [
+        ("20", "gear1_teeth", "18", 2.0, 18),
+        ("30", "gear1_teeth", "28", 2.0, 28),
+        ("30", "gear1_teeth", "20", 2.0, 20),
+        ("100", "gear1_teeth", "95", 2.0, 95),
+        ("100", "gear1_teeth", "20", 2.0, 20),
+        ("20", "gear1_teeth", "100", 2.0, 100),
+        ("20", "gear1_module", "1.5 mm", 1.5, 20),
+        ("20", "gear1_module", "1 mm", 1.0, 20),
+        ("20", "gear1_module", "5 mm", 5.0, 20),
+    ];
+    for by_text in [true, false] {
+        for (start, name, value, module, teeth) in cases {
+            let mut s = session();
+            run(&mut s, "generate.gear", json!({ "teeth": start }));
+            let t0 = std::time::Instant::now();
+            if by_text {
+                set_param_text(&mut s, name, value);
+            } else {
+                run(&mut s, "param.set", json!({ "name": name, "expr": value }));
+            }
+            let area = tooth_area(&mut s, "Gear1_profile");
+            let want = reference_area(&GearValues { module, ..defaults(teeth) }, 6.0);
+            assert!((area - want).abs() < 0.1 * module, "{start} -> {name} = {value}: {area} vs {want}");
+            eprintln!("{start} -> {name} = {value} (text {by_text}): {:?}", t0.elapsed());
+        }
+    }
+}
+
+/// The evaluation error of the profile sketch `Gear1_profile`, if any.
+fn profile_error(s: &mut Session) -> Option<gusset_eval::EvalError> {
+    let ev = s.evaluate(&Actor::User).unwrap();
+    ev.errors().into_iter().find(|e| e.feature == "Gear1_profile").cloned()
+}
+
+/// Review v0.2 M1: an edit that makes the gear impossible fails the profile sketch with
+/// the generator's message and hint, on every rebuild, instead of solving to a wrong
+/// profile.
+#[test]
+fn impossible_parameter_edits_fail_with_the_generator_hint() {
+    let mut s = session();
+    run(&mut s, "generate.gear", json!({"teeth": "12", "shift": "0.4"}));
+    assert!(text(&s).contains("sketch Gear1_profile (plane: XY, next_id: ") && text(&s).contains(", gear: gear1)"));
+    assert!(profile_error(&mut s).is_none());
+    let v12 = GearValues { shift: 0.4, ..defaults(12) };
+    // Undercut by a smaller shift: still well constrained before this check existed.
+    for (name, value, v) in [
+        ("gear1_shift", "0.25", GearValues { shift: 0.25, ..v12 }),
+        ("gear1_shift", "0.2", GearValues { shift: 0.2, ..v12 }),
+        ("gear1_teeth", "9", GearValues { teeth: 9, shift: 0.2, ..v12 }),
+    ] {
+        run(&mut s, "param.set", json!({"name": name, "expr": value}));
+        let e = profile_error(&mut s).unwrap_or_else(|| panic!("{name} = {value} should fail"));
+        let want = Geometry::new(&v).unwrap_err();
+        assert_eq!(e.code, gusset_eval::ErrorCode::InvalidGear);
+        assert!(e.message.contains("undercut"), "{e:?}");
+        assert_eq!((e.message.as_str(), e.hint.as_deref()), (want.message.as_str(), Some(want.hint.as_str())));
+    }
+    // The hint's way out works.
+    run(&mut s, "param.set", json!({"name": "gear1_teeth", "expr": "12"}));
+    run(&mut s, "param.set", json!({"name": "gear1_shift", "expr": "0.4"}));
+    assert!(profile_error(&mut s).is_none());
+    let _ = tooth_area(&mut s, "Gear1_profile");
+    // Pointed teeth, a bore that does not fit, a tooth count that is not whole.
+    for (name, value, why) in [
+        ("gear1_shift", "1.5", "point"),
+        ("gear1_bore", "24 mm", "bore"),
+        ("gear1_teeth", "12.5", "whole number"),
+        ("gear1_fillet", "0.7", "fillet"),
+    ] {
+        let before = text(&s);
+        run(&mut s, "param.set", json!({"name": name, "expr": value}));
+        let e = profile_error(&mut s).unwrap_or_else(|| panic!("{name} = {value} should fail"));
+        assert!(e.message.contains(why) && e.hint.is_some(), "{name}: {e:?}");
+        run(&mut s, "document.set_text", json!({ "text": before }));
+        assert!(profile_error(&mut s).is_none());
+    }
+    // The checked parameters are in use: deleting one is refused.
+    let e = execute(&mut s, &CmdCtx::user(1), "param.delete", json!({"name": "gear1_backlash"})).unwrap_err();
+    assert!(format!("{e:?}").contains("Gear1_profile"), "{e:?}");
+}
+
+/// The check sees a helical gear's transverse profile, as its sketch does.
+#[test]
+fn helical_gears_are_checked_in_the_transverse_plane() {
+    let mut s = session();
+    run(&mut s, "generate.gear", json!({"teeth": "16", "helix": "30 deg"}));
+    assert!(profile_error(&mut s).is_none());
+    let _ = tooth_area(&mut s, "Gear1_profile");
+    // The transverse pressure angle of a helical gear is larger, so it can have fewer teeth
+    // than a spur gear before undercut sets in.
+    let hel = GearValues { helix: 30f64.to_radians(), ..defaults(16) };
+    let (zh, zs) = (gear::min_teeth(&hel), gear::min_teeth(&defaults(16)));
+    assert!(zh < zs && zh > 7, "{zh} {zs}");
+    run(&mut s, "param.set", json!({"name": "gear1_teeth", "expr": zh.to_string()}));
+    assert!(profile_error(&mut s).is_none());
+    run(&mut s, "param.set", json!({"name": "gear1_teeth", "expr": (zh - 1).to_string()}));
+    let e = profile_error(&mut s).expect("undercut");
+    let want = Geometry::new(&GearValues { teeth: zh - 1, ..hel }).unwrap_err();
+    assert_eq!((e.message, e.hint), (want.message, Some(want.hint)));
+}
+
+/// Review v0.2 L9: a tip land between the hard limit (0.1 m) and 0.25 m is generated with a
+/// warning.
+#[test]
+fn narrow_tip_lands_are_warned_about() {
+    let mut s = session();
+    let r = run(&mut s, "generate.gear", json!({}));
+    assert_eq!(r["warnings"], json!([]));
+    let shift = (10..40)
+        .map(|k| f64::from(k) * 0.05)
+        .find(|&x| {
+            Geometry::new(&GearValues { shift: x, ..defaults(20) })
+                .is_ok_and(|g| g.tip_land() < gear::NARROW_TIP_LAND * 2.0)
+        })
+        .unwrap();
+    let r = run(&mut s, "generate.gear", json!({"shift": format!("{shift}"), "name": "Thin"}));
+    let w = r["warnings"].to_string();
+    assert!(w.contains("tip land") && w.contains("profile shift"), "{w}");
 }

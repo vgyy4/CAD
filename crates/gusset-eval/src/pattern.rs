@@ -81,7 +81,7 @@ pub(crate) fn derive(
             SkPatternKind::Linear { dx, dy } => {
                 let dx = crate::eval_expr(name, dx, Dim::LENGTH, params, units)?;
                 let dy = crate::eval_expr(name, dy, Dim::LENGTH, params, units)?;
-                if dx.hypot(dy) < 1e-9 {
+                if libm::hypot(dx, dy) < 1e-9 {
                     return Err(sketch_err(name, pat, "the spacing is zero, so the copies would overlap".into())
                         .with_hint("give dx and/or dy a non-zero length"));
                 }

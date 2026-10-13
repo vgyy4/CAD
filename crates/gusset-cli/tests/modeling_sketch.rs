@@ -2,7 +2,7 @@
 //! persistent names across parameter edits. Mock-kernel coverage lives in gusset-commands.
 
 #![cfg(gusset_occt)]
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::disallowed_methods)]
 
 use gusset_commands::{CmdCtx, Session, execute};
 use serde_json::{Value, json};

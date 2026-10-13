@@ -1,6 +1,6 @@
 // Integration-test helpers live outside `#[test]` functions, where clippy.toml's
 // `allow-*-in-tests` settings do not reach; this file is test-only code.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp, clippy::disallowed_methods)]
 
 mod common;
 
@@ -8,7 +8,7 @@ use common::{Rect, Rng, close, rect};
 use core::f64::consts::PI;
 use gusset_sketch::{
     Constraint as C, Drag, EntityId, Geom, Sketch, SolveError, SolveOptions, SolveResult, SolveStatus, solve,
-    solve_drag,
+    solve_continued, solve_drag,
 };
 use std::time::{Duration, Instant};
 
@@ -559,4 +559,108 @@ fn perturbed_well_constrained_sketches_converge_back() {
         }
         assert!((res.sketch.radius(circ).unwrap() - radius).abs() < 1e-9);
     }
+}
+
+/// A fan of points placed in polar coordinates about a fixed centre (like the generated
+/// gear sketch, review v0.2 H1): `distance(centre, p)` and `angle(axis, ray)` for each.
+/// Drawn with radii `r0` and angles `a0`, constrained to `r1` and `a1`.
+fn polar_fan(n: usize, r0: f64, a0: f64, r1: f64, a1: f64) -> (Sketch, EntityId, Vec<EntityId>) {
+    let mut s = Sketch::new();
+    let centre = s.add_point([0.0, 0.0]).unwrap();
+    let on_x = s.add_point([1.0, 0.0]).unwrap();
+    let axis = s.add_line_between(centre, on_x).unwrap();
+    s.add_constraint(C::Fixed(centre)).unwrap();
+    s.add_constraint(C::Fixed(on_x)).unwrap();
+    let mut pts = Vec::new();
+    for i in 0..n {
+        let k = 1.0 + i as f64 / n as f64;
+        let (r, a) = (r0 * k, a0 * k);
+        let p = s.add_point([r * a.cos(), r * a.sin()]).unwrap();
+        let ray = s.add_line_between(centre, p).unwrap();
+        s.add_constraint(C::Distance { a: centre, b: p, value: r1 * k }).unwrap();
+        s.add_constraint(C::Angle { a: axis, b: ray, value: a1 * k }).unwrap();
+        pts.push(p);
+    }
+    (s, centre, pts)
+}
+
+/// Review v0.2 H1: shrinking a polar sketch to a third pulled the "fixed" centre away
+/// (it is shared by every distance), ending in a false conflict. Fixed unknowns are
+/// held during the iteration now.
+#[test]
+fn fixed_points_hold_when_a_polar_sketch_shrinks() {
+    for (r1, a1) in [(10.0, -0.05), (3.0, -0.2), (60.0, 0.4)] {
+        let (s, centre, pts) = polar_fan(120, 30.0, -0.1, r1, a1);
+        let res = solve(&s, &opts());
+        assert_eq!(res.status, SolveStatus::WellConstrained, "{r1}: {:?} {:?}", res.error, res.conflicting.len());
+        assert_eq!(pos(&res, centre), [0.0, 0.0]);
+        for (i, p) in pts.iter().enumerate() {
+            let k = 1.0 + i as f64 / pts.len() as f64;
+            let q = pos(&res, *p);
+            assert!(close(q, [r1 * k * (a1 * k).cos(), r1 * k * (a1 * k).sin()], 1e-7), "{i}: {q:?}");
+        }
+    }
+}
+
+/// A chain of links with a fixed start, each link turned by `to` against the previous one,
+/// drawn turned by `from`.
+fn curl(n: usize, from: f64, to: f64) -> (Sketch, Vec<EntityId>) {
+    let mut s = Sketch::new();
+    let mut pts = vec![s.add_point([0.0, 0.0]).unwrap()];
+    let (mut dir, mut p) = (0.0f64, [0.0f64, 0.0]);
+    for _ in 0..n {
+        p = [p[0] + 10.0 * dir.cos(), p[1] + 10.0 * dir.sin()];
+        pts.push(s.add_point(p).unwrap());
+        dir += from;
+    }
+    s.add_constraint(C::Fixed(pts[0])).unwrap();
+    let mut lines = Vec::new();
+    for w in pts.windows(2) {
+        let l = s.add_line_between(w[0], w[1]).unwrap();
+        s.add_constraint(C::Distance { a: l, b: l, value: 10.0 }).unwrap();
+        lines.push(l);
+    }
+    s.add_constraint(C::Horizontal(lines[0])).unwrap();
+    for w in lines.windows(2) {
+        s.add_constraint(C::Angle { a: w[0], b: w[1], value: to }).unwrap();
+    }
+    (s, pts)
+}
+
+/// Review v0.2 H1: dimension continuation reaches shapes far from the stored geometry
+/// that one damped solve from the stored positions does not, and the result depends
+/// only on the sketch.
+#[test]
+fn continuation_reaches_far_dimension_changes() {
+    for (n, from, to) in [(20, 0.1, 2.5), (30, 0.0, 0.3)] {
+        let (s, pts) = curl(n, from, to);
+        let res = solve_continued(&s, &opts());
+        assert_eq!(res.status, SolveStatus::WellConstrained, "{n}: {:?}", res.error);
+        // The exact shape: each link turned by `to` more than the one before.
+        let (mut dir, mut p) = (0.0f64, [0.0f64, 0.0]);
+        for (i, q) in pts.iter().enumerate().skip(1) {
+            p = [p[0] + 10.0 * dir.cos(), p[1] + 10.0 * dir.sin()];
+            assert!(close(pos(&res, *q), p, 1e-6), "{n} point {i}: {:?} vs {p:?}", pos(&res, *q));
+            dir += to;
+        }
+        // Same sketch, same result, bit for bit.
+        assert_eq!(solve_continued(&s, &opts()), res);
+        // Constraint values are the requested ones, not a continuation step's.
+        assert_eq!(res.sketch.constraints(), s.constraints());
+    }
+    // A sketch the direct solve handles is returned as is.
+    let (s, _) = curl(5, 0.1, 0.2);
+    assert_eq!(solve_continued(&s, &opts()), solve(&s, &opts()));
+}
+
+/// A real conflict stays a conflict, with the direct solve's analysis.
+#[test]
+fn continuation_keeps_real_conflicts() {
+    let mut s = Sketch::new();
+    let r = skewed_rect(&mut s);
+    s.add_constraint(C::Distance { a: r.l[1], b: r.l[1], value: 20.0 }).unwrap();
+    s.add_constraint(C::Distance { a: r.p[0], b: r.p[1], value: 30.0 }).unwrap();
+    let res = solve_continued(&s, &opts());
+    assert_eq!(res, solve(&s, &opts()));
+    assert_eq!(res.status, SolveStatus::OverConstrained);
 }

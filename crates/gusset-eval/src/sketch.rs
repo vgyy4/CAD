@@ -178,8 +178,11 @@ pub(crate) fn solve_sketch(
     frame: Frame,
 ) -> Result<Solved, EvalError> {
     let err = |code, msg: String| EvalError::new(name, code, msg);
+    if let Some(prefix) = &def.gear {
+        crate::gear::check_sketch(name, prefix, params, units)?;
+    }
     let Built { s, back, cback, .. } = build(name, def, params, units)?;
-    let r = sk::solve(&s, &sk::SolveOptions::default());
+    let r = sk::solve_continued(&s, &sk::SolveOptions::default());
     let names = |v: &[sk::EntityId]| v.iter().filter_map(|i| back.get(i).map(|s| (*s).to_string())).collect::<Vec<_>>();
     let cnames =
         |v: &[sk::ConstraintId]| v.iter().filter_map(|i| cback.get(i).map(|s| (*s).to_string())).collect::<Vec<_>>();
@@ -623,7 +626,7 @@ pub fn trim_plan(
         err(ErrorCode::InvalidReference, format!("'{entity}' cannot be trimmed: it is not a line, arc or circle"))
             .with_hint("pick a line, arc or circle that is not construction geometry (splines cannot be trimmed)")
     };
-    let solved = sk::solve(&s, &sk::SolveOptions::default());
+    let solved = sk::solve_continued(&s, &sk::SolveOptions::default());
     if solved.status == sk::SolveStatus::Failed {
         return Err(err(ErrorCode::SketchSolve, "the sketch could not be solved".to_string()));
     }

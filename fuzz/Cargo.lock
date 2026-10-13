@@ -212,6 +212,7 @@ dependencies = [
  "gusset-store",
  "gusset-units",
  "libc",
+ "libm",
  "schemars",
  "serde",
  "serde_json",
@@ -282,6 +283,7 @@ name = "gusset-meshio"
 version = "0.1.0-mvp"
 dependencies = [
  "gusset-kernel",
+ "libm",
  "miniz_oxide",
  "quick-xml",
 ]

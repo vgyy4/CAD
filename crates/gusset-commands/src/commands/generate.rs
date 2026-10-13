@@ -153,11 +153,21 @@ impl Command for GenerateGear {
                 bore: value("bore", Dim::LENGTH)?,
             };
             let helical = v.helix != 0.0;
+            if !(v.face_width > 0.0 && v.face_width.is_finite()) {
+                return Err(
+                    CommandError::args("the face width must be positive").hint("give the gear a width such as 10 mm")
+                );
+            }
             let g = gear::Geometry::new(&v).map_err(|e| CommandError::args(e.message).hint(e.hint))?;
-            if v.bore < 0.0 || (v.bore > 0.0 && v.bore / 2.0 > g.root_radius - 0.25 * v.module) {
-                let max = 2.0 * (g.root_radius - 0.25 * v.module);
-                return Err(CommandError::args(format!("bore {} mm does not fit inside the root circle", v.bore))
-                    .hint(format!("use a bore of 0 (solid) up to {:.2} mm", max.max(0.0))));
+            gear::check_bore(&v, &g).map_err(|e| CommandError::args(e.message).hint(e.hint))?;
+            let mut warnings: Vec<String> = Vec::new();
+            if g.tip_land() < gear::NARROW_TIP_LAND * v.module {
+                warnings.push(format!(
+                    "the tip land is only {:.3} mm ({:.2} x module): narrow tips chip easily, especially on hardened \
+                     gears; a smaller profile shift or less backlash widens it",
+                    g.tip_land(),
+                    g.tip_land() / v.module
+                ));
             }
             let flank = gear::choose_flank(&g).map_err(|e| CommandError::args(e.message).hint(e.hint))?;
             let sketch = gear::profile_sketch(&nm, &g, &flank, v.bore / 2.0)
@@ -256,6 +266,7 @@ impl Command for GenerateGear {
                 "root_diameter_mm": 2.0 * g.root_radius,
                 "flank_points": flank.points.len(),
                 "flank_error_mm": flank.error,
+                "warnings": warnings,
             }))
         })
     }
@@ -290,5 +301,6 @@ fn path_sketch(nm: &Names, face_width: f64) -> Result<SketchDef, CommandError> {
             constraint("k6", SkConstraintKind::Distance, &["l3", "l3"], Some(&nm.n("face_width")))?,
         ],
         patterns: Vec::new(),
+        gear: None,
     })
 }

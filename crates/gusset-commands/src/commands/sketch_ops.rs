@@ -456,7 +456,7 @@ impl Command for SketchPattern {
                     let dy = parse_expr("dy", self.dy.as_deref().unwrap_or("0 mm"))?;
                     let (x, y) =
                         (eval("dx", &dx, gusset_units::Dim::LENGTH)?, eval("dy", &dy, gusset_units::Dim::LENGTH)?);
-                    if x.hypot(y) < 1e-9 {
+                    if libm::hypot(x, y) < 1e-9 {
                         return Err(CommandError::args("dx and dy are both zero, so the copies would overlap")
                             .hint("give a spacing, for example dx: 10 mm"));
                     }

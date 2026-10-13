@@ -29,6 +29,12 @@ cargo +nightly run --release --example make_seeds -- seeds   # seed corpus
 cargo +nightly fuzz run doc_text corpus/doc_text seeds/doc_text
 ```
 
+The `doc_text` seeds are the example documents of `crates/gusset-doc/src/grammar.md` plus the
+files in `seeds-src/doc_text/` (v0.2 statements and face keys, and a generated helical gear);
+`gusset-doc/tests/fuzz_seeds.rs` checks that they parse, print to a fixed point and use every
+v0.2 statement. Add a file there when the grammar grows. `corpus/` is the fuzzer's own working
+corpus (kept by CI between runs, not in git).
+
 CI (`.github/workflows/fuzz-miri.yml`) runs every target for 60 s on each push and
 pull request, and for 20 min nightly, which also keeps a minimized corpus. Crashing
 inputs are uploaded as workflow artifacts. Add a regression unit test in the owning

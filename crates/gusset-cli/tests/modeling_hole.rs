@@ -4,7 +4,7 @@
 //! text, commands) lives in the other crates.
 
 #![cfg(gusset_occt)]
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp, clippy::disallowed_methods)]
 
 use gusset_commands::{CmdCtx, Session, execute};
 use gusset_doc::Document;

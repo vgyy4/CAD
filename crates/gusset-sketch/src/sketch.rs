@@ -642,6 +642,22 @@ impl Sketch {
         Ok(id)
     }
 
+    /// Changes the value of the dimension (distance, angle, radius, diameter) at `index`
+    /// into [`Sketch::constraints`], unchecked: for the solver's continuation, which only
+    /// sets values between two valid ones.
+    pub(crate) fn set_dimension_value(&mut self, index: usize, v: f64) {
+        if let Some((
+            _,
+            Constraint::Distance { value, .. }
+            | Constraint::Angle { value, .. }
+            | Constraint::Radius { value, .. }
+            | Constraint::Diameter { value, .. },
+        )) = self.constraints.get_mut(index)
+        {
+            *value = v;
+        }
+    }
+
     /// Removes a constraint and returns it.
     pub fn remove_constraint(&mut self, id: ConstraintId) -> Result<Constraint, SketchError> {
         let i = self.constraints.binary_search_by_key(&id, |c| c.0).map_err(|_| SketchError::UnknownConstraint(id))?;

@@ -1,3 +1,5 @@
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 use super::*;
 use gusset_kernel::mock::MockKernel;
 

@@ -69,7 +69,7 @@ impl Dims {
 
     /// Depth of the countersink cone below the mouth.
     pub fn countersink_depth(&self) -> Option<f64> {
-        self.countersink.map(|(d, a)| (d - self.diameter) / 2.0 / (a / 2.0).tan())
+        self.countersink.map(|(d, a)| (d - self.diameter) / 2.0 / libm::tan(a / 2.0))
     }
 
     /// How deep the counterbore or countersink goes.
@@ -82,7 +82,7 @@ impl Dims {
 
     /// Height of the drill-point cone (0 for a flat end).
     pub fn point_height(&self) -> f64 {
-        if self.point_angle >= PI - 1e-9 { 0.0 } else { self.diameter / 2.0 / (self.point_angle / 2.0).tan() }
+        if self.point_angle >= PI - 1e-9 { 0.0 } else { self.diameter / 2.0 / libm::tan(self.point_angle / 2.0) }
     }
 
     /// The closed outline of the hole's tool in (radius, depth) coordinates, counter-clockwise,
@@ -504,7 +504,7 @@ fn mouth_in_face(mesh: &Mesh, fi: u32, frame: &Frame, centre: V3, radius: f64) -
     inside(c)
         && (0..SAMPLES).all(|i| {
             let a = TAU * i as f64 / SAMPLES as f64;
-            inside([c[0] + r * a.cos(), c[1] + r * a.sin()])
+            inside([c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)])
         })
 }
 
@@ -512,7 +512,7 @@ fn mouth_in_face(mesh: &Mesh, fi: u32, frame: &Frame, centre: V3, radius: f64) -
 fn in_triangle(p: [f64; 2], t: &[[f64; 2]; 3]) -> bool {
     let side = |a: [f64; 2], b: [f64; 2]| {
         let (e, w) = ([b[0] - a[0], b[1] - a[1]], [p[0] - a[0], p[1] - a[1]]);
-        let len = e[0].hypot(e[1]).max(1e-12);
+        let len = libm::hypot(e[0], e[1]).max(1e-12);
         (e[0] * w[1] - e[1] * w[0]) / len
     };
     let s = [side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0])];

@@ -1,0 +1,49 @@
+gusset 1
+units mm
+
+param holes = 4
+param r = 30 mm
+
+sketch Plate (plane: XY, next_id: 9) {
+  p1 = point(-40, -40)
+  p2 = point(40, -40)
+  p3 = point(40, 40)
+  p4 = point(-40, 40)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Plate, distance: 8 mm, op: new, body_name: Base)
+
+sketch Sites (plane: Extrude1/cap(end), next_id: 12) {
+  p1 = point(0, 0)
+  p2 = point(30, 0)
+  p3 = point(10, 10) construction
+  p4 = point(20, -10)
+  p5 = point(25, 5)
+  s6 = spline(p3, p4, p5)
+  s7 = spline(p1, p4, p5, p3) closed
+  c8 = circle(p2, 1)
+  k9 = fixed(p1)
+  k10 = distance(p1, p2, r)
+  g11 = pattern_circular(of: [c8], center: p1, count: holes, angle: 360 deg)
+}
+
+hole Hole1 (face: Extrude1/cap(end), points: Sites, type: simple, diameter: 3 mm, depth: 5 mm, point_angle: 180 deg)
+
+hole Hole2 (face: Extrude1/cap(start), at: [[-30 mm, -30 mm]], type: countersink, diameter: 4.5 mm, through: true, csink_diameter: 9 mm, csink_angle: 90 deg)
+
+fillet Fillet1 (edges: [edge(Hole1/wall(c8_2), Extrude1/cap(end))], radius: 0.3 mm)
+
+sketch Lines (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(10, 0)
+  l3 = line(p1, p2)
+  g4 = pattern_linear(of: [l3], count: 3, dx: 0 mm, dy: 5 mm)
+  p5 = point(0, 20)
+  p6 = point(10, 20)
+  p8 = point(20, 25)
+  s7 = spline(p5, p6, p8)
+}

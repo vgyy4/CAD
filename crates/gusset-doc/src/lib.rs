@@ -425,6 +425,31 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         }
     }
 
+    /// Review v0.2 M1: the profile sketch of a generated gear names its gear's parameter
+    /// prefix; the gear's inputs count as parameters the sketch uses.
+    #[test]
+    fn gear_sketches_name_their_parameters() {
+        let params = ["module", "teeth", "pressure_angle", "shift", "backlash", "fillet", "bore", "transverse_module"];
+        let mut ok = String::from("gusset 1\nunits mm\n\n");
+        for p in params {
+            ok.push_str(&format!("param g1_{p} = 1\n"));
+        }
+        ok.push_str("\nsketch S (plane: XY, next_id: 2, gear: g1, label: \"teeth\") {\n  p1 = point(0, 0)\n}\n");
+        let doc = Document::from_text(&ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(s.gear.as_deref(), Some("g1"));
+        let want: Vec<String> = params.iter().map(|p| format!("g1_{p}")).collect();
+        assert_eq!(doc.features[0].kind.parameters(), want);
+        let e = Document::from_text(&ok.replace("param g1_shift = 1\n", "")).unwrap_err().to_string();
+        assert!(e.contains("unknown parameter 'g1_shift'"), "{e}");
+        let e = Document::from_text(&ok.replace("gear: g1", "gear: 1g")).unwrap_err().to_string();
+        assert!(!e.is_empty());
+        // Without the key nothing extra is used.
+        let plain = Document::from_text(&ok.replace(", gear: g1", "")).unwrap();
+        assert!(plain.features[0].kind.parameters().is_empty());
+    }
+
     #[test]
     fn sketch_patterns_round_trip_and_are_validated() {
         let ok = "gusset 1\nunits mm\n\nparam n = 3\n\nsketch S (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  p2 = point(5, 0)\n  l3 = line(p1, p2)\n  p4 = point(1, 1)\n  c5 = circle(p4, 1)\n  g6 = pattern_linear(of: [l3], count: n, dx: 10 mm, dy: 2 mm)\n  g7 = pattern_circular(of: [c5], center: p1, count: 6, angle: 360 deg)\n}\n\nextrude E (profile: S.regions(c5_2), distance: 1 mm, op: new)\n";

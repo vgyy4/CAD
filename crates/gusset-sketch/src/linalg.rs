@@ -198,7 +198,7 @@ impl RowEchelon {
                 && let Some(Some(r)) = self.rows.get_mut(k)
             {
                 let a = r.get(k).copied().unwrap_or(0.0);
-                let rho = a.hypot(vk);
+                let rho = libm::hypot(a, vk);
                 let (c, s) = (a / rho, vk / rho);
                 let end = hi.max(self.last.get(k).copied().unwrap_or(k));
                 for j in k..=end {

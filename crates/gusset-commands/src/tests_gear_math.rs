@@ -1,4 +1,6 @@
 //! Involute gear geometry and the generated parameter expressions (ADR 0018), without a kernel.
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 
 use crate::gear::*;
 use gusset_units::expr::parse;
@@ -86,7 +88,6 @@ fn bad_inputs_have_hints() {
         (GearValues { fillet: 0.9, ..values(2.0, 20) }, "fillet"),
         (GearValues { backlash: 5.0, ..values(2.0, 20) }, "backlash"),
         (GearValues { helix: 1.2, ..values(2.0, 20) }, "helix"),
-        (GearValues { face_width: 0.0, ..values(2.0, 20) }, "face width"),
         (GearValues { module: f64::NAN, ..values(2.0, 20) }, "finite"),
     ] {
         let e = Geometry::new(&v).unwrap_err();
@@ -100,6 +101,16 @@ fn bad_inputs_have_hints() {
     assert!(Geometry::new(&GearValues { teeth: min_teeth(&v), ..v }).is_ok());
     let x = min_shift(&v);
     assert!(Geometry::new(&GearValues { shift: x + 0.01, ..v }).is_ok(), "x {x}");
+    // Review v0.2 L9: the pointed-tooth hint is readable and names what widens the tip.
+    let e = Geometry::new(&GearValues { shift: 1.9, ..values(2.0, 20) }).unwrap_err();
+    assert_eq!(e.hint, "use a smaller profile shift, less backlash or more teeth");
+    // The bore must leave material below the root circle (radius 17.5 mm here).
+    let v = values(2.0, 20);
+    let g = Geometry::new(&v).unwrap();
+    assert!(check_bore(&GearValues { bore: 34.0, ..v }, &g).is_ok());
+    let e = check_bore(&GearValues { bore: 35.0, ..v }, &g).unwrap_err();
+    assert!(e.message.contains("bore") && e.hint.contains("34.00"), "{e:?}");
+    assert!(check_bore(&GearValues { bore: -1.0, ..v }, &g).is_err());
 }
 
 #[test]

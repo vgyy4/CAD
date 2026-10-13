@@ -617,7 +617,7 @@ mod tests {
         let eqs = build(&s, &lay).unwrap();
         assert!(eqs.len() > 30);
         // Evaluate away from x0 so that Fixed etc. have non-trivial residuals.
-        let x: Vec<f64> = lay.x0.iter().enumerate().map(|(i, v)| v + 0.1 * ((i as f64) * 1.7).sin()).collect();
+        let x: Vec<f64> = lay.x0.iter().enumerate().map(|(i, v)| v + 0.1 * libm::sin((i as f64) * 1.7)).collect();
         for eq in &eqs {
             let r = eval(eq, &x);
             assert!(r.v.is_finite());

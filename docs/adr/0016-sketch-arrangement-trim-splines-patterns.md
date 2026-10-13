@@ -197,3 +197,47 @@ about the solved centre point (`step = angle / count` for a full turn, else
 ### Text and model
 `SketchDef.patterns: Vec<SkPattern>`, printed after the constraints. `sketch.pattern`
 creates or edits one (arguments are expression strings).
+
+## 5. Solving parametric sketches after large edits (review v0.2 H1, 2026-10-13)
+
+### Context
+Constraint values are expressions, so one parameter edit can move every point of a sketch
+far from the coordinates stored in the document (the generated gear: `gear1_teeth` 30 → 20
+moves each of about 200 flank points by millimetres). Every solve starts from the stored
+coordinates. Two things made such edits fail with a false `SketchConflict`:
+1. `fixed` was a soft equation. A fixed point that hundreds of distances pull on (the gear
+   centre) is a cheap direction for the damped least-squares step, and the iteration ended
+   in a minimum with the "fixed" centre moved onto another point.
+2. A single Levenberg–Marquardt run from the stored positions cannot reach every far
+   shape (a chain of links curled from straight to a spiral does not converge).
+
+### Decision
+* **Fixed unknowns are held.** An unknown that a `fixed` constraint pins, and that is at
+  its pinned value when the solve starts, is a constant of the iteration (its row and column
+  are left out of the normal equations). The DOF, redundancy and conflict analysis still
+  sees every equation. A dragged fixed point starts away from its value and is pulled back
+  as before. With this, every reported gear edit (smaller teeth counts and modules, 100 → 20
+  teeth, module 2 → 5 mm) solves directly.
+* **Dimension continuation as the fallback** (`gusset_sketch::solve_continued`, used by the
+  evaluator and by trim): only when the direct solve fails, every dimension (distance, angle,
+  radius, diameter) is measured on the stored geometry and moved from that value to its
+  requested value in steps; each step is solved from the previous step's solution. Steps
+  adapt (start at half the way, halve after a failure, double after a success), at most 24
+  extra solves and steps no smaller than 1/256 of the way. If it does not get through, the
+  direct solve's result is reported (the user sees the same conflict analysis as before).
+  The final step solves the sketch with exactly the requested values, so a success is a
+  solution of the document's sketch. Measuring instead of remembering the previous
+  parameter values keeps it a function of the document alone.
+* **Determinism:** nothing is cached between solves; the same document gives the same
+  result bit for bit, whether it was reached by parameter edits, by `document_set_text`, by
+  undo or by opening a file.
+* **No write-back on parameter edits.** `param.set` does not store re-solved coordinates in
+  the sketch (the sketch editing commands still do, with `store_solution`). Write-back would
+  not make evaluation independent of the stored start (text edits, merges and opened files
+  jump anyway), and it would turn a parameter-only edit into an edit of every sketch that uses
+  the parameter: larger history diffs and conflicts when two branches edit different
+  parameters of the same sketch.
+
+### Consequences
+A failing parametric sketch costs up to 25 solves before the conflict is reported. The
+release solver budget tests are unchanged (the continuation never runs for them).

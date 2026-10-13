@@ -1,5 +1,5 @@
 // Test-only code (see the note at the top of profiles.rs).
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp, clippy::disallowed_methods)]
 
 mod common;
 

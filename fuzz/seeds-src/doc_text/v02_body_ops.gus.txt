@@ -1,0 +1,46 @@
+gusset 1
+units mm
+
+param n_bolts = 6
+param pitch = 12 mm
+param tilt = 30 deg
+
+sketch Sketch1 (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
+
+shell Shell1 (body: Extrude1, faces: [Extrude1/cap(end)], thickness: 2 mm)
+
+plane Plane1 (base: XY, axis: edge(Extrude1/cap(start), Extrude1/side(Sketch1/l5)), angle: tilt)
+
+plane Plane2 (base: Shell1/inner(Extrude1/side(Sketch1/l6)), offset: -1 mm)
+
+mirror Mirror1 (body: Extrude1, plane: Plane1, merge: true)
+
+pattern_linear Pattern1 (body: Extrude1, direction: [1, 0.5, 0], count: n_bolts - 1, spacing: -2 * pitch)
+
+pattern_circular Pattern2 (body: Extrude1, axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count: 3, angle: 90 deg, label: "Fan")
+
+sketch Sketch2 (plane: Pattern2/instance(2, Mirror1/mirror(Extrude1/cap(start))), next_id: 3) {
+  p1 = point(5, 5)
+  c2 = circle(p1, 2)
+}
+
+extrude Extrude2 (profile: Sketch2, distance: 4 mm, op: new)
+
+move Move1 (body: Extrude2, translate: [1 mm, 2 mm, 3 mm], axis: Z, angle: 45 deg, through: [5 mm, 5 mm, 0 mm])
+
+move Move2 (body: Extrude2, axis: [1, 1, 0], angle: -15 deg, copy: true)
+
+combine Combine1 (body: Extrude1, tools: [Extrude2], op: cut)
+
+chamfer Chamfer1 (edges: [edge(Shell1/inner(Extrude1/side(Sketch1/l6)), Shell1/inner(Extrude1/side(Sketch1/l7)))], distance: 0.5 mm)

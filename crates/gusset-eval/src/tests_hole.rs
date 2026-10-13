@@ -1,6 +1,8 @@
 //! Hole features against the mock kernel: arguments, faces, sites and the face-fit check are
 //! decided before the kernel is asked, and a kernel without revolve fails cleanly. The real
 //! geometry (volumes, names, edits) is tested with OCCT in `gusset-cli/tests/modeling_hole.rs`.
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 
 use super::*;
 use crate::hole::Dims;
