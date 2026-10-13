@@ -200,18 +200,19 @@ fn gpu_tiers() -> String {
 
 fn budgets() -> String {
     let mut s = String::from(
-        "| Example machine | Interactive threads | Background threads | Cache budget | Default tessellation | Speculative precompute |\n\
-         |---|---|---|---|---|---|\n",
+        "| Example machine | Interactive threads | Background threads | Cache budget | Kernel worker memory | Default tessellation | Speculative precompute |\n\
+         |---|---|---|---|---|---|---|\n",
     );
     for (name, logical, topo, ram) in EXAMPLE_MACHINES {
         let b = Budgets::compute(*logical, *topo, Some(gib(*ram)));
         let _ = writeln!(
             s,
-            "| {} | {} | {} | {} MiB | {} | {} |",
+            "| {} | {} | {} | {} MiB | {} GiB | {} | {} |",
             cell(name),
             b.interactive_threads,
             b.background_threads,
             b.cache_bytes / (1024 * 1024),
+            crate::budgets::kernel_worker_bytes(Some(gib(*ram))) / gib(1),
             b.tessellation.name(),
             yes_no(b.speculative_precompute)
         );
@@ -221,9 +222,12 @@ fn budgets() -> String {
         s,
         "\nRules (from `gusset_hw::budgets`): interactive = max(1, logical - 1); background = efficiency \
          logical CPUs on hybrid CPUs, else interactive / 2, clamped to [1, interactive]; cache = RAM / 16 \
-         clamped to [128 MiB, 4 GiB]; if RAM is unknown, {} GiB is assumed (cache {} MiB).\n",
+         clamped to [128 MiB, 4 GiB]; kernel worker memory (address space of the geometry \
+         kernel process, ADR 0022) = 3/4 of RAM, at least 2 GiB; if RAM is unknown, {} GiB is \
+         assumed (cache {} MiB, kernel worker {} GiB).\n",
         crate::budgets::ASSUMED_RAM_BYTES / gib(1),
-        unknown.cache_bytes / (1024 * 1024)
+        unknown.cache_bytes / (1024 * 1024),
+        crate::budgets::kernel_worker_bytes(None) / gib(1)
     );
     s
 }

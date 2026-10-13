@@ -196,16 +196,16 @@ Thread pools, cache size and default tessellation quality scale with the detecte
 machine. Table generated from `gusset_hw::budgets` for example machines:
 
 <!-- BEGIN GENERATED: budgets -->
-| Example machine | Interactive threads | Background threads | Cache budget | Default tessellation | Speculative precompute |
-|---|---|---|---|---|---|
-| Raspberry Pi 4-class: 4 cores, 4 GB | 3 | 1 | 256 MiB | coarse | no |
-| Reference machine: 4 cores, 8 GB | 3 | 1 | 512 MiB | standard | no |
-| 4C/8T desktop (e.g. Core i7-6700), 8 GB | 7 | 3 | 512 MiB | standard | no |
-| Core i7-13700 (8P+8E, 24 threads), 32 GB | 23 | 8 | 2048 MiB | extra-fine | yes |
-| Hybrid laptop: 4P + 4E cores, 16 GB | 7 | 4 | 1024 MiB | fine | yes |
-| Workstation: 16 cores / 32 threads, 64 GB | 31 | 15 | 4096 MiB | extra-fine | yes |
+| Example machine | Interactive threads | Background threads | Cache budget | Kernel worker memory | Default tessellation | Speculative precompute |
+|---|---|---|---|---|---|---|
+| Raspberry Pi 4-class: 4 cores, 4 GB | 3 | 1 | 256 MiB | 3 GiB | coarse | no |
+| Reference machine: 4 cores, 8 GB | 3 | 1 | 512 MiB | 6 GiB | standard | no |
+| 4C/8T desktop (e.g. Core i7-6700), 8 GB | 7 | 3 | 512 MiB | 6 GiB | standard | no |
+| Core i7-13700 (8P+8E, 24 threads), 32 GB | 23 | 8 | 2048 MiB | 24 GiB | extra-fine | yes |
+| Hybrid laptop: 4P + 4E cores, 16 GB | 7 | 4 | 1024 MiB | 12 GiB | fine | yes |
+| Workstation: 16 cores / 32 threads, 64 GB | 31 | 15 | 4096 MiB | 48 GiB | extra-fine | yes |
 
-Rules (from `gusset_hw::budgets`): interactive = max(1, logical - 1); background = efficiency logical CPUs on hybrid CPUs, else interactive / 2, clamped to [1, interactive]; cache = RAM / 16 clamped to [128 MiB, 4 GiB]; if RAM is unknown, 4 GiB is assumed (cache 256 MiB).
+Rules (from `gusset_hw::budgets`): interactive = max(1, logical - 1); background = efficiency logical CPUs on hybrid CPUs, else interactive / 2, clamped to [1, interactive]; cache = RAM / 16 clamped to [128 MiB, 4 GiB]; kernel worker memory (address space of the geometry kernel process, ADR 0022) = 3/4 of RAM, at least 2 GiB; if RAM is unknown, 4 GiB is assumed (cache 256 MiB, kernel worker 3 GiB).
 <!-- END GENERATED -->
 
 Background threads run at low priority / efficiency QoS: nice 10/19 on Linux, QoS
