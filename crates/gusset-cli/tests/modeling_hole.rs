@@ -465,3 +465,85 @@ fn errors_are_clean() {
     assert!(e.suggestion.is_some());
     assert!(matches!(r.status("After"), Some(FeatureStatus::Blocked { .. })));
 }
+
+/// Review L7: the fit check tests the face's boundary, so an existing hole anywhere inside a
+/// new hole's mouth is found (the old check sampled the centre and one circle only).
+#[test]
+fn a_mouth_over_an_existing_hole_does_not_fit() {
+    let first = format!("hole H1 (face: {TOP}, at: [[30 mm, 20 mm]], diameter: 2 mm, through: true)");
+    // The 2 mm hole lies 6 mm from the centre of a 20 mm counterbore: inside its mouth.
+    let (_, r) = eval(&format!(
+        "{first}\n\nhole H2 (face: {TOP}, at: [[36 mm, 20 mm]], type: counterbore, diameter: 4 mm, through: true, \
+         cbore_diameter: 20 mm, cbore_depth: 3 mm)"
+    ));
+    let Some(FeatureStatus::Failed(e)) = r.status("H2") else { panic!("{:?}", r.status("H2")) };
+    assert_eq!(e.code, ErrorCode::InvalidReference);
+    assert!(e.message.contains("does not fit inside face"), "{e}");
+    // Clear of the first hole it fits (0.5 mm between the mouth and the hole).
+    let (_, r) = eval(&format!(
+        "{first}\n\nhole H2 (face: {TOP}, at: [[41.5 mm, 20 mm]], type: counterbore, diameter: 4 mm, through: true, \
+         cbore_diameter: 20 mm, cbore_depth: 3 mm)"
+    ));
+    ok(&r);
+}
+
+/// A 20 x 20 x 30 mm block over the middle of the plate (x 20..40, y 10..30) with a 4 mm
+/// hole through its top, as body T.
+const TOOL_BLOCK: &str = "sketch TS (plane: XY, next_id: 9) {
+  p1 = point(20, 10)
+  p2 = point(40, 10)
+  p3 = point(40, 30)
+  p4 = point(20, 30)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude T (profile: TS, distance: 30 mm, op: new)
+
+hole HT (face: T/cap(end), at: [[30 mm, 20 mm]], diameter: 4 mm, through: true)
+";
+
+/// Review L1: `combine` with cut does not copy the tool's hole records into the target, and
+/// records whose wall is cut away are dropped.
+#[test]
+fn hole_records_follow_the_geometry() {
+    let (_, r) = eval(&format!("{TOOL_BLOCK}\ncombine K (body: E1, tools: [T], op: cut)"));
+    ok(&r);
+    assert!(r.body("E1").unwrap().holes.is_empty(), "{:?}", r.body("E1").unwrap().holes);
+    // A union keeps them (the hole's wall is still there: it runs through the block above
+    // the plate).
+    let (_, r) = eval(&format!("{TOOL_BLOCK}\ncombine K (body: E1, tools: [T], op: add)"));
+    ok(&r);
+    let ids: Vec<String> = r.body("E1").unwrap().holes.iter().map(|h| format!("{}/{}", h.feature, h.at)).collect();
+    assert_eq!(ids, ["HT/e1"]);
+    // A pocket cut over a hole removes its wall, and its record goes with it.
+    let hole = format!("hole H1 (face: {TOP}, at: [[30 mm, 20 mm]], diameter: 6 mm, through: true)");
+    let (_, r) = eval(&hole);
+    assert_eq!(r.body("E1").unwrap().holes.len(), 1);
+    let (_, r) = eval(&format!(
+        "{hole}\n\nsketch Pocket (plane: XY, next_id: 9) {{\n  p1 = point(20, 10)\n  p2 = point(40, 10)\n  \
+         p3 = point(40, 30)\n  p4 = point(20, 30)\n  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  \
+         l8 = line(p4, p1)\n}}\n\nextrude Cut1 (profile: Pocket, distance: 30 mm, op: cut, body: E1)"
+    ));
+    ok(&r);
+    assert!(r.body("E1").unwrap().holes.is_empty());
+}
+
+/// Review L2: explicit points keep their stored ids, so removing one does not rename the
+/// other holes' faces.
+#[test]
+fn explicit_points_keep_their_ids() {
+    let (_, r) =
+        eval(&format!("hole H1 (face: {TOP}, at: [[15 mm, 20 mm], [45 mm, 20 mm]], diameter: 4 mm, through: true)"));
+    ok(&r);
+    let walls = |r: &Evaluation| names(r).into_iter().filter(|n| n.starts_with("H1/wall")).collect::<Vec<_>>();
+    assert_eq!(walls(&r), ["H1/wall(e1)", "H1/wall(e2)"]);
+    // The first point deleted (as the code view now prints it): the other keeps e2.
+    let (_, r) = eval(&format!("hole H1 (face: {TOP}, at: [e2: [45 mm, 20 mm]], diameter: 4 mm, through: true)"));
+    ok(&r);
+    assert_eq!(walls(&r), ["H1/wall(e2)"]);
+    let wall = face(&r, "H1/wall(e2)");
+    assert!(close(wall.centroid[0], 45.0, 1e-6), "{:?}", wall.centroid);
+}

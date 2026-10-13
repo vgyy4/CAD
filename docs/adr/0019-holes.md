@@ -116,3 +116,29 @@ hint (face, points, standard, diameter, depth, through).
 Slots and obround holes; holes on curved faces or at an angle to the face; thread geometry and
 fine-pitch tables (ISO 261 fine, UN/imperial, NPT); countersunk-and-counterbored (spot-face)
 combinations; hole tables in drawings; copying a hole to patterns with cosmetic threads.
+
+## Amendment (2026-10-13): v0.2 review H3, L1, L2, L7
+- **One boolean per feature (H3).** All of a feature's tools are built first and cut with one
+  `Kernel::boolean_many` (ADR 0020), named once with `OpContext::Modify { inputs: [body,
+  tool_1, ...] }`. Face names are the same as with one cut per hole. If the single cut fails,
+  the holes are cut one at a time to name the failing one. 400 holes: 110 s before, 2 s now.
+  Holes from a sketch are limited to 1,000 per feature like explicit points, and every hole
+  feature is charged against the evaluation's work limits (ADR 0020).
+- **Fit check (L7).** §2's check sampled the centre and 32 points of one circle, so a small hole
+  or slot inside the mouth could pass. Now the face's triangles and boundary (triangle edges
+  that only one triangle of the face has, so the outer loop and every inner loop) are built once
+  per feature; a mouth fits when its centre is on a triangle and no boundary edge comes closer
+  than its radius (less 0.01 mm, as before).
+- **Stable ids for explicit points (L2).** §3 named `at:` holes by list position, so deleting or
+  reordering a point renamed every later hole's faces and moved references to another hole.
+  Each point now stores its id: `at: [e1: [10 mm, 5 mm], e3: [50 mm, 35 mm]]`. The text always
+  prints the ids, so deleting `e2` in the code view keeps `e3`. Files written before list bare
+  pairs (`at: [[10 mm, 5 mm], ...]`), which still parse: a bare pair is `e<position>`, which
+  is exactly the old naming, so existing references keep resolving; from the next save on
+  the ids are written out. Ids are unique within a feature (`e0`, `e01` and duplicates are
+  refused); `feature.hole` numbers its points `e1`, `e2`, ... Sketch-point ids were already
+  stable.
+- **Records (L1).** §6's "combine merges the tool bodies' records" now holds only for
+  `op: add`: a tool body that is cut away or intersected leaves no holes in the target. After
+  every feature, records whose wall face no longer exists on the body (a pocket or a later cut
+  removed the hole) are dropped, so `query_body` lists only holes that are there.

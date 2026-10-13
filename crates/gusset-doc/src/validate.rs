@@ -263,7 +263,14 @@ fn check_hole(n: &str, d: &HoleDef, seen: &BTreeMap<&str, &Feature>, out: &mut V
         HoleSites::Points(p) if p.len() > MAX_HOLE_SITES => {
             out.push(issue(n, format!("{} hole points; at most {MAX_HOLE_SITES} per feature", p.len())));
         }
-        HoleSites::Points(_) => {}
+        HoleSites::Points(p) => {
+            let mut ids = BTreeSet::new();
+            for h in p {
+                if h.id == 0 || !ids.insert(h.id) {
+                    out.push(issue(n, format!("hole point id {} is zero or used twice", h.name())));
+                }
+            }
+        }
     }
     let extra = |has: bool, wanted: bool, what: &str, ty: &str, out: &mut Vec<Issue>| {
         if wanted && !has {

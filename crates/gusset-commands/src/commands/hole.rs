@@ -139,11 +139,10 @@ impl Hole {
                     return Err(CommandError::args(format!("at most {MAX_HOLE_SITES} holes per feature")));
                 }
                 HoleSites::Points(
-                    list.iter().map(|[u, v]| Ok([parse_expr("at", u)?, parse_expr("at", v)?])).collect::<Result<
-                        _,
-                        CommandError,
-                    >>(
-                    )?,
+                    (1..)
+                        .zip(list)
+                        .map(|(id, [u, v])| Ok(HolePoint { id, at: [parse_expr("at", u)?, parse_expr("at", v)?] }))
+                        .collect::<Result<_, CommandError>>()?,
                 )
             }
             _ => {

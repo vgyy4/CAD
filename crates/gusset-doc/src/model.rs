@@ -818,8 +818,25 @@ pub enum HoleSites {
     /// are projected onto the face along its normal. Hole ids are the point ids (`p5`).
     Sketch(String),
     /// Explicit points `(u, v)` in the face's own sketch frame (the frame a sketch placed on
-    /// that face gets), as lengths. Hole ids are `e1`, `e2`, ... in list order.
-    Points(Vec<[Expr; 2]>),
+    /// that face gets), as lengths, each with its stored id (`e1`, `e2`, ...; ADR 0019 §3).
+    Points(Vec<HolePoint>),
+}
+
+/// One explicit hole position. Its id (`e<id>`) is stored with it, so deleting or reordering
+/// other points does not rename this hole's faces (review L2). Files written before the ids
+/// were stored list bare `[u, v]` pairs, which get `e1`, `e2`, ... in list order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HolePoint {
+    /// The number in the hole id `e<id>` (at least 1, unique within the feature).
+    pub id: u32,
+    pub at: [Expr; 2],
+}
+
+impl HolePoint {
+    /// The hole id, `e<id>`.
+    pub fn name(&self) -> String {
+        format!("e{}", self.id)
+    }
 }
 
 /// How deep a hole goes.
@@ -886,7 +903,7 @@ impl HoleDef {
     pub fn exprs(&self) -> Vec<&Expr> {
         let mut v: Vec<&Expr> = Vec::new();
         if let HoleSites::Points(p) = &self.sites {
-            v.extend(p.iter().flat_map(|[a, b]| [a, b]));
+            v.extend(p.iter().flat_map(|h| [&h.at[0], &h.at[1]]));
         }
         v.push(&self.diameter);
         if let HoleDepth::Blind(d) = &self.depth {

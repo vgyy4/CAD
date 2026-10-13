@@ -220,7 +220,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "type: tapped",
             "type: countersink",
             "through: true",
-            "at: [[",
+            "at: [e1: [",
         ] {
             assert!(all.contains(kw), "no example uses {kw}");
         }
@@ -231,7 +231,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     #[test]
     fn hole_round_trips_and_is_validated() {
         let ok = format!(
-            "{HOLE_BASE}hole H1 (face: E/cap(end), points: S, type: counterbore, diameter: d, through: true, cbore_diameter: d * 1.7, cbore_depth: 6 mm)\n\nhole H2 (face: E/cap(end), at: [[10 mm, 5 mm], [2 * d, 4 mm]], type: tapped, diameter: 5 mm, depth: deep, point_angle: 120 deg, thread: \"M6\", pitch: 1 mm, thread_depth: 8 mm)\n\nhole H3 (face: H1/cbore_floor(p1), at: [[0 mm, 0 mm]], type: countersink, diameter: 3 mm, depth: 5 mm, csink_diameter: 6 mm, csink_angle: 90 deg)\n\nhole H4 (face: E/side(P/l5)#2, at: [], type: simple, diameter: 1 mm, depth: 2 mm)\n"
+            "{HOLE_BASE}hole H1 (face: E/cap(end), points: S, type: counterbore, diameter: d, through: true, cbore_diameter: d * 1.7, cbore_depth: 6 mm)\n\nhole H2 (face: E/cap(end), at: [e1: [10 mm, 5 mm], e3: [2 * d, 4 mm]], type: tapped, diameter: 5 mm, depth: deep, point_angle: 120 deg, thread: \"M6\", pitch: 1 mm, thread_depth: 8 mm)\n\nhole H3 (face: H1/cbore_floor(p1), at: [e1: [0 mm, 0 mm]], type: countersink, diameter: 3 mm, depth: 5 mm, csink_diameter: 6 mm, csink_angle: 90 deg)\n\nhole H4 (face: E/side(P/l5)#2, at: [], type: simple, diameter: 1 mm, depth: 2 mm)\n"
         );
         // The last statement is invalid (no points) but must print and parse.
         let doc = text::parse(&ok).unwrap_or_else(|e| panic!("{e}"));
@@ -239,7 +239,23 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
         let FeatureKind::Hole(h) = &doc.feature("H2").unwrap().kind else { panic!() };
         assert_eq!(h.kind, HoleType::Tapped);
         assert_eq!(h.thread.as_ref().map(|t| t.designation.as_str()), Some("M6"));
-        assert!(matches!(&h.sites, HoleSites::Points(p) if p.len() == 2));
+        assert!(matches!(&h.sites, HoleSites::Points(p) if p.iter().map(|h| h.id).eq([1, 3])));
+        // Review L2: files from before the stored ids list bare pairs, which get e1, e2, ... in
+        // order and are printed with their ids from then on.
+        let old_form = ok.replace("[e1: [10 mm, 5 mm], e3: [2 * d, 4 mm]]", "[[10 mm, 5 mm], [2 * d, 4 mm]]");
+        let d = text::parse(&old_form).unwrap_or_else(|e| panic!("{e}"));
+        assert!(text::print(&d).contains("at: [e1: [10 mm, 5 mm], e2: [2 * d, 4 mm]]"), "{}", text::print(&d));
+        for (bad, why) in [
+            ("[e2: [1 mm, 1 mm], e2: [2 mm, 2 mm]]", "listed twice"),
+            ("[[1 mm, 1 mm], e1: [2 mm, 2 mm]]", "listed twice"),
+            ("[e0: [1 mm, 1 mm]]", "not a hole point id"),
+            ("[e01: [1 mm, 1 mm]]", "not a hole point id"),
+            ("[p1: [1 mm, 1 mm]]", "not a hole point id"),
+        ] {
+            let src = ok.replace("[e1: [10 mm, 5 mm], e3: [2 * d, 4 mm]]", bad);
+            let e = text::parse(&src).unwrap_err();
+            assert!(e.to_string().contains(why), "{bad}: {e}");
+        }
         assert_eq!(doc.feature("H2").unwrap().kind.parameters(), ["d", "deep"]);
         assert_eq!(doc.feature("H1").unwrap().kind.dependencies(), ["E", "S"]);
         assert_eq!(doc.feature("H3").unwrap().kind.dependencies(), ["H1"]);

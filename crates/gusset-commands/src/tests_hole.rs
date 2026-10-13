@@ -62,7 +62,7 @@ fn preset_values_become_ordinary_parameters() {
     let t = text(&s);
     assert!(t.contains("param hole1_diameter = 6.6 mm  # ISO 273 normal clearance hole for M6"), "{t}");
     assert!(
-        t.contains("hole Hole1 (face: Extrude1/cap(end), at: [[10 mm, 10 mm]], type: simple, diameter: hole1_diameter, through: true)"),
+        t.contains("hole Hole1 (face: Extrude1/cap(end), at: [e1: [10 mm, 10 mm]], type: simple, diameter: hole1_diameter, through: true)"),
         "{t}"
     );
     assert!(t.contains("# ISO M6 clearance normal (ISO 273)."), "{t}");
@@ -139,7 +139,7 @@ fn without_a_standard_the_expressions_go_into_the_statement() {
     );
     assert_eq!(r["parameters"], json!([]));
     assert!(
-        text(&s).contains("hole Hole1 (face: Extrude1/cap(end), at: [[w, 2 * w]], type: simple, diameter: w / 2, depth: 8 mm, point_angle: 120 deg)"),
+        text(&s).contains("hole Hole1 (face: Extrude1/cap(end), at: [e1: [w, 2 * w]], type: simple, diameter: w / 2, depth: 8 mm, point_angle: 120 deg)"),
         "{}",
         text(&s)
     );

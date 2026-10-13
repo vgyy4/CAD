@@ -425,8 +425,9 @@ fn find_face(feature: &str, r: &FaceRef, bodies: &[Arc<Body>]) -> Result<(usize,
     Err(e)
 }
 
-/// The world position of every hole, with its id, in id order for sketches and list order
-/// for explicit points. All lie in the plane of the face.
+/// The world position of every hole, with its id (the stored `e<n>` of an explicit point),
+/// in id order for sketches and list order for explicit points. All lie in the plane of the
+/// face.
 fn hole_positions(
     feature: &str,
     d: &HoleDef,
@@ -439,12 +440,12 @@ fn hole_positions(
     match &d.sites {
         HoleSites::Points(list) => {
             let mut out = Vec::with_capacity(list.len());
-            for (i, [u, v]) in list.iter().enumerate() {
+            for h in list {
                 let uv = [
-                    eval_expr(feature, u, Dim::LENGTH, params, units)?,
-                    eval_expr(feature, v, Dim::LENGTH, params, units)?,
+                    eval_expr(feature, &h.at[0], Dim::LENGTH, params, units)?,
+                    eval_expr(feature, &h.at[1], Dim::LENGTH, params, units)?,
                 ];
-                out.push((format!("e{}", i + 1), frame.to_world(uv)));
+                out.push((h.name(), frame.to_world(uv)));
             }
             Ok(out)
         }
