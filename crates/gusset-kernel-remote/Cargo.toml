@@ -1,0 +1,20 @@
+[package]
+name = "gusset-kernel-remote"
+description = "Kernel worker protocol (ADR 0022): a Kernel served over a byte stream, and the client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Test-only requests that crash, exhaust or stall the worker (ADR 0022 §5). Never in
+# release builds.
+fault-injection = []
+
+[dependencies]
+gusset-kernel.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

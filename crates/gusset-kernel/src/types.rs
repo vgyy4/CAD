@@ -367,6 +367,9 @@ pub enum KernelErrorKind {
     Cancelled,
     Io,
     Internal,
+    /// The process running the geometry kernel died during the call (crash, killed, out
+    /// of memory); a new one serves the next call (ADR 0022).
+    Crashed,
 }
 
 impl KernelError {

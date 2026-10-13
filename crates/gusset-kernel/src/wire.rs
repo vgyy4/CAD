@@ -814,6 +814,7 @@ wire_c_enum!(KernelErrorKind {
     Cancelled = 4,
     Io = 5,
     Internal = 6,
+    Crashed = 7,
 });
 
 impl Wire for KernelError {
@@ -1092,6 +1093,7 @@ mod tests {
             KernelErrorKind::Cancelled,
             KernelErrorKind::Io,
             KernelErrorKind::Internal,
+            KernelErrorKind::Crashed,
         ] {
             rt(&kind);
             rt(&KernelError::new(kind, "boom"));
@@ -1250,7 +1252,7 @@ mod tests {
         assert!(decode::<Seg2>(&[4], &NoShapes).is_err());
         assert!(decode::<FaceOrigin>(&[8], &NoShapes).is_err());
         assert!(decode::<Transform>(&[3], &NoShapes).is_err());
-        assert!(decode::<KernelErrorKind>(&[7], &NoShapes).is_err());
+        assert!(decode::<KernelErrorKind>(&[8], &NoShapes).is_err());
         assert!(decode::<SweepPath>(&[2], &NoShapes).is_err());
         assert!(decode::<String>(&[2, 0, 0, 0, 0xff, 0xfe], &NoShapes).is_err());
         assert!(decode::<u32>(&[], &NoShapes).is_err());

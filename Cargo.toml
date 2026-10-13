@@ -76,6 +76,7 @@ semver = "1.0.28"
 # Internal crates (versioned so cargo-deny's wildcard check passes)
 gusset-units = { path = "crates/gusset-units", version = "0.1.0-mvp" }
 gusset-kernel = { path = "crates/gusset-kernel", version = "0.1.0-mvp" }
+gusset-kernel-remote = { path = "crates/gusset-kernel-remote", version = "0.1.0-mvp" }
 gusset-doc = { path = "crates/gusset-doc", version = "0.1.0-mvp" }
 gusset-history = { path = "crates/gusset-history", version = "0.1.0-mvp" }
 gusset-naming = { path = "crates/gusset-naming", version = "0.1.0-mvp" }
