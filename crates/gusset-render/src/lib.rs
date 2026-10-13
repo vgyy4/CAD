@@ -27,6 +27,9 @@
 //! let png = SoftwareRenderer::new().render_png(&scene, &camera, [80, 60]).unwrap();
 //! assert!(png.starts_with(b"\x89PNG"));
 //! ```
+// Display-only code: platform float functions are fine here (PROMPT.md Determinism covers
+// model-defining code).
+#![allow(clippy::disallowed_methods)]
 
 mod camera;
 pub mod demo;

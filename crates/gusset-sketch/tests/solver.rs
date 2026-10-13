@@ -1,6 +1,6 @@
 // Integration-test helpers live outside `#[test]` functions, where clippy.toml's
 // `allow-*-in-tests` settings do not reach; this file is test-only code.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp, clippy::disallowed_methods)]
 
 mod common;
 

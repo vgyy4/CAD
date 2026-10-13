@@ -17,6 +17,7 @@ gusset-naming.workspace = true
 gusset-sketch.workspace = true
 gusset-meshio.workspace = true
 gusset-store.workspace = true
+libm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

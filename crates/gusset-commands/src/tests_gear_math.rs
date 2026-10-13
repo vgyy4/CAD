@@ -1,4 +1,6 @@
 //! Involute gear geometry and the generated parameter expressions (ADR 0018), without a kernel.
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 
 use crate::gear::*;
 use gusset_units::expr::parse;

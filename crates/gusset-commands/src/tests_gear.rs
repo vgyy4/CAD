@@ -1,5 +1,7 @@
 //! The `generate.gear` command (mock kernel: the sketch is solved and its regions measured;
 //! solids need OCCT, see gusset-cli/tests/modeling_gear.rs).
+// Test-only code: expected values may use std float functions.
+#![allow(clippy::disallowed_methods)]
 
 use crate::gear::{self, GearValues, Geometry};
 use crate::*;

@@ -116,7 +116,7 @@ pub fn dist_to_polyline(p: [f64; 2], line: &[[f64; 2]]) -> f64 {
         let l2 = ab[0] * ab[0] + ab[1] * ab[1];
         let t = if l2 > 0.0 { (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
         let q = [a[0] + t * ab[0], a[1] + t * ab[1]];
-        best = best.min((p[0] - q[0]).hypot(p[1] - q[1]));
+        best = best.min(libm::hypot(p[0] - q[0], p[1] - q[1]));
     }
     best
 }

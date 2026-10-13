@@ -81,21 +81,36 @@ fn plane_axis(feature: &str, axis: &PlaneAxis, bodies: &[Arc<Body>]) -> Result<(
                 e.reference = Some(r.to_string());
                 return Err(e);
             };
-            let dir = normalize(sub(b.point, a.point)).ok_or_else(|| {
+            let along = sub(b.point, a.point);
+            let dir = canonical_direction(along).ok_or_else(|| {
                 EvalError::new(feature, ErrorCode::InvalidReference, format!("edge {r} has no length"))
                     .with_hint("use X, Y, Z or a straight edge as the axis")
             })?;
-            // The direction of an edge has no meaning of its own, so it is made canonical:
-            // towards +X (else +Y, else +Z). Rebuilds then always turn the same way.
-            let flip = dir.iter().find(|c| c.abs() > 1e-9).is_some_and(|c| *c < 0.0);
-            Ok((a.point, if flip { scale(dir, -1.0) } else { dir }))
+            Ok((a.point, dir))
         }
     }
 }
 
+/// Positional noise of a vertex that the direction of an edge must not depend on (mm): ten
+/// times OCCT's confusion tolerance.
+const VERTEX_NOISE: f64 = 1e-6;
+
+/// The unit direction of an edge from one end to the other (`along`), made canonical because
+/// an edge's direction has no meaning of its own: towards +X, else +Y, else +Z, so rebuilds
+/// always turn the same way. A component counts as zero when it is within what vertex noise
+/// can produce over the edge's length (review v0.2 L3: an absolute 1e-9 test let an edge
+/// meant to be perpendicular to X flip with the sign of its 1e-9 x component).
+fn canonical_direction(along: [f64; 3]) -> Option<[f64; 3]> {
+    let len = libm::sqrt(dot(along, along));
+    let dir = normalize(along)?;
+    let eps = (VERTEX_NOISE / len).max(VERTEX_NOISE);
+    let flip = dir.iter().find(|c| c.abs() > eps).is_some_and(|c| *c < 0.0);
+    Some(if flip { scale(dir, -1.0) } else { dir })
+}
+
 /// Turns a frame about the line through `point` along the unit vector `axis`.
 fn rotate_frame(f: &Frame, point: [f64; 3], axis: [f64; 3], angle: f64) -> Frame {
-    let (sin, cos) = angle.sin_cos();
+    let (sin, cos) = (libm::sin(angle), libm::cos(angle));
     let rot =
         |v: [f64; 3]| add(add(scale(v, cos), scale(cross(axis, v), sin)), scale(axis, dot(axis, v) * (1.0 - cos)));
     let x = normalize(rot(f.x)).unwrap_or(f.x);
@@ -106,6 +121,24 @@ fn rotate_frame(f: &Frame, point: [f64; 3], axis: [f64; 3], angle: f64) -> Frame
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_directions_ignore_vertex_noise() {
+        // An edge along Y, with noise in x of either sign, keeps its direction.
+        for noise in [1e-9, -1e-9, 3e-7, -3e-7] {
+            let d = canonical_direction([noise, -20.0, 0.0]).unwrap();
+            assert!((d[1] - 1.0).abs() < 1e-12, "{noise}: {d:?}");
+            let d = canonical_direction([noise, 20.0, 0.0]).unwrap();
+            assert!((d[1] - 1.0).abs() < 1e-12, "{noise}: {d:?}");
+        }
+        // On a short edge the same vertex noise tilts the direction more.
+        let d = canonical_direction([-4e-7, 0.01, 0.0]).unwrap();
+        assert!(d[1] > 0.99, "{d:?}");
+        // A real tilt still decides.
+        assert!(canonical_direction([-1e-3, 20.0, 0.0]).unwrap()[0] > 0.0);
+        assert!(canonical_direction([0.0, 0.0, -2.0]).unwrap()[2] > 0.0);
+        assert!(canonical_direction([0.0; 3]).is_none());
+    }
 
     #[test]
     fn rotating_a_frame_about_x() {

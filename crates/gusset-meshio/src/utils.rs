@@ -356,7 +356,7 @@ pub(crate) fn build_display(
 const MAX_CREASE_CLUSTERS: usize = 64;
 
 fn crease(positions: &[[f32; 3]], tris: &[Tri], angle_deg: f32) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>) {
-    let cos_thr = f64::from(angle_deg.clamp(0.0, 180.0)).to_radians().cos();
+    let cos_thr = libm::cos(f64::from(angle_deg.clamp(0.0, 180.0)).to_radians());
     let nv = positions.len();
     let raw: Vec<[f64; 3]> = tris.iter().map(|&t| face_normal_raw(positions, t)).collect();
     let unit_n: Vec<[f64; 3]> = raw.iter().map(|&n| unit(n).unwrap_or([0.0, 0.0, 0.0])).collect();

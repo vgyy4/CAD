@@ -320,7 +320,7 @@ fn transform_prism(p: &Prism, t: &Transform) -> KResult<Prism> {
         Transform::Translate(v) => q.frame.origin = add(p.frame.origin, v),
         Transform::Rotate { origin, axis, angle } => {
             let k = normalize(axis).ok_or_else(|| invalid("rotation axis has no direction"))?;
-            let (s, c) = angle.sin_cos();
+            let (s, c) = (libm::sin(angle), libm::cos(angle));
             let rot = |v: V3| add(add(scale(v, c), scale(cross(k, v), s)), scale(k, dot(k, v) * (1.0 - c)));
             q.frame.origin = add(origin, rot(sub(p.frame.origin, origin)));
             q.frame.x = rot(p.frame.x);

@@ -995,7 +995,7 @@ impl Command for SketchAddPolyline {
         }
         // Zero-length segments would be degenerate lines (review N8).
         const MIN_SEGMENT: f64 = 1e-6;
-        let close = |a: &[f64; 2], b: &[f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) < MIN_SEGMENT;
+        let close = |a: &[f64; 2], b: &[f64; 2]| libm::hypot(a[0] - b[0], a[1] - b[1]) < MIN_SEGMENT;
         for (i, w) in self.points.windows(2).enumerate() {
             if let [a, b] = w
                 && close(a, b)
@@ -1171,8 +1171,8 @@ impl Command for SketchAddArc {
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("A");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let r = (self.x1 - self.cx).hypot(self.y1 - self.cy);
-        let de = (self.x2 - self.cx).hypot(self.y2 - self.cy);
+        let r = libm::hypot(self.x1 - self.cx, self.y1 - self.cy);
+        let de = libm::hypot(self.x2 - self.cx, self.y2 - self.cy);
         if !(r > 1e-9 && de > 1e-9) {
             return Err(CommandError::args("arc start and end must differ from the center"));
         }

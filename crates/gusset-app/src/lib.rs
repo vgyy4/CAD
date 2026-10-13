@@ -1,4 +1,7 @@
 //! The Gusset desktop application (ADR 0009, DESIGN.md).
+// Display and input code: platform float functions are fine here (PROMPT.md Determinism
+// covers model-defining code; edits reach the model through commands).
+#![allow(clippy::disallowed_methods)]
 
 pub mod agents;
 pub mod app;

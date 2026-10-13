@@ -138,24 +138,25 @@ impl Geometry {
             ));
         }
         let z = f64::from(v.teeth);
-        let cb = v.helix.cos();
+        let cb = libm::cos(v.helix);
         let mt = v.module / cb;
-        let at = (v.pressure_angle.tan() / cb).atan();
+        let at = libm::atan(libm::tan(v.pressure_angle) / cb);
         let pitch_radius = mt * z / 2.0;
-        let base_radius = pitch_radius * at.cos();
+        let base_radius = pitch_radius * libm::cos(at);
         let tip_radius = pitch_radius + v.module * (1.0 + v.shift);
         let root_radius = pitch_radius - v.module * (1.25 - v.shift);
         if root_radius <= 0.0 {
             return Err(err("the root circle would be inside the gear centre", "use more teeth or a larger shift"));
         }
-        let half = (FRAC_PI_2 + 2.0 * v.shift * v.pressure_angle.tan() - v.backlash / v.module) / z;
-        let tooth_angle = half + (at.tan() - at);
+        let half = (FRAC_PI_2 + 2.0 * v.shift * libm::tan(v.pressure_angle) - v.backlash / v.module) / z;
+        let tooth_angle = half + (libm::tan(at) - at);
         let fillet_radius = v.fillet * v.module;
         let cutter_depth = 1.25 * v.module - fillet_radius - v.shift * v.module;
-        let cutter_offset = PI * mt / 4.0 - (cutter_depth + v.shift * v.module) * at.tan() - fillet_radius / at.cos();
-        let d_j = cutter_depth + fillet_radius * at.sin();
-        let junction_radius = ((pitch_radius - d_j).powi(2) + (d_j / at.tan()).powi(2)).sqrt();
-        if d_j > pitch_radius * at.sin().powi(2) || junction_radius < base_radius {
+        let cutter_offset =
+            PI * mt / 4.0 - (cutter_depth + v.shift * v.module) * libm::tan(at) - fillet_radius / libm::cos(at);
+        let d_j = cutter_depth + fillet_radius * libm::sin(at);
+        let junction_radius = ((pitch_radius - d_j).powi(2) + (d_j / libm::tan(at)).powi(2)).sqrt();
+        if d_j > pitch_radius * libm::sin(at).powi(2) || junction_radius < base_radius {
             // The straight part of the rack's flank reaches deeper than the tangent point of
             // the line of action: the rack cuts away the foot of the involute (undercut).
             let x_min = min_shift(v);
@@ -168,14 +169,14 @@ impl Geometry {
                 format!("use at least {} teeth, or a profile shift of about {:.2} or more", min_teeth(v), x_min),
             ));
         }
-        let flank_roll = (base_radius / junction_radius).acos();
+        let flank_roll = libm::acos(base_radius / junction_radius);
         if tip_radius <= junction_radius {
             return Err(err(
                 "the teeth are too short to have an involute flank",
                 "increase the profile shift, or use a smaller root fillet",
             ));
         }
-        let tip_roll = (base_radius / tip_radius).acos();
+        let tip_roll = libm::acos(base_radius / tip_radius);
         let g = Geometry {
             teeth: z,
             module: v.module,
@@ -235,20 +236,20 @@ impl Geometry {
     /// Polar position (radius, angle) of the lower flank where the involute has rolled
     /// through `phi` radians; the tooth is centred on angle 0.
     pub fn involute_polar(&self, phi: f64) -> (f64, f64) {
-        (self.base_radius / phi.cos(), -(self.tooth_angle - (phi.tan() - phi)))
+        (self.base_radius / libm::cos(phi), -(self.tooth_angle - (libm::tan(phi) - phi)))
     }
 
     /// Polar position of the lower flank on the root fillet, for the rack tip's contact
     /// normal at angle `psi` from the pitch line (`pi/2` at the root circle, the
     /// transverse pressure angle where the fillet meets the involute).
     pub fn fillet_polar(&self, psi: f64) -> (f64, f64) {
-        let d = self.cutter_depth + self.fillet_radius * psi.sin();
+        let d = self.cutter_depth + self.fillet_radius * libm::sin(psi);
         let a = self.pitch_radius - d;
-        let b = d / psi.tan();
-        let u_i = self.cutter_offset + self.fillet_radius * psi.cos() - b;
+        let b = d / libm::tan(psi);
+        let u_i = self.cutter_offset + self.fillet_radius * libm::cos(psi) - b;
         let theta =
-            -PI / self.teeth + u_i / self.pitch_radius + b.atan2(a) + self.backlash / (self.module * self.teeth);
-        (a.hypot(b), theta)
+            -PI / self.teeth + u_i / self.pitch_radius + libm::atan2(b, a) + self.backlash / (self.module * self.teeth);
+        (libm::hypot(a, b), theta)
     }
 
     /// Roll angle at position `num / DEN` along the involute. The positions are even in arc
@@ -285,7 +286,7 @@ impl Geometry {
             })
             .sum::<f64>()
             / 2.0;
-        let angle = |p: Option<&[f64; 2]>| p.map_or(0.0, |p| p[1].atan2(p[0]));
+        let angle = |p: Option<&[f64; 2]>| p.map_or(0.0, |p| libm::atan2(p[1], p[0]));
         let tip_sector = 0.5 * self.tip_radius.powi(2) * (-2.0 * angle(flank.last()));
         let root_sector = 0.5 * self.root_radius.powi(2) * (self.pitch_angle() + 2.0 * angle(flank.first()));
         self.teeth * (2.0 * swept + tip_sector + root_sector)
@@ -299,7 +300,7 @@ impl Geometry {
 
 /// Cartesian position of a polar one (radius, angle).
 pub fn polar((r, th): (f64, f64)) -> [f64; 2] {
-    [r * th.cos(), r * th.sin()]
+    [r * libm::cos(th), r * libm::sin(th)]
 }
 
 /// Checks that the bore fits inside the root circle, leaving a quarter module of material.
@@ -339,14 +340,14 @@ pub fn min_shift(v: &GearValues) -> f64 {
 
 fn undercut_free(v: &GearValues) -> bool {
     let z = f64::from(v.teeth);
-    let cb = v.helix.cos();
+    let cb = libm::cos(v.helix);
     let mt = v.module / cb;
-    let at = (v.pressure_angle.tan() / cb).atan();
+    let at = libm::atan(libm::tan(v.pressure_angle) / cb);
     let pr = mt * z / 2.0;
     let rho = v.fillet * v.module;
     let depth = 1.25 * v.module - rho - v.shift * v.module;
-    let d_j = depth + rho * at.sin();
-    d_j <= pr * at.sin().powi(2)
+    let d_j = depth + rho * libm::sin(at);
+    d_j <= pr * libm::sin(at).powi(2)
 }
 
 /// Fit points along a flank part sit at multiples of `1/DEN` of its parameter range.
