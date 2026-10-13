@@ -7,7 +7,7 @@ use std::fmt;
 use crate::dual::N;
 use crate::equations::{self, Equation, Layout, Owner};
 use crate::linalg::{RowEchelon, cholesky_solve, rcm};
-use crate::sketch::{ConstraintId, EntityId, Geom, MAX_COORD, Sketch, SketchError};
+use crate::sketch::{Constraint, ConstraintId, EntityId, Geom, MAX_COORD, Sketch, SketchError};
 
 /// Upper bound for [`SolveOptions::max_iterations`].
 pub const HARD_MAX_ITERATIONS: u32 = 10_000;
@@ -154,6 +154,118 @@ pub fn solve(sketch: &Sketch, opts: &SolveOptions) -> SolveResult {
     solve_drag(sketch, opts, &[])
 }
 
+/// Most solves one [`solve_continued`] call may add after the direct solve failed.
+pub const MAX_CONTINUATION_SOLVES: u32 = 24;
+/// Smallest continuation step, as a fraction of the way from the stored geometry's
+/// dimensions to the requested ones.
+const MIN_CONTINUATION_STEP: f64 = 1.0 / 256.0;
+
+/// Solves like [`solve`]; if that does not converge (status `Failed` or conflicting
+/// constraints), retries by **dimension continuation** (ADR 0016 §6): every dimension
+/// (distance, angle, radius, diameter) is first measured on the stored geometry, then
+/// moved from that value to its requested value in steps, each step solved from the
+/// previous step's solution (step lengths adapt: halved after a failed step, doubled
+/// after a good one). This reaches shapes far from the stored positions, such as a
+/// parametric sketch after a large parameter edit, which a single Levenberg–Marquardt
+/// run started at the stored positions can miss.
+///
+/// The result depends only on `sketch` and `opts`, never on earlier solves. When the
+/// continuation fails too, the direct solve's result (with its conflict analysis) is
+/// returned. The final step solves the sketch with exactly the requested values, so a
+/// successful result is a solution of `sketch` itself.
+pub fn solve_continued(sketch: &Sketch, opts: &SolveOptions) -> SolveResult {
+    let direct = solve(sketch, opts);
+    if solved(&direct) {
+        return direct;
+    }
+    continuation(sketch, opts).unwrap_or(direct)
+}
+
+fn solved(r: &SolveResult) -> bool {
+    r.status != SolveStatus::Failed && r.conflicting.is_empty()
+}
+
+/// The dimensions' values measured on the stored geometry, as offsets from the requested
+/// values: `(index into constraints, measured - requested)`. Empty when nothing differs.
+fn dimension_offsets(sketch: &Sketch) -> Option<Vec<(usize, f64)>> {
+    sketch.validate().ok()?;
+    let lay = Layout::new(sketch);
+    let eqs = equations::build(sketch, &lay)?;
+    let mut out = Vec::new();
+    for eq in &eqs {
+        let Owner::Constraint(ci) = eq.owner else { continue };
+        let Some((_, c)) = sketch.constraints().get(ci) else { continue };
+        // Each dimension is one equation `g(x) - value` (the radius equation of a diameter
+        // takes half the value; angles are wrapped into (-pi, pi] around the value).
+        let r0 = equations::eval(eq, &lay.x0).v;
+        let (value, off) = match *c {
+            Constraint::Distance { value, .. } | Constraint::Radius { value, .. } | Constraint::Angle { value, .. } => {
+                (value, r0)
+            }
+            Constraint::Diameter { value, .. } => (value, 2.0 * r0),
+            _ => continue,
+        };
+        let mut measured = value + off;
+        if matches!(c, Constraint::Angle { .. }) && measured.abs() > 4.0 * core::f64::consts::PI {
+            measured -= core::f64::consts::TAU.copysign(measured);
+        }
+        let ok = match c {
+            Constraint::Angle { .. } => measured.is_finite(),
+            Constraint::Distance { .. } => measured.is_finite() && measured >= 0.0,
+            _ => measured.is_finite() && measured > 0.0,
+        };
+        if ok && (measured - value).abs() > 1e-12 * (1.0 + value.abs()) {
+            out.push((ci, measured - value));
+        }
+    }
+    Some(out)
+}
+
+fn continuation(sketch: &Sketch, opts: &SolveOptions) -> Option<SolveResult> {
+    let offsets = dimension_offsets(sketch)?;
+    if offsets.is_empty() {
+        return None;
+    }
+    let targets: Vec<(usize, f64)> = offsets
+        .iter()
+        .filter_map(|&(ci, _)| match sketch.constraints().get(ci).map(|c| c.1) {
+            Some(
+                Constraint::Distance { value, .. }
+                | Constraint::Angle { value, .. }
+                | Constraint::Radius { value, .. }
+                | Constraint::Diameter { value, .. },
+            ) => Some((ci, value)),
+            _ => None,
+        })
+        .collect();
+    let mut cur = sketch.clone();
+    let (mut t, mut h) = (0.0f64, 0.5f64);
+    for _ in 0..MAX_CONTINUATION_SOLVES {
+        let next = (t + h).min(1.0);
+        let rest = 1.0 - next;
+        let mut step = cur.clone();
+        for (&(ci, off), &(_, value)) in offsets.iter().zip(&targets) {
+            // `rest == 0` gives exactly the requested value.
+            step.set_dimension_value(ci, value + rest * off);
+        }
+        let r = solve(&step, opts);
+        if solved(&r) {
+            if rest <= 0.0 {
+                return Some(r);
+            }
+            cur = r.sketch;
+            t = next;
+            h = (2.0 * h).min(1.0 - t);
+        } else {
+            h *= 0.5;
+            if h < MIN_CONTINUATION_STEP {
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Solves with some points dragged toward targets. Dragged points start at their
 /// target and are damped [`DRAG_WEIGHT`] times more strongly than other unknowns,
 /// so the rest of the sketch moves to follow them where the constraints allow.
@@ -206,6 +318,22 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
         }
     }
 
+    // Unknowns held by a `Fixed` constraint that is satisfied at the start stay where they
+    // are: the iteration treats them as constants. Otherwise a fixed point that many
+    // equations pull on (the centre of a gear sketch) is a cheap way for the damped
+    // least-squares step to reduce residuals, and the iteration can end in a minimum with
+    // the "fixed" point moved away. The rank analysis below still sees every equation.
+    let mut frozen = vec![false; n];
+    for eq in &eqs {
+        if let (Owner::Constraint(_), equations::Kind::Value { a, v }) = (eq.owner, eq.kind)
+            && let Some(&g) = eq.locals.get(usize::from(a))
+            && x.get(g) == Some(&v)
+            && let Some(f) = frozen.get_mut(g)
+        {
+            *f = true;
+        }
+    }
+
     let comps = components(n, &eqs);
     let ncons = sketch.constraints().len();
     let mut col_map = vec![usize::MAX; n];
@@ -236,7 +364,7 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
                 *m = j;
             }
         }
-        let lm = levenberg_marquardt(&eqs, comp, &col_map, &mut x, &w, &is_radius, &o);
+        let lm = levenberg_marquardt(&eqs, comp, &col_map, &frozen, &mut x, &w, &is_radius, &o);
         if !lm.finite {
             return fail(SolveError::NonFinite);
         }
@@ -495,8 +623,15 @@ fn cost(eqs: &[Equation], comp: &Component, x: &[f64]) -> (f64, f64) {
     (c, m)
 }
 
-/// Normal equations `JᵀJ` (dense, row major) and gradient `Jᵀr`.
-fn normal_eqs(eqs: &[Equation], comp: &Component, col_map: &[usize], x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+/// Normal equations `JᵀJ` (dense, row major) and gradient `Jᵀr`, without the columns of
+/// `frozen` unknowns (their rows and columns stay zero, so the damped step leaves them).
+fn normal_eqs(
+    eqs: &[Equation],
+    comp: &Component,
+    col_map: &[usize],
+    frozen: &[bool],
+    x: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
     let nc = comp.cols.len();
     let mut a = vec![0.0; nc * nc];
     let mut g = vec![0.0; nc];
@@ -507,6 +642,9 @@ fn normal_eqs(eqs: &[Equation], comp: &Component, col_map: &[usize], x: &[f64]) 
         let mut ent: [(usize, f64); N] = [(usize::MAX, 0.0); N];
         let mut ne = 0;
         for (k, &gl) in eq.locals.iter().enumerate().take(eq.nloc) {
+            if frozen.get(gl).copied().unwrap_or(false) {
+                continue;
+            }
             let j = col_map.get(gl).copied().unwrap_or(usize::MAX);
             let dk = d.d.get(k).copied().unwrap_or(0.0);
             if let Some(e) = ent.iter_mut().take(ne).find(|e| e.0 == j) {
@@ -540,10 +678,12 @@ struct LmOutcome {
     finite: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn levenberg_marquardt(
     eqs: &[Equation],
     comp: &Component,
     col_map: &[usize],
+    frozen: &[bool],
     x: &mut [f64],
     w_all: &[f64],
     is_radius: &[bool],
@@ -556,7 +696,7 @@ fn levenberg_marquardt(
     if !c.is_finite() || !maxres.is_finite() {
         return LmOutcome { iterations: 0, converged: false, stationary: false, finite: false };
     }
-    let (mut a, mut g) = normal_eqs(eqs, comp, col_map, x);
+    let (mut a, mut g) = normal_eqs(eqs, comp, col_map, frozen, x);
     let maxdiag = (0..nc).map(|j| a.get(j * nc + j).copied().unwrap_or(0.0)).fold(0.0, f64::max);
     let lam_min = 1e-12 * maxdiag.max(1.0);
     let mut lambda = (1e-3 * maxdiag).max(lam_min);
@@ -630,7 +770,7 @@ fn levenberg_marquardt(
             stuck = maxres > o.tolerance;
             break;
         }
-        (a, g) = normal_eqs(eqs, comp, col_map, x);
+        (a, g) = normal_eqs(eqs, comp, col_map, frozen, x);
         if small_step && maxres > o.tolerance {
             stuck = true;
             break;

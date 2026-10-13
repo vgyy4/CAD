@@ -232,3 +232,46 @@ fn bad_options_are_clean_errors() {
     let e = fail(&mut s, json!({"name": "Gear1"}));
     assert!(e.contains("already exists"), "{e}");
 }
+
+/// Replaces `param <name> = ...` in the code view text (no stored solution: the evaluator
+/// must reach the new shape from the generation-time coordinates).
+fn set_param_text(s: &mut Session, name: &str, value: &str) {
+    let t = text(s);
+    let start = t.find(&format!("param {name} = ")).unwrap();
+    let end = start + t[start..].find("  #").unwrap();
+    let new = format!("{}param {name} = {value}{}", &t[..start], &t[end..]);
+    run(s, "document.set_text", json!({ "text": new }));
+}
+
+/// Review v0.2 H1: edits that make the gear smaller (and large jumps either way) solve,
+/// whether the change comes as a parameter edit or as text.
+#[test]
+fn smaller_and_far_parameter_edits_solve() {
+    let cases: [(&str, &str, &str, f64, u32); 9] = [
+        ("20", "gear1_teeth", "18", 2.0, 18),
+        ("30", "gear1_teeth", "28", 2.0, 28),
+        ("30", "gear1_teeth", "20", 2.0, 20),
+        ("100", "gear1_teeth", "95", 2.0, 95),
+        ("100", "gear1_teeth", "20", 2.0, 20),
+        ("20", "gear1_teeth", "100", 2.0, 100),
+        ("20", "gear1_module", "1.5 mm", 1.5, 20),
+        ("20", "gear1_module", "1 mm", 1.0, 20),
+        ("20", "gear1_module", "5 mm", 5.0, 20),
+    ];
+    for by_text in [true, false] {
+        for (start, name, value, module, teeth) in cases {
+            let mut s = session();
+            run(&mut s, "generate.gear", json!({ "teeth": start }));
+            let t0 = std::time::Instant::now();
+            if by_text {
+                set_param_text(&mut s, name, value);
+            } else {
+                run(&mut s, "param.set", json!({ "name": name, "expr": value }));
+            }
+            let area = tooth_area(&mut s, "Gear1_profile");
+            let want = reference_area(&GearValues { module, ..defaults(teeth) }, 6.0);
+            assert!((area - want).abs() < 0.1 * module, "{start} -> {name} = {value}: {area} vs {want}");
+            eprintln!("{start} -> {name} = {value} (text {by_text}): {:?}", t0.elapsed());
+        }
+    }
+}

@@ -34,5 +34,5 @@ pub use profile::{
     Arrangement, Chain, ChainError, Curve, Loop, Profile, ProfileError, Segment, arrange, chain, profiles,
 };
 pub use sketch::{Constraint, ConstraintId, Entity, EntityId, EntityKind, Geom, Sketch, SketchError};
-pub use solver::{Drag, SolveError, SolveOptions, SolveResult, SolveStatus, solve, solve_drag};
+pub use solver::{Drag, SolveError, SolveOptions, SolveResult, SolveStatus, solve, solve_continued, solve_drag};
 pub use spline::polyline as spline_polyline;
