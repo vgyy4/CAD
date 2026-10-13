@@ -96,7 +96,9 @@ Phase 3 has started (see Next).
      memory/time budgets per rebuild, cancel inside OCCT operations, fault-injection tests.
      Done: worker process, crash containment and restart, evaluator crash handling,
      app/MCP/CLI wiring and packaging, Stop that kills a running kernel operation, MCP
-     deadlines, a Stop button (ADR 0022 "State"). Next: rebuild progress, docs.
+     deadlines, a Stop button, rebuild progress (ADR 0022 "State").
+   - v0.3: parallel feature evaluation across kernel workers (ADR 0024, proposed):
+     dependency keys first (independent parts stay cached), then a worker pool.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
