@@ -14,7 +14,7 @@
 
 mod budget;
 mod datum;
-#[allow(dead_code)] // wired into the evaluator in ADR 0024 phase 1b
+mod delta;
 mod deps;
 pub mod error;
 pub mod gear;
@@ -140,6 +140,11 @@ impl Statuses {
         self.0 = Some(Arc::new(StatusLink { name, status, prev: self.0.take() }));
     }
 
+    /// The status pushed last.
+    fn newest(&self) -> Option<(&str, &FeatureStatus)> {
+        self.0.as_deref().map(|l| (l.name.as_str(), &l.status))
+    }
+
     /// In feature order.
     fn to_vec(&self) -> Vec<(String, FeatureStatus)> {
         let mut out = Vec::new();
@@ -245,9 +250,17 @@ fn mesh_bytes(m: &MeshBody) -> u64 {
 /// Fixed overhead charged per cached state.
 const ENTRY_BYTES: u64 = 256;
 
+/// A cache entry: the state after a document prefix, or what one feature changed
+/// (ADR 0024), under keys from separate hash domains.
+#[derive(Debug, Clone)]
+enum Entry {
+    State(Arc<State>),
+    Delta(Arc<delta::Delta>),
+}
+
 #[derive(Debug)]
 struct Cached {
-    state: Arc<State>,
+    entry: Entry,
     /// Body/mesh allocations this state references (pointer, estimated bytes).
     refs: Vec<(usize, u64)>,
     /// Last use (for LRU eviction).
@@ -414,13 +427,27 @@ impl Evaluator {
         self.clock
     }
 
-    fn lookup(&mut self, key: &[u8; 32]) -> Option<Arc<State>> {
+    fn lookup_entry(&mut self, key: &[u8; 32]) -> Option<Entry> {
         let stamp = self.tick();
         let c = self.cache.get_mut(key)?;
         self.lru.remove(&c.stamp);
         c.stamp = stamp;
         self.lru.insert(stamp, *key);
-        Some(c.state.clone())
+        Some(c.entry.clone())
+    }
+
+    fn lookup(&mut self, key: &[u8; 32]) -> Option<Arc<State>> {
+        match self.lookup_entry(key)? {
+            Entry::State(s) => Some(s),
+            Entry::Delta(_) => None,
+        }
+    }
+
+    fn lookup_delta(&mut self, key: &[u8; 32]) -> Option<Arc<delta::Delta>> {
+        match self.lookup_entry(key)? {
+            Entry::Delta(d) => Some(d),
+            Entry::State(_) => None,
+        }
     }
 
     /// Charges one reference to a body/mesh allocation; bytes count on 0 -> 1.
@@ -461,12 +488,21 @@ impl Evaluator {
         for m in &st.meshes {
             refs.push((Arc::as_ptr(m) as *const () as usize, mesh_bytes(m)));
         }
+        self.insert_entry(key, Entry::State(st), refs);
+    }
+
+    fn remember_delta(&mut self, key: [u8; 32], d: delta::Delta) {
+        let refs = d.refs().collect();
+        self.insert_entry(key, Entry::Delta(Arc::new(d)), refs);
+    }
+
+    fn insert_entry(&mut self, key: [u8; 32], entry: Entry, refs: Vec<(usize, u64)>) {
         let stamp = self.tick();
         for &(p, b) in &refs {
             self.retain(p, b);
         }
         self.bytes += ENTRY_BYTES;
-        if let Some(old) = self.cache.insert(key, Cached { state: st, refs, stamp }) {
+        if let Some(old) = self.cache.insert(key, Cached { entry, refs, stamp }) {
             self.lru.remove(&old.stamp);
             self.remove_entry(old);
         }
@@ -515,7 +551,16 @@ impl Evaluator {
         let mut recomputed = 0;
         let mut rolled_back = Vec::new();
         let mut cancelled = false;
+        // Dependency keys (ADR 0024): a feature's own text and parameters plus the keys of
+        // the features it depends on, so what it did can be reused when only features it
+        // does not depend on changed.
+        let graph = deps::graph(doc);
+        let units_key = *blake3::hash(format!("gusset-eval dep 1 {:?}", doc.units).as_bytes()).as_bytes();
+        let mut dep_keys: Vec<[u8; 32]> = Vec::with_capacity(doc.features.len());
         for (i, f) in doc.features.iter().enumerate() {
+            let deps = graph.deps.get(i).map_or(&[][..], Vec::as_slice);
+            let dkey = dep_key(&units_key, f, &params, deps.iter().filter_map(|&d| dep_keys.get(d)));
+            dep_keys.push(dkey);
             if rollback.is_some_and(|r| i >= r) {
                 rolled_back.push((f.name.clone(), FeatureStatus::RolledBack));
                 continue;
@@ -530,7 +575,16 @@ impl Evaluator {
                 continue;
             }
             let mut s = (*state).clone();
-            if let Some((_, err)) = self.crashes.iter().find(|(k, _)| *k == key) {
+            if let Some(d) = self.lookup_delta(&dkey)
+                && d.replayable(&s.work)
+            {
+                d.replay(&mut s, &f.name);
+                let st = Arc::new(s);
+                self.remember(key, st.clone());
+                state = st;
+                continue;
+            }
+            if let Some((_, err)) = self.crashes.iter().find(|(k, _)| *k == dkey) {
                 s.failed.insert(f.name.clone());
                 s.statuses.push(f.name.clone(), FeatureStatus::Failed(err.clone()));
                 state = Arc::new(s);
@@ -547,7 +601,7 @@ impl Evaluator {
                 if let Some(FeatureStatus::Failed(e)) = s.statuses.to_vec().last().map(|(_, st)| st.clone())
                     && e.code == ErrorCode::KernelCrashed
                 {
-                    self.crashes.push_back((key, e));
+                    self.crashes.push_back((dkey, e));
                     while self.crashes.len() > MAX_CRASH_MEMO {
                         self.crashes.pop_front();
                     }
@@ -572,6 +626,9 @@ impl Evaluator {
                 continue;
             }
             let st = Arc::new(s);
+            if let Some(d) = delta::Delta::diff(&state, &st, &f.name) {
+                self.remember_delta(dkey, d);
+            }
             self.remember(key, st.clone());
             state = st;
         }
@@ -868,6 +925,22 @@ fn prune_holes(s: &mut State, before: &[usize]) {
     }
 }
 
+/// A feature's dependency key (ADR 0024): its text and parameter values and the keys
+/// of the features it depends on.
+fn dep_key<'a>(
+    units: &[u8; 32],
+    f: &Feature,
+    params: &ParamValues,
+    deps: impl Iterator<Item = &'a [u8; 32]>,
+) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(&step_key(units, f, params));
+    for d in deps {
+        h.update(d);
+    }
+    *h.finalize().as_bytes()
+}
+
 fn step_key(prev: &[u8; 32], f: &Feature, params: &ParamValues) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(prev);
@@ -1095,6 +1168,8 @@ mod tests_budget;
 mod tests_crash;
 #[cfg(test)]
 mod tests_datum;
+#[cfg(test)]
+mod tests_deps;
 #[cfg(test)]
 mod tests_hole;
 #[cfg(test)]

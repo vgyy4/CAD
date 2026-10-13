@@ -237,7 +237,8 @@ fn cache_is_bounded_by_estimated_bytes_and_is_lru() {
     let mut ev = Evaluator::new(Arc::new(MockKernel));
     ev.evaluate(&doc, None, &());
     let one_body = ev.cache_bytes();
-    assert!(one_body > 0 && ev.cache_len() == 2);
+    // Two prefix states and the two features' deltas (ADR 0024).
+    assert!(one_body > 0 && ev.cache_len() == 4, "{}", ev.cache_len());
     // A budget for about two extrude states: older depths are evicted, the newest kept.
     ev.set_cache_limits(1000, one_body * 2);
     let mut last = doc.clone();

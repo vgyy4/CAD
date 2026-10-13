@@ -1,6 +1,6 @@
 # ADR 0024: Parallel feature evaluation across kernel workers
 
-- Status: proposed (implementation in phases, v0.3)
+- Status: accepted (implementation in phases, v0.3)
 - Date: 2026-10-13
 - Builds on: ADR 0022 (kernel worker), ADR 0023 §3 (multithreading where it pays), ADR 0020
   (work limits), ADR 0003 (naming)
@@ -68,6 +68,18 @@ OCCT goldens give bit-identical topology summaries and volumes with `N = 1` and 
 2. The worker pool and waves; equivalence tests `N = 1` vs `N = 4`; perf report on the
    gear pair (target: the pair rebuilds in about the time of its slower gear).
 3. Tessellation and topology summaries of independent bodies on the pool.
+
+## State (2026-10-13)
+- Phase 1 done: `deps::graph` (read/write analysis, barriers) and a second cache tier:
+  next to the state after each document prefix, the evaluator stores what each feature
+  changed (`delta::Delta`: bodies replaced, removed and appended, mesh bodies, solved
+  sketch, datum plane, status, work) under its dependency key. When the prefix misses,
+  a delta whose dependencies are unchanged is replayed instead of building the feature;
+  a delta is stored only if replaying it onto the state it came from reproduces the
+  result, and replayed only when the work limits see the same totals. Crashes are
+  memoised by dependency key. Tests: an edit to one part rebuilds only that part; a warm
+  evaluator equals a fresh one over a sequence of edits and rollbacks with barriers,
+  combine, copies and a failing feature.
 
 ## Consequences
 - Heavy models with independent parts rebuild up to `N` times faster on multi-core

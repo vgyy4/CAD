@@ -14,7 +14,7 @@ impl Planes {
         self.0.iter().find(|(n, _)| n == name).map(|(_, f)| f)
     }
 
-    fn push(&mut self, name: &str, frame: Frame) {
+    pub(crate) fn push(&mut self, name: &str, frame: Frame) {
         Arc::make_mut(&mut self.0).push((name.to_string(), frame));
     }
 
