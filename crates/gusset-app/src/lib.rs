@@ -9,6 +9,7 @@ pub mod forms;
 pub mod i18n;
 pub mod icons;
 pub mod link;
+pub mod ribbon;
 pub mod theme;
 pub mod timeline;
 pub mod viewport;
@@ -21,3 +22,5 @@ mod screenshots;
 mod tests;
 #[cfg(test)]
 mod tests_lifecycle;
+#[cfg(test)]
+mod tests_ribbon;

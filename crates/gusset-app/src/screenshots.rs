@@ -7,6 +7,7 @@
 use crate::app::{App, Dialog};
 use crate::theme::ThemeKind;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use gusset_kernel::Kernel;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -84,5 +85,17 @@ fn generate_gallery() {
         bracket(&mut a);
         a.dialog = Some(Dialog::Unsaved { pending: crate::app::Pending::Close, save_failed: None });
         shoot(&dir, &format!("07-close-dialog-{t}"), a, |_| {});
+        // Sketch editing: the SKETCH tab's ribbon with "Finish sketch".
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.edit_sketch("Profile");
+        shoot(&dir, &format!("08-sketch-mode-{t}"), a, |_| {});
+        // A ribbon dropdown listing every command of its group.
+        let mut a = app(theme);
+        bracket(&mut a);
+        shoot(&dir, &format!("09-ribbon-dropdown-{t}"), a, |h| {
+            h.get_by_label("CREATE").click();
+            h.run_steps(3);
+        });
     }
 }
