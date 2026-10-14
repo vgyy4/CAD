@@ -47,7 +47,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Revolve(r) => r.op == BodyOp::New,
         FeatureKind::Sweep(d) => d.op == BodyOp::New,
         FeatureKind::Loft(d) => d.op == BodyOp::New,
-        FeatureKind::Import(_) => true,
+        FeatureKind::Import(_) | FeatureKind::Component(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
         _ => false,
@@ -64,11 +64,15 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         | FeatureKind::Loft(LoftDef { op: BodyOp::New, body_name, .. }) => {
             Some(body_name.as_deref().unwrap_or(&f.name))
         }
-        FeatureKind::Import(_) => Some(&f.name),
+        FeatureKind::Import(_) | FeatureKind::Component(_) => Some(&f.name),
         FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
         FeatureKind::Move(m) if m.copy => Some(&f.name),
         _ => None,
     }
+}
+
+fn is_hash(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 pub fn validate(doc: &Document) -> Vec<Issue> {
@@ -241,8 +245,16 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             }
             FeatureKind::Hole(d) => check_hole(n, d, &seen, &mut out),
             FeatureKind::Import(i) => {
-                if i.blob.len() != 64 || !i.blob.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+                if !is_hash(&i.blob) {
                     out.push(issue(n, "blob must be a 64-character lowercase hex hash"));
+                }
+            }
+            FeatureKind::Component(d) => {
+                if !is_hash(&d.document) {
+                    out.push(issue(n, "document must be a 64-character lowercase hex hash"));
+                }
+                if d.body.as_deref().is_some_and(|b| validate_feature_name(b).is_err()) {
+                    out.push(issue(n, "body must be a body name of the component's document"));
                 }
             }
         }

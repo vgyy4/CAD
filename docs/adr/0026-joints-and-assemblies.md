@@ -64,7 +64,7 @@ version bump.
 ### 5. Commands and UI
 `feature.joint` (registry → GUI form, CLI, MCP), `query.joints` (types, frames, values,
 degrees of freedom left), browser category "Joints", timeline chips. Phase 2: components
-from other documents (external references with version pins), loops.
+loops.
 
 Relations (gear, rack and pinion, screw) need no feature of their own: a joint value is an
 expression, so `angle: -turn * 20 / 40` couples a gear pair (grammar "Joints").
@@ -82,3 +82,23 @@ face and edge counts, wherever placed) and gives the rows as JSON and CSV.
   enough for mechanisms (hinges, sliders, gear pairs at a centre distance) and for agents
   to describe placements without coordinates.
 - Moving parts stay parametric and cheap to animate.
+
+### 7. Components from other documents (phase 2, done)
+`component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <B>])`
+brings in one body of another `.gus` document. `assembly.insert_component` reads the file
+(agents: confined to the project folder, like imports), takes the head of its main branch
+(or `branch`), stores that document's text as a blob together with every blob it needs
+(its imports, and the documents of its own components, recursively, at most 8 deep), and
+records the source path and node. The evaluator rebuilds the stored document with a fresh
+evaluator on the same kernel (same cancel flag and limits, no speculation) and takes the
+body; so a component is pinned: it changes only when `assembly.update_component` reads
+the source again and pins its new head. One body per component keeps "one feature, one
+body", which validation and joints rely on; a second body is a second component.
+
+Faces are named `<Name>/part(<face name in the component's document>)`: names inside a
+component are as stable as in its own document, and the inner name is not a reference to
+this document's features (dependencies and renames stop at the component). A component
+starts at its own coordinates; joints place it.
+
+Not done yet: parameter overrides per instance (configurations), and an "update available"
+notice (comparing the stored version with the source's head).

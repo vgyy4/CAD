@@ -118,3 +118,47 @@ fn interference_counts_overlap_not_contact() {
         m["steps"].as_array().unwrap().iter().map(|f| f["interference"].as_array().unwrap().len()).collect();
     assert_eq!(counts, [1, 1, 0], "{m}");
 }
+
+#[test]
+fn a_shaft_from_its_own_document_goes_into_the_bore() {
+    use gusset_commands::{CmdCtx, Session, execute};
+    use serde_json::json;
+    let dir = std::env::temp_dir().join(format!("gusset-occt-component-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // The shaft alone, saved as its own project file.
+    let shaft = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 3) {\n  p1 = point(0, 0)\n  c2 = circle(p1, 4)\n}\n\n\
+                 extrude Shaft (profile: S, distance: 20 mm, op: new)\n";
+    let u = gusset_history::Ctx::user(1);
+    let h = gusset_history::History::new(&Document::from_text(shaft).unwrap(), &u);
+    let meta = gusset_project::ProjectMeta {
+        id: gusset_store::paths::ProjectId::new_random().unwrap(),
+        save_seq: 1,
+        base_seq: 1,
+        created: 1,
+    };
+    std::fs::write(dir.join("shaft.gus"), gusset_project::encode(&h, &meta).unwrap()).unwrap();
+    // The plate with its bore, and the shaft as a component.
+    let plate = PLATE_AND_SHAFT.split("sketch Shaft_s").next().unwrap();
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = Session::new(&Document::from_text(plate).unwrap(), k, &CmdCtx::user(0));
+    s.project_dir = Some(dir.clone());
+    let c = CmdCtx::user(1);
+    let mut run =
+        |id: &str, args: serde_json::Value| execute(&mut s, &c, id, args).unwrap_or_else(|e| panic!("{id}: {e:?}"));
+    let r = run("assembly.insert_component", json!({"path": "shaft.gus"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let r = run(
+        "feature.joint",
+        json!({"type": "cylindrical", "body": "Shaft", "at": "Shaft/part(Shaft/side(S/c2))", "to": "Bore/side(Bore_s/c2)"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let b = run("query.body", json!({"body": "Shaft"}));
+    let c = b["centroid_mm"].as_array().unwrap();
+    // On the bore's axis, centred in the plate's thickness.
+    let want = [25.0, 12.0, 3.0];
+    assert!(c.iter().zip(want).all(|(a, w)| (a.as_f64().unwrap() - w).abs() < 1e-6), "{b}");
+    assert!((b["volume_mm3"].as_f64().unwrap() - std::f64::consts::PI * 16.0 * 20.0).abs() < 1e-3, "{b}");
+    let q = run("query.interference", json!({}));
+    assert_eq!(q["interference"], json!([]), "{q}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

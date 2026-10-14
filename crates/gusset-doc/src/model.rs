@@ -53,6 +53,7 @@ pub enum FeatureKind {
     Combine(CombineDef),
     Hole(HoleDef),
     Joint(Box<JointDef>),
+    Component(ComponentDef),
 }
 
 impl FeatureKind {
@@ -75,6 +76,7 @@ impl FeatureKind {
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
             FeatureKind::Joint(_) => "joint",
+            FeatureKind::Component(_) => "component",
         }
     }
 
@@ -156,6 +158,7 @@ impl FeatureKind {
                 d.at.features(&mut add);
                 d.to.features(&mut add);
             }
+            FeatureKind::Component(_) => {}
         }
         out
     }
@@ -214,6 +217,7 @@ impl FeatureKind {
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
+            FeatureKind::Component(_) => {}
         }
         // A generated gear sketch is checked with its gear's parameters (ADR 0018 §3).
         if let FeatureKind::Sketch(SketchDef { gear: Some(g), .. }) = self {
@@ -278,6 +282,7 @@ impl FeatureKind {
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
+            FeatureKind::Component(_) => {}
         }
         out
     }
@@ -963,6 +968,21 @@ impl FrameRef {
 }
 
 /// Places a body by a joint (ADR 0026): the frame `at` on the moving body is brought onto
+/// A body of another document, pinned to a version (ADR 0026 §7): `document` is the blob
+/// holding that document's text as it was when the component was inserted or updated, so
+/// the component rebuilds the same until it is updated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComponentDef {
+    /// Where the document came from (a path, untrusted; for updates and display).
+    pub source: String,
+    /// The source's history node when it was pinned (hex; informational).
+    pub version: String,
+    /// BLAKE3 hash (hex) of the stored document text.
+    pub document: String,
+    /// The body of that document (default: its last body).
+    pub body: Option<String>,
+}
+
 /// the frame `to` (on a body already in place, a plane or the origin), with the joint's
 /// motion in between. The bodies in `with` move along rigidly.
 #[derive(Debug, Clone, PartialEq)]

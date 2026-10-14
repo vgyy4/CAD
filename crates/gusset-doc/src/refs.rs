@@ -31,6 +31,10 @@ pub enum FaceKey {
     /// Face of the moved copy made by a `move` with `copy: true`
     /// (`Move1/copy(<face>)`).
     Copy(Box<FaceRef>),
+    /// Face of the body a `component` brings in, named by its face in the component's own
+    /// document (`Wheel/part(Extrude1/cap(end))`). The inner name refers to that document,
+    /// not to this one's features.
+    Part(Box<FaceRef>),
     /// Face of pattern instance `k` (1-based; 0 is the source) copied from the named
     /// face (`Pattern1/instance(2, <face>)`).
     Instance { k: u32, face: Box<FaceRef> },
@@ -108,7 +112,7 @@ impl FaceRef {
             FaceKey::Inner(r) | FaceKey::Mirror(r) | FaceKey::Copy(r) | FaceKey::Instance { face: r, .. } => {
                 r.features(f);
             }
-            FaceKey::Cap { .. } | FaceKey::Imported(_) | FaceKey::Hole { .. } => {}
+            FaceKey::Cap { .. } | FaceKey::Imported(_) | FaceKey::Hole { .. } | FaceKey::Part(_) => {}
         }
     }
 
@@ -194,6 +198,7 @@ impl fmt::Display for FaceRef {
             FaceKey::Inner(r) => write!(f, "inner({r})")?,
             FaceKey::Mirror(r) => write!(f, "mirror({r})")?,
             FaceKey::Copy(r) => write!(f, "copy({r})")?,
+            FaceKey::Part(r) => write!(f, "part({r})")?,
             FaceKey::Instance { k, face } => write!(f, "instance({k}, {face})")?,
             FaceKey::Hole { part, at } => write!(f, "{}({at})", part.keyword())?,
         }
@@ -265,6 +270,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         "inner" => FaceKey::Inner(Box::new(parse_face(c)?)),
         "mirror" => FaceKey::Mirror(Box::new(parse_face(c)?)),
         "copy" => FaceKey::Copy(Box::new(parse_face(c)?)),
+        "part" => FaceKey::Part(Box::new(parse_face(c)?)),
         "instance" => {
             let k = c.uint()?;
             if k == 0 {
@@ -276,7 +282,7 @@ pub(crate) fn parse_face(c: &mut Cursor<'_>) -> Result<FaceRef, ParseError> {
         other => {
             return Err(c.err_hint(
                 format!("unknown face kind '{other}'"),
-                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), instance(k, <face>), face(N) or a hole face such as wall(p5)",
+                "use side(...), cap(start|end), blend(edge(...)), inner(<face>), mirror(<face>), copy(<face>), part(<face>), instance(k, <face>), face(N) or a hole face such as wall(p5)",
             ));
         }
     };
@@ -321,6 +327,7 @@ mod tests {
             "Shell1/inner(Extrude1/side(Sketch1/l3)#2)#1",
             "Mirror1/mirror(Extrude1/side(Sketch1/l3))",
             "Move1/copy(Extrude1/side(Sketch1/l3))",
+            "Wheel/part(Extrude1/cap(end))",
             "Pattern1/instance(3, Extrude1/cap(start, l4)#2)",
             "Hole1/wall(p5)",
             "Hole1/cbore_floor(p5_2)#2",

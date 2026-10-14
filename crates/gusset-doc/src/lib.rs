@@ -1067,3 +1067,31 @@ joint J3 (type: ball, body: Knob, at: edge(Knob/cap(end), Knob/side(Sketch1/l5))
         assert!(issues.iter().any(|i| i.message.contains("both the moving body")), "{issues:?}");
     }
 }
+
+#[cfg(test)]
+mod component_tests {
+    use super::*;
+
+    const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn components_round_trip_and_validate() {
+        let text = format!(
+            "gusset 1\nunits mm\n\ncomponent Wheel (source: \"parts/wheel.gus\", version: \"00ff\", document: \"{HASH}\", body: Rim)\n\n\
+             joint J1 (type: revolute, body: Wheel, at: Wheel/part(Extrude1/cap(start)), to: origin, angle: 10 deg)\n"
+        );
+        let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), text);
+        let FeatureKind::Component(c) = &doc.feature("Wheel").unwrap().kind else { panic!() };
+        assert_eq!((c.source.as_str(), c.body.as_deref()), ("parts/wheel.gus", Some("Rim")));
+        // The inner name refers to the component's document, not to this one's features.
+        assert!(
+            doc.feature("J1").unwrap().kind.dependencies() == ["Wheel"],
+            "{:?}",
+            doc.feature("J1").unwrap().kind.dependencies()
+        );
+        // A bad hash is refused; the document is required.
+        assert!(Document::from_text(&text.replace(HASH, "xyz")).is_err());
+        assert!(Document::from_text("gusset 1\nunits mm\ncomponent C (source: \"a.gus\")\n").is_err());
+    }
+}

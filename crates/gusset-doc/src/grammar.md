@@ -456,6 +456,19 @@ extrude Lid (profile: Box, distance: 2 mm, op: new)
 joint Hinge (type: revolute, body: Lid, at: Lid/cap(start), to: Base/cap(end), flip: true, angle: open, angle_limits: [0 deg, 110 deg])
 ```
 
+## Components
+
+```
+component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <Body>])
+```
+
+- A component brings in one body of another Gusset document (`body`, default: its last
+  body), at that document's own coordinates; place it with a joint. Insert it with
+  `assembly.insert_component`, never by hand: `document` is the hash of a stored copy of
+  that document, so the component stays the same until `assembly.update_component` pins
+  the source's newer version.
+- Its faces are named `<Name>/part(<face in the component's document>)`, for example
+  `Wheel/part(Extrude1/cap(end))`; `query_body` lists them.
 ## Holes
 
 ```

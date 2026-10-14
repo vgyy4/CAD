@@ -78,7 +78,15 @@ const SOLID: &[Group] = &[
             d("param.delete", "Delete"),
         ],
     },
-    Group { key: "ribbon.assemble", large: 1, tools: &[d("feature.joint", "Joint")] },
+    Group {
+        key: "ribbon.assemble",
+        large: 2,
+        tools: &[
+            d("feature.joint", "Joint"),
+            d("assembly.insert_component", "Component"),
+            d("assembly.update_component", "Update"),
+        ],
+    },
     Group { key: "ribbon.construct", large: 1, tools: &[d("feature.plane", "Plane")] },
     Group { key: "ribbon.inspect", large: 1, tools: &[d("query.body", "Measure"), d("query.model", "Overview")] },
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },

@@ -26,6 +26,8 @@ pub enum ErrorCode {
     Cancelled,
     /// The geometry kernel's process died while building this feature (ADR 0022 §2).
     KernelCrashed,
+    /// The document a component comes from cannot be read or rebuilt (ADR 0026 §7).
+    ComponentFailed,
 }
 
 impl ErrorCode {
@@ -45,6 +47,7 @@ impl ErrorCode {
             ErrorCode::EmptyResult => "empty_result",
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::MissingBlob => "missing_blob",
+            ErrorCode::ComponentFailed => "component_failed",
             ErrorCode::InvalidGear => "invalid_gear",
             ErrorCode::TooComplex => "too_complex",
             ErrorCode::Cancelled => "cancelled",

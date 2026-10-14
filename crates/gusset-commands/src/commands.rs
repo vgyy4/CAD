@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod assembly;
+mod component;
 mod datum;
 mod generate;
 mod hole;
@@ -25,6 +26,7 @@ mod ops;
 mod sketch_ops;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
+pub use component::{InsertComponent, UpdateComponent};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
@@ -42,6 +44,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(datum::specs());
     v.extend(joint::specs());
     v.extend(assembly::specs());
+    v.extend(component::specs());
     v.extend(sketch_ops::specs());
     v
 }

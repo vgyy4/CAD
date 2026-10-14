@@ -189,6 +189,7 @@ pub enum Tool {
     Shell,
     Combine,
     Joint,
+    Component,
     MoveBody,
     PatternLinear,
     PatternCircular,
@@ -252,6 +253,7 @@ impl Tool {
         Tool::Shell,
         Tool::Combine,
         Tool::Joint,
+        Tool::Component,
         Tool::MoveBody,
         Tool::PatternLinear,
         Tool::PatternCircular,
@@ -310,6 +312,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.shell" => Tool::Shell,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
+        "assembly.insert_component" | "assembly.update_component" => Tool::Component,
         "feature.move_body" => Tool::MoveBody,
         "feature.pattern_linear" => Tool::PatternLinear,
         "feature.pattern_circular" => Tool::PatternCircular,
@@ -356,6 +359,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "combine" => Tool::Combine,
         "hole" => Tool::Hole,
         "joint" => Tool::Joint,
+        "component" => Tool::Component,
         _ => Tool::Body,
     }
 }
@@ -578,6 +582,11 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(3.0, 13.0), (13.0, 13.0), (13.0, 19.0), (3.0, 19.0)], pen.fill, ink);
             pen.poly(&[(11.0, 4.0), (21.0, 9.0), (18.0, 14.0), (9.0, 9.0)], pen.fill, a);
             pen.circle(12.0, 12.0, 2.5, a, a);
+        }
+        Tool::Component => {
+            // A part brought in from another document: a box with an arrow into it.
+            pen.poly(&[(9.0, 9.0), (21.0, 9.0), (21.0, 21.0), (9.0, 21.0)], pen.fill, ink);
+            pen.arrow((3.0, 3.0), (13.0, 13.0), a);
         }
         Tool::MoveBody => {
             for (dx, dy) in [(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)] {

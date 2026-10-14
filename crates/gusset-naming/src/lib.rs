@@ -113,6 +113,20 @@ pub struct BodyNames {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamingError(pub String);
 
+/// The names of a body brought in by the component `feature` (ADR 0026 §7): each face
+/// `f` of the component's document becomes `feature/part(f)`, edges and corners follow.
+/// Wrapping keeps the order of names, so edges stay sorted.
+#[must_use]
+pub fn part_names(feature: &str, input: &BodyNames) -> BodyNames {
+    let face = |f: &FaceRef| FaceRef::new(feature, FaceKey::Part(Box::new(f.clone())));
+    let edge = |e: &EdgeRef| EdgeRef { faces: e.faces.iter().map(face).collect(), index: e.index };
+    BodyNames {
+        faces: input.faces.iter().map(face).collect(),
+        edges: input.edges.iter().map(edge).collect(),
+        corners: input.corners.iter().map(|c| c.as_ref().map(edge)).collect(),
+    }
+}
+
 impl std::fmt::Display for NamingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

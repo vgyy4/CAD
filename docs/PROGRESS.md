@@ -127,7 +127,9 @@ Phase 3 has started (see Next).
      (shaft in a bore); `query.joints` (values, limits, DOF left, status, unplaced bodies),
      the ASSEMBLE ribbon group and a Joints browser category; `query.interference`,
      `study.motion` and `query.bom` (phase 2 part, OCCT test); relations are expressions.
-     Next: phase 2 (components from other documents, loops), a joint form with frame
+     Components from other documents (`component`, `assembly.insert_component` /
+     `update_component`, pinned copies, `part(...)` face names; mock and OCCT tests).
+     Next: phase 2 (loops, parameter overrides per component, update-available notice), a joint form with frame
      picking in the viewport, branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,

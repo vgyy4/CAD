@@ -370,6 +370,14 @@ fn print_feature(out: &mut String, f: &Feature) {
                 }
             }
         }
+        FeatureKind::Component(d) => {
+            args.push(format!("source: {}", quote(&d.source)));
+            args.push(format!("version: {}", quote(&d.version)));
+            args.push(format!("document: {}", quote(&d.document)));
+            if let Some(b) = &d.body {
+                args.push(format!("body: {b}"));
+            }
+        }
         FeatureKind::Import(i) => {
             args.push(format!("blob: {}", quote(&i.blob)));
             args.push(format!("format: {}", i.format.keyword()));
@@ -499,7 +507,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint" => {
+            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint"
+            | "component" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -517,6 +526,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_hole(&mut c)?
                 } else if kw == "joint" {
                     parse_joint(&mut c)?
+                } else if kw == "component" {
+                    parse_component(&mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -532,7 +543,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint, component",
                 ));
             }
         }
@@ -1382,6 +1393,36 @@ fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 2], Parse
 }
 
 /// `joint` statements (ADR 0026).
+fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    const KW: &str = "component";
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let (mut source, mut version, mut document, mut body) = (None, None, None, None);
+    const ALLOWED: &str = "source, version, document, body, label, suppressed";
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "source" => source = Some(c.string()?),
+            "version" => version = Some(c.string()?),
+            "document" => document = Some(c.string()?),
+            "body" => body = Some(c.ident()?.to_string()),
+            key => return Err(unknown_arg(c, KW, key, ALLOWED)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let def = ComponentDef {
+        source: source.unwrap_or_default(),
+        version: version.unwrap_or_default(),
+        document: document.ok_or_else(|| missing(c, KW, "document"))?,
+        body,
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Component(def) })
+}
+
 fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "joint";
     let name = c.ident()?.to_string();

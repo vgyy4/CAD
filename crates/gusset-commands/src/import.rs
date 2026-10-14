@@ -117,7 +117,7 @@ pub fn open_regular(path: &Path, shown: &str, max: u64) -> Result<std::fs::File,
 }
 
 /// Reads at most `max` bytes (a file that grows past it is an error), checking `cancel`.
-fn read_capped(mut f: std::fs::File, max: u64, cancel: &AtomicBool) -> Result<Vec<u8>, CommandError> {
+pub(crate) fn read_capped(mut f: std::fs::File, max: u64, cancel: &AtomicBool) -> Result<Vec<u8>, CommandError> {
     let mut out = Vec::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
