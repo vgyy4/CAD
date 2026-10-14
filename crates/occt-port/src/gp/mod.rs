@@ -1,4 +1,5 @@
-//! The 3D part of OCCT's `gp` package: gp_XYZ, gp_Pnt, gp_Vec, gp_Dir, gp_Ax1, gp_Ax2, gp_Ax3,
+//! The 3D and 2D parts of OCCT's `gp` package (the 2D types are gp_XY, gp_Pnt2d, gp_Vec2d, gp_Dir2d,
+//! gp_Ax2d, gp_Ax22d, gp_Mat2d, gp_Trsf2d, gp_GTrsf2d and the 2D conics). 3D: gp_XYZ, gp_Pnt, gp_Vec, gp_Dir, gp_Ax1, gp_Ax2, gp_Ax3,
 //! gp_Mat, gp_Trsf, gp_GTrsf, gp_Quaternion (with NLerp/SLerp), the enums and the conics that
 //! ElCLib needs. `gp::resolution()` is `f64::MIN_POSITIVE` (OCCT's `RealSmall()`).
 //!
@@ -11,28 +12,50 @@
 
 mod ax1;
 mod ax2;
+mod ax22d;
+mod ax2d;
 mod ax3;
 mod curves;
+mod curves2d;
 mod dir;
+mod dir2d;
 mod gtrsf;
+mod gtrsf2d;
+mod lin2d;
 mod mat;
+mod mat2d;
 mod pnt;
+mod pnt2d;
 mod quaternion;
 mod trsf;
+mod trsf2d;
 mod vec;
+mod vec2d;
+mod xy;
 mod xyz;
 
 pub use ax1::{Ax1, Ax1Mirror};
 pub use ax2::{Ax2, Ax2Coplanar, Ax2Mirror};
+pub use ax2d::{Ax2d, Ax2dMirror};
 pub use ax3::{Ax3, Ax3Coplanar, Ax3Mirror};
+pub use ax22d::{Ax22d, Ax22dMirror};
 pub use curves::{Circ, Elips, Hypr, Lin, Parab};
+pub use curves2d::{Circ2d, Circ2dMirror, Elips2d, Elips2dMirror, Hypr2d, Hypr2dMirror, Parab2d, Parab2dMirror};
 pub use dir::{Dir, DirMirror};
+pub use dir2d::{Dir2d, Dir2dMirror};
 pub use gtrsf::{Affinity, GTrsf};
+pub use gtrsf2d::GTrsf2d;
+pub use lin2d::{Lin2d, Lin2dDistance, Lin2dMirror};
 pub use mat::Mat;
+pub use mat2d::Mat2d;
 pub use pnt::{Pnt, PntMirror};
+pub use pnt2d::{Pnt2d, Pnt2dMirror};
 pub use quaternion::{EulerSequence, Quaternion, QuaternionNLerp, QuaternionSLerp};
 pub use trsf::{Trsf, TrsfForm, TrsfMirror};
+pub use trsf2d::{Trsf2d, Trsf2dMirror};
 pub use vec::{Vec, VecMirror};
+pub use vec2d::{Vec2d, Vec2dMirror};
+pub use xy::XY;
 pub use xyz::XYZ;
 
 /// OCCT's construction, domain, range and singular-matrix failures (`Standard_ConstructionError`,
@@ -65,6 +88,36 @@ pub enum Direction {
     NegativeX,
     NegativeY,
     NegativeZ,
+}
+
+/// gp_Dir2d::D
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction2d {
+    X,
+    Y,
+    NegativeX,
+    NegativeY,
+}
+
+// gp::Origin2d
+pub fn origin2d() -> Pnt2d {
+    Pnt2d::new(0., 0.)
+}
+// gp::DX2d
+pub fn dx2d() -> Dir2d {
+    Dir2d::from_direction(Direction2d::X)
+}
+// gp::DY2d
+pub fn dy2d() -> Dir2d {
+    Dir2d::from_direction(Direction2d::Y)
+}
+// gp::OX2d
+pub fn ox2d() -> Ax2d {
+    Ax2d::from_standard_direction(Direction2d::X)
+}
+// gp::OY2d
+pub fn oy2d() -> Ax2d {
+    Ax2d::from_standard_direction(Direction2d::Y)
 }
 
 // gp::Origin

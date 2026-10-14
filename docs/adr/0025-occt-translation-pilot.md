@@ -145,6 +145,16 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
 - Result: 2,425 lines, 45,889 values, 44,850 bit-identical, worst 39 ulps on sin/cos paths
   (within 8 ulps of the line's largest value).
 
+## Package 5 (2026-10-14): `gp` 2D
+- Judge by a Sonnet subagent following the reviewed 3D judge: 163 families, 3,102 lines,
+  at least 18 distinct lines per family, `throws` and `unchecked` checked against the
+  binary, a throwaway implementation and a 19-mutation sweep (15 caught, 4 equivalent) to
+  validate the judge itself. Translation by a second Sonnet subagent in one pass, no judge
+  problems: 48,424 of 48,511 values bit-identical, worst 9 ulps on sin/cos paths.
+- OCCT bug found: `gp_Mat2d::Multiply(*this)` reads an entry it already overwrote, so
+  `Power` with |n| >= 3 is not the mathematical power. The port reproduces it (results
+  must equal the OCCT that ships); recorded in STATUS.md.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),

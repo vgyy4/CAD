@@ -34,7 +34,7 @@ handles → `Arc`/ownership, `NCollection` → Rust collections, exceptions → 
 ## TKMath packages
 | Package | Lines | Status |
 |---|---|---|
-| gp | 20 k | 3D done: XYZ, Pnt, Vec, Dir, Ax1/2/3, Mat, Trsf, GTrsf, Quaternion (+ NLerp/SLerp, Euler sequences), 2,425 oracle lines, 44,850 of 45,889 values bit-identical, the rest within 8 ulps (libm); 2D next |
+| gp | 20 k | 3D done: XYZ, Pnt, Vec, Dir, Ax1/2/3, Mat, Trsf, GTrsf, Quaternion (+ NLerp/SLerp, Euler sequences), 2,425 oracle lines, 44,850 of 45,889 values bit-identical, the rest within 8 ulps (libm). 2D done: XY, Pnt2d, Vec2d, Dir2d, Ax2d, Ax22d, Mat2d, Trsf2d, GTrsf2d, Lin2d and the 2D conics, 3,102 lines, 48,424 of 48,511 bit-identical, worst 9 ulps; OCCT's `gp_Mat2d::Multiply(*this)` aliasing (used by `Power`) is reproduced on purpose. 3D curves and surfaces (Lin, Circ, Pln, Cylinder...) next |
 | ElCLib | 2.4 k | 3D done (bit-identical / libm) |
 | BSplCLib | 13 k | 3D curve evaluation done (bit-identical) |
 | math | 25 k | linear algebra done (vectors, matrices, LU, Crout, Householder, SVD, Jacobi, eigen, polynomial roots, Gauss/Kronrod; 29,068 of 29,069 values bit-identical); solvers next |
