@@ -10,3 +10,4 @@
 pub mod bsplclib;
 pub mod elclib;
 pub mod gp;
+pub mod mathlin;

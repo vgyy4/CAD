@@ -110,6 +110,26 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
   with defaults where C++ walks pointers) is acceptable inside the oracle's coverage;
   code the oracle does not reach needs targeted cases before it is trusted.
 
+## Package 3 (2026-10-14): `math` linear algebra
+- Scope: math_Vector/IntegerVector/Matrix/DoubleTab, Gauss and Kronrod tables and their
+  computation, LU (math_Gauss), Crout, Householder, SVD, Jacobi, math_Recipes, the eigen
+  searcher and the direct polynomial roots (~3,300 Rust lines plus the tables).
+- Codex wrote the oracle and started the translation, then hit its usage limit; Gemini
+  CLI is refused for the account's tier. A Sonnet subagent finished it: Codex's partial
+  port was simplified rather than faithful (roots, Gauss/Kronrod, SVD, invert...) and was
+  redone from the C++.
+- The judge needed fixing first, and every fix was reviewed: ten parse mismatches with
+  the oracle's printed format, in-place calls printed after they had overwritten their
+  inputs (the oracle now prints a copy taken before the call), out-of-table reads in
+  `math::GaussPoints` for n > 61 (undefined behaviour in OCCT, dropped), and judge
+  sequences that did not follow the oracle's. No tolerance was loosened.
+- Result: 815 records, 29,069 values, 29,068 bit-identical, worst 1 ulp (a libm path).
+- Reading: an oracle written by a model must itself be reviewed against its printf
+  sequence before a translation can be judged by it; "the test fails" was the judge's
+  fault in most first failures. OCCT is built with `No_Exception`, so some documented
+  exceptions never happen in the reference binary; where OCCT's behaviour is undefined
+  the port returns `Err`.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),

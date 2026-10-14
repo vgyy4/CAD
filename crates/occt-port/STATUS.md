@@ -34,8 +34,8 @@ handles → `Arc`/ownership, `NCollection` → Rust collections, exceptions → 
 ## TKMath packages
 | Package | Lines | Status |
 |---|---|---|
-| gp | 20 k | subset done (ElCLib needs); 3D algebra and transforms: in progress |
+| gp | 20 k | subset done (ElCLib needs); 3D algebra and transforms: judge done, translation in progress |
 | ElCLib | 2.4 k | 3D done (bit-identical / libm) |
 | BSplCLib | 13 k | 3D curve evaluation done (bit-identical) |
-| math | 25 k | linear algebra: in progress; solvers next |
+| math | 25 k | linear algebra done (vectors, matrices, LU, Crout, Householder, SVD, Jacobi, eigen, polynomial roots, Gauss/Kronrod; 29,068 of 29,069 values bit-identical); solvers next |
 | ElSLib, PLib, BSplSLib, CSLib, Convert, Bnd, BVH, Poly, TopLoc, Math* | 85 k | — |
