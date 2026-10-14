@@ -1591,6 +1591,9 @@ impl App {
                     form.set("expr", &expr);
                 }
             }
+            browser::Action::SetParam(name, expr) => {
+                self.submit_command("param.set", json!({ "name": name, "expr": expr }), Then::Quiet);
+            }
             browser::Action::SwitchBranch(id) => {
                 self.submit_command("branch.switch", json!({ "branch": id.to_string() }), Then::Quiet);
             }

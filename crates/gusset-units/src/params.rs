@@ -42,6 +42,27 @@ pub struct Param {
     pub expr: Expr,
     /// Free-text note (untrusted user content).
     pub comment: String,
+    /// Allowed values and a slider step (the customizer, ADR 0027).
+    pub range: ParamRange,
+}
+
+/// `min`, `max` (a value outside fails the parameter) and `step` of a parameter; each an
+/// expression in the parameter's unit, which may refer to other parameters.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ParamRange {
+    pub min: Option<Expr>,
+    pub max: Option<Expr>,
+    pub step: Option<Expr>,
+}
+
+impl ParamRange {
+    pub fn is_empty(&self) -> bool {
+        self.min.is_none() && self.max.is_none() && self.step.is_none()
+    }
+
+    fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        [&self.min, &self.max, &self.step].into_iter().flatten()
+    }
 }
 
 /// The evaluated value of every parameter, or why it failed.
@@ -95,7 +116,8 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
         visiting.push(name);
         // Resolve dependencies first so their errors are attributed correctly.
         let mut dep_err = None;
-        for v in p.expr.variables() {
+        let vars: Vec<String> = std::iter::once(&p.expr).chain(p.range.exprs()).flat_map(Expr::variables).collect();
+        for v in vars {
             if defs.contains_key(v.as_str()) {
                 let key = defs.get_key_value(v.as_str()).map(|(k, _)| *k).unwrap_or_default();
                 if let Err(e) = visit(key, defs, out, visiting) {
@@ -118,7 +140,7 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
             Some(e) => Err(e),
             None => {
                 let scope = |n: &str| out.get(n).and_then(|r| r.as_ref().ok().copied());
-                expr::eval(&p.expr, &scope)
+                expr::eval(&p.expr, &scope).and_then(|q| check_range(p, q, &scope).map(|()| q))
             }
         };
         out.insert(name.to_string(), r.clone());
@@ -129,6 +151,39 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
         let _ = visit(p.name.as_str(), &defs, &mut out, &mut visiting);
     }
     out
+}
+
+/// Fails a value outside the parameter's `min` / `max`.
+fn check_range(p: &Param, q: Quantity, scope: &dyn expr::Scope) -> Result<(), ExprError> {
+    let bound = |e: &Option<Expr>, what: &str| -> Result<Option<Quantity>, ExprError> {
+        let Some(e) = e else { return Ok(None) };
+        let b = expr::eval(e, scope)?;
+        // A plain-number bound takes the parameter's unit, like a plain-number value does.
+        let b = if b.dim == q.dim || b.dim.is_none() { Quantity::new(b.value, q.dim) } else { b };
+        if b.dim != q.dim {
+            return Err(ExprError {
+                kind: ExprErrorKind::DimensionMismatch,
+                span: e.span(),
+                message: format!("the {what} of '{}' is {}, the value {}", p.name, b.dim.name(), q.dim.name()),
+                hint: Some("give the range in the parameter's unit".into()),
+            });
+        }
+        Ok(Some(b))
+    };
+    let (lo, hi) = (bound(&p.range.min, "min")?, bound(&p.range.max, "max")?);
+    let _ = bound(&p.range.step, "step")?;
+    let tol = 1e-9 * q.value.abs().max(1.0);
+    let outside = lo.is_some_and(|l| q.value < l.value - tol) || hi.is_some_and(|h| q.value > h.value + tol);
+    if outside {
+        let show = |b: Option<Quantity>| b.map_or("…".to_string(), |b| format!("{}", b.value));
+        return Err(ExprError {
+            kind: ExprErrorKind::Domain,
+            span: p.expr.span(),
+            message: format!("'{}' is outside its range ({} to {} in base units)", p.name, show(lo), show(hi)),
+            hint: Some("choose a value between min and max, or widen the range".into()),
+        });
+    }
+    Ok(())
 }
 
 /// Interprets a result where `expected` is required. A plain number is taken in the
@@ -154,7 +209,7 @@ mod tests {
     use super::*;
 
     fn p(name: &str, src: &str) -> Param {
-        Param { name: name.into(), expr: expr::parse(src).unwrap(), comment: String::new() }
+        Param { name: name.into(), expr: expr::parse(src).unwrap(), comment: String::new(), range: Default::default() }
     }
 
     #[test]

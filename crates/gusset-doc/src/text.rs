@@ -63,6 +63,11 @@ fn print_param(out: &mut String, p: &Param) {
         print_comment_lines(out, &p.comment);
     }
     let _ = write!(out, "param {} = {}", p.name, p.expr);
+    for (k, e) in [("min", &p.range.min), ("max", &p.range.max), ("step", &p.range.step)] {
+        if let Some(e) = e {
+            let _ = write!(out, ", {k}: {e}");
+        }
+    }
     if single {
         let _ = write!(out, "  # {}", p.comment);
     }
@@ -504,6 +509,21 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 let name = c.ident()?.to_string();
                 c.expect('=')?;
                 let expr = c.expr()?;
+                let mut range = gusset_units::params::ParamRange::default();
+                while c.eat(',') {
+                    let key = c.ident()?;
+                    c.expect(':')?;
+                    let slot = match key {
+                        "min" => &mut range.min,
+                        "max" => &mut range.max,
+                        "step" => &mut range.step,
+                        k => return Err(c.err_hint(format!("unknown parameter option '{k}'"), "use min, max or step")),
+                    };
+                    if slot.is_some() {
+                        return Err(c.err(format!("'{key}' is set twice")));
+                    }
+                    *slot = Some(c.expr()?);
+                }
                 if !c.at_end() {
                     return Err(c.err("unexpected text after parameter value"));
                 }
@@ -511,7 +531,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 if let Some(t) = comment {
                     notes.push(t.to_string());
                 }
-                doc.params.push(Param { name, expr, comment: notes.join("\n") });
+                doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint"

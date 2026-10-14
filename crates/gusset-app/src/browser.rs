@@ -122,6 +122,8 @@ pub enum Action {
     AddParam,
     /// Double-click on a parameter.
     EditParam(String),
+    /// A customizer slider was released: set the parameter to this expression.
+    SetParam(String, String),
     /// Click on another branch.
     SwitchBranch(BranchId),
 }
@@ -417,11 +419,74 @@ fn parameters(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         if row(ui, v.pal, &r).on_hover_text(tr("browser.edit_param")).double_clicked() {
             out.push(Action::EditParam(p.name.clone()));
         }
+        if let Some(s) = slider_of(p, v) {
+            customizer(ui, p, s, out);
+        }
     }
     ui.horizontal(|ui| {
         ui.add_space(INDENT);
         if ui.small_button(format!("+ {}", tr("browser.add_param"))).clicked() {
             out.push(Action::AddParam);
+        }
+    });
+}
+
+/// A parameter's customizer slider: bounds, step and current value in display units.
+struct Slider {
+    lo: f64,
+    hi: f64,
+    step: Option<f64>,
+    value: f64,
+    unit: &'static str,
+}
+
+/// The slider of `p` when its `min` and `max` evaluate (ADR 0027): lengths in the
+/// document's unit, angles in degrees.
+fn slider_of(p: &gusset_units::params::Param, v: &View<'_>) -> Option<Slider> {
+    let eval = v.eval?;
+    let value = eval.params.get(&p.name)?.as_ref().ok().copied()?;
+    let scope = |n: &str| eval.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let bound = |e: &Option<gusset_units::expr::Expr>| {
+        let q = gusset_units::expr::eval(e.as_ref()?, &scope).ok()?;
+        (q.dim == value.dim || q.dim.is_none()).then_some(q.value)
+    };
+    let (factor, unit) = if value.dim == gusset_units::Dim::LENGTH {
+        let u = v.doc.units.unit();
+        (u.factor, u.symbol)
+    } else if value.dim == gusset_units::Dim::ANGLE {
+        (std::f64::consts::PI / 180.0, "deg")
+    } else {
+        (1.0, "")
+    };
+    let (lo, hi) = (bound(&p.range.min)? / factor, bound(&p.range.max)? / factor);
+    (lo < hi).then_some(Slider {
+        lo,
+        hi,
+        step: bound(&p.range.step).map(|s| s / factor),
+        value: value.value / factor,
+        unit,
+    })
+}
+
+fn customizer(ui: &mut Ui, p: &gusset_units::params::Param, s: Slider, out: &mut Vec<Action>) {
+    let id = ui.id().with(("customizer", &p.name));
+    // While dragging, the slider shows its own value; the model changes on release.
+    let mut x = ui.data(|d| d.get_temp::<f64>(id)).unwrap_or(s.value);
+    ui.horizontal(|ui| {
+        ui.add_space(INDENT * 2.0);
+        let mut slider = egui::Slider::new(&mut x, s.lo..=s.hi).suffix(format!(" {}", s.unit).trim_end().to_string());
+        if let Some(step) = s.step.filter(|st| *st > 0.0) {
+            slider = slider.step_by(step);
+        }
+        let r = ui.add(slider).on_hover_text(format!("{} ({})", p.name, tr("browser.customizer")));
+        if r.dragged() {
+            ui.data_mut(|d| d.insert_temp(id, x));
+        } else {
+            ui.data_mut(|d| d.remove::<f64>(id));
+        }
+        if (r.drag_stopped() || (r.changed() && !r.dragged())) && (x - s.value).abs() > 1e-12 {
+            let expr = if s.unit.is_empty() { format!("{x}") } else { format!("{x} {}", s.unit) };
+            out.push(Action::SetParam(p.name.clone(), expr));
         }
     });
 }

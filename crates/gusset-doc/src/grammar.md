@@ -11,6 +11,7 @@ complete document that parses and validates.
 gusset 1                      # header, always first
 units mm                      # mm or in (display unit and bare numbers), at most once
 param <name> = <expr>         # parameters, any order, may refer to each other
+param <name> = <expr>, min: <expr>, max: <expr>, step: <expr>   # with a range (each optional)
 sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
 ```

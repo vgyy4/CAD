@@ -110,6 +110,28 @@ fn browser_parameters_edit_and_add_through_the_forms() {
 }
 
 #[test]
+fn a_parameter_with_a_range_gets_a_customizer_slider() {
+    let mut a = app();
+    a.run("param.set", json!({"name": "width", "expr": "40 mm", "min": "10 mm", "max": "100 mm", "step": "5 mm"}))
+        .unwrap();
+    a.wait_idle();
+    let mut h = quick_harness(a);
+    settle(&mut h);
+    let slider = || egui::accesskit::Role::Slider;
+    h.get_by_role(slider()).focus();
+    h.run();
+    // One step to the right: 45 mm, set as an ordinary (undoable) parameter edit.
+    h.key_press(egui::Key::ArrowRight);
+    h.run();
+    h.state_mut().wait_idle();
+    h.run();
+    let p = h.state().snapshot.doc.params.iter().find(|p| p.name == "width").map(|p| p.expr.to_string());
+    assert_eq!(p.as_deref(), Some("45 mm"));
+    // The range survives the edit.
+    assert!(h.state().snapshot.doc.to_text().contains("param width = 45 mm, min: 10 mm, max: 100 mm, step: 5 mm"));
+}
+
+#[test]
 fn browser_branch_rows_switch_branches() {
     let mut a = app();
     a.run("param.set", json!({"name": "w", "expr": "1 mm"})).unwrap();

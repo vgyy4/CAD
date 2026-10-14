@@ -113,7 +113,12 @@ impl Command for GenerateGear {
             // gear is helical and to place the sketch's points.
             let mut all = doc.params.clone();
             for (what, e) in &exprs {
-                all.push(Param { name: nm.n(what), expr: e.clone(), comment: String::new() });
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
             }
             let vals = params::evaluate(&all);
             let value = |what: &str, dim: Dim| -> Result<f64, CommandError> {
@@ -191,11 +196,16 @@ impl Command for GenerateGear {
                     continue;
                 }
                 let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
-                new_params.push(Param { name: nm.n(what), expr: e.clone(), comment: note.to_string() });
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.to_string(),
+                    range: Default::default(),
+                });
             }
             for (pname, src, note) in gear::derived_params(&nm, helical) {
                 let expr = parse_expr(&pname, &src)?;
-                new_params.push(Param { name: pname, expr, comment: note.to_string() });
+                new_params.push(Param { name: pname, expr, comment: note.to_string(), range: Default::default() });
             }
             for p in &new_params {
                 if doc.params.iter().any(|q| q.name == p.name) {

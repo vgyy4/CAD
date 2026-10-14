@@ -388,6 +388,7 @@ mod tests {
             name: "w".into(),
             expr: gusset_units::expr::parse("5 mm").unwrap(),
             comment: String::new(),
+            range: Default::default(),
         });
         let nb = h.commit(&u, b, &d, "exp", NodeState::Ok).unwrap();
         let diff = h.compare(root, nb).unwrap();

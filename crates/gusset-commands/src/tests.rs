@@ -1134,3 +1134,27 @@ fn merging_a_branch_takes_its_changes_and_reports_conflicts() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("param b = 11 mm") && text.contains("param a = 5 mm"), "{text}");
 }
+
+#[test]
+fn a_parameter_range_bounds_its_value_and_round_trips() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(
+        &mut s,
+        &u,
+        "param.set",
+        json!({"name": "w", "expr": "40 mm", "min": "10 mm", "max": "100 mm", "step": "1 mm"}),
+    );
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("param w = 40 mm, min: 10 mm, max: 100 mm, step: 1 mm"), "{text}");
+    assert_eq!(Document::from_text(&text).unwrap().to_text(), text, "round trip");
+    let e = execute(&mut s, &u, "param.set", json!({"name": "w", "expr": "120 mm"})).unwrap_err();
+    assert!(e.message.contains("outside its range"), "{e:?}");
+    // A bound may refer to another parameter, and "" removes it.
+    run(&mut s, &u, "param.set", json!({"name": "h", "expr": "5 mm", "max": "w / 2"}));
+    assert!(execute(&mut s, &u, "param.set", json!({"name": "h", "expr": "30 mm"})).is_err());
+    run(&mut s, &u, "param.set", json!({"name": "h", "expr": "30 mm", "max": ""}));
+    let m = run(&mut s, &u, "query.model", json!({}));
+    let w = m["parameters"].as_array().unwrap().iter().find(|p| p["name"] == "w").unwrap().clone();
+    assert_eq!(w["range"]["max"], "100 mm", "{w}");
+}

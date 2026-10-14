@@ -305,7 +305,12 @@ impl Hole {
                     .hint("name the hole differently, for example name: \"Hole2\""));
             }
             exprs.insert(d.arg, parse_expr(d.arg, &pname)?);
-            doc.params.push(Param { name: pname.clone(), expr: value, comment: d.comment.clone() });
+            doc.params.push(Param {
+                name: pname.clone(),
+                expr: value,
+                comment: d.comment.clone(),
+                range: Default::default(),
+            });
             created.push(pname);
         }
         let take = |exprs: &mut BTreeMap<&str, gusset_units::expr::Expr>, arg: &str| exprs.remove(arg);

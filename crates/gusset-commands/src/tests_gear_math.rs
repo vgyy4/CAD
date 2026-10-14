@@ -146,7 +146,12 @@ fn expressions_reproduce_the_numbers() {
         let flank = choose_flank(&g).unwrap();
         let mut ps: Vec<Param> = Vec::new();
         let mut add = |name: &str, src: String| {
-            ps.push(Param { name: nm.n(name), expr: parse(&src).unwrap(), comment: String::new() });
+            ps.push(Param {
+                name: nm.n(name),
+                expr: parse(&src).unwrap(),
+                comment: String::new(),
+                range: Default::default(),
+            });
         };
         add("module", format!("{} mm", v.module));
         add("teeth", format!("{}", v.teeth));
@@ -158,7 +163,12 @@ fn expressions_reproduce_the_numbers() {
             add("helix", format!("{} rad", v.helix));
         }
         for (name, src, _) in derived_params(&nm, helical) {
-            ps.push(Param { name, expr: parse(&src).unwrap_or_else(|e| panic!("{src}: {e}")), comment: String::new() });
+            ps.push(Param {
+                name,
+                expr: parse(&src).unwrap_or_else(|e| panic!("{src}: {e}")),
+                comment: String::new(),
+                range: Default::default(),
+            });
         }
         let vals = params::evaluate(&ps);
         let get = |n: &str| vals[&nm.n(n)].as_ref().unwrap_or_else(|e| panic!("{n}: {e}")).value;

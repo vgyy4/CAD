@@ -801,6 +801,13 @@ pub struct ParamSet {
     /// Optional comment (user text).
     #[serde(default)]
     pub comment: Option<String>,
+    /// Customizer range: `min`, `max`, `step` expressions ("" removes one).
+    #[serde(default)]
+    pub min: Option<String>,
+    #[serde(default)]
+    pub max: Option<String>,
+    #[serde(default)]
+    pub step: Option<String>,
 }
 
 impl Command for ParamSet {
@@ -812,17 +819,40 @@ impl Command for ParamSet {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         params::validate_name(&self.name).map_err(CommandError::args)?;
         let expr = parse_expr(&self.name, &self.expr)?;
+        // Some(None): remove that bound.
+        let bound =
+            |what: &str, v: &Option<String>| -> Result<Option<Option<gusset_units::expr::Expr>>, CommandError> {
+                match v.as_deref().map(str::trim) {
+                    None => Ok(None),
+                    Some("") => Ok(Some(None)),
+                    Some(t) => parse_expr(what, t).map(|e| Some(Some(e))),
+                }
+            };
+        let (min, max, step) = (bound("min", &self.min)?, bound("max", &self.max)?, bound("step", &self.step)?);
         let label = format!("Set {}", self.name);
         edit(s, ctx, &label, |doc, _| {
-            match doc.params.iter_mut().find(|p| p.name == self.name) {
-                Some(p) => {
-                    p.expr = expr;
-                    if let Some(c) = self.comment {
-                        p.comment = c;
-                    }
-                }
+            let i = match doc.params.iter().position(|p| p.name == self.name) {
+                Some(i) => i,
                 None => {
-                    doc.params.push(Param { name: self.name.clone(), expr, comment: self.comment.unwrap_or_default() })
+                    let range = Default::default();
+                    doc.params.push(Param {
+                        name: self.name.clone(),
+                        expr: expr.clone(),
+                        comment: String::new(),
+                        range,
+                    });
+                    doc.params.len() - 1
+                }
+            };
+            if let Some(p) = doc.params.get_mut(i) {
+                p.expr = expr;
+                if let Some(c) = self.comment {
+                    p.comment = c;
+                }
+                for (slot, v) in [(&mut p.range.min, min), (&mut p.range.max, max), (&mut p.range.step, step)] {
+                    if let Some(v) = v {
+                        *slot = v;
+                    }
                 }
             }
             let v = params::evaluate(&doc.params);
@@ -2652,7 +2682,18 @@ impl Command for QueryModel {
                     Some(Err(e)) => json!({"error": e.to_string()}),
                     None => Value::Null,
                 };
-                json!({"name": p.name, "expr": p.expr.to_string(), "comment_user_text": p.comment, "result": v})
+                let mut j =
+                    json!({"name": p.name, "expr": p.expr.to_string(), "comment_user_text": p.comment, "result": v});
+                if !p.range.is_empty()
+                    && let Value::Object(m) = &mut j
+                {
+                    let show = |e: &Option<gusset_units::expr::Expr>| e.as_ref().map(ToString::to_string);
+                    m.insert(
+                        "range".into(),
+                        json!({"min": show(&p.range.min), "max": show(&p.range.max), "step": show(&p.range.step)}),
+                    );
+                }
+                j
             })
             .collect();
         let bodies: Vec<Value> = ev
