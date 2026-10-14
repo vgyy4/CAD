@@ -64,15 +64,18 @@ version bump.
 ### 5. Commands and UI
 `feature.joint` (registry → GUI form, CLI, MCP), `query.joints` (types, frames, values,
 degrees of freedom left), browser category "Joints", timeline chips. Phase 2: components
-from other documents (external references with version pins), loops, BOM, relations
-(gear, rack and pinion, screw).
+from other documents (external references with version pins), loops.
+
+Relations (gear, rack and pinion, screw) need no feature of their own: a joint value is an
+expression, so `angle: -turn * 20 / 40` couples a gear pair (grammar "Joints").
 
 ### 6. Interference and motion studies (phase 2, done)
 `query.interference` checks pairs of bodies whose boxes overlap by their common volume;
 contact (an empty or zero-volume common part) is not interference. `study.motion` sweeps
 a parameter `from + (to - from)·t` in equal steps on a copy of the document (the
 evaluator's cache keeps unaffected features), and reports per step the rebuild errors,
-body centroids and, optionally, interference; the document does not change.
+body centroids and, optionally, interference; the document does not change. `query.bom` groups bodies into parts (same volume, area,
+face and edge counts, wherever placed) and gives the rows as JSON and CSV.
 
 ## Consequences
 - An assembly in phase 1 is a multi-body part whose bodies are positioned by joints:

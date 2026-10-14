@@ -24,7 +24,7 @@ mod joint;
 mod ops;
 mod sketch_ops;
 mod sweep;
-pub use assembly::{QueryInterference, StudyMotion};
+pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;

@@ -87,6 +87,18 @@ fn a_slider_moves_along_the_frame_normal_and_respects_limits() {
 }
 
 #[test]
+fn a_relation_is_an_expression_of_another_joint_value() {
+    // A rack: 2 mm of travel per quarter turn of `open` (90 deg).
+    let (ev, r) = eval(
+        "joint J1 (type: slider, body: Lid, at: Lid/cap(start), to: Base/cap(end), flip: true, \
+         distance: open / 360 deg * 8 mm)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let (lo, _) = bbox(&ev, &r, "Lid");
+    assert!(close(lo, [0.0, 3.0, 3.0]), "{lo:?}");
+}
+
+#[test]
 fn a_joint_to_the_origin_and_a_bad_frame() {
     let (ev, r) = eval("joint J1 (type: rigid, body: Lid, at: Lid/cap(end), to: origin)");
     assert!(r.errors().is_empty(), "{:?}", r.errors());

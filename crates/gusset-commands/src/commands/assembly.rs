@@ -5,7 +5,7 @@ use super::*;
 use gusset_kernel::{BBox, BoolOp, Kernel};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<QueryInterference>(), spec::<StudyMotion>()]
+    vec![spec::<QueryInterference>(), spec::<StudyMotion>(), spec::<QueryBom>()]
 }
 
 /// Overlap below this volume (mm³) is contact, not interference.
@@ -174,4 +174,66 @@ impl Command for StudyMotion {
         }
         Ok(json!({ "parameter": self.parameter, "steps": frames }))
     }
+}
+
+/// Bill of materials: the bodies grouped into identical parts.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryBom {}
+
+/// Whether two measures agree to 1e-7 relative (identical parts, placed differently).
+fn same(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-7 * a.abs().max(b.abs()).max(1.0)
+}
+
+impl Command for QueryBom {
+    const ID: &'static str = "query.bom";
+    const TITLE: &'static str = "Bill of materials";
+    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (wherever they are placed). Rows with quantity, body names, volume and area, and the same as CSV.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let ev = s.evaluate(&ctx.actor)?;
+        let k = s.kernel().clone();
+        struct Row<'a> {
+            bodies: Vec<&'a str>,
+            m: gusset_kernel::MassProps,
+            faces: usize,
+            edges: usize,
+        }
+        let mut rows: Vec<Row<'_>> = Vec::new();
+        for b in &ev.bodies {
+            let m = k.mass_properties(&b.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+            let (faces, edges) = (b.topology.faces.len(), b.topology.edges.len());
+            let found = rows
+                .iter_mut()
+                .find(|r| r.faces == faces && r.edges == edges && same(r.m.volume, m.volume) && same(r.m.area, m.area));
+            match found {
+                Some(r) => r.bodies.push(&b.name),
+                None => rows.push(Row { bodies: vec![&b.name], m, faces, edges }),
+            }
+        }
+        let mut csv = String::from("item,part,quantity,bodies,volume_mm3,area_mm2\n");
+        let mut out = Vec::new();
+        for (i, r) in rows.iter().enumerate() {
+            let part = r.bodies.first().copied().unwrap_or_default();
+            csv.push_str(&format!(
+                "{},{},{},{},{},{}\n",
+                i + 1,
+                csv_field(part),
+                r.bodies.len(),
+                csv_field(&r.bodies.join(" ")),
+                r.m.volume,
+                r.m.area
+            ));
+            out.push(json!({"item": i + 1, "part": part, "quantity": r.bodies.len(), "bodies": r.bodies,
+                            "volume_mm3": r.m.volume, "area_mm2": r.m.area, "faces": r.faces}));
+        }
+        Ok(json!({ "rows": out, "csv": csv }))
+    }
+}
+
+/// A CSV field, quoted when it needs to be.
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
 }

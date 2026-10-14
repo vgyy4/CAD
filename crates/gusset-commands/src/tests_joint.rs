@@ -98,3 +98,23 @@ fn interference_and_a_motion_study() {
         assert!(execute(&mut s, &CmdCtx::user(1), "study.motion", bad).is_err());
     }
 }
+
+#[test]
+fn bom_groups_identical_bodies() {
+    let mut s = session();
+    plate_and_block(&mut s);
+    // A second block, elsewhere: the same part.
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch3", "x": 200, "y": 50, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch3", "distance": "5 mm", "body_name": "Block2"}));
+    let b = run(&mut s, "query.bom", json!({}));
+    let rows = b["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{b}");
+    assert_eq!(rows[0]["part"], "Plate");
+    assert_eq!(rows[0]["quantity"], 1);
+    assert_eq!(rows[1]["bodies"], json!(["Block", "Block2"]), "{b}");
+    assert_eq!(rows[1]["quantity"], 2);
+    let csv = b["csv"].as_str().unwrap();
+    assert!(csv.starts_with("item,part,quantity,bodies,volume_mm3,area_mm2\n1,Plate,1,Plate,8000,"), "{csv}");
+    assert!(csv.contains("\n2,Block,2,Block Block2,500,"), "{csv}");
+}

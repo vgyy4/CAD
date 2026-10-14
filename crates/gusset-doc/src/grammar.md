@@ -428,6 +428,9 @@ joint <Name> (type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, body
 - `flip: true` reverses the target frame's Z (put a face against a face); `offset` moves
   along the target frame's Z. Values outside `angle_limits` / `distance_limits` fail the
   joint. Values can be parameters: setting the parameter moves the mechanism.
+- Relations are expressions: a gear pair turns together with `angle: turn` on one joint
+  and `angle: -turn * 20 / 40` on the other (teeth 20 and 40); a rack moves
+  `distance: turn / 360 deg * pi * 40 mm`; a screw `distance: turn / 360 deg * 1.5 mm`.
 
 ```gusset
 gusset 1
