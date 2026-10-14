@@ -5,7 +5,7 @@ use gusset_doc::ComponentDef;
 use gusset_history::{Hash, History};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<InsertComponent>(), spec::<UpdateComponent>(), spec::<ConfigureComponent>()]
+    vec![spec::<InsertComponent>(), spec::<UpdateComponent>(), spec::<ConfigureComponent>(), spec::<QueryComponents>()]
 }
 
 /// How deep the documents a component brings along may nest.
@@ -259,4 +259,43 @@ impl Command for ConfigureComponent {
             Ok(json!({ "feature": self.component }))
         })
     }
+}
+
+/// Lists the components and whether their sources changed.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryComponents {}
+
+impl Command for QueryComponents {
+    const ID: &'static str = "query.components";
+    const TITLE: &'static str = "Components";
+    const DESCRIPTION: &'static str = "Every component: source, pinned version, body, parameters set, and whether the source now has a newer version (update_available; null when the source cannot be read, with the reason).";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let doc = s.document(&ctx.actor)?;
+        let mut out = Vec::new();
+        for f in &doc.features {
+            let FeatureKind::Component(d) = &f.kind else { continue };
+            let (available, error) = match read_source(s, ctx, &d.source, None) {
+                Ok(src) => (json!(src.doc.to_text() != stored_text(s, d)), Value::Null),
+                Err(e) => (Value::Null, json!(e.message)),
+            };
+            let set: serde_json::Map<String, Value> =
+                d.set.iter().map(|(n, e)| (n.clone(), json!(e.to_string()))).collect();
+            out.push(json!({
+                "name": f.name, "source": d.source, "version": d.version, "body": d.body,
+                "set": set, "update_available": available, "source_error": error,
+            }));
+        }
+        Ok(json!({ "components": out }))
+    }
+}
+
+/// The text stored for component `d` (empty when missing).
+fn stored_text(s: &Session, d: &ComponentDef) -> String {
+    Hash::from_hex(&d.document)
+        .and_then(|h| s.history().objects().get(h).ok())
+        .and_then(|b| std::str::from_utf8(b).ok().map(str::to_string))
+        .unwrap_or_default()
 }

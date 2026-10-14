@@ -88,8 +88,13 @@ fn a_component_brings_in_a_pinned_body_that_joints_can_place() {
     write_part(&d.join("pin.gus"), &[PART, &PART.replace("param h = 2 mm", "param h = 4 mm")]);
     let b = run(&mut s, &u, "query.body", json!({"body": "Pin"}));
     assert_eq!(b["volume_mm3"], 80.0, "{b}");
+    let q = run(&mut s, &u, "query.components", json!({}));
+    assert_eq!(q["components"][0]["update_available"], true, "{q}");
     let r = run(&mut s, &u, "assembly.update_component", json!({"component": "Pin"}));
     assert_eq!(r["changed"], true, "{r}");
+    let q = run(&mut s, &u, "query.components", json!({}));
+    assert_eq!(q["components"][0]["update_available"], false, "{q}");
+    assert_eq!(q["components"][0]["version"], "n2", "{q}");
     let b = run(&mut s, &u, "query.body", json!({"body": "Pin"}));
     assert_eq!(b["volume_mm3"], 160.0, "{b}");
     let r = run(&mut s, &u, "assembly.update_component", json!({"component": "Pin"}));

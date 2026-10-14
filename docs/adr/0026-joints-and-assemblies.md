@@ -105,5 +105,5 @@ this document's parameters and gives the component's parameter that value as a l
 base units (mm, rad or a plain number), so one part file can be used in several sizes and
 a parameter of the assembly can drive a part (`assembly.configure_component`).
 
-Not done yet: an "update available" notice (comparing the stored version with the
-source's head).
+`query.components` lists the components with `update_available` (the source's head
+differs from the stored copy), so an agent or the GUI can offer the update.

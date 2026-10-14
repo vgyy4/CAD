@@ -26,7 +26,7 @@ mod ops;
 mod sketch_ops;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
-pub use component::{ConfigureComponent, InsertComponent, UpdateComponent};
+pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
