@@ -91,6 +91,25 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
   harder per line. Next pilot: `BSplCLib` (13 k lines, B-spline evaluation), to measure a
   package with real numerics and loops rather than closed formulas.
 
+## Pilot 2 result (2026-10-14): BSplCLib 3D curve evaluation
+- Scope: `BSplCLib::D0/D1/D2/D3/DN` (3D, index located by the function) and
+  `LocateParameter`, with what they call: knot location, local knots (`BuildKnots`),
+  `PoleIndex`, the evaluation buffer with weights, `Eval`, `Bohm` and
+  `PLib::RationalDerivative` (~1,000 lines of C++ templates and functions).
+- Judge: 500 random curves (degree 1-5, clamped and periodic, polynomial, rational and
+  rational with equal weights, parameters inside, on knots and outside the period),
+  every value bit for bit; this code uses only `+ - * /`, so no tolerance at all.
+- Codex with `model_reasoning_effort = high` translated it in one run of 8 minutes, 456
+  lines, bit-identical on all 500 curves, clippy clean, without touching the judge.
+  Review found no deviation; extra oracle cases for the equal-weights branch passed
+  unchanged. The difference from pilot 1 is the reasoning effort, not the task: at the
+  default effort Codex stopped early twice.
+- Reading: for packages that are pure arithmetic, a strong-effort Codex run plus an
+  oracle and a review is an efficient pipeline (~1,000 C++ lines in under 10 minutes of
+  machine time and ~15 minutes of review). The translation style (bounds-checked reads
+  with defaults where C++ walks pointers) is acceptable inside the oracle's coverage;
+  code the oracle does not reach needs targeted cases before it is trusted.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),
