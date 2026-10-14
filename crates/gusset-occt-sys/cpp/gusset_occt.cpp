@@ -1382,6 +1382,38 @@ int gs_compound(const GsShape* const* shapes, size_t n, GsShape** out, GsBuf* or
 }
 
 // Kind, area, centroid and outward normal (at the parameter-space middle) of a face.
+// Axis of a revolved face (cylinder, cone, torus) or a sphere's center and polar axis:
+// out = [has, ox, oy, oz, dx, dy, dz] (joint frames, ADR 0026).
+void face_axis(const TopoDS_Face& f, double* out) {
+  BRepAdaptor_Surface a(f);
+  gp_Ax1 ax;
+  bool has = true;
+  switch (a.GetType()) {
+    case GeomAbs_Cylinder: ax = a.Cylinder().Axis(); break;
+    case GeomAbs_Cone: ax = a.Cone().Axis(); break;
+    case GeomAbs_Sphere: ax = a.Sphere().Position().Axis(); break;
+    case GeomAbs_Torus: ax = a.Torus().Axis(); break;
+    default: has = false;
+  }
+  const gp_Pnt& o = ax.Location();
+  const gp_Dir& d = ax.Direction();
+  const double v[7] = {has ? 1.0 : 0.0, o.X(), o.Y(), o.Z(), d.X(), d.Y(), d.Z()};
+  for (int i = 0; i < 7; ++i) out[i] = has ? v[i] : 0.0;
+}
+
+// Center, normal and radius of a circular edge: out = [has, cx, cy, cz, nx, ny, nz, r].
+void edge_circle(const TopoDS_Edge& e, double* out) {
+  for (int i = 0; i < 8; ++i) out[i] = 0.0;
+  if (BRep_Tool::Degenerated(e)) return;
+  BRepAdaptor_Curve c(e);
+  if (c.GetType() != GeomAbs_Circle) return;
+  gp_Circ ci = c.Circle();
+  const gp_Pnt& o = ci.Location();
+  const gp_Dir& n = ci.Axis().Direction();
+  const double v[8] = {1.0, o.X(), o.Y(), o.Z(), n.X(), n.Y(), n.Z(), ci.Radius()};
+  for (int i = 0; i < 8; ++i) out[i] = v[i];
+}
+
 void measure_face(const TopoDS_Face& f, double* out) {
   GProp_GProps g;
   BRepGProp::SurfaceProperties(f, g);
@@ -1425,11 +1457,12 @@ int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, G
   TopExp::MapShapes(s->s, TopAbs_SHELL, shm);
   // Per-face and per-edge measures are independent: computed on all cores, each into its
   // own slot, so the result is identical to a sequential pass (determinism, PROMPT.md).
-  std::vector<double> fv(size_t(fm.Extent()) * 8);
+  std::vector<double> fv(size_t(fm.Extent()) * 15);
   std::atomic<bool> failed{false};
   OSD_Parallel::For(1, fm.Extent() + 1, [&](int i) {
     try {
-      measure_face(TopoDS::Face(fm(i)), fv.data() + size_t(i - 1) * 8);
+      measure_face(TopoDS::Face(fm(i)), fv.data() + size_t(i - 1) * 15);
+      face_axis(TopoDS::Face(fm(i)), fv.data() + size_t(i - 1) * 15 + 8);
     } catch (...) {
       failed = true;
     }
@@ -1452,6 +1485,9 @@ int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, G
     TopoDS_Edge e = TopoDS::Edge(em(i));
     const double* l = lens.data() + size_t(i - 1) * 4;
     ev.insert(ev.end(), {double(curve_kind(e)), l[0], l[1], l[2], l[3]});
+    double circle[8];
+    edge_circle(e, circle);
+    ev.insert(ev.end(), circle, circle + 8);
     std::vector<int64_t> fidx;
     int ai = anc.FindIndex(e);
     if (ai > 0) {

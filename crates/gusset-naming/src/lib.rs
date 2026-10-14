@@ -555,8 +555,20 @@ mod tests {
         // Two faces with the same origin (as after a split) get #1/#2 ordered by position.
         let topo = Topology {
             faces: vec![
-                FaceInfo { kind: SurfaceKind::Plane, area: 1.0, centroid: [5.0, 0.0, 0.0], normal: [0.0, 0.0, 1.0] },
-                FaceInfo { kind: SurfaceKind::Plane, area: 1.0, centroid: [1.0, 0.0, 0.0], normal: [0.0, 0.0, 1.0] },
+                FaceInfo {
+                    axis: None,
+                    kind: SurfaceKind::Plane,
+                    area: 1.0,
+                    centroid: [5.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
+                FaceInfo {
+                    axis: None,
+                    kind: SurfaceKind::Plane,
+                    area: 1.0,
+                    centroid: [1.0, 0.0, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                },
             ],
             ..Topology::default()
         };
@@ -575,6 +587,7 @@ mod tests {
         let mut topo = Topology::default();
         for i in 0..7 {
             topo.faces.push(FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: 1.0,
                 centroid: [i as f64, 0.0, 0.0],
@@ -599,6 +612,7 @@ mod tests {
         let mut topo = Topology::default();
         for i in 0..8 {
             topo.faces.push(FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: 1.0,
                 centroid: [i as f64, 0.0, 0.0],
@@ -662,6 +676,7 @@ mod tests {
         let mut topo = Topology::default();
         for i in 0..11 {
             topo.faces.push(FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: 1.0,
                 centroid: [i as f64, 0.0, 0.0],
@@ -679,8 +694,13 @@ mod tests {
 
     #[test]
     fn imported_faces_need_no_history() {
-        let f =
-            |x: f64| FaceInfo { kind: SurfaceKind::Plane, area: 1.0, centroid: [x, 0.0, 0.0], normal: [0.0, 0.0, 1.0] };
+        let f = |x: f64| FaceInfo {
+            axis: None,
+            kind: SurfaceKind::Plane,
+            area: 1.0,
+            centroid: [x, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
         let topo = Topology { faces: vec![f(0.0), f(1.0)], ..Default::default() };
         let n = name_body(&OpContext::Import { feature: "Import1" }, &[vec![], vec![]], &topo).unwrap();
         assert_eq!(n.faces.len(), 2);
@@ -690,6 +710,7 @@ mod tests {
     fn flat_topo(n: usize) -> Topology {
         let faces = (0..n)
             .map(|i| FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: 1.0,
                 centroid: [i as f64, 0.0, 0.0],

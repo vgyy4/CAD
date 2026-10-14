@@ -263,6 +263,25 @@ pub struct FaceInfo {
     /// Outward normal at (or near) the centroid; for non-planar faces the normal at the
     /// parametric center.
     pub normal: V3,
+    /// Axis of a revolved face (cylinder, cone, torus) or a sphere's center and polar
+    /// axis; `None` for other surfaces (joint frames, ADR 0026).
+    pub axis: Option<Axis3>,
+}
+
+/// A point and a unit direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Axis3 {
+    pub origin: V3,
+    pub dir: V3,
+}
+
+/// A circle in space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Circle3 {
+    pub center: V3,
+    /// Unit normal of the circle's plane.
+    pub normal: V3,
+    pub radius: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -274,6 +293,8 @@ pub struct EdgeInfo {
     pub faces: Vec<u32>,
     /// Indices of the end vertices (one for closed edges).
     pub vertices: Vec<u32>,
+    /// The circle of a circular edge (full or arc).
+    pub circle: Option<Circle3>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

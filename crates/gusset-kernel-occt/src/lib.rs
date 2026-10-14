@@ -253,16 +253,27 @@ mod imp {
     pub(crate) fn topology(s: &RawShape) -> KResult<Topology> {
         let t = ffi::topology(s)?;
         let mut out = Topology::default();
-        for f in t.faces.chunks_exact(8) {
-            let &[k, area, cx, cy, cz, nx, ny, nz] = f else { continue };
-            out.faces.push(FaceInfo { kind: surface_kind(k), area, centroid: [cx, cy, cz], normal: [nx, ny, nz] });
+        for f in t.faces.chunks_exact(15) {
+            let &[k, area, cx, cy, cz, nx, ny, nz, has, ox, oy, oz, dx, dy, dz] = f else { continue };
+            let axis = (has != 0.0).then_some(Axis3 { origin: [ox, oy, oz], dir: [dx, dy, dz] });
+            out.faces.push(FaceInfo {
+                kind: surface_kind(k),
+                area,
+                centroid: [cx, cy, cz],
+                normal: [nx, ny, nz],
+                axis,
+            });
         }
-        for (e, a) in t.edges.chunks_exact(5).zip(t.adj.chunks_exact(6)) {
-            let (&[k, length, mx, my, mz], &[nf, f0, f1, nv, v0, v1]) = (e, a) else { continue };
+        for (e, a) in t.edges.chunks_exact(13).zip(t.adj.chunks_exact(6)) {
+            let (&[k, length, mx, my, mz, has, cx, cy, cz, nx, ny, nz, radius], &[nf, f0, f1, nv, v0, v1]) = (e, a)
+            else {
+                continue;
+            };
             let faces: Vec<u32> = [f0, f1].into_iter().take(nf.clamp(0, 2) as usize).map(u32_of).collect();
             let vertices: Vec<u32> =
                 [v0, v1].into_iter().filter(|&x| x >= 0).take(nv.clamp(0, 2) as usize).map(u32_of).collect();
-            out.edges.push(EdgeInfo { kind: curve_kind(k), length, midpoint: [mx, my, mz], faces, vertices });
+            let circle = (has != 0.0).then_some(Circle3 { center: [cx, cy, cz], normal: [nx, ny, nz], radius });
+            out.edges.push(EdgeInfo { kind: curve_kind(k), length, midpoint: [mx, my, mz], faces, vertices, circle });
         }
         for v in t.verts.chunks_exact(3) {
             if let &[x, y, z] = v {

@@ -434,6 +434,7 @@ fn topology(m: &MockShape) -> Topology {
         let caps = if p.lo_end == CapEnd::Start { [(p.lo, -1.0), (p.hi, 1.0)] } else { [(p.hi, 1.0), (p.lo, -1.0)] };
         for (h, sgn) in caps {
             t.faces.push(FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: a,
                 centroid: p.at(c2, h),
@@ -446,6 +447,7 @@ fn topology(m: &MockShape) -> Topology {
             let out = normalize(add(scale(p.frame.x, d[1]), scale(p.frame.y, -d[0]))).unwrap_or(p.frame.x);
             let mid = [(u[0] + w[0]) / 2.0, (u[1] + w[1]) / 2.0];
             t.faces.push(FaceInfo {
+                axis: None,
                 kind: SurfaceKind::Plane,
                 area: dist2(u, w) * p.height(),
                 centroid: p.at(mid, (p.lo + p.hi) / 2.0),
@@ -471,6 +473,7 @@ fn topology(m: &MockShape) -> Topology {
             };
             faces.sort_unstable();
             t.edges.push(EdgeInfo {
+                circle: None,
                 kind: CurveKind::Line,
                 length: norm(sub(b3, a3)),
                 midpoint: scale(add(a3, b3), 0.5),

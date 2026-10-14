@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -121,8 +121,10 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
 int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins);
 int gs_compound(const GsShape* const* shapes, size_t n, GsShape** out, GsBuf* origins);
 
-/* Topology. faces: f64 x 8 per face (kind, area, cx, cy, cz, nx, ny, nz);
- * edges: f64 x 5 per edge (kind, length, mx, my, mz);
+/* Topology. faces: f64 x 15 per face (kind, area, cx, cy, cz, nx, ny, nz, then the axis of
+ * a revolved face: has_axis, ox, oy, oz, dx, dy, dz);
+ * edges: f64 x 13 per edge (kind, length, mx, my, mz, then a circle: has_circle, cx, cy, cz,
+ * nx, ny, nz, radius);
  * edge_adj: i64 x 6 per edge (nfaces, f0, f1, nverts, v0, v1);
  * verts: f64 x 3 per vertex; counts: i64 x 2 (solids, shells). */
 int gs_topology(const GsShape* s, GsBuf* faces, GsBuf* edges, GsBuf* edge_adj, GsBuf* verts, GsBuf* counts);

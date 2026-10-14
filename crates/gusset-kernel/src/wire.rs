@@ -676,27 +676,59 @@ impl Wire for Transform {
 wire_c_enum!(SurfaceKind { Plane = 0, Cylinder = 1, Cone = 2, Sphere = 3, Torus = 4, BSpline = 5, Other = 6 });
 wire_c_enum!(CurveKind { Line = 0, Circle = 1, Ellipse = 2, BSpline = 3, Other = 4 });
 
+impl Wire for Axis3 {
+    const MIN_SIZE: usize = 48;
+    fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
+        self.origin.put(w, s)?;
+        self.dir.put(w, s)
+    }
+    fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        Ok(Axis3 { origin: Wire::get(r, s)?, dir: Wire::get(r, s)? })
+    }
+}
+
+impl Wire for Circle3 {
+    const MIN_SIZE: usize = 56;
+    fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
+        self.center.put(w, s)?;
+        self.normal.put(w, s)?;
+        w.f64(self.radius);
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        Ok(Circle3 { center: Wire::get(r, s)?, normal: Wire::get(r, s)?, radius: r.f64()? })
+    }
+}
+
 impl Wire for FaceInfo {
-    const MIN_SIZE: usize = 57;
+    const MIN_SIZE: usize = 58;
     fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
         self.kind.put(w, s)?;
         w.f64(self.area);
         self.centroid.put(w, s)?;
-        self.normal.put(w, s)
+        self.normal.put(w, s)?;
+        self.axis.put(w, s)
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
-        Ok(FaceInfo { kind: Wire::get(r, s)?, area: r.f64()?, centroid: Wire::get(r, s)?, normal: Wire::get(r, s)? })
+        Ok(FaceInfo {
+            kind: Wire::get(r, s)?,
+            area: r.f64()?,
+            centroid: Wire::get(r, s)?,
+            normal: Wire::get(r, s)?,
+            axis: Wire::get(r, s)?,
+        })
     }
 }
 
 impl Wire for EdgeInfo {
-    const MIN_SIZE: usize = 41;
+    const MIN_SIZE: usize = 42;
     fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
         self.kind.put(w, s)?;
         w.f64(self.length);
         self.midpoint.put(w, s)?;
         w.seq(&self.faces, s)?;
-        w.seq(&self.vertices, s)
+        w.seq(&self.vertices, s)?;
+        self.circle.put(w, s)
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
         Ok(EdgeInfo {
@@ -705,6 +737,7 @@ impl Wire for EdgeInfo {
             midpoint: Wire::get(r, s)?,
             faces: r.seq(s)?,
             vertices: r.seq(s)?,
+            circle: Wire::get(r, s)?,
         })
     }
 }
@@ -1038,21 +1071,39 @@ mod tests {
             SurfaceKind::Other,
         ] {
             rt(&kind);
-            rt(&FaceInfo { kind, area: 12.5, centroid: [1.0, 2.0, 3.0], normal: [0.0, 0.0, -1.0] });
+            rt(&FaceInfo { axis: None, kind, area: 12.5, centroid: [1.0, 2.0, 3.0], normal: [0.0, 0.0, -1.0] });
+            let axis = Some(Axis3 { origin: [1.0, -2.0, 0.5], dir: [0.0, 0.6, 0.8] });
+            rt(&FaceInfo { axis, kind, area: 1.0, centroid: [0.0; 3], normal: [0.0, 0.0, 1.0] });
         }
         for kind in [CurveKind::Line, CurveKind::Circle, CurveKind::Ellipse, CurveKind::BSpline, CurveKind::Other] {
             rt(&kind);
-            rt(&EdgeInfo { kind, length: 4.0, midpoint: [0.5; 3], faces: vec![0, 3], vertices: vec![1] });
+            rt(&EdgeInfo { circle: None, kind, length: 4.0, midpoint: [0.5; 3], faces: vec![0, 3], vertices: vec![1] });
+            let circle = Some(Circle3 { center: [1.0, 2.0, 3.0], normal: [1.0, 0.0, 0.0], radius: 2.5 });
+            rt(&EdgeInfo { circle, kind, length: 4.0, midpoint: [0.5; 3], faces: vec![0], vertices: vec![] });
         }
-        rt(&EdgeInfo { kind: CurveKind::Line, length: 0.0, midpoint: [0.0; 3], faces: vec![], vertices: vec![] });
+        rt(&EdgeInfo {
+            circle: None,
+            kind: CurveKind::Line,
+            length: 0.0,
+            midpoint: [0.0; 3],
+            faces: vec![],
+            vertices: vec![],
+        });
         rt(&VertexInfo { point: [9.0, 8.0, 7.0] });
         rt(&Topology::default());
         rt(&Topology {
             faces: vec![
-                FaceInfo { kind: SurfaceKind::Plane, area: 1.0, centroid: [0.0; 3], normal: [0.0, 0.0, 1.0] };
+                FaceInfo {
+                    axis: None,
+                    kind: SurfaceKind::Plane,
+                    area: 1.0,
+                    centroid: [0.0; 3],
+                    normal: [0.0, 0.0, 1.0]
+                };
                 3
             ],
             edges: vec![EdgeInfo {
+                circle: None,
                 kind: CurveKind::Line,
                 length: 1.0,
                 midpoint: [0.0; 3],

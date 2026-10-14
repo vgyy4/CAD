@@ -507,3 +507,33 @@ fn loft_golden_volumes_history_and_errors() {
     assert_eq!(e.kind, KernelErrorKind::InvalidInput);
     assert!(k().loft(&[centred_square(10.0, Frame::XY), centred_square(5.0, Frame::XY)], &spec).is_err());
 }
+
+#[test]
+fn topology_reports_cylinder_axes_and_circles() {
+    let k = OcctKernel::new().unwrap();
+    let circle = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [3.0, 4.0], radius: 2.5 }, tag: 1 }] },
+            holes: vec![],
+        }],
+    };
+    let r = k.extrude(&circle, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let t = k.topology(&r.shape).unwrap();
+    let side = t.faces.iter().find(|f| f.kind == SurfaceKind::Cylinder).unwrap();
+    let axis = side.axis.unwrap();
+    assert!((axis.origin[0] - 3.0).abs() < 1e-9 && (axis.origin[1] - 4.0).abs() < 1e-9, "{axis:?}");
+    assert!((axis.dir[2].abs() - 1.0).abs() < 1e-12, "{axis:?}");
+    assert!(t.faces.iter().filter(|f| f.kind == SurfaceKind::Plane).all(|f| f.axis.is_none()));
+    let circles: Vec<_> = t.edges.iter().filter_map(|e| e.circle).collect();
+    assert_eq!(circles.len(), 2, "top and bottom rims");
+    for c in circles {
+        assert!(
+            (c.radius - 2.5).abs() < 1e-9
+                && (c.center[0] - 3.0).abs() < 1e-9
+                && (c.normal[2].abs() - 1.0).abs() < 1e-12
+        );
+        assert!(c.center[2].abs() < 1e-9 || (c.center[2] - 10.0).abs() < 1e-9, "{c:?}");
+    }
+    assert!(t.edges.iter().filter(|e| e.kind == CurveKind::Line).all(|e| e.circle.is_none()));
+}
