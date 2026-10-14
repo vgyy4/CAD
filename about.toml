@@ -47,3 +47,8 @@ ignore-dev-dependencies = true
 # here only for this crate so the inventory lists it truthfully. See docs/PROGRESS.md.
 [epaint_default_fonts]
 accepted = ["Ubuntu-font-1.0"]
+
+# The OCCT translation pilot carries OCCT's own license; it may only be linked into the
+# kernel worker (ADR 0025, enforced by deny.toml).
+[occt-port]
+accepted = ["LGPL-2.1-only WITH OCCT-exception-1.0"]

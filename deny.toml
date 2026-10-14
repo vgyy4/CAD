@@ -32,6 +32,12 @@ allow = [
 # LGPL/GPL/AGPL Rust crates are never allowed (Rust links statically). OCCT is
 # LGPL-2.1 but is a C++ shared library, not a crate; see ADR 0001/0002.
 
+# The OCCT translation pilot is LGPL like OCCT itself. It may only be linked into the
+# kernel worker, a separate program, never into the app (ADR 0025; see [bans]).
+[[licenses.exceptions]]
+crate = "occt-port"
+allow = ["LGPL-2.1-only WITH OCCT-exception-1.0"]
+
 # Font licences, scoped to the one crate that bundles fonts (ADR 0001, "Fonts").
 [[licenses.exceptions]]
 crate = "epaint_default_fonts"
@@ -47,6 +53,8 @@ deny = [
   # Statically links LGPL OCCT (ADR 0002)
   { crate = "occt-sys" },
   { crate = "opencascade-sys" },
+  # LGPL translation of OCCT: only the kernel worker process may depend on it (ADR 0025)
+  { crate = "occt-port", wrappers = ["gusset-kernel-worker"] },
 ]
 
 [sources]

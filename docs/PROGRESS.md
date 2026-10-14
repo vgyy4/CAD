@@ -45,7 +45,9 @@ Phase 3 has started (see Next).
   Sketches, Features, Construction, Parameters, Branches), timeline icon chips with status
   badges and playback buttons that move the rollback marker, and a command line above the
   status bar (View menu toggle; registry id plus JSON or `key=value` args through
-  `submit_command`, Tab completes ids, Up/Down recall) (phase 2).
+  `submit_command`, Tab completes ids, Up/Down recall) (phase 2). Bottom tidied after
+  owner feedback: one timeline bar (playback, chips in a recessed track, graph toggle),
+  command line hidden by default (View menu, Ctrl+Shift+K), confirmations fade after 5 s.
   Origin, bodies and datum planes are read-only in the browser (the scene has no
   visibility for them yet). Still to do: a properties panel instead of the floating
   command form, the SURFACE/INSPECT tabs, the SELECT group, and a wireframe view style
@@ -103,8 +105,12 @@ Phase 3 has started (see Next).
      Done: worker process, crash containment and restart, evaluator crash handling,
      app/MCP/CLI wiring and packaging, Stop that kills a running kernel operation, MCP
      deadlines, a Stop button, rebuild progress (ADR 0022 "State").
-   - v0.3: parallel feature evaluation across kernel workers (ADR 0024, proposed):
-     dependency keys first (independent parts stay cached), then a worker pool.
+   - v0.3: parallel feature evaluation across kernel workers (ADR 0024): phase 1 done
+     (dependency keys: independent parts stay cached); next the worker pool.
+   - OCCT translated to Rust, owner request (ADR 0025): opencascade-rs and occt-rs are
+     bindings, not ports (LGPL / AGPL); pilot translation of `gp` + `ElCLib` by Codex,
+     judged bit for bit against the C++ original by oracle programs; the LGPL port may
+     only link into the kernel worker. Numbers from the pilot decide the next layers.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

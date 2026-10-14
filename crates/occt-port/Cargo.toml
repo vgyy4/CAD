@@ -1,0 +1,18 @@
+[package]
+name = "occt-port"
+description = "Pilot: parts of Open CASCADE Technology translated to Rust, checked against the C++ original (ADR 0025)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# A translation of OCCT is a derivative work of it: same license as OCCT. Linked only
+# into the kernel worker process, never into the app (ADR 0025 §3).
+license = "LGPL-2.1-only WITH OCCT-exception-1.0"
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+libm.workspace = true
+
+[lints]
+workspace = true
