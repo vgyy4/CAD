@@ -26,7 +26,7 @@ mod sweep;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
-pub use joint::JointCommand;
+pub use joint::{JointCommand, QueryJoints};
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};

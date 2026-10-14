@@ -121,7 +121,8 @@ Phase 3 has started (see Next).
      revolved faces (axis from the kernel's new topology fields), circular/straight edges,
      planes and the origin; flip, offset, limits; values are expressions so parameters
      drive motion; `feature.joint` command (GUI/CLI/MCP), grammar docs, mock and OCCT tests
-     (shaft in a bore). Next: phase 2 (components from other documents, loops,
+     (shaft in a bore); `query.joints` (values, limits, DOF left, status, unplaced bodies),
+     the ASSEMBLE ribbon group and a Joints browser category. Next: phase 2 (components from other documents, loops,
      interference, BOM, motion study, gear/rack/screw relations), a joint form with frame
      picking in the viewport, branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.

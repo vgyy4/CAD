@@ -218,20 +218,7 @@ impl Command for Combine {
         edit(s, ctx, "Combine bodies", |doc, rb| {
             let at = rb.unwrap_or(doc.features.len()).min(doc.features.len());
             let live = live_body_features(doc, at);
-            let names_of = |live: &[&Feature]| -> Vec<String> {
-                live.iter().filter_map(|f| created_body_name(f)).map(str::to_string).collect()
-            };
-            // A tool or target may be named by its body or by the feature that created it.
-            let resolve = |what: &str, given: &str| -> Result<String, CommandError> {
-                live.iter()
-                    .find(|f| f.name == given)
-                    .or_else(|| live.iter().find(|f| created_body_name(f) == Some(given)))
-                    .map(|f| f.name.clone())
-                    .ok_or_else(|| {
-                        CommandError::not_found(format!("no {what} body '{given}'"))
-                            .hint(format!("bodies: {}", names_of(&live).join(", ")))
-                    })
-            };
+            let resolve = |what: &str, given: &str| resolve_body(&live, what, given);
             let mut tools: Vec<String> = Vec::new();
             for t in &self.tools {
                 let f = resolve("tool", t)?;
@@ -268,4 +255,17 @@ impl Command for Combine {
             )
         })
     }
+}
+
+/// The feature that created a body named by its body name or by that feature (`live`:
+/// the body-creating features in place, see `live_body_features`).
+pub(super) fn resolve_body(live: &[&Feature], what: &str, given: &str) -> Result<String, CommandError> {
+    live.iter()
+        .find(|f| f.name == given)
+        .or_else(|| live.iter().find(|f| created_body_name(f) == Some(given)))
+        .map(|f| f.name.clone())
+        .ok_or_else(|| {
+            let names: Vec<&str> = live.iter().filter_map(|f| created_body_name(f)).collect();
+            CommandError::not_found(format!("no {what} body '{given}'")).hint(format!("bodies: {}", names.join(", ")))
+        })
 }

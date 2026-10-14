@@ -45,6 +45,7 @@ const EN: &[(&str, &str)] = &[
     ("browser.origin", "Origin"),
     ("browser.sketches", "Sketches"),
     ("browser.construction", "Construction"),
+    ("browser.joints", "Joints"),
     ("browser.branches", "Branches"),
     ("browser.units", "Units"),
     ("browser.units_help", "The document's length unit (set in the code view: units mm / units in)"),

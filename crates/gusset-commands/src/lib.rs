@@ -29,6 +29,8 @@ mod tests_gear_math;
 #[cfg(test)]
 mod tests_hole;
 #[cfg(test)]
+mod tests_joint;
+#[cfg(test)]
 mod tests_ops;
 #[cfg(test)]
 mod tests_sketch;

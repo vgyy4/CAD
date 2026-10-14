@@ -901,6 +901,16 @@ impl JointKind {
         JointKind::Ball,
     ];
 
+    /// Degrees of freedom the joint leaves (the values that move it).
+    pub fn dof(self) -> usize {
+        match self {
+            JointKind::Rigid => 0,
+            JointKind::Revolute | JointKind::Slider => 1,
+            JointKind::Cylindrical | JointKind::PinSlot => 2,
+            JointKind::Planar | JointKind::Ball => 3,
+        }
+    }
+
     pub fn keyword(self) -> &'static str {
         match self {
             JointKind::Rigid => "rigid",

@@ -98,7 +98,8 @@ fn print_plane(p: &PlaneRef) -> String {
     }
 }
 
-fn print_frame(f: &FrameRef) -> String {
+/// A joint frame as written in the text form.
+pub fn print_frame(f: &FrameRef) -> String {
     match f {
         FrameRef::Origin => "origin".into(),
         FrameRef::Plane(p) => print_plane(p),

@@ -1,6 +1,6 @@
 //! The browser tree (DESIGN.md §2): collapsible categories with icons. Document settings
 //! (units), Origin (the base planes and the origin), Bodies, Sketches, Features, Construction
-//! (datum planes), Parameters and Branches.
+//! (datum planes), Joints, Parameters and Branches.
 //!
 //! The widgets only report what the user chose ([`Action`]); the app applies it. Origin,
 //! bodies and datum planes have no visibility in the scene yet, so their rows are read-only
@@ -27,18 +27,21 @@ pub enum Category {
     /// The remaining features (extrude, fillet, ...): the timeline lists them too.
     Features,
     Construction,
+    /// Joints placing bodies (ADR 0026).
+    Joints,
     Parameters,
     Branches,
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 9] = [
         Category::Document,
         Category::Origin,
         Category::Bodies,
         Category::Sketches,
         Category::Features,
         Category::Construction,
+        Category::Joints,
         Category::Parameters,
         Category::Branches,
     ];
@@ -52,6 +55,7 @@ impl Category {
             Category::Sketches => "browser.sketches",
             Category::Features => "browser.features",
             Category::Construction => "browser.construction",
+            Category::Joints => "browser.joints",
             Category::Parameters => "browser.parameters",
             Category::Branches => "browser.branches",
         })
@@ -65,6 +69,7 @@ impl Category {
             Category::Sketches => Tool::Sketch,
             Category::Features => Tool::Extrude,
             Category::Construction => Tool::Plane,
+            Category::Joints => Tool::Joint,
             Category::Parameters => Tool::Params,
             Category::Branches => Tool::Branch,
         }
@@ -80,6 +85,7 @@ impl Category {
         match kind {
             FeatureKind::Sketch(_) => Category::Sketches,
             FeatureKind::Plane(_) => Category::Construction,
+            FeatureKind::Joint(_) => Category::Joints,
             _ => Category::Features,
         }
     }
@@ -154,7 +160,9 @@ pub fn count(v: &View<'_>, c: Category) -> usize {
         Category::Bodies => v.eval.map_or(0, |e| e.bodies.len()),
         Category::Parameters => v.doc.params.len(),
         Category::Branches => v.branches.len(),
-        Category::Sketches | Category::Features | Category::Construction => features_of(v.doc, c).len(),
+        Category::Sketches | Category::Features | Category::Construction | Category::Joints => {
+            features_of(v.doc, c).len()
+        }
     }
 }
 
@@ -178,7 +186,7 @@ pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
             Category::Origin => origin(ui, v),
             Category::Bodies => bodies(ui, v),
             Category::Sketches => sketches(ui, v, &mut out),
-            Category::Features | Category::Construction => features(ui, v, c),
+            Category::Features | Category::Construction | Category::Joints => features(ui, v, c),
             Category::Parameters => parameters(ui, v, &mut out),
             Category::Branches => branches(ui, v, &mut out),
         }
@@ -455,7 +463,17 @@ mod tests {
         let titles: Vec<&str> = Category::ALL.iter().map(|c| c.title()).collect();
         assert_eq!(
             titles,
-            ["Document settings", "Origin", "Bodies", "Sketches", "Features", "Construction", "Parameters", "Branches"]
+            [
+                "Document settings",
+                "Origin",
+                "Bodies",
+                "Sketches",
+                "Features",
+                "Construction",
+                "Joints",
+                "Parameters",
+                "Branches"
+            ]
         );
         let mut s = State::default();
         assert!(s.is_open(Category::Sketches) && !s.is_open(Category::Origin));

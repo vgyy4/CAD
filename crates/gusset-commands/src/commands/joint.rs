@@ -1,12 +1,12 @@
 //! Joints (ADR 0026): place a body by bringing a frame on it onto a frame on another body,
 //! a plane or the origin, with the joint's motion in between.
 
-use super::datum::vec3;
+use super::datum::{resolve_body, vec3};
 use super::*;
 use gusset_doc::{JointDef, JointKind};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<JointCommand>()]
+    vec![spec::<JointCommand>(), spec::<QueryJoints>()]
 }
 
 /// Adds a joint.
@@ -89,9 +89,82 @@ impl Command for JointCommand {
         text::parse_feature_object(&text::print_feature_object(&probe))
             .map_err(|e| CommandError::args(e.to_string()))?;
         edit(s, ctx, "Joint", |doc, rb| {
+            // Bodies may be named by body name; the document refers to the creating feature.
+            let mut def = def;
+            let at = rb.unwrap_or(doc.features.len()).min(doc.features.len());
+            let live = live_body_features(doc, at);
+            def.body = resolve_body(&live, "moving", &def.body)?;
+            for w in &mut def.with {
+                *w = resolve_body(&live, "carried", w)?;
+            }
             let name = feature_name(doc, self.name, "Joint")?;
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Joint(Box::new(def))));
             Ok(json!({ "feature": name }))
         })
+    }
+}
+
+/// Lists the joints.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryJoints {}
+
+impl Command for QueryJoints {
+    const ID: &'static str = "query.joints";
+    const TITLE: &'static str = "Joints";
+    const DESCRIPTION: &'static str = "Every joint: type, moving body and bodies carried, frames, values and limits as evaluated, degrees of freedom left, build status and the moved body's centroid. Also the bodies no joint places.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let ev = s.evaluate(&ctx.actor)?;
+        let doc = s.document(&ctx.actor)?.clone();
+        let k = s.kernel().clone();
+        let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+        let value = |e: &gusset_units::expr::Expr| match gusset_units::expr::eval(e, &scope) {
+            Ok(q) => json!(q.display(doc.units)),
+            Err(err) => json!({ "expr": e.to_string(), "error": err.message }),
+        };
+        let pair = |p: &Option<[gusset_units::expr::Expr; 2]>| p.as_ref().map(|[a, b]| json!([value(a), value(b)]));
+        let mut placed = std::collections::BTreeSet::new();
+        let mut joints = Vec::new();
+        for f in &doc.features {
+            let FeatureKind::Joint(d) = &f.kind else { continue };
+            let body = body_display_name(&doc, &d.body);
+            let with: Vec<String> = d.with.iter().map(|w| body_display_name(&doc, w)).collect();
+            placed.insert(body.clone());
+            placed.extend(with.iter().cloned());
+            let mut values = serde_json::Map::new();
+            let named =
+                [("angle", &d.angle), ("distance", &d.distance), ("x", &d.x), ("y", &d.y), ("offset", &d.offset)];
+            for (key, e) in named {
+                if let Some(e) = e {
+                    values.insert(key.into(), value(e));
+                }
+            }
+            if let Some(a) = &d.angles {
+                values.insert("angles".into(), json!(a.iter().map(&value).collect::<Vec<_>>()));
+            }
+            let centroid = ev.body(&body).and_then(|b| k.mass_properties(&b.shape).ok()).map(|m| m.centroid);
+            let mut v = json!({
+                "name": f.name,
+                "type": d.kind.keyword(),
+                "body": body,
+                "with": with,
+                "at": text::print_frame(&d.at),
+                "to": text::print_frame(&d.to),
+                "flip": d.flip,
+                "values": values,
+                "angle_limits": pair(&d.angle_limits),
+                "distance_limits": pair(&d.distance_limits),
+                "dof": d.kind.dof(),
+                "suppressed": f.suppressed,
+                "status": ev.status(&f.name).map(status_json),
+                "body_centroid_mm": centroid,
+            });
+            snap_zeros(&mut v);
+            joints.push(v);
+        }
+        let free: Vec<&str> = ev.bodies.iter().map(|b| b.name.as_str()).filter(|n| !placed.contains(*n)).collect();
+        Ok(json!({ "joints": joints, "unplaced_bodies": free }))
     }
 }
