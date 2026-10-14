@@ -334,6 +334,9 @@ fn print_feature(out: &mut String, f: &Feature) {
                     args.push(format!("{k}: [{lo}, {hi}]"));
                 }
             }
+            if !d.free.is_empty() {
+                args.push(format!("free: [{}]", d.free.join(", ")));
+            }
         }
         FeatureKind::Hole(d) => {
             args.push(format!("face: {}", d.face));
@@ -1461,8 +1464,9 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let (mut kind, mut body, mut with, mut at, mut to) = (None, None, Vec::new(), None, None);
     let (mut angle, mut distance, mut x, mut y, mut angles) = (None, None, None, None, None);
     let (mut flip, mut offset, mut angle_limits, mut distance_limits) = (false, None, None, None);
+    let mut free = Vec::new();
     const ALLOWED: &str = "type, body, with, at, to, angle, distance, x, y, angles, flip, offset, angle_limits, \
-                           distance_limits, label, suppressed";
+                           distance_limits, free, label, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -1489,6 +1493,7 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "offset" => offset = Some(c.expr()?),
             "angle_limits" => angle_limits = Some(parse_pair(c)?),
             "distance_limits" => distance_limits = Some(parse_pair(c)?),
+            "free" => free = parse_ident_list(c, "values")?,
             key => return Err(unknown_arg(c, KW, key, ALLOWED)),
         }
         Ok(())
@@ -1498,14 +1503,7 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     }
     let kind = kind.ok_or_else(|| missing(c, KW, "type"))?;
     // Only the values the joint type moves.
-    let uses = |v: &str| match kind {
-        JointKind::Rigid => false,
-        JointKind::Revolute => v == "angle",
-        JointKind::Slider => v == "distance",
-        JointKind::Cylindrical | JointKind::PinSlot => matches!(v, "angle" | "distance"),
-        JointKind::Planar => matches!(v, "x" | "y" | "angle"),
-        JointKind::Ball => v == "angles",
-    };
+    let uses = |v: &str| kind.has_value(v);
     for (v, given) in [
         ("angle", angle.is_some() || angle_limits.is_some()),
         ("distance", distance.is_some() || distance_limits.is_some()),
@@ -1518,6 +1516,17 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 format!("a {} joint has no '{v}'", kind.keyword()),
                 "values: revolute angle; slider distance; cylindrical and pin_slot angle, distance; planar x, y, angle; ball angles",
             ));
+        }
+    }
+    for (i, v) in free.iter().enumerate() {
+        if !uses(v) {
+            return Err(c.err_hint(
+                format!("a {} joint has no value '{v}' to leave free", kind.keyword()),
+                "free lists values of this joint type: angle, distance, x, y or angles",
+            ));
+        }
+        if free.get(..i).is_some_and(|before| before.contains(v)) {
+            return Err(c.err(format!("'{v}' is listed twice in free")));
         }
     }
     let kind_def = JointDef {
@@ -1535,6 +1544,7 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         offset,
         angle_limits,
         distance_limits,
+        free,
     };
     Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Joint(Box::new(kind_def)) })
 }

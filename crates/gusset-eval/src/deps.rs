@@ -88,15 +88,28 @@ pub(crate) fn graph(doc: &Document) -> Graph {
     // Features no later feature depends on yet: every earlier feature is an ancestor of
     // one of them, so depending on all of them means depending on everything before.
     let mut sinks: BTreeSet<usize> = BTreeSet::new();
+    // Bodies a joint has placed: a later joint moving one closes a loop.
+    let mut joint_placed: BTreeSet<&str> = BTreeSet::new();
     for (i, f) in doc.features.iter().enumerate() {
         let a = access(&f.kind);
+        // A joint the loop solver may change, or one closing a loop, moves bodies other
+        // than its own: like a reference resolved at evaluation time, it reads and may
+        // change every body (ADR 0026 §1).
+        let in_loop = match &f.kind {
+            FeatureKind::Joint(d) => {
+                let closes = joint_placed.contains(d.body.as_str());
+                joint_placed.extend(std::iter::once(d.body.as_str()).chain(d.with.iter().map(String::as_str)));
+                closes || !d.free.is_empty()
+            }
+            _ => false,
+        };
         let referenced = f.kind.dependencies();
         // References other than sketches, planes and explicitly named bodies are naming
         // references, resolved against whatever body holds those faces now.
         let naming = referenced
             .iter()
             .any(|n| !sketch_or_plane.get(n.as_str()).copied().unwrap_or(false) && !a.bodies.iter().any(|b| b == n));
-        let dynamic = a.dynamic || naming;
+        let dynamic = a.dynamic || naming || in_loop;
         let mut d: BTreeSet<usize> = BTreeSet::new();
         if dynamic {
             d.extend(sinks.iter().copied());
@@ -192,5 +205,24 @@ mod tests {
         assert_eq!(d.get(4), Some(&vec![1, 3]));
         // ... and everything after it depends on E3.
         assert_eq!(d.get(5), Some(&vec![0, 4]));
+    }
+
+    #[test]
+    fn a_joint_closing_a_loop_reads_and_changes_every_body() {
+        let text = [
+            sketch("S1"),
+            "extrude E1 (profile: S1, distance: 5 mm, op: new)\n".into(),
+            sketch("S2"),
+            "extrude E2 (profile: S2, distance: 5 mm, op: new)\n".into(),
+            "joint J1 (type: rigid, body: E1, at: origin, to: XY)\n".into(),
+            // E1 is placed already: J2 closes a loop and may move any body placed before.
+            "joint J2 (type: rigid, body: E1, at: origin, to: XZ)\n".into(),
+            "extrude E3 (profile: S1, distance: 7 mm, op: new)\n".into(),
+        ]
+        .concat();
+        let d = deps(&text);
+        assert_eq!(d.get(4), Some(&vec![1]), "an ordinary joint depends on its body");
+        assert_eq!(d.get(5), Some(&vec![3, 4]), "the closing joint depends on everything");
+        assert_eq!(d.get(6), Some(&vec![0, 5]), "and everything after depends on it");
     }
 }

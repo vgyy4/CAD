@@ -61,6 +61,11 @@ impl Delta {
         if appended.iter().any(|n| in_before.contains(&ptr(n))) {
             return None;
         }
+        // Joint records hold the placements a later loop may change: a joint's change is
+        // kept as a full state, not a delta.
+        if !Arc::ptr_eq(&before.joints, &after.joints) {
+            return None;
+        }
         let (bm, am) = (&before.meshes, &after.meshes);
         if am.len() < bm.len() || !bm.iter().zip(am).all(|(x, y)| Arc::ptr_eq(x, y)) {
             return None;

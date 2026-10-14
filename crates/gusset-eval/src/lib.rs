@@ -111,6 +111,9 @@ struct State {
     statuses: Statuses,
     /// Work charged so far ([`budget`]); kept per state so limits do not depend on the cache.
     work: budget::Work,
+    /// Joints evaluated so far and the body placements they made (closed loops re-place
+    /// earlier bodies, ADR 0026 §1).
+    joints: Arc<joint::Joints>,
 }
 
 /// Feature statuses as a list whose earlier part is shared, newest first.
@@ -215,6 +218,19 @@ pub struct Evaluation {
     /// The kernel epoch ([`Kernel::epoch`]) the bodies' shapes belong to: an evaluation
     /// whose epoch is no longer the kernel's holds shapes of a restarted kernel worker.
     pub epoch: u64,
+    /// Values of each joint as built, in base units (mm, rad), including those the loop
+    /// solver chose: `angle`, `distance`, `x`, `y`, `angles`.
+    pub joint_values: BTreeMap<String, JointValues>,
+}
+
+/// A joint's values as built (base units: mm, rad).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JointValues {
+    pub angle: f64,
+    pub distance: f64,
+    pub x: f64,
+    pub y: f64,
+    pub angles: [f64; 3],
 }
 
 impl Evaluation {
@@ -738,6 +754,7 @@ impl Evaluator {
                     cancelled: false,
                     transient: true,
                     epoch: self.kernel.epoch(),
+                    joint_values: BTreeMap::new(),
                 };
                 return (crashed, true);
             }
@@ -774,6 +791,18 @@ impl Evaluator {
             cancelled,
             transient,
             epoch: self.epoch,
+            joint_values: state
+                .joints
+                .recs
+                .iter()
+                .map(|r| {
+                    let v = r.vals;
+                    (
+                        r.name.clone(),
+                        JointValues { angle: v.angle, distance: v.distance, x: v.x, y: v.y, angles: v.angles },
+                    )
+                })
+                .collect(),
         };
         (e, false)
     }

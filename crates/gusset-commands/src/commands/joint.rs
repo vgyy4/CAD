@@ -13,7 +13,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JointCommand {
-    /// rigid, revolute, slider, cylindrical, pin_slot, planar, ball.
+    /// rigid|revolute|slider|cylindrical|pin_slot|planar|ball
     #[serde(rename = "type")]
     pub kind: String,
     /// The moving body.
@@ -21,7 +21,7 @@ pub struct JointCommand {
     /// Bodies carried along.
     #[serde(default)]
     pub with: Vec<String>,
-    /// Frame on the body: face, edge(..), plane or origin.
+    /// Frame on the body (kinds as for `to`).
     pub at: String,
     /// Target frame: face, edge(..), plane or origin.
     pub to: String,
@@ -44,13 +44,15 @@ pub struct JointCommand {
     #[serde(default)]
     pub distance_limits: Option<[String; 2]>,
     #[serde(default)]
+    pub free: Vec<String>,
+    #[serde(default)]
     pub name: Option<String>,
 }
 
 impl Command for JointCommand {
     const ID: &'static str = "feature.joint";
     const TITLE: &'static str = "Joint";
-    const DESCRIPTION: &'static str = "Place a body by a joint: frame `at` on it goes onto frame `to` (a placed body, plane or origin). Values: revolute angle; slider distance; cylindrical/pin_slot both; planar x, y, angle; ball angles. flip: face against face.";
+    const DESCRIPTION: &'static str = "Place a body: frame `at` on it onto frame `to`. Values: revolute angle; slider distance; cylindrical/pin_slot both; planar x, y, angle; ball angles. flip: face to face. On a placed body it closes a loop, solving `free` values.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -83,6 +85,7 @@ impl Command for JointCommand {
             offset: opt("offset", &self.offset)?,
             angle_limits: pair("angle_limits", &self.angle_limits)?,
             distance_limits: pair("distance_limits", &self.distance_limits)?,
+            free: self.free.clone(),
         };
         // The same checks as the text form (values the type does not move are refused).
         let probe = Feature::new("Probe", FeatureKind::Joint(Box::new(def.clone())));
@@ -112,7 +115,7 @@ pub struct QueryJoints {}
 impl Command for QueryJoints {
     const ID: &'static str = "query.joints";
     const TITLE: &'static str = "Joints";
-    const DESCRIPTION: &'static str = "Every joint: type, moving body and bodies carried, frames, values and limits as evaluated, degrees of freedom left, build status and the moved body's centroid. Also the bodies no joint places.";
+    const DESCRIPTION: &'static str = "Every joint: type, moving body and bodies carried, frames, values and limits as evaluated, `free` values and `built_values` (as built, including what the loop solver chose), degrees of freedom left, build status and the moved body's centroid. Also the bodies no joint places.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -144,6 +147,23 @@ impl Command for QueryJoints {
             if let Some(a) = &d.angles {
                 values.insert("angles".into(), json!(a.iter().map(&value).collect::<Vec<_>>()));
             }
+            // As built, including the values the loop solver chose (`free`).
+            let built = ev.joint_values.get(&f.name).map(|v| {
+                let q = |x: f64, dim| json!(gusset_units::Quantity::new(x, dim).display(doc.units));
+                let (a, l) = (gusset_units::Dim::ANGLE, gusset_units::Dim::LENGTH);
+                let mut m = serde_json::Map::new();
+                let used = |key: &str| d.kind.has_value(key);
+                for (key, x, dim) in [("angle", v.angle, a), ("distance", v.distance, l), ("x", v.x, l), ("y", v.y, l)]
+                {
+                    if used(key) {
+                        m.insert(key.into(), q(x, dim));
+                    }
+                }
+                if used("angles") {
+                    m.insert("angles".into(), json!(v.angles.iter().map(|x| q(*x, a)).collect::<Vec<_>>()));
+                }
+                Value::Object(m)
+            });
             let centroid = ev.body(&body).and_then(|b| k.mass_properties(&b.shape).ok()).map(|m| m.centroid);
             let mut v = json!({
                 "name": f.name,
@@ -154,6 +174,8 @@ impl Command for QueryJoints {
                 "to": text::print_frame(&d.to),
                 "flip": d.flip,
                 "values": values,
+                "free": d.free,
+                "built_values": built,
                 "angle_limits": pair(&d.angle_limits),
                 "distance_limits": pair(&d.distance_limits),
                 "dof": d.kind.dof(),

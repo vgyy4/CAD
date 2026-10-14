@@ -34,10 +34,22 @@ or a datum plane), with the joint's motion applied in between:
 
 `X_moving' = F_fixed · M(type, values) · F_moving⁻¹ · X_moving`
 
-Phase 1 is a tree: a body is placed by at most one joint (a second joint moving the same
-body is an error naming the first), and a joint's fixed side must be a body that is
-already in place (earlier in the timeline). Closed loops need a simultaneous solver
-(phase 2, sketch solver technique in 3D).
+Phase 1 is a tree: a joint's fixed side must be a body that is already in place (earlier
+in the timeline).
+
+Closed loops (phase 2, done): a joint whose moving body an earlier joint placed or carried
+*closes* a loop. Values a joint lists in `free: [...]` are unknowns; at each closing joint
+the evaluator solves all free values so far (Levenberg-Marquardt, forward-difference
+Jacobian, deterministic from the written values as starting guesses) so that every closing
+joint's two frames meet (3 translation and 3 rotation residuals each; tolerance 1e-6 mm
+and 1e-8 rad), then moves each body from its current placement to the solved one. This
+needs no kernel calls: every joint record keeps its frames in its bodies' coordinates
+before any joint moved them, so placements are replayed from the values alone. Without
+free values a second placement that does not already agree is an error naming the first
+joint and suggesting `free`. Limits are checked on solved values. A joint in a loop
+(free values, or closing) reads and may change every body placed before it, so the
+dependency graph (ADR 0024) treats it like a reference resolved at evaluation time.
+Bodies in a loop are positioned by joints only: a `move` between them is not replayed.
 
 ### 2. Frames (joint origins) from persistent names
 `frame(<face>)`: planar face → centroid, Z = outward normal; cylindrical/conical face →
@@ -63,8 +75,8 @@ version bump.
 
 ### 5. Commands and UI
 `feature.joint` (registry → GUI form, CLI, MCP), `query.joints` (types, frames, values,
-degrees of freedom left), browser category "Joints", timeline chips. Phase 2: components
-loops.
+degrees of freedom left, `free` values and `built_values`), browser category "Joints",
+timeline chips. Phase 2: components (§7) and loops (§1).
 
 Relations (gear, rack and pinion, screw) need no feature of their own: a joint value is an
 expression, so `angle: -turn * 20 / 40` couples a gear pair (grammar "Joints").

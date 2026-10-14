@@ -412,7 +412,8 @@ move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
 joint <Name> (type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, body: <Feature>, [with: [<Feature>, ...]],
               at: <frame>, to: <frame>, [angle: <angle>], [distance: <length>], [x: <length>, y: <length>],
               [angles: [<rx>, <ry>, <rz>]], [flip: true], [offset: <length>],
-              [angle_limits: [<lo>, <hi>]], [distance_limits: [<lo>, <hi>]])
+              [angle_limits: [<lo>, <hi>]], [distance_limits: [<lo>, <hi>]],
+              [free: [angle|distance|x|y|angles, ...]])
 ```
 
 - A joint places the body `body` (and the bodies in `with`, carried rigidly): its frame
@@ -431,6 +432,13 @@ joint <Name> (type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, body
 - Relations are expressions: a gear pair turns together with `angle: turn` on one joint
   and `angle: -turn * 20 / 40` on the other (teeth 20 and 40); a rack moves
   `distance: turn / 360 deg * pi * 40 mm`; a screw `distance: turn / 360 deg * 1.5 mm`.
+- Closed loops (linkages): a joint whose `body` an earlier joint already placed (or
+  carried) closes a loop and moves nothing itself. The values listed in `free` (on any
+  joint of the timeline so far) are then solved so that every closing joint meets; a
+  written value is the starting guess, which picks the assembly mode. A four-bar with a
+  driven crank needs `free: [angle]` on the other three pivots. A loop that cannot close
+  fails the closing joint with the gap; limits apply to solved values too. `query.joints`
+  reports the values as built (`built_values`).
 
 ```gusset
 gusset 1

@@ -130,9 +130,10 @@ Phase 3 has started (see Next).
      Components from other documents (`component`, `assembly.insert_component` /
      `update_component`, pinned copies, `part(...)` face names; mock and OCCT tests).
      Parameters per component (`set:`, `assembly.configure_component`).
-     `query.components` reports available updates. Next: phase 2 loops (closed joint
-     chains), a GUI notice for component updates, a joint form with frame
-     picking in the viewport, branch merge, configurations/customizer.
+     `query.components` reports available updates; the app names them after opening.
+     Closed loops: `free: [...]` values solved at the joint that closes a loop (four-bar
+     test). Next: a joint form with frame picking in the viewport, branch merge,
+     configurations/customizer, an OCCT golden test of a linkage.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

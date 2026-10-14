@@ -59,6 +59,33 @@ fn a_slider_joint_places_the_block_and_query_joints_reports_it() {
 }
 
 #[test]
+fn a_second_joint_closes_the_loop_and_the_solver_picks_the_free_value() {
+    let mut s = session();
+    plate_and_block(&mut s);
+    // Slide the block down from the plate's top by a free distance ...
+    run(
+        &mut s,
+        "feature.joint",
+        json!({"type": "slider", "body": "Block", "at": "Extrude2/cap(start)", "to": "Extrude1/cap(end)",
+               "flip": true, "free": ["distance"]}),
+    );
+    // ... until its bottom meets the plate's bottom: 10 mm.
+    let r = run(
+        &mut s,
+        "feature.joint",
+        json!({"type": "rigid", "body": "Block", "at": "Extrude2/cap(start)", "to": "Extrude1/cap(start)"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let q = run(&mut s, "query.joints", json!({}));
+    let j = &q["joints"][0];
+    assert_eq!(j["free"], json!(["distance"]), "{q}");
+    assert_eq!(j["built_values"]["distance"], "10 mm", "{q}");
+    assert_eq!(q["joints"][1]["status"]["state"], "ok", "{q}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("free: [distance]"), "{text}");
+}
+
+#[test]
 fn interference_and_a_motion_study() {
     let mut s = session();
     plate_and_block(&mut s);

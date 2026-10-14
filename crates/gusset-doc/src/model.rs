@@ -896,6 +896,18 @@ pub enum JointKind {
 }
 
 impl JointKind {
+    /// Whether this type moves by value `v` (`angle`, `distance`, `x`, `y`, `angles`).
+    pub fn has_value(self, v: &str) -> bool {
+        match self {
+            JointKind::Rigid => false,
+            JointKind::Revolute => v == "angle",
+            JointKind::Slider => v == "distance",
+            JointKind::Cylindrical | JointKind::PinSlot => matches!(v, "angle" | "distance"),
+            JointKind::Planar => matches!(v, "x" | "y" | "angle"),
+            JointKind::Ball => v == "angles",
+        }
+    }
+
     pub const ALL: [JointKind; 7] = [
         JointKind::Rigid,
         JointKind::Revolute,
@@ -1012,6 +1024,9 @@ pub struct JointDef {
     /// Allowed range of `angle` and `distance`.
     pub angle_limits: Option<[Expr; 2]>,
     pub distance_limits: Option<[Expr; 2]>,
+    /// Values the loop solver chooses (`angle`, `distance`, `x`, `y`, `angles`); a written
+    /// value is then the starting guess (ADR 0026 §1, closed loops).
+    pub free: Vec<String>,
 }
 
 impl JointDef {
