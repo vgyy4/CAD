@@ -162,3 +162,57 @@ fn a_shaft_from_its_own_document_goes_into_the_bore() {
     assert_eq!(q["interference"], json!([]), "{q}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A four-bar linkage (ground 40, crank 10, coupler 35, rocker 25) with pivots on the
+/// links' vertical corner edges; the loop solver closes it for the crank angle.
+#[test]
+fn a_four_bar_linkage_closes_for_every_crank_angle() {
+    let rect = |n: &str, w: f64| {
+        format!(
+            "sketch {n} (plane: XY, next_id: 9) {{\n  p1 = point(0, 0)\n  p2 = point({w}, 0)\n  p3 = point({w}, 2)\n  \
+             p4 = point(0, 2)\n  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}}\n"
+        )
+    };
+    let pivot = |b: &str, s: &str, end: bool| {
+        let (a, c) = if end { ("l5", "l6") } else { ("l8", "l5") };
+        format!("edge({b}/side({s}/{a}), {b}/side({s}/{c}))")
+    };
+    let text = |crank: f64| {
+        format!(
+            "gusset 1\nunits mm\nparam crank = {crank} deg\n{}{}{}{}\
+             extrude Ground (profile: G, distance: 1 mm, op: new)\nextrude Crank (profile: C, distance: 1 mm, op: new)\n\
+             extrude Coupler (profile: K, distance: 1 mm, op: new)\nextrude Rocker (profile: R, distance: 1 mm, op: new)\n\
+             joint J1 (type: revolute, body: Crank, at: {}, to: {}, angle: crank)\n\
+             joint J2 (type: revolute, body: Coupler, at: {}, to: {}, free: [angle])\n\
+             joint J3 (type: revolute, body: Rocker, at: {}, to: {}, angle: 90 deg, free: [angle])\n\
+             joint J4 (type: revolute, body: Coupler, at: {}, to: {}, free: [angle])\n",
+            rect("G", 40.0),
+            rect("C", 10.0),
+            rect("K", 35.0),
+            rect("R", 25.0),
+            pivot("Crank", "C", false),
+            pivot("Ground", "G", false),
+            pivot("Coupler", "K", false),
+            pivot("Crank", "C", true),
+            pivot("Rocker", "R", false),
+            pivot("Ground", "G", true),
+            pivot("Coupler", "K", true),
+            pivot("Rocker", "R", true),
+        )
+    };
+    let kernel = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(kernel.clone());
+    for crank in [0.0, 45.0, 120.0, 200.0] {
+        let doc = Document::from_text(&text(crank)).unwrap();
+        let r = ev.evaluate(&doc, None, &());
+        assert!(r.errors().is_empty(), "crank {crank}: {:?}", r.errors());
+        // The coupler's and the rocker's far pivots meet: a bottom vertex in common.
+        let bottom = |body: &str| {
+            let t = gusset_kernel::Kernel::topology(kernel.as_ref(), &r.body(body).unwrap().shape).unwrap();
+            t.vertices.iter().map(|v| v.point).filter(|p| p[2].abs() < 1e-6).collect::<Vec<_>>()
+        };
+        let (k, rk) = (bottom("Coupler"), bottom("Rocker"));
+        let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5);
+        assert!(k.iter().any(|p| rk.iter().any(|q| near(*p, *q))), "crank {crank}: {k:?} {rk:?}");
+    }
+}
