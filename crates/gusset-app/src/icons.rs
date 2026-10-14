@@ -188,6 +188,7 @@ pub enum Tool {
     Chamfer,
     Shell,
     Combine,
+    Joint,
     MoveBody,
     PatternLinear,
     PatternCircular,
@@ -250,6 +251,7 @@ impl Tool {
         Tool::Chamfer,
         Tool::Shell,
         Tool::Combine,
+        Tool::Joint,
         Tool::MoveBody,
         Tool::PatternLinear,
         Tool::PatternCircular,
@@ -307,6 +309,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.chamfer" => Tool::Chamfer,
         "feature.shell" => Tool::Shell,
         "feature.combine" => Tool::Combine,
+        "feature.joint" => Tool::Joint,
         "feature.move_body" => Tool::MoveBody,
         "feature.pattern_linear" => Tool::PatternLinear,
         "feature.pattern_circular" => Tool::PatternCircular,
@@ -352,7 +355,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "move" => Tool::MoveBody,
         "combine" => Tool::Combine,
         "hole" => Tool::Hole,
-        "joint" => Tool::MoveBody,
+        "joint" => Tool::Joint,
         _ => Tool::Body,
     }
 }
@@ -569,6 +572,12 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
         Tool::Combine => {
             pen.poly(&[(3.0, 8.0), (14.0, 8.0), (14.0, 19.0), (3.0, 19.0)], pen.fill, ink);
             pen.poly(&[(9.0, 4.0), (21.0, 4.0), (21.0, 15.0), (9.0, 15.0)], pen.fill, a);
+        }
+        Tool::Joint => {
+            // Two links hinged at a pin.
+            pen.poly(&[(3.0, 13.0), (13.0, 13.0), (13.0, 19.0), (3.0, 19.0)], pen.fill, ink);
+            pen.poly(&[(11.0, 4.0), (21.0, 9.0), (18.0, 14.0), (9.0, 9.0)], pen.fill, a);
+            pen.circle(12.0, 12.0, 2.5, a, a);
         }
         Tool::MoveBody => {
             for (dx, dy) in [(0.0, -1.0), (0.0, 1.0), (-1.0, 0.0), (1.0, 0.0)] {

@@ -26,6 +26,7 @@ const EN: &[(&str, &str)] = &[
     ("tab.sketch", "Sketch"),
     ("ribbon.create", "Create"),
     ("ribbon.modify", "Modify"),
+    ("ribbon.assemble", "Assemble"),
     ("ribbon.construct", "Construct"),
     ("ribbon.inspect", "Inspect"),
     ("ribbon.insert", "Insert"),

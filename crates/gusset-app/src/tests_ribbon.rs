@@ -76,6 +76,13 @@ fn ribbon_large_tools_and_dropdowns_open_their_commands() {
     h.get_by_label(title("feature.mirror")).click();
     h.run();
     assert_eq!(form_command(&h), Some("feature.mirror"));
+    h.state_mut().form = None;
+    h.run();
+    // ASSEMBLE has the joint as its large tool.
+    h.get_by_label("ASSEMBLE");
+    h.get_by_label(title("feature.joint")).click();
+    h.run();
+    assert_eq!(form_command(&h), Some("feature.joint"));
 }
 
 #[test]
