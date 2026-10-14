@@ -336,6 +336,26 @@ mod tests {
     }
 
     #[test]
+    fn gc_keeps_component_documents_and_what_they_need() {
+        // ADR 0026 §7: a component's pinned document lives only in the blob store, and so
+        // do the documents of components nested in it.
+        let u = Ctx::user(0);
+        let mut h = History::new(&doc(&[]), &u);
+        let main = h.main();
+        let inner = h.put_blob(b"gusset 1\nunits mm\n\nparam a = 1 mm\n");
+        let comp = |name: &str, hash: Hash| {
+            format!("component {name} (source: \"{name}.gus\", version: \"n1\", document: \"{}\")\n", hash.to_hex())
+        };
+        let outer = h.put_blob(format!("gusset 1\nunits mm\n\n{}", comp("Inner", inner)).as_bytes());
+        let stray = h.put_blob(b"nobody refers to this");
+        let top = Document::from_text(&format!("gusset 1\nunits mm\n\n{}", comp("Outer", outer))).unwrap();
+        h.commit(&u, main, &top, "insert", NodeState::Ok).unwrap();
+        h.gc(1_000_000_000, &GcPolicy::default());
+        assert!(h.objects().get(outer).is_ok() && h.objects().get(inner).is_ok());
+        assert!(h.objects().get(stray).is_err(), "unreferenced blobs are still collected");
+    }
+
+    #[test]
     fn squash_keeps_heads_and_stars() {
         let u = Ctx::user(0);
         let mut h = History::new(&doc(&[]), &u);

@@ -372,15 +372,52 @@ impl ObjectStore {
         let mut complete = true;
         for f in &s.features {
             match self.feature(*f) {
-                Ok(Feature { kind: gusset_doc::FeatureKind::Import(i), .. }) => {
-                    if let Some(b) = Hash::from_hex(&i.blob) {
-                        out.insert(b);
-                    }
-                }
-                Ok(_) => {}
+                Ok(f) => complete &= self.feature_blobs(&f.kind, out, 0),
                 Err(_) => complete = false,
             }
         }
         complete
+    }
+
+    /// The stored data a feature needs: an import's file, a component's pinned document
+    /// and, inside it, what its own features need (ADR 0026 §7). False when a stored
+    /// component document cannot be read or nesting is deeper than any valid project.
+    fn feature_blobs(
+        &self,
+        kind: &gusset_doc::FeatureKind,
+        out: &mut std::collections::BTreeSet<Hash>,
+        depth: u32,
+    ) -> bool {
+        match kind {
+            gusset_doc::FeatureKind::Import(i) => {
+                if let Some(b) = Hash::from_hex(&i.blob) {
+                    out.insert(b);
+                }
+                true
+            }
+            gusset_doc::FeatureKind::Component(c) => {
+                let Some(h) = Hash::from_hex(&c.document) else { return true };
+                if !out.insert(h) {
+                    return true;
+                }
+                if depth >= 32 {
+                    return false;
+                }
+                if self.get(h).is_err() {
+                    return true; // not stored: nothing else to keep for it
+                }
+                // Stored but unreadable: it may reference data a repair could still use.
+                let Some(doc) = self.text(h).ok().and_then(|t| Document::from_text(t).ok()) else {
+                    return false;
+                };
+                // Every feature, even after an incomplete one: keep all that can be seen.
+                let mut complete = true;
+                for f in &doc.features {
+                    complete &= self.feature_blobs(&f.kind, out, depth + 1);
+                }
+                complete
+            }
+            _ => true,
+        }
     }
 }

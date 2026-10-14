@@ -426,3 +426,56 @@ fn startup_offers_unsaved_work_of_a_never_saved_project() {
     let d = app_with(dirs_in(&root));
     assert!(d.dialog.is_none(), "{:?}", d.dialog);
 }
+
+/// A part document saved as a project file at `path`, one version per text.
+fn write_part(path: &Path, docs: &[&str]) {
+    let u = gusset_history::Ctx::user(1);
+    let doc = |t: &str| gusset_doc::Document::from_text(t).unwrap();
+    let mut h = gusset_history::History::new(&doc(docs[0]), &u);
+    for d in &docs[1..] {
+        let main = h.main();
+        h.commit(&u, main, &doc(d), "edit", gusset_history::NodeState::Ok).unwrap();
+    }
+    let meta = gusset_project::ProjectMeta {
+        id: gusset_store::paths::ProjectId::new_random().unwrap(),
+        save_seq: 1,
+        base_seq: 1,
+        created: 1,
+    };
+    std::fs::write(path, gusset_project::encode(&h, &meta).unwrap()).unwrap();
+}
+
+#[test]
+fn opening_an_assembly_says_which_components_have_newer_sources() {
+    const PART: &str = "gusset 1\nunits mm\n\nparam h = 2 mm\n\nsketch S (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  p2 = point(10, 0)\n  p3 = point(10, 4)\n  p4 = point(0, 4)\n  l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n}\n\nextrude Pin (profile: S, distance: h, op: new)\n";
+    let root = temp_dir("components");
+    write_part(&root.join("pin.gus"), &[PART]);
+    let mut a = app_with(dirs_in(&root));
+    let asm = root.join("asm.gus");
+    a.save_as(asm.clone());
+    a.wait_idle();
+    a.run("assembly.insert_component", json!({"path": "pin.gus"})).unwrap();
+    a.wait_idle();
+    a.save_as(asm.clone());
+    a.wait_idle();
+    drop(a);
+    // Opened in a new window each time (the project lock is per window).
+    let opened = |path: &Path| {
+        let mut b = app_with(dirs_in(&root));
+        b.open(path.to_path_buf()).unwrap();
+        b.wait_idle();
+        let notice = b.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+        // The pinned copy was saved with the project: the component rebuilds.
+        let v = b.run("query.body", json!({"body": "Pin"})).unwrap();
+        assert_eq!(v["volume_mm3"], 80.0, "{v}");
+        notice
+    };
+    // Up to date: opening says nothing about components.
+    let n = opened(&asm);
+    assert!(!n.contains("Newer versions"), "{n}");
+    // The source gets a new version: opening the assembly names the component.
+    write_part(&root.join("pin.gus"), &[PART, &PART.replace("h = 2 mm", "h = 4 mm")]);
+    let n = opened(&asm);
+    assert!(n.contains("Newer versions") && n.contains("Pin"), "{n}");
+    let _ = std::fs::remove_dir_all(&root);
+}

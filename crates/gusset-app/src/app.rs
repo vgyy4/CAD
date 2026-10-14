@@ -122,6 +122,8 @@ pub enum Then {
     PathDialog(PathPurpose, String),
     /// A branch comparison for the agents panel (branch name, plain text).
     Compare(String),
+    /// `query.components` after opening: a notice when components have newer sources.
+    ComponentUpdates,
 }
 
 /// An action that replaces or ends the open project, run once unsaved changes and
@@ -725,6 +727,11 @@ impl App {
                 };
             }
             Then::Compare(branch) => self.show_compare(&branch, result),
+            Then::ComponentUpdates => {
+                if let Some(text) = result.ok().as_ref().and_then(component_updates) {
+                    self.notice = Some(Notice { text, hint: Some(tr("components.update_hint").into()), error: false });
+                }
+            }
             Then::PathDialog(purpose, text) => match result {
                 Ok(_) => self.report(id, &result),
                 Err(e) => self.dialog = Some(Dialog::Path { purpose, text, error: Some(e.message) }),
@@ -968,6 +975,8 @@ impl App {
             }
             (session, Some(project))
         });
+        // Components whose source documents changed since they were pinned (ADR 0026 §7).
+        self.submit_command("query.components", json!({}), Then::ComponentUpdates);
         match report {
             OpenReport::Clean => {}
             OpenReport::RecoveryAvailable { recovered, .. } => self.dialog = Some(Dialog::Recovery { recovered }),
@@ -2350,4 +2359,15 @@ pub fn search(query: &str) -> Vec<&'static gusset_commands::CommandSpec> {
         .collect();
     hits.sort_by_key(|(r, _)| *r);
     hits.into_iter().map(|(_, s)| s).collect()
+}
+
+/// The notice for a `query.components` result, if any component has a newer source.
+fn component_updates(v: &Value) -> Option<String> {
+    let names: Vec<&str> = v["components"]
+        .as_array()?
+        .iter()
+        .filter(|c| c["update_available"] == true)
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    (!names.is_empty()).then(|| format!("{}: {}", tr("components.updates"), names.join(", ")))
 }
