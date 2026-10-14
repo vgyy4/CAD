@@ -133,6 +133,11 @@ impl Form {
         }
     }
 
+    /// The current text of field `name`.
+    pub fn value(&self, name: &str) -> Option<&str> {
+        self.fields.iter().find(|f| f.name == name).map(|f| f.value.as_str())
+    }
+
     pub fn set(&mut self, name: &str, value: &str) -> bool {
         match self.fields.iter_mut().find(|f| f.name == name) {
             Some(f) => {

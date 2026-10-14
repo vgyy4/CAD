@@ -304,3 +304,20 @@ fn command_line_is_toggled_from_the_view_menu() {
     assert!(!h.state().cmdline.visible);
     assert!(h.query_by_role(input).is_none());
 }
+
+#[test]
+fn two_picked_faces_fill_the_joint_form() {
+    use crate::viewport::Hit;
+    let mut a = app();
+    let face = |body: &str, name: &str| Hit::Face { body: body.into(), index: 0, name: name.into() };
+    a.selection = vec![face("Lid", "Lid/cap(start)"), face("Base", "Base/cap(end)")];
+    a.start_command("feature.joint");
+    let form = a.form.as_mut().unwrap();
+    assert_eq!(form.value("at"), Some("Lid/cap(start)"));
+    assert_eq!(form.value("to"), Some("Base/cap(end)"));
+    assert_eq!(form.value("body"), Some("Lid"));
+    // A later pick replaces the target.
+    crate::app::pick_joint_frame(form, &face("Base", "Base/side(S1/l5)"));
+    assert_eq!(form.value("to"), Some("Base/side(S1/l5)"));
+    assert_eq!(form.value("at"), Some("Lid/cap(start)"));
+}

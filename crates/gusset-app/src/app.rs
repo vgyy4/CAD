@@ -776,6 +776,13 @@ impl App {
         let face =
             self.selection.iter().find_map(|h| if let Hit::Face { name, .. } = h { Some(name.as_str()) } else { None });
         form.set("plane", face.unwrap_or("XY"));
+        // A joint from two picks (ADR 0026): the first is the moving body's frame, the
+        // second the target.
+        if form.command == "feature.joint" {
+            for h in self.selection.iter().take(2) {
+                pick_joint_frame(form, h);
+            }
+        }
         // The sketch being edited wins over "the latest sketch".
         if let Some(s) = &self.active_sketch {
             form.set("sketch", s);
@@ -1726,6 +1733,12 @@ impl App {
                 Some(h) => self.selection = vec![h],
                 None => self.selection.clear(),
             }
+            // With the joint form open, picks fill its frames.
+            if let (Some(form), Some(h)) = (self.form.as_mut(), self.selection.last())
+                && form.command == "feature.joint"
+            {
+                pick_joint_frame(form, h);
+            }
         }
         if empty {
             self.empty_state(ui);
@@ -2376,4 +2389,16 @@ fn component_updates(v: &Value) -> Option<String> {
         .filter_map(|c| c["name"].as_str())
         .collect();
     (!names.is_empty()).then(|| format!("{}: {}", tr("components.updates"), names.join(", ")))
+}
+
+/// Puts a picked face or edge into the joint form: `at` (and the moving `body`) while `at`
+/// is empty, else `to`.
+pub(crate) fn pick_joint_frame(form: &mut Form, h: &Hit) {
+    let (Hit::Face { body, name, .. } | Hit::Edge { body, name, .. }) = h;
+    if form.value("at").is_none_or(|v| v.trim().is_empty()) {
+        form.set("at", name);
+        form.set("body", body);
+    } else if form.value("at") != Some(name.as_str()) {
+        form.set("to", name);
+    }
 }

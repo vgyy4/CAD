@@ -135,7 +135,8 @@ Phase 3 has started (see Next).
      test, OCCT four-bar golden). Three-way `branch.merge` (ADR 0006); the agents panel's Apply merges.
      Customizer and configurations (ADR 0027): parameter ranges (min/max/step), browser
      sliders, named configurations (save/apply/query, per component).
-     Next: a joint form with frame picking in the viewport.
+     The joint form takes its frames from viewport picks (first pick: moving body and
+     `at`, next: `to`). Next: v0.4 (2D drawings, DXF/SVG) after the v0.3 milestone review.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
