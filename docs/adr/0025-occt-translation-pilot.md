@@ -155,6 +155,12 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
   `Power` with |n| >= 3 is not the mathematical power. The port reproduces it (results
   must equal the OCCT that ships); recorded in STATUS.md.
 
+## Package 6 (2026-10-14): `gp` curves and elementary surfaces
+- Same pipeline (Sonnet judge with a throwaway implementation and mutations, Sonnet
+  translation): 68 families, 1,088 lines; translation passed on its first run, 55,180 of
+  55,272 values bit-identical, worst 16 ulps (tan/sin/cos). With it the whole `gp`
+  package (20 k C++ lines) is translated and judged.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),
