@@ -161,3 +161,43 @@ fn stream_transport_round_trips_through_frames() {
     // A closed stream is a dead worker.
     assert!(matches!(t.call(&ping), Err(TransportError::Died { .. })));
 }
+
+#[test]
+fn a_pool_runs_on_the_slot_worker_and_moves_shapes_between_workers() {
+    let (a, _, _) = remote(u32::MAX);
+    let (b, _, counter_b) = remote(u32::MAX);
+    let pool = PoolKernel::new("mock", vec![a, b]);
+    let spec = ExtrudeSpec { distance: 5.0, symmetric: false };
+    let s0 = with_slot(0, || pool.extrude(&square(), &spec)).unwrap();
+    let s1 = with_slot(1, || pool.extrude(&square(), &spec)).unwrap();
+    let s1 = pool.transform(&s1.shape, &gusset_kernel::Transform::Translate([20.0, 0.0, 0.0])).unwrap();
+    // Built on different workers ...
+    assert_eq!(pool.generations(), [1, 1]);
+    // ... and still combined: the tool moves to the target's worker.
+    let u = pool.boolean(BoolOp::Union, &s0.shape, &s1.shape).unwrap();
+    let local = MockKernel;
+    let l0 = local.extrude(&square(), &spec).unwrap();
+    let l1 = local.transform(&l0.shape, &gusset_kernel::Transform::Translate([20.0, 0.0, 0.0])).unwrap();
+    let lu = local.boolean(BoolOp::Union, &l0.shape, &l1.shape).unwrap();
+    assert_eq!(pool.mass_properties(&u.shape).unwrap().volume, local.mass_properties(&lu.shape).unwrap().volume);
+    // Work in parallel on both workers.
+    let pool = Arc::new(pool);
+    let handles: Vec<_> = (0..2)
+        .map(|i| {
+            let p = pool.clone();
+            std::thread::spawn(move || {
+                with_slot(i, || {
+                    (0..20).map(|_| p.extrude(&square(), &spec).map(|r| r.shape)).collect::<Result<Vec<_>, _>>()
+                })
+            })
+        })
+        .collect();
+    for h in handles {
+        assert_eq!(h.join().unwrap().unwrap().len(), 20);
+    }
+    // A worker restart changes the pool's epoch.
+    let before = pool.epoch();
+    counter_b.store(0, Ordering::SeqCst);
+    let _ = with_slot(1, || pool.extrude(&square(), &spec));
+    assert!(pool.epoch() > before);
+}

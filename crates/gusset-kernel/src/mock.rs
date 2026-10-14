@@ -46,6 +46,9 @@ impl ShapeData for MockShape {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MockKernel;
 
+/// Shapes written by [`MockKernel::write_native`] (tests only).
+static NATIVE: std::sync::Mutex<Vec<Vec<Prism>>> = std::sync::Mutex::new(Vec::new());
+
 const MAX_POLY: usize = 100_000;
 
 fn signed_area(poly: &[P2]) -> f64 {
@@ -208,6 +211,26 @@ impl Kernel for MockKernel {
             prisms.extend(m.prisms.iter().cloned());
         }
         Ok(OpResult { shape: Shape::new(MockShape { prisms }), face_origins: origins })
+    }
+
+    /// A handle into a process-wide table, so shapes can move between mock "workers" in
+    /// tests (the mock has no file format of its own).
+    fn write_native(&self, shape: &Shape) -> KResult<Vec<u8>> {
+        let m = shape.downcast::<MockShape>()?;
+        let mut table = NATIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        table.push(m.prisms.clone());
+        Ok(format!("mock-native {}", table.len() - 1).into_bytes())
+    }
+
+    fn read_native(&self, data: &[u8]) -> KResult<Shape> {
+        let id = std::str::from_utf8(data)
+            .ok()
+            .and_then(|t| t.strip_prefix("mock-native "))
+            .and_then(|n| n.parse::<usize>().ok())
+            .ok_or_else(|| invalid("not a mock native blob"))?;
+        let table = NATIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prisms = table.get(id).cloned().ok_or_else(|| invalid("unknown mock native blob"))?;
+        Ok(Shape::new(MockShape { prisms }))
     }
 
     fn compound(&self, shapes: &[Shape]) -> KResult<OpResult> {

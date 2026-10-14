@@ -179,6 +179,15 @@ pub trait NativeGate: Send + Sync {
     fn vet<'a>(&self, bytes: &'a [u8]) -> KResult<Cow<'a, [u8]>>;
 }
 
+impl<G: NativeGate + ?Sized> NativeGate for Arc<G> {
+    fn written(&self, bytes: &[u8]) {
+        (**self).written(bytes);
+    }
+    fn vet<'a>(&self, bytes: &'a [u8]) -> KResult<Cow<'a, [u8]>> {
+        (**self).vet(bytes)
+    }
+}
+
 /// A [`Kernel`] whose work happens in a worker process.
 pub struct RemoteKernel {
     link: Mutex<Link>,
@@ -249,6 +258,16 @@ impl RemoteKernel {
     pub fn with_native_gate(mut self, gate: Box<dyn NativeGate>) -> RemoteKernel {
         self.gate = Some(gate);
         self
+    }
+
+    /// Whether `shape` was made by this kernel's workers (any generation).
+    #[must_use]
+    pub fn owns(&self, shape: &Shape) -> bool {
+        shape
+            .0
+            .as_any()
+            .downcast_ref::<RemoteShape>()
+            .is_some_and(|s| std::ptr::eq(s.frees.as_ptr(), Arc::as_ptr(&self.frees)))
     }
 
     /// The current worker generation (it increases with every restart).
