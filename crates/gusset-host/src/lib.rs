@@ -518,7 +518,24 @@ impl HostHandle {
     /// # Errors
     /// As [`HostHandle::call`].
     pub async fn call_async(&self, ctx: CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
+        self.call_async_observed(ctx, id, args, Arc::default()).await
+    }
+
+    /// [`HostHandle::call_async`] that sets `started` when the model thread begins the
+    /// job, so a caller whose deadline passes can tell a queued request from a slow one
+    /// (review N3).
+    ///
+    /// # Errors
+    /// As [`HostHandle::call`].
+    pub async fn call_async_observed(
+        &self,
+        ctx: CmdCtx,
+        id: &str,
+        args: Value,
+        started: Arc<AtomicBool>,
+    ) -> Result<Value, CommandError> {
         if is_import(id) {
+            started.store(true, Ordering::SeqCst);
             return self.import_async(ctx, args).await;
         }
         self.supersede_rebuild(id);
@@ -539,6 +556,7 @@ impl HostHandle {
                 return Err(CommandError::new("cancelled", "the request was cancelled before it ran"));
             }
             *lock_running(&running) = true;
+            started.store(true, Ordering::SeqCst);
             let _done = ClearOnDrop(running);
             let point = revert_point(s, &ctx, &id);
             let r = execute(s, &ctx, &id, args);

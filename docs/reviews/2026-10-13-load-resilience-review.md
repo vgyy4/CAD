@@ -22,8 +22,9 @@
 - Fixed 2026-10-14: L4 (the gate is a required `RemoteKernel::new` argument, raw STEP/IGES
   requests are refused by client and worker) and L5 (a `Status` request, protocol 3, returns
   the worker's sandbox report; shown by `self-test` and in the app's diagnostics).
-- Open: N2 (worker-side leaks on encode failures), N3 (deadline includes queue
-  time).
+- Fixed 2026-10-14: N2 (the worker drops the shapes of a reply it cannot encode; a reply
+  the app cannot decode restarts the worker) and N3 (a call whose deadline passes before it
+  started is `busy`, "nothing changed", not "simplify the model").
 
 Code and security review, read-only. Line numbers are at f7d2b90. `af51715` (ADR 0024) and the
 uncommitted changes to gusset-eval in the working tree are out of scope. For gusset-eval

@@ -391,7 +391,16 @@ impl RemoteKernel {
             Reply::decode(&reply, &refs).map_err(KernelError::from)??;
         }
         let reply = send(&mut link, &payload)?;
-        Reply::decode(&reply, &refs).map_err(KernelError::from)?.map_err(capped)
+        match Reply::decode(&reply, &refs) {
+            Ok(r) => r.map_err(capped),
+            Err(e) => {
+                // The worker may hold shapes for this reply that no handle will free: restart
+                // it, which the rebuild handles like a crash (review N2).
+                link.transport = None;
+                link.generation += 1;
+                Err(crashed(format!("the geometry kernel sent a reply this app cannot read: {}", e.0)))
+            }
+        }
     }
 
     fn op(&self, req: &Request) -> KResult<OpResult> {

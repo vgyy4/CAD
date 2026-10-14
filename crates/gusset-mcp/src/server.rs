@@ -686,8 +686,20 @@ impl GussetMcp {
         // On expiry the call future is dropped: the host skips the job if it has not
         // started, or stops its rebuild (killing the kernel worker's operation) and undoes
         // its changes.
-        match tokio::time::timeout(limit, self.shared.host.call_async(ctx, id, args)).await {
+        let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let call = self.shared.host.call_async_observed(ctx, id, args, started.clone());
+        match tokio::time::timeout(limit, call).await {
             Ok(r) => r,
+            // Never started: it waited behind other work (a long rebuild of the user's) and
+            // was skipped, which is not the request's fault (review N3).
+            Err(_) if !started.load(std::sync::atomic::Ordering::SeqCst) => Err(CommandError::new(
+                "busy",
+                format!(
+                    "'{id}' waited {} s for the model, which was busy with other work, and was not run; nothing changed",
+                    limit.as_secs()
+                ),
+            )
+            .hint("try again when the current rebuild has finished")),
             Err(_) => Err(deadline_error(id, limit)),
         }
     }

@@ -64,8 +64,13 @@ impl<K: Kernel> Server<K> {
     #[must_use]
     pub fn handle(&self, request: &[u8]) -> Vec<u8> {
         let result = Request::decode(request, &self.table).map_err(KernelError::from).and_then(|r| self.execute(r));
-        Reply::encode(&result, &self.table)
-            .unwrap_or_else(|e| Reply::encode(&Err(KernelError::from(e)), &NoShapes).unwrap_or_default())
+        let first = *self.table.next.borrow() + 1;
+        Reply::encode(&result, &self.table).unwrap_or_else(|e| {
+            // The shapes registered for the reply that could not be sent would never be
+            // freed by the client (review N2).
+            self.table.shapes.borrow_mut().retain(|id, _| *id < first);
+            Reply::encode(&Err(KernelError::from(e)), &NoShapes).unwrap_or_default()
+        })
     }
 
     /// Serves frames from `input` until it ends cleanly.
