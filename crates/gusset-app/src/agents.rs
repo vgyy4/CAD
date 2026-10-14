@@ -200,6 +200,11 @@ pub struct Agents {
     pub compare: Option<(String, Vec<String>)>,
     /// Standing approvals ("always allow"), shared by every project this window opens.
     pub grants: Arc<gusset_mcp::grants::Grants>,
+    /// Agent keys (one credential per agent), shared like the grants.
+    pub keys: Arc<gusset_mcp::agent_keys::AgentKeys>,
+    /// The "new key" name field, and the token just created (shown once).
+    pub new_key_name: String,
+    pub new_key_token: Option<(String, String)>,
     /// The approval modal's "always allow" choices for the request it shows.
     pub always: AlwaysChoice,
     /// The kill switch is on for this window: endpoints for later projects start
@@ -256,6 +261,9 @@ impl Agents {
             show_token: false,
             compare: None,
             grants: Arc::default(),
+            keys: Arc::default(),
+            new_key_name: String::new(),
+            new_key_token: None,
             always: AlwaysChoice::default(),
             killed: false,
         };
@@ -275,6 +283,7 @@ impl Agents {
         let server = McpServer::new(host.clone());
         server.set_approval_provider(self.approvals.clone());
         server.set_grants(self.grants.clone());
+        server.set_agent_keys(self.keys.clone());
         server.set_renderer(self.renderer.clone());
         self.server = Some(server);
         if let Some(opts) = self.http.clone() {
@@ -358,6 +367,14 @@ impl Agents {
     /// A message for the status bar (a damaged file gives no grants).
     pub fn load_grants(&self, path: &std::path::Path) -> Result<usize, String> {
         self.grants.load(path).map_err(|e| e.to_string())
+    }
+
+    /// Loads the agent keys (owner-only file in the user's data directory).
+    ///
+    /// # Errors
+    /// A message for the status bar (a damaged file gives no keys).
+    pub fn load_keys(&self, path: &std::path::Path) -> Result<usize, String> {
+        self.keys.load(path)
     }
 
     /// True after the kill switch until the user allows agents again.
@@ -534,6 +551,8 @@ impl App {
             ui.separator();
             self.grants_section(ui, &pal);
             ui.separator();
+            self.keys_section(ui, &pal);
+            ui.separator();
 
             // Agent branches.
             ui.label(RichText::new(tr("agents.branches")).strong());
@@ -633,6 +652,47 @@ impl App {
         });
         if let Some(Err(e)) = result {
             self.notice = Some(Notice { text: e.to_string(), hint: None, error: true });
+        }
+    }
+
+    /// Agent keys: one credential per agent, so it keeps its name, branch and grants.
+    fn keys_section(&mut self, ui: &mut Ui, pal: &theme::Palette) {
+        ui.label(RichText::new(tr("agents.keys")).strong()).on_hover_text(tr("agents.keys_help"));
+        let mut notice = None;
+        for k in self.agents.keys.list() {
+            ui.horizontal_wrapped(|ui| {
+                icons::labeled(ui, Icon::Diamond, pal.agent, plain(&k.name, 64));
+                ui.weak(format!("branch agent/{}", k.agent()));
+                if ui.small_button(tr("agents.key_remove")).clicked() {
+                    if let Err(e) = self.agents.keys.remove(&k.name) {
+                        notice = Some(Notice { text: e, hint: None, error: true });
+                    }
+                    if self.agents.new_key_token.as_ref().is_some_and(|(n, _)| *n == k.name) {
+                        self.agents.new_key_token = None;
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.agents.new_key_name).hint_text("cad-bot").desired_width(120.0));
+            if ui.button(tr("agents.key_add")).clicked() {
+                let name = self.agents.new_key_name.trim().to_string();
+                match self.agents.keys.create(&name, crate::app::now_unix()) {
+                    Ok(token) => {
+                        self.agents.new_key_token = Some((name, token));
+                        self.agents.new_key_name.clear();
+                    }
+                    Err(e) => notice = Some(Notice { text: e, hint: None, error: true }),
+                }
+            }
+        });
+        if let Some((name, token)) = &self.agents.new_key_token {
+            ui.colored_label(pal.warning, format!("{} {name}:", tr("agents.key_shown_once")));
+            let mut t = token.clone();
+            ui.add(egui::TextEdit::singleline(&mut t).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+        }
+        if let Some(n) = notice {
+            self.notice = Some(n);
         }
     }
 

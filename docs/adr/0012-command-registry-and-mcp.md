@@ -159,6 +159,16 @@ same live model.
   carries a new nonce and every response must carry its proof. A process squatting a
   stale port never sees the token and cannot answer the agent.
 
+### Agent keys (2026-10-14, dogfooding F2-2)
+Besides the shared bearer token, the user can create a **key per agent** in the agents
+panel (a name such as `cad-bot`; the token is shown once, only its BLAKE3 hash is kept in
+an owner-only file in the data folder). An HTTP request bearing a key acts as agent
+`key_<name>` on every connection: it continues on its own branch `agent/key_<name>`, and
+standing approvals granted to it hold only for the key's holder. Sanitized client names
+never contain `_`, so no connection without the key can take that name. Keys are checked
+in constant time against every stored hash; the kill switch refuses keys too; removing a
+key refuses it at once. Keys are made only in the app (no command, no MCP tool).
+
 ### Claude Code setup (documented in README)
 ```
 claude mcp add --transport stdio gusset -- gusset mcp

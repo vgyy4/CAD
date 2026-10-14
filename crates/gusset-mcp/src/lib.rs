@@ -18,6 +18,7 @@
 //! tools are registry commands (file commands are confined to the project folder) and
 //! the two read-only helpers.
 
+pub mod agent_keys;
 pub mod agents;
 pub mod approval;
 pub mod b64;
@@ -147,6 +148,18 @@ impl McpServer {
     #[must_use]
     pub fn grants(&self) -> Arc<grants::Grants> {
         self.shared.grants()
+    }
+
+    /// The agent keys (ADR 0012 "Agent keys"): load them from a file, create and remove
+    /// them from the app.
+    #[must_use]
+    pub fn agent_keys(&self) -> Arc<agent_keys::AgentKeys> {
+        self.shared.keys()
+    }
+
+    /// Shares one key store between the servers of the projects a window opens.
+    pub fn set_agent_keys(&self, keys: Arc<agent_keys::AgentKeys>) {
+        self.shared.set_keys(keys);
     }
 
     /// Shares one grant store between the servers of the projects a window opens.

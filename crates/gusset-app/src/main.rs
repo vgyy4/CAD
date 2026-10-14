@@ -57,6 +57,12 @@ fn main() -> eframe::Result {
     {
         app.notice = Some(gusset_app::app::Notice { text: e, hint: None, error: true });
     }
+    // Agent keys (ADR 0012 "Agent keys").
+    if let Some(f) = grant_file.as_ref().and_then(|g| g.parent()).map(|d| d.join("agent-keys.json"))
+        && let Err(e) = app.agents.load_keys(&f)
+    {
+        app.notice = Some(gusset_app::app::Notice { text: e, hint: None, error: true });
+    }
     app.kernel_note = note;
     app.kernel_status = app_kernel_status;
     if let Some(path) = std::env::args_os().nth(1)

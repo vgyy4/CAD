@@ -106,6 +106,8 @@ pub(crate) struct Shared {
     /// The in-app prompt when the GUI hosts the session (`None`: headless).
     approvals: RwLock<Option<Arc<dyn ApprovalProvider>>>,
     pub(crate) agents: AgentRegistry,
+    /// Agent keys (ADR 0012 "Agent keys").
+    keys: RwLock<Arc<crate::agent_keys::AgentKeys>>,
     limits: RateLimiter,
     texts: TextStore,
     pending: PendingApprovals,
@@ -137,6 +139,7 @@ impl Shared {
             texts: TextStore::default(),
             pending: PendingApprovals::default(),
             grants: RwLock::new(Arc::default()),
+            keys: RwLock::new(Arc::default()),
             diagnostics: RwLock::new(None),
             elicitation_timeout: Duration::from_secs(600),
             request_deadline: RwLock::new(DEFAULT_REQUEST_DEADLINE),
@@ -154,6 +157,14 @@ impl Shared {
 
     pub(crate) fn grants(&self) -> Arc<crate::grants::Grants> {
         self.grants.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    pub(crate) fn keys(&self) -> Arc<crate::agent_keys::AgentKeys> {
+        self.keys.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    pub(crate) fn set_keys(&self, k: Arc<crate::agent_keys::AgentKeys>) {
+        *self.keys.write().unwrap_or_else(std::sync::PoisonError::into_inner) = k;
     }
 
     pub(crate) fn set_grants(&self, g: Arc<crate::grants::Grants>) {
@@ -643,6 +654,12 @@ impl GussetMcp {
 
     /// Stable agent name for the connection behind `ctx`.
     fn agent(&self, ctx: &RequestContext<RoleServer>) -> String {
+        // A request with an agent key is that agent, on every connection.
+        if let Some(k) =
+            ctx.extensions.get::<http::request::Parts>().and_then(|p| p.extensions.get::<crate::http::KeyedAgent>())
+        {
+            return k.0.clone();
+        }
         let client = ctx.client_info().map(|i| i.name).unwrap_or_default();
         let key = match self.transport {
             Transport::Stream => format!("conn:{}", self.instance),

@@ -495,3 +495,26 @@ fn imported_reference_mesh_is_drawn() {
     assert_eq!(names.len(), 1, "{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_agents_panel_creates_an_agent_key_and_shows_it_once() {
+    let mut a = app();
+    a.agents.show_panel = true;
+    a.agents.new_key_name = "cad-bot".into();
+    let mut h = harness(a);
+    h.run();
+    h.get_by_label("New key").click();
+    h.run();
+    let keys = h.state().agents.keys.list();
+    assert_eq!(keys.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(), ["cad-bot"]);
+    let (name, token) = h.state().agents.new_key_token.clone().unwrap();
+    assert_eq!(name, "cad-bot");
+    assert_eq!(h.state().agents.keys.check(token.as_bytes()).as_deref(), Some("key_cad-bot"));
+    h.get_by_label_contains("agent/key_cad-bot");
+    // An invalid name is refused with a notice.
+    h.state_mut().agents.new_key_name = "Bad Name".into();
+    h.run();
+    h.get_by_label("New key").click();
+    h.run();
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error), "{:?}", h.state().notice);
+}

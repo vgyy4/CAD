@@ -1033,3 +1033,89 @@ async fn a_call_past_its_deadline_is_stopped_with_a_clear_error() {
     server.set_request_deadline(gusset_mcp::server::DEFAULT_REQUEST_DEADLINE);
     ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
 }
+
+/// POSTs `body`; returns the status, the body and the `mcp-session-id` header.
+async fn raw_session(port: u16, headers: &[(&str, String)], body: &str) -> (u16, String, Option<String>) {
+    use http_body_util::{BodyExt, Full};
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let (mut tx, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream)).await.unwrap();
+    tokio::spawn(conn);
+    let mut b = hyper::Request::builder().method("POST").uri("/mcp");
+    for (k, v) in headers {
+        b = b.header(*k, v);
+    }
+    let resp = tx.send_request(b.body(Full::new(bytes::Bytes::from(body.to_string()))).unwrap()).await.unwrap();
+    let status = resp.status().as_u16();
+    let session = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(String::from);
+    let mut body = resp.into_body();
+    let mut s = String::new();
+    while let Some(Ok(f)) = body.frame().await {
+        if let Some(d) = f.data_ref() {
+            s.push_str(&String::from_utf8_lossy(d));
+        }
+        if s.contains("\"result\"") || s.contains("\"error\"") {
+            break;
+        }
+    }
+    (status, s, session)
+}
+
+/// Dogfooding F2-2: an agent with its own key is the same agent on every connection, so
+/// it continues on its own branch; removing the key or the kill switch refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_key_keeps_the_agent_and_its_branch_across_connections() {
+    let dir = tmpdir("agent-keys");
+    let server = McpServer::new(host());
+    let keys = server.agent_keys();
+    keys.load(&dir.join("agent-keys.json")).unwrap();
+    let key = keys.create("cad-bot", 1).unwrap();
+    let info =
+        server.start_http(HttpOptions { connection_dir: Some(dir.clone()), ..Default::default() }).await.unwrap();
+    let port = info.port;
+    let base = vec![
+        ("host", format!("127.0.0.1:{port}")),
+        ("content-type", "application/json".to_string()),
+        ("accept", "application/json, text/event-stream".to_string()),
+        ("authorization", format!("Bearer {key}")),
+    ];
+    let session = |v: f64| {
+        let base = base.clone();
+        async move {
+            let (s, body, id) = raw_session(port, &base, INIT).await;
+            assert_eq!(s, 200, "{body}");
+            let mut h = base.clone();
+            if let Some(id) = id {
+                h.push(("mcp-session-id", id));
+            }
+            let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+            raw_session(port, &h, note).await;
+            let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "param_set", "arguments": {"name": "w", "expr": format!("{v} mm")}}});
+            let (s, body, _) = raw_session(port, &h, &call.to_string()).await;
+            assert_eq!(s, 200, "{body}");
+            assert!(!body.contains("\"isError\":true"), "{body}");
+        }
+    };
+    session(1.0).await;
+    session(2.0).await;
+    let branches = server
+        .host()
+        .with_session(|s| s.history().branches().iter().map(|b| b.name.clone()).collect::<Vec<_>>())
+        .unwrap();
+    let agent: Vec<&String> = branches.iter().filter(|n| n.starts_with("agent/")).collect();
+    assert_eq!(agent, [&"agent/key_cad-bot".to_string()], "one agent, one branch: {branches:?}");
+    // Removed: refused. Kill switch: keys are refused too.
+    let init = |auth: String| {
+        let mut h = base.clone();
+        h.retain(|(k, _)| *k != "authorization");
+        h.push(("authorization", auth));
+        h
+    };
+    let other = keys.create("helper", 2).unwrap();
+    assert!(keys.remove("cad-bot").unwrap());
+    assert_eq!(raw_session(port, &init(format!("Bearer {key}")), INIT).await.0, 401);
+    server.revoke().unwrap();
+    assert_eq!(raw_session(port, &init(format!("Bearer {other}")), INIT).await.0, 401);
+    server.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+}

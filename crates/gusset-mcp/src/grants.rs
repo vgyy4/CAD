@@ -86,7 +86,7 @@ pub fn blanket_ok(command: &str) -> bool {
 fn valid(g: &Grant) -> bool {
     // The identity is stored as derived once from the agent name (`identity_of`); it is
     // not re-derived here, so a client named e.g. "gpt-5" keeps identity "gpt-5".
-    crate::agents::sanitize_client_name(&g.agent) == g.agent
+    (crate::agents::sanitize_client_name(&g.agent) == g.agent || crate::agent_keys::is_keyed_agent(&g.agent))
         && match &g.scope {
             GrantScope::Command(c) => gusset_commands::find(c).is_some_and(|s| !s.flags.user_only),
             GrantScope::All => true,

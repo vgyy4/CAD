@@ -253,11 +253,16 @@ fn header_eq_any(v: &str, allowed: &[String]) -> bool {
 }
 
 /// What a request that passed the pre-checks is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Route {
-    Mcp,
+    /// An MCP request; the agent name when it bore an agent key.
+    Mcp(Option<String>),
     Identity,
 }
+
+/// The agent an HTTP request's agent key names, in the request's extensions.
+#[derive(Debug, Clone)]
+pub(crate) struct KeyedAgent(pub(crate) String);
 
 /// The pre-checks; `Err` is the response to send instead.
 fn check(req: &Request<Incoming>, st: &State) -> Result<Route, Box<Response<Body>>> {
@@ -295,9 +300,16 @@ fn check(req: &Request<Incoming>, st: &State) -> Result<Route, Box<Response<Body
         (Some(a), None) => a.as_bytes(),
         _ => b"",
     };
+    // The shared token, or an agent key (ADR 0012 "Agent keys"); with the kill switch
+    // on there is no token and keys are refused too.
+    let mut keyed = None;
     let ok = match (token, presented.get(..7)) {
         (Some(t), Some(scheme)) if scheme.eq_ignore_ascii_case(b"bearer ") => {
-            ct_eq(presented.get(7..).unwrap_or_default(), t.0.as_bytes())
+            let bearer = presented.get(7..).unwrap_or_default();
+            ct_eq(bearer, t.0.as_bytes()) || {
+                keyed = st.shared.keys().check(bearer);
+                keyed.is_some()
+            }
         }
         _ => false,
     };
@@ -315,7 +327,7 @@ fn check(req: &Request<Incoming>, st: &State) -> Result<Route, Box<Response<Body
     if len > st.options.max_body_bytes as u64 {
         return Err(Box::new(plain(StatusCode::PAYLOAD_TOO_LARGE, "Payload Too Large")));
     }
-    Ok(Route::Mcp)
+    Ok(Route::Mcp(keyed))
 }
 
 fn nonce_of(req: &Request<Incoming>) -> Option<String> {
@@ -351,7 +363,7 @@ fn identity(req: &Request<Incoming>, st: &State) -> Response<Body> {
 }
 
 async fn handle(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     st: Arc<State>,
     rate: Arc<Mutex<RateWindow>>,
 ) -> Result<Response<Body>, Infallible> {
@@ -371,8 +383,12 @@ async fn handle(
         r.headers_mut().insert(http::header::RETRY_AFTER, http::HeaderValue::from_static("1"));
         return Ok(r);
     }
-    if route == Route::Identity {
-        return Ok(identity(&req, &st));
+    match &route {
+        Route::Identity => return Ok(identity(&req, &st)),
+        Route::Mcp(Some(agent)) => {
+            req.extensions_mut().insert(KeyedAgent(agent.clone()));
+        }
+        Route::Mcp(None) => {}
     }
     let nonce = nonce_of(&req);
     let session = req.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(String::from);
