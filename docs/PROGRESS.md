@@ -115,6 +115,9 @@ Phase 3 has started (see Next).
      only link into the kernel worker. Pilots done (gp subset, ElCLib, BSplCLib curve
      evaluation); now translating TKMath package by package with Codex (GPT-6 Luna,
      high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md.
+     2026-10-14: Codex reached its usage limit (until 2026-10-24) and Gemini CLI still
+     refuses the account's tier, so math (linear algebra) and gp 3D continue with Sonnet
+     subagents under the same judge rules; Codex takes the simple packages again after.
    - v0.3: joints (ADR 0026, after research on Fusion, Onshape, SolidWorks, FreeCAD):
      phase 1 done: `joint` feature (rigid, revolute, slider, cylindrical, pin_slot, planar,
      ball) placing a body (and carried bodies) frame-to-frame; frames on planar faces,
@@ -122,8 +125,9 @@ Phase 3 has started (see Next).
      planes and the origin; flip, offset, limits; values are expressions so parameters
      drive motion; `feature.joint` command (GUI/CLI/MCP), grammar docs, mock and OCCT tests
      (shaft in a bore); `query.joints` (values, limits, DOF left, status, unplaced bodies),
-     the ASSEMBLE ribbon group and a Joints browser category. Next: phase 2 (components from other documents, loops,
-     interference, BOM, motion study, gear/rack/screw relations), a joint form with frame
+     the ASSEMBLE ribbon group and a Joints browser category; `query.interference` and
+     `study.motion` (phase 2 part, OCCT test). Next: phase 2 (components from other documents, loops,
+     BOM, gear/rack/screw relations), a joint form with frame
      picking in the viewport, branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,

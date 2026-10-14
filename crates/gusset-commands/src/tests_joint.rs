@@ -57,3 +57,44 @@ fn a_slider_joint_places_the_block_and_query_joints_reports_it() {
     let q = run(&mut s, "query.joints", json!({}));
     assert_ne!(q["joints"][0]["status"]["state"], "ok", "{q}");
 }
+
+#[test]
+fn interference_and_a_motion_study() {
+    let mut s = session();
+    plate_and_block(&mut s);
+    // Apart: nothing to report.
+    let q = run(&mut s, "query.interference", json!({}));
+    assert_eq!(q["checked"], 2, "{q}");
+    assert_eq!(q["interference"], json!([]), "{q}");
+    run(
+        &mut s,
+        "feature.joint",
+        json!({"type": "slider", "body": "Block", "at": "Extrude2/cap(start)", "to": "Extrude1/cap(end)",
+               "distance": "slide", "distance_limits": ["0 mm", "10 mm"]}),
+    );
+    let before = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    let m = run(
+        &mut s,
+        "study.motion",
+        json!({"parameter": "slide", "from": "0 mm", "to": "1 cm", "steps": 3, "bodies": ["Block"]}),
+    );
+    let steps = m["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3, "{m}");
+    let z: Vec<f64> = steps.iter().map(|f| f["bodies"][0]["centroid_mm"][2].as_f64().unwrap()).collect();
+    // Without flip the block's outward bottom normal turns to the plate's top normal, so
+    // it hangs into the plate (z 5..10) and slides up 0, 5 and 10 mm.
+    assert!(z.iter().zip([7.5, 12.5, 17.5]).all(|(a, b)| (a - b).abs() < 1e-9), "{z:?}");
+    assert_eq!(steps[1]["value"], "5 mm", "{m}");
+    assert!(steps.iter().all(|f| f["errors"] == json!([])), "{m}");
+    // The document did not change.
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap().to_text(), before);
+    // Past the limits the step reports the joint's error.
+    let m = run(&mut s, "study.motion", json!({"parameter": "slide", "from": "10 mm", "to": "20 mm", "steps": 2}));
+    assert!(m["steps"][1]["errors"][0].as_str().unwrap().contains("limits"), "{m}");
+    for bad in [
+        json!({"parameter": "nope", "from": "0", "to": "1"}),
+        json!({"parameter": "slide", "from": "0 mm", "to": "1 mm", "steps": 1}),
+    ] {
+        assert!(execute(&mut s, &CmdCtx::user(1), "study.motion", bad).is_err());
+    }
+}

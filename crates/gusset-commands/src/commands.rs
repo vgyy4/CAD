@@ -16,6 +16,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod assembly;
 mod datum;
 mod generate;
 mod hole;
@@ -23,6 +24,7 @@ mod joint;
 mod ops;
 mod sketch_ops;
 mod sweep;
+pub use assembly::{QueryInterference, StudyMotion};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
@@ -39,6 +41,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(ops::specs());
     v.extend(datum::specs());
     v.extend(joint::specs());
+    v.extend(assembly::specs());
     v.extend(sketch_ops::specs());
     v
 }

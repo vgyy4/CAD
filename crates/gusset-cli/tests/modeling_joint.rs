@@ -79,3 +79,42 @@ fn a_cylindrical_joint_puts_the_shaft_on_the_bore_axis_and_slides_it() {
     assert!((vol(&ev, &r) - vol(&ev2, &r2)).abs() < 1e-6);
     assert!((vol(&ev, &r) - std::f64::consts::PI * 16.0 * 20.0).abs() < 1e-3);
 }
+
+/// A session on the plate-and-shaft document with the shaft's radius `r`.
+fn session(r: &str) -> gusset_commands::Session {
+    use gusset_commands::{CmdCtx, Session};
+    let text = PLATE_AND_SHAFT
+        .replace("p1 = point(-50, 7)\n  c2 = circle(p1, 4)", &format!("p1 = point(-50, 7)\n  c2 = circle(p1, {r})"));
+    let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    Session::new(&doc, k, &CmdCtx::user(0))
+}
+
+#[test]
+fn interference_counts_overlap_not_contact() {
+    use gusset_commands::{CmdCtx, execute};
+    use serde_json::json;
+    let u = CmdCtx::user(1);
+    // A shaft as wide as the bore touches it all round: no interference.
+    let mut s = session("4");
+    let q = execute(&mut s, &u, "query.interference", json!({})).unwrap();
+    assert_eq!(q["interference"], json!([]), "{q}");
+    // One 1 mm wider overlaps a ring of the plate: pi (5² - 4²) 6 mm³.
+    let mut s = session("5");
+    let q = execute(&mut s, &u, "query.interference", json!({})).unwrap();
+    let pairs = q["interference"].as_array().unwrap();
+    assert_eq!(pairs.len(), 1, "{q}");
+    let v = pairs[0]["volume_mm3"].as_f64().unwrap();
+    assert!((v - std::f64::consts::PI * 9.0 * 6.0).abs() < 1e-6, "{q}");
+    // Sliding the shaft out of the plate ends the interference.
+    let m = execute(
+        &mut s,
+        &u,
+        "study.motion",
+        json!({"parameter": "slide", "from": "0 mm", "to": "20 mm", "steps": 3, "interference": true}),
+    )
+    .unwrap();
+    let counts: Vec<usize> =
+        m["steps"].as_array().unwrap().iter().map(|f| f["interference"].as_array().unwrap().len()).collect();
+    assert_eq!(counts, [1, 1, 0], "{m}");
+}
