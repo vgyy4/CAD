@@ -130,6 +130,21 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
   exceptions never happen in the reference binary; where OCCT's behaviour is undefined
   the port returns `Err`.
 
+## Package 4 (2026-10-14): `gp` 3D algebra and transforms
+- Scope: gp_XYZ, Pnt, Vec, Dir, Ax1, Ax2, Ax3, Mat, Trsf, GTrsf, Quaternion with NLerp/SLerp,
+  EulerSequence, TrsfForm and the constants (~4,300 Rust lines). Sonnet subagent.
+- Judge first: the earlier oracle used fixed inputs for most families and the judge
+  expected "throws" where OCCT, built without exception checks, returns garbage. The
+  rewrite prints every input (a schema per family, checked by the oracle), 16 distinct
+  random lines per family with parallel, opposite, singular and left-handed edge cases, and
+  an `unchecked` marker where OCCT's result is unspecified (the port must return `Err`).
+- Rust has no overloading: each C++ overload got its own name (`set_linear_form_2`,
+  `translate_points`, `set_rotation_quaternion`, `from_point_standard`...). The translator
+  stopped twice on judge problems instead of working around them (arity overloads, and
+  the `gp_Ax2(P, gp_Dir::D)` enum overload, whose signed zeros differ from `(P, gp_Dir)`).
+- Result: 2,425 lines, 45,889 values, 44,850 bit-identical, worst 39 ulps on sin/cos paths
+  (within 8 ulps of the line's largest value).
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),

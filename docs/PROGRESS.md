@@ -113,7 +113,7 @@ Phase 3 has started (see Next).
      bindings, not ports (LGPL / AGPL); pilot translation of `gp` + `ElCLib` by Codex,
      judged bit for bit against the C++ original by oracle programs; the LGPL port may
      only link into the kernel worker. Pilots done (gp subset, ElCLib, BSplCLib curve
-     evaluation); now translating TKMath package by package with Codex (GPT-6 Luna,
+     evaluation), math linear algebra, gp 3D; now translating TKMath package by package with Codex (GPT-6 Luna,
      high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md.
      2026-10-14: Codex reached its usage limit (until 2026-10-24) and Gemini CLI still
      refuses the account's tier, so math (linear algebra) and gp 3D continue with Sonnet

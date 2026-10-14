@@ -4,10 +4,10 @@
 use crate::gp::{self, Circ, Elips, Hypr, Lin, Parab, Pnt, Vec, XYZ};
 use std::f64::consts::PI;
 fn form(a: f64, x: XYZ, b: f64, y: XYZ, loc: XYZ) -> XYZ {
-    XYZ { x: a * x.x() + b * y.x() + loc.x(), y: a * x.y() + b * y.y() + loc.y(), z: a * x.z() + b * y.z() + loc.z() }
+    XYZ::new(a * x.x() + b * y.x() + loc.x(), a * x.y() + b * y.y() + loc.y(), a * x.z() + b * y.z() + loc.z())
 }
 fn form0(a: f64, x: XYZ, b: f64, y: XYZ) -> XYZ {
-    XYZ { x: a * x.x() + b * y.x(), y: a * x.y() + b * y.y(), z: a * x.z() + b * y.z() }
+    XYZ::new(a * x.x() + b * y.x(), a * x.y() + b * y.y(), a * x.z() + b * y.z())
 }
 // ElCLib::LineD1
 pub fn d1_lin(u: f64, l: &Lin) -> (Pnt, Vec) {
@@ -44,7 +44,7 @@ pub fn d3_hypr(u: f64, c: &Hypr) -> (Pnt, Vec, Vec, Vec) {
     let (x, y) = (c.a.x.0, c.a.y.0);
     let v = form0(b * c.major, x, a * c.minor, y);
     let q = form0(a * c.major, x, b * c.minor, y);
-    (gp::point(q.add(c.a.loc.0)), gp::vector(v), gp::vector(q), gp::vector(v))
+    (gp::point(q.added(&c.a.loc.0)), gp::vector(v), gp::vector(q), gp::vector(v))
 }
 // ElCLib::ParabolaD2
 pub fn d2_parab(u: f64, c: &Parab) -> (Pnt, Vec, Vec) {
@@ -59,7 +59,7 @@ pub fn d2_parab(u: f64, c: &Parab) -> (Pnt, Vec, Vec) {
         (
             gp::point(form(u * u / (4. * c.f), x, u, y, p)),
             gp::vector(form0(u / (2. * c.f), x, 1., y)),
-            gp::vector(x.scale(1. / (2. * c.f))),
+            gp::vector(x.multiplied(1. / (2. * c.f))),
         )
     }
 }
@@ -132,7 +132,7 @@ pub fn dn_parab(u: f64, c: &Parab, n: i32) -> Vec {
     if c.f.abs() <= f64::MIN_POSITIVE {
         return gp::vector(gp::xyz(0., 0., 0.));
     }
-    gp::vector(c.a.x.0.scale(1. / (2. * c.f)))
+    gp::vector(c.a.x.0.multiplied(1. / (2. * c.f)))
 }
 // ElCLib::LineParameter
 pub fn parameter_lin(l: &Lin, p: &Pnt) -> f64 {
@@ -146,12 +146,12 @@ pub fn parameter_circ(c: &Circ, p: &Pnt) -> f64 {
     let o = c.a.loc.0;
     let q = p.0;
     let v = gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z());
-    if v.dot(v) < f64::MIN_POSITIVE {
+    if v.dot(&v) < f64::MIN_POSITIVE {
         return 0.;
     }
     let n = c.a.dir.0;
-    let proj = n.cross(v.cross(n));
-    if proj.dot(proj) < f64::MIN_POSITIVE {
+    let proj = n.crossed(&v.crossed(&n));
+    if proj.dot(&proj) < f64::MIN_POSITIVE {
         return 0.;
     }
     let mut t = angle_with_ref(c.a.x.0, dir_coords(proj), n);
@@ -165,12 +165,12 @@ pub fn parameter_elips(c: &Elips, p: &Pnt) -> f64 {
     let op = gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z());
     let x = c.a.x.0;
     let y = c.a.y.0;
-    let ny = op.dot(y);
-    let nx = op.dot(x);
+    let ny = op.dot(&y);
+    let nx = op.dot(&x);
     if nx.abs() <= f64::MIN_POSITIVE && ny.abs() <= f64::MIN_POSITIVE {
         return 0.;
     }
-    let om = x.scale(nx).add(y.scale(ny * (c.major / c.minor)));
+    let om = x.multiplied(nx).added(&y.multiplied(ny * (c.major / c.minor)));
     let mut t = angle_with_ref(dir_coords(x), dir_coords(om), dir_coords(c.a.dir.0));
     normalize(&mut t);
     t
@@ -179,13 +179,13 @@ pub fn parameter_elips(c: &Elips, p: &Pnt) -> f64 {
 pub fn parameter_hypr(c: &Hypr, p: &Pnt) -> f64 {
     let q = p.0;
     let o = c.a.loc.0;
-    libm::asinh((gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z()).dot(c.a.y.0)) / c.minor)
+    libm::asinh((gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z()).dot(&c.a.y.0)) / c.minor)
 }
 // ElCLib::ParabolaParameter
 pub fn parameter_parab(c: &Parab, p: &Pnt) -> f64 {
     let q = p.0;
     let o = c.a.loc.0;
-    gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z()).dot(c.a.y.0)
+    gp::xyz(q.x() - o.x(), q.y() - o.y(), q.z() - o.z()).dot(&c.a.y.0)
 }
 /// The coordinates `gp_Dir(x, y, z)` stores: unchanged when already of unit length (within
 /// gp::Resolution), else divided by the length. Callers checked the length is not zero.
@@ -202,8 +202,8 @@ fn dir_coords(v: XYZ) -> XYZ {
 
 // gp_Dir::AngleWithRef (`a`, `other` and `vref` are unit directions)
 fn angle_with_ref(a: XYZ, other: XYZ, vref: XYZ) -> f64 {
-    let c = a.cross(other);
-    let cosinus = a.dot(other);
+    let c = a.crossed(&other);
+    let cosinus = a.dot(&other);
     let sinus = (c.x() * c.x() + c.y() * c.y() + c.z() * c.z()).sqrt();
     let ang = if cosinus > -0.70710678118655 && cosinus < 0.70710678118655 {
         libm::acos(cosinus)
@@ -212,7 +212,7 @@ fn angle_with_ref(a: XYZ, other: XYZ, vref: XYZ) -> f64 {
     } else {
         libm::asin(sinus)
     };
-    if c.dot(vref) >= 0.0 { ang } else { -ang }
+    if c.dot(&vref) >= 0.0 { ang } else { -ang }
 }
 
 // normalizeAngle (ElCLib.cxx)
