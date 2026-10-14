@@ -3,7 +3,6 @@
 
 use crate::frame::{REQUEST_MAGIC, RESPONSE_MAGIC, read_frame, write_frame};
 use crate::proto::{Fault, Reply, Request, VERSION};
-#[cfg(not(feature = "fault-injection"))]
 use gusset_kernel::KernelErrorKind;
 use gusset_kernel::wire::{NoShapes, ShapeRefs, WireError};
 use gusset_kernel::{Kernel, KernelError, Shape};
