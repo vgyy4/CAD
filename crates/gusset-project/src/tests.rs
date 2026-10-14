@@ -633,3 +633,42 @@ fn history_overhead_budget() {
     assert!(per_edit <= 450.0, "a parameter edit added {per_edit:.0} bytes");
     assert!(overhead <= 0.35, "100 edits added {:.1} % of the parametric size", overhead * 100.0);
 }
+
+#[test]
+fn saves_written_off_the_model_thread_keep_order_and_newer_recovery() {
+    let t = Tmp::new("async-save");
+    let file = t.0.join("part.gus");
+    let u = Ctx::user(10);
+    let mut h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&file, &h).unwrap();
+    // Two saves prepared in turn and written in reverse: the older one is skipped.
+    let main = h.main();
+    h.commit(&u, main, &doc("3 mm"), "a=3", NodeState::Ok).unwrap();
+    let older = p.prepare_save(&h).unwrap();
+    h.commit(&u, main, &doc("4 mm"), "a=4", NodeState::Ok).unwrap();
+    let newer = p.prepare_save(&h).unwrap();
+    assert!(std::thread::spawn(move || newer.write()).join().unwrap().unwrap());
+    assert!(!older.write().unwrap(), "an older save never replaces a newer file");
+    // An edit after a save was prepared: its recovery copy outlives that save.
+    let save = p.prepare_save(&h).unwrap();
+    h.commit(&u, main, &doc("5 mm"), "a=5", NodeState::Ok).unwrap();
+    p.prepare_snapshot(&h).unwrap().write().unwrap();
+    assert!(save.write().unwrap());
+    assert!(p.recovery_path().exists(), "the newer recovery copy stays");
+    p.release();
+    let (p, h2, rep) = Project::open(&file, t.dirs()).unwrap();
+    assert_eq!(h2.head_document(h2.main()).unwrap(), doc("4 mm"), "the file holds the save");
+    let OpenReport::RecoveryAvailable { recovered, .. } = rep else { panic!("recovery not offered: {rep:?}") };
+    assert_eq!(recovered.head_document(recovered.main()).unwrap(), doc("5 mm"));
+    p.release();
+    // A recovery copy older than a save is removed by it.
+    let (mut p, h3, _) = Project::open(&file, t.dirs()).unwrap();
+    p.prepare_snapshot(&h3).unwrap().write().unwrap();
+    p.prepare_save(&h3).unwrap().write().unwrap();
+    assert!(!p.recovery_path().exists());
+    // A save still pending when the project closes fails instead of landing unlocked.
+    let late = p.prepare_save(&h3).unwrap();
+    p.close();
+    assert!(late.write().is_err());
+}

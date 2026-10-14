@@ -141,8 +141,7 @@ Phase 3 has started (see Next).
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
-2. Post-MVP leftovers: project saves off the model thread (recovery snapshots are
-   done, M3), fault-injection storage tests (M14), per-agent credentials for grants
+2. Post-MVP leftovers: fault-injection storage tests (M14), per-agent credentials for grants
    and reconnect to an agent's own branch (F2-2).
 3. Release: v0.1.0-mvp is published (pre-release, tag at e3ee7e0, run 38271195031):
    AppImage/deb/tar.gz for Linux x64+arm64, MSI/zip for Windows x64+arm64, dmg for

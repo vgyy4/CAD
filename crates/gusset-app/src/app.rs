@@ -26,7 +26,7 @@ use gusset_history::{Actor, History, NodeId};
 use gusset_host::{Host, HostEvent, HostHandle};
 use gusset_kernel::{Kernel, KernelErrorKind, TessellationParams};
 use gusset_project::settings::{SaveAction, SaveScheduler, Settings};
-use gusset_project::{OpenReport, PendingRecovery, Project, SnapshotWrite};
+use gusset_project::{OpenReport, PendingRecovery, Project, SaveWrite, SnapshotWrite};
 use gusset_store::paths::DataDirs;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -167,6 +167,12 @@ pub(crate) enum Done {
     },
     /// A recovery snapshot encoded on the model thread, to be written off it (M3).
     RecoveryPrepared(Result<Option<SnapshotWrite>, String>, u64),
+    /// A save encoded on the model thread, to be written off it.
+    SavePrepared {
+        result: Result<SaveWrite, String>,
+        then: AfterSave,
+        mark: u64,
+    },
     /// A recovery write finished; the second field is the scheduler mark it covers.
     Recovery(Result<Option<u64>, String>, u64),
     /// A project file read on a background thread (`discard`: the user chose not to keep
@@ -564,14 +570,18 @@ impl App {
                             self.after_save = Some(p);
                         }
                     }
-                    Err(e) => {
-                        if let AfterSave::Then(pending) = then {
-                            self.dialog = Some(Dialog::Unsaved { pending, save_failed: Some(e.clone()) });
-                        }
-                        self.notice = Some(Notice { text: e, hint: None, error: true });
-                    }
+                    Err(e) => self.save_failed(e, Some(then)),
                 }
             }
+            Done::SavePrepared { result, then, mark } => match result {
+                Ok(w) => self.write_save(w, then, mark),
+                Err(e) => {
+                    if let AfterSave::Then(pending) = then {
+                        self.dialog = Some(Dialog::Unsaved { pending, save_failed: Some(e.clone()) });
+                    }
+                    self.notice = Some(Notice { text: e, hint: None, error: true });
+                }
+            },
             Done::SavedAs { path, text, result } => {
                 self.stale = true;
                 match result {
@@ -823,16 +833,46 @@ impl App {
         }
         self.notice = Some(Notice { text: "Saving…".into(), hint: None, error: false });
         let mark = self.save.mark();
+        // Only the encoding runs on the model thread; the durable write runs on its own
+        // thread, so edits are not held up (post-MVP item M3, saves).
         self.submit(
             |s, p| {
                 let p = p.ok_or("No data folder: cannot save")?;
-                p.save(s.history()).map_err(|e| e.to_string())?;
+                let w = p.prepare_save(s.history()).map_err(|e| e.to_string())?;
+                // Edits from now on mark it dirty again; a failed write restores it.
                 s.dirty = false;
-                Ok(())
+                Ok(w)
             },
-            move |r| Done::Saved { result: r.map_err(|e| e.message).and_then(|x: Result<(), String>| x), then, mark },
+            move |r| Done::SavePrepared {
+                result: r.map_err(|e| e.message).and_then(|x: Result<SaveWrite, String>| x),
+                then,
+                mark,
+            },
         );
         true
+    }
+
+    /// Writes a prepared save on its own thread; the result arrives as [`Done::Saved`].
+    fn write_save(&mut self, w: SaveWrite, then: AfterSave, mark: u64) {
+        let (tx, waker) = (self.done_tx.clone(), self.waker.clone());
+        let spawned = std::thread::Builder::new().name("gusset-save".into()).spawn(move || {
+            let result = w.write().map(|_| ()).map_err(|e| e.to_string());
+            let _ = tx.send(Done::Saved { result, then, mark });
+            waker.wake();
+        });
+        match spawned {
+            Ok(_) => self.in_flight += 1,
+            Err(e) => self.save_failed(e.to_string(), None),
+        }
+    }
+
+    /// A save did not reach the disk: the project is unsaved again.
+    fn save_failed(&mut self, e: String, then: Option<AfterSave>) {
+        self.submit(|s, _| s.dirty = true, |_| Done::Refresh(Ok(())));
+        if let Some(AfterSave::Then(pending)) = then {
+            self.dialog = Some(Dialog::Unsaved { pending, save_failed: Some(e.clone()) });
+        }
+        self.notice = Some(Notice { text: e, hint: None, error: true });
     }
 
     /// Starts "Save As" to `path`; a failure re-opens the path dialog with the error.

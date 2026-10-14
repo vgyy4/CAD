@@ -296,6 +296,9 @@ pub struct Project {
     records: RecordCache,
     /// Orders recovery-copy writes made on other threads (see [`SnapshotWrite`]).
     gate: WriteGate,
+    /// Saves prepared so far, and the newest one written (see [`SaveWrite`]).
+    saves_prepared: u64,
+    saves_written: WriteGate,
 }
 
 /// The generation of the newest recovery-copy state: bumped by every prepared snapshot
@@ -336,6 +339,58 @@ impl SnapshotWrite {
     }
 }
 
+/// `saves_written` once the project is gone.
+const CLOSED: u64 = u64::MAX;
+
+/// A project save encoded on the model thread, to be written on another thread. Saves
+/// are written in the order they were prepared: one superseded by a newer save already
+/// written is skipped, so an older state never replaces a newer file.
+#[derive(Debug)]
+#[must_use = "a prepared save does nothing until written"]
+pub struct SaveWrite {
+    bytes: Vec<u8>,
+    path: PathBuf,
+    dirs: DataDirs,
+    id: ProjectId,
+    generation: u64,
+    written: WriteGate,
+    /// The recovery-snapshot generation when the save was prepared.
+    snapshot_generation: u64,
+    snapshots: WriteGate,
+}
+
+impl SaveWrite {
+    /// Writes the file durably (keeping a last-known-good copy) unless a newer save was
+    /// already written (then `Ok(false)`).
+    ///
+    /// # Errors
+    /// The write failed: the file on disk is unchanged.
+    pub fn write(self) -> Result<bool, ProjectError> {
+        let mut written = lock_gate(&self.written);
+        if *written == CLOSED {
+            return Err(ProjectError::Write("the project was closed before the save was written".into()));
+        }
+        if *written > self.generation {
+            return Ok(false);
+        }
+        let fs = RealFs::default();
+        let lkg = self.dirs.lkg_file(&self.id);
+        durable::save_project_with(&fs, &self.path, &fs, Some(&lkg), &self.bytes, &container::verify_framing)
+            .map_err(|e| ProjectError::Write(e.to_string()))?;
+        *written = self.generation;
+        let _ = housekeeping::register(&self.dirs, self.id, &self.path);
+        // The file now holds everything up to the save's preparation. A recovery copy
+        // prepared after it holds later edits and stays; otherwise it is obsolete, and
+        // so are snapshots still waiting to be written.
+        let mut snapshots = lock_gate(&self.snapshots);
+        if *snapshots == self.snapshot_generation {
+            *snapshots += 1;
+            let _ = recovery::remove(&fs, &self.dirs.recovery_file(&self.id));
+        }
+        Ok(true)
+    }
+}
+
 /// The retention part of history GC (ADR 0006), run when a project is opened: purges
 /// "Recently deleted" branches past their retention and what only they referenced, and
 /// keeps the history below its save limits. Never prunes live iterations.
@@ -370,6 +425,8 @@ impl Project {
             overrides: ProjectSettings::default(),
             records: RecordCache::new(),
             gate: WriteGate::default(),
+            saves_prepared: 0,
+            saves_written: WriteGate::default(),
         };
         p.lock()?;
         Ok(p)
@@ -416,6 +473,8 @@ impl Project {
                     overrides,
                     records,
                     gate: WriteGate::default(),
+                    saves_prepared: 0,
+                    saves_written: WriteGate::default(),
                 };
                 let copy_of = p.copy_of(path);
                 if copy_of.is_some() {
@@ -460,6 +519,8 @@ impl Project {
                             overrides: ProjectSettings::default(),
                             records: RecordCache::new(),
                             gate: WriteGate::default(),
+                            saves_prepared: 0,
+                            saves_written: WriteGate::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::RecoverySnapshot }));
@@ -479,6 +540,8 @@ impl Project {
                             overrides: ProjectSettings::default(),
                             records: RecordCache::new(),
                             gate: WriteGate::default(),
+                            saves_prepared: 0,
+                            saves_written: WriteGate::default(),
                         };
                         p.lock()?;
                         return Ok((p, h, OpenReport::Damaged { reason, source: DamageSource::LastKnownGood }));
@@ -607,21 +670,38 @@ impl Project {
     }
 
     fn save_to(&mut self, path: &Path, history: &History) -> Result<(), ProjectError> {
+        self.prepare_save_to(path, history)?.write().map(|_| ())
+    }
+
+    /// Encodes a save to the current path; write it with [`SaveWrite::write`], on any
+    /// thread, so the disk write does not hold up edits. The save sequence number is
+    /// taken now: recovery snapshots prepared after this one count as newer than it.
+    ///
+    /// # Errors
+    /// The project has no file yet, or encoding failed.
+    pub fn prepare_save(&mut self, history: &History) -> Result<SaveWrite, ProjectError> {
+        let path =
+            self.path.clone().ok_or_else(|| ProjectError::Write("the project has no file yet; use Save As".into()))?;
+        self.prepare_save_to(&path, history)
+    }
+
+    fn prepare_save_to(&mut self, path: &Path, history: &History) -> Result<SaveWrite, ProjectError> {
         let mut meta = self.meta.clone();
         meta.save_seq += 1;
         meta.base_seq = meta.save_seq;
         let bytes = encode_with(history, &meta, None, &self.overrides, &mut self.records)?;
-        let fs = RealFs::default();
-        let lkg = self.dirs.lkg_file(&self.meta.id);
-        durable::save_project_with(&fs, path, &fs, Some(&lkg), &bytes, &container::verify_framing)
-            .map_err(|e| ProjectError::Write(e.to_string()))?;
         self.meta = meta;
-        let _ = housekeeping::register(&self.dirs, self.meta.id, path);
-        // The project file now holds everything: the recovery file is obsolete, and so
-        // are snapshots still waiting to be written.
-        let _gate = self.supersede_snapshots();
-        let _ = recovery::remove(&fs, &self.recovery_path());
-        Ok(())
+        self.saves_prepared += 1;
+        Ok(SaveWrite {
+            bytes,
+            path: path.to_path_buf(),
+            dirs: self.dirs.clone(),
+            id: self.meta.id,
+            generation: self.saves_prepared,
+            written: Arc::clone(&self.saves_written),
+            snapshot_generation: *lock_gate(&self.gate),
+            snapshots: Arc::clone(&self.gate),
+        })
     }
 
     /// Makes every prepared snapshot obsolete; waits for a write in progress. Hold the
@@ -692,6 +772,8 @@ impl Drop for Project {
     /// gone (security review V7). Waits for a write in progress.
     fn drop(&mut self) {
         drop(self.supersede_snapshots());
+        // Nor saves: waits for one in progress; later ones fail (never land unlocked).
+        *lock_gate(&self.saves_written) = CLOSED;
     }
 }
 
@@ -793,6 +875,8 @@ impl Project {
             overrides,
             records: RecordCache::new(),
             gate: WriteGate::default(),
+            saves_prepared: 0,
+            saves_written: WriteGate::default(),
         };
         p.lock()?;
         retention_gc(&mut history, &p.settings());
