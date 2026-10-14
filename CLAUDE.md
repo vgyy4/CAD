@@ -33,6 +33,9 @@ Without `GUSSET_OCCT_DIR` everything else builds and tests against `MockKernel`.
   attribution lines.
 - Before merging: `cargo build`, `cargo test`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo fmt --check`. With OCCT available, also clippy/test the OCCT crates (cfg-gated code).
+  `fuzz/` is its own workspace with its own `Cargo.lock`: when internal dependencies change,
+  refresh it (`cargo metadata --manifest-path fuzz/Cargo.toml`) and commit both lockfiles
+  (CI builds with `--locked`).
 - Workspace lints forbid `unsafe` except in listed FFI crates (ADR 0008); `unwrap/expect/
   indexing` are linted — use `.get()`/slice patterns.
 - Internal deps go through `[workspace.dependencies]` with path + version (cargo-deny).
