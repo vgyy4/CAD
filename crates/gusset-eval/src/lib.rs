@@ -86,7 +86,7 @@ pub enum FeatureStatus {
 }
 
 /// Supplies imported blobs (kernel-native B-rep bytes) by hash.
-pub trait BlobSource {
+pub trait BlobSource: Sync {
     fn blob(&self, hash_hex: &str) -> Option<Arc<[u8]>>;
 }
 
@@ -303,6 +303,10 @@ pub struct Evaluator {
     limits: EvalLimits,
     cancel: Arc<AtomicBool>,
     progress: ProgressCell,
+    /// Features built at the same time (ADR 0024 §3); 1 = sequential.
+    parallel: usize,
+    /// Features built ahead of their turn, over the evaluator's life (tests, diagnostics).
+    speculated: usize,
     /// Kernel epoch the cached states belong to.
     epoch: u64,
     /// Features that crashed the kernel, by step key (the feature and everything before
@@ -321,6 +325,7 @@ const CRASH_HINT: &str = "the rest of the model is rebuilt without it; change th
 
 impl Evaluator {
     pub fn new(kernel: Arc<dyn Kernel>) -> Self {
+        let parallel = kernel.parallelism().max(1);
         Evaluator {
             kernel,
             cache: HashMap::new(),
@@ -333,6 +338,8 @@ impl Evaluator {
             limits: EvalLimits::default(),
             cancel: Arc::new(AtomicBool::new(false)),
             progress: ProgressCell::default(),
+            parallel,
+            speculated: 0,
             epoch: 0,
             crashes: VecDeque::new(),
         }
@@ -372,6 +379,65 @@ impl Evaluator {
     #[must_use]
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
         self.cancel.clone()
+    }
+
+    /// Builds up to `n` independent features at the same time (ADR 0024 §3). Worth it only
+    /// with a kernel whose calls run in parallel (a pool of kernel workers); results are
+    /// the same as building them one after the other.
+    pub fn set_parallel(&mut self, n: usize) {
+        self.parallel = n.max(1);
+    }
+
+    /// Features built ahead of their turn so far.
+    #[must_use]
+    pub fn speculated(&self) -> usize {
+        self.speculated
+    }
+
+    /// Later features that can be built now, next to feature `i`, on the state before `i`:
+    /// they depend only on features before `i` and on sketches or planes after it that
+    /// themselves depend only on features before `i` (built first on the same thread; they
+    /// are cheap), and nothing of them is cached yet. Each is `(feature, sketches/planes)`.
+    fn speculation_candidates(
+        &self,
+        doc: &Document,
+        i: usize,
+        rollback: Option<usize>,
+        graph: &deps::Graph,
+        dep_keys: &[[u8; 32]],
+    ) -> Vec<(usize, Vec<usize>)> {
+        const WINDOW: usize = 64;
+        let mut out = Vec::new();
+        // Next to a sketch or plane there is nothing to overlap with: this thread would
+        // only wait for the others.
+        let light =
+            doc.features.get(i).is_none_or(|f| matches!(f.kind, FeatureKind::Sketch(_) | FeatureKind::Plane(_)));
+        if self.parallel < 2 || light {
+            return out;
+        }
+        let end = doc.features.len().min(i + 1 + WINDOW).min(rollback.unwrap_or(usize::MAX));
+        for j in i + 1..end {
+            if out.len() + 1 >= self.parallel {
+                break;
+            }
+            let (Some(f), Some(deps), Some(key)) = (doc.features.get(j), graph.deps.get(j), dep_keys.get(j)) else {
+                break;
+            };
+            let cheap = |k: usize| {
+                doc.features.get(k).is_some_and(|g| matches!(g.kind, FeatureKind::Sketch(_) | FeatureKind::Plane(_)))
+            };
+            let mut pre = Vec::new();
+            let mut ok = !cheap(j) && !f.suppressed;
+            for &d in deps.iter().filter(|&&d| d >= i) {
+                let d_ok = d > i && cheap(d) && graph.deps.get(d).is_some_and(|dd| dd.iter().all(|&x| x < i));
+                ok &= d_ok;
+                pre.push(d);
+            }
+            if ok && !self.cache.contains_key(key) && !self.crashes.iter().any(|(k, _)| k == key) {
+                out.push((j, pre));
+            }
+        }
+        out
     }
 
     /// The progress of the running evaluation, for display from another thread.
@@ -577,6 +643,9 @@ impl Evaluator {
             let deps = graph.deps.get(i).map_or(&[][..], Vec::as_slice);
             let dkey = dep_key(&units_key, f, &params, deps.iter().filter_map(|&d| dep_keys.get(d)));
             dep_keys.push(dkey);
+        }
+        for (i, f) in doc.features.iter().enumerate() {
+            let dkey = dep_keys.get(i).copied().unwrap_or_default();
             if rollback.is_some_and(|r| i >= r) {
                 rolled_back.push((f.name.clone(), FeatureStatus::RolledBack));
                 continue;
@@ -592,7 +661,7 @@ impl Evaluator {
             }
             let mut s = (*state).clone();
             if let Some(d) = self.lookup_delta(&dkey)
-                && d.replayable(&s.work)
+                && d.replayable(&s.work, &self.limits)
             {
                 d.replay(&mut s, &f.name);
                 let st = Arc::new(s);
@@ -607,11 +676,33 @@ impl Evaluator {
                 continue;
             }
             let epoch = self.kernel.epoch();
+            let mut ahead: Vec<(usize, State)> = Vec::new();
             if !self.is_cancelled() {
                 recomputed += 1;
                 let (index, total) = (i + 1, doc.features.len());
                 set_progress(&self.progress, Some(Progress { feature: f.name.clone(), index, total }));
-                self.apply(&mut s, f, doc.units, &params, blobs);
+                let candidates = if transient {
+                    Vec::new()
+                } else {
+                    self.speculation_candidates(doc, i, rollback, &graph, &dep_keys)
+                };
+                if candidates.is_empty() {
+                    self.apply(&mut s, f, doc.units, &params, blobs);
+                } else {
+                    ahead = self.build_ahead(&mut s, f, &state, &candidates, doc, &params, blobs);
+                }
+            }
+            // What was built ahead is kept as deltas, replayed when its turn comes; not
+            // after a crash or a cancel (its shapes may be gone or half made).
+            if !self.is_cancelled() && self.kernel.epoch() == epoch {
+                for (j, t) in ahead {
+                    if let (Some(fj), Some(key)) = (doc.features.get(j), dep_keys.get(j))
+                        && let Some(d) = delta::Delta::diff(&state, &t, &fj.name)
+                    {
+                        self.speculated += 1;
+                        self.remember_delta(*key, d);
+                    }
+                }
             }
             let crash_status = match s.statuses.newest() {
                 Some((n, FeatureStatus::Failed(e))) if n == f.name && e.code == ErrorCode::KernelCrashed => {
@@ -683,6 +774,50 @@ impl Evaluator {
             epoch: self.epoch,
         };
         (e, false)
+    }
+
+    /// Builds feature `f` into `s` on this thread, and the features `ahead` (indices into
+    /// `doc`) on the state `before` at the same time, each on its own thread and kernel
+    /// worker slot. Returns the states those produced.
+    #[allow(clippy::too_many_arguments)]
+    fn build_ahead(
+        &self,
+        s: &mut State,
+        f: &Feature,
+        before: &State,
+        ahead: &[(usize, Vec<usize>)],
+        doc: &Document,
+        params: &ParamValues,
+        blobs: &dyn BlobSource,
+    ) -> Vec<(usize, State)> {
+        let cancel = self.cancel.clone();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ahead
+                .iter()
+                .enumerate()
+                .filter_map(|(k, (j, pre))| {
+                    let j = *j;
+                    let fj = doc.features.get(j)?;
+                    let cancel = cancel.clone();
+                    let spawned =
+                        std::thread::Builder::new().name("gusset-eval-ahead".into()).spawn_scoped(scope, move || {
+                            gusset_kernel::cancel::scope(&cancel, || {
+                                gusset_kernel::slot::scope(k + 1, || {
+                                    let mut t = before.clone();
+                                    for p in pre.iter().filter_map(|&p| doc.features.get(p)) {
+                                        self.apply(&mut t, p, doc.units, params, blobs);
+                                    }
+                                    self.apply(&mut t, fj, doc.units, params, blobs);
+                                    (j, t)
+                                })
+                            })
+                        });
+                    spawned.ok()
+                })
+                .collect();
+            gusset_kernel::slot::scope(0, || self.apply(s, f, doc.units, params, blobs));
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
+        })
     }
 
     fn apply(&self, s: &mut State, f: &Feature, units: LengthUnit, params: &ParamValues, blobs: &dyn BlobSource) {

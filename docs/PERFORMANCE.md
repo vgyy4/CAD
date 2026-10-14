@@ -173,6 +173,12 @@ The process boundary costs 0-6 % on heavy operations (within run-to-run noise) a
 nothing measurable on edits; a worker starts in ~30 ms (`gusset build` of the bracket:
 62 ms in process, 90 ms with the worker).
 
+### 2026-10-14: parallel rebuild on a pool of kernel workers (ADR 0024)
+`perf_gear_pair_cold_rebuild_on_a_pool` (release, 4 vCPU): cold rebuild of a helical
+gear pair 6.2 s with one worker, 3.7 s with two or three (the slower gear alone takes
+3.7 s). Building ahead only next to heavy features: started next to a sketch, the main
+thread had nothing to overlap and simply waited (first attempt, no gain).
+
 ## History overhead (2026-10-11)
 
 Each history node used to store a snapshot object listing every feature hash, so a

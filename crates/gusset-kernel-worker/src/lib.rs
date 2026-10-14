@@ -5,7 +5,9 @@
 //! Use [`production_kernel`], or [`connector`] with [`RemoteKernel::new`].
 
 use gusset_kernel::Kernel;
-use gusset_kernel_remote::{Connect, Interrupt, NativeGate, RemoteKernel, StreamTransport, Transport, TransportError};
+use gusset_kernel_remote::{
+    Connect, Interrupt, NativeGate, PoolKernel, RemoteKernel, StreamTransport, Transport, TransportError,
+};
 use std::borrow::Cow;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -282,6 +284,15 @@ impl NativeGate for OcctGate {
     }
 }
 
+/// Kernel workers for parallel rebuilds (ADR 0024 §3): one per interactive thread (a
+/// rebuild is work the user waits for), each with at least 2 GiB of the memory budget,
+/// at most 4.
+fn pool_size(cpu: &gusset_hw::CpuInfo, budget: u64) -> usize {
+    let threads = gusset_hw::budgets::interactive_threads(cpu.logical_cores);
+    let by_memory = usize::try_from(budget / (2 << 30)).unwrap_or(1);
+    threads.min(by_memory).clamp(1, 4)
+}
+
 /// How long the first start of the worker may take before the app falls back.
 const PING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -304,9 +315,16 @@ pub fn production_kernel() -> Result<(Arc<dyn Kernel>, Option<String>), String> 
         match default_worker_path().filter(|p| p.is_file()) {
             None => "the kernel worker is not installed next to this program".to_owned(),
             Some(worker) => {
-                let ram = gusset_hw::CpuInfo::detect().total_ram_bytes;
-                let remote = RemoteKernel::new("occt", connector(worker, gusset_hw::budgets::kernel_worker_bytes(ram)))
-                    .with_native_gate(Box::new(OcctGate::next_to_exe()));
+                let cpu = gusset_hw::CpuInfo::detect();
+                let budget = gusset_hw::budgets::kernel_worker_bytes(cpu.total_ram_bytes);
+                let workers = pool_size(&cpu, budget);
+                // One gate for all workers: a shape one worker wrote may go to another.
+                let gate = Arc::new(OcctGate::next_to_exe());
+                let member = |memory: u64| {
+                    RemoteKernel::new("occt", connector(worker.clone(), memory))
+                        .with_native_gate(Box::new(gate.clone()))
+                };
+                let remote = member(budget / workers as u64);
                 // A worker that hangs on start must not hang the app: stop it after a while.
                 let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let timer = Arc::clone(&flag);
@@ -317,6 +335,12 @@ pub fn production_kernel() -> Result<(Arc<dyn Kernel>, Option<String>), String> 
                 let pinged = gusset_kernel::cancel::scope(&flag, || remote.ping());
                 flag.store(false, std::sync::atomic::Ordering::SeqCst);
                 match pinged {
+                    // The other workers start when first used.
+                    Ok(()) if workers > 1 => {
+                        let mut members = vec![remote];
+                        members.extend((1..workers).map(|_| member(budget / workers as u64)));
+                        return Ok((Arc::new(PoolKernel::new("occt", members)), None));
+                    }
                     Ok(()) => return Ok((Arc::new(remote), None)),
                     Err(e) => format!("the kernel worker did not start: {}", e.message),
                 }

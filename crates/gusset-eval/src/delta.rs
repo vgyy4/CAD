@@ -103,9 +103,16 @@ impl Delta {
     /// Whether replaying is equivalent to building the feature on a state whose work so
     /// far is `work`: the work limits (ADR 0020) see the same totals, or the feature
     /// charged nothing and did not fail on a limit.
-    pub(crate) fn replayable(&self, work: &Work) -> bool {
+    pub(crate) fn replayable(&self, work: &Work, limits: &crate::EvalLimits) -> bool {
+        if *work == self.work_before {
+            return true;
+        }
+        // The feature's own charge does not depend on the work before it (ADR 0020), only
+        // whether the totals stay within the limits: the same totals as building it here.
         let limit_failure = matches!(&self.status, FeatureStatus::Failed(e) if e.code == ErrorCode::TooComplex);
-        *work == self.work_before || (self.work_before == self.work_after && !limit_failure)
+        let faces = work.faces.saturating_add(self.work_after.faces.saturating_sub(self.work_before.faces));
+        let tools = work.tools.saturating_add(self.work_after.tools.saturating_sub(self.work_before.tools));
+        !limit_failure && faces <= limits.max_boolean_work && tools <= limits.max_tools
     }
 
     /// Applies the change to `s` (the state before feature `name`).

@@ -24,6 +24,18 @@ fn worker() -> Option<std::path::PathBuf> {
     w.is_file().then_some(w)
 }
 
+fn pool(workers: usize) -> Option<Arc<dyn gusset_kernel::Kernel>> {
+    let w = worker()?;
+    let gate = Arc::new(gusset_kernel_worker::OcctGate::next_to_exe());
+    let members = (0..workers)
+        .map(|_| {
+            gusset_kernel_remote::RemoteKernel::new("occt", gusset_kernel_worker::connector(w.clone(), 4 << 30))
+                .with_native_gate(Box::new(gate.clone()))
+        })
+        .collect();
+    Some(Arc::new(gusset_kernel_remote::PoolKernel::new("occt", members)))
+}
+
 fn session(in_worker: bool) -> Session {
     let kernel: Arc<dyn gusset_kernel::Kernel> = match worker().filter(|_| in_worker) {
         Some(w) => Arc::new(
@@ -58,5 +70,42 @@ fn perf_gears_report() {
         timed(&mut s, "feature.delete Gear2", "feature.delete", json!({"name": "Gear2"}));
         timed(&mut s, "history.undo", "history.undo", json!({}));
         timed(&mut s, "query.model after undo", "query.model", json!({}));
+    }
+}
+
+/// A cold rebuild of a helical gear pair (two independent sweeps) on one worker and on a
+/// pool of workers (ADR 0024 §3).
+#[test]
+#[ignore = "timing report; run in release"]
+fn perf_gear_pair_cold_rebuild_on_a_pool() {
+    let mut s = session(false);
+    for teeth in ["20", "30"] {
+        let r = execute(&mut s, &CmdCtx::user(1), "generate.gear", json!({"teeth": teeth, "helix": "20 deg"})).unwrap();
+        assert_eq!(r["rebuild_ok"], true, "{r}");
+    }
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    for keep in [3usize, 6] {
+        let mut part = doc.clone();
+        part.features.truncate(keep);
+        let Some(kernel) = pool(1) else { return };
+        let t = Instant::now();
+        let r = gusset_eval::Evaluator::new(kernel).evaluate(&part, None, &());
+        eprintln!(
+            "first {keep} features, 1 worker   {:>8.0} ms ({} errors)",
+            t.elapsed().as_secs_f64() * 1e3,
+            r.errors().len()
+        );
+    }
+    for workers in [1, 2, 3] {
+        let Some(kernel) = pool(workers) else { return };
+        let t = Instant::now();
+        let mut ev = gusset_eval::Evaluator::new(kernel);
+        let r = ev.evaluate(&doc, None, &());
+        eprintln!(
+            "cold rebuild, {workers} worker(s)   {:>8.0} ms (built ahead: {})",
+            t.elapsed().as_secs_f64() * 1e3,
+            ev.speculated()
+        );
+        assert!(r.errors().is_empty() && r.body("Gear2").is_some(), "{:?}", r.errors());
     }
 }

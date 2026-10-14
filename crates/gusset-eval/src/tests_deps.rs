@@ -98,3 +98,27 @@ fn a_warm_evaluator_matches_a_fresh_one_across_edits() {
         }
     }
 }
+
+#[test]
+fn building_ahead_in_parallel_gives_the_sequential_result() {
+    let tail = format!(
+        "plane F1 (base: E1/cap(end), offset: c)\n{}extrude E4 (profile: S4, distance: c, op: add)\n\
+         move M1 (body: E2, translate: [0 mm, 30 mm, 0 mm], copy: true)\n\
+         extrude E5 (profile: S2, distance: 0 mm, op: new)\ncombine C1 (body: E2, tools: [M1])\n",
+        square("S4", 100.0)
+    );
+    let values =
+        [["5 mm", "7 mm", "3 mm"], ["6 mm", "7 mm", "3 mm"], ["6 mm", "9 mm", "2 mm"], ["4 mm", "7 mm", "30 mm"]];
+    let mut par = Evaluator::new(Arc::new(MockKernel));
+    par.set_parallel(4);
+    for v in values {
+        for rollback in [None, Some(8)] {
+            let d = doc(v, &tail);
+            let r = par.evaluate(&d, rollback, &());
+            let mut seq = Evaluator::new(Arc::new(MockKernel));
+            let f = seq.evaluate(&d, rollback, &());
+            assert_eq!(summary(&par, &r), summary(&seq, &f), "{v:?} rollback {rollback:?}");
+        }
+    }
+    assert!(par.speculated() > 0, "independent extrudes were built ahead");
+}

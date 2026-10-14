@@ -11,6 +11,7 @@
 
 pub mod cancel;
 pub mod mock;
+pub mod slot;
 pub mod types;
 pub mod wire;
 
@@ -136,6 +137,12 @@ pub trait Kernel: Send + Sync + Debug {
     /// before the next operation instead of that operation being blamed for the crash.
     /// Callers that cache shapes call it before building. In-process kernels do nothing.
     fn probe(&self) {}
+
+    /// How many operations this kernel can run at the same time (several worker processes,
+    /// ADR 0024 §3). Callers may build that many independent features in parallel.
+    fn parallelism(&self) -> usize {
+        1
+    }
 
     /// Linear sweep of a planar profile along its normal.
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult>;

@@ -81,6 +81,22 @@ OCCT goldens give bit-identical topology summaries and volumes with `N = 1` and 
   evaluator equals a fresh one over a sequence of edits and rollbacks with barriers,
   combine, copies and a failing feature.
 
+- Phase 2 done: `PoolKernel` (several `RemoteKernel`s; an operation runs on the worker
+  holding its first input, other inputs are copied with write/read native, new shapes go
+  to the calling thread's worker slot, `gusset_kernel::slot`) and speculative builds in
+  the evaluator: while a heavy feature is built, up to `parallelism - 1` later features
+  that depend only on earlier features (plus cheap sketches/planes of their own) are
+  built on other threads and workers on the same starting state; their results are kept
+  as deltas (phase 1) and replayed when their turn comes, so the result is exactly the
+  sequential one (tested against a sequential evaluator across edits and rollbacks).
+  Work limits: a replayed delta's charge is added to the current totals and must stay
+  within the limits, the same outcome as building it in place. After a crash or a cancel
+  nothing built ahead is kept. The app's pool has one worker per interactive thread,
+  each with at least 2 GiB of the memory budget, at most 4; the first starts with the
+  app, the others when first used.
+- Measured: cold rebuild of a helical gear pair, 6.2 s on one worker, 3.7 s on two (the
+  time of the slower gear; 4-core container).
+
 ## Consequences
 - Heavy models with independent parts rebuild up to `N` times faster on multi-core
   machines; a one-core machine behaves as today.

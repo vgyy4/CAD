@@ -12,25 +12,12 @@ use gusset_kernel::{
     BBox, BoolOp, ExtrudeSpec, KResult, Kernel, KernelError, KernelErrorKind, LoftSpec, MassProps, Mesh, OpResult,
     Profile, RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
 };
-use std::cell::Cell;
 use std::sync::Arc;
 
-thread_local! {
-    static SLOT: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Runs `f` with new shapes going to worker `slot` (modulo the pool size).
+/// Runs `f` with new shapes going to worker `slot` (modulo the pool size); the same as
+/// [`gusset_kernel::slot::scope`].
 pub fn with_slot<R>(slot: usize, f: impl FnOnce() -> R) -> R {
-    let prev = SLOT.with(|s| s.replace(slot));
-    struct Restore(usize);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            let prev = self.0;
-            SLOT.with(|s| s.set(prev));
-        }
-    }
-    let _restore = Restore(prev);
-    f()
+    gusset_kernel::slot::scope(slot, f)
 }
 
 /// See the module documentation.
@@ -77,7 +64,7 @@ impl PoolKernel {
     }
 
     fn preferred(&self) -> usize {
-        SLOT.with(Cell::get) % self.members.len().max(1)
+        gusset_kernel::slot::current() % self.members.len().max(1)
     }
 
     /// The worker for an operation on `shapes`, and the shapes as that worker's handles.
@@ -119,6 +106,10 @@ impl Kernel for PoolKernel {
 
     fn probe(&self) {
         self.members.iter().for_each(|m| m.probe());
+    }
+
+    fn parallelism(&self) -> usize {
+        self.members.len().max(1)
     }
 
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
