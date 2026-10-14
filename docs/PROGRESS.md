@@ -132,9 +132,8 @@ Phase 3 has started (see Next).
      Parameters per component (`set:`, `assembly.configure_component`).
      `query.components` reports available updates; the app names them after opening.
      Closed loops: `free: [...]` values solved at the joint that closes a loop (four-bar
-     test, OCCT four-bar golden). Three-way `branch.merge` (ADR 0006). Next: a joint form
-     with frame picking in the viewport, a Merge button in the branches panel,
-     configurations/customizer.
+     test, OCCT four-bar golden). Three-way `branch.merge` (ADR 0006); the agents panel's Apply merges.
+     Next: a joint form with frame picking in the viewport, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

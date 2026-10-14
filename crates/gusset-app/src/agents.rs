@@ -444,17 +444,6 @@ fn compare_lines(v: &Value) -> Vec<String> {
     out
 }
 
-/// Names of what `branch.compare` (mine → theirs) found added, changed or moved.
-fn changed_names(v: &Value, key: &str) -> Vec<String> {
-    v.get(key)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|c| c.get("change").and_then(Value::as_str) != Some("removed"))
-        .filter_map(|c| c.get("name").and_then(Value::as_str).map(String::from))
-        .collect()
-}
-
 impl App {
     pub(crate) fn show_compare(&mut self, branch: &str, result: Result<Value, CommandError>) {
         match result {
@@ -473,29 +462,11 @@ impl App {
         );
     }
 
-    /// Applies an agent branch's changes to the user's branch: one `branch.cherry_pick`
-    /// of every parameter and feature it added or changed (validated by a rebuild,
-    /// undoable like any edit).
+    /// Applies an agent branch's changes to the user's branch: a three-way
+    /// `branch.merge`, so the user's own edits since the branch started are kept and
+    /// items both changed are reported as conflicts (validated by a rebuild, undoable).
     pub fn apply_branch(&mut self, branch: BranchId) {
-        let ctx = App::ctx();
-        let from = branch.to_string();
-        self.submit(
-            move |s, _| {
-                let mine = s.current_branch(&Actor::User).to_string();
-                let d = gusset_commands::execute(s, &ctx, "branch.compare", json!({ "a": mine, "b": from }))?;
-                let (features, params) = (changed_names(&d, "features"), changed_names(&d, "parameters"));
-                if features.is_empty() && params.is_empty() {
-                    return Err(CommandError::new("nothing_to_apply", "this branch has no changes to apply"));
-                }
-                gusset_commands::execute(
-                    s,
-                    &ctx,
-                    "branch.cherry_pick",
-                    json!({ "from": from, "features": features, "params": params }),
-                )
-            },
-            |r| Done::Command { id: "branch.cherry_pick".into(), then: Then::Notice, result: r.and_then(|x| x) },
-        );
+        self.submit_command("branch.merge", json!({ "from": branch.to_string() }), Then::Notice);
     }
 
     /// The "AI agents" panel.

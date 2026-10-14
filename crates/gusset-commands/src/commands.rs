@@ -2467,9 +2467,13 @@ impl Command for BranchMerge {
             .map(|c| json!({ "kind": c.kind, "name": c.name, "ours": c.ours, "theirs": c.theirs }))
             .collect();
         if prefer.is_none() && !m.conflicts.is_empty() {
-            return Err(CommandError::new("conflict", format!("{} conflict(s); nothing was merged", conflicts.len()))
-                .hint("resolve with prefer: \"ours\" or \"theirs\", or edit one side first")
-                .details(json!({ "conflicts": conflicts })));
+            let names: Vec<&str> = m.conflicts.iter().map(|c| c.name.as_str()).collect();
+            return Err(CommandError::new(
+                "conflict",
+                format!("both sides changed {}; nothing was merged", names.join(", ")),
+            )
+            .hint("resolve with prefer: \"ours\" or \"theirs\", or edit one side first")
+            .details(json!({ "conflicts": conflicts })));
         }
         if m.from_theirs.is_empty() {
             return Ok(

@@ -146,7 +146,10 @@ const EN: &[(&str, &str)] = &[
     ("agents.switch", "Switch to"),
     ("agents.compare", "Compare"),
     ("agents.apply", "Apply"),
-    ("agents.apply_help", "Copy this branch's added and changed features and parameters onto your branch (undoable)"),
+    (
+        "agents.apply_help",
+        "Merge this branch into yours: its changes arrive, yours stay; items you both changed are listed as conflicts (undoable)",
+    ),
     ("agents.compared", "Your branch compared with"),
     ("agents.no_diff", "No differences"),
     ("agents.audit", "Agent actions"),
