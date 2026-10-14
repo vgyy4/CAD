@@ -377,6 +377,10 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(b) = &d.body {
                 args.push(format!("body: {b}"));
             }
+            if !d.set.is_empty() {
+                let items: Vec<String> = d.set.iter().map(|(n, e)| format!("{n} = {e}")).collect();
+                args.push(format!("set: [{}]", items.join(", ")));
+            }
         }
         FeatureKind::Import(i) => {
             args.push(format!("blob: {}", quote(&i.blob)));
@@ -1397,8 +1401,8 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "component";
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
-    let (mut source, mut version, mut document, mut body) = (None, None, None, None);
-    const ALLOWED: &str = "source, version, document, body, label, suppressed";
+    let (mut source, mut version, mut document, mut body, mut set) = (None, None, None, None, Vec::new());
+    const ALLOWED: &str = "source, version, document, body, set, label, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -1407,6 +1411,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "version" => version = Some(c.string()?),
             "document" => document = Some(c.string()?),
             "body" => body = Some(c.ident()?.to_string()),
+            "set" => set = parse_assignments(c)?,
             key => return Err(unknown_arg(c, KW, key, ALLOWED)),
         }
         Ok(())
@@ -1419,8 +1424,34 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         version: version.unwrap_or_default(),
         document: document.ok_or_else(|| missing(c, KW, "document"))?,
         body,
+        set,
     };
     Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Component(def) })
+}
+
+/// `[name = <expr>, ...]` with distinct names.
+fn parse_assignments(c: &mut Cursor<'_>) -> Result<Vec<(String, gusset_units::expr::Expr)>, ParseError> {
+    c.expect('[')?;
+    let mut list: Vec<(String, gusset_units::expr::Expr)> = Vec::new();
+    if !c.eat(']') {
+        loop {
+            let n = c.ident()?.to_string();
+            if list.iter().any(|(m, _)| *m == n) {
+                return Err(c.err(format!("'{n}' is set twice")));
+            }
+            c.expect('=')?;
+            list.push((n, c.expr()?));
+            if list.len() > MAX_LIST_ITEMS {
+                return Err(c.err("too many parameters"));
+            }
+            if c.eat(',') {
+                continue;
+            }
+            c.expect(']')?;
+            break;
+        }
+    }
+    Ok(list)
 }
 
 fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {

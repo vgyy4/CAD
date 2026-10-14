@@ -959,7 +959,7 @@ impl Evaluator {
             FeatureKind::Plane(d) => self.run_plane(s, name, d, units, params),
             FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
             FeatureKind::Joint(d) => self.run_joint(s, name, d, units, params),
-            FeatureKind::Component(d) => self.run_component(s, name, d, blobs),
+            FeatureKind::Component(d) => self.run_component(s, name, d, params, blobs),
             FeatureKind::Combine(d) => self.run_combine(s, name, d),
             FeatureKind::Hole(d) => self.run_hole(s, name, d, units, params),
             FeatureKind::Import(i) => {

@@ -100,5 +100,10 @@ component are as stable as in its own document, and the inner name is not a refe
 this document's features (dependencies and renames stop at the component). A component
 starts at its own coordinates; joints place it.
 
-Not done yet: parameter overrides per instance (configurations), and an "update available"
-notice (comparing the stored version with the source's head).
+Parameters per instance: `set: [teeth = 30, w = 2 * a]` evaluates each expression with
+this document's parameters and gives the component's parameter that value as a literal in
+base units (mm, rad or a plain number), so one part file can be used in several sizes and
+a parameter of the assembly can drive a part (`assembly.configure_component`).
+
+Not done yet: an "update available" notice (comparing the stored version with the
+source's head).

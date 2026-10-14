@@ -128,3 +128,36 @@ fn component_errors() {
     assert!(ev.errors().iter().any(|e| e.message.contains("missing")), "{:?}", ev.errors());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+#[allow(clippy::float_cmp)] // the mock kernel's box volumes are exact
+fn components_take_parameters_from_this_document() {
+    let d = dir();
+    write_part(&d.join("pin.gus"), &[PART]);
+    let mut s = session(&d);
+    let u = CmdCtx::user(1);
+    let vol = |s: &mut Session, b: &str| {
+        execute(s, &CmdCtx::user(1), "query.body", json!({"body": b})).unwrap()["volume_mm3"].as_f64().unwrap()
+    };
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "set": {"h": "3 mm"}}));
+    assert_eq!(vol(&mut s, "Pin"), 120.0);
+    // Two sizes of one part, the second driven by a parameter here.
+    run(&mut s, &u, "param.set", json!({"name": "depth", "expr": "5 mm"}));
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "name": "Long"}));
+    let r = run(&mut s, &u, "assembly.configure_component", json!({"component": "Long", "set": {"h": "depth"}}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert_eq!((vol(&mut s, "Pin"), vol(&mut s, "Long")), (120.0, 200.0));
+    run(&mut s, &u, "param.set", json!({"name": "depth", "expr": "1 cm"}));
+    assert_eq!(vol(&mut s, "Long"), 400.0);
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains(", set: [h = depth])"), "{text}");
+    // null restores the part's own value; unknown parameters are refused.
+    run(&mut s, &u, "assembly.configure_component", json!({"component": "Long", "set": {"h": null}}));
+    assert_eq!(vol(&mut s, "Long"), 80.0);
+    let e = execute(&mut s, &u, "assembly.configure_component", json!({"component": "Long", "set": {"nope": "1"}}));
+    assert_eq!(e.unwrap_err().code, "not_found");
+    let e = execute(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "set": {"h": "2 deg"}}));
+    // A wrong unit is the component's rebuild error.
+    assert!(e.is_ok_and(|r| r["rebuild_ok"] == false));
+    let _ = std::fs::remove_dir_all(&d);
+}

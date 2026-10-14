@@ -5,7 +5,7 @@ use gusset_doc::ComponentDef;
 use gusset_history::{Hash, History};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<InsertComponent>(), spec::<UpdateComponent>()]
+    vec![spec::<InsertComponent>(), spec::<UpdateComponent>(), spec::<ConfigureComponent>()]
 }
 
 /// How deep the documents a component brings along may nest.
@@ -87,6 +87,34 @@ fn check_body(doc: &Document, body: Option<&str>, shown: &str) -> Result<(), Com
     Err(CommandError::not_found(format!("'{shown}' {what}")).hint(format!("its bodies: {}", names.join(", "))))
 }
 
+/// `set` parsed, after checking the parameters exist in the component's document.
+fn assignments(
+    doc: &Document,
+    set: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, gusset_units::expr::Expr)>, CommandError> {
+    set.iter()
+        .map(|(n, e)| {
+            if !doc.params.iter().any(|p| p.name == *n) {
+                let names: Vec<&str> = doc.params.iter().map(|p| p.name.as_str()).collect();
+                return Err(CommandError::not_found(format!("the component has no parameter '{n}'"))
+                    .hint(format!("its parameters: {}", names.join(", "))));
+            }
+            Ok((n.clone(), parse_expr(n, e)?))
+        })
+        .collect()
+}
+
+/// The stored document of component `d`.
+fn stored_document(s: &Session, d: &ComponentDef) -> Result<Document, CommandError> {
+    let h = Hash::from_hex(&d.document).ok_or_else(|| CommandError::args("the component's hash is invalid"))?;
+    let bytes =
+        s.history().objects().get(h).map_err(|_| CommandError::not_found("the component's document is missing"))?;
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|t| Document::from_text(t).ok())
+        .ok_or_else(|| CommandError::new("io", "the component's document cannot be read"))
+}
+
 /// Pins `src` into the project: its blobs, then its text. Returns the document hash.
 fn pin(s: &mut Session, src: &Source) -> Result<String, CommandError> {
     copy_blobs(s, &src.history, &src.doc, 0)?;
@@ -116,6 +144,9 @@ pub struct InsertComponent {
     /// Its branch (default: main).
     #[serde(default)]
     pub branch: Option<String>,
+    /// Its parameters to set, as expressions of this document: {"teeth": "30"}.
+    #[serde(default)]
+    pub set: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -130,7 +161,9 @@ impl Command for InsertComponent {
         let src = read_source(s, ctx, &self.path, self.branch.as_deref())?;
         check_body(&src.doc, self.body.as_deref(), &crate::paths::display_name(&self.path))?;
         let document = pin(s, &src)?;
-        let def = ComponentDef { source: self.path.clone(), version: src.node.to_string(), document, body: self.body };
+        let set = assignments(&src.doc, &self.set)?;
+        let def =
+            ComponentDef { source: self.path.clone(), version: src.node.to_string(), document, body: self.body, set };
         let stem = std::path::Path::new(&self.path).file_stem().and_then(|n| n.to_str()).unwrap_or_default();
         let base = component_name(stem);
         edit(s, ctx, "Insert component", |doc, rb| {
@@ -182,6 +215,48 @@ impl Command for UpdateComponent {
                 d.version = version.clone();
             }
             Ok(json!({ "feature": self.component, "changed": true, "version": version }))
+        })
+    }
+}
+
+/// Sets or clears parameters of a component.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureComponent {
+    /// The component feature.
+    pub component: String,
+    /// Parameter -> expression of this document; null clears it (the component's own
+    /// value again).
+    pub set: std::collections::BTreeMap<String, Option<String>>,
+}
+
+impl Command for ConfigureComponent {
+    const ID: &'static str = "assembly.configure_component";
+    const TITLE: &'static str = "Configure component";
+    const DESCRIPTION: &'static str = "Set parameters of a component's document from this one ({\"teeth\": \"30\", \"w\": \"2 * a\"}; null restores its own value), e.g. two sizes of one part.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let doc = s.document(&ctx.actor)?;
+        let Some(FeatureKind::Component(old)) = doc.feature(&self.component).map(|f| &f.kind) else {
+            return Err(CommandError::not_found(format!("no component '{}'", self.component)));
+        };
+        let inner = stored_document(s, old)?;
+        let mut set = old.set.clone();
+        for (n, e) in &self.set {
+            set.retain(|(m, _)| m != n);
+            if let Some(e) = e {
+                let one = std::collections::BTreeMap::from([(n.clone(), e.clone())]);
+                set.extend(assignments(&inner, &one)?);
+            }
+        }
+        edit(s, ctx, "Configure component", |doc, _| {
+            if let Some(FeatureKind::Component(d)) =
+                doc.features.iter_mut().find(|f| f.name == self.component).map(|f| &mut f.kind)
+            {
+                d.set = set;
+            }
+            Ok(json!({ "feature": self.component }))
         })
     }
 }

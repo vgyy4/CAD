@@ -217,7 +217,7 @@ impl FeatureKind {
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
-            FeatureKind::Component(_) => {}
+            FeatureKind::Component(d) => d.set.iter().for_each(|(_, e)| take(e)),
         }
         // A generated gear sketch is checked with its gear's parameters (ADR 0018 §3).
         if let FeatureKind::Sketch(SketchDef { gear: Some(g), .. }) = self {
@@ -282,7 +282,7 @@ impl FeatureKind {
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
-            FeatureKind::Component(_) => {}
+            FeatureKind::Component(d) => out.extend(d.set.iter_mut().map(|(_, e)| e)),
         }
         out
     }
@@ -981,6 +981,9 @@ pub struct ComponentDef {
     pub document: String,
     /// The body of that document (default: its last body).
     pub body: Option<String>,
+    /// Parameters of that document set from this one (`set: [teeth = 30, w = 2 * a]`):
+    /// evaluated here and given to the component as values.
+    pub set: Vec<(String, Expr)>,
 }
 
 /// the frame `to` (on a body already in place, a plane or the origin), with the joint's

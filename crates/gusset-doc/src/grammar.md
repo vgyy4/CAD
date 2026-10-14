@@ -459,7 +459,8 @@ joint Hinge (type: revolute, body: Lid, at: Lid/cap(start), to: Base/cap(end), f
 ## Components
 
 ```
-component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <Body>])
+component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <Body>],
+                  [set: [<param> = <expr>, ...]])
 ```
 
 - A component brings in one body of another Gusset document (`body`, default: its last
@@ -467,6 +468,9 @@ component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body
   `assembly.insert_component`, never by hand: `document` is the hash of a stored copy of
   that document, so the component stays the same until `assembly.update_component` pins
   the source's newer version.
+- `set` gives parameters of the component's document values computed here (expressions
+  of this document's parameters): two components of one part can have different sizes,
+  and a parameter here can drive a part (`assembly.configure_component`).
 - Its faces are named `<Name>/part(<face in the component's document>)`, for example
   `Wheel/part(Extrude1/cap(end))`; `query_body` lists them.
 ## Holes

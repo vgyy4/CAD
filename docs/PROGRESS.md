@@ -129,7 +129,8 @@ Phase 3 has started (see Next).
      `study.motion` and `query.bom` (phase 2 part, OCCT test); relations are expressions.
      Components from other documents (`component`, `assembly.insert_component` /
      `update_component`, pinned copies, `part(...)` face names; mock and OCCT tests).
-     Next: phase 2 (loops, parameter overrides per component, update-available notice), a joint form with frame
+     Parameters per component (`set:`, `assembly.configure_component`).
+     Next: phase 2 (loops, update-available notice), a joint form with frame
      picking in the viewport, branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
