@@ -105,12 +105,16 @@ Phase 3 has started (see Next).
      Done: worker process, crash containment and restart, evaluator crash handling,
      app/MCP/CLI wiring and packaging, Stop that kills a running kernel operation, MCP
      deadlines, a Stop button, rebuild progress (ADR 0022 "State").
-   - v0.3: parallel feature evaluation across kernel workers (ADR 0024): phase 1 done
-     (dependency keys: independent parts stay cached); next the worker pool.
+   - v0.3: parallel feature evaluation across kernel workers (ADR 0024): done. Phase 1
+     dependency keys (independent parts stay cached), phase 2 a pool of kernel workers
+     with speculative builds replayed in document order (gear pair cold rebuild 6.2 s ->
+     3.7 s). Phase 3 (tessellation on the pool) only if measurements call for it.
    - OCCT translated to Rust, owner request (ADR 0025): opencascade-rs and occt-rs are
      bindings, not ports (LGPL / AGPL); pilot translation of `gp` + `ElCLib` by Codex,
      judged bit for bit against the C++ original by oracle programs; the LGPL port may
-     only link into the kernel worker. Numbers from the pilot decide the next layers.
+     only link into the kernel worker. Pilots done (gp subset, ElCLib, BSplCLib curve
+     evaluation); now translating TKMath package by package with Codex (GPT-6 Luna,
+     high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md.
    - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
      branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
