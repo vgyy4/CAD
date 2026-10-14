@@ -11,11 +11,13 @@
 
 pub mod diff;
 pub mod history;
+pub mod merge;
 pub mod objects;
 pub mod persist;
 
 pub use diff::{Change, DocDiff, ItemChange};
 pub use history::*;
+pub use merge::{Conflict, Merged, Side, merge_documents};
 pub use objects::{Hash, ObjectKind, ObjectStore, Snapshot};
 pub use persist::HistoryRecords;
 

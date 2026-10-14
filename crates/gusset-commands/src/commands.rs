@@ -82,6 +82,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<BranchSwitch>(),
         spec::<BranchCompare>(),
         spec::<BranchCherryPick>(),
+        spec::<BranchMerge>(),
         spec::<BranchSetMain>(),
         spec::<BranchDelete>(),
         spec::<BranchRestore>(),
@@ -2422,6 +2423,75 @@ impl Command for BranchCherryPick {
             );
         }
         Ok(v)
+    }
+}
+
+/// Merges another branch (or iteration) into yours: a three-way merge by name.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BranchMerge {
+    /// Source branch or node.
+    pub from: String,
+    /// Who wins conflicts: "ours" or "theirs". Without it, conflicts are reported and
+    /// nothing changes.
+    #[serde(default)]
+    pub prefer: Option<String>,
+}
+
+impl Command for BranchMerge {
+    const ID: &'static str = "branch.merge";
+    const TITLE: &'static str = "Merge";
+    const DESCRIPTION: &'static str = "Merge another branch into yours: parameters and features changed on one side since the common iteration are taken; items both sides changed differently are conflicts (resolve with prefer).";
+    const CATEGORY: Category = Category::Branches;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let prefer = match self.prefer.as_deref() {
+            None => None,
+            Some("ours") => Some(gusset_history::Side::Ours),
+            Some("theirs") => Some(gusset_history::Side::Theirs),
+            Some(p) => return Err(CommandError::args(format!("prefer '{p}': use \"ours\" or \"theirs\""))),
+        };
+        let src = find_node(s, &self.from)?;
+        let b = s.branch_for(ctx)?;
+        let h = s.history();
+        let head = h.head(b).map_err(CommandError::history)?;
+        let base = h.merge_base(head, src).ok_or_else(|| CommandError::args("these iterations share no history"))?;
+        if base == src {
+            return Ok(json!({ "merged": false, "reason": "already contained in your branch" }));
+        }
+        let doc = |n| h.document(n).map_err(CommandError::history);
+        let m = gusset_history::merge_documents(&doc(base)?, &doc(head)?, &doc(src)?, prefer);
+        let conflicts: Vec<Value> = m
+            .conflicts
+            .iter()
+            .map(|c| json!({ "kind": c.kind, "name": c.name, "ours": c.ours, "theirs": c.theirs }))
+            .collect();
+        if prefer.is_none() && !m.conflicts.is_empty() {
+            return Err(CommandError::new("conflict", format!("{} conflict(s); nothing was merged", conflicts.len()))
+                .hint("resolve with prefer: \"ours\" or \"theirs\", or edit one side first")
+                .details(json!({ "conflicts": conflicts })));
+        }
+        if m.from_theirs.is_empty() {
+            return Ok(
+                json!({ "merged": false, "reason": "nothing to take: your branch has every change", "conflicts": conflicts }),
+            );
+        }
+        let issues = gusset_doc::validate::validate(&m.doc);
+        if !issues.is_empty() {
+            let msg: Vec<String> = issues.iter().map(ToString::to_string).collect();
+            return Err(CommandError::args(format!("the merged document is invalid: {}", msg.join("; ")))
+                .hint("cherry-pick the parts you need instead"));
+        }
+        // The label names the merged node: the next merge starts from it (`merge_base`).
+        let out = s.commit(ctx, &format!("Merge {} ({src})", self.from), &m.doc)?;
+        Ok(json!({
+            "merged": true,
+            "node": out.node.to_string(),
+            "taken": m.from_theirs,
+            "conflicts": conflicts,
+            "rebuild_ok": out.new_errors.is_empty(),
+            "new_errors": out.new_errors,
+        }))
     }
 }
 

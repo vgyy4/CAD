@@ -1157,6 +1157,23 @@ impl History {
 
     // ------------------------------------------------------------ compare / cherry-pick
 
+    /// The base for merging `theirs` into `ours`: the newest common ancestor, or, when
+    /// `ours` already merged an iteration of `theirs`' history since then, that iteration
+    /// (a merge node's label ends with the merged node, ` (n12)`), so changes merged
+    /// before do not conflict again.
+    pub fn merge_base(&self, ours: NodeId, theirs: NodeId) -> Option<NodeId> {
+        let lo = self.lineage(ours);
+        let lt = self.lineage(theirs);
+        let fork = lt.iter().copied().find(|n| lo.contains(n))?;
+        let merged = lo.iter().take_while(|n| **n != fork).find_map(|n| {
+            let label = &self.nodes.get(n)?.label;
+            let id = label.strip_prefix("Merge ")?.rsplit_once(" (n")?.1.strip_suffix(')')?;
+            let id = NodeId(id.parse().ok()?);
+            lt.contains(&id).then_some(id)
+        });
+        Some(merged.unwrap_or(fork))
+    }
+
     pub fn compare(&self, a: NodeId, b: NodeId) -> HResult<DocDiff> {
         Ok(diff_documents(&self.document(a)?, &self.document(b)?))
     }

@@ -1090,3 +1090,47 @@ fn export_with_failed_rebuild_and_no_bodies_carries_rebuild_errors() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn merging_a_branch_takes_its_changes_and_reports_conflicts() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "a", "expr": "1 mm"}));
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "2 mm"}));
+    run(&mut s, &u, "branch.create", json!({"name": "idea"}));
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "7 mm"}));
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "main"}));
+    run(&mut s, &u, "param.set", json!({"name": "a", "expr": "5 mm"}));
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea"}));
+    assert_eq!(r["merged"], true, "{r}");
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("param a = 5 mm") && text.contains("param b = 7 mm") && text.contains("sketch Sketch1"),
+        "{text}"
+    );
+    // Merging again takes nothing new.
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea"}));
+    assert_eq!(r["merged"], false, "{r}");
+    // Both sides change b: a conflict, nothing merged until a side is preferred.
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "8 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "idea"}));
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "9 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "main"}));
+    let e = execute(&mut s, &u, "branch.merge", json!({"from": "idea"})).unwrap_err();
+    assert_eq!(e.code, "conflict", "{e:?}");
+    assert_eq!(e.details.as_ref().unwrap()["conflicts"][0]["name"], "b", "{e:?}");
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea", "prefer": "theirs"}));
+    assert_eq!(r["merged"], true, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("param b = 9 mm"), "{text}");
+    // Merged before: a later change on their side alone arrives without a conflict.
+    run(&mut s, &u, "branch.switch", json!({"branch": "idea"}));
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "11 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "main"}));
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea"}));
+    assert_eq!(r["merged"], true, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("param b = 11 mm") && text.contains("param a = 5 mm"), "{text}");
+}

@@ -68,11 +68,19 @@ retention, default 7 days; warns if it contains starred nodes).
 - "Compact history" runs GC and pruning immediately. The history size per project is
   shown in Settings → Storage.
 
-### Full merge
-Out of scope for the MVP. A three-way merge is feasible on this model, because snapshots
-are ordered feature lists with stable ids and the merge base is the common ancestor
-node. Conflicts arise only when both sides edited the same feature or the parameter, or
-reorders interleave. That research goes in `docs/RESEARCH.md`.
+### Full merge (done 2026-10-14)
+`branch.merge` (`from`, optional `prefer: ours|theirs`) merges another branch or iteration
+into the caller's branch, three-way by name against the merge base: units, every
+parameter and every feature is taken from the side that changed it since the base;
+the same change on both sides is no conflict; different changes (including removed on
+one side, edited on the other) are conflicts. Features keep our order; features only
+they added go right after the feature that precedes them on their side; a reorder of
+shared features on one side only is taken, on both sides it conflicts. Without `prefer`
+any conflict fails the merge with the list (nothing changes). The result is validated and
+committed as an ordinary node (undoable, rebuilt; a failing rebuild is committed broken
+like a cherry-pick). Nodes have one parent, so the merge node's label records the merged
+iteration (`Merge idea (n12)`); the next merge from that branch uses it as the base, so
+changes merged once never conflict again.
 
 ## Consequences
 - Derived geometry is never stored in history; inactive branches rebuild on demand from
