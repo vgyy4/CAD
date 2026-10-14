@@ -52,6 +52,7 @@ pub enum FeatureKind {
     Move(MoveDef),
     Combine(CombineDef),
     Hole(HoleDef),
+    Joint(Box<JointDef>),
 }
 
 impl FeatureKind {
@@ -73,6 +74,7 @@ impl FeatureKind {
             FeatureKind::Move(_) => "move",
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
+            FeatureKind::Joint(_) => "joint",
         }
     }
 
@@ -148,6 +150,12 @@ impl FeatureKind {
                     add(s);
                 }
             }
+            FeatureKind::Joint(d) => {
+                add(&d.body);
+                d.with.iter().for_each(|b| add(b));
+                d.at.features(&mut add);
+                d.to.features(&mut add);
+            }
         }
         out
     }
@@ -205,6 +213,7 @@ impl FeatureKind {
             }
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
+            FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
         }
         // A generated gear sketch is checked with its gear's parameters (ADR 0018 §3).
         if let FeatureKind::Sketch(SketchDef { gear: Some(g), .. }) = self {
@@ -268,6 +277,7 @@ impl FeatureKind {
             }
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
+            FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
         }
         out
     }
@@ -859,6 +869,148 @@ pub struct MoveDef {
     pub translate: Option<[Expr; 3]>,
     pub rotation: Option<MoveRotation>,
     pub copy: bool,
+}
+
+/// The kind of a joint (ADR 0026): which motions it leaves free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JointKind {
+    /// No motion.
+    Rigid,
+    /// Rotation about Z (`angle`).
+    Revolute,
+    /// Translation along Z (`distance`).
+    Slider,
+    /// Rotation about and translation along Z (`angle`, `distance`).
+    Cylindrical,
+    /// Rotation about Z and translation along X (`angle`, `distance`).
+    PinSlot,
+    /// Translation in the XY plane and rotation about Z (`x`, `y`, `angle`).
+    Planar,
+    /// Rotation about X, then Y, then Z (`angles`).
+    Ball,
+}
+
+impl JointKind {
+    pub const ALL: [JointKind; 7] = [
+        JointKind::Rigid,
+        JointKind::Revolute,
+        JointKind::Slider,
+        JointKind::Cylindrical,
+        JointKind::PinSlot,
+        JointKind::Planar,
+        JointKind::Ball,
+    ];
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            JointKind::Rigid => "rigid",
+            JointKind::Revolute => "revolute",
+            JointKind::Slider => "slider",
+            JointKind::Cylindrical => "cylindrical",
+            JointKind::PinSlot => "pin_slot",
+            JointKind::Planar => "planar",
+            JointKind::Ball => "ball",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<JointKind> {
+        JointKind::ALL.into_iter().find(|k| k.keyword() == s)
+    }
+}
+
+/// Where a joint attaches (a joint origin, ADR 0026 §2).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrameRef {
+    /// The world origin, Z up.
+    Origin,
+    /// A plane (world plane, datum plane or planar face): its frame.
+    Plane(PlaneRef),
+    /// A face: planar (centroid, normal) or revolved (on its axis).
+    Face(FaceRef),
+    /// An edge: circular (center, normal) or straight (midpoint, direction).
+    Edge(EdgeRef),
+}
+
+impl FrameRef {
+    /// Renames every occurrence of feature `from` to `to`.
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        match self {
+            FrameRef::Origin => {}
+            FrameRef::Plane(p) => p.rename_feature(from, to),
+            FrameRef::Face(f) => f.rename_feature(from, to),
+            FrameRef::Edge(e) => e.rename_feature(from, to),
+        }
+    }
+
+    fn features(&self, add: &mut impl FnMut(&str)) {
+        match self {
+            FrameRef::Origin => {}
+            FrameRef::Plane(p) => p.features(add),
+            FrameRef::Face(f) => f.features(add),
+            FrameRef::Edge(e) => e.features(add),
+        }
+    }
+}
+
+/// Places a body by a joint (ADR 0026): the frame `at` on the moving body is brought onto
+/// the frame `to` (on a body already in place, a plane or the origin), with the joint's
+/// motion in between. The bodies in `with` move along rigidly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JointDef {
+    pub kind: JointKind,
+    /// The moving body (named after the feature that created it).
+    pub body: String,
+    pub with: Vec<String>,
+    pub at: FrameRef,
+    pub to: FrameRef,
+    /// Rotation about Z (revolute, cylindrical, pin slot, planar).
+    pub angle: Option<Expr>,
+    /// Translation along Z (slider, cylindrical) or X (pin slot).
+    pub distance: Option<Expr>,
+    /// Planar translation.
+    pub x: Option<Expr>,
+    pub y: Option<Expr>,
+    /// Ball rotations about X, Y, Z.
+    pub angles: Option<[Expr; 3]>,
+    /// Reverses the fixed frame's Z axis.
+    pub flip: bool,
+    /// Moves along the fixed frame's Z axis (length).
+    pub offset: Option<Expr>,
+    /// Allowed range of `angle` and `distance`.
+    pub angle_limits: Option<[Expr; 2]>,
+    pub distance_limits: Option<[Expr; 2]>,
+}
+
+impl JointDef {
+    /// Renames every reference to feature `from`.
+    pub fn rename_feature(&mut self, from: &str, to: &str) {
+        for b in std::iter::once(&mut self.body).chain(&mut self.with) {
+            if b == from {
+                *b = to.to_string();
+            }
+        }
+        self.at.rename_feature(from, to);
+        self.to.rename_feature(from, to);
+    }
+
+    /// Every expression, in a fixed order.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let mut out: Vec<&Expr> = Vec::new();
+        out.extend(self.angle.iter().chain(&self.distance).chain(&self.x).chain(&self.y));
+        out.extend(self.angles.iter().flatten());
+        out.extend(self.offset.iter());
+        out.extend(self.angle_limits.iter().flatten().chain(self.distance_limits.iter().flatten()));
+        out
+    }
+
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out: Vec<&mut Expr> = Vec::new();
+        out.extend(self.angle.iter_mut().chain(&mut self.distance).chain(&mut self.x).chain(&mut self.y));
+        out.extend(self.angles.iter_mut().flatten());
+        out.extend(self.offset.iter_mut());
+        out.extend(self.angle_limits.iter_mut().flatten().chain(self.distance_limits.iter_mut().flatten()));
+        out
+    }
 }
 
 /// Combines tool bodies into a target body; the tool bodies are consumed.

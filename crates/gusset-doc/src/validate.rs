@@ -184,6 +184,18 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::Move(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
+            FeatureKind::Joint(d) => {
+                for b in std::iter::once(&d.body).chain(&d.with) {
+                    check_body_target(n, Some(b), true, &seen, &consumed, &mut out);
+                }
+                if d.with.contains(&d.body) {
+                    out.push(issue_h(
+                        n,
+                        format!("'{}' is both the moving body and in 'with'", d.body),
+                        "remove it from 'with'",
+                    ));
+                }
+            }
             FeatureKind::Combine(d) => {
                 // Without a named target there must be a body besides the tools.
                 let spare = live_bodies > d.tools.len();

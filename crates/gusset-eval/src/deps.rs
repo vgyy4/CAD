@@ -62,6 +62,9 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::PatternLinear(d) => target(d.body.as_ref()),
         FeatureKind::PatternCircular(d) => target(d.body.as_ref()),
         FeatureKind::Move(d) => target(d.body.as_ref()),
+        FeatureKind::Joint(d) => {
+            Access { bodies: std::iter::once(&d.body).chain(&d.with).cloned().collect(), dynamic: false }
+        }
         FeatureKind::Combine(d) => {
             let mut a = target(d.body.as_ref());
             a.bodies.extend(d.tools.iter().cloned());

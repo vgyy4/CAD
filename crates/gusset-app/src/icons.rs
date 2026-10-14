@@ -352,6 +352,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "move" => Tool::MoveBody,
         "combine" => Tool::Combine,
         "hole" => Tool::Hole,
+        "joint" => Tool::MoveBody,
         _ => Tool::Body,
     }
 }

@@ -250,7 +250,7 @@ impl Evaluator {
 }
 
 /// The body a modifying feature works on: the named body, or the most recent one.
-fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize, Arc<Body>), EvalError> {
+pub(crate) fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize, Arc<Body>), EvalError> {
     let bi = match target {
         Some(t) => s.bodies.iter().position(|b| b.feature == t).ok_or_else(|| {
             EvalError::new(
@@ -268,7 +268,7 @@ fn target_body(s: &State, feature: &str, target: Option<&str>) -> Result<(usize,
     Ok((bi, body))
 }
 
-fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
+pub(crate) fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
     let nb = Arc::new(Body {
         name: old.name.clone(),
         feature: old.feature.clone(),

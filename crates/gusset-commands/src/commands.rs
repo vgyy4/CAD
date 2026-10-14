@@ -19,12 +19,14 @@ use serde_json::{Value, json};
 mod datum;
 mod generate;
 mod hole;
+mod joint;
 mod ops;
 mod sketch_ops;
 mod sweep;
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
+pub use joint::JointCommand;
 pub use ops::{Mirror, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
@@ -36,6 +38,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(hole::specs());
     v.extend(ops::specs());
     v.extend(datum::specs());
+    v.extend(joint::specs());
     v.extend(sketch_ops::specs());
     v
 }

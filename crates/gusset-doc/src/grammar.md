@@ -406,6 +406,53 @@ combine Combine1 (body: Extrude1, tools: [Extrude2], op: add)
 move Move1 (body: Extrude1, translate: [0 mm, 0 mm, 5 mm], copy: true)
 ```
 
+## Joints
+
+```
+joint <Name> (type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, body: <Feature>, [with: [<Feature>, ...]],
+              at: <frame>, to: <frame>, [angle: <angle>], [distance: <length>], [x: <length>, y: <length>],
+              [angles: [<rx>, <ry>, <rz>]], [flip: true], [offset: <length>],
+              [angle_limits: [<lo>, <hi>]], [distance_limits: [<lo>, <hi>]])
+```
+
+- A joint places the body `body` (and the bodies in `with`, carried rigidly): its frame
+  `at` is brought onto the frame `to` with the joint's motion in between. `to` is on a body
+  that is already in place (earlier in the timeline), a plane, or `origin`.
+- Frames (`<frame>`): a planar face (its center, Z out of the face), a cylindrical, conical
+  or toroidal face (on its axis, Z along it), a spherical face (its center), `edge(...)`
+  (a circle: its center and normal; a straight edge: its midpoint and direction), `XY`,
+  `XZ`, `YZ`, a datum plane, or `origin`. X is the world X axis projected onto the frame.
+- Motion: revolute `angle` about Z; slider `distance` along Z; cylindrical both; pin_slot
+  `angle` about Z and `distance` along X; planar `x`, `y` and `angle`; ball `angles` about
+  X, Y and Z; rigid none. Values not used by the type are refused.
+- `flip: true` reverses the target frame's Z (put a face against a face); `offset` moves
+  along the target frame's Z. Values outside `angle_limits` / `distance_limits` fail the
+  joint. Values can be parameters: setting the parameter moves the mechanism.
+
+```gusset
+gusset 1
+units mm
+
+param open = 45 deg
+
+sketch Box (plane: XY) {
+  p1 = point(0, 0)
+  p2 = point(20, 0)
+  p3 = point(20, 10)
+  p4 = point(0, 10)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Base (profile: Box, distance: 8 mm, op: new)
+
+extrude Lid (profile: Box, distance: 2 mm, op: new)
+
+joint Hinge (type: revolute, body: Lid, at: Lid/cap(start), to: Base/cap(end), flip: true, angle: open, angle_limits: [0 deg, 110 deg])
+```
+
 ## Holes
 
 ```

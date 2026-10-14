@@ -115,8 +115,15 @@ Phase 3 has started (see Next).
      only link into the kernel worker. Pilots done (gp subset, ElCLib, BSplCLib curve
      evaluation); now translating TKMath package by package with Codex (GPT-6 Luna,
      high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md.
-   - v0.3: assemblies and joints (research Fusion joints vs SolidWorks mates first),
-     branch merge, configurations/customizer.
+   - v0.3: joints (ADR 0026, after research on Fusion, Onshape, SolidWorks, FreeCAD):
+     phase 1 done: `joint` feature (rigid, revolute, slider, cylindrical, pin_slot, planar,
+     ball) placing a body (and carried bodies) frame-to-frame; frames on planar faces,
+     revolved faces (axis from the kernel's new topology fields), circular/straight edges,
+     planes and the origin; flip, offset, limits; values are expressions so parameters
+     drive motion; `feature.joint` command (GUI/CLI/MCP), grammar docs, mock and OCCT tests
+     (shaft in a bore). Next: phase 2 (components from other documents, loops,
+     interference, BOM, motion study, gear/rack/screw relations), a joint form with frame
+     picking in the viewport, branch merge, configurations/customizer.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

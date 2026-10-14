@@ -1003,3 +1003,67 @@ combine Combine2 (tools: [Mirror1], op: add, label: "Weld")
         assert_eq!(p, PlaneRef::Datum("Datum".into()));
     }
 }
+
+#[cfg(test)]
+mod joint_tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"gusset 1
+units mm
+
+param open = 30 deg
+
+sketch Sketch1 (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(10, 0)
+  p3 = point(10, 10)
+  p4 = point(0, 10)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Base (profile: Sketch1, distance: 5 mm, op: new)
+
+extrude Lid (profile: Sketch1, distance: 2 mm, op: new)
+
+extrude Knob (profile: Sketch1, distance: 1 mm, op: new)
+
+joint J1 (type: revolute, body: Lid, with: [Knob], at: Lid/cap(start), to: Base/cap(end), angle: open, flip: true, angle_limits: [0 deg, 110 deg])
+
+joint J2 (type: slider, body: Base, at: origin, to: XY, distance: 3 mm, offset: 1 mm)
+
+joint J3 (type: ball, body: Knob, at: edge(Knob/cap(end), Knob/side(Sketch1/l5)), to: origin, angles: [10 deg, 0 deg, open])
+"#;
+
+    #[test]
+    fn joints_roundtrip_and_report_their_references() {
+        let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), SAMPLE);
+        for f in &doc.features {
+            let obj = text::print_feature_object(f);
+            assert_eq!(&text::parse_feature_object(&obj).unwrap(), f, "{obj}");
+        }
+        assert_eq!(validate::validate(&doc), vec![]);
+        let j1 = doc.feature("J1").unwrap();
+        assert_eq!(j1.kind.dependencies(), ["Lid", "Knob", "Base"].map(String::from).to_vec());
+        assert_eq!(j1.kind.parameters(), vec!["open".to_string()]);
+        let FeatureKind::Joint(j3) = &doc.feature("J3").unwrap().kind else { panic!() };
+        assert!(matches!(j3.at, FrameRef::Edge(_)) && j3.to == FrameRef::Origin);
+        let FeatureKind::Joint(j2) = &doc.feature("J2").unwrap().kind else { panic!() };
+        assert_eq!(j2.to, FrameRef::Plane(PlaneRef::XY));
+    }
+
+    #[test]
+    fn joint_errors_are_actionable() {
+        let err = |stmt: &str| text::parse(&format!("gusset 1\n{stmt}\n")).unwrap_err().to_string();
+        assert!(err("joint J (body: A, at: origin, to: origin)").contains("type"));
+        assert!(err("joint J (type: hinge, body: A, at: origin, to: origin)").contains("unknown joint type"));
+        assert!(err("joint J (type: slider, body: A, at: origin, to: origin, angle: 5 deg)").contains("no 'angle'"));
+        assert!(err("joint J (type: rigid, at: origin, to: origin)").contains("body"));
+        let e = text::parse("gusset 1\njoint J (type: rigid, body: A, with: [A], at: origin, to: origin)\n").unwrap();
+        let issues = validate::validate(&e);
+        assert!(issues.iter().any(|i| i.message.contains("both the moving body")), "{issues:?}");
+    }
+}

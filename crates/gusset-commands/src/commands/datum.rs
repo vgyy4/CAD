@@ -31,7 +31,7 @@ pub(super) fn parse_plane_arg(s: &mut Session, ctx: &CmdCtx, text: &str) -> Resu
     Ok(plane)
 }
 
-fn vec3(what: &str, v: &[String; 3]) -> Result<[gusset_units::expr::Expr; 3], CommandError> {
+pub(super) fn vec3(what: &str, v: &[String; 3]) -> Result<[gusset_units::expr::Expr; 3], CommandError> {
     Ok([parse_expr(what, &v[0])?, parse_expr(what, &v[1])?, parse_expr(what, &v[2])?])
 }
 

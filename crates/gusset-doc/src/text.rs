@@ -98,6 +98,15 @@ fn print_plane(p: &PlaneRef) -> String {
     }
 }
 
+fn print_frame(f: &FrameRef) -> String {
+    match f {
+        FrameRef::Origin => "origin".into(),
+        FrameRef::Plane(p) => print_plane(p),
+        FrameRef::Face(r) => r.to_string(),
+        FrameRef::Edge(e) => e.to_string(),
+    }
+}
+
 fn print_vec3(v: &[gusset_units::expr::Expr; 3]) -> String {
     format!("[{}, {}, {}]", v[0], v[1], v[2])
 }
@@ -297,6 +306,34 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("tools: [{}]", d.tools.join(", ")));
             args.push(format!("op: {}", d.op.keyword()));
         }
+        FeatureKind::Joint(d) => {
+            args.push(format!("type: {}", d.kind.keyword()));
+            args.push(format!("body: {}", d.body));
+            if !d.with.is_empty() {
+                args.push(format!("with: [{}]", d.with.join(", ")));
+            }
+            args.push(format!("at: {}", print_frame(&d.at)));
+            args.push(format!("to: {}", print_frame(&d.to)));
+            for (k, v) in [("angle", &d.angle), ("distance", &d.distance), ("x", &d.x), ("y", &d.y)] {
+                if let Some(v) = v {
+                    args.push(format!("{k}: {v}"));
+                }
+            }
+            if let Some(a) = &d.angles {
+                args.push(format!("angles: {}", print_vec3(a)));
+            }
+            if d.flip {
+                args.push("flip: true".into());
+            }
+            if let Some(o) = &d.offset {
+                args.push(format!("offset: {o}"));
+            }
+            for (k, v) in [("angle_limits", &d.angle_limits), ("distance_limits", &d.distance_limits)] {
+                if let Some([lo, hi]) = v {
+                    args.push(format!("{k}: [{lo}, {hi}]"));
+                }
+            }
+        }
         FeatureKind::Hole(d) => {
             args.push(format!("face: {}", d.face));
             match &d.sites {
@@ -461,7 +498,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n") });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" => {
+            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -477,6 +514,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_feature_ext3(kw, &mut c)?
                 } else if kw == "hole" {
                     parse_hole(&mut c)?
+                } else if kw == "joint" {
+                    parse_joint(&mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -492,7 +531,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint",
                 ));
             }
         }
@@ -1139,6 +1178,17 @@ fn parse_plane(c: &mut Cursor<'_>) -> Result<PlaneRef, ParseError> {
     })
 }
 
+/// Parses a joint frame given outside a document (`origin`, `XY`, a datum plane, a face or
+/// an `edge(...)`).
+pub fn parse_frame_ref(s: &str) -> Result<FrameRef, ParseError> {
+    let mut c = Cursor::new(s, 1);
+    let f = parse_frame(&mut c)?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after the frame"));
+    }
+    Ok(f)
+}
+
 /// Parses a plane given outside a document (`XY`, a face reference or a datum plane name).
 pub fn parse_plane_ref(s: &str) -> Result<PlaneRef, ParseError> {
     let mut c = Cursor::new(s, 1);
@@ -1280,6 +1330,140 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
         }),
     };
     Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+/// A joint origin: `origin`, a plane (`XY`, a datum plane), a face or an edge.
+fn parse_frame(c: &mut Cursor<'_>) -> Result<FrameRef, ParseError> {
+    let save = c.pos;
+    let word = c.ident()?;
+    let next_is_paren = c.peek() == Some('(');
+    let next_is_slash = c.peek() == Some('/');
+    c.pos = save;
+    Ok(match word {
+        "origin" if !next_is_paren && !next_is_slash => {
+            c.ident()?;
+            FrameRef::Origin
+        }
+        "edge" if next_is_paren => FrameRef::Edge(parse_edge(c)?),
+        _ => match parse_plane(c)? {
+            PlaneRef::Face(f) => FrameRef::Face(f),
+            p => FrameRef::Plane(p),
+        },
+    })
+}
+
+fn parse_ident_list(c: &mut Cursor<'_>, what: &str) -> Result<Vec<String>, ParseError> {
+    c.expect('[')?;
+    let mut list = Vec::new();
+    if !c.eat(']') {
+        loop {
+            list.push(c.ident()?.to_string());
+            if list.len() > MAX_LIST_ITEMS {
+                return Err(c.err(format!("too many {what}")));
+            }
+            if c.eat(',') {
+                continue;
+            }
+            c.expect(']')?;
+            break;
+        }
+    }
+    Ok(list)
+}
+
+fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 2], ParseError> {
+    c.expect('[')?;
+    let lo = c.expr()?;
+    c.expect(',')?;
+    let hi = c.expr()?;
+    c.expect(']')?;
+    Ok([lo, hi])
+}
+
+/// `joint` statements (ADR 0026).
+fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    const KW: &str = "joint";
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let (mut kind, mut body, mut with, mut at, mut to) = (None, None, Vec::new(), None, None);
+    let (mut angle, mut distance, mut x, mut y, mut angles) = (None, None, None, None, None);
+    let (mut flip, mut offset, mut angle_limits, mut distance_limits) = (false, None, None, None);
+    const ALLOWED: &str = "type, body, with, at, to, angle, distance, x, y, angles, flip, offset, angle_limits, \
+                           distance_limits, label, suppressed";
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "type" => {
+                let w = c.ident()?;
+                kind = Some(JointKind::from_keyword(w).ok_or_else(|| {
+                    c.err_hint(
+                        format!("unknown joint type '{w}'"),
+                        "use rigid, revolute, slider, cylindrical, pin_slot, planar or ball",
+                    )
+                })?);
+            }
+            "body" => body = Some(c.ident()?.to_string()),
+            "with" => with = parse_ident_list(c, "bodies")?,
+            "at" => at = Some(parse_frame(c)?),
+            "to" => to = Some(parse_frame(c)?),
+            "angle" => angle = Some(c.expr()?),
+            "distance" => distance = Some(c.expr()?),
+            "x" => x = Some(c.expr()?),
+            "y" => y = Some(c.expr()?),
+            "angles" => angles = Some(parse_vec3(c)?),
+            "flip" => flip = parse_bool(c)?,
+            "offset" => offset = Some(c.expr()?),
+            "angle_limits" => angle_limits = Some(parse_pair(c)?),
+            "distance_limits" => distance_limits = Some(parse_pair(c)?),
+            key => return Err(unknown_arg(c, KW, key, ALLOWED)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let kind = kind.ok_or_else(|| missing(c, KW, "type"))?;
+    // Only the values the joint type moves.
+    let uses = |v: &str| match kind {
+        JointKind::Rigid => false,
+        JointKind::Revolute => v == "angle",
+        JointKind::Slider => v == "distance",
+        JointKind::Cylindrical | JointKind::PinSlot => matches!(v, "angle" | "distance"),
+        JointKind::Planar => matches!(v, "x" | "y" | "angle"),
+        JointKind::Ball => v == "angles",
+    };
+    for (v, given) in [
+        ("angle", angle.is_some() || angle_limits.is_some()),
+        ("distance", distance.is_some() || distance_limits.is_some()),
+        ("x", x.is_some()),
+        ("y", y.is_some()),
+        ("angles", angles.is_some()),
+    ] {
+        if given && !uses(v) {
+            return Err(c.err_hint(
+                format!("a {} joint has no '{v}'", kind.keyword()),
+                "values: revolute angle; slider distance; cylindrical and pin_slot angle, distance; planar x, y, angle; ball angles",
+            ));
+        }
+    }
+    let kind_def = JointDef {
+        kind,
+        body: body.ok_or_else(|| missing(c, KW, "body"))?,
+        with,
+        at: at.ok_or_else(|| missing(c, KW, "at"))?,
+        to: to.ok_or_else(|| missing(c, KW, "to"))?,
+        angle,
+        distance,
+        x,
+        y,
+        angles,
+        flip,
+        offset,
+        angle_limits,
+        distance_limits,
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Joint(Box::new(kind_def)) })
 }
 
 impl Cursor<'_> {
