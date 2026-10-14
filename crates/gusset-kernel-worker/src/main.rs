@@ -29,17 +29,21 @@ fn main() -> ExitCode {
         cpu_seconds: gusset_kernel_worker::NO_CPU_LIMIT,
         read_file: None,
     });
-    if let Some(e) = codeload {
+    if let Some(e) = &codeload {
         eprintln!("gusset-kernel-worker: DLL search-path hardening failed: {e}");
     }
     if !report.missing.is_empty() {
         eprintln!("gusset-kernel-worker: sandbox incomplete: {}", report.missing.join("; "));
     }
-    serve()
+    let mut status = report.to_text();
+    if let Some(e) = codeload {
+        status.push_str(&format!("; DLL search-path hardening failed: {e}"));
+    }
+    serve(status)
 }
 
 #[cfg(gusset_occt)]
-fn serve() -> ExitCode {
+fn serve(status: String) -> ExitCode {
     // The app vets B-rep blobs before sending them (`OcctGate`); this process is the sandbox.
     let kernel = match gusset_kernel_occt::OcctKernel::with_vetted_inputs() {
         Ok(k) => k,
@@ -48,7 +52,7 @@ fn serve() -> ExitCode {
             return ExitCode::from(3);
         }
     };
-    let server = gusset_kernel_remote::Server::new(kernel);
+    let server = gusset_kernel_remote::Server::new(kernel).with_status(status);
     let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
     match server.serve(&mut stdin.lock(), &mut stdout.lock()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -60,7 +64,7 @@ fn serve() -> ExitCode {
 }
 
 #[cfg(not(gusset_occt))]
-fn serve() -> ExitCode {
+fn serve(_status: String) -> ExitCode {
     eprintln!("gusset-kernel-worker: this build does not include the OCCT kernel");
     ExitCode::from(3)
 }

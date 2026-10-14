@@ -19,8 +19,10 @@
 - L1, L2, L3, L7, L8, L9 fixed; L10: `model.rebuild` ("Rebuild all") retries memoised
   crashes. L6: ADR 0022 §3 amended. N1 (CI order), N4 (ping timeout), N5 (error text
   capped) fixed.
-- Open: L4 (gate as constructor argument, refuse raw imports), L5 (sandbox status in
-  ping/self-test), N2 (worker-side leaks on encode failures), N3 (deadline includes queue
+- Fixed 2026-10-14: L4 (the gate is a required `RemoteKernel::new` argument, raw STEP/IGES
+  requests are refused by client and worker) and L5 (a `Status` request, protocol 3, returns
+  the worker's sandbox report; shown by `self-test` and in the app's diagnostics).
+- Open: N2 (worker-side leaks on encode failures), N3 (deadline includes queue
   time).
 
 Code and security review, read-only. Line numbers are at f7d2b90. `af51715` (ADR 0024) and the

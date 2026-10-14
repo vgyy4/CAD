@@ -144,6 +144,12 @@ pub trait Kernel: Send + Sync + Debug {
         1
     }
 
+    /// A line about where and how the kernel runs (a worker's sandbox report), if it has
+    /// one; for `self-test` and Settings.
+    fn diagnostics(&self) -> Option<String> {
+        None
+    }
+
     /// Linear sweep of a planar profile along its normal.
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult>;
 

@@ -179,6 +179,19 @@ pub trait NativeGate: Send + Sync {
     fn vet<'a>(&self, bytes: &'a [u8]) -> KResult<Cow<'a, [u8]>>;
 }
 
+/// A gate that lets every blob through: for tests and workers that only ever see blobs
+/// they wrote themselves. Production kernels vet with the kernel's own checker
+/// (`gusset_kernel_worker::OcctGate`; review L4).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnvettedNatives;
+
+impl NativeGate for UnvettedNatives {
+    fn written(&self, _: &[u8]) {}
+    fn vet<'a>(&self, bytes: &'a [u8]) -> KResult<Cow<'a, [u8]>> {
+        Ok(Cow::Borrowed(bytes))
+    }
+}
+
 impl<G: NativeGate + ?Sized> NativeGate for Arc<G> {
     fn written(&self, bytes: &[u8]) {
         (**self).written(bytes);
@@ -194,7 +207,7 @@ pub struct RemoteKernel {
     connect: Connect,
     frees: Arc<Frees>,
     name: &'static str,
-    gate: Option<Box<dyn NativeGate>>,
+    gate: Box<dyn NativeGate>,
     watch: Arc<Watch>,
 }
 
@@ -234,30 +247,31 @@ impl ShapeRefs for Refs<'_> {
 
 const STALE: &str = "this shape was made by a geometry kernel that has since restarted";
 
+fn raw_import() -> KernelError {
+    KernelError::new(
+        KernelErrorKind::Unsupported,
+        "files are imported by the sandboxed import worker, not by the kernel worker",
+    )
+}
+
 fn crashed(message: String) -> KernelError {
     KernelError::new(KernelErrorKind::Crashed, message)
 }
 
 impl RemoteKernel {
     /// A kernel that starts its worker with `connect` on first use and after a crash.
-    /// `name` is reported by [`Kernel::name`] (the worker's kernel, e.g. "occt").
+    /// `name` is reported by [`Kernel::name`] (the worker's kernel, e.g. "occt"); `gate`
+    /// vets native blobs before the worker parses them (there is no default, review L4).
     #[must_use]
-    pub fn new(name: &'static str, connect: Connect) -> RemoteKernel {
+    pub fn new(name: &'static str, connect: Connect, gate: Box<dyn NativeGate>) -> RemoteKernel {
         RemoteKernel {
             link: Mutex::new(Link { transport: None, generation: 1, calls: 0 }),
             connect,
             frees: Arc::new(Mutex::new(Vec::new())),
             name,
-            gate: None,
+            gate,
             watch: Arc::new(Watch::default()),
         }
-    }
-
-    /// Vets native blobs with `gate` before the worker parses them.
-    #[must_use]
-    pub fn with_native_gate(mut self, gate: Box<dyn NativeGate>) -> RemoteKernel {
-        self.gate = Some(gate);
-        self
     }
 
     /// Whether `shape` was made by this kernel's workers (any generation).
@@ -283,6 +297,14 @@ impl RemoteKernel {
     /// What the fault produces: usually [`KernelErrorKind::Crashed`].
     pub fn inject_fault(&self, fault: Fault) -> KResult<()> {
         self.call(&Request::Fault(fault)).map(|_| ())
+    }
+
+    /// The worker's report of its sandbox (Landlock, seccomp, limits; review L5).
+    ///
+    /// # Errors
+    /// The worker could not be started.
+    pub fn status(&self) -> KResult<String> {
+        Ok(String::from_utf8_lossy(&self.bytes(&Request::Status)?).into_owned())
     }
 
     /// Checks that a worker runs and speaks this protocol version.
@@ -385,13 +407,6 @@ impl RemoteKernel {
             _ => Err(unexpected()),
         }
     }
-
-    fn bodies(&self, req: &Request) -> KResult<Vec<(Shape, String)>> {
-        match self.call(req)? {
-            Reply::Bodies(b) => Ok(b),
-            _ => Err(unexpected()),
-        }
-    }
 }
 
 /// A mesh from the worker is checked before the app uses it (review L9): indices inside
@@ -441,6 +456,10 @@ fn named(bodies: &[(&Shape, &str)]) -> Vec<(Shape, String)> {
 }
 
 impl Kernel for RemoteKernel {
+    fn diagnostics(&self) -> Option<String> {
+        self.status().ok()
+    }
+
     fn name(&self) -> &'static str {
         self.name
     }
@@ -535,31 +554,29 @@ impl Kernel for RemoteKernel {
         self.bytes(&Request::ExportStep(named(bodies)))
     }
 
-    fn import_step(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
-        self.bodies(&Request::ImportStep(data.to_vec()))
+    /// Refused: the long-lived worker holds every shape of the session, so untrusted files
+    /// are parsed by the separate import worker instead (review L4).
+    fn import_step(&self, _: &[u8]) -> KResult<Vec<(Shape, String)>> {
+        Err(raw_import())
     }
 
     fn export_iges(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {
         self.bytes(&Request::ExportIges(named(bodies)))
     }
 
-    fn import_iges(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
-        self.bodies(&Request::ImportIges(data.to_vec()))
+    /// Refused, like [`Kernel::import_step`].
+    fn import_iges(&self, _: &[u8]) -> KResult<Vec<(Shape, String)>> {
+        Err(raw_import())
     }
 
     fn write_native(&self, shape: &Shape) -> KResult<Vec<u8>> {
         let bytes = self.bytes(&Request::WriteNative(shape.clone()))?;
-        if let Some(g) = &self.gate {
-            g.written(&bytes);
-        }
+        self.gate.written(&bytes);
         Ok(bytes)
     }
 
     fn read_native(&self, data: &[u8]) -> KResult<Shape> {
-        let data = match &self.gate {
-            Some(g) => g.vet(data)?,
-            None => Cow::Borrowed(data),
-        };
+        let data = self.gate.vet(data)?;
         match self.call(&Request::ReadNative(data.into_owned()))? {
             Reply::Shape(s) => Ok(s),
             _ => Err(unexpected()),

@@ -41,6 +41,7 @@ fn remote(lives: u32) -> (RemoteKernel, Servers, Arc<AtomicU32>) {
             s2.lock().unwrap().push(server.clone());
             Ok(Box::new(Local { server, lives: c2.clone() }) as Box<dyn Transport>)
         }),
+        Box::new(crate::UnvettedNatives),
     );
     (k, servers, counter)
 }
@@ -126,7 +127,8 @@ fn a_dead_worker_is_an_error_and_the_next_call_restarts_it() {
 
 #[test]
 fn a_worker_that_cannot_start_is_an_error() {
-    let k = RemoteKernel::new("mock", Box::new(|| Err("gusset-worker not found".into())));
+    let k =
+        RemoteKernel::new("mock", Box::new(|| Err("gusset-worker not found".into())), Box::new(crate::UnvettedNatives));
     let e = k.ping().unwrap_err();
     assert_eq!(e.kind, KernelErrorKind::Crashed);
     assert!(e.message.contains("could not start") && e.message.contains("not found"), "{e}");
@@ -200,4 +202,24 @@ fn a_pool_runs_on_the_slot_worker_and_moves_shapes_between_workers() {
     counter_b.store(0, Ordering::SeqCst);
     let _ = with_slot(1, || pool.extrude(&square(), &spec));
     assert!(pool.epoch() > before);
+}
+
+#[test]
+fn the_worker_reports_its_status_and_refuses_raw_imports() {
+    let k = RemoteKernel::new(
+        "mock",
+        Box::new(|| {
+            let server = Arc::new(Mutex::new(Server::new(MockKernel).with_status("sandbox: applied seccomp".into())));
+            Ok(Box::new(Local { server, lives: Arc::new(AtomicU32::new(u32::MAX)) }) as Box<dyn Transport>)
+        }),
+        Box::new(crate::UnvettedNatives),
+    );
+    assert_eq!(k.status().unwrap(), "sandbox: applied seccomp");
+    assert_eq!(gusset_kernel::Kernel::diagnostics(&k).as_deref(), Some("sandbox: applied seccomp"));
+    // Untrusted files never reach the worker that holds the session's shapes (review L4).
+    assert_eq!(
+        gusset_kernel::Kernel::import_step(&k, b"ISO-10303-21;").unwrap_err().kind,
+        KernelErrorKind::Unsupported
+    );
+    assert_eq!(gusset_kernel::Kernel::import_iges(&k, b"S").unwrap_err().kind, KernelErrorKind::Unsupported);
 }

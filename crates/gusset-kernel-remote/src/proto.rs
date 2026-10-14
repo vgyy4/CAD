@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub enum Fault {
 #[derive(Debug)]
 pub(crate) enum Request {
     Ping,
+    /// The worker's own report: what of its sandbox was applied (review L5).
+    Status,
     Free(Vec<u64>),
     Extrude(Profile, ExtrudeSpec),
     Revolve(Profile, RevolveSpec),
@@ -117,6 +119,7 @@ impl Request {
         let mut w = Writer::new();
         match self {
             Request::Ping => w.u8(0),
+            Request::Status => w.u8(24),
             Request::Free(ids) => {
                 w.u8(1);
                 w.seq_len(ids.len())?;
@@ -259,6 +262,7 @@ impl Request {
                 4 => Fault::Exit,
                 t => return Err(WireError(format!("unknown fault {t}"))),
             }),
+            24 => Request::Status,
             t => return Err(WireError(format!("unknown request {t}"))),
         };
         r.finish()?;

@@ -112,6 +112,11 @@ impl Kernel for PoolKernel {
         self.members.len().max(1)
     }
 
+    fn diagnostics(&self) -> Option<String> {
+        let first = self.members.first()?.status().ok()?;
+        Some(format!("{} workers; {first}", self.members.len()))
+    }
+
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
         self.here()?.extrude(profile, spec)
     }

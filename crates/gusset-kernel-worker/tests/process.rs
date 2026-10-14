@@ -15,7 +15,11 @@ fn worker() -> PathBuf {
 }
 
 fn remote(memory_mb: u64) -> RemoteKernel {
-    RemoteKernel::new("occt", gusset_kernel_worker::connector(worker(), memory_mb << 20))
+    RemoteKernel::new(
+        "occt",
+        gusset_kernel_worker::connector(worker(), memory_mb << 20),
+        Box::new(gusset_kernel_worker::OcctGate::next_to_exe()),
+    )
 }
 
 fn square(size: f64) -> Profile {
@@ -53,7 +57,11 @@ fn the_worker_gives_the_same_results_as_the_kernel_in_process() {
 
 #[test]
 fn a_missing_worker_binary_is_a_clear_error() {
-    let k = RemoteKernel::new("occt", gusset_kernel_worker::connector(PathBuf::from("/nonexistent/worker"), 1 << 30));
+    let k = RemoteKernel::new(
+        "occt",
+        gusset_kernel_worker::connector(PathBuf::from("/nonexistent/worker"), 1 << 30),
+        Box::new(gusset_kernel_remote::UnvettedNatives),
+    );
     let e = k.ping().unwrap_err();
     assert_eq!(e.kind, KernelErrorKind::Crashed);
     assert!(e.message.contains("could not start"), "{e}");
@@ -61,7 +69,7 @@ fn a_missing_worker_binary_is_a_clear_error() {
 
 #[test]
 fn native_blobs_are_vetted_in_the_app_before_the_worker_parses_them() {
-    let k = remote(1024).with_native_gate(Box::new(gusset_kernel_worker::OcctGate::next_to_exe()));
+    let k = remote(1024);
     let spec = ExtrudeSpec { distance: 10.0, symmetric: false };
     let a = k.extrude(&square(10.0), &spec).unwrap();
     // The worker's own output is trusted in the app and goes back as is.

@@ -15,7 +15,9 @@ mod pool;
 mod proto;
 mod server;
 
-pub use client::{CANCEL_GRACE, Connect, Interrupt, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError};
+pub use client::{
+    CANCEL_GRACE, Connect, Interrupt, NativeGate, RemoteKernel, RemoteShape, Transport, TransportError, UnvettedNatives,
+};
 pub use frame::{MAX_FRAME, MAX_REPLY};
 pub use pool::{PoolKernel, with_slot};
 pub use proto::{Fault, VERSION};

@@ -238,6 +238,8 @@ pub struct App {
     pub notice: Option<Notice>,
     /// Shown once when the real kernel is unavailable.
     pub kernel_note: Option<String>,
+    /// The kernel worker's sandbox report, read once at startup (review L5).
+    pub kernel_status: Option<String>,
     scene: Option<Drawn>,
     scene_requested: Option<(NodeId, Option<usize>)>,
     /// When to auto-save or write a recovery snapshot (settings: save mode, interval).
@@ -320,6 +322,7 @@ impl App {
             dialog: (!unrecovered.is_empty()).then_some(Dialog::Unrecovered { items: unrecovered }),
             notice: None,
             kernel_note: None,
+            kernel_status: None,
             scene: None,
             scene_requested: None,
             save: SaveScheduler::new(settings),
@@ -1392,6 +1395,9 @@ impl App {
         if let Some(n) = &self.kernel_note {
             s.push_str(n);
             s.push('\n');
+        }
+        if let Some(k) = &self.kernel_status {
+            s.push_str(&format!("Kernel worker: {k}\n"));
         }
         if let Some(r) = &self.project_risky {
             s.push_str(&format!("Storage warning: {r}\n"));

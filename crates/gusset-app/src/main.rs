@@ -49,6 +49,7 @@ fn main() -> eframe::Result {
         eprintln!("warning: trusted-blob list unavailable: {e}");
     }
     let grant_file = dirs.as_ref().map(|d| d.data_dir().join("agent-grants.json"));
+    let app_kernel_status = k.diagnostics();
     let mut app = App::new(k, dirs);
     // Remembered "always allow" agent grants (ADR 0012 "Standing approvals").
     if let Some(f) = &grant_file
@@ -57,6 +58,7 @@ fn main() -> eframe::Result {
         app.notice = Some(gusset_app::app::Notice { text: e, hint: None, error: true });
     }
     app.kernel_note = note;
+    app.kernel_status = app_kernel_status;
     if let Some(path) = std::env::args_os().nth(1)
         && let Err(e) = app.open(path.into())
     {

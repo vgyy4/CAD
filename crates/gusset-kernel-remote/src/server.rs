@@ -38,12 +38,20 @@ impl ShapeRefs for Table {
 pub struct Server<K: Kernel> {
     kernel: K,
     table: Table,
+    status: String,
 }
 
 impl<K: Kernel> Server<K> {
     #[must_use]
     pub fn new(kernel: K) -> Self {
-        Server { kernel, table: Table::default() }
+        Server { kernel, table: Table::default(), status: String::new() }
+    }
+
+    /// What the worker reports when asked for its status: the sandbox it runs in.
+    #[must_use]
+    pub fn with_status(mut self, status: String) -> Self {
+        self.status = status;
+        self
     }
 
     /// Number of shapes currently held (tests: the client frees what it drops).
@@ -75,6 +83,7 @@ impl<K: Kernel> Server<K> {
         let k = &self.kernel;
         Ok(match req {
             Request::Ping => Reply::Version(VERSION),
+            Request::Status => Reply::Bytes(self.status.clone().into_bytes()),
             Request::Free(ids) => {
                 let mut shapes = self.table.shapes.borrow_mut();
                 ids.iter().for_each(|id| {
@@ -105,8 +114,14 @@ impl<K: Kernel> Server<K> {
                 let refs: Vec<(&Shape, &str)> = bodies.iter().map(|(s, n)| (s, n.as_str())).collect();
                 Reply::Bytes(k.export_iges(&refs)?)
             }
-            Request::ImportStep(data) => Reply::Bodies(k.import_step(&data)?),
-            Request::ImportIges(data) => Reply::Bodies(k.import_iges(&data)?),
+            // Untrusted files are parsed by the import worker, never next to the
+            // session's shapes (review L4); the requests stay in the protocol, refused.
+            Request::ImportStep(_) | Request::ImportIges(_) => {
+                return Err(KernelError::new(
+                    KernelErrorKind::Unsupported,
+                    "files are imported by the sandboxed import worker, not by the kernel worker",
+                ));
+            }
             Request::WriteNative(s) => Reply::Bytes(k.write_native(&s)?),
             Request::ReadNative(data) => Reply::Shape(k.read_native(&data)?),
             Request::Fault(f) => inject(f)?,

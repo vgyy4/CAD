@@ -391,6 +391,10 @@ fn self_test() -> Result<ExitCode, String> {
         step.len(),
         stl.len()
     );
+    // Whether the worker's sandbox was applied (review L5).
+    if let Some(d) = k.diagnostics() {
+        println!("kernel worker: {d}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 

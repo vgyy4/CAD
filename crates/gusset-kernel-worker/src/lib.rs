@@ -320,10 +320,8 @@ pub fn production_kernel() -> Result<(Arc<dyn Kernel>, Option<String>), String> 
                 let workers = pool_size(&cpu, budget);
                 // One gate for all workers: a shape one worker wrote may go to another.
                 let gate = Arc::new(OcctGate::next_to_exe());
-                let member = |memory: u64| {
-                    RemoteKernel::new("occt", connector(worker.clone(), memory))
-                        .with_native_gate(Box::new(gate.clone()))
-                };
+                let member =
+                    |memory: u64| RemoteKernel::new("occt", connector(worker.clone(), memory), Box::new(gate.clone()));
                 let remote = member(budget / workers as u64);
                 // A worker that hangs on start must not hang the app: stop it after a while.
                 let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));

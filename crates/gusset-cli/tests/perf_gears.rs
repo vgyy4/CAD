@@ -29,8 +29,11 @@ fn pool(workers: usize) -> Option<Arc<dyn gusset_kernel::Kernel>> {
     let gate = Arc::new(gusset_kernel_worker::OcctGate::next_to_exe());
     let members = (0..workers)
         .map(|_| {
-            gusset_kernel_remote::RemoteKernel::new("occt", gusset_kernel_worker::connector(w.clone(), 4 << 30))
-                .with_native_gate(Box::new(gate.clone()))
+            gusset_kernel_remote::RemoteKernel::new(
+                "occt",
+                gusset_kernel_worker::connector(w.clone(), 4 << 30),
+                Box::new(gate.clone()),
+            )
         })
         .collect();
     Some(Arc::new(gusset_kernel_remote::PoolKernel::new("occt", members)))
@@ -38,10 +41,11 @@ fn pool(workers: usize) -> Option<Arc<dyn gusset_kernel::Kernel>> {
 
 fn session(in_worker: bool) -> Session {
     let kernel: Arc<dyn gusset_kernel::Kernel> = match worker().filter(|_| in_worker) {
-        Some(w) => Arc::new(
-            gusset_kernel_remote::RemoteKernel::new("occt", gusset_kernel_worker::connector(w, 4 << 30))
-                .with_native_gate(Box::new(gusset_kernel_worker::OcctGate::next_to_exe())),
-        ),
+        Some(w) => Arc::new(gusset_kernel_remote::RemoteKernel::new(
+            "occt",
+            gusset_kernel_worker::connector(w, 4 << 30),
+            Box::new(gusset_kernel_worker::OcctGate::next_to_exe()),
+        )),
         None => Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap_or_else(|e| panic!("OCCT: {e}"))),
     };
     Session::new(&Document::from_text("gusset 1\nunits mm\n").unwrap(), kernel, &CmdCtx::user(0))
