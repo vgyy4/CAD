@@ -224,8 +224,9 @@ pub struct App {
     done_rx: mpsc::Receiver<Done>,
     /// Host jobs sent and not yet answered.
     in_flight: usize,
-    /// Recovery-copy writers running on their own threads (also counted in `in_flight`).
-    recovery_writers: usize,
+    /// Save and recovery-copy writers running on their own threads (also counted in
+    /// `in_flight`).
+    writers: usize,
     pub(crate) waker: Arc<Waker>,
     /// Number of change events from agents seen (for the status bar and tests).
     pub agent_changes: u64,
@@ -312,7 +313,7 @@ impl App {
             done_tx,
             done_rx,
             in_flight: 0,
-            recovery_writers: 0,
+            writers: 0,
             waker,
             agent_changes: 0,
             has_project,
@@ -462,8 +463,8 @@ impl App {
             if self.in_flight == 0 && !self.stale {
                 break;
             }
-            // Recovery copies are written outside the model thread: wait for them too.
-            if self.recovery_writers > 0
+            // Saves and recovery copies are written outside the model thread: wait for them too.
+            if self.writers > 0
                 && let Ok(done) = self.done_rx.recv_timeout(std::time::Duration::from_secs(10))
             {
                 self.in_flight = self.in_flight.saturating_sub(1);
@@ -561,6 +562,7 @@ impl App {
                 self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
             }
             Done::Saved { result, then, mark } => {
+                self.writers = self.writers.saturating_sub(1);
                 self.stale = true;
                 match result {
                     Ok(()) => {
@@ -637,7 +639,7 @@ impl App {
                 self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
             }
             Done::Recovery(r, mark) => {
-                self.recovery_writers = self.recovery_writers.saturating_sub(1);
+                self.writers = self.writers.saturating_sub(1);
                 if r.is_ok() {
                     self.save.written_up_to(mark);
                 }
@@ -861,7 +863,10 @@ impl App {
             waker.wake();
         });
         match spawned {
-            Ok(_) => self.in_flight += 1,
+            Ok(_) => {
+                self.in_flight += 1;
+                self.writers += 1;
+            }
             Err(e) => self.save_failed(e.to_string(), None),
         }
     }
@@ -919,7 +924,7 @@ impl App {
         self.in_flight = 0;
         // The old project's writers report to the old channel; closing it (below, in
         // `make`) waits for a write in progress and cancels the others.
-        self.recovery_writers = 0;
+        self.writers = 0;
         let (session, project) = make(old);
         self.has_project = project.is_some();
         self.host = Host::spawn(session, project);
@@ -1079,7 +1084,7 @@ impl App {
         match spawned {
             Ok(_) => {
                 self.in_flight += 1;
-                self.recovery_writers += 1;
+                self.writers += 1;
             }
             Err(e) => {
                 self.notice = Some(Notice { text: format!("Recovery copy failed: {e}"), hint: None, error: true });
