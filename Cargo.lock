@@ -1606,6 +1606,7 @@ dependencies = [
  "gusset-kernel",
  "gusset-meshio",
  "gusset-naming",
+ "gusset-project",
  "gusset-sketch",
  "gusset-store",
  "gusset-units",
