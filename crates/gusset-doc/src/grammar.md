@@ -12,6 +12,7 @@ gusset 1                      # header, always first
 units mm                      # mm or in (display unit and bare numbers), at most once
 param <name> = <expr>         # parameters, any order, may refer to each other
 param <name> = <expr>, min: <expr>, max: <expr>, step: <expr>   # with a range (each optional)
+configuration <Name> (set: [<param> = <expr>, ...])            # a named parameter preset
 sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
 ```
@@ -469,7 +470,7 @@ joint Hinge (type: revolute, body: Lid, at: Lid/cap(start), to: Base/cap(end), f
 
 ```
 component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <Body>],
-                  [set: [<param> = <expr>, ...]])
+                  [configuration: <Name>], [set: [<param> = <expr>, ...]])
 ```
 
 - A component brings in one body of another Gusset document (`body`, default: its last

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 mod assembly;
 mod component;
+mod configuration;
 mod datum;
 mod generate;
 mod hole;
@@ -27,6 +28,7 @@ mod sketch_ops;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
+pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use generate::GenerateGear;
 pub use hole::Hole;
@@ -45,6 +47,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(joint::specs());
     v.extend(assembly::specs());
     v.extend(component::specs());
+    v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
     v
 }
@@ -924,6 +927,11 @@ impl Command for ParamRename {
             let mut used: Vec<String> = doc.params.iter().map(|p| p.name.clone()).collect();
             for p in &doc.params {
                 used.extend(p.expr.variables());
+                let r = &p.range;
+                used.extend([&r.min, &r.max, &r.step].into_iter().flatten().flat_map(|e| e.variables()));
+            }
+            for c in &doc.configurations {
+                used.extend(c.set.iter().flat_map(|(_, e)| e.variables()));
             }
             for feature in &doc.features {
                 used.extend(feature.kind.parameters());
@@ -948,6 +956,19 @@ impl Command for ParamRename {
             };
             for param in &mut doc.params {
                 rewrite(&mut param.expr);
+                let r = &mut param.range;
+                for e in [&mut r.min, &mut r.max, &mut r.step].into_iter().flatten() {
+                    rewrite(e);
+                }
+            }
+            // Configurations name the parameters they set, and their values may use others.
+            for c in &mut doc.configurations {
+                for (n, e) in &mut c.set {
+                    rewrite(e);
+                    if let Some((_, new)) = renamed.iter().find(|(old, _)| old == n) {
+                        n.clone_from(new);
+                    }
+                }
             }
             // A generated gear sketch names its parameters `<key>_module` etc. (ADR 0018):
             // they move together, and the key follows them.
@@ -1017,7 +1038,23 @@ impl Command for ParamDelete {
                 .iter()
                 .filter(|f| f.kind.parameters().contains(&self.name))
                 .map(|f| f.name.clone())
-                .chain(doc.params.iter().filter(|p| p.expr.variables().contains(&self.name)).map(|p| p.name.clone()))
+                .chain(
+                    doc.params
+                        .iter()
+                        .filter(|p| {
+                            let r = &p.range;
+                            std::iter::once(&p.expr)
+                                .chain([&r.min, &r.max, &r.step].into_iter().flatten())
+                                .any(|e| e.variables().contains(&self.name))
+                        })
+                        .map(|p| p.name.clone()),
+                )
+                .chain(
+                    doc.configurations
+                        .iter()
+                        .filter(|c| c.set.iter().any(|(n, e)| *n == self.name || e.variables().contains(&self.name)))
+                        .map(|c| format!("configuration {}", c.name)),
+                )
                 .collect();
             if !users.is_empty() {
                 return Err(CommandError::args(format!("'{}' is used by {}", self.name, users.join(", ")))

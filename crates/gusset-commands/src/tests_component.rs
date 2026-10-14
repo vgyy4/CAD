@@ -166,3 +166,22 @@ fn components_take_parameters_from_this_document() {
     assert!(e.is_ok_and(|r| r["rebuild_ok"] == false));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_component_can_use_a_configuration_of_its_document() {
+    let d = dir();
+    let part = PART.replace("param h = 2 mm\n", "param h = 2 mm\nconfiguration Long (set: [h = 10 mm])\n");
+    write_part(&d.join("pin.gus"), &[&part]);
+    let mut s = session(&d);
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus"}));
+    let vol = |s: &mut Session| run(s, &CmdCtx::user(1), "query.body", json!({"body": "Pin"}))["volume_mm3"].clone();
+    assert_eq!(vol(&mut s), 80.0);
+    run(&mut s, &u, "assembly.configure_component", json!({"component": "Pin", "configuration": "Long"}));
+    assert_eq!(vol(&mut s), 400.0);
+    let e = execute(&mut s, &u, "assembly.configure_component", json!({"component": "Pin", "configuration": "Nope"}))
+        .unwrap_err();
+    assert!(e.hint.unwrap_or_default().contains("Long"));
+    run(&mut s, &u, "assembly.configure_component", json!({"component": "Pin", "configuration": ""}));
+    assert_eq!(vol(&mut s), 80.0);
+}

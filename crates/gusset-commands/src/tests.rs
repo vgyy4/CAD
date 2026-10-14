@@ -1158,3 +1158,35 @@ fn a_parameter_range_bounds_its_value_and_round_trips() {
     let w = m["parameters"].as_array().unwrap().iter().find(|p| p["name"] == "w").unwrap().clone();
     assert_eq!(w["range"]["max"], "100 mm", "{w}");
 }
+
+#[test]
+fn configurations_save_apply_and_follow_renames() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "40 mm"}));
+    run(&mut s, &u, "param.set", json!({"name": "n", "expr": "4"}));
+    run(&mut s, &u, "configuration.save", json!({"name": "Large"}));
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "20 mm"}));
+    run(&mut s, &u, "param.set", json!({"name": "n", "expr": "2"}));
+    run(&mut s, &u, "configuration.save", json!({"name": "Small", "params": ["w"]}));
+    let q = run(&mut s, &u, "query.configurations", json!({}));
+    assert_eq!(q["configurations"][0]["current"], false, "{q}");
+    assert_eq!(q["configurations"][1]["current"], true, "{q}");
+    run(&mut s, &u, "configuration.apply", json!({"name": "Large"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("param w = 40 mm") && text.contains("param n = 4"), "{text}");
+    assert!(text.contains("configuration Small (set: [w = 20 mm])"), "{text}");
+    // The text (and so the history's params object) round-trips.
+    assert_eq!(Document::from_text(&text).unwrap().to_text(), text);
+    // A rename follows into configurations; a delete is refused while one uses it.
+    run(&mut s, &u, "param.rename", json!({"from": "w", "to": "width"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("configuration Small (set: [width = 20 mm])"), "{text}");
+    let e = execute(&mut s, &u, "param.delete", json!({"name": "width"})).unwrap_err();
+    assert!(e.message.contains("configuration Small"), "{e:?}");
+    run(&mut s, &u, "configuration.delete", json!({"name": "Small"}));
+    // Undo brings it back from history.
+    run(&mut s, &u, "history.undo", json!({}));
+    let q = run(&mut s, &u, "query.configurations", json!({}));
+    assert_eq!(q["configurations"].as_array().unwrap().len(), 2, "{q}");
+}

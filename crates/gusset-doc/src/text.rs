@@ -34,10 +34,13 @@ pub fn print(doc: &Document) -> String {
             LengthUnit::Inch => "in",
         }
     );
-    if !doc.params.is_empty() {
+    if !doc.params.is_empty() || !doc.configurations.is_empty() {
         out.push('\n');
         for p in &doc.params {
             print_param(&mut out, p);
+        }
+        for c in &doc.configurations {
+            print_configuration(&mut out, c);
         }
     }
     for f in &doc.features {
@@ -55,6 +58,27 @@ fn print_comment_lines(out: &mut String, text: &str) {
             let _ = writeln!(out, "# {line}");
         }
     }
+}
+
+fn print_configuration(out: &mut String, c: &Configuration) {
+    let items: Vec<String> = c.set.iter().map(|(n, e)| format!("{n} = {e}")).collect();
+    let _ = writeln!(out, "configuration {} (set: [{}])", c.name, items.join(", "));
+}
+
+fn parse_configuration(c: &mut Cursor<'_>) -> Result<Configuration, ParseError> {
+    let name = c.ident()?.to_string();
+    let mut set = None;
+    parse_args(c, |key, c| {
+        match key {
+            "set" => set = Some(parse_assignments(c)?),
+            key => return Err(unknown_arg(c, "configuration", key, "set")),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    Ok(Configuration { name, set: set.ok_or_else(|| missing(c, "configuration", "set"))? })
 }
 
 fn print_param(out: &mut String, p: &Param) {
@@ -385,6 +409,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(b) = &d.body {
                 args.push(format!("body: {b}"));
             }
+            if let Some(c) = &d.configuration {
+                args.push(format!("configuration: {c}"));
+            }
             if !d.set.is_empty() {
                 let items: Vec<String> = d.set.iter().map(|(n, e)| format!("{n} = {e}")).collect();
                 args.push(format!("set: [{}]", items.join(", ")));
@@ -503,6 +530,17 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     return Err(c.err("unexpected text after units"));
                 }
                 seen_units = true;
+                pending_note.clear();
+            }
+            "configuration" => {
+                if doc.configurations.len() >= MAX_LIST_ITEMS {
+                    return Err(c.err("too many configurations"));
+                }
+                let conf = parse_configuration(&mut c)?;
+                if doc.configurations.iter().any(|x| x.name == conf.name) {
+                    return Err(c.err(format!("configuration '{}' is defined twice", conf.name)));
+                }
+                doc.configurations.push(conf);
                 pending_note.clear();
             }
             "param" => {
@@ -1425,7 +1463,8 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
     let (mut source, mut version, mut document, mut body, mut set) = (None, None, None, None, Vec::new());
-    const ALLOWED: &str = "source, version, document, body, set, label, suppressed";
+    let mut configuration = None;
+    const ALLOWED: &str = "source, version, document, body, configuration, set, label, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -1435,6 +1474,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "document" => document = Some(c.string()?),
             "body" => body = Some(c.ident()?.to_string()),
             "set" => set = parse_assignments(c)?,
+            "configuration" => configuration = Some(c.ident()?.to_string()),
             key => return Err(unknown_arg(c, KW, key, ALLOWED)),
         }
         Ok(())
@@ -1448,6 +1488,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         document: document.ok_or_else(|| missing(c, KW, "document"))?,
         body,
         set,
+        configuration,
     };
     Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Component(def) })
 }
@@ -1833,20 +1874,23 @@ pub fn parse_feature_object(s: &str) -> Result<Feature, ParseError> {
     }
 }
 
-/// Canonical text of a parameter table (a history object).
-pub fn print_params_object(params: &[Param]) -> String {
+/// Canonical text of a parameter table with the configurations (a history object).
+pub fn print_params_object(params: &[Param], configurations: &[Configuration]) -> String {
     let mut s = String::new();
     for p in params {
         print_param(&mut s, p);
     }
+    for c in configurations {
+        print_configuration(&mut s, c);
+    }
     s
 }
 
-/// Parses a parameter-table history object.
-pub fn parse_params_object(s: &str) -> Result<Vec<Param>, ParseError> {
+/// Parses a parameter-table history object: the parameters and the configurations.
+pub fn parse_params_object(s: &str) -> Result<(Vec<Param>, Vec<Configuration>), ParseError> {
     let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;
     if !doc.features.is_empty() {
         return Err(perr(1, "a parameter object must not contain features"));
     }
-    Ok(doc.params)
+    Ok((doc.params, doc.configurations))
 }

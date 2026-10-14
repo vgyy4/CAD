@@ -620,8 +620,8 @@ mod object_tests {
         let f = &doc.features[0];
         let obj = text::print_feature_object(f);
         assert_eq!(&text::parse_feature_object(&obj).unwrap(), f);
-        let p = text::print_params_object(&doc.params);
-        assert_eq!(text::parse_params_object(&p).unwrap(), doc.params);
+        let p = text::print_params_object(&doc.params, &doc.configurations);
+        assert_eq!(text::parse_params_object(&p).unwrap(), (doc.params.clone(), doc.configurations.clone()));
         assert!(text::parse_feature_object(&format!("{obj}{obj}")).is_err());
     }
 }

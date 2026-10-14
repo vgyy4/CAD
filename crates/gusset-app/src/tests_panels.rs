@@ -132,6 +132,24 @@ fn a_parameter_with_a_range_gets_a_customizer_slider() {
 }
 
 #[test]
+fn a_configuration_row_applies_its_values() {
+    let mut a = app();
+    a.run("param.set", json!({"name": "width", "expr": "40 mm"})).unwrap();
+    a.run("configuration.save", json!({"name": "Wide"})).unwrap();
+    a.run("param.set", json!({"name": "width", "expr": "10 mm"})).unwrap();
+    a.wait_idle();
+    let mut h = quick_harness(a);
+    settle(&mut h);
+    h.get_by_label_contains("configuration Wide");
+    h.get_by_label("Apply").click();
+    h.run();
+    h.state_mut().wait_idle();
+    h.run();
+    let p = h.state().snapshot.doc.params.iter().find(|p| p.name == "width").map(|p| p.expr.to_string());
+    assert_eq!(p.as_deref(), Some("40 mm"));
+}
+
+#[test]
 fn browser_branch_rows_switch_branches() {
     let mut a = app();
     a.run("param.set", json!({"name": "w", "expr": "1 mm"})).unwrap();

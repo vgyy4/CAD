@@ -1591,6 +1591,9 @@ impl App {
                     form.set("expr", &expr);
                 }
             }
+            browser::Action::ApplyConfiguration(name) => {
+                self.submit_command("configuration.apply", json!({ "name": name }), Then::Notice);
+            }
             browser::Action::SetParam(name, expr) => {
                 self.submit_command("param.set", json!({ "name": name, "expr": expr }), Then::Quiet);
             }

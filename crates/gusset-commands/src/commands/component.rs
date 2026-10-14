@@ -162,8 +162,14 @@ impl Command for InsertComponent {
         check_body(&src.doc, self.body.as_deref(), &crate::paths::display_name(&self.path))?;
         let document = pin(s, &src)?;
         let set = assignments(&src.doc, &self.set)?;
-        let def =
-            ComponentDef { source: self.path.clone(), version: src.node.to_string(), document, body: self.body, set };
+        let def = ComponentDef {
+            source: self.path.clone(),
+            version: src.node.to_string(),
+            document,
+            body: self.body,
+            set,
+            configuration: None,
+        };
         let stem = std::path::Path::new(&self.path).file_stem().and_then(|n| n.to_str()).unwrap_or_default();
         let base = component_name(stem);
         edit(s, ctx, "Insert component", |doc, rb| {
@@ -227,13 +233,17 @@ pub struct ConfigureComponent {
     pub component: String,
     /// Parameter -> expression of this document; null clears it (the component's own
     /// value again).
+    #[serde(default)]
     pub set: std::collections::BTreeMap<String, Option<String>>,
+    /// A configuration of the component's document, applied before `set` ("" clears it).
+    #[serde(default)]
+    pub configuration: Option<String>,
 }
 
 impl Command for ConfigureComponent {
     const ID: &'static str = "assembly.configure_component";
     const TITLE: &'static str = "Configure component";
-    const DESCRIPTION: &'static str = "Set parameters of a component's document from this one ({\"teeth\": \"30\", \"w\": \"2 * a\"}; null restores its own value), e.g. two sizes of one part.";
+    const DESCRIPTION: &'static str = "Set parameters of a component's document from this one ({\"teeth\": \"30\", \"w\": \"2 * a\"}; null restores its own value) and/or pick one of its configurations, e.g. two sizes of one part.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -242,6 +252,16 @@ impl Command for ConfigureComponent {
             return Err(CommandError::not_found(format!("no component '{}'", self.component)));
         };
         let inner = stored_document(s, old)?;
+        let configuration = match self.configuration.as_deref() {
+            None => old.configuration.clone(),
+            Some("") => None,
+            Some(c) if inner.configurations.iter().any(|x| x.name == c) => Some(c.to_string()),
+            Some(c) => {
+                let have: Vec<&str> = inner.configurations.iter().map(|x| x.name.as_str()).collect();
+                return Err(CommandError::not_found(format!("the component has no configuration '{c}'"))
+                    .hint(format!("its configurations: {}", have.join(", "))));
+            }
+        };
         let mut set = old.set.clone();
         for (n, e) in &self.set {
             set.retain(|(m, _)| m != n);
@@ -255,6 +275,7 @@ impl Command for ConfigureComponent {
                 doc.features.iter_mut().find(|f| f.name == self.component).map(|f| &mut f.kind)
             {
                 d.set = set;
+                d.configuration = configuration;
             }
             Ok(json!({ "feature": self.component }))
         })

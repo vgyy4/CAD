@@ -1,6 +1,6 @@
 # ADR 0027: Customizer ranges and configurations
 
-Status: accepted (ranges and sliders done 2026-10-14; configurations planned)
+Status: accepted, done 2026-10-14
 
 ## Context
 DESIGN.md §1.8: parameters are first-class, and "parameters can be exposed as customizer
@@ -25,10 +25,17 @@ The browser shows a slider under each parameter whose `min` and `max` evaluate: 
 the document's unit, angles in degrees, `step` as the slider step. The model changes when
 the slider is released (one ordinary, undoable `param.set`), not on every drag frame.
 
-### 3. Configurations (planned)
-Named parameter presets in the document, `configuration Small (set: [width = 20 mm])`.
-Applying one is an ordinary `param.set` batch (undoable); `query.configurations` names the
-one the current values match; components may name a configuration instead of `set:`.
+### 3. Configurations
+Named parameter presets in the document, `configuration Small (set: [width = 20 mm])`,
+written after the parameters and stored with them in the history's parameter object (no
+change to the snapshot format). `configuration.save` stores the current values of chosen
+parameters (default: all), `configuration.apply` sets them in one undoable edit,
+`configuration.delete` removes one, `query.configurations` lists them with `current`
+(the parameters hold exactly those expressions). Renames follow into configurations; a
+parameter a configuration sets cannot be deleted. Merges treat them by name like
+parameters. A component may pick one of its document's configurations
+(`configuration: Long`, `assembly.configure_component`), applied before its `set:`. The
+browser lists configurations under the parameters with an Apply button.
 
 ## Consequences
 - The parameter text gains optional trailing options; older files parse unchanged.

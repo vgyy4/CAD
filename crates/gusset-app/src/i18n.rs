@@ -108,6 +108,8 @@ const EN: &[(&str, &str)] = &[
     ("empty.code", "Open the code view"),
     ("empty.hint", "Tip: press Ctrl+K to find any command."),
     ("status.saved", "All changes saved"),
+    ("browser.configuration", "configuration"),
+    ("browser.apply_configuration", "Apply"),
     ("browser.customizer", "drag to change; the model rebuilds when you let go"),
     ("components.updates", "Newer versions of components are available"),
     ("components.update_hint", "assembly.update_component pins a component to its source's current version"),

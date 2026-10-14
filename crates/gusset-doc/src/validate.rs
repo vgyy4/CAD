@@ -89,6 +89,26 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         }
     }
 
+    // Configurations: unique names, setting existing parameters.
+    let mut cnames = BTreeSet::new();
+    for c in &doc.configurations {
+        if let Err(e) = validate_feature_name(&c.name) {
+            out.push(issue(&c.name, e));
+        }
+        if !cnames.insert(c.name.as_str()) {
+            out.push(issue_h(&c.name, "configuration is defined twice", "rename or remove one of them"));
+        }
+        for (n, _) in &c.set {
+            if !pnames.contains(n.as_str()) {
+                out.push(issue_h(
+                    &c.name,
+                    format!("sets '{n}', which is not a parameter"),
+                    "remove it or add the parameter",
+                ));
+            }
+        }
+    }
+
     // Features: unique names, earlier-only references.
     let mut seen: BTreeMap<&str, &Feature> = BTreeMap::new();
     // Bodies that exist at this point (a combine consumes its tool bodies).

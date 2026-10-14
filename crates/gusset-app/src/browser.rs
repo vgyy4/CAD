@@ -124,6 +124,8 @@ pub enum Action {
     EditParam(String),
     /// A customizer slider was released: set the parameter to this expression.
     SetParam(String, String),
+    /// "Apply" on a configuration.
+    ApplyConfiguration(String),
     /// Click on another branch.
     SwitchBranch(BranchId),
 }
@@ -422,6 +424,22 @@ fn parameters(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         if let Some(s) = slider_of(p, v) {
             customizer(ui, p, s, out);
         }
+    }
+    // Configurations (ADR 0027 §3): named value sets, applied as one undoable edit.
+    for c in &v.doc.configurations {
+        let current = c.set.iter().all(|(n, e)| v.doc.params.iter().any(|p| p.name == *n && p.expr == *e));
+        ui.horizontal(|ui| {
+            ui.add_space(INDENT);
+            let mut r = Row::new(Tool::Params, &c.name);
+            r.selected = Some(current);
+            r.suffix = tr("browser.configuration").into();
+            r.access = format!("{} {}", tr("browser.configuration"), c.name);
+            // The button first: a row takes the rest of the width.
+            if !current && ui.small_button(tr("browser.apply_configuration")).clicked() {
+                out.push(Action::ApplyConfiguration(c.name.clone()));
+            }
+            row(ui, v.pal, &r);
+        });
     }
     ui.horizontal(|ui| {
         ui.add_space(INDENT);

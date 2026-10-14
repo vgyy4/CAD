@@ -133,8 +133,9 @@ Phase 3 has started (see Next).
      `query.components` reports available updates; the app names them after opening.
      Closed loops: `free: [...]` values solved at the joint that closes a loop (four-bar
      test, OCCT four-bar golden). Three-way `branch.merge` (ADR 0006); the agents panel's Apply merges.
-     Customizer (ADR 0027): parameter ranges (min/max/step) and browser sliders.
-     Next: configurations (ADR 0027 §3), a joint form with frame picking in the viewport.
+     Customizer and configurations (ADR 0027): parameter ranges (min/max/step), browser
+     sliders, named configurations (save/apply/query, per component).
+     Next: a joint form with frame picking in the viewport.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

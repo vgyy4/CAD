@@ -16,7 +16,7 @@ pub enum Side {
 /// An item both sides changed differently since the common ancestor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
-    /// `units`, `parameter`, `feature` or `order`.
+    /// `units`, `parameter`, `configuration`, `feature` or `order`.
     pub kind: &'static str,
     pub name: String,
     /// Each side's version as text (`None`: removed on that side).
@@ -85,6 +85,29 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         params.extend(r);
     }
 
+    // Configurations: like parameters.
+    let cnames = names(
+        ours.configurations.iter().map(|c| c.name.as_str()),
+        theirs.configurations.iter().map(|c| c.name.as_str()),
+    );
+    let conf = |d: &Document, n: &str| d.configurations.iter().find(|c| c.name == n).cloned();
+    let show_c = |c: &Option<gusset_doc::Configuration>| {
+        c.as_ref().map(|c| c.set.iter().map(|(n, e)| format!("{n} = {e}")).collect::<Vec<_>>().join(", "))
+    };
+    let mut configurations = Vec::new();
+    for n in &cnames {
+        let (b, o, t) = (conf(base, n), conf(ours, n), conf(theirs, n));
+        let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
+            Ok(r) => r,
+            Err(()) if resolve("configuration", n, show_c(&o), show_c(&t)) => t.clone(),
+            Err(()) => o.clone(),
+        };
+        if r != o {
+            from_theirs.push(format!("configuration {n}"));
+        }
+        configurations.extend(r);
+    }
+
     // Features: merged one by one, placed in ours' order; those only theirs added go right
     // after the feature that precedes them on their side.
     let feature = |d: &Document, n: &str| d.feature(n).cloned();
@@ -146,7 +169,7 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
     }
     let features =
         order.iter().filter_map(|n| merged.iter().find(|(m, _)| m == n).and_then(|(_, f)| f.clone())).collect();
-    Merged { doc: Document { units, params, features }, conflicts, from_theirs }
+    Merged { doc: Document { units, params, configurations, features }, conflicts, from_theirs }
 }
 
 /// The names of `a`, then those of `b` not in `a`, each once.

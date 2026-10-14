@@ -13,7 +13,16 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub struct Document {
     pub units: LengthUnit,
     pub params: Vec<Param>,
+    /// Named parameter presets (ADR 0027 §3).
+    pub configurations: Vec<Configuration>,
     pub features: Vec<Feature>,
+}
+
+/// A named set of parameter values: `configuration Small (set: [w = 20 mm])`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Configuration {
+    pub name: String,
+    pub set: Vec<(String, Expr)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -996,6 +1005,8 @@ pub struct ComponentDef {
     /// Parameters of that document set from this one (`set: [teeth = 30, w = 2 * a]`):
     /// evaluated here and given to the component as values.
     pub set: Vec<(String, Expr)>,
+    /// A configuration of that document applied first (`set` then overrides it).
+    pub configuration: Option<String>,
 }
 
 /// the frame `to` (on a body already in place, a plane or the origin), with the joint's

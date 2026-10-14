@@ -49,6 +49,23 @@ impl Evaluator {
         let mut doc = Document::from_text(text).map_err(|e| {
             EvalError::new(name, ErrorCode::ComponentFailed, format!("the component's document does not read: {e}"))
         })?;
+        // A configuration of the component's document: its values, in its own terms.
+        if let Some(cn) = &d.configuration {
+            let conf = doc.configurations.iter().find(|c| c.name == *cn).cloned().ok_or_else(|| {
+                let have: Vec<&str> = doc.configurations.iter().map(|c| c.name.as_str()).collect();
+                EvalError::new(name, ErrorCode::InvalidReference, format!("the component has no configuration '{cn}'"))
+                    .with_hint(if have.is_empty() {
+                        "its document defines no configurations".to_string()
+                    } else {
+                        format!("its configurations: {}", have.join(", "))
+                    })
+            })?;
+            for (p, e) in conf.set {
+                if let Some(slot) = doc.params.iter_mut().find(|q| q.name == p) {
+                    slot.expr = e;
+                }
+            }
+        }
         for (p, e) in &d.set {
             let value = override_value(name, e, params)?;
             let names: Vec<String> = doc.params.iter().map(|q| q.name.clone()).collect();
