@@ -126,6 +126,11 @@ int gs_draft(const GsShape* s, const uint32_t* faces, size_t nfaces, const doubl
  * face reports INPUT origins. */
 int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, double distance, GsShape** out,
                     GsBuf* origins);
+/* Moves the faces `faces` of `s` rigidly by `nsteps` translate/rotate steps applied in order
+ * (kinds[i], params[7 * i ..]); the faces around keep their surfaces and stretch. Every face
+ * reports INPUT origins. */
+int gs_move_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, const int* kinds, const double* params,
+                  size_t nsteps, GsShape** out, GsBuf* origins);
 /* Returns a transformed copy; output face i is input face i (INPUT origins, input 0). */
 int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins);
 int gs_compound(const GsShape* const* shapes, size_t n, GsShape** out, GsBuf* origins);

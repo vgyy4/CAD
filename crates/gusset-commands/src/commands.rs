@@ -35,7 +35,7 @@ pub use generate::GenerateGear;
 pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
-pub use ops::{Draft, Mirror, OffsetFace, PatternCircular, PatternLinear, Shell};
+pub use ops::{Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
 

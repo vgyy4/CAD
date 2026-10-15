@@ -175,6 +175,11 @@ impl Kernel for PoolKernel {
         k.draft(&s, faces, spec)
     }
 
+    fn move_faces(&self, shape: &Shape, faces: &[u32], steps: &[Transform]) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.move_faces(&s, faces, steps)
+    }
+
     fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.transform(&s, t)

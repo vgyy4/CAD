@@ -2,7 +2,8 @@
 
 use super::*;
 use gusset_doc::{
-    CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, OffsetFaceDef, PatternCircularDef, PatternLinearDef, ShellDef,
+    CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, MoveFaceDef, MoveRotation, OffsetFaceDef, PatternCircularDef,
+    PatternLinearDef, ShellDef,
 };
 use gusset_kernel::{DraftSpec, KernelError, Transform};
 use gusset_naming::BodyNames;
@@ -85,6 +86,42 @@ impl Evaluator {
             let mut e = kernel_err(name, "offset face", ke);
             if e.hint.is_none() {
                 e.hint = Some("move the faces less far, or fewer faces at once".into());
+            }
+            e
+        })?;
+        let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+        let names = name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
+            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+        replace_body(s, bi, &body, res.shape, names, topo);
+        Ok(())
+    }
+
+    /// Moves faces rigidly (ADR 0031); the faces around stretch to follow.
+    pub(crate) fn run_move_face(
+        &self,
+        s: &mut State,
+        name: &str,
+        d: &MoveFaceDef,
+        units: LengthUnit,
+        params: &ParamValues,
+    ) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let mut steps = motion_steps(name, d.translate.as_ref(), d.rotation.as_ref(), params, units)?;
+        let (bi, body) = target_body(s, name, d.body.as_deref())?;
+        let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
+        // A zero move (a parameter at 0) leaves the body as it is.
+        steps.retain(|t| match t {
+            Transform::Translate(v) => v.iter().any(|c| c.abs() > 1e-9),
+            Transform::Rotate { angle, .. } => angle.abs() > 1e-12,
+            Transform::Mirror { .. } => true,
+        });
+        if steps.is_empty() {
+            return Ok(());
+        }
+        let res = k.move_faces(&body.shape, &faces, &steps).map_err(|ke| {
+            let mut e = kernel_err(name, "move face", ke);
+            if e.hint.is_none() {
+                e.hint = Some("move the faces less far, or together with the faces around them".into());
             }
             e
         })?;
@@ -454,17 +491,7 @@ impl Evaluator {
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let (bi, body) = target_body(s, name, d.body.as_deref())?;
-        // A turn about the axis comes first, then the translation along the world axes.
-        let mut steps: Vec<Transform> = Vec::new();
-        if let Some(r) = &d.rotation {
-            let axis = direction(name, &r.axis, params, units)?;
-            let angle = eval_expr(name, &r.angle, Dim::ANGLE, params, units)?;
-            let origin = length_point(name, r.through.as_ref(), params, units)?;
-            steps.push(Transform::Rotate { origin, axis, angle });
-        }
-        if d.translate.is_some() {
-            steps.push(Transform::Translate(length_point(name, d.translate.as_ref(), params, units)?));
-        }
+        let steps = motion_steps(name, d.translate.as_ref(), d.rotation.as_ref(), params, units)?;
         let mut res: Option<OpResult> = None;
         for t in &steps {
             let from = res.as_ref().map_or(&body.shape, |r| &r.shape);
@@ -593,6 +620,27 @@ impl Evaluator {
         s.bodies.retain(|b| !is_tool(b));
         Ok(())
     }
+}
+
+/// A turn about the axis first, then the translation along the world axes.
+fn motion_steps(
+    feature: &str,
+    translate: Option<&[gusset_units::expr::Expr; 3]>,
+    rotation: Option<&MoveRotation>,
+    params: &ParamValues,
+    units: LengthUnit,
+) -> Result<Vec<Transform>, EvalError> {
+    let mut steps: Vec<Transform> = Vec::new();
+    if let Some(r) = rotation {
+        let axis = direction(feature, &r.axis, params, units)?;
+        let angle = eval_expr(feature, &r.angle, Dim::ANGLE, params, units)?;
+        let origin = length_point(feature, r.through.as_ref(), params, units)?;
+        steps.push(Transform::Rotate { origin, axis, angle });
+    }
+    if translate.is_some() {
+        steps.push(Transform::Translate(length_point(feature, translate, params, units)?));
+    }
+    Ok(steps)
 }
 
 /// Three length expressions as a point in mm; `None` = the origin.

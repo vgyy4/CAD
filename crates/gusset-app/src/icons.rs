@@ -189,6 +189,7 @@ pub enum Tool {
     Shell,
     Draft,
     OffsetFace,
+    MoveFace,
     Text,
     Combine,
     Joint,
@@ -256,6 +257,7 @@ impl Tool {
         Tool::Shell,
         Tool::Draft,
         Tool::OffsetFace,
+        Tool::MoveFace,
         Tool::Text,
         Tool::Combine,
         Tool::Joint,
@@ -318,6 +320,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.shell" => Tool::Shell,
         "feature.draft" => Tool::Draft,
         "feature.offset_face" => Tool::OffsetFace,
+        "feature.move_face" => Tool::MoveFace,
         "feature.text" => Tool::Text,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
@@ -362,6 +365,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "shell" => Tool::Shell,
         "draft" => Tool::Draft,
         "offset_face" => Tool::OffsetFace,
+        "move_face" => Tool::MoveFace,
         "text" => Tool::Text,
         "mirror" => Tool::Mirror,
         "pattern_linear" => Tool::PatternLinear,
@@ -596,6 +600,13 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(4.0, 20.0), (4.0, 11.0), (20.0, 11.0), (20.0, 20.0)], pen.fill, ink);
             pen.poly(&[(4.0, 8.0), (20.0, 8.0), (20.0, 9.5), (4.0, 9.5)], pen.fill, a);
             pen.arrow((12.0, 9.0), (12.0, 2.0), a);
+        }
+        Tool::MoveFace => {
+            // A plate with its hole slid sideways.
+            pen.poly(&[(3.0, 9.0), (21.0, 9.0), (21.0, 20.0), (3.0, 20.0)], pen.fill, ink);
+            pen.circle(8.0, 14.5, 2.5, CLEAR, ink);
+            pen.circle(16.0, 14.5, 2.5, CLEAR, a);
+            pen.arrow((8.0, 5.0), (17.0, 5.0), a);
         }
         Tool::Text => {
             // A raised letter T on a plate.

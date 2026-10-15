@@ -324,6 +324,30 @@ pub fn offset_faces(s: &RawShape, faces: &[u32], distance: f64) -> ShimResult<Op
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Moves `faces` by the transform steps `(kind, params)` applied in order.
+pub fn move_faces(s: &RawShape, faces: &[u32], steps: &[(i32, [f64; 7])]) -> ShimResult<OpOut> {
+    let kinds: Vec<i32> = steps.iter().map(|(k, _)| *k).collect();
+    let params: Vec<f64> = steps.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; `faces`, `kinds` (n) and `params` (7 n) alive for the
+    // call; out-params valid.
+    let rc = s.with(|p| unsafe {
+        sys::gs_move_faces(
+            p,
+            faces.as_ptr(),
+            faces.len(),
+            kinds.as_ptr(),
+            params.as_ptr(),
+            kinds.len(),
+            &mut out,
+            &mut origins,
+        )
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 /// `params`: pull direction (3), a neutral-plane point (3), angle in radians.
 pub fn draft(s: &RawShape, faces: &[u32], params: &[f64; 7]) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();

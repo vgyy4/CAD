@@ -43,6 +43,14 @@
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <gp_Trsf.hxx>
+#include <BRepAlgoAPI_Check.hxx>
+#include <BRepTools_Modifier.hxx>
+#include <BRepTools_TrsfModification.hxx>
+#include <GeomLib_Tool.hxx>
+#include <GeomProjLib.hxx>
+#include <Geom2d_Curve.hxx>
+#include <Geom_Curve.hxx>
+#include <Geom_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -1406,28 +1414,215 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
   GS_GUARD_END
 }
 
+namespace {
+
+// The rigid motion (or mirror) of a GS_XF_* kind; an error message when it has none.
+const char* make_trsf(int kind, const double params[7], gp_Trsf& t) {
+  for (int i = 0; i < 7; ++i)
+    if (!std::isfinite(params[i])) return "transform has non-finite parameters";
+  switch (kind) {
+    case GS_XF_MIRROR: {
+      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12) return "mirror plane has no normal";
+      t.SetMirror(gp_Ax2(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])));
+      return nullptr;
+    }
+    case GS_XF_TRANSLATE: t.SetTranslation(gp_Vec(params[0], params[1], params[2])); return nullptr;
+    case GS_XF_ROTATE: {
+      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12) return "rotation axis has no direction";
+      t.SetRotation(gp_Ax1(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])),
+                    params[6]);
+      return nullptr;
+    }
+    default: return "unknown transform";
+  }
+}
+
+// A copy of the edge's 3D curve in world coordinates, moved by `t` (same parameters).
+occ::handle<Geom_Curve> moved_curve(const TopoDS_Edge& e, const gp_Trsf& t, double& f, double& l) {
+  occ::handle<Geom_Curve> c = BRep_Tool::Curve(e, f, l);
+  if (c.IsNull()) return c;
+  return occ::down_cast<Geom_Curve>(c->Transformed(t));
+}
+
+// Moves some faces of a solid rigidly (ADR 0031). The other faces keep their surfaces and
+// the other edges their curves, so they must contain what moves onto them (checked by
+// check_followers first): a hole slides along the plane it sits in, a side face moves
+// along its normal while its neighbours stretch.
+class MoveFacesModification : public BRepTools_Modification {
+ public:
+  MoveFacesModification(const gp_Trsf& t, const ShapeMap& faces, const ShapeMap& edges, const ShapeMap& vertices)
+      : t_(t), trsf_(new BRepTools_TrsfModification(t)), faces_(faces), edges_(edges), vertices_(vertices) {}
+
+  bool NewSurface(const TopoDS_Face& F, occ::handle<Geom_Surface>& S, TopLoc_Location& L, double& Tol,
+                  bool& RevWires, bool& RevFace) override {
+    return faces_.Contains(F) && trsf_->NewSurface(F, S, L, Tol, RevWires, RevFace);
+  }
+  bool NewCurve(const TopoDS_Edge& E, occ::handle<Geom_Curve>& C, TopLoc_Location& L, double& Tol) override {
+    return edges_.Contains(E) && trsf_->NewCurve(E, C, L, Tol);
+  }
+  bool NewPoint(const TopoDS_Vertex& V, gp_Pnt& P, double& Tol) override {
+    return vertices_.Contains(V) && trsf_->NewPoint(V, P, Tol);
+  }
+  bool NewCurve2d(const TopoDS_Edge& E, const TopoDS_Face& F, const TopoDS_Edge& NewE, const TopoDS_Face& NewF,
+                  occ::handle<Geom2d_Curve>& C, double& Tol) override {
+    if (faces_.Contains(F)) return trsf_->NewCurve2d(E, F, NewE, NewF, C, Tol);
+    if (!edges_.Contains(E)) return false;
+    // A moved edge on a face that stays: the moved curve's image on that face's surface.
+    double f = 0, l = 0;
+    occ::handle<Geom_Curve> c = moved_curve(E, t_, f, l);
+    TopLoc_Location loc;
+    occ::handle<Geom_Surface> surf = BRep_Tool::Surface(F, loc);
+    if (c.IsNull() || surf.IsNull()) return false;
+    if (!loc.IsIdentity()) c = occ::down_cast<Geom_Curve>(c->Transformed(loc.Transformation().Inverted()));
+    Tol = BRep_Tool::Tolerance(E);
+    double ptol = Tol;
+    C = GeomProjLib::Curve2d(c, f, l, surf, ptol);
+    if (C.IsNull()) throw Standard_Failure("a moved edge cannot be placed on the face next to it");
+    Tol = std::max(Tol, ptol);
+    return true;
+  }
+  bool NewParameter(const TopoDS_Vertex& V, const TopoDS_Edge& E, double& P, double& Tol) override {
+    if (edges_.Contains(E)) return trsf_->NewParameter(V, E, P, Tol);
+    if (!vertices_.Contains(V)) return false;
+    // An edge that stays, with a moved end: where the moved point lies on its curve.
+    TopLoc_Location loc;
+    double f = 0, l = 0;
+    occ::handle<Geom_Curve> c = BRep_Tool::Curve(E, loc, f, l);
+    if (c.IsNull()) throw Standard_Failure("a moved vertex ends an edge without a curve");
+    gp_Pnt p = BRep_Tool::Pnt(V).Transformed(t_);
+    if (!loc.IsIdentity()) p.Transform(loc.Transformation().Inverted());
+    Tol = BRep_Tool::Tolerance(V);
+    double u = 0;
+    if (!GeomLib_Tool::Parameter(c, p, std::max(Tol, 1e-6), u))
+      throw Standard_Failure("a moved vertex leaves the edge next to it");
+    if (c->IsPeriodic()) {
+      const double old = BRep_Tool::Parameter(V, E);
+      const double period = c->Period();
+      u += period * std::round((old - u) / period);
+    }
+    P = u;
+    return true;
+  }
+  GeomAbs_Shape Continuity(const TopoDS_Edge& E, const TopoDS_Face& F1, const TopoDS_Face& F2,
+                           const TopoDS_Edge& NewE, const TopoDS_Face& NewF1, const TopoDS_Face& NewF2) override {
+    return trsf_->Continuity(E, F1, F2, NewE, NewF1, NewF2);
+  }
+
+ private:
+  gp_Trsf t_;
+  occ::handle<BRepTools_TrsfModification> trsf_;
+  const ShapeMap& faces_;
+  const ShapeMap& edges_;
+  const ShapeMap& vertices_;
+};
+
+// Throws unless every face that stays contains the moved edges on it and every edge that
+// stays contains its moved ends; otherwise the faces around would have to change shape.
+void check_followers(const TopoDS_Shape& s, const gp_Trsf& t, const ShapeMap& faces, const ShapeMap& edges,
+                     const ShapeMap& vertices) {
+  const char* hint =
+      "the faces next to the moved ones would have to change shape: move them too, or move along the "
+      "faces around (a hole along the plane it sits in), or use offset_face or draft";
+  AncMap edge_faces;
+  TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge& e = TopoDS::Edge(edges(i));
+    if (BRep_Tool::Degenerated(e)) continue;
+    double f = 0, l = 0;
+    occ::handle<Geom_Curve> c = moved_curve(e, t, f, l);
+    if (c.IsNull()) throw Standard_Failure("a moved edge has no curve");
+    const double tol = std::max(BRep_Tool::Tolerance(e), 1e-6);
+    for (ShapeList::Iterator it(edge_faces.FindFromKey(e)); it.More(); it.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(it.Value());
+      if (faces.Contains(face)) continue;
+      occ::handle<Geom_Surface> surf = BRep_Tool::Surface(face);
+      for (int k = 0; k <= 4; ++k) {
+        double u = 0, v = 0;
+        if (!GeomLib_Tool::Parameters(surf, c->Value(f + (l - f) * k / 4.0), tol, u, v))
+          throw Standard_Failure(hint);
+      }
+    }
+  }
+  AncMap vertex_edges;
+  TopExp::MapShapesAndAncestors(s, TopAbs_VERTEX, TopAbs_EDGE, vertex_edges);
+  for (int i = 1; i <= vertices.Extent(); ++i) {
+    const TopoDS_Vertex& v = TopoDS::Vertex(vertices(i));
+    const gp_Pnt p = BRep_Tool::Pnt(v).Transformed(t);
+    for (ShapeList::Iterator it(vertex_edges.FindFromKey(v)); it.More(); it.Next()) {
+      const TopoDS_Edge& e = TopoDS::Edge(it.Value());
+      if (edges.Contains(e)) continue;
+      TopoDS_Vertex a, b;
+      TopExp::Vertices(e, a, b);
+      if (BRep_Tool::Degenerated(e) || a.IsSame(b)) throw Standard_Failure(hint);
+      double f = 0, l = 0;
+      occ::handle<Geom_Curve> c = BRep_Tool::Curve(e, f, l);
+      double u = 0;
+      if (c.IsNull() || !GeomLib_Tool::Parameter(c, p, std::max(BRep_Tool::Tolerance(e), 1e-6), u))
+        throw Standard_Failure(hint);
+    }
+  }
+}
+
+}  // namespace
+
+int gs_move_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, const int* kinds, const double* params,
+                  size_t nsteps, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!faces && nfaces) || (!kinds && nsteps) || (!params && nsteps))
+    return fail("null argument");
+  if (nfaces == 0) return fail("no faces to move");
+  if (nsteps == 0) return fail("the move does nothing");
+  // Steps apply in order: the composed motion is t_n * ... * t_1.
+  gp_Trsf t;
+  for (size_t i = 0; i < nsteps; ++i) {
+    if (kinds[i] == GS_XF_MIRROR) return fail("faces can only be moved and turned, not mirrored");
+    gp_Trsf step;
+    if (const char* err = make_trsf(kinds[i], params + 7 * i, step)) return fail(err);
+    t.PreMultiply(step);
+  }
+  bool moves = false;
+  for (const gp_Pnt& p : {gp_Pnt(0, 0, 0), gp_Pnt(1000, 0, 0), gp_Pnt(0, 1000, 0), gp_Pnt(0, 0, 1000)})
+    moves = moves || p.Distance(p.Transformed(t)) > 1e-9;
+  if (!moves) return fail("the move does nothing");
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  ShapeMap moved, edges, vertices;
+  for (size_t i = 0; i < nfaces; ++i) {
+    if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
+    const TopoDS_Shape& f = in_faces(int(faces[i]) + 1);
+    moved.Add(f);
+    TopExp::MapShapes(f, TopAbs_EDGE, edges);
+    TopExp::MapShapes(f, TopAbs_VERTEX, vertices);
+  }
+  if (moved.Extent() == in_faces.Extent()) return fail("every face would move: use move on the body");
+  check_followers(s->s, t, moved, edges, vertices);
+  occ::handle<MoveFacesModification> m = new MoveFacesModification(t, moved, edges, vertices);
+  BRepTools_Modifier mod(s->s, m);
+  if (!mod.IsDone()) return fail("move face failed");
+  TopoDS_Shape result = mod.ModifiedShape(s->s);
+  if (result.IsNull()) return fail("move face produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    int idx = out_faces.FindIndex(mod.ModifiedShape(in_faces(i)));
+    if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+  }
+  check_valid(result, "move face");
+  // A moved face can pass through another one, which the face checks do not see.
+  BRepAlgoAPI_Check self(result, false, true);
+  if (!self.IsValid()) return fail("the moved faces would cut through the rest of the part");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
 int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!params || !s || !out || !origins) return fail("null argument");
-  for (int i = 0; i < 7; ++i)
-    if (!std::isfinite(params[i])) return fail("transform has non-finite parameters");
   gp_Trsf t;
-  switch (kind) {
-    case GS_XF_MIRROR: {
-      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12) return fail("mirror plane has no normal");
-      t.SetMirror(gp_Ax2(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])));
-      break;
-    }
-    case GS_XF_TRANSLATE: t.SetTranslation(gp_Vec(params[0], params[1], params[2])); break;
-    case GS_XF_ROTATE: {
-      if (std::hypot(params[3], std::hypot(params[4], params[5])) < 1e-12)
-        return fail("rotation axis has no direction");
-      t.SetRotation(gp_Ax1(gp_Pnt(params[0], params[1], params[2]), gp_Dir(params[3], params[4], params[5])),
-                    params[6]);
-      break;
-    }
-    default: return fail("unknown transform");
-  }
+  if (const char* err = make_trsf(kind, params, t)) return fail(err);
   BRepBuilderAPI_Transform xf(s->s, t, true);
   if (!xf.IsDone()) return fail("transform failed");
   TopoDS_Shape result = xf.Shape();

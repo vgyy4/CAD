@@ -106,6 +106,7 @@ impl<K: Kernel> Server<K> {
             Request::Shell(s, faces, t) => Reply::Op(k.shell(&s, &faces, t)?),
             Request::Draft(s, faces, spec) => Reply::Op(k.draft(&s, &faces, &spec)?),
             Request::OffsetFaces(s, faces, d) => Reply::Op(k.offset_faces(&s, &faces, d)?),
+            Request::MoveFaces(s, faces, steps) => Reply::Op(k.move_faces(&s, &faces, &steps)?),
             Request::Transform(s, t) => Reply::Op(k.transform(&s, &t)?),
             Request::Compound(shapes) => Reply::Op(k.compound(&shapes)?),
             Request::Topology(s) => Reply::Topology(k.topology(&s)?),

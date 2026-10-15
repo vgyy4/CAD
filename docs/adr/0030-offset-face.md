@@ -25,5 +25,5 @@ radius changes by the distance).
 ## Consequences
 - Golden tests: box faces up and down, two faces at once, a hole's radius
   (crates/gusset-kernel-occt/src/tests.rs, crates/gusset-cli/tests/modeling_offset.rs).
-- Not yet: move face by a translation or rotation (needs a different algorithm), replace
+- Move face by a translation or rotation: ADR 0031. Not yet: replace
   face, delete face with healing.

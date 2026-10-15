@@ -80,6 +80,10 @@ pub(crate) fn offset_faces(s: &RawShape, faces: &[u32], distance: f64) -> KResul
     safe::offset_faces(s, faces, distance).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn move_faces(s: &RawShape, faces: &[u32], steps: &[(i32, [f64; 7])]) -> KResult<OpOut> {
+    safe::move_faces(s, faces, steps).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn draft(s: &RawShape, faces: &[u32], params: &[f64; 7]) -> KResult<OpOut> {
     safe::draft(s, faces, params).map_err(err(KernelErrorKind::OperationFailed))
 }

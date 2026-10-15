@@ -998,6 +998,7 @@ impl Evaluator {
             FeatureKind::Shell(d) => self.run_shell(s, name, d, units, params),
             FeatureKind::Draft(d) => self.run_draft(s, name, d, units, params),
             FeatureKind::OffsetFace(d) => self.run_offset_face(s, name, d, units, params),
+            FeatureKind::MoveFace(d) => self.run_move_face(s, name, d, units, params),
             FeatureKind::Text(d) => self.run_text(s, name, d, units, params),
             FeatureKind::Mirror(d) => self.run_mirror(s, name, d, units, params),
             FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),

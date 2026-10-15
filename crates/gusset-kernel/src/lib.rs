@@ -228,6 +228,15 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("offset face", self.name())
     }
 
+    /// Moves the faces `faces` rigidly by `steps` (translations and rotations, applied in
+    /// order; ADR 0031). The other faces keep their surfaces and stretch or shrink to
+    /// follow, so they must contain the moved edges (a hole slides along the plane it sits
+    /// in); otherwise the move is refused. Every output face is its input face.
+    fn move_faces(&self, shape: &Shape, faces: &[u32], steps: &[Transform]) -> KResult<OpResult> {
+        let _ = (shape, faces, steps);
+        unsupported("move face", self.name())
+    }
+
     /// A transformed copy of a shape. Output face *i* is input face *i*
     /// (`face_origins[i] == [Input { input: 0, face: i }]`); a mirror keeps outward
     /// normals outward.

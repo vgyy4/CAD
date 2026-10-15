@@ -128,6 +128,30 @@ fn offset_face_command_writes_the_statement() {
 }
 
 #[test]
+fn move_face_command_writes_the_statement() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    plate(&mut s, &u);
+    let r = run(
+        &mut s,
+        &u,
+        "feature.move_face",
+        json!({"faces": ["Extrude1/side(Sketch1/l5)"], "translate": ["2 mm", "0 mm", "0 mm"], "axis": "Z", "angle": "5 deg"}),
+    );
+    assert_eq!(r["feature"], "MoveFace1", "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("move_face MoveFace1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5)], translate: [2 mm, 0 mm, 0 mm], axis: Z, angle: 5 deg)"),
+        "{text}"
+    );
+    run(&mut s, &u, "feature.rename", json!({"from": "Extrude1", "to": "Base"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("move_face MoveFace1 (body: Base, faces: [Base/side(Sketch1/l5)]"), "{text}");
+    let e = execute(&mut s, &u, "feature.move_face", json!({"faces": ["Base/cap(end)"]})).unwrap_err();
+    assert!(e.message.contains("does nothing"), "{e:?}");
+}
+
+#[test]
 fn bad_arguments_are_rejected_with_messages() {
     let mut s = session();
     let u = CmdCtx::user(1);

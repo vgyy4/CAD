@@ -120,6 +120,19 @@ mod imp {
         Ok(&s.downcast::<OcctShape>()?.0)
     }
 
+    /// The shim's transform kind and parameters.
+    fn xf(t: &Transform) -> (i32, [f64; 7]) {
+        match *t {
+            Transform::Mirror { origin, normal } => {
+                (sys::GS_XF_MIRROR, [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2], 0.0])
+            }
+            Transform::Translate(v) => (sys::GS_XF_TRANSLATE, [v[0], v[1], v[2], 0.0, 0.0, 0.0, 0.0]),
+            Transform::Rotate { origin, axis, angle } => {
+                (sys::GS_XF_ROTATE, [origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], angle])
+            }
+        }
+    }
+
     fn invalid(msg: impl Into<String>) -> KernelError {
         KernelError::new(KernelErrorKind::InvalidInput, msg)
     }
@@ -391,16 +404,13 @@ mod imp {
             op_result(ffi::draft(raw(shape)?, faces, &[d[0], d[1], d[2], n[0], n[1], n[2], spec.angle])?)
         }
 
+        fn move_faces(&self, shape: &Shape, faces: &[u32], steps: &[Transform]) -> KResult<OpResult> {
+            let steps: Vec<(i32, [f64; 7])> = steps.iter().map(xf).collect();
+            op_result(ffi::move_faces(raw(shape)?, faces, &steps)?)
+        }
+
         fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
-            let (kind, p) = match *t {
-                Transform::Mirror { origin, normal } => {
-                    (sys::GS_XF_MIRROR, [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2], 0.0])
-                }
-                Transform::Translate(v) => (sys::GS_XF_TRANSLATE, [v[0], v[1], v[2], 0.0, 0.0, 0.0, 0.0]),
-                Transform::Rotate { origin, axis, angle } => {
-                    (sys::GS_XF_ROTATE, [origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], angle])
-                }
-            };
+            let (kind, p) = xf(t);
             op_result(ffi::transform(kind, &p, raw(shape)?)?)
         }
 

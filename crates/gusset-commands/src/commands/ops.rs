@@ -8,6 +8,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<Shell>(),
         spec::<Draft>(),
         spec::<OffsetFace>(),
+        spec::<MoveFace>(),
         spec::<Mirror>(),
         spec::<PatternLinear>(),
         spec::<PatternCircular>(),
@@ -50,6 +51,12 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             d.plane.rename_feature(from, to);
         }
         FeatureKind::OffsetFace(d) => {
+            body_of(&mut d.body);
+            for f in &mut d.faces {
+                f.rename_feature(from, to);
+            }
+        }
+        FeatureKind::MoveFace(d) => {
             body_of(&mut d.body);
             for f in &mut d.faces {
                 f.rename_feature(from, to);
@@ -137,6 +144,52 @@ impl Command for OffsetFace {
             let body = body_for(doc, rb, self.body)?;
             let def = OffsetFaceDef { body, faces, distance };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Moves faces rigidly (ADR 0031).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveFace {
+    /// Faces to move (face refs from query_body).
+    pub faces: Vec<String>,
+    /// As in feature_move_body.
+    #[serde(default)]
+    pub translate: Option<[String; 3]>,
+    #[serde(default)]
+    pub axis: Option<String>,
+    #[serde(default)]
+    pub angle: Option<String>,
+    #[serde(default)]
+    pub through: Option<[String; 3]>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for MoveFace {
+    const ID: &'static str = "feature.move_face";
+    const TITLE: &'static str = "Move face";
+    const DESCRIPTION: &'static str = "Turn (first) and/or translate faces, e.g. slide a hole; the faces around stretch to follow or the move is refused. Needs OCCT.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let (translate, rotation) = super::datum::motion(&self.translate, &self.axis, &self.angle, &self.through)?;
+        let faces = parse_faces(&self.faces)?;
+        if faces.is_empty() {
+            return Err(CommandError::args("no faces to move").hint("list the faces to move"));
+        }
+        for f in &faces {
+            check_face_resolves(s, ctx, f)?;
+        }
+        edit(s, ctx, "Move face", |doc, rb| {
+            let name = feature_name(doc, self.name, "MoveFace")?;
+            let body = body_for(doc, rb, self.body)?;
+            let def = MoveFaceDef { body, faces, translate, rotation };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::MoveFace(def)));
             Ok(json!({ "feature": name }))
         })
     }

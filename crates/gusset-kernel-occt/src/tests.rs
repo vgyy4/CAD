@@ -316,6 +316,62 @@ fn offset_faces_golden() {
     assert!(k().offset_faces(&b.shape, &[], 1.0).is_err());
 }
 
+fn plate_with_hole(cx: f64, cy: f64) -> OpResult {
+    let mut region = Region2 { outer: rect(40.0, 40.0, 1), holes: vec![] };
+    region
+        .holes
+        .push(Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [cx, cy], radius: 5.0 }, tag: 99 }] });
+    let p = Profile { frame: Frame::XY, regions: vec![region] };
+    k().extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap()
+}
+
+fn hole_axis(r: &OpResult) -> Axis3 {
+    let t = k().topology(&r.shape).unwrap();
+    t.faces.iter().find(|f| f.kind == SurfaceKind::Cylinder).unwrap().axis.unwrap()
+}
+
+#[test]
+fn move_faces_golden() {
+    let plate = plate_with_hole(20.0, 20.0);
+    let t = k().topology(&plate.shape).unwrap();
+    let hole = t.faces.iter().position(|f| f.kind == SurfaceKind::Cylinder).unwrap() as u32;
+    let volume = (1600.0 - std::f64::consts::PI * 25.0) * 10.0;
+    // The hole slides along the plate: same volume, axis 8 mm further along X.
+    let r = k().move_faces(&plate.shape, &[hole], &[Transform::Translate([8.0, 0.0, 0.0])]).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, volume, 1e-6));
+    let a = hole_axis(&r);
+    assert!(close(a.origin[0], 28.0, 1e-9) && close(a.origin[1], 20.0, 1e-9), "{a:?}");
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!((rt.solids, rt.faces.len()), (1, t.faces.len()));
+    assert!(
+        r.face_origins.iter().all(|o| matches!(o.as_slice(), [FaceOrigin::Input { input: 0, .. }])),
+        "{:?}",
+        r.face_origins
+    );
+    // A quarter turn about a vertical axis through (10, 20), then 2 mm along Y: (10, 32).
+    let steps = [
+        Transform::Rotate { origin: [10.0, 20.0, 0.0], axis: [0.0, 0.0, 1.0], angle: std::f64::consts::FRAC_PI_2 },
+        Transform::Translate([0.0, 2.0, 0.0]),
+    ];
+    let r = k().move_faces(&plate.shape, &[hole], &steps).unwrap();
+    let a = hole_axis(&r);
+    assert!(close(a.origin[0], 10.0, 1e-9) && close(a.origin[1], 32.0, 1e-9), "{a:?}");
+    // A side face along its normal: the faces around stretch (43 x 20 x 10).
+    let b = plain_box(40.0, 20.0, 10.0);
+    let bt = k().topology(&b.shape).unwrap();
+    let side = bt.faces.iter().position(|f| f.normal[0] > 0.9).unwrap() as u32;
+    let top = bt.faces.iter().position(|f| f.normal[2] > 0.9).unwrap() as u32;
+    let r = k().move_faces(&b.shape, &[side], &[Transform::Translate([3.0, 0.0, 0.0])]).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, 43.0 * 20.0 * 10.0, 1e-9));
+    // Refused: the side faces would have to tilt; a hole through the plate's edge; no move.
+    let e = k().move_faces(&b.shape, &[top], &[Transform::Translate([5.0, 0.0, 0.0])]).unwrap_err();
+    assert!(e.message.contains("change shape"), "{e:?}");
+    assert!(k().move_faces(&plate.shape, &[hole], &[Transform::Translate([18.0, 0.0, 0.0])]).is_err());
+    assert!(k().move_faces(&plate.shape, &[hole], &[Transform::Translate([0.0, 0.0, 0.0])]).is_err());
+    assert!(k().move_faces(&plate.shape, &[hole], &[]).is_err());
+    assert!(k().move_faces(&plate.shape, &[99], &[Transform::Translate([1.0, 0.0, 0.0])]).is_err());
+}
+
 #[test]
 fn draft_box_golden() {
     let b = plain_box(40.0, 20.0, 10.0);

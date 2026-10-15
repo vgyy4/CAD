@@ -50,3 +50,5 @@ draft Draft1 (faces: [Extrude1/side(Sketch1/l5)], plane: XY, angle: 2 deg, flip:
 text Text1 (text: "Gusset", plane: XY, at: [0 mm, 0 mm], height: 5 mm, distance: 1 mm, op: new)
 
 offset_face OffsetFace1 (faces: [Extrude1/cap(end)], distance: 1.5 mm)
+
+move_face MoveFace1 (faces: [Extrude1/side(Sketch1/l5)], translate: [0 mm, 2 mm, 0 mm], axis: Z, angle: 5 deg)

@@ -531,6 +531,10 @@ impl Kernel for RemoteKernel {
         self.op(&Request::Draft(shape.clone(), faces.to_vec(), *spec))
     }
 
+    fn move_faces(&self, shape: &Shape, faces: &[u32], steps: &[Transform]) -> KResult<OpResult> {
+        self.op(&Request::MoveFaces(shape.clone(), faces.to_vec(), steps.to_vec()))
+    }
+
     fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
         self.op(&Request::Transform(shape.clone(), *t))
     }

@@ -143,8 +143,10 @@ Phase 3 has started (see Next).
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
      `text` done (ADR 0029: one line embossed or engraved on a plane or face, the app's two
      fonts through `gusset-text`/skrifa; OCCT tests in `modeling_text.rs`). `offset_face` done (ADR 0030: push/pull faces
-     along their normals, holes change radius; OCCT tests in `modeling_offset.rs`). Next in the
-     tier: move face by a translation/rotation, FreeCAD/OpenSCAD import, Parasolid XT.
+     along their normals, holes change radius; OCCT tests in `modeling_offset.rs`). `move_face`
+     done (ADR 0031: translate/turn faces rigidly, the faces around keep their surfaces and
+     stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). Next in the tier:
+     FreeCAD/OpenSCAD import, Parasolid XT.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

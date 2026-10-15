@@ -108,6 +108,34 @@ impl Command for DatumPlane {
     }
 }
 
+type Motion = (Option<[gusset_units::expr::Expr; 3]>, Option<MoveRotation>);
+
+/// The translation and turn of a move (body or faces) from its command arguments.
+pub(super) fn motion(
+    translate: &Option<[String; 3]>,
+    axis: &Option<String>,
+    angle: &Option<String>,
+    through: &Option<[String; 3]>,
+) -> Result<Motion, CommandError> {
+    let translate = translate.as_ref().map(|t| vec3("translate", t)).transpose()?;
+    let rotation = match (axis, angle) {
+        (Some(a), Some(g)) => Some(MoveRotation {
+            axis: text::parse_direction(a).map_err(|e| CommandError::args(format!("axis: {e}")))?,
+            angle: parse_expr("angle", g)?,
+            through: through.as_ref().map(|t| vec3("through", t)).transpose()?,
+        }),
+        (None, None) if through.is_none() => None,
+        (Some(_), None) => return Err(CommandError::args("a rotation axis needs an angle")),
+        _ => {
+            return Err(CommandError::args("angle (and through) need an axis").hint("give axis, for example \"Z\""));
+        }
+    };
+    if translate.is_none() && rotation.is_none() {
+        return Err(CommandError::args("the move does nothing").hint("give translate, or axis and angle (or both)"));
+    }
+    Ok((translate, rotation))
+}
+
 /// Moves or copies a body.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -137,26 +165,11 @@ pub struct MoveBody {
 impl Command for MoveBody {
     const ID: &'static str = "feature.move_body";
     const TITLE: &'static str = "Move body";
-    const DESCRIPTION: &'static str = "Rotate (first) and/or translate a body, or with copy: true add the moved copy as a new body named after the feature. A moved body keeps its face names; copy faces are named <feature>/copy(<face>).";
+    const DESCRIPTION: &'static str = "Rotate (first) and/or translate a body; copy: true adds the moved copy as a new body named after the feature (faces <feature>/copy(<face>)).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let translate = self.translate.as_ref().map(|t| vec3("translate", t)).transpose()?;
-        let rotation = match (&self.axis, &self.angle) {
-            (Some(a), Some(g)) => Some(MoveRotation {
-                axis: text::parse_direction(a).map_err(|e| CommandError::args(format!("axis: {e}")))?,
-                angle: parse_expr("angle", g)?,
-                through: self.through.as_ref().map(|t| vec3("through", t)).transpose()?,
-            }),
-            (None, None) if self.through.is_none() => None,
-            (Some(_), None) => return Err(CommandError::args("a rotation axis needs an angle")),
-            _ => {
-                return Err(CommandError::args("angle (and through) need an axis").hint("give axis, for example \"Z\""));
-            }
-        };
-        if translate.is_none() && rotation.is_none() {
-            return Err(CommandError::args("the move does nothing").hint("give translate, or axis and angle (or both)"));
-        }
+        let (translate, rotation) = motion(&self.translate, &self.axis, &self.angle, &self.through)?;
         let label = if self.copy { "Copy body" } else { "Move body" };
         edit(s, ctx, label, |doc, rb| {
             let name = feature_name(doc, self.name, if self.copy { "Copy" } else { "Move" })?;

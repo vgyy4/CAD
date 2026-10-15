@@ -56,6 +56,7 @@ pub enum FeatureKind {
     Shell(ShellDef),
     Draft(DraftDef),
     OffsetFace(OffsetFaceDef),
+    MoveFace(MoveFaceDef),
     Text(Box<TextDef>),
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
@@ -82,6 +83,7 @@ impl FeatureKind {
             FeatureKind::Shell(_) => "shell",
             FeatureKind::Draft(_) => "draft",
             FeatureKind::OffsetFace(_) => "offset_face",
+            FeatureKind::MoveFace(_) => "move_face",
             FeatureKind::Text(_) => "text",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::PatternLinear(_) => "pattern_linear",
@@ -156,6 +158,12 @@ impl FeatureKind {
                 d.plane.features(&mut add);
             }
             FeatureKind::OffsetFace(d) => {
+                add_body(&mut add, &d.body);
+                for f in &d.faces {
+                    f.features(&mut add);
+                }
+            }
+            FeatureKind::MoveFace(d) => {
                 add_body(&mut add, &d.body);
                 for f in &d.faces {
                     f.features(&mut add);
@@ -245,14 +253,8 @@ impl FeatureKind {
                 PlaneKind::Offset(e) => take(e),
                 PlaneKind::Angle { angle, .. } => take(angle),
             },
-            FeatureKind::Move(d) => {
-                let translate = d.translate.iter().flatten();
-                let rot = d
-                    .rotation
-                    .iter()
-                    .flat_map(|r| r.axis.exprs().into_iter().chain(r.through.iter().flatten()).chain([&r.angle]));
-                translate.chain(rot).for_each(&mut take);
-            }
+            FeatureKind::Move(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
+            FeatureKind::MoveFace(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
@@ -314,18 +316,8 @@ impl FeatureKind {
                 PlaneKind::Offset(e) => out.push(e),
                 PlaneKind::Angle { angle, .. } => out.push(angle),
             },
-            FeatureKind::Move(d) => {
-                if let Some(translate) = &mut d.translate {
-                    out.extend(translate.iter_mut());
-                }
-                if let Some(rotation) = &mut d.rotation {
-                    out.extend(rotation.axis.exprs_mut());
-                    if let Some(through) = &mut rotation.through {
-                        out.extend(through.iter_mut());
-                    }
-                    out.push(&mut rotation.angle);
-                }
-            }
+            FeatureKind::Move(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
+            FeatureKind::MoveFace(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
@@ -1009,6 +1001,43 @@ pub struct MoveRotation {
     pub angle: Expr,
     /// A point on the axis (lengths); `None` = the world origin.
     pub through: Option<[Expr; 3]>,
+}
+
+fn motion_exprs<'a>(translate: &'a Option<[Expr; 3]>, rotation: &'a Option<MoveRotation>) -> Vec<&'a Expr> {
+    let rot =
+        rotation.iter().flat_map(|r| r.axis.exprs().into_iter().chain(r.through.iter().flatten()).chain([&r.angle]));
+    translate.iter().flatten().chain(rot).collect()
+}
+
+fn motion_exprs_mut<'a>(
+    translate: &'a mut Option<[Expr; 3]>,
+    rotation: &'a mut Option<MoveRotation>,
+    out: &mut Vec<&'a mut Expr>,
+) {
+    if let Some(translate) = translate {
+        out.extend(translate.iter_mut());
+    }
+    if let Some(rotation) = rotation {
+        out.extend(rotation.axis.exprs_mut());
+        if let Some(through) = &mut rotation.through {
+            out.extend(through.iter_mut());
+        }
+        out.push(&mut rotation.angle);
+    }
+}
+
+/// Moves faces of a body rigidly (ADR 0031): first turns them about an axis, then
+/// translates them (world axes), like `move`. The faces around keep their surfaces and
+/// stretch to follow, so they must contain the moved edges (a hole slides along the plane
+/// it sits in, a side face moves along its normal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveFaceDef {
+    /// Target body; `None` = the most recent body.
+    pub body: Option<String>,
+    pub faces: Vec<FaceRef>,
+    /// Translation along the world X, Y and Z axes (lengths).
+    pub translate: Option<[Expr; 3]>,
+    pub rotation: Option<MoveRotation>,
 }
 
 /// Moves a body: first turns it about an axis, then translates it (world axes). With

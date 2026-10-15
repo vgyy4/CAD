@@ -116,6 +116,23 @@ fn print_profile(p: &ProfileRef) -> String {
     if p.regions.is_empty() { p.sketch.clone() } else { format!("{}.regions({})", p.sketch, p.regions.join(", ")) }
 }
 
+fn push_motion(
+    args: &mut Vec<String>,
+    translate: &Option<[gusset_units::expr::Expr; 3]>,
+    rotation: &Option<MoveRotation>,
+) {
+    if let Some(t) = translate {
+        args.push(format!("translate: {}", print_vec3(t)));
+    }
+    if let Some(r) = rotation {
+        args.push(format!("axis: {}", print_dir(&r.axis)));
+        args.push(format!("angle: {}", r.angle));
+        if let Some(t) = &r.through {
+            args.push(format!("through: {}", print_vec3(t)));
+        }
+    }
+}
+
 fn push_body(args: &mut Vec<String>, body: &Option<String>) {
     if let Some(b) = body {
         args.push(format!("body: {b}"));
@@ -366,18 +383,15 @@ fn print_feature(out: &mut String, f: &Feature) {
                 }
             }
         }
+        FeatureKind::MoveFace(d) => {
+            push_body(&mut args, &d.body);
+            let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
+            args.push(format!("faces: [{}]", faces.join(", ")));
+            push_motion(&mut args, &d.translate, &d.rotation);
+        }
         FeatureKind::Move(d) => {
             push_body(&mut args, &d.body);
-            if let Some(t) = &d.translate {
-                args.push(format!("translate: {}", print_vec3(t)));
-            }
-            if let Some(r) = &d.rotation {
-                args.push(format!("axis: {}", print_dir(&r.axis)));
-                args.push(format!("angle: {}", r.angle));
-                if let Some(t) = &r.through {
-                    args.push(format!("through: {}", print_vec3(t)));
-                }
-            }
+            push_motion(&mut args, &d.translate, &d.rotation);
             if d.copy {
                 args.push("copy: true".into());
             }
@@ -626,8 +640,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "draft" | "offset_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular" | "plane"
-            | "move" | "combine" | "hole" | "joint" | "component" => {
+            | "draft" | "offset_face" | "move_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular"
+            | "plane" | "move" | "combine" | "hole" | "joint" | "component" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -640,7 +654,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     "shell" | "draft" | "offset_face" | "mirror" | "pattern_linear" | "pattern_circular"
                 ) {
                     parse_feature_ext(kw, &mut c)?
-                } else if matches!(kw, "plane" | "move" | "combine") {
+                } else if matches!(kw, "plane" | "move" | "move_face" | "combine") {
                     parse_feature_ext2(kw, &mut c)?
                 } else if matches!(kw, "sweep" | "loft") {
                     parse_feature_ext3(kw, &mut c)?
@@ -932,24 +946,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             (_, "label") => label = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             (_, "body") => body = Some(c.ident()?.to_string()),
-            ("shell" | "draft" | "offset_face", "faces") => {
-                c.expect('[')?;
-                let mut list = Vec::new();
-                if !c.eat(']') {
-                    loop {
-                        list.push(parse_face(c)?);
-                        if list.len() > MAX_LIST_ITEMS {
-                            return Err(c.err("too many faces"));
-                        }
-                        if c.eat(',') {
-                            continue;
-                        }
-                        c.expect(']')?;
-                        break;
-                    }
-                }
-                faces = Some(list);
-            }
+            ("shell" | "draft" | "offset_face", "faces") => faces = Some(parse_face_list(c)?),
             ("shell", "thickness") => thickness = Some(c.expr()?),
             ("mirror" | "draft", "plane") => plane = Some(parse_plane(c)?),
             ("draft", "flip") => flip = parse_bool(c)?,
@@ -1377,17 +1374,19 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut translate = None;
     let mut copy = false;
     let mut tools: Option<Vec<String>> = None;
+    let mut faces = None;
     let mut op = None;
     let allowed = match kw {
         "plane" => "base, offset, axis, angle, label, suppressed",
         "move" => "body, translate, axis, angle, through, copy, label, suppressed",
+        "move_face" => "body, faces, translate, axis, angle, through, label, suppressed",
         _ => "body, tools, op, label, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
             (_, "label") => label = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
-            ("move" | "combine", "body") => body = Some(c.ident()?.to_string()),
+            ("move" | "move_face" | "combine", "body") => body = Some(c.ident()?.to_string()),
             ("plane", "base") => base = Some(parse_plane(c)?),
             ("plane", "offset") => offset = Some(c.expr()?),
             ("plane", "axis") => {
@@ -1402,10 +1401,11 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                     }
                 });
             }
-            ("plane" | "move", "angle") => angle = Some(c.expr()?),
-            ("move", "translate") => translate = Some(parse_vec3(c)?),
-            ("move", "axis") => axis = Some(parse_dir(c)?),
-            ("move", "through") => through = Some(parse_vec3(c)?),
+            ("plane" | "move" | "move_face", "angle") => angle = Some(c.expr()?),
+            ("move" | "move_face", "translate") => translate = Some(parse_vec3(c)?),
+            ("move" | "move_face", "axis") => axis = Some(parse_dir(c)?),
+            ("move" | "move_face", "through") => through = Some(parse_vec3(c)?),
+            ("move_face", "faces") => faces = Some(parse_face_list(c)?),
             ("move", "copy") => copy = parse_bool(c)?,
             ("combine", "tools") => {
                 c.expect('[')?;
@@ -1460,7 +1460,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             };
             FeatureKind::Plane(PlaneDef { base: base.ok_or_else(|| missing(c, kw, "base"))?, kind })
         }
-        "move" => {
+        "move" | "move_face" => {
             let rotation = match (axis, angle) {
                 (Some(axis), Some(angle)) => Some(MoveRotation { axis, angle, through }),
                 (None, None) if through.is_none() => None,
@@ -1469,11 +1469,16 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             };
             if translate.is_none() && rotation.is_none() {
                 return Err(c.err_hint(
-                    "'move' needs a translate, or an axis and an angle",
+                    format!("'{kw}' needs a translate, or an axis and an angle"),
                     "e.g. translate: [10 mm, 0 mm, 0 mm]",
                 ));
             }
-            FeatureKind::Move(MoveDef { body, translate, rotation, copy })
+            if kw == "move" {
+                FeatureKind::Move(MoveDef { body, translate, rotation, copy })
+            } else {
+                let faces = faces.ok_or_else(|| missing(c, kw, "faces"))?;
+                FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation })
+            }
         }
         _ => FeatureKind::Combine(CombineDef {
             body,
@@ -1482,6 +1487,26 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
         }),
     };
     Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+/// `[<face>, ...]`.
+fn parse_face_list(c: &mut Cursor<'_>) -> Result<Vec<FaceRef>, ParseError> {
+    c.expect('[')?;
+    let mut list = Vec::new();
+    if !c.eat(']') {
+        loop {
+            list.push(parse_face(c)?);
+            if list.len() > MAX_LIST_ITEMS {
+                return Err(c.err("too many faces"));
+            }
+            if c.eat(',') {
+                continue;
+            }
+            c.expect(']')?;
+            break;
+        }
+    }
+    Ok(list)
 }
 
 /// A joint origin: `origin`, a plane (`XY`, a datum plane), a face or an edge.

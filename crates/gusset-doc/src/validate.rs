@@ -243,6 +243,12 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 }
                 check_plane(n, &d.base, &seen, &mut out);
             }
+            FeatureKind::MoveFace(d) => {
+                if d.faces.is_empty() {
+                    out.push(issue_h(n, "no faces selected", "select the faces to move"));
+                }
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
             FeatureKind::Move(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
