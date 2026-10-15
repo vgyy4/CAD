@@ -41,9 +41,9 @@ status. Scratch harnesses referenced below lived outside the repository.
 | v0.3 W5 | Removing or recreating an agent key leaves its standing grants and branch to the next key of that name | **Fixed** in 96f1189: keyed agents are `key_<name>_<id>` with a random id per key |
 | v0.3 W6 | A project file can plant the branch `agent/key_<name>` that a keyed agent then continues on | **Fixed** in 96f1189 (random id in the keyed agent's name and branch) |
 | v0.3 W7 | Agent key file: a damaged file is overwritten by the next key, `version` and mode are not checked | **Fixed** in 96f1189: version, owner and mode checked; an unreadable file is kept as `.bad` |
-| v0.3 W8 | Open-time component check decodes every distinct local source with no work limit | **Open** |
-| v0.3 W9 | THREAT_MODEL.md not updated for components, agent keys, merge and the worker pool | **Open** |
-| v0.3 W10 | Kernel worker pool: a blob one worker wrote is trusted by the gate for the other workers | **Open** (info) |
+| v0.3 W8 | Open-time component check decodes every distinct local source with no work limit | **Fixed**: at most 50 different sources per `query.components` call (the open-time check also stays inside the project folder and is cancellable) |
+| v0.3 W9 | THREAT_MODEL.md not updated for components, agent keys, merge and the worker pool | **Fixed**: THREAT_MODEL B1, B2, B3 rows for components, merge, agent keys and the worker pool |
+| v0.3 W10 | Kernel worker pool: a blob one worker wrote is trusted by the gate for the other workers | **Accepted** (ADR 0022 amendment): workers share one sandbox and the session's data |
 | v0.3 W11 | `merge_base` still trusts node labels (code review L3) | **Fixed** in eb00848 (reviewed at bd91a8c): nodes carry a `merged` field |
 
 ## Review 1: MVP milestone (2026-10-11)

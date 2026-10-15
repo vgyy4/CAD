@@ -141,3 +141,11 @@ fillet radius against the shortest edge, already checked in `feature.fillet`).
   meshes and topology summaries, as today).
 - A second long-lived process per open project; on low-end machines (HARDWARE.md tier 1)
   the worker budget is what keeps the app responsive.
+
+## Amendment (2026-10-15): trust between pool workers
+The workers of a pool share one trust gate: a native blob one worker wrote is read by
+another without the import worker's vetting. Accepted: all workers run in the same
+sandbox, on the same session's shapes, so a compromised worker could already corrupt
+every result it returns; re-vetting each cross-worker copy would cost an import-worker
+round trip per shape for no gain. Blobs that come from files are vetted as before
+(security review v0.3 W10).

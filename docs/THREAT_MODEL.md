@@ -47,9 +47,11 @@ Last full revision: 2026-10-10 (Phase 1).
 | S | File claims to be from another app version | Version and schema checks; migrations only go forward |
 | T | Tampered or torn file | Per-record CRC32C + BLAKE3; damaged files are refused, with the recovery flow (ADR 0005/0007) |
 | R | — | — |
-| I | File makes the app read other files (paths in imports) | Projects carry blobs *inside* the file; no external paths are dereferenced on open |
+| I | File makes the app read other files (paths in imports, component sources) | Projects carry blobs and the pinned documents of components *inside* the file. The update check after opening reads only component sources inside the project folder (the agent confinement rules), at most 50 per check, cancellable; network, device and verbatim paths are refused for everyone; other sources are read only when the user asks for an update (ADR 0026, security review v0.3 H1/W8) |
 | D | Decompression bombs, huge counts, deep nesting | Limits on size, records, decompressed sizes, nesting and statement counts; parsers fuzzed |
-| D | Small files that are expensive to rebuild (500-copy patterns, chained patterns that double the body, many holes, splines that intersect many curves) | Per-feature and per-evaluation work budgets with clean errors, multi-tool booleans instead of one per copy, a cancellable rebuild, bounded spline intersection (security review V1/V2) |
+| D | Small files that are expensive to rebuild (500-copy patterns, chained patterns that double the body, many holes, splines that intersect many curves, nested or many components, long joint loops) | Per-feature and per-evaluation work budgets with clean errors, multi-tool booleans instead of one per copy, a cancellable rebuild, bounded spline intersection (security review V1/V2). Components: identical builds memoised, at most 1000 different ones, all sharing the evaluation's budget, nesting depth 8; joint loops: at most 60 unknowns per loop and one solver budget per rebuild (security review v0.3 H3, W1, W3) |
+| D | A large document that is expensive to merge or compare | Merge and compare are linear in the document size (security review v0.3 W2) |
+| T | A planted history record that changes what a later merge takes | Merge records are a node field checked on load, not parsed from labels (code review v0.3 L3) |
 | E | Code execution through the file | The document language is declarative and pure (ADR 0004): no I/O, no process, no network, no clock; parsing never executes anything |
 
 ### B2: Importing foreign files
@@ -57,12 +59,14 @@ Last full revision: 2026-10-10 (Phase 1).
 |---|---|---|
 | T/D/E | Memory-corruption bugs in C++ parsers (OCCT STEP/IGES); pathological geometry | **Out-of-process import worker** (`gusset-worker`) with OS sandboxing (Linux: seccomp + Landlock, no network; Windows: AppContainer/low integrity, job object limits; macOS: sandbox profile), CPU/memory/time limits. The worker returns kernel-native B-rep bytes, which are validated in the app. A worker crash is a reported error |
 | D | Mesh/zip bombs in 3MF and Rust parsers | Limits, ratio checks; fuzzing in CI |
+| T/E | A compromised kernel worker hands hostile native bytes to the other workers of the pool | Accepted (ADR 0022 amendment): blobs a worker wrote are trusted by the shared gate; every worker runs in the same sandbox on the same session's data, so one compromised worker gains nothing the others lack. Blobs from files are still vetted by the import worker first (security review v0.3 W10) |
 | I | Imported metadata (names, notes) used for prompt injection | Treated as untrusted text everywhere (B4) |
 | E | Blender `.blend` scripts | Blender is only ever run with `-b -Y --factory-startup` (auto-run scripts disabled), from an absolute path the user confirmed, with an argument array and no shell |
 
 ### B3: Local IPC: MCP server and stdio bridge
 | | Threat | Mitigation |
 |---|---|---|
+| S | Another agent takes a keyed agent's identity, branch or standing grants | Agent keys (ADR 0012) are created only in the app, stored as BLAKE3 hashes in an owner-only file (refused when open to others or of another version), compared in constant time; a keyed agent is `key_<name>_<id>` with a random id per key, which no client name can produce, so a re-created key or a planted branch gets no old grants or branch (security review v0.3 W5-W7) |
 | S | Another local user or process connects to the localhost port | Random 256-bit per-session bearer token in a file readable only by the user (0600 / user-only ACL), compared in constant time. On Windows, a named pipe with a user-only DACL is preferred where the client supports it |
 | S | DNS rebinding from a browser | Bind 127.0.0.1/::1 only; validate `Host` (localhost names and our port only) and `Origin` (absent, or an explicit allow-list, otherwise 403). rmcp's origin enforcement is switched on explicitly, because its default allow-list is empty and does nothing |
 | T | Path escapes through MCP file tools | Paths are canonicalized; `..`, symlink and junction escapes are rejected; access is confined to the project folder and re-checked after open (`openat`-style on Unix, handle path check on Windows) |
@@ -70,6 +74,7 @@ Last full revision: 2026-10-10 (Phase 1).
 | I | Token leakage | The token is never logged, never in URLs, and rotated per session; the kill switch revokes it immediately |
 | D | Flooding | Per-session rate limits, size limits on requests, timeouts |
 | E | Rare commands reached through the generic `commands`/`run` tools escape a check | `run` calls the command through the same path as its own tool (approvals and their retries, read-only mode in the app and in the bridge, main-branch protection, limits, argument checks). A client's "always allow `run`" covers every non-core command, so Gusset's own approvals are what protect edits (ADR 0012) |
+| E | An agent's branch reaches main | `branch.merge` and the agents panel's Apply merge into the caller's branch only; main is protected like any other edit (approval), and the preview (`branch.compare`) shows every item the merge takes, ranges and configurations included (security review v0.3 M5) |
 | E | An agent changes security settings, deletes data permanently, runs commands | No such tools exist. Settings for the updater, MCP, sandbox and permissions are not exposed. Destructive actions need confirm flags and human approval (elicitation or in-app prompt), and agents work on their own branch by default |
 
 ### B4: Prompt injection via model content (T5)

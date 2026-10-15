@@ -8,6 +8,9 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     vec![spec::<InsertComponent>(), spec::<UpdateComponent>(), spec::<ConfigureComponent>(), spec::<QueryComponents>()]
 }
 
+/// Most different sources `query.components` reads in one call (security review v0.3 W8).
+const MAX_CHECKED: usize = 50;
+
 /// How deep the documents a component brings along may nest.
 const MAX_NESTING: u32 = 8;
 
@@ -337,7 +340,11 @@ impl Command for QueryComponents {
             std::collections::BTreeMap::new();
         for f in &doc.features {
             let FeatureKind::Component(d) = &f.kind else { continue };
+            let many = read.len() >= MAX_CHECKED;
             let text = read.entry((d.source.as_str(), d.branch.as_deref())).or_insert_with(|| {
+                if many {
+                    return Err(format!("not checked: more than {MAX_CHECKED} different sources"));
+                }
                 if self.local_only {
                     crate::paths::confined(s.project_dir.as_deref(), &d.source)
                         .map_err(|_| "not checked: the source is outside the project folder".to_string())?;
