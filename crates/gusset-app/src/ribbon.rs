@@ -69,6 +69,7 @@ const SOLID: &[Group] = &[
             d("feature.chamfer", "Chamfer"),
             d("feature.shell", "Shell"),
             d("feature.combine", "Combine"),
+            d("feature.draft", "Draft"),
             d("feature.move_body", "Move"),
             d("feature.pattern_linear", "Pattern"),
             d("feature.pattern_circular", "Circular"),

@@ -1593,6 +1593,7 @@ dependencies = [
  "gusset-store",
  "gusset-units",
  "gusset-worker",
+ "libm",
  "serde_json",
 ]
 
@@ -1684,6 +1685,7 @@ dependencies = [
  "gusset-occt-sys",
  "gusset-sandbox",
  "gusset-worker",
+ "libm",
 ]
 
 [[package]]

@@ -29,7 +29,8 @@ fn plate(s: &mut Session, ctx: &CmdCtx) {
 
 #[test]
 fn commands_are_registered_with_schemas() {
-    for id in ["feature.shell", "feature.mirror", "feature.pattern_linear", "feature.pattern_circular"] {
+    for id in ["feature.shell", "feature.draft", "feature.mirror", "feature.pattern_linear", "feature.pattern_circular"]
+    {
         let spec = find(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(spec.description.len() > 40, "{id}");
         let schema = serde_json::to_string(&(spec.schema)()).unwrap();
@@ -83,6 +84,30 @@ fn mirror_and_pattern_commands_edit_the_document() {
 }
 
 #[test]
+fn draft_command_writes_the_statement_and_follows_renames() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    plate(&mut s, &u);
+    let r = run(
+        &mut s,
+        &u,
+        "feature.draft",
+        json!({"faces": ["Extrude1/side(Sketch1/l5)"], "plane": "Extrude1/cap(start)", "angle": "2 deg", "flip": true}),
+    );
+    assert_eq!(r["feature"], "Draft1", "{r}");
+    // The mock kernel has no draft: the edit is kept and reported as not rebuilding.
+    assert_eq!(r["rebuild_ok"], false, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("draft Draft1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5)], plane: Extrude1/cap(start), angle: 2 deg, flip: true)"),
+        "{text}"
+    );
+    run(&mut s, &u, "feature.rename", json!({"from": "Extrude1", "to": "Base"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("faces: [Base/side(Sketch1/l5)], plane: Base/cap(start)"), "{text}");
+}
+
+#[test]
 fn bad_arguments_are_rejected_with_messages() {
     let mut s = session();
     let u = CmdCtx::user(1);
@@ -91,6 +116,9 @@ fn bad_arguments_are_rejected_with_messages() {
         ("feature.shell", json!({"faces": ["Extrude1/cap(end)"]})),
         ("feature.shell", json!({"faces": ["nonsense"], "thickness": "2 mm"})),
         ("feature.shell", json!({"faces": ["Extrude1/side(Sketch1/l99)"], "thickness": "2 mm"})),
+        ("feature.draft", json!({"faces": [], "plane": "XY", "angle": "2 deg"})),
+        ("feature.draft", json!({"faces": ["Extrude1/side(Sketch1/l5)"], "plane": "ZZ", "angle": "2 deg"})),
+        ("feature.draft", json!({"faces": ["Extrude1/side(Sketch1/l5)"], "plane": "XY", "angle": "2 +"})),
         ("feature.mirror", json!({"plane": "ZZ"})),
         ("feature.mirror", json!({"plane": "XY", "color": "red"})),
         ("feature.pattern_linear", json!({"direction": "W", "count": "3", "spacing": "1 mm"})),

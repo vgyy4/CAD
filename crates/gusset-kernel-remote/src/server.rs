@@ -104,6 +104,7 @@ impl<K: Kernel> Server<K> {
             Request::Fillet(s, edges, r) => Reply::Op(k.fillet(&s, &edges, r)?),
             Request::Chamfer(s, edges, d) => Reply::Op(k.chamfer(&s, &edges, d)?),
             Request::Shell(s, faces, t) => Reply::Op(k.shell(&s, &faces, t)?),
+            Request::Draft(s, faces, spec) => Reply::Op(k.draft(&s, &faces, &spec)?),
             Request::Transform(s, t) => Reply::Op(k.transform(&s, &t)?),
             Request::Compound(shapes) => Reply::Op(k.compound(&shapes)?),
             Request::Topology(s) => Reply::Topology(k.topology(&s)?),

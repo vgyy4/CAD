@@ -76,6 +76,10 @@ pub(crate) fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> KResult<OpOu
     safe::shell(s, faces, thickness).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn draft(s: &RawShape, faces: &[u32], params: &[f64; 7]) -> KResult<OpOut> {
+    safe::draft(s, faces, params).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn transform(kind: i32, params: &[f64; 7], s: &RawShape) -> KResult<OpOut> {
     safe::transform(kind, params, s).map_err(err(KernelErrorKind::OperationFailed))
 }

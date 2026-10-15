@@ -653,6 +653,10 @@ shell Shell1 (body: Extrude1, faces: [Extrude1/cap(end)], thickness: 2 mm)
 
 shell Shell2 (faces: [], thickness: 1 mm)
 
+draft Draft1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5), Extrude1/side(Sketch1/l7)], plane: XY, angle: 2 deg)
+
+draft Draft2 (faces: [Extrude1/side(Sketch1/l6)], plane: Extrude1/cap(start), angle: -1.5 deg, flip: true)
+
 mirror Mirror1 (body: Extrude1, plane: YZ)
 
 mirror Mirror2 (plane: Extrude1/side(Sketch1/l6), merge: true)
@@ -764,6 +768,11 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
             "shell S (faces: [], thickness: 1 mm, count: 2)",
             "shell S (faces: [Extrude1/cap(end)], thickness: )",
             "shell S (faces: [Extrude1/cap(end), thickness: 1 mm)",
+            "draft D (plane: XY, angle: 2 deg)",
+            "draft D (faces: [Extrude1/cap(end)], angle: 2 deg)",
+            "draft D (faces: [Extrude1/cap(end)], plane: XY)",
+            "draft D (faces: [Extrude1/cap(end)], plane: XY, angle: 2 deg, flip: maybe)",
+            "draft D (faces: [Extrude1/cap(end)], plane: XY, angle: 2 deg, thickness: 1 mm)",
             "mirror M (merge: maybe, plane: XY)",
             "mirror M (merge: true)",
             "pattern_linear P (direction: W, count: 2, spacing: 1 mm)",

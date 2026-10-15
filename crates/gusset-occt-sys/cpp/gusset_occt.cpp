@@ -37,6 +37,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <gp_Trsf.hxx>
@@ -1309,6 +1310,54 @@ int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thic
     if (!(va > 1e-9) || (thickness > 0 && !(va < vb - 1e-9)))
       throw Standard_Failure("the walls are too thick for this part");
   }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_draft(const GsShape* s, const uint32_t* faces, size_t nfaces, const double params[7], GsShape** out,
+             GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || !params || (!faces && nfaces)) return fail("null argument");
+  if (nfaces == 0) return fail("no faces to draft");
+  for (int i = 0; i < 7; ++i)
+    if (!std::isfinite(params[i])) return fail("draft has non-finite parameters");
+  gp_Vec pull(params[0], params[1], params[2]);
+  if (pull.Magnitude() < 1e-12) return fail("the pull direction is zero");
+  const double angle = params[6];
+  if (!(std::fabs(angle) > 1e-9 && std::fabs(angle) < M_PI / 2 - 1e-9))
+    return fail("the draft angle must be between 0 and 90 degrees");
+  const gp_Dir dir(pull);
+  const gp_Pln neutral(gp_Pnt(params[3], params[4], params[5]), dir);
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  BRepOffsetAPI_DraftAngle mk(s->s);
+  for (size_t i = 0; i < nfaces; ++i) {
+    if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
+    // For OCCT a positive angle leans an outward face inward along the pull direction
+    // (the part narrows towards it), the convention of DraftSpec (golden test).
+    mk.Add(TopoDS::Face(in_faces(int(faces[i]) + 1)), dir, angle, neutral);
+    if (!mk.AddDone())
+      throw Standard_Failure(("face " + std::to_string(faces[i]) +
+                              " cannot be drafted: it must be planar, cylindrical or conical and cross the "
+                              "neutral plane")
+                                 .c_str());
+  }
+  mk.Build();
+  if (!mk.IsDone()) return fail("draft failed");
+  TopoDS_Shape result = mk.Shape();
+  if (result.IsNull()) return fail("draft produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  // A modification keeps one face per face; DraftAngle reports the drafted ones through
+  // ModifiedShape, not Modified.
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    int idx = out_faces.FindIndex(mk.ModifiedShape(in_faces(i)));
+    if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+  }
+  check_valid(result, "draft");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;

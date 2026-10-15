@@ -193,6 +193,13 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::Shell(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
+            FeatureKind::Draft(d) => {
+                if d.faces.is_empty() {
+                    out.push(issue_h(n, "no faces selected", "select the faces to draft"));
+                }
+                check_plane(n, &d.plane, &seen, &mut out);
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
             FeatureKind::Mirror(d) => {
                 check_plane(n, &d.plane, &seen, &mut out);
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);

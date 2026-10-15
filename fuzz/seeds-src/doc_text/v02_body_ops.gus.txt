@@ -44,3 +44,5 @@ move Move2 (body: Extrude2, axis: [1, 1, 0], angle: -15 deg, copy: true)
 combine Combine1 (body: Extrude1, tools: [Extrude2], op: cut)
 
 chamfer Chamfer1 (edges: [edge(Shell1/inner(Extrude1/side(Sketch1/l6)), Shell1/inner(Extrude1/side(Sketch1/l7)))], distance: 0.5 mm)
+
+draft Draft1 (faces: [Extrude1/side(Sketch1/l5)], plane: XY, angle: 2 deg, flip: true)

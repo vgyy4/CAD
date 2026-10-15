@@ -4,12 +4,12 @@
 
 use gusset_kernel::wire::{Reader, ShapeRefs, Wire, WireError, Writer};
 use gusset_kernel::{
-    BBox, BoolOp, ExtrudeSpec, KernelError, LoftSpec, MassProps, Mesh, OpResult, Profile, RevolveSpec, Shape,
-    SweepPath, SweepSpec, TessellationParams, Topology, Transform,
+    BBox, BoolOp, DraftSpec, ExtrudeSpec, KernelError, LoftSpec, MassProps, Mesh, OpResult, Profile, RevolveSpec,
+    Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,7 @@ pub(crate) enum Request {
     Fillet(Shape, Vec<u32>, f64),
     Chamfer(Shape, Vec<u32>, f64),
     Shell(Shape, Vec<u32>, f64),
+    Draft(Shape, Vec<u32>, DraftSpec),
     Transform(Shape, Transform),
     Compound(Vec<Shape>),
     Topology(Shape),
@@ -120,6 +121,12 @@ impl Request {
         match self {
             Request::Ping => w.u8(0),
             Request::Status => w.u8(24),
+            Request::Draft(shape, faces, spec) => {
+                w.u8(25);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, faces)?;
+                spec.put(&mut w, s)?;
+            }
             Request::Free(ids) => {
                 w.u8(1);
                 w.seq_len(ids.len())?;
@@ -263,6 +270,7 @@ impl Request {
                 t => return Err(WireError(format!("unknown fault {t}"))),
             }),
             24 => Request::Status,
+            25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };
         r.finish()?;

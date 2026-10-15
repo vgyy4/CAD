@@ -212,6 +212,14 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("shell", self.name())
     }
 
+    /// Tapers the faces `faces` (indices into the shape's topology) about their
+    /// intersection with the neutral plane (ADR 0028). Every output face reports
+    /// [`FaceOrigin::Input`]: drafted and neighbouring faces are modified, none are added.
+    fn draft(&self, shape: &Shape, faces: &[u32], spec: &DraftSpec) -> KResult<OpResult> {
+        let _ = (shape, faces, spec);
+        unsupported("draft", self.name())
+    }
+
     /// A transformed copy of a shape. Output face *i* is input face *i*
     /// (`face_origins[i] == [Input { input: 0, face: i }]`); a mirror keeps outward
     /// normals outward.

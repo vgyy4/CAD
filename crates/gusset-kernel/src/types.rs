@@ -170,6 +170,19 @@ pub struct SweepSpec {
     pub twist: f64,
 }
 
+/// A draft (taper) for [`crate::Kernel::draft`] (ADR 0028).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DraftSpec {
+    /// Pull direction (any non-zero length); also the normal of the neutral plane.
+    pub pull: V3,
+    /// A point of the neutral plane, where the drafted faces keep their place.
+    pub neutral: V3,
+    /// Draft angle in radians, `0 < |angle| < π/2`. Positive tapers the drafted faces
+    /// inward along `pull` (the part narrows towards the pull side, as a molded part
+    /// leaving its cavity); negative tapers them outward.
+    pub angle: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoftSpec {
     /// Ruled surfaces between neighbouring profiles (sharp transitions), else a smooth

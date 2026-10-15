@@ -138,7 +138,10 @@ Phase 3 has started (see Next).
      The joint form takes its frames from viewport picks (first pick: moving body and
      `at`, next: `to`). v0.3 milestone code review (docs/reviews/2026-10-14-v0.3-assemblies-review.md):
      every high, medium and low finding fixed but N1. Next: the v0.3 security review and
-     dogfooding, then v0.4 (2D drawings, DXF/SVG); `draft` (v1 tier) in progress.
+     dogfooding, then v0.4 (2D drawings, DXF/SVG).
+   - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
+     from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
+     Next in the tier: text/emboss, direct edit (move/offset face).
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

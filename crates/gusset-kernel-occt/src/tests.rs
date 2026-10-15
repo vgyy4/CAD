@@ -291,6 +291,40 @@ fn shell_box_golden() {
 }
 
 #[test]
+fn draft_box_golden() {
+    let b = plain_box(40.0, 20.0, 10.0);
+    let t = k().topology(&b.shape).unwrap();
+    let sides: Vec<u32> = (0..t.faces.len() as u32).filter(|&i| t.faces[i as usize].normal[2].abs() < 0.1).collect();
+    assert_eq!(sides.len(), 4);
+    let bottom = t.faces.iter().map(|f| f.centroid[2]).fold(f64::INFINITY, f64::min);
+    let spec = |angle: f64| DraftSpec { pull: [0.0, 0.0, 1.0], neutral: [0.0, 0.0, bottom], angle };
+    // 5 degrees inward along +Z about the bottom: a frustum, prismatoid volume
+    // h/6 (A_bottom + A_top + 4 A_middle).
+    let a = 5f64.to_radians();
+    let r = k().draft(&b.shape, &sides, &spec(a)).unwrap();
+    let off = 10.0 * libm::tan(a);
+    let rect = |s: f64| (40.0 - 2.0 * s) * (20.0 - 2.0 * s);
+    let want = 10.0 / 6.0 * (rect(0.0) + rect(off) + 4.0 * rect(off / 2.0));
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, want, 1e-9), "{} vs {want}", m.volume);
+    // Every face is an input face, once.
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!((rt.solids, rt.faces.len()), (1, 6));
+    assert!(
+        r.face_origins.iter().all(|o| matches!(o.as_slice(), [FaceOrigin::Input { input: 0, .. }])),
+        "{:?}",
+        r.face_origins
+    );
+    // Negative angles widen it; bad input is refused.
+    let g = k().draft(&b.shape, &sides, &spec(-a)).unwrap();
+    assert!(k().mass_properties(&g.shape).unwrap().volume > 8000.0);
+    assert!(k().draft(&b.shape, &sides, &spec(0.0)).is_err());
+    assert!(k().draft(&b.shape, &sides, &spec(1.6)).is_err());
+    assert!(k().draft(&b.shape, &[99], &spec(a)).is_err());
+    assert!(k().draft(&b.shape, &[], &spec(a)).is_err());
+}
+
+#[test]
 fn transform_golden() {
     let b = plain_box(40.0, 20.0, 10.0);
     let tb = k().topology(&b.shape).unwrap();

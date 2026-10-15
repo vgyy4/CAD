@@ -184,6 +184,14 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_draft(
+            s: *const GsShape,
+            faces: *const u32,
+            nfaces: usize,
+            params: *const f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_transform(
             kind: i32,
             params: *const f64,

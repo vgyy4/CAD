@@ -559,6 +559,19 @@ impl Wire for SweepSpec {
     }
 }
 
+impl Wire for DraftSpec {
+    const MIN_SIZE: usize = 56;
+    fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
+        self.pull.put(w, s)?;
+        self.neutral.put(w, s)?;
+        w.f64(self.angle);
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        Ok(DraftSpec { pull: Wire::get(r, s)?, neutral: Wire::get(r, s)?, angle: r.f64()? })
+    }
+}
+
 impl Wire for LoftSpec {
     fn put(&self, w: &mut Writer, _s: &dyn ShapeRefs) -> Result<(), WireError> {
         w.bool(self.ruled);
@@ -1029,6 +1042,7 @@ mod tests {
         rt(&RevolveSpec { axis_origin: [1.0, 2.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU });
         for orientation in [SweepOrientation::Fixed, SweepOrientation::Frenet] {
             rt(&SweepSpec { orientation, twist: 0.75 });
+            rt(&DraftSpec { pull: [0.0, 0.0, 1.0], neutral: [1.0, -2.0, 3.5], angle: -0.1 });
         }
         rt(&LoftSpec { ruled: true });
         rt(&LoftSpec { ruled: false });

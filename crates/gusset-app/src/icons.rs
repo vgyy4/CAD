@@ -187,6 +187,7 @@ pub enum Tool {
     Fillet,
     Chamfer,
     Shell,
+    Draft,
     Combine,
     Joint,
     Component,
@@ -251,6 +252,7 @@ impl Tool {
         Tool::Fillet,
         Tool::Chamfer,
         Tool::Shell,
+        Tool::Draft,
         Tool::Combine,
         Tool::Joint,
         Tool::Component,
@@ -310,6 +312,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.fillet" => Tool::Fillet,
         "feature.chamfer" => Tool::Chamfer,
         "feature.shell" => Tool::Shell,
+        "feature.draft" => Tool::Draft,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
         "assembly.insert_component" | "assembly.update_component" => Tool::Component,
@@ -351,6 +354,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "chamfer" => Tool::Chamfer,
         "import" => Tool::Import,
         "shell" => Tool::Shell,
+        "draft" => Tool::Draft,
         "mirror" => Tool::Mirror,
         "pattern_linear" => Tool::PatternLinear,
         "pattern_circular" => Tool::PatternCircular,
@@ -572,6 +576,12 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
         Tool::Shell => {
             pen.iso_box(3.0, 10.0, 10.0, 8.0, 9.0);
             pen.poly(&[(6.0, 10.0), (13.0, 6.5), (18.0, 9.0), (11.0, 12.5)], pen.hole, a);
+        }
+        Tool::Draft => {
+            // A block whose side leans in, with the angle from the upright.
+            pen.poly(&[(4.0, 20.0), (4.0, 4.0), (13.0, 4.0), (18.0, 20.0)], pen.fill, ink);
+            pen.line(&[(13.0, 4.0), (13.0, 20.0)], a);
+            pen.arc(13.0, 4.0, 9.0, -PI * 0.5, -PI * 0.5 + 0.3, a);
         }
         Tool::Combine => {
             pen.poly(&[(3.0, 8.0), (14.0, 8.0), (14.0, 19.0), (3.0, 19.0)], pen.fill, ink);

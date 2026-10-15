@@ -1,10 +1,10 @@
-//! Shell, mirror and pattern commands (v0.2). They change an existing body, so the target
+//! Shell, draft, mirror and pattern commands (v0.2). They change an existing body, so the target
 //! is resolved to a concrete body name when the feature is created (like add/cut).
 
 use super::*;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<Shell>(), spec::<Mirror>(), spec::<PatternLinear>(), spec::<PatternCircular>()]
+    vec![spec::<Shell>(), spec::<Draft>(), spec::<Mirror>(), spec::<PatternLinear>(), spec::<PatternCircular>()]
 }
 
 /// Renames references to feature `from` inside the new feature kinds.
@@ -42,6 +42,13 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             body_of(&mut d.body);
             d.plane.rename_feature(from, to);
         }
+        FeatureKind::Draft(d) => {
+            body_of(&mut d.body);
+            for f in &mut d.faces {
+                f.rename_feature(from, to);
+            }
+            d.plane.rename_feature(from, to);
+        }
         FeatureKind::PatternLinear(d) => body_of(&mut d.body),
         FeatureKind::PatternCircular(d) => body_of(&mut d.body),
         FeatureKind::Plane(d) => {
@@ -76,6 +83,52 @@ pub(super) fn body_for(
 
 fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
     faces.iter().map(|f| FaceRef::parse(f).map_err(|e| CommandError::args(format!("face '{f}': {e}")))).collect()
+}
+
+/// Tapers faces of a body for molding (ADR 0028).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Draft {
+    /// Faces to taper (face refs from query_body): planar, cylindrical or conical faces that cross the neutral plane.
+    pub faces: Vec<String>,
+    /// Neutral plane, where the faces keep their size: XY/XZ/YZ, a planar face ref or a datum plane.
+    pub plane: String,
+    /// Draft angle (`2 deg`); positive narrows the part along the pull direction.
+    pub angle: String,
+    /// Pull direction: the plane's normal, or into the body for a face; true reverses it.
+    #[serde(default)]
+    pub flip: bool,
+    /// Body to change (default: the latest body).
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for Draft {
+    const ID: &'static str = "feature.draft";
+    const TITLE: &'static str = "Draft";
+    const DESCRIPTION: &'static str = "Taper faces by an angle about a neutral plane so a molded or cast part releases. Needs the OCCT kernel. Faces keep their names. Returns body_changes.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let angle = parse_expr("angle", &self.angle)?;
+        let faces = parse_faces(&self.faces)?;
+        if faces.is_empty() {
+            return Err(CommandError::args("no faces to draft").hint("list the side faces to taper"));
+        }
+        for f in &faces {
+            check_face_resolves(s, ctx, f)?;
+        }
+        let plane = super::datum::parse_plane_arg(s, ctx, &self.plane)?;
+        edit(s, ctx, "Draft", |doc, rb| {
+            let name = feature_name(doc, self.name, "Draft")?;
+            let body = body_for(doc, rb, self.body)?;
+            let def = DraftDef { body, faces, plane, angle, flip: self.flip };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Draft(def)));
+            Ok(json!({ "feature": name }))
+        })
+    }
 }
 
 /// Hollows a body, opening the given faces.

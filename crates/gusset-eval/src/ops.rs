@@ -1,8 +1,8 @@
-//! Shell, mirror and pattern features: operations that rebuild an existing body.
+//! Shell, draft, mirror and pattern features: operations that rebuild an existing body.
 
 use super::*;
-use gusset_doc::{CombineDef, DirRef, MirrorDef, MoveDef, PatternCircularDef, PatternLinearDef, ShellDef};
-use gusset_kernel::{KernelError, Transform};
+use gusset_doc::{CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, PatternCircularDef, PatternLinearDef, ShellDef};
+use gusset_kernel::{DraftSpec, KernelError, Transform};
 use gusset_naming::BodyNames;
 
 /// Most instances one pattern may create (the evaluation's work limits also apply,
@@ -57,6 +57,61 @@ impl Evaluator {
         })?;
         let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
         let names = name_body(&OpContext::Shell { feature: name, input: &body.names }, &res.face_origins, &topo)
+            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+        replace_body(s, bi, &body, res.shape, names, topo);
+        Ok(())
+    }
+
+    /// Tapers faces about the neutral plane (ADR 0028). The pull direction is the plane's
+    /// normal, or into the body for a face of it; `flip` reverses it.
+    pub(crate) fn run_draft(
+        &self,
+        s: &mut State,
+        name: &str,
+        d: &DraftDef,
+        units: LengthUnit,
+        params: &ParamValues,
+    ) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let angle = eval_expr(name, &d.angle, Dim::ANGLE, params, units)?;
+        if !(angle.abs() > 1e-9 && angle.abs() < std::f64::consts::FRAC_PI_2 - 1e-9) {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::Expression,
+                "the draft angle must be between 0 and 90 degrees",
+            )
+            .with_hint("molded parts typically use 1 to 3 deg; negative leans the faces outward"));
+        }
+        let (bi, body) = target_body(s, name, d.body.as_deref())?;
+        let mut faces: Vec<u32> = Vec::new();
+        for r in &d.faces {
+            let Some(fi) = body.names.face_index(r) else {
+                let mut e = EvalError::new(name, ErrorCode::MissingReference, format!("face {r} no longer exists"))
+                    .with_hint("re-select the face to draft");
+                e.reference = Some(r.to_string());
+                e.suggestion = closest_face(&body.names, r).map(|f| f.to_string());
+                return Err(e);
+            };
+            if !faces.contains(&fi) {
+                faces.push(fi);
+            }
+        }
+        if faces.is_empty() {
+            return Err(EvalError::new(name, ErrorCode::InvalidReference, "no faces to draft")
+                .with_hint("select the side faces to taper"));
+        }
+        let (neutral, normal) = mirror_plane(name, &d.plane, s)?;
+        let into = matches!(d.plane, gusset_doc::PlaneRef::Face(_));
+        let pull = if into != d.flip { scale(normal, -1.0) } else { normal };
+        let res = k.draft(&body.shape, &faces, &DraftSpec { pull, neutral, angle }).map_err(|ke| {
+            let mut e = kernel_err(name, "draft", ke);
+            if e.hint.is_none() {
+                e.hint = Some("draft side faces that cross the neutral plane, with a smaller angle".into());
+            }
+            e
+        })?;
+        let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+        let names = name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
         replace_body(s, bi, &body, res.shape, names, topo);
         Ok(())

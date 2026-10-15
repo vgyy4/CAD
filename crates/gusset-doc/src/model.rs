@@ -54,6 +54,7 @@ pub enum FeatureKind {
     Chamfer(EdgeBlendDef),
     Import(ImportDef),
     Shell(ShellDef),
+    Draft(DraftDef),
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
     PatternCircular(PatternCircularDef),
@@ -77,6 +78,7 @@ impl FeatureKind {
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Import(_) => "import",
             FeatureKind::Shell(_) => "shell",
+            FeatureKind::Draft(_) => "draft",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::PatternLinear(_) => "pattern_linear",
             FeatureKind::PatternCircular(_) => "pattern_circular",
@@ -142,6 +144,13 @@ impl FeatureKind {
                 add_body(&mut add, &d.body);
                 d.plane.features(&mut add);
             }
+            FeatureKind::Draft(d) => {
+                add_body(&mut add, &d.body);
+                for f in &d.faces {
+                    f.features(&mut add);
+                }
+                d.plane.features(&mut add);
+            }
             FeatureKind::PatternLinear(d) => add_body(&mut add, &d.body),
             FeatureKind::PatternCircular(d) => add_body(&mut add, &d.body),
             FeatureKind::Plane(d) => {
@@ -203,6 +212,7 @@ impl FeatureKind {
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
+            FeatureKind::Draft(d) => take(&d.angle),
             FeatureKind::Mirror(_) => {}
             FeatureKind::PatternLinear(d) => {
                 d.direction.exprs().into_iter().chain([&d.count, &d.spacing]).for_each(&mut take);
@@ -260,6 +270,7 @@ impl FeatureKind {
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => out.push(&mut b.size),
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
+            FeatureKind::Draft(d) => out.push(&mut d.angle),
             FeatureKind::Mirror(_) => {}
             FeatureKind::PatternLinear(d) => {
                 out.extend(d.direction.exprs_mut());
@@ -765,6 +776,22 @@ pub struct ShellDef {
     /// Faces to open (face references, ADR 0003). May be empty for a fully closed hollow.
     pub faces: Vec<FaceRef>,
     pub thickness: Expr,
+}
+
+/// Tapers faces of a body about the neutral plane (ADR 0028): each face turns by `angle`
+/// about its intersection with `plane`, so it leans inward along the pull direction (the
+/// plane's normal, reversed by `flip`); a negative angle leans it outward.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DraftDef {
+    /// Target body; `None` = the most recent body.
+    pub body: Option<String>,
+    /// Faces to draft (planar, cylindrical or conical, crossing the neutral plane).
+    pub faces: Vec<FaceRef>,
+    /// The neutral plane: a base plane, a planar face or a datum plane.
+    pub plane: PlaneRef,
+    pub angle: Expr,
+    /// Pull against the plane's normal.
+    pub flip: bool,
 }
 
 /// Mirrors a body across a plane.

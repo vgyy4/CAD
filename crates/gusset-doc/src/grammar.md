@@ -350,7 +350,7 @@ plane  <Name> (base: <plane>, offset: <length>)
 plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
 move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
 combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>])
-shell, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
+shell, draft, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
 ```
 
 - `<plane>` is `XY`, `XZ`, `YZ`, a planar face reference or the name of an earlier `plane`.
@@ -371,6 +371,12 @@ shell, mirror, pattern_linear, pattern_circular   # whole-body operations (see b
   [merge: true])` copies it across a plane; `pattern_linear (direction: X|Y|Z|[x, y, z],
   count: <n>, spacing: <length>)` and `pattern_circular (axis: ..., [through: [x, y, z]],
   count: <n>, angle: <angle>)` repeat a body. All take an optional `body:`.
+- `draft (faces: [<face>], plane: <plane>, angle: <angle>, [flip: true])` tapers faces for
+  molding: each face turns by `angle` about its line on the neutral `plane`, leaning inward
+  along the pull direction (the part narrows that way; a negative angle leans it outward).
+  The pull direction is the plane's normal (XY: +Z), or into the body for a face of it;
+  `flip: true` reverses it. Faces must be planar, cylindrical or conical and cross the
+  plane; they keep their names.
 
 ```gusset
 gusset 1

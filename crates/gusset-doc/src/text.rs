@@ -289,6 +289,16 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("faces: [{}]", faces.join(", ")));
             args.push(format!("thickness: {}", d.thickness));
         }
+        FeatureKind::Draft(d) => {
+            push_body(&mut args, &d.body);
+            let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
+            args.push(format!("faces: [{}]", faces.join(", ")));
+            args.push(format!("plane: {}", print_plane(&d.plane)));
+            args.push(format!("angle: {}", d.angle));
+            if d.flip {
+                args.push("flip: true".into());
+            }
+        }
         FeatureKind::Mirror(d) => {
             push_body(&mut args, &d.body);
             args.push(format!("plane: {}", print_plane(&d.plane)));
@@ -589,8 +599,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint"
-            | "component" => {
+            | "draft" | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole"
+            | "joint" | "component" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -598,7 +608,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     let (f, consumed) = parse_sketch(&mut c, &lines, i)?;
                     i = consumed;
                     f
-                } else if matches!(kw, "shell" | "mirror" | "pattern_linear" | "pattern_circular") {
+                } else if matches!(kw, "shell" | "draft" | "mirror" | "pattern_linear" | "pattern_circular") {
                     parse_feature_ext(kw, &mut c)?
                 } else if matches!(kw, "plane" | "move" | "combine") {
                     parse_feature_ext2(kw, &mut c)?
@@ -861,7 +871,7 @@ pub fn parse_direction(s: &str) -> Result<DirRef, ParseError> {
     Ok(d)
 }
 
-/// Shell, mirror and pattern statements.
+/// Shell, draft, mirror and pattern statements.
 fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let mut label = None;
@@ -871,6 +881,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut thickness = None;
     let mut plane = None;
     let mut merge = false;
+    let mut flip = false;
     let mut dir = None;
     let mut through = None;
     let mut count = None;
@@ -878,6 +889,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut angle = None;
     let allowed = match kw {
         "shell" => "body, faces, thickness, label, suppressed",
+        "draft" => "body, faces, plane, angle, flip, label, suppressed",
         "mirror" => "body, plane, merge, label, suppressed",
         "pattern_linear" => "body, direction, count, spacing, label, suppressed",
         _ => "body, axis, through, count, angle, label, suppressed",
@@ -887,7 +899,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             (_, "label") => label = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             (_, "body") => body = Some(c.ident()?.to_string()),
-            ("shell", "faces") => {
+            ("shell" | "draft", "faces") => {
                 c.expect('[')?;
                 let mut list = Vec::new();
                 if !c.eat(']') {
@@ -906,7 +918,8 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
                 faces = Some(list);
             }
             ("shell", "thickness") => thickness = Some(c.expr()?),
-            ("mirror", "plane") => plane = Some(parse_plane(c)?),
+            ("mirror" | "draft", "plane") => plane = Some(parse_plane(c)?),
+            ("draft", "flip") => flip = parse_bool(c)?,
             ("mirror", "merge") => merge = parse_bool(c)?,
             ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
             ("pattern_circular", "through") => {
@@ -921,7 +934,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             }
             ("pattern_linear" | "pattern_circular", "count") => count = Some(c.expr()?),
             ("pattern_linear", "spacing") => spacing = Some(c.expr()?),
-            ("pattern_circular", "angle") => angle = Some(c.expr()?),
+            ("pattern_circular" | "draft", "angle") => angle = Some(c.expr()?),
             (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
         }
         Ok(())
@@ -934,6 +947,13 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             body,
             faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,
             thickness: thickness.ok_or_else(|| missing(c, kw, "thickness"))?,
+        }),
+        "draft" => FeatureKind::Draft(DraftDef {
+            body,
+            faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,
+            plane: plane.ok_or_else(|| missing(c, kw, "plane"))?,
+            angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
+            flip,
         }),
         "mirror" => {
             FeatureKind::Mirror(MirrorDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))?, merge })

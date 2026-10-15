@@ -314,6 +314,18 @@ pub fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> ShimResult<OpOut> {
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// `params`: pull direction (3), a neutral-plane point (3), angle in radians.
+pub fn draft(s: &RawShape, faces: &[u32], params: &[f64; 7]) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; `faces` and the 7 `params` alive for the call;
+    // out-params valid.
+    let rc =
+        s.with(|p| unsafe { sys::gs_draft(p, faces.as_ptr(), faces.len(), params.as_ptr(), &mut out, &mut origins) });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn transform(kind: i32, params: &[f64; 7], s: &RawShape) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

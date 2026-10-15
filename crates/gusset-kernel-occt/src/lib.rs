@@ -382,6 +382,11 @@ mod imp {
             op_result(ffi::shell(raw(shape)?, remove, thickness)?)
         }
 
+        fn draft(&self, shape: &Shape, faces: &[u32], spec: &DraftSpec) -> KResult<OpResult> {
+            let (d, n) = (spec.pull, spec.neutral);
+            op_result(ffi::draft(raw(shape)?, faces, &[d[0], d[1], d[2], n[0], n[1], n[2], spec.angle])?)
+        }
+
         fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
             let (kind, p) = match *t {
                 Transform::Mirror { origin, normal } => {

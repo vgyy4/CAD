@@ -17,3 +17,6 @@ gusset-sandbox.workspace = true
 # No `unsafe` here: the FFI wrappers live in gusset-occt-sys (ADR 0008).
 [lints]
 workspace = true
+
+[dev-dependencies]
+libm.workspace = true
