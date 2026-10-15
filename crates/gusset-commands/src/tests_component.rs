@@ -94,7 +94,7 @@ fn a_component_brings_in_a_pinned_body_that_joints_can_place() {
     assert_eq!(r["changed"], true, "{r}");
     let q = run(&mut s, &u, "query.components", json!({}));
     assert_eq!(q["components"][0]["update_available"], false, "{q}");
-    assert_eq!(q["components"][0]["version"], "n2", "{q}");
+    assert_eq!(q["components"][0]["version_user_text"], "n2", "{q}");
     let b = run(&mut s, &u, "query.body", json!({"body": "Pin"}));
     assert_eq!(b["volume_mm3"], 160.0, "{b}");
     let r = run(&mut s, &u, "assembly.update_component", json!({"component": "Pin"}));
@@ -206,7 +206,7 @@ fn the_check_after_opening_reads_only_sources_inside_the_project() {
     let q = run(&mut s, &u, "query.components", json!({"local_only": true}));
     let c = q["components"].as_array().unwrap();
     assert!(c[0]["update_available"].is_null(), "{q}");
-    assert!(c[0]["source_error"].as_str().unwrap().contains("outside the project folder"), "{q}");
+    assert!(c[0]["source_error_user_text"].as_str().unwrap().contains("outside the project folder"), "{q}");
     assert_eq!(c[1]["update_available"], false, "{q}");
     assert_eq!(c[2]["update_available"], false, "{q}");
     // Asked for explicitly, the user's own source is read.

@@ -34,13 +34,13 @@ status. Scratch harnesses referenced below lived outside the repository.
 | Dogfood F-B1 / Code review H5 | Import not wired; no mesh import | **Fixed**: the sandboxed worker is the STEP/IGES importer in `gusset mcp`, `gusset build --import` and the app; STL/3MF/OBJ import as reference mesh bodies (PROGRESS deviation); imported B-rep faces are named again (import never rebuilt before) |
 | Dogfood (IGES import) | IGES import always failed: OCCT's IGES reader has no stream support, and the sandbox gives the worker no filesystem | **Fixed** (ADR 0008 §4): the parent writes the IGES bytes to a private 0700 directory (file 0600), always deletes it, and passes the path on the worker's command line; Landlock grants `ReadFile` on exactly that file and seccomp then allows read-only `openat`. Without enforced Landlock (ABI V1 filesystem rights, kernel 5.13+) `openat` stays denied and the import is refused with a clear message, never run unsandboxed. macOS/Windows keep their existing (weaker) sandbox and just read the file. Limits: one same-user-readable temp file for the duration of the import; not re-hashed |
 | Review #18–20 | see below | Open — next |
-| v0.3 W1 | Loop solver: each closing joint costs time linear in the chain and nothing charges it; a 35 KB file takes minutes | **Open** |
-| v0.3 W2 | `merge_documents` is quadratic in the feature count (40,000 features: 58 s, not cancellable) | **Open** |
-| v0.3 W3 | Component builds: up to 1000 distinct builds per evaluation, each with a fresh work budget | **Open** |
-| v0.3 W4 | Component `source` and file names in errors reach agents outside `user_text` | **Open** |
-| v0.3 W5 | Removing or recreating an agent key leaves its standing grants and branch to the next key of that name | **Open** |
-| v0.3 W6 | A project file can plant the branch `agent/key_<name>` that a keyed agent then continues on | **Open** |
-| v0.3 W7 | Agent key file: a damaged file is overwritten by the next key, `version` and mode are not checked | **Open** |
+| v0.3 W1 | Loop solver: each closing joint costs time linear in the chain and nothing charges it; a 35 KB file takes minutes | **Fixed** in ed487e1: one `max_joint_steps` budget (2,000,000 placements) for all loop solving of a rebuild |
+| v0.3 W2 | `merge_documents` is quadratic in the feature count (40,000 features: 58 s, not cancellable) | **Fixed** in 26fb87b: merge and compare use name maps (20,000 features: 0.35 s debug) |
+| v0.3 W3 | Component builds: up to 1000 distinct builds per evaluation, each with a fresh work budget | **Fixed** in 8844a40: component builds share the evaluation's budget |
+| v0.3 W4 | Component `source` and file names in errors reach agents outside `user_text` | **Fixed**: `query.components` returns `source_user_text`, `version_user_text`, `source_error_user_text`; `validate` bounds and refuses control characters in source, version and branch |
+| v0.3 W5 | Removing or recreating an agent key leaves its standing grants and branch to the next key of that name | **Fixed** in 96f1189: keyed agents are `key_<name>_<id>` with a random id per key |
+| v0.3 W6 | A project file can plant the branch `agent/key_<name>` that a keyed agent then continues on | **Fixed** in 96f1189 (random id in the keyed agent's name and branch) |
+| v0.3 W7 | Agent key file: a damaged file is overwritten by the next key, `version` and mode are not checked | **Fixed** in 96f1189: version, owner and mode checked; an unreadable file is kept as `.bad` |
 | v0.3 W8 | Open-time component check decodes every distinct local source with no work limit | **Open** |
 | v0.3 W9 | THREAT_MODEL.md not updated for components, agent keys, merge and the worker pool | **Open** |
 | v0.3 W10 | Kernel worker pool: a blob one worker wrote is trusted by the gate for the other workers | **Open** (info) |

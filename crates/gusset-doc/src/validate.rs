@@ -318,6 +318,15 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 if d.body.as_deref().is_some_and(|b| validate_feature_name(b).is_err()) {
                     out.push(issue(n, "body must be a body name of the component's document"));
                 }
+                // Short, single-line strings (security review v0.3 W4).
+                let bad = |t: &str, max: usize| t.chars().count() > max || t.chars().any(char::is_control);
+                if bad(&d.source, 1024) || bad(&d.version, 64) || d.branch.as_deref().is_some_and(|b| bad(b, 120)) {
+                    out.push(issue_h(
+                        n,
+                        "source, version or branch is too long or has control characters",
+                        "insert the component again",
+                    ));
+                }
             }
         }
         if creates_body(f) {

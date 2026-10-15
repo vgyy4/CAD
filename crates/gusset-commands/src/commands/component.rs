@@ -326,7 +326,7 @@ pub struct QueryComponents {
 impl Command for QueryComponents {
     const ID: &'static str = "query.components";
     const TITLE: &'static str = "Components";
-    const DESCRIPTION: &'static str = "Every component: source, pinned version, body, parameters set, and whether the source now has a newer version (update_available; null when the source cannot be read, with the reason).";
+    const DESCRIPTION: &'static str = "Every component: source, pinned version, body, parameters set, and whether the source now has a newer version (update_available; null when the source cannot be read, with the reason in source_error_user_text).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -351,8 +351,10 @@ impl Command for QueryComponents {
             let set: serde_json::Map<String, Value> =
                 d.set.iter().map(|(n, e)| (n.clone(), json!(e.to_string()))).collect();
             out.push(json!({
-                "name": f.name, "source": d.source, "version": d.version, "body": d.body,
-                "set": set, "update_available": available, "source_error": error,
+                // Free text from the document or the file system: labeled for agents
+                // (security review v0.3 W4).
+                "name": f.name, "source_user_text": d.source, "version_user_text": d.version, "body": d.body,
+                "set": set, "update_available": available, "source_error_user_text": error,
             }));
         }
         Ok(json!({ "components": out }))
