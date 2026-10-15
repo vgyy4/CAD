@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,7 @@ pub(crate) enum Request {
     Chamfer(Shape, Vec<u32>, f64),
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
+    OffsetFaces(Shape, Vec<u32>, f64),
     Transform(Shape, Transform),
     Compound(Vec<Shape>),
     Topology(Shape),
@@ -121,6 +122,12 @@ impl Request {
         match self {
             Request::Ping => w.u8(0),
             Request::Status => w.u8(24),
+            Request::OffsetFaces(shape, faces, d) => {
+                w.u8(26);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, faces)?;
+                w.f64(*d);
+            }
             Request::Draft(shape, faces, spec) => {
                 w.u8(25);
                 put_shape(&mut w, s, shape)?;
@@ -270,6 +277,7 @@ impl Request {
                 t => return Err(WireError(format!("unknown fault {t}"))),
             }),
             24 => Request::Status,
+            26 => Request::OffsetFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

@@ -55,6 +55,7 @@ pub enum FeatureKind {
     Import(ImportDef),
     Shell(ShellDef),
     Draft(DraftDef),
+    OffsetFace(OffsetFaceDef),
     Text(Box<TextDef>),
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
@@ -80,6 +81,7 @@ impl FeatureKind {
             FeatureKind::Import(_) => "import",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::Draft(_) => "draft",
+            FeatureKind::OffsetFace(_) => "offset_face",
             FeatureKind::Text(_) => "text",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::PatternLinear(_) => "pattern_linear",
@@ -153,6 +155,12 @@ impl FeatureKind {
                 }
                 d.plane.features(&mut add);
             }
+            FeatureKind::OffsetFace(d) => {
+                add_body(&mut add, &d.body);
+                for f in &d.faces {
+                    f.features(&mut add);
+                }
+            }
             FeatureKind::Text(d) => {
                 d.plane.features(&mut add);
                 if d.op != BodyOp::New {
@@ -221,6 +229,7 @@ impl FeatureKind {
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
             FeatureKind::Draft(d) => take(&d.angle),
+            FeatureKind::OffsetFace(d) => take(&d.distance),
             FeatureKind::Text(d) => {
                 d.at.iter().chain([&d.height, &d.distance]).chain(d.angle.as_ref()).for_each(&mut take);
             }
@@ -282,6 +291,7 @@ impl FeatureKind {
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
             FeatureKind::Draft(d) => out.push(&mut d.angle),
+            FeatureKind::OffsetFace(d) => out.push(&mut d.distance),
             FeatureKind::Text(d) => {
                 let TextDef { at, height, distance, angle, .. } = &mut **d;
                 out.extend(at.iter_mut());
@@ -793,6 +803,16 @@ pub struct ShellDef {
     /// Faces to open (face references, ADR 0003). May be empty for a fully closed hollow.
     pub faces: Vec<FaceRef>,
     pub thickness: Expr,
+}
+
+/// Moves faces of a body along their normals (ADR 0030, direct edit): `distance` > 0
+/// outward (adds material), < 0 inward; the neighbouring faces stretch to follow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OffsetFaceDef {
+    /// Target body; `None` = the most recent body.
+    pub body: Option<String>,
+    pub faces: Vec<FaceRef>,
+    pub distance: Expr,
 }
 
 /// Tapers faces of a body about the neutral plane (ADR 0028): each face turns by `angle`

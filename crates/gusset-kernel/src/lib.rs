@@ -220,6 +220,14 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("draft", self.name())
     }
 
+    /// Moves the faces `faces` along their normals by `distance` mm (> 0 outward, adding
+    /// material; ADR 0030); the neighbouring faces stretch to follow. Every output face
+    /// reports [`FaceOrigin::Input`].
+    fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+        let _ = (shape, faces, distance);
+        unsupported("offset face", self.name())
+    }
+
     /// A transformed copy of a shape. Output face *i* is input face *i*
     /// (`face_origins[i] == [Input { input: 0, face: i }]`); a mirror keeps outward
     /// normals outward.

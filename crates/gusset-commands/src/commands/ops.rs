@@ -4,7 +4,14 @@
 use super::*;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<Shell>(), spec::<Draft>(), spec::<Mirror>(), spec::<PatternLinear>(), spec::<PatternCircular>()]
+    vec![
+        spec::<Shell>(),
+        spec::<Draft>(),
+        spec::<OffsetFace>(),
+        spec::<Mirror>(),
+        spec::<PatternLinear>(),
+        spec::<PatternCircular>(),
+    ]
 }
 
 /// Renames references to feature `from` inside the new feature kinds.
@@ -41,6 +48,12 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
         FeatureKind::Mirror(d) => {
             body_of(&mut d.body);
             d.plane.rename_feature(from, to);
+        }
+        FeatureKind::OffsetFace(d) => {
+            body_of(&mut d.body);
+            for f in &mut d.faces {
+                f.rename_feature(from, to);
+            }
         }
         FeatureKind::Text(d) => {
             body_of(&mut d.body);
@@ -87,6 +100,46 @@ pub(super) fn body_for(
 
 fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
     faces.iter().map(|f| FaceRef::parse(f).map_err(|e| CommandError::args(format!("face '{f}': {e}")))).collect()
+}
+
+/// Moves faces along their normals (ADR 0030).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OffsetFace {
+    /// Faces to move (face refs from query_body).
+    pub faces: Vec<String>,
+    /// Along the face normals (`2 mm`); negative moves them in.
+    pub distance: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for OffsetFace {
+    const ID: &'static str = "feature.offset_face";
+    const TITLE: &'static str = "Offset face";
+    const DESCRIPTION: &'static str =
+        "Push or pull faces along their normals (direct edit); neighbouring faces follow. Needs OCCT.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let distance = parse_expr("distance", &self.distance)?;
+        let faces = parse_faces(&self.faces)?;
+        if faces.is_empty() {
+            return Err(CommandError::args("no faces to move").hint("list the faces to push or pull"));
+        }
+        for f in &faces {
+            check_face_resolves(s, ctx, f)?;
+        }
+        edit(s, ctx, "Offset face", |doc, rb| {
+            let name = feature_name(doc, self.name, "OffsetFace")?;
+            let body = body_for(doc, rb, self.body)?;
+            let def = OffsetFaceDef { body, faces, distance };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
+            Ok(json!({ "feature": name }))
+        })
+    }
 }
 
 /// Tapers faces of a body for molding (ADR 0028).

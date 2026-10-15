@@ -1,7 +1,9 @@
 //! Shell, draft, mirror and pattern features: operations that rebuild an existing body.
 
 use super::*;
-use gusset_doc::{CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, PatternCircularDef, PatternLinearDef, ShellDef};
+use gusset_doc::{
+    CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, OffsetFaceDef, PatternCircularDef, PatternLinearDef, ShellDef,
+};
 use gusset_kernel::{DraftSpec, KernelError, Transform};
 use gusset_naming::BodyNames;
 
@@ -62,6 +64,37 @@ impl Evaluator {
         Ok(())
     }
 
+    /// Moves faces along their normals (ADR 0030).
+    pub(crate) fn run_offset_face(
+        &self,
+        s: &mut State,
+        name: &str,
+        d: &OffsetFaceDef,
+        units: LengthUnit,
+        params: &ParamValues,
+    ) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let distance = eval_expr(name, &d.distance, Dim::LENGTH, params, units)?;
+        if distance.abs() < 1e-9 {
+            return Err(EvalError::new(name, ErrorCode::Expression, "the offset distance is zero")
+                .with_hint("enter how far to move the faces, such as 2 mm (negative moves them in)"));
+        }
+        let (bi, body) = target_body(s, name, d.body.as_deref())?;
+        let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
+        let res = k.offset_faces(&body.shape, &faces, distance).map_err(|ke| {
+            let mut e = kernel_err(name, "offset face", ke);
+            if e.hint.is_none() {
+                e.hint = Some("move the faces less far, or fewer faces at once".into());
+            }
+            e
+        })?;
+        let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+        let names = name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
+            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+        replace_body(s, bi, &body, res.shape, names, topo);
+        Ok(())
+    }
+
     /// Tapers faces about the neutral plane (ADR 0028). The pull direction is the plane's
     /// normal, or into the body for a face of it; `flip` reverses it.
     pub(crate) fn run_draft(
@@ -83,19 +116,7 @@ impl Evaluator {
             .with_hint("molded parts typically use 1 to 3 deg; negative leans the faces outward"));
         }
         let (bi, body) = target_body(s, name, d.body.as_deref())?;
-        let mut faces: Vec<u32> = Vec::new();
-        for r in &d.faces {
-            let Some(fi) = body.names.face_index(r) else {
-                let mut e = EvalError::new(name, ErrorCode::MissingReference, format!("face {r} no longer exists"))
-                    .with_hint("re-select the face to draft");
-                e.reference = Some(r.to_string());
-                e.suggestion = closest_face(&body.names, r).map(|f| f.to_string());
-                return Err(e);
-            };
-            if !faces.contains(&fi) {
-                faces.push(fi);
-            }
-        }
+        let faces = resolve_faces(name, &body, &d.faces, "re-select the face to draft")?;
         if faces.is_empty() {
             return Err(EvalError::new(name, ErrorCode::InvalidReference, "no faces to draft")
                 .with_hint("select the side faces to taper"));
@@ -588,4 +609,22 @@ fn length_point(
         }
     }
     Ok(out)
+}
+
+/// The indices of `refs` in `body` (each once), or the missing reference with a suggestion.
+fn resolve_faces(name: &str, body: &Body, refs: &[gusset_doc::FaceRef], hint: &str) -> Result<Vec<u32>, EvalError> {
+    let mut faces: Vec<u32> = Vec::new();
+    for r in refs {
+        let Some(fi) = body.names.face_index(r) else {
+            let mut e =
+                EvalError::new(name, ErrorCode::MissingReference, format!("face {r} no longer exists")).with_hint(hint);
+            e.reference = Some(r.to_string());
+            e.suggestion = closest_face(&body.names, r).map(|f| f.to_string());
+            return Err(e);
+        };
+        if !faces.contains(&fi) {
+            faces.push(fi);
+        }
+    }
+    Ok(faces)
 }

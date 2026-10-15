@@ -29,8 +29,14 @@ fn plate(s: &mut Session, ctx: &CmdCtx) {
 
 #[test]
 fn commands_are_registered_with_schemas() {
-    for id in ["feature.shell", "feature.draft", "feature.mirror", "feature.pattern_linear", "feature.pattern_circular"]
-    {
+    for id in [
+        "feature.shell",
+        "feature.draft",
+        "feature.offset_face",
+        "feature.mirror",
+        "feature.pattern_linear",
+        "feature.pattern_circular",
+    ] {
         let spec = find(id).unwrap_or_else(|| panic!("{id} missing"));
         assert!(spec.description.len() > 40, "{id}");
         let schema = serde_json::to_string(&(spec.schema)()).unwrap();
@@ -108,6 +114,20 @@ fn draft_command_writes_the_statement_and_follows_renames() {
 }
 
 #[test]
+fn offset_face_command_writes_the_statement() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    plate(&mut s, &u);
+    let r = run(&mut s, &u, "feature.offset_face", json!({"faces": ["Extrude1/cap(end)"], "distance": "-1.5 mm"}));
+    assert_eq!(r["feature"], "OffsetFace1", "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("offset_face OffsetFace1 (body: Extrude1, faces: [Extrude1/cap(end)], distance: -1.5 mm)"),
+        "{text}"
+    );
+}
+
+#[test]
 fn bad_arguments_are_rejected_with_messages() {
     let mut s = session();
     let u = CmdCtx::user(1);
@@ -117,6 +137,8 @@ fn bad_arguments_are_rejected_with_messages() {
         ("feature.shell", json!({"faces": ["nonsense"], "thickness": "2 mm"})),
         ("feature.shell", json!({"faces": ["Extrude1/side(Sketch1/l99)"], "thickness": "2 mm"})),
         ("feature.draft", json!({"faces": [], "plane": "XY", "angle": "2 deg"})),
+        ("feature.offset_face", json!({"faces": [], "distance": "2 mm"})),
+        ("feature.offset_face", json!({"faces": ["Extrude1/cap(end)"], "distance": "2 +"})),
         ("feature.draft", json!({"faces": ["Extrude1/side(Sketch1/l5)"], "plane": "ZZ", "angle": "2 deg"})),
         ("feature.draft", json!({"faces": ["Extrude1/side(Sketch1/l5)"], "plane": "XY", "angle": "2 +"})),
         ("feature.mirror", json!({"plane": "ZZ"})),

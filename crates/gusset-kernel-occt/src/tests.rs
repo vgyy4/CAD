@@ -291,6 +291,32 @@ fn shell_box_golden() {
 }
 
 #[test]
+fn offset_faces_golden() {
+    let b = plain_box(40.0, 20.0, 10.0);
+    let t = k().topology(&b.shape).unwrap();
+    let top = t.faces.iter().position(|f| f.normal[2] > 0.9).unwrap() as u32;
+    let side = t.faces.iter().position(|f| f.normal[0] > 0.9).unwrap() as u32;
+    // Top up 2 mm: 40 x 20 x 12; and down 3 mm: 40 x 20 x 7.
+    let r = k().offset_faces(&b.shape, &[top], 2.0).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, 9600.0, 1e-9));
+    let rt = k().topology(&r.shape).unwrap();
+    assert_eq!((rt.solids, rt.faces.len()), (1, 6));
+    assert!(
+        r.face_origins.iter().all(|o| matches!(o.as_slice(), [FaceOrigin::Input { input: 0, .. }])),
+        "{:?}",
+        r.face_origins
+    );
+    let r = k().offset_faces(&b.shape, &[top], -3.0).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, 5600.0, 1e-9));
+    // Two faces at once: 42 x 20 x 12.
+    let r = k().offset_faces(&b.shape, &[top, side], 2.0).unwrap();
+    assert!(close(k().mass_properties(&r.shape).unwrap().volume, 42.0 * 20.0 * 12.0, 1e-9));
+    assert!(k().offset_faces(&b.shape, &[top], 0.0).is_err());
+    assert!(k().offset_faces(&b.shape, &[99], 1.0).is_err());
+    assert!(k().offset_faces(&b.shape, &[], 1.0).is_err());
+}
+
+#[test]
 fn draft_box_golden() {
     let b = plain_box(40.0, 20.0, 10.0);
     let t = k().topology(&b.shape).unwrap();

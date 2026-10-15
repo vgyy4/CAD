@@ -37,7 +37,9 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepAlgo_Image.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
+#include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <gp_Trsf.hxx>
@@ -1358,6 +1360,46 @@ int gs_draft(const GsShape* s, const uint32_t* faces, size_t nfaces, const doubl
     if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
   }
   check_valid(result, "draft");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, double distance, GsShape** out,
+                    GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!faces && nfaces)) return fail("null argument");
+  if (nfaces == 0) return fail("no faces to offset");
+  if (!std::isfinite(distance) || std::fabs(distance) < 1e-9) return fail("the offset distance must be non-zero");
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  // Base offset 0 with an offset on the chosen faces only: the others stay, their
+  // neighbours stretch (BRepOffset's per-face offsets).
+  BRepOffset_MakeOffset mk;
+  mk.Initialize(s->s, 0.0, 1e-7, BRepOffset_Skin, Standard_False, Standard_False, GeomAbs_Intersection);
+  for (size_t i = 0; i < nfaces; ++i) {
+    if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
+    mk.SetOffsetOnFace(TopoDS::Face(in_faces(int(faces[i]) + 1)), distance);
+  }
+  mk.MakeOffsetShape();
+  if (!mk.IsDone()) return fail("the faces cannot be offset that far (the part would fold over)");
+  TopoDS_Shape result = mk.Shape();
+  if (result.IsNull()) return fail("offset produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  // Modified() is empty for this algorithm; its face image maps every input face.
+  const BRepAlgo_Image& image = mk.OffsetFacesFromShapes();
+  std::vector<int64_t> o;
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    const TopoDS_Shape& g = in_faces(i);
+    if (!image.HasImage(g)) continue;
+    for (ShapeList::Iterator it(image.Image(g)); it.More(); it.Next()) {
+      int idx = out_faces.FindIndex(it.Value());
+      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, 0, i - 1);
+    }
+  }
+  check_valid(result, "offset");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;

@@ -188,6 +188,7 @@ pub enum Tool {
     Chamfer,
     Shell,
     Draft,
+    OffsetFace,
     Text,
     Combine,
     Joint,
@@ -254,6 +255,7 @@ impl Tool {
         Tool::Chamfer,
         Tool::Shell,
         Tool::Draft,
+        Tool::OffsetFace,
         Tool::Text,
         Tool::Combine,
         Tool::Joint,
@@ -315,6 +317,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.chamfer" => Tool::Chamfer,
         "feature.shell" => Tool::Shell,
         "feature.draft" => Tool::Draft,
+        "feature.offset_face" => Tool::OffsetFace,
         "feature.text" => Tool::Text,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
@@ -358,6 +361,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "import" => Tool::Import,
         "shell" => Tool::Shell,
         "draft" => Tool::Draft,
+        "offset_face" => Tool::OffsetFace,
         "text" => Tool::Text,
         "mirror" => Tool::Mirror,
         "pattern_linear" => Tool::PatternLinear,
@@ -586,6 +590,12 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(4.0, 20.0), (4.0, 4.0), (13.0, 4.0), (18.0, 20.0)], pen.fill, ink);
             pen.line(&[(13.0, 4.0), (13.0, 20.0)], a);
             pen.arc(13.0, 4.0, 9.0, -PI * 0.5, -PI * 0.5 + 0.3, a);
+        }
+        Tool::OffsetFace => {
+            // A block with its top face pulled up.
+            pen.poly(&[(4.0, 20.0), (4.0, 11.0), (20.0, 11.0), (20.0, 20.0)], pen.fill, ink);
+            pen.poly(&[(4.0, 8.0), (20.0, 8.0), (20.0, 9.5), (4.0, 9.5)], pen.fill, a);
+            pen.arrow((12.0, 9.0), (12.0, 2.0), a);
         }
         Tool::Text => {
             // A raised letter T on a plate.

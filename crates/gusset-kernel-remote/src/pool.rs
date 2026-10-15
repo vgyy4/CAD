@@ -165,6 +165,11 @@ impl Kernel for PoolKernel {
         k.shell(&s, remove, thickness)
     }
 
+    fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.offset_faces(&s, faces, distance)
+    }
+
     fn draft(&self, shape: &Shape, faces: &[u32], spec: &DraftSpec) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.draft(&s, faces, spec)
