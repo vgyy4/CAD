@@ -92,9 +92,9 @@ fn copy_blobs(
     Ok(())
 }
 
-/// The body `body` (default: the last one) of `doc`, checked before pinning.
-fn check_body(doc: &Document, body: Option<&str>, shown: &str) -> Result<(), CommandError> {
-    let names: Vec<&str> = doc.features.iter().filter_map(created_body_name).collect();
+/// The body `body` (default: the last one) of the source, checked before pinning.
+fn check_body(src: &Source, body: Option<&str>, shown: &str) -> Result<(), CommandError> {
+    let names: Vec<&str> = src.doc.features.iter().filter_map(created_body_name).collect();
     let ok = match body {
         Some(b) => names.contains(&b),
         None => !names.is_empty(),
@@ -103,15 +103,37 @@ fn check_body(doc: &Document, body: Option<&str>, shown: &str) -> Result<(), Com
         return Ok(());
     }
     let what = body.map_or_else(|| "has no bodies".to_string(), |b| format!("has no body '{b}'"));
-    Err(CommandError::not_found(format!("'{shown}' {what}")).hint(format!("its bodies: {}", names.join(", "))))
+    let err = CommandError::not_found(format!("'{shown}' {what}"));
+    if !names.is_empty() {
+        return Err(err.hint(format!("its bodies: {}", names.join(", "))));
+    }
+    // The work may be on another branch, such as an agent's (dogfooding F4-1).
+    let elsewhere: Vec<String> = src
+        .history
+        .branches()
+        .into_iter()
+        .filter(|b| src.history.head(b.id).is_ok_and(|n| n != src.node))
+        .filter(|b| {
+            let head = src.history.head(b.id).and_then(|n| src.history.document(n));
+            head.is_ok_and(|d| d.features.iter().any(|f| created_body_name(f).is_some()))
+        })
+        .map(|b| format!("\"{}\"", b.name))
+        .take(5)
+        .collect();
+    if elsewhere.is_empty() {
+        return Err(err.hint("model a body in it first"));
+    }
+    Err(err.hint(format!("bodies exist on branch {}: pass branch", elsewhere.join(", "))))
 }
 
 /// `set` parsed, after checking the parameters exist in the component's document.
 fn assignments(
+    host: &Document,
     doc: &Document,
     set: &std::collections::BTreeMap<String, String>,
 ) -> Result<Vec<(String, gusset_units::expr::Expr)>, CommandError> {
-    set.iter()
+    let out: Vec<(String, gusset_units::expr::Expr)> = set
+        .iter()
         .map(|(n, e)| {
             if !doc.params.iter().any(|p| p.name == *n) {
                 let names: Vec<&str> = doc.params.iter().map(|p| p.name.as_str()).collect();
@@ -120,7 +142,39 @@ fn assignments(
             }
             Ok((n.clone(), parse_expr(n, e)?))
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    // The values (evaluated here) must fit the parameters' ranges there, like param_set
+    // (dogfooding F4-6). Values that do not evaluate are the rebuild's to report.
+    let here = gusset_units::params::evaluate(&host.params, host.units);
+    let there = gusset_units::params::evaluate(&doc.params, doc.units);
+    let scope_here = |n: &str| here.get(n).and_then(|r| r.as_ref().ok().copied());
+    let scope_there = |n: &str| there.get(n).and_then(|r| r.as_ref().ok().copied());
+    for (n, e) in &out {
+        let (Some(p), Ok(q)) = (doc.params.iter().find(|p| p.name == *n), gusset_units::expr::eval(e, &scope_here))
+        else {
+            continue;
+        };
+        let Ok(q) = gusset_units::params::coerce(
+            q,
+            there.get(n).and_then(|r| r.as_ref().ok()).map_or(q.dim, |v| v.dim),
+            doc.units,
+        ) else {
+            continue;
+        };
+        let Ok([lo, hi, _]) = gusset_units::params::range_bounds(p, q, &scope_there, doc.units) else { continue };
+        let tol = 1e-9 * q.value.abs().max(1.0);
+        if lo.is_some_and(|l| q.value < l.value - tol) || hi.is_some_and(|h| q.value > h.value + tol) {
+            let show = |b: &Option<gusset_units::expr::Expr>| b.as_ref().map_or("…".to_string(), ToString::to_string);
+            return Err(CommandError::args(format!(
+                "'{n}' = {} is outside its range in the component ({} to {})",
+                q.display(doc.units),
+                show(&p.range.min),
+                show(&p.range.max)
+            ))
+            .hint("choose a value between min and max"));
+        }
+    }
+    Ok(out)
 }
 
 /// The stored document of component `d`.
@@ -173,14 +227,15 @@ pub struct InsertComponent {
 impl Command for InsertComponent {
     const ID: &'static str = "assembly.insert_component";
     const TITLE: &'static str = "Insert component";
-    const DESCRIPTION: &'static str = "Bring in a body of another .gus document as a component, pinned to that document's current version (a stored copy), at its own coordinates; place it with feature_joint. Faces are named <Name>/part(<face in that document>).";
+    const DESCRIPTION: &'static str = "Bring in a body of another .gus document as a component pinned to its current version (a stored copy), at its own coordinates; place it with feature_joint. Faces: <Name>/part(<face there>).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let src = read_source(s, ctx, &self.path, self.branch.as_deref())?;
-        check_body(&src.doc, self.body.as_deref(), &crate::paths::display_name(&self.path))?;
+        check_body(&src, self.body.as_deref(), &crate::paths::display_name(&self.path))?;
         let document = pin(s, &src)?;
-        let set = assignments(&src.doc, &self.set)?;
+        let host = s.document(&ctx.actor)?;
+        let set = assignments(&host, &src.doc, &self.set)?;
         let def = ComponentDef {
             source: crate::paths::project_relative(s.project_dir.as_deref(), &self.path),
             version: src.node.to_string(),
@@ -228,7 +283,7 @@ impl Command for UpdateComponent {
         };
         let src = read_source(s, ctx, &old.source, old.branch.as_deref())?;
         let shown = crate::paths::display_name(&old.source);
-        check_body(&src.doc, old.body.as_deref(), &shown)?;
+        check_body(&src, old.body.as_deref(), &shown)?;
         // What the component sets must still exist in the new version (review v0.3 L5).
         for (p, _) in &old.set {
             if !src.doc.params.iter().any(|q| q.name == *p) {
@@ -301,7 +356,7 @@ impl Command for ConfigureComponent {
             set.retain(|(m, _)| m != n);
             if let Some(e) = e {
                 let one = std::collections::BTreeMap::from([(n.clone(), e.clone())]);
-                set.extend(assignments(&inner, &one)?);
+                set.extend(assignments(&doc, &inner, &one)?);
             }
         }
         edit(s, ctx, "Configure component", |doc, _| {
@@ -329,7 +384,7 @@ pub struct QueryComponents {
 impl Command for QueryComponents {
     const ID: &'static str = "query.components";
     const TITLE: &'static str = "Components";
-    const DESCRIPTION: &'static str = "Every component: source, pinned version, body, parameters set, and whether the source now has a newer version (update_available; null when the source cannot be read, with the reason in source_error_user_text).";
+    const DESCRIPTION: &'static str = "Every component: source, branch, pinned version, body (null: the last), configuration, set, and update_available (null when the source cannot be read; why in source_error_user_text)";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -361,7 +416,7 @@ impl Command for QueryComponents {
                 // Free text from the document or the file system: labeled for agents
                 // (security review v0.3 W4).
                 "name": f.name, "source_user_text": d.source, "version_user_text": d.version, "body": d.body,
-                "set": set, "update_available": available, "source_error_user_text": error,
+                "branch_user_text": d.branch, "configuration_user_text": d.configuration, "set": set, "update_available": available, "source_error_user_text": error,
             }));
         }
         Ok(json!({ "components": out }))

@@ -119,6 +119,13 @@ fn interference_and_a_motion_study() {
     // Past the limits the step reports the joint's error.
     let m = run(&mut s, "study.motion", json!({"parameter": "slide", "from": "10 mm", "to": "20 mm", "steps": 2}));
     assert!(m["steps"][1]["errors"][0].as_str().unwrap().contains("limits"), "{m}");
+    // Past the parameter's own max: the step says so, and value stays a string (F4-6).
+    run(&mut s, "param.set", json!({"name": "slide", "expr": "0 mm", "max": "15 mm"}));
+    let m = run(&mut s, "study.motion", json!({"parameter": "slide", "from": "0 mm", "to": "20 mm", "steps": 2}));
+    let last = &m["steps"][1];
+    assert_eq!(last["value"], "20 mm", "{m}");
+    assert!(last["value_error"].as_str().unwrap().contains("outside its range"), "{m}");
+    assert!(last["errors"].to_string().contains("outside its range"), "{m}");
     for bad in [
         json!({"parameter": "nope", "from": "0", "to": "1"}),
         json!({"parameter": "slide", "from": "0 mm", "to": "1 mm", "steps": 1}),

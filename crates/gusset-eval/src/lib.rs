@@ -1194,6 +1194,13 @@ fn eval_expr(
 ) -> Result<f64, EvalError> {
     let scope = |n: &str| params.get(n).and_then(|r| r.as_ref().ok().copied());
     let q: Quantity = gusset_units::expr::eval(e, &scope).map_err(|err| {
+        // A parameter that does not evaluate (out of its range, say) is not "unknown":
+        // report its own error (dogfooding F4-6).
+        let failed = e.variables().into_iter().find_map(|n| match params.get(&n) {
+            Some(Err(pe)) => Some(pe.clone()),
+            _ => None,
+        });
+        let err = failed.unwrap_or(err);
         let mut ee = EvalError::new(feature, ErrorCode::Expression, format!("'{e}': {}", err.message));
         ee.hint = err.hint;
         ee

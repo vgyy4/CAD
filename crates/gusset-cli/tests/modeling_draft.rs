@@ -122,8 +122,14 @@ fn draft_errors_explain() {
     let e = r.errors()[0].clone();
     assert_eq!(e.code, ErrorCode::KernelFailure, "{e}");
     assert!(e.hint.is_some(), "{e}");
+    // The face is named, not numbered (F4-9).
+    assert!(e.message.contains("face Extrude1/cap(end) cannot be drafted"), "{e}");
     let (_, r) = eval(BOX, &format!("draft Draft1 (faces: [{SIDES}], plane: XY, angle: 90 deg)"));
-    assert!(r.errors()[0].message.contains("between 0 and 90"), "{:?}", r.errors());
+    assert!(r.errors()[0].message.contains("between -90 and 90"), "{:?}", r.errors());
+    // No taper leaves the body alone, so a parameter range may include 0.
+    let (ev, r) = eval(BOX, &format!("param tilt = 0 deg\ndraft Draft1 (faces: [{SIDES}], plane: XY, angle: tilt)"));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(near(volume(&ev, &r, "Extrude1"), frustum(0.0, true)), "{}", volume(&ev, &r, "Extrude1"));
 }
 
 #[test]

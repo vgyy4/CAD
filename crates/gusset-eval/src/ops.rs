@@ -144,11 +144,11 @@ impl Evaluator {
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let angle = eval_expr(name, &d.angle, Dim::ANGLE, params, units)?;
-        if !(angle.abs() > 1e-9 && angle.abs() < std::f64::consts::FRAC_PI_2 - 1e-9) {
+        if angle.abs() >= std::f64::consts::FRAC_PI_2 - 1e-9 {
             return Err(EvalError::new(
                 name,
                 ErrorCode::Expression,
-                "the draft angle must be between 0 and 90 degrees",
+                "the draft angle must be between -90 and 90 degrees",
             )
             .with_hint("molded parts typically use 1 to 3 deg; negative leans the faces outward"));
         }
@@ -158,10 +158,15 @@ impl Evaluator {
             return Err(EvalError::new(name, ErrorCode::InvalidReference, "no faces to draft")
                 .with_hint("select the side faces to taper"));
         }
+        // No taper (a parameter at 0, F4-9) leaves the body as it is.
+        if angle.abs() <= 1e-9 {
+            return Ok(());
+        }
         let (neutral, normal) = mirror_plane(name, &d.plane, s)?;
         let into = matches!(d.plane, gusset_doc::PlaneRef::Face(_));
         let pull = if into != d.flip { scale(normal, -1.0) } else { normal };
-        let res = k.draft(&body.shape, &faces, &DraftSpec { pull, neutral, angle }).map_err(|ke| {
+        let res = k.draft(&body.shape, &faces, &DraftSpec { pull, neutral, angle }).map_err(|mut ke| {
+            ke.message = name_face_index(&ke.message, &body);
             let mut e = kernel_err(name, "draft", ke);
             if e.hint.is_none() {
                 e.hint = Some("draft side faces that cross the neutral plane, with a smaller angle".into());
@@ -619,6 +624,18 @@ impl Evaluator {
         }
         s.bodies.retain(|b| !is_tool(b));
         Ok(())
+    }
+}
+
+/// The kernel names faces by index ("face 2 cannot be drafted"); say which face that is.
+fn name_face_index(message: &str, body: &Body) -> String {
+    let Some(at) = message.find("face ") else { return message.to_string() };
+    let (head, rest) = message.split_at(at + "face ".len());
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let face = digits.parse::<usize>().ok().and_then(|i| body.names.faces.get(i));
+    match face {
+        Some(f) => format!("{head}{f}{}", rest.get(digits.len()..).unwrap_or("")),
+        None => message.to_string(),
     }
 }
 

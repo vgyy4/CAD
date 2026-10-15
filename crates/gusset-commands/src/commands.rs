@@ -191,7 +191,8 @@ pub(crate) struct BodyChange {
 impl BodyChange {
     fn to_json(&self) -> Value {
         let m = |x: &Option<Metrics>| {
-            x.as_ref().map(|(v, bb)| json!({"volume_mm3": v, "bbox_min_mm": bb[0], "bbox_max_mm": bb[1]}))
+            x.as_ref()
+                .map(|(v, bb)| json!({"volume_mm3": v, "bbox_min_mm": tidy_mm(bb[0]), "bbox_max_mm": tidy_mm(bb[1])}))
         };
         let mut v =
             json!({ "body": self.body, "change": self.change, "before": m(&self.before), "after": m(&self.after) });
@@ -358,6 +359,15 @@ fn frame_json(f: &gusset_kernel::Frame) -> Value {
     let mut v = json!({ "origin_mm": f.origin, "x_axis": f.x, "y_axis": f.y, "normal": f.normal() });
     snap_zeros(&mut v);
     v
+}
+
+/// A bounding-box corner rounded to 1e-6 mm: the kernel's boxes carry its 1e-7 mm
+/// tolerance (-1e-7 for a body that starts at 0, F4-11), which is no information.
+pub(crate) fn tidy_mm(p: [f64; 3]) -> [f64; 3] {
+    p.map(|c| {
+        let r = (c * 1e6).round() / 1e6;
+        if r == 0.0 { 0.0 } else { r }
+    })
 }
 
 /// Numeric noise below this is reported as exactly 0 (F2-9).
@@ -809,7 +819,7 @@ pub struct ParamSet {
     /// Optional comment (user text).
     #[serde(default)]
     pub comment: Option<String>,
-    /// Customizer range: `min`, `max`, `step` expressions ("" removes one).
+    /// Customizer range: `min` and `max` are enforced, `step` is the slider step ("" removes one).
     #[serde(default)]
     pub min: Option<String>,
     #[serde(default)]
@@ -866,6 +876,10 @@ impl Command for ParamSet {
             let v = params::evaluate(&doc.params, doc.units);
             let val = match v.get(&self.name) {
                 Some(Ok(q)) => json!(q.display(doc.units)),
+                // Range messages already name the parameter (F4-8).
+                Some(Err(e)) if e.to_string().contains(&format!("'{}'", self.name)) => {
+                    return Err(CommandError::args(e.to_string()));
+                }
                 Some(Err(e)) => return Err(CommandError::args(format!("{}: {e}", self.name))),
                 None => Value::Null,
             };
@@ -1663,7 +1677,7 @@ pub struct Extrude {
 impl Command for Extrude {
     const ID: &'static str = "feature.extrude";
     const TITLE: &'static str = "Extrude";
-    const DESCRIPTION: &'static str = "Extrude closed sketch regions (new body, or add/cut/intersect). A sketch on a face extrudes along its outward normal, so a cut needs a negative distance. body_name (op new) names the new body. Result: body_changes (volume/bbox before/after); warns when an add/cut changed nothing.";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions (new body, or add/cut/intersect). A sketch on a face extrudes along its outward normal (a cut needs a negative distance). body_name names a new body. Result: body_changes; warns when an add/cut changed nothing.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
@@ -2877,8 +2891,8 @@ impl Command for QueryBody {
             "volume_mm3": m.volume,
             "area_mm2": m.area,
             "centroid_mm": m.centroid,
-            "bbox_min_mm": bb.min,
-            "bbox_max_mm": bb.max,
+            "bbox_min_mm": tidy_mm(bb.min),
+            "bbox_max_mm": tidy_mm(bb.max),
             "size_mm": bb.size(),
             "faces": body.topology.faces.len(),
             "edges": body.topology.edges.len(),

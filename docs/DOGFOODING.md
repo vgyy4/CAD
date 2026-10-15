@@ -189,3 +189,94 @@ Not seen in this run: crashes in the kernel, wrong volumes, mirror/pattern/combi
 plane errors, or a confusing error from the new commands beyond the items above. Not
 exercised by part 6: `feature_move_body`, `pattern_circular`, `sketch_trim`,
 `import_file`/exports (covered by parts 1-5 in the first agent's logs only by tool name).
+
+## Run 4 — v0.3 features (2026-10-15)
+
+Setup: real OCCT 8.0.1 kernel, `gusset mcp --no-attach <file>` over stdio (protocol 2025-11-25), a
+long-lived stdlib Python client per project (run 3's `daemon.py`/`c.py`, plus a batch helper `cl.py`
+and `g`/`start.sh` wrappers; the scripts, saved files and renders stayed in the session's scratch directory). The agent learned the tools from `tools/list`
+(31 tools), `commands` (the 41 commands run through `run`), the `gusset://docs/text-grammar`
+resource and error messages. Binary: `cargo build --release -p gusset-cli` with `GUSSET_OCCT_DIR`
+(copied to `bin/gusset`). The repository working tree was being edited by another session while this
+ran (HEAD moved to ca12830 during the run, 26 files modified and uncommitted at 10:19), so the binary is
+"ca12830 plus whatever was uncommitted at 10:14-10:19". Log: `calls.log` (tool, bytes, seconds, no
+arguments), 265 calls, 77.5 s server time in total, of which 42.5 s is one render (see F4-13).
+
+### Parts
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | Hinge: `leafA.gus`, `leafB.gus`, assembly `hinge_asm.gus` | success | 49 | Two leaves (knuckle + web + 25 x 40 x 2 plate, 2994.64 mm3 each) inserted with `assembly_insert_component`, one `revolute` joint (`angle: open`, limits 0..200 deg), `study_motion`, `query_interference`, `query_bom`, 2 renders. |
+| 2 | Four-bar linkage: `bar.gus` (parametric bar with 2 holes), `fourbar.gus` | success | 37 | One bar document inserted 4 times with `set: {len: ...}` (ground 60, crank 30, coupler 70, rocker 50 mm); 3 free pivots; swept 0..360 deg in 13 steps; all 13 steps match the hand solution to 3 decimals. |
+| 3 | Parametric box with ranges, 2+1 configurations, component using one: `box.gus`, `boxes.gus` | success | 55 | `min/max/step` on 3 parameters; `Small`, `Large`, `Tall` (partial); components `BoxS`/`BoxL` select configurations; a `set` override on top. |
+| 4 | Drafted, shelled tray with embossed and engraved text: `tray.gus` | success | 51 (+20 in the rebuild, see F4-2) | 60 x 40 x 20 box, `feature_draft` 5 deg on the 4 sides, `feature_shell` 2 mm open top, `feature_text` GUSSET embossed on the slanted front face and engraved in the floor, `feature_hole` drain. |
+| 5 | Branches: change, compare, merge, conflict with `prefer` | success | 30 | `thick_wall` branch (wall, tilt, drain hole) vs agent branch (tilt); `branch_compare`, conflict reported, `prefer: ours` and `theirs`, merge into Main needs approval (declined by the client policy). |
+
+All `.gus` files rebuild with `gusset build <file> --branch agent/dogfood4-1` (checked at the end:
+hinge 56 ms, four-bar, boxes 9 ms, tray 1.3 s). Note the work lives on the agent branch
+`agent/dogfood4-1`; the files' Main is empty (see F4-1).
+
+Renders in `img/`: `p1_hinge60.png`, `p1_hinge135.png`, `p2_fourbar.png`, `p3_boxes.png`,
+`p4_tray_frontview.png`, `p4_tray_front.png`, `p4_tray_bottom.png`, `p4_tray_iso.png`, `p5_merged.png`.
+
+### Hand checks
+
+| Check | Hand | Gusset |
+|---|---|---|
+| Leaf volume: knuckle+web section (pi 16 + 10 - 7.91586) x 19 + plate 25 x 2 x 40 | 2994.64 | 2994.642686 |
+| Hinge centroid of leaf B at 30/60/90/120 deg: (-11.7468 cos a, y, 11.7468 sin a) | (-10.173, 5.873), (-5.873, 10.173), (0, 11.747), (5.873, 10.173) | identical, 3 decimals |
+| Hinge folded flat (180 deg): the two plates coincide | 2000 mm3 at centroid (17.5, 20, 0) | 2000.0 at (17.5, 20.0, 0.0) |
+| Joint limit 120 deg, sweep to 150 and 180 | refused | refused with the limit in the message |
+| Bar volume 38 x 8 x 3 - 2 pi 2^2 x 3 | 836.60 | 836.601776 (ground 60 mm: 1556.60) |
+| Four-bar, crank 60 deg: coupler and rocker angles from the circle intersection (a 30, b 70, c 50, d 60) | 15.487 / 63.31 deg (mirrored, see F4-3) | `built_values` 15.487232 / 63.309814 |
+| Four-bar, closing point C for 13 crank angles 0..360 | e.g. 60 deg: (82.458, -44.672); 180 deg: (28.333, -38.694) | coupler-end and rocker-end positions equal each other and the hand value at all 13 steps |
+| Crank 200 mm cannot close: gap = \|BD\| - (b + c) = 177.76 - 120 | 57.76 mm | "57.7639 mm and 84.8227 deg apart" |
+| Box 30 x 20 x 15 / 80 x 60 x 40: volume, area | 9000 / 192000; 2700 / 20800 | exact |
+| Small box inside the large one: interference | 9000 mm3 at (15, 10, 7.5) | 9000.0 at (15.0, 10.0, 7.5) |
+| Drafted prism (60 - 2 z t)(40 - 2 z t) integrated over 20 mm, t = tan 5 deg | 44582.0990 | 44582.098966 |
+| Shell: drafted body minus cavity (floor 2 mm, walls 2 mm normal to the sloped faces, open top) | 11424.161774 | 11424.161774 (also tilt 8/wall 3: 16084.479, tilt 10/wall 4: 20162.088, both exact) |
+| Emboss then engrave the same string | equal and opposite | +22.009312 / -22.009312 mm3 (letter area 44.02 mm2 x 0.5 mm) |
+| Merge `prefer: ours` (tilt 4, wall 3, drain hole pi 3^2 x 3) | 16333.4359 | 16333.435947 |
+| Merge `prefer: theirs` (tilt 6, wall 3, drain) | 16162.5391 | 16162.539149 |
+
+### Findings
+
+| ID | Sev | Finding | Repro | Suggested fix |
+|---|---|---|---|---|
+| F4-1 | medium | A component source whose model lives on an agent branch is "empty": `assembly_insert_component` (default branch main) fails with `'leafA.gus' has no bodies` and the hint `its bodies: ` is empty. The agent has to guess `branch: "agent/dogfood4-1"` (it is the only place the work exists, since agents do not edit Main). | Model in `leafA.gus`, then `run assembly_insert_component {path: "leafA.gus"}` in another project. | When main has no bodies but other branches do, say so: `hint: "main has no bodies; branches with bodies: agent/dogfood4-1"`. |
+| F4-2 | medium | There is no save tool: the `.gus` is written only when the server exits normally (closing stdin). The tray session's server was killed during the interruption (usage-limit stop) and `tray.gus` never existed; the whole part had to be rebuilt by script (20 calls). No recovery file turned up next to it. The other six files were saved because their servers had been shut down before the stop. A source for `assembly_insert_component` also cannot be used while its server is still running. | Model, kill the process, look for the `.gus`. | A `project_save` command (and autosave on every edit or every N seconds in `--no-attach` mode), or tell the agent in the tool result/instructions that the file is written on exit. |
+| F4-3 | medium | The sign of a revolute `angle` depends on the orientation of the frame's Z, which for a cylindrical face depends on whether it is a boss or a hole, and nothing says so or reports it. Barrel (boss) of the hinge: positive angle turns the leaf from -X towards +Z. Pin hole of a bar: `angle: 60 deg` put the crank at -60 deg (clockwise seen from +Z), and the solved free angles (+15.49, +63.31) are the mirror of the counter-clockwise hand solution. `query_joints` returns the values and the moved body's centroid but not the frames (origin, Z, X). | Four-bar: `feature_joint {type: revolute, body: Crank, at: Crank/part(Bar/side(BarSk/c10)), to: Ground/part(Bar/side(BarSk/c10)), angle: 60 deg}`, then `query_joints` / bbox. | Return `at_frame`/`to_frame` (origin_mm, z_axis, x_axis) in `query_joints`; document the sign rule in the grammar; or orient cylinder frames independent of boss/hole. |
+| F4-4 | medium | Joint frame placement by trial: (a) the frame of a planar face is the face's centre (centroid), so the cap of a knuckle that carries a web is 0.18 mm off the barrel axis (centroid (-0.178, 21, 0)); the circle `edge(...)` (partial arc, uses the full circle's centre and normal) was needed. (b) Without `flip` the first joint turned the body 180 deg about X and put its knuckle on top of the other one (`rebuild_ok: true`, no warning); with `flip` a positive `offset` moves along the flipped Z, i.e. into the other body (a 2 mm gap needed `offset: -2 mm`). | Hinge: `feature_joint {at: edge(LeafB/part(Knuckle/cap(start)), ...c2)), to: edge(LeafA/part(Knuckle/cap(end)), ...c2)), flip, offset}`. | Result of `feature_joint` with the placed frame and the body's bbox change (like extrude's `body_changes`); document "offset is along the target Z after `flip`, positive = into the part"; warn when a joint creates interference (cheap with `query_interference`). |
+| F4-5 | low | A closing joint without `free: [angle]` fails with `0.0001 mm and 0.1773 deg apart`, a mismatch that looks like a solver tolerance problem. The grammar does say the three other pivots need `free`, but the message does not point at it. With `free: [angle]` on the closing joint its `built_values.angle` is -0.177 deg, which means nothing physical for a pin. | `feature_joint J4 ... angle: 0 deg` closing the loop without `free`. | When the position gap is below ~1e-3 mm and only the angle is off: "the closing joint's own angle is fixed; add free: [angle] to it". Hide or explain the solved value. |
+| F4-6 | medium | Range violations surface as misleading errors. (a) `study_motion` beyond the parameter's `max` returns for those steps `errors: ["Hinge: 'open': unknown parameter 'open'"]`, `value: {"error": "'open' is outside its range ..."}` (a string at the other steps, an object here) and the bodies at their unplaced position. (b) `assembly_configure_component set {h: "500 mm"}` (max 60) is committed (`committed_with_errors`), the body disappears and the message is `BoxExt: 'h': unknown parameter 'h' (fix it in its own document, then update the component)`, a wrong cause and a wrong remedy. | (a) `param_set open ... max 120 deg`, `study_motion open 0..180`. (b) see left. | Name the range and the limit in both places; refuse the component `set` before committing (as `param_set` does); keep `value` a string and add `error`. |
+| F4-7 | low | `query_components` omits what its description promises (`body`) and the picked `configuration` and `branch`, which `document_get_text` shows. An agent cannot tell which configuration BoxS uses without reading the text. | `assembly_configure_component {component: BoxS, configuration: Small}`, `query_components`. | Add `body`, `branch`, `configuration`. |
+| F4-8 | low | Parameter ranges: `step` is neither enforced (w = 42 and 43 accepted with min 20, step 5) nor described (a hint for sliders?); `step: 0 mm` and `min > max` are accepted, and the error for the latter is `outside its range (20 mm to 10 mm)`; the message repeats the name (`w: 'w' is outside its range`). `max` and `min` are enforced hard on `param_set` and in configurations/components, so for an agent a "customizer range" is a hard limit. | `param_set {name: w, expr: 42 mm, min: 20 mm, max: 100 mm, step: 5 mm}`. | Say in the `param_set` description that min/max are enforced and step is a UI hint (or enforce it); validate `step > 0`, `min <= max` up front. |
+| F4-9 | medium | `feature_draft` with angle 0 fails (`the draft angle must be between 0 and 90 degrees (molded parts typically use 1 to 3 deg; negative leans the faces outward)`), so a parameter range that includes 0 breaks the model at its lower end; the message contradicts itself (negative angles are accepted: -3 deg built, bbox 61.05). 95 deg gives the same text. A face that cannot be drafted is reported as `face 2 cannot be drafted`, an index and not a name. | `param_set tilt 0 deg` with `feature_draft ... angle: tilt`; `feature_draft` on `cap(start)`. | Treat 0 as a no-op; one consistent range text (`-90 < angle < 90`); name the face. |
+| F4-10 | low | `feature_text` and `feature_hole at:` take coordinates in the face's own frame, which the result does not show. For the slanted front face (frame origin (0,0,0), x +X, y up the slope) and the floor (x +X, y -Y, normal -Z) I had to call `sketch_create` on the face and undo it. | `feature_text {plane: TrayExt/cap(start), at: [...]}` | Return `frame` and the letters' bbox in the feature result (as `sketch_create` and `feature_plane` do). |
+| F4-11 | low | Numerical noise in `body_changes`: `bbox_min_mm: [-1e-7, -1e-7, -1e-7]` (and -1.00000004e-7) after text/hole features on bodies that start at 0 (F2-9's snapping does not apply here). | tray after `feature_text`. | Snap bbox values in `body_changes` like the other results. |
+| F4-12 | low (setup) | `cargo build --release -p gusset-cli` does not rebuild `gusset-kernel-worker` / `gusset-worker`; the stale worker (protocol 1, later 5) gives `note: the kernel worker did not start: the geometry kernel worker speaks protocol 1, the app 4` and `not installed next to this program`, and the kernel then runs inside the MCP process, so a kernel crash would end the session. That note goes to stderr only; the MCP client is not told. The built workers also disagreed with the app (5 vs 4) because the tree changed under the build. | Build as in the task, run `gusset mcp`. | Say in `diagnostics`/instructions that the kernel is in-process; build the workers with the CLI (workspace default-members or a build script). |
+| F4-13 | low | One `render_view` (iso, 900x700, tray) took 42.5 s right after a server restart (the next renders of the same model took 0.03-0.1 s). The machine was loaded by a `find /` and another session's builds, so this is only a hint at the 25 s cold render of run 1, not a measurement. First renders of simple models: 2.1 s. | Start server, build tray, `render_view`. | Warm the renderer at start-up; progress notification after 2 s. |
+| F4-14 | info | `branch_compare` shows differences between two heads only, not which side changed since the common iteration, so before `branch_merge` an agent cannot predict the conflicts (it did report them correctly and changed nothing without `prefer`). | `branch_compare` of the two branches. | Optional `base: true` three-way view. |
+
+No prompt-injection attempt was seen in tool output, resources or files in this run (component paths,
+branch names and parameter comments all arrived as `user_text` with `suspicious: false`).
+
+### What worked well
+
+- Assemblies end to end: `assembly_insert_component` (pinned stored copy, faces named `Name/part(...)`), `set` overrides (one bar document gave four different links), `assembly_configure_component` with configurations, `query_components` with `update_available`, and a `query_bom` that counts mirrored leaves as one part (2 x 2994.64 mm3).
+- `feature_joint` + `study_motion`: exact positions, limits enforced on driven and solved values, interference at each step (3.28 mm3 at 160 deg, 145.75 at 170, 2000.0 at 180) and no change to the document.
+- Closed loops: `free` angles solved a Grashof four-bar at 13 positions with all assembly modes consistent and equal to the hand solution; an impossible loop gives the gap in mm and degrees (57.76 mm, correct by hand).
+- Parameter ranges are enforced everywhere (`param_set`, configurations, component `set`) and shown in `query_model`; configuration save/apply/`current` flag behave and a partial configuration (`Tall`, one parameter) works. `configuration_apply` of an unknown name and `assembly_configure_component` with an unknown configuration list the existing ones.
+- Draft, shell, text and hole produced exact volumes against hand integrals (draft 44582.0990, shell 11424.1618, tilt/wall sweeps, text +/-22.009312 mm3); the text outline is readable from the outside of the face (not mirrored) on both slanted and flat faces; parameters (`tilt`, `wall`) rebuild the whole chain (draft, shell, text, hole) in about 1 s.
+- Branches: `branch_create from node`, `branch_compare`, `branch_merge` (a conflict is reported with ours/theirs and changes nothing, `prefer` resolves it, "already contained" on a repeat, three-way semantics correct on a later merge), merge into Main needs approval and the prompt names the branch and who made it (S2 is fixed). `history_undo` text now says `now at n32` (F3-11).
+- Errors were precise about argument names (`unknown field name, expected one of component, set, configuration`), `committed_with_errors` + `undo_hint` appear for every broken joint/draft.
+
+### Not tested
+
+- `assembly_update_component` and `update_available: true` (a source that changed after insertion).
+- Cylindrical/slider/planar/ball joints, `distance_limits`, gear-style joint relations (only revolute).
+- Components inside components, configurations on a component that is itself an assembly.
+- Cancellation, rate limits and read-only mode with the new commands; the in-app GUI paths.
+- STEP/3MF export of an assembly (bodies placed by joints) and re-import.
+- `branch_cherry_pick` (only merge) and merging a feature changed on both sides (only a parameter conflict).
+- The kernel worker isolation (the worker was stale, F4-12), so a kernel crash on draft/shell/text was not exercised.

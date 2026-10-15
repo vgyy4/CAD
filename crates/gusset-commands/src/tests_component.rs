@@ -164,6 +164,14 @@ fn components_take_parameters_from_this_document() {
     let e = execute(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "set": {"h": "2 deg"}}));
     // A wrong unit is the component's rebuild error.
     assert!(e.is_ok_and(|r| r["rebuild_ok"] == false));
+    // A value outside the part's range is refused before anything changes (F4-6).
+    write_part(&d.join("ranged.gus"), &[&PART.replace("param h = 2 mm", "param h = 2 mm, min: 1 mm, max: 6 mm")]);
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "ranged.gus", "name": "R"}));
+    let before = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    let e = execute(&mut s, &u, "assembly.configure_component", json!({"component": "R", "set": {"h": "50 mm"}}))
+        .unwrap_err();
+    assert!(e.message.contains("outside its range"), "{e:?}");
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap().to_text(), before);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -287,4 +295,32 @@ fn a_component_follows_its_branch_and_update_checks_what_it_sets() {
     save(&h);
     let e = execute(&mut s, &c, "assembly.update_component", json!({"component": "Pin"})).unwrap_err();
     assert!(e.message.contains("no parameter 'h'"), "{e:?}");
+}
+
+#[test]
+fn a_source_whose_bodies_are_on_a_branch_says_which() {
+    // Dogfooding F4-1: an agent's work lives on its branch; Main is empty.
+    let d = dir();
+    let u = Ctx::user(1);
+    let mut h = History::new(&Document::from_text("gusset 1\nunits mm\n").unwrap(), &u);
+    let head = h.head(h.main()).unwrap();
+    let agent = h.create_branch(&u, head, Some("agent/a-1")).unwrap();
+    h.commit(&u, agent, &Document::from_text(PART).unwrap(), "model", NodeState::Ok).unwrap();
+    let meta = gusset_project::ProjectMeta {
+        id: gusset_store::paths::ProjectId::new_random().unwrap(),
+        save_seq: 1,
+        base_seq: 1,
+        created: 1,
+    };
+    std::fs::write(d.join("pin.gus"), gusset_project::encode(&h, &meta).unwrap()).unwrap();
+    let mut s = session(&d);
+    let c = CmdCtx::user(1);
+    let e = execute(&mut s, &c, "assembly.insert_component", json!({"path": "pin.gus"})).unwrap_err();
+    assert!(e.message.contains("has no bodies"), "{e:?}");
+    assert!(e.hint.as_deref().unwrap_or("").contains("\"agent/a-1\""), "{e:?}");
+    run(&mut s, &c, "assembly.insert_component", json!({"path": "pin.gus", "branch": "agent/a-1"}));
+    let q = run(&mut s, &c, "query.components", json!({}));
+    assert_eq!(q["components"][0]["branch_user_text"], "agent/a-1", "{q}");
+    assert_eq!(q["components"][0]["configuration_user_text"], Value::Null, "{q}");
+    let _ = std::fs::remove_dir_all(&d);
 }

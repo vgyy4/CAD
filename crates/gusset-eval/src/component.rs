@@ -185,7 +185,11 @@ impl Evaluator {
                 ErrorCode::ComponentFailed,
                 format!("the component's document does not rebuild: {e}"),
             )
-            .with_hint("fix it in its own document, then update the component"));
+            .with_hint(if d.set.is_empty() && d.configuration.is_none() {
+                "fix it in its own document, then update the component"
+            } else {
+                "check the values this component sets (set, configuration), or fix its own document"
+            }));
         }
         let body = match &d.body {
             Some(b) => ev.body(b),

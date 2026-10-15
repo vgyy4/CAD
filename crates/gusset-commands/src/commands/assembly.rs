@@ -130,7 +130,7 @@ pub struct StudyMotion {
 impl Command for StudyMotion {
     const ID: &'static str = "study.motion";
     const TITLE: &'static str = "Motion study";
-    const DESCRIPTION: &'static str = "Sweep a parameter from `from` to `to` in equal steps without changing the document; at each step: the rebuild errors, the bodies' centroids and (optionally) interference. For joints driven by parameters.";
+    const DESCRIPTION: &'static str = "Sweep a parameter from `from` to `to` in equal steps (the document is not changed); per step: rebuild errors, body centroids, optional interference.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -156,16 +156,22 @@ impl Command for StudyMotion {
             let expr = parse_expr("value", &format!("({from}) + (({to}) - ({from})) * {t:?}"))?;
             let mut doc = base.clone();
             if let Some(p) = doc.params.iter_mut().find(|p| p.name == self.parameter) {
-                p.expr = expr;
+                p.expr = expr.clone();
             }
             let ev = s.evaluate_doc(&doc, rollback);
             if ev.cancelled {
                 return Err(CommandError::new("cancelled", "the motion study was stopped"));
             }
-            let value = match ev.params.get(&self.parameter) {
-                Some(Ok(q)) => json!(q.display(doc.units)),
-                Some(Err(e)) => json!({ "error": e.to_string() }),
-                None => Value::Null,
+            // `value` stays a string; a step the parameter refuses (outside its range,
+            // dogfooding F4-6) also carries `value_error`.
+            let (value, value_error) = match ev.params.get(&self.parameter) {
+                Some(Ok(q)) => (json!(q.display(doc.units)), Value::Null),
+                Some(Err(e)) => {
+                    let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+                    let shown = gusset_units::expr::eval(&expr, &scope).map(|q| q.display(doc.units));
+                    (shown.map_or(Value::Null, |v| json!(v)), json!(e.to_string()))
+                }
+                None => (Value::Null, Value::Null),
             };
             let bodies = select(&ev, &self.bodies)?;
             let placed: Vec<Value> = bodies
@@ -177,6 +183,7 @@ impl Command for StudyMotion {
                 .collect();
             let mut frame = json!({
                 "value": value,
+                "value_error": value_error,
                 "errors": ev.errors().iter().map(|e| e.to_string()).collect::<Vec<_>>(),
                 "bodies": placed,
             });

@@ -192,9 +192,24 @@ pub fn range_bounds(
     Ok([bound(&p.range.min, "min")?, bound(&p.range.max, "max")?, bound(&p.range.step, "step")?])
 }
 
-/// Fails a value outside the parameter's `min` / `max`.
+/// Fails a value outside the parameter's `min` / `max`, and a range that is no range
+/// (`min > max`, `step <= 0`; dogfooding F4-8). `step` is the slider's step, not enforced.
 fn check_range(p: &Param, q: Quantity, scope: &dyn expr::Scope, lengths: LengthUnit) -> Result<(), ExprError> {
-    let [lo, hi, _] = range_bounds(p, q, scope, lengths)?;
+    let [lo, hi, step] = range_bounds(p, q, scope, lengths)?;
+    let bad = |message: String, hint: &str| ExprError {
+        kind: ExprErrorKind::Domain,
+        span: p.expr.span(),
+        message,
+        hint: Some(hint.into()),
+    };
+    if let (Some(l), Some(h)) = (lo, hi)
+        && l.value > h.value
+    {
+        return Err(bad(format!("the range of '{}' has min above max", p.name), "swap min and max"));
+    }
+    if step.is_some_and(|s| s.value <= 0.0 || s.value.is_nan()) {
+        return Err(bad(format!("the step of '{}' must be positive", p.name), "remove the step or make it positive"));
+    }
     let tol = 1e-9 * q.value.abs().max(1.0);
     let outside = lo.is_some_and(|l| q.value < l.value - tol) || hi.is_some_and(|h| q.value > h.value + tol);
     if outside {
@@ -255,6 +270,19 @@ mod tests {
         assert!(ok(ranged("n", "1", Some("10 mm"), None), LengthUnit::Inch).is_ok());
         // Another dimension still is a mismatch.
         assert!(ok(ranged("a", "5 mm", Some("1 deg"), None), LengthUnit::Millimetre).is_err());
+    }
+
+    #[test]
+    fn a_range_must_be_a_range() {
+        // Dogfooding F4-8: min above max and a zero step were accepted.
+        let ok = |p: Param| evaluate(&[p], LengthUnit::Millimetre).into_values().next().unwrap();
+        let e = ok(ranged("w", "15 mm", Some("20 mm"), Some("10 mm"))).unwrap_err();
+        assert!(e.message.contains("min above max"), "{e:?}");
+        let mut q = ranged("w", "15 mm", Some("10 mm"), Some("20 mm"));
+        q.range.step = Some(expr::parse("0 mm").unwrap());
+        assert!(ok(q.clone()).unwrap_err().message.contains("step"));
+        q.range.step = Some(expr::parse("5 mm").unwrap());
+        assert!(ok(q).is_ok());
     }
 
     #[test]
