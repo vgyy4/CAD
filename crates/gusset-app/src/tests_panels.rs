@@ -132,6 +132,18 @@ fn a_parameter_with_a_range_gets_a_customizer_slider() {
 }
 
 #[test]
+fn a_derived_parameter_gets_no_slider() {
+    // Review v0.3 L4: the slider would replace the relation with a number.
+    let mut a = app();
+    a.run("param.set", json!({"name": "height", "expr": "20 mm"})).unwrap();
+    a.run("param.set", json!({"name": "width", "expr": "height * 2", "min": "10 mm", "max": "100 mm"})).unwrap();
+    a.wait_idle();
+    let mut h = quick_harness(a);
+    settle(&mut h);
+    assert!(h.query_by_role(egui::accesskit::Role::Slider).is_none());
+}
+
+#[test]
 fn a_configuration_row_applies_its_values() {
     let mut a = app();
     a.run("param.set", json!({"name": "width", "expr": "40 mm"})).unwrap();

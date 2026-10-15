@@ -459,11 +459,16 @@ struct Slider {
 }
 
 /// The slider of `p` when its `min` and `max` evaluate (ADR 0027): lengths in the
-/// document's unit, angles in degrees.
+/// document's unit, angles in degrees. Only for a parameter written as a value (a slider
+/// would replace a relation such as `height * 2`), shown at the nearest end when the
+/// value is outside its range so it can bring it back (review v0.3 L4).
 fn slider_of(p: &gusset_units::params::Param, v: &View<'_>) -> Option<Slider> {
     let eval = v.eval?;
-    let value = eval.params.get(&p.name)?.as_ref().ok().copied()?;
+    if !p.expr.variables().is_empty() {
+        return None;
+    }
     let scope = |n: &str| eval.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let value = gusset_units::expr::eval(&p.expr, &scope).ok()?;
     // The same bounds the range check uses (review v0.3 M4).
     let [min, max, step] = gusset_units::params::range_bounds(p, value, &scope, v.doc.units).ok()?;
     let bound = |b: Option<gusset_units::Quantity>| b.map(|b| b.value);
@@ -476,7 +481,13 @@ fn slider_of(p: &gusset_units::params::Param, v: &View<'_>) -> Option<Slider> {
         (1.0, "")
     };
     let (lo, hi) = (bound(min)? / factor, bound(max)? / factor);
-    (lo < hi).then_some(Slider { lo, hi, step: bound(step).map(|s| s / factor), value: value.value / factor, unit })
+    (lo < hi).then_some(Slider {
+        lo,
+        hi,
+        step: bound(step).map(|s| s / factor),
+        value: (value.value / factor).clamp(lo, hi),
+        unit,
+    })
 }
 
 fn customizer(ui: &mut Ui, p: &gusset_units::params::Param, s: Slider, out: &mut Vec<Action>) {
