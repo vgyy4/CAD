@@ -19,6 +19,7 @@ struct Source {
 }
 
 fn read_source(s: &Session, ctx: &CmdCtx, path: &str, branch: Option<&str>) -> Result<Source, CommandError> {
+    crate::paths::refuse_remote(path)?;
     let full = crate::paths::read_target(s.project_dir.as_deref(), path, &ctx.actor)?;
     let shown = crate::paths::display_name(path);
     if full.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("gus")) {
@@ -27,7 +28,8 @@ fn read_source(s: &Session, ctx: &CmdCtx, path: &str, branch: Option<&str>) -> R
         );
     }
     let file = crate::import::open_regular(&full, path, crate::import::MAX_IMPORT_BYTES)?;
-    let bytes = crate::import::read_capped(file, crate::import::MAX_IMPORT_BYTES, &Default::default())?;
+    // Stop cancels a slow read (review v0.3 H1).
+    let bytes = crate::import::read_capped(file, crate::import::MAX_IMPORT_BYTES, &s.rebuild_cancel_flag())?;
     let (history, _) = gusset_project::decode(&bytes)
         .map_err(|e| CommandError::new("io", format!("'{shown}' cannot be read: {e}")))?;
     let b = match branch {
@@ -285,7 +287,12 @@ impl Command for ConfigureComponent {
 /// Lists the components and whether their sources changed.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct QueryComponents {}
+pub struct QueryComponents {
+    /// Only read sources inside the project folder; others report `source_error` (the
+    /// app's check after opening a project, which must not touch other files).
+    #[serde(default)]
+    pub local_only: bool,
+}
 
 impl Command for QueryComponents {
     const ID: &'static str = "query.components";
@@ -296,11 +303,20 @@ impl Command for QueryComponents {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let doc = s.document(&ctx.actor)?;
         let mut out = Vec::new();
+        // Each source is read once, however many components name it (review v0.3 H1).
+        let mut read: std::collections::BTreeMap<&str, Result<String, String>> = std::collections::BTreeMap::new();
         for f in &doc.features {
             let FeatureKind::Component(d) = &f.kind else { continue };
-            let (available, error) = match read_source(s, ctx, &d.source, None) {
-                Ok(src) => (json!(src.doc.to_text() != stored_text(s, d)), Value::Null),
-                Err(e) => (Value::Null, json!(e.message)),
+            let text = read.entry(d.source.as_str()).or_insert_with(|| {
+                if self.local_only {
+                    crate::paths::confined(s.project_dir.as_deref(), &d.source)
+                        .map_err(|_| "not checked: the source is outside the project folder".to_string())?;
+                }
+                read_source(s, ctx, &d.source, None).map(|src| src.doc.to_text()).map_err(|e| e.message)
+            });
+            let (available, error) = match text {
+                Ok(t) => (json!(*t != stored_text(s, d)), Value::Null),
+                Err(e) => (Value::Null, json!(e)),
             };
             let set: serde_json::Map<String, Value> =
                 d.set.iter().map(|(n, e)| (n.clone(), json!(e.to_string()))).collect();

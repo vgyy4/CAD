@@ -173,6 +173,31 @@ pub fn write_file(path: &Path, shown: &str, bytes: &[u8]) -> Result<(), CommandE
     })
 }
 
+/// Refuses network (UNC), device and verbatim paths for every actor (review v0.3 H1):
+/// reading one could reach another machine, and on Windows send the user's credentials.
+///
+/// # Errors
+/// `not_allowed` for such a path.
+pub fn refuse_remote(path: &str) -> Result<(), CommandError> {
+    let refuse = || {
+        CommandError::new("not_allowed", "network and device paths are not read")
+            .hint("copy the file to this computer first")
+    };
+    let p = path.trim_start();
+    let sep = |c: char| c == '/' || c == '\\';
+    let mut chars = p.chars();
+    if chars.next().is_some_and(sep) && chars.next().is_some_and(sep) {
+        return Err(refuse());
+    }
+    #[cfg(windows)]
+    if let Some(Component::Prefix(px)) = Path::new(p).components().next()
+        && !matches!(px.kind(), std::path::Prefix::Disk(_))
+    {
+        return Err(refuse());
+    }
+    Ok(())
+}
+
 /// A short, path-free name for messages: the file name of `shown`.
 #[must_use]
 pub fn display_name(shown: &str) -> String {
@@ -187,6 +212,16 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gusset-paths-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn refuses_network_and_device_paths() {
+        for bad in ["//host/share/x.gus", "\\\\host\\share\\x.gus", "\\\\?\\C:\\x.gus", " //h/x.gus", "/\\h\\x.gus"] {
+            assert!(refuse_remote(bad).is_err(), "{bad:?} was accepted");
+        }
+        for ok in ["part.gus", "parts/a.gus", "/home/u/a.gus", "C:\\parts\\a.gus", "../a.gus"] {
+            assert!(refuse_remote(ok).is_ok(), "{ok:?} was refused");
+        }
     }
 
     #[test]

@@ -185,3 +185,31 @@ fn a_component_can_use_a_configuration_of_its_document() {
     run(&mut s, &u, "assembly.configure_component", json!({"component": "Pin", "configuration": ""}));
     assert_eq!(vol(&mut s), 80.0);
 }
+
+#[test]
+fn the_check_after_opening_reads_only_sources_inside_the_project() {
+    // Review v0.3 H1: an opened file must not make the app read other files.
+    let (d, other) = (dir(), dir());
+    let outside = other.join("pin.gus");
+    write_part(&outside, &[PART]);
+    write_part(&d.join("pin.gus"), &[PART]);
+    let mut s = session(&d);
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "assembly.insert_component", json!({"path": outside.to_str().unwrap(), "name": "Far"}));
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "name": "Near"}));
+    run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "name": "Near2"}));
+    let q = run(&mut s, &u, "query.components", json!({"local_only": true}));
+    let c = q["components"].as_array().unwrap();
+    assert!(c[0]["update_available"].is_null(), "{q}");
+    assert!(c[0]["source_error"].as_str().unwrap().contains("outside the project folder"), "{q}");
+    assert_eq!(c[1]["update_available"], false, "{q}");
+    assert_eq!(c[2]["update_available"], false, "{q}");
+    // Asked for explicitly, the user's own source is read.
+    let q = run(&mut s, &u, "query.components", json!({}));
+    assert_eq!(q["components"][0]["update_available"], false, "{q}");
+    // Network paths are refused for everyone.
+    for p in ["//host/share/pin.gus", "\\\\host\\share\\pin.gus"] {
+        let e = execute(&mut s, &u, "assembly.insert_component", json!({"path": p})).unwrap_err();
+        assert_eq!(e.code, "not_allowed", "{p}: {e:?}");
+    }
+}

@@ -1028,7 +1028,9 @@ impl App {
             (session, Some(project))
         });
         // Components whose source documents changed since they were pinned (ADR 0026 §7).
-        self.submit_command("query.components", json!({}), Then::ComponentUpdates);
+        // Only sources inside the project folder: opening a file reads nothing else (review
+        // v0.3 H1); Update reads the others when the user asks.
+        self.submit_command("query.components", json!({ "local_only": true }), Then::ComponentUpdates);
         match report {
             OpenReport::Clean => {}
             OpenReport::RecoveryAvailable { recovered, .. } => self.dialog = Some(Dialog::Recovery { recovered }),
