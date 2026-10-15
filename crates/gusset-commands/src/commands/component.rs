@@ -179,7 +179,7 @@ impl Command for InsertComponent {
         let document = pin(s, &src)?;
         let set = assignments(&src.doc, &self.set)?;
         let def = ComponentDef {
-            source: self.path.clone(),
+            source: crate::paths::project_relative(s.project_dir.as_deref(), &self.path),
             version: src.node.to_string(),
             document,
             body: self.body,

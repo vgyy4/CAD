@@ -477,7 +477,9 @@ component <Name> (source: "<path>", version: "<node>", document: "<hash>", [bran
   body), at that document's own coordinates; place it with a joint. Insert it with
   `assembly.insert_component`, never by hand: `document` is the hash of a stored copy of
   that document, so the component stays the same until `assembly.update_component` pins
-  the source's newer version (of `branch`, default: its main branch).
+  the source's newer version (of `branch`, default: its main branch). The stored copy is the whole
+  source document, its notes, labels and comments included. A source inside the project
+  folder is stored relative to it.
 - `set` gives parameters of the component's document values computed here (expressions
   of this document's parameters): two components of one part can have different sizes,
   and a parameter here can drive a part (`assembly.configure_component`).

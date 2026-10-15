@@ -198,6 +198,24 @@ pub fn refuse_remote(path: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// `path` relative to the project folder (with `/`) when it is an absolute path inside
+/// it, else `path` unchanged: what a component stores as its source, so the shared
+/// document carries no user's folder names and agents can refresh it (review v0.3 L7).
+#[must_use]
+pub fn project_relative(project_dir: Option<&Path>, path: &str) -> String {
+    let p = Path::new(path);
+    let Some(dir) = project_dir.filter(|_| p.is_absolute()) else { return path.to_string() };
+    let canon = |x: &Path| x.canonicalize().unwrap_or_else(|_| x.to_path_buf());
+    let (dir, full) = (canon(dir), canon(p));
+    let Ok(rel) = full.strip_prefix(&dir) else { return path.to_string() };
+    let parts: Option<Vec<&str>> =
+        rel.components().map(|c| if let Component::Normal(n) = c { n.to_str() } else { None }).collect();
+    match parts {
+        Some(v) if !v.is_empty() => v.join("/"),
+        _ => path.to_string(),
+    }
+}
+
 /// A short, path-free name for messages: the file name of `shown`.
 #[must_use]
 pub fn display_name(shown: &str) -> String {

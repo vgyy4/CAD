@@ -198,6 +198,11 @@ fn the_check_after_opening_reads_only_sources_inside_the_project() {
     run(&mut s, &u, "assembly.insert_component", json!({"path": outside.to_str().unwrap(), "name": "Far"}));
     run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "name": "Near"}));
     run(&mut s, &u, "assembly.insert_component", json!({"path": "pin.gus", "name": "Near2"}));
+    // A file inside the project chosen by its absolute path is stored relative (L7).
+    let abs = d.join("pin.gus");
+    run(&mut s, &u, "assembly.insert_component", json!({"path": abs.to_str().unwrap(), "name": "Near3"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("component Near3 (source: \"pin.gus\""), "{text}");
     let q = run(&mut s, &u, "query.components", json!({"local_only": true}));
     let c = q["components"].as_array().unwrap();
     assert!(c[0]["update_available"].is_null(), "{q}");
