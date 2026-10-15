@@ -306,6 +306,10 @@ fn limit_errors_use_the_documents_unit_and_name_the_joint() {
 
 /// Ball joints B1..Bn chained (each to the previous body), then `loop` joints.
 fn chain(n: usize, tail: &str) -> (Evaluator, Evaluation) {
+    chain_with(n, tail, |_| {})
+}
+
+fn chain_with(n: usize, tail: &str, limits: impl Fn(&mut crate::EvalLimits)) -> (Evaluator, Evaluation) {
     let mut text = format!("gusset 1\nunits mm\n{}", rect("S", 10.0, 4.0));
     for i in 0..=n {
         text.push_str(&format!("extrude B{i} (profile: S, distance: 1 mm, op: new)\n"));
@@ -319,6 +323,9 @@ fn chain(n: usize, tail: &str) -> (Evaluator, Evaluation) {
     text.push_str(tail);
     let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
     let mut ev = Evaluator::new(Arc::new(MockKernel));
+    let mut l = ev.limits();
+    limits(&mut l);
+    ev.set_limits(l);
     let r = ev.evaluate(&doc, None, &());
     (ev, r)
 }
@@ -330,6 +337,28 @@ fn too_many_unknowns_in_one_loop_is_an_error() {
     let m = message(&r, "Jc");
     assert!(m.contains("63 free values") && m.contains("limit is 60") && m.contains("fewer"), "{m}");
     assert!(r.errors().iter().any(|e| e.code == ErrorCode::TooComplex));
+}
+
+#[test]
+fn loop_solving_shares_one_budget_per_rebuild() {
+    // Security review v0.3 W1: a long chain with closing joints that cannot close repeated
+    // the whole solve for every closing joint.
+    let mut tail = String::new();
+    for k in 0..10 {
+        tail.push_str(&format!(
+            "joint Jc{k} (type: rigid, body: B{n}, at: B{n}/cap(end), to: B0/cap(start), offset: {} mm)\n",
+            500 + k,
+            n = 19
+        ));
+    }
+    // With the default budget every closing joint is solved (and fails to close)...
+    let (_, r) = chain(19, &tail);
+    assert!(r.errors().iter().all(|e| e.code == ErrorCode::InvalidReference), "{:?}", r.errors());
+    // ...with a small one the later solves stop, wherever their chains are.
+    let (_, r) = chain_with(19, &tail, |l| l.max_joint_steps = 2_000);
+    let codes: Vec<ErrorCode> = r.errors().iter().map(|e| e.code).collect();
+    assert!(codes.first() == Some(&ErrorCode::InvalidReference), "{:?}", r.errors());
+    assert!(codes.contains(&ErrorCode::TooComplex), "{:?}", r.errors());
 }
 
 #[test]

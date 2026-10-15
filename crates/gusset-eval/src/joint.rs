@@ -294,7 +294,10 @@ impl Evaluator {
         js.recs.push(rec);
         let mut moved: Vec<(usize, Arc<Body>)> = Vec::new();
         if closing {
-            self.close_loops(s, &mut js, name, units, &mut moved)?;
+            let mut steps = 0u64;
+            let r = self.close_loops(s, &mut js, name, units, &mut moved, &mut steps);
+            s.work.joint_steps = s.work.joint_steps.saturating_add(steps);
+            r?;
         } else {
             vals.check(name, name, units)?;
             let t = fixed.then_after(&motion(d.kind, &vals)).then_after(&moving.inverse());
@@ -323,6 +326,7 @@ impl Evaluator {
         name: &str,
         units: LengthUnit,
         moved: &mut Vec<(usize, Arc<Body>)>,
+        steps: &mut u64,
     ) -> Result<(), EvalError> {
         let all = js.recs.clone();
         // Only the joints that can change the closing joints' residuals are in the problem.
@@ -348,16 +352,33 @@ impl Evaluator {
             }
             rs
         };
-        let gap = |q: &[f64]| loop_residual(&with_values(q));
-        let (q, r) = if unknowns.is_empty() {
-            (q0.clone(), gap(&q0))
-        } else {
-            let (q, r, stopped) = least_squares(&q0, gap, || self.is_cancelled());
-            if stopped {
-                return Err(budget::cancelled(name));
-            }
-            (q, r)
+        // Every residual places each joint of the loop once; all loop solving of one rebuild
+        // shares `max_joint_steps` of that work (security review v0.3 W1).
+        let left = self.limits.max_joint_steps.saturating_sub(s.work.joint_steps);
+        let used = std::cell::Cell::new(0u64);
+        let per = u64::try_from(sub.len()).unwrap_or(u64::MAX).max(1);
+        let gap = |q: &[f64]| {
+            used.set(used.get().saturating_add(per));
+            loop_residual(&with_values(q))
         };
+        let over = || used.get() > left;
+        let result = if unknowns.is_empty() {
+            Ok((q0.clone(), gap(&q0)))
+        } else {
+            let (q, r, stopped) = least_squares(&q0, gap, || self.is_cancelled() || over());
+            match (stopped, self.is_cancelled()) {
+                (true, true) => Err(budget::cancelled(name)),
+                (true, false) => Err(EvalError::new(
+                    name,
+                    ErrorCode::TooComplex,
+                    "the joint loops need more solving than one rebuild allows",
+                )
+                .with_hint("close fewer or shorter loops, or fix values with fewer free entries")),
+                _ => Ok((q, r)),
+            }
+        };
+        *steps = used.get();
+        let (q, r) = result?;
         let (off_mm, turned) = r.chunks(6).fold((0.0_f64, 0.0_f64), |(m, t), c| {
             let n = |a: &[f64]| a.iter().map(|x| x * x).sum::<f64>().sqrt();
             (m.max(n(c.get(..3).unwrap_or(&[]))), t.max(n(c.get(3..).unwrap_or(&[]))))

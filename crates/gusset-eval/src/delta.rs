@@ -147,6 +147,10 @@ impl Delta {
         s.work = Work {
             faces: s.work.faces.saturating_add(self.work_after.faces.saturating_sub(self.work_before.faces)),
             tools: s.work.tools.saturating_add(self.work_after.tools.saturating_sub(self.work_before.tools)),
+            joint_steps: s
+                .work
+                .joint_steps
+                .saturating_add(self.work_after.joint_steps.saturating_sub(self.work_before.joint_steps)),
         };
     }
 

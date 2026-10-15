@@ -33,6 +33,9 @@ pub struct EvalLimits {
     pub max_boolean_work: u64,
     /// Most boolean tools (pattern instances, holes, tool bodies) in one evaluation.
     pub max_tools: u64,
+    /// Most joint placements the loop solver computes in one evaluation, all closing joints
+    /// together (security review v0.3 W1).
+    pub max_joint_steps: u64,
 }
 
 /// See [`EvalLimits::max_body_faces`].
@@ -41,6 +44,8 @@ pub const DEFAULT_MAX_BODY_FACES: u64 = 10_000;
 pub const DEFAULT_MAX_BOOLEAN_WORK: u64 = 1_000_000;
 /// See [`EvalLimits::max_tools`].
 pub const DEFAULT_MAX_TOOLS: u64 = 20_000;
+/// See [`EvalLimits::max_joint_steps`].
+pub const DEFAULT_MAX_JOINT_STEPS: u64 = 2_000_000;
 
 impl Default for EvalLimits {
     fn default() -> Self {
@@ -48,6 +53,7 @@ impl Default for EvalLimits {
             max_body_faces: DEFAULT_MAX_BODY_FACES,
             max_boolean_work: DEFAULT_MAX_BOOLEAN_WORK,
             max_tools: DEFAULT_MAX_TOOLS,
+            max_joint_steps: DEFAULT_MAX_JOINT_STEPS,
         }
     }
 }
@@ -57,6 +63,8 @@ impl Default for EvalLimits {
 pub(crate) struct Work {
     pub(crate) faces: u64,
     pub(crate) tools: u64,
+    /// Joint placements computed by the loop solver so far (security review v0.3 W1).
+    pub(crate) joint_steps: u64,
 }
 
 impl Work {

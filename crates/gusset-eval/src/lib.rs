@@ -27,7 +27,9 @@ pub mod sketch;
 mod sweep;
 mod text;
 
-pub use budget::{DEFAULT_MAX_BODY_FACES, DEFAULT_MAX_BOOLEAN_WORK, DEFAULT_MAX_TOOLS, EvalLimits};
+pub use budget::{
+    DEFAULT_MAX_BODY_FACES, DEFAULT_MAX_BOOLEAN_WORK, DEFAULT_MAX_JOINT_STEPS, DEFAULT_MAX_TOOLS, EvalLimits,
+};
 pub use error::{ErrorCode, EvalError};
 pub use hole::{DEFAULT_POINT_ANGLE, Dims as HoleDims, HoleInfo, ThreadInfo};
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
