@@ -18,8 +18,18 @@ fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
     })
 }
 
-/// The pairs of `bodies` that share volume: boxes first, then the common volume.
-fn interference(k: &dyn Kernel, bodies: &[&gusset_eval::Body], min_volume: f64) -> Result<Vec<Value>, CommandError> {
+/// Most body pairs one command intersects (review v0.3 L6); further pairs are skipped and
+/// the result says `truncated`.
+const MAX_PAIRS: usize = 2000;
+
+/// The pairs of `bodies` that share volume: boxes first, then the common volume. Each
+/// intersection takes one from `budget`; `true` when it ran out before the last pair.
+fn interference(
+    k: &dyn Kernel,
+    bodies: &[&gusset_eval::Body],
+    min_volume: f64,
+    budget: &mut usize,
+) -> Result<(Vec<Value>, bool), CommandError> {
     let kerr = |e: gusset_kernel::KernelError| CommandError::new("evaluation", e.to_string());
     let boxes = bodies.iter().map(|b| k.bbox(&b.shape).map_err(kerr)).collect::<Result<Vec<_>, _>>()?;
     let mut out = Vec::new();
@@ -28,6 +38,8 @@ fn interference(k: &dyn Kernel, bodies: &[&gusset_eval::Body], min_volume: f64) 
             if !boxes_overlap(ba, bb) {
                 continue;
             }
+            let Some(left) = budget.checked_sub(1) else { return Ok((out, true)) };
+            *budget = left;
             match k.boolean(BoolOp::Intersect, &a.shape, &b.shape).and_then(|r| k.mass_properties(&r.shape)) {
                 Ok(m) if m.volume > min_volume => {
                     out.push(json!({"a": a.name, "b": b.name, "volume_mm3": m.volume, "centroid_mm": m.centroid}));
@@ -41,7 +53,7 @@ fn interference(k: &dyn Kernel, bodies: &[&gusset_eval::Body], min_volume: f64) 
             }
         }
     }
-    Ok(out)
+    Ok((out, false))
 }
 
 /// The bodies of `ev` named in `filter` (all when empty).
@@ -75,16 +87,17 @@ pub struct QueryInterference {
 impl Command for QueryInterference {
     const ID: &'static str = "query.interference";
     const TITLE: &'static str = "Interference";
-    const DESCRIPTION: &'static str =
-        "Pairs of bodies that overlap, with the shared volume and its centroid. Bodies that only touch do not count.";
+    const DESCRIPTION: &'static str = "Pairs of bodies that overlap, with the shared volume and its centroid. Bodies that only touch do not count. At most 2000 pairs are intersected (truncated: true beyond).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let ev = s.evaluate(&ctx.actor)?;
         let bodies = select(&ev, &self.bodies)?;
         let k = s.kernel().clone();
-        let pairs = interference(k.as_ref(), &bodies, self.min_volume_mm3.unwrap_or(DEFAULT_MIN_VOLUME))?;
-        let mut v = json!({ "checked": bodies.len(), "interference": pairs });
+        let mut budget = MAX_PAIRS;
+        let min = self.min_volume_mm3.unwrap_or(DEFAULT_MIN_VOLUME);
+        let (pairs, truncated) = interference(k.as_ref(), &bodies, min, &mut budget)?;
+        let mut v = json!({ "checked": bodies.len(), "interference": pairs, "truncated": truncated });
         snap_zeros(&mut v);
         Ok(v)
     }
@@ -136,6 +149,7 @@ impl Command for StudyMotion {
         let rollback = s.history().branch(branch).map_err(CommandError::history)?.rollback;
         let k = s.kernel().clone();
         let mut frames = Vec::with_capacity(steps);
+        let mut budget = MAX_PAIRS;
         for i in 0..steps {
             let t = i as f64 / (steps - 1) as f64;
             // from + (to - from) * t keeps the units of the endpoints.
@@ -167,7 +181,9 @@ impl Command for StudyMotion {
                 "bodies": placed,
             });
             if self.interference {
-                frame = merge(frame, json!({ "interference": interference(k.as_ref(), &bodies, DEFAULT_MIN_VOLUME)? }));
+                // One budget for the whole study.
+                let (pairs, truncated) = interference(k.as_ref(), &bodies, DEFAULT_MIN_VOLUME, &mut budget)?;
+                frame = merge(frame, json!({ "interference": pairs, "truncated": truncated }));
             }
             snap_zeros(&mut frame);
             frames.push(frame);
@@ -189,7 +205,7 @@ fn same(a: f64, b: f64) -> bool {
 impl Command for QueryBom {
     const ID: &'static str = "query.bom";
     const TITLE: &'static str = "Bill of materials";
-    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (wherever they are placed). Rows with quantity, body names, volume and area, and the same as CSV.";
+    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (wherever they are placed; mirror images too). Rows with quantity, body names, volume and area, and the same as CSV.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

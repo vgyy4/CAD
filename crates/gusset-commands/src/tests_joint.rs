@@ -93,6 +93,7 @@ fn interference_and_a_motion_study() {
     let q = run(&mut s, "query.interference", json!({}));
     assert_eq!(q["checked"], 2, "{q}");
     assert_eq!(q["interference"], json!([]), "{q}");
+    assert_eq!(q["truncated"], false, "{q}");
     run(
         &mut s,
         "feature.joint",
