@@ -267,9 +267,13 @@ fn carried_bodies_must_be_new_and_distinct() {
     );
     assert_eq!(failed(&r), ["J2"], "{:?}", r.errors());
     assert!(message(&r, "J2").contains("'Tag'") && message(&r, "J2").contains("already placed"), "{:?}", r.errors());
-    // The same body twice (the text form does not check; the evaluator refuses too).
-    let (_, r) = eval("joint J1 (type: rigid, body: Lid, with: [Tag, Tag], at: Lid/cap(start), to: Base/cap(end))");
-    assert!(message(&r, "J1").contains("twice"), "{:?}", r.errors());
+    // The same body twice is caught when the document is read.
+    let dup = format!(
+        "gusset 1\n{}extrude A (profile: S1, distance: 1 mm, op: new)\nextrude B (profile: S1, distance: 1 mm, op: new)\n\
+         joint J1 (type: rigid, body: A, with: [B, B], at: origin, to: origin)\n",
+        rect("S1", 1.0, 1.0)
+    );
+    assert!(Document::from_text(&dup).unwrap_err().to_string().contains("twice"));
 }
 
 #[test]
