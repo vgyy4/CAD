@@ -2547,6 +2547,11 @@ impl Command for BranchMerge {
             .details(json!({ "conflicts": conflicts })));
         }
         if m.from_theirs.is_empty() {
+            // Conflicts settled by keeping ours are merged too: the next merge must not
+            // report them again (review v0.3 N3).
+            if prefer.is_some() && !m.conflicts.is_empty() {
+                s.history_mut().set_merged(head, src).map_err(CommandError::history)?;
+            }
             return Ok(
                 json!({ "merged": false, "reason": "nothing to take: your branch has every change", "conflicts": conflicts }),
             );
@@ -2557,8 +2562,9 @@ impl Command for BranchMerge {
             return Err(CommandError::args(format!("the merged document is invalid: {}", msg.join("; ")))
                 .hint("cherry-pick the parts you need instead"));
         }
-        // The label names the merged node: the next merge starts from it (`merge_base`).
+        // The node records what it merged: the next merge starts from there (`merge_base`).
         let out = s.commit(ctx, &format!("Merge {} ({src})", self.from), &m.doc)?;
+        s.history_mut().set_merged(out.node, src).map_err(CommandError::history)?;
         Ok(json!({
             "merged": true,
             "node": out.node.to_string(),

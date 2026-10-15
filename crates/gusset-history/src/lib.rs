@@ -376,6 +376,27 @@ mod tests {
     }
 
     #[test]
+    fn merge_records_are_fields_not_labels() {
+        // Review v0.3 L3: a node labelled like a merge used to move the merge base.
+        let u = Ctx::user(1);
+        let mut h = History::new(&doc(&[("a", "1 mm")]), &u);
+        let main = h.main();
+        let root = h.head(main).unwrap();
+        let side = h.create_branch(&u, root, Some("side")).unwrap();
+        let theirs = h.commit(&u, side, &doc(&[("a", "2 mm")]), "edit", NodeState::Ok).unwrap();
+        let fake = format!("Merge side ({theirs})");
+        let ours = h.commit(&u, main, &doc(&[("a", "1 mm"), ("b", "1 mm")]), &fake, NodeState::Ok).unwrap();
+        assert_eq!(h.merge_base(ours, theirs), Some(root));
+        // A real record moves it, survives saving and is kept by the size accounting.
+        h.set_merged(ours, theirs).unwrap();
+        assert_eq!(h.merge_base(ours, theirs), Some(theirs));
+        sizes_match(&h);
+        let back = History::from_records(&h.to_records()).unwrap();
+        assert_eq!(back.node(ours).unwrap().merged, Some(theirs));
+        assert_eq!(back.merge_base(ours, theirs), Some(theirs));
+    }
+
+    #[test]
     fn compare_shows_range_and_configuration_changes() {
         // Review v0.3 M5: a merge takes them, so the preview must show them.
         let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\n{extra}")).unwrap();

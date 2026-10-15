@@ -140,8 +140,10 @@ pub(crate) fn node_line(n: &Node) -> String {
         NodeState::Ok => "ok".to_string(),
         NodeState::Broken { message } => format!("broken={}", esc(message)),
     };
+    // `merged` is an optional tenth field, so files without merges read as before.
+    let merged = n.merged.map_or(String::new(), |m| format!("\t{m}"));
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{merged}\n",
         n.id,
         n.parent.map_or("-".into(), |p| p.to_string()),
         n.snapshot,
@@ -242,7 +244,11 @@ impl History {
                 return Err("too many history nodes".into());
             }
             let f: Vec<&str> = l.split('\t').collect();
-            let [id, parent, snap, time, act, state, star, name, label] = f.as_slice() else {
+            let (fields, merged) = match f.as_slice() {
+                [rest @ .., m] if rest.len() == 9 => (rest, Some(node_id(m)?)),
+                all => (all, None),
+            };
+            let [id, parent, snap, time, act, state, star, name, label] = fields else {
                 return Err(format!("nodes record line {}: wrong field count", i + 2));
             };
             let id = node_id(id)?;
@@ -265,6 +271,7 @@ impl History {
                     state,
                     name: unopt(name)?,
                     starred: *star == "1",
+                    merged,
                 },
             );
         }
@@ -280,6 +287,11 @@ impl History {
             }
         }
         check_acyclic(&nodes)?;
+        // A merge record whose node is gone (or never existed) is dropped.
+        let ids: std::collections::BTreeSet<NodeId> = nodes.keys().copied().collect();
+        for n in nodes.values_mut() {
+            n.merged = n.merged.filter(|m| ids.contains(m));
+        }
         // Branches.
         let mut lines = r.branches.lines();
         if lines.next() != Some("branches 1") {

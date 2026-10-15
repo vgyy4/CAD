@@ -80,6 +80,9 @@ pub struct Node {
     /// User-given iteration name; named nodes are never pruned.
     pub name: Option<String>,
     pub starred: bool,
+    /// The node of another branch this one merged ([`History::set_merged`]): the next
+    /// merge starts from it (review v0.3 L3; labels are only text).
+    pub merged: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +402,7 @@ impl History {
                 state: NodeState::Ok,
                 name: None,
                 starred: false,
+                merged: None,
             },
         );
         let main = BranchId(1);
@@ -697,6 +701,7 @@ impl History {
             state: message,
             name: None,
             starred: false,
+            merged: None,
         };
         let line = node_line(&node).len();
         let need = Need {
@@ -714,6 +719,19 @@ impl History {
         self.live_branch_mut(branch)?.head = id;
         self.record(ctx, Event::Edit { branch, from: head, to: id });
         Ok(id)
+    }
+
+    /// Records that `node` merged `from` (an iteration of another branch), for
+    /// [`History::merge_base`]. Not an undoable event: undoing the merge moves the head
+    /// back, past the mark.
+    pub fn set_merged(&mut self, node: NodeId, from: NodeId) -> HResult<()> {
+        self.node(from)?;
+        let n = self.nodes.get_mut(&node).ok_or(HistoryError::UnknownNode(node))?;
+        let before = node_line(n).len();
+        n.merged = Some(from);
+        let after = node_line(n).len();
+        self.sizes.nodes = self.sizes.nodes.saturating_sub(before) + after;
+        Ok(())
     }
 
     /// Points a branch at any node (e.g. "go to this iteration"); non-destructive.
@@ -1160,18 +1178,13 @@ impl History {
 
     /// The base for merging `theirs` into `ours`: the newest common ancestor, or, when
     /// `ours` already merged an iteration of `theirs`' history since then, that iteration
-    /// (a merge node's label ends with the merged node, ` (n12)`), so changes merged
-    /// before do not conflict again.
+    /// (a node's [`Node::merged`]), so changes merged before do not conflict again.
     pub fn merge_base(&self, ours: NodeId, theirs: NodeId) -> Option<NodeId> {
         let lo = self.lineage(ours);
         let lt = self.lineage(theirs);
         let fork = lt.iter().copied().find(|n| lo.contains(n))?;
-        let merged = lo.iter().take_while(|n| **n != fork).find_map(|n| {
-            let label = &self.nodes.get(n)?.label;
-            let id = label.strip_prefix("Merge ")?.rsplit_once(" (n")?.1.strip_suffix(')')?;
-            let id = NodeId(id.parse().ok()?);
-            lt.contains(&id).then_some(id)
-        });
+        let merged =
+            lo.iter().take_while(|n| **n != fork).find_map(|n| self.nodes.get(n)?.merged.filter(|id| lt.contains(id)));
         Some(merged.unwrap_or(fork))
     }
 
@@ -1273,8 +1286,8 @@ impl History {
         rep
     }
 
-    /// Nodes that may be squashed: unnamed, unstarred, not a branch head, not the root,
-    /// with exactly one child. Returned with their time, oldest first.
+    /// Nodes that may be squashed: unnamed, unstarred, no merge record, not a branch head,
+    /// not the root, with exactly one child. Returned with their time, oldest first.
     fn squash_candidates(&self) -> Vec<(NodeId, u64)> {
         let heads: BTreeSet<NodeId> = self.branches.values().map(|b| b.head).collect();
         let mut child_count: BTreeMap<NodeId, usize> = BTreeMap::new();
@@ -1290,6 +1303,7 @@ impl History {
                 n.parent.is_some()
                     && !n.starred
                     && n.name.is_none()
+                    && n.merged.is_none()
                     && !heads.contains(&n.id)
                     && child_count.get(&n.id).copied() == Some(1)
             })
