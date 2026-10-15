@@ -53,6 +53,7 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::Revolve(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Sweep(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Loft(d) => modifies(d.op, d.body.as_ref()),
+        FeatureKind::Text(d) => modifies(d.op, d.body.as_ref()),
         // The edges decide the body.
         FeatureKind::Fillet(_) | FeatureKind::Chamfer(_) | FeatureKind::Hole(_) => {
             Access { bodies: Vec::new(), dynamic: true }

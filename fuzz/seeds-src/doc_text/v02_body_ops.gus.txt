@@ -46,3 +46,5 @@ combine Combine1 (body: Extrude1, tools: [Extrude2], op: cut)
 chamfer Chamfer1 (edges: [edge(Shell1/inner(Extrude1/side(Sketch1/l6)), Shell1/inner(Extrude1/side(Sketch1/l7)))], distance: 0.5 mm)
 
 draft Draft1 (faces: [Extrude1/side(Sketch1/l5)], plane: XY, angle: 2 deg, flip: true)
+
+text Text1 (text: "Gusset", plane: XY, at: [0 mm, 0 mm], height: 5 mm, distance: 1 mm, op: new)

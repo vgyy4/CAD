@@ -43,6 +43,9 @@ libc = "0.2.190"
 windows-sys = "0.61.2"
 cc = "1.7.0"
 egui = "0.36.2"
+# gusset-text: glyph outlines (ADR 0029); both already in the tree through egui.
+skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
+epaint_default_fonts = "0.36.2"
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "accesskit", "default_fonts", "wayland", "x11"] }
 egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }
 landlock = "0.4.7"
@@ -82,6 +85,7 @@ gusset-doc = { path = "crates/gusset-doc", version = "0.1.0-mvp" }
 gusset-history = { path = "crates/gusset-history", version = "0.1.0-mvp" }
 gusset-naming = { path = "crates/gusset-naming", version = "0.1.0-mvp" }
 gusset-sketch = { path = "crates/gusset-sketch", version = "0.1.0-mvp" }
+gusset-text = { path = "crates/gusset-text", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.1.0-mvp" }
 gusset-eval = { path = "crates/gusset-eval", version = "0.1.0-mvp" }

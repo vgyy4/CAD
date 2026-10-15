@@ -55,6 +55,7 @@ pub enum FeatureKind {
     Import(ImportDef),
     Shell(ShellDef),
     Draft(DraftDef),
+    Text(Box<TextDef>),
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
     PatternCircular(PatternCircularDef),
@@ -79,6 +80,7 @@ impl FeatureKind {
             FeatureKind::Import(_) => "import",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::Draft(_) => "draft",
+            FeatureKind::Text(_) => "text",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::PatternLinear(_) => "pattern_linear",
             FeatureKind::PatternCircular(_) => "pattern_circular",
@@ -151,6 +153,12 @@ impl FeatureKind {
                 }
                 d.plane.features(&mut add);
             }
+            FeatureKind::Text(d) => {
+                d.plane.features(&mut add);
+                if d.op != BodyOp::New {
+                    add_body(&mut add, &d.body);
+                }
+            }
             FeatureKind::PatternLinear(d) => add_body(&mut add, &d.body),
             FeatureKind::PatternCircular(d) => add_body(&mut add, &d.body),
             FeatureKind::Plane(d) => {
@@ -213,6 +221,9 @@ impl FeatureKind {
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
             FeatureKind::Draft(d) => take(&d.angle),
+            FeatureKind::Text(d) => {
+                d.at.iter().chain([&d.height, &d.distance]).chain(d.angle.as_ref()).for_each(&mut take);
+            }
             FeatureKind::Mirror(_) => {}
             FeatureKind::PatternLinear(d) => {
                 d.direction.exprs().into_iter().chain([&d.count, &d.spacing]).for_each(&mut take);
@@ -271,6 +282,12 @@ impl FeatureKind {
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
             FeatureKind::Draft(d) => out.push(&mut d.angle),
+            FeatureKind::Text(d) => {
+                let TextDef { at, height, distance, angle, .. } = &mut **d;
+                out.extend(at.iter_mut());
+                out.extend([height, distance]);
+                out.extend(angle.as_mut());
+            }
             FeatureKind::Mirror(_) => {}
             FeatureKind::PatternLinear(d) => {
                 out.extend(d.direction.exprs_mut());
@@ -792,6 +809,80 @@ pub struct DraftDef {
     pub angle: Expr,
     /// Pull against the plane's normal.
     pub flip: bool,
+}
+
+/// Text extruded from a plane (ADR 0029): the outline of `text`, capital letters `height`
+/// tall, on the baseline starting at `at` (plane coordinates), turned by `angle`, extruded
+/// by `distance` along the plane's normal and combined like an extrude.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextDef {
+    /// The string (untrusted user content; at most 200 characters, no control characters).
+    pub text: String,
+    pub plane: PlaneRef,
+    pub at: [Expr; 2],
+    pub height: Expr,
+    pub distance: Expr,
+    pub font: TextFont,
+    pub align: TextAlign,
+    pub angle: Option<Expr>,
+    pub op: BodyOp,
+    /// Target body for `add`/`cut`/`intersect`; `None` = the most recent body.
+    pub body: Option<String>,
+    /// Name of the body created with `op: new`; `None` = the feature name.
+    pub body_name: Option<String>,
+}
+
+/// The fonts a text can use (the ones the app ships).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextFont {
+    #[default]
+    Sans,
+    Mono,
+}
+
+impl TextFont {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            TextFont::Sans => "sans",
+            TextFont::Mono => "mono",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s {
+            "sans" => Some(TextFont::Sans),
+            "mono" => Some(TextFont::Mono),
+            _ => None,
+        }
+    }
+}
+
+/// Where `at` is along the text's baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl TextAlign {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            TextAlign::Left => "left",
+            TextAlign::Center => "center",
+            TextAlign::Right => "right",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<Self> {
+        match s {
+            "left" => Some(TextAlign::Left),
+            "center" => Some(TextAlign::Center),
+            "right" => Some(TextAlign::Right),
+            _ => None,
+        }
+    }
 }
 
 /// Mirrors a body across a plane.

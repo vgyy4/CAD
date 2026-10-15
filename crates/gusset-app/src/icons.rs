@@ -188,6 +188,7 @@ pub enum Tool {
     Chamfer,
     Shell,
     Draft,
+    Text,
     Combine,
     Joint,
     Component,
@@ -253,6 +254,7 @@ impl Tool {
         Tool::Chamfer,
         Tool::Shell,
         Tool::Draft,
+        Tool::Text,
         Tool::Combine,
         Tool::Joint,
         Tool::Component,
@@ -313,6 +315,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.chamfer" => Tool::Chamfer,
         "feature.shell" => Tool::Shell,
         "feature.draft" => Tool::Draft,
+        "feature.text" => Tool::Text,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
         "assembly.insert_component" | "assembly.update_component" => Tool::Component,
@@ -355,6 +358,7 @@ pub fn tool_for_keyword(keyword: &str) -> Tool {
         "import" => Tool::Import,
         "shell" => Tool::Shell,
         "draft" => Tool::Draft,
+        "text" => Tool::Text,
         "mirror" => Tool::Mirror,
         "pattern_linear" => Tool::PatternLinear,
         "pattern_circular" => Tool::PatternCircular,
@@ -582,6 +586,24 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(4.0, 20.0), (4.0, 4.0), (13.0, 4.0), (18.0, 20.0)], pen.fill, ink);
             pen.line(&[(13.0, 4.0), (13.0, 20.0)], a);
             pen.arc(13.0, 4.0, 9.0, -PI * 0.5, -PI * 0.5 + 0.3, a);
+        }
+        Tool::Text => {
+            // A raised letter T on a plate.
+            pen.poly(&[(3.0, 17.0), (21.0, 17.0), (21.0, 21.0), (3.0, 21.0)], pen.fill, ink);
+            pen.poly(
+                &[
+                    (6.0, 3.0),
+                    (18.0, 3.0),
+                    (18.0, 6.5),
+                    (13.8, 6.5),
+                    (13.8, 15.0),
+                    (10.2, 15.0),
+                    (10.2, 6.5),
+                    (6.0, 6.5),
+                ],
+                pen.fill,
+                a,
+            );
         }
         Tool::Combine => {
             pen.poly(&[(3.0, 8.0), (14.0, 8.0), (14.0, 19.0), (3.0, 19.0)], pen.fill, ink);

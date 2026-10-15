@@ -289,6 +289,27 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("faces: [{}]", faces.join(", ")));
             args.push(format!("thickness: {}", d.thickness));
         }
+        FeatureKind::Text(d) => {
+            args.push(format!("text: {}", quote(&d.text)));
+            args.push(format!("plane: {}", print_plane(&d.plane)));
+            args.push(format!("at: [{}, {}]", d.at[0], d.at[1]));
+            args.push(format!("height: {}", d.height));
+            args.push(format!("distance: {}", d.distance));
+            if d.font != TextFont::Sans {
+                args.push(format!("font: {}", d.font.keyword()));
+            }
+            if d.align != TextAlign::Left {
+                args.push(format!("align: {}", d.align.keyword()));
+            }
+            if let Some(a) = &d.angle {
+                args.push(format!("angle: {a}"));
+            }
+            args.push(format!("op: {}", d.op.keyword()));
+            push_body(&mut args, &d.body);
+            if let Some(b) = &d.body_name {
+                args.push(format!("body_name: {b}"));
+            }
+        }
         FeatureKind::Draft(d) => {
             push_body(&mut args, &d.body);
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
@@ -599,8 +620,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "draft" | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine" | "hole"
-            | "joint" | "component" => {
+            | "draft" | "text" | "mirror" | "pattern_linear" | "pattern_circular" | "plane" | "move" | "combine"
+            | "hole" | "joint" | "component" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -620,6 +641,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_joint(&mut c)?
                 } else if kw == "component" {
                     parse_component(&mut c)?
+                } else if kw == "text" {
+                    parse_text(&mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -1492,6 +1515,75 @@ fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 2], Parse
     let hi = c.expr()?;
     c.expect(']')?;
     Ok([lo, hi])
+}
+
+/// `text` statements (ADR 0029).
+fn parse_text(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    const KW: &str = "text";
+    const ALLOWED: &str =
+        "text, plane, at, height, distance, font, align, angle, op, body, body_name, label, suppressed";
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let (mut text, mut plane, mut at, mut height, mut distance) = (None, None, None, None, None);
+    let (mut font, mut align, mut angle, mut op) = (TextFont::Sans, TextAlign::Left, None, None);
+    let (mut body, mut body_name) = (None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "text" => text = Some(c.string()?),
+            "plane" => plane = Some(parse_plane(c)?),
+            "at" => {
+                c.expect('[')?;
+                let x = c.expr()?;
+                c.expect(',')?;
+                let y = c.expr()?;
+                c.expect(']')?;
+                at = Some([x, y]);
+            }
+            "height" => height = Some(c.expr()?),
+            "distance" => distance = Some(c.expr()?),
+            "angle" => angle = Some(c.expr()?),
+            "font" => {
+                let w = c.ident()?;
+                font = TextFont::from_keyword(w)
+                    .ok_or_else(|| c.err_hint(format!("unknown font '{w}'"), "use sans or mono"))?;
+            }
+            "align" => {
+                let w = c.ident()?;
+                align = TextAlign::from_keyword(w)
+                    .ok_or_else(|| c.err_hint(format!("unknown alignment '{w}'"), "use left, center or right"))?;
+            }
+            "op" => {
+                let w = c.ident()?;
+                op =
+                    Some(BodyOp::from_keyword(w).ok_or_else(|| {
+                        c.err_hint(format!("unknown operation '{w}'"), "use new, add, cut or intersect")
+                    })?);
+            }
+            "body" => body = Some(c.ident()?.to_string()),
+            "body_name" => body_name = Some(c.ident()?.to_string()),
+            key => return Err(unknown_arg(c, KW, key, ALLOWED)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let def = TextDef {
+        text: text.ok_or_else(|| missing(c, KW, "text"))?,
+        plane: plane.ok_or_else(|| missing(c, KW, "plane"))?,
+        at: at.ok_or_else(|| missing(c, KW, "at"))?,
+        height: height.ok_or_else(|| missing(c, KW, "height"))?,
+        distance: distance.ok_or_else(|| missing(c, KW, "distance"))?,
+        font,
+        align,
+        angle,
+        op: op.unwrap_or(BodyOp::New),
+        body,
+        body_name,
+    };
+    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Text(Box::new(def)) })
 }
 
 /// `joint` statements (ADR 0026).

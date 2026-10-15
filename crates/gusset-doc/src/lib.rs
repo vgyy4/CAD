@@ -657,6 +657,10 @@ draft Draft1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5), Extrude1/side(S
 
 draft Draft2 (faces: [Extrude1/side(Sketch1/l6)], plane: Extrude1/cap(start), angle: -1.5 deg, flip: true)
 
+text Text1 (text: "No. 7 \\ \"x\"", plane: Extrude1/cap(end), at: [2 mm, pitch / 2], height: 3 mm, distance: -0.4 mm, font: mono, align: center, angle: 15 deg, op: cut, body: Extrude1)
+
+text Text2 (text: "Gusset", plane: XY, at: [0 mm, 0 mm], height: 5 mm, distance: 1 mm, op: new, body_name: Label)
+
 mirror Mirror1 (body: Extrude1, plane: YZ)
 
 mirror Mirror2 (plane: Extrude1/side(Sketch1/l6), merge: true)
@@ -769,6 +773,10 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
             "shell S (faces: [Extrude1/cap(end)], thickness: )",
             "shell S (faces: [Extrude1/cap(end), thickness: 1 mm)",
             "draft D (plane: XY, angle: 2 deg)",
+            "text T (plane: XY, at: [0, 0], height: 1 mm, distance: 1 mm)",
+            "text T (text: \"a\", plane: XY, at: [0], height: 1 mm, distance: 1 mm)",
+            "text T (text: \"a\", plane: XY, at: [0, 0], height: 1 mm, distance: 1 mm, font: serif)",
+            "text T (text: \"a\", plane: XY, at: [0, 0], height: 1 mm, distance: 1 mm, align: middle)",
             "draft D (faces: [Extrude1/cap(end)], angle: 2 deg)",
             "draft D (faces: [Extrude1/cap(end)], plane: XY)",
             "draft D (faces: [Extrude1/cap(end)], plane: XY, angle: 2 deg, flip: maybe)",

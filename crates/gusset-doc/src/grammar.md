@@ -351,6 +351,7 @@ plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
 move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
 combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>])
 shell, draft, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
+text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length>, distance: <length>, [font: sans|mono], [align: left|center|right], [angle: <angle>], [op: ...], [body: ...], [body_name: ...])
 ```
 
 - `<plane>` is `XY`, `XZ`, `YZ`, a planar face reference or the name of an earlier `plane`.
@@ -377,6 +378,12 @@ shell, draft, mirror, pattern_linear, pattern_circular   # whole-body operations
   The pull direction is the plane's normal (XY: +Z), or into the body for a face of it;
   `flip: true` reverses it. Faces must be planar, cylindrical or conical and cross the
   plane; they keep their names.
+- `text` embosses or engraves one line (at most 200 characters) on a plane: `at` is the start
+  (or centre / end, with `align`) of the baseline in the plane's coordinates, `height` the
+  height of capital letters, `angle` turns it about `at`; `distance` and `op` work as for
+  `extrude` (engrave into a face with `op: cut` and a negative distance). Fonts: `sans`
+  (Ubuntu Light) and `mono` (Hack). Faces: `Text1/cap(end)`, sides
+  `Text1/side(Text1/g<char>_<contour>_g<segment>)`.
 
 ```gusset
 gusset 1

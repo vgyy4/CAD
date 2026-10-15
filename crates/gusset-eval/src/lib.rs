@@ -25,6 +25,7 @@ mod ops;
 mod pattern;
 pub mod sketch;
 mod sweep;
+mod text;
 
 pub use budget::{DEFAULT_MAX_BODY_FACES, DEFAULT_MAX_BOOLEAN_WORK, DEFAULT_MAX_TOOLS, EvalLimits};
 pub use error::{ErrorCode, EvalError};
@@ -990,6 +991,7 @@ impl Evaluator {
             }
             FeatureKind::Shell(d) => self.run_shell(s, name, d, units, params),
             FeatureKind::Draft(d) => self.run_draft(s, name, d, units, params),
+            FeatureKind::Text(d) => self.run_text(s, name, d, units, params),
             FeatureKind::Mirror(d) => self.run_mirror(s, name, d, units, params),
             FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),
             FeatureKind::PatternCircular(d) => self.run_pattern_circular(s, name, d, units, params),

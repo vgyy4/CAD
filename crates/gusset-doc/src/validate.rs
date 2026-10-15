@@ -37,6 +37,9 @@ fn issue_h(subject: &str, message: impl Into<String>, hint: impl Into<String>) -
     Issue { subject: Some(subject.to_string()), message: message.into(), hint: Some(hint.into()) }
 }
 
+/// Most characters of one `text` (ADR 0029).
+pub const MAX_TEXT_CHARS: usize = 200;
+
 /// Most tool bodies one `combine` may merge (each costs a boolean operation).
 pub const MAX_COMBINE_TOOLS: usize = 500;
 
@@ -47,6 +50,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Revolve(r) => r.op == BodyOp::New,
         FeatureKind::Sweep(d) => d.op == BodyOp::New,
         FeatureKind::Loft(d) => d.op == BodyOp::New,
+        FeatureKind::Text(d) => d.op == BodyOp::New,
         FeatureKind::Import(_) | FeatureKind::Component(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
@@ -64,6 +68,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         | FeatureKind::Loft(LoftDef { op: BodyOp::New, body_name, .. }) => {
             Some(body_name.as_deref().unwrap_or(&f.name))
         }
+        FeatureKind::Text(d) if d.op == BodyOp::New => Some(d.body_name.as_deref().unwrap_or(&f.name)),
         FeatureKind::Import(_) | FeatureKind::Component(_) => Some(&f.name),
         FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
         FeatureKind::Move(m) if m.copy => Some(&f.name),
@@ -183,6 +188,22 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     check_profile(n, p, &seen, &mut out);
                 }
                 let target = BodyTarget { op: *op, body: body.as_deref(), body_name: body_name.as_deref() };
+                check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Text(d) => {
+                check_plane(n, &d.plane, &seen, &mut out);
+                let chars = d.text.chars().count();
+                if chars == 0 || chars > MAX_TEXT_CHARS {
+                    out.push(issue_h(
+                        n,
+                        format!("the text has {chars} characters"),
+                        format!("use 1 to {MAX_TEXT_CHARS} characters"),
+                    ));
+                }
+                if d.text.chars().any(char::is_control) {
+                    out.push(issue_h(n, "the text contains control characters", "one line of text, no tabs"));
+                }
+                let target = BodyTarget { op: d.op, body: d.body.as_deref(), body_name: d.body_name.as_deref() };
                 check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {

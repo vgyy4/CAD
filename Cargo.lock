@@ -1635,6 +1635,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-naming",
  "gusset-sketch",
+ "gusset-text",
  "gusset-units",
  "libm",
 ]
@@ -1815,6 +1816,14 @@ dependencies = [
  "trash",
  "windows-sys 0.61.2",
  "zstd",
+]
+
+[[package]]
+name = "gusset-text"
+version = "0.1.0-mvp"
+dependencies = [
+ "epaint_default_fonts",
+ "skrifa",
 ]
 
 [[package]]

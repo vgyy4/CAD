@@ -42,6 +42,10 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             body_of(&mut d.body);
             d.plane.rename_feature(from, to);
         }
+        FeatureKind::Text(d) => {
+            body_of(&mut d.body);
+            d.plane.rename_feature(from, to);
+        }
         FeatureKind::Draft(d) => {
             body_of(&mut d.body);
             for f in &mut d.faces {
@@ -89,13 +93,13 @@ fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
-    /// Faces to taper (face refs from query_body): planar, cylindrical or conical faces that cross the neutral plane.
+    /// Faces to taper (planar, cylindrical or conical, crossing the plane).
     pub faces: Vec<String>,
-    /// Neutral plane, where the faces keep their size: XY/XZ/YZ, a planar face ref or a datum plane.
+    /// Neutral plane: XY/XZ/YZ, planar face or datum plane.
     pub plane: String,
     /// Draft angle (`2 deg`); positive narrows the part along the pull direction.
     pub angle: String,
-    /// Pull direction: the plane's normal, or into the body for a face; true reverses it.
+    /// Reverse the pull direction (plane normal, or into the body for a face).
     #[serde(default)]
     pub flip: bool,
     /// Body to change (default: the latest body).

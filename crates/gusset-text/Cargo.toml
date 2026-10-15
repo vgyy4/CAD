@@ -1,0 +1,15 @@
+[package]
+name = "gusset-text"
+description = "Text outlines in millimetres for Gusset's text feature (ADR 0029)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+skrifa.workspace = true
+epaint_default_fonts.workspace = true
+
+[lints]
+workspace = true
