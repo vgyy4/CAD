@@ -161,6 +161,14 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
   55,272 values bit-identical, worst 16 ulps (tan/sin/cos). With it the whole `gp`
   package (20 k C++ lines) is translated and judged.
 
+## Package 7 (2026-10-15): `ElSLib` and the rest of `ElCLib`
+- Sonnet judge (83 families, at least 33 distinct lines each, a schema checker that
+  compares the oracle's output schemas with the test's readers) and a Sonnet translation
+  that passed on its first full run: 39,913 of 40,681 values bit-identical; the rest are
+  sin/cos/atan2 paths within 8 ε of the line's largest value.
+- Found while writing the judge: the earlier `elclib::dn_hypr` treated negative odd orders
+  as odd (`n % 2 != 0`), OCCT's `IsOdd` does not; fixed to match OCCT.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),

@@ -9,5 +9,6 @@
 
 pub mod bsplclib;
 pub mod elclib;
+pub mod elslib;
 pub mod gp;
 pub mod mathlin;

@@ -35,7 +35,8 @@ handles → `Arc`/ownership, `NCollection` → Rust collections, exceptions → 
 | Package | Lines | Status |
 |---|---|---|
 | gp | 20 k | 3D done: XYZ, Pnt, Vec, Dir, Ax1/2/3, Mat, Trsf, GTrsf, Quaternion (+ NLerp/SLerp, Euler sequences), 2,425 oracle lines, 44,850 of 45,889 values bit-identical, the rest within 8 ulps (libm). 2D done: XY, Pnt2d, Vec2d, Dir2d, Ax2d, Ax22d, Mat2d, Trsf2d, GTrsf2d, Lin2d and the 2D conics, 3,102 lines, 48,424 of 48,511 bit-identical, worst 9 ulps; OCCT's `gp_Mat2d::Multiply(*this)` aliasing (used by `Power`) is reproduced on purpose. 3D curves and elementary surfaces done: Lin, Circ, Elips, Hypr, Parab, Pln, Cylinder, Cone, Sphere, Torus, 1,088 lines, 55,180 of 55,272 bit-identical, worst 16 ulps (`Lin::distance(&Lin)` returns NaN where OCCT would throw on an underflowing cross product; no golden line reaches it). gp is complete |
-| ElCLib | 2.4 k | 3D done (bit-identical / libm) |
+| ElCLib | 2.4 k | done: 3D and 2D evaluation, parameters, every position-based overload and `To3d`. OCCT's hyperbola `DN` of a negative odd order is the zero vector (`IsOdd` is `n % 2 == 1`); the port follows it |
+| ElSLib | 1.6 k | done: values, D0–D3, DN, parameters and iso curves of plane, cylinder, cone, sphere and torus. With ElCLib's rest: 83 families, 2,739 oracle lines, 39,913 of 40,681 values bit-identical, worst 271 ulps of the line's largest value (within 8 ε of it). `No_Exception` keeps negative radii in iso circles; the port reproduces them |
 | BSplCLib | 13 k | 3D curve evaluation done (bit-identical) |
 | math | 25 k | linear algebra done (vectors, matrices, LU, Crout, Householder, SVD, Jacobi, eigen, polynomial roots, Gauss/Kronrod; 29,068 of 29,069 values bit-identical); solvers next |
-| ElSLib, PLib, BSplSLib, CSLib, Convert, Bnd, BVH, Poly, TopLoc, Math* | 85 k | — |
+| PLib, BSplSLib, CSLib, Convert, Bnd, BVH, Poly, TopLoc, Math* | 85 k | — |
