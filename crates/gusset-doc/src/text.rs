@@ -61,8 +61,7 @@ fn print_comment_lines(out: &mut String, text: &str) {
 }
 
 fn print_configuration(out: &mut String, c: &Configuration) {
-    let items: Vec<String> = c.set.iter().map(|(n, e)| format!("{n} = {e}")).collect();
-    let _ = writeln!(out, "configuration {} (set: [{}])", c.name, items.join(", "));
+    let _ = writeln!(out, "configuration {} (set: [{}])", c.name, configuration_line(c));
 }
 
 fn parse_configuration(c: &mut Cursor<'_>) -> Result<Configuration, ParseError> {
@@ -81,17 +80,32 @@ fn parse_configuration(c: &mut Cursor<'_>) -> Result<Configuration, ParseError> 
     Ok(Configuration { name, set: set.ok_or_else(|| missing(c, "configuration", "set"))? })
 }
 
-fn print_param(out: &mut String, p: &Param) {
-    let single = !p.comment.is_empty() && !p.comment.contains('\n');
-    if !p.comment.is_empty() && !single {
-        print_comment_lines(out, &p.comment);
-    }
-    let _ = write!(out, "param {} = {}", p.name, p.expr);
+/// A parameter's definition on one line, without its comment: `w = 40 mm, min: 10 mm`
+/// (the compare view, review v0.3 M5).
+#[must_use]
+pub fn param_line(p: &Param) -> String {
+    let mut out = format!("{} = {}", p.name, p.expr);
     for (k, e) in [("min", &p.range.min), ("max", &p.range.max), ("step", &p.range.step)] {
         if let Some(e) = e {
             let _ = write!(out, ", {k}: {e}");
         }
     }
+    out
+}
+
+/// A configuration's values on one line: `w = 20 mm, n = 2`.
+#[must_use]
+pub fn configuration_line(c: &Configuration) -> String {
+    let items: Vec<String> = c.set.iter().map(|(n, e)| format!("{n} = {e}")).collect();
+    items.join(", ")
+}
+
+fn print_param(out: &mut String, p: &Param) {
+    let single = !p.comment.is_empty() && !p.comment.contains('\n');
+    if !p.comment.is_empty() && !single {
+        print_comment_lines(out, &p.comment);
+    }
+    let _ = write!(out, "param {}", param_line(p));
     if single {
         let _ = write!(out, "  # {}", p.comment);
     }

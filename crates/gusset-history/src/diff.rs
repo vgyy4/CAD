@@ -1,7 +1,7 @@
 //! Parameter/feature diff between two document states (the "compare" view).
 
 use gusset_doc::Document;
-use gusset_doc::text::print_feature_object;
+use gusset_doc::text::{configuration_line, param_line, print_feature_object};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -28,13 +28,15 @@ pub struct ItemChange {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DocDiff {
     pub units_changed: bool,
+    /// Parameters, with their ranges (review v0.3 M5: a merge takes range changes).
     pub params: Vec<ItemChange>,
+    pub configurations: Vec<ItemChange>,
     pub features: Vec<ItemChange>,
 }
 
 impl DocDiff {
     pub fn is_empty(&self) -> bool {
-        !self.units_changed && self.params.is_empty() && self.features.is_empty()
+        !self.units_changed && self.params.is_empty() && self.configurations.is_empty() && self.features.is_empty()
     }
 }
 
@@ -45,9 +47,9 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
     for p in &b.params {
         match a.params.iter().find(|x| x.name == p.name) {
             None => d.params.push(ItemChange { name: p.name.clone(), change: Change::Added }),
-            Some(old) if old.expr != p.expr || old.comment != p.comment => d.params.push(ItemChange {
+            Some(old) if old != p => d.params.push(ItemChange {
                 name: p.name.clone(),
-                change: Change::Modified { old: old.expr.to_string(), new: p.expr.to_string() },
+                change: Change::Modified { old: param_line(old), new: param_line(p) },
             }),
             Some(_) => {}
         }
@@ -55,6 +57,21 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
     for p in &a.params {
         if !b.params.iter().any(|x| x.name == p.name) {
             d.params.push(ItemChange { name: p.name.clone(), change: Change::Removed });
+        }
+    }
+    for c in &b.configurations {
+        match a.configurations.iter().find(|x| x.name == c.name) {
+            None => d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Added }),
+            Some(old) if old != c => d.configurations.push(ItemChange {
+                name: c.name.clone(),
+                change: Change::Modified { old: configuration_line(old), new: configuration_line(c) },
+            }),
+            Some(_) => {}
+        }
+    }
+    for c in &a.configurations {
+        if !b.configurations.iter().any(|x| x.name == c.name) {
+            d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Removed });
         }
     }
     // Positions among the features both sides share, so an insertion does not make

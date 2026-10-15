@@ -624,7 +624,9 @@ pub fn describe_approval(s: &Session, actor: &gusset_history::Actor, command: &s
                 let rem = |c: &gusset_history::Change| matches!(c, gusset_history::Change::Removed);
                 let modi = |c: &gusset_history::Change| matches!(c, gusset_history::Change::Modified { .. });
                 let mut ch = Vec::new();
-                for (what, v) in [("features", &d.features), ("parameters", &d.params)] {
+                for (what, v) in
+                    [("features", &d.features), ("parameters", &d.params), ("configurations", &d.configurations)]
+                {
                     for (verb, f) in [("added", add as fn(&_) -> bool), ("changed", modi), ("removed", rem)] {
                         if let Some(c) = count(v, f) {
                             ch.push(format!("{what} {verb}: {c}"));
@@ -2427,7 +2429,8 @@ pub struct BranchCompare {
 impl Command for BranchCompare {
     const ID: &'static str = "branch.compare";
     const TITLE: &'static str = "Compare iterations";
-    const DESCRIPTION: &'static str = "Compare two branches or history nodes: parameter and feature differences.";
+    const DESCRIPTION: &'static str =
+        "Compare two branches or history nodes: parameter (with ranges), configuration and feature differences.";
     const CATEGORY: Category = Category::Branches;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, _ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2448,6 +2451,7 @@ impl Command for BranchCompare {
         Ok(json!({
             "units_changed": d.units_changed,
             "parameters": d.params.iter().map(item).collect::<Vec<_>>(),
+            "configurations": d.configurations.iter().map(item).collect::<Vec<_>>(),
             "features": d.features.iter().map(item).collect::<Vec<_>>(),
         }))
     }

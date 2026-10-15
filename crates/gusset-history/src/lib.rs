@@ -376,6 +376,26 @@ mod tests {
     }
 
     #[test]
+    fn compare_shows_range_and_configuration_changes() {
+        // Review v0.3 M5: a merge takes them, so the preview must show them.
+        let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\n{extra}")).unwrap();
+        let a = t("param w = 4 mm, max: 10 mm\nconfiguration A (set: [w = 4 mm])\n");
+        let b = t("param w = 4 mm, max: 20 mm\nconfiguration A (set: [w = 5 mm])\nconfiguration B (set: [w = 6 mm])\n");
+        let d = diff::diff_documents(&a, &b);
+        assert_eq!(
+            d.params,
+            vec![ItemChange {
+                name: "w".into(),
+                change: Change::Modified { old: "w = 4 mm, max: 10 mm".into(), new: "w = 4 mm, max: 20 mm".into() }
+            }]
+        );
+        assert_eq!(d.configurations.len(), 2, "{d:?}");
+        assert_eq!(d.configurations[0].change, Change::Modified { old: "w = 4 mm".into(), new: "w = 5 mm".into() });
+        assert_eq!(d.configurations[1].change, Change::Added);
+        assert!(diff::diff_documents(&b, &b).is_empty());
+    }
+
+    #[test]
     fn compare_and_cherry_pick() {
         let u = Ctx::user(0);
         let base = with_feature(doc(&[("a", "1 mm")]), "S1");

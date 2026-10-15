@@ -439,7 +439,7 @@ fn clock(t: u64) -> String {
 /// Plain-text lines of a `branch.compare` result.
 fn compare_lines(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    for (key, title) in [("parameters", "Parameter"), ("features", "Feature")] {
+    for (key, title) in [("parameters", "Parameter"), ("configurations", "Configuration"), ("features", "Feature")] {
         for c in v.get(key).and_then(Value::as_array).into_iter().flatten() {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
             let change = c.get("change").and_then(Value::as_str).unwrap_or("?");
