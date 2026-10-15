@@ -46,9 +46,20 @@ fn read_source(s: &Session, ctx: &CmdCtx, path: &str, branch: Option<&str>) -> R
 
 /// Copies every blob `doc` needs (imported files, the documents of nested components and
 /// what they need) from `from` into the session's project.
-fn copy_blobs(s: &mut Session, from: &History, doc: &Document, depth: u32) -> Result<(), CommandError> {
+/// `seen` holds the component documents already copied: each is parsed and walked once
+/// however often it is used (review v0.3 H3).
+fn copy_blobs(
+    s: &mut Session,
+    from: &History,
+    doc: &Document,
+    depth: u32,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> Result<(), CommandError> {
     if depth > MAX_NESTING {
         return Err(CommandError::args(format!("components are nested more than {MAX_NESTING} deep")));
+    }
+    if s.rebuild_cancel_flag().load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(CommandError::new("cancelled", "inserting the component was cancelled"));
     }
     let get = |hex: &str| {
         Hash::from_hex(hex).and_then(|h| from.objects().get(h).ok().cloned()).ok_or_else(|| {
@@ -61,12 +72,15 @@ fn copy_blobs(s: &mut Session, from: &History, doc: &Document, depth: u32) -> Re
                 s.put_blob(&get(&i.blob)?);
             }
             FeatureKind::Component(c) => {
+                if !seen.insert(c.document.clone()) {
+                    continue;
+                }
                 let bytes = get(&c.document)?;
                 let inner =
                     std::str::from_utf8(&bytes).ok().and_then(|t| Document::from_text(t).ok()).ok_or_else(|| {
                         CommandError::new("io", format!("component '{}' of the source cannot be read", f.name))
                     })?;
-                copy_blobs(s, from, &inner, depth + 1)?;
+                copy_blobs(s, from, &inner, depth + 1, seen)?;
                 s.put_blob(&bytes);
             }
             _ => {}
@@ -119,7 +133,7 @@ fn stored_document(s: &Session, d: &ComponentDef) -> Result<Document, CommandErr
 
 /// Pins `src` into the project: its blobs, then its text. Returns the document hash.
 fn pin(s: &mut Session, src: &Source) -> Result<String, CommandError> {
-    copy_blobs(s, &src.history, &src.doc, 0)?;
+    copy_blobs(s, &src.history, &src.doc, 0, &mut Default::default())?;
     Ok(s.put_blob(src.doc.to_text().as_bytes()).to_hex())
 }
 

@@ -4,9 +4,27 @@
 use super::*;
 use gusset_units::expr::Expr;
 use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 /// How deep components may nest (a component of a component of ...).
 const MAX_DEPTH: u32 = 8;
+
+/// Most distinct component builds in one evaluation, nested ones included (review v0.3
+/// H3: identical instances are built once, so only many different ones reach it).
+pub(crate) const MAX_BUILDS: usize = 1000;
+
+/// The components built during one top-level evaluation: by (document, configuration,
+/// values set, body), the body or the error, so identical instances are built once.
+#[derive(Debug, Default)]
+pub(crate) struct Builds {
+    memo: Mutex<BTreeMap<String, Result<Arc<Body>, EvalError>>>,
+}
+
+/// How deeply components are being built on this thread (0: the top-level document).
+pub(crate) fn depth() -> u32 {
+    DEPTH.with(Cell::get)
+}
 
 thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
@@ -40,6 +58,57 @@ impl Evaluator {
         params: &ParamValues,
         blobs: &dyn BlobSource,
     ) -> Result<(), EvalError> {
+        // The values `set` gives, in this document's terms: part of the build's identity.
+        let mut values = Vec::with_capacity(d.set.len());
+        for (p, e) in &d.set {
+            values.push((p.clone(), override_value(name, e, params)?));
+        }
+        let set: Vec<String> = values.iter().map(|(p, e)| format!("{p}={e}")).collect();
+        let key = format!("{}|{:?}|{:?}|{}", d.document, d.configuration, d.body, set.join(","));
+        let known = self.components.memo.lock().ok().and_then(|m| m.get(&key).cloned());
+        let built = match known {
+            Some(r) => r,
+            None => {
+                if self.components.memo.lock().map_or(true, |m| m.len() >= MAX_BUILDS) {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::TooComplex,
+                        format!("more than {MAX_BUILDS} different components in one model"),
+                    )
+                    .with_hint("use fewer different components or parameter sets"));
+                }
+                let r = self.build_component(name, d, values, blobs);
+                if !matches!(&r, Err(e) if e.code == ErrorCode::Cancelled)
+                    && let Ok(mut m) = self.components.memo.lock()
+                {
+                    m.insert(key, r.clone());
+                }
+                r
+            }
+        };
+        let body = built.map_err(|mut e| {
+            e.feature = name.to_string();
+            e
+        })?;
+        s.bodies.push(Arc::new(Body {
+            name: name.to_string(),
+            feature: name.to_string(),
+            shape: body.shape.clone(),
+            names: gusset_naming::part_names(name, &body.names),
+            topology: body.topology.clone(),
+            holes: body.holes.clone(),
+        }));
+        Ok(())
+    }
+
+    /// Builds the component's document and returns the chosen body.
+    fn build_component(
+        &self,
+        name: &str,
+        d: &gusset_doc::ComponentDef,
+        values: Vec<(String, Expr)>,
+        blobs: &dyn BlobSource,
+    ) -> Result<Arc<Body>, EvalError> {
         let bytes = blobs.blob(&d.document).ok_or_else(|| {
             EvalError::new(name, ErrorCode::MissingBlob, "the component's document is missing from the project")
                 .with_hint("insert the component again")
@@ -66,16 +135,15 @@ impl Evaluator {
                 }
             }
         }
-        for (p, e) in &d.set {
-            let value = override_value(name, e, params)?;
+        for (p, value) in values {
             let names: Vec<String> = doc.params.iter().map(|q| q.name.clone()).collect();
-            let slot = doc.params.iter_mut().find(|q| q.name == *p).ok_or_else(|| {
+            let slot = doc.params.iter_mut().find(|q| q.name == p).ok_or_else(|| {
                 EvalError::new(name, ErrorCode::InvalidReference, format!("the component has no parameter '{p}'"))
                     .with_hint(format!("its parameters: {}", names.join(", ")))
             })?;
             slot.expr = value;
         }
-        let depth = DEPTH.with(Cell::get);
+        let depth = depth();
         if depth >= MAX_DEPTH {
             return Err(EvalError::new(
                 name,
@@ -88,6 +156,7 @@ impl Evaluator {
         inner.cancel = self.cancel.clone();
         inner.limits = self.limits;
         inner.set_parallel(1);
+        inner.components = self.components.clone();
         DEPTH.with(|c| c.set(depth + 1));
         let ev = inner.evaluate(&doc, None, blobs);
         DEPTH.with(|c| c.set(depth));
@@ -112,14 +181,6 @@ impl Evaluator {
             EvalError::new(name, ErrorCode::InvalidReference, format!("the component's document {what}"))
                 .with_hint(format!("its bodies: {}", names.join(", ")))
         })?;
-        s.bodies.push(Arc::new(Body {
-            name: name.to_string(),
-            feature: name.to_string(),
-            shape: body.shape.clone(),
-            names: gusset_naming::part_names(name, &body.names),
-            topology: body.topology.clone(),
-            holes: body.holes.clone(),
-        }));
-        Ok(())
+        Ok(body.clone())
     }
 }

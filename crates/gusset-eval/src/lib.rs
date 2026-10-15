@@ -330,6 +330,9 @@ pub struct Evaluator {
     /// Features that crashed the kernel, by step key (the feature and everything before
     /// it), oldest first: not run again until something in that chain changes (ADR 0022).
     crashes: VecDeque<([u8; 32], EvalError)>,
+    /// Components built in the current top-level evaluation, shared with the evaluators
+    /// of nested components (review v0.3 H3).
+    components: Arc<component::Builds>,
 }
 
 /// Remembered kernel crashes.
@@ -360,6 +363,7 @@ impl Evaluator {
             speculated: 0,
             epoch: 0,
             crashes: VecDeque::new(),
+            components: Arc::default(),
         }
     }
 
@@ -622,6 +626,9 @@ impl Evaluator {
     pub fn evaluate(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> Evaluation {
         // The cancel flag also stops a kernel operation in progress where the kernel can
         // (the worker process is killed, ADR 0022 §3); its shapes are then gone too.
+        if component::depth() == 0 {
+            self.components = Arc::default();
+        }
         let cancel = self.cancel.clone();
         let progress = self.progress.clone();
         let e = gusset_kernel::cancel::scope(&cancel, || {

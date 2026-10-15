@@ -213,3 +213,32 @@ fn the_check_after_opening_reads_only_sources_inside_the_project() {
         assert_eq!(e.code, "not_allowed", "{p}: {e:?}");
     }
 }
+
+#[test]
+fn identical_nested_components_are_copied_and_built_once() {
+    // Review v0.3 H3: 4 components per level over 6 levels was 4^6 copies and builds.
+    let d = dir();
+    write_part(&d.join("l0.gus"), &[PART]);
+    let u = CmdCtx::user(1);
+    let meta = gusset_project::ProjectMeta {
+        id: gusset_store::paths::ProjectId::new_random().unwrap(),
+        save_seq: 1,
+        base_seq: 1,
+        created: 1,
+    };
+    let start = std::time::Instant::now();
+    for level in 1..=6 {
+        let mut s = session(&d);
+        for i in 0..4 {
+            let r = run(
+                &mut s,
+                &u,
+                "assembly.insert_component",
+                json!({"path": format!("l{}.gus", level - 1), "name": format!("C{i}")}),
+            );
+            assert_eq!(r["rebuild_ok"], true, "level {level}: {r}");
+        }
+        std::fs::write(d.join(format!("l{level}.gus")), gusset_project::encode(s.history(), &meta).unwrap()).unwrap();
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(60), "took {:?}", start.elapsed());
+}
