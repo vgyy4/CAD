@@ -169,6 +169,12 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
 - Found while writing the judge: the earlier `elclib::dn_hypr` treated negative odd orders
   as odd (`n % 2 != 0`), OCCT's `IsOdd` does not; fixed to match OCCT.
 
+## Package 8 (2026-10-15): `PLib`
+- Sonnet judge (54 families, at least 21 distinct lines each, every family EXACT since PLib
+  uses only + - * / and sqrt; checked under valgrind) and Sonnet translation: all 37,372
+  values bit-identical on the first full run. The judge found that `EvalPoly2Var`'s real
+  coefficient layout differs from the comment in `PLib.hxx`.
+
 ## Consequences
 - Nothing in the app changes until a translated toolkit is complete and wired into the
   kernel worker behind the `Kernel` trait, operation by operation (ADR 0023 §2 routing),

@@ -39,4 +39,5 @@ handles → `Arc`/ownership, `NCollection` → Rust collections, exceptions → 
 | ElSLib | 1.6 k | done: values, D0–D3, DN, parameters and iso curves of plane, cylinder, cone, sphere and torus. With ElCLib's rest: 83 families, 2,739 oracle lines, 39,913 of 40,681 values bit-identical, worst 271 ulps of the line's largest value (within 8 ε of it). `No_Exception` keeps negative radii in iso circles; the port reproduces them |
 | BSplCLib | 13 k | 3D curve evaluation done (bit-identical) |
 | math | 25 k | linear algebra done (vectors, matrices, LU, Crout, Householder, SVD, Jacobi, eigen, polynomial roots, Gauss/Kronrod; 29,068 of 29,069 values bit-identical); solvers next |
-| PLib, BSplSLib, CSLib, Convert, Bnd, BVH, Poly, TopLoc, Math* | 85 k | — |
+| PLib | 4 k | done: polynomial evaluation, Lagrange and Hermite interpolation, poles/coefficients, trimming, rational derivatives, `JacobiPolynomial`, `HermitJacobi`. 54 families, 3,140 oracle lines, all 37,372 values bit-identical. Note: `EvalPoly2Var`'s coefficient layout is `(i*(vdeg+1)+j)*dim`, not what `PLib.hxx` says |
+| BSplSLib, CSLib, Convert, Bnd, BVH, Poly, TopLoc, Math* | 85 k | — |
