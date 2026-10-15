@@ -68,7 +68,7 @@ impl Command for SketchTrim {
         }
         let sk = self.sketch.clone();
         let out = edit(s, ctx, "Trim", |doc, _| {
-            let values = params::evaluate(&doc.params);
+            let values = params::evaluate(&doc.params, doc.units);
             let units = doc.units;
             let d = sketch_mut(doc, &sk)?;
             if !d.entities.iter().any(|e| e.id == self.entity) {
@@ -412,7 +412,7 @@ impl Command for SketchPattern {
         let count = parse_expr("count", &self.count)?;
         let kind_name = self.kind.as_str();
         let out = edit(s, ctx, "Sketch pattern", |doc, _| {
-            let values = params::evaluate(&doc.params);
+            let values = params::evaluate(&doc.params, doc.units);
             let units = doc.units;
             let scope = |n: &str| values.get(n).and_then(|r| r.as_ref().ok().copied());
             let eval =

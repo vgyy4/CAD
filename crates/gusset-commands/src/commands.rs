@@ -540,7 +540,7 @@ fn add_constraint(
 /// Re-solves a sketch and stores the solved positions, so the document reflects what
 /// the user sees (and later solves start from there).
 fn store_solution(doc: &mut Document, sketch: &str) {
-    let values = params::evaluate(&doc.params);
+    let values = params::evaluate(&doc.params, doc.units);
     let units = doc.units;
     let Some(Feature { kind: FeatureKind::Sketch(def), .. }) = doc.features.iter_mut().find(|f| f.name == sketch)
     else {
@@ -858,7 +858,7 @@ impl Command for ParamSet {
                     }
                 }
             }
-            let v = params::evaluate(&doc.params);
+            let v = params::evaluate(&doc.params, doc.units);
             let val = match v.get(&self.name) {
                 Some(Ok(q)) => json!(q.display(doc.units)),
                 Some(Err(e)) => return Err(CommandError::args(format!("{}: {e}", self.name))),
@@ -1366,7 +1366,7 @@ fn start_value(
     let Some(e) = e else {
         return Err(CommandError::args(format!("give {what} (mm) or {what}_expr")));
     };
-    let values = params::evaluate(&doc.params);
+    let values = params::evaluate(&doc.params, doc.units);
     let scope = |n: &str| values.get(n).and_then(|r| r.as_ref().ok().copied());
     let v = gusset_units::expr::eval(e, &scope)
         .ok()

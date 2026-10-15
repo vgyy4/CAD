@@ -57,7 +57,7 @@ const TOP: &str = "Extrude1/cap(end)";
 fn sketch_sites_are_points_and_circle_centres_in_id_order() {
     let doc = Document::from_text(&format!("{BASE}\n")).unwrap();
     let FeatureKind::Sketch(def) = &doc.feature("Marks").unwrap().kind else { panic!() };
-    let params = gusset_units::params::evaluate(&doc.params);
+    let params = gusset_units::params::evaluate(&doc.params, doc.units);
     let solved = sketch::solve_sketch("Marks", def, &params, LengthUnit::Millimetre, Frame::XY).unwrap();
     let ids: Vec<&str> = solved.hole_sites.iter().map(|(i, _)| i.as_str()).collect();
     // p3 is construction, p4/p5 end a line; p7 is a circle centre.

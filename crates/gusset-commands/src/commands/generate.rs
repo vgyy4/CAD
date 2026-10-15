@@ -120,7 +120,7 @@ impl Command for GenerateGear {
                     range: Default::default(),
                 });
             }
-            let vals = params::evaluate(&all);
+            let vals = params::evaluate(&all, doc.units);
             let value = |what: &str, dim: Dim| -> Result<f64, CommandError> {
                 match vals.get(&nm.n(what)) {
                     // The value is written into a parameter as given, so its kind must be

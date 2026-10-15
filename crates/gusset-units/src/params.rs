@@ -72,8 +72,9 @@ pub type ParamValues = BTreeMap<String, Result<Quantity, ExprError>>;
 /// cycles and references to failing parameters are reported per parameter.
 ///
 /// Bare numbers in a parameter that is otherwise unitless are kept as plain numbers;
-/// callers that need a length coerce with [`coerce`].
-pub fn evaluate(params: &[Param]) -> ParamValues {
+/// callers that need a length coerce with [`coerce`]. `lengths` is the document's unit,
+/// which plain-number range bounds take ([`range_bounds`]).
+pub fn evaluate(params: &[Param], lengths: LengthUnit) -> ParamValues {
     let defs: BTreeMap<&str, &Param> = params.iter().map(|p| (p.name.as_str(), p)).collect();
     let mut out: ParamValues = BTreeMap::new();
     let mut visiting: Vec<&str> = Vec::new();
@@ -83,6 +84,7 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
         defs: &BTreeMap<&'a str, &'a Param>,
         out: &mut ParamValues,
         visiting: &mut Vec<&'a str>,
+        lengths: LengthUnit,
     ) -> Result<Quantity, ExprError> {
         if let Some(r) = out.get(name) {
             return r.clone();
@@ -120,7 +122,7 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
         for v in vars {
             if defs.contains_key(v.as_str()) {
                 let key = defs.get_key_value(v.as_str()).map(|(k, _)| *k).unwrap_or_default();
-                if let Err(e) = visit(key, defs, out, visiting) {
+                if let Err(e) = visit(key, defs, out, visiting, lengths) {
                     dep_err = Some(if e.kind == ExprErrorKind::Cycle {
                         e
                     } else {
@@ -140,7 +142,7 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
             Some(e) => Err(e),
             None => {
                 let scope = |n: &str| out.get(n).and_then(|r| r.as_ref().ok().copied());
-                expr::eval(&p.expr, &scope).and_then(|q| check_range(p, q, &scope).map(|()| q))
+                expr::eval(&p.expr, &scope).and_then(|q| check_range(p, q, &scope, lengths).map(|()| q))
             }
         };
         out.insert(name.to_string(), r.clone());
@@ -148,38 +150,59 @@ pub fn evaluate(params: &[Param]) -> ParamValues {
     }
 
     for p in params {
-        let _ = visit(p.name.as_str(), &defs, &mut out, &mut visiting);
+        let _ = visit(p.name.as_str(), &defs, &mut out, &mut visiting, lengths);
     }
     out
 }
 
-/// Fails a value outside the parameter's `min` / `max`.
-fn check_range(p: &Param, q: Quantity, scope: &dyn expr::Scope) -> Result<(), ExprError> {
+/// A parameter's `min`, `max` and `step` in the terms of its value `q` (ADR 0027 §1,
+/// review v0.3 M4). A plain-number bound takes the value's unit the way a plain-number
+/// value does: a length in the document's unit `lengths`, an angle in degrees. For a
+/// plain-number value with a length or angle bound, the bound becomes the plain number
+/// that value would be read as.
+///
+/// # Errors
+/// A bound that does not evaluate or has another dimension.
+pub fn range_bounds(
+    p: &Param,
+    q: Quantity,
+    scope: &dyn expr::Scope,
+    lengths: LengthUnit,
+) -> Result<[Option<Quantity>; 3], ExprError> {
     let bound = |e: &Option<Expr>, what: &str| -> Result<Option<Quantity>, ExprError> {
         let Some(e) = e else { return Ok(None) };
         let b = expr::eval(e, scope)?;
-        // A plain-number bound takes the parameter's unit, like a plain-number value does.
-        let b = if b.dim == q.dim || b.dim.is_none() { Quantity::new(b.value, q.dim) } else { b };
-        if b.dim != q.dim {
-            return Err(ExprError {
-                kind: ExprErrorKind::DimensionMismatch,
-                span: e.span(),
-                message: format!("the {what} of '{}' is {}, the value {}", p.name, b.dim.name(), q.dim.name()),
-                hint: Some("give the range in the parameter's unit".into()),
-            });
+        let mismatch = || ExprError {
+            kind: ExprErrorKind::DimensionMismatch,
+            span: e.span(),
+            message: format!("the {what} of '{}' is {}, the value {}", p.name, b.dim.name(), q.dim.name()),
+            hint: Some("give the range in the parameter's unit".into()),
+        };
+        if b.dim == q.dim {
+            Ok(Some(b))
+        } else if b.dim.is_none() {
+            coerce(b, q.dim, lengths).map(Some).map_err(|_| mismatch())
+        } else if q.dim.is_none() {
+            let one = coerce(Quantity::number(1.0), b.dim, lengths).map_err(|_| mismatch())?;
+            Ok(Some(Quantity::number(b.value / one.value)))
+        } else {
+            Err(mismatch())
         }
-        Ok(Some(b))
     };
-    let (lo, hi) = (bound(&p.range.min, "min")?, bound(&p.range.max, "max")?);
-    let _ = bound(&p.range.step, "step")?;
+    Ok([bound(&p.range.min, "min")?, bound(&p.range.max, "max")?, bound(&p.range.step, "step")?])
+}
+
+/// Fails a value outside the parameter's `min` / `max`.
+fn check_range(p: &Param, q: Quantity, scope: &dyn expr::Scope, lengths: LengthUnit) -> Result<(), ExprError> {
+    let [lo, hi, _] = range_bounds(p, q, scope, lengths)?;
     let tol = 1e-9 * q.value.abs().max(1.0);
     let outside = lo.is_some_and(|l| q.value < l.value - tol) || hi.is_some_and(|h| q.value > h.value + tol);
     if outside {
-        let show = |b: Option<Quantity>| b.map_or("…".to_string(), |b| format!("{}", b.value));
+        let show = |b: &Option<Expr>| b.as_ref().map_or("…".to_string(), ToString::to_string);
         return Err(ExprError {
             kind: ExprErrorKind::Domain,
             span: p.expr.span(),
-            message: format!("'{}' is outside its range ({} to {} in base units)", p.name, show(lo), show(hi)),
+            message: format!("'{}' is outside its range ({} to {})", p.name, show(&p.range.min), show(&p.range.max)),
             hint: Some("choose a value between min and max, or widen the range".into()),
         });
     }
@@ -212,15 +235,37 @@ mod tests {
         Param { name: name.into(), expr: expr::parse(src).unwrap(), comment: String::new(), range: Default::default() }
     }
 
+    fn ranged(name: &str, src: &str, min: Option<&str>, max: Option<&str>) -> Param {
+        let e = |x: Option<&str>| x.map(|x| expr::parse(x).unwrap());
+        Param { range: ParamRange { min: e(min), max: e(max), step: None }, ..p(name, src) }
+    }
+
+    #[test]
+    fn plain_number_bounds_take_the_document_unit_and_degrees() {
+        // Review v0.3 M4: they were read as mm and radians.
+        let ok = |p: Param, u| evaluate(&[p], u).into_values().next().unwrap();
+        assert!(ok(ranged("a", "2 in", Some("1"), Some("3")), LengthUnit::Inch).is_ok());
+        assert!(ok(ranged("a", "4 in", Some("1"), Some("3")), LengthUnit::Inch).is_err());
+        assert!(ok(ranged("a", "45 deg", Some("10"), Some("90")), LengthUnit::Millimetre).is_ok());
+        let e = ok(ranged("a", "100 deg", None, Some("90")), LengthUnit::Millimetre).unwrap_err();
+        assert!(e.message.contains("outside its range (… to 90)"), "{e:?}");
+        // A plain-number value with a length bound: the value is read in the document unit.
+        assert!(ok(ranged("n", "40", Some("10 mm"), None), LengthUnit::Millimetre).is_ok());
+        assert!(ok(ranged("n", "5", Some("10 mm"), None), LengthUnit::Millimetre).is_err());
+        assert!(ok(ranged("n", "1", Some("10 mm"), None), LengthUnit::Inch).is_ok());
+        // Another dimension still is a mismatch.
+        assert!(ok(ranged("a", "5 mm", Some("1 deg"), None), LengthUnit::Millimetre).is_err());
+    }
+
     #[test]
     fn forward_references() {
-        let v = evaluate(&[p("depth", "width / 2"), p("width", "40 mm")]);
+        let v = evaluate(&[p("depth", "width / 2"), p("width", "40 mm")], LengthUnit::Millimetre);
         assert_eq!(v["depth"].as_ref().unwrap().value, 20.0);
     }
 
     #[test]
     fn cycles_are_reported() {
-        let v = evaluate(&[p("a", "b + 1 mm"), p("b", "a * 2"), p("c", "5 mm")]);
+        let v = evaluate(&[p("a", "b + 1 mm"), p("b", "a * 2"), p("c", "5 mm")], LengthUnit::Millimetre);
         let e = v["a"].as_ref().unwrap_err();
         assert_eq!(e.kind, ExprErrorKind::Cycle);
         assert!(e.message.contains('→'));
@@ -230,14 +275,14 @@ mod tests {
 
     #[test]
     fn dependency_failure_names_cause() {
-        let v = evaluate(&[p("a", "1 mm + 2"), p("b", "a * 2")]);
+        let v = evaluate(&[p("a", "1 mm + 2"), p("b", "a * 2")], LengthUnit::Millimetre);
         let e = v["b"].as_ref().unwrap_err();
         assert!(e.message.contains("depends on 'a'"), "{}", e.message);
     }
 
     #[test]
     fn self_reference() {
-        let v = evaluate(&[p("a", "a + 1")]);
+        let v = evaluate(&[p("a", "a + 1")], LengthUnit::Millimetre);
         assert_eq!(v["a"].as_ref().unwrap_err().kind, ExprErrorKind::Cycle);
     }
 
@@ -266,7 +311,7 @@ mod tests {
         for i in 1..500 {
             ps.push(p(&format!("p{i}"), &format!("p{} + 1 mm", i - 1)));
         }
-        let v = evaluate(&ps);
+        let v = evaluate(&ps, LengthUnit::Millimetre);
         assert_eq!(v["p499"].as_ref().unwrap().value, 500.0);
     }
 }

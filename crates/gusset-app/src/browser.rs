@@ -464,10 +464,9 @@ fn slider_of(p: &gusset_units::params::Param, v: &View<'_>) -> Option<Slider> {
     let eval = v.eval?;
     let value = eval.params.get(&p.name)?.as_ref().ok().copied()?;
     let scope = |n: &str| eval.params.get(n).and_then(|r| r.as_ref().ok().copied());
-    let bound = |e: &Option<gusset_units::expr::Expr>| {
-        let q = gusset_units::expr::eval(e.as_ref()?, &scope).ok()?;
-        (q.dim == value.dim || q.dim.is_none()).then_some(q.value)
-    };
+    // The same bounds the range check uses (review v0.3 M4).
+    let [min, max, step] = gusset_units::params::range_bounds(p, value, &scope, v.doc.units).ok()?;
+    let bound = |b: Option<gusset_units::Quantity>| b.map(|b| b.value);
     let (factor, unit) = if value.dim == gusset_units::Dim::LENGTH {
         let u = v.doc.units.unit();
         (u.factor, u.symbol)
@@ -476,14 +475,8 @@ fn slider_of(p: &gusset_units::params::Param, v: &View<'_>) -> Option<Slider> {
     } else {
         (1.0, "")
     };
-    let (lo, hi) = (bound(&p.range.min)? / factor, bound(&p.range.max)? / factor);
-    (lo < hi).then_some(Slider {
-        lo,
-        hi,
-        step: bound(&p.range.step).map(|s| s / factor),
-        value: value.value / factor,
-        unit,
-    })
+    let (lo, hi) = (bound(min)? / factor, bound(max)? / factor);
+    (lo < hi).then_some(Slider { lo, hi, step: bound(step).map(|s| s / factor), value: value.value / factor, unit })
 }
 
 fn customizer(ui: &mut Ui, p: &gusset_units::params::Param, s: Slider, out: &mut Vec<Action>) {

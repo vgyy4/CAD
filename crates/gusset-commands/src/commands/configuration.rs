@@ -84,7 +84,7 @@ impl Command for ApplyConfiguration {
                     p.expr = e.clone();
                 }
             }
-            let values = params::evaluate(&doc.params);
+            let values = params::evaluate(&doc.params, doc.units);
             for (n, _) in &c.set {
                 if let Some(Err(e)) = values.get(n) {
                     return Err(CommandError::args(format!("{n}: {e}")).hint("edit the configuration's values"));

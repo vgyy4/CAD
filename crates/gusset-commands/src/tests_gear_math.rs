@@ -170,7 +170,7 @@ fn expressions_reproduce_the_numbers() {
                 range: Default::default(),
             });
         }
-        let vals = params::evaluate(&ps);
+        let vals = params::evaluate(&ps, gusset_units::LengthUnit::Millimetre);
         let get = |n: &str| vals[&nm.n(n)].as_ref().unwrap_or_else(|e| panic!("{n}: {e}")).value;
         assert!(near(get("pitch_diameter"), 2.0 * g.pitch_radius, 1e-9));
         assert!(near(get("base_diameter"), 2.0 * g.base_radius, 1e-9));

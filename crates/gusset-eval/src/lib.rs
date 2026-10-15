@@ -650,7 +650,7 @@ impl Evaluator {
     }
 
     fn evaluate_pass(&mut self, doc: &Document, rollback: Option<usize>, blobs: &dyn BlobSource) -> (Evaluation, bool) {
-        let params = params::evaluate(&doc.params);
+        let params = params::evaluate(&doc.params, doc.units);
         let mut key = *blake3::hash(format!("gusset-eval 1 {:?}", doc.units).as_bytes()).as_bytes();
         let mut state = Arc::new(State::default());
         let mut recomputed = 0;
