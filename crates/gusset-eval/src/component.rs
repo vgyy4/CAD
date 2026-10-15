@@ -19,6 +19,9 @@ pub(crate) const MAX_BUILDS: usize = 1000;
 #[derive(Debug, Default)]
 pub(crate) struct Builds {
     memo: Mutex<BTreeMap<String, Result<Arc<Body>, EvalError>>>,
+    /// The work all component builds of this evaluation charged: one budget for them all
+    /// (security review v0.3 W3).
+    spent: Mutex<budget::Work>,
 }
 
 /// How deeply components are being built on this thread (0: the top-level document).
@@ -154,12 +157,25 @@ impl Evaluator {
         // The component's own document, on the same kernel, stopped by the same flag.
         let mut inner = Evaluator::new(self.kernel.clone());
         inner.cancel = self.cancel.clone();
-        inner.limits = self.limits;
+        // Only what the earlier component builds left of the budget.
+        let spent = self.components.spent.lock().map(|w| *w).unwrap_or_default();
+        let left = |max: u64, used: u64| max.saturating_sub(used);
+        inner.limits = EvalLimits {
+            max_boolean_work: left(self.limits.max_boolean_work, spent.faces),
+            max_tools: left(self.limits.max_tools, spent.tools),
+            max_joint_steps: left(self.limits.max_joint_steps, spent.joint_steps),
+            ..self.limits
+        };
         inner.set_parallel(1);
         inner.components = self.components.clone();
         DEPTH.with(|c| c.set(depth + 1));
         let ev = inner.evaluate(&doc, None, blobs);
         DEPTH.with(|c| c.set(depth));
+        if let Ok(mut w) = self.components.spent.lock() {
+            w.faces = w.faces.saturating_add(ev.work.faces);
+            w.tools = w.tools.saturating_add(ev.work.tools);
+            w.joint_steps = w.joint_steps.saturating_add(ev.work.joint_steps);
+        }
         if ev.cancelled {
             return Err(EvalError::new(name, ErrorCode::Cancelled, "the rebuild was cancelled"));
         }

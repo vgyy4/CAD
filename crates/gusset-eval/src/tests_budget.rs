@@ -168,3 +168,33 @@ fn a_cancelled_rebuild_stops_and_caches_nothing_after_the_cancel() {
     assert!(r.errors().is_empty(), "{:?}", r.errors());
     assert_eq!(r.recomputed, 3, "the sketch and E1 came from the cache");
 }
+
+#[test]
+fn component_builds_share_the_evaluation_budget() {
+    // Security review v0.3 W3: each component build had a fresh budget, so different `set:`
+    // values multiplied the work. The part: a 50-instance pattern (300 faces of boolean work).
+    struct Part(String);
+    impl BlobSource for Part {
+        fn blob(&self, _: &str) -> Option<Arc<[u8]>> {
+            Some(Arc::from(self.0.as_bytes()))
+        }
+    }
+    let part = BOX.replacen("units mm\n", "units mm\n\nparam w = 20 mm\n", 1)
+        + "\npattern_linear P1 (direction: X, count: 50, spacing: w)\n";
+    let hash = "ab".repeat(32);
+    let mut text = String::from("gusset 1\nunits mm\n");
+    for k in 0..10 {
+        text.push_str(&format!(
+            "\ncomponent C{k} (source: \"p.gus\", version: \"n1\", document: \"{hash}\", set: [w = {} mm])\n",
+            20 + k
+        ));
+    }
+    let doc = Document::from_text(&text).unwrap();
+    let mut ev = Evaluator::new(Arc::new(MockKernel));
+    ev.set_limits(EvalLimits { max_boolean_work: 2_000, ..EvalLimits::default() });
+    let r = ev.evaluate(&doc, None, &Part(part));
+    // Six builds fit in 2,000 faces of work; the seventh does not.
+    assert!(matches!(r.status("C5"), Some(FeatureStatus::Ok)), "{:?}", r.errors());
+    let e = failure(&r, "C6");
+    assert!(e.message.contains("faces"), "{e}");
+}

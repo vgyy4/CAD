@@ -224,6 +224,8 @@ pub struct Evaluation {
     /// Values of each joint as built, in base units (mm, rad), including those the loop
     /// solver chose: `angle`, `distance`, `x`, `y`, `angles`.
     pub joint_values: BTreeMap<String, JointValues>,
+    /// The work this evaluation charged (component builds add it to the outer budget).
+    pub(crate) work: budget::Work,
 }
 
 /// A joint's values as built (base units: mm, rad).
@@ -765,6 +767,7 @@ impl Evaluator {
                     transient: true,
                     epoch: self.kernel.epoch(),
                     joint_values: BTreeMap::new(),
+                    work: budget::Work::default(),
                 };
                 return (crashed, true);
             }
@@ -801,6 +804,7 @@ impl Evaluator {
             cancelled,
             transient,
             epoch: self.epoch,
+            work: state.work,
             joint_values: state
                 .joints
                 .recs
