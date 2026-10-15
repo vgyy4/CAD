@@ -2,6 +2,7 @@
 
 use gusset_doc::Document;
 use gusset_doc::text::{configuration_line, param_line, print_feature_object};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -43,11 +44,16 @@ impl DocDiff {
 /// Compares `a` (old) to `b` (new). Output order is deterministic: items in `b` order,
 /// then removed items in `a` order.
 pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
+    // Lookups by name through maps, so a compare stays linear (security review v0.3 W2).
     let mut d = DocDiff { units_changed: a.units != b.units, ..DocDiff::default() };
+    let (pa, pb): (HashMap<_, _>, HashMap<_, _>) = (
+        a.params.iter().map(|p| (p.name.as_str(), p)).collect(),
+        b.params.iter().map(|p| (p.name.as_str(), p)).collect(),
+    );
     for p in &b.params {
-        match a.params.iter().find(|x| x.name == p.name) {
+        match pa.get(p.name.as_str()) {
             None => d.params.push(ItemChange { name: p.name.clone(), change: Change::Added }),
-            Some(old) if old != p => d.params.push(ItemChange {
+            Some(old) if *old != p => d.params.push(ItemChange {
                 name: p.name.clone(),
                 change: Change::Modified { old: param_line(old), new: param_line(p) },
             }),
@@ -55,14 +61,18 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
         }
     }
     for p in &a.params {
-        if !b.params.iter().any(|x| x.name == p.name) {
+        if !pb.contains_key(p.name.as_str()) {
             d.params.push(ItemChange { name: p.name.clone(), change: Change::Removed });
         }
     }
+    let (ca, cb): (HashMap<_, _>, HashMap<_, _>) = (
+        a.configurations.iter().map(|c| (c.name.as_str(), c)).collect(),
+        b.configurations.iter().map(|c| (c.name.as_str(), c)).collect(),
+    );
     for c in &b.configurations {
-        match a.configurations.iter().find(|x| x.name == c.name) {
+        match ca.get(c.name.as_str()) {
             None => d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Added }),
-            Some(old) if old != c => d.configurations.push(ItemChange {
+            Some(old) if *old != c => d.configurations.push(ItemChange {
                 name: c.name.clone(),
                 change: Change::Modified { old: configuration_line(old), new: configuration_line(c) },
             }),
@@ -70,23 +80,32 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
         }
     }
     for c in &a.configurations {
-        if !b.configurations.iter().any(|x| x.name == c.name) {
+        if !cb.contains_key(c.name.as_str()) {
             d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Removed });
         }
     }
     // Positions among the features both sides share, so an insertion does not make
     // every later feature look "moved".
-    let common_a: Vec<&str> =
-        a.features.iter().filter(|f| b.feature(&f.name).is_some()).map(|f| f.name.as_str()).collect();
-    let common_b: Vec<&str> =
-        b.features.iter().filter(|f| a.feature(&f.name).is_some()).map(|f| f.name.as_str()).collect();
+    let (fa, fb): (HashMap<_, _>, HashMap<_, _>) = (
+        a.features.iter().map(|f| (f.name.as_str(), f)).collect(),
+        b.features.iter().map(|f| (f.name.as_str(), f)).collect(),
+    );
+    let position = |d: &Document, other: &HashMap<&str, &gusset_doc::Feature>| -> HashMap<String, usize> {
+        d.features
+            .iter()
+            .filter(|f| other.contains_key(f.name.as_str()))
+            .enumerate()
+            .map(|(i, f)| (f.name.clone(), i))
+            .collect()
+    };
+    let (common_a, common_b) = (position(a, &fb), position(b, &fa));
     for f in &b.features {
-        match a.feature(&f.name) {
+        match fa.get(f.name.as_str()) {
             None => d.features.push(ItemChange { name: f.name.clone(), change: Change::Added }),
             Some(old) => {
-                let oi = common_a.iter().position(|n| *n == f.name).unwrap_or(0);
-                let ni = common_b.iter().position(|n| *n == f.name).unwrap_or(0);
-                if old != f {
+                let oi = common_a.get(&f.name).copied().unwrap_or(0);
+                let ni = common_b.get(&f.name).copied().unwrap_or(0);
+                if *old != f {
                     d.features.push(ItemChange {
                         name: f.name.clone(),
                         change: Change::Modified { old: print_feature_object(old), new: print_feature_object(f) },
@@ -101,7 +120,7 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
         }
     }
     for f in &a.features {
-        if b.feature(&f.name).is_none() {
+        if !fb.contains_key(f.name.as_str()) {
             d.features.push(ItemChange { name: f.name.clone(), change: Change::Removed });
         }
     }

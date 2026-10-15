@@ -5,6 +5,7 @@
 use gusset_doc::text::print_feature_object;
 use gusset_doc::{Document, Feature};
 use gusset_units::params::Param;
+use std::collections::{HashMap, HashSet};
 
 /// Which side wins a conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,11 +70,14 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
 
     // Parameters: ours' order, then those only theirs added.
     let pnames = names(ours.params.iter().map(|p| p.name.as_str()), theirs.params.iter().map(|p| p.name.as_str()));
-    let param = |d: &Document, n: &str| d.params.iter().find(|p| p.name == n).cloned();
+    // Lookups by name through maps: merging stays linear in the document size (security
+    // review v0.3 W2).
+    let (pb, po, pt) = (param_map(base), param_map(ours), param_map(theirs));
+    let param = |m: &HashMap<&str, &Param>, n: &str| m.get(n).map(|p| (*p).clone());
     let show_p = |p: &Option<Param>| p.as_ref().map(|p| p.expr.to_string());
     let mut params = Vec::new();
     for n in &pnames {
-        let (b, o, t) = (param(base, n), param(ours, n), param(theirs, n));
+        let (b, o, t) = (param(&pb, n), param(&po, n), param(&pt, n));
         let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
             Ok(r) => r,
             Err(()) if resolve("parameter", n, show_p(&o), show_p(&t)) => t.clone(),
@@ -90,13 +94,14 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         ours.configurations.iter().map(|c| c.name.as_str()),
         theirs.configurations.iter().map(|c| c.name.as_str()),
     );
-    let conf = |d: &Document, n: &str| d.configurations.iter().find(|c| c.name == n).cloned();
+    let (cb, co, ct) = (conf_map(base), conf_map(ours), conf_map(theirs));
+    let conf = |m: &HashMap<&str, &gusset_doc::Configuration>, n: &str| m.get(n).map(|c| (*c).clone());
     let show_c = |c: &Option<gusset_doc::Configuration>| {
         c.as_ref().map(|c| c.set.iter().map(|(n, e)| format!("{n} = {e}")).collect::<Vec<_>>().join(", "))
     };
     let mut configurations = Vec::new();
     for n in &cnames {
-        let (b, o, t) = (conf(base, n), conf(ours, n), conf(theirs, n));
+        let (b, o, t) = (conf(&cb, n), conf(&co, n), conf(&ct, n));
         let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
             Ok(r) => r,
             Err(()) if resolve("configuration", n, show_c(&o), show_c(&t)) => t.clone(),
@@ -110,12 +115,13 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
 
     // Features: merged one by one, placed in ours' order; those only theirs added go right
     // after the feature that precedes them on their side.
-    let feature = |d: &Document, n: &str| d.feature(n).cloned();
+    let (fb, fo, ft) = (feature_map(base), feature_map(ours), feature_map(theirs));
+    let feature = |m: &HashMap<&str, &Feature>, n: &str| m.get(n).map(|f| (*f).clone());
     let show_f = |f: &Option<Feature>| f.as_ref().map(print_feature_object);
     let mut merged: Vec<(String, Option<Feature>)> = Vec::new();
     let fnames = names(ours.features.iter().map(|f| f.name.as_str()), theirs.features.iter().map(|f| f.name.as_str()));
     for n in &fnames {
-        let (b, o, t) = (feature(base, n), feature(ours, n), feature(theirs, n));
+        let (b, o, t) = (feature(&fb, n), feature(&fo, n), feature(&ft, n));
         let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
             Ok(r) => r,
             Err(()) if resolve("feature", n, show_f(&o), show_f(&t)) => t.clone(),
@@ -126,23 +132,42 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         }
         merged.push((n.clone(), r));
     }
-    let mut order: Vec<String> = ours.features.iter().map(|f| f.name.clone()).collect();
+    // A feature only theirs has goes right after the feature before it on their side (which
+    // is placed by then): chains of followers hung on ours' order.
+    let mut follower: HashMap<&str, &str> = HashMap::new();
+    let mut head: Option<&str> = None;
     for (i, f) in theirs.features.iter().enumerate() {
-        if order.contains(&f.name) {
+        if fo.contains_key(f.name.as_str()) {
             continue;
         }
-        let after = theirs
-            .features
-            .get(..i)
-            .and_then(|before| before.iter().rev().find_map(|p| order.iter().position(|n| *n == p.name)));
-        order.insert(after.map_or(0, |a| a + 1), f.name.clone());
+        match i.checked_sub(1).and_then(|j| theirs.features.get(j)) {
+            Some(p) => {
+                follower.insert(p.name.as_str(), f.name.as_str());
+            }
+            None => head = Some(f.name.as_str()),
+        }
+    }
+    let mut order: Vec<String> = Vec::with_capacity(ours.features.len() + follower.len() + 1);
+    let mut chain = |start: &str, order: &mut Vec<String>| {
+        let mut at = Some(start);
+        while let Some(n) = at {
+            order.push(n.to_string());
+            at = follower.remove(n);
+        }
+    };
+    if let Some(h) = head {
+        chain(h, &mut order);
+    }
+    for f in &ours.features {
+        chain(&f.name, &mut order);
     }
     // A reorder of shared features on one side is taken; on both sides it conflicts.
     let shared = |d: &Document| -> Vec<String> {
         d.features
             .iter()
             .filter(|f| {
-                base.feature(&f.name).is_some() && ours.feature(&f.name).is_some() && theirs.feature(&f.name).is_some()
+                let n = f.name.as_str();
+                fb.contains_key(n) && fo.contains_key(n) && ft.contains_key(n)
             })
             .map(|f| f.name.clone())
             .collect()
@@ -158,8 +183,9 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
     if take_theirs_order {
         // The shared features' slots, refilled in their order.
         let mut next = st.iter();
+        let so_set: HashSet<&String> = so.iter().collect();
         for slot in order.iter_mut() {
-            if so.contains(slot)
+            if so_set.contains(slot)
                 && let Some(n) = next.next()
             {
                 slot.clone_from(n);
@@ -167,16 +193,29 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         }
         from_theirs.push("order".into());
     }
-    let features =
-        order.iter().filter_map(|n| merged.iter().find(|(m, _)| m == n).and_then(|(_, f)| f.clone())).collect();
+    let mut merged: HashMap<String, Option<Feature>> = merged.into_iter().collect();
+    let features = order.iter().filter_map(|n| merged.remove(n).flatten()).collect();
     Merged { doc: Document { units, params, configurations, features }, conflicts, from_theirs }
+}
+
+fn param_map(d: &Document) -> HashMap<&str, &Param> {
+    d.params.iter().map(|p| (p.name.as_str(), p)).collect()
+}
+
+fn conf_map(d: &Document) -> HashMap<&str, &gusset_doc::Configuration> {
+    d.configurations.iter().map(|c| (c.name.as_str(), c)).collect()
+}
+
+fn feature_map(d: &Document) -> HashMap<&str, &Feature> {
+    d.features.iter().map(|f| (f.name.as_str(), f)).collect()
 }
 
 /// The names of `a`, then those of `b` not in `a`, each once.
 fn names<'a>(a: impl Iterator<Item = &'a str>, b: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for n in a.chain(b) {
-        if !out.iter().any(|x| x == n) {
+        if seen.insert(n) {
             out.push(n.to_string());
         }
     }
@@ -249,5 +288,38 @@ mod tests {
         let ours = doc(&format!("{}{}{}", sk("B"), sk("A"), sk("C")));
         let m = merge_documents(&base, &ours, &theirs, None);
         assert_eq!(m.conflicts.iter().map(|c| c.kind).collect::<Vec<_>>(), ["order"]);
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn merging_and_comparing_large_documents_is_linear() {
+        // Security review v0.3 W2: 40,000 features took a minute (quadratic lookups).
+        let n = 20_000;
+        let mut base = Document::from_text("gusset 1\nunits mm\n").unwrap_or_else(|e| panic!("{e}"));
+        let probe = Document::from_text("gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 1) {\n}\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let Some(sk) = probe.features.first().cloned() else { panic!("no sketch") };
+        for i in 0..n {
+            let mut f = sk.clone();
+            f.name = format!("S{i}");
+            base.features.push(f);
+        }
+        let (mut ours, mut theirs) = (base.clone(), base.clone());
+        ours.features.remove(10);
+        let mut extra = sk.clone();
+        extra.name = "Theirs1".into();
+        theirs.features.insert(500, extra);
+        let start = std::time::Instant::now();
+        let m = merge_documents(&base, &ours, &theirs, None);
+        let d = crate::diff::diff_documents(&ours, &theirs);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        assert_eq!(m.doc.features.len(), n);
+        assert_eq!(m.doc.features.get(499).map(|f| f.name.as_str()), Some("Theirs1"));
+        assert!(m.conflicts.is_empty());
+        assert_eq!(d.features.len(), 2, "{:?}", d.features);
     }
 }
