@@ -268,15 +268,19 @@ pub(crate) fn target_body(s: &State, feature: &str, target: Option<&str>) -> Res
     Ok((bi, body))
 }
 
-pub(crate) fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
-    let nb = Arc::new(Body {
+pub(crate) fn rebuilt_body(old: &Body, shape: Shape, names: BodyNames, topology: Topology) -> Arc<Body> {
+    Arc::new(Body {
         name: old.name.clone(),
         feature: old.feature.clone(),
         shape,
         names,
         topology,
         holes: old.holes.clone(),
-    });
+    })
+}
+
+pub(crate) fn replace_body(s: &mut State, bi: usize, old: &Body, shape: Shape, names: BodyNames, topology: Topology) {
+    let nb = rebuilt_body(old, shape, names, topology);
     if let Some(slot) = s.bodies.get_mut(bi) {
         *slot = nb;
     }

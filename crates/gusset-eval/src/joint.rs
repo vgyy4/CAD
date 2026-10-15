@@ -195,6 +195,40 @@ impl Evaluator {
         })
     }
 
+    /// Checks which bodies the two frames lie on (ADR 0026, review M3): the `at` frame on
+    /// the moving body or a carried one, the `to` frame on none of them.
+    fn check_frame_bodies(
+        name: &str,
+        d: &JointDef,
+        at_body: Option<&str>,
+        to_body: Option<&str>,
+    ) -> Result<(), EvalError> {
+        let moves = |b: &str| b == d.body || d.with.iter().any(|w| w == b);
+        if let Some(b) = at_body.filter(|b| !moves(b)) {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::InvalidReference,
+                format!(
+                    "the 'at' frame {} lies on '{b}', which this joint does not move",
+                    gusset_doc::text::print_frame(&d.at)
+                ),
+            )
+            .with_hint(format!("use a frame on '{}' (or a body in with), and put the other body in 'to'", d.body)));
+        }
+        if let Some(b) = to_body.filter(|b| moves(b)) {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::InvalidReference,
+                format!(
+                    "the 'to' frame {} lies on '{b}', which this joint moves",
+                    gusset_doc::text::print_frame(&d.to)
+                ),
+            )
+            .with_hint("the 'to' frame must lie on a body that stays: another body, a plane or the origin"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn run_joint(
         &self,
         s: &mut State,
@@ -203,8 +237,9 @@ impl Evaluator {
         units: LengthUnit,
         params: &ParamValues,
     ) -> Result<(), EvalError> {
-        let (moving, _) = self.joint_frame(s, name, &d.at)?;
+        let (moving, at_body) = self.joint_frame(s, name, &d.at)?;
         let (mut fixed, fixed_body) = self.joint_frame(s, name, &d.to)?;
+        Self::check_frame_bodies(name, d, at_body.as_deref(), fixed_body.as_deref())?;
         if let Some(o) = &d.offset {
             let off = eval_expr(name, o, Dim::LENGTH, params, units)?;
             fixed = fixed.then_after(&Rigid::translation([0.0, 0.0, off]));
@@ -213,7 +248,34 @@ impl Evaluator {
             fixed = fixed.then_after(&Rigid::rotation([1.0, 0.0, 0.0], std::f64::consts::PI));
         }
         let vals = Self::joint_values(name, d, units, params)?;
-        let placed = |b: &str| s.joints.placed.get(b).copied().unwrap_or(Rigid::ID);
+        // Everything is built on the side and installed only when the joint succeeds, so a
+        // failing joint leaves no record and moves nothing (review M2).
+        let mut js = (*s.joints).clone();
+        let is_placed = |js: &Joints, b: &str| {
+            js.recs.iter().any(|r| !r.closing && (r.moving == b || r.with.iter().any(|w| w == b)))
+        };
+        if let Some((_, w)) = d.with.iter().enumerate().find(|(i, w)| d.with.iter().take(*i).any(|o| o == *w)) {
+            return Err(EvalError::new(name, ErrorCode::InvalidReference, format!("'{w}' is listed twice in 'with'"))
+                .with_hint("list each carried body once (a body name and its feature name are the same body)"));
+        }
+        let closing = is_placed(&js, &d.body);
+        if closing && !d.with.is_empty() {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::InvalidReference,
+                format!("a joint that closes a loop cannot carry bodies ('{}' is already placed)", d.body),
+            )
+            .with_hint("remove 'with'; bodies carried along belong to the joint that placed them first"));
+        }
+        if !closing && let Some(w) = d.with.iter().find(|w| is_placed(&js, w)) {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::InvalidReference,
+                format!("'{w}' in 'with' was already placed by an earlier joint"),
+            )
+            .with_hint("carry only bodies no joint has placed; give the body its own joint"));
+        }
+        let placed = |b: &str| js.placed.get(b).copied().unwrap_or(Rigid::ID);
         let fixed_place = fixed_body.as_deref().map_or(Rigid::ID, placed);
         // Frames in their bodies' coordinates before any joint moved them, so the loop
         // solver can place every body again from the joint values alone.
@@ -222,35 +284,63 @@ impl Evaluator {
             kind: d.kind,
             moving: d.body.clone(),
             with: d.with.clone(),
-            fixed: fixed_body.filter(|b| *b != d.body),
+            fixed: fixed_body,
             fixed_local: fixed_place.inverse().then_after(&fixed),
             moving_local: placed(&d.body).inverse().then_after(&moving),
-            free: d.free.iter().flat_map(|v| Slot::of(v)).collect(),
-            closing: s.joints.recs.iter().any(|r| !r.closing && (r.moving == d.body || r.with.contains(&d.body))),
+            free: dedup_slots(d.free.iter().flat_map(|v| Slot::of(v))),
+            closing,
             vals,
         };
-        let closing = rec.closing;
-        Arc::make_mut(&mut s.joints).recs.push(rec);
-        if !closing {
-            vals.check(name)?;
+        js.recs.push(rec);
+        let mut moved: Vec<(usize, Arc<Body>)> = Vec::new();
+        if closing {
+            self.close_loops(s, &mut js, name, units, &mut moved)?;
+        } else {
+            vals.check(name, name, units)?;
             let t = fixed.then_after(&motion(d.kind, &vals)).then_after(&moving.inverse());
             for b in std::iter::once(&d.body).chain(&d.with) {
-                self.move_body(s, name, b, &t)?;
+                let now = js.placed.get(b).copied().unwrap_or(Rigid::ID);
+                moved.extend(self.moved_body(s, name, b, &t)?);
+                js.placed.insert(b.clone(), t.then_after(&now));
             }
-            return Ok(());
         }
-        self.close_loops(s, name)
+        for (bi, nb) in moved {
+            if let Some(slot) = s.bodies.get_mut(bi) {
+                *slot = nb;
+            }
+        }
+        s.joints = Arc::new(js);
+        Ok(())
     }
 
-    /// Solves the free values of every joint so far so that the closing joints meet, then
-    /// moves the bodies to the solution (ADR 0026 §1, closed loops).
-    fn close_loops(&self, s: &mut State, name: &str) -> Result<(), EvalError> {
-        let recs = s.joints.recs.clone();
+    /// Solves the free values of the joints connected to the newest (closing) joint so
+    /// that the loop's closing joints meet, then works out the bodies' new places (ADR 0026
+    /// §1, closed loops). Nothing in `s` changes: the caller installs `js` and `moved`.
+    fn close_loops(
+        &self,
+        s: &State,
+        js: &mut Joints,
+        name: &str,
+        units: LengthUnit,
+        moved: &mut Vec<(usize, Arc<Body>)>,
+    ) -> Result<(), EvalError> {
+        let all = js.recs.clone();
+        // Only the joints that can change the closing joints' residuals are in the problem.
+        let members: Vec<usize> = loop_members(&all).into_iter().collect();
+        let sub: Vec<JointRec> = members.iter().filter_map(|&i| all.get(i).cloned()).collect();
         let unknowns: Vec<(usize, Slot)> =
-            recs.iter().enumerate().flat_map(|(i, r)| r.free.iter().map(move |&f| (i, f))).collect();
-        let q0: Vec<f64> = unknowns.iter().map(|&(i, f)| recs.get(i).map_or(0.0, |r| f.get(&r.vals))).collect();
+            sub.iter().enumerate().flat_map(|(i, r)| r.free.iter().map(move |&f| (i, f))).collect();
+        if unknowns.len() > MAX_UNKNOWNS {
+            return Err(EvalError::new(
+                name,
+                ErrorCode::TooComplex,
+                format!("the joint loop has {} free values to solve for (the limit is {MAX_UNKNOWNS})", unknowns.len()),
+            )
+            .with_hint("list fewer values in free: only the ones the loop needs to close"));
+        }
+        let q0: Vec<f64> = unknowns.iter().map(|&(i, f)| sub.get(i).map_or(0.0, |r| f.get(&r.vals))).collect();
         let with_values = |q: &[f64]| {
-            let mut rs = recs.clone();
+            let mut rs = sub.clone();
             for (&(i, f), &v) in unknowns.iter().zip(q) {
                 if let Some(r) = rs.get_mut(i) {
                     f.set(&mut r.vals, v);
@@ -259,20 +349,28 @@ impl Evaluator {
             rs
         };
         let gap = |q: &[f64]| loop_residual(&with_values(q));
-        let (q, r) = if unknowns.is_empty() { (q0.clone(), gap(&q0)) } else { least_squares(&q0, gap) };
-        let (moved, turned) = r.chunks(6).fold((0.0_f64, 0.0_f64), |(m, t), c| {
+        let (q, r) = if unknowns.is_empty() {
+            (q0.clone(), gap(&q0))
+        } else {
+            let (q, r, stopped) = least_squares(&q0, gap, || self.is_cancelled());
+            if stopped {
+                return Err(budget::cancelled(name));
+            }
+            (q, r)
+        };
+        let (off_mm, turned) = r.chunks(6).fold((0.0_f64, 0.0_f64), |(m, t), c| {
             let n = |a: &[f64]| a.iter().map(|x| x * x).sum::<f64>().sqrt();
             (m.max(n(c.get(..3).unwrap_or(&[]))), t.max(n(c.get(3..).unwrap_or(&[]))))
         });
-        if moved > LOOP_TOL_MM || turned > LOOP_TOL_RAD {
-            let first = recs.iter().find(|r| {
-                recs.last().is_some_and(|c| !r.closing && (r.moving == c.moving || r.with.contains(&c.moving)))
+        if off_mm > LOOP_TOL_MM || turned > LOOP_TOL_RAD {
+            let first = all.iter().find(|r| {
+                all.last().is_some_and(|c| !r.closing && (r.moving == c.moving || r.with.contains(&c.moving)))
             });
-            let msg = format!("the joint loop cannot close: {moved:.4} mm and {:.4}° apart", turned.to_degrees());
+            let msg = format!("the joint loop cannot close: {off_mm:.4} mm and {:.4}° apart", turned.to_degrees());
             let hint = if unknowns.is_empty() {
                 format!(
                     "'{}' is already placed by {}: list the values the solver may choose in free, e.g. free: [angle]",
-                    recs.last().map_or("", |c| c.moving.as_str()),
+                    all.last().map_or("", |c| c.moving.as_str()),
                     first.map_or("an earlier joint", |r| r.name.as_str())
                 )
             } else {
@@ -281,38 +379,49 @@ impl Evaluator {
             };
             return Err(EvalError::new(name, ErrorCode::InvalidReference, msg).with_hint(hint));
         }
-        let solved = with_values(&q);
-        for r in &solved {
-            r.vals.check(&r.name)?;
+        let solved_sub = with_values(&q);
+        for r in &solved_sub {
+            r.vals.check(name, &r.name, units)?;
         }
-        // Move every body from where it is to where the solution puts it.
+        let mut solved = all;
+        for (&i, r) in members.iter().zip(solved_sub) {
+            if let Some(slot) = solved.get_mut(i) {
+                *slot = r;
+            }
+        }
+        // Move every body from where it is to where the solution puts it; bodies whose
+        // place changed only by rounding noise are left alone (review L2).
         let target = placements(&solved);
         for (body, p) in &target {
-            let now = s.joints.placed.get(body).copied().unwrap_or(Rigid::ID);
+            let now = js.placed.get(body).copied().unwrap_or(Rigid::ID);
             let delta = p.then_after(&now.inverse());
-            self.move_body(s, name, body, &delta)?;
+            moved.extend(self.moved_body(s, name, body, &delta)?);
         }
-        let js = Arc::make_mut(&mut s.joints);
         js.recs = solved;
         js.placed = target;
         Ok(())
     }
 
-    /// Moves body `body` (its creating feature) rigidly by `t` and records its placement.
-    fn move_body(&self, s: &mut State, name: &str, body: &str, t: &Rigid) -> Result<(), EvalError> {
+    /// Body `body` (its creating feature) moved rigidly by `t`, as its index and new value;
+    /// `None` when `t` is rounding noise. Changes nothing.
+    fn moved_body(
+        &self,
+        s: &State,
+        name: &str,
+        body: &str,
+        t: &Rigid,
+    ) -> Result<Option<(usize, Arc<Body>)>, EvalError> {
         let (axis, angle) = t.axis_angle();
         let mut steps = Vec::new();
-        if angle != 0.0 {
+        if angle > PLACE_TOL_RAD {
             steps.push(Transform::Rotate { origin: [0.0; 3], axis, angle });
         }
         // The translation after the rotation about the world origin.
-        if dot(t.t, t.t) > 0.0 {
+        if dot(t.t, t.t) > PLACE_TOL_MM * PLACE_TOL_MM {
             steps.push(Transform::Translate(t.t));
         }
-        let now = s.joints.placed.get(body).copied().unwrap_or(Rigid::ID);
-        Arc::make_mut(&mut s.joints).placed.insert(body.to_string(), t.then_after(&now));
         if steps.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let k = self.kernel.as_ref();
         let (bi, b) = ops::target_body(s, name, Some(body))?;
@@ -321,7 +430,7 @@ impl Evaluator {
             let from = res.as_ref().map_or(&b.shape, |r| &r.shape);
             res = Some(k.transform(from, step).map_err(|ke| kernel_err(name, "joint", ke))?);
         }
-        let Some(res) = res else { return Ok(()) };
+        let Some(res) = res else { return Ok(None) };
         let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
         // A rigid placement changes where the faces are, not what they are: names stay.
         let names = gusset_naming::name_body(
@@ -330,14 +439,81 @@ impl Evaluator {
             &topo,
         )
         .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-        ops::replace_body(s, bi, &b, res.shape, names, topo);
-        Ok(())
+        Ok(Some((bi, ops::rebuilt_body(&b, res.shape, names, topo))))
     }
 }
 
 /// Gaps the loop solver accepts.
 const LOOP_TOL_MM: f64 = 1e-6;
 const LOOP_TOL_RAD: f64 = 1e-8;
+/// Placement changes below these are rounding noise: the body is not transformed again.
+const PLACE_TOL_MM: f64 = 1e-9;
+const PLACE_TOL_RAD: f64 = 1e-12;
+/// Most values the loop solver may choose at once (the solve is cubic in this).
+const MAX_UNKNOWNS: usize = 60;
+
+fn dedup_slots(it: impl Iterator<Item = Slot>) -> Vec<Slot> {
+    let mut out: Vec<Slot> = Vec::new();
+    for s in it {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Indices of the non-closing joints that place `bodies`, directly or through the bodies
+/// their fixed frames lie on.
+fn placers(recs: &[JointRec], bodies: &[&str]) -> BTreeSet<usize> {
+    let mut out = BTreeSet::new();
+    let mut todo: Vec<String> = bodies.iter().map(|b| (*b).to_string()).collect();
+    while let Some(b) = todo.pop() {
+        let Some(j) = recs.iter().rposition(|r| !r.closing && (r.moving == b || r.with.contains(&b))) else {
+            continue;
+        };
+        if out.insert(j)
+            && let Some(f) = recs.get(j).and_then(|r| r.fixed.clone())
+        {
+            todo.push(f);
+        }
+    }
+    out
+}
+
+/// The joints that matter when the newest (closing) joint closes: itself, the joints
+/// that placed its two bodies, and the earlier closing joints that share a joint with free
+/// values with them (their loops must stay closed).
+fn loop_members(recs: &[JointRec]) -> BTreeSet<usize> {
+    let mut set = BTreeSet::new();
+    let Some(last) = recs.len().checked_sub(1) else { return set };
+    let chain = |i: usize| {
+        let mut c = recs.get(i).map_or_else(BTreeSet::new, |r| {
+            let mut bodies = vec![r.moving.as_str()];
+            bodies.extend(r.fixed.as_deref());
+            placers(recs, &bodies)
+        });
+        c.insert(i);
+        c
+    };
+    set.extend(chain(last));
+    loop {
+        let mut grew = false;
+        for (i, r) in recs.iter().enumerate() {
+            if !r.closing || set.contains(&i) {
+                continue;
+            }
+            let c = chain(i);
+            let shares = c.iter().any(|j| set.contains(j) && recs.get(*j).is_some_and(|r| !r.free.is_empty()));
+            if shares {
+                set.extend(c);
+                grew = true;
+            }
+        }
+        if !grew {
+            return set;
+        }
+    }
+}
 
 /// Numeric values of one joint (base units: mm, rad) and its evaluated limits.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -352,19 +528,24 @@ pub(crate) struct Vals {
 }
 
 impl Vals {
-    fn check(&self, name: &str) -> Result<(), EvalError> {
-        for (v, l, what) in
-            [(self.angle, self.angle_limits, "angle"), (self.distance, self.distance_limits, "distance")]
-        {
+    /// Fails when a value is outside its limits; the error is on `feature` and names the
+    /// `joint` (they differ when a closing joint's solution breaks an earlier joint's
+    /// limit). Values are shown in the document's unit and in degrees (review N2).
+    fn check(&self, feature: &str, joint: &str, units: LengthUnit) -> Result<(), EvalError> {
+        for (v, l, what, dim) in [
+            (self.angle, self.angle_limits, "angle", Dim::ANGLE),
+            (self.distance, self.distance_limits, "distance", Dim::LENGTH),
+        ] {
             if let Some((lo, hi)) = l
                 && (v < lo - 1e-12 || v > hi + 1e-12)
             {
+                let show = |x: f64| gusset_units::Quantity::new(x, dim).display(units);
                 return Err(EvalError::new(
-                    name,
+                    feature,
                     ErrorCode::Expression,
-                    format!("the {what} is outside the joint's limits"),
+                    format!("joint {joint}: the {what} {} is outside the joint's limits", show(v)),
                 )
-                .with_hint(format!("keep it between the limits ({lo} and {hi} in base units: radians or mm)")));
+                .with_hint(format!("keep it between the limits ({} and {})", show(lo), show(hi))));
             }
         }
         Ok(())
@@ -497,20 +678,31 @@ fn loop_residual(recs: &[JointRec]) -> Vec<f64> {
 }
 
 /// Levenberg-Marquardt on `f` from `q0` with a forward-difference Jacobian: the values
-/// and the residual where it stopped. Deterministic: same input, same answer.
-fn least_squares(q0: &[f64], f: impl Fn(&[f64]) -> Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+/// and the residual where it stopped, and whether `cancelled` stopped it. Deterministic:
+/// same input, same answer.
+fn least_squares(
+    q0: &[f64],
+    f: impl Fn(&[f64]) -> Vec<f64>,
+    cancelled: impl Fn() -> bool,
+) -> (Vec<f64>, Vec<f64>, bool) {
     let n = q0.len();
     let mut q = q0.to_vec();
     let mut r = f(&q);
     let cost = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
     let mut lambda = 1e-3;
     for _ in 0..200 {
+        if cancelled() {
+            return (q, r, true);
+        }
         if cost(&r) < 1e-24 {
             break;
         }
         // J (m × n) by forward differences.
         let mut jac: Vec<Vec<f64>> = Vec::with_capacity(n);
         for k in 0..n {
+            if cancelled() {
+                return (q, r, true);
+            }
             let mut qk = q.clone();
             let h = 1e-7 * q.get(k).map_or(1.0, |v| v.abs().max(1.0));
             if let Some(v) = qk.get_mut(k) {
@@ -525,6 +717,9 @@ fn least_squares(q0: &[f64], f: impl Fn(&[f64]) -> Vec<f64>) -> (Vec<f64>, Vec<f
             (0..n).map(|a| jac.get(a).map_or(0.0, |c| c.iter().zip(&r).map(|(x, y)| x * y).sum())).collect();
         let mut improved = false;
         for _ in 0..30 {
+            if cancelled() {
+                return (q, r, true);
+            }
             let mut m = jtj.clone();
             for (i, row) in m.iter_mut().enumerate() {
                 if let Some(d) = row.get_mut(i) {
@@ -550,7 +745,7 @@ fn least_squares(q0: &[f64], f: impl Fn(&[f64]) -> Vec<f64>) -> (Vec<f64>, Vec<f
             break;
         }
     }
-    (q, r)
+    (q, r, false)
 }
 
 fn dot_n(a: Option<&Vec<f64>>, b: Option<&Vec<f64>>) -> f64 {
@@ -612,6 +807,21 @@ mod tests {
         let (axis, angle) = Rigid::rotation([0.6, 0.0, 0.8], std::f64::consts::PI).axis_angle();
         assert!((angle - std::f64::consts::PI).abs() < 1e-9);
         assert!(norm_diff(axis, [0.6, 0.0, 0.8]) < 1e-9 || norm_diff(axis, [-0.6, 0.0, -0.8]) < 1e-9);
+    }
+
+    #[test]
+    fn the_solver_stops_when_cancelled() {
+        // M1: least_squares polls the cancel callback in every iteration.
+        use std::cell::Cell;
+        let polls = Cell::new(0);
+        let f = |q: &[f64]| vec![q.first().copied().unwrap_or(0.0) - 1.0, 0.5 * q.get(1).copied().unwrap_or(0.0)];
+        let (_, _, stopped) = least_squares(&[5.0, 5.0], f, || {
+            polls.set(polls.get() + 1);
+            polls.get() > 2
+        });
+        assert!(stopped && polls.get() == 3);
+        let (q, _, stopped) = least_squares(&[5.0, 5.0], f, || false);
+        assert!(!stopped && q.first().is_some_and(|x| (x - 1.0).abs() < 1e-6));
     }
 
     fn norm_diff(a: V3, b: V3) -> f64 {

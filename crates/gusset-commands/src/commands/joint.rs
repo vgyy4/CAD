@@ -100,11 +100,50 @@ impl Command for JointCommand {
             for w in &mut def.with {
                 *w = resolve_body(&live, "carried", w)?;
             }
+            check_carried(doc, at, &def)?;
             let name = feature_name(doc, self.name, "Joint")?;
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Joint(Box::new(def))));
             Ok(json!({ "feature": name }))
         })
     }
+}
+
+/// Rejects `with` lists that would place a body twice (after names are resolved to
+/// features): duplicates, the moving body itself, bodies an earlier joint already placed,
+/// and any `with` on a joint that closes a loop (review M3).
+fn check_carried(doc: &Document, before: usize, def: &JointDef) -> Result<(), CommandError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for w in &def.with {
+        if *w == def.body {
+            return Err(CommandError::args(format!("'{w}' is both the moving body and in 'with'"))
+                .hint("remove it from 'with'"));
+        }
+        if !seen.insert(w.as_str()) {
+            return Err(CommandError::args(format!("'{w}' is listed twice in 'with'"))
+                .hint("a body name and its feature name are the same body: list it once"));
+        }
+    }
+    // Bodies the joints before this one place (a joint on a placed body closes a loop).
+    let mut placed = std::collections::BTreeSet::new();
+    for f in doc.features.iter().take(before) {
+        let FeatureKind::Joint(d) = &f.kind else { continue };
+        if !f.suppressed && !placed.contains(&d.body) {
+            placed.insert(d.body.clone());
+            placed.extend(d.with.iter().cloned());
+        }
+    }
+    if placed.contains(&def.body) && !def.with.is_empty() {
+        return Err(CommandError::args(format!(
+            "'{}' is already placed by an earlier joint, so this joint closes a loop and cannot carry bodies",
+            def.body
+        ))
+        .hint("remove 'with'"));
+    }
+    if let Some(w) = def.with.iter().find(|w| placed.contains(*w)) {
+        return Err(CommandError::args(format!("'{w}' in 'with' was already placed by an earlier joint"))
+            .hint("carry only bodies no joint has placed"));
+    }
+    Ok(())
 }
 
 /// Lists the joints.

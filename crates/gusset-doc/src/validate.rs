@@ -223,6 +223,16 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                         "remove it from 'with'",
                     ));
                 }
+                let mut carried = BTreeSet::new();
+                for w in &d.with {
+                    if !carried.insert(w.as_str()) {
+                        out.push(issue_h(
+                            n,
+                            format!("'{w}' is listed twice in 'with'"),
+                            "list each carried body once (a body name and its feature name are the same body)",
+                        ));
+                    }
+                }
             }
             FeatureKind::Combine(d) => {
                 // Without a named target there must be a body besides the tools.
@@ -700,6 +710,24 @@ mod tests {
 
     fn issues(src: &str) -> Vec<String> {
         validate(&parse(src).unwrap()).iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_joint_may_not_list_a_carried_body_twice() {
+        let rect = "sketch S (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  p2 = point(1, 0)\n  p3 = point(1, 1)\n  \
+                    l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p1)\n}\n";
+        let ext = |n: &str| format!("extrude {n} (profile: S, distance: 1 mm, op: new)\n");
+        let src = |with: &str| {
+            format!(
+                "gusset 1\n{rect}{}{}{}joint J (type: rigid, body: A, with: [{with}], at: origin, to: origin)\n",
+                ext("A"),
+                ext("B"),
+                ext("C")
+            )
+        };
+        assert!(issues(&src("B, C")).is_empty(), "{:?}", issues(&src("B, C")));
+        let v = issues(&src("B, C, B"));
+        assert!(v.iter().any(|i| i.contains("'B' is listed twice in 'with'")), "{v:?}");
     }
 
     #[test]

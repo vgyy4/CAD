@@ -145,3 +145,41 @@ fn bom_groups_identical_bodies() {
     assert!(csv.starts_with("item,part,quantity,bodies,volume_mm3,area_mm2\n1,Plate,1,Plate,8000,"), "{csv}");
     assert!(csv.contains("\n2,Block,2,Block Block2,500,"), "{csv}");
 }
+
+#[test]
+fn with_lists_that_place_a_body_twice_are_refused() {
+    // Review M3: a body name and its feature name are one body; a body an earlier joint
+    // placed is not carried again; a closing joint carries nothing.
+    let mut s = session();
+    plate_and_block(&mut s);
+    let refused = |s: &mut Session, args: Value| {
+        let e = execute(s, &CmdCtx::user(1), "feature.joint", args).unwrap_err();
+        format!("{e:?}")
+    };
+    let base = json!({"type": "rigid", "body": "Plate", "at": "Extrude1/cap(start)", "to": "origin"});
+    let with = |w: Value| {
+        let mut a = base.clone();
+        a["with"] = w;
+        a
+    };
+    let e = refused(&mut s, with(json!(["Block", "Extrude2"])));
+    assert!(e.contains("listed twice"), "{e}");
+    let e = refused(&mut s, with(json!(["Plate"])));
+    assert!(e.contains("both the moving body"), "{e}");
+    // Block is placed by the first joint; carrying it again, or moving it by a closing joint
+    // that carries something, is refused.
+    run(
+        &mut s,
+        "feature.joint",
+        json!({"type": "rigid", "body": "Block", "at": "Extrude2/cap(start)", "to": "Extrude1/cap(end)"}),
+    );
+    let e = refused(&mut s, with(json!(["Block"])));
+    assert!(e.contains("already placed"), "{e}");
+    let closing =
+        json!({"type": "rigid", "body": "Block", "with": ["Plate"], "at": "Extrude2/cap(start)", "to": "origin"});
+    let e = refused(&mut s, closing);
+    assert!(e.contains("cannot carry"), "{e}");
+    // Nothing was added by the refusals.
+    let q = run(&mut s, "query.joints", json!({}));
+    assert_eq!(q["joints"].as_array().map(Vec::len), Some(1), "{q}");
+}
