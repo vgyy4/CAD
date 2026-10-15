@@ -185,6 +185,7 @@ impl Command for InsertComponent {
             body: self.body,
             set,
             configuration: None,
+            branch: self.branch.clone(),
         };
         let stem = std::path::Path::new(&self.path).file_stem().and_then(|n| n.to_str()).unwrap_or_default();
         let base = component_name(stem);
@@ -212,7 +213,7 @@ pub struct UpdateComponent {
 impl Command for UpdateComponent {
     const ID: &'static str = "assembly.update_component";
     const TITLE: &'static str = "Update component";
-    const DESCRIPTION: &'static str = "Read a component's source document again and pin its current version (main branch). Reports whether anything changed.";
+    const DESCRIPTION: &'static str = "Read a component's source document again and pin its current version (of the branch it was inserted from). Reports whether anything changed.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -222,8 +223,22 @@ impl Command for UpdateComponent {
             Some(_) => return Err(CommandError::args(format!("'{}' is not a component", self.component))),
             None => return Err(CommandError::not_found(format!("no feature '{}'", self.component))),
         };
-        let src = read_source(s, ctx, &old.source, None)?;
-        check_body(&src.doc, old.body.as_deref(), &crate::paths::display_name(&old.source))?;
+        let src = read_source(s, ctx, &old.source, old.branch.as_deref())?;
+        let shown = crate::paths::display_name(&old.source);
+        check_body(&src.doc, old.body.as_deref(), &shown)?;
+        // What the component sets must still exist in the new version (review v0.3 L5).
+        for (p, _) in &old.set {
+            if !src.doc.params.iter().any(|q| q.name == *p) {
+                return Err(CommandError::args(format!("the new version of '{shown}' has no parameter '{p}'"))
+                    .hint("clear it with assembly.configure_component first, or keep the pinned version"));
+            }
+        }
+        if let Some(c) = &old.configuration
+            && !src.doc.configurations.iter().any(|x| x.name == *c)
+        {
+            return Err(CommandError::args(format!("the new version of '{shown}' has no configuration '{c}'"))
+                .hint("clear it with assembly.configure_component first, or keep the pinned version"));
+        }
         let document = pin(s, &src)?;
         if document == old.document {
             return Ok(json!({ "feature": self.component, "changed": false, "version": old.version }));
@@ -318,15 +333,16 @@ impl Command for QueryComponents {
         let doc = s.document(&ctx.actor)?;
         let mut out = Vec::new();
         // Each source is read once, however many components name it (review v0.3 H1).
-        let mut read: std::collections::BTreeMap<&str, Result<String, String>> = std::collections::BTreeMap::new();
+        let mut read: std::collections::BTreeMap<(&str, Option<&str>), Result<String, String>> =
+            std::collections::BTreeMap::new();
         for f in &doc.features {
             let FeatureKind::Component(d) = &f.kind else { continue };
-            let text = read.entry(d.source.as_str()).or_insert_with(|| {
+            let text = read.entry((d.source.as_str(), d.branch.as_deref())).or_insert_with(|| {
                 if self.local_only {
                     crate::paths::confined(s.project_dir.as_deref(), &d.source)
                         .map_err(|_| "not checked: the source is outside the project folder".to_string())?;
                 }
-                read_source(s, ctx, &d.source, None).map(|src| src.doc.to_text()).map_err(|e| e.message)
+                read_source(s, ctx, &d.source, d.branch.as_deref()).map(|src| src.doc.to_text()).map_err(|e| e.message)
             });
             let (available, error) = match text {
                 Ok(t) => (json!(*t != stored_text(s, d)), Value::Null),

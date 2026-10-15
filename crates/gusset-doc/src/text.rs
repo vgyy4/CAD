@@ -420,6 +420,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("source: {}", quote(&d.source)));
             args.push(format!("version: {}", quote(&d.version)));
             args.push(format!("document: {}", quote(&d.document)));
+            if let Some(b) = &d.branch {
+                args.push(format!("branch: {}", quote(b)));
+            }
             if let Some(b) = &d.body {
                 args.push(format!("body: {b}"));
             }
@@ -1477,8 +1480,8 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
     let (mut source, mut version, mut document, mut body, mut set) = (None, None, None, None, Vec::new());
-    let mut configuration = None;
-    const ALLOWED: &str = "source, version, document, body, configuration, set, label, suppressed";
+    let (mut configuration, mut branch) = (None, None);
+    const ALLOWED: &str = "source, version, document, branch, body, configuration, set, label, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -1486,6 +1489,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "source" => source = Some(c.string()?),
             "version" => version = Some(c.string()?),
             "document" => document = Some(c.string()?),
+            "branch" => branch = Some(c.string()?),
             "body" => body = Some(c.ident()?.to_string()),
             "set" => set = parse_assignments(c)?,
             "configuration" => configuration = Some(c.ident()?.to_string()),
@@ -1503,6 +1507,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         body,
         set,
         configuration,
+        branch,
     };
     Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Component(def) })
 }

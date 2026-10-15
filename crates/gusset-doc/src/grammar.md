@@ -469,15 +469,15 @@ joint Hinge (type: revolute, body: Lid, at: Lid/cap(start), to: Base/cap(end), f
 ## Components
 
 ```
-component <Name> (source: "<path>", version: "<node>", document: "<hash>", [body: <Body>],
-                  [configuration: <Name>], [set: [<param> = <expr>, ...]])
+component <Name> (source: "<path>", version: "<node>", document: "<hash>", [branch: "<branch>"],
+                  [body: <Body>], [configuration: <Name>], [set: [<param> = <expr>, ...]])
 ```
 
 - A component brings in one body of another Gusset document (`body`, default: its last
   body), at that document's own coordinates; place it with a joint. Insert it with
   `assembly.insert_component`, never by hand: `document` is the hash of a stored copy of
   that document, so the component stays the same until `assembly.update_component` pins
-  the source's newer version.
+  the source's newer version (of `branch`, default: its main branch).
 - `set` gives parameters of the component's document values computed here (expressions
   of this document's parameters): two components of one part can have different sizes,
   and a parameter here can drive a part (`assembly.configure_component`).

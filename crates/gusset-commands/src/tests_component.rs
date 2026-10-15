@@ -242,3 +242,44 @@ fn identical_nested_components_are_copied_and_built_once() {
     }
     assert!(start.elapsed() < std::time::Duration::from_secs(60), "took {:?}", start.elapsed());
 }
+
+#[test]
+fn a_component_follows_its_branch_and_update_checks_what_it_sets() {
+    // Review v0.3 L5: updates read main and committed parameters the new version lacks.
+    let d = dir();
+    let u = Ctx::user(1);
+    let mut h = History::new(&Document::from_text(PART).unwrap(), &u);
+    let main = h.main();
+    let head = h.head(main).unwrap();
+    let idea = h.create_branch(&u, head, Some("idea")).unwrap();
+    let meta = gusset_project::ProjectMeta {
+        id: gusset_store::paths::ProjectId::new_random().unwrap(),
+        save_seq: 1,
+        base_seq: 1,
+        created: 1,
+    };
+    let save = |h: &History| std::fs::write(d.join("pin.gus"), gusset_project::encode(h, &meta).unwrap()).unwrap();
+    save(&h);
+    let mut s = session(&d);
+    let c = CmdCtx::user(1);
+    run(&mut s, &c, "assembly.insert_component", json!({"path": "pin.gus", "branch": "idea", "set": {"h": "3 mm"}}));
+    assert!(s.document(&gusset_history::Actor::User).unwrap().to_text().contains("branch: \"idea\""));
+    // A change on main is not an update for a component that follows idea.
+    h.commit(&u, main, &Document::from_text(&PART.replace("2 mm", "5 mm")).unwrap(), "main", NodeState::Ok).unwrap();
+    save(&h);
+    let q = run(&mut s, &c, "query.components", json!({}));
+    assert_eq!(q["components"][0]["update_available"], false, "{q}");
+    // idea drops the parameter the component sets: the update is refused.
+    h.commit(
+        &u,
+        idea,
+        &Document::from_text(&PART.replace("param h = 2 mm", "param k = 2 mm").replace("distance: h", "distance: k"))
+            .unwrap(),
+        "idea",
+        NodeState::Ok,
+    )
+    .unwrap();
+    save(&h);
+    let e = execute(&mut s, &c, "assembly.update_component", json!({"component": "Pin"})).unwrap_err();
+    assert!(e.message.contains("no parameter 'h'"), "{e:?}");
+}

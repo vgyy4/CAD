@@ -1007,6 +1007,8 @@ pub struct ComponentDef {
     pub set: Vec<(String, Expr)>,
     /// A configuration of that document applied first (`set` then overrides it).
     pub configuration: Option<String>,
+    /// The source's branch it follows (`None`: main); updates read that branch.
+    pub branch: Option<String>,
 }
 
 /// the frame `to` (on a body already in place, a plane or the origin), with the joint's
