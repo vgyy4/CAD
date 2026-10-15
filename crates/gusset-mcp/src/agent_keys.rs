@@ -1,7 +1,10 @@
 //! Agent keys (ADR 0012 "Agent keys", dogfooding F2-2): a credential per agent, created by
 //! the user in the app. An HTTP request bearing an agent key acts as that agent: the same
-//! name on every connection (`key_<name>`), so it continues on its own branch, and the
-//! standing approvals granted to it apply only to the holder of the key.
+//! name on every connection (`key_<name>_<id>`), so it continues on its own branch, and the
+//! standing approvals granted to it apply only to the holder of the key. `<id>` is random
+//! per key: a key created again under the same name is a new agent, without the old one's
+//! grants or branch, and a project file cannot plant a keyed agent's branch by guessing
+//! its name (security review v0.3 W5, W6).
 //!
 //! Rules (each one has a test):
 //! - Only the app creates keys; the token is shown once and only its BLAKE3 hash is kept.
@@ -11,7 +14,9 @@
 //!   the key can never take a keyed agent's name, branch or grants.
 //! - The kill switch (no shared token) blocks keys too.
 //! - Keys live in an owner-only file written with `durable_write`; a file that is not a
-//!   regular file, too large or malformed is ignored (no keys), at most [`MAX_KEYS`].
+//!   regular file, too large, malformed, of another version, or writable or owned by
+//!   someone else gives no keys and is kept as `agent-keys.json.bad` before the next key
+//!   is written (security review v0.3 W7). At most [`MAX_KEYS`].
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -28,26 +33,40 @@ pub struct AgentKey {
     /// BLAKE3 of the token, hex.
     hash: String,
     pub created: u64,
+    /// Random, per key (12 lowercase hex); part of the agent name. Keys from files written
+    /// before it existed use the start of their hash.
+    #[serde(default)]
+    id: String,
 }
 
 impl AgentKey {
     /// The agent name a request with this key acts as.
     #[must_use]
     pub fn agent(&self) -> String {
-        agent_name(&self.name)
+        let id = if valid_id(&self.id) { self.id.as_str() } else { self.hash.get(..ID_LEN).unwrap_or_default() };
+        agent_name(&self.name, id)
     }
 }
 
-/// The agent name of key `name`.
-#[must_use]
-pub fn agent_name(name: &str) -> String {
-    format!("key_{name}")
+const ID_LEN: usize = 12;
+
+fn valid_id(id: &str) -> bool {
+    id.len() == ID_LEN && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Whether `agent` is a keyed agent's name (`key_<valid key name>`).
+/// The agent name of key `name` with id `id`.
+#[must_use]
+pub fn agent_name(name: &str, id: &str) -> String {
+    format!("key_{name}_{id}")
+}
+
+/// Whether `agent` is a keyed agent's name (`key_<valid key name>_<id>`).
 #[must_use]
 pub fn is_keyed_agent(agent: &str) -> bool {
-    agent.strip_prefix("key_").is_some_and(|n| valid_name(n).is_ok())
+    agent
+        .strip_prefix("key_")
+        .and_then(|rest| rest.rsplit_once('_'))
+        .is_some_and(|(n, id)| valid_name(n).is_ok() && valid_id(id))
 }
 
 /// A key name: a sanitized client name (lowercase letters, digits, `-`) that does not end
@@ -83,6 +102,28 @@ pub struct AgentKeys {
     inner: RwLock<Inner>,
 }
 
+/// The key file, when it is a small regular file of this version that only we own and
+/// can write.
+fn read_file(path: &Path, meta: &std::fs::Metadata) -> Result<FileData, String> {
+    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+        return Err("the agent key file is not a small regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let ours = path.parent().and_then(crate::bridge::trusted_dir);
+        if meta.permissions().mode() & 0o077 != 0 || ours != Some(meta.uid()) {
+            return Err("the agent key file or its folder is open to other users".into());
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let data: FileData = serde_json::from_slice(&bytes).map_err(|e| format!("agent key file: {e}"))?;
+    if data.version != VERSION {
+        return Err(format!("agent key file version {} (this app writes {VERSION})", data.version));
+    }
+    Ok(data)
+}
+
 fn hash_hex(token: &[u8]) -> String {
     blake3::hash(token).to_hex().to_string()
 }
@@ -101,11 +142,16 @@ impl AgentKeys {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(e) => return Err(e.to_string()),
         };
-        if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-            return Err("the agent key file is not a small regular file".into());
-        }
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let data: FileData = serde_json::from_slice(&bytes).map_err(|e| format!("agent key file: {e}"))?;
+        let data = match read_file(path, &meta) {
+            Ok(d) => d,
+            Err(e) => {
+                // Kept for the user (the next key would overwrite it otherwise).
+                let mut bad = path.as_os_str().to_owned();
+                bad.push(".bad");
+                let _ = std::fs::rename(path, &bad);
+                return Err(e);
+            }
+        };
         for k in data.keys {
             let hash_ok = k.hash.len() == 64 && k.hash.bytes().all(|b| b.is_ascii_hexdigit());
             if g.keys.len() >= MAX_KEYS || !hash_ok || valid_name(&k.name).is_err() {
@@ -143,7 +189,8 @@ impl AgentKeys {
             return Err(format!("at most {MAX_KEYS} agent keys"));
         }
         let token = crate::approval::random_hex(32).ok_or("no secure randomness available")?;
-        g.keys.push(AgentKey { name: name.to_string(), hash: hash_hex(token.as_bytes()), created: now });
+        let id = crate::approval::random_hex(ID_LEN / 2).ok_or("no secure randomness available")?;
+        g.keys.push(AgentKey { name: name.to_string(), hash: hash_hex(token.as_bytes()), created: now, id });
         if let Err(e) = Self::save(&g) {
             g.keys.pop();
             return Err(e);
@@ -205,15 +252,20 @@ mod tests {
         let k = AgentKeys::default();
         k.load(&p).unwrap();
         let token = k.create("cad-bot", 1).unwrap();
-        assert_eq!(k.check(token.as_bytes()).as_deref(), Some("key_cad-bot"));
+        let agent = k.check(token.as_bytes()).unwrap();
+        assert!(agent.starts_with("key_cad-bot_") && is_keyed_agent(&agent), "{agent}");
         assert_eq!(k.check(b"wrong"), None);
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains(&token), "only the hash is stored");
         let k2 = AgentKeys::default();
         assert_eq!(k2.load(&p).unwrap(), 1);
-        assert_eq!(k2.check(token.as_bytes()).as_deref(), Some("key_cad-bot"));
+        assert_eq!(k2.check(token.as_bytes()), Some(agent.clone()));
         assert!(k2.remove("cad-bot").unwrap());
         assert_eq!(k2.check(token.as_bytes()), None);
+        // W5: the same name again is another agent (no inherited grants or branch).
+        let again = k2.create("cad-bot", 2).unwrap();
+        let other = k2.check(again.as_bytes()).unwrap();
+        assert!(other.starts_with("key_cad-bot_") && other != agent, "{other} {agent}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -230,22 +282,48 @@ mod tests {
         assert!(valid_name("cad-bot").is_ok());
         // No sanitized client name contains '_', so none equals a keyed agent's name.
         assert!(!crate::agents::sanitize_client_name("key_cad-bot").contains('_'));
-        assert!(is_keyed_agent("key_cad-bot") && !is_keyed_agent("cad-bot") && !is_keyed_agent("key_Bad"));
+        assert!(is_keyed_agent("key_cad-bot_0123456789ab"));
+        for bad in ["key_cad-bot", "cad-bot", "key_Bad_0123456789ab", "key_cad-bot_0123", "key_cad-bot_0123456789AB"] {
+            assert!(!is_keyed_agent(bad), "{bad}");
+        }
     }
 
     #[test]
     fn forged_files_give_no_keys() {
         let p = tmp("forged");
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, b"{nope").unwrap();
+        gusset_store::fs::create_private_dir_all(p.parent().unwrap()).unwrap();
+        // Written like the app writes it: owner-only.
+        let write = |bytes: &[u8]| {
+            std::fs::write(&p, bytes).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        };
+        write(b"{nope");
         let k = AgentKeys::default();
         assert!(k.load(&p).is_err());
+        // W7: the damaged file is kept, and the next key does not overwrite it.
+        let bad = p.with_file_name("agent-keys.json.bad");
+        assert_eq!(std::fs::read(&bad).unwrap(), b"{nope");
+        k.create("new", 1).unwrap();
+        assert_eq!(std::fs::read(&bad).unwrap(), b"{nope");
+        write(serde_json::json!({"version": 2, "keys": []}).to_string().as_bytes());
+        assert!(k.load(&p).unwrap_err().contains("version"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            write(serde_json::json!({"version": 1, "keys": []}).to_string().as_bytes());
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
+            assert!(k.load(&p).unwrap_err().contains("other users"));
+        }
         let forged = serde_json::json!({"version": 1, "keys": [
             {"name": "Bad Name", "hash": "00".repeat(32), "created": 0},
             {"name": "short", "hash": "abc", "created": 0},
             {"name": "ok", "hash": "11".repeat(32), "created": 0}
         ]});
-        std::fs::write(&p, forged.to_string()).unwrap();
+        write(forged.to_string().as_bytes());
         assert_eq!(k.load(&p).unwrap(), 1);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }

@@ -163,7 +163,7 @@ same live model.
 Besides the shared bearer token, the user can create a **key per agent** in the agents
 panel (a name such as `cad-bot`; the token is shown once, only its BLAKE3 hash is kept in
 an owner-only file in the data folder). An HTTP request bearing a key acts as agent
-`key_<name>` on every connection: it continues on its own branch `agent/key_<name>`, and
+`key_<name>_<id>` (`<id>`: 12 random hex digits per key, so a key created again under the same name is a new agent; security review v0.3 W5/W6) on every connection: it continues on its own branch `agent/key_<name>_<id>`, and
 standing approvals granted to it hold only for the key's holder. Sanitized client names
 never contain `_`, so no connection without the key can take that name. Keys are checked
 in constant time against every stored hash; the kill switch refuses keys too; removing a

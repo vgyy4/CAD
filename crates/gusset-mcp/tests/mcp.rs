@@ -1103,7 +1103,10 @@ async fn an_agent_key_keeps_the_agent_and_its_branch_across_connections() {
         .with_session(|s| s.history().branches().iter().map(|b| b.name.clone()).collect::<Vec<_>>())
         .unwrap();
     let agent: Vec<&String> = branches.iter().filter(|n| n.starts_with("agent/")).collect();
-    assert_eq!(agent, [&"agent/key_cad-bot".to_string()], "one agent, one branch: {branches:?}");
+    assert!(
+        agent.len() == 1 && agent.iter().all(|n| n.starts_with("agent/key_cad-bot_")),
+        "one agent, one branch: {branches:?}"
+    );
     // Removed: refused. Kill switch: keys are refused too.
     let init = |auth: String| {
         let mut h = base.clone();

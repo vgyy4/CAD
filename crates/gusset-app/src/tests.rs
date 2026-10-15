@@ -509,7 +509,8 @@ fn the_agents_panel_creates_an_agent_key_and_shows_it_once() {
     assert_eq!(keys.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(), ["cad-bot"]);
     let (name, token) = h.state().agents.new_key_token.clone().unwrap();
     assert_eq!(name, "cad-bot");
-    assert_eq!(h.state().agents.keys.check(token.as_bytes()).as_deref(), Some("key_cad-bot"));
+    let agent = h.state().agents.keys.check(token.as_bytes()).unwrap();
+    assert!(agent.starts_with("key_cad-bot_"), "{agent}");
     h.get_by_label_contains("agent/key_cad-bot");
     // An invalid name is refused with a notice.
     h.state_mut().agents.new_key_name = "Bad Name".into();

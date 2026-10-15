@@ -184,7 +184,7 @@ fn our_uid(dir: &Path) -> Option<u32> {
 
 /// The connection directory must be a real directory owned by us and closed to others.
 #[cfg(unix)]
-fn trusted_dir(dir: &Path) -> Option<u32> {
+pub(crate) fn trusted_dir(dir: &Path) -> Option<u32> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = std::fs::symlink_metadata(dir).ok()?;
     if !meta.file_type().is_dir() || meta.permissions().mode() & 0o077 != 0 {
@@ -195,7 +195,7 @@ fn trusted_dir(dir: &Path) -> Option<u32> {
 }
 
 #[cfg(not(unix))]
-fn trusted_dir(_dir: &Path) -> Option<u32> {
+pub(crate) fn trusted_dir(_dir: &Path) -> Option<u32> {
     // Per-user profile directory; its default ACL limits it to the user (THREAT_MODEL B3).
     Some(0)
 }
