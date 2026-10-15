@@ -98,7 +98,11 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         if !cnames.insert(c.name.as_str()) {
             out.push(issue_h(&c.name, "configuration is defined twice", "rename or remove one of them"));
         }
+        let mut set = BTreeSet::new();
         for (n, _) in &c.set {
+            if !set.insert(n.as_str()) {
+                out.push(issue_h(&c.name, format!("sets '{n}' twice"), "keep one value per parameter"));
+            }
             if !pnames.contains(n.as_str()) {
                 out.push(issue_h(
                     &c.name,

@@ -32,7 +32,10 @@ impl Command for SaveConfiguration {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         gusset_doc::validate::validate_feature_name(&self.name).map_err(CommandError::args)?;
         edit(s, ctx, &format!("Save configuration {}", self.name), |doc, _| {
-            let names = self.params.clone().unwrap_or_else(|| doc.params.iter().map(|p| p.name.clone()).collect());
+            let mut names = self.params.clone().unwrap_or_else(|| doc.params.iter().map(|p| p.name.clone()).collect());
+            // A parameter listed twice is saved once (review v0.3 H2).
+            let mut seen = std::collections::BTreeSet::new();
+            names.retain(|n| seen.insert(n.clone()));
             if names.is_empty() {
                 return Err(CommandError::args("there are no parameters to save").hint("add parameters first"));
             }

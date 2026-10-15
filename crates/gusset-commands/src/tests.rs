@@ -1190,3 +1190,16 @@ fn configurations_save_apply_and_follow_renames() {
     let q = run(&mut s, &u, "query.configurations", json!({}));
     assert_eq!(q["configurations"].as_array().unwrap().len(), 2, "{q}");
 }
+
+#[test]
+fn a_configuration_listing_a_parameter_twice_saves_it_once() {
+    // Review v0.3 H2: the repeated name used to commit an unreadable node.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "5 mm"}));
+    let r = run(&mut s, &u, "configuration.save", json!({"name": "A", "params": ["w", "w"]}));
+    assert_eq!(r["params"], json!(["w"]), "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("configuration A (set: [w = 5 mm])"), "{text}");
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "6 mm"}));
+}

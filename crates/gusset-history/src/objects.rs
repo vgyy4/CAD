@@ -193,6 +193,25 @@ impl StagedDocument {
     pub fn hash(&self) -> Hash {
         self.snapshot
     }
+
+    /// Parses back every new parameter and feature object, so a document the text
+    /// parser would refuse is never committed (review v0.3 H2): `Err` names the object
+    /// and the parse error.
+    pub fn verify(&self) -> Result<(), String> {
+        for (_, kind, bytes) in &self.objects {
+            let text = std::str::from_utf8(bytes).map_err(|_| "an object is not UTF-8".to_string())?;
+            match kind {
+                ObjectKind::Params => {
+                    parse_params_object(text).map_err(|e| format!("the parameter table would not read back: {e}"))?;
+                }
+                ObjectKind::Feature => {
+                    parse_feature_object(text).map_err(|e| format!("a feature would not read back: {e}"))?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 fn unreachable_hash() -> Hash {

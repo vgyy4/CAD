@@ -677,6 +677,7 @@ impl History {
                 self.limits.max_object_bytes
             ))
         })?;
+        staged.verify().map_err(HistoryError::InvalidDocument)?;
         let snapshot = staged.hash();
         if state == NodeState::Ok && self.node(head)?.snapshot == snapshot {
             return Ok(head);
