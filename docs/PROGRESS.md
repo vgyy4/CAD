@@ -148,8 +148,12 @@ Phase 3 has started (see Next).
      centrelines, ISO 129 dimensions measured in the view plane, dangling dimensions
      reported) and writes SVG (mm) and DXF R2000 (default, `$INSUNITS` mm, line weights)
      or R12; commands `drawing.*` and `query.drawing`; OCCT test `modeling_drawing.rs`.
-     Next: phase 3 (a Drawing workspace in the app, dragging views and dimensions, a PNG
-     render of a sheet for agents), then phase 4 (sections, detail views, PDF, DXF import).
+     Phase 3 done: the DRAWING tab (sheet painted in the app, pan/zoom, dragging views,
+     notes and dimension texts, `drawing.move_item`) and `render_view` with `drawing` (a
+     CPU raster PNG for agents). Phase 4 done: full sections (`section`, `cut_at`; cut with
+     a half-space box, hatched from the mesh), circular details (`detail_of`), PDF export
+     (own writer), `sketch.import_dxf` (own fuzzed reader). Next for drawings: the
+     milestone review, then deferred items (half/offset sections, GD&T, BOM).
    - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
      `text` done (ADR 0029: one line embossed or engraved on a plane or face, the app's two

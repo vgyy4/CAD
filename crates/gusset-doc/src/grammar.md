@@ -659,7 +659,8 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   (`a`, `b`). A dimension whose edge no longer exists is reported as dangling by
   `query.drawing`; it is not deleted.
 - To look at a sheet, call `render_view` with `drawing: <Name>`; `drawing.export` writes
-  SVG or DXF.
+  SVG, DXF or PDF. `sketch.import_dxf` adds a DXF file's lines, arcs, circles and
+  polylines to a sketch (laser-cut outlines, old 2D drawings).
 
 ```gusset
 gusset 1

@@ -74,6 +74,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<SketchAddRectangle>(),
         spec::<SketchAddCircle>(),
         spec::<SketchAddArc>(),
+        spec::<SketchImportDxf>(),
         spec::<SketchAddConstraint>(),
         spec::<SketchDeleteItems>(),
         spec::<SketchMovePoint>(),
@@ -1455,6 +1456,96 @@ impl Command for SketchAddCircle {
                 .collect();
             store_solution(doc, &sk);
             Ok(json!({ "circle": circ, "center": c, "constraint": k, "position_constraints": at }))
+        })
+    }
+}
+
+/// Reads the lines, arcs, circles and polylines of a DXF file into a sketch.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchImportDxf {
+    pub sketch: String,
+    /// .dxf file in the project folder.
+    pub path: String,
+    /// Extra factor after the file's units (default 1).
+    #[serde(default)]
+    pub scale: Option<f64>,
+}
+
+/// Largest DXF file read into a sketch.
+const MAX_DXF_BYTES: u64 = 64 << 20;
+
+impl Command for SketchImportDxf {
+    const ID: &'static str = "sketch.import_dxf";
+    const TITLE: &'static str = "Import DXF";
+    const DESCRIPTION: &'static str = "Add a DXF file's lines, arcs, circles and polylines to a sketch (mm by $INSUNITS); shared ends become shared points.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let k = self.scale.unwrap_or(1.0);
+        if !(k.is_finite() && k > 0.0) {
+            return Err(CommandError::args("scale must be positive"));
+        }
+        let full = crate::paths::read_target(s.project_dir.as_deref(), &self.path, &ctx.actor)?;
+        if !full.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("dxf")) {
+            return Err(CommandError::args("the file name must end in .dxf"));
+        }
+        let file = crate::import::open_regular(&full, &self.path, MAX_DXF_BYTES)?;
+        let bytes = crate::import::read_capped(file, MAX_DXF_BYTES, &std::sync::atomic::AtomicBool::new(false))?;
+        let read = gusset_drawing::dxf_read::read(&bytes)
+            .map_err(|e| CommandError::new("io", format!("'{}' cannot be read: {e}", self.path)))?;
+        if read.curves.is_empty() {
+            return Err(CommandError::new("io", "the file has no lines, arcs or circles"));
+        }
+        let skipped: Vec<String> = read.skipped.iter().take(20).map(|(t, n)| format!("{n} {t}")).collect();
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Import DXF", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            // Ends closer than 1 µm are one point.
+            let mut points: std::collections::HashMap<(i64, i64), String> = std::collections::HashMap::new();
+            let mut point = |d: &mut SketchDef, p: [f64; 2]| -> Result<String, CommandError> {
+                let (x, y) = (p[0] * k, p[1] * k);
+                let key = ((x * 1e3).round() as i64, (y * 1e3).round() as i64);
+                if let Some(id) = points.get(&key) {
+                    return Ok(id.clone());
+                }
+                let id = add_point(d, x, y)?;
+                points.insert(key, id.clone());
+                Ok(id)
+            };
+            let (mut lines, mut arcs, mut circles) = (0, 0, 0);
+            for c in &read.curves {
+                match *c {
+                    gusset_drawing::dxf_read::Curve::Line(a, b) => {
+                        let (pa, pb) = (point(d, a)?, point(d, b)?);
+                        if pa != pb {
+                            add_entity(d, SkGeom::Line { a: pa, b: pb }, false);
+                            lines += 1;
+                        }
+                    }
+                    gusset_drawing::dxf_read::Curve::Circle { center, radius } => {
+                        let c = point(d, center)?;
+                        add_entity(d, SkGeom::Circle { center: c, radius: radius * k }, false);
+                        circles += 1;
+                    }
+                    gusset_drawing::dxf_read::Curve::Arc { center, radius, start, end } => {
+                        let at = |t: f64| [center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)];
+                        let (c, a, b) = (point(d, center)?, point(d, at(start))?, point(d, at(end))?);
+                        if a == b {
+                            add_entity(d, SkGeom::Circle { center: c, radius: radius * k }, false);
+                            circles += 1;
+                        } else {
+                            add_entity(d, SkGeom::Arc { center: c, start: a, end: b }, false);
+                            arcs += 1;
+                        }
+                    }
+                }
+            }
+            store_solution(doc, &sk);
+            Ok(json!({
+                "lines": lines, "arcs": arcs, "circles": circles, "points": points.len(),
+                "unit_mm": read.unit_mm, "skipped_user_text": skipped,
+            }))
         })
     }
 }

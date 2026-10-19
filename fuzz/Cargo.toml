@@ -18,6 +18,7 @@ gusset-store = { path = "../crates/gusset-store" }
 gusset-project = { path = "../crates/gusset-project" }
 gusset-kernel = { path = "../crates/gusset-kernel" }
 gusset-meshio = { path = "../crates/gusset-meshio" }
+gusset-drawing = { path = "../crates/gusset-drawing" }
 # Only the protocol codec is fuzzed; without GUSSET_OCCT_DIR the OCCT crates build as
 # stubs, so this does not need OCCT.
 gusset-worker = { path = "../crates/gusset-worker" }
@@ -107,6 +108,13 @@ bench = false
 [[bin]]
 name = "worker_response"
 path = "fuzz_targets/worker_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dxf_read"
+path = "fuzz_targets/dxf_read.rs"
 test = false
 doc = false
 bench = false

@@ -8,6 +8,7 @@ mod centers;
 pub mod detail;
 pub mod dims;
 pub mod dxf;
+pub mod dxf_read;
 pub mod pdf;
 pub mod raster;
 pub mod scene;

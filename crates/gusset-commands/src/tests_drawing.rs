@@ -151,3 +151,33 @@ fn views_and_items_are_edited_and_deleted_in_order() {
     assert!(e.message.contains("not a body") || e.to_string().contains("not a body"), "{e:?}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
+
+#[test]
+fn a_dxf_file_becomes_sketch_geometry() {
+    let mut s = session();
+    plate(&mut s);
+    let dir = s.project_dir.clone().unwrap();
+    // A 1 x 0.5 inch closed polyline and a 0.1 inch circle.
+    let dxf = "  0\nSECTION\n  2\nHEADER\n  9\n$INSUNITS\n 70\n1\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n\
+  0\nLWPOLYLINE\n 90\n4\n 70\n1\n 10\n0\n 20\n0\n 10\n1\n 20\n0\n 10\n1\n 20\n0.5\n 10\n0\n 20\n0.5\n\
+  0\nCIRCLE\n 10\n0.5\n 20\n0.25\n 40\n0.1\n  0\nENDSEC\n  0\nEOF\n";
+    std::fs::write(dir.join("plate.dxf"), dxf).unwrap();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Cut"}));
+    let r = run(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "plate.dxf"}));
+    assert_eq!((r["lines"].as_u64(), r["circles"].as_u64(), r["points"].as_u64()), (Some(4), Some(1), Some(5)), "{r}");
+    assert_eq!(r["unit_mm"], 25.4);
+    // The square is a closed profile: it extrudes (25.4 x 12.7 mm, minus the hole).
+    let r = run(&mut s, "feature.extrude", json!({"sketch": "Cut", "distance": "2 mm"}));
+    assert!(r.get("feature").is_some(), "{r}");
+    // Our own DXF exports read back.
+    run(&mut s, "drawing.create", json!({"standard_views": true}));
+    run(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": "sheet.dxf"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Sheet"}));
+    let r = run(&mut s, "sketch.import_dxf", json!({"sketch": "Sheet", "path": "sheet.dxf"}));
+    assert!(r["lines"].as_u64().unwrap() > 20, "{r}");
+    assert!(r["skipped_user_text"].as_array().is_some_and(|a| !a.is_empty()), "texts and fills are skipped: {r}");
+    // Not a DXF, and a file that is not there.
+    std::fs::write(dir.join("junk.dxf"), "hello").unwrap();
+    assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "junk.dxf"})).code, "io");
+    assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "plate.svg"})).code, "invalid_args");
+}

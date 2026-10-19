@@ -89,8 +89,10 @@ worker (ADR 0022) and its results are cached.
    2. Dimensions and notes, centre marks and centrelines, dangling dimensions.
    3. The app: a Drawing workspace showing the sheet, view and dimension tools, and
       placing items by dragging; a PNG render of a sheet for agents.
-   4. Full section and circular detail views, PDF, and DXF import into a sketch (the `dxf`
-      crate in the import worker, fuzzed).
+   4. Full section and circular detail views, PDF, and DXF import into a sketch. Done
+      2026-10-19. The DXF reader is our own safe Rust (ASCII DXF; LINE, CIRCLE, ARC,
+      LWPOLYLINE and POLYLINE with bulges; capped, fuzzed) and runs in-process like the
+      mesh readers, instead of the `dxf` crate in the import worker.
 
 ## Consequences
 - Drawings travel with the model in one file. A drawing of a part inside another

@@ -325,6 +325,7 @@ name = "gusset-fuzz"
 version = "0.0.0"
 dependencies = [
  "gusset-doc",
+ "gusset-drawing",
  "gusset-history",
  "gusset-kernel",
  "gusset-meshio",
