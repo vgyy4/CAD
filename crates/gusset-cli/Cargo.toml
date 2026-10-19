@@ -40,3 +40,4 @@ workspace = true
 libm.workspace = true
 gusset-kernel-remote.workspace = true
 gusset-sketch.workspace = true
+gusset-drawing.workspace = true
