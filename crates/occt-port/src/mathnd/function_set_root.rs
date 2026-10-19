@@ -1,77 +1,40 @@
-//! The one-variable path of `math_FunctionSetRoot` (private): what `math_FunctionRoot` needs of it.
+//! `math_FunctionSetRoot` (`math_FunctionSetRoot.cxx`), with its file-local `MyDirFunction`,
+//! `MinimizeDirection` (two overloads), `SearchDirection` (two overloads) and `Bounds`.
 //!
-//! `math_FunctionRoot` runs `math_FunctionSetRoot` on its class `math_MyFunctionSetWithDerivatives`, which has one
-//! variable and one equation. Therefore:
-//! * the branches of `SearchDirection` for more unknowns than equations (SVD) or fewer (`math_GaussLeastSquare`),
-//!   and the sub-problem built for a partly constrained system, are unreachable and not translated;
-//! * `math_FunctionSetRoot::Perform` is always called with `theStopOnDivergent = false`, so `myIsDivergent` has no
-//!   effect and is not tracked;
-//! * `math_MyFunctionSetWithDerivatives` does not override `GetStateNumber` (it returns 0 without calling the
-//!   user's function), so the `State` of `math_FunctionSetRoot` is not kept.
+//! The operations and the callback calls are in the order of the C++ source.
 #![allow(clippy::float_cmp)]
 
-use super::{
-    BrentMinimum, Function, FunctionWithDerivative, PRECISION_INFINITE, SQUARE_CONFUSION, cmax, cmin, epsilon,
-    is_infinite,
-};
-use crate::mathlin::{Gauss, IntegerVector, MathError, Matrix, Svd, Vector};
+use super::{FunctionSetRootState, FunctionSetRootTest, FunctionSetWithDerivatives, vector_dump};
+use crate::math1d::{BrentMinimum, Function, PRECISION_INFINITE, SQUARE_CONFUSION, cmax, cmin, epsilon, is_infinite};
+use crate::mathlin::{Gauss, GaussLeastSquare, IntegerVector, MathError, Matrix, Svd, Vector};
 
-/// `math_MyFunctionSetWithDerivatives`.
-pub(super) struct OneVarSet<'a> {
-    pub(super) ff: &'a mut dyn FunctionWithDerivative,
-}
-
-impl OneVarSet<'_> {
-    /// `Value(X, F)`: `Ff->Value(X(1), F(1))`.
-    fn value(&mut self, x: &Vector, fs: &mut Vector) -> Result<bool, MathError> {
-        match self.ff.value(x.value(1)?) {
-            Some(v) => {
-                fs.set_value(1, v)?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-
-    /// `Values(X, F, D)`: `Ff->Values(X(1), F(1), D(1, 1))`.
-    fn values(&mut self, x: &Vector, fs: &mut Vector, d: &mut Matrix) -> Result<bool, MathError> {
-        match self.ff.values(x.value(1)?) {
-            Some((v, dv)) => {
-                fs.set_value(1, v)?;
-                d.set_value(1, 1, dv)?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-}
-
-/// `MyDirFunction`: the function set along a direction (`Temp1..Temp4` are its own vectors).
-pub(super) struct DirFunction<'a> {
-    set: OneVarSet<'a>,
+/// `MyDirFunction`: the function set along a direction. `Temp1..Temp4` of the solver are its own vectors.
+struct DirFunction<'a> {
     p0: Vector,
     dir: Vector,
     p: Vector,
     fv: Vector,
+    f: &'a mut dyn FunctionSetWithDerivatives,
 }
 
 impl<'a> DirFunction<'a> {
-    pub(super) fn new(set: OneVarSet<'a>) -> Result<Self, MathError> {
-        Ok(Self { set, p0: Vector::new(1, 1)?, dir: Vector::new(1, 1)?, p: Vector::new(1, 1)?, fv: Vector::new(1, 1)? })
+    fn new(f: &'a mut dyn FunctionSetWithDerivatives, n: i32, m: i32) -> Result<Self, MathError> {
+        Ok(Self { p0: Vector::new(1, n)?, dir: Vector::new(1, n)?, p: Vector::new(1, n)?, fv: Vector::new(1, m)?, f })
     }
 
     /// `Initialize`.
-    fn initialize(&mut self, p0: &Vector, dir: &Vector) {
-        self.p0 = p0.clone();
-        self.dir = dir.clone();
+    fn initialize(&mut self, p0: &Vector, dir: &Vector) -> Result<(), MathError> {
+        self.p0.initialized(p0)?;
+        self.dir.initialized(dir)
     }
 
+    /// `Value(const double x, double& fval)`: `None` is `return false`.
     fn eval(&mut self, x: f64) -> Result<Option<f64>, MathError> {
         for i in self.p.lower()..=self.p.upper() {
             let p = self.dir.value(i)?;
             self.p.set_value(i, p * x + self.p0.value(i)?)?;
         }
-        if self.set.value(&self.p, &mut self.fv)? {
+        if self.f.value(&self.p, &mut self.fv) {
             for i in self.fv.lower()..=self.fv.upper() {
                 let a_val = self.fv.value(i)?;
                 if a_val <= -1.0e+100 || a_val >= 1.0e+100 {
@@ -93,7 +56,7 @@ impl<'a> DirFunction<'a> {
         f2: &mut f64,
         gnr1: &mut f64,
     ) -> Result<bool, MathError> {
-        if self.set.values(sol, ff, df)? {
+        if self.f.values(sol, ff, df) {
             for i in ff.lower()..=ff.upper() {
                 let a_val = ff.value(i)?;
                 if a_val < 0.0 {
@@ -132,7 +95,7 @@ fn minimize_direction_3(
     f1: f64,
     delta: &mut Vector,
     tol: &Vector,
-    f: &mut DirFunction,
+    f: &mut DirFunction<'_>,
 ) -> Result<bool, MathError> {
     // (1) one-dimensional parametric tolerance
     let mut tol1d = 2.1_f64;
@@ -144,18 +107,19 @@ fn minimize_direction_3(
         }
     }
     if tol1d > 1.9 {
-        return Ok(false); // not worth the effort
+        return Ok(false);
     }
     tol1d /= 3.0;
 
-    *delta = p1.subtracted(p0)?;
+    let d = p1.subtracted(p0)?;
+    delta.initialized(&d)?;
     let mut invnorme = delta.norm();
     if invnorme <= eps {
         return Ok(false);
     }
     invnorme = 1.0 / invnorme;
 
-    f.initialize(p1, delta);
+    f.initialize(p1, delta)?;
 
     // (2) minimise
     let ax = -1.0;
@@ -188,7 +152,7 @@ fn minimize_direction_2(
     gradient: &Vector,
     d_gradient: &Vector,
     tol: &Vector,
-    f: &mut DirFunction,
+    f: &mut DirFunction<'_>,
 ) -> Result<bool, MathError> {
     if is_infinite(p_value) || is_infinite(p_dir_value) {
         return Ok(false);
@@ -253,7 +217,7 @@ fn minimize_direction_2(
         return Ok(false); // useless result
     }
 
-    f.initialize(p, dir);
+    f.initialize(p, dir)?;
     let mut fsol = 0.0_f64;
     if let Some(v) = f.value(tsol) {
         fsol = v;
@@ -304,16 +268,16 @@ fn minimize_direction_2(
             }
         }
     }
+    let _ = result;
 
     if good {
         // update Delta
         dir.multiply(tsol);
     }
-    let _ = result;
     Ok(good)
 }
 
-/// `SearchDirection` without constraints (one unknown and one equation: the square case).
+/// `SearchDirection` without constraints (`ChangeDirection` is passed by value in C++).
 fn search_direction(
     df: &Matrix,
     gh: &Vector,
@@ -334,22 +298,38 @@ fn search_direction(
             }
             let solut = Gauss::new(df, 1.0e-9)?;
             if solut.is_done() {
-                *direction = solut.solve_in_place(direction.clone())?;
+                let x = solut.solve_in_place(direction.clone())?;
+                direction.initialized(&x)?;
             } else {
-                // singular directions have to be forgotten
+                // singular directions have to be "forgotten"
                 let solve_by_svd = Svd::new(df)?;
                 if solve_by_svd.is_done() {
-                    *direction = solve_by_svd.solve(&ff.t_multiplied(-1.0), 1.0e-6)?;
+                    let x = solve_by_svd.solve(&ff.t_multiplied(-1.0), 1.0e-6)?;
+                    direction.initialized(&x)?;
                 } else {
                     change_direction = true;
                 }
             }
+        } else if ninc > neq {
+            let solut = Svd::new(df)?;
+            if solut.is_done() {
+                let x = solut.solve(&ff.t_multiplied(-1.0), 1.0e-6)?;
+                direction.initialized(&x)?;
+            } else {
+                change_direction = true;
+            }
         } else {
-            // more unknowns than equations (SVD) or fewer (least squares): not reachable for one unknown
-            return Err(MathError::Dimension);
+            // Calcul par GaussLeastSquare
+            let solut = GaussLeastSquare::new(df, 1.0e-20)?;
+            if solut.is_done() {
+                let x = solut.solve(&ff.t_multiplied(-1.0))?;
+                direction.initialized(&x)?;
+            } else {
+                change_direction = true;
+            }
         }
     }
-    // too long directions are forbidden, to armour ill-conditioned cases
+    // too long directions are forbidden, to armour the ill-conditioned cases
     let lower = direction.lower();
     let mut ratio = (direction.value(lower)? * inv_length_max.value(lower)?).abs();
     for i in (lower + 1)..=direction.upper() {
@@ -373,7 +353,7 @@ fn search_direction(
     Ok(())
 }
 
-/// `SearchDirection` along a boundary, with the constraints (one unknown: either free or fixed).
+/// `SearchDirection` along a boundary.
 #[allow(clippy::too_many_arguments)]
 fn search_direction_constrained(
     df: &Matrix,
@@ -386,28 +366,65 @@ fn search_direction_constrained(
     dy: &mut f64,
 ) -> Result<(), MathError> {
     let ninc = df.col_number();
+    let neq = df.row_number();
     let mut cons = 0;
+
     for i in 1..=ninc {
         if constraints.value(i)? != 0 {
             cons += 1;
         }
     }
+
     if cons == 0 {
-        search_direction(df, gh, ff, change_direction, inv_length_max, direction, dy)
+        search_direction(df, gh, ff, change_direction, inv_length_max, direction, dy)?;
     } else if cons == ninc {
-        // nothing more to do
         for i in direction.lower()..=direction.upper() {
             direction.set_value(i, 0.0)?;
         }
         *dy = 0.0;
-        Ok(())
     } else {
-        // a sub-problem with some of the unknowns: not reachable for one unknown
-        Err(MathError::Dimension)
+        // (1) general case: a sub-problem
+        let mut df2 = Matrix::new(1, neq, 1, ninc - cons)?;
+        let mut my_gh = Vector::new(1, ninc - cons)?;
+        let mut my_direction = Vector::new(1, ninc - cons)?;
+        let mut my_inv_length_max = Vector::new(1, ninc)?;
+
+        let mut k = 1;
+        for i in 1..=ninc {
+            if constraints.value(i)? == 0 {
+                my_gh.set_value(k, gh.value(i)?)?;
+                my_inv_length_max.set_value(k, inv_length_max.value(i)?)?;
+                my_direction.set_value(k, direction.value(i)?)?;
+                for j in 1..=neq {
+                    df2.set_value(j, k, df.value(j, i)?)?;
+                }
+                k += 1;
+            }
+        }
+        // (2) solve it
+        search_direction(&df2, &my_gh, ff, change_direction, &my_inv_length_max, &mut my_direction, dy)?;
+
+        // (3) interpret it: rebuild Direction
+        k = 1;
+        for i in 1..=ninc {
+            if constraints.value(i)? == 0 {
+                if !change_direction {
+                    direction.set_value(i, my_direction.value(k)?)?;
+                } else {
+                    direction.set_value(i, -gh.value(i)?)?;
+                }
+                k += 1;
+            } else {
+                direction.set_value(i, 0.0)?;
+            }
+        }
     }
+    Ok(())
 }
 
-/// `Bounds`: trims `sol` to the domain; returns `(Out, IsNewSol)`.
+/// `Bounds`: trims `sol` to the domain; `delta` gets the distance between the final `sol` and `sol_save`.
+/// Returns `Out`; `is_new_sol` is false if the final `sol` coincides with `sol_save`.
+#[allow(clippy::too_many_arguments)]
 fn bounds(
     inf_bound: &Vector,
     sup_bound: &Vector,
@@ -416,12 +433,13 @@ fn bounds(
     sol_save: &Vector,
     constraints: &mut IntegerVector,
     delta: &mut Vector,
-) -> Result<(bool, bool), MathError> {
+    is_new_sol: &mut bool,
+) -> Result<bool, MathError> {
     let mut out = false;
     let ninc = sol.length();
     let mut monratio = 1.0_f64;
 
-    let mut is_new_sol = true;
+    *is_new_sol = true;
 
     // ratio of the trimming
     for i in 1..=ninc {
@@ -450,12 +468,13 @@ fn bounds(
     if out {
         // truncation and last trimming (numerical problems)
         if monratio == 0.0 {
-            is_new_sol = false;
-            *sol = sol_save.clone();
+            *is_new_sol = false;
+            sol.initialized(sol_save)?;
             delta.init(0.0);
         } else {
             delta.multiply(monratio);
-            *sol = sol_save.added(delta)?;
+            let s = sol_save.added(delta)?;
+            sol.initialized(&s)?;
             for i in 1..=ninc {
                 if sol.value(i)? < inf_bound.value(i)? {
                     sol.set_value(i, inf_bound.value(i)?)?;
@@ -467,18 +486,45 @@ fn bounds(
             }
         }
     }
-    Ok((out, is_new_sol))
+    Ok(out)
 }
 
-/// `math_FunctionSetRoot` for one variable and one equation.
-pub(super) struct FunctionSetRoot {
+/// `Root = Sol` / `Err = Delta` in the library, where the checks are compiled out. Wrong lengths are `Dimension` errors
+/// when the solver is done (the golden file's `unchecked`); when it is not done the golden file copies the common prefix.
+fn copy_checked(done: bool, out: &mut Vector, from: &Vector) -> Result<(), MathError> {
+    if out.length() == from.length() {
+        return out.initialized(from);
+    }
+    if done {
+        return Err(MathError::Dimension);
+    }
+    let first = out.lower();
+    for k in 0..out.length().min(from.length()) {
+        out.set_value(first + k, from.value(from.lower() + k)?)?;
+    }
+    Ok(())
+}
+
+struct DefaultTest;
+impl FunctionSetRootTest for DefaultTest {
+    fn is_solution_reached(&mut self, s: &FunctionSetRootState<'_>, _: &mut dyn FunctionSetWithDerivatives) -> bool {
+        s.is_solution_reached_default()
+    }
+}
+
+/// `math_FunctionSetRoot`.
+#[derive(Debug, Clone)]
+pub struct FunctionSetRoot {
     delta: Vector,
     sol: Vector,
     df: Matrix,
     tol: Vector,
     done: bool,
     kount: i32,
+    state: i32,
     itermax: i32,
+    inf_bound: Vector,
+    sup_bound: Vector,
     sol_save: Vector,
     gh: Vector,
     dh: Vector,
@@ -486,63 +532,89 @@ pub(super) struct FunctionSetRoot {
     ff: Vector,
     previous_solution: Vector,
     save: Vector,
+    is_divergent: bool,
 }
 
 impl FunctionSetRoot {
-    /// `math_FunctionSetRoot(F, Tolerance, NbIterations)` (the one-variable set).
-    pub(super) fn new(tolerance: &Vector, nb_iterations: i32) -> Result<Self, MathError> {
-        let mut tol = Vector::new(1, 1)?;
-        for i in 1..=tol.length() {
-            tol.set_value(i, tolerance.value(i)?)?;
-        }
+    /// `math_FunctionSetRoot(F, Tolerance, NbIterations)`.
+    pub fn new(f: &dyn FunctionSetWithDerivatives, tolerance: &Vector, nb_iterations: i32) -> Result<Self, MathError> {
+        let mut s = Self::without_tolerance(f, nb_iterations)?;
+        s.set_tolerance(tolerance)?;
+        Ok(s)
+    }
+
+    /// `math_FunctionSetRoot(F, NbIterations)`: `set_tolerance` must be called.
+    pub fn without_tolerance(f: &dyn FunctionSetWithDerivatives, nb_iterations: i32) -> Result<Self, MathError> {
+        let n = f.nb_variables();
+        let m = f.nb_equations();
         Ok(Self {
-            delta: Vector::new(1, 1)?,
-            sol: Vector::new(1, 1)?,
-            df: Matrix::new(1, 1, 1, 1)?,
-            tol,
+            delta: Vector::new(1, n)?,
+            sol: Vector::new(1, n)?,
+            df: Matrix::new(1, m, 1, n)?,
+            tol: Vector::new(1, n)?,
             done: false,
             kount: 0,
+            state: 0,
             itermax: nb_iterations,
-            sol_save: Vector::new(1, 1)?,
-            gh: Vector::new(1, 1)?,
-            dh: Vector::new(1, 1)?,
-            dh_save: Vector::new(1, 1)?,
-            ff: Vector::new(1, 1)?,
-            previous_solution: Vector::new(1, 1)?,
+            inf_bound: Vector::filled(1, n, -f64::MAX)?,
+            sup_bound: Vector::filled(1, n, f64::MAX)?,
+            sol_save: Vector::new(1, n)?,
+            gh: Vector::new(1, n)?,
+            dh: Vector::new(1, n)?,
+            dh_save: Vector::new(1, n)?,
+            ff: Vector::new(1, m)?,
+            previous_solution: Vector::new(1, n)?,
             save: Vector::new(0, nb_iterations)?,
+            is_divergent: false,
         })
     }
 
-    pub(super) fn is_done(&self) -> bool {
-        self.done
-    }
-
-    pub(super) fn nb_iterations(&self) -> Result<i32, MathError> {
-        if self.done { Ok(self.kount) } else { Err(MathError::NotDone) }
-    }
-
-    pub(super) fn root(&self) -> Result<f64, MathError> {
-        if self.done { self.sol.value(1) } else { Err(MathError::NotDone) }
-    }
-
-    pub(super) fn derivative(&self) -> Result<f64, MathError> {
-        if self.done { self.df.value(1, 1) } else { Err(MathError::NotDone) }
-    }
-
-    /// `IsSolutionReached`.
-    fn is_solution_reached(&self) -> Result<bool, MathError> {
-        for i in 1..=self.sol.length() {
-            if self.delta.value(i)?.abs() > self.tol.value(i)? {
-                return Ok(false);
-            }
+    /// `SetTolerance`.
+    pub fn set_tolerance(&mut self, tolerance: &Vector) -> Result<(), MathError> {
+        for i in 1..=self.tol.length() {
+            self.tol.set_value(i, tolerance.value(i)?)?;
         }
-        Ok(true)
+        Ok(())
     }
 
-    /// `Delta(i) = PreviousSolution(i) - Sol(i)`.
-    fn delta_from_previous(&mut self) -> Result<(), MathError> {
-        for i in self.delta.lower()..=self.delta.upper() {
-            self.delta.set_value(i, self.previous_solution.value(i)? - self.sol.value(i)?)?;
+    /// `Perform(F, StartingPoint, theStopOnDivergent)`.
+    pub fn perform(
+        &mut self,
+        f: &mut dyn FunctionSetWithDerivatives,
+        starting_point: &Vector,
+        stop_on_divergent: bool,
+    ) -> Result<(), MathError> {
+        self.perform_with_test(f, starting_point, stop_on_divergent, &mut DefaultTest)
+    }
+
+    /// `Perform(F, StartingPoint, InfBound, SupBound, theStopOnDivergent)`.
+    pub fn perform_bounded(
+        &mut self,
+        f: &mut dyn FunctionSetWithDerivatives,
+        starting_point: &Vector,
+        inf_bound: &Vector,
+        sup_bound: &Vector,
+        stop_on_divergent: bool,
+    ) -> Result<(), MathError> {
+        self.perform_bounded_with_test(f, starting_point, inf_bound, sup_bound, stop_on_divergent, &mut DefaultTest)
+    }
+
+    /// `Perform(F, StartingPoint, theStopOnDivergent)` with a redefined `IsSolutionReached`.
+    pub fn perform_with_test(
+        &mut self,
+        f: &mut dyn FunctionSetWithDerivatives,
+        starting_point: &Vector,
+        stop_on_divergent: bool,
+        test: &mut dyn FunctionSetRootTest,
+    ) -> Result<(), MathError> {
+        let (lo, hi) = (self.inf_bound.clone(), self.sup_bound.clone());
+        self.perform_bounded_with_test(f, starting_point, &lo, &hi, stop_on_divergent, test)
+    }
+
+    fn update_divergent(&mut self, lo: &Vector, hi: &Vector) -> Result<(), MathError> {
+        for i in 1..=self.sol.length() {
+            self.is_divergent =
+                self.is_divergent || self.sol.value(i)? < lo.value(i)? || self.sol.value(i)? > hi.value(i)?;
         }
         Ok(())
     }
@@ -555,54 +627,118 @@ impl FunctionSetRoot {
         Ok(())
     }
 
-    /// `Perform(F, StartingPoint, InfBound, SupBound)`.
-    #[allow(clippy::cognitive_complexity, unused_assignments)]
-    pub(super) fn perform(
+    #[allow(clippy::too_many_arguments)]
+    fn call_bounds(
         &mut self,
-        f_dir: &mut DirFunction,
+        lo: &Vector,
+        hi: &Vector,
+        constraints: &mut IntegerVector,
+        is_new_sol: &mut bool,
+    ) -> Result<bool, MathError> {
+        bounds(lo, hi, &self.tol, &mut self.sol, &self.sol_save, constraints, &mut self.delta, is_new_sol)
+    }
+
+    fn eval_full(&mut self, f_dir: &mut DirFunction<'_>, f2: &mut f64, gnr1: &mut f64) -> Result<bool, MathError> {
+        f_dir.full_value(&self.sol, &mut self.ff, &mut self.df, &mut self.gh, f2, gnr1)
+    }
+
+    /// The failure exit of the first value of `F`: `Done = false; if (...) State = F.GetStateNumber()`.
+    fn fail_exit(&mut self, f_dir: &mut DirFunction<'_>, stop: bool) {
+        self.done = false;
+        if !stop || !self.is_divergent {
+            self.state = f_dir.f.state_number();
+        }
+    }
+
+    /// The success exit: `Done = false; if (...) { Done = true; [F.Value(Sol, FF);] State = ...; }`.
+    fn done_exit(&mut self, f_dir: &mut DirFunction<'_>, stop: bool, update_f: bool) {
+        self.done = false;
+        if !stop || !self.is_divergent {
+            self.done = true;
+            if update_f {
+                f_dir.f.value(&self.sol, &mut self.ff);
+            }
+            self.state = f_dir.f.state_number();
+        }
+    }
+
+    fn solution_reached(&mut self, f_dir: &mut DirFunction<'_>, test: &mut dyn FunctionSetRootTest) -> bool {
+        let state = FunctionSetRootState { delta: &self.delta, sol: &self.sol, df: &self.df, tol: &self.tol };
+        test.is_solution_reached(&state, &mut *f_dir.f)
+    }
+
+    fn delta_from_previous(&mut self) -> Result<(), MathError> {
+        for i in self.delta.lower()..=self.delta.upper() {
+            self.delta.set_value(i, self.previous_solution.value(i)? - self.sol.value(i)?)?;
+        }
+        Ok(())
+    }
+
+    /// `Perform(F, StartingPoint, InfBound, SupBound, theStopOnDivergent)` with a redefined `IsSolutionReached`.
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity, clippy::too_many_arguments, unused_assignments)]
+    pub fn perform_bounded_with_test(
+        &mut self,
+        f: &mut dyn FunctionSetWithDerivatives,
         starting_point: &Vector,
-        inf_bound: &Vector,
-        sup_bound: &Vector,
+        the_inf_bound: &Vector,
+        the_sup_bound: &Vector,
+        stop_on_divergent: bool,
+        test: &mut dyn FunctionSetRootTest,
     ) -> Result<(), MathError> {
-        let ninc = 1;
-        if starting_point.length() != ninc || inf_bound.length() != ninc || sup_bound.length() != ninc {
+        let ninc = f.nb_variables();
+        let neq = f.nb_equations();
+
+        if neq <= 0
+            || starting_point.length() != ninc
+            || the_inf_bound.length() != ninc
+            || the_sup_bound.length() != ninc
+        {
             return Err(MathError::Dimension);
         }
 
         let mut change_direction = false;
-        let mut sort = false;
+        let mut sort;
         let mut is_new_sol = false;
         const EPS_SQRT: f64 = 1.0e-16;
         const EPS: f64 = 1.0e-32;
         const EPS2: f64 = 1.0e-64;
         const PROGRES: f64 = 0.005;
         let (mut f2, mut gnr1) = (0.0_f64, 0.0_f64);
-        let (mut dy, mut old_f);
+        let mut dy = 0.0_f64;
+        let mut old_f;
         let (mut ambda, mut ambda2);
         let mut inv_length_max = Vector::new(1, ninc)?; // blocks the steps to 1/4 of the domain
         let mut a_constraints = IntegerVector::new(1, ninc)?; // on which boundary we are
         for i in 1..=ninc {
-            let a_sup_bound = cmin(sup_bound.value(i)?, PRECISION_INFINITE);
-            let an_inf_bound = cmax(inf_bound.value(i)?, -PRECISION_INFINITE);
+            let a_sup_bound = cmin(the_sup_bound.value(i)?, PRECISION_INFINITE);
+            let an_inf_bound = cmax(the_inf_bound.value(i)?, -PRECISION_INFINITE);
             inv_length_max.set_value(i, 1.0 / cmax((a_sup_bound - an_inf_bound) / 4.0, 1.0e-9))?;
         }
 
+        let mut f_dir = DirFunction::new(f, ninc, neq)?;
+
         self.done = false;
-        self.sol = starting_point.clone();
+        self.sol.initialized(starting_point)?;
         self.kount = 0;
+
+        self.is_divergent = false;
+        self.update_divergent(the_inf_bound, the_sup_bound)?;
+        if stop_on_divergent && self.is_divergent {
+            return Ok(());
+        }
 
         // validity of the unknowns against the bounds: recentre on the bounds if not valid
         for i in 1..=ninc {
-            if self.sol.value(i)? <= inf_bound.value(i)? {
-                self.sol.set_value(i, inf_bound.value(i)?)?;
-            } else if self.sol.value(i)? > sup_bound.value(i)? {
-                self.sol.set_value(i, sup_bound.value(i)?)?;
+            if self.sol.value(i)? <= the_inf_bound.value(i)? {
+                self.sol.set_value(i, the_inf_bound.value(i)?)?;
+            } else if self.sol.value(i)? > the_sup_bound.value(i)? {
+                self.sol.set_value(i, the_sup_bound.value(i)?)?;
             }
         }
 
         // first value of F and its gradient
-        if !f_dir.full_value(&self.sol, &mut self.ff, &mut self.df, &mut self.gh, &mut f2, &mut gnr1)? {
-            self.done = false;
+        if !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+            self.fail_exit(&mut f_dir, stop_on_divergent);
             return Ok(());
         }
         ambda2 = gnr1;
@@ -611,22 +747,21 @@ impl FunctionSetRoot {
         let a_tol_func = epsilon(f2);
 
         if f2 <= EPS || gnr1 <= EPS2 {
-            self.done = true;
+            self.done_exit(&mut f_dir, stop_on_divergent, false);
             return Ok(());
         }
+        // the C++ `Done = true` here has no `F.Value` update; `done_exit` with `false` matches it
 
         self.kount = 1;
         while self.kount <= self.itermax {
             let previous_minimum = f2;
             let oldgr = gnr1;
-            self.previous_solution = self.sol.clone();
-            self.sol_save = self.sol.clone();
+            self.previous_solution.initialized(&self.sol)?;
+            self.sol_save.initialized(&self.sol)?;
 
-            dy = 0.0;
             search_direction(&self.df, &self.gh, &self.ff, change_direction, &inv_length_max, &mut self.dh, &mut dy)?;
             if dy.abs() <= EPS {
-                self.done = true;
-                f_dir.set.value(&self.sol, &mut self.ff)?; // update F before the state number
+                self.done_exit(&mut f_dir, stop_on_divergent, true);
                 return Ok(());
             }
             if change_direction {
@@ -640,29 +775,20 @@ impl FunctionSetRoot {
             }
 
             self.step(ambda)?;
-            let (s, n) = bounds(
-                inf_bound,
-                sup_bound,
-                &self.tol,
-                &mut self.sol,
-                &self.sol_save,
-                &mut a_constraints,
-                &mut self.delta,
-            )?;
-            sort = s;
-            is_new_sol = n;
+            self.update_divergent(the_inf_bound, the_sup_bound)?;
+            if stop_on_divergent && self.is_divergent {
+                return Ok(());
+            }
+            sort = self.call_bounds(the_inf_bound, the_sup_bound, &mut a_constraints, &mut is_new_sol)?;
 
-            self.dh_save = self.gh.clone();
-            if is_new_sol
-                && !f_dir.full_value(&self.sol, &mut self.ff, &mut self.df, &mut self.gh, &mut f2, &mut gnr1)?
-            {
-                self.done = false;
+            self.dh_save.initialized(&self.gh)?;
+            if is_new_sol && !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                self.fail_exit(&mut f_dir, stop_on_divergent);
                 return Ok(());
             }
 
             if f2 <= EPS || gnr1 <= EPS2 {
-                self.done = true;
-                f_dir.set.value(&self.sol, &mut self.ff)?;
+                self.done_exit(&mut f_dir, stop_on_divergent, true);
                 return Ok(());
             }
 
@@ -681,20 +807,15 @@ impl FunctionSetRoot {
                         if f2 < old_f && (dy < 0.0) {
                             // try to progress in this direction
                             descente_iter += 1;
-                            self.sol_save = self.sol.clone();
+                            self.sol_save.initialized(&self.sol)?;
                             old_f = f2;
                             self.step(ambda)?;
-                            let (s, n) = bounds(
-                                inf_bound,
-                                sup_bound,
-                                &self.tol,
-                                &mut self.sol,
-                                &self.sol_save,
-                                &mut a_constraints,
-                                &mut self.delta,
-                            )?;
-                            stop = s;
-                            is_new_sol = n;
+                            self.update_divergent(the_inf_bound, the_sup_bound)?;
+                            if stop_on_divergent && self.is_divergent {
+                                return Ok(());
+                            }
+                            stop =
+                                self.call_bounds(the_inf_bound, the_sup_bound, &mut a_constraints, &mut is_new_sol)?;
                             ambda *= 1.7;
                         } else {
                             if (f2 >= old_f) || (f2 >= previous_minimum) {
@@ -710,7 +831,7 @@ impl FunctionSetRoot {
                                         &self.dh_save,
                                         &self.gh,
                                         &self.tol,
-                                        f_dir,
+                                        &mut f_dir,
                                     )?;
                                 } else if change_direction || (descente_iter > 1) || (old_f > previous_minimum) {
                                     // the progress was useful: minimise
@@ -722,51 +843,41 @@ impl FunctionSetRoot {
                                         old_f,
                                         &mut self.delta,
                                         &self.tol,
-                                        f_dir,
+                                        &mut f_dir,
                                     )?;
                                 }
                                 if !good {
-                                    self.sol = self.sol_save.clone();
+                                    self.sol.initialized(&self.sol_save)?;
                                     f2 = old_f;
                                 } else {
-                                    self.sol = self.sol_save.added(&self.delta)?;
-                                    let (s, n) = bounds(
-                                        inf_bound,
-                                        sup_bound,
-                                        &self.tol,
-                                        &mut self.sol,
-                                        &self.sol_save,
+                                    let s = self.sol_save.added(&self.delta)?;
+                                    self.sol.initialized(&s)?;
+                                    self.update_divergent(the_inf_bound, the_sup_bound)?;
+                                    if stop_on_divergent && self.is_divergent {
+                                        return Ok(());
+                                    }
+                                    let _ = self.call_bounds(
+                                        the_inf_bound,
+                                        the_sup_bound,
                                         &mut a_constraints,
-                                        &mut self.delta,
+                                        &mut is_new_sol,
                                     )?;
-                                    sort = s;
-                                    is_new_sol = n;
                                 }
                                 sort = false; // the point on the boundary was rejected
                             }
                             stop = true; // and leave in any case
                         }
-                        self.dh_save = self.gh.clone();
-                        if is_new_sol
-                            && !f_dir.full_value(
-                                &self.sol,
-                                &mut self.ff,
-                                &mut self.df,
-                                &mut self.gh,
-                                &mut f2,
-                                &mut gnr1,
-                            )?
-                        {
-                            self.done = false;
+                        self.dh_save.initialized(&self.gh)?;
+                        if is_new_sol && !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                            self.fail_exit(&mut f_dir, stop_on_divergent);
                             return Ok(());
                         }
                         dy = self.gh.dot(&self.dh)?;
                         if dy.abs() <= EPS {
                             if f2 > old_f {
-                                self.sol = self.sol_save.clone();
+                                self.sol.initialized(&self.sol_save)?;
                             }
-                            self.done = true;
-                            f_dir.set.value(&self.sol, &mut self.ff)?;
+                            self.done_exit(&mut f_dir, stop_on_divergent, true);
                             return Ok(());
                         }
                         if descente_iter >= 100 {
@@ -774,7 +885,7 @@ impl FunctionSetRoot {
                         }
                     }
                 }
-                // boundary processing
+                // processing of the boundaries
                 if sort {
                     stop = f2 > 1.001 * old_f; // do not progress on the boundary
                     sortbis = sort;
@@ -782,7 +893,7 @@ impl FunctionSetRoot {
                     while sortbis && ((f2 < old_f) || (descente_iter == 0)) && !stop {
                         descente_iter += 1;
                         // try to progress on the boundary
-                        self.sol_save = self.sol.clone();
+                        self.sol_save.initialized(&self.sol)?;
                         old_f = f2;
                         search_direction_constrained(
                             &self.df,
@@ -807,30 +918,16 @@ impl FunctionSetRoot {
                             }
 
                             self.step(ambda)?;
-                            let (s, n) = bounds(
-                                inf_bound,
-                                sup_bound,
-                                &self.tol,
-                                &mut self.sol,
-                                &self.sol_save,
-                                &mut a_constraints,
-                                &mut self.delta,
-                            )?;
-                            sortbis = s;
-                            is_new_sol = n;
+                            self.update_divergent(the_inf_bound, the_sup_bound)?;
+                            if stop_on_divergent && self.is_divergent {
+                                return Ok(());
+                            }
+                            sortbis =
+                                self.call_bounds(the_inf_bound, the_sup_bound, &mut a_constraints, &mut is_new_sol)?;
 
-                            self.dh_save = self.gh.clone();
-                            if is_new_sol
-                                && !f_dir.full_value(
-                                    &self.sol,
-                                    &mut self.ff,
-                                    &mut self.df,
-                                    &mut self.gh,
-                                    &mut f2,
-                                    &mut gnr1,
-                                )?
-                            {
-                                self.done = false;
+                            self.dh_save.initialized(&self.gh)?;
+                            if is_new_sol && !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                                self.fail_exit(&mut f_dir, stop_on_divergent);
                                 return Ok(());
                             }
                             ambda2 = gnr1;
@@ -842,33 +939,23 @@ impl FunctionSetRoot {
                             descente_iter += 1;
                             if f2 < old_f && dy < 0.0 {
                                 // try to progress in this direction
-                                self.sol_save = self.sol.clone();
+                                self.sol_save.initialized(&self.sol)?;
                                 old_f = f2;
                                 self.step(ambda)?;
-                                let (s, n) = bounds(
-                                    inf_bound,
-                                    sup_bound,
-                                    &self.tol,
-                                    &mut self.sol,
-                                    &self.sol_save,
+                                self.update_divergent(the_inf_bound, the_sup_bound)?;
+                                if stop_on_divergent && self.is_divergent {
+                                    return Ok(());
+                                }
+                                sortbis = self.call_bounds(
+                                    the_inf_bound,
+                                    the_sup_bound,
                                     &mut a_constraints,
-                                    &mut self.delta,
+                                    &mut is_new_sol,
                                 )?;
-                                sortbis = s;
-                                is_new_sol = n;
                             }
-                            self.dh_save = self.gh.clone();
-                            if is_new_sol
-                                && !f_dir.full_value(
-                                    &self.sol,
-                                    &mut self.ff,
-                                    &mut self.df,
-                                    &mut self.gh,
-                                    &mut f2,
-                                    &mut gnr1,
-                                )?
-                            {
-                                self.done = false;
+                            self.dh_save.initialized(&self.gh)?;
+                            if is_new_sol && !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                                self.fail_exit(&mut f_dir, stop_on_divergent);
                                 return Ok(());
                             }
                             ambda2 = gnr1;
@@ -879,6 +966,7 @@ impl FunctionSetRoot {
                     }
                     if ((f2 / previous_minimum > PROGRES) && (f2 >= old_f)) || (f2 >= previous_minimum) {
                         // minimise by Brent
+                        descente_iter += 1;
                         good = minimize_direction_2(
                             &self.sol_save,
                             &mut self.delta,
@@ -887,41 +975,29 @@ impl FunctionSetRoot {
                             &self.dh_save,
                             &self.gh,
                             &self.tol,
-                            f_dir,
+                            &mut f_dir,
                         )?;
                         if !good {
-                            self.sol = self.sol_save.clone();
+                            self.sol.initialized(&self.sol_save)?;
                             sort = false;
                         } else {
-                            self.sol = self.sol_save.added(&self.delta)?;
-                            let (s, n) = bounds(
-                                inf_bound,
-                                sup_bound,
-                                &self.tol,
-                                &mut self.sol,
-                                &self.sol_save,
-                                &mut a_constraints,
-                                &mut self.delta,
-                            )?;
-                            sort = s;
-                            is_new_sol = n;
-                            if is_new_sol
-                                && !f_dir.full_value(
-                                    &self.sol,
-                                    &mut self.ff,
-                                    &mut self.df,
-                                    &mut self.gh,
-                                    &mut f2,
-                                    &mut gnr1,
-                                )?
-                            {
-                                self.done = false;
+                            let s = self.sol_save.added(&self.delta)?;
+                            self.sol.initialized(&s)?;
+                            self.update_divergent(the_inf_bound, the_sup_bound)?;
+                            if stop_on_divergent && self.is_divergent {
+                                return Ok(());
+                            }
+                            sort =
+                                self.call_bounds(the_inf_bound, the_sup_bound, &mut a_constraints, &mut is_new_sol)?;
+                            if is_new_sol && !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                                self.fail_exit(&mut f_dir, stop_on_divergent);
                                 return Ok(());
                             }
                         }
                         dy = self.gh.dot(&self.dh)?;
                     }
                 }
+                let _ = (descente_iter, sort);
             }
 
             // stopping tests
@@ -938,12 +1014,11 @@ impl FunctionSetRoot {
             }
             if verif {
                 self.delta_from_previous()?;
-                if self.is_solution_reached()? {
+                if self.solution_reached(&mut f_dir, test) {
                     if previous_minimum < f2 {
-                        self.sol = self.sol_save.clone();
+                        self.sol.initialized(&self.sol_save)?;
                     }
-                    self.done = true;
-                    f_dir.set.value(&self.sol, &mut self.ff)?;
+                    self.done_exit(&mut f_dir, stop_on_divergent, true);
                     return Ok(());
                 }
             }
@@ -957,7 +1032,7 @@ impl FunctionSetRoot {
                         if !change_direction {
                             change_direction = true;
                         } else {
-                            self.done = true;
+                            self.done_exit(&mut f_dir, stop_on_divergent, false);
                             return Ok(()); // a gain below 5% leaves
                         }
                     } else {
@@ -974,9 +1049,8 @@ impl FunctionSetRoot {
                 // if the strategy is not changed, verify if not already done
                 if !change_direction && !verif {
                     self.delta_from_previous()?;
-                    if self.is_solution_reached()? {
-                        self.done = true;
-                        f_dir.set.value(&self.sol, &mut self.ff)?;
+                    if self.solution_reached(&mut f_dir, test) {
+                        self.done_exit(&mut f_dir, stop_on_divergent, true);
                         return Ok(());
                     }
                 }
@@ -985,18 +1059,90 @@ impl FunctionSetRoot {
                 if !change_direction {
                     // switch to the gradient
                     change_direction = true;
-                    self.sol = self.previous_solution.clone();
-                    if !f_dir.full_value(&self.sol, &mut self.ff, &mut self.df, &mut self.gh, &mut f2, &mut gnr1)? {
-                        self.done = false;
+                    self.sol.initialized(&self.previous_solution)?;
+                    if !self.eval_full(&mut f_dir, &mut f2, &mut gnr1)? {
+                        self.fail_exit(&mut f_dir, stop_on_divergent);
                         return Ok(());
                     }
                 } else {
+                    if !stop_on_divergent || !self.is_divergent {
+                        self.state = f_dir.f.state_number();
+                    }
                     return Ok(()); // no way out
                 }
             }
-            self.kount = self.kount.wrapping_add(1);
+            self.kount += 1;
         }
-        let _ = (sort, is_new_sol);
+        if !stop_on_divergent || !self.is_divergent {
+            self.state = f_dir.f.state_number();
+        }
         Ok(())
+    }
+
+    /// `IsDone`.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+    /// `IsDivergent`.
+    pub fn is_divergent(&self) -> bool {
+        self.is_divergent
+    }
+    fn check(&self) -> Result<(), MathError> {
+        if self.done { Ok(()) } else { Err(MathError::NotDone) }
+    }
+    /// `NbIterations`.
+    pub fn nb_iterations(&self) -> Result<i32, MathError> {
+        self.check()?;
+        Ok(self.kount)
+    }
+    /// `StateNumber`.
+    pub fn state_number(&self) -> Result<i32, MathError> {
+        self.check()?;
+        Ok(self.state)
+    }
+    /// `Root()`.
+    pub fn root(&self) -> Result<&Vector, MathError> {
+        self.check()?;
+        Ok(&self.sol)
+    }
+    /// `Root(math_Vector&)`.
+    pub fn root_into(&self, o: &mut Vector) -> Result<(), MathError> {
+        // the library is built without `StdFail_NotDone_Raise_if`: no `NotDone` check here
+        copy_checked(self.done, o, &self.sol)
+    }
+    /// `Derivative()`.
+    pub fn derivative(&self) -> Result<&Matrix, MathError> {
+        self.check()?;
+        Ok(&self.df)
+    }
+    /// `Derivative(math_Matrix&)`.
+    pub fn derivative_into(&self, o: &mut Matrix) -> Result<(), MathError> {
+        self.check()?;
+        if o.col_number() != self.sol.length() || o.row_number() != self.df.row_number() {
+            return Err(MathError::Dimension);
+        }
+        o.initialize_from(&self.df)
+    }
+    /// `FunctionSetErrors()`.
+    pub fn function_set_errors(&self) -> Result<&Vector, MathError> {
+        self.check()?;
+        Ok(&self.delta)
+    }
+    /// `FunctionSetErrors(math_Vector&)`.
+    pub fn function_set_errors_into(&self, o: &mut Vector) -> Result<(), MathError> {
+        // the library is built without `StdFail_NotDone_Raise_if`: no `NotDone` check here
+        copy_checked(self.done, o, &self.delta)
+    }
+    /// `Dump`.
+    pub fn dump(&self) -> String {
+        let mut s = String::from(" math_FunctionSetRoot");
+        if self.done {
+            s.push_str(" Status = Done\n");
+            s.push_str(&format!(" Location value = {}\n", vector_dump(&self.sol)));
+            s.push_str(&format!(" Number of iterations = {}\n", self.kount));
+        } else {
+            s.push_str("Status = Not Done\n");
+        }
+        s
     }
 }

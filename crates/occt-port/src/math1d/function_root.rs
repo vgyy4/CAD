@@ -1,9 +1,47 @@
 //! `math_FunctionRoot`: a root near a guess, computed by `math_FunctionSetRoot` on one variable.
 #![allow(clippy::float_cmp)]
 
-use super::function_set_root::{DirFunction, FunctionSetRoot, OneVarSet};
 use super::{FunctionWithDerivative, REAL_FIRST, REAL_LAST, fmt_g};
-use crate::mathlin::{MathError, Vector};
+use crate::mathlin::{MathError, Matrix, Vector};
+use crate::mathnd::{FunctionSet, FunctionSetRoot, FunctionSetWithDerivatives};
+
+/// `math_MyFunctionSetWithDerivatives`: one variable, one equation. It does not override `GetStateNumber`.
+struct MyFunctionSet<'a> {
+    ff: &'a mut dyn FunctionWithDerivative,
+}
+
+impl FunctionSet for MyFunctionSet<'_> {
+    fn nb_variables(&self) -> i32 {
+        1
+    }
+    fn nb_equations(&self) -> i32 {
+        1
+    }
+    fn value(&mut self, x: &Vector, f: &mut Vector) -> bool {
+        let Ok(x1) = x.value(1) else { return false };
+        match self.ff.value(x1) {
+            Some(v) => f.set_value(1, v).is_ok(),
+            None => false,
+        }
+    }
+}
+
+impl FunctionSetWithDerivatives for MyFunctionSet<'_> {
+    fn derivatives(&mut self, x: &Vector, d: &mut Matrix) -> bool {
+        let Ok(x1) = x.value(1) else { return false };
+        match self.ff.derivative(x1) {
+            Some(v) => d.set_value(1, 1, v).is_ok(),
+            None => false,
+        }
+    }
+    fn values(&mut self, x: &Vector, f: &mut Vector, d: &mut Matrix) -> bool {
+        let Ok(x1) = x.value(1) else { return false };
+        match self.ff.values(x1) {
+            Some((v, dv)) => f.set_value(1, v).is_ok() && d.set_value(1, 1, dv).is_ok(),
+            None => false,
+        }
+    }
+}
 
 /// `math_FunctionRoot`.
 #[derive(Debug, Clone)]
@@ -55,17 +93,15 @@ impl FunctionRoot {
         tol.set_value(1, tolerance)?;
         aa.set_value(1, a)?;
         bb.set_value(1, b)?;
-        let mut sol = FunctionSetRoot::new(&tol, nb_iterations)?;
-        {
-            let mut f_dir = DirFunction::new(OneVarSet { ff: &mut *f })?;
-            sol.perform(&mut f_dir, &v, &aa, &bb)?;
-        }
+        let mut ff = MyFunctionSet { ff: &mut *f };
+        let mut sol = FunctionSetRoot::new(&ff, &tol, nb_iterations)?;
+        sol.perform_bounded(&mut ff, &v, &aa, &bb, false)?;
         let mut r = Self { done: sol.is_done(), the_root: 0.0, the_error: 0.0, the_derivative: 0.0, nb_iter: 0 };
         if r.done {
             r.nb_iter = sol.nb_iterations()?;
             f.state_number();
-            r.the_root = sol.root()?;
-            r.the_derivative = sol.derivative()?;
+            r.the_root = sol.root()?.value(1)?;
+            r.the_derivative = sol.derivative()?.value(1, 1)?;
             if let Some(val) = f.value(r.the_root) {
                 r.the_error = val;
             }

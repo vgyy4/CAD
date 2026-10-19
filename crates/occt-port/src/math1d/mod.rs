@@ -14,7 +14,6 @@ mod bracketed_root;
 mod brent_minimum;
 mod function_root;
 mod function_roots;
-mod function_set_root;
 mod newton_root;
 mod trig_roots;
 

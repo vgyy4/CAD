@@ -14,4 +14,5 @@ pub mod elslib;
 pub mod gp;
 pub mod math1d;
 pub mod mathlin;
+pub mod mathnd;
 pub mod plib;
