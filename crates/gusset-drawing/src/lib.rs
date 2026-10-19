@@ -11,7 +11,7 @@ pub mod raster;
 pub mod scene;
 pub mod svg;
 
-pub use scene::{Anchor, Item, PlacedView, Prim, Scene, Style};
+pub use scene::{Anchor, Handle, Item, PlacedView, Prim, Scene, Style};
 
 use gusset_doc::drawing::{Drawing, DrawingItem, Projection, Side, ViewDef, ViewPlacement};
 use gusset_eval::{Body, Evaluation};
@@ -402,6 +402,31 @@ fn projection_symbol(scene: &mut Scene, p: Projection, c: [f64; 2]) {
     scene.line(Style::Center, [circle_x, c[1] - big - 1.0], [circle_x, c[1] + big + 1.0]);
 }
 
+/// A drag handle for `item` around the text it drew from item `start` on.
+fn handle(scene: &mut Scene, start: usize, item: &str, at: [f64; 2]) {
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    for it in scene.items.get(start..).unwrap_or(&[]) {
+        let Prim::Text { at: p, height, text, anchor, angle } = &it.prim else { continue };
+        // A rough box: 0.75 of the height per character, the cap height plus a margin.
+        let w = text.chars().count() as f64 * height * 0.75;
+        let x0 = match anchor {
+            Anchor::Left => 0.0,
+            Anchor::Center => -w / 2.0,
+            Anchor::Right => -w,
+        };
+        let (s, c) = (libm::sin(*angle), libm::cos(*angle));
+        for (x, y) in [(x0, -1.0), (x0 + w, -1.0), (x0, height + 1.0), (x0 + w, height + 1.0)] {
+            let q = [p[0] + x * c - y * s, p[1] + x * s + y * c];
+            lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+            hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+        }
+    }
+    if lo[0].is_finite() {
+        scene.handles.push(Handle { item: item.to_string(), at, min: lo, max: hi });
+    }
+}
+
 /// Builds the scene of drawing `d`. Problems (a view that cannot be projected, an
 /// expression that does not evaluate) are listed in `Scene::issues`, and the rest of the
 /// sheet is still drawn.
@@ -463,9 +488,11 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
             },
             DrawingItem::Note(n) => match (number(&n.at[0], cx.ev), number(&n.at[1], cx.ev)) {
                 (Ok(x), Ok(y)) => {
+                    let start = scene.items.len();
                     for (i, line) in n.text.lines().enumerate() {
                         scene.text([x, y - i as f64 * 6.0], 3.5, line, Anchor::Left);
                     }
+                    handle(&mut scene, start, &n.name, [x, y]);
                 }
                 (Err(e), _) | (_, Err(e)) => scene.issues.push(format!("note {}: {e}", n.name)),
             },
@@ -478,6 +505,7 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                         value: None,
                         text: String::new(),
                         error: Some(e),
+                        text_at: None,
                     });
                     continue;
                 };
@@ -487,11 +515,20 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 let r = match (offset, text_at) {
                     (Ok(offset), Ok(text_at)) => {
                         let v = dims::ViewCtx { bodies: &p.bodies, view: pv, units: cx.units };
-                        dims::draw(&mut scene, dim, &v, offset, text_at)
+                        let start = scene.items.len();
+                        let r = dims::draw(&mut scene, dim, &v, offset, text_at);
+                        if let Some(at) = r.text_at {
+                            handle(&mut scene, start, &dim.name, at);
+                        }
+                        r
                     }
-                    (Err(e), _) | (_, Err(e)) => {
-                        dims::DimResult { name: dim.name.clone(), value: None, text: String::new(), error: Some(e) }
-                    }
+                    (Err(e), _) | (_, Err(e)) => dims::DimResult {
+                        name: dim.name.clone(),
+                        value: None,
+                        text: String::new(),
+                        error: Some(e),
+                        text_at: None,
+                    },
                 };
                 if let Some(e) = &r.error {
                     scene.issues.push(format!("dimension {}: {e}", dim.name));

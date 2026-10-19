@@ -1,7 +1,8 @@
 //! The Drawing tab's sheet (ADR 0032 phase 3): the drawing's scene painted with egui on
 //! white paper, panned and zoomed like the viewport (wheel zooms about the pointer, a
 //! drag on the paper or with the middle button pans, double-click fits). Dragging a base
-//! view moves it; projected views follow their parent when the drawing rebuilds.
+//! view, a note or a dimension's text moves it; projected views follow their parent when
+//! the drawing rebuilds.
 //!
 //! The widget only reports what was moved ([`Out`]); the app sends the command.
 
@@ -25,18 +26,29 @@ pub struct State {
 
 #[derive(Debug)]
 struct Drag {
-    /// A base view, or `None` while panning.
+    /// The item being moved, or `None` while panning.
     view: Option<String>,
-    /// Its box centre (sheet mm) when the drag started.
+    /// The point that places it (sheet mm) when the drag started.
     center: [f64; 2],
     /// Total movement in sheet mm.
     moved: [f64; 2],
+    grab: Option<Grab>,
+}
+
+/// Something that can be moved: a base view, a note or a dimension's text.
+#[derive(Debug, Clone)]
+struct Grab {
+    name: String,
+    at: [f64; 2],
+    min: [f64; 2],
+    max: [f64; 2],
 }
 
 /// What the user did.
 #[derive(Debug, Default, PartialEq)]
 pub struct Out {
-    /// A base view dropped at a new centre (sheet mm).
+    /// A base view, note or dimension text dropped at a new place (sheet mm, as
+    /// `drawing.move_item` takes it).
     pub moved: Option<(String, [f64; 2])>,
 }
 
@@ -124,15 +136,38 @@ pub fn show(
     let map = Map { origin: rect.min + st.offset, zoom: st.zoom, height: scene.size[1] };
     st.last = Some((map.origin, map.zoom, map.height));
     let movable = |v: &&gusset_drawing::PlacedView| v.error.is_none() && base_views.contains(&v.name);
-    let pointer = resp.hover_pos().or(resp.interact_pointer_pos()).map(|p| map.from(p));
-    let hovered = pointer.and_then(|p| scene.views.iter().filter(movable).find(|v| inside(v.min, v.max, p)));
+    // A drag picks what was under the pointer when the button went down (the drag only
+    // starts after the pointer has moved a few pixels).
+    let press = ui.input(|i| i.pointer.press_origin()).filter(|_| resp.drag_started());
+    let pointer = press.or(resp.hover_pos()).or(resp.interact_pointer_pos()).map(|p| map.from(p));
+    // What a drag would move: a note or dimension text before the view around it.
+    let hovered: Option<Grab> = pointer.and_then(|p| {
+        scene
+            .handles
+            .iter()
+            .rev()
+            .find(|h| inside(h.min, h.max, p))
+            .map(|h| Grab { name: h.item.clone(), at: h.at, min: h.min, max: h.max })
+            .or_else(|| {
+                scene.views.iter().filter(movable).find(|v| inside(v.min, v.max, p)).map(|v| Grab {
+                    name: v.name.clone(),
+                    at: [(v.min[0] + v.max[0]) / 2.0, (v.min[1] + v.max[1]) / 2.0],
+                    min: v.min,
+                    max: v.max,
+                })
+            })
+    });
 
-    // Drags: a base view under the pointer moves, anything else pans.
+    // Drags: the item under the pointer moves, anything else pans.
     let middle = ui.input(|i| i.pointer.middle_down());
     if resp.drag_started() {
-        let view = if middle { None } else { hovered.map(|v| v.name.clone()) };
-        let center = hovered.map_or([0.0; 2], |v| [(v.min[0] + v.max[0]) / 2.0, (v.min[1] + v.max[1]) / 2.0]);
-        st.drag = Some(Drag { view, center, moved: [0.0; 2] });
+        let grab = if middle { None } else { hovered.clone() };
+        st.drag = Some(Drag {
+            view: grab.as_ref().map(|g| g.name.clone()),
+            center: grab.as_ref().map_or([0.0; 2], |g| g.at),
+            moved: [0.0; 2],
+            grab,
+        });
     }
     if resp.dragged() {
         let d = resp.drag_delta();
@@ -145,7 +180,7 @@ pub fn show(
         }
     }
     if resp.drag_stopped()
-        && let Some(Drag { view: Some(v), center, moved }) = st.drag.take()
+        && let Some(Drag { view: Some(v), center, moved, .. }) = st.drag.take()
         && (moved[0].abs() > 1e-3 || moved[1].abs() > 1e-3)
     {
         // Whole tenths of a millimetre keep the document text short.
@@ -161,24 +196,22 @@ pub fn show(
     painter.rect_filled(paper, 0.0, Color32::WHITE);
     paint(&painter, &map, scene);
 
-    // The view under the pointer, and the one being dragged where it would land.
-    if let Some(v) = hovered
+    // The item under the pointer, and the one being dragged where it would land.
+    if let Some(g) = &hovered
         && st.drag.is_none()
     {
         painter.rect_stroke(
-            Rect::from_two_pos(map.to(v.min), map.to(v.max)).expand(3.0),
+            Rect::from_two_pos(map.to(g.min), map.to(g.max)).expand(3.0),
             2.0,
             Stroke::new(1.0, pal.accent),
             egui::StrokeKind::Outside,
         );
-        resp.clone().on_hover_text(format!("{}: drag to move", v.name));
+        resp.clone().on_hover_text(format!("{}: drag to move", g.name));
     }
-    if let Some(Drag { view: Some(name), moved, .. }) = &st.drag
-        && let Some(v) = scene.views.iter().find(|v| &v.name == name)
-    {
+    if let Some(Drag { grab: Some(g), moved, .. }) = &st.drag {
         let shift = |p: [f64; 2]| map.to([p[0] + moved[0], p[1] + moved[1]]);
         painter.rect_stroke(
-            Rect::from_two_pos(shift(v.min), shift(v.max)).expand(3.0),
+            Rect::from_two_pos(shift(g.min), shift(g.max)).expand(3.0),
             2.0,
             Stroke::new(1.5, pal.accent),
             egui::StrokeKind::Outside,

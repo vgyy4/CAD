@@ -147,6 +147,16 @@ impl PlacedView {
     }
 }
 
+/// Something on the sheet that can be dragged: a note or a dimension's text, with the
+/// point that places it and its box (sheet mm).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Handle {
+    pub item: String,
+    pub at: [f64; 2],
+    pub min: [f64; 2],
+    pub max: [f64; 2],
+}
+
 /// One sheet.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Scene {
@@ -158,6 +168,8 @@ pub struct Scene {
     pub issues: Vec<String>,
     /// The dimensions as measured, in drawing order.
     pub dims: Vec<crate::dims::DimResult>,
+    /// Notes and dimension texts, for dragging.
+    pub handles: Vec<Handle>,
 }
 
 impl Scene {

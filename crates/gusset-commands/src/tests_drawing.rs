@@ -87,7 +87,7 @@ fn views_and_items_are_edited_and_deleted_in_order() {
         "invalid_args"
     );
     let dim = json!({"drawing": "D", "view": "View1", "kind": "length",
-                     "a": "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l1))"});
+                     "a": "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))"});
     let r = run(&mut s, "drawing.add_dimension", dim.clone());
     assert_eq!(r["dimension"], "D1", "{r}");
     run(
@@ -98,6 +98,19 @@ fn views_and_items_are_edited_and_deleted_in_order() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("text_at: [100, 170], tolerance: \"±0.05\")"), "{text}");
     run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "tolerance": "", "text_at": []}));
+    // Moving on the sheet: a base view, a dimension's text; a projected view refuses.
+    run(&mut s, "drawing.move_item", json!({"drawing": "D", "item": "View1", "at": ["130", "150"]}));
+    run(&mut s, "drawing.move_item", json!({"drawing": "D", "item": "D1", "at": ["130", "120"]}));
+    let e = err(&mut s, "drawing.move_item", json!({"drawing": "D", "item": "View2", "at": ["0", "0"]}));
+    assert!(e.message.contains("follows its parent"), "{e:?}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("view View1 (from: front, at: [130, 150])") && text.contains("text_at: [130, 120]"),
+        "{text}"
+    );
+    let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
+    assert_eq!(q["dimensions"][0]["value"], 40.0, "{q}");
+    run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "text_at": []}));
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(!text.contains("text_at") && !text.contains("tolerance"), "{text}");
     let mut two = dim.clone();

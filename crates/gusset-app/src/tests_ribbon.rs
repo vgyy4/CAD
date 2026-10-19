@@ -368,6 +368,25 @@ fn drawing_tab_shows_the_sheet_and_dragging_moves_a_view() {
     let views = &h.state().sheet.as_ref().unwrap().1.views;
     let top_after = views.iter().find(|v| v.name == "Top").unwrap().min[0];
     assert!((top_after - top_before - f64::from(60.0 / zoom)).abs() < 0.2, "{top_before} -> {top_after}");
+    // A note is dragged by its text.
+    h.state_mut()
+        .run("drawing.add_note", json!({"drawing": "Drawing1", "text": "Deburr", "at": ["40", "60"]}))
+        .unwrap();
+    for _ in 0..4 {
+        h.state_mut().wait_idle();
+        h.run();
+    }
+    let note = h.state().sheet.as_ref().unwrap().1.handles.iter().find(|x| x.item == "Note1").cloned().unwrap();
+    let grip = [(note.min[0] + note.max[0]) / 2.0, (note.min[1] + note.max[1]) / 2.0];
+    let at = h.state().sheet_state.screen(grip).unwrap();
+    drag(&mut h, at, egui::Vec2::new(0.0, -40.0));
+    for _ in 0..4 {
+        h.state_mut().wait_idle();
+        h.run();
+    }
+    let text = h.state().snapshot.doc.to_text();
+    let y = ((60.0 + f64::from(40.0 / zoom)) * 10.0).round() / 10.0;
+    assert!(text.contains(&format!("note Note1 (text: \"Deburr\", at: [40, {y}])")), "{y} in\n{text}");
     // Back to the model.
     h.get_by_label("SOLID").click();
     h.run();

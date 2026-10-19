@@ -17,6 +17,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<DrawingAddDimension>(),
         spec::<DrawingEditDimension>(),
         spec::<DrawingAddNote>(),
+        spec::<DrawingMoveItem>(),
         spec::<DrawingDeleteItem>(),
         spec::<DrawingExport>(),
         spec::<QueryDrawing>(),
@@ -596,6 +597,47 @@ impl Command for DrawingAddNote {
             let name = item_name(d, self.name, "Note")?;
             d.items.push(DrawingItem::Note(NoteDef { name: name.clone(), text: self.text, at }));
             Ok(json!({ "note": name }))
+        })
+    }
+}
+
+/// Places a base view, a note or a dimension's text at a sheet position.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingMoveItem {
+    pub drawing: String,
+    pub item: String,
+    /// Sheet mm.
+    pub at: [String; 2],
+}
+
+impl Command for DrawingMoveItem {
+    const ID: &'static str = "drawing.move_item";
+    const TITLE: &'static str = "Move on sheet";
+    const DESCRIPTION: &'static str =
+        "Place a base view (its centre), a note or a dimension's text at a sheet position.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = pair("at", &self.at)?;
+        edit(s, ctx, "Move on sheet", |doc, _| {
+            let d = find(doc, &self.drawing)?;
+            let dname = d.name.clone();
+            let item = d
+                .items
+                .iter_mut()
+                .find(|i| i.name() == self.item)
+                .ok_or_else(|| CommandError::not_found(format!("drawing '{dname}' has no item '{}'", self.item)))?;
+            match item {
+                DrawingItem::View(ViewDef { placement: ViewPlacement::Base { at: slot, .. }, .. }) => *slot = at,
+                DrawingItem::View(_) => {
+                    return Err(CommandError::args("a projected view follows its parent")
+                        .hint("move the parent, or change this view's gap"));
+                }
+                DrawingItem::Note(n) => n.at = at,
+                DrawingItem::Dim(dim) => dim.text_at = Some(at),
+            }
+            Ok(json!({ "moved": self.item }))
         })
     }
 }

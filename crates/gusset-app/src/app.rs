@@ -1527,9 +1527,9 @@ impl App {
         // The last scene stays up while the next one builds.
         let scene = self.sheet.as_ref().filter(|(k, _)| k.1 == name).map(|(_, s)| s);
         let out = crate::sheet::show(ui, &pal, &name, scene, &base, &mut self.sheet_state);
-        if let Some((view, at)) = out.moved {
+        if let Some((item, at)) = out.moved {
             let at = [at[0].to_string(), at[1].to_string()];
-            self.submit_command("drawing.edit_view", json!({"drawing": name, "view": view, "at": at}), Then::Quiet);
+            self.submit_command("drawing.move_item", json!({"drawing": name, "item": item, "at": at}), Then::Quiet);
         }
     }
 

@@ -31,6 +31,8 @@ pub struct DimResult {
     pub value: Option<f64>,
     pub text: String,
     pub error: Option<String>,
+    /// The point that, given as the dimension's `text_at`, keeps its text where it is.
+    pub text_at: Option<[f64; 2]>,
 }
 
 /// An edge as the dimension sees it, in model coordinates.
@@ -126,7 +128,7 @@ fn linear(
     offset: f64,
     text_at: Option<[f64; 2]>,
     text: &str,
-) {
+) -> [f64; 2] {
     let base = match text_at {
         Some(t) => dot(t, n),
         None => dot(p1, n).max(dot(p2, n)).max(reach) + offset,
@@ -157,6 +159,7 @@ fn linear(
         None => mul(add(f1, f2), 0.5),
     };
     aligned_text(scene, mid, dir, text);
+    mid
 }
 
 /// The value as written: 2 decimals in mm, 3 in inches, no trailing zeros.
@@ -183,7 +186,9 @@ pub fn draw(
     text_at: Option<[f64; 2]>,
 ) -> DimResult {
     match build(scene, d, v, offset.unwrap_or(DEFAULT_OFFSET), text_at) {
-        Ok((value, text)) => DimResult { name: d.name.clone(), value: Some(value), text, error: None },
+        Ok((value, text, at)) => {
+            DimResult { name: d.name.clone(), value: Some(value), text, error: None, text_at: Some(at) }
+        }
         Err(e) => {
             if let Some(t) = text_at {
                 scene.push(
@@ -197,7 +202,7 @@ pub fn draw(
                     },
                 );
             }
-            DimResult { name: d.name.clone(), value: None, text: String::new(), error: Some(e) }
+            DimResult { name: d.name.clone(), value: None, text: String::new(), error: Some(e), text_at }
         }
     }
 }
@@ -208,7 +213,7 @@ fn build(
     v: &ViewCtx<'_>,
     offset: f64,
     text_at: Option<[f64; 2]>,
-) -> Result<(f64, String), String> {
+) -> Result<(f64, String, [f64; 2]), String> {
     let pv = v.view;
     let to = |p: V3| pv.to_sheet(p);
     let (factor, decimals) = match v.units {
@@ -292,8 +297,8 @@ fn build(
             let value = dot(sub(p2, p1), dir).abs() / pv.scale * factor;
             let text = label(number(value, decimals));
             let n = away(perp(dir), mul(add(p1, p2), 0.5));
-            linear(scene, p1, p2, dir, n, reach(n), offset, text_at, &text);
-            Ok((value, text))
+            let at = linear(scene, p1, p2, dir, n, reach(n), offset, text_at, &text);
+            Ok((value, text, at))
         }
         DimKind::Diameter | DimKind::Radius => {
             let Geo::Circle(c) = &a else {
@@ -335,7 +340,7 @@ fn build(
                     angle: 0.0,
                 },
             );
-            Ok((value, text))
+            Ok((value, text, knee))
         }
         DimKind::Angle => {
             let (Geo::Line(p, q), Some(Geo::Line(r, s))) = (&a, &b) else {
@@ -406,7 +411,7 @@ fn build(
                     angle: 0.0,
                 },
             );
-            Ok((value, text))
+            Ok((value, text, tp))
         }
     }
 }
