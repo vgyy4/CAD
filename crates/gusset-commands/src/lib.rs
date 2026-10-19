@@ -5,6 +5,7 @@
 
 pub mod commands;
 pub mod error;
+pub mod fcstd;
 pub mod gear;
 #[doc(hidden)]
 pub mod golden;

@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gusset_kernel::Mesh;
 
+pub mod archive;
 pub mod error;
 mod obj;
 mod stl;

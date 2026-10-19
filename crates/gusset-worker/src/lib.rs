@@ -35,6 +35,8 @@ pub enum Format {
     Iges = 2,
     /// A kernel-native B-rep blob (OCCT `BinTools`) to validate and re-serialize.
     Brep = 3,
+    /// OCCT BRep text (FreeCAD's `.brp` shapes, ADR 0033).
+    BrepText = 4,
 }
 
 impl Format {
@@ -43,6 +45,7 @@ impl Format {
             1 => Some(Format::Step),
             2 => Some(Format::Iges),
             3 => Some(Format::Brep),
+            4 => Some(Format::BrepText),
             _ => None,
         }
     }
@@ -50,6 +53,7 @@ impl Format {
         match ext.to_ascii_lowercase().as_str() {
             "step" | "stp" => Some(Format::Step),
             "iges" | "igs" => Some(Format::Iges),
+            "brp" | "brep_text" => Some(Format::BrepText),
             _ => None,
         }
     }

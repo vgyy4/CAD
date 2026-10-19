@@ -384,6 +384,56 @@ fn import_uses_the_importer_and_stores_blobs_once() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn a_freecad_file_imports_its_visible_shapes_through_the_worker() {
+    struct Fake;
+    impl session::Importer for Fake {
+        fn import(
+            &self,
+            format: &str,
+            bytes: &[u8],
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            assert_eq!(format, "brp");
+            if bytes.starts_with(b"CASCADE") {
+                Ok(vec![(String::new(), bytes.to_vec())])
+            } else {
+                Err("not BRep".into())
+            }
+        }
+    }
+    let doc = r#"<Document><Objects><Object type="Part::Box" name="Box"/><Object type="Part::Cylinder" name="Cyl"/>
+<Object type="Sketcher::SketchObject" name="Sketch"/></Objects><ObjectData>
+<Object name="Box"><Properties><Property name="Label"><String value="Base plate"/></Property>
+<Property name="Shape"><Part file="PartShape.brp"/></Property></Properties></Object>
+<Object name="Cyl"><Properties><Property name="Shape"><Part file="PartShape1.brp"/></Property></Properties></Object>
+<Object name="Sketch"><Properties><Property name="Shape"><Part file="PartShape2.brp"/></Property></Properties></Object>
+</ObjectData></Document>"#;
+    let zip = gusset_meshio::archive::write(&[
+        ("Document.xml", doc.as_bytes()),
+        ("PartShape.brp", b"CASCADE Topology V1, (c) Matra-Datavision"),
+        ("PartShape1.brp", b"garbage"),
+        ("PartShape2.brp", b"CASCADE Topology V1"),
+    ])
+    .unwrap();
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-fcstd-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("part.FCStd"), &zip).unwrap();
+    std::fs::write(d.join("empty.fcstd"), gusset_meshio::archive::write(&[("x.txt", b"x")]).unwrap()).unwrap();
+    s.project_dir = Some(d.clone());
+    s.importer = Some(Arc::new(Fake));
+    let r = run(&mut s, &u, "import.file", json!({"path": "part.FCStd"}));
+    // The box imports; the cylinder's shape is refused (a warning); the sketch is skipped.
+    assert_eq!(r["features"].as_array().unwrap().len(), 1, "{r}");
+    assert!(r.to_string().contains("not BRep"), "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("format: fcstd") && text.contains("Base plate"), "{text}");
+    assert_eq!(execute(&mut s, &u, "import.file", json!({"path": "empty.fcstd"})).unwrap_err().code, "io");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn err_code(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> String {
     execute(s, ctx, id, args).map(|v| format!("ok: {v}")).unwrap_or_else(|e| e.code)
 }

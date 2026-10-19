@@ -31,6 +31,7 @@ gusset-kernel-occt.workspace = true
 gusset-host.workspace = true
 gusset-doc.workspace = true
 serde_json.workspace = true
+gusset-meshio.workspace = true
 
 [lints]
 workspace = true

@@ -279,6 +279,7 @@ dependencies = [
  "gusset-units",
  "libc",
  "libm",
+ "quick-xml",
  "schemars",
  "serde",
  "serde_json",
@@ -324,6 +325,7 @@ dependencies = [
 name = "gusset-fuzz"
 version = "0.0.0"
 dependencies = [
+ "gusset-commands",
  "gusset-doc",
  "gusset-drawing",
  "gusset-history",

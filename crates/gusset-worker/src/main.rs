@@ -72,6 +72,12 @@ fn run(format: Format, data: &[u8], file: Option<&Path>, granted: Option<&Path>)
                 .map(|(i, s)| Ok(Body { name: format!("Body {}", i + 1), brep: safe::brep_write(s).map_err(err)? }))
                 .collect()
         }
+        Format::BrepText => {
+            let s = safe::brep_text_read(data).map_err(err)?;
+            safe::topology(&s).map_err(err)?;
+            let brep = safe::brep_write(&s).map_err(err)?;
+            Ok(vec![Body { name: String::new(), brep }])
+        }
         Format::Brep => {
             // Parse, walk the whole topology (what the app does next with the shape),
             // and re-serialize with OCCT's writer: the app parses only that output.

@@ -273,5 +273,7 @@ mod raw {
         ) -> i32;
         pub(crate) fn gs_brep_write(s: *const GsShape, out: *mut GsBuf) -> i32;
         pub(crate) fn gs_brep_read(data: *const u8, len: usize, out: *mut *mut GsShape) -> i32;
+        pub(crate) fn gs_brep_text_read(data: *const u8, len: usize, out: *mut *mut GsShape) -> i32;
+        pub(crate) fn gs_brep_text_write(s: *const GsShape, out: *mut GsBuf) -> i32;
     }
 }

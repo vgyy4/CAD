@@ -40,7 +40,12 @@ pub const TIER_MESH: &str =
 enum Kind {
     Brep(ImportFormat),
     Mesh(gusset_meshio::Format),
+    /// A FreeCAD document: its visible shapes, each parsed by the worker (ADR 0033).
+    FreeCad,
 }
+
+/// Tier note for FreeCAD imports.
+pub const TIER_FREECAD: &str = "exact geometry per visible FreeCAD object (B-rep, no FreeCAD history)";
 
 /// An opened import file, ready to be read and parsed off the model thread.
 pub struct ImportJob {
@@ -145,17 +150,18 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
     let kind = match ext.as_str() {
         "step" | "stp" => Kind::Brep(ImportFormat::Step),
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
+        "fcstd" => Kind::FreeCad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .stl, .3mf, .obj"));
+                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .stl, .3mf, .obj"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_)) && importer.is_none() {
-        return Err(CommandError::new("not_allowed", "STEP/IGES import is not available in this session")
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad) && importer.is_none() {
+        return Err(CommandError::new("not_allowed", "STEP/IGES/FreeCAD import is not available in this session")
             .hint("the sandboxed import worker (gusset-worker) was not found next to the program"));
     }
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
@@ -181,6 +187,11 @@ impl ImportJob {
                 })?;
                 let bodies = bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format });
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
+            }
+            Kind::FreeCad => {
+                let importer =
+                    self.importer.ok_or_else(|| CommandError::new("not_allowed", "FreeCAD import is not available"))?;
+                freecad(&bytes, importer.as_ref(), cancel)?
             }
             Kind::Mesh(format) => {
                 let opts = gusset_meshio::ImportOptions {
@@ -209,6 +220,53 @@ impl ImportJob {
         }
         Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings })
     }
+}
+
+/// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape
+/// the worker refuses is reported as a warning; none at all is an error.
+fn freecad(
+    bytes: &[u8],
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let limits = gusset_meshio::Limits::default();
+    let bad = |e: gusset_meshio::MeshIoError| CommandError::new("io", format!("the FreeCAD file cannot be read: {e}"));
+    let xml = gusset_meshio::archive::read_entries(bytes, &limits, &|n| n == "Document.xml" || n == "GuiDocument.xml")
+        .map_err(bad)?;
+    let get = |n: &str| xml.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_slice());
+    let doc = get("Document.xml")
+        .ok_or_else(|| CommandError::new("io", "the file has no Document.xml: not a FreeCAD document"))?;
+    let picks = crate::fcstd::picks(doc, get("GuiDocument.xml")).map_err(|e| CommandError::new("io", e))?;
+    if picks.is_empty() {
+        return Err(CommandError::new("io", "the FreeCAD document shows no solid objects"));
+    }
+    let files: std::collections::BTreeSet<&str> = picks.iter().map(|p| p.file.as_str()).collect();
+    let shapes = gusset_meshio::archive::read_entries(bytes, &limits, &|n| files.contains(n)).map_err(bad)?;
+    let (mut out, mut warnings) = (Vec::new(), Vec::new());
+    for p in &picks {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let Some((_, data)) = shapes.iter().find(|(n, _)| *n == p.file) else {
+            warnings.push(format!("{}: its shape file is missing", p.label));
+            continue;
+        };
+        // FreeCAD writes BRep text (.brp), or OCCT binary (.bin) when asked to.
+        let format = if p.file.to_ascii_lowercase().ends_with(".bin") { "brep" } else { "brp" };
+        match importer.import(format, data, cancel) {
+            Ok(bodies) => out.extend(bodies.into_iter().map(|(_, blob)| PreparedBody {
+                name: p.label.clone(),
+                blob,
+                format: ImportFormat::FreeCad,
+            })),
+            Err(_) if cancel.load(Ordering::Relaxed) => return Err(cancelled()),
+            Err(e) => warnings.push(format!("{}: {e}", p.label)),
+        }
+    }
+    if out.is_empty() {
+        return Err(CommandError::new("io", format!("no FreeCAD shape could be read: {}", warnings.join("; "))));
+    }
+    Ok((out, TIER_FREECAD, warnings))
 }
 
 /// Phase 3 without policy checks: stores the blobs and commits the import features.

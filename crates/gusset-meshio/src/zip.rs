@@ -208,6 +208,11 @@ impl<'a> Archive<'a> {
         &self.entries
     }
 
+    /// Every entry, in archive order.
+    pub(crate) fn all(&self) -> &[Entry] {
+        &self.entries
+    }
+
     /// Case-insensitive lookup (OPC part names are case-insensitive).
     pub(crate) fn find(&self, name: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.name.eq_ignore_ascii_case(name))

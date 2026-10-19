@@ -2210,4 +2210,30 @@ int gs_brep_read(const uint8_t* data, size_t len, GsShape** out) {
   GS_GUARD_END
 }
 
+/* OCCT's BRep text format ("CASCADE Topology V1..V3"), as FreeCAD stores shapes. Only
+ * the sandboxed import worker calls this on file data (ADR 0033). */
+int gs_brep_text_read(const uint8_t* data, size_t len, GsShape** out) {
+  GS_GUARD_BEGIN
+  if (!data || !out) return fail("null argument");
+  std::string buf(reinterpret_cast<const char*>(data), len);
+  std::istringstream is(buf);
+  TopoDS_Shape s;
+  BRep_Builder b;
+  BRepTools::Read(s, is, b);
+  if (s.IsNull()) return fail("the BRep text is empty or damaged");
+  *out = new GsShape{s};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_brep_text_write(const GsShape* s, GsBuf* out) {
+  GS_GUARD_BEGIN
+  if (!s || !out) return fail("null argument");
+  std::ostringstream os;
+  BRepTools::Write(s->s, os);
+  bytes_to_buf(os.str(), out);
+  return GS_OK;
+  GS_GUARD_END
+}
+
 }  // extern "C"

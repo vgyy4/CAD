@@ -3289,7 +3289,7 @@ impl Command for ExportMesh {
     }
 }
 
-/// Imports a STEP, IGES, STL, 3MF or OBJ file from the project folder.
+/// Imports a STEP, IGES, FreeCAD, STL, 3MF or OBJ file from the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportFile {
@@ -3300,7 +3300,7 @@ pub struct ImportFile {
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES become exact bodies (parsed in a sandboxed worker); STL/3MF/OBJ become reference meshes (display, measuring, mesh export; not solids). Runs in the background, cancellable. Names in the file are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/FCStd become exact bodies (parsed in a sandboxed worker); STL/3MF/OBJ become reference meshes (display, measuring, mesh export; not solids). Runs in the background, cancellable. Names in the file are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");

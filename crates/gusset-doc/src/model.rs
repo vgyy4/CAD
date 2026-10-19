@@ -750,6 +750,8 @@ pub enum ImportFormat {
     Obj,
     /// Kernel-native B-rep (the import worker's output).
     Brep,
+    /// A FreeCAD document's shape (ADR 0033), stored as kernel-native B-rep.
+    FreeCad,
 }
 
 impl ImportFormat {
@@ -761,6 +763,7 @@ impl ImportFormat {
             ImportFormat::ThreeMf => "3mf",
             ImportFormat::Obj => "obj",
             ImportFormat::Brep => "brep",
+            ImportFormat::FreeCad => "fcstd",
         }
     }
     pub fn from_keyword(s: &str) -> Option<Self> {
@@ -771,6 +774,7 @@ impl ImportFormat {
             ImportFormat::ThreeMf,
             ImportFormat::Obj,
             ImportFormat::Brep,
+            ImportFormat::FreeCad,
         ]
         .into_iter()
         .find(|f| f.keyword() == s)

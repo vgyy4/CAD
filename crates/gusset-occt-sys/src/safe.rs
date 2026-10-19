@@ -556,6 +556,27 @@ pub fn brep_read(data: &[u8]) -> ShimResult<RawShape> {
     RawShape::from_ptr(out)
 }
 
+/// Reads OCCT's BRep text format (FreeCAD's `.brp`). For untrusted data, call this only
+/// in the sandboxed import worker (ADR 0033).
+pub fn brep_text_read(data: &[u8]) -> ShimResult<RawShape> {
+    let mut out = std::ptr::null_mut();
+    let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: `data` alive for the call; out-param valid.
+    let rc = unsafe { sys::gs_brep_text_read(data.as_ptr(), data.len(), &mut out) };
+    check(rc)?;
+    RawShape::from_ptr(out)
+}
+
+/// Writes a shape in OCCT's BRep text format.
+pub fn brep_text_write(s: &RawShape) -> ShimResult<Vec<u8>> {
+    let mut out = GsBuf::default();
+    // SAFETY: shape locked; out-param valid.
+    let rc = s.with(|p| unsafe { sys::gs_brep_text_write(p, &mut out) });
+    let v = take(out);
+    check(rc)?;
+    Ok(v)
+}
+
 /// Runs OCCT's validity check on a shape (`BRepCheck_Analyzer`).
 pub fn check_valid(s: &RawShape) -> ShimResult<()> {
     // SAFETY: shape locked and valid for the call.

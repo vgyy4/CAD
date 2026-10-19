@@ -176,6 +176,8 @@ void gs_shape_array_free(GsShape** shapes, size_t n);
 /* Lossless native (BRep binary) serialization. */
 int gs_brep_write(const GsShape* s, GsBuf* out);
 int gs_brep_read(const uint8_t* data, size_t len, GsShape** out);
+int gs_brep_text_read(const uint8_t* data, size_t len, GsShape** out);
+int gs_brep_text_write(const GsShape* s, GsBuf* out);
 
 #ifdef __cplusplus
 }

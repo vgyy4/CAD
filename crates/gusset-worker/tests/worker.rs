@@ -146,3 +146,44 @@ fn own_blobs_are_trusted() {
     let blob = k.write_native(&shapes[0].0).unwrap();
     assert!(k.read_native(&blob).is_ok());
 }
+
+/// ADR 0033: a FreeCAD document's visible shape, stored as OCCT BRep text inside the
+/// .FCStd ZIP, imports through a session and the sandboxed worker as an exact body.
+#[test]
+fn freecad_import_end_to_end_through_a_session() {
+    use gusset_commands::{CmdCtx, Session};
+    // A 10 x 30 x 5 box as FreeCAD stores it: BRep text.
+    let k0 = gusset_kernel_occt::OcctKernel::new().unwrap();
+    let step = step_box_sized(30.0);
+    let shape = k0.import_step(&step).unwrap().remove(0).0;
+    let raw = gusset_occt_sys::safe::brep_read(&k0.write_native(&shape).unwrap()).unwrap();
+    let text = gusset_occt_sys::safe::brep_text_write(&raw).unwrap();
+    assert!(text.starts_with(b"\nCASCADE Topology") || text.starts_with(b"CASCADE Topology"));
+    let doc = r#"<Document><Objects><Object type="Part::Feature" name="Box"/></Objects><ObjectData>
+<Object name="Box"><Properties><Property name="Label"><String value="Freecad box"/></Property>
+<Property name="Shape"><Part file="PartShape.brp"/></Property></Properties></Object></ObjectData></Document>"#;
+    let zip = gusset_meshio::archive::write(&[("Document.xml", doc.as_bytes()), ("PartShape.brp", &text)]).unwrap();
+    let dir = std::env::temp_dir().join(format!("gusset-e2e-fcstd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("part.FCStd"), zip).unwrap();
+    let k = std::sync::Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker().to_path_buf())).unwrap());
+    let d = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut s = Session::new(&d, k, &CmdCtx::user(0));
+    s.importer = Some(std::sync::Arc::new(gusset_worker::WorkerImporter::new(worker().to_path_buf())));
+    s.project_dir = Some(dir.clone());
+    let host = gusset_host::Host::spawn(s, None);
+    let a = CmdCtx::agent("e2e", 1);
+    let r = host.call(a.clone(), "import.file", serde_json::json!({"path": "part.FCStd"})).unwrap();
+    assert_eq!(r["features"].as_array().unwrap().len(), 1, "{r}");
+    let b = host.call(a, "query.body", serde_json::json!({})).unwrap();
+    assert!((b["volume_mm3"].as_f64().unwrap() - 1500.0).abs() < 1e-6, "{b}");
+    let _ = host.shutdown();
+    let _ = std::fs::remove_dir_all(&dir);
+    // Hostile BRep text fails cleanly in the worker.
+    let lim = gusset_sandbox::Limits::default();
+    for junk in [&b"CASCADE Topology V1, (c) Matra-Datavision\nLocations 99999999\n"[..], b"", &[0xffu8; 512][..]] {
+        let r = import_out_of_process(worker(), Format::BrepText, junk, &lim, Duration::from_secs(60));
+        assert!(r.is_err(), "{r:?}");
+    }
+}

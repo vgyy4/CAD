@@ -17,6 +17,7 @@ gusset-eval.workspace = true
 gusset-naming.workspace = true
 gusset-sketch.workspace = true
 gusset-meshio.workspace = true
+quick-xml.workspace = true
 gusset-store.workspace = true
 gusset-project.workspace = true
 libm.workspace = true
