@@ -1,6 +1,56 @@
-//! The 3D curve evaluation part of OCCT's `BSplCLib`.
+//! The 3D curve evaluation part of OCCT's `BSplCLib`, and the flat-array functions that `BSplSLib` needs
+//! (`Eval`/`Bohm` on raw buffers, local knots, knot location, B-spline basis, interpolation, knot insertion and
+//! removal, degree elevation, unperiodizing).
 #![allow(clippy::float_cmp)]
 use crate::gp::{self, Pnt, Vec};
+use crate::mathlin::MathError;
+use crate::plib::PLibError;
+
+pub(crate) mod basis;
+pub(crate) mod flat;
+pub(crate) mod knotops;
+pub(crate) mod util;
+
+pub use basis::{build_schoenberg_points, eval_bspline_basis, interpolate};
+pub use flat::{
+    bohm_buffer, build_knots, eval_buffer, knot_sequence, knot_sequence_length, locate_parameter_flat,
+    locate_parameter_range, max_degree, max_unit_weights_size, no_mults, pole_index, unit_weights_data,
+};
+pub use knotops::{
+    increase_degree, increase_degree_count_knots, insert_knots, prepare_insert_knots, prepare_unperiodize, remove_knot,
+    unperiodize,
+};
+
+/// The error type of `BSplCLib` and `BSplSLib`, standing for the exceptions of OCCT and for the checks that OCCT
+/// 8.0.1 as built does not make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BSplError {
+    /// `Standard_ConstructionError` raised by OCCT (`function_multiply` when the function reports an error).
+    Construction,
+    /// `Standard_OutOfRange` raised by OCCT (`interpolate` on a singular system), and every call that OCCT 8.0.1 as
+    /// built does not check and that would fail (an access outside an array, a degree above the maximum, ...).
+    OutOfRange,
+    /// Any other `Standard_Failure`.
+    Failure,
+    /// A wrong shape of a Rust argument (slices that are too short, sizes that do not match, ...).
+    Argument,
+    /// An error of `mathlin` used inside.
+    Math(MathError),
+    /// An error of `plib` used inside.
+    PLib(PLibError),
+}
+
+impl From<MathError> for BSplError {
+    fn from(e: MathError) -> Self {
+        BSplError::Math(e)
+    }
+}
+
+impl From<PLibError> for BSplError {
+    fn from(e: PLibError) -> Self {
+        BSplError::PLib(e)
+    }
+}
 
 /// A B-spline curve with OCCT's pole, knot, and multiplicity data.
 #[derive(Debug)]
@@ -22,9 +72,9 @@ fn w<T>(s: &mut [T], i: usize, v: T) {
         *x = v;
     }
 }
-// Standard::Epsilon
+// Epsilon(x) of OCCT
 fn eps(x: f64) -> f64 {
-    f64::EPSILON * x.abs()
+    util::epsilon(x)
 }
 
 // BSplCLib::LocateParameter

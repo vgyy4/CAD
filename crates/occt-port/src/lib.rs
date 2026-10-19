@@ -8,6 +8,7 @@
 //! distributed under the same terms: GNU LGPL 2.1 with the OCCT exception.
 
 pub mod bsplclib;
+pub mod bsplslib;
 pub mod elclib;
 pub mod elslib;
 pub mod gp;
