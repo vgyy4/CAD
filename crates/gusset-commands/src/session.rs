@@ -221,6 +221,9 @@ impl Session {
                     .map(|b| b.id);
                 match existing {
                     Some(b) => b,
+                    // Read-only agents read main and never create a branch (F5-2). Not
+                    // remembered as their branch: writes, once allowed, still get their own.
+                    None if self.config.read_only_agents => return Ok(main),
                     None => {
                         let head = self.history.head(self.history.main()).map_err(CommandError::history)?;
                         let name = (1..)

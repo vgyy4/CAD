@@ -131,3 +131,25 @@ fn memory_time_and_depth_bombs_are_refused() {
         .to_string();
     assert!(e.contains("cancelled"), "{e}");
 }
+
+#[test]
+fn a_small_fn_makes_the_polygon_openscad_makes() {
+    // Dogfooding F5-1: the hex nut trap.
+    let m =
+        read("linear_extrude(2) circle(d = 10, $fn = 6); cylinder(h = 2, d = 10, $fn = 6); cylinder(h = 2, d = 10);")
+            .unwrap();
+    let mut l = Vec::new();
+    for o in &m.objects {
+        leaves(o, &mut l);
+    }
+    for (p, _) in l.iter().take(2) {
+        let Prim::Prism { shape: Shape2::Polygon(paths), .. } = p else { panic!("{p:?}") };
+        let pts = &paths[0];
+        assert_eq!(pts.len(), 6);
+        assert!(close(pts[0][0], 5.0) && close(pts[0][1], 0.0), "{pts:?}");
+        assert!(close(pts[1][1], 5.0 * libm::sin(std::f64::consts::PI / 3.0)), "{pts:?}");
+    }
+    assert!(matches!(l[2].0, Prim::Cylinder { .. }), "{l:?}");
+    let m = read("sphere(5, $fn = 8);").unwrap();
+    assert!(m.warnings.iter().any(|w| w.contains("$fn")), "{:?}", m.warnings);
+}

@@ -255,11 +255,27 @@ fn build(
         DimDirection::Horizontal => Some([1.0, 0.0]),
         DimDirection::Vertical => Some([0.0, 1.0]),
     };
+    // A view along a model axis shows lengths in the view plane true; an axonometric view
+    // shortens them all (dogfooding F5-6).
+    let principal = pv.toward.iter().any(|c| c.abs() > 1.0 - 1e-9);
     match d.kind {
         DimKind::Length | DimKind::Distance => {
+            if !principal && (d.kind == DimKind::Distance || fixed_dir.is_some()) {
+                return Err("this view is axonometric: dimension distances in a front, top or side view".into());
+            }
             let (p1, p2, aligned_dir) = match (d.kind, &a, &b) {
                 (DimKind::Length, Geo::Line(p, q), _) => {
                     let (p1, p2) = (to(*p), to(*q));
+                    // Only an edge shown at its true length is dimensioned.
+                    let true_len = libm::sqrt(q.iter().zip(p).map(|(x, y)| (x - y) * (x - y)).sum::<f64>());
+                    let shown = libm::hypot(p2[0] - p1[0], p2[1] - p1[1]) / pv.scale;
+                    if fixed_dir.is_none() && (shown - true_len).abs() > 1e-6 * true_len.max(1.0) {
+                        return Err(format!(
+                            "the edge is foreshortened in this view ({} of {}): dimension it where it shows its true length",
+                            number(shown * factor, decimals),
+                            number(true_len * factor, decimals)
+                        ));
+                    }
                     (p1, p2, unit(sub(p2, p1)))
                 }
                 (DimKind::Length, _, _) => return Err("a length dimension takes a straight edge".into()),

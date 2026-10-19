@@ -112,6 +112,21 @@ impl Value {
     }
 }
 
+/// Largest `$fn` built as a polygon.
+const MAX_FACETED: usize = 30;
+
+/// OpenSCAD's regular polygon for a circle of radius `r` with `n` segments: vertex `i` at
+/// `360 * i / n` degrees.
+fn ngon(r: f64, n: usize) -> Shape2 {
+    let pts = (0..n)
+        .map(|i| {
+            let a = (360.0 * i as f64 / n as f64).to_radians();
+            [r * libm::cos(a), r * libm::sin(a)]
+        })
+        .collect();
+    Shape2::Polygon(vec![pts])
+}
+
 /// Longest text a value is shown as, in bytes.
 const MAX_TEXT: usize = 1 << 20;
 
@@ -338,6 +353,21 @@ impl Eval<'_> {
     fn push_scope(&mut self, parent: usize) -> usize {
         self.scopes.push(Scope { parent: Some(parent), ..Scope::default() });
         self.scopes.len() - 1
+    }
+
+    /// An explicit small `$fn` (3 to [`MAX_FACETED`]): circles are built as OpenSCAD's
+    /// polygons. Larger or unset, they stay exact (the difference is under 0.75 %).
+    fn facets(&self) -> Option<usize> {
+        match self.lookup(0, "$fn") {
+            Value::Num(n) if (3.0..=MAX_FACETED as f64).contains(&n) => Some(n as usize),
+            _ => None,
+        }
+    }
+
+    fn warn(&mut self, line: u32, m: &str) {
+        if self.warnings.len() < 100 {
+            self.warnings.push(format!("line {line}: {m}"));
+        }
     }
 
     fn lookup(&self, mut sc: usize, name: &str) -> Value {
@@ -895,6 +925,9 @@ impl Eval<'_> {
                     (_, Value::Num(d)) => d / 2.0,
                     _ => 1.0,
                 };
+                if self.facets().is_some() {
+                    self.warn(line, "a sphere with a small $fn is built exact, not faceted");
+                }
                 self.prim(Prim::Sphere { radius: positive(r, "the radius")? }, line)
             }
             "cylinder" => {
@@ -911,6 +944,13 @@ impl Eval<'_> {
                 positive(h, "the height")?;
                 if !(r1 >= 0.0 && r2 >= 0.0 && r1 + r2 > 0.0 && r1.is_finite() && r2.is_finite()) {
                     return err(line, "cylinder: radii must be non-negative and not both zero");
+                }
+                // A small explicit $fn is a prism, as OpenSCAD makes it (dogfooding F5-1).
+                if let Some(n) = self.facets() {
+                    if (r1 - r2).abs() <= 1e-12 * r1.max(r2) {
+                        return self.prim(Prim::Prism { shape: ngon(r1, n), h, center }, line);
+                    }
+                    self.warn(line, "a cone with a small $fn is built exact, not faceted");
                 }
                 self.prim(Prim::Cylinder { h, r1, r2, center }, line)
             }
@@ -937,7 +977,11 @@ impl Eval<'_> {
                             (_, Value::Num(d)) => d / 2.0,
                             _ => 1.0,
                         };
-                        Shape2::Circle { center: [0.0, 0.0], radius: positive(r, "the radius")? }
+                        let r = positive(r, "the radius")?;
+                        match self.facets() {
+                            Some(n) => ngon(r, n),
+                            None => Shape2::Circle { center: [0.0, 0.0], radius: r },
+                        }
                     }
                     _ => {
                         let pts: Vec<[f64; 2]> = match self.arg(a, "points", 0) {

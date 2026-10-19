@@ -173,6 +173,15 @@ fn agents_work_on_their_own_branch_and_need_approval() {
     let e = execute(&mut s, &approved, "param.set", json!({"name": "depth", "expr": "4 mm"})).unwrap_err();
     assert_eq!(e.code, "read_only");
     run(&mut s, &a, "query.model", json!({}));
+    // A new read-only agent reads main and creates no branch (dogfooding F5-2).
+    let fresh = CmdCtx::agent("reader", 1);
+    let before = s.history().branches().len();
+    run(&mut s, &fresh, "query.model", json!({}));
+    assert_eq!(
+        execute(&mut s, &fresh, "param.set", json!({"name": "depth", "expr": "4 mm"})).unwrap_err().code,
+        "read_only"
+    );
+    assert_eq!(s.history().branches().len(), before);
     // Every agent call is audited.
     assert!(s.audit_log().len() >= 6);
     assert!(s.audit_log().iter().any(|e| e.outcome.contains("approval_required")));

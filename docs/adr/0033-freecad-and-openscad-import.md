@@ -35,8 +35,9 @@ formats, the licences of existing readers (FreeCAD LGPL-2.1+, OpenSCAD GPL-2.0+,
    (angle), `translate`, `rotate`, `mirror`, `scale` (uniform), `multmatrix` (rigid),
    `union`, `difference`, `intersection`, `color` (ignored), and the math and list
    functions. Solids are built with the kernel as exact B-rep (spheres and cylinders are
-   true surfaces, not facets; `$fn` only matters for `circle`/`polygon` used as
-   polygons). `hull`, `minkowski`, `offset`, `projection`, `surface`, `import`, `text`
+   true surfaces, not facets; an explicit `$fn` of 3 to 30 on a circle or cylinder builds
+   OpenSCAD's regular polygon or prism (hex nut traps, dogfooding F5-1), and a small `$fn`
+   on a sphere or cone is warned about). `hull`, `minkowski`, `offset`, `projection`, `surface`, `import`, `text`
    and non-uniform scaling are reported as unsupported with the line. Evaluation is
    bounded: recursion depth 256, 10 M evaluation steps, 100 k primitives, 20 M value
    elements built or walked, CSG depth 256 (amended after security review v0.4 X1-X3;

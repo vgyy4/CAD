@@ -12,7 +12,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 pub struct Sweep {
     /// Profile sketch.
     pub sketch: String,
-    /// Region ids; empty = all.
+    /// Region ids; empty = all, holes left open.
     #[serde(default)]
     pub regions: Vec<String>,
     /// Path sketch `S`, its curves `S.curves(l1, a2)`, or edges `[edge(..)]`; an end lies in the profile plane.

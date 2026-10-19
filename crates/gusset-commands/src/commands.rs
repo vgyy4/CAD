@@ -1769,7 +1769,7 @@ fn feature_name(doc: &Document, name: Option<String>, base: &str) -> Result<Stri
 #[serde(deny_unknown_fields)]
 pub struct Extrude {
     pub sketch: String,
-    /// Region ids from query_sketch (or an entity bounding one region); empty = all.
+    /// Region ids (query_sketch) or an entity bounding one; empty = all, holes left open.
     #[serde(default)]
     pub regions: Vec<String>,
     /// Distance expression (`10 mm`, `depth`, negative to flip).

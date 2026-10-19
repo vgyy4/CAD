@@ -70,6 +70,9 @@ pub struct RegionInfo {
 pub(crate) struct Solved {
     pub(crate) result: SketchResult,
     pub(crate) profiles: Vec<(RegionInfo, Region2)>,
+    /// Per profile: it lies inside an odd number of other regions (a hole of one), so an
+    /// empty selection leaves it out, as an even-odd fill does (dogfooding F5-7).
+    pub(crate) in_hole: Vec<bool>,
     /// Some curve is cut by another one (regions are then named with ranks).
     pub(crate) crossings: bool,
     /// Where the sketch sits in 3D.
@@ -328,6 +331,7 @@ pub(crate) fn solve_sketch(
     }
     let dnames = |v: &[sk::EntityId]| v.iter().filter_map(|i| dback.get(i).cloned()).collect::<Vec<_>>();
     let mut profiles = Vec::new();
+    let mut in_hole = Vec::new();
     let mut crossings = false;
     match sk::arrange(&arr_sketch, 1e-6) {
         Ok(arr) if arr.profiles.is_empty() && !arr.open_ends.is_empty() => {
@@ -378,6 +382,8 @@ pub(crate) fn solve_sketch(
                     outer: Loop2 { edges: p.outer.segments.iter().map(seg_of).collect() },
                     holes: p.holes.iter().map(|h| Loop2 { edges: h.segments.iter().map(seg_of).collect() }).collect(),
                 };
+                let depth = arr.profiles.iter().filter(|q| !std::ptr::eq(*q, p) && q.outer.contains(p.label)).count();
+                in_hole.push(depth % 2 == 1);
                 profiles.push((RegionInfo { id, area: p.area, outer: outer.clone(), at: p.label }, region));
             }
             result.regions = Ok(profiles.iter().map(|(i, _)| i.clone()).collect());
@@ -402,7 +408,17 @@ pub(crate) fn solve_sketch(
         }
     }
     let hole_sites = hole_sites(def, &derived, &result.points);
-    Ok(Solved { result, profiles, crossings, frame, line_points, arranged: arr_sketch, ids: dback, hole_sites })
+    Ok(Solved {
+        result,
+        profiles,
+        in_hole,
+        crossings,
+        frame,
+        line_points,
+        arranged: arr_sketch,
+        ids: dback,
+        hole_sites,
+    })
 }
 
 /// The places a `hole` feature can use (ADR 0019): the points that are not construction
@@ -571,7 +587,8 @@ pub(crate) fn kernel_profile(
     let mut regions = Vec::new();
     let mut ids = Vec::new();
     for (k, (info, region)) in solved.profiles.iter().enumerate() {
-        if select.is_empty() || picked.contains(&k) {
+        let default = !solved.in_hole.get(k).copied().unwrap_or(false);
+        if (select.is_empty() && default) || picked.contains(&k) {
             regions.push(region.clone());
             ids.push(info.id.clone());
         }

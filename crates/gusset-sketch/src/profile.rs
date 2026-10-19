@@ -87,6 +87,11 @@ impl Loop {
     pub fn entities(&self) -> Vec<EntityId> {
         self.segments.iter().map(|s| s.entity).collect()
     }
+
+    /// Whether `p` lies inside the loop (non-zero winding).
+    pub fn contains(&self, p: V2) -> bool {
+        winding(self, p) != 0
+    }
 }
 
 /// A closed region: a counter-clockwise outer loop and clockwise hole loops.

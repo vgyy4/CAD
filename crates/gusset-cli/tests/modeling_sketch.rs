@@ -323,3 +323,18 @@ fn sketch_patterns_drill_a_plate_and_follow_parameters() {
     let last = &q["points"][format!("{hub_centre}_4")];
     assert!(last[0].as_f64().unwrap().abs() < 1e-9 && (last[1].as_f64().unwrap() + 20.0).abs() < 1e-9, "{q}");
 }
+
+#[test]
+fn a_default_extrude_leaves_holes_open_and_fills_islands() {
+    // Dogfooding F5-7: with no regions given, a region inside another one's hole is left
+    // out (even-odd), and an island inside that hole is extruded again.
+    let mut r = Rig::new();
+    r.run("sketch.create", json!({"plane": "XY"}));
+    r.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    r.run("sketch.add_circle", json!({"sketch": "Sketch1", "cx": 20, "cy": 10, "radius": 6}));
+    r.run("sketch.add_circle", json!({"sketch": "Sketch1", "cx": 20, "cy": 10, "radius": 2}));
+    let e = r.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    assert_eq!(e["rebuild_ok"], true, "{e}");
+    let want = (800.0 - PI * 36.0 + PI * 4.0) * 5.0;
+    assert!((r.volume("Extrude1") - want).abs() < 1e-6 * want, "{} vs {want}", r.volume("Extrude1"));
+}

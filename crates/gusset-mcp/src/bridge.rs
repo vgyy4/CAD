@@ -388,14 +388,17 @@ where
     }
     // Agent work reaches the file a few seconds after each change, not only on a clean
     // exit: a killed server lost a whole part (dogfooding F4-2).
-    let saver = tokio::spawn(autosave(host.clone(), save_as.clone()));
+    // A read-only connection never writes the project (dogfooding F5-2).
+    let saver = (!options.read_only).then(|| tokio::spawn(autosave(host.clone(), save_as.clone())));
     let served = server.serve_io(read, write).await;
-    saver.abort();
+    if let Some(saver) = saver {
+        saver.abort();
+    }
     // Persist agent work (it lives on agent branches; main is untouched).
     if let Some((session, project)) = host.shutdown()
         && let Some(mut project) = project
     {
-        if session.dirty {
+        if session.dirty && !options.read_only {
             let saved = match &save_as {
                 Some(p) => project.save_as(p, session.history()),
                 None => project.save(session.history()),

@@ -142,6 +142,9 @@ fn dimensions_are_measured_from_the_model() {
   dim D3 (view: Top, kind: angle, a: {l5}, b: {l6})
   dim D4 (view: Top, kind: length, a: {l6}, direction: horizontal)
   dim D5 (view: Top, kind: diameter, a: {l6})
+  view Iso (bodies: [Plate], from: iso, at: [330, 210])
+  dim D6 (view: Iso, kind: length, a: {l5})
+  dim D7 (view: Iso, kind: distance, a: {l5}, b: {l7})
 }}
 ",
         l5 = e("l5"),
@@ -167,7 +170,10 @@ fn dimensions_are_measured_from_the_model() {
     // A vertical edge measured horizontally is zero long.
     near("D4", 0.0);
     assert!(d("D5").error.as_deref().is_some_and(|e| e.contains("circular")), "{:?}", d("D5"));
-    assert_eq!(s.issues.len(), 1, "{:?}", s.issues);
+    // An isometric view shortens edges: no projected length is shown as a size (F5-6).
+    assert!(d("D6").error.as_deref().is_some_and(|e| e.contains("foreshortened")), "{:?}", d("D6"));
+    assert!(d("D7").error.as_deref().is_some_and(|e| e.contains("axonometric")), "{:?}", d("D7"));
+    assert_eq!(s.issues.len(), 3, "{:?}", s.issues);
     // Arrows and dimension lines are drawn.
     assert!(s.items.iter().filter(|i| matches!(i.prim, Prim::Fill { .. })).count() >= 6);
     assert!(s.items.iter().any(|i| matches!(&i.prim, Prim::Text { text, .. } if text == "40")));
