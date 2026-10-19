@@ -176,6 +176,10 @@ pub trait ViewRenderer: Send + Sync + 'static {
     /// # Errors
     /// A message for the agent (e.g. "no GPU adapter available").
     fn render_png(&self, request: &RenderRequest, scene: &RenderScene) -> Result<Vec<u8>, String>;
+
+    /// Prepares for the first render (device, pipelines) so it does not pay for that.
+    /// Blocking: call it on a thread of its own.
+    fn warm(&self) {}
 }
 
 /// A test double: a valid 1×1 PNG whatever the request (records nothing).

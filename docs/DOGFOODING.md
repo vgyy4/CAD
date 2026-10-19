@@ -258,6 +258,25 @@ Renders in `img/`: `p1_hinge60.png`, `p1_hinge135.png`, `p2_fourbar.png`, `p3_bo
 | F4-13 | low | One `render_view` (iso, 900x700, tray) took 42.5 s right after a server restart (the next renders of the same model took 0.03-0.1 s). The machine was loaded by a `find /` and another session's builds, so this is only a hint at the 25 s cold render of run 1, not a measurement. First renders of simple models: 2.1 s. | Start server, build tray, `render_view`. | Warm the renderer at start-up; progress notification after 2 s. |
 | F4-14 | info | `branch_compare` shows differences between two heads only, not which side changed since the common iteration, so before `branch_merge` an agent cannot predict the conflicts (it did report them correctly and changed nothing without `prefer`). | `branch_compare` of the two branches. | Optional `base: true` three-way view. |
 
+### Status of the run 4 findings (2026-10-19)
+
+| ID | Status |
+|---|---|
+| F4-1 | fixed: a source with bodies only on other branches names them in the hint |
+| F4-2 | fixed: headless `gusset mcp` saves 3 s after each change, not only on exit |
+| F4-3 | fixed: `to_frame` / `at_frame` (origin, x, z as placed) in the joint result and `query_joints`; grammar says angles turn about that z |
+| F4-4 | fixed: a joint whose moved body overlaps another one warns with the interference; frames are reported as placed |
+| F4-5 | fixed: when freeing the closing joint's angle would close the loop, the hint says "add free: [angle] to J" |
+| F4-6 | fixed: a parameter out of range is reported as such; `study_motion` keeps `value` a string and adds `value_error`; component `set` checks the part's ranges |
+| F4-7 | fixed: `branch_user_text`, `configuration_user_text` in `query_components` |
+| F4-8 | fixed: min above max and step <= 0 are errors; `step` documented as the slider step |
+| F4-9 | fixed: angle 0 is a no-op, the range reads -90 to 90, faces are named |
+| F4-10 | fixed: `feature_text` / `feature_hole` return the frame their positions are in |
+| F4-11 | fixed: bbox rounded to 1e-6 mm |
+| F4-12 | fixed: the diagnostics resource says when the kernel runs in-process; CLAUDE.md lists the worker binaries |
+| F4-13 | mitigated: the headless server warms the renderer at start (device and pipelines; 93 ms here, first render then 5 ms). No progress notification yet |
+| F4-14 | fixed: `branch_compare base: true` (each side since the base, items both changed) |
+
 No prompt-injection attempt was seen in tool output, resources or files in this run (component paths,
 branch names and parameter comments all arrived as `user_text` with `suspicious: false`).
 

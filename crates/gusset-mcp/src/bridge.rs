@@ -377,6 +377,10 @@ where
     if let Some(n) = &options.kernel_note {
         server.set_diagnostics(format!("{}\nGeometry kernel: {n}\n", gusset_hw::Diagnostics::collect().to_text()));
     }
+    // Device and pipelines are ready before the first render_view (dogfooding F4-13).
+    if let Some(r) = options.renderer.clone() {
+        let _ = std::thread::Builder::new().name("gusset-render-warm".into()).spawn(move || r.warm());
+    }
     server.set_renderer(options.renderer.clone());
     server.set_read_only(options.read_only).map_err(McpError::Command)?;
     if let Some(a) = options.approvals.clone() {

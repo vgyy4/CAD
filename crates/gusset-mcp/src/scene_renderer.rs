@@ -165,6 +165,29 @@ impl ViewRenderer for SceneRenderer {
         let path = self.init(&mut guard);
         path.render_png(&s, &camera, [request.width, request.height]).map_err(|e| format!("rendering failed: {e}"))
     }
+
+    /// Creates the device and renders one small frame, so shader and pipeline compilation
+    /// is done before the first `render_view` (a cold first render took 25-40 s on a
+    /// loaded machine; dogfooding F4-13). A `render_view` meanwhile waits for it.
+    fn warm(&self) {
+        let one = RenderScene {
+            bodies: vec![crate::render::RenderBody {
+                name: String::new(),
+                mesh: gusset_kernel::Mesh {
+                    positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    normals: vec![[0.0, 0.0, 1.0]; 3],
+                    indices: vec![0, 1, 2],
+                    face_ranges: std::iter::once(0..1).collect(),
+                    edges: vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]],
+                },
+                face_names: Vec::new(),
+                edge_names: Vec::new(),
+            }],
+        };
+        if let Ok(request) = serde_json::from_value::<RenderRequest>(serde_json::json!({"width": 16, "height": 16})) {
+            let _ = self.render_png(&request, &one);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +278,19 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
         let r = SceneRenderer::new();
         eprintln!("render path: {}", r.describe());
         check(&r);
+    }
+
+    #[test]
+    fn warming_makes_the_first_render_cheap() {
+        // F4-13: the device and pipelines are made once, before the first real render.
+        let r = SceneRenderer::new();
+        let t = std::time::Instant::now();
+        r.warm();
+        let warm = t.elapsed();
+        let t = std::time::Instant::now();
+        let png = r.render_png(&request(160, 120), &plate_scene()).unwrap();
+        eprintln!("{}: warm {warm:?}, first render {:?}", r.describe(), t.elapsed());
+        assert!(is_png(&png));
     }
 
     #[test]
