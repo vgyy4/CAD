@@ -44,7 +44,7 @@ windows-sys = "0.61.2"
 cc = "1.7.0"
 egui = "0.36.2"
 # gusset-text: glyph outlines (ADR 0029); both already in the tree through egui.
-skrifa = { version = "0.44.0", default-features = false, features = ["std", "autohint_shaping"] }
+skrifa = { version = "0.48.0", default-features = false, features = ["std", "autohint_shaping"] }
 epaint_default_fonts = "0.36.2"
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "accesskit", "default_fonts", "wayland", "x11"] }
 egui_kittest = { version = "0.36.2", features = ["wgpu", "snapshot"] }
