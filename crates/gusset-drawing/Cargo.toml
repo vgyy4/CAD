@@ -11,6 +11,7 @@ repository.workspace = true
 gusset-doc.workspace = true
 gusset-eval.workspace = true
 gusset-kernel.workspace = true
+gusset-naming.workspace = true
 gusset-units.workspace = true
 libm.workspace = true
 

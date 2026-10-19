@@ -156,6 +156,8 @@ pub struct Scene {
     pub views: Vec<PlacedView>,
     /// Problems that left something out (a view that could not be projected, ...).
     pub issues: Vec<String>,
+    /// The dimensions as measured, in drawing order.
+    pub dims: Vec<crate::dims::DimResult>,
 }
 
 impl Scene {

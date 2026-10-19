@@ -576,7 +576,7 @@ fn scene(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<gusset_drawing::Sc
         .ok_or_else(|| CommandError::not_found(format!("no drawing '{name}'")).hint("see query_drawing"))?;
     let ev = s.evaluate(&ctx.actor)?;
     let kernel = s.kernel().clone();
-    let cx = gusset_drawing::Context { ev: &ev, kernel: kernel.as_ref() };
+    let cx = gusset_drawing::Context { ev: &ev, kernel: kernel.as_ref(), units: doc.units };
     Ok(gusset_drawing::build(&d, &cx, &mut s.drawing_cache))
 }
 
@@ -629,6 +629,10 @@ fn query(s: &mut Session, ctx: &CmdCtx, name: Option<&str>) -> Result<Value, Com
         "projection": if d.projection == Projection::First { "first" } else { "third" },
         "views": views,
         "notes": notes,
+        "dimensions": sc.dims.iter().map(|d| match &d.error {
+            Some(e) => json!({ "name": d.name, "dangling": true, "error": e }),
+            None => json!({ "name": d.name, "value": d.value.map(round), "text_user_text": d.text }),
+        }).collect::<Vec<_>>(),
         "issues": sc.issues,
         "text_user_text": gusset_doc::drawing::print_drawing_object(&d),
     }))
@@ -646,7 +650,7 @@ pub struct QueryDrawing {
 impl Command for QueryDrawing {
     const ID: &'static str = "query.drawing";
     const TITLE: &'static str = "Drawing";
-    const DESCRIPTION: &'static str = "List drawings, or one drawing as built: each view's box on the sheet (mm) and scale, off_sheet, view errors, notes, issues, and its text.";
+    const DESCRIPTION: &'static str = "List drawings, or one drawing as built: view boxes (sheet mm), scales, off_sheet, measured dimensions (dangling ones flagged), notes, issues, text.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

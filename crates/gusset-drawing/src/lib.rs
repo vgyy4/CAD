@@ -4,6 +4,7 @@
 //! Views are projected with [`Kernel::hidden_lines`] and cached per (shapes, view), so
 //! moving a note or a dimension does not project the model again.
 
+pub mod dims;
 pub mod dxf;
 pub mod scene;
 pub mod svg;
@@ -30,6 +31,8 @@ const CACHE_ENTRIES: usize = 64;
 pub struct Context<'a> {
     pub ev: &'a Evaluation,
     pub kernel: &'a dyn Kernel,
+    /// The document's length unit: dimension values are written in it.
+    pub units: gusset_units::quantity::LengthUnit,
 }
 
 impl std::fmt::Debug for Context<'_> {
@@ -461,7 +464,35 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 }
                 (Err(e), _) | (_, Err(e)) => scene.issues.push(format!("note {}: {e}", n.name)),
             },
-            DrawingItem::Dim(_) => {}
+            DrawingItem::Dim(dim) => {
+                let Some(Ok((p, pv))) = b.placed.get(dim.view.as_str()) else {
+                    let e = format!("view {} is not shown", dim.view);
+                    scene.issues.push(format!("dimension {}: {e}", dim.name));
+                    scene.dims.push(dims::DimResult {
+                        name: dim.name.clone(),
+                        value: None,
+                        text: String::new(),
+                        error: Some(e),
+                    });
+                    continue;
+                };
+                let eval = |e: &Expr| number(e, cx.ev);
+                let offset = dim.offset.as_ref().map(eval).transpose();
+                let text_at = dim.text_at.as_ref().map(|[x, y]| Ok::<_, String>([eval(x)?, eval(y)?])).transpose();
+                let r = match (offset, text_at) {
+                    (Ok(offset), Ok(text_at)) => {
+                        let v = dims::ViewCtx { bodies: &p.bodies, view: pv, units: cx.units };
+                        dims::draw(&mut scene, dim, &v, offset, text_at)
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        dims::DimResult { name: dim.name.clone(), value: None, text: String::new(), error: Some(e) }
+                    }
+                };
+                if let Some(e) = &r.error {
+                    scene.issues.push(format!("dimension {}: {e}", dim.name));
+                }
+                scene.dims.push(r);
+            }
         }
     }
     scene

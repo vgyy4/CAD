@@ -25,7 +25,7 @@ fn scene(drawing: &str) -> Scene {
     let k = Arc::new(MockKernel);
     let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
     assert!(ev.errors().is_empty(), "{:?}", ev.errors());
-    let cx = Context { ev: &ev, kernel: k.as_ref() };
+    let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units };
     build(&doc.drawings[0], &cx, &mut HlrCache::default())
 }
 
@@ -111,4 +111,49 @@ fn svg_and_dxf_hold_the_scene() {
     // Non-ASCII text is escaped.
     let s = scene(&SHEET.replace("Break sharp edges", "Ø 5 ±0.1"));
     assert!(dxf::to_dxf(&s, dxf::Profile::R12).contains("\\U+00D8 5 \\U+00B10.1"));
+}
+
+#[test]
+fn dimensions_are_measured_from_the_model() {
+    let e = |l: &str| format!("edge(Plate/cap(end), Plate/side(S/{l}))");
+    let sheet = format!(
+        "drawing D (size: A3, projection: first) {{
+  view Front (bodies: [Plate], from: front, at: [130, 160])
+  view Top (of: Front, side: top)
+  dim D1 (view: Front, kind: length, a: {l5})
+  dim D2 (view: Top, kind: distance, a: {l5}, b: {l7}, tolerance: \"±0.1\")
+  dim D3 (view: Top, kind: angle, a: {l5}, b: {l6})
+  dim D4 (view: Top, kind: length, a: {l6}, direction: horizontal)
+  dim D5 (view: Top, kind: diameter, a: {l6})
+}}
+",
+        l5 = e("l5"),
+        l6 = e("l6"),
+        l7 = e("l7"),
+    );
+    let s = scene(&sheet);
+    if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
+        let _ = std::fs::write(format!("{dir}/dims.svg"), svg::to_svg(&s));
+        let _ = std::fs::write(format!("{dir}/dims_r12.dxf"), dxf::to_dxf(&s, dxf::Profile::R12));
+    }
+    let d = |n: &str| s.dims.iter().find(|d| d.name == n).unwrap_or_else(|| panic!("{n}: {:?}", s.dims));
+    let near = |n: &str, v: f64| {
+        let got = d(n).value.unwrap_or_else(|| panic!("{n}: {:?}", d(n).error));
+        assert!((got - v).abs() < 1e-9, "{n}: {got}");
+    };
+    near("D1", 40.0);
+    near("D2", 20.0);
+    assert_eq!(d("D2").text, "20 ±0.1");
+    near("D3", 90.0);
+    assert_eq!(d("D3").text, "90°");
+    // A vertical edge measured horizontally is zero long.
+    near("D4", 0.0);
+    assert!(d("D5").error.as_deref().is_some_and(|e| e.contains("circular")), "{:?}", d("D5"));
+    assert_eq!(s.issues.len(), 1, "{:?}", s.issues);
+    // Arrows and dimension lines are drawn.
+    assert!(s.items.iter().filter(|i| matches!(i.prim, Prim::Fill { .. })).count() >= 6);
+    assert!(s.items.iter().any(|i| matches!(&i.prim, Prim::Text { text, .. } if text == "40")));
+    // A reference to an edge the model no longer has dangles; the sheet still builds.
+    let s = scene(&sheet.replace("S/l5)))\n  dim D2", "S/l9)))\n  dim D2"));
+    assert!(s.dims.first().is_some_and(|d| d.error.is_some()), "{:?}", s.dims);
 }
