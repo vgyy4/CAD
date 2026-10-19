@@ -8,6 +8,9 @@ use gusset_units::params::validate_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+/// Longest chain of projected and detail views from a base view.
+pub const MAX_VIEW_CHAIN: usize = 32;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Issue {
     /// The feature (or parameter) the issue belongs to.
@@ -402,6 +405,11 @@ fn validate_drawings(
                 ));
             }
         }
+        let views: std::collections::HashMap<&str, &crate::drawing::ViewDef> = d
+            .items
+            .iter()
+            .filter_map(|i| if let DrawingItem::View(v) = i { Some((v.name.as_str(), v)) } else { None })
+            .collect();
         for item in &d.items {
             match item {
                 DrawingItem::View(v) => match &v.placement {
@@ -419,17 +427,22 @@ fn validate_drawings(
                         }
                     }
                     ViewPlacement::Projected { .. } | ViewPlacement::Detail { .. } => {
-                        // Follow the chain of parents: it must end in a base view.
+                        // Follow the chain of parents: it must end in a base view within
+                        // MAX_VIEW_CHAIN steps (review D2: a map lookup per step, and no
+                        // drafting use for longer chains).
                         let mut at = v;
                         let mut steps = 0;
                         while let Some(of) = at.placement.parent() {
                             steps += 1;
-                            match d.view(of) {
-                                Some(p) if steps <= d.items.len() => at = p,
+                            match views.get(of) {
+                                Some(p) if steps <= MAX_VIEW_CHAIN => at = p,
                                 Some(_) => {
                                     out.push(issue(
                                         n,
-                                        format!("view {} is projected from itself through other views", v.name),
+                                        format!(
+                                            "view {} is projected from itself, or through more than {MAX_VIEW_CHAIN} views",
+                                            v.name
+                                        ),
                                     ));
                                     break;
                                 }
@@ -449,7 +462,7 @@ fn validate_drawings(
                     }
                 },
                 DrawingItem::Dim(dim) => {
-                    if d.view(&dim.view).is_none() {
+                    if !views.contains_key(dim.view.as_str()) {
                         out.push(issue(
                             n,
                             format!("dimension {} is in view '{}', which does not exist", dim.name, dim.view),

@@ -230,7 +230,29 @@ pub fn show(
 }
 
 /// Paints every item of the scene.
+/// The part of segment `a`-`b` inside `r` (Liang-Barsky), or `None`.
+fn clip(a: Pos2, b: Pos2, r: Rect) -> Option<(Pos2, Pos2)> {
+    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+        return None;
+    }
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d.x, a.x - r.min.x), (d.x, r.max.x - a.x), (-d.y, a.y - r.min.y), (d.y, r.max.y - a.y)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    (t0 <= t1).then(|| (a + d * t0, a + d * t1))
+}
+
 fn paint(painter: &egui::Painter, map: &Map, scene: &Scene) {
+    let view = painter.clip_rect().expand(8.0);
     let ink = Color32::from_gray(20);
     let warn = Color32::from_rgb(176, 48, 96);
     for item in &scene.items {
@@ -241,8 +263,15 @@ fn paint(painter: &egui::Painter, map: &Map, scene: &Scene) {
             match dashes {
                 [] => vec![Shape::line(pts, stroke)],
                 [dash, gap, ..] => {
+                    // Dashes are cut only where the line is on screen (review D1).
                     let (d, g) = ((*dash as f32 * map.zoom).max(2.0), (*gap as f32 * map.zoom).max(1.5));
-                    Shape::dashed_line(&pts, stroke, d, g)
+                    pts.windows(2)
+                        .filter_map(|w| match w {
+                            [a, b] => clip(*a, *b, view),
+                            _ => None,
+                        })
+                        .flat_map(|(a, b)| Shape::dashed_line(&[a, b], stroke, d, g))
+                        .collect()
                 }
                 [_] => vec![Shape::line(pts, stroke)],
             }

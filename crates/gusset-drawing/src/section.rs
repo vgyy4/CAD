@@ -9,6 +9,12 @@ use gusset_kernel::{
     BoolOp, ExtrudeSpec, Frame, Kernel, Loop2, Profile, ProfileEdge, Region2, Seg2, Shape, TessellationParams, V3,
 };
 
+/// Hatching stops after this many line pieces (callers report it).
+const HATCH_LIMIT: usize = 400_000;
+
+/// A line segment on the sheet.
+pub type Segment = ([f64; 2], [f64; 2]);
+
 /// Hatch line spacing on the sheet (mm).
 pub const HATCH_SPACING: f64 = 2.5;
 /// Letter height of the section label and the cutting-plane letters (mm).
@@ -108,15 +114,22 @@ pub fn cut_faces(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, y: V3, c: f64) 
     Ok(out)
 }
 
-/// Hatch segments over the union of `tris`: lines at 45° `spacing` apart.
-pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> {
+/// Hatch segments over the union of `tris`: lines at 45° `spacing` apart, and whether
+/// the hatching is complete (false when a limit cut it short).
+pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> (Vec<Segment>, bool) {
+    let mut complete = true;
     let h = std::f64::consts::FRAC_1_SQRT_2;
     let d = [h, h];
     let m = [-h, h];
     let dt = |p: [f64; 2], v: [f64; 2]| p[0] * v[0] + p[1] * v[1];
     // Per hatch line index: intervals along d.
     let mut lines: std::collections::BTreeMap<i64, Vec<(f64, f64)>> = std::collections::BTreeMap::new();
+    let mut count = 0usize;
     for t in tris {
+        if count > HATCH_LIMIT {
+            complete = false;
+            break;
+        }
         let s = [dt(t[0], m), dt(t[1], m), dt(t[2], m)];
         let lo = s.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = s.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -125,6 +138,7 @@ pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> 
         }
         let (k0, k1) = (libm::ceil(lo / spacing) as i64, libm::floor(hi / spacing) as i64);
         if k1 - k0 > 100_000 {
+            complete = false;
             continue;
         }
         for k in k0..=k1 {
@@ -139,6 +153,7 @@ pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> 
             if ts.len() >= 2 {
                 let (a, b) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
                 if b - a > 1e-9 {
+                    count += 1;
                     lines.entry(k).or_default().push((a, b));
                 }
             }
@@ -164,7 +179,7 @@ pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> Vec<([f64; 2], [f64; 2])> 
             out.push((at(ca), at(cb)));
         }
     }
-    out
+    (out, complete)
 }
 
 /// The cutting-plane line across a parent view's box `[min, max]` (sheet mm): `vertical`
@@ -217,7 +232,8 @@ mod tests {
     fn hatching_covers_the_union_once() {
         // A 10 x 10 square as two triangles.
         let tris = [[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]], [[0.0, 0.0], [10.0, 10.0], [0.0, 10.0]]];
-        let segs = hatch(&tris, 1.0);
+        let (segs, complete) = hatch(&tris, 1.0);
+        assert!(complete);
         // Lines at 45° 1 apart cross a 10 mm square: levels -7..=7 (10/√2 ≈ 7.07).
         assert_eq!(segs.len(), 15, "{segs:?}");
         // The diagonal line (level 0) runs corner to corner, merged across both triangles.
@@ -229,6 +245,6 @@ mod tests {
                 assert!(p[0] > -1e-9 && p[0] < 10.0 + 1e-9 && p[1] > -1e-9 && p[1] < 10.0 + 1e-9, "{p:?}");
             }
         }
-        assert!(hatch(&tris, 0.0).is_empty());
+        assert!(hatch(&tris, 0.0).0.is_empty());
     }
 }

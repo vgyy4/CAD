@@ -30,6 +30,13 @@ use std::sync::Arc;
 pub const DEFAULT_GAP: f64 = 20.0;
 /// Chordal deflection of curves on the sheet (mm); divided by the scale for the model.
 const SHEET_DEFLECTION: f64 = 0.02;
+/// Scales a sheet or view may have (review D1: line lengths, dashes, hatch counts and the
+/// projection's deflection all follow the scale).
+pub const MIN_SCALE: f64 = 1e-4;
+pub const MAX_SCALE: f64 = 1e4;
+/// Most hatch lines in one section view.
+const MAX_HATCH: usize = 200_000;
+
 /// Views kept in a [`HlrCache`].
 const CACHE_ENTRIES: usize = 64;
 
@@ -264,7 +271,11 @@ impl Builder<'_, '_> {
             Some(e) => number(e, self.cx.ev)?,
             None => parent.unwrap_or(self.sheet_scale),
         };
-        if s > 0.0 && s.is_finite() { Ok(s) } else { Err(format!("view {}: the scale must be positive", v.name)) }
+        if (MIN_SCALE..=MAX_SCALE).contains(&s) {
+            Ok(s)
+        } else {
+            Err(format!("view {}: the scale must be between 1:10000 and 10000:1", v.name))
+        }
     }
 
     /// Projects and places view `name` (its parents first).
@@ -568,9 +579,9 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
     let mut scene = Scene { size, ..Scene::default() };
     let sheet_scale = match &d.scale {
         Some(e) => match number(e, cx.ev) {
-            Ok(s) if s > 0.0 && s.is_finite() => s,
+            Ok(s) if (MIN_SCALE..=MAX_SCALE).contains(&s) => s,
             Ok(_) => {
-                scene.issues.push("the sheet scale must be positive; using 1:1".into());
+                scene.issues.push("the sheet scale must be between 1:10000 and 10000:1; using 1:1".into());
                 1.0
             }
             Err(e) => {
@@ -618,7 +629,11 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                     }
                     if let Some(s) = &p.section {
                         let at = |q: [f64; 2]| [pv.origin[0] + pv.scale * q[0], pv.origin[1] + pv.scale * q[1]];
-                        for (a, b) in section::hatch(&s.cut.faces, section::HATCH_SPACING / pv.scale) {
+                        let (lines, complete) = section::hatch(&s.cut.faces, section::HATCH_SPACING / pv.scale);
+                        if !complete || lines.len() > MAX_HATCH {
+                            scene.issues.push(format!("view {}: the cut is too large to hatch", v.name));
+                        }
+                        for (a, b) in lines.into_iter().take(MAX_HATCH) {
                             scene.line(Style::Thin, at(a), at(b));
                         }
                         let label = format!("{0}–{0}", s.label);

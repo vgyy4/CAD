@@ -47,6 +47,34 @@ impl Raster {
 
 type P = [f64; 2];
 
+/// Most dashes cut per path.
+const MAX_DASHES: usize = 100_000;
+
+/// The part (parameters 0..=1) of segment `a`-`b` inside the box (Liang-Barsky).
+fn clip_segment(a: P, b: P, (lo, hi): (P, P)) -> Option<(f64, f64)> {
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    let d = [b[0] - a[0], b[1] - a[1]];
+    for k in 0..2 {
+        let (p, q0, q1) =
+            (d.get(k).copied()?, a.get(k).copied()? - lo.get(k).copied()?, hi.get(k).copied()? - a.get(k).copied()?);
+        for (p, q) in [(-p, q0), (p, q1)] {
+            if p.abs() < 1e-300 {
+                if q < 0.0 {
+                    return None;
+                }
+            } else {
+                let r = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(r);
+                } else {
+                    t1 = t1.min(r);
+                }
+            }
+        }
+    }
+    (t0 <= t1).then_some((t0, t1))
+}
+
 /// Polygons of one colour, as directed edges.
 #[derive(Default)]
 struct Layer {
@@ -89,40 +117,62 @@ impl Layer {
         self.polygon(&[[a[0] + nx, a[1] + ny], [b[0] + nx, b[1] + ny], [b[0] - nx, b[1] - ny], [a[0] - nx, a[1] - ny]]);
     }
 
-    /// A path stroked with a dash pattern (pixels; empty: continuous).
-    fn path(&mut self, pts: &[P], w: f64, dashes: &[f64]) {
-        if dashes.is_empty() || dashes.iter().sum::<f64>() <= 0.0 {
-            for s in pts.windows(2) {
-                if let [a, b] = s {
-                    self.segment(*a, *b, w);
-                }
-            }
-            return;
-        }
-        let (mut k, mut left, mut on) = (0usize, dashes.first().copied().unwrap_or(1.0), true);
+    /// A path stroked with a dash pattern (pixels; empty: continuous). Each segment is
+    /// clipped to `clip` first, so the work is bounded by the image, not the line's length
+    /// (review D1); non-finite segments are skipped.
+    fn path(&mut self, pts: &[P], w: f64, dashes: &[f64], clip: ([f64; 2], [f64; 2])) {
+        let period: f64 = dashes.iter().sum();
+        let dashed = !dashes.is_empty() && period > 0.0;
+        let mut dist = 0.0;
+        let mut quads = 0usize;
         for s in pts.windows(2) {
             let [a, b] = s else { continue };
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
             let l = libm::sqrt(dx * dx + dy * dy);
-            let mut t = 0.0;
-            while t < l {
-                let step = left.min(l - t);
-                if on && step > 0.0 {
-                    let p = |u: f64| [a[0] + dx * u / l, a[1] + dy * u / l];
-                    self.segment(p(t), p(t + step), w);
-                } else if on {
-                    // A dot.
-                    let p = [a[0] + dx * t / l, a[1] + dy * t / l];
-                    self.segment(p, p, w);
+            if !l.is_finite() || !a[0].is_finite() || !a[1].is_finite() {
+                continue;
+            }
+            let p = |u: f64| [a[0] + dx * u, a[1] + dy * u];
+            let Some((u0, u1)) = clip_segment(*a, *b, clip) else {
+                dist += l;
+                continue;
+            };
+            if !dashed || l < 1e-12 {
+                self.segment(p(u0), p(u1), w);
+                dist += l;
+                continue;
+            }
+            // The dash pattern continues along the whole path, also where it was clipped.
+            let (s0, s1) = (u0 * l, u1 * l);
+            let mut phase = (dist + s0) % period;
+            let mut k = 0usize;
+            let mut left = dashes.first().copied().unwrap_or(1.0);
+            while phase >= left && left > 0.0 {
+                phase -= left;
+                k = (k + 1) % dashes.len();
+                left = dashes.get(k).copied().unwrap_or(1.0);
+            }
+            left -= phase;
+            let mut t = s0;
+            while t < s1 {
+                quads += 1;
+                if quads > MAX_DASHES {
+                    // Beyond any real drawing: the rest is drawn solid.
+                    self.segment(p(t / l), p(u1), w);
+                    break;
+                }
+                let step = left.min(s1 - t);
+                if k.is_multiple_of(2) {
+                    self.segment(p(t / l), p((t + step) / l), w);
                 }
                 t += step;
                 left -= step;
                 if left <= 1e-12 {
                     k = (k + 1) % dashes.len();
                     left = dashes.get(k).copied().unwrap_or(1.0);
-                    on = k % 2 == 0;
                 }
             }
+            dist += l;
         }
     }
 
@@ -218,23 +268,25 @@ pub fn render(scene: &Scene, width: u32) -> Raster {
     // Sheet mm (Y up) to pixels (Y down).
     let to = |p: P| [p[0] * s, (sh - p[1]) * s];
     let (mut ink, mut warn) = (Layer::default(), Layer::default());
+    // The image with a margin for stroke widths (pixels).
+    let clip = ([-8.0, -8.0], [f64::from(wpx) + 8.0, f64::from(hpx) + 8.0]);
     for item in &scene.items {
         let layer = if item.style == Style::Dangling { &mut warn } else { &mut ink };
         // At least one pixel wide, so thin lines stay visible at small sizes.
         let w = (item.style.width() * s).max(1.0);
         let dashes: Vec<f64> = item.style.dashes().iter().map(|d| d * s).collect();
         match &item.prim {
-            Prim::Line { a, b } => layer.path(&[to(*a), to(*b)], w, &dashes),
+            Prim::Line { a, b } => layer.path(&[to(*a), to(*b)], w, &dashes, clip),
             Prim::Arc { center, radius, start, end } => {
                 let pts: Vec<P> = arc_points(*center, *radius, *start, *end).into_iter().map(to).collect();
-                layer.path(&pts, w, &dashes);
+                layer.path(&pts, w, &dashes, clip);
             }
             Prim::Polyline { points, closed } => {
                 let mut pts: Vec<P> = points.iter().map(|p| to(*p)).collect();
                 if *closed && let Some(&f) = pts.first() {
                     pts.push(f);
                 }
-                layer.path(&pts, w, &dashes);
+                layer.path(&pts, w, &dashes, clip);
             }
             Prim::Fill { points } => {
                 let pts: Vec<P> = points.iter().map(|p| to(*p)).collect();

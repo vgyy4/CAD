@@ -327,3 +327,35 @@ fn a_pdf_of_the_sheet() {
         assert!(at(off).starts_with(&format!("{} 0 obj", i + 1)), "object {}", i + 1);
     }
 }
+
+#[test]
+fn huge_dashed_lines_render_quickly() {
+    // Review D1: lines far longer than the image, or infinitely long, are clipped first.
+    let mut s = Scene { size: [420.0, 297.0], ..Scene::default() };
+    s.line(Style::Hidden, [0.0, 0.0], [1e300, 1e300]);
+    s.line(Style::Hidden, [-1e7, 100.0], [1e7, 100.0]);
+    s.line(Style::Center, [f64::NAN, 0.0], [1.0, 1.0]);
+    let t = std::time::Instant::now();
+    // Wide enough that the 0.75 mm gaps are several pixels.
+    let r = raster::render(&s, 2048);
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    // The long horizontal line is drawn dashed across the image.
+    let row = (297.0 - 100.0) / 297.0 * f64::from(r.height);
+    let dark = (0..r.width).filter(|x| r.rgba[((row as u32 * r.width + x) * 4) as usize] < 128).count();
+    assert!(dark > 100 && dark < r.width as usize, "{dark}");
+}
+
+#[test]
+fn long_view_chains_are_refused_quickly() {
+    // Review D2: 3000 chained projected views validated in seconds before; now a chain
+    // longer than MAX_VIEW_CHAIN is an error found in linear time.
+    let mut d = String::from("drawing D (size: A3) {\n  view V0 (bodies: [Plate], from: front, at: [100, 100])\n");
+    for i in 1..3000 {
+        d.push_str(&format!("  view V{i} (of: V{}, side: top)\n", i - 1));
+    }
+    d.push_str("}\n");
+    let t = std::time::Instant::now();
+    let r = Document::from_text(&format!("{PLATE}\n{d}"));
+    assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    assert!(r.is_err_and(|e| e.to_string().contains("more than 32 views")));
+}
