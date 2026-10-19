@@ -55,8 +55,9 @@ worker (ADR 0022) and its results are cached.
    outline, with the model edge it comes from (`source`). The exact path walks
    `HLRBRep_Data` the way `HLRBRep_HLRToShape` does, and maps each fragment through the
    data's edge map to the shape's edge order. Silhouettes have no source. The mesh path
-   (`HLRBRep_PolyAlgo`) is kept for very large views only: the research measured it as no
-   faster once meshing is counted. Worker protocol 7. Results are cached per (shape
+   (`HLRBRep_PolyAlgo`) stays in the protocol (`exact: false`) but the sheet does not use
+   it: the research measured it as no faster once meshing is counted (amended after review
+   N5). Worker protocol 7. Results are cached per (shape
    revision, view, deflection) in the session.
 3. **Scene**: a new crate `gusset-drawing` turns a drawing and an evaluation into a
    renderer-neutral scene. A scene is sheets of primitives (line, arc, polyline, text,

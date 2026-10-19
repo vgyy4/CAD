@@ -39,17 +39,20 @@ fn n(v: f64) -> String {
     if s.is_empty() || s == "-" { "0".into() } else { s.to_string() }
 }
 
-/// Text in the DXF's 8-bit encoding: ASCII as is, everything else as `\U+XXXX`.
+/// Text in the DXF's 8-bit encoding: ASCII as is, `%` as `%%%` (`%%` starts a control
+/// code), other BMP characters as `\U+XXXX`, and `?` beyond the BMP (review N1: readers do
+/// not join surrogates).
 fn text(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
-        if c.is_ascii() && !c.is_ascii_control() {
+        if c == '%' {
+            o.push_str("%%%");
+        } else if c.is_ascii() && !c.is_ascii_control() {
             o.push(c);
+        } else if u32::from(c) > 0xFFFF {
+            o.push('?');
         } else if !c.is_control() {
-            let mut buf = [0u16; 2];
-            for u in c.encode_utf16(&mut buf) {
-                let _ = write!(o, "\\U+{u:04X}");
-            }
+            let _ = write!(o, "\\U+{:04X}", u32::from(c));
         }
     }
     o

@@ -114,13 +114,15 @@ fn a_dimensioned_sheet_of_a_plate_with_a_hole() {
         std::fs::write(format!("{dir}/occt_plate.svg"), &svg).unwrap();
         std::fs::write(format!("{dir}/occt_plate.dxf"), gusset_drawing::dxf::to_dxf(&s, Default::default())).unwrap();
     }
-    // A second build reuses the projections.
+    // A second build reuses the projections (counted, not timed: review N6).
+    let misses = cache.misses();
+    assert!(misses > 0);
     let t1 = std::time::Instant::now();
     let again = gusset_drawing::build(&doc.drawings[0], &cx, &mut cache);
     let second = t1.elapsed();
     assert_eq!(again, s);
     eprintln!("sheet built in {first:?}, again in {second:?}");
-    assert!(second < first, "the cache is used: {first:?} then {second:?}");
+    assert_eq!(cache.misses(), misses, "the cache is used");
 }
 
 /// Hatched area of a section view: hatch length times spacing (sheet mm², at 1:1).
@@ -173,6 +175,13 @@ fn section_views_cut_the_part_and_hatch_the_cut() {
     assert!(s.issues.is_empty(), "{:?}", s.issues);
     let a = 2.0 * 15.0 * 20.0;
     assert!((hatched(&s) - a).abs() < 0.03 * a, "hatched {} of {a}", hatched(&s));
+    // A detail of the section keeps its hatching (review D8): a circle around the whole
+    // cut, at 1:1, doubles the hatched area.
+    let two = build(
+        "  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n  view DB (detail_of: B, center: [0, 0], radius: 80, at: [330, 80], scale: 1)\n",
+    );
+    assert!(two.issues.is_empty(), "{:?}", two.issues);
+    assert!((hatched(&two) - 2.0 * a).abs() < 0.06 * a, "hatched {} of {}", hatched(&two), 2.0 * a);
     // A plane beyond the part leaves nothing: reported, not a crash.
     let s = build("  view C (of: Front, side: top, section: C, cut_at: -5 mm)\n");
     assert!(s.issues.iter().any(|i| i.contains("nothing")), "{:?}", s.issues);

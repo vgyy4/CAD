@@ -69,6 +69,17 @@ fn clip_polyline(pts: &[P], c: P, r: f64) -> Vec<Vec<P>> {
     out
 }
 
+/// The part of segment `a`-`b` inside the circle (a chord of a convex region: one piece).
+pub fn clip_segment(a: P, b: P, c: P, r: f64) -> Option<(P, P)> {
+    match clip_polyline(&[a, b], c, r).as_slice() {
+        [piece] => match piece.as_slice() {
+            [p, .., q] => Some((*p, *q)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `curves` clipped to the circle of radius `r` around `c` (all in view coordinates).
 /// `tol` is the chordal tolerance for flattening arcs.
 pub fn clip(curves: &[HlrCurve], c: P, r: f64, tol: f64) -> Vec<HlrCurve> {

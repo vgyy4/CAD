@@ -1530,11 +1530,16 @@ impl Command for SketchImportDxf {
                     }
                     gusset_drawing::dxf_read::Curve::Arc { center, radius, start, end } => {
                         let at = |t: f64| [center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)];
-                        let (c, a, b) = (point(d, center)?, point(d, at(start))?, point(d, at(end))?);
-                        if a == b {
+                        // The sweep decides (review D11): a tiny arc whose ends snap to one
+                        // point is dropped, not turned into a full circle.
+                        let sweep = (end - start).rem_euclid(std::f64::consts::TAU);
+                        let snap = |p: [f64; 2]| ((p[0] * k * 1e3).round() as i64, (p[1] * k * 1e3).round() as i64);
+                        if sweep < 1e-9 || std::f64::consts::TAU - sweep < 1e-9 {
+                            let c = point(d, center)?;
                             add_entity(d, SkGeom::Circle { center: c, radius: radius * k }, false);
                             circles += 1;
-                        } else {
+                        } else if snap(at(start)) != snap(at(end)) {
+                            let (c, a, b) = (point(d, center)?, point(d, at(start))?, point(d, at(end))?);
                             add_entity(d, SkGeom::Arc { center: c, start: a, end: b }, false);
                             arcs += 1;
                         }

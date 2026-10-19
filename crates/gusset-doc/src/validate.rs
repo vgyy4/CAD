@@ -433,6 +433,19 @@ fn validate_drawings(
                         }
                     }
                     ViewPlacement::Projected { .. } | ViewPlacement::Detail { .. } => {
+                        // A detail is an enlarged excerpt: nothing is projected from it
+                        // (review D8); a detail of a detail is fine.
+                        if let ViewPlacement::Projected { of, .. } = &v.placement
+                            && views
+                                .get(of.as_str())
+                                .is_some_and(|p| matches!(p.placement, ViewPlacement::Detail { .. }))
+                        {
+                            out.push(issue_h(
+                                n,
+                                format!("view {} is projected from the detail view {of}", v.name),
+                                "project it from the detail's parent view",
+                            ));
+                        }
                         // Follow the chain of parents: it must end in a base view within
                         // MAX_VIEW_CHAIN steps (review D2: a map lookup per step, and no
                         // drafting use for longer chains).

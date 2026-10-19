@@ -180,7 +180,7 @@ pub struct ViewDef {
 
 /// A full section view (ISO 128-40): `label` names the cutting plane ("A" gives "A–A"),
 /// `cut_at` places it along the axis of the parent view that points at this view's side
-/// (model mm from the origin; `None`: through the middle of the bodies).
+/// (a model length from the origin, plain numbers in the document unit; `None`: through the middle of the bodies).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SectionDef {
     pub label: String,
@@ -193,8 +193,8 @@ pub enum ViewPlacement {
     Base { bodies: Vec<String>, from: ViewDir, at: [Expr; 2] },
     /// A view projected from `of`, aligned with it on `side`, `gap` apart (default 20 mm).
     Projected { of: String, side: Side, gap: Option<Expr> },
-    /// A circular detail of `of`: the circle of `radius` (model mm) around `center` (the
-    /// parent view's axes, model mm), enlarged and centred at `at` (sheet mm).
+    /// A circular detail of `of`: the circle of `radius` (a model length) around `center` (the
+    /// parent view's axes; plain numbers in the document unit), enlarged and centred at `at` (sheet mm).
     Detail { of: String, center: [Expr; 2], radius: Expr, at: [Expr; 2] },
 }
 
@@ -605,15 +605,23 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
         }
         Ok(())
     })?;
-    if let Some(of) = detail_of {
-        if from.is_some() || side.is_some() || gap.is_some() || bodies.is_some() || section.is_some() {
+    if let Some(dof) = detail_of {
+        // `of` and `cut_at` too: they would be dropped on the next print (review N2).
+        if from.is_some()
+            || of.is_some()
+            || side.is_some()
+            || gap.is_some()
+            || bodies.is_some()
+            || section.is_some()
+            || cut_at.is_some()
+        {
             return Err(c.err_hint(
                 "a detail view takes detail_of, center, radius and at",
-                "remove from/of/side/gap/bodies/section",
+                "remove from/of/side/gap/bodies/section/cut_at",
             ));
         }
         let placement = ViewPlacement::Detail {
-            of,
+            of: dof,
             center: center.ok_or_else(|| missing(c, KW, "center"))?,
             radius: radius.ok_or_else(|| missing(c, KW, "radius"))?,
             at: at.ok_or_else(|| missing(c, KW, "at"))?,

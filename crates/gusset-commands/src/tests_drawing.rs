@@ -160,11 +160,15 @@ fn a_dxf_file_becomes_sketch_geometry() {
     // A 1 x 0.5 inch closed polyline and a 0.1 inch circle.
     let dxf = "  0\nSECTION\n  2\nHEADER\n  9\n$INSUNITS\n 70\n1\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n\
   0\nLWPOLYLINE\n 90\n4\n 70\n1\n 10\n0\n 20\n0\n 10\n1\n 20\n0\n 10\n1\n 20\n0.5\n 10\n0\n 20\n0.5\n\
-  0\nCIRCLE\n 10\n0.5\n 20\n0.25\n 40\n0.1\n  0\nENDSEC\n  0\nEOF\n";
+  0\nCIRCLE\n 10\n0.5\n 20\n0.25\n 40\n0.1\n\
+  0\nARC\n 10\n0.2\n 20\n0.2\n 40\n0.05\n 50\n0\n 51\n360\n\
+  0\nARC\n 10\n0.8\n 20\n0.2\n 40\n0.05\n 50\n0\n 51\n0.0000001\n  0\nENDSEC\n  0\nEOF\n";
     std::fs::write(dir.join("plate.dxf"), dxf).unwrap();
     run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Cut"}));
     let r = run(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "plate.dxf"}));
-    assert_eq!((r["lines"].as_u64(), r["circles"].as_u64(), r["points"].as_u64()), (Some(4), Some(1), Some(5)), "{r}");
+    assert_eq!((r["lines"].as_u64(), r["circles"].as_u64(), r["points"].as_u64()), (Some(4), Some(2), Some(6)), "{r}");
+    // A full-sweep ARC is a circle; an arc whose ends meet after snapping is dropped (D11).
+    assert_eq!(r["arcs"].as_u64(), Some(0), "{r}");
     assert_eq!(r["unit_mm"], 25.4);
     // The square is a closed profile: it extrudes (25.4 x 12.7 mm, minus the hole).
     let r = run(&mut s, "feature.extrude", json!({"sketch": "Cut", "distance": "2 mm"}));
@@ -180,6 +184,7 @@ fn a_dxf_file_becomes_sketch_geometry() {
     std::fs::write(dir.join("junk.dxf"), "hello").unwrap();
     assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "junk.dxf"})).code, "io");
     assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "plate.svg"})).code, "invalid_args");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

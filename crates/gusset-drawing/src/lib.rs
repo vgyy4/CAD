@@ -65,6 +65,8 @@ pub struct HlrCache {
     entries: Vec<CacheEntry>,
     /// Sections by (shapes, plane, view X): the cut shapes and their cut faces.
     cuts: Vec<(Vec<Shape>, [u64; 7], Arc<Cut>)>,
+    /// Projections computed (not found in the cache) so far.
+    misses: usize,
 }
 
 /// A section's cut bodies and the triangles of its cut faces (view coordinates).
@@ -80,6 +82,11 @@ impl std::fmt::Debug for HlrCache {
 }
 
 impl HlrCache {
+    /// How many projections were computed rather than reused.
+    pub fn misses(&self) -> usize {
+        self.misses
+    }
+
     /// Forgets everything (a new document, undo across many edits).
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -116,6 +123,7 @@ impl HlrCache {
             many => k.compound(many).map_err(|e| e.message)?.shape,
         };
         let curves = Arc::new(k.hidden_lines(&shape, view).map_err(|e| e.message)?);
+        self.misses += 1;
         if self.entries.len() >= CACHE_ENTRIES {
             self.entries.remove(0);
         }
@@ -184,6 +192,20 @@ pub fn scale_text(s: f64) -> String {
 }
 
 /// An expression as a plain number (a length in mm, or a number without unit).
+/// A model length (section offsets, detail circles) in mm: a plain number is in the
+/// document's unit (review N4, as for parameters).
+fn model_len(e: &Expr, ev: &Evaluation, units: gusset_units::quantity::LengthUnit) -> Result<f64, String> {
+    let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let q: Quantity = gusset_units::expr::eval(e, &scope).map_err(|err| format!("'{e}': {}", err.message))?;
+    if q.dim.is_none() {
+        Ok(q.value * units.unit().factor)
+    } else if q.dim == gusset_units::Dim::LENGTH {
+        Ok(q.value)
+    } else {
+        Err(format!("'{e}' must be a length, not {}", q.dim.name()))
+    }
+}
+
 fn number(e: &Expr, ev: &Evaluation) -> Result<f64, String> {
     let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
     let q: Quantity = gusset_units::expr::eval(e, &scope).map_err(|err| format!("'{e}': {}", err.message))?;
@@ -210,6 +232,8 @@ struct Projected {
     section: Option<SectionInfo>,
     /// A detail: its parent and circle (view coordinates, model mm).
     detail: Option<(String, [f64; 2], f64)>,
+    /// A detail of a section: the parent's cut, hatched inside the circle (review D8).
+    detail_cut: Option<Arc<Cut>>,
 }
 
 struct SectionInfo {
@@ -315,14 +339,23 @@ impl Builder<'_, '_> {
         };
         let ev = self.cx.ev;
         self.place(of, depth + 1)?;
-        let (bodies, t, x, y, pscale, curves) = match self.placed.get(of.as_str()) {
-            Some(Ok((p, _))) => (p.bodies.clone(), p.toward, p.x, p.y, p.scale, p.curves.clone()),
+        let (bodies, t, x, y, pscale, curves, cut) = match self.placed.get(of.as_str()) {
+            Some(Ok((p, _))) => (
+                p.bodies.clone(),
+                p.toward,
+                p.x,
+                p.y,
+                p.scale,
+                p.curves.clone(),
+                p.section.as_ref().map(|s| s.cut.clone()).or_else(|| p.detail_cut.clone()),
+            ),
             Some(Err(e)) => return Err(format!("view {}: its parent {of} failed: {e}", v.name)),
             None => return Err(format!("view {}: no view '{of}'", v.name)),
         };
         let scale = self.view_scale(v, Some(2.0 * pscale))?;
-        let c = [number(&center[0], ev)?, number(&center[1], ev)?];
-        let r = number(radius, ev)?;
+        let u = self.cx.units;
+        let c = [model_len(&center[0], ev, u)?, model_len(&center[1], ev, u)?];
+        let r = model_len(radius, ev, u)?;
         if !(r > 0.0 && r.is_finite()) {
             return Err(format!("view {}: the radius must be positive", v.name));
         }
@@ -349,6 +382,7 @@ impl Builder<'_, '_> {
             curves: Arc::new(clipped),
             section: None,
             detail: Some((of.clone(), c, r)),
+            detail_cut: cut,
         };
         Ok((p, pv))
     }
@@ -389,7 +423,7 @@ impl Builder<'_, '_> {
                     // new view's `toward`); it crosses the parent view as a line.
                     let shapes: Vec<Shape> = bodies.iter().map(|b| b.shape.clone()).collect();
                     let c = match &sec.cut_at {
-                        Some(e) => number(e, ev)?,
+                        Some(e) => model_len(e, ev, self.cx.units)?,
                         None => {
                             let (lo, hi, _, _) = section::extent(self.cx.kernel, &shapes, ct)
                                 .map_err(|e| format!("view {}: {e}", v.name))?;
@@ -475,7 +509,10 @@ impl Builder<'_, '_> {
             y,
             error: None,
         };
-        Ok((Projected { bodies, toward: t, x, y, scale, curves, section: section_info, detail: None }, pv))
+        Ok((
+            Projected { bodies, toward: t, x, y, scale, curves, section: section_info, detail: None, detail_cut: None },
+            pv,
+        ))
     }
 }
 
@@ -642,6 +679,18 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                             let k = std::f64::consts::FRAC_1_SQRT_2;
                             let tp = [pc[0] + (pr + 2.0) * k, pc[1] + (pr + 2.0) * k];
                             scene.text(tp, section::LABEL_H, &v.name, Anchor::Left);
+                        }
+                    }
+                    if let (Some(cut), Some((_, c, r))) = (&p.detail_cut, &p.detail) {
+                        let at = |q: [f64; 2]| [pv.origin[0] + pv.scale * q[0], pv.origin[1] + pv.scale * q[1]];
+                        let (lines, complete) = section::hatch(&cut.faces, section::HATCH_SPACING / pv.scale);
+                        let lines: Vec<_> =
+                            lines.into_iter().filter_map(|(a, b)| detail::clip_segment(a, b, *c, *r)).collect();
+                        if !complete || lines.len() > MAX_HATCH {
+                            scene.issues.push(format!("view {}: the cut is too large to hatch", v.name));
+                        }
+                        for (a, b) in lines.into_iter().take(MAX_HATCH) {
+                            scene.line(Style::Thin, at(a), at(b));
                         }
                     }
                     if v.centers && p.section.is_none() && p.detail.is_none() {

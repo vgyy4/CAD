@@ -359,7 +359,9 @@ fn build(
             let value = libm::acos(dot(ra, rb).clamp(-1.0, 1.0)).to_degrees();
             let text = label(format!("{}°", number(value, 2)));
             let radius = match text_at {
-                Some(t) => len(sub(t, o)),
+                // The text sits outside the arc by the same gap as the automatic text, so
+                // giving back the reported `text_at` keeps the arc where it was (review N3).
+                Some(t) => len(sub(t, o)) - (2.0 + TEXT_H / 2.0),
                 None => (0.6 * len(sub(fa, o)).min(len(sub(fb, o)))).max(8.0) + offset - DEFAULT_OFFSET,
             }
             .max(2.0 * ARROW_LEN);

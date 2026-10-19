@@ -115,9 +115,19 @@ fn svg_and_dxf_hold_the_scene() {
     assert_eq!(d2.matches("\n  0\nLINE\n").count(), sheet_lines);
     assert_eq!(d2.lines().count() % 2, 0);
     assert!(d2.contains("\n370\n50\n"), "visible lines are 0.5 mm");
+    // Both exports read back with every line (review N6).
+    for d in [&dxf, &d2] {
+        let back = crate::dxf_read::read(d.as_bytes()).unwrap();
+        let lines = back.curves.iter().filter(|c| matches!(c, crate::dxf_read::Curve::Line(..))).count();
+        // Polylines (dashes, arrows) read back as lines too.
+        assert!(lines >= d.matches("\n  0\nLINE\n").count(), "{lines}");
+    }
     // Non-ASCII text is escaped.
     let s = scene(&SHEET.replace("Break sharp edges", "Ø 5 ±0.1"));
     assert!(dxf::to_dxf(&s, dxf::Profile::R12).contains("\\U+00D8 5 \\U+00B10.1"));
+    // `%` is not a control code, and characters beyond the BMP are not surrogate pairs (N1).
+    let s = scene(&SHEET.replace("Break sharp edges", "100%%u \u{1F600}"));
+    assert!(dxf::to_dxf(&s, dxf::Profile::R12).contains("\n100%%%%%%u ?\n"));
 }
 
 #[test]

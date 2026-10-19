@@ -292,7 +292,7 @@ pub struct DrawingAddView {
 impl Command for DrawingAddView {
     const ID: &'static str = "drawing.add_view";
     const TITLE: &'static str = "Add view";
-    const DESCRIPTION: &'static str = "Add a view: base (from, at in sheet mm, bodies), projected (of, side; section+cut_at cuts it) or detail (detail_of, center, radius in model mm, at).";
+    const DESCRIPTION: &'static str = "Add a view: base (from, at in sheet mm, bodies), projected (of, side; section+cut_at cuts it) or detail (detail_of, center, radius in doc units, at).";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

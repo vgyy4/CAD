@@ -89,7 +89,8 @@ fn need(g: &Groups<'_>, code: i32, what: &str) -> Result<f64, ReadError> {
 fn bulge_curve(a: [f64; 2], b: [f64; 2], bulge: f64) -> Curve {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let chord = libm::hypot(dx, dy);
-    if bulge.abs() < 1e-12 || chord < 1e-12 {
+    // A sagitta below 1e-6 is a straight segment (review D10): the radius would be huge.
+    if (bulge * chord / 2.0).abs() < 1e-6 || chord < 1e-12 {
         return Curve::Line(a, b);
     }
     let theta = 4.0 * libm::atan(bulge);
@@ -103,6 +104,56 @@ fn bulge_curve(a: [f64; 2], b: [f64; 2], bulge: f64) -> Curve {
     let ang = |p: [f64; 2]| libm::atan2(p[1] - c[1], p[0] - c[0]);
     let (start, end) = if bulge > 0.0 { (ang(a), ang(b)) } else { (ang(b), ang(a)) };
     Curve::Arc { center: c, radius: r.abs(), start, end }
+}
+
+/// The entity's extrusion direction (210/220/230): `Some(false)` for +Z, `Some(true)` for
+/// -Z (the object coordinate system is mirrored in X, review D10), `None` when tilted.
+fn ocs_mirror(g: &Groups<'_>) -> Result<Option<bool>, ReadError> {
+    let n = |c| get(g, c).map(num).transpose();
+    let (x, y, z) = (n(210)?.unwrap_or(0.0), n(220)?.unwrap_or(0.0), n(230)?.unwrap_or(1.0));
+    let len = libm::sqrt(x * x + y * y + z * z);
+    if len.is_nan() || len <= 0.0 || libm::hypot(x, y) > 1e-9 * len {
+        return Ok(None);
+    }
+    Ok(Some(z < 0.0))
+}
+
+/// `c` seen through an object coordinate system mirrored in X.
+fn mirror_x(c: Curve) -> Curve {
+    use std::f64::consts::PI;
+    match c {
+        Curve::Line(a, b) => Curve::Line([-a[0], a[1]], [-b[0], b[1]]),
+        Curve::Circle { center, radius } => Curve::Circle { center: [-center[0], center[1]], radius },
+        // A mirror reverses the sweep: the counterclockwise arc runs from π-end to π-start.
+        Curve::Arc { center, radius, start, end } => {
+            Curve::Arc { center: [-center[0], center[1]], radius, start: PI - end, end: PI - start }
+        }
+    }
+}
+
+/// Maps `curves[from..]` from an object coordinate system to the world, or drops them
+/// (counted as skipped) when it is tilted out of the XY plane.
+fn to_world(
+    curves: &mut Vec<Curve>,
+    from: usize,
+    mirror: Option<bool>,
+    kind: &str,
+    skipped: &mut BTreeMap<String, usize>,
+) {
+    match mirror {
+        Some(false) => {}
+        Some(true) => {
+            for c in curves.iter_mut().skip(from) {
+                *c = mirror_x(c.clone());
+            }
+        }
+        None => {
+            if curves.len() > from {
+                curves.truncate(from);
+                *skipped.entry(format!("{kind} (tilted)")).or_default() += 1;
+            }
+        }
+    }
 }
 
 fn polyline(pts: &[([f64; 2], f64)], closed: bool, out: &mut Vec<Curve>) {
@@ -137,7 +188,8 @@ type Vertex = ([f64; 2], f64);
 struct State<'a> {
     kind: Option<&'a str>,
     groups: Groups<'a>,
-    poly: Option<(bool, Vec<Vertex>)>,
+    /// Closed, the polyline's mirror flag (`None` tilted), and its vertices.
+    poly: Option<(bool, Option<bool>, Vec<Vertex>)>,
 }
 
 /// Finishes the current entity.
@@ -150,10 +202,16 @@ fn finish<'a>(
     let g = std::mem::take(&mut st.groups);
     // An old-style polyline ends at anything that is not one of its vertices.
     if kind != "VERTEX"
-        && let Some((closed, pts)) = st.poly.take()
+        && let Some((closed, mirror, pts)) = st.poly.take()
     {
+        let from = curves.len();
         polyline(&pts, closed, curves);
+        to_world(curves, from, mirror, "POLYLINE", skipped);
     }
+    // LINE is in world coordinates; the others in their object coordinate system.
+    let from = curves.len();
+    let mirror =
+        if matches!(kind, "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE") { ocs_mirror(&g)? } else { Some(false) };
     match kind {
         "LINE" => curves.push(Curve::Line(
             [need(&g, 10, "LINE")?, need(&g, 20, "LINE")?],
@@ -202,10 +260,10 @@ fn finish<'a>(
         }
         "POLYLINE" => {
             let closed = get(&g, 70).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|f| f & 1 == 1);
-            st.poly = Some((closed, Vec::new()));
+            st.poly = Some((closed, mirror, Vec::new()));
         }
         "VERTEX" => {
-            if let Some((_, pts)) = st.poly.as_mut() {
+            if let Some((_, _, pts)) = st.poly.as_mut() {
                 if pts.len() >= MAX_VERTICES {
                     return Err(err("a polyline has too many vertices"));
                 }
@@ -216,6 +274,7 @@ fn finish<'a>(
         "SEQEND" => {}
         other => *skipped.entry(other.chars().take(32).collect()).or_default() += 1,
     }
+    to_world(curves, from, mirror, kind, skipped);
     if curves.len() > MAX_CURVES {
         return Err(err(format!("the file has more than {MAX_CURVES} curves")));
     }
@@ -279,8 +338,10 @@ pub fn read(bytes: &[u8]) -> Result<Read, ReadError> {
         }
     }
     finish(&mut st, &mut curves, &mut out.skipped)?;
-    if let Some((closed, pts)) = st.poly.take() {
+    if let Some((closed, mirror, pts)) = st.poly.take() {
+        let from = curves.len();
         polyline(&pts, closed, &mut curves);
+        to_world(&mut curves, from, mirror, "POLYLINE", &mut out.skipped);
     }
     if !seen_entities {
         return Err(err("the file has no ENTITIES section"));
@@ -325,6 +386,29 @@ mod tests {
         assert!((center[0] - 25.4).abs() < 1e-9 && center[1].abs() < 1e-9 && (radius - 25.4).abs() < 1e-9);
         assert!((start.abs() - std::f64::consts::PI).abs() < 1e-9 && end.abs() < 1e-9, "{start} {end}");
         assert_eq!(r.skipped.get("TEXT"), Some(&1));
+    }
+
+    #[test]
+    fn object_coordinate_systems_and_flat_bulges() {
+        let doc = "  0\nSECTION\n  2\nENTITIES\n\
+  0\nARC\n 10\n3\n 20\n1\n 40\n1\n 50\n0\n 51\n90\n210\n0\n220\n0\n230\n-1\n\
+  0\nLINE\n 10\n1\n 20\n0\n 11\n2\n 21\n0\n230\n-1\n\
+  0\nCIRCLE\n 10\n0\n 20\n0\n 40\n1\n210\n1\n220\n0\n230\n0\n\
+  0\nLWPOLYLINE\n 10\n0\n 20\n0\n 42\n1e-7\n 10\n1\n 20\n0\n\
+  0\nENDSEC\n  0\nEOF\n";
+        let r = read(doc.as_bytes()).unwrap();
+        assert_eq!(r.curves.len(), 3, "{r:?}");
+        // Seen from below, the quarter arc at (3, 1) from 0° to 90° is the one at (-3, 1)
+        // from 90° to 180°.
+        let Curve::Arc { center, start, end, .. } = r.curves[0] else { panic!("{r:?}") };
+        assert_eq!(center, [-3.0, 1.0]);
+        let pi = std::f64::consts::PI;
+        assert!((start - pi / 2.0).abs() < 1e-12 && (end - pi).abs() < 1e-12, "{start} {end}");
+        // A LINE is in world coordinates whatever its extrusion.
+        assert_eq!(r.curves[1], Curve::Line([1.0, 0.0], [2.0, 0.0]));
+        // A tilted circle is skipped; a bulge with a sagitta of 5e-8 is a line.
+        assert_eq!(r.skipped.get("CIRCLE (tilted)"), Some(&1));
+        assert_eq!(r.curves[2], Curve::Line([0.0, 0.0], [1.0, 0.0]));
     }
 
     #[test]

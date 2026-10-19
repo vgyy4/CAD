@@ -1196,5 +1196,21 @@ drawing Plate_dwg (size: A3, projection: first, scale: 0.5, title: \"Plate\", nu
         );
         let e = Document::from_text(&format!("{PLATE}{cyc}")).map(|_| ()).unwrap_err().to_string();
         assert!(e.contains("projected from itself"), "{e}");
+        // Nothing is projected from a detail view (review D8).
+        let det = DRAWING.replace(
+            "view Iso (from: iso, at: [330, 210], scale: 0.25, hidden: false)",
+            "view D (detail_of: Front, center: [0, 0], radius: 10, at: [300, 60])\n  view E (of: D, side: top)",
+        );
+        let e = Document::from_text(&format!("{PLATE}{det}")).map(|_| ()).unwrap_err().to_string();
+        assert!(e.contains("projected from the detail view D"), "{e}");
+        // A detail view refuses `of` and `cut_at` rather than dropping them (review N2).
+        for extra in ["of: Front, ", "cut_at: 3 mm, "] {
+            let det = DRAWING.replace(
+                "view Iso (from: iso, at: [330, 210], scale: 0.25, hidden: false)",
+                &format!("view D (detail_of: Front, {extra}center: [0, 0], radius: 10, at: [300, 60])"),
+            );
+            let e = Document::from_text(&format!("{PLATE}{det}")).map(|_| ()).unwrap_err().to_string();
+            assert!(e.contains("a detail view takes"), "{e}");
+        }
     }
 }
