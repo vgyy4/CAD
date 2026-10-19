@@ -139,8 +139,17 @@ Phase 3 has started (see Next).
      `at`, next: `to`). v0.3 milestone code review (docs/reviews/2026-10-14-v0.3-assemblies-review.md):
      every high, medium and low finding fixed but N1. The v0.3 security review (2026-10-15)
      and dogfooding run 4 are done and their findings fixed (docs/DOGFOODING.md "Status of
-     the run 4 findings"). Next: v0.4 (2D drawings, DXF/SVG): research in
-     docs/research/drawings.md, then an ADR.
+     the run 4 findings").
+   - v0.4 drawings (ADR 0032, research in docs/research/drawings.md): phases 1 and 2
+     done. `drawing` blocks in the document (sheets, base and projected views, driven
+     dimensions on edge names, notes) stored in history, compared and merged whole;
+     `gusset-drawing` builds one scene (OCCT exact hidden lines, cached per view, ISO 128
+     line styles, ISO 7200-style title block with the projection symbol, centre marks and
+     centrelines, ISO 129 dimensions measured in the view plane, dangling dimensions
+     reported) and writes SVG (mm) and DXF R2000 (default, `$INSUNITS` mm, line weights)
+     or R12; commands `drawing.*` and `query.drawing`; OCCT test `modeling_drawing.rs`.
+     Next: phase 3 (a Drawing workspace in the app, dragging views and dimensions, a PNG
+     render of a sheet for agents), then phase 4 (sections, detail views, PDF, DXF import).
    - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
      `text` done (ADR 0029: one line embossed or engraved on a plane or face, the app's two
