@@ -1626,6 +1626,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gusset-drawing"
+version = "0.1.0-mvp"
+dependencies = [
+ "gusset-doc",
+ "gusset-eval",
+ "gusset-kernel",
+ "gusset-units",
+ "libm",
+]
+
+[[package]]
 name = "gusset-eval"
 version = "0.1.0-mvp"
 dependencies = [

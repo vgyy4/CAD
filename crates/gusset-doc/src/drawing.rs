@@ -533,7 +533,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
                     c,
                     "view direction",
                     "front, back, top, bottom, left, right, iso or iso_back",
-                    |w| ViewDir::from_keyword(w),
+                    ViewDir::from_keyword,
                 )?);
             }
             "at" => at = Some(parse_pair(c)?),
@@ -584,9 +584,12 @@ fn parse_dim(c: &mut Cursor<'_>) -> Result<DimDef, ParseError> {
         match key {
             "view" => view = Some(c.ident()?.to_string()),
             "kind" => {
-                kind = Some(keyword(c, "dimension kind", "length, distance, diameter, radius or angle", |w| {
-                    DimKind::from_keyword(w)
-                })?);
+                kind = Some(keyword(
+                    c,
+                    "dimension kind",
+                    "length, distance, diameter, radius or angle",
+                    DimKind::from_keyword,
+                )?);
             }
             "a" => a = Some(parse_edge(c)?),
             "b" => b = Some(parse_edge(c)?),

@@ -1,0 +1,18 @@
+[package]
+name = "gusset-drawing"
+description = "2D drawings: views laid out on a sheet, one scene for every output (SVG, DXF, the app) (ADR 0032)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-doc.workspace = true
+gusset-eval.workspace = true
+gusset-kernel.workspace = true
+gusset-units.workspace = true
+libm.workspace = true
+
+[lints]
+workspace = true
