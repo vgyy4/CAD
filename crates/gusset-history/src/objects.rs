@@ -127,7 +127,10 @@ impl Snapshot {
             LengthUnit::Millimetre => "mm",
             LengthUnit::Inch => "in",
         };
-        let mut s = format!("snapshot 2\nunits {u}\nparams {params}\nlist {list}\n");
+        // With drawings the version is 3, so older builds report an unknown version instead
+        // of a damaged history (review D13).
+        let v = if drawings.is_some() { 3 } else { 2 };
+        let mut s = format!("snapshot {v}\nunits {u}\nparams {params}\nlist {list}\n");
         if let Some(d) = drawings {
             s.push_str(&format!("drawings {d}\n"));
         }
@@ -356,8 +359,10 @@ impl ObjectStore {
     pub fn snapshot(&self, h: Hash) -> Result<Snapshot, ObjectError> {
         let text = self.text(h)?;
         let corrupt = |reason: String| ObjectError::Corrupt { hash: h, reason };
-        let Some(rest) = text.strip_prefix("snapshot 2\n") else {
-            return Snapshot::from_text(text).map_err(corrupt);
+        let (rest, v3) = match (text.strip_prefix("snapshot 2\n"), text.strip_prefix("snapshot 3\n")) {
+            (Some(r), _) => (r, false),
+            (_, Some(r)) => (r, true),
+            _ => return Snapshot::from_text(text).map_err(corrupt),
         };
         // Version 2: the same header lines, then the list root.
         let v1 = format!("snapshot 1\n{}", rest.lines().take(2).collect::<Vec<_>>().join("\n"));
@@ -378,6 +383,9 @@ impl ObjectStore {
         };
         if tail.next().is_some() {
             return Err(corrupt("trailing lines".into()));
+        }
+        if v3 != drawing_list.is_some() {
+            return Err(corrupt("the version does not match the drawings line".into()));
         }
         let root = self.text(list)?;
         let bad_root = |r: &str| ObjectError::Corrupt { hash: list, reason: r.to_string() };

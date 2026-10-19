@@ -80,6 +80,20 @@ impl std::fmt::Debug for HlrCache {
 }
 
 impl HlrCache {
+    /// Forgets everything (a new document, undo across many edits).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.cuts.clear();
+    }
+
+    /// Drops entries for shapes the evaluation no longer has, so old model revisions are
+    /// not kept alive (review D14).
+    fn retain_current(&mut self, ev: &Evaluation) {
+        let live = |s: &Shape| ev.bodies.iter().any(|b| b.shape.ptr_eq(s));
+        self.entries.retain(|(shapes, _, _)| shapes.iter().all(live));
+        self.cuts.retain(|(shapes, _, _)| shapes.iter().all(live));
+    }
+
     fn get(&mut self, k: &dyn Kernel, shapes: &[Shape], view: &HlrView) -> Result<Arc<Vec<HlrCurve>>, String> {
         let key = [
             view.toward[0].to_bits(),
@@ -211,11 +225,10 @@ struct SectionInfo {
 
 /// Normalized arc angles: counterclockwise from `s` to `e > s`.
 fn ccw_angles(start: f64, end: f64, ccw: bool) -> (f64, f64) {
-    let (s, mut e) = if ccw { (start, end) } else { (end, start) };
-    while e <= s {
-        e += TAU;
-    }
-    (s, e)
+    let (s, e) = if ccw { (start, end) } else { (end, start) };
+    // e in (s, s + TAU]; no loop, so non-finite input cannot spin (review D14).
+    let d = (e - s).rem_euclid(TAU);
+    (s, s + if d <= 0.0 || !d.is_finite() { TAU } else { d })
 }
 
 fn arc_points(center: [f64; 2], radius: f64, s: f64, e: f64, n: usize) -> impl Iterator<Item = [f64; 2]> {
@@ -597,6 +610,7 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
     scene.rect(Style::Border, fmin, fmax);
     title_block(&mut scene, d, sheet_scale, fmax[0], fmin[1]);
 
+    cache.retain_current(cx.ev);
     let mut b = Builder { d, cx, cache, sheet_scale, placed: BTreeMap::new() };
     for item in &d.items {
         if cx.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {

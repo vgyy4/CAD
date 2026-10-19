@@ -129,7 +129,7 @@ pub fn to_svg(scene: &Scene) -> String {
                     };
                     let _ = writeln!(
                         s,
-                        r#"<text x="{}" y="{}" font-size="{}" text-anchor="{a}"{rot}>{}</text>"#,
+                        r#"<text x="{}" y="{}" font-size="{}" text-anchor="{a}" fill="{color}" stroke="none" font-family="sans-serif"{rot}>{}</text>"#,
                         n(at[0]),
                         n(y(at[1])),
                         n(size),

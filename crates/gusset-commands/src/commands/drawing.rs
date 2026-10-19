@@ -332,8 +332,10 @@ impl Command for DrawingAddView {
         let scale = opt_expr("scale", &self.scale)?;
         let section = match (&self.section, &placement) {
             (Some(l), ViewPlacement::Projected { .. }) => {
-                if l.is_empty() || l.len() > 8 || !l.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    return Err(CommandError::args("a section letter is up to 8 letters or digits").hint("e.g. A"));
+                let first_letter = l.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+                if !first_letter || l.len() > 8 || !l.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err(CommandError::args("a section label is a letter, then up to 7 letters or digits")
+                        .hint("e.g. A or B2"));
                 }
                 Some(gusset_doc::drawing::SectionDef { label: l.clone(), cut_at: opt_expr("cut_at", &self.cut_at)? })
             }

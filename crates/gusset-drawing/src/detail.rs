@@ -84,9 +84,11 @@ pub fn clip(curves: &[HlrCurve], c: P, r: f64, tol: f64) -> Vec<HlrCurve> {
                     out.push(h.clone());
                     continue;
                 }
-                let (s, mut e) = if *ccw { (*start, *end) } else { (*end, *start) };
-                while e <= s {
-                    e += TAU;
+                let (s, e0) = if *ccw { (*start, *end) } else { (*end, *start) };
+                let d = (e0 - s).rem_euclid(TAU);
+                let e = s + if d <= 0.0 || !d.is_finite() { TAU } else { d };
+                if !(s.is_finite() && radius.is_finite()) {
+                    continue;
                 }
                 let step = 2.0 * libm::acos((1.0 - tol / radius.max(tol)).clamp(-1.0, 1.0));
                 let n = (((e - s) / step.max(1e-3)).ceil() as usize).clamp(8, 4096);

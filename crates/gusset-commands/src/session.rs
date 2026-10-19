@@ -392,6 +392,7 @@ impl Session {
 
     pub(crate) fn invalidate_cache(&mut self) {
         self.cache.clear();
+        self.drawing_cache.clear();
     }
 
     fn remember_eval(&mut self, node: NodeId, rollback: Option<usize>, e: Arc<Evaluation>) {

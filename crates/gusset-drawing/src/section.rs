@@ -64,9 +64,12 @@ pub fn extent(k: &dyn Kernel, shapes: &[Shape], n: V3) -> Result<(f64, f64, V3, 
 /// `shapes` with everything where `dot(p, n) > c` removed. Bodies entirely on the removed
 /// side are left out.
 pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64) -> Result<Vec<Shape>, String> {
-    let (lo, _, centre, diag) = extent(k, shapes, n)?;
+    let (lo, hi, centre, diag) = extent(k, shapes, n)?;
     if c <= lo {
         return Err("the cutting plane leaves nothing to show".into());
+    }
+    if c >= hi {
+        return Err("the cutting plane misses the part".into());
     }
     let r = diag + 10.0;
     // A box from the plane outwards: its profile lies in the plane (normal x × y = n).
@@ -98,7 +101,8 @@ pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64) -> Result<Vec
 /// Triangles of `shapes` lying in the plane `dot(p, n) = c`, in view coordinates (x, y).
 pub fn cut_faces(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, y: V3, c: f64) -> Result<Vec<[[f64; 2]; 3]>, String> {
     let mut out = Vec::new();
-    let tol = 1e-3 * (1.0 + c.abs());
+    // The mesh stores f32 coordinates: allow their rounding, nothing more (review D9).
+    let tol = 1e-4 + 2.0 * f64::from(f32::EPSILON) * c.abs();
     for s in shapes {
         let m = k.tessellate(s, &TessellationParams::default()).map_err(|e| e.message)?;
         let p = |i: u32| m.positions.get(i as usize).map(|v| [f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);

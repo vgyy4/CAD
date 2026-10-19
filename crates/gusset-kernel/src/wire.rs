@@ -638,6 +638,16 @@ impl Wire for HlrCurve {
             }
             t => return Err(WireError(format!("unknown projected curve type {t}"))),
         };
+        let finite = match &curve {
+            ProjCurve::Line(a, b) => a.iter().chain(b).all(|v| v.is_finite()),
+            ProjCurve::Arc { center, radius, start, end, .. } => {
+                center.iter().chain([radius, start, end]).all(|v| v.is_finite())
+            }
+            ProjCurve::Polyline(p) => p.iter().flatten().all(|v| v.is_finite()),
+        };
+        if !finite {
+            return Err(WireError("a projected curve is not finite".into()));
+        }
         Ok(HlrCurve { visible, class, curve, source })
     }
 }
