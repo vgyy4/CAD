@@ -299,3 +299,90 @@ branch names and parameter comments all arrived as `user_text` with `suspicious:
 - STEP/3MF export of an assembly (bodies placed by joints) and re-import.
 - `branch_cherry_pick` (only merge) and merging a feature changed on both sides (only a parameter conflict).
 - The kernel worker isolation (the worker was stale, F4-12), so a kernel crash on draft/shell/text was not exercised.
+
+## Run 5 — v0.4 features (2026-10-19)
+
+Setup: real OCCT 8.0.1 kernel, release build at b9f0e2f of `gusset-cli`, `gusset-kernel-worker` and
+`gusset-worker` together (`CARGO_TARGET_DIR=target/occt`, so the workers were current), `gusset mcp
+--no-attach <file>` over stdio (protocol 2025-11-25). Client: run 4's stdlib Python daemon/`cl.py`
+helpers, one server per project; scripts, inputs, `.gus` files, exports and renders in the session's
+scratch directory (`dogfood5/`). The agent learned the tools from `tools/list` (31 tools), `commands`
+(58 commands run through `run`, schemas via `commands {name}`), the server instructions and error
+messages. Input files written for the run: `plate.dxf` (inches, `LWPOLYLINE` with a bulge, `CIRCLE`,
+`LINE` + `ARC` slot), `odd.dxf` (no `$INSUNITS`, SPLINE/ELLIPSE/TEXT/INSERT), six `.scad` files, and
+`.FCStd` files zipped by hand (`Document.xml`, `GuiDocument.xml`, BRep text). Gusset has no BRep export,
+so the BRep text came from a 10-line C++ program against the OCCT install (`BRepPrimAPI_MakeBox` /
+`MakeCylinder` + `BRepTools::Write`, which writes "Topology V3"). Log: `calls.log`, 209 calls,
+2.3 s server time in total. The slowest call was a fillet at 0.14 s. Drawing renders took 0.05-0.10 s,
+exports 0.01-0.05 s and imports 0.01-0.12 s. No call was slow.
+
+### Parts
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | L bracket `bracket.gus` → drawing D1 (A3, first angle) | success, with layout problems (F5-3, F5-4) | 93 | 60 x 40 x 40, t 5, 2 x Ø`hd` through holes (`feature_hole`), fillets R3 inside/R8 outside. `standard_views` (front/top/right/iso), 6 dimensions (2 lengths, distance, diameter, radius, angle 90°), 2 notes, title block, full section A-A through the holes (`of: Top, side: top, section: A, cut_at: -20 mm`), detail DetB 4:1 of the bend, bottom and back views. Exported PDF (A3, 1 page), SVG and DXF (R2000 and R12; layers VISIBLE/HIDDEN/THIN/DIM/TEXT/CENTER/BORDER). Views and dimension texts moved, `hd` 8 → 10 mm updated the Ø text, and deleting `FilOut` left a magenta "Rout?" mark plus an issue. Undo restored it. |
+| 2 | DXF plate `plate.gus` (inches) → extrude 0.25 in → drawing PD (A4, 1:2) | success after a wrong first extrude (F5-7) | 31 | `sketch_import_dxf`: `unit_mm: 25.4`, 3 regions, bulge arc correct. Dimensions 76.2 / 63.5 / Ø12.7 / R31.75 / R5.08. PDF and DXF exported. Re-importing the exported drawing DXF into a sketch works (632 lines, SOLID/TEXT skipped and counted). |
+| 3 | OpenSCAD `scad.gus` (`part3*.scad`) | success, but `$fn` is ignored (F5-1) | 12 | Modules, `for`, `function`, list comprehension, `let`, difference/union/intersection, `rotate_extrude` (also `angle: 90`), `linear_extrude`, `mirror`, `scale`, `cylinder r1/r2 center`, `echo` all match by hand (table below). Unsupported constructs: see F5-9. |
+| 4 | FreeCAD `fc.gus` (`two.FCStd`, `inj.FCStd`, `nogui.FCStd`, broken variants) | success | 13 | The visible box was imported (6000 mm3) and the hidden cylinder skipped. Without `GuiDocument.xml` both were imported. A missing or damaged `.brp` gives a clear error per object. An injected label arrived as `label_user_text` with `suspicious: true`. |
+| 5 | Agent-safety checks | mostly OK, but read-only mode writes (F5-2) | 47 | Export paths `../x`, absolute and `img/../x` were refused. A missing folder was refused with a hint. Overwriting an export asks the user through elicitation; it was declined and nothing was written. `--read-only` refuses every drawing and import command and `export_step`. Item names must be identifiers, so injected text cannot get into issue strings. Notes, OpenSCAD `echo` and FCStd labels were flagged `suspicious`. |
+
+All four `.gus` files rebuild with `gusset build <file> --branch agent/dogfood5-1` (bracket 0.11 s,
+plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`, `p1_pdf-1.png`,
+`p2_sheet.png`, `p3_scad.png`).
+
+### Hand checks
+
+| Check | Hand | Gusset |
+|---|---|---|
+| L profile 60x5 + 5x35, depth 40 | 19000 | 19000.0 |
+| 2 holes Ø8 through 5 mm | -502.6548 | -502.654825 |
+| Fillets: + (9 - 9π/4)·40 inside, - (64 - 64π/4)·40 outside | 18025.2211 | 18025.221135 |
+| Drawing values: overall 60, top flat 60 - 5 - 3 = 52, Ø8 → Ø10 after `hd`, R8, 90°, hole pitch 20 | as hand | as hand; Ø changed to 10 at once |
+| Section A-A (first angle, below the top view, viewed towards -Y): profile with +X to the right and +Z down | flange left, pointing down | as hand (checked against a `back` base view) |
+| DXF plate area: 3 x 2.5 in + half disc r 1.25 - hole r 0.25 - slot (1 x 0.4 + π 0.2²) | 9.232356 in² = 5956.3468 mm² | region a6 5956.346806 |
+| Plate volume x 6.35 mm | 37822.8022 | 37822.802217 (with `regions: [a6]`) |
+| SCAD `bar(4)`: 40x20x5 - 4 π 2² 5 | 3748.6726 | 3748.672588 (exact circles, not 64-gons; OpenSCAD itself gives 3749.08) |
+| SCAD ring (rotate_extrude of a 2x5 square at r 10) 220π | 691.1504 | 691.150384 |
+| SCAD wedge, cube ∪ sphere (1000 + 523.599 - 523.599/8), rotated cube | 150 / 1458.1489 / 200 | 150.0 / 1458.148929 / 200.0, bbox ±7.071068 |
+| SCAD rotate_extrude angle 90 of circle r2 at 10: ¼·2π10·4π | 197.3921 | 197.392088 |
+| SCAD cone r1 5 r2 0 h 9 centred; intersection of cubes; mirror(scale(cube)) | 235.6194 / 125 / 48, x -4..0 | 235.619449 / 125.0 / 48.0, bbox 66..70 |
+| SCAD `circle(d = 10, $fn = 6)` extruded 2 mm (hexagon) | 129.9038 | **157.079633** (a full circle, F5-1) |
+| FCStd box 30x20x10 | 6000 | 6000.0, 12 edges, 6 faces |
+
+### Findings
+
+| ID | Sev | Finding | Repro | Suggested fix |
+|---|---|---|---|---|
+| F5-1 | high | OpenSCAD `$fn`/`$fa`/`$fs` are ignored and every circle, cylinder and sphere is exact, without a warning. For `$fn = 6` (the usual nut-trap and hex-socket idiom) this gives the wrong shape: 157.08 instead of 129.90 mm3 (+21 %), and the across-flats size becomes the diameter. For large `$fn` the difference is negligible (bar: 3748.67 vs OpenSCAD's 3749.08). The import result's `tier` says "exact geometry", but nothing says that the facet settings were dropped. | `linear_extrude(2) circle(d = 10, $fn = 6);` and `cylinder(h = 2, d = 10, $fn = 6);` → `import_file`. | Build an explicit small `$fn` (say ≤ 12, or any `$fn` set on the primitive) as the polygon OpenSCAD makes. Otherwise warn per line: "line 1: $fn = 6 ignored, an exact circle was used". |
+| F5-2 | medium | Read-only mode writes the project. A refused write (`drawing_add_note` → `read_only`) still creates the agent's branch (`agent/dogfood5-3`, now current), and on exit the `.gus` is rewritten with it. A session that only called `branch_list` also changed the file's bytes (same size, different md5). | `cp bracket.gus t.gus; gusset mcp --no-attach t.gus --read-only`, then `run drawing_add_note …` and `branch_list`, close, `cmp`. | Do not create the agent branch in read-only mode (refuse before the branch step), and do not save a read-only session. |
+| F5-3 | medium | Automatic placement of dimension and label text collides. On the bracket, "60", "52" and "20" were drawn on top of each other (Overall and Flat get the same offset, and Pitch from the top view reaches up to the same line). "R8", "90°" and the detail label "DetB" overlapped. On the plate, "Ø12.7" and "R5.08" overlapped, and two dangling marks were drawn at the same spot. `issues` stays empty, so an agent only sees this by rendering. | Part 1: add Overall (distance, horizontal), Flat (length) and Pitch with default offsets, then `render_view {drawing: D1}`. | Stack parallel dimensions of one view at increasing offsets, and move text that overlaps other text or geometry. Report the overlaps that remain in `issues`. |
+| F5-4 | medium | Layout problems are not reported. `issues: []` came back while: (a) `standard_views` on A4 at 1:1 put the right view at x -12.8 mm (`off_sheet: true` in `views`, which is the only sign); (b) a projected view `of: Top, side: top` took exactly the box of the existing section view on the same side; (c) a base view and the detail's caption overlapped the title block; (d) a note at x = 900 mm on a 420 mm sheet was accepted. A projected view cannot be moved sideways (`drawing_move_item` says "a projected view follows its parent"), so (b) can only be fixed by deleting it or changing `gap`. | Part 2 `drawing_create {size: A4, standard_views: true}`; part 1 `drawing_add_view {of: Top, side: top}` twice. | Put `off_sheet`, view/view and view/title-block overlaps and off-sheet notes into `issues`. With `standard_views`, choose a standard scale that fits the sheet. Place a second projected view on the same side further out. |
+| F5-5 | medium | Invalid drawing items are committed as successful edits. A diameter on a straight edge, an angle between parallel edges, sheet scale `abc` / `-1` / `0`, view scale `1e9`, detail `radius: -5 mm`, and a `cut_at` that misses the part or is `abc` all returned `rebuild_ok: true` and `new_errors: []`. The error shows only in `placed.error`, or later in `query_drawing.issues` / render / export (`dimension D1: a diameter dimension takes a circular edge`, `sheet scale: 'abc': unknown parameter 'abc'; using 1:1`). Feature commands put such problems in `new_errors` with an undo hint. | `drawing_add_dimension {kind: diameter, a: <line edge>}`; `drawing_create {scale: "abc"}`. | Refuse kind/edge mismatches and values that cannot be evaluated at add time. Report the rest in `new_errors` / `rebuild_ok: false` like features do. |
+| F5-6 | medium | A length dimension in the isometric view shows the projected length: the 52 mm edge reads "42.46" (52·√(2/3)). This is a wrong value on the drawing, and no issue is raised. | `drawing_add_dimension {view: Iso, kind: length, a: edge(L/cap(start), L/side(Prof/l9))}`. | In axonometric views, measure the true 3D length (and draw it along the edge), or refuse with "dimension in an orthographic view". |
+| F5-7 | medium | `feature_extrude` with the default `regions` (empty = all) fills the holes of an imported plate. The DXF gives three regions: a6, the plate with the hole and the slot already removed, and c11 and a19, the hole and slot themselves. "All" extrudes all three, so the plate came out solid: 40780.72 instead of 37822.80 mm3. The result shows only the volume. This is the normal case for an imported DXF part, and the schema note "empty = all" does not warn about it. | Part 2: `sketch_import_dxf plate.dxf`, `feature_extrude {sketch: S, distance: 0.25 in}`. | Default to the outermost regions with their holes (leave out regions that are holes of another region), or warn: "regions c11, a19 are holes in a6 and were filled; pass regions: [a6] to keep them open". |
+| F5-8 | low | `feature_delete` of a feature that a drawing dimension measures succeeds without a word. The result has `new_errors: []`, `query_model.errors` is empty, and the dangling dimension shows only in `query_drawing` / render / export. Its message starts with the confusing part: `edge … is not in this view's bodies (face FilOut/blend(…) no longer exists)`. | Part 1: `feature_delete {name: FilOut}` while dimension Rout measures its arc. | Name the affected drawing items in the delete result (`dangling: ["D1/Rout"]`). Start the message with "the face … no longer exists". |
+| F5-9 | low | OpenSCAD constructs that are not supported are handled in two different ways. `hull`, `minkowski`, `text`, `import` and `offset` are skipped with a clear warning per line. `polyhedron`, `linear_extrude(scale = …)` and `linear_extrude(twist = …)` abort the whole import (`OpenSCAD: line 13: polyhedron is not supported yet`), so one object stops all the others. Parse errors, "recursion is too deep" and "too many primitives" (good guards; the limit is not stated) all come with `code: "io"`. | `part3c.scad` with a `polyhedron`; `linear_extrude(height = 10, twist = 90) square(4);`. | Skip unsupported objects with a warning, as for `hull`. Use `invalid_input` / `unsupported` instead of `io`, and give the primitive limit in the message. |
+| F5-10 | low | FCStd: hidden objects are skipped silently (`warnings_user_text: []`), so the agent cannot tell that "Hidden box" existed. Without `GuiDocument.xml`, everything is imported without a note. A non-ZIP file reports `3MF ZIP container: file is too small to be a ZIP archive`, which names the wrong format. The import result does not show object labels, so a suspicious label is visible only in `query_model`. | `two.FCStd` (one hidden object); `notzip.FCStd`. | Add warnings such as "skipped hidden object 'Hidden box'" and "no GuiDocument.xml: visibility unknown, all objects imported". Say "FreeCAD file (ZIP)". Return `label_user_text` per created body. |
+| F5-11 | low | The drawing command schemas are thin. In `drawing_add_view`, `side`, `section`, `cut_at`, `gap`, `center`, `radius`, `scale` and `name` have no description: the values of `side` came from an error, and the frame of a detail's `center` ("doc units") had to be guessed. `drawing_edit` accepts `title` and it works, but `title` is not in its schema. `drawing_export` of a `.png` gives the hint "e.g. part.step or part.stl". `query_drawing` returns neither dimension and note positions nor `text_at`, so a `drawing_move_item` can only be checked by rendering. An automatic dimension name can equal the drawing name (dimension "D1" in drawing "D1"). | `commands {name: drawing_add_view}`. | Describe each field (side: top/bottom/left/right as seen from the parent; cut_at: offset along the parent's …; center: view-plane model coordinates). Add `title` to the schema. Fix the hint. Return `text_at`/`at` per dimension and note. Use a prefix such as `Dim1` for automatic names. |
+| F5-12 | low | `--read-only` cannot open a project that a writer server already holds: `error: … is already open in another Gusset window (the project is open in another Gusset window (process 28150 on vm))`. The text is repeated and says "window" for a headless server. A read-only reviewer next to a working agent is a natural setup. | Start `gusset mcp --no-attach bracket.gus`, then `gusset mcp --no-attach bracket.gus --read-only`. | Let read-only sessions open a locked project from its last save. Fix the duplicated text. |
+| F5-13 | low | DXF import skips SPLINE and ELLIPSE (counted in `skipped_user_text`, which is good). Both are common in DXF files from other CAD tools. A file without `$INSUNITS` is taken as mm (`unit_mm: 1.0`) without a note. | `odd.dxf`. | Import ellipses (exact) and splines (B-spline sketch curves). Warn when `$INSUNITS` is missing or 0. |
+| F5-14 | low | Drawing dimensions are in mm only. The inch plate is dimensioned 76.2 / 63.5 / Ø12.7, and there is no unit, dual-dimension or decimal-places option in `drawing_create`, `drawing_edit` or `drawing_add_dimension`. | Part 2. | Add a drawing `units` (mm/in) and `decimals` setting, and optional dual dimensions. |
+
+### What worked well
+
+- **Values:** every model and drawing value matched the hand calculation. Dimensions are re-measured on each change (Ø8 → Ø10 at once), and a deleted feature turns its dimension into a visible "Rout?" mark that comes back on undo.
+- **Views:** first-angle placement, hidden lines, centre marks and the section are correct. The section has its arrows, label A-A and hatching, and only cut faces are hatched. The detail view has a circle, a label and its scale. Moving a base view takes its projected views along.
+- **Exports:** the PDF is a real one-page A3. The SVG has `mm` units and a group per line type, and the DXF has a layer per line type in both R2000 and R12. Exports and renders report the same `issues`, and the overwrite approval goes to the user.
+- **DXF import:** units come from `$INSUNITS`, bulges become exact arcs, shared ends become shared points, region areas are exact, and skipped entities are counted.
+- **OpenSCAD:** modules, recursion, loops, functions, comprehensions and the CSG operations are all right. The import has guards against runaway recursion and huge loops, `echo` output arrives as flagged `user_text`, and unsupported calls are named by line.
+- **FCStd:** a hand-made file imports. Hidden objects are skipped and broken shape files are reported per object.
+- **Safety and speed:** paths are confined to the project, item names must be identifiers, and read-only mode refuses every new command. All calls answered in 0.14 s or less.
+
+### Not tested
+
+- Third-angle sheets, portrait sheets, ANSI sizes, `drawing_edit` changing size or projection after views exist.
+- Half sections, offset or aligned sections, broken-out sections, sections of assemblies or of several bodies.
+- Drawings of assemblies or components, and drawings on a branch merged into another one.
+- A real FreeCAD-written `.FCStd`: compounds, `Part::FeaturePython`, links, placements that differ from the shape location, and older "Topology V1/V2" BRep text.
+- OpenSCAD `include`/`use` of other files, `children()`, `surface`, `projection` and `resize`.
+- Cancelling a long import, rate limits, and the in-app GUI drawing editor.
