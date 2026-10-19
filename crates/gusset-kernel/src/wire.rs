@@ -589,10 +589,11 @@ impl Wire for HlrView {
 wire_c_enum!(HlrClass { Sharp = 0, Smooth = 1, Outline = 2 });
 
 impl Wire for HlrCurve {
-    const MIN_SIZE: usize = 3;
+    const MIN_SIZE: usize = 7;
     fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
         w.bool(self.visible);
         self.class.put(w, s)?;
+        w.u32(self.source.map_or(u32::MAX, |e| e));
         match &self.curve {
             ProjCurve::Line(a, b) => {
                 w.u8(0);
@@ -617,6 +618,7 @@ impl Wire for HlrCurve {
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
         let visible = r.bool()?;
         let class = HlrClass::get(r, s)?;
+        let source = Some(r.u32()?).filter(|e| *e != u32::MAX);
         let curve = match r.u8()? {
             0 => ProjCurve::Line([r.f64()?, r.f64()?], [r.f64()?, r.f64()?]),
             1 => ProjCurve::Arc {
@@ -636,7 +638,7 @@ impl Wire for HlrCurve {
             }
             t => return Err(WireError(format!("unknown projected curve type {t}"))),
         };
-        Ok(HlrCurve { visible, class, curve })
+        Ok(HlrCurve { visible, class, curve, source })
     }
 }
 

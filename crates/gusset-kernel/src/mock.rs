@@ -307,7 +307,7 @@ impl Kernel for MockKernel {
             [dot(p, x), dot(p, y)]
         };
         let mut out: Vec<HlrCurve> = Vec::new();
-        for e in &mesh.edges {
+        for (i, e) in mesh.edges.iter().enumerate() {
             for w in e.windows(2) {
                 let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
                 let (a, b) = (at(a), at(b));
@@ -315,7 +315,8 @@ impl Kernel for MockKernel {
                 if dx * dx + dy * dy < 1e-18 {
                     continue;
                 }
-                out.push(HlrCurve { visible: true, class: HlrClass::Sharp, curve: ProjCurve::Line(a, b) });
+                let source = u32::try_from(i).ok();
+                out.push(HlrCurve { visible: true, class: HlrClass::Sharp, curve: ProjCurve::Line(a, b), source });
             }
         }
         Ok(out)

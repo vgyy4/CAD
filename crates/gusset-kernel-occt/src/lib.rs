@@ -420,7 +420,7 @@ mod imp {
             };
             let mut out = Vec::with_capacity(curves.len() / 10);
             for c in curves.chunks_exact(10) {
-                let &[vis, cls, kind, a, b, cc, d, e, f, _] = c else { continue };
+                let &[vis, cls, kind, a, b, cc, d, e, f, src] = c else { continue };
                 let curve = match kind as i32 {
                     0 => ProjCurve::Line([a, b], [cc, d]),
                     1 => ProjCurve::Arc { center: [a, b], radius: cc, start: d, end: e, ccw: f != 0.0 },
@@ -434,7 +434,8 @@ mod imp {
                         )
                     }
                 };
-                out.push(HlrCurve { visible: vis != 0.0, class: class(cls), curve });
+                let source = (src >= 0.0).then_some(src as u32);
+                out.push(HlrCurve { visible: vis != 0.0, class: class(cls), curve, source });
             }
             Ok(out)
         }

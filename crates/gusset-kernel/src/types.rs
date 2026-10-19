@@ -228,6 +228,9 @@ pub struct HlrCurve {
     pub visible: bool,
     pub class: HlrClass,
     pub curve: ProjCurve,
+    /// The model edge (index into the shape's topology) this curve is a part of; `None`
+    /// for silhouettes, which are no edge of the model.
+    pub source: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

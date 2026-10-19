@@ -686,9 +686,21 @@ fn hidden_lines_of_a_plate_with_a_hole() {
         let b = span(&vis);
         assert!(b.iter().zip([0.0, 0.0, 40.0, 40.0]).all(|(a, w)| close(*a, w, 1e-6)), "{exact}: {b:?}");
         if exact {
+            let arc = vis
+                .iter()
+                .find(|c| {
+                    matches!(&c.curve, ProjCurve::Arc { center, radius, .. }
+                    if close(*radius, 5.0, 1e-9) && close(center[0], 20.0, 1e-9) && close(center[1], 20.0, 1e-9))
+                })
+                .unwrap_or_else(|| panic!("{vis:?}"));
+            // It knows the model edge it shows: the hole's top circle (z = 10).
+            let t = k().topology(&r.shape).unwrap();
+            let e = &t.edges[arc.source.expect("a source edge") as usize];
+            let c = e.circle.expect("a circle edge");
+            assert!(close(c.radius, 5.0, 1e-9) && close(c.center[2], 10.0, 1e-9), "{e:?}");
+            // Every sharp visible line of the square has a source edge too.
             assert!(
-                vis.iter().any(|c| matches!(&c.curve, ProjCurve::Arc { center, radius, .. }
-                    if close(*radius, 5.0, 1e-9) && close(center[0], 20.0, 1e-9) && close(center[1], 20.0, 1e-9))),
+                vis.iter().filter(|c| matches!(c.curve, ProjCurve::Line(..))).all(|c| c.source.is_some()),
                 "{vis:?}"
             );
         }

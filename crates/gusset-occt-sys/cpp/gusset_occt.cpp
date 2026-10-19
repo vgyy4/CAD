@@ -18,7 +18,11 @@
 #include <BRepAdaptor_CompCurve.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
 #include <HLRAlgo_Projector.hxx>
+#include <HLRAlgo_EdgeIterator.hxx>
+#include <HLRBRep.hxx>
 #include <HLRBRep_Algo.hxx>
+#include <HLRBRep_Data.hxx>
+#include <HLRBRep_FaceIterator.hxx>
 #include <HLRBRep_HLRToShape.hxx>
 #include <HLRBRep_PolyAlgo.hxx>
 #include <HLRBRep_PolyHLRToShape.hxx>
@@ -1863,7 +1867,7 @@ namespace {
 
 /* Appends the edges of `c` (in the projector's frame, z = 0) as HLR curves. */
 void hlr_edges(const TopoDS_Shape& c, int visible, int cls, double defl, std::vector<double>& curves,
-               std::vector<double>& points) {
+               std::vector<double>& points, double source = -1) {
   if (c.IsNull()) return;
   for (TopExp_Explorer ex(c, TopAbs_EDGE); ex.More(); ex.Next()) {
     TopoDS_Edge e = TopoDS::Edge(ex.Current());
@@ -1875,7 +1879,7 @@ void hlr_edges(const TopoDS_Shape& c, int visible, int cls, double defl, std::ve
     if (bc.GetType() == GeomAbs_Line) {
       gp_Pnt a = bc.Value(rev ? t1 : t0), b = bc.Value(rev ? t0 : t1);
       if (a.Distance(b) < 1e-9) continue;
-      curves.insert(curves.end(), {double(visible), double(cls), 0, a.X(), a.Y(), b.X(), b.Y(), 0, 0, 0});
+      curves.insert(curves.end(), {double(visible), double(cls), 0, a.X(), a.Y(), b.X(), b.Y(), 0, 0, source});
       continue;
     }
     if (bc.GetType() == GeomAbs_Circle) {
@@ -1894,7 +1898,7 @@ void hlr_edges(const TopoDS_Shape& c, int visible, int cls, double defl, std::ve
       // Full circles: the end angle is one turn on.
       if (span > 2 * M_PI - 1e-9) a1 = a0 + (ccw ? 2 * M_PI : -2 * M_PI);
       curves.insert(curves.end(),
-                    {double(visible), double(cls), 1, cen.X(), cen.Y(), ci.Radius(), a0, a1, double(ccw), 0});
+                    {double(visible), double(cls), 1, cen.X(), cen.Y(), ci.Radius(), a0, a1, double(ccw), source});
       continue;
     }
     GCPnts_QuasiUniformDeflection d(bc, defl, t0, t1);
@@ -1905,7 +1909,87 @@ void hlr_edges(const TopoDS_Shape& c, int visible, int cls, double defl, std::ve
       gp_Pnt p = d.Value(rev ? n + 1 - k : k);
       points.insert(points.end(), {p.X(), p.Y()});
     }
-    curves.insert(curves.end(), {double(visible), double(cls), 2, first, double(n), 0, 0, 0, 0, 0});
+    curves.insert(curves.end(), {double(visible), double(cls), 2, first, double(n), 0, 0, 0, 0, source});
+  }
+}
+
+/* HLRBRep_HLRToShape::InternalCompound (whole shape, 2D) with every fragment tagged by
+ * the input edge it comes from (0-based in `em`, -1 for silhouettes and other new edges).
+ * typ: 5 sharp, 3 smooth (G1), 2 outline. */
+void hlr_collect(const occ::handle<HLRBRep_Data>& ds, int typ, bool visible, const ShapeMap& em, double defl,
+                 std::vector<double>& curves, std::vector<double>& points) {
+  int cls = typ == 5 ? 0 : typ == 3 ? 1 : 2;
+  int ne = ds->NbEdges(), nf = ds->NbFaces();
+  for (int ie = 1; ie <= ne; ++ie) {
+    HLRBRep_EdgeData& ed = ds->EDataArray().ChangeValue(ie);
+    if (ed.Selected() && !ed.Vertical()) {
+      ed.Used(false);
+      ed.HideCount(0);
+    } else {
+      ed.Used(true);
+    }
+  }
+  auto source = [&](int ie) -> double {
+    if (ie < 1 || ie > ds->EdgeMap().Extent()) return -1;
+    int k = em.FindIndex(ds->EdgeMap().FindKey(ie));
+    return k > 0 ? double(k - 1) : -1;
+  };
+  auto draw = [&](bool in_face, HLRBRep_EdgeData& ed, int ie) {
+    bool todraw = in_face || (typ == 3 ? ed.Rg1Line() && !ed.RgNLine() : !ed.Rg1Line());
+    if (!todraw) return;
+    double sta, end;
+    float tsta, tend;
+    HLRAlgo_EdgeIterator it;
+    BRep_Builder b;
+    TopoDS_Compound part;
+    b.MakeCompound(part);
+    bool any = false;
+    if (visible) {
+      for (it.InitVisible(ed.Status()); it.MoreVisible(); it.NextVisible()) {
+        it.Visible(sta, tsta, end, tend);
+        TopoDS_Edge e = HLRBRep::MakeEdge(ed.Geometry(), sta, end);
+        if (!e.IsNull()) b.Add(part, e), any = true;
+      }
+    } else {
+      for (it.InitHidden(ed.Status()); it.MoreHidden(); it.NextHidden()) {
+        it.Hidden(sta, tsta, end, tend);
+        TopoDS_Edge e = HLRBRep::MakeEdge(ed.Geometry(), sta, end);
+        if (!e.IsNull()) b.Add(part, e), any = true;
+      }
+    }
+    if (any) hlr_edges(part, visible ? 1 : 0, cls, defl, curves, points, source(ie));
+  };
+  for (int f = 1; f <= nf; ++f) {
+    HLRBRep_FaceIterator itf;
+    for (itf.InitEdge(ds->FDataArray().ChangeValue(f)); itf.MoreEdge(); itf.NextEdge()) {
+      int ie = itf.Edge();
+      HLRBRep_EdgeData& edf = ds->EDataArray().ChangeValue(ie);
+      if (edf.Used()) continue;
+      bool todraw = typ == 2   ? itf.Internal()
+                    : typ == 3 ? edf.Rg1Line() && !edf.RgNLine() && !itf.OutLine()
+                               : !itf.IsoLine() && !itf.Internal() && (!edf.Rg1Line() || itf.OutLine());
+      if (todraw) {
+        draw(true, edf, ie);
+        edf.Used(true);
+      } else if ((typ > 4 || typ == 2) && edf.Rg1Line() && !itf.OutLine()) {
+        int hc = edf.HideCount();
+        if (hc > 0)
+          edf.Used(true);
+        else
+          edf.HideCount(hc + 1);
+      } else {
+        edf.Used(true);
+      }
+    }
+  }
+  if (typ >= 3) {
+    for (int ie = 1; ie <= ne; ++ie) {
+      HLRBRep_EdgeData& ed = ds->EDataArray().ChangeValue(ie);
+      if (!ed.Used()) {
+        draw(false, ed, ie);
+        ed.Used(true);
+      }
+    }
   }
 }
 
@@ -1927,13 +2011,15 @@ int gs_hlr(const GsShape* s, const double view[6], int exact, double deflection,
     algo->Projector(projector);
     algo->Update();
     algo->Hide();
-    HLRBRep_HLRToShape out(algo);
-    hlr_edges(out.VCompound(), 1, 0, deflection, cv, pts);
-    hlr_edges(out.Rg1LineVCompound(), 1, 1, deflection, cv, pts);
-    hlr_edges(out.OutLineVCompound(), 1, 2, deflection, cv, pts);
-    hlr_edges(out.HCompound(), 0, 0, deflection, cv, pts);
-    hlr_edges(out.Rg1LineHCompound(), 0, 1, deflection, cv, pts);
-    hlr_edges(out.OutLineHCompound(), 0, 2, deflection, cv, pts);
+    occ::handle<HLRBRep_Data> ds = algo->DataStructure();
+    if (!ds.IsNull()) {
+      ShapeMap em;
+      TopExp::MapShapes(s->s, TopAbs_EDGE, em);
+      ds->Projector().Scaled(true);
+      for (int vis = 1; vis >= 0; --vis)
+        for (int typ : {5, 3, 2}) hlr_collect(ds, typ, vis != 0, em, deflection, cv, pts);
+      ds->Projector().Scaled(false);
+    }
   } else {
     BRepMesh_IncrementalMesh mesher(s->s, deflection, false, 0.5, false);
     occ::handle<HLRBRep_PolyAlgo> algo = new HLRBRep_PolyAlgo();
