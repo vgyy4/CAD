@@ -10,6 +10,13 @@ and the test, reviewed here; (2) a separate Codex run translates, without access
 judge; (3) review, merge. Infrastructure packages are not translated literally: `Standard`
 handles → `Arc`/ownership, `NCollection` → Rust collections, exceptions → `Result`.
 
+Draft translator (2026-10-19): `tools/cxx2rs.py` turns clang's JSON AST of a `.cxx` file
+into a Rust draft, function by function, keeping the C++ order of floating-point
+operations (what bit-identity rests on) and marking what it cannot translate with
+`todo!`. No tokens, seconds per file: ElCLib's 66 functions come out with no gaps;
+math_FunctionRoots with 21. The translating agent starts from the draft and only fixes
+the marked spots, overload names (from the API doc) and ownership.
+
 ## Toolkits needed by a CAD app (lines incl. headers, without OCCT's own tests)
 | Toolkit | Packages | Lines | Status |
 |---|---|---|---|
