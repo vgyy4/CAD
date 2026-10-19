@@ -137,8 +137,10 @@ Phase 3 has started (see Next).
      sliders, named configurations (save/apply/query, per component).
      The joint form takes its frames from viewport picks (first pick: moving body and
      `at`, next: `to`). v0.3 milestone code review (docs/reviews/2026-10-14-v0.3-assemblies-review.md):
-     every high, medium and low finding fixed but N1. Next: the v0.3 security review and
-     dogfooding, then v0.4 (2D drawings, DXF/SVG).
+     every high, medium and low finding fixed but N1. The v0.3 security review (2026-10-15)
+     and dogfooding run 4 are done and their findings fixed (docs/DOGFOODING.md "Status of
+     the run 4 findings"). Next: v0.4 (2D drawings, DXF/SVG): research in
+     docs/research/drawings.md, then an ADR.
    - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
      `text` done (ADR 0029: one line embossed or engraved on a plane or face, the app's two
