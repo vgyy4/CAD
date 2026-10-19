@@ -25,7 +25,7 @@ fn scene(drawing: &str) -> Scene {
     let k = Arc::new(MockKernel);
     let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
     assert!(ev.errors().is_empty(), "{:?}", ev.errors());
-    let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units };
+    let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units, cancel: None };
     build(&doc.drawings[0], &cx, &mut HlrCache::default())
 }
 
@@ -164,6 +164,12 @@ fn dimensions_are_measured_from_the_model() {
     // A reference to an edge the model no longer has dangles; the sheet still builds.
     let s = scene(&sheet.replace("S/l5)))\n  dim D2", "S/l9)))\n  dim D2"));
     assert!(s.dims.first().is_some_and(|d| d.error.is_some()), "{:?}", s.dims);
+    // ... and still shows on the sheet without a text position (review D5).
+    assert!(
+        s.items
+            .iter()
+            .any(|i| i.style == Style::Dangling && matches!(&i.prim, Prim::Text { text, .. } if text == "D1?"))
+    );
 }
 
 #[test]

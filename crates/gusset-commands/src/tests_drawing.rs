@@ -181,3 +181,24 @@ fn a_dxf_file_becomes_sketch_geometry() {
     assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "junk.dxf"})).code, "io");
     assert_eq!(err(&mut s, "sketch.import_dxf", json!({"sketch": "Cut", "path": "plate.svg"})).code, "invalid_args");
 }
+
+#[test]
+fn renaming_or_deleting_a_measured_feature_keeps_the_drawing() {
+    // Review D4.
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    run(
+        &mut s,
+        "drawing.add_view",
+        json!({"drawing": "D", "name": "F", "bodies": ["Extrude1"], "from": "front", "at": ["100", "100"]}),
+    );
+    let e = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))";
+    run(&mut s, "drawing.add_dimension", json!({"drawing": "D", "view": "F", "kind": "length", "a": e}));
+    run(&mut s, "feature.rename", json!({"from": "Extrude1", "to": "Base"}));
+    run(&mut s, "feature.rename", json!({"from": "Sketch1", "to": "Prof"}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("bodies: [Base]") && text.contains("edge(Base/cap(end), Base/side(Prof/l5))"), "{text}");
+    let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
+    assert_eq!(q["dimensions"][0]["value"], 40.0, "{q}");
+}

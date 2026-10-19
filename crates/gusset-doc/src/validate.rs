@@ -10,6 +10,8 @@ use std::fmt;
 
 /// Longest chain of projected and detail views from a base view.
 pub const MAX_VIEW_CHAIN: usize = 32;
+/// Most views in one drawing (each is a hidden-line projection; review D3).
+pub const MAX_VIEWS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Issue {
@@ -405,6 +407,10 @@ fn validate_drawings(
                 ));
             }
         }
+        let n_views = d.items.iter().filter(|i| matches!(i, DrawingItem::View(_))).count();
+        if n_views > MAX_VIEWS {
+            out.push(issue(n, format!("drawing {} has {n_views} views; at most {MAX_VIEWS} are allowed", d.name)));
+        }
         let views: std::collections::HashMap<&str, &crate::drawing::ViewDef> = d
             .items
             .iter()
@@ -468,17 +474,9 @@ fn validate_drawings(
                             format!("dimension {} is in view '{}', which does not exist", dim.name, dim.view),
                         ));
                     }
-                    let mut missing = Vec::new();
-                    for e in std::iter::once(&dim.a).chain(&dim.b) {
-                        e.features(&mut |f| {
-                            if !features.contains_key(f) {
-                                missing.push(f.to_string());
-                            }
-                        });
-                    }
-                    for f in missing {
-                        out.push(issue(n, format!("dimension {} refers to '{f}', which does not exist", dim.name)));
-                    }
+                    // A dimension on an edge of a feature that no longer exists dangles
+                    // (ADR 0032 §1): the sheet reports it; the document stays valid, so
+                    // deleting the feature is allowed (review D4).
                     for t in [&dim.tolerance, &dim.prefix].into_iter().flatten() {
                         if bad_text(t, 40) || t.contains('\n') {
                             out.push(issue(n, format!("dimension {}: tolerance or prefix is too long", dim.name)));

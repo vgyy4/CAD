@@ -2224,6 +2224,27 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             *sketch = to.to_string();
         }
     }
+    // Drawings: base views showing the feature's body and dimension edges (review D4).
+    for d in &mut doc.drawings {
+        for item in &mut d.items {
+            match item {
+                gusset_doc::drawing::DrawingItem::View(v) => {
+                    if let gusset_doc::drawing::ViewPlacement::Base { bodies, .. } = &mut v.placement {
+                        for b in bodies.iter_mut().filter(|b| *b == from) {
+                            *b = to.to_string();
+                        }
+                    }
+                }
+                gusset_doc::drawing::DrawingItem::Dim(dim) => {
+                    dim.a.rename_feature(from, to);
+                    if let Some(b) = &mut dim.b {
+                        b.rename_feature(from, to);
+                    }
+                }
+                gusset_doc::drawing::DrawingItem::Note(_) => {}
+            }
+        }
+    }
 }
 
 impl Command for FeatureRename {

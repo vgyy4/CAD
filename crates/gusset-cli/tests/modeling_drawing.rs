@@ -75,7 +75,7 @@ fn a_dimensioned_sheet_of_a_plate_with_a_hole() {
     );
     let doc = Document::from_text(&format!("{PART}\n{drawing}")).unwrap_or_else(|e| panic!("{e}"));
     let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
-    let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units };
+    let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units, cancel: None };
     let mut cache = HlrCache::default();
     let t0 = std::time::Instant::now();
     let s = gusset_drawing::build(&doc.drawings[0], &cx, &mut cache);
@@ -145,7 +145,7 @@ fn section_views_cut_the_part_and_hatch_the_cut() {
         );
         let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}"));
         let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
-        let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units };
+        let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units, cancel: None };
         gusset_drawing::build(&doc.drawings[0], &cx, &mut HlrCache::default())
     };
     let base = build("");

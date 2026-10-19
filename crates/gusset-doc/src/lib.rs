@@ -1179,11 +1179,9 @@ drawing Plate_dwg (size: A3, projection: first, scale: 0.5, title: \"Plate\", nu
         bad("bodies: [Plate]", "bodies: [Nope]", "not a body");
         bad("of: Front, side: top", "of: Back, side: top", "not a view of this drawing");
         bad("view: Front, kind: length", "view: Side, kind: length", "'Side', which does not exist");
-        bad(
-            "Plate/cap(end), Plate/side(Sketch1/l5)",
-            "Nope/cap(end), Plate/side(Sketch1/l5)",
-            "'Nope', which does not exist",
-        );
+        // A dimension on a feature that no longer exists dangles; the document is valid.
+        let gone = DRAWING.replace("Plate/cap(end), Plate/side(Sketch1/l5)", "Nope/cap(end), Plate/side(Sketch1/l5)");
+        assert!(Document::from_text(&format!("{PLATE}{gone}")).is_ok());
         bad("kind: length", "kind: distance", "takes two references");
         bad("size: A3", "size: A9", "unknown sheet size");
         bad("side: top, gap", "side: up, gap", "unknown side");

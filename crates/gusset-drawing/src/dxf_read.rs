@@ -119,121 +119,171 @@ fn polyline(pts: &[([f64; 2], f64)], closed: bool, out: &mut Vec<Curve>) {
     }
 }
 
-/// Reads the geometry of `bytes`.
+/// Most entities (read or skipped) in one file.
+pub const MAX_ENTITIES: usize = 1_000_000;
+/// Most groups kept for one entity.
+const MAX_GROUPS: usize = 4 * MAX_VERTICES + 64;
+
+/// Entity types whose groups are kept.
+fn wanted(kind: &str) -> bool {
+    matches!(kind, "LINE" | "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "SEQEND")
+}
+
+/// A polyline vertex and the bulge to the next one.
+type Vertex = ([f64; 2], f64);
+
+/// The entity collected so far, and an old-style polyline waiting for its vertices.
+#[derive(Default)]
+struct State<'a> {
+    kind: Option<&'a str>,
+    groups: Groups<'a>,
+    poly: Option<(bool, Vec<Vertex>)>,
+}
+
+/// Finishes the current entity.
+fn finish<'a>(
+    st: &mut State<'a>,
+    curves: &mut Vec<Curve>,
+    skipped: &mut BTreeMap<String, usize>,
+) -> Result<(), ReadError> {
+    let Some(kind) = st.kind.take() else { return Ok(()) };
+    let g = std::mem::take(&mut st.groups);
+    // An old-style polyline ends at anything that is not one of its vertices.
+    if kind != "VERTEX"
+        && let Some((closed, pts)) = st.poly.take()
+    {
+        polyline(&pts, closed, curves);
+    }
+    match kind {
+        "LINE" => curves.push(Curve::Line(
+            [need(&g, 10, "LINE")?, need(&g, 20, "LINE")?],
+            [need(&g, 11, "LINE")?, need(&g, 21, "LINE")?],
+        )),
+        "CIRCLE" => {
+            let r = need(&g, 40, "CIRCLE")?;
+            if r > 0.0 {
+                curves.push(Curve::Circle { center: [need(&g, 10, "CIRCLE")?, need(&g, 20, "CIRCLE")?], radius: r });
+            }
+        }
+        "ARC" => {
+            let r = need(&g, 40, "ARC")?;
+            if r > 0.0 {
+                curves.push(Curve::Arc {
+                    center: [need(&g, 10, "ARC")?, need(&g, 20, "ARC")?],
+                    radius: r,
+                    start: need(&g, 50, "ARC")?.to_radians(),
+                    end: need(&g, 51, "ARC")?.to_radians(),
+                });
+            }
+        }
+        "LWPOLYLINE" => {
+            let closed = get(&g, 70).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|f| f & 1 == 1);
+            let mut pts: Vec<([f64; 2], f64)> = Vec::new();
+            let mut x = None;
+            for (code, v) in &g {
+                match code {
+                    10 => x = Some(num(v)?),
+                    20 => {
+                        let px = x.take().ok_or_else(|| err("LWPOLYLINE: a Y without its X"))?;
+                        if pts.len() >= MAX_VERTICES {
+                            return Err(err("a polyline has too many vertices"));
+                        }
+                        pts.push(([px, num(v)?], 0.0));
+                    }
+                    42 => {
+                        if let Some(last) = pts.last_mut() {
+                            last.1 = num(v)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            polyline(&pts, closed, curves);
+        }
+        "POLYLINE" => {
+            let closed = get(&g, 70).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|f| f & 1 == 1);
+            st.poly = Some((closed, Vec::new()));
+        }
+        "VERTEX" => {
+            if let Some((_, pts)) = st.poly.as_mut() {
+                if pts.len() >= MAX_VERTICES {
+                    return Err(err("a polyline has too many vertices"));
+                }
+                let b = get(&g, 42).map(num).transpose()?.unwrap_or(0.0);
+                pts.push(([need(&g, 10, "VERTEX")?, need(&g, 20, "VERTEX")?], b));
+            }
+        }
+        "SEQEND" => {}
+        other => *skipped.entry(other.chars().take(32).collect()).or_default() += 1,
+    }
+    if curves.len() > MAX_CURVES {
+        return Err(err(format!("the file has more than {MAX_CURVES} curves")));
+    }
+    Ok(())
+}
+
+/// Reads the geometry of `bytes`. The group-code pairs are streamed: only the current
+/// entity's groups are kept, so memory stays near the file size (review D6).
 ///
 /// # Errors
-/// Binary or malformed DXF, numbers out of range, too many curves.
+/// Binary or malformed DXF, numbers out of range, too many curves or entities.
 pub fn read(bytes: &[u8]) -> Result<Read, ReadError> {
     if bytes.starts_with(b"AutoCAD Binary DXF") {
         return Err(err("binary DXF is not supported; save the file as ASCII DXF"));
     }
     let text = String::from_utf8_lossy(bytes);
     let mut lines = text.lines();
-    let mut pairs: Vec<(i32, &str)> = Vec::new();
+    let mut out = Read { unit_mm: 1.0, ..Read::default() };
+    let mut curves = Vec::new();
+    let (mut prev, mut in_entities, mut seen_entities) = ((0i32, ""), false, false);
+    let mut st = State::default();
+    let mut entities = 0usize;
     while let Some(code) = lines.next() {
         let Some(value) = lines.next() else { break };
         let code: i32 = code
             .trim()
             .parse()
             .map_err(|_| err(format!("bad group code '{}'", code.trim().chars().take(20).collect::<String>())))?;
-        pairs.push((code, value));
-    }
-    let mut out = Read { unit_mm: 1.0, ..Read::default() };
-    // $INSUNITS in the header.
-    for w in pairs.windows(2) {
-        if let [(9, name), (70, v)] = w
-            && name.trim() == "$INSUNITS"
-        {
-            out.unit_mm = unit_mm(v.trim().parse().unwrap_or(0));
+        if !in_entities {
+            match (prev, code) {
+                ((9, name), 70) if name.trim() == "$INSUNITS" => {
+                    out.unit_mm = unit_mm(value.trim().parse().unwrap_or(0))
+                }
+                ((0, s), 2) if s.trim() == "SECTION" && value.trim() == "ENTITIES" => {
+                    in_entities = true;
+                    seen_entities = true;
+                }
+                _ => {}
+            }
+            prev = (code, value);
+            continue;
+        }
+        if code == 0 {
+            finish(&mut st, &mut curves, &mut out.skipped)?;
+            let kind = value.trim();
+            if kind == "ENDSEC" {
+                in_entities = false;
+                prev = (0, value);
+                continue;
+            }
+            entities += 1;
+            if entities > MAX_ENTITIES {
+                return Err(err(format!("the file has more than {MAX_ENTITIES} entities")));
+            }
+            st.kind = Some(kind);
+        } else if st.kind.is_some_and(wanted) {
+            if st.groups.len() >= MAX_GROUPS {
+                return Err(err("an entity has too many groups"));
+            }
+            st.groups.push((code, value));
         }
     }
-    // The ENTITIES section, split into entities at every group 0.
-    let start =
-        pairs.windows(2).position(|w| matches!(w, [(0, s), (2, e)] if s.trim() == "SECTION" && e.trim() == "ENTITIES"));
-    let Some(start) = start else { return Err(err("the file has no ENTITIES section")) };
-    let mut ents: Vec<(&str, Groups<'_>)> = Vec::new();
-    for (code, value) in pairs.iter().skip(start + 2) {
-        if *code == 0 {
-            if value.trim() == "ENDSEC" {
-                break;
-            }
-            ents.push((value.trim(), Vec::new()));
-        } else if let Some((_, g)) = ents.last_mut() {
-            g.push((*code, value));
-        }
+    finish(&mut st, &mut curves, &mut out.skipped)?;
+    if let Some((closed, pts)) = st.poly.take() {
+        polyline(&pts, closed, &mut curves);
     }
-    let mut curves = Vec::new();
-    let mut i = 0;
-    while i < ents.len() {
-        let Some((kind, g)) = ents.get(i) else { break };
-        i += 1;
-        match *kind {
-            "LINE" => curves.push(Curve::Line(
-                [need(g, 10, "LINE")?, need(g, 20, "LINE")?],
-                [need(g, 11, "LINE")?, need(g, 21, "LINE")?],
-            )),
-            "CIRCLE" => {
-                let r = need(g, 40, "CIRCLE")?;
-                if r > 0.0 {
-                    curves.push(Curve::Circle { center: [need(g, 10, "CIRCLE")?, need(g, 20, "CIRCLE")?], radius: r });
-                }
-            }
-            "ARC" => {
-                let r = need(g, 40, "ARC")?;
-                if r > 0.0 {
-                    curves.push(Curve::Arc {
-                        center: [need(g, 10, "ARC")?, need(g, 20, "ARC")?],
-                        radius: r,
-                        start: need(g, 50, "ARC")?.to_radians(),
-                        end: need(g, 51, "ARC")?.to_radians(),
-                    });
-                }
-            }
-            "LWPOLYLINE" => {
-                let closed = get(g, 70).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|f| f & 1 == 1);
-                let mut pts: Vec<([f64; 2], f64)> = Vec::new();
-                let mut x = None;
-                for (code, v) in g {
-                    match code {
-                        10 => x = Some(num(v)?),
-                        20 => {
-                            let px = x.take().ok_or_else(|| err("LWPOLYLINE: a Y without its X"))?;
-                            if pts.len() >= MAX_VERTICES {
-                                return Err(err("a polyline has too many vertices"));
-                            }
-                            pts.push(([px, num(v)?], 0.0));
-                        }
-                        42 => {
-                            if let Some(last) = pts.last_mut() {
-                                last.1 = num(v)?;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                polyline(&pts, closed, &mut curves);
-            }
-            "POLYLINE" => {
-                let closed = get(g, 70).and_then(|v| v.trim().parse::<i64>().ok()).is_some_and(|f| f & 1 == 1);
-                let mut pts: Vec<([f64; 2], f64)> = Vec::new();
-                while let Some(("VERTEX", vg)) = ents.get(i).map(|(k, g)| (*k, g)) {
-                    i += 1;
-                    if pts.len() >= MAX_VERTICES {
-                        return Err(err("a polyline has too many vertices"));
-                    }
-                    let b = get(vg, 42).map(num).transpose()?.unwrap_or(0.0);
-                    pts.push(([need(vg, 10, "VERTEX")?, need(vg, 20, "VERTEX")?], b));
-                }
-                if matches!(ents.get(i), Some(("SEQEND", _))) {
-                    i += 1;
-                }
-                polyline(&pts, closed, &mut curves);
-            }
-            other => *out.skipped.entry(other.chars().take(32).collect()).or_default() += 1,
-        }
-        if curves.len() > MAX_CURVES {
-            return Err(err(format!("the file has more than {MAX_CURVES} curves")));
-        }
+    if !seen_entities {
+        return Err(err("the file has no ENTITIES section"));
     }
     let k = out.unit_mm;
     out.curves = curves

@@ -38,7 +38,7 @@ pub const MAX_SCALE: f64 = 1e4;
 const MAX_HATCH: usize = 200_000;
 
 /// Views kept in a [`HlrCache`].
-const CACHE_ENTRIES: usize = 64;
+const CACHE_ENTRIES: usize = 256;
 
 /// What a drawing is built from.
 pub struct Context<'a> {
@@ -46,6 +46,8 @@ pub struct Context<'a> {
     pub kernel: &'a dyn Kernel,
     /// The document's length unit: dimension values are written in it.
     pub units: gusset_units::quantity::LengthUnit,
+    /// Stops the build between views ("Stop rebuild", deadlines; review D3).
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl std::fmt::Debug for Context<'_> {
@@ -597,6 +599,10 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
 
     let mut b = Builder { d, cx, cache, sheet_scale, placed: BTreeMap::new() };
     for item in &d.items {
+        if cx.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            scene.issues.push("the drawing was stopped before all views were projected".into());
+            break;
+        }
         if let DrawingItem::View(v) = item
             && let Err(e) = b.place(&v.name, 0)
         {

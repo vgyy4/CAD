@@ -754,7 +754,8 @@ pub fn drawing_scene(s: &mut Session, actor: &Actor, name: &str) -> Result<gusse
         .ok_or_else(|| CommandError::not_found(format!("no drawing '{name}'")).hint("see query_drawing"))?;
     let ev = s.evaluate(actor)?;
     let kernel = s.kernel().clone();
-    let cx = gusset_drawing::Context { ev: &ev, kernel: kernel.as_ref(), units: doc.units };
+    let stop = s.rebuild_cancel_flag();
+    let cx = gusset_drawing::Context { ev: &ev, kernel: kernel.as_ref(), units: doc.units, cancel: Some(&stop) };
     Ok(gusset_drawing::build(&d, &cx, &mut s.drawing_cache))
 }
 

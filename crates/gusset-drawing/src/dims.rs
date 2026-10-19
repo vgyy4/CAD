@@ -190,18 +190,14 @@ pub fn draw(
             DimResult { name: d.name.clone(), value: Some(value), text, error: None, text_at: Some(at) }
         }
         Err(e) => {
-            if let Some(t) = text_at {
-                scene.push(
-                    Style::Dangling,
-                    Prim::Text {
-                        at: t,
-                        height: TEXT_H,
-                        text: format!("{}?", d.name),
-                        anchor: Anchor::Center,
-                        angle: 0.0,
-                    },
-                );
-            }
+            // A dangling dimension stays visible (ADR 0032 §1, review D5): at its text
+            // position, or above its view.
+            let pv = v.view;
+            let t = text_at.unwrap_or([(pv.min[0] + pv.max[0]) / 2.0, pv.max[1] + 4.0]);
+            scene.push(
+                Style::Dangling,
+                Prim::Text { at: t, height: TEXT_H, text: format!("{}?", d.name), anchor: Anchor::Center, angle: 0.0 },
+            );
             DimResult { name: d.name.clone(), value: None, text: String::new(), error: Some(e), text_at }
         }
     }
