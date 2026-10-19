@@ -238,6 +238,7 @@ name = "gusset-commands"
 version = "0.1.0-mvp"
 dependencies = [
  "gusset-doc",
+ "gusset-drawing",
  "gusset-eval",
  "gusset-history",
  "gusset-kernel",
@@ -259,6 +260,17 @@ name = "gusset-doc"
 version = "0.1.0-mvp"
 dependencies = [
  "gusset-units",
+]
+
+[[package]]
+name = "gusset-drawing"
+version = "0.1.0-mvp"
+dependencies = [
+ "gusset-doc",
+ "gusset-eval",
+ "gusset-kernel",
+ "gusset-units",
+ "libm",
 ]
 
 [[package]]

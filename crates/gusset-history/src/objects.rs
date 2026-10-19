@@ -212,6 +212,10 @@ impl StagedDocument {
                 ObjectKind::Params => {
                     parse_params_object(text).map_err(|e| format!("the parameter table would not read back: {e}"))?;
                 }
+                // Drawings (ADR 0032) are stored with the features' kind.
+                ObjectKind::Feature if text.starts_with("drawing ") => {
+                    parse_drawing_object(text).map_err(|e| format!("a drawing would not read back: {e}"))?;
+                }
                 ObjectKind::Feature => {
                     parse_feature_object(text).map_err(|e| format!("a feature would not read back: {e}"))?;
                 }

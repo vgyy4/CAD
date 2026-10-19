@@ -20,6 +20,7 @@ mod assembly;
 mod component;
 mod configuration;
 mod datum;
+mod drawing;
 mod generate;
 mod hole;
 mod joint;
@@ -31,6 +32,10 @@ pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
 pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};
 pub use datum::{Combine, DatumPlane, MoveBody};
+pub use drawing::{
+    DrawingAddDimension, DrawingAddNote, DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit,
+    DrawingEditView, DrawingExport, QueryDrawing,
+};
 pub use generate::GenerateGear;
 pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
@@ -50,6 +55,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(joint::specs());
     v.extend(assembly::specs());
     v.extend(component::specs());
+    v.extend(drawing::specs());
     v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
     v

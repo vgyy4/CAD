@@ -25,6 +25,8 @@ mod tests_component;
 #[cfg(test)]
 mod tests_datum;
 #[cfg(test)]
+mod tests_drawing;
+#[cfg(test)]
 mod tests_gear;
 #[cfg(test)]
 mod tests_gear_math;

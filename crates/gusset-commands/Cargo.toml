@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 gusset-units.workspace = true
 gusset-doc.workspace = true
+gusset-drawing.workspace = true
 gusset-kernel.workspace = true
 gusset-history.workspace = true
 gusset-eval.workspace = true

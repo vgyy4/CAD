@@ -1602,6 +1602,7 @@ name = "gusset-commands"
 version = "0.1.0-mvp"
 dependencies = [
  "gusset-doc",
+ "gusset-drawing",
  "gusset-eval",
  "gusset-history",
  "gusset-kernel",

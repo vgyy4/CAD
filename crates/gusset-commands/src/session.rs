@@ -114,6 +114,8 @@ pub struct Session {
     /// True when there are changes not yet written to the project file.
     pub dirty: bool,
     changes: Vec<Change>,
+    /// Hidden-line projections of drawing views (ADR 0032).
+    pub(crate) drawing_cache: gusset_drawing::HlrCache,
 }
 
 impl std::fmt::Debug for Session {
@@ -164,6 +166,7 @@ impl Session {
             project_dir: None,
             dirty: false,
             changes: Vec::new(),
+            drawing_cache: gusset_drawing::HlrCache::default(),
         }
     }
 
