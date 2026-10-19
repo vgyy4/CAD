@@ -325,21 +325,21 @@ fn mcp(args: &[String]) -> Result<ExitCode, String> {
             Err(e) => eprintln!("gusset mcp: warning: startup housekeeping failed: {e}"),
         }
     }
-    let kernel: Arc<dyn Kernel> = match gusset_kernel_worker::production_kernel() {
+    let (kernel, kernel_note): (Arc<dyn Kernel>, _) = match gusset_kernel_worker::production_kernel() {
         Ok((k, note)) => {
-            if let Some(n) = note {
+            if let Some(n) = &note {
                 eprintln!("gusset mcp: note: {n}");
             }
-            k
+            (k, note)
         }
         Err(e) => {
-            eprintln!(
-                "gusset mcp: warning: {e}; falling back to the mock kernel (simple prisms only, not for real models)"
-            );
-            Arc::new(gusset_kernel::mock::MockKernel)
+            let n = format!("{e}; falling back to the mock kernel (simple prisms only, not for real models)");
+            eprintln!("gusset mcp: warning: {n}");
+            (Arc::new(gusset_kernel::mock::MockKernel), Some(n))
         }
     };
     let mut options = gusset_mcp::StdioOptions::new(file, kernel);
+    options.kernel_note = kernel_note;
     options.attach = attach;
     options.read_only = read_only;
     options.renderer = Some(Arc::new(gusset_mcp::SceneRenderer::new()));

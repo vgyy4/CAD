@@ -467,6 +467,12 @@ impl Command for Hole {
                     .map(hole_json)
                     .collect();
                 let mut v = json!({ "holes": holes });
+                // The face's frame: `at` points are in its coordinates (dogfooding F4-10).
+                if let (Some(f), Value::Object(m)) =
+                    (gusset_eval::frame_of(&out.evaluation, &PlaneRef::Face(plan.face.clone())), &mut v)
+                {
+                    m.insert("frame".into(), frame_json(&f));
+                }
                 if !out.new_errors.is_empty()
                     && let Value::Object(m) = &mut v
                 {

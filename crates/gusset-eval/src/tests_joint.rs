@@ -184,6 +184,8 @@ fn a_loop_that_cannot_close_says_why() {
     let (_, r) = four_bar("60 deg", "");
     let e = first_error(&r);
     assert!(e.contains("cannot close") && r.errors().first().is_some_and(|e| e.feature == "J4"), "{e}");
+    // The pieces meet; only J4's own angle is fixed, and the hint says so (F4-5).
+    assert!(e.contains("add free: [angle] to J4"), "{e}");
     // Nothing free: a second joint on the lid cannot also put it on the base's bottom.
     let rigid = "joint J1 (type: rigid, body: Lid, at: Lid/cap(start), to: Base/cap(end), flip: true)
 ";

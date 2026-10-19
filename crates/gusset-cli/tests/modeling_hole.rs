@@ -385,6 +385,8 @@ fn presets_match_the_table() {
     // ISO 261/262 + 2306 tapped M8: tap drill 6.8, pitch 1.25; thread 12 deep, drill 16 deep.
     let r = run(&mut s, "feature.hole", json!({"face": TOP, "at": [["30 mm", "20 mm"]], "standard": "ISO M8 tapped"}));
     assert_eq!(r["rebuild_ok"], true, "{r}");
+    // The face's frame, in which `at` is given (F4-10).
+    assert!(r["frame"]["normal"].is_array() && r["frame"]["origin_mm"].is_array(), "{r}");
     assert!(close(removed_in(&mut s), PI * 3.4 * 3.4 * 16.0 + cone(3.4, A118), 1e-6));
     let t = &r["holes"][0]["thread"];
     assert_eq!(t["designation_user_text"], "M8");

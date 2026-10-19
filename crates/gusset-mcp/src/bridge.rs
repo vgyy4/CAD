@@ -6,9 +6,9 @@
 //!    the same live model as the human.
 //! 2. Otherwise the project file (or a new empty project) is opened headless in a
 //!    [`gusset_host::Host`] and served over stdio with the same tools. Approvals are
-//!    denied unless the client supports elicitation. On exit, unsaved changes (agent
-//!    work lives on agent branches) are saved to the file; if that fails a recovery
-//!    snapshot is kept. A project with a pending crash-recovery copy or a damaged file
+//!    denied unless the client supports elicitation. A few seconds after each change
+//!    and on exit, unsaved changes (agent work lives on agent branches) are saved to the
+//!    file; if that fails a recovery snapshot is kept. A project with a pending crash-recovery copy or a damaged file
 //!    is refused with a clear message: only the app's recovery dialog resolves those.
 //!
 //! Connection files are trusted only if they and their directory belong to the current
@@ -62,6 +62,9 @@ pub struct StdioOptions {
     /// Headless it maps to `SessionConfig::read_only_agents`; when relaying to a running
     /// app the bridge itself refuses mutating `tools/call` requests.
     pub read_only: bool,
+    /// Headless: why the kernel is not in its worker process, if it is not; the
+    /// `diagnostics` resource says so (dogfooding F4-12).
+    pub kernel_note: Option<String>,
 }
 
 impl std::fmt::Debug for StdioOptions {
@@ -88,6 +91,7 @@ impl StdioOptions {
             approvals: None,
             importer: None,
             read_only: false,
+            kernel_note: None,
         }
     }
 }
@@ -370,12 +374,19 @@ where
     };
     let host = Host::spawn(session, project);
     let server = McpServer::new(host.clone());
+    if let Some(n) = &options.kernel_note {
+        server.set_diagnostics(format!("{}\nGeometry kernel: {n}\n", gusset_hw::Diagnostics::collect().to_text()));
+    }
     server.set_renderer(options.renderer.clone());
     server.set_read_only(options.read_only).map_err(McpError::Command)?;
     if let Some(a) = options.approvals.clone() {
         server.set_approval_provider(a);
     }
+    // Agent work reaches the file a few seconds after each change, not only on a clean
+    // exit: a killed server lost a whole part (dogfooding F4-2).
+    let saver = tokio::spawn(autosave(host.clone(), save_as.clone()));
     let served = server.serve_io(read, write).await;
+    saver.abort();
     // Persist agent work (it lives on agent branches; main is untouched).
     if let Some((session, project)) = host.shutdown()
         && let Some(mut project) = project
@@ -397,6 +408,63 @@ where
         }
     }
     served
+}
+
+/// How long after a change the headless server writes the file.
+const AUTOSAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Saves the project (to `save_as` while it has no file yet) after changes, at most once
+/// per [`AUTOSAVE_DELAY`]. A failed save keeps a recovery snapshot instead.
+async fn autosave(host: gusset_host::HostHandle, save_as: Option<PathBuf>) {
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+    let mut rx = host.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(gusset_host::HostEvent::Changed { .. }) | Err(RecvError::Lagged(_)) => {}
+            Ok(_) => continue,
+            Err(RecvError::Closed) => return,
+        }
+        tokio::time::sleep(AUTOSAVE_DELAY).await;
+        // Changes made meanwhile are in this save.
+        loop {
+            match rx.try_recv() {
+                Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => return,
+            }
+        }
+        let (h, path) = (host.clone(), save_as.clone());
+        let saved = tokio::task::spawn_blocking(move || {
+            h.exec(move |s, p| {
+                let Some(p) = p else { return Ok(()) };
+                if !s.dirty {
+                    return Ok(());
+                }
+                let r = match (p.path().is_some(), &path) {
+                    (true, _) => p.save(s.history()),
+                    (false, Some(path)) => p.save_as(path, s.history()),
+                    (false, None) => return Ok(()),
+                };
+                match r {
+                    Ok(()) => {
+                        s.dirty = false;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = p.snapshot(s.history());
+                        Err(e.to_string())
+                    }
+                }
+            })
+        })
+        .await;
+        match saved {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(e))) => eprintln!("gusset mcp: could not save the project ({e}); a recovery snapshot was kept"),
+            // The session closed: the exit path saves.
+            Ok(Err(_)) | Err(_) => return,
+        }
+    }
 }
 
 // ------------------------------------------------------------------ relay

@@ -236,6 +236,19 @@ pub struct JointValues {
     pub x: f64,
     pub y: f64,
     pub angles: [f64; 3],
+    /// The fixed frame in world coordinates, after `offset` and `flip`.
+    pub to_frame: JointFrame,
+    /// The moving body's frame in world coordinates, as placed.
+    pub at_frame: JointFrame,
+}
+
+/// A joint frame: origin (mm) and unit X and Z axes. Revolute angles turn about Z by
+/// the right-hand rule; sliders move along Z.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct JointFrame {
+    pub origin: [f64; 3],
+    pub x: [f64; 3],
+    pub z: [f64; 3],
 }
 
 impl Evaluation {
@@ -805,18 +818,28 @@ impl Evaluator {
             transient,
             epoch: self.epoch,
             work: state.work,
-            joint_values: state
-                .joints
-                .recs
-                .iter()
-                .map(|r| {
-                    let v = r.vals;
-                    (
-                        r.name.clone(),
-                        JointValues { angle: v.angle, distance: v.distance, x: v.x, y: v.y, angles: v.angles },
-                    )
-                })
-                .collect(),
+            joint_values: {
+                let frames = state.joints.world_frames();
+                state
+                    .joints
+                    .recs
+                    .iter()
+                    .map(|r| {
+                        let v = r.vals;
+                        let (to_frame, at_frame) = frames.get(&r.name).copied().unwrap_or_default();
+                        let jv = JointValues {
+                            angle: v.angle,
+                            distance: v.distance,
+                            x: v.x,
+                            y: v.y,
+                            angles: v.angles,
+                            to_frame,
+                            at_frame,
+                        };
+                        (r.name.clone(), jv)
+                    })
+                    .collect()
+            },
         };
         (e, false)
     }
@@ -1272,6 +1295,18 @@ fn sketch_input(feature: &str, sketch: &str, s: &State) -> Result<(Arc<Solved>, 
     })?;
     let frame = solved.frame;
     Ok((solved, frame))
+}
+
+/// The frame of `plane` in a finished evaluation (sketch-plane coordinates for text and
+/// hole positions; dogfooding F4-10). `None` when it does not resolve.
+pub fn frame_of(ev: &Evaluation, plane: &PlaneRef) -> Option<Frame> {
+    match plane {
+        PlaneRef::XY => Some(Frame::XY),
+        PlaneRef::XZ => Some(Frame::XZ),
+        PlaneRef::YZ => Some(Frame::YZ),
+        PlaneRef::Face(r) => face_frame("", r, &ev.bodies).ok(),
+        PlaneRef::Datum(n) => ev.planes.iter().find(|(m, _)| m == n).map(|(_, f)| *f),
+    }
 }
 
 fn plane_frame(feature: &str, plane: &PlaneRef, s: &State) -> Result<Frame, EvalError> {

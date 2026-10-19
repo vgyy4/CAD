@@ -655,6 +655,12 @@ async fn stdio_headless_creates_and_saves_the_project() {
     });
     let c = Client::new("cli", None).serve(b).await.unwrap();
     build_plate(&c).await;
+    // Saved while the server still runs, so a killed server keeps it (dogfooding F4-2).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !project.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(project.exists(), "agent work saved a few seconds after the edits");
     c.cancel().await.unwrap();
     task.await.unwrap().unwrap();
     assert!(project.exists(), "agent work saved on exit");

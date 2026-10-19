@@ -59,6 +59,10 @@ impl Rigid {
         Rigid { t, ..Rigid::ID }
     }
 
+    fn frame(&self) -> JointFrame {
+        JointFrame { origin: self.t, x: col(&self.r, 0), z: col(&self.r, 2) }
+    }
+
     /// The rotation part as a rotation vector (axis × angle).
     fn rotation_vector(&self) -> V3 {
         let (axis, angle) = self.axis_angle();
@@ -379,16 +383,52 @@ impl Evaluator {
         };
         *steps = used.get();
         let (q, r) = result?;
-        let (off_mm, turned) = r.chunks(6).fold((0.0_f64, 0.0_f64), |(m, t), c| {
-            let n = |a: &[f64]| a.iter().map(|x| x * x).sum::<f64>().sqrt();
-            (m.max(n(c.get(..3).unwrap_or(&[]))), t.max(n(c.get(3..).unwrap_or(&[]))))
-        });
+        let spread = |r: &[f64]| {
+            r.chunks(6).fold((0.0_f64, 0.0_f64), |(m, t), c| {
+                let n = |a: &[f64]| a.iter().map(|x| x * x).sum::<f64>().sqrt();
+                (m.max(n(c.get(..3).unwrap_or(&[]))), t.max(n(c.get(3..).unwrap_or(&[]))))
+            })
+        };
+        let (off_mm, turned) = spread(&r);
         if off_mm > LOOP_TOL_MM || turned > LOOP_TOL_RAD {
             let first = all.iter().find(|r| {
                 all.last().is_some_and(|c| !r.closing && (r.moving == c.moving || r.with.contains(&c.moving)))
             });
             let msg = format!("the joint loop cannot close: {off_mm:.4} mm and {:.4}° apart", turned.to_degrees());
-            let hint = if unknowns.is_empty() {
+            // Would the loop close if the closing joint's own angle were free too? Then
+            // that is the fix to name (dogfooding F4-5).
+            let own_angle_fixed = all
+                .last()
+                .is_some_and(|c| c.kind.has_value("angle") && !Slot::of("angle").iter().all(|sl| c.free.contains(sl)));
+            let closing_at = members.iter().position(|&i| i + 1 == all.len());
+            let freeing_fixes = match closing_at {
+                Some(ci) if own_angle_fixed && !unknowns.is_empty() => {
+                    let mut u2 = unknowns.clone();
+                    u2.push((ci, Slot::Angle));
+                    let mut q2 = q.clone();
+                    q2.push(sub.get(ci).map_or(0.0, |r| Slot::Angle.get(&r.vals)));
+                    let gap2 = |qq: &[f64]| {
+                        used.set(used.get().saturating_add(per));
+                        let mut rs = sub.clone();
+                        for (&(i, f), &v) in u2.iter().zip(qq) {
+                            if let Some(r) = rs.get_mut(i) {
+                                f.set(&mut r.vals, v);
+                            }
+                        }
+                        loop_residual(&rs)
+                    };
+                    let (_, r2, stopped) = least_squares(&q2, gap2, || self.is_cancelled() || over());
+                    *steps = used.get();
+                    let (m2, t2) = spread(&r2);
+                    !stopped && m2 <= LOOP_TOL_MM && t2 <= LOOP_TOL_RAD
+                }
+                _ => false,
+            };
+            let hint = if freeing_fixes {
+                format!(
+                    "the pieces meet, but the closing joint's own angle is fixed at its value: add free: [angle] to {name}"
+                )
+            } else if unknowns.is_empty() {
                 format!(
                     "'{}' is already placed by {}: list the values the solver may choose in free, e.g. free: [angle]",
                     all.last().map_or("", |c| c.moving.as_str()),
@@ -643,6 +683,22 @@ pub(crate) struct JointRec {
 pub(crate) struct Joints {
     pub(crate) recs: Vec<JointRec>,
     placed: BTreeMap<String, Rigid>,
+}
+
+impl Joints {
+    /// Each joint's fixed frame (after offset and flip) and moving frame in world
+    /// coordinates, where the joints placed the bodies (dogfooding F4-3).
+    pub(crate) fn world_frames(&self) -> BTreeMap<String, (JointFrame, JointFrame)> {
+        let at = |b: Option<&String>| b.and_then(|b| self.placed.get(b)).copied().unwrap_or(Rigid::ID);
+        self.recs
+            .iter()
+            .map(|r| {
+                let to = at(r.fixed.as_ref()).then_after(&r.fixed_local);
+                let moving = at(Some(&r.moving)).then_after(&r.moving_local);
+                (r.name.clone(), (to.frame(), moving.frame()))
+            })
+            .collect()
+    }
 }
 
 /// The joint's motion in its frame.

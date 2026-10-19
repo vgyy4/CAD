@@ -27,6 +27,9 @@ made without the owner: `docs/PROGRESS.md`. Architecture decisions: `docs/adr/`.
 `deps/occt/build-occt.sh <prefix>` builds the pinned OCCT (~1 h on 4 cores), then
 `GUSSET_OCCT_DIR=<prefix> cargo test -p gusset-kernel-occt -p gusset-cli`.
 Without `GUSSET_OCCT_DIR` everything else builds and tests against `MockKernel`.
+`gusset` runs the kernel and imports in worker binaries next to it: build them with it
+(`cargo build -p gusset-cli -p gusset-kernel-worker -p gusset-worker`), or a stale worker
+is refused and the kernel runs in-process (the `diagnostics` resource says so).
 
 ## Conventions
 - Conventional Commits, one logical change per commit; end messages with the session

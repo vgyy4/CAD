@@ -1203,3 +1203,23 @@ fn a_configuration_listing_a_parameter_twice_saves_it_once() {
     assert!(text.contains("configuration A (set: [w = 5 mm])"), "{text}");
     run(&mut s, &u, "param.set", json!({"name": "w", "expr": "6 mm"}));
 }
+
+#[test]
+fn branch_compare_with_base_shows_both_sides() {
+    // Dogfooding F4-14: which side changed what since the fork, to predict conflicts.
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "1 mm"}));
+    run(&mut s, &u, "branch.create", json!({"name": "Idea"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "Idea"}));
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "2 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "main"}));
+    run(&mut s, &u, "param.set", json!({"name": "w", "expr": "3 mm"}));
+    run(&mut s, &u, "param.set", json!({"name": "z", "expr": "4 mm"}));
+    let c = run(&mut s, &u, "branch.compare", json!({"a": "main", "b": "Idea", "base": true}));
+    assert_eq!(c["changed_on_both_user_text"], json!(["w"]), "{c}");
+    assert_eq!(c["a_since_base"]["parameters"].as_array().map(Vec::len), Some(2), "{c}");
+    assert_eq!(c["b_since_base"]["parameters"].as_array().map(Vec::len), Some(1), "{c}");
+    let plain = run(&mut s, &u, "branch.compare", json!({"a": "main", "b": "Idea"}));
+    assert!(plain.get("base").is_none(), "{plain}");
+}

@@ -120,6 +120,30 @@ fn interference_counts_overlap_not_contact() {
 }
 
 #[test]
+fn a_joint_that_puts_a_body_inside_another_says_so() {
+    // Dogfooding F4-4: the overlap went unnoticed. The fat shaft's second joint (a rigid
+    // copy of J1's placement) reports the ring it shares with the plate.
+    use gusset_commands::{CmdCtx, execute};
+    use serde_json::json;
+    let u = CmdCtx::user(1);
+    let mut s = session("5");
+    execute(&mut s, &u, "feature.suppress", json!({"name": "J1", "suppressed": true})).unwrap();
+    let r = execute(
+        &mut s,
+        &u,
+        "feature.joint",
+        json!({"type": "rigid", "body": "Shaft", "at": "Shaft/side(Shaft_s/c2)", "to": "Bore/side(Bore_s/c2)"}),
+    )
+    .unwrap();
+    assert!(r["warning"].as_str().unwrap_or("").contains("overlaps"), "{r}");
+    let v = r["interference"][0]["volume_mm3"].as_f64().unwrap();
+    assert!((v - std::f64::consts::PI * 9.0 * 6.0).abs() < 1e-6, "{r}");
+    // The frame is on the bore's axis.
+    let o = r["to_frame"]["origin_mm"].as_array().unwrap();
+    assert!((o[0].as_f64().unwrap() - 25.0).abs() < 1e-9 && (o[1].as_f64().unwrap() - 12.0).abs() < 1e-9, "{r}");
+}
+
+#[test]
 fn a_shaft_from_its_own_document_goes_into_the_bore() {
     use gusset_commands::{CmdCtx, Session, execute};
     use serde_json::json;

@@ -448,11 +448,15 @@ joint <Name> (type: rigid|revolute|slider|cylindrical|pin_slot|planar|ball, body
   or toroidal face (on its axis, Z along it), a spherical face (its center), `edge(...)`
   (a circle: its center and normal; a straight edge: its midpoint and direction), `XY`,
   `XZ`, `YZ`, a datum plane, or `origin`. X is the world X axis projected onto the frame.
+  An axis's Z follows the surface's own direction, which can differ between a boss and a
+  hole: `query.joints` and the joint's result report each frame as placed (`to_frame`,
+  `at_frame`); angles turn about that Z by the right-hand rule.
 - Motion: revolute `angle` about Z; slider `distance` along Z; cylindrical both; pin_slot
   `angle` about Z and `distance` along X; planar `x`, `y` and `angle`; ball `angles` about
   X, Y and Z; rigid none. Values not used by the type are refused.
 - `flip: true` reverses the target frame's Z (put a face against a face); `offset` moves
-  along the target frame's Z. Values outside `angle_limits` / `distance_limits` fail the
+  along the target frame's Z before the flip (for a face: positive is out of the target
+  body). A joint whose body ends up inside another one says so in its result. Values outside `angle_limits` / `distance_limits` fail the
   joint. Values can be parameters: setting the parameter moves the mechanism.
 - Relations are expressions: a gear pair turns together with `angle: turn` on one joint
   and `angle: -turn * 20 / 40` on the other (teeth 20 and 40); a rack moves

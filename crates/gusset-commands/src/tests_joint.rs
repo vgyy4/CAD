@@ -37,8 +37,15 @@ fn a_slider_joint_places_the_block_and_query_joints_reports_it() {
                "flip": true, "distance": "slide", "distance_limits": ["0 mm", "10 mm"]}),
     );
     assert_eq!(r["rebuild_ok"], true, "{r}");
+    // The result shows the frames as placed (F4-3/F4-4): the plate's top centre, Z flipped
+    // down, and the block's bottom 3 mm below it (the overlap warning needs a kernel with
+    // booleans: modeling_joint.rs).
+    assert_eq!(r["to_frame"]["origin_mm"], json!([20.0, 10.0, 10.0]), "{r}");
+    assert_eq!(r["to_frame"]["z_axis"], json!([0.0, 0.0, -1.0]), "{r}");
+    assert_eq!(r["at_frame"]["origin_mm"], json!([20.0, 10.0, 7.0]), "{r}");
     let q = run(&mut s, "query.joints", json!({}));
     let j = &q["joints"][0];
+    assert_eq!(j["to_frame"], r["to_frame"], "{q}");
     assert_eq!(j["name"], "Joint1", "{q}");
     assert_eq!(j["type"], "slider");
     assert_eq!(j["dof"], 1);

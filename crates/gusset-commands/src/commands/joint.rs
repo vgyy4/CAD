@@ -91,7 +91,7 @@ impl Command for JointCommand {
         let probe = Feature::new("Probe", FeatureKind::Joint(Box::new(def.clone())));
         text::parse_feature_object(&text::print_feature_object(&probe))
             .map_err(|e| CommandError::args(e.to_string()))?;
-        edit(s, ctx, "Joint", |doc, rb| {
+        let mut r = edit(s, ctx, "Joint", |doc, rb| {
             // Bodies may be named by body name; the document refers to the creating feature.
             let mut def = def;
             let at = rb.unwrap_or(doc.features.len()).min(doc.features.len());
@@ -104,8 +104,59 @@ impl Command for JointCommand {
             let name = feature_name(doc, self.name, "Joint")?;
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Joint(Box::new(def))));
             Ok(json!({ "feature": name }))
-        })
+        })?;
+        placed_report(s, ctx, &mut r);
+        Ok(r)
     }
+}
+
+/// A frame as JSON.
+fn frame_json(f: &gusset_eval::JointFrame) -> Value {
+    json!({ "origin_mm": f.origin, "x_axis": f.x, "z_axis": f.z })
+}
+
+/// How many moved/other body pairs a new joint checks for interference.
+const JOINT_PAIRS: usize = 8;
+
+/// Adds where the new joint put its frames and whether the moved bodies now overlap
+/// others (dogfooding F4-4: a joint without `flip` sat one body inside the other).
+fn placed_report(s: &mut Session, ctx: &CmdCtx, r: &mut Value) {
+    let Some(name) = r["feature"].as_str().map(str::to_string) else { return };
+    let Ok(ev) = s.evaluate(&ctx.actor) else { return };
+    let Some(jv) = ev.joint_values.get(&name) else { return };
+    let mut extra = json!({ "to_frame": frame_json(&jv.to_frame), "at_frame": frame_json(&jv.at_frame) });
+    let doc = s.document(&ctx.actor).ok();
+    let moved: Vec<String> = match doc.as_ref().and_then(|d| d.feature(&name)).map(|f| &f.kind) {
+        Some(FeatureKind::Joint(d)) => {
+            let doc = doc.as_ref().map_or_else(Document::default, Clone::clone);
+            std::iter::once(&d.body).chain(&d.with).map(|b| body_display_name(&doc, b)).collect()
+        }
+        _ => Vec::new(),
+    };
+    let k = s.kernel().clone();
+    let mut budget = JOINT_PAIRS;
+    let mut overlaps = Vec::new();
+    for m in &moved {
+        let Some(a) = ev.body(m) else { continue };
+        for b in ev.bodies.iter().filter(|b| !moved.contains(&b.name)) {
+            if let Ok((pairs, _)) = super::assembly::interference(
+                k.as_ref(),
+                &[&**a, &**b],
+                super::assembly::DEFAULT_MIN_VOLUME,
+                &mut budget,
+            ) {
+                overlaps.extend(pairs.into_iter().filter(|p| p.get("volume_mm3").is_some()));
+            }
+        }
+    }
+    if !overlaps.is_empty()
+        && let Value::Object(m) = &mut extra
+    {
+        m.insert("interference".into(), json!(overlaps));
+        m.insert("warning".into(), json!("the placed body overlaps another one: try flip, or another frame or offset"));
+    }
+    snap_zeros(&mut extra);
+    *r = merge(r.clone(), extra);
 }
 
 /// Rejects `with` lists that would place a body twice (after names are resolved to
@@ -154,7 +205,7 @@ pub struct QueryJoints {}
 impl Command for QueryJoints {
     const ID: &'static str = "query.joints";
     const TITLE: &'static str = "Joints";
-    const DESCRIPTION: &'static str = "Every joint: type, moving body and bodies carried, frames, values and limits as evaluated, `free` values and `built_values` (as built, including what the loop solver chose), degrees of freedom left, build status and the moved body's centroid. Also the bodies no joint places.";
+    const DESCRIPTION: &'static str = "Every joint: type, bodies, frames as placed (to_frame, at_frame; angles turn about z), values, limits, free and built_values (as solved), DOF, status, centroid. Also unplaced bodies.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -221,6 +272,8 @@ impl Command for QueryJoints {
                 "suppressed": f.suppressed,
                 "status": ev.status(&f.name).map(status_json),
                 "body_centroid_mm": centroid,
+                "to_frame": ev.joint_values.get(&f.name).map(|v| frame_json(&v.to_frame)),
+                "at_frame": ev.joint_values.get(&f.name).map(|v| frame_json(&v.at_frame)),
             });
             snap_zeros(&mut v);
             joints.push(v);

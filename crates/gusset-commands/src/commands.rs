@@ -2441,13 +2441,15 @@ pub struct BranchCompare {
     /// Branch or node (`n12`).
     pub a: String,
     pub b: String,
+    /// Also what each side changed since their common base, and what both changed.
+    #[serde(default)]
+    pub base: bool,
 }
 
 impl Command for BranchCompare {
     const ID: &'static str = "branch.compare";
     const TITLE: &'static str = "Compare iterations";
-    const DESCRIPTION: &'static str =
-        "Compare two branches or history nodes: parameter (with ranges), configuration and feature differences.";
+    const DESCRIPTION: &'static str = "Compare two branches or nodes: parameter, configuration and feature differences; base: true adds each side's changes since their common base and what both changed.";
     const CATEGORY: Category = Category::Branches;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, _ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -2465,12 +2467,34 @@ impl Command for BranchCompare {
                 }
             }
         };
-        Ok(json!({
-            "units_changed": d.units_changed,
-            "parameters": d.params.iter().map(item).collect::<Vec<_>>(),
-            "configurations": d.configurations.iter().map(item).collect::<Vec<_>>(),
-            "features": d.features.iter().map(item).collect::<Vec<_>>(),
-        }))
+        let diff_json = |d: &gusset_history::DocDiff| {
+            json!({
+                "units_changed": d.units_changed,
+                "parameters": d.params.iter().map(item).collect::<Vec<_>>(),
+                "configurations": d.configurations.iter().map(item).collect::<Vec<_>>(),
+                "features": d.features.iter().map(item).collect::<Vec<_>>(),
+            })
+        };
+        let mut out = diff_json(&d);
+        if !self.base {
+            return Ok(out);
+        }
+        // A three-way view, to predict a merge's conflicts (dogfooding F4-14).
+        let h = s.history();
+        let m = h.merge_base(a, b).ok_or_else(|| CommandError::args("the two have no common base"))?;
+        let (da, db) =
+            (h.compare(m, a).map_err(CommandError::history)?, h.compare(m, b).map_err(CommandError::history)?);
+        let names = |d: &gusset_history::DocDiff| -> std::collections::BTreeSet<String> {
+            d.params.iter().chain(&d.configurations).chain(&d.features).map(|c| c.name.clone()).collect()
+        };
+        let both: Vec<String> = names(&da).intersection(&names(&db)).cloned().collect();
+        if let Value::Object(o) = &mut out {
+            o.insert("base".into(), json!(m.to_string()));
+            o.insert("a_since_base".into(), diff_json(&da));
+            o.insert("b_since_base".into(), diff_json(&db));
+            o.insert("changed_on_both_user_text".into(), json!(both));
+        }
+        Ok(out)
     }
 }
 

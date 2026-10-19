@@ -102,6 +102,8 @@ fn text_command_drives_the_real_kernel() {
     )
     .unwrap();
     assert_eq!(r["rebuild_ok"], true, "{r}");
+    // The top face's frame, in which `at` is given (F4-10).
+    assert_eq!(r["frame"]["normal"], json!([0.0, 0.0, 1.0]), "{r}");
     let b = execute(&mut s, &u, "query.body", json!({})).unwrap();
     assert!(b["volume_mm3"].as_f64().unwrap() > 8000.0, "{b}");
 }

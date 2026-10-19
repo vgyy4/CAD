@@ -9,7 +9,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 }
 
 /// Overlap below this volume (mm³) is contact, not interference.
-const DEFAULT_MIN_VOLUME: f64 = 1e-6;
+pub(super) const DEFAULT_MIN_VOLUME: f64 = 1e-6;
 
 fn boxes_overlap(a: &BBox, b: &BBox) -> bool {
     (0..3).all(|k| match (a.min.get(k), a.max.get(k), b.min.get(k), b.max.get(k)) {
@@ -24,7 +24,7 @@ const MAX_PAIRS: usize = 2000;
 
 /// The pairs of `bodies` that share volume: boxes first, then the common volume. Each
 /// intersection takes one from `budget`; `true` when it ran out before the last pair.
-fn interference(
+pub(super) fn interference(
     k: &dyn Kernel,
     bodies: &[&gusset_eval::Body],
     min_volume: f64,

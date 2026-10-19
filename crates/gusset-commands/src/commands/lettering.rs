@@ -73,6 +73,9 @@ impl Command for Text {
         };
         let op = op_of(&self.op)?;
         let plane = super::datum::parse_plane_arg(s, ctx, &self.plane)?;
+        // The plane's frame before the letters change its face: `at` is in its coordinates
+        // (dogfooding F4-10).
+        let frame = s.evaluate(&ctx.actor).ok().and_then(|ev| gusset_eval::frame_of(&ev, &plane));
         let seen = std::cell::RefCell::new((String::new(), None::<String>));
         edit_post(
             s,
@@ -91,7 +94,11 @@ impl Command for Text {
             },
             |_, out, ch| {
                 let (name, body) = &*seen.borrow();
-                combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch)
+                let v = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+                match &frame {
+                    Some(f) => merge(if v.is_null() { json!({}) } else { v }, json!({ "frame": frame_json(f) })),
+                    None => v,
+                }
             },
         )
     }
