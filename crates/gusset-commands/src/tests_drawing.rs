@@ -52,19 +52,23 @@ fn a_drawing_with_standard_views_is_built_queried_and_exported() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("drawing Drawing1 (size: A3, projection: first, title: \"Plate\") {"), "{text}");
     // Export both formats.
-    for (path, profile, magic) in
-        [("plate.svg", None, "<svg"), ("plate.dxf", None, "AC1015"), ("plate12.dxf", Some("r12"), "AC1009")]
-    {
+    for (path, profile, magic) in [
+        ("plate.svg", None, "<svg"),
+        ("plate.dxf", None, "AC1015"),
+        ("plate12.dxf", Some("r12"), "AC1009"),
+        ("plate.pdf", None, "%PDF-1.4"),
+    ] {
         let r = run(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": path, "profile": profile}));
         assert_eq!(r["written"], path, "{r}");
-        let body = std::fs::read_to_string(s.project_dir.clone().unwrap().join(path)).unwrap();
+        let body =
+            String::from_utf8_lossy(&std::fs::read(s.project_dir.clone().unwrap().join(path)).unwrap()).into_owned();
         assert!(body.contains(magic), "{path}");
     }
     assert_eq!(
         err(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": "plate.svg"})).code,
         "confirmation_required"
     );
-    assert_eq!(err(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": "plate.pdf"})).code, "invalid_args");
+    assert_eq!(err(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": "plate.png"})).code, "invalid_args");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
 

@@ -841,7 +841,7 @@ impl Command for QueryDrawing {
 #[serde(deny_unknown_fields)]
 pub struct DrawingExport {
     pub drawing: String,
-    /// File name in the project folder: .svg or .dxf.
+    /// File name in the project folder: .svg, .dxf or .pdf.
     pub path: String,
     /// DXF: r2000 (default) or r12.
     #[serde(default)]
@@ -854,16 +854,16 @@ impl Command for DrawingExport {
     const ID: &'static str = "drawing.export";
     const TITLE: &'static str = "Export drawing";
     const DESCRIPTION: &'static str =
-        "Write a drawing as SVG or DXF (mm, a layer per line type) to a file in the project folder.";
+        "Write a drawing as SVG, DXF (a layer per line type) or PDF to a file in the project folder.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let path = crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, &["svg", "dxf"])?;
+        let path =
+            crate::paths::export_target(s.project_dir.as_deref(), &self.path, &ctx.actor, &["svg", "dxf", "pdf"])?;
         let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-        let dxf = match ext.as_deref() {
-            Some("dxf") => true,
-            Some("svg") => false,
-            _ => return Err(CommandError::args("the file name must end in .svg or .dxf")),
+        let format = match ext.as_deref() {
+            Some(f @ ("dxf" | "svg" | "pdf")) => f.to_string(),
+            _ => return Err(CommandError::args("the file name must end in .svg, .dxf or .pdf")),
         };
         let profile = match self.profile.as_deref() {
             None => gusset_drawing::dxf::Profile::default(),
@@ -880,8 +880,16 @@ impl Command for DrawingExport {
             }
         }
         let sc = scene(s, ctx, &self.drawing)?;
-        let text = if dxf { gusset_drawing::dxf::to_dxf(&sc, profile) } else { gusset_drawing::svg::to_svg(&sc) };
-        crate::paths::write_file(&path, &self.path, text.as_bytes())?;
-        Ok(json!({ "written": self.path, "bytes": text.len(), "issues": sc.issues }))
+        let bytes = match format.as_str() {
+            "dxf" => gusset_drawing::dxf::to_dxf(&sc, profile).into_bytes(),
+            "pdf" => {
+                let doc = s.document(&ctx.actor)?;
+                let title = doc.drawings.iter().find(|d| d.name == self.drawing).and_then(|d| d.title.clone());
+                gusset_drawing::pdf::to_pdf(&sc, title.as_deref().unwrap_or(&self.drawing))
+            }
+            _ => gusset_drawing::svg::to_svg(&sc).into_bytes(),
+        };
+        crate::paths::write_file(&path, &self.path, &bytes)?;
+        Ok(json!({ "written": self.path, "bytes": bytes.len(), "issues": sc.issues }))
     }
 }

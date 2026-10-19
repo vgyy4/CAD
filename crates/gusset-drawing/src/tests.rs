@@ -303,3 +303,27 @@ fn a_detail_view_enlarges_a_circle_of_its_parent() {
     let doc = Document::from_text(&format!("{PLATE}\n{sheet}")).unwrap();
     assert!(doc.to_text().contains("view Corner (detail_of: Front, center: [40, 10], radius: 5 mm, at: [300, 80])"));
 }
+
+#[test]
+fn a_pdf_of_the_sheet() {
+    let s = scene(SHEET);
+    let pdf = pdf::to_pdf(&s, "Plate");
+    assert!(pdf.starts_with(b"%PDF-1.4") && pdf.ends_with(b"%%EOF\n"));
+    if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
+        let _ = std::fs::write(format!("{dir}/plate.pdf"), &pdf);
+    }
+    // Byte offsets: the header's binary comment is not UTF-8.
+    let at = |off: usize| String::from_utf8_lossy(&pdf[off..]).into_owned();
+    let text = at(0);
+    // A3 landscape in points.
+    assert!(text.contains("/MediaBox [0 0 1190.5512 841.8898]"));
+    let tail = std::str::from_utf8(&pdf[pdf.len() - 40..]).unwrap();
+    let xref: usize =
+        tail.rsplit("startxref\n").next().and_then(|t| t.lines().next()).and_then(|l| l.parse().ok()).unwrap();
+    let table = at(xref);
+    assert!(table.starts_with("xref\n0 7\n"), "{}", &table[..20]);
+    for (i, line) in table.lines().skip(3).take(6).enumerate() {
+        let off: usize = line[..10].parse().unwrap();
+        assert!(at(off).starts_with(&format!("{} 0 obj", i + 1)), "object {}", i + 1);
+    }
+}

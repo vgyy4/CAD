@@ -72,8 +72,10 @@ worker (ADR 0022) and its results are cached.
    data and no transforms. DXF is written as R2000 (AC1015) by default, with `$INSUNITS`
    = 4 (mm), layers per line style (VISIBLE, HIDDEN, CENTER, DIM, TEXT, BORDER), an LTYPE
    table, and dimensions exploded to lines and text. An R12 (AC1009) profile is offered
-   for laser cutters and old readers; it flattens what R12 lacks. PDF comes later
-   (`krilla`, after the dependency checks in PROMPT.md). Sketches export to DXF/SVG the
+   for laser cutters and old readers; it flattens what R12 lacks. PDF (added in phase 4)
+   is also written by our own code: one vector page in mm, arcs as Béziers, text in the
+   standard Helvetica font with WinAnsi encoding (no font embedding, no dependency; this
+   replaces the earlier plan to use `krilla`). Sketches export to DXF/SVG the
    same way, for laser cutting.
 5. **Commands** (GUI = CLI = MCP, ADR 0012): `drawing.create`, `drawing.add_view`,
    `drawing.add_dimension`, `drawing.add_note`, `drawing.edit` (sheet properties),
