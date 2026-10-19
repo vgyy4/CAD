@@ -173,6 +173,18 @@ pub struct ViewDef {
     pub tangent: bool,
     /// Centre marks on circles and centrelines on cylinders (default on).
     pub centers: bool,
+    /// A full section (projected views only): the parent is cut by a plane and the part
+    /// between the plane and the viewer is removed.
+    pub section: Option<SectionDef>,
+}
+
+/// A full section view (ISO 128-40): `label` names the cutting plane ("A" gives "A–A"),
+/// `cut_at` places it along the axis of the parent view that points at this view's side
+/// (model mm from the origin; `None`: through the middle of the bodies).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionDef {
+    pub label: String,
+    pub cut_at: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -407,6 +419,12 @@ fn print_item(item: &DrawingItem) -> String {
             if let Some(h) = v.hidden {
                 args.push(format!("hidden: {h}"));
             }
+            if let Some(sec) = &v.section {
+                args.push(format!("section: {}", sec.label));
+                if let Some(e) = &sec.cut_at {
+                    args.push(format!("cut_at: {e}"));
+                }
+            }
             if !v.centers {
                 args.push("centers: false".into());
             }
@@ -530,6 +548,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
     let (mut bodies, mut from, mut at) = (None, None, None);
     let (mut of, mut side, mut gap) = (None, None, None);
     let (mut scale, mut hidden, mut tangent, mut centers) = (None, None, false, true);
+    let (mut section, mut cut_at) = (None, None);
     parse_args(c, |key, c| {
         match key {
             "bodies" => bodies = Some(parse_ident_list(c, "bodies")?),
@@ -549,12 +568,14 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
             "hidden" => hidden = Some(parse_bool(c)?),
             "tangent" => tangent = parse_bool(c)?,
             "centers" => centers = parse_bool(c)?,
+            "section" => section = Some(c.ident()?.to_string()),
+            "cut_at" => cut_at = Some(c.expr()?),
             key => {
                 return Err(unknown_arg(
                     c,
                     KW,
                     key,
-                    "bodies, from, at, of, side, gap, scale, hidden, tangent, centers",
+                    "bodies, from, at, of, side, gap, section, cut_at, scale, hidden, tangent, centers",
                 ));
             }
         }
@@ -584,7 +605,17 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
         }
         (None, None) => return Err(missing(c, KW, "from (or of)")),
     };
-    Ok(ViewDef { name, placement, scale, hidden, tangent, centers })
+    let section = match (section, cut_at) {
+        (Some(label), cut_at) => {
+            if matches!(placement, ViewPlacement::Base { .. }) {
+                return Err(c.err_hint("a section is projected from the view it cuts", "add of: <view>, side: <side>"));
+            }
+            Some(SectionDef { label, cut_at })
+        }
+        (None, Some(_)) => return Err(c.err_hint("cut_at belongs to section views", "add section: <letter>")),
+        (None, None) => None,
+    };
+    Ok(ViewDef { name, placement, scale, hidden, tangent, centers, section })
 }
 
 fn parse_dim(c: &mut Cursor<'_>) -> Result<DimDef, ParseError> {

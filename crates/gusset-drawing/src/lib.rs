@@ -9,6 +9,7 @@ pub mod dims;
 pub mod dxf;
 pub mod raster;
 pub mod scene;
+pub mod section;
 pub mod svg;
 
 pub use scene::{Anchor, Handle, Item, PlacedView, Prim, Scene, Style};
@@ -50,6 +51,14 @@ type CacheEntry = (Vec<Shape>, [u64; 7], Arc<Vec<HlrCurve>>);
 #[derive(Default)]
 pub struct HlrCache {
     entries: Vec<CacheEntry>,
+    /// Sections by (shapes, plane, view X): the cut shapes and their cut faces.
+    cuts: Vec<(Vec<Shape>, [u64; 7], Arc<Cut>)>,
+}
+
+/// A section's cut bodies and the triangles of its cut faces (view coordinates).
+struct Cut {
+    shapes: Vec<Shape>,
+    faces: Vec<[[f64; 2]; 3]>,
 }
 
 impl std::fmt::Debug for HlrCache {
@@ -86,6 +95,30 @@ impl HlrCache {
         }
         self.entries.push((shapes.to_vec(), key, curves.clone()));
         Ok(curves)
+    }
+
+    fn cut(
+        &mut self,
+        k: &dyn Kernel,
+        shapes: &[Shape],
+        n: [f64; 3],
+        x: [f64; 3],
+        y: [f64; 3],
+        c: f64,
+    ) -> Result<Arc<Cut>, String> {
+        let key = [n[0], n[1], n[2], x[0], x[1], x[2], c].map(f64::to_bits);
+        let same = |s: &[Shape]| s.len() == shapes.len() && s.iter().zip(shapes).all(|(a, b)| a.ptr_eq(b));
+        if let Some((_, _, cut)) = self.cuts.iter().find(|(s, kk, _)| *kk == key && same(s)) {
+            return Ok(cut.clone());
+        }
+        let kept = section::cut(k, shapes, n, x, c)?;
+        let faces = section::cut_faces(k, &kept, n, x, y, c)?;
+        let cut = Arc::new(Cut { shapes: kept, faces });
+        if self.cuts.len() >= CACHE_ENTRIES {
+            self.cuts.remove(0);
+        }
+        self.cuts.push((shapes.to_vec(), key, cut.clone()));
+        Ok(cut)
     }
 }
 
@@ -147,6 +180,19 @@ struct Projected {
     y: [f64; 3],
     scale: f64,
     curves: Arc<Vec<HlrCurve>>,
+    /// A section: its cut faces, and where its plane crosses the parent view.
+    section: Option<SectionInfo>,
+}
+
+struct SectionInfo {
+    cut: Arc<Cut>,
+    label: String,
+    parent: String,
+    /// The plane in the parent view: along the sheet's Y (vertical) at this sheet X, or
+    /// along X at this sheet Y; and the viewing direction on the sheet.
+    vertical: bool,
+    pos: f64,
+    look: [f64; 2],
 }
 
 /// Normalized arc angles: counterclockwise from `s` to `e > s`.
@@ -232,6 +278,7 @@ impl Builder<'_, '_> {
 
     fn place_one(&mut self, v: &ViewDef, depth: usize) -> Result<(Projected, PlacedView), String> {
         let ev = self.cx.ev;
+        let mut section_info: Option<SectionInfo> = None;
         let (bodies, axes, scale, parent) = match &v.placement {
             ViewPlacement::Base { bodies, from, .. } => {
                 let list: Vec<Arc<Body>> = if bodies.is_empty() {
@@ -256,6 +303,32 @@ impl Builder<'_, '_> {
                 let (bodies, t, x, y, pscale, pv) = parent;
                 let (ct, cxx, _) = side_axes(*side, t, x, y);
                 let axes = frame(ct, cxx).ok_or_else(|| format!("view {}: bad direction", v.name))?;
+                if let Some(sec) = &v.section {
+                    // The plane is perpendicular to the parent axis pointing at `side` (the
+                    // new view's `toward`); it crosses the parent view as a line.
+                    let shapes: Vec<Shape> = bodies.iter().map(|b| b.shape.clone()).collect();
+                    let c = match &sec.cut_at {
+                        Some(e) => number(e, ev)?,
+                        None => {
+                            let (lo, hi, _, _) = section::extent(self.cx.kernel, &shapes, ct)
+                                .map_err(|e| format!("view {}: {e}", v.name))?;
+                            (lo + hi) / 2.0
+                        }
+                    };
+                    let (st, sx, sy) = axes;
+                    let cut = self
+                        .cache
+                        .cut(self.cx.kernel, &shapes, st, sx, sy, c)
+                        .map_err(|e| format!("view {}: {e}", v.name))?;
+                    // In the parent, `ct` is ±(its x) or ±(its y).
+                    let vertical = matches!(side, Side::Left | Side::Right);
+                    let sign = if matches!(side, Side::Top | Side::Right) { 1.0 } else { -1.0 };
+                    let (o, s) = (if vertical { pv.origin[0] } else { pv.origin[1] }, pv.scale);
+                    let pos = o + s * sign * c;
+                    let look = if vertical { [-sign, 0.0] } else { [0.0, -sign] };
+                    section_info =
+                        Some(SectionInfo { cut, label: sec.label.clone(), parent: of.clone(), vertical, pos, look });
+                }
                 let g = match gap {
                     Some(e) => number(e, ev)?,
                     None => DEFAULT_GAP,
@@ -267,7 +340,10 @@ impl Builder<'_, '_> {
             return Err(format!("view {}: there is no body to show", v.name));
         }
         let (t, x, y) = axes;
-        let shapes: Vec<Shape> = bodies.iter().map(|b| b.shape.clone()).collect();
+        let shapes: Vec<Shape> = match &section_info {
+            Some(s) => s.cut.shapes.clone(),
+            None => bodies.iter().map(|b| b.shape.clone()).collect(),
+        };
         let hv = HlrView { toward: t, x, exact: true, deflection: SHEET_DEFLECTION / scale };
         let curves = self.cache.get(self.cx.kernel, &shapes, &hv).map_err(|e| format!("view {}: {e}", v.name))?;
         let (min, max) = bounds(&curves, true).ok_or_else(|| format!("view {}: nothing to show", v.name))?;
@@ -316,7 +392,7 @@ impl Builder<'_, '_> {
             y,
             error: None,
         };
-        Ok((Projected { bodies, toward: t, x, y, scale, curves }, pv))
+        Ok((Projected { bodies, toward: t, x, y, scale, curves, section: section_info }, pv))
     }
 }
 
@@ -465,8 +541,20 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 Some(Ok((p, pv))) => {
                     let iso = matches!(&v.placement, ViewPlacement::Base { from, .. } if from.is_iso());
                     draw_view(&mut scene, v, p, pv, iso);
-                    if v.centers {
+                    if v.centers && p.section.is_none() {
                         centers::draw(&mut scene, &p.bodies, pv);
+                    }
+                    if let Some(s) = &p.section {
+                        let at = |q: [f64; 2]| [pv.origin[0] + pv.scale * q[0], pv.origin[1] + pv.scale * q[1]];
+                        for (a, b) in section::hatch(&s.cut.faces, section::HATCH_SPACING / pv.scale) {
+                            scene.line(Style::Thin, at(a), at(b));
+                        }
+                        let label = format!("{0}–{0}", s.label);
+                        let below = [(pv.min[0] + pv.max[0]) / 2.0, pv.min[1] - 6.0 - section::LABEL_H];
+                        scene.text(below, section::LABEL_H, &label, Anchor::Center);
+                        if let Some(Ok((_, ppv))) = b.placed.get(s.parent.as_str()) {
+                            section::cutting_plane(&mut scene, ppv.min, ppv.max, s.vertical, s.pos, s.look, &s.label);
+                        }
                     }
                     scene.views.push(pv.clone());
                 }

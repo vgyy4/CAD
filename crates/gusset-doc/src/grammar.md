@@ -644,6 +644,10 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   (default 20 mm). The projection picks the side of the sheet: in `first` angle (ISO) the
   view of the top goes below the parent, in `third` angle (ASME) above.
 - Hidden lines are shown dashed (`hidden: false` turns them off; iso views default to off).
+  `section: A` on a projected view makes it a full section: the parent's bodies are cut by
+  a plane across the parent (at `cut_at`, model mm along the parent's axis pointing at
+  `side`; default the middle), the part towards the viewer is removed and the cut is
+  hatched. The view is labelled "A–A" and the parent shows the cutting plane.
   `tangent: true` also draws smooth edges. Centre marks on holes and round bosses seen
   end-on and centrelines along cylinders seen from the side are drawn unless
   `centers: false`.

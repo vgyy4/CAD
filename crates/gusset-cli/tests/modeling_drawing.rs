@@ -122,3 +122,58 @@ fn a_dimensioned_sheet_of_a_plate_with_a_hole() {
     eprintln!("sheet built in {first:?}, again in {second:?}");
     assert!(second < first, "the cache is used: {first:?} then {second:?}");
 }
+
+/// Hatched area of a section view: hatch length times spacing (sheet mm², at 1:1).
+fn hatched(s: &Scene) -> f64 {
+    s.items
+        .iter()
+        .filter(|i| i.style == Style::Thin)
+        .filter_map(|i| match i.prim {
+            Prim::Line { a, b } => Some(libm::hypot(b[0] - a[0], b[1] - a[1])),
+            _ => None,
+        })
+        .sum::<f64>()
+        * gusset_drawing::section::HATCH_SPACING
+}
+
+#[test]
+fn section_views_cut_the_part_and_hatch_the_cut() {
+    let k = kernel();
+    let build = |views: &str| {
+        let text = format!(
+            "{PART}\ndrawing D (size: A3, projection: first) {{\n  view Front (bodies: [E1], from: front, at: [150, 220])\n{views}}}\n"
+        );
+        let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}"));
+        let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
+        let cx = Context { ev: &ev, kernel: k.as_ref(), units: doc.units };
+        gusset_drawing::build(&doc.drawings[0], &cx, &mut HlrCache::default())
+    };
+    let base = build("");
+    // Thin lines of the sheet itself (title block) are not hatching.
+    let hatched = |s: &Scene| hatched(s) - hatched(&base);
+    // Through the middle of the plate's thickness (z = 10): the plate with its hole.
+    let s = build("  view A (of: Front, side: top, section: A)\n");
+    if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
+        std::fs::write(format!("{dir}/section.png"), gusset_drawing::raster::render(&s, 1400).to_png().unwrap())
+            .unwrap();
+    }
+    assert!(s.issues.is_empty(), "{:?}", s.issues);
+    let a = 60.0 * 40.0 - std::f64::consts::PI * 25.0;
+    assert!((hatched(&s) - a).abs() < 0.03 * a, "hatched {} of {a}", hatched(&s));
+    // The label under the view and the cutting plane (letters at both ends) in the parent.
+    let texts: Vec<&str> = s
+        .items
+        .iter()
+        .filter_map(|i| if let Prim::Text { text, .. } = &i.prim { Some(text.as_str()) } else { None })
+        .collect();
+    assert!(texts.contains(&"A–A") && texts.iter().filter(|t| **t == "A").count() == 2, "{texts:?}");
+    assert!(count(&s, Style::Center) > count(&base, Style::Center));
+    // A vertical cut through the hole's axis (x = 30): two 15 x 20 strips beside the hole.
+    let s = build("  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n");
+    assert!(s.issues.is_empty(), "{:?}", s.issues);
+    let a = 2.0 * 15.0 * 20.0;
+    assert!((hatched(&s) - a).abs() < 0.03 * a, "hatched {} of {a}", hatched(&s));
+    // A plane beyond the part leaves nothing: reported, not a crash.
+    let s = build("  view C (of: Front, side: top, section: C, cut_at: -5 mm)\n");
+    assert!(s.issues.iter().any(|i| i.contains("nothing")), "{:?}", s.issues);
+}

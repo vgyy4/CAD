@@ -156,6 +156,7 @@ impl Command for DrawingCreate {
                         hidden,
                         tangent: false,
                         centers: true,
+                        section: None,
                     }))
                 };
                 let projected = |n: &str, side| {
@@ -166,6 +167,7 @@ impl Command for DrawingCreate {
                         hidden: None,
                         tangent: false,
                         centers: true,
+                        section: None,
                     })
                 };
                 // Front in the upper middle, so first and third angle both have room.
@@ -275,6 +277,12 @@ pub struct DrawingAddView {
     /// Centre marks and centrelines (default true).
     #[serde(default)]
     pub centers: Option<bool>,
+    /// Section letter (projected).
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Section plane, model mm.
+    #[serde(default)]
+    pub cut_at: Option<String>,
 }
 
 impl Command for DrawingAddView {
@@ -306,6 +314,19 @@ impl Command for DrawingAddView {
             }
         };
         let scale = opt_expr("scale", &self.scale)?;
+        let section = match (&self.section, &placement) {
+            (Some(l), ViewPlacement::Projected { .. }) => {
+                if l.is_empty() || l.len() > 8 || !l.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    return Err(CommandError::args("a section letter is up to 8 letters or digits").hint("e.g. A"));
+                }
+                Some(gusset_doc::drawing::SectionDef { label: l.clone(), cut_at: opt_expr("cut_at", &self.cut_at)? })
+            }
+            (Some(_), _) => {
+                return Err(CommandError::args("a section is projected from the view it cuts").hint("give of and side"));
+            }
+            (None, _) if self.cut_at.is_some() => return Err(CommandError::args("cut_at needs section")),
+            (None, _) => None,
+        };
         let drawing = self.drawing.clone();
         let created = std::cell::RefCell::new(String::new());
         edit_post(
@@ -322,6 +343,7 @@ impl Command for DrawingAddView {
                     hidden: self.hidden,
                     tangent: self.tangent,
                     centers: self.centers.unwrap_or(true),
+                    section,
                 }));
                 *created.borrow_mut() = name.clone();
                 Ok(json!({ "view": name }))
