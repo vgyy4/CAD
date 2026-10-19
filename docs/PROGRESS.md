@@ -154,7 +154,8 @@ Phase 3 has started (see Next).
      a half-space box, hatched from the mesh), circular details (`detail_of`), PDF export
      (own writer), `sketch.import_dxf` (own fuzzed reader). Milestone code review
      (docs/reviews/2026-10-19-v0.4-drawings-review.md): every finding D1-D14 and nit N1-N6
-     fixed. Next for drawings: the v0.4 security review and dogfooding, then deferred items
+     fixed. Security review (docs/reviews/2026-10-19-v0.4-security-review.md): X1-X8 fixed
+     but X6's off-thread DXF import (accepted). Next for drawings: v0.4 dogfooding, then deferred items
      (half/offset sections, GD&T, BOM).
    - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
