@@ -415,7 +415,40 @@ impl Builder<'_, '_> {
                     Some(Err(e)) => return Err(format!("view {}: its parent {of} failed: {e}", v.name)),
                     None => return Err(format!("view {}: no view '{of}'", v.name)),
                 };
-                let (bodies, t, x, y, pscale, pv) = parent;
+                let (bodies, t, x, y, pscale, mut pv) = parent;
+                // Earlier views projected from the same parent to the same side: this one
+                // goes beyond them, not over them (dogfooding F5-4).
+                let siblings: Vec<String> = self
+                    .d
+                    .items
+                    .iter()
+                    .filter_map(|i| match i {
+                        DrawingItem::View(w) => Some(w),
+                        _ => None,
+                    })
+                    .take_while(|w| w.name != v.name)
+                    .filter(|w| matches!(&w.placement, ViewPlacement::Projected { of: o, side: sd, .. } if o == of && sd == side))
+                    .map(|w| w.name.clone())
+                    .collect();
+                for sib in siblings {
+                    if self.place(&sib, depth + 1).is_ok()
+                        && let Some(Ok((_, b))) = self.placed.get(sib.as_str())
+                    {
+                        // Grow the parent's box along the stacking axis only, so the
+                        // alignment across it is kept.
+                        let (lo, hi) = (b.min, b.max);
+                        match side {
+                            Side::Top | Side::Bottom => {
+                                pv.min[1] = pv.min[1].min(lo[1]);
+                                pv.max[1] = pv.max[1].max(hi[1]);
+                            }
+                            Side::Left | Side::Right => {
+                                pv.min[0] = pv.min[0].min(lo[0]);
+                                pv.max[0] = pv.max[0].max(hi[0]);
+                            }
+                        }
+                    }
+                }
                 let (ct, cxx, _) = side_axes(*side, t, x, y);
                 let axes = frame(ct, cxx).ok_or_else(|| format!("view {}: bad direction", v.name))?;
                 if let Some(sec) = &v.section {
@@ -781,7 +814,60 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
             }
         }
     }
+    layout_issues(&mut scene, d, cx);
     scene
+}
+
+/// A box on the sheet: (min, max) corners, mm.
+type SheetBox = ([f64; 2], [f64; 2]);
+
+/// Most layout problems listed per sheet.
+const MAX_LAYOUT_ISSUES: usize = 20;
+
+/// Views outside the frame, over the title block or over each other, and notes outside the
+/// frame (dogfooding F5-4: these showed only on a rendered sheet).
+fn layout_issues(scene: &mut Scene, d: &Drawing, cx: &Context<'_>) {
+    let (fmin, fmax) = frame_box(scene.size);
+    let title = ([fmax[0] - 180.0, fmin[1]], [fmax[0], fmin[1] + 40.0]);
+    let meets = |a: SheetBox, b: SheetBox| {
+        a.0[0] < b.1[0] - 0.5 && b.0[0] < a.1[0] - 0.5 && a.0[1] < b.1[1] - 0.5 && b.0[1] < a.1[1] - 0.5
+    };
+    let inside = |p: [f64; 2]| p[0] >= fmin[0] && p[1] >= fmin[1] && p[0] <= fmax[0] && p[1] <= fmax[1];
+    let boxes: Vec<(&str, SheetBox)> =
+        scene.views.iter().filter(|v| v.error.is_none()).map(|v| (v.name.as_str(), (v.min, v.max))).collect();
+    let mut out = Vec::new();
+    for (i, (name, b)) in boxes.iter().enumerate() {
+        if !inside(b.0) || !inside(b.1) {
+            out.push(format!("view {name} lies outside the frame"));
+        } else if meets(*b, title) {
+            out.push(format!("view {name} covers the title block"));
+        }
+        for (other, c) in boxes.iter().skip(i + 1) {
+            if meets(*b, *c) {
+                out.push(format!("views {name} and {other} overlap"));
+            }
+        }
+    }
+    // Dimension and note texts on top of each other (dogfooding F5-3).
+    for (i, a) in scene.handles.iter().enumerate() {
+        for b in scene.handles.iter().skip(i + 1) {
+            if meets((a.min, a.max), (b.min, b.max)) {
+                out.push(format!(
+                    "the texts of {} and {} overlap: move one (text_at, or the note's at)",
+                    a.item, b.item
+                ));
+            }
+        }
+    }
+    for item in &d.items {
+        if let DrawingItem::Note(n) = item
+            && let (Ok(x), Ok(y)) = (number(&n.at[0], cx.ev), number(&n.at[1], cx.ev))
+            && !inside([x, y])
+        {
+            out.push(format!("note {} lies outside the frame", n.name));
+        }
+    }
+    scene.issues.extend(out.into_iter().take(MAX_LAYOUT_ISSUES));
 }
 
 #[cfg(test)]

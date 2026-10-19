@@ -125,60 +125,69 @@ impl Command for DrawingCreate {
         let size = self.size.as_deref().map(size_of).transpose()?.unwrap_or(SheetSize::A3);
         let projection = self.projection.as_deref().map(projection_of).transpose()?.unwrap_or(Projection::First);
         let scale = opt_expr("scale", &self.scale)?;
-        edit(s, ctx, "New drawing", |doc, _| {
-            let name = match self.name {
-                Some(n) => {
-                    gusset_doc::validate::validate_feature_name(&n).map_err(CommandError::args)?;
-                    if doc.feature(&n).is_some() || doc.drawings.iter().any(|d| d.name == n) {
-                        return Err(CommandError::args(format!("the name '{n}' is taken")));
+        let created = std::cell::RefCell::new(String::new());
+        edit_checked(
+            s,
+            ctx,
+            "New drawing",
+            |doc, _| {
+                let name = match self.name {
+                    Some(n) => {
+                        gusset_doc::validate::validate_feature_name(&n).map_err(CommandError::args)?;
+                        if doc.feature(&n).is_some() || doc.drawings.iter().any(|d| d.name == n) {
+                            return Err(CommandError::args(format!("the name '{n}' is taken")));
+                        }
+                        n
                     }
-                    n
+                    None => (1..)
+                        .map(|i| format!("Drawing{i}"))
+                        .find(|n| doc.feature(n).is_none() && !doc.drawings.iter().any(|d| d.name == *n))
+                        .unwrap_or_else(|| "Drawing".into()),
+                };
+                let mut d = Drawing::new(&name);
+                *created.borrow_mut() = name.clone();
+                d.size = size;
+                d.landscape = !self.portrait;
+                d.projection = projection;
+                d.scale = scale;
+                d.title = self.title.filter(|t| !t.is_empty());
+                if self.standard_views {
+                    let [w, h] = gusset_drawing::sheet_size(&d);
+                    let e = |v: f64| gusset_units::expr::parse(&num(v)).map_err(|e| CommandError::args(e.to_string()));
+                    let base = |n: &str, from, at: [f64; 2], hidden| -> Result<DrawingItem, CommandError> {
+                        Ok(DrawingItem::View(ViewDef {
+                            name: n.into(),
+                            placement: ViewPlacement::Base { bodies: Vec::new(), from, at: [e(at[0])?, e(at[1])?] },
+                            scale: None,
+                            hidden,
+                            tangent: false,
+                            centers: true,
+                            section: None,
+                        }))
+                    };
+                    let projected = |n: &str, side| {
+                        DrawingItem::View(ViewDef {
+                            name: n.into(),
+                            placement: ViewPlacement::Projected { of: "Front".into(), side, gap: None },
+                            scale: None,
+                            hidden: None,
+                            tangent: false,
+                            centers: true,
+                            section: None,
+                        })
+                    };
+                    // Front in the upper middle, so first and third angle both have room.
+                    d.items.push(base("Front", ViewDir::Front, [w * 0.42, h * 0.62], None)?);
+                    d.items.push(projected("Top", Side::Top));
+                    d.items.push(projected("Right", Side::Right));
+                    d.items.push(base("Iso", ViewDir::Iso, [w * 0.8, h * 0.72], None)?);
                 }
-                None => (1..)
-                    .map(|i| format!("Drawing{i}"))
-                    .find(|n| doc.feature(n).is_none() && !doc.drawings.iter().any(|d| d.name == *n))
-                    .unwrap_or_else(|| "Drawing".into()),
-            };
-            let mut d = Drawing::new(&name);
-            d.size = size;
-            d.landscape = !self.portrait;
-            d.projection = projection;
-            d.scale = scale;
-            d.title = self.title.filter(|t| !t.is_empty());
-            if self.standard_views {
-                let [w, h] = gusset_drawing::sheet_size(&d);
-                let e = |v: f64| gusset_units::expr::parse(&num(v)).map_err(|e| CommandError::args(e.to_string()));
-                let base = |n: &str, from, at: [f64; 2], hidden| -> Result<DrawingItem, CommandError> {
-                    Ok(DrawingItem::View(ViewDef {
-                        name: n.into(),
-                        placement: ViewPlacement::Base { bodies: Vec::new(), from, at: [e(at[0])?, e(at[1])?] },
-                        scale: None,
-                        hidden,
-                        tangent: false,
-                        centers: true,
-                        section: None,
-                    }))
-                };
-                let projected = |n: &str, side| {
-                    DrawingItem::View(ViewDef {
-                        name: n.into(),
-                        placement: ViewPlacement::Projected { of: "Front".into(), side, gap: None },
-                        scale: None,
-                        hidden: None,
-                        tangent: false,
-                        centers: true,
-                        section: None,
-                    })
-                };
-                // Front in the upper middle, so first and third angle both have room.
-                d.items.push(base("Front", ViewDir::Front, [w * 0.42, h * 0.62], None)?);
-                d.items.push(projected("Top", Side::Top));
-                d.items.push(projected("Right", Side::Right));
-                d.items.push(base("Iso", ViewDir::Iso, [w * 0.8, h * 0.72], None)?);
-            }
-            doc.drawings.push(d);
-            Ok(json!({ "drawing": name }))
-        })
+                doc.drawings.push(d);
+                Ok(json!({ "drawing": name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &created.borrow(), None),
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -222,26 +231,34 @@ impl Command for DrawingEdit {
             Some("") => Some(None),
             Some(t) => Some(Some(parse_expr("scale", t)?)),
         };
-        edit(s, ctx, "Edit drawing", |doc, _| {
-            let d = find(doc, &self.drawing)?;
-            if let Some(z) = size {
-                d.size = z;
-            }
-            if let Some(p) = self.portrait {
-                d.landscape = !p;
-            }
-            if let Some(p) = projection {
-                d.projection = p;
-            }
-            if let Some(sc) = scale {
-                d.scale = sc;
-            }
-            set_text(&mut d.title, self.title);
-            set_text(&mut d.number, self.number);
-            set_text(&mut d.material, self.material);
-            set_text(&mut d.author, self.author);
-            Ok(json!({ "drawing": d.name }))
-        })
+        let drawing = self.drawing.clone();
+        edit_checked(
+            s,
+            ctx,
+            "Edit drawing",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                if let Some(z) = size {
+                    d.size = z;
+                }
+                if let Some(p) = self.portrait {
+                    d.landscape = !p;
+                }
+                if let Some(p) = projection {
+                    d.projection = p;
+                }
+                if let Some(sc) = scale {
+                    d.scale = sc;
+                }
+                set_text(&mut d.title, self.title);
+                set_text(&mut d.number, self.number);
+                set_text(&mut d.material, self.material);
+                set_text(&mut d.author, self.author);
+                Ok(json!({ "drawing": d.name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, None),
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -347,7 +364,7 @@ impl Command for DrawingAddView {
         };
         let drawing = self.drawing.clone();
         let created = std::cell::RefCell::new(String::new());
-        edit_post(
+        edit_checked(
             s,
             ctx,
             "Add view",
@@ -366,6 +383,7 @@ impl Command for DrawingAddView {
                 *created.borrow_mut() = name.clone();
                 Ok(json!({ "view": name }))
             },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&created.borrow())),
             |_, _, _| Value::Null,
         )
         .and_then(|v| {
@@ -419,46 +437,54 @@ impl Command for DrawingEditView {
             Some("") => Some(None),
             Some(t) => Some(Some(parse_expr("scale", t)?)),
         };
-        edit(s, ctx, "Edit view", |doc, _| {
-            let d = find(doc, &self.drawing)?;
-            let dname = d.name.clone();
-            let v = d
-                .items
-                .iter_mut()
-                .find_map(|i| match i {
-                    DrawingItem::View(v) if v.name == self.view => Some(v),
-                    _ => None,
-                })
-                .ok_or_else(|| CommandError::not_found(format!("drawing '{dname}' has no view '{}'", self.view)))?;
-            match (&mut v.placement, at, gap) {
-                (ViewPlacement::Base { at: slot, .. } | ViewPlacement::Detail { at: slot, .. }, Some(a), None) => {
-                    *slot = a
+        let (drawing, item) = (self.drawing.clone(), self.view.clone());
+        edit_checked(
+            s,
+            ctx,
+            "Edit view",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                let dname = d.name.clone();
+                let v = d
+                    .items
+                    .iter_mut()
+                    .find_map(|i| match i {
+                        DrawingItem::View(v) if v.name == self.view => Some(v),
+                        _ => None,
+                    })
+                    .ok_or_else(|| CommandError::not_found(format!("drawing '{dname}' has no view '{}'", self.view)))?;
+                match (&mut v.placement, at, gap) {
+                    (ViewPlacement::Base { at: slot, .. } | ViewPlacement::Detail { at: slot, .. }, Some(a), None) => {
+                        *slot = a
+                    }
+                    (ViewPlacement::Projected { gap: slot, .. }, None, Some(g)) => *slot = Some(g),
+                    (_, None, None) => {}
+                    (ViewPlacement::Base { .. } | ViewPlacement::Detail { .. }, _, Some(_)) => {
+                        return Err(CommandError::args("gap applies to projected views; move a base view with at"));
+                    }
+                    (ViewPlacement::Projected { .. }, Some(_), _) => {
+                        return Err(CommandError::args(
+                            "a projected view follows its parent; change gap, or move the parent",
+                        ));
+                    }
                 }
-                (ViewPlacement::Projected { gap: slot, .. }, None, Some(g)) => *slot = Some(g),
-                (_, None, None) => {}
-                (ViewPlacement::Base { .. } | ViewPlacement::Detail { .. }, _, Some(_)) => {
-                    return Err(CommandError::args("gap applies to projected views; move a base view with at"));
+                if let Some(sc) = scale {
+                    v.scale = sc;
                 }
-                (ViewPlacement::Projected { .. }, Some(_), _) => {
-                    return Err(CommandError::args(
-                        "a projected view follows its parent; change gap, or move the parent",
-                    ));
+                if let Some(h) = self.hidden {
+                    v.hidden = Some(h);
                 }
-            }
-            if let Some(sc) = scale {
-                v.scale = sc;
-            }
-            if let Some(h) = self.hidden {
-                v.hidden = Some(h);
-            }
-            if let Some(t) = self.tangent {
-                v.tangent = t;
-            }
-            if let Some(c) = self.centers {
-                v.centers = c;
-            }
-            Ok(json!({ "view": v.name }))
-        })
+                if let Some(t) = self.tangent {
+                    v.tangent = t;
+                }
+                if let Some(c) = self.centers {
+                    v.centers = c;
+                }
+                Ok(json!({ "view": v.name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&item)),
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -522,26 +548,36 @@ impl Command for DrawingAddDimension {
             })?,
         };
         let offset = opt_expr("offset", &self.offset)?;
-        edit(s, ctx, "Add dimension", |doc, _| {
-            let d = find(doc, &self.drawing)?;
-            if d.view(&self.view).is_none() {
-                return Err(CommandError::not_found(format!("drawing '{}' has no view '{}'", d.name, self.view)));
-            }
-            let name = item_name(d, self.name, "D")?;
-            d.items.push(DrawingItem::Dim(DimDef {
-                name: name.clone(),
-                view: self.view,
-                kind,
-                a,
-                b,
-                direction,
-                offset,
-                text_at: None,
-                tolerance: self.tolerance.filter(|t| !t.is_empty()),
-                prefix: self.prefix.filter(|t| !t.is_empty()),
-            }));
-            Ok(json!({ "dimension": name }))
-        })
+        let drawing = self.drawing.clone();
+        let created = std::cell::RefCell::new(String::new());
+        edit_checked(
+            s,
+            ctx,
+            "Add dimension",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                if d.view(&self.view).is_none() {
+                    return Err(CommandError::not_found(format!("drawing '{}' has no view '{}'", d.name, self.view)));
+                }
+                let name = item_name(d, self.name, "D")?;
+                *created.borrow_mut() = name.clone();
+                d.items.push(DrawingItem::Dim(DimDef {
+                    name: name.clone(),
+                    view: self.view,
+                    kind,
+                    a,
+                    b,
+                    direction,
+                    offset,
+                    text_at: None,
+                    tolerance: self.tolerance.filter(|t| !t.is_empty()),
+                    prefix: self.prefix.filter(|t| !t.is_empty()),
+                }));
+                Ok(json!({ "dimension": name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&created.borrow())),
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -585,32 +621,40 @@ impl Command for DrawingEditDimension {
                 CommandError::args(format!("unknown direction '{d}'")).hint("use aligned, horizontal or vertical")
             })?),
         };
-        edit(s, ctx, "Edit dimension", |doc, _| {
-            let d = find(doc, &self.drawing)?;
-            let dname = d.name.clone();
-            let dim = d
-                .items
-                .iter_mut()
-                .find_map(|i| match i {
-                    DrawingItem::Dim(x) if x.name == self.dimension => Some(x),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    CommandError::not_found(format!("drawing '{dname}' has no dimension '{}'", self.dimension))
-                })?;
-            if offset.is_some() {
-                dim.offset = offset;
-            }
-            if let Some(t) = text_at {
-                dim.text_at = t;
-            }
-            if let Some(dir) = direction {
-                dim.direction = dir;
-            }
-            set_text(&mut dim.tolerance, self.tolerance);
-            set_text(&mut dim.prefix, self.prefix);
-            Ok(json!({ "dimension": dim.name }))
-        })
+        let (drawing, item) = (self.drawing.clone(), self.dimension.clone());
+        edit_checked(
+            s,
+            ctx,
+            "Edit dimension",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                let dname = d.name.clone();
+                let dim = d
+                    .items
+                    .iter_mut()
+                    .find_map(|i| match i {
+                        DrawingItem::Dim(x) if x.name == self.dimension => Some(x),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        CommandError::not_found(format!("drawing '{dname}' has no dimension '{}'", self.dimension))
+                    })?;
+                if offset.is_some() {
+                    dim.offset = offset;
+                }
+                if let Some(t) = text_at {
+                    dim.text_at = t;
+                }
+                if let Some(dir) = direction {
+                    dim.direction = dir;
+                }
+                set_text(&mut dim.tolerance, self.tolerance);
+                set_text(&mut dim.prefix, self.prefix);
+                Ok(json!({ "dimension": dim.name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&item)),
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -746,6 +790,42 @@ fn scene(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<gusset_drawing::Sc
 ///
 /// # Errors
 /// No such drawing, or the branch does not evaluate.
+/// Refuses an edit the sheet cannot draw (dogfooding F5-5): an error of the item `item` of
+/// drawing `drawing` (a view or dimension), or with `item` `None` a sheet scale that does
+/// not evaluate, that the edit brings in. Errors already there before the edit (a
+/// dimension left dangling by a model change) do not block moving or fixing the item.
+fn sheet_check(
+    s: &mut Session,
+    actor: &Actor,
+    doc: &Document,
+    ev: &gusset_eval::Evaluation,
+    drawing: &str,
+    item: Option<&str>,
+) -> Result<(), CommandError> {
+    let problem = |s: &mut Session, doc: &Document| -> Option<String> {
+        let d = doc.drawings.iter().find(|d| d.name == drawing)?;
+        let kernel = s.kernel().clone();
+        let cx = gusset_drawing::Context { ev, kernel: kernel.as_ref(), units: doc.units, cancel: None };
+        let sc = gusset_drawing::build(d, &cx, &mut s.drawing_cache);
+        match item {
+            Some(item) => sc.views.iter().find(|v| v.name == item).and_then(|v| v.error.clone()).or_else(|| {
+                sc.dims
+                    .iter()
+                    .find(|d| d.name == item)
+                    .and_then(|d| d.error.as_ref())
+                    .map(|e| format!("dimension {item}: {e}"))
+            }),
+            None => sc.issues.iter().find(|i| i.contains("sheet scale")).cloned(),
+        }
+    };
+    let Some(after) = problem(s, doc) else { return Ok(()) };
+    let old = s.document(actor)?;
+    if problem(s, &old).as_deref() == Some(after.as_str()) {
+        return Ok(());
+    }
+    Err(CommandError::args(after).hint("nothing was changed"))
+}
+
 pub fn drawing_scene(s: &mut Session, actor: &Actor, name: &str) -> Result<gusset_drawing::Scene, CommandError> {
     let doc = s.document(actor)?;
     let d = doc

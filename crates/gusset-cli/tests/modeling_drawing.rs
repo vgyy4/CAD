@@ -63,7 +63,7 @@ fn a_dimensioned_sheet_of_a_plate_with_a_hole() {
     let front_edge = "edge(E1/cap(end), E1/side(S1/l5))";
     let drawing = format!(
         "drawing D (size: A3, projection: first, scale: 2, title: \"Plate\") {{
-  view Front (bodies: [E1], from: front, at: [150, 200])
+  view Front (bodies: [E1], from: front, at: [200, 200])
   view Top (of: Front, side: top)
   view Right (of: Front, side: right)
   view Iso (from: iso, at: [330, 210], scale: 1)
@@ -80,7 +80,12 @@ fn a_dimensioned_sheet_of_a_plate_with_a_hole() {
     let t0 = std::time::Instant::now();
     let s = gusset_drawing::build(&doc.drawings[0], &cx, &mut cache);
     let first = t0.elapsed();
-    assert!(s.issues.is_empty(), "{:?}", s.issues);
+    assert!(
+        s.issues.is_empty(),
+        "{:?} {:?}",
+        s.issues,
+        s.views.iter().map(|v| (&v.name, v.min, v.max)).collect::<Vec<_>>()
+    );
     let view = |n: &str| s.views.iter().find(|v| v.name == n).unwrap();
     let size = |n: &str| {
         let v = view(n);
@@ -178,7 +183,7 @@ fn section_views_cut_the_part_and_hatch_the_cut() {
     // A detail of the section keeps its hatching (review D8): a circle around the whole
     // cut, at 1:1, doubles the hatched area.
     let two = build(
-        "  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n  view DB (detail_of: B, center: [0, 0], radius: 80, at: [330, 80], scale: 1)\n",
+        "  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n  view DB (detail_of: B, center: [0, 0], radius: 80, at: [320, 190], scale: 1)\n",
     );
     assert!(two.issues.is_empty(), "{:?}", two.issues);
     assert!((hatched(&two) - 2.0 * a).abs() < 0.06 * a, "hatched {} of {}", hatched(&two), 2.0 * a);

@@ -144,11 +144,11 @@ fn views_and_items_are_edited_and_deleted_in_order() {
     assert_eq!(q["sheet_mm"], json!([210.0, 297.0]), "{q}");
     run(&mut s, "drawing.delete", json!({"drawing": "D"}));
     assert_eq!(run(&mut s, "query.drawing", json!({}))["drawings"], json!([]));
-    // A view of a body that does not exist is refused by validation.
+    // A view of a body that does not exist is refused (by the sheet check, or by validation).
     run(&mut s, "drawing.create", json!({"name": "E"}));
     let e =
         err(&mut s, "drawing.add_view", json!({"drawing": "E", "from": "top", "at": ["0", "0"], "bodies": ["Nope"]}));
-    assert!(e.message.contains("not a body") || e.to_string().contains("not a body"), "{e:?}");
+    assert!(e.message.contains("not a body") || e.message.contains("no body"), "{e:?}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
 
@@ -206,4 +206,40 @@ fn renaming_or_deleting_a_measured_feature_keeps_the_drawing() {
     assert!(text.contains("bodies: [Base]") && text.contains("edge(Base/cap(end), Base/side(Prof/l5))"), "{text}");
     let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
     assert_eq!(q["dimensions"][0]["value"], 40.0, "{q}");
+}
+
+#[test]
+fn drawing_items_the_sheet_cannot_draw_are_refused() {
+    // Dogfooding F5-5: these were committed with rebuild_ok and failed only on the sheet.
+    let mut s = session();
+    plate(&mut s);
+    let d = |s: &mut Session, args: Value| err(s, "drawing.create", args);
+    for bad in ["abc", "-1", "0"] {
+        assert_eq!(d(&mut s, json!({"name": "X", "scale": bad})).code, "invalid_args", "{bad}");
+    }
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    let nodes = s.history().nodes().count();
+    let view = |s: &mut Session, extra: Value| {
+        let mut a = json!({"drawing": "D", "name": "F", "bodies": ["Extrude1"], "from": "front", "at": ["100", "100"]});
+        if let (Value::Object(m), Value::Object(e)) = (&mut a, extra) {
+            m.extend(e);
+        }
+        execute(s, &CmdCtx::user(1), "drawing.add_view", a)
+    };
+    assert_eq!(view(&mut s, json!({"scale": "1e9"})).unwrap_err().code, "invalid_args");
+    assert_eq!(s.history().nodes().count(), nodes, "nothing was committed");
+    view(&mut s, json!({})).unwrap();
+    let e = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))";
+    let dim = |s: &mut Session, kind: &str| {
+        execute(
+            s,
+            &CmdCtx::user(1),
+            "drawing.add_dimension",
+            json!({"drawing": "D", "view": "F", "kind": kind, "a": e}),
+        )
+    };
+    let r = dim(&mut s, "diameter").unwrap_err();
+    assert!(r.code == "invalid_args" && r.message.contains("circular"), "{r:?}");
+    dim(&mut s, "length").unwrap();
+    run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "offset": "15"}));
 }

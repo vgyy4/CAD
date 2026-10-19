@@ -130,12 +130,27 @@ pub(crate) fn edit_post(
     f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
     post: impl FnOnce(&Session, &crate::session::CommitOutcome, &[BodyChange]) -> Value,
 ) -> Result<Value, CommandError> {
+    edit_checked(s, ctx, label, f, |_, _, _| Ok(()), post)
+}
+
+/// Like [`edit_post`], with a `check` of the edited document against the current
+/// evaluation before anything is committed (drawing items, which do not change the
+/// model: dogfooding F5-5).
+pub(crate) fn edit_checked(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    label: &str,
+    f: impl FnOnce(&mut Document, Option<usize>) -> Result<Value, CommandError>,
+    check: impl FnOnce(&mut Session, &Document, &gusset_eval::Evaluation) -> Result<(), CommandError>,
+    post: impl FnOnce(&Session, &crate::session::CommitOutcome, &[BodyChange]) -> Value,
+) -> Result<Value, CommandError> {
     let branch = s.branch_for(ctx)?;
     let mut doc = s.history().head_document(branch).map_err(CommandError::history)?;
     let rollback = s.history().branch(branch).map_err(CommandError::history)?.rollback;
     let before = doc.features.len();
     let before_eval = s.evaluate_branch(branch)?;
     let extra = f(&mut doc, rollback)?;
+    check(s, &doc, &before_eval)?;
     // Inserting while rolled back keeps the marker just after the new feature; the new
     // feature is evaluated as active, and one undo reverts both (reviews N1, M9).
     let moved = match rollback {

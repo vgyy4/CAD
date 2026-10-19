@@ -381,3 +381,43 @@ fn long_view_chains_are_refused_quickly() {
     assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
     assert!(r.is_err_and(|e| e.to_string().contains("more than 32 views")));
 }
+
+#[test]
+fn layout_problems_are_listed() {
+    // Dogfooding F5-4: off the frame, over the title block, over each other, notes too.
+    let s = scene(
+        "drawing D (size: A3, projection: first) {
+  view A (bodies: [Plate], from: front, at: [5, 160])
+  view B (bodies: [Plate], from: front, at: [200, 160])
+  view C (bodies: [Plate], from: top, at: [205, 162])
+  view T (bodies: [Plate], from: front, at: [380, 25])
+  note N (at: [900, 100], text: \"far away\")
+  note M1 (at: [60, 250], text: \"one\")
+  note M2 (at: [61, 250.5], text: \"two\")
+}
+",
+    );
+    let has = |t: &str| s.issues.iter().any(|i| i.contains(t));
+    assert!(has("view A lies outside the frame"), "{:?}", s.issues);
+    assert!(has("views B and C overlap"), "{:?}", s.issues);
+    assert!(has("view T covers the title block"), "{:?}", s.issues);
+    assert!(has("note N lies outside the frame"), "{:?}", s.issues);
+    assert!(has("the texts of M1 and M2 overlap"), "{:?}", s.issues);
+}
+
+#[test]
+fn a_second_view_on_the_same_side_goes_further_out() {
+    // Dogfooding F5-4: it took exactly the first one's box.
+    let s = scene(
+        "drawing D (size: A3, projection: first) {
+  view Front (bodies: [Plate], from: front, at: [130, 160])
+  view T1 (of: Front, side: top)
+  view T2 (of: Front, side: top)
+}
+",
+    );
+    let (t1, t2) = (view(&s, "T1"), view(&s, "T2"));
+    assert!(t2.max[1] <= t1.min[1] - 19.0, "{t1:?} {t2:?}");
+    assert!((t2.origin[0] - t1.origin[0]).abs() < 1e-9, "aligned with its parent");
+    assert!(!s.issues.iter().any(|i| i.contains("overlap")), "{:?}", s.issues);
+}
