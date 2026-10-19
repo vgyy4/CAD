@@ -34,7 +34,7 @@ pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurat
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use drawing::{
     DrawingAddDimension, DrawingAddNote, DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit,
-    DrawingEditView, DrawingExport, QueryDrawing,
+    DrawingEditDimension, DrawingEditView, DrawingExport, QueryDrawing,
 };
 pub use generate::GenerateGear;
 pub use hole::Hole;

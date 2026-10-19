@@ -627,7 +627,8 @@ follow every model change.
 drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: first | third,
                 [scale: <number>], [title: "..."], [number: "..."], [material: "..."], [author: "..."]) {
   view <Name> ([bodies: [<body>, ...]], from: front | back | top | bottom | left | right | iso | iso_back,
-               at: [<x>, <y>], [scale: <number>], [hidden: true | false], [tangent: true])
+               at: [<x>, <y>], [scale: <number>], [hidden: true | false], [tangent: true],
+               [centers: false])
   view <Name> (of: <view>, side: top | bottom | left | right, [gap: <length>], [scale: ...], ...)
   dim <Name> (view: <view>, kind: length | distance | diameter | radius | angle, a: <edge>, [b: <edge>],
               [direction: aligned | horizontal | vertical], [offset: <length>], [text_at: [<x>, <y>]],
@@ -643,7 +644,9 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   (default 20 mm). The projection picks the side of the sheet: in `first` angle (ISO) the
   view of the top goes below the parent, in `third` angle (ASME) above.
 - Hidden lines are shown dashed (`hidden: false` turns them off; iso views default to off).
-  `tangent: true` also draws smooth edges.
+  `tangent: true` also draws smooth edges. Centre marks on holes and round bosses seen
+  end-on and centrelines along cylinders seen from the side are drawn unless
+  `centers: false`.
 - Dimensions are measured from the model each time and never stored. `length` takes one
   straight edge, `diameter` and `radius` a circular edge, `distance` and `angle` two edges
   (`a`, `b`). A dimension whose edge no longer exists is reported as dangling by

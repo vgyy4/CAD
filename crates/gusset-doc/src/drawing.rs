@@ -171,6 +171,8 @@ pub struct ViewDef {
     pub hidden: Option<bool>,
     /// Smooth (tangent) edges.
     pub tangent: bool,
+    /// Centre marks on circles and centrelines on cylinders (default on).
+    pub centers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -405,6 +407,9 @@ fn print_item(item: &DrawingItem) -> String {
             if let Some(h) = v.hidden {
                 args.push(format!("hidden: {h}"));
             }
+            if !v.centers {
+                args.push("centers: false".into());
+            }
             if v.tangent {
                 args.push("tangent: true".into());
             }
@@ -524,7 +529,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
     let name = c.ident()?.to_string();
     let (mut bodies, mut from, mut at) = (None, None, None);
     let (mut of, mut side, mut gap) = (None, None, None);
-    let (mut scale, mut hidden, mut tangent) = (None, None, false);
+    let (mut scale, mut hidden, mut tangent, mut centers) = (None, None, false, true);
     parse_args(c, |key, c| {
         match key {
             "bodies" => bodies = Some(parse_ident_list(c, "bodies")?),
@@ -543,7 +548,15 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
             "scale" => scale = Some(c.expr()?),
             "hidden" => hidden = Some(parse_bool(c)?),
             "tangent" => tangent = parse_bool(c)?,
-            key => return Err(unknown_arg(c, KW, key, "bodies, from, at, of, side, gap, scale, hidden, tangent")),
+            "centers" => centers = parse_bool(c)?,
+            key => {
+                return Err(unknown_arg(
+                    c,
+                    KW,
+                    key,
+                    "bodies, from, at, of, side, gap, scale, hidden, tangent, centers",
+                ));
+            }
         }
         Ok(())
     })?;
@@ -571,7 +584,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
         }
         (None, None) => return Err(missing(c, KW, "from (or of)")),
     };
-    Ok(ViewDef { name, placement, scale, hidden, tangent })
+    Ok(ViewDef { name, placement, scale, hidden, tangent, centers })
 }
 
 fn parse_dim(c: &mut Cursor<'_>) -> Result<DimDef, ParseError> {

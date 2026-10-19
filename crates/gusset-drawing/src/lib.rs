@@ -4,6 +4,7 @@
 //! Views are projected with [`Kernel::hidden_lines`] and cached per (shapes, view), so
 //! moving a note or a dimension does not project the model again.
 
+mod centers;
 pub mod dims;
 pub mod dxf;
 pub mod scene;
@@ -438,6 +439,9 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 Some(Ok((p, pv))) => {
                     let iso = matches!(&v.placement, ViewPlacement::Base { from, .. } if from.is_iso());
                     draw_view(&mut scene, v, p, pv, iso);
+                    if v.centers {
+                        centers::draw(&mut scene, &p.bodies, pv);
+                    }
                     scene.views.push(pv.clone());
                 }
                 Some(Err(e)) => {

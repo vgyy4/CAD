@@ -165,3 +165,71 @@ fn dimensions_are_measured_from_the_model() {
     let s = scene(&sheet.replace("S/l5)))\n  dim D2", "S/l9)))\n  dim D2"));
     assert!(s.dims.first().is_some_and(|d| d.error.is_some()), "{:?}", s.dims);
 }
+
+#[test]
+fn centre_marks_and_centrelines() {
+    use gusset_kernel::{Axis3, Circle3, CurveKind, EdgeInfo, FaceInfo, SurfaceKind, Topology};
+    // A cylinder of radius 5 along Z from 0 to 10, its end circles, and a quarter-turn
+    // fillet arc that gets no mark.
+    let doc = Document::from_text(PLATE).unwrap();
+    let k = Arc::new(MockKernel);
+    let ev = Evaluator::new(k.clone()).evaluate(&doc, None, &());
+    let plate = ev.bodies.first().unwrap();
+    let circle = |z: f64, r: f64, turn: f64| EdgeInfo {
+        kind: CurveKind::Circle,
+        length: turn * std::f64::consts::TAU * r,
+        midpoint: [r, 0.0, z],
+        faces: vec![0],
+        vertices: vec![],
+        circle: Some(Circle3 { center: [0.0, 0.0, z], normal: [0.0, 0.0, 1.0], radius: r }),
+    };
+    let face = |kind, axis| FaceInfo { kind, area: 1.0, centroid: [0.0; 3], normal: [1.0, 0.0, 0.0], axis };
+    let topology = Topology {
+        faces: vec![face(SurfaceKind::Cylinder, Some(Axis3 { origin: [0.0; 3], dir: [0.0, 0.0, 1.0] }))],
+        edges: vec![circle(0.0, 5.0, 1.0), circle(10.0, 5.0, 1.0), circle(10.0, 2.0, 0.25)],
+        vertices: vec![],
+        solids: 1,
+        shells: 1,
+    };
+    let body = Arc::new(gusset_eval::Body {
+        name: "Pin".into(),
+        feature: "Pin".into(),
+        shape: plate.shape.clone(),
+        names: Default::default(),
+        topology,
+        holes: vec![],
+    });
+    let view = |toward: [f64; 3], x: [f64; 3], y: [f64; 3]| PlacedView {
+        name: "V".into(),
+        min: [0.0; 2],
+        max: [0.0; 2],
+        scale: 2.0,
+        origin: [100.0, 100.0],
+        toward,
+        x,
+        y,
+        error: None,
+    };
+    let lines = |s: &Scene| -> Vec<([f64; 2], [f64; 2])> {
+        s.items
+            .iter()
+            .filter(|i| i.style == Style::Center)
+            .filter_map(|i| match i.prim {
+                Prim::Line { a, b } => Some((a, b)),
+                _ => None,
+            })
+            .collect()
+    };
+    // Seen from the top: one cross for both end circles, 2 x 5 + 2.5 mm each side.
+    let mut s = Scene::default();
+    crate::centers::draw(&mut s, std::slice::from_ref(&body), &view([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+    let l = lines(&s);
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert!(close(l[0].0, [87.5, 100.0]) && close(l[0].1, [112.5, 100.0]), "{l:?}");
+    // From the front: a centreline along the axis, 2.5 mm past each end.
+    let mut s = Scene::default();
+    crate::centers::draw(&mut s, &[body], &view([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
+    let l = lines(&s);
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert!(close(l[0].0, [100.0, 97.5]) && close(l[0].1, [100.0, 122.5]), "{l:?}");
+}

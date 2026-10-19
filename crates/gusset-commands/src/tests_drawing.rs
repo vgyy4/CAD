@@ -90,6 +90,16 @@ fn views_and_items_are_edited_and_deleted_in_order() {
                      "a": "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l1))"});
     let r = run(&mut s, "drawing.add_dimension", dim.clone());
     assert_eq!(r["dimension"], "D1", "{r}");
+    run(
+        &mut s,
+        "drawing.edit_dimension",
+        json!({"drawing": "D", "dimension": "D1", "tolerance": "±0.05", "text_at": ["100", "170"]}),
+    );
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("text_at: [100, 170], tolerance: \"±0.05\")"), "{text}");
+    run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "tolerance": "", "text_at": []}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(!text.contains("text_at") && !text.contains("tolerance"), "{text}");
     let mut two = dim.clone();
     two["kind"] = json!("distance");
     assert_eq!(err(&mut s, "drawing.add_dimension", two).code, "invalid_args");

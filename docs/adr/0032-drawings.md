@@ -77,7 +77,8 @@ worker (ADR 0022) and its results are cached.
    same way, for laser cutting.
 5. **Commands** (GUI = CLI = MCP, ADR 0012): `drawing.create`, `drawing.add_view`,
    `drawing.add_dimension`, `drawing.add_note`, `drawing.edit` (sheet properties),
-   `drawing.edit_view`, `drawing.edit_dimension`, `drawing.delete_item`, `drawing.export`
+   `drawing.edit_view`, `drawing.edit_dimension`, `drawing.delete` (an item, or the whole
+   drawing), `drawing.export`
    (format, profile, path) and `query.drawing` (views with their sheet boxes, dimensions
    with values or dangling references, notes).
 6. **Phases**:

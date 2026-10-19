@@ -14,6 +14,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<DrawingAddView>(),
         spec::<DrawingEditView>(),
         spec::<DrawingAddDimension>(),
+        spec::<DrawingEditDimension>(),
         spec::<DrawingAddNote>(),
         spec::<DrawingDeleteItem>(),
         spec::<DrawingExport>(),
@@ -152,6 +153,7 @@ impl Command for DrawingCreate {
                         scale: None,
                         hidden,
                         tangent: false,
+                        centers: true,
                     }))
                 };
                 let projected = |n: &str, side| {
@@ -161,6 +163,7 @@ impl Command for DrawingCreate {
                         scale: None,
                         hidden: None,
                         tangent: false,
+                        centers: true,
                     })
                 };
                 // Front in the upper middle, so first and third angle both have room.
@@ -267,6 +270,9 @@ pub struct DrawingAddView {
     pub hidden: Option<bool>,
     #[serde(default)]
     pub tangent: bool,
+    /// Centre marks and centrelines (default true).
+    #[serde(default)]
+    pub centers: Option<bool>,
 }
 
 impl Command for DrawingAddView {
@@ -313,6 +319,7 @@ impl Command for DrawingAddView {
                     scale,
                     hidden: self.hidden,
                     tangent: self.tangent,
+                    centers: self.centers.unwrap_or(true),
                 }));
                 *created.borrow_mut() = name.clone();
                 Ok(json!({ "view": name }))
@@ -351,13 +358,15 @@ pub struct DrawingEditView {
     pub hidden: Option<bool>,
     #[serde(default)]
     pub tangent: Option<bool>,
+    #[serde(default)]
+    pub centers: Option<bool>,
 }
 
 impl Command for DrawingEditView {
     const ID: &'static str = "drawing.edit_view";
     const TITLE: &'static str = "Edit view";
     const DESCRIPTION: &'static str =
-        "Move a view (at for base views, gap for projected ones) or change its scale, hidden or tangent lines.";
+        "Move a view (at; gap if projected) or change its scale, hidden/tangent lines, centre marks.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -400,6 +409,9 @@ impl Command for DrawingEditView {
             }
             if let Some(t) = self.tangent {
                 v.tangent = t;
+            }
+            if let Some(c) = self.centers {
+                v.centers = c;
             }
             Ok(json!({ "view": v.name }))
         })
@@ -485,6 +497,75 @@ impl Command for DrawingAddDimension {
                 prefix: self.prefix.filter(|t| !t.is_empty()),
             }));
             Ok(json!({ "dimension": name }))
+        })
+    }
+}
+
+/// Moves a dimension or changes its text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingEditDimension {
+    pub drawing: String,
+    pub dimension: String,
+    #[serde(default)]
+    pub offset: Option<String>,
+    /// Sheet mm; [] = automatic.
+    #[serde(default)]
+    pub text_at: Option<Vec<String>>,
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// "" clears.
+    #[serde(default)]
+    pub tolerance: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+impl Command for DrawingEditDimension {
+    const ID: &'static str = "drawing.edit_dimension";
+    const TITLE: &'static str = "Edit dimension";
+    const DESCRIPTION: &'static str = "Move a dimension or change its direction, tolerance or prefix.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let offset = opt_expr("offset", &self.offset)?;
+        let text_at = match self.text_at.as_deref() {
+            None => None,
+            Some([]) => Some(None),
+            Some([x, y]) => Some(Some([parse_expr("text_at", x)?, parse_expr("text_at", y)?])),
+            Some(_) => return Err(CommandError::args("text_at takes [x, y], or [] for the automatic place")),
+        };
+        let direction = match self.direction.as_deref() {
+            None => None,
+            Some(d) => Some(DimDirection::from_keyword(d).ok_or_else(|| {
+                CommandError::args(format!("unknown direction '{d}'")).hint("use aligned, horizontal or vertical")
+            })?),
+        };
+        edit(s, ctx, "Edit dimension", |doc, _| {
+            let d = find(doc, &self.drawing)?;
+            let dname = d.name.clone();
+            let dim = d
+                .items
+                .iter_mut()
+                .find_map(|i| match i {
+                    DrawingItem::Dim(x) if x.name == self.dimension => Some(x),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    CommandError::not_found(format!("drawing '{dname}' has no dimension '{}'", self.dimension))
+                })?;
+            if offset.is_some() {
+                dim.offset = offset;
+            }
+            if let Some(t) = text_at {
+                dim.text_at = t;
+            }
+            if let Some(dir) = direction {
+                dim.direction = dir;
+            }
+            set_text(&mut dim.tolerance, self.tolerance);
+            set_text(&mut dim.prefix, self.prefix);
+            Ok(json!({ "dimension": dim.name }))
         })
     }
 }
