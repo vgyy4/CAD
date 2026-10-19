@@ -304,3 +304,80 @@ fn camera_blend_ends_at_the_target_view() {
     let end = crate::viewport::blend(&a, &b, 1.0);
     assert!(same(end.forward, b.forward) && same(end.up, b.up));
 }
+
+fn drag(h: &mut Harness<'static, App>, from: egui::Pos2, by: egui::Vec2) {
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    for i in 1..=5 {
+        h.hover_at(from + by * (i as f32 / 5.0));
+        h.run();
+    }
+    let to = from + by;
+    h.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+}
+
+#[test]
+fn drawing_tab_shows_the_sheet_and_dragging_moves_a_view() {
+    let mut h = harness(with_body());
+    h.run();
+    // No drawing yet: the tab starts one.
+    h.get_by_label("DRAWING").click();
+    h.run();
+    assert_eq!(form_command(&h), Some("drawing.create"));
+    h.state_mut().form = None;
+    h.state_mut().run("drawing.create", json!({"standard_views": true})).unwrap();
+    h.state_mut().wait_idle();
+    // Now the tab opens it, with the drawing tools in the ribbon.
+    h.get_by_label("DRAWING").click();
+    h.run();
+    assert_eq!(h.state().active_drawing(), Some("Drawing1"));
+    for _ in 0..4 {
+        h.state_mut().wait_idle();
+        h.run();
+    }
+    let _ = h.get_by_label(title("drawing.add_view"));
+    let views = h.state().sheet.as_ref().map(|(_, s)| s.views.clone()).expect("the sheet was built");
+    let front = views.iter().find(|v| v.name == "Front").unwrap().clone();
+    let top_before = views.iter().find(|v| v.name == "Top").unwrap().min[0];
+    let center = [(front.min[0] + front.max[0]) / 2.0, (front.min[1] + front.max[1]) / 2.0];
+    let at = h.state().sheet_state.screen(center).unwrap();
+    let zoom =
+        h.state().sheet_state.screen([1.0, 0.0]).unwrap().x - h.state().sheet_state.screen([0.0, 0.0]).unwrap().x;
+    drag(&mut h, at, egui::Vec2::new(60.0, 0.0));
+    for _ in 0..4 {
+        h.state_mut().wait_idle();
+        h.run();
+    }
+    let text = h.state().snapshot.doc.to_text();
+    let moved = center[0] + f64::from(60.0 / zoom);
+    let want = format!("view Front (from: front, at: [{}, ", (moved * 10.0).round() / 10.0);
+    assert!(text.contains(&want), "{want} in\n{text}");
+    // The projected view followed its parent.
+    let views = &h.state().sheet.as_ref().unwrap().1.views;
+    let top_after = views.iter().find(|v| v.name == "Top").unwrap().min[0];
+    assert!((top_after - top_before - f64::from(60.0 / zoom)).abs() < 0.2, "{top_before} -> {top_after}");
+    // Back to the model.
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert_eq!(h.state().active_drawing(), None);
+}
+
+#[test]
+fn every_drawing_ribbon_command_is_registered() {
+    for id in crate::ribbon::drawing_command_ids() {
+        assert!(gusset_commands::find(id).is_some(), "{id}");
+    }
+    assert_eq!(crate::ribbon::drawing_command_ids().len(), 10);
+}

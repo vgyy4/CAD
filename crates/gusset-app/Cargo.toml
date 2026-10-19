@@ -23,6 +23,7 @@ gusset-occt-sys.workspace = true
 gusset-history.workspace = true
 gusset-eval.workspace = true
 gusset-commands.workspace = true
+gusset-drawing.workspace = true
 gusset-project.workspace = true
 gusset-store.workspace = true
 gusset-hw.workspace = true

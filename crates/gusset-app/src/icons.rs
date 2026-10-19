@@ -239,6 +239,11 @@ pub enum Tool {
     StepBack,
     StepForward,
     ToEnd,
+    /// A 2D drawing sheet (ADR 0032) and its tools.
+    Drawing,
+    DrawView,
+    Dimension,
+    Note,
 }
 
 impl Tool {
@@ -302,6 +307,10 @@ impl Tool {
         Tool::StepBack,
         Tool::StepForward,
         Tool::ToEnd,
+        Tool::Drawing,
+        Tool::DrawView,
+        Tool::Dimension,
+        Tool::Note,
     ];
 }
 
@@ -347,6 +356,11 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "sketch.move_point" => Tool::MovePoint,
         "sketch.delete_items" => Tool::DeleteItems,
         "param.set" | "param.rename" | "param.delete" => Tool::Params,
+        "drawing.create" | "drawing.edit" | "drawing.delete" | "query.drawing" => Tool::Drawing,
+        "drawing.add_view" | "drawing.edit_view" => Tool::DrawView,
+        "drawing.add_dimension" | "drawing.edit_dimension" => Tool::Dimension,
+        "drawing.add_note" => Tool::Note,
+        "drawing.export" => Tool::Export,
         _ => return None,
     })
 }
@@ -814,6 +828,33 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.line(&[(20.0, 13.0), (14.0, 20.0)], a);
         }
         Tool::Body => pen.iso_box(4.0, 8.0, 9.0, 8.0, 8.0),
+        Tool::Drawing => {
+            // A sheet with two views and a title block.
+            pen.poly(&[(3.0, 4.0), (21.0, 4.0), (21.0, 20.0), (3.0, 20.0)], pen.fill, ink);
+            pen.closed(&[(6.0, 7.0), (12.0, 7.0), (12.0, 11.0), (6.0, 11.0)], a);
+            pen.closed(&[(6.0, 13.0), (12.0, 13.0), (12.0, 17.0), (6.0, 17.0)], a);
+            pen.line(&[(14.0, 16.0), (21.0, 16.0)], ink);
+            pen.line(&[(14.0, 16.0), (14.0, 20.0)], ink);
+        }
+        Tool::DrawView => {
+            // A front view projected to a top view below it.
+            pen.closed(&[(5.0, 4.0), (19.0, 4.0), (19.0, 10.0), (5.0, 10.0)], ink);
+            pen.closed(&[(5.0, 14.0), (19.0, 14.0), (19.0, 20.0), (5.0, 20.0)], a);
+            pen.line(&[(12.0, 10.5), (12.0, 13.5)], a);
+        }
+        Tool::Dimension => {
+            pen.line(&[(4.0, 6.0), (4.0, 20.0)], ink);
+            pen.line(&[(20.0, 6.0), (20.0, 20.0)], ink);
+            pen.line(&[(5.0, 13.0), (19.0, 13.0)], a);
+            pen.arrow((12.0, 13.0), (4.5, 13.0), a);
+            pen.arrow((12.0, 13.0), (19.5, 13.0), a);
+        }
+        Tool::Note => {
+            pen.poly(&[(4.0, 4.0), (20.0, 4.0), (20.0, 20.0), (4.0, 20.0)], pen.fill, ink);
+            for y in [8.0, 12.0, 16.0] {
+                pen.line(&[(7.0, y), (17.0, y)], a);
+            }
+        }
         Tool::Origin => {
             pen.arrow((12.0, 12.0), (21.0, 12.0), a);
             pen.arrow((12.0, 12.0), (12.0, 3.0), ink);

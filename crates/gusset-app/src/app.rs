@@ -145,6 +145,9 @@ pub enum AfterSave {
 }
 
 /// Results of host jobs, delivered to the UI thread.
+/// A drawing's scene is current for this model state and drawing.
+pub(crate) type SheetKey = ((gusset_history::NodeId, Option<usize>), String);
+
 pub(crate) enum Done {
     /// A never-saved project was recovered from its recovery copy.
     RecoveredUntitled(Result<Box<(Project, Session)>, String>),
@@ -154,6 +157,8 @@ pub(crate) enum Done {
         result: Result<Value, CommandError>,
     },
     Scene(Result<Result<SceneData, CommandError>, CommandError>),
+    /// A drawing's scene (ADR 0032).
+    Sheet(SheetKey, Result<gusset_drawing::Scene, CommandError>),
     Saved {
         result: Result<(), String>,
         then: AfterSave,
@@ -268,6 +273,12 @@ pub struct App {
     active_sketch: Option<String>,
     /// The active sketch was seen in the document (a new one is not in the snapshot yet).
     active_sketch_seen: bool,
+    /// The drawing shown in the Drawing tab (ADR 0032), its scene for the current model,
+    /// the scene being built, and the sheet's pan and zoom.
+    active_drawing: Option<String>,
+    pub(crate) sheet: Option<(SheetKey, gusset_drawing::Scene)>,
+    sheet_requested: Option<SheetKey>,
+    pub(crate) sheet_state: crate::sheet::State,
     /// Sketch visibility the user chose in the browser (overrides the default: sketches
     /// used as a profile are hidden, others shown).
     pub sketch_visibility: std::collections::BTreeMap<String, bool>,
@@ -343,6 +354,10 @@ impl App {
             show_iterations: false,
             active_sketch: None,
             active_sketch_seen: false,
+            active_drawing: None,
+            sheet: None,
+            sheet_requested: None,
+            sheet_state: crate::sheet::State::default(),
             sketch_visibility: std::collections::BTreeMap::new(),
             browser: browser::State::default(),
             cmdline: cmdline::State::default(),
@@ -523,6 +538,21 @@ impl App {
             }
         }
         self.request_scene();
+        self.request_sheet();
+    }
+
+    /// Builds the open drawing's scene on the model thread when the model changed.
+    fn request_sheet(&mut self) {
+        let (Some(name), Some(key)) = (self.active_drawing.clone(), self.snapshot.scene_key()) else { return };
+        let key: SheetKey = (key, name.clone());
+        if self.sheet.as_ref().is_some_and(|(k, _)| *k == key) || self.sheet_requested.as_ref() == Some(&key) {
+            return;
+        }
+        self.sheet_requested = Some(key.clone());
+        self.submit(
+            move |s, _| gusset_commands::commands::drawing_scene(s, &gusset_history::Actor::User, &name),
+            move |r| Done::Sheet(key, r.and_then(|x| x)),
+        );
     }
 
     /// Evaluates and tessellates the user's branch on the model thread when it changed.
@@ -560,6 +590,20 @@ impl App {
             }
             Done::Scene(Ok(Err(e)) | Err(e)) => {
                 self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
+            }
+            Done::Sheet(key, Ok(scene)) => self.sheet = Some((key, scene)),
+            Done::Sheet(_, Err(e)) => {
+                self.sheet_requested = None;
+                if self
+                    .active_drawing
+                    .as_ref()
+                    .is_some_and(|d| !self.snapshot.doc.drawings.iter().any(|x| &x.name == d))
+                {
+                    // Deleted or undone: back to the model.
+                    self.active_drawing = None;
+                } else {
+                    self.notice = Some(Notice { text: e.message, hint: e.hint, error: true });
+                }
             }
             Done::Saved { result, then, mark } => {
                 self.writers = self.writers.saturating_sub(1);
@@ -705,7 +749,12 @@ impl App {
                         let title = form.title;
                         self.form = None;
                         self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
-                        if id == "sketch.create"
+                        if id == "drawing.create"
+                            && let Some(name) = v.get("drawing").and_then(Value::as_str)
+                        {
+                            // A new drawing is shown right away.
+                            self.open_drawing(name);
+                        } else if id == "sketch.create"
                             && let Some(name) = v.get("sketch").and_then(Value::as_str)
                         {
                             // A new sketch is edited right away.
@@ -794,6 +843,10 @@ impl App {
             for h in self.selection.iter().take(2) {
                 pick_joint_frame(form, h);
             }
+        }
+        // The open drawing is the one drawing commands work on.
+        if let Some(d) = &self.active_drawing {
+            form.set("drawing", d);
         }
         // The sketch being edited wins over "the latest sketch".
         if let Some(s) = &self.active_sketch {
@@ -1199,7 +1252,13 @@ impl App {
         if self.code.is_some() {
             egui::Panel::right("code").default_size(360.0).resizable(true).show(ui, |ui| self.code_view(ui));
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            if self.active_drawing.is_some() {
+                self.sheet_view(ui);
+            } else {
+                self.viewport(ui);
+            }
+        });
 
         self.form_window(&ctx);
         self.palette_window(&ctx);
@@ -1378,7 +1437,10 @@ impl App {
     /// The Design workspace switcher, the SOLID / SKETCH tabs and the command search.
     fn workspace_tabs(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
-        let action = ribbon::tabs(ui, &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref() });
+        let action = ribbon::tabs(
+            ui,
+            &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref(), drawing: self.active_drawing.as_deref() },
+        );
         if let Some(a) = action {
             self.ribbon_action(a);
         }
@@ -1387,7 +1449,10 @@ impl App {
     /// The ribbon of the active tab.
     fn ribbon(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
-        let action = ribbon::show(ui, &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref() });
+        let action = ribbon::show(
+            ui,
+            &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref(), drawing: self.active_drawing.as_deref() },
+        );
         if let Some(a) = action {
             self.ribbon_action(a);
         }
@@ -1398,8 +1463,16 @@ impl App {
         match action {
             Action::Run(id) => self.start_command(id),
             Action::Search => self.palette = Some(String::new()),
-            Action::SolidTab | Action::FinishSketch => self.finish_sketch(),
+            Action::SolidTab | Action::FinishSketch => {
+                self.active_drawing = None;
+                self.finish_sketch();
+            }
+            Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {
+                Some(name) => self.open_drawing(&name),
+                None => self.start_command("drawing.create"),
+            },
             Action::SketchTab => {
+                self.active_drawing = None;
                 let latest = self
                     .snapshot
                     .doc
@@ -1413,6 +1486,50 @@ impl App {
                     None => self.start_command("sketch.create"),
                 }
             }
+        }
+    }
+
+    /// The drawing shown in the Drawing tab, if any.
+    pub fn active_drawing(&self) -> Option<&str> {
+        self.active_drawing.as_deref()
+    }
+
+    /// Shows a drawing in the Drawing tab.
+    pub fn open_drawing(&mut self, name: &str) {
+        self.active_drawing = Some(name.to_string());
+        self.request_sheet();
+    }
+
+    /// The Drawing tab's sheet: the open drawing, panned, zoomed and edited by dragging.
+    fn sheet_view(&mut self, ui: &mut Ui) {
+        let pal = *theme::palette(self.theme);
+        let Some(name) = self.active_drawing.clone() else { return };
+        let base: Vec<String> = self
+            .snapshot
+            .doc
+            .drawings
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| {
+                d.items
+                    .iter()
+                    .filter_map(|i| match i {
+                        gusset_doc::drawing::DrawingItem::View(v)
+                            if matches!(v.placement, gusset_doc::drawing::ViewPlacement::Base { .. }) =>
+                        {
+                            Some(v.name.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The last scene stays up while the next one builds.
+        let scene = self.sheet.as_ref().filter(|(k, _)| k.1 == name).map(|(_, s)| s);
+        let out = crate::sheet::show(ui, &pal, &name, scene, &base, &mut self.sheet_state);
+        if let Some((view, at)) = out.moved {
+            let at = [at[0].to_string(), at[1].to_string()];
+            self.submit_command("drawing.edit_view", json!({"drawing": name, "view": view, "at": at}), Then::Quiet);
         }
     }
 
@@ -1653,6 +1770,10 @@ impl App {
             }
             browser::Action::SwitchBranch(id) => {
                 self.submit_command("branch.switch", json!({ "branch": id.to_string() }), Then::Quiet);
+            }
+            browser::Action::OpenDrawing(name) => {
+                self.finish_sketch();
+                self.open_drawing(&name);
             }
         }
     }

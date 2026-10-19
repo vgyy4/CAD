@@ -97,5 +97,17 @@ fn generate_gallery() {
             h.get_by_label("CREATE").click();
             h.run_steps(3);
         });
+        // The Drawing tab: a sheet with front, top, right and iso views.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.run("drawing.create", json!({"name": "Bracket_dwg", "title": "Bracket", "standard_views": true})).ok();
+        a.wait_idle();
+        a.open_drawing("Bracket_dwg");
+        shoot(&dir, &format!("10-drawing-{t}"), a, |h| {
+            for _ in 0..3 {
+                h.state_mut().wait_idle();
+                h.run_steps(2);
+            }
+        });
     }
 }

@@ -1553,6 +1553,7 @@ dependencies = [
  "egui_kittest",
  "gusset-commands",
  "gusset-doc",
+ "gusset-drawing",
  "gusset-eval",
  "gusset-history",
  "gusset-host",

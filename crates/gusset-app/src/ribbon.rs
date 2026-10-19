@@ -24,6 +24,8 @@ pub enum Action {
     SketchTab,
     /// "Finish sketch".
     FinishSketch,
+    /// The Drawing tab: opens the latest drawing (or starts a new one).
+    DrawingTab,
     /// The command search (Ctrl+K).
     Search,
 }
@@ -118,6 +120,31 @@ const SKETCH: &[Group] = &[
     Group { key: "ribbon.inspect", large: 1, tools: &[d("query.sketch", "Status")] },
 ];
 
+const DRAWING: &[Group] = &[
+    Group {
+        key: "ribbon.create",
+        large: 4,
+        tools: &[
+            d("drawing.add_view", "View"),
+            d("drawing.add_dimension", "Dimension"),
+            d("drawing.add_note", "Note"),
+            d("drawing.create", "New sheet"),
+        ],
+    },
+    Group {
+        key: "ribbon.modify",
+        large: 2,
+        tools: &[
+            d("drawing.edit_view", "Edit view"),
+            d("drawing.edit", "Sheet"),
+            d("drawing.edit_dimension", "Edit dim"),
+            d("drawing.delete", "Delete"),
+        ],
+    },
+    Group { key: "ribbon.inspect", large: 1, tools: &[d("query.drawing", "Status")] },
+    Group { key: "ribbon.export", large: 1, tools: &[d("drawing.export", "Export")] },
+];
+
 /// Width of a large button.
 const BTN_W: f32 = 56.0;
 /// Height of a large button (icon above its label).
@@ -143,12 +170,19 @@ pub fn command_ids(sketch: bool) -> Vec<&'static str> {
     groups.iter().flat_map(|g| present(g)).map(|(_, s)| s.id).collect()
 }
 
+/// The command ids of the Drawing tab.
+pub fn drawing_command_ids() -> Vec<&'static str> {
+    DRAWING.iter().flat_map(|g| present(g)).map(|(_, s)| s.id).collect()
+}
+
 /// What the ribbon needs to know.
 #[derive(Debug)]
 pub struct Ribbon<'a> {
     pub pal: &'a Palette,
     /// The sketch being edited (the Sketch tab is active), if any.
     pub sketch: Option<&'a str>,
+    /// The drawing shown (the Drawing tab is active), if any.
+    pub drawing: Option<&'a str>,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -200,15 +234,18 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::SPACE[4];
         workspace_switcher(ui, pal);
-        let sketching = r.sketch.is_some();
-        for (label, active, act) in
-            [(tr("tab.solid"), !sketching, Action::SolidTab), (tr("tab.sketch"), sketching, Action::SketchTab)]
-        {
+        let sketching = r.sketch.is_some() && r.drawing.is_none();
+        let drawing = r.drawing.is_some();
+        for (label, active, act) in [
+            (tr("tab.solid"), !sketching && !drawing, Action::SolidTab),
+            (tr("tab.sketch"), sketching, Action::SketchTab),
+            (tr("tab.drawing"), drawing, Action::DrawingTab),
+        ] {
             if tab(ui, &label.to_uppercase(), active, pal).clicked() {
                 action = Some(act);
             }
         }
-        if let Some(name) = r.sketch {
+        if let Some(name) = r.drawing.or(r.sketch) {
             ui.weak(name);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -293,7 +330,14 @@ fn search_button(ui: &mut Ui, pal: &Palette) -> egui::Response {
 
 /// The ribbon: groups of large icon tools, each with its dropdown.
 pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
-    let groups = if r.sketch.is_some() { SKETCH } else { SOLID };
+    let sketching = r.sketch.is_some() && r.drawing.is_none();
+    let groups = if r.drawing.is_some() {
+        DRAWING
+    } else if sketching {
+        SKETCH
+    } else {
+        SOLID
+    };
     let pal = r.pal;
     let mut action = None;
     // Fit the large buttons into the width: the widest groups give up buttons first (the
@@ -302,7 +346,7 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
     let mut large: Vec<usize> = groups.iter().zip(&shown).map(|(g, t)| g.large.min(t.len())).collect();
     let width = |large: &[usize]| -> f32 {
         large.iter().map(|&n| (n as f32 * BTN_W).max(DROPDOWN_W) + GROUP_GAP).sum::<f32>()
-            + if r.sketch.is_some() { BTN_W * 2.0 + GROUP_GAP } else { 0.0 }
+            + if sketching { BTN_W * 2.0 + GROUP_GAP } else { 0.0 }
     };
     while width(&large) > ui.available_width() {
         let Some((i, _)) = large.iter().enumerate().filter(|(_, n)| **n > 1).max_by_key(|(i, n)| (**n, *i)) else {
@@ -334,7 +378,7 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
             });
             group_separator(ui, pal);
         }
-        if r.sketch.is_some() && finish_button(ui, pal).clicked() {
+        if sketching && finish_button(ui, pal).clicked() {
             action = Some(Action::FinishSketch);
         }
     });
@@ -486,8 +530,8 @@ mod tests {
 
     #[test]
     fn every_ribbon_tool_is_a_registry_command_with_an_icon() {
-        for sketch in [false, true] {
-            for g in if sketch { SKETCH } else { SOLID } {
+        for groups in [SOLID, SKETCH, DRAWING] {
+            for g in groups {
                 for t in g.tools {
                     assert!(spec(t.id).is_some(), "ribbon tool {} is not in the command registry", t.id);
                     assert!(icons::tool_for_command(t.id).is_some(), "no icon for {}", t.id);

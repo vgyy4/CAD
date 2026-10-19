@@ -1,6 +1,6 @@
 //! The browser tree (DESIGN.md §2): collapsible categories with icons. Document settings
 //! (units), Origin (the base planes and the origin), Bodies, Sketches, Features, Construction
-//! (datum planes), Joints, Parameters and Branches.
+//! (datum planes), Joints, Drawings, Parameters and Branches.
 //!
 //! The widgets only report what the user chose ([`Action`]); the app applies it. Origin,
 //! bodies and datum planes have no visibility in the scene yet, so their rows are read-only
@@ -29,12 +29,14 @@ pub enum Category {
     Construction,
     /// Joints placing bodies (ADR 0026).
     Joints,
+    /// 2D drawing sheets (ADR 0032).
+    Drawings,
     Parameters,
     Branches,
 }
 
 impl Category {
-    pub const ALL: [Category; 9] = [
+    pub const ALL: [Category; 10] = [
         Category::Document,
         Category::Origin,
         Category::Bodies,
@@ -42,6 +44,7 @@ impl Category {
         Category::Features,
         Category::Construction,
         Category::Joints,
+        Category::Drawings,
         Category::Parameters,
         Category::Branches,
     ];
@@ -56,6 +59,7 @@ impl Category {
             Category::Features => "browser.features",
             Category::Construction => "browser.construction",
             Category::Joints => "browser.joints",
+            Category::Drawings => "browser.drawings",
             Category::Parameters => "browser.parameters",
             Category::Branches => "browser.branches",
         })
@@ -70,6 +74,7 @@ impl Category {
             Category::Features => Tool::Extrude,
             Category::Construction => Tool::Plane,
             Category::Joints => Tool::Joint,
+            Category::Drawings => Tool::Drawing,
             Category::Parameters => Tool::Params,
             Category::Branches => Tool::Branch,
         }
@@ -128,6 +133,8 @@ pub enum Action {
     ApplyConfiguration(String),
     /// Click on another branch.
     SwitchBranch(BranchId),
+    /// Double-click on a drawing.
+    OpenDrawing(String),
 }
 
 /// What the browser draws.
@@ -163,6 +170,7 @@ pub fn count(v: &View<'_>, c: Category) -> usize {
         Category::Origin => ORIGIN.len(),
         Category::Bodies => v.eval.map_or(0, |e| e.bodies.len()),
         Category::Parameters => v.doc.params.len(),
+        Category::Drawings => v.doc.drawings.len(),
         Category::Branches => v.branches.len(),
         Category::Sketches | Category::Features | Category::Construction | Category::Joints => {
             features_of(v.doc, c).len()
@@ -192,6 +200,7 @@ pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
             Category::Sketches => sketches(ui, v, &mut out),
             Category::Features | Category::Construction | Category::Joints => features(ui, v, c),
             Category::Parameters => parameters(ui, v, &mut out),
+            Category::Drawings => drawings(ui, v, &mut out),
             Category::Branches => branches(ui, v, &mut out),
         }
         ui.add_space(theme::SPACE[2]);
@@ -391,6 +400,19 @@ fn sketches(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     }
 }
 
+/// Drawings: double-click opens one in the Drawing tab.
+fn drawings(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
+    for d in &v.doc.drawings {
+        let mut r = Row::new(Tool::Drawing, d.name.clone());
+        r.indent = INDENT;
+        r.suffix = format!("{} {}", d.size.keyword().replace('_', " "), d.title.as_deref().unwrap_or(""));
+        r.clickable = true;
+        if row(ui, v.pal, &r).on_hover_text(tr("browser.open_drawing")).double_clicked() {
+            out.push(Action::OpenDrawing(d.name.clone()));
+        }
+    }
+}
+
 /// Features and datum planes: read-only rows with their status and failure tooltip.
 fn features(ui: &mut Ui, v: &View<'_>, c: Category) {
     for f in features_of(v.doc, c) {
@@ -558,6 +580,7 @@ mod tests {
                 "Features",
                 "Construction",
                 "Joints",
+                "Drawings",
                 "Parameters",
                 "Branches"
             ]

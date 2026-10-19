@@ -12,6 +12,7 @@ pub mod i18n;
 pub mod icons;
 pub mod link;
 pub mod ribbon;
+pub mod sheet;
 pub mod theme;
 pub mod timeline;
 pub mod viewport;
