@@ -653,3 +653,64 @@ fn topology_reports_cylinder_axes_and_circles() {
     }
     assert!(t.edges.iter().filter(|e| e.kind == CurveKind::Line).all(|e| e.circle.is_none()));
 }
+
+#[test]
+fn hidden_lines_of_a_plate_with_a_hole() {
+    // ADR 0032: a 40 x 40 x 10 plate with a 5 mm hole at (20, 20).
+    let r = plate_with_hole(20.0, 20.0);
+    let span = |c: &[HlrCurve]| {
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        let mut add = |p: [f64; 2]| {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        };
+        for c in c {
+            match &c.curve {
+                ProjCurve::Line(a, z) => {
+                    add(*a);
+                    add(*z);
+                }
+                ProjCurve::Arc { center, radius, .. } => {
+                    add([center[0] - radius, center[1] - radius]);
+                    add([center[0] + radius, center[1] + radius]);
+                }
+                ProjCurve::Polyline(p) => p.iter().for_each(|q| add(*q)),
+            }
+        }
+        b
+    };
+    for exact in [true, false] {
+        // Top: the square and the hole's circle, seen from +Z.
+        let top = HlrView { toward: [0.0, 0.0, 1.0], x: [1.0, 0.0, 0.0], exact, deflection: 0.01 };
+        let c = k().hidden_lines(&r.shape, &top).unwrap();
+        let vis: Vec<HlrCurve> = c.iter().filter(|c| c.visible).cloned().collect();
+        let b = span(&vis);
+        assert!(b.iter().zip([0.0, 0.0, 40.0, 40.0]).all(|(a, w)| close(*a, w, 1e-6)), "{exact}: {b:?}");
+        if exact {
+            assert!(
+                vis.iter().any(|c| matches!(&c.curve, ProjCurve::Arc { center, radius, .. }
+                    if close(*radius, 5.0, 1e-9) && close(center[0], 20.0, 1e-9) && close(center[1], 20.0, 1e-9))),
+                "{vis:?}"
+            );
+        }
+        // Front (from -Y, Z up): a 40 x 10 outline; the bore shows as two hidden lines.
+        let front = HlrView { toward: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], exact, deflection: 0.01 };
+        let c = k().hidden_lines(&r.shape, &front).unwrap();
+        let vis: Vec<HlrCurve> = c.iter().filter(|c| c.visible).cloned().collect();
+        let b = span(&vis);
+        assert!(b.iter().zip([0.0, 0.0, 40.0, 10.0]).all(|(a, w)| close(*a, w, 1e-3)), "{exact}: {b:?}");
+        let hidden: Vec<f64> = c
+            .iter()
+            .filter(|c| !c.visible)
+            .filter_map(|c| match &c.curve {
+                ProjCurve::Line(a, z) if close(a[0], z[0], 1e-6) => Some(a[0]),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            hidden.iter().any(|x| close(*x, 15.0, 1e-3)) && hidden.iter().any(|x| close(*x, 25.0, 1e-3)),
+            "{exact}: {c:?}"
+        );
+    }
+    let bad = HlrView { toward: [1.0, 0.0, 0.0], x: [2.0, 0.0, 0.0], exact: true, deflection: 0.01 };
+    assert!(k().hidden_lines(&r.shape, &bad).is_err());
+}

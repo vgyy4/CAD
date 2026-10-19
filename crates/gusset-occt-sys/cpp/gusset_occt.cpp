@@ -16,6 +16,12 @@
 #include <vector>
 
 #include <BRepAdaptor_CompCurve.hxx>
+#include <GCPnts_QuasiUniformDeflection.hxx>
+#include <HLRAlgo_Projector.hxx>
+#include <HLRBRep_Algo.hxx>
+#include <HLRBRep_HLRToShape.hxx>
+#include <HLRBRep_PolyAlgo.hxx>
+#include <HLRBRep_PolyHLRToShape.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
@@ -1849,6 +1855,102 @@ int gs_check(const GsShape* s) {
   GS_GUARD_BEGIN
   if (!s) return fail("null argument");
   check_valid(s->s, "the operation");
+  return GS_OK;
+  GS_GUARD_END
+}
+
+namespace {
+
+/* Appends the edges of `c` (in the projector's frame, z = 0) as HLR curves. */
+void hlr_edges(const TopoDS_Shape& c, int visible, int cls, double defl, std::vector<double>& curves,
+               std::vector<double>& points) {
+  if (c.IsNull()) return;
+  for (TopExp_Explorer ex(c, TopAbs_EDGE); ex.More(); ex.Next()) {
+    TopoDS_Edge e = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(e)) continue;
+    BRepAdaptor_Curve bc(e);
+    double t0 = bc.FirstParameter(), t1 = bc.LastParameter();
+    if (!(t1 > t0)) continue;
+    bool rev = e.Orientation() == TopAbs_REVERSED;
+    if (bc.GetType() == GeomAbs_Line) {
+      gp_Pnt a = bc.Value(rev ? t1 : t0), b = bc.Value(rev ? t0 : t1);
+      if (a.Distance(b) < 1e-9) continue;
+      curves.insert(curves.end(), {double(visible), double(cls), 0, a.X(), a.Y(), b.X(), b.Y(), 0, 0, 0});
+      continue;
+    }
+    if (bc.GetType() == GeomAbs_Circle) {
+      gp_Circ ci = bc.Circle();
+      gp_Pnt a = bc.Value(t0), b = bc.Value(t1), cen = ci.Location();
+      // The arc runs from a to b turning about the circle's axis: counterclockwise in the
+      // view when that axis points at the viewer (+Z).
+      bool ccw = ci.Axis().Direction().Z() > 0;
+      if (rev) {
+        std::swap(a, b);
+        ccw = !ccw;
+      }
+      double a0 = std::atan2(a.Y() - cen.Y(), a.X() - cen.X());
+      double a1 = std::atan2(b.Y() - cen.Y(), b.X() - cen.X());
+      double span = t1 - t0;
+      // Full circles: the end angle is one turn on.
+      if (span > 2 * M_PI - 1e-9) a1 = a0 + (ccw ? 2 * M_PI : -2 * M_PI);
+      curves.insert(curves.end(),
+                    {double(visible), double(cls), 1, cen.X(), cen.Y(), ci.Radius(), a0, a1, double(ccw), 0});
+      continue;
+    }
+    GCPnts_QuasiUniformDeflection d(bc, defl, t0, t1);
+    if (!d.IsDone() || d.NbPoints() < 2) continue;
+    double first = double(points.size() / 2);
+    int n = d.NbPoints();
+    for (int k = 1; k <= n; ++k) {
+      gp_Pnt p = d.Value(rev ? n + 1 - k : k);
+      points.insert(points.end(), {p.X(), p.Y()});
+    }
+    curves.insert(curves.end(), {double(visible), double(cls), 2, first, double(n), 0, 0, 0, 0, 0});
+  }
+}
+
+}  // namespace
+
+int gs_hlr(const GsShape* s, const double view[6], int exact, double deflection, GsBuf* curves, GsBuf* points) {
+  GS_GUARD_BEGIN
+  if (!s || !view || !curves || !points) return fail("null argument");
+  if (!(deflection > 0)) return fail("the deflection must be positive");
+  gp_Vec z(view[0], view[1], view[2]), x(view[3], view[4], view[5]);
+  if (z.Magnitude() < 1e-12 || x.Magnitude() < 1e-12 || z.CrossMagnitude(x) < 1e-9 * z.Magnitude() * x.Magnitude())
+    return fail("the view direction and its X axis must be independent");
+  gp_Ax2 cs(gp_Pnt(0, 0, 0), gp_Dir(z), gp_Dir(x));
+  HLRAlgo_Projector projector(cs);
+  std::vector<double> cv, pts;
+  if (exact) {
+    occ::handle<HLRBRep_Algo> algo = new HLRBRep_Algo();
+    algo->Add(s->s);
+    algo->Projector(projector);
+    algo->Update();
+    algo->Hide();
+    HLRBRep_HLRToShape out(algo);
+    hlr_edges(out.VCompound(), 1, 0, deflection, cv, pts);
+    hlr_edges(out.Rg1LineVCompound(), 1, 1, deflection, cv, pts);
+    hlr_edges(out.OutLineVCompound(), 1, 2, deflection, cv, pts);
+    hlr_edges(out.HCompound(), 0, 0, deflection, cv, pts);
+    hlr_edges(out.Rg1LineHCompound(), 0, 1, deflection, cv, pts);
+    hlr_edges(out.OutLineHCompound(), 0, 2, deflection, cv, pts);
+  } else {
+    BRepMesh_IncrementalMesh mesher(s->s, deflection, false, 0.5, false);
+    occ::handle<HLRBRep_PolyAlgo> algo = new HLRBRep_PolyAlgo();
+    algo->Load(s->s);
+    algo->Projector(projector);
+    algo->Update();
+    HLRBRep_PolyHLRToShape out;
+    out.Update(algo);
+    hlr_edges(out.VCompound(), 1, 0, deflection, cv, pts);
+    hlr_edges(out.Rg1LineVCompound(), 1, 1, deflection, cv, pts);
+    hlr_edges(out.OutLineVCompound(), 1, 2, deflection, cv, pts);
+    hlr_edges(out.HCompound(), 0, 0, deflection, cv, pts);
+    hlr_edges(out.Rg1LineHCompound(), 0, 1, deflection, cv, pts);
+    hlr_edges(out.OutLineHCompound(), 0, 2, deflection, cv, pts);
+  }
+  to_buf(cv, curves);
+  to_buf(pts, points);
   return GS_OK;
   GS_GUARD_END
 }

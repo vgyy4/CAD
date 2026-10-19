@@ -237,6 +237,13 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("move face", self.name())
     }
 
+    /// Hidden-line projection of `shape` (2D drawings, ADR 0032): its visible and hidden
+    /// edges and silhouettes as curves in the view's coordinates.
+    fn hidden_lines(&self, shape: &Shape, view: &HlrView) -> KResult<Vec<HlrCurve>> {
+        let _ = (shape, view);
+        unsupported("hidden-line projection", self.name())
+    }
+
     /// A transformed copy of a shape. Output face *i* is input face *i*
     /// (`face_origins[i] == [Input { input: 0, face: i }]`); a mirror keeps outward
     /// normals outward.

@@ -572,6 +572,74 @@ impl Wire for DraftSpec {
     }
 }
 
+impl Wire for HlrView {
+    const MIN_SIZE: usize = 57;
+    fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
+        self.toward.put(w, s)?;
+        self.x.put(w, s)?;
+        w.bool(self.exact);
+        w.f64(self.deflection);
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        Ok(HlrView { toward: Wire::get(r, s)?, x: Wire::get(r, s)?, exact: r.bool()?, deflection: r.f64()? })
+    }
+}
+
+wire_c_enum!(HlrClass { Sharp = 0, Smooth = 1, Outline = 2 });
+
+impl Wire for HlrCurve {
+    const MIN_SIZE: usize = 3;
+    fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
+        w.bool(self.visible);
+        self.class.put(w, s)?;
+        match &self.curve {
+            ProjCurve::Line(a, b) => {
+                w.u8(0);
+                [a[0], a[1], b[0], b[1]].iter().for_each(|v| w.f64(*v));
+            }
+            ProjCurve::Arc { center, radius, start, end, ccw } => {
+                w.u8(1);
+                [center[0], center[1], *radius, *start, *end].iter().for_each(|v| w.f64(*v));
+                w.bool(*ccw);
+            }
+            ProjCurve::Polyline(p) => {
+                w.u8(2);
+                w.seq_len(p.len())?;
+                p.iter().for_each(|q| {
+                    w.f64(q[0]);
+                    w.f64(q[1]);
+                });
+            }
+        }
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        let visible = r.bool()?;
+        let class = HlrClass::get(r, s)?;
+        let curve = match r.u8()? {
+            0 => ProjCurve::Line([r.f64()?, r.f64()?], [r.f64()?, r.f64()?]),
+            1 => ProjCurve::Arc {
+                center: [r.f64()?, r.f64()?],
+                radius: r.f64()?,
+                start: r.f64()?,
+                end: r.f64()?,
+                ccw: r.bool()?,
+            },
+            2 => {
+                let n = r.seq_len(16)?;
+                let mut p = Vec::with_capacity(n);
+                for _ in 0..n {
+                    p.push([r.f64()?, r.f64()?]);
+                }
+                ProjCurve::Polyline(p)
+            }
+            t => return Err(WireError(format!("unknown projected curve type {t}"))),
+        };
+        Ok(HlrCurve { visible, class, curve })
+    }
+}
+
 impl Wire for LoftSpec {
     fn put(&self, w: &mut Writer, _s: &dyn ShapeRefs) -> Result<(), WireError> {
         w.bool(self.ruled);

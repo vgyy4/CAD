@@ -409,6 +409,36 @@ mod imp {
             op_result(ffi::move_faces(raw(shape)?, faces, &steps)?)
         }
 
+        fn hidden_lines(&self, shape: &Shape, view: &HlrView) -> KResult<Vec<HlrCurve>> {
+            let (t, x) = (view.toward, view.x);
+            let (curves, points) =
+                ffi::hlr(raw(shape)?, &[t[0], t[1], t[2], x[0], x[1], x[2]], view.exact, view.deflection)?;
+            let class = |c: f64| match c as i32 {
+                1 => HlrClass::Smooth,
+                2 => HlrClass::Outline,
+                _ => HlrClass::Sharp,
+            };
+            let mut out = Vec::with_capacity(curves.len() / 10);
+            for c in curves.chunks_exact(10) {
+                let &[vis, cls, kind, a, b, cc, d, e, f, _] = c else { continue };
+                let curve = match kind as i32 {
+                    0 => ProjCurve::Line([a, b], [cc, d]),
+                    1 => ProjCurve::Arc { center: [a, b], radius: cc, start: d, end: e, ccw: f != 0.0 },
+                    _ => {
+                        let (first, n) = (a as usize, b as usize);
+                        let pts = points.get(2 * first..2 * (first + n)).unwrap_or(&[]);
+                        ProjCurve::Polyline(
+                            pts.chunks_exact(2)
+                                .filter_map(|p| if let &[x, y] = p { Some([x, y]) } else { None })
+                                .collect(),
+                        )
+                    }
+                };
+                out.push(HlrCurve { visible: vis != 0.0, class: class(cls), curve });
+            }
+            Ok(out)
+        }
+
         fn transform(&self, shape: &Shape, t: &Transform) -> KResult<OpResult> {
             let (kind, p) = xf(t);
             op_result(ffi::transform(kind, &p, raw(shape)?)?)

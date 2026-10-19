@@ -150,6 +150,14 @@ int gs_bbox(const GsShape* s, GsBuf* bbox);
 /* Validates the shape; GS_ERR with a reason when invalid. */
 int gs_check(const GsShape* s);
 
+/* Hidden-line projection of `s` seen along -view[0..3] (view[0..3] points at the viewer),
+ * view[3..6] the view's X axis on the sheet. exact != 0: HLRBRep_Algo on the exact
+ * geometry; 0: HLRBRep_PolyAlgo on a mesh of `deflection`. curves: f64 x 10 per curve
+ * (visible, class, type, a .. g): class 0 sharp, 1 smooth (tangent), 2 outline
+ * (silhouette); type 0 line (x0, y0, x1, y1), 1 circle arc (cx, cy, r, a0, a1, ccw),
+ * 2 polyline (first point, point count) into points (f64 x 2), in view coordinates. */
+int gs_hlr(const GsShape* s, const double view[6], int exact, double deflection, GsBuf* curves, GsBuf* points);
+
 /* Mesh: positions/normals f32 x 3, indices u32, face_ranges u32 x 2 (start, end triangle),
  * edge_offsets u32 (n+1 offsets into edge_points), edge_points f32 x 3. */
 int gs_tessellate(const GsShape* s, double lin_defl, double ang_defl, GsBuf* positions, GsBuf* normals,

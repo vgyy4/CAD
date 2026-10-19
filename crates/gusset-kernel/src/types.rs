@@ -183,6 +183,53 @@ pub struct DraftSpec {
     pub angle: f64,
 }
 
+/// A view for [`crate::Kernel::hidden_lines`]: orthographic, looking along `-toward`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HlrView {
+    /// Points from the model at the viewer (any non-zero length).
+    pub toward: V3,
+    /// The view's X axis on the sheet (not parallel to `toward`).
+    pub x: V3,
+    /// Exact hidden-line removal on the model's geometry; else on a mesh (faster).
+    pub exact: bool,
+    /// Chordal deflection (mm) for curves written as polylines and for the mesh.
+    pub deflection: f64,
+}
+
+/// Which kind of model edge a projected curve comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlrClass {
+    /// A sharp edge between faces.
+    Sharp,
+    /// A tangent (smooth) edge.
+    Smooth,
+    /// A silhouette of a curved face.
+    Outline,
+}
+
+/// A curve in view coordinates (mm; x along the view's X axis, y up).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjCurve {
+    Line([f64; 2], [f64; 2]),
+    /// From angle `start` to `end` (radians), counterclockwise when `ccw`.
+    Arc {
+        center: [f64; 2],
+        radius: f64,
+        start: f64,
+        end: f64,
+        ccw: bool,
+    },
+    Polyline(Vec<[f64; 2]>),
+}
+
+/// One curve of a hidden-line projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HlrCurve {
+    pub visible: bool,
+    pub class: HlrClass,
+    pub curve: ProjCurve,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoftSpec {
     /// Ruled surfaces between neighbouring profiles (sharp transitions), else a smooth

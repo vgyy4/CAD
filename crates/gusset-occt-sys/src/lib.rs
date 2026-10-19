@@ -234,6 +234,14 @@ mod raw {
         pub(crate) fn gs_mass(s: *const GsShape, mass: *mut GsBuf) -> i32;
         pub(crate) fn gs_bbox(s: *const GsShape, bbox: *mut GsBuf) -> i32;
         pub(crate) fn gs_check(s: *const GsShape) -> i32;
+        pub(crate) fn gs_hlr(
+            s: *const GsShape,
+            view: *const f64,
+            exact: i32,
+            deflection: f64,
+            curves: *mut GsBuf,
+            points: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_tessellate(
             s: *const GsShape,
             lin_defl: f64,

@@ -295,6 +295,32 @@ impl Kernel for MockKernel {
         Ok(BBox { min, max })
     }
 
+    /// Every edge projected as visible and sharp (no hiding): enough to test drawings.
+    fn hidden_lines(&self, shape: &Shape, view: &HlrView) -> KResult<Vec<HlrCurve>> {
+        let bad = || KernelError::new(KernelErrorKind::InvalidInput, "the view direction and its X axis must differ");
+        let z = normalize(view.toward).ok_or_else(bad)?;
+        let y = normalize(cross(z, view.x)).ok_or_else(bad)?;
+        let x = cross(y, z);
+        let mesh = self.tessellate(shape, &TessellationParams::default())?;
+        let at = |p: [f32; 3]| {
+            let p = [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])];
+            [dot(p, x), dot(p, y)]
+        };
+        let mut out: Vec<HlrCurve> = Vec::new();
+        for e in &mesh.edges {
+            for w in e.windows(2) {
+                let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
+                let (a, b) = (at(a), at(b));
+                let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+                if dx * dx + dy * dy < 1e-18 {
+                    continue;
+                }
+                out.push(HlrCurve { visible: true, class: HlrClass::Sharp, curve: ProjCurve::Line(a, b) });
+            }
+        }
+        Ok(out)
+    }
+
     fn tessellate(&self, shape: &Shape, _params: &TessellationParams) -> KResult<Mesh> {
         let m = shape.downcast::<MockShape>()?;
         let mut mesh = Mesh::default();

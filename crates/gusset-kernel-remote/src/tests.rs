@@ -72,6 +72,11 @@ fn operations_match_the_kernel_they_wrap() {
         k.tessellate(&a.shape, &params).unwrap().positions,
         local.tessellate(&b.shape, &params).unwrap().positions
     );
+    // Hidden lines cross the wire unchanged (ADR 0032).
+    let view = gusset_kernel::HlrView { toward: [0.0, -1.0, 0.0], x: [1.0, 0.0, 0.0], exact: true, deflection: 0.1 };
+    let hl = k.hidden_lines(&a.shape, &view).unwrap();
+    assert!(!hl.is_empty());
+    assert_eq!(hl, local.hidden_lines(&b.shape, &view).unwrap());
     // Shapes made remotely go back as inputs.
     let moved = k.transform(&a.shape, &gusset_kernel::Transform::Translate([20.0, 0.0, 0.0])).unwrap();
     let both = k.boolean(BoolOp::Union, &a.shape, &moved.shape).unwrap();

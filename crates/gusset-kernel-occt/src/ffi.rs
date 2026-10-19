@@ -108,6 +108,10 @@ pub(crate) fn bbox(s: &RawShape) -> KResult<Vec<f64>> {
     safe::bbox(s).map_err(err(KernelErrorKind::Internal))
 }
 
+pub(crate) fn hlr(s: &RawShape, view: &[f64; 6], exact: bool, deflection: f64) -> KResult<(Vec<f64>, Vec<f64>)> {
+    safe::hlr(s, view, exact, deflection).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn tessellate(s: &RawShape, lin: f64, ang: f64) -> KResult<safe::RawMesh> {
     safe::tessellate(s, lin, ang).map_err(err(KernelErrorKind::Internal))
 }

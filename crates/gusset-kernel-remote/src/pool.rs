@@ -211,6 +211,11 @@ impl Kernel for PoolKernel {
         k.tessellate(&s, params)
     }
 
+    fn hidden_lines(&self, shape: &Shape, view: &gusset_kernel::HlrView) -> KResult<Vec<gusset_kernel::HlrCurve>> {
+        let (k, s) = self.on_one(shape)?;
+        k.hidden_lines(&s, view)
+    }
+
     fn export_step(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {
         let shapes: Vec<&Shape> = bodies.iter().map(|(s, _)| *s).collect();
         let (k, s) = self.place(&shapes)?;

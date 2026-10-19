@@ -571,6 +571,13 @@ impl Kernel for RemoteKernel {
         }
     }
 
+    fn hidden_lines(&self, shape: &Shape, view: &gusset_kernel::HlrView) -> KResult<Vec<gusset_kernel::HlrCurve>> {
+        match self.call(&Request::HiddenLines(shape.clone(), *view))? {
+            Reply::Curves(c) => Ok(c),
+            _ => Err(unexpected()),
+        }
+    }
+
     fn export_step(&self, bodies: &[(&Shape, &str)]) -> KResult<Vec<u8>> {
         self.bytes(&Request::ExportStep(named(bodies)))
     }

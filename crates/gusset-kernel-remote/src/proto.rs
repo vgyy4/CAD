@@ -4,12 +4,12 @@
 
 use gusset_kernel::wire::{Reader, ShapeRefs, Wire, WireError, Writer};
 use gusset_kernel::{
-    BBox, BoolOp, DraftSpec, ExtrudeSpec, KernelError, LoftSpec, MassProps, Mesh, OpResult, Profile, RevolveSpec,
-    Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
+    BBox, BoolOp, DraftSpec, ExtrudeSpec, HlrCurve, HlrView, KernelError, LoftSpec, MassProps, Mesh, OpResult, Profile,
+    RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,7 @@ pub(crate) enum Request {
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
     MoveFaces(Shape, Vec<u32>, Vec<Transform>),
+    HiddenLines(Shape, HlrView),
     Transform(Shape, Transform),
     Compound(Vec<Shape>),
     Topology(Shape),
@@ -71,6 +72,7 @@ pub(crate) enum Reply {
     Bytes(Vec<u8>),
     Bodies(Vec<(Shape, String)>),
     Shape(Shape),
+    Curves(Vec<HlrCurve>),
 }
 
 fn put_shape(w: &mut Writer, s: &dyn ShapeRefs, shape: &Shape) -> Result<(), WireError> {
@@ -207,6 +209,11 @@ impl Request {
                 });
                 put_shape(&mut w, s, x)?;
             }
+            Request::HiddenLines(x, view) => {
+                w.u8(28);
+                put_shape(&mut w, s, x)?;
+                view.put(&mut w, s)?;
+            }
             Request::Tessellate(x, params) => {
                 w.u8(17);
                 put_shape(&mut w, s, x)?;
@@ -286,6 +293,7 @@ impl Request {
             24 => Request::Status,
             26 => Request::OffsetFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?),
             27 => Request::MoveFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?, Wire::get(&mut r, s)?),
+            28 => Request::HiddenLines(get_shape(&mut r, s)?, HlrView::get(&mut r, s)?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };
@@ -342,6 +350,10 @@ impl Reply {
                         w.u8(9);
                         put_shape(&mut w, s, x)?;
                     }
+                    Reply::Curves(x) => {
+                        w.u8(10);
+                        w.seq(x, s)?;
+                    }
                 }
             }
         }
@@ -363,6 +375,7 @@ impl Reply {
                 7 => Reply::Bytes(r.bytes()?.to_vec()),
                 8 => Reply::Bodies(get_named(&mut r, s)?),
                 9 => Reply::Shape(get_shape(&mut r, s)?),
+                10 => Reply::Curves(r.seq(s)?),
                 t => return Err(WireError(format!("unknown reply {t}"))),
             }),
             t => return Err(WireError(format!("unknown status {t}"))),

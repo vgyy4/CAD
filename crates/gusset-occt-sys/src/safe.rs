@@ -450,6 +450,20 @@ pub fn tessellate(s: &RawShape, lin: f64, ang: f64) -> ShimResult<RawMesh> {
     Ok(m)
 }
 
+/// Hidden-line projection: (curves, f64 x 10 each; points, f64 x 2 each); see `gs_hlr`.
+pub fn hlr(s: &RawShape, view: &[f64; 6], exact: bool, deflection: f64) -> ShimResult<(Vec<f64>, Vec<f64>)> {
+    let mut b: [GsBuf; 2] = Default::default();
+    let rc = s.with(|p| {
+        let [c, pts] = &mut b;
+        // SAFETY: shape locked; `view` holds 6 values; out-params are distinct valid GsBufs.
+        unsafe { sys::gs_hlr(p, view.as_ptr(), i32::from(exact), deflection, c, pts) }
+    });
+    let [c, pts] = b;
+    let out = (take(c), take(pts));
+    check(rc)?;
+    Ok(out)
+}
+
 pub fn step_write(shapes: &[&RawShape], names: &[&str]) -> ShimResult<Vec<u8>> {
     let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let cnames: Vec<std::ffi::CString> =
