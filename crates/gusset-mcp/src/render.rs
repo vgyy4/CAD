@@ -89,6 +89,9 @@ pub struct RenderRequest {
     /// Face or edge names to highlight (from query_body with names: true).
     #[serde(default)]
     pub highlight: Vec<String>,
+    /// A drawing to show.
+    #[serde(default)]
+    pub drawing: Option<String>,
 }
 
 fn default_size() -> u32 {
@@ -247,6 +250,7 @@ mod tests {
             height: default_height(),
             style: RenderStyle::default(),
             highlight: Vec::new(),
+            drawing: None,
         };
         assert!(request.validate().unwrap_err().contains("finite"));
     }

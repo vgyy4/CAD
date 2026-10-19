@@ -889,6 +889,9 @@ impl GussetMcp {
         let Some(_slot) = self.shared.limits.render_slot() else {
             return self.err_result(&agent, &RateLimiter::error(Class::Render, crate::limits::RetryAfter(1)));
         };
+        if let Some(name) = request.drawing.clone() {
+            return self.render_drawing(&agent, name, request.width).await;
+        }
         let Some(renderer) = self.shared.renderer() else {
             let e = CommandError::new("renderer_unavailable", "no renderer is available in this session (headless)")
                 .hint("check your work with query_model and query_body instead");
@@ -950,6 +953,49 @@ impl GussetMcp {
                 self.err_result(&agent, &CommandError::new("render_failed", "the renderer returned an invalid image"))
             }
             Err(m) => self.err_result(&agent, &CommandError::new("render_failed", m)),
+        }
+    }
+
+    /// `render_view` of a drawing: its sheet rasterized on the CPU (no GPU needed).
+    async fn render_drawing(&self, agent: &str, name: String, width: u32) -> CallToolResult {
+        let actor = Actor::Agent(agent.to_string());
+        let limit = self.shared.request_deadline();
+        let job = self
+            .shared
+            .host
+            .exec_async_stoppable(move |s, _| gusset_commands::commands::drawing_scene(s, &actor, &name));
+        let scene = match tokio::time::timeout(limit, job).await {
+            Ok(r) => r.and_then(|r| r),
+            Err(_) => Err(deadline_error("render_view", limit)),
+        };
+        let scene = match scene {
+            Ok(s) => s,
+            Err(e) => return self.err_result(agent, &e),
+        };
+        let issues = scene.issues.clone();
+        let png = tokio::task::spawn_blocking(move || {
+            let r = gusset_drawing::raster::render(&scene, width);
+            r.to_png().map(|b| (b, r.width, r.height))
+        })
+        .await
+        .map_err(|_| "the renderer crashed".to_string())
+        .and_then(|r| r);
+        match png {
+            Ok((bytes, w, h)) if bytes.len() <= MAX_PNG_BYTES => {
+                let meta =
+                    json!({"width": w, "height": h, "bytes": bytes.len(), "mime_type": "image/png", "issues": issues});
+                let mut r = CallToolResult::success(vec![
+                    ContentBlock::image(crate::b64::encode(&bytes), "image/png"),
+                    ContentBlock::text(meta.to_string()),
+                ]);
+                r.structured_content = Some(meta);
+                r
+            }
+            Ok(_) => self.err_result(
+                agent,
+                &CommandError::new("render_failed", "the image is too large").hint("ask for a smaller width"),
+            ),
+            Err(m) => self.err_result(agent, &CommandError::new("render_failed", m)),
         }
     }
 

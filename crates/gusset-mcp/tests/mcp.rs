@@ -222,6 +222,15 @@ async fn full_session(modern: bool) {
     assert!(c.read_resource(ReadResourceRequestParams::new("gusset://project/nope")).await.is_err());
     // render_view: clear error without renderer, PNG with one.
     assert_eq!(err_code(&call(&c, "render_view", json!({})).await), "renderer_unavailable");
+    // A drawing's sheet renders on the CPU, with or without a renderer.
+    let r = call(&c, "run", json!({"name": "drawing.create", "args": {"name": "D", "standard_views": true}})).await;
+    assert_eq!(r.is_error, Some(false), "{r:?}");
+    let r = call(&c, "render_view", json!({"drawing": "D", "width": 600})).await;
+    let img = r.content[0].as_image().unwrap_or_else(|| panic!("{r:?}"));
+    let png = gusset_mcp::b64::decode(&img.data).unwrap();
+    assert!(gusset_mcp::render::is_png(&png));
+    assert_eq!(r.structured_content.as_ref().unwrap()["height"], 424, "A3 landscape");
+    assert_eq!(err_code(&call(&c, "render_view", json!({"drawing": "Nope"})).await), "not_found");
     server.set_renderer(Some(Arc::new(StubRenderer)));
     let r = call(&c, "render_view", json!({"view": "top", "width": 64, "height": 64})).await;
     let img = r.content[0].as_image().unwrap();

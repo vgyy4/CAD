@@ -651,6 +651,8 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   straight edge, `diameter` and `radius` a circular edge, `distance` and `angle` two edges
   (`a`, `b`). A dimension whose edge no longer exists is reported as dangling by
   `query.drawing`; it is not deleted.
+- To look at a sheet, call `render_view` with `drawing: <Name>`; `drawing.export` writes
+  SVG or DXF.
 
 ```gusset
 gusset 1

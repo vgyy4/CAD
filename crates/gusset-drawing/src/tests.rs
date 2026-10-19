@@ -233,3 +233,34 @@ fn centre_marks_and_centrelines() {
     assert_eq!(l.len(), 1, "{l:?}");
     assert!(close(l[0].0, [100.0, 97.5]) && close(l[0].1, [100.0, 122.5]), "{l:?}");
 }
+
+#[test]
+fn a_raster_of_the_sheet() {
+    let s = scene(SHEET);
+    let r = raster::render(&s, 840);
+    assert_eq!((r.width, r.height), (840, 594));
+    assert_eq!(r.rgba.len(), 840 * 594 * 4);
+    // The darkest red channel around a sheet point (a line can straddle two pixels).
+    let px = |x: f64, y: f64| {
+        let (i, j) = ((x * 2.0) as usize, ((297.0 - y) * 2.0) as usize);
+        (i - 1..=i + 1)
+            .flat_map(|i| (j - 1..=j + 1).map(move |j| (i, j)))
+            .map(|(i, j)| r.rgba[(j * 840 + i) * 4])
+            .min()
+            .unwrap()
+    };
+    // The frame's left edge at x = 20 mm and the front view's bottom edge at y = 155 mm
+    // are ink; the paper between them is white.
+    assert!(px(20.0, 150.0) < 100, "frame: {}", px(20.0, 150.0));
+    assert!(px(130.0, 155.0) <= 128, "view edge: {}", px(130.0, 155.0));
+    assert_eq!(px(60.0, 250.0), 255);
+    // Text is drawn: the title block's title area has ink.
+    let inked = (0..40)
+        .flat_map(|i| (0..10).map(move |j| (i, j)))
+        .filter(|&(i, j)| px(235.0 + f64::from(i), 38.0 + f64::from(j)) < 128)
+        .count();
+    assert!(inked > 10, "{inked} inked pixels in the title");
+    if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
+        let _ = std::fs::write(format!("{dir}/plate.png"), r.to_png().unwrap());
+    }
+}

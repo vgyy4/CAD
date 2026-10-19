@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 gusset-commands.workspace = true
+gusset-drawing.workspace = true
 gusset-host.workspace = true
 gusset-history.workspace = true
 gusset-hw.workspace = true

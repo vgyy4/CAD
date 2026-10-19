@@ -7,6 +7,7 @@
 mod centers;
 pub mod dims;
 pub mod dxf;
+pub mod raster;
 pub mod scene;
 pub mod svg;
 

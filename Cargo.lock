@@ -1635,8 +1635,10 @@ dependencies = [
  "gusset-eval",
  "gusset-kernel",
  "gusset-naming",
+ "gusset-text",
  "gusset-units",
  "libm",
+ "png",
 ]
 
 [[package]]
@@ -1735,6 +1737,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gusset-commands",
  "gusset-doc",
+ "gusset-drawing",
  "gusset-eval",
  "gusset-history",
  "gusset-host",

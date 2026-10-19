@@ -6,6 +6,7 @@ use gusset_doc::drawing::{
     DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, Projection, SheetSize, Side, ViewDef, ViewDir,
     ViewPlacement,
 };
+use gusset_history::Actor;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
@@ -648,14 +649,22 @@ impl Command for DrawingDeleteItem {
 
 /// Builds the scene of drawing `name` on the actor's branch.
 fn scene(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<gusset_drawing::Scene, CommandError> {
-    let doc = s.document(&ctx.actor)?;
+    drawing_scene(s, &ctx.actor, name)
+}
+
+/// The scene of drawing `name` on `actor`'s branch, as `render_view` and the app draw it.
+///
+/// # Errors
+/// No such drawing, or the branch does not evaluate.
+pub fn drawing_scene(s: &mut Session, actor: &Actor, name: &str) -> Result<gusset_drawing::Scene, CommandError> {
+    let doc = s.document(actor)?;
     let d = doc
         .drawings
         .iter()
         .find(|d| d.name == name)
         .cloned()
         .ok_or_else(|| CommandError::not_found(format!("no drawing '{name}'")).hint("see query_drawing"))?;
-    let ev = s.evaluate(&ctx.actor)?;
+    let ev = s.evaluate(actor)?;
     let kernel = s.kernel().clone();
     let cx = gusset_drawing::Context { ev: &ev, kernel: kernel.as_ref(), units: doc.units };
     Ok(gusset_drawing::build(&d, &cx, &mut s.drawing_cache))
