@@ -100,6 +100,7 @@ fn svg_and_dxf_hold_the_scene() {
     if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
         let _ = std::fs::write(format!("{dir}/plate.svg"), &svg);
         let _ = std::fs::write(format!("{dir}/plate_r12.dxf"), &dxf);
+        let _ = std::fs::write(format!("{dir}/plate_r2000.dxf"), dxf::to_dxf(&s, dxf::Profile::R2000));
     }
     assert!(dxf.contains("AC1009") && dxf.trim_end().ends_with("EOF"));
     let lines = dxf.matches("\n  0\nLINE\n").count();
@@ -108,6 +109,12 @@ fn svg_and_dxf_hold_the_scene() {
     assert!(dxf.contains("\n  8\nVISIBLE\n") && dxf.contains("\n  2\nHIDDEN\n"));
     // Group codes and values alternate: an even number of lines.
     assert_eq!(dxf.lines().count() % 2, 0);
+    // R2000: units, handles, line weights; the same entities.
+    let d2 = dxf::to_dxf(&s, dxf::Profile::default());
+    assert!(d2.contains("AC1015") && d2.contains("$INSUNITS\n 70\n4\n") && d2.trim_end().ends_with("EOF"));
+    assert_eq!(d2.matches("\n  0\nLINE\n").count(), sheet_lines);
+    assert_eq!(d2.lines().count() % 2, 0);
+    assert!(d2.contains("\n370\n50\n"), "visible lines are 0.5 mm");
     // Non-ASCII text is escaped.
     let s = scene(&SHEET.replace("Break sharp edges", "Ø 5 ±0.1"));
     assert!(dxf::to_dxf(&s, dxf::Profile::R12).contains("\\U+00D8 5 \\U+00B10.1"));
@@ -135,6 +142,7 @@ fn dimensions_are_measured_from_the_model() {
     if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
         let _ = std::fs::write(format!("{dir}/dims.svg"), svg::to_svg(&s));
         let _ = std::fs::write(format!("{dir}/dims_r12.dxf"), dxf::to_dxf(&s, dxf::Profile::R12));
+        let _ = std::fs::write(format!("{dir}/dims_r2000.dxf"), dxf::to_dxf(&s, dxf::Profile::R2000));
     }
     let d = |n: &str| s.dims.iter().find(|d| d.name == n).unwrap_or_else(|| panic!("{n}: {:?}", s.dims));
     let near = |n: &str, v: f64| {

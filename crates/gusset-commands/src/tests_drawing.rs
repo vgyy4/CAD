@@ -52,8 +52,10 @@ fn a_drawing_with_standard_views_is_built_queried_and_exported() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("drawing Drawing1 (size: A3, projection: first, title: \"Plate\") {"), "{text}");
     // Export both formats.
-    for (path, magic) in [("plate.svg", "<svg"), ("plate.dxf", "AC1009")] {
-        let r = run(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": path}));
+    for (path, profile, magic) in
+        [("plate.svg", None, "<svg"), ("plate.dxf", None, "AC1015"), ("plate12.dxf", Some("r12"), "AC1009")]
+    {
+        let r = run(&mut s, "drawing.export", json!({"drawing": "Drawing1", "path": path, "profile": profile}));
         assert_eq!(r["written"], path, "{r}");
         let body = std::fs::read_to_string(s.project_dir.clone().unwrap().join(path)).unwrap();
         assert!(body.contains(magic), "{path}");

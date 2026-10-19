@@ -665,6 +665,9 @@ pub struct DrawingExport {
     pub drawing: String,
     /// File name in the project folder: .svg or .dxf.
     pub path: String,
+    /// DXF: r2000 (default) or r12.
+    #[serde(default)]
+    pub profile: Option<String>,
     #[serde(default)]
     pub overwrite: bool,
 }
@@ -673,7 +676,7 @@ impl Command for DrawingExport {
     const ID: &'static str = "drawing.export";
     const TITLE: &'static str = "Export drawing";
     const DESCRIPTION: &'static str =
-        "Write a drawing as SVG (mm) or DXF (R12, layers per line type) to a file in the project folder.";
+        "Write a drawing as SVG or DXF (mm, a layer per line type) to a file in the project folder.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -683,6 +686,11 @@ impl Command for DrawingExport {
             Some("dxf") => true,
             Some("svg") => false,
             _ => return Err(CommandError::args("the file name must end in .svg or .dxf")),
+        };
+        let profile = match self.profile.as_deref() {
+            None => gusset_drawing::dxf::Profile::default(),
+            Some(p) => gusset_drawing::dxf::Profile::from_keyword(p)
+                .ok_or_else(|| CommandError::args(format!("unknown DXF profile '{p}'")).hint("use r2000 or r12"))?,
         };
         if path.exists() {
             if !self.overwrite {
@@ -694,11 +702,7 @@ impl Command for DrawingExport {
             }
         }
         let sc = scene(s, ctx, &self.drawing)?;
-        let text = if dxf {
-            gusset_drawing::dxf::to_dxf(&sc, gusset_drawing::dxf::Profile::R12)
-        } else {
-            gusset_drawing::svg::to_svg(&sc)
-        };
+        let text = if dxf { gusset_drawing::dxf::to_dxf(&sc, profile) } else { gusset_drawing::svg::to_svg(&sc) };
         crate::paths::write_file(&path, &self.path, text.as_bytes())?;
         Ok(json!({ "written": self.path, "bytes": text.len(), "issues": sc.issues }))
     }
