@@ -1041,7 +1041,11 @@ impl Evaluator {
                     ImportFormat::Stl => Some(gusset_meshio::Format::Stl),
                     ImportFormat::ThreeMf => Some(gusset_meshio::Format::ThreeMf),
                     ImportFormat::Obj => Some(gusset_meshio::Format::Obj),
-                    ImportFormat::Brep | ImportFormat::Step | ImportFormat::Iges | ImportFormat::FreeCad => None,
+                    ImportFormat::Brep
+                    | ImportFormat::Step
+                    | ImportFormat::Iges
+                    | ImportFormat::FreeCad
+                    | ImportFormat::Scad => None,
                 };
                 if let Some(fmt) = mesh_format {
                     s.meshes.push(Arc::new(read_mesh(name, &bytes, fmt)?));

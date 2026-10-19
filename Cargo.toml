@@ -86,6 +86,7 @@ gusset-history = { path = "crates/gusset-history", version = "0.1.0-mvp" }
 gusset-naming = { path = "crates/gusset-naming", version = "0.1.0-mvp" }
 gusset-sketch = { path = "crates/gusset-sketch", version = "0.1.0-mvp" }
 gusset-text = { path = "crates/gusset-text", version = "0.1.0-mvp" }
+gusset-scad = { path = "crates/gusset-scad", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.1.0-mvp" }
 gusset-eval = { path = "crates/gusset-eval", version = "0.1.0-mvp" }

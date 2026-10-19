@@ -3300,7 +3300,7 @@ pub struct ImportFile {
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/FCStd become exact bodies (parsed in a sandboxed worker); STL/3MF/OBJ become reference meshes (display, measuring, mesh export; not solids). Runs in the background, cancellable. Names in the file are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/FCStd/SCAD become exact bodies (parsed in a sandboxed worker or evaluated safely); STL/3MF/OBJ become reference meshes (display, measuring, mesh export; not solids). Runs in the background, cancellable. Names in the file are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");

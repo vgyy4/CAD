@@ -42,7 +42,12 @@ enum Kind {
     Mesh(gusset_meshio::Format),
     /// A FreeCAD document: its visible shapes, each parsed by the worker (ADR 0033).
     FreeCad,
+    /// An OpenSCAD file, evaluated here and built with the kernel (ADR 0033).
+    Scad,
 }
+
+/// Tier note for OpenSCAD imports.
+pub const TIER_SCAD: &str = "exact geometry built from the OpenSCAD program (B-rep, its parameters are not kept)";
 
 /// Tier note for FreeCAD imports.
 pub const TIER_FREECAD: &str = "exact geometry per visible FreeCAD object (B-rep, no FreeCAD history)";
@@ -53,6 +58,7 @@ pub struct ImportJob {
     kind: Kind,
     file_name: String,
     importer: Option<Arc<dyn Importer>>,
+    kernel: Arc<dyn gusset_kernel::Kernel>,
 }
 
 impl std::fmt::Debug for ImportJob {
@@ -151,11 +157,12 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "step" | "stp" => Kind::Brep(ImportFormat::Step),
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
         "fcstd" => Kind::FreeCad,
+        "scad" => Kind::Scad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .stl, .3mf, .obj"));
+                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .scad, .stl, .3mf, .obj"));
             }
         },
     };
@@ -166,7 +173,7 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
     }
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
     let file_name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(ImportJob { file, kind, file_name, importer })
+    Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone() })
 }
 
 impl ImportJob {
@@ -188,6 +195,7 @@ impl ImportJob {
                 let bodies = bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format });
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
             }
+            Kind::Scad => scad(&bytes, self.kernel.as_ref(), cancel)?,
             Kind::FreeCad => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "FreeCAD import is not available"))?;
@@ -220,6 +228,30 @@ impl ImportJob {
         }
         Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings })
     }
+}
+
+/// An OpenSCAD program: one exact body per top-level statement.
+fn scad(
+    bytes: &[u8],
+    k: &dyn gusset_kernel::Kernel,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let src = std::str::from_utf8(bytes).map_err(|_| CommandError::new("io", "the .scad file is not UTF-8 text"))?;
+    let model = gusset_scad::read(src).map_err(|e| CommandError::new("io", format!("OpenSCAD: {e}")))?;
+    if model.objects.is_empty() {
+        return Err(CommandError::new("io", "the OpenSCAD file makes no solid object"));
+    }
+    let mut out = Vec::new();
+    for (i, c) in model.objects.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let shape = crate::scad_build::build(k, c).map_err(|e| CommandError::new("io", format!("OpenSCAD: {e}")))?;
+        let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
+        out.push(PreparedBody { name: format!("Object {}", i + 1), blob, format: ImportFormat::Scad });
+    }
+    let warnings = model.warnings.into_iter().take(50).collect();
+    Ok((out, TIER_SCAD, warnings))
 }
 
 /// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape

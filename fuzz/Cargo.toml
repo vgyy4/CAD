@@ -20,6 +20,7 @@ gusset-kernel = { path = "../crates/gusset-kernel" }
 gusset-meshio = { path = "../crates/gusset-meshio" }
 gusset-drawing = { path = "../crates/gusset-drawing" }
 gusset-commands = { path = "../crates/gusset-commands" }
+gusset-scad = { path = "../crates/gusset-scad" }
 # Only the protocol codec is fuzzed; without GUSSET_OCCT_DIR the OCCT crates build as
 # stubs, so this does not need OCCT.
 gusset-worker = { path = "../crates/gusset-worker" }
@@ -123,6 +124,13 @@ bench = false
 [[bin]]
 name = "fcstd_picks"
 path = "fuzz_targets/fcstd_picks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scad_read"
+path = "fuzz_targets/scad_read.rs"
 test = false
 doc = false
 bench = false

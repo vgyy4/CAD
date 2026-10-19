@@ -1611,6 +1611,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-naming",
  "gusset-project",
+ "gusset-scad",
  "gusset-sketch",
  "gusset-store",
  "gusset-units",
@@ -1815,6 +1816,13 @@ dependencies = [
  "rlimit",
  "seccompiler",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "gusset-scad"
+version = "0.1.0-mvp"
+dependencies = [
+ "libm",
 ]
 
 [[package]]

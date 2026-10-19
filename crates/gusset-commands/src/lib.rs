@@ -13,6 +13,7 @@ pub mod hole_standards;
 pub mod import;
 pub mod paths;
 pub mod registry;
+pub mod scad_build;
 pub mod session;
 
 pub use error::CommandError;

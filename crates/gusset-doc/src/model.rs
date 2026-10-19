@@ -752,6 +752,8 @@ pub enum ImportFormat {
     Brep,
     /// A FreeCAD document's shape (ADR 0033), stored as kernel-native B-rep.
     FreeCad,
+    /// An OpenSCAD object built as exact B-rep (ADR 0033).
+    Scad,
 }
 
 impl ImportFormat {
@@ -764,6 +766,7 @@ impl ImportFormat {
             ImportFormat::Obj => "obj",
             ImportFormat::Brep => "brep",
             ImportFormat::FreeCad => "fcstd",
+            ImportFormat::Scad => "scad",
         }
     }
     pub fn from_keyword(s: &str) -> Option<Self> {
@@ -775,6 +778,7 @@ impl ImportFormat {
             ImportFormat::Obj,
             ImportFormat::Brep,
             ImportFormat::FreeCad,
+            ImportFormat::Scad,
         ]
         .into_iter()
         .find(|f| f.keyword() == s)
