@@ -2473,6 +2473,7 @@ impl Command for BranchCompare {
                 "parameters": d.params.iter().map(item).collect::<Vec<_>>(),
                 "configurations": d.configurations.iter().map(item).collect::<Vec<_>>(),
                 "features": d.features.iter().map(item).collect::<Vec<_>>(),
+                "drawings": d.drawings.iter().map(item).collect::<Vec<_>>(),
             })
         };
         let mut out = diff_json(&d);
@@ -2485,7 +2486,13 @@ impl Command for BranchCompare {
         let (da, db) =
             (h.compare(m, a).map_err(CommandError::history)?, h.compare(m, b).map_err(CommandError::history)?);
         let names = |d: &gusset_history::DocDiff| -> std::collections::BTreeSet<String> {
-            d.params.iter().chain(&d.configurations).chain(&d.features).map(|c| c.name.clone()).collect()
+            d.params
+                .iter()
+                .chain(&d.configurations)
+                .chain(&d.features)
+                .chain(&d.drawings)
+                .map(|c| c.name.clone())
+                .collect()
         };
         let both: Vec<String> = names(&da).intersection(&names(&db)).cloned().collect();
         if let Value::Object(o) = &mut out {

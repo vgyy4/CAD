@@ -195,7 +195,28 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
     }
     let mut merged: HashMap<String, Option<Feature>> = merged.into_iter().collect();
     let features = order.iter().filter_map(|n| merged.remove(n).flatten()).collect();
-    Merged { doc: Document { units, params, configurations, features }, conflicts, from_theirs }
+
+    // Drawings (ADR 0032): whole drawings, like configurations.
+    let dmap = |d: &Document| -> HashMap<String, gusset_doc::drawing::Drawing> {
+        d.drawings.iter().map(|x| (x.name.clone(), x.clone())).collect()
+    };
+    let dnames = names(ours.drawings.iter().map(|d| d.name.as_str()), theirs.drawings.iter().map(|d| d.name.as_str()));
+    let (db, dw, dt) = (dmap(base), dmap(ours), dmap(theirs));
+    let show_d = |d: &Option<gusset_doc::drawing::Drawing>| d.as_ref().map(gusset_doc::drawing::print_drawing_object);
+    let mut drawings = Vec::new();
+    for n in &dnames {
+        let (b, o, t) = (db.get(n).cloned(), dw.get(n).cloned(), dt.get(n).cloned());
+        let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
+            Ok(r) => r,
+            Err(()) if resolve("drawing", n, show_d(&o), show_d(&t)) => t.clone(),
+            Err(()) => o.clone(),
+        };
+        if r != o {
+            from_theirs.push(format!("drawing {n}"));
+        }
+        drawings.extend(r);
+    }
+    Merged { doc: Document { units, params, configurations, features, drawings }, conflicts, from_theirs }
 }
 
 fn param_map(d: &Document) -> HashMap<&str, &Param> {

@@ -1,5 +1,6 @@
 //! Content-addressed immutable objects: features, parameter tables, snapshots, blobs.
 
+use gusset_doc::drawing::{parse_drawing_object, print_drawing_object};
 use gusset_doc::text::{parse_feature_object, parse_params_object, print_feature_object, print_params_object};
 use gusset_doc::{Document, Feature, ParseError};
 use gusset_units::LengthUnit;
@@ -71,8 +72,11 @@ pub struct Snapshot {
     /// The flattened feature list.
     pub features: Vec<Hash>,
     /// Objects holding the feature list (version 2: the list root and its chunks; empty
-    /// for version 1).
+    /// for version 1), and the drawing list when there is one.
     pub chunks: Vec<Hash>,
+    /// The drawings (ADR 0032), one object each; version 2 only, on an optional
+    /// `drawings <hash>` line naming a `drawinglist 1` object.
+    pub drawings: Vec<Hash>,
 }
 
 /// Feature-list chunks end after a feature whose hash's first byte is a multiple of
@@ -118,12 +122,16 @@ fn parse_chunk(s: &str) -> Result<Vec<Hash>, String> {
 
 impl Snapshot {
     /// The version-2 text.
-    fn to_text_v2(units: LengthUnit, params: Hash, list: Hash) -> String {
+    fn to_text_v2(units: LengthUnit, params: Hash, list: Hash, drawings: Option<Hash>) -> String {
         let u = match units {
             LengthUnit::Millimetre => "mm",
             LengthUnit::Inch => "in",
         };
-        format!("snapshot 2\nunits {u}\nparams {params}\nlist {list}\n")
+        let mut s = format!("snapshot 2\nunits {u}\nparams {params}\nlist {list}\n");
+        if let Some(d) = drawings {
+            s.push_str(&format!("drawings {d}\n"));
+        }
+        s
     }
 
     /// Version-1 text (the full feature list inline).
@@ -160,7 +168,7 @@ impl Snapshot {
             let h = l.strip_prefix("feature ").and_then(Hash::from_hex).ok_or("snapshot: bad feature line")?;
             features.push(h);
         }
-        Ok(Snapshot { units, params, features, chunks: Vec::new() })
+        Ok(Snapshot { units, params, features, chunks: Vec::new(), drawings: Vec::new() })
     }
 }
 
@@ -318,7 +326,17 @@ impl ObjectStore {
             root.push_str(&format!("chunk {h}\n"));
         }
         let list = stage(ObjectKind::Snapshot, &|| "the feature list".into(), root)?;
-        let text = Snapshot::to_text_v2(doc.units, params, list);
+        let drawings = if doc.drawings.is_empty() {
+            None
+        } else {
+            let mut index = String::from("drawinglist 1\n");
+            for d in &doc.drawings {
+                let h = stage(ObjectKind::Feature, &|| format!("drawing '{}'", d.name), print_drawing_object(d))?;
+                index.push_str(&format!("drawing {h}\n"));
+            }
+            Some(stage(ObjectKind::Snapshot, &|| "the drawing list".into(), index)?)
+        };
+        let text = Snapshot::to_text_v2(doc.units, params, list, drawings);
         let snapshot = stage(ObjectKind::Snapshot, &|| "the model snapshot".into(), text)?;
         Ok(StagedDocument { snapshot, objects })
     }
@@ -346,6 +364,14 @@ impl ObjectStore {
             .and_then(|l| l.strip_prefix("list "))
             .and_then(Hash::from_hex)
             .ok_or_else(|| corrupt("bad list line".into()))?;
+        let drawing_list = match tail.next() {
+            None => None,
+            Some(l) => Some(
+                l.strip_prefix("drawings ")
+                    .and_then(Hash::from_hex)
+                    .ok_or_else(|| corrupt("bad drawings line".into()))?,
+            ),
+        };
         if tail.next().is_some() {
             return Err(corrupt("trailing lines".into()));
         }
@@ -362,7 +388,21 @@ impl ObjectStore {
             features.extend(parse_chunk(self.text(c)?).map_err(|r| ObjectError::Corrupt { hash: c, reason: r })?);
             chunks.push(c);
         }
-        Ok(Snapshot { units: head.units, params: head.params, features, chunks })
+        let mut drawings = Vec::new();
+        if let Some(dl) = drawing_list {
+            let text = self.text(dl)?;
+            let bad = |r: &str| ObjectError::Corrupt { hash: dl, reason: r.to_string() };
+            let mut lines = text.lines();
+            if lines.next() != Some("drawinglist 1") {
+                return Err(bad("not a drawing list"));
+            }
+            for l in lines {
+                drawings
+                    .push(l.strip_prefix("drawing ").and_then(Hash::from_hex).ok_or_else(|| bad("bad drawing line"))?);
+            }
+            chunks.push(dl);
+        }
+        Ok(Snapshot { units: head.units, params: head.params, features, chunks, drawings })
     }
 
     pub fn feature(&self, h: Hash) -> Result<Feature, ObjectError> {
@@ -376,7 +416,15 @@ impl ObjectStore {
         let (params, configurations) = parse_params_object(self.text(snap.params)?)
             .map_err(|e| ObjectError::Corrupt { hash: snap.params, reason: e.to_string() })?;
         let features = snap.features.iter().map(|h| self.feature(*h)).collect::<Result<Vec<_>, _>>()?;
-        Ok(Document { units: snap.units, params, configurations, features })
+        let drawings = snap
+            .drawings
+            .iter()
+            .map(|h| {
+                parse_drawing_object(self.text(*h)?)
+                    .map_err(|e| ObjectError::Corrupt { hash: *h, reason: e.to_string() })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Document { units: snap.units, params, configurations, features, drawings })
     }
 
     /// Hashes of every object a snapshot references (including itself). Returns false
@@ -391,6 +439,7 @@ impl ObjectStore {
         };
         out.insert(s.params);
         out.extend(s.chunks.iter().copied());
+        out.extend(s.drawings.iter().copied());
         out.extend(s.features.iter().copied());
         let mut complete = true;
         for f in &s.features {

@@ -417,6 +417,39 @@ mod tests {
     }
 
     #[test]
+    fn drawings_are_stored_compared_and_merged() {
+        // ADR 0032: a drawing travels with the document through every history operation.
+        let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{extra}")).unwrap();
+        let sheet = |title: &str, note: &str| {
+            format!(
+                "\ndrawing D (size: A4, projection: third, title: \"{title}\") {{\n  note N1 (text: \"{note}\", at: [10, 10])\n}}\n"
+            )
+        };
+        let base = t(&sheet("Plate", "a"));
+        let mut store = ObjectStore::default();
+        let h = store.put_document(&base);
+        assert_eq!(store.document(h).unwrap(), base);
+        let mut closure = std::collections::BTreeSet::new();
+        assert!(store.snapshot_closure(h, &mut closure));
+        assert_eq!(closure.len(), 5, "snapshot, params, list root (no features: no chunk), drawing list, drawing");
+        // A document without drawings keeps the old snapshot text.
+        let plain = t("");
+        let hp = store.put_document(&plain);
+        assert!(store.snapshot(hp).unwrap().drawings.is_empty());
+        assert_eq!(store.document(hp).unwrap(), plain);
+        // Compare and merge: whole drawings, like configurations.
+        let ours = t(&sheet("Plate", "b"));
+        let theirs = t(&sheet("Bracket", "a"));
+        let d = diff::diff_documents(&base, &ours);
+        assert_eq!(d.drawings.len(), 1, "{d:?}");
+        assert!(matches!(&d.drawings[0].change, Change::Modified { new, .. } if new.contains("\"b\"")));
+        let m = merge_documents(&base, &ours, &theirs, None);
+        assert_eq!(m.conflicts.len(), 1, "{m:?}");
+        let m = merge_documents(&base, &base, &theirs, None);
+        assert!(m.conflicts.is_empty() && m.doc.drawings == theirs.drawings, "{m:?}");
+    }
+
+    #[test]
     fn compare_and_cherry_pick() {
         let u = Ctx::user(0);
         let base = with_feature(doc(&[("a", "1 mm")]), "S1");

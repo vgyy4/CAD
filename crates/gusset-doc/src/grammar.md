@@ -617,6 +617,64 @@ parameters or text like anything else:
   teeth, or a profile shift of about X or more". These parameters count as used by the sketch
   (they cannot be deleted while it has the key). Remove `gear: ...` to turn the check off.
 
+## Drawings
+
+A `drawing` block after the features makes a 2D sheet of the model (ADR 0032). It changes
+no body. Views are projected from the model when the drawing is shown or exported, so they
+follow every model change.
+
+```
+drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: first | third,
+                [scale: <number>], [title: "..."], [number: "..."], [material: "..."], [author: "..."]) {
+  view <Name> ([bodies: [<body>, ...]], from: front | back | top | bottom | left | right | iso | iso_back,
+               at: [<x>, <y>], [scale: <number>], [hidden: true | false], [tangent: true])
+  view <Name> (of: <view>, side: top | bottom | left | right, [gap: <length>], [scale: ...], ...)
+  dim <Name> (view: <view>, kind: length | distance | diameter | radius | angle, a: <edge>, [b: <edge>],
+              [direction: aligned | horizontal | vertical], [offset: <length>], [text_at: [<x>, <y>]],
+              [tolerance: "..."], [prefix: "..."])
+  note <Name> (text: "...", at: [<x>, <y>])
+}
+```
+
+- Sheet positions are millimetres from the sheet's lower-left corner. `scale` is a plain
+  number (0.5 is 1:2); a view's scale defaults to the sheet's.
+- A base view shows `bodies` (default: every body) seen `from` a direction, centred at
+  `at`. A projected view (`of`, `side`) stays aligned with its parent, `gap` apart
+  (default 20 mm). The projection picks the side of the sheet: in `first` angle (ISO) the
+  view of the top goes below the parent, in `third` angle (ASME) above.
+- Hidden lines are shown dashed (`hidden: false` turns them off; iso views default to off).
+  `tangent: true` also draws smooth edges.
+- Dimensions are measured from the model each time and never stored. `length` takes one
+  straight edge, `diameter` and `radius` a circular edge, `distance` and `angle` two edges
+  (`a`, `b`). A dimension whose edge no longer exists is reported as dangling by
+  `query.drawing`; it is not deleted.
+
+```gusset
+gusset 1
+units mm
+
+sketch S (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Plate (profile: S, distance: 10 mm, op: new)
+
+drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
+  view Front (bodies: [Plate], from: front, at: [130, 180])
+  view Top (of: Front, side: top)
+  view Iso (from: iso, at: [320, 200])
+  dim Width (view: Front, kind: length, a: edge(Plate/cap(end), Plate/side(S/l5)), offset: 10 mm)
+  note N1 (text: "Break sharp edges", at: [20, 30])
+}
+```
+
 ## Common mistakes
 
 - A header other than `gusset 1`, a second `units`, a duplicate feature or id.
@@ -624,3 +682,4 @@ parameters or text like anything else:
 - `angle` with points instead of lines, or with a bare number where degrees are meant.
 - `body:` names the feature that created the body (`Extrude1`); `body_name:` names the
   body a new extrude or revolve creates.
+- `drawing` blocks come after every feature; a view's `of` names a view of the same drawing.

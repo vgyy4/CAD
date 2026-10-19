@@ -1,0 +1,23 @@
+gusset 1
+units mm
+
+sketch S (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Plate (profile: S, distance: 10 mm, op: new)
+
+drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
+  view Front (bodies: [Plate], from: front, at: [130, 180])
+  view Top (of: Front, side: top)
+  view Iso (from: iso, at: [320, 200])
+  dim Width (view: Front, kind: length, a: edge(Plate/cap(end), Plate/side(S/l5)), offset: 10 mm)
+  note N1 (text: "Break sharp edges", at: [20, 30])
+}

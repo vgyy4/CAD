@@ -33,11 +33,17 @@ pub struct DocDiff {
     pub params: Vec<ItemChange>,
     pub configurations: Vec<ItemChange>,
     pub features: Vec<ItemChange>,
+    /// Drawings (ADR 0032), whole: `old`/`new` are their texts.
+    pub drawings: Vec<ItemChange>,
 }
 
 impl DocDiff {
     pub fn is_empty(&self) -> bool {
-        !self.units_changed && self.params.is_empty() && self.configurations.is_empty() && self.features.is_empty()
+        !self.units_changed
+            && self.params.is_empty()
+            && self.configurations.is_empty()
+            && self.features.is_empty()
+            && self.drawings.is_empty()
     }
 }
 
@@ -82,6 +88,28 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
     for c in &a.configurations {
         if !cb.contains_key(c.name.as_str()) {
             d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Removed });
+        }
+    }
+    let (da, db): (HashMap<_, _>, HashMap<_, _>) = (
+        a.drawings.iter().map(|x| (x.name.as_str(), x)).collect(),
+        b.drawings.iter().map(|x| (x.name.as_str(), x)).collect(),
+    );
+    for x in &b.drawings {
+        match da.get(x.name.as_str()) {
+            None => d.drawings.push(ItemChange { name: x.name.clone(), change: Change::Added }),
+            Some(old) if *old != x => d.drawings.push(ItemChange {
+                name: x.name.clone(),
+                change: Change::Modified {
+                    old: gusset_doc::drawing::print_drawing_object(old),
+                    new: gusset_doc::drawing::print_drawing_object(x),
+                },
+            }),
+            Some(_) => {}
+        }
+    }
+    for x in &a.drawings {
+        if !db.contains_key(x.name.as_str()) {
+            d.drawings.push(ItemChange { name: x.name.clone(), change: Change::Removed });
         }
     }
     // Positions among the features both sides share, so an insertion does not make

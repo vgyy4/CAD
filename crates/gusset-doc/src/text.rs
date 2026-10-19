@@ -47,6 +47,10 @@ pub fn print(doc: &Document) -> String {
         out.push('\n');
         print_feature(&mut out, f);
     }
+    for d in &doc.drawings {
+        out.push('\n');
+        crate::drawing::print_drawing(&mut out, d);
+    }
     out
 }
 
@@ -499,7 +503,7 @@ fn print_feature(out: &mut String, f: &Feature) {
 
 /// Splits a line into (code, trailing comment). `#` inside strings and directly after
 /// a reference's `)` (disambiguation index) is not a comment.
-fn split_comment(line: &str) -> (&str, Option<&str>) {
+pub(crate) fn split_comment(line: &str) -> (&str, Option<&str>) {
     let mut in_str = false;
     let mut esc = false;
     let mut prev = ' ';
@@ -527,7 +531,7 @@ fn split_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
-fn perr(line: usize, msg: impl Into<String>) -> ParseError {
+pub(crate) fn perr(line: usize, msg: impl Into<String>) -> ParseError {
     ParseError { line, column: 1, message: msg.into(), hint: None }
 }
 
@@ -678,10 +682,22 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 }
                 doc.features.push(feature);
             }
+            "drawing" => {
+                if doc.drawings.len() >= MAX_LIST_ITEMS {
+                    return Err(c.err("too many drawings"));
+                }
+                let (d, consumed) = crate::drawing::parse_drawing(&mut c, &lines, i)?;
+                i = consumed;
+                if doc.drawings.iter().any(|x| x.name == d.name) {
+                    return Err(c.err(format!("drawing '{}' is defined twice", d.name)));
+                }
+                doc.drawings.push(d);
+                pending_note.clear();
+            }
             other => {
                 return Err(c.err_hint(
                     format!("unknown statement '{other}'"),
-                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint, component",
+                    "statements are: param, sketch, extrude, revolve, sweep, loft, fillet, chamfer, import, shell, mirror, pattern_linear, pattern_circular, plane, move, combine, hole, joint, component, drawing",
                 ));
             }
         }
@@ -704,7 +720,7 @@ impl WithHint for ParseError {
 
 /// Parses `(key: value, ...)`, calling `on_arg` for each key with the cursor positioned
 /// at the value.
-fn parse_args(
+pub(crate) fn parse_args(
     c: &mut Cursor<'_>,
     mut on_arg: impl FnMut(&str, &mut Cursor<'_>) -> Result<(), ParseError>,
 ) -> Result<(), ParseError> {
@@ -729,7 +745,7 @@ fn parse_args(
     }
 }
 
-fn parse_bool(c: &mut Cursor<'_>) -> Result<bool, ParseError> {
+pub(crate) fn parse_bool(c: &mut Cursor<'_>) -> Result<bool, ParseError> {
     match c.ident()? {
         "true" => Ok(true),
         "false" => Ok(false),
@@ -759,11 +775,11 @@ fn parse_profile(c: &mut Cursor<'_>) -> Result<ProfileRef, ParseError> {
     Ok(ProfileRef { sketch, regions })
 }
 
-fn unknown_arg(c: &Cursor<'_>, kw: &str, key: &str, allowed: &str) -> ParseError {
+pub(crate) fn unknown_arg(c: &Cursor<'_>, kw: &str, key: &str, allowed: &str) -> ParseError {
     c.err_hint(format!("'{kw}' has no argument '{key}'"), format!("allowed: {allowed}"))
 }
 
-fn missing(c: &Cursor<'_>, kw: &str, key: &str) -> ParseError {
+pub(crate) fn missing(c: &Cursor<'_>, kw: &str, key: &str) -> ParseError {
     c.err(format!("'{kw}' needs a '{key}' argument"))
 }
 
@@ -1529,7 +1545,7 @@ fn parse_frame(c: &mut Cursor<'_>) -> Result<FrameRef, ParseError> {
     })
 }
 
-fn parse_ident_list(c: &mut Cursor<'_>, what: &str) -> Result<Vec<String>, ParseError> {
+pub(crate) fn parse_ident_list(c: &mut Cursor<'_>, what: &str) -> Result<Vec<String>, ParseError> {
     c.expect('[')?;
     let mut list = Vec::new();
     if !c.eat(']') {
@@ -1548,7 +1564,7 @@ fn parse_ident_list(c: &mut Cursor<'_>, what: &str) -> Result<Vec<String>, Parse
     Ok(list)
 }
 
-fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 2], ParseError> {
+pub(crate) fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr; 2], ParseError> {
     c.expect('[')?;
     let lo = c.expr()?;
     c.expect(',')?;

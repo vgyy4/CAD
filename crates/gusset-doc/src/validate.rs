@@ -351,7 +351,135 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         }
         seen.insert(n, f);
     }
+    validate_drawings(doc, &seen, &body_names, &mut out);
     out
+}
+
+/// Drawings (ADR 0032): names unique among features and drawings, views of existing
+/// bodies, projected views of existing views without cycles, dimensions in existing
+/// views, references to existing features, short single-line texts.
+fn validate_drawings(
+    doc: &Document,
+    features: &BTreeMap<&str, &Feature>,
+    bodies: &BTreeSet<&str>,
+    out: &mut Vec<Issue>,
+) {
+    use crate::drawing::{DrawingItem, ViewPlacement};
+    let mut names = BTreeSet::new();
+    let bad_text = |t: &str, max: usize| t.chars().count() > max || t.chars().any(|c| c.is_control() && c != '\n');
+    for d in &doc.drawings {
+        let n = d.name.as_str();
+        if let Err(e) = validate_feature_name(n) {
+            out.push(issue(n, e));
+        }
+        if features.contains_key(n) || !names.insert(n) {
+            out.push(issue_h(
+                n,
+                "drawing name is used twice",
+                "drawing names must differ from every feature and drawing",
+            ));
+        }
+        for t in [&d.title, &d.number, &d.material, &d.author].into_iter().flatten() {
+            if bad_text(t, 200) || t.contains('\n') {
+                out.push(issue_h(
+                    n,
+                    "a title block field is too long or has control characters",
+                    "keep it to one line",
+                ));
+            }
+        }
+        let mut items = BTreeSet::new();
+        for item in &d.items {
+            let iname = item.name();
+            if let Err(e) = validate_feature_name(iname) {
+                out.push(issue(n, format!("{iname}: {e}")));
+            }
+            if !items.insert(iname) {
+                out.push(issue_h(
+                    n,
+                    format!("'{iname}' is defined twice"),
+                    "give each view, dimension and note its own name",
+                ));
+            }
+        }
+        for item in &d.items {
+            match item {
+                DrawingItem::View(v) => match &v.placement {
+                    ViewPlacement::Base { bodies: list, .. } => {
+                        for b in list {
+                            if !bodies.contains(b.as_str())
+                                && !features.get(b.as_str()).is_some_and(|f| creates_body(f))
+                            {
+                                out.push(issue_h(
+                                    n,
+                                    format!("view {} shows '{b}', which is not a body", v.name),
+                                    "use a body name or the feature that makes the body",
+                                ));
+                            }
+                        }
+                    }
+                    ViewPlacement::Projected { .. } => {
+                        // Follow the chain of parents: it must end in a base view.
+                        let mut at = v;
+                        let mut steps = 0;
+                        while let ViewPlacement::Projected { of, .. } = &at.placement {
+                            steps += 1;
+                            match d.view(of) {
+                                Some(p) if steps <= d.items.len() => at = p,
+                                Some(_) => {
+                                    out.push(issue(
+                                        n,
+                                        format!("view {} is projected from itself through other views", v.name),
+                                    ));
+                                    break;
+                                }
+                                None => {
+                                    out.push(issue_h(
+                                        n,
+                                        format!(
+                                            "view {} is projected from '{of}', which is not a view of this drawing",
+                                            v.name
+                                        ),
+                                        "project it from a view of the same drawing",
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                },
+                DrawingItem::Dim(dim) => {
+                    if d.view(&dim.view).is_none() {
+                        out.push(issue(
+                            n,
+                            format!("dimension {} is in view '{}', which does not exist", dim.name, dim.view),
+                        ));
+                    }
+                    let mut missing = Vec::new();
+                    for e in std::iter::once(&dim.a).chain(&dim.b) {
+                        e.features(&mut |f| {
+                            if !features.contains_key(f) {
+                                missing.push(f.to_string());
+                            }
+                        });
+                    }
+                    for f in missing {
+                        out.push(issue(n, format!("dimension {} refers to '{f}', which does not exist", dim.name)));
+                    }
+                    for t in [&dim.tolerance, &dim.prefix].into_iter().flatten() {
+                        if bad_text(t, 40) || t.contains('\n') {
+                            out.push(issue(n, format!("dimension {}: tolerance or prefix is too long", dim.name)));
+                        }
+                    }
+                }
+                DrawingItem::Note(note) => {
+                    if bad_text(&note.text, 2000) {
+                        out.push(issue(n, format!("note {} is too long or has control characters", note.name)));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A hole feature: its sites exist and its arguments fit its type.

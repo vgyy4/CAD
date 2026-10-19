@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 mod cursor;
+pub mod drawing;
 pub mod model;
 pub mod refs;
 pub mod text;
@@ -1119,5 +1120,83 @@ mod component_tests {
         // A bad hash is refused; the document is required.
         assert!(Document::from_text(&text.replace(HASH, "xyz")).is_err());
         assert!(Document::from_text("gusset 1\nunits mm\ncomponent C (source: \"a.gus\")\n").is_err());
+    }
+}
+
+#[cfg(test)]
+mod drawing_tests {
+    use super::*;
+
+    const PLATE: &str = "gusset 1
+units mm
+
+sketch Sketch1 (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Plate (profile: Sketch1, distance: 10 mm, op: new)
+";
+
+    const DRAWING: &str = "
+drawing Plate_dwg (size: A3, projection: first, scale: 0.5, title: \"Plate\", number: \"P-1\") {
+  view Front (bodies: [Plate], from: front, at: [130, 160])
+  view Top (of: Front, side: top, gap: 25 mm)
+  view Iso (from: iso, at: [330, 210], scale: 0.25, hidden: false)
+  dim D1 (view: Front, kind: length, a: edge(Plate/cap(end), Plate/side(Sketch1/l5)), direction: horizontal, offset: 10 mm)
+  dim D2 (view: Top, kind: distance, a: edge(Plate/cap(end), Plate/side(Sketch1/l6)), b: edge(Plate/cap(end), Plate/side(Sketch1/l8)), tolerance: \"±0.1\")
+  note N1 (text: \"Break sharp edges\", at: [20, 30])
+}
+";
+
+    #[test]
+    fn drawings_round_trip_and_validate() {
+        let text = format!("{PLATE}{DRAWING}");
+        let doc = Document::from_text(&text).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), text);
+        let d = &doc.drawings[0];
+        assert_eq!((d.size, d.projection, d.items.len()), (drawing::SheetSize::A3, drawing::Projection::First, 6));
+        assert!(
+            matches!(&d.view("Top").unwrap().placement, drawing::ViewPlacement::Projected { of, .. } if of == "Front")
+        );
+        let obj = drawing::print_drawing_object(d);
+        assert_eq!(&drawing::parse_drawing_object(&obj).unwrap(), d);
+    }
+
+    #[test]
+    fn drawing_errors() {
+        let bad = |from: &str, to: &str, want: &str| {
+            let text = format!("{PLATE}{}", DRAWING.replace(from, to));
+            let e = Document::from_text(&text).map(|_| ()).unwrap_err().to_string();
+            assert!(e.contains(want), "{from} -> {to}: {e}");
+        };
+        bad("bodies: [Plate]", "bodies: [Nope]", "not a body");
+        bad("of: Front, side: top", "of: Back, side: top", "not a view of this drawing");
+        bad("view: Front, kind: length", "view: Side, kind: length", "'Side', which does not exist");
+        bad(
+            "Plate/cap(end), Plate/side(Sketch1/l5)",
+            "Nope/cap(end), Plate/side(Sketch1/l5)",
+            "'Nope', which does not exist",
+        );
+        bad("kind: length", "kind: distance", "takes two references");
+        bad("size: A3", "size: A9", "unknown sheet size");
+        bad("side: top, gap", "side: up, gap", "unknown side");
+        bad("view Iso", "view Front", "defined twice");
+        bad("drawing Plate_dwg", "drawing Plate", "drawing name is used twice");
+        bad("of: Front, side: top", "of: Front, from: top", "either projected");
+        bad("\n}\n", "\n", "not closed");
+        // A projection cycle.
+        let cyc = DRAWING.replace(
+            "view Iso (from: iso, at: [330, 210], scale: 0.25, hidden: false)",
+            "view A (of: B, side: left)\n  view B (of: A, side: right)",
+        );
+        let e = Document::from_text(&format!("{PLATE}{cyc}")).map(|_| ()).unwrap_err().to_string();
+        assert!(e.contains("projected from itself"), "{e}");
     }
 }

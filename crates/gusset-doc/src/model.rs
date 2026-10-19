@@ -16,6 +16,8 @@ pub struct Document {
     /// Named parameter presets (ADR 0027 §3).
     pub configurations: Vec<Configuration>,
     pub features: Vec<Feature>,
+    /// 2D drawings (ADR 0032), after the features; they change no body.
+    pub drawings: Vec<crate::drawing::Drawing>,
 }
 
 /// A named set of parameter values: `configuration Small (set: [w = 20 mm])`.
