@@ -12,5 +12,6 @@ pub mod bsplslib;
 pub mod elclib;
 pub mod elslib;
 pub mod gp;
+pub mod math1d;
 pub mod mathlin;
 pub mod plib;
