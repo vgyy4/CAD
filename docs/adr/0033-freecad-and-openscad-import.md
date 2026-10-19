@@ -38,8 +38,9 @@ formats, the licences of existing readers (FreeCAD LGPL-2.1+, OpenSCAD GPL-2.0+,
    true surfaces, not facets; `$fn` only matters for `circle`/`polygon` used as
    polygons). `hull`, `minkowski`, `offset`, `projection`, `surface`, `import`, `text`
    and non-uniform scaling are reported as unsupported with the line. Evaluation is
-   bounded: recursion depth 256, 10 M evaluation steps, 100 k primitives, 50 MB of
-   values. The result is an `import` feature per top-level solid; the source is kept in
+   bounded: recursion depth 256, 10 M evaluation steps, 100 k primitives, 20 M value
+   elements built or walked, CSG depth 256 (amended after security review v0.4 X1-X3;
+   the first version claimed "50 MB of values" without enforcing it), and cancellable. The result is an `import` feature per top-level solid; the source is kept in
    the import feature's file name and the warnings list what was skipped. Translating
    `.scad` into our code language (tier 1, editable parameters) needs loops and modules
    in the language and comes later.

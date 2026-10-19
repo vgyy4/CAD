@@ -97,3 +97,37 @@ fn unsupported_and_hostile_input_is_reported() {
     // Disabled objects and comments vanish.
     assert_eq!(read("*cube(1); /* sphere(); */ %sphere(2);").unwrap().objects.len(), 1);
 }
+
+#[test]
+fn memory_time_and_depth_bombs_are_refused() {
+    // Security review X1-X3: each of these aborted the process or ran for minutes.
+    let refused = |src: &str, want: &str| {
+        let t = std::time::Instant::now();
+        let e = read(src).unwrap_err().to_string();
+        assert!(e.contains(want), "{src}: {e}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(20), "{src}: {:?}", t.elapsed());
+    };
+    refused("function d(v,n) = n==0 ? v : d(concat(v,v), n-1); x = len(d([1],34)); cube(x);", "too much data");
+    refused("idx=[for(i=[0:999]) 0]; module m() { children(idx); } m() m() m() cube(1);", "too many primitives");
+    let nest = "v0=[1,2,3,4,5,6,7,8,9,10]; v1=[v0,v0,v0,v0,v0,v0,v0,v0,v0,v0]; \
+        v2=[v1,v1,v1,v1,v1,v1,v1,v1,v1,v1]; v3=[v2,v2,v2,v2,v2,v2,v2,v2,v2,v2]; \
+        v4=[v3,v3,v3,v3,v3,v3,v3,v3,v3,v3]; v5=[v4,v4,v4,v4,v4,v4,v4,v4,v4,v4]; \
+        v6=[v5,v5,v5,v5,v5,v5,v5,v5,v5,v5]; v7=[v6,v6,v6,v6,v6,v6,v6,v6,v6,v6]; \
+        v8=[v7,v7,v7,v7,v7,v7,v7,v7,v7,v7]; v9=[v8,v8,v8,v8,v8,v8,v8,v8,v8,v8];";
+    refused(&format!("{nest} x = str(v8); cube(1);"), "too much data");
+    refused(&format!("{nest} w = v9 == v9; cube(1);"), "too much data");
+    refused(&format!("{nest} w = v9 + v9; cube(1);"), "too much data");
+    // A tree far deeper than any real model: refused in the evaluator, on its own stack.
+    let mut body = String::from("r(k-1); cube(1);");
+    for _ in 0..100 {
+        body = format!("difference() {{ {body} }} cube(1);");
+    }
+    let deep = format!("module r(k) {{ if (k > 0) {{ {body} }} else cube(1); }} r(250);");
+    refused(&deep, "operations deep");
+    // A cancelled run stops.
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    let e = read_cancellable("for (i = [0:999999]) for (j = [0:9]) x = i;", &Limits::default(), Some(&stop))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("cancelled"), "{e}");
+}

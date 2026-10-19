@@ -11,7 +11,7 @@ const MAX_OBJECTS: usize = 20_000;
 /// Most shapes imported from one file.
 pub const MAX_SHAPES: usize = 256;
 /// Largest XML file read.
-const MAX_XML: usize = 64 << 20;
+pub(crate) const MAX_XML: usize = 64 << 20;
 
 /// One object of `Document.xml`.
 #[derive(Debug, Clone, Default, PartialEq)]

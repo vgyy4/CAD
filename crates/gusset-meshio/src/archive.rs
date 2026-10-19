@@ -11,12 +11,30 @@ use crate::{Limits, Result};
 /// # Errors
 /// Not a ZIP, unsafe names, too many entries, encrypted or oversized entries.
 pub fn read_entries(data: &[u8], limits: &Limits, want: &dyn Fn(&str) -> bool) -> Result<Vec<(String, Vec<u8>)>> {
-    let a = Archive::parse(data, limits)?;
     let mut budget = limits.max_decompressed_bytes;
+    read_entries_within(data, limits, want, u64::MAX, &mut budget)
+}
+
+/// [`read_entries`] with a cap on each entry's declared size, checked before inflating,
+/// and a decompressed-bytes `budget` shared across calls (security review X4).
+///
+/// # Errors
+/// As [`read_entries`]; an entry over `max_entry` bytes.
+pub fn read_entries_within(
+    data: &[u8],
+    limits: &Limits,
+    want: &dyn Fn(&str) -> bool,
+    max_entry: u64,
+    budget: &mut u64,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let a = Archive::parse(data, limits)?;
     let mut out = Vec::new();
     for e in a.all() {
         if want(&e.name) {
-            out.push((e.name.clone(), a.read(e, &mut budget, limits)?));
+            if e.usize > max_entry {
+                return Err(crate::error::limit("entry size (bytes)", e.usize, max_entry));
+            }
+            out.push((e.name.clone(), a.read(e, budget, limits)?));
         }
     }
     Ok(out)

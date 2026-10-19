@@ -54,6 +54,9 @@ impl Format {
             "step" | "stp" => Some(Format::Step),
             "iges" | "igs" => Some(Format::Iges),
             "brp" | "brep_text" => Some(Format::BrepText),
+            // FreeCAD's binary shapes (`.bin`): validated and re-serialized here, never
+            // read in the app (security review X7).
+            "brep_bin" => Some(Format::Brep),
             _ => None,
         }
     }

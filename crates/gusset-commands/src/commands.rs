@@ -1483,8 +1483,9 @@ impl Command for SketchImportDxf {
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let k = self.scale.unwrap_or(1.0);
-        if !(k.is_finite() && k > 0.0) {
-            return Err(CommandError::args("scale must be positive"));
+        // Bounded, so coordinates times the scale stay finite (security review X6).
+        if !(1e-6..=1e6).contains(&k) {
+            return Err(CommandError::args("scale must be between 1e-6 and 1e6"));
         }
         let full = crate::paths::read_target(s.project_dir.as_deref(), &self.path, &ctx.actor)?;
         if !full.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("dxf")) {
@@ -1492,8 +1493,12 @@ impl Command for SketchImportDxf {
         }
         let file = crate::import::open_regular(&full, &self.path, MAX_DXF_BYTES)?;
         let bytes = crate::import::read_capped(file, MAX_DXF_BYTES, &std::sync::atomic::AtomicBool::new(false))?;
-        let read = gusset_drawing::dxf_read::read(&bytes)
-            .map_err(|e| CommandError::new("io", format!("'{}' cannot be read: {e}", self.path)))?;
+        let read = gusset_drawing::dxf_read::read(&bytes).map_err(|e| {
+            // The reader quotes the file: in a `_user_text` field (security review X5).
+            let mut c = CommandError::new("io", format!("'{}' is not a DXF file this reader takes", self.path));
+            c.details = Some(json!({ "reason_user_text": e.to_string() }));
+            c
+        })?;
         if read.curves.is_empty() {
             return Err(CommandError::new("io", "the file has no lines, arcs or circles"));
         }
@@ -1501,6 +1506,14 @@ impl Command for SketchImportDxf {
         let sk = self.sketch.clone();
         edit(s, ctx, "Import DXF", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
+            // Refused before anything is added: the sketch would pass its entity cap (X6).
+            if d.entities.len() + read.curves.len() > gusset_sketch::sketch::MAX_ENTITIES {
+                return Err(CommandError::args(format!(
+                    "the file has {} curves: the sketch would pass {} entities",
+                    read.curves.len(),
+                    gusset_sketch::sketch::MAX_ENTITIES
+                )));
+            }
             // Ends closer than 1 µm are one point.
             let mut points: std::collections::HashMap<(i64, i64), String> = std::collections::HashMap::new();
             let mut point = |d: &mut SketchDef, p: [f64; 2]| -> Result<String, CommandError> {

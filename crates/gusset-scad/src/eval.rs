@@ -9,6 +9,7 @@ use crate::parse::{Arg, Expr, Param, Stmt, VecItem};
 use crate::{Csg, Csg2, IDENTITY, M4, Model, Op, Prim, ScadError, Shape2, mul};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Bounds on evaluation.
 #[derive(Debug, Clone, Copy)]
@@ -18,11 +19,23 @@ pub struct Limits {
     pub max_primitives: usize,
     /// Most elements in one vector or range expansion.
     pub max_vector: usize,
+    /// Most value elements built or walked over the whole run (memory and time: deep
+    /// vector operations, `concat`, `str`, ranges; security review X1).
+    pub max_cells: u64,
+    /// Deepest CSG tree (the importer's builder recurses over it; review X2).
+    pub max_csg_depth: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_steps: 10_000_000, max_depth: 256, max_primitives: 100_000, max_vector: 1_000_000 }
+        Limits {
+            max_steps: 10_000_000,
+            max_depth: 256,
+            max_primitives: 100_000,
+            max_vector: 1_000_000,
+            max_cells: 20_000_000,
+            max_csg_depth: 256,
+        }
     }
 }
 
@@ -50,7 +63,38 @@ impl Value {
     fn num(&self) -> Option<f64> {
         if let Value::Num(n) = self { Some(*n) } else { None }
     }
+    /// The value as text, at most [`MAX_TEXT`] bytes (shared nested vectors can stand for
+    /// far more text than memory holds).
     fn show(&self) -> String {
+        let mut o = String::new();
+        self.show_into(&mut o);
+        o
+    }
+
+    /// Appends the value's text to `o`; `false` (and `o` cut short) past [`MAX_TEXT`].
+    fn show_into(&self, o: &mut String) -> bool {
+        if o.len() > MAX_TEXT {
+            return false;
+        }
+        match self {
+            Value::Vec(v) => {
+                o.push('[');
+                for (i, x) in v.iter().enumerate() {
+                    if i > 0 {
+                        o.push_str(", ");
+                    }
+                    if !x.show_into(o) {
+                        return false;
+                    }
+                }
+                o.push(']');
+            }
+            other => o.push_str(&other.show_flat()),
+        }
+        o.len() <= MAX_TEXT
+    }
+
+    fn show_flat(&self) -> String {
         match self {
             Value::Undef => "undef".into(),
             Value::Bool(b) => b.to_string(),
@@ -62,9 +106,66 @@ impl Value {
                 }
             }
             Value::Str(s) => s.to_string(),
-            Value::Vec(v) => format!("[{}]", v.iter().map(Value::show).collect::<Vec<_>>().join(", ")),
+            Value::Vec(_) => String::new(),
             Value::Range(a, s, b) => format!("[{a} : {s} : {b}]"),
         }
+    }
+}
+
+/// Longest text a value is shown as, in bytes.
+const MAX_TEXT: usize = 1 << 20;
+
+/// The number of leaf values in `v` (vectors shared by `Rc` counted each time), stopping
+/// once past `cap`.
+fn weight(v: &Value, cap: u64) -> u64 {
+    match v {
+        Value::Vec(items) => {
+            let mut n = 1u64;
+            for x in items.iter() {
+                if n > cap {
+                    break;
+                }
+                n += weight(x, cap - n);
+            }
+            n
+        }
+        _ => 1,
+    }
+}
+
+/// The depth of `c`, stopping once past `cap`.
+fn csg_depth(c: &Csg, cap: usize) -> usize {
+    match c {
+        Csg::Leaf { .. } => 1,
+        Csg::Op(_, v) if cap > 0 => 1 + v.iter().map(|k| csg_depth(k, cap - 1)).max().unwrap_or(0),
+        Csg::Op(..) => 1,
+    }
+}
+
+fn csg2_depth(c: &Csg2, cap: usize) -> usize {
+    match c {
+        Csg2::Shape(_) => 1,
+        Csg2::Op(_, v) if cap > 0 => 1 + v.iter().map(|k| csg2_depth(k, cap - 1)).max().unwrap_or(0),
+        Csg2::Op(..) => 1,
+    }
+}
+
+fn leaves(o: &Obj) -> usize {
+    fn l3(c: &Csg) -> usize {
+        match c {
+            Csg::Leaf { .. } => 1,
+            Csg::Op(_, v) => v.iter().map(l3).sum(),
+        }
+    }
+    fn l2(c: &Csg2) -> usize {
+        match c {
+            Csg2::Shape(_) => 1,
+            Csg2::Op(_, v) => v.iter().map(l2).sum(),
+        }
+    }
+    match o {
+        Obj::D3(c) => l3(c),
+        Obj::D2(c) => l2(c),
     }
 }
 
@@ -113,8 +214,12 @@ struct Eval<'a> {
     /// `$` variables: (name, value), innermost last.
     dynamic: Vec<(String, Value)>,
     steps: u64,
+    cells: u64,
+    /// Nested child blocks being evaluated.
+    nest: usize,
     depth: u32,
     prims: usize,
+    cancel: Option<&'a AtomicBool>,
     warnings: Vec<String>,
     children: Option<Rc<Children>>,
 }
@@ -195,7 +300,31 @@ impl Eval<'_> {
         if self.steps > self.lim.max_steps {
             return err(line, "the program takes too long to evaluate");
         }
+        if self.steps.is_multiple_of(4096) && self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return err(0, "cancelled");
+        }
         Ok(())
+    }
+
+    /// Charges `n` value elements built or walked to the run's budget (review X1, X3).
+    fn charge(&mut self, n: u64, line: u32) -> R<()> {
+        self.cells = self.cells.saturating_add(n);
+        if self.cells > self.lim.max_cells {
+            return err(line, "the program builds too much data");
+        }
+        self.steps = self.steps.saturating_add(n / 16);
+        self.step(line)
+    }
+
+    /// Charges a walk over `vals` (leaf counts, bounded by what is left of the budget).
+    fn charge_walk(&mut self, vals: &[&Value], line: u32) -> R<()> {
+        let mut n = 0u64;
+        for v in vals {
+            if matches!(v, Value::Vec(_)) {
+                n = n.saturating_add(weight(v, self.lim.max_cells.saturating_sub(self.cells).saturating_add(1)));
+            }
+        }
+        self.charge(n, line)
     }
 
     fn enter(&mut self, line: u32) -> R<()> {
@@ -389,7 +518,10 @@ impl Eval<'_> {
 
     fn iterate(&mut self, v: &Value, line: u32) -> R<Vec<Value>> {
         Ok(match v {
-            Value::Vec(items) => items.as_ref().clone(),
+            Value::Vec(items) => {
+                self.charge(items.len() as u64, line)?;
+                items.as_ref().clone()
+            }
             Value::Range(a, s, b) => {
                 if *s == 0.0 || !s.is_finite() || !a.is_finite() || !b.is_finite() {
                     return Ok(Vec::new());
@@ -401,9 +533,13 @@ impl Eval<'_> {
                 if n + 1.0 > self.lim.max_vector as f64 {
                     return err(line, "a range is too long");
                 }
+                self.charge(n as u64 + 1, line)?;
                 (0..=n as usize).map(|i| Value::Num(a + s * i as f64)).collect()
             }
-            Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string().into())).collect(),
+            Value::Str(s) => {
+                self.charge(s.len() as u64, line)?;
+                s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+            }
             Value::Undef => Vec::new(),
             other => vec![other.clone()],
         })
@@ -424,6 +560,7 @@ impl Eval<'_> {
                 for it in items {
                     self.vec_item(it, sc, line, &mut out)?;
                 }
+                self.charge(out.len() as u64, line)?;
                 Value::Vec(Rc::new(out))
             }
             Expr::Range(a, s, b) => {
@@ -437,6 +574,7 @@ impl Eval<'_> {
             }
             Expr::Unary(op, a) => {
                 let v = self.expr(a, sc, line)?;
+                self.charge_walk(&[&v], line)?;
                 match (*op, v) {
                     ("!", v) => Value::Bool(!v.truthy()),
                     ("-", Value::Num(n)) => Value::Num(-n),
@@ -455,6 +593,8 @@ impl Eval<'_> {
                     return Ok(Value::Bool(self.expr(a, sc, line)?.truthy() || self.expr(b, sc, line)?.truthy()));
                 }
                 let (x, y) = (self.expr(a, sc, line)?, self.expr(b, sc, line)?);
+                // Element-wise operations and `==` walk whole nested vectors.
+                self.charge_walk(&[&x, &y], line)?;
                 binary(op, &x, &y)
             }
             Expr::Cond(c, a, b) => {
@@ -604,6 +744,10 @@ impl Eval<'_> {
         for a in args {
             vals.push(self.expr(&a.value, sc, line)?);
         }
+        if name != "len" {
+            let refs: Vec<&Value> = vals.iter().collect();
+            self.charge_walk(&refs, line)?;
+        }
         builtin_fn(name, &vals, line, &mut self.warnings)
     }
 
@@ -667,7 +811,18 @@ impl Eval<'_> {
                     Value::Num(n) => vec![*n as usize],
                     other => self.iterate(other, line)?.iter().filter_map(Value::num).map(|n| n as usize).collect(),
                 };
-                idx.into_iter().filter_map(|i| objs.get(i).cloned()).flatten().collect()
+                // Each pick copies the child: its leaves count again (review X1).
+                let mut out = Vec::new();
+                for i in idx {
+                    for o in objs.get(i).into_iter().flatten() {
+                        self.prims += leaves(o);
+                        if self.prims > self.lim.max_primitives {
+                            return err(line, "the model has too many primitives");
+                        }
+                        out.push(o.clone());
+                    }
+                }
+                out
             }
         })
     }
@@ -681,9 +836,17 @@ impl Eval<'_> {
     }
 
     fn kids(&mut self, children: &[Stmt], sc: usize) -> R<Vec<Obj>> {
+        // Each nested operation's children recurse here: bounding the nesting bounds the
+        // stack while the tree is built, not only the finished tree (review X2).
+        self.nest += 1;
+        if self.nest > 4 * self.lim.max_csg_depth {
+            self.nest -= 1;
+            return err(0, format!("the model nests more than {} operations deep", self.lim.max_csg_depth));
+        }
         let inner = self.push_scope(sc);
         let r = self.block(children, inner);
         self.scopes.truncate(inner);
+        self.nest -= 1;
         r
     }
 
@@ -911,7 +1074,10 @@ impl Eval<'_> {
             }
             "assert" => {
                 if !self.arg(a, "condition", 0).truthy() {
-                    return err(line, format!("assertion failed: {}", self.arg(a, "message", 1).show()));
+                    let text: String = self.arg(a, "message", 1).show().chars().take(200).collect();
+                    let mut e = ScadError::at(line, "assertion failed");
+                    e.user_text = Some(text);
+                    return Err(e);
                 }
                 self.kids(children, sc)
             }
@@ -1137,7 +1303,13 @@ fn builtin_fn(name: &str, v: &[Value], line: u32, warnings: &mut Vec<String>) ->
             }
             Vec(Rc::new(out))
         }
-        "str" => Str(v.iter().map(Value::show).collect::<String>().into()),
+        "str" => {
+            let mut o = String::new();
+            if !v.iter().all(|x| x.show_into(&mut o)) {
+                return err(line, "a string is too long");
+            }
+            Str(o.into())
+        }
         "chr" => {
             Str(v.iter().filter_map(Value::num).filter_map(|c| char::from_u32(c as u32)).collect::<String>().into())
         }
@@ -1187,14 +1359,17 @@ fn builtin_fn(name: &str, v: &[Value], line: u32, warnings: &mut Vec<String>) ->
 }
 
 /// Evaluates a parsed program.
-pub(crate) fn evaluate(prog: &[Stmt], lim: &Limits) -> Result<Model, ScadError> {
+pub(crate) fn evaluate(prog: &[Stmt], lim: &Limits, cancel: Option<&AtomicBool>) -> Result<Model, ScadError> {
     let mut e = Eval {
         lim,
         scopes: vec![Scope::default()],
         dynamic: Vec::new(),
         steps: 0,
+        cells: 0,
+        nest: 0,
         depth: 0,
         prims: 0,
+        cancel,
         warnings: Vec::new(),
         children: None,
     };
@@ -1203,6 +1378,13 @@ pub(crate) fn evaluate(prog: &[Stmt], lim: &Limits) -> Result<Model, ScadError> 
     let mut objects = Vec::new();
     for s in prog {
         for o in group(e.stmt(s, 0)?) {
+            let deep = match &o {
+                Obj::D3(c) => csg_depth(c, lim.max_csg_depth),
+                Obj::D2(c) => csg2_depth(c, lim.max_csg_depth),
+            };
+            if deep > lim.max_csg_depth {
+                return err(0, format!("the model nests more than {} operations deep", lim.max_csg_depth));
+            }
             match o {
                 Obj::D3(c) => objects.push(c),
                 Obj::D2(_) => e.warnings.push("a 2D object at the top level is not a solid; skipped".into()),

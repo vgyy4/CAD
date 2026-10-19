@@ -9,6 +9,7 @@ use gusset_kernel::{
 };
 use gusset_scad::{Csg, M4, Op, Prim, Shape2};
 use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type R<T> = Result<T, String>;
 
@@ -229,15 +230,22 @@ fn leaf(k: &dyn Kernel, prim: &Prim, m: &M4, line: u32) -> R<Shape> {
     Ok(shape)
 }
 
-/// Builds one top-level object.
+/// Builds one top-level object, checking `cancel` before each primitive (security
+/// review X3). The evaluator bounds the tree's depth, so the recursion is shallow.
 ///
 /// # Errors
-/// An unsupported placement or a kernel failure, with the line of the primitive.
-pub fn build(k: &dyn Kernel, c: &Csg) -> R<Shape> {
+/// An unsupported placement or a kernel failure, with the line of the primitive;
+/// "cancelled".
+pub fn build(k: &dyn Kernel, c: &Csg, cancel: &AtomicBool) -> R<Shape> {
     match c {
-        Csg::Leaf { prim, at, line } => leaf(k, prim, at, *line),
+        Csg::Leaf { prim, at, line } => {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            leaf(k, prim, at, *line)
+        }
         Csg::Op(op, kids) => {
-            let shapes: Vec<Shape> = kids.iter().map(|c| build(k, c)).collect::<R<_>>()?;
+            let shapes: Vec<Shape> = kids.iter().map(|c| build(k, c, cancel)).collect::<R<_>>()?;
             let Some((first, rest)) = shapes.split_first() else { return Err("an empty operation".into()) };
             if rest.is_empty() {
                 return Ok(first.clone());

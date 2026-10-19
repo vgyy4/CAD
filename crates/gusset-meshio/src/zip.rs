@@ -75,7 +75,7 @@ pub(crate) struct Entry {
     flags: u16,
     crc: u32,
     csize: u64,
-    usize: u64,
+    pub(crate) usize: u64,
     local_offset: u64,
 }
 

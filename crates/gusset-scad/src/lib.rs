@@ -11,6 +11,7 @@ mod eval;
 mod parse;
 
 pub use eval::Limits;
+use std::sync::atomic::AtomicBool;
 
 /// A 4x4 affine transform, row-major; the last row is `[0, 0, 0, 1]`.
 pub type M4 = [[f64; 4]; 4];
@@ -108,11 +109,14 @@ pub struct Model {
 pub struct ScadError {
     pub line: u32,
     pub message: String,
+    /// Text written in the file itself (an `assert` message): kept out of `message`, so
+    /// callers can label it as untrusted (security review X5).
+    pub user_text: Option<String>,
 }
 
 impl ScadError {
     pub(crate) fn at(line: u32, m: impl Into<String>) -> ScadError {
-        ScadError { line, message: m.into() }
+        ScadError { line, message: m.into(), user_text: None }
     }
 }
 
@@ -137,6 +141,14 @@ pub fn read(src: &str) -> Result<Model, ScadError> {
 /// # Errors
 /// As [`read`].
 pub fn read_with(src: &str, limits: &Limits) -> Result<Model, ScadError> {
+    read_cancellable(src, limits, None)
+}
+
+/// [`read_with`] that stops soon after `cancel` is set (security review X3).
+///
+/// # Errors
+/// As [`read`]; "cancelled" when stopped.
+pub fn read_cancellable(src: &str, limits: &Limits, cancel: Option<&AtomicBool>) -> Result<Model, ScadError> {
     // Parsing and evaluation recurse up to the depth limits; give them a stack that
     // holds that depth whatever thread the caller runs on.
     std::thread::scope(|sc| {
@@ -146,7 +158,7 @@ pub fn read_with(src: &str, limits: &Limits) -> Result<Model, ScadError> {
             .spawn_scoped(sc, || {
                 let toks = parse::lex(src)?;
                 let prog = parse::Parser::new(toks).program()?;
-                eval::evaluate(&prog, limits)
+                eval::evaluate(&prog, limits, cancel)
             })
             .map_err(|_| ScadError::at(0, "could not start the OpenSCAD evaluator"))?
             .join()

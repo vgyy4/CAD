@@ -237,7 +237,16 @@ fn scad(
     cancel: &CancelFlag,
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
     let src = std::str::from_utf8(bytes).map_err(|_| CommandError::new("io", "the .scad file is not UTF-8 text"))?;
-    let model = gusset_scad::read(src).map_err(|e| CommandError::new("io", format!("OpenSCAD: {e}")))?;
+    let model = gusset_scad::read_cancellable(src, &gusset_scad::Limits::default(), Some(cancel)).map_err(|e| {
+        if cancel.load(Ordering::Relaxed) {
+            return cancelled();
+        }
+        let mut c = CommandError::new("io", format!("OpenSCAD: {e}"));
+        if let Some(t) = e.user_text {
+            c.details = Some(serde_json::json!({ "message_user_text": t }));
+        }
+        c
+    })?;
     if model.objects.is_empty() {
         return Err(CommandError::new("io", "the OpenSCAD file makes no solid object"));
     }
@@ -246,13 +255,18 @@ fn scad(
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
-        let shape = crate::scad_build::build(k, c).map_err(|e| CommandError::new("io", format!("OpenSCAD: {e}")))?;
+        let shape = crate::scad_build::build(k, c, cancel).map_err(|e| {
+            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", format!("OpenSCAD: {e}")) }
+        })?;
         let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
         out.push(PreparedBody { name: format!("Object {}", i + 1), blob, format: ImportFormat::Scad });
     }
     let warnings = model.warnings.into_iter().take(50).collect();
     Ok((out, TIER_SCAD, warnings))
 }
+
+/// Most bytes of parsed shapes one FreeCAD import keeps (review X4).
+const MAX_FREECAD_BYTES: usize = 2 << 30;
 
 /// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape
 /// the worker refuses is reported as a warning; none at all is an error.
@@ -263,8 +277,17 @@ fn freecad(
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
     let limits = gusset_meshio::Limits::default();
     let bad = |e: gusset_meshio::MeshIoError| CommandError::new("io", format!("the FreeCAD file cannot be read: {e}"));
-    let xml = gusset_meshio::archive::read_entries(bytes, &limits, &|n| n == "Document.xml" || n == "GuiDocument.xml")
-        .map_err(bad)?;
+    // One decompression budget for both passes, and the XML refused by its declared size
+    // before it is inflated (security review X4).
+    let mut budget = limits.max_decompressed_bytes;
+    let xml = gusset_meshio::archive::read_entries_within(
+        bytes,
+        &limits,
+        &|n| n == "Document.xml" || n == "GuiDocument.xml",
+        crate::fcstd::MAX_XML as u64,
+        &mut budget,
+    )
+    .map_err(bad)?;
     let get = |n: &str| xml.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_slice());
     let doc = get("Document.xml")
         .ok_or_else(|| CommandError::new("io", "the file has no Document.xml: not a FreeCAD document"))?;
@@ -273,8 +296,13 @@ fn freecad(
         return Err(CommandError::new("io", "the FreeCAD document shows no solid objects"));
     }
     let files: std::collections::BTreeSet<&str> = picks.iter().map(|p| p.file.as_str()).collect();
-    let shapes = gusset_meshio::archive::read_entries(bytes, &limits, &|n| files.contains(n)).map_err(bad)?;
+    let shapes =
+        gusset_meshio::archive::read_entries_within(bytes, &limits, &|n| files.contains(n), u64::MAX, &mut budget)
+            .map_err(bad)?;
+    // Each shape file is parsed once, however many objects name it (review X4).
+    let mut parsed: std::collections::HashMap<&str, Result<Vec<Vec<u8>>, String>> = std::collections::HashMap::new();
     let (mut out, mut warnings) = (Vec::new(), Vec::new());
+    let mut kept = 0usize;
     for p in &picks {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
@@ -283,20 +311,35 @@ fn freecad(
             warnings.push(format!("{}: its shape file is missing", p.label));
             continue;
         };
-        // FreeCAD writes BRep text (.brp), or OCCT binary (.bin) when asked to.
-        let format = if p.file.to_ascii_lowercase().ends_with(".bin") { "brep" } else { "brp" };
-        match importer.import(format, data, cancel) {
-            Ok(bodies) => out.extend(bodies.into_iter().map(|(_, blob)| PreparedBody {
-                name: p.label.clone(),
-                blob,
-                format: ImportFormat::FreeCad,
-            })),
-            Err(_) if cancel.load(Ordering::Relaxed) => return Err(cancelled()),
-            Err(e) => warnings.push(format!("{}: {e}", p.label)),
+        if !parsed.contains_key(p.file.as_str()) {
+            // FreeCAD writes BRep text (.brp), or OCCT binary (.bin) when asked to.
+            let format = if p.file.to_ascii_lowercase().ends_with(".bin") { "brep_bin" } else { "brp" };
+            let r = match importer.import(format, data, cancel) {
+                Ok(bodies) => Ok(bodies.into_iter().map(|(_, blob)| blob).collect()),
+                Err(_) if cancel.load(Ordering::Relaxed) => return Err(cancelled()),
+                Err(e) => Err(e.to_string()),
+            };
+            parsed.insert(p.file.as_str(), r);
+        }
+        match parsed.get(p.file.as_str()) {
+            Some(Ok(blobs)) => {
+                for blob in blobs {
+                    kept += blob.len();
+                    if kept > MAX_FREECAD_BYTES {
+                        return Err(CommandError::new("io", "the FreeCAD document's shapes are too large"));
+                    }
+                    out.push(PreparedBody { name: p.label.clone(), blob: blob.clone(), format: ImportFormat::FreeCad });
+                }
+            }
+            Some(Err(e)) => warnings.push(format!("{}: {e}", p.label)),
+            None => {}
         }
     }
     if out.is_empty() {
-        return Err(CommandError::new("io", format!("no FreeCAD shape could be read: {}", warnings.join("; "))));
+        // The labels come from the file: in a `_user_text` field (review X5).
+        let mut e = CommandError::new("io", "no FreeCAD shape could be read");
+        e.details = Some(serde_json::json!({ "warnings_user_text": warnings }));
+        return Err(e);
     }
     Ok((out, TIER_FREECAD, warnings))
 }

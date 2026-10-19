@@ -45,6 +45,14 @@ status. Scratch harnesses referenced below lived outside the repository.
 | v0.3 W9 | THREAT_MODEL.md not updated for components, agent keys, merge and the worker pool | **Fixed**: THREAT_MODEL B1, B2, B3 rows for components, merge, agent keys and the worker pool |
 | v0.3 W10 | Kernel worker pool: a blob one worker wrote is trusted by the gate for the other workers | **Accepted** (ADR 0022 amendment): workers share one sandbox and the session's data |
 | v0.3 W11 | `merge_base` still trusts node labels (code review L3) | **Fixed** in eb00848 (reviewed at bd91a8c): nodes carry a `merged` field |
+| v0.4 X1 | OpenSCAD evaluator has no memory bound: 77 bytes abort the app | **Fixed**: 20 M value-element budget charged by every vector built or walked (`concat`, `str`, element-wise ops, `==`, ranges); text capped at 1 MiB; `children()` copies count as primitives |
+| v0.4 X2 | Deep OpenSCAD CSG trees overflow the import thread's stack | **Fixed**: CSG depth limit 256, checked on the evaluator's 256 MiB-stack thread before the model is returned |
+| v0.4 X3 | OpenSCAD import not cancellable; big vector ops cost one step | **Fixed**: cancel flag polled in evaluation and before each primitive is built; vector work charged by size |
+| v0.4 X4 | FCStd: one shape file parsed per naming object; XML inflated before its size check | **Fixed**: each shape file parsed once; kept output capped at 2 GiB; XML refused by declared size; one decompression budget for both passes |
+| v0.4 X5 | File text in error messages outside `user_text` | **Fixed**: `assert` messages, FreeCAD labels and DXF reader errors in `_user_text` detail fields |
+| v0.4 X6 | `sketch.import_dxf` on the model thread, not cancellable | **Partly fixed**: scale bounded, entity cap checked before editing; off-thread import accepted as is (parsing measured at 0.4 s for 33 MB) |
+| v0.4 X7 | FreeCAD binary shapes always fail | **Fixed**: `.bin` shapes go to the worker's BinTools path (`brep_bin`), still sandboxed |
+| v0.4 X8 | Threat model and ADR 0033 not updated | **Fixed**: B2 rows for in-process OpenSCAD, FCStd, DXF and error text; ADR 0033 limits corrected |
 
 ## Review 1: MVP milestone (2026-10-11)
 

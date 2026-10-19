@@ -434,6 +434,42 @@ fn a_freecad_file_imports_its_visible_shapes_through_the_worker() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn a_freecad_shape_named_by_many_objects_is_parsed_once() {
+    // Security review X4: 256 objects naming one shape file made 256 worker runs.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    struct Counting;
+    impl session::Importer for Counting {
+        fn import(
+            &self,
+            _format: &str,
+            bytes: &[u8],
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![(String::new(), bytes.to_vec())])
+        }
+    }
+    let objects: String = (0..20).map(|i| format!("<Object type=\"Part::Feature\" name=\"B{i}\"/>")).collect();
+    let data: String = (0..20)
+        .map(|i| format!("<Object name=\"B{i}\"><Properties><Property name=\"Shape\"><Part file=\"S.brp\"/></Property></Properties></Object>"))
+        .collect();
+    let doc = format!("<Document><Objects>{objects}</Objects><ObjectData>{data}</ObjectData></Document>");
+    let zip =
+        gusset_meshio::archive::write(&[("Document.xml", doc.as_bytes()), ("S.brp", b"CASCADE Topology V1")]).unwrap();
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-fcstd-once-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("many.FCStd"), &zip).unwrap();
+    s.project_dir = Some(d.clone());
+    s.importer = Some(Arc::new(Counting));
+    let r = run(&mut s, &u, "import.file", json!({"path": "many.FCStd"}));
+    assert_eq!(r["features"].as_array().unwrap().len(), 20, "{r}");
+    assert_eq!(CALLS.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 fn err_code(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> String {
     execute(s, ctx, id, args).map(|v| format!("ok: {v}")).unwrap_or_else(|e| e.code)
 }
