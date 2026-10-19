@@ -1515,7 +1515,11 @@ impl App {
                     .iter()
                     .filter_map(|i| match i {
                         gusset_doc::drawing::DrawingItem::View(v)
-                            if matches!(v.placement, gusset_doc::drawing::ViewPlacement::Base { .. }) =>
+                            if matches!(
+                                v.placement,
+                                gusset_doc::drawing::ViewPlacement::Base { .. }
+                                    | gusset_doc::drawing::ViewPlacement::Detail { .. }
+                            ) =>
                         {
                             Some(v.name.clone())
                         }

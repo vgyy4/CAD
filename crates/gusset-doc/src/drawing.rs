@@ -193,6 +193,19 @@ pub enum ViewPlacement {
     Base { bodies: Vec<String>, from: ViewDir, at: [Expr; 2] },
     /// A view projected from `of`, aligned with it on `side`, `gap` apart (default 20 mm).
     Projected { of: String, side: Side, gap: Option<Expr> },
+    /// A circular detail of `of`: the circle of `radius` (model mm) around `center` (the
+    /// parent view's axes, model mm), enlarged and centred at `at` (sheet mm).
+    Detail { of: String, center: [Expr; 2], radius: Expr, at: [Expr; 2] },
+}
+
+impl ViewPlacement {
+    /// The view this one is derived from.
+    pub fn parent(&self) -> Option<&str> {
+        match self {
+            ViewPlacement::Base { .. } => None,
+            ViewPlacement::Projected { of, .. } | ViewPlacement::Detail { of, .. } => Some(of),
+        }
+    }
 }
 
 /// The named view directions.
@@ -412,6 +425,12 @@ fn print_item(item: &DrawingItem) -> String {
                         args.push(format!("gap: {g}"));
                     }
                 }
+                ViewPlacement::Detail { of, center, radius, at } => {
+                    args.push(format!("detail_of: {of}"));
+                    args.push(format!("center: {}", pair(center)));
+                    args.push(format!("radius: {radius}"));
+                    args.push(format!("at: {}", pair(at)));
+                }
             }
             if let Some(s) = &v.scale {
                 args.push(format!("scale: {s}"));
@@ -549,6 +568,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
     let (mut of, mut side, mut gap) = (None, None, None);
     let (mut scale, mut hidden, mut tangent, mut centers) = (None, None, false, true);
     let (mut section, mut cut_at) = (None, None);
+    let (mut detail_of, mut center, mut radius) = (None, None, None);
     parse_args(c, |key, c| {
         match key {
             "bodies" => bodies = Some(parse_ident_list(c, "bodies")?),
@@ -569,18 +589,40 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
             "tangent" => tangent = parse_bool(c)?,
             "centers" => centers = parse_bool(c)?,
             "section" => section = Some(c.ident()?.to_string()),
+            "detail_of" => detail_of = Some(c.ident()?.to_string()),
+            "center" => center = Some(parse_pair(c)?),
+            "radius" => radius = Some(c.expr()?),
             "cut_at" => cut_at = Some(c.expr()?),
             key => {
                 return Err(unknown_arg(
                     c,
                     KW,
                     key,
-                    "bodies, from, at, of, side, gap, section, cut_at, scale, hidden, tangent, centers",
+                    "bodies, from, at, of, side, gap, section, cut_at, detail_of, center, radius, scale, hidden, \
+                     tangent, centers",
                 ));
             }
         }
         Ok(())
     })?;
+    if let Some(of) = detail_of {
+        if from.is_some() || side.is_some() || gap.is_some() || bodies.is_some() || section.is_some() {
+            return Err(c.err_hint(
+                "a detail view takes detail_of, center, radius and at",
+                "remove from/of/side/gap/bodies/section",
+            ));
+        }
+        let placement = ViewPlacement::Detail {
+            of,
+            center: center.ok_or_else(|| missing(c, KW, "center"))?,
+            radius: radius.ok_or_else(|| missing(c, KW, "radius"))?,
+            at: at.ok_or_else(|| missing(c, KW, "at"))?,
+        };
+        return Ok(ViewDef { name, placement, scale, hidden, tangent, centers, section: None });
+    }
+    if center.is_some() || radius.is_some() {
+        return Err(c.err_hint("center and radius belong to detail views", "add detail_of: <view>"));
+    }
     let placement = match (of, from) {
         (Some(_), Some(_)) => {
             return Err(c.err_hint("a view is either projected (of, side) or a base view (from, at)", "remove one"));

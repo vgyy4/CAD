@@ -181,6 +181,10 @@ impl Scene {
         self.push(style, Prim::Line { a, b });
     }
 
+    pub fn circle(&mut self, style: Style, center: [f64; 2], radius: f64) {
+        self.push(style, Prim::Arc { center, radius, start: 0.0, end: std::f64::consts::TAU });
+    }
+
     pub fn rect(&mut self, style: Style, min: [f64; 2], max: [f64; 2]) {
         let points = vec![min, [max[0], min[1]], max, [min[0], max[1]]];
         self.push(style, Prim::Polyline { points, closed: true });

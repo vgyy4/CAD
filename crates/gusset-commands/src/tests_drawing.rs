@@ -111,6 +111,19 @@ fn views_and_items_are_edited_and_deleted_in_order() {
     let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
     assert_eq!(q["dimensions"][0]["value"], 40.0, "{q}");
     run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "text_at": []}));
+    // A detail view, moved like a base view.
+    let r = run(
+        &mut s,
+        "drawing.add_view",
+        json!({"drawing": "D", "name": "Det", "detail_of": "View1", "center": ["0", "0"], "radius": "4 mm", "at": ["300", "100"]}),
+    );
+    assert_eq!(r["view"], "Det", "{r}");
+    run(&mut s, "drawing.move_item", json!({"drawing": "D", "item": "Det", "at": ["310", "100"]}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("view Det (detail_of: View1, center: [0, 0], radius: 4 mm, at: [310, 100])"), "{text}");
+    let e = err(&mut s, "drawing.add_view", json!({"drawing": "D", "detail_of": "View1", "at": ["1", "1"]}));
+    assert!(e.message.contains("center"), "{e:?}");
+    run(&mut s, "drawing.delete", json!({"drawing": "D", "item": "Det"}));
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(!text.contains("text_at") && !text.contains("tolerance"), "{text}");
     let mut two = dim.clone();

@@ -5,6 +5,7 @@
 //! moving a note or a dimension does not project the model again.
 
 mod centers;
+pub mod detail;
 pub mod dims;
 pub mod dxf;
 pub mod raster;
@@ -182,6 +183,8 @@ struct Projected {
     curves: Arc<Vec<HlrCurve>>,
     /// A section: its cut faces, and where its plane crosses the parent view.
     section: Option<SectionInfo>,
+    /// A detail: its parent and circle (view coordinates, model mm).
+    detail: Option<(String, [f64; 2], f64)>,
 }
 
 struct SectionInfo {
@@ -276,7 +279,56 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    /// A detail view: the parent's curves inside a circle, enlarged (default twice the
+    /// parent's scale), centred at `at`.
+    fn place_detail(&mut self, v: &ViewDef, depth: usize) -> Result<(Projected, PlacedView), String> {
+        let ViewPlacement::Detail { of, center, radius, at } = &v.placement else {
+            return Err(format!("view {}: not a detail", v.name));
+        };
+        let ev = self.cx.ev;
+        self.place(of, depth + 1)?;
+        let (bodies, t, x, y, pscale, curves) = match self.placed.get(of.as_str()) {
+            Some(Ok((p, _))) => (p.bodies.clone(), p.toward, p.x, p.y, p.scale, p.curves.clone()),
+            Some(Err(e)) => return Err(format!("view {}: its parent {of} failed: {e}", v.name)),
+            None => return Err(format!("view {}: no view '{of}'", v.name)),
+        };
+        let scale = self.view_scale(v, Some(2.0 * pscale))?;
+        let c = [number(&center[0], ev)?, number(&center[1], ev)?];
+        let r = number(radius, ev)?;
+        if !(r > 0.0 && r.is_finite()) {
+            return Err(format!("view {}: the radius must be positive", v.name));
+        }
+        let at = [number(&at[0], ev)?, number(&at[1], ev)?];
+        let clipped = detail::clip(&curves, c, r, SHEET_DEFLECTION / scale);
+        let origin = [at[0] - scale * c[0], at[1] - scale * c[1]];
+        let pv = PlacedView {
+            name: v.name.clone(),
+            min: [at[0] - scale * r, at[1] - scale * r],
+            max: [at[0] + scale * r, at[1] + scale * r],
+            scale,
+            origin,
+            toward: t,
+            x,
+            y,
+            error: None,
+        };
+        let p = Projected {
+            bodies,
+            toward: t,
+            x,
+            y,
+            scale,
+            curves: Arc::new(clipped),
+            section: None,
+            detail: Some((of.clone(), c, r)),
+        };
+        Ok((p, pv))
+    }
+
     fn place_one(&mut self, v: &ViewDef, depth: usize) -> Result<(Projected, PlacedView), String> {
+        if matches!(v.placement, ViewPlacement::Detail { .. }) {
+            return self.place_detail(v, depth);
+        }
         let ev = self.cx.ev;
         let mut section_info: Option<SectionInfo> = None;
         let (bodies, axes, scale, parent) = match &v.placement {
@@ -293,6 +345,7 @@ impl Builder<'_, '_> {
                 let axes = frame(t, x).ok_or_else(|| format!("view {}: bad direction", v.name))?;
                 (list, axes, self.view_scale(v, None)?, None)
             }
+            ViewPlacement::Detail { .. } => return Err(format!("view {}: a detail is placed apart", v.name)),
             ViewPlacement::Projected { of, side, gap } => {
                 self.place(of, depth + 1)?;
                 let parent = match self.placed.get(of.as_str()) {
@@ -379,7 +432,9 @@ impl Builder<'_, '_> {
                     }
                 }
             }
-            (ViewPlacement::Projected { .. }, None) => return Err(format!("view {}: no parent", v.name)),
+            (ViewPlacement::Detail { .. }, _) | (ViewPlacement::Projected { .. }, None) => {
+                return Err(format!("view {}: no parent", v.name));
+            }
         };
         let pv = PlacedView {
             name: v.name.clone(),
@@ -392,7 +447,7 @@ impl Builder<'_, '_> {
             y,
             error: None,
         };
-        Ok((Projected { bodies, toward: t, x, y, scale, curves, section: section_info }, pv))
+        Ok((Projected { bodies, toward: t, x, y, scale, curves, section: section_info, detail: None }, pv))
     }
 }
 
@@ -541,7 +596,22 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 Some(Ok((p, pv))) => {
                     let iso = matches!(&v.placement, ViewPlacement::Base { from, .. } if from.is_iso());
                     draw_view(&mut scene, v, p, pv, iso);
-                    if v.centers && p.section.is_none() {
+                    if let Some((parent, c, r)) = &p.detail {
+                        let ctr = |o: [f64; 2], s: f64| [o[0] + s * c[0], o[1] + s * c[1]];
+                        scene.circle(Style::Thin, ctr(pv.origin, pv.scale), pv.scale * r);
+                        let label = format!("{} ({})", v.name, scale_text(pv.scale));
+                        let below = [(pv.min[0] + pv.max[0]) / 2.0, pv.min[1] - 6.0 - section::LABEL_H];
+                        scene.text(below, section::LABEL_H, &label, Anchor::Center);
+                        if let Some(Ok((_, ppv))) = b.placed.get(parent.as_str()) {
+                            let pc = ctr(ppv.origin, ppv.scale);
+                            let pr = ppv.scale * r;
+                            scene.circle(Style::Thin, pc, pr);
+                            let k = std::f64::consts::FRAC_1_SQRT_2;
+                            let tp = [pc[0] + (pr + 2.0) * k, pc[1] + (pr + 2.0) * k];
+                            scene.text(tp, section::LABEL_H, &v.name, Anchor::Left);
+                        }
+                    }
+                    if v.centers && p.section.is_none() && p.detail.is_none() {
                         centers::draw(&mut scene, &p.bodies, pv);
                     }
                     if let Some(s) = &p.section {

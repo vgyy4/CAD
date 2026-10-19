@@ -418,11 +418,11 @@ fn validate_drawings(
                             }
                         }
                     }
-                    ViewPlacement::Projected { .. } => {
+                    ViewPlacement::Projected { .. } | ViewPlacement::Detail { .. } => {
                         // Follow the chain of parents: it must end in a base view.
                         let mut at = v;
                         let mut steps = 0;
-                        while let ViewPlacement::Projected { of, .. } = &at.placement {
+                        while let Some(of) = at.placement.parent() {
                             steps += 1;
                             match d.view(of) {
                                 Some(p) if steps <= d.items.len() => at = p,

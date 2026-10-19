@@ -648,6 +648,9 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   a plane across the parent (at `cut_at`, model mm along the parent's axis pointing at
   `side`; default the middle), the part towards the viewer is removed and the cut is
   hatched. The view is labelled "A–A" and the parent shows the cutting plane.
+- `view D (detail_of: Front, center: [x, y], radius: 5 mm, at: [x, y], [scale: 4])` is a
+  circular detail: the parent's lines inside the circle (centre in the parent's axes,
+  model mm), enlarged (default twice the parent's scale) and centred at `at` (sheet mm).
   `tangent: true` also draws smooth edges. Centre marks on holes and round bosses seen
   end-on and centrelines along cylinders seen from the side are drawn unless
   `centers: false`.

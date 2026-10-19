@@ -264,3 +264,42 @@ fn a_raster_of_the_sheet() {
         let _ = std::fs::write(format!("{dir}/plate.png"), r.to_png().unwrap());
     }
 }
+
+#[test]
+fn a_detail_view_enlarges_a_circle_of_its_parent() {
+    let sheet = "drawing D (size: A3, projection: first) {
+  view Front (bodies: [Plate], from: front, at: [130, 160])
+  view Corner (detail_of: Front, center: [40, 10], radius: 5 mm, at: [300, 80])
+}
+";
+    let s = scene(sheet);
+    assert!(s.issues.is_empty(), "{:?}", s.issues);
+    // Twice the parent's scale: a 20 mm circle centred at (300, 80).
+    let v = view(&s, "Corner");
+    assert!(close(v.min, [290.0, 70.0]) && close(v.max, [310.0, 90.0]), "{v:?}");
+    // The corner's two edges, 5 mm of each, drawn 10 mm long inside the circle.
+    let inside: Vec<f64> = s
+        .items
+        .iter()
+        .filter(|i| i.style == Style::Visible)
+        .filter_map(|i| match i.prim {
+            Prim::Line { a, b } if a[0] > 280.0 && b[0] > 280.0 => Some(libm::hypot(b[0] - a[0], b[1] - a[1])),
+            _ => None,
+        })
+        .collect();
+    // (The mock projects the front and back edges on top of each other.)
+    assert!(inside.len() >= 2, "{inside:?}");
+    assert!(inside.iter().all(|l| (l - 10.0).abs() < 1e-9), "{inside:?}");
+    let texts: Vec<&str> = s
+        .items
+        .iter()
+        .filter_map(|i| if let Prim::Text { text, .. } = &i.prim { Some(text.as_str()) } else { None })
+        .collect();
+    assert!(texts.contains(&"Corner (2:1)") && texts.contains(&"Corner"), "{texts:?}");
+    // Two thin circles: one around the detail, one on the parent.
+    let circles = s.items.iter().filter(|i| i.style == Style::Thin && matches!(i.prim, Prim::Arc { .. })).count();
+    assert_eq!(circles, 2);
+    // The text form round-trips.
+    let doc = Document::from_text(&format!("{PLATE}\n{sheet}")).unwrap();
+    assert!(doc.to_text().contains("view Corner (detail_of: Front, center: [40, 10], radius: 5 mm, at: [300, 80])"));
+}

@@ -277,22 +277,38 @@ pub struct DrawingAddView {
     /// Centre marks and centrelines (default true).
     #[serde(default)]
     pub centers: Option<bool>,
-    /// Section letter (projected).
     #[serde(default)]
     pub section: Option<String>,
-    /// Section plane, model mm.
     #[serde(default)]
     pub cut_at: Option<String>,
+    #[serde(default)]
+    pub detail_of: Option<String>,
+    #[serde(default)]
+    pub center: Option<[String; 2]>,
+    #[serde(default)]
+    pub radius: Option<String>,
 }
 
 impl Command for DrawingAddView {
     const ID: &'static str = "drawing.add_view";
     const TITLE: &'static str = "Add view";
-    const DESCRIPTION: &'static str = "Add a drawing view: base (from, at in sheet mm, bodies) or projected (of, side), placed by the projection angle. Returns its sheet box.";
+    const DESCRIPTION: &'static str = "Add a view: base (from, at in sheet mm, bodies), projected (of, side; section+cut_at cuts it) or detail (detail_of, center, radius in model mm, at).";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let placement = match (&self.of, &self.from) {
+            (None, None) if self.detail_of.is_some() => {
+                let need = |w: &str| CommandError::args(format!("a detail view needs {w}"));
+                ViewPlacement::Detail {
+                    of: self.detail_of.clone().unwrap_or_default(),
+                    center: pair("center", self.center.as_ref().ok_or_else(|| need("center"))?)?,
+                    radius: parse_expr("radius", self.radius.as_deref().ok_or_else(|| need("radius"))?)?,
+                    at: pair("at", self.at.as_ref().ok_or_else(|| need("at"))?)?,
+                }
+            }
+            _ if self.detail_of.is_some() => {
+                return Err(CommandError::args("a detail view takes detail_of, center, radius and at"));
+            }
             (Some(of), None) => {
                 if self.at.is_some() || !self.bodies.is_empty() {
                     return Err(CommandError::args("a projected view takes its bodies and place from its parent")
@@ -413,10 +429,12 @@ impl Command for DrawingEditView {
                 })
                 .ok_or_else(|| CommandError::not_found(format!("drawing '{dname}' has no view '{}'", self.view)))?;
             match (&mut v.placement, at, gap) {
-                (ViewPlacement::Base { at: slot, .. }, Some(a), None) => *slot = a,
+                (ViewPlacement::Base { at: slot, .. } | ViewPlacement::Detail { at: slot, .. }, Some(a), None) => {
+                    *slot = a
+                }
                 (ViewPlacement::Projected { gap: slot, .. }, None, Some(g)) => *slot = Some(g),
                 (_, None, None) => {}
-                (ViewPlacement::Base { .. }, _, Some(_)) => {
+                (ViewPlacement::Base { .. } | ViewPlacement::Detail { .. }, _, Some(_)) => {
                     return Err(CommandError::args("gap applies to projected views; move a base view with at"));
                 }
                 (ViewPlacement::Projected { .. }, Some(_), _) => {
@@ -651,7 +669,10 @@ impl Command for DrawingMoveItem {
                 .find(|i| i.name() == self.item)
                 .ok_or_else(|| CommandError::not_found(format!("drawing '{dname}' has no item '{}'", self.item)))?;
             match item {
-                DrawingItem::View(ViewDef { placement: ViewPlacement::Base { at: slot, .. }, .. }) => *slot = at,
+                DrawingItem::View(ViewDef {
+                    placement: ViewPlacement::Base { at: slot, .. } | ViewPlacement::Detail { at: slot, .. },
+                    ..
+                }) => *slot = at,
                 DrawingItem::View(_) => {
                     return Err(CommandError::args("a projected view follows its parent")
                         .hint("move the parent, or change this view's gap"));
@@ -676,7 +697,8 @@ pub struct DrawingDeleteItem {
 impl Command for DrawingDeleteItem {
     const ID: &'static str = "drawing.delete";
     const TITLE: &'static str = "Delete from drawing";
-    const DESCRIPTION: &'static str = "Delete a drawing's view, dimension or note (item), or the whole drawing. A view that others are projected from or measured in cannot go first.";
+    const DESCRIPTION: &'static str =
+        "Delete a view, dimension or note (item), or the whole drawing. A view others depend on cannot go first.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -694,7 +716,9 @@ impl Command for DrawingDeleteItem {
                 .items
                 .iter()
                 .filter(|i| match i {
-                    DrawingItem::View(ViewDef { placement: ViewPlacement::Projected { of, .. }, .. }) => *of == item,
+                    DrawingItem::View(v) if v.placement.parent().is_some() => {
+                        v.placement.parent() == Some(item.as_str())
+                    }
                     DrawingItem::Dim(dim) => dim.view == item,
                     _ => false,
                 })
@@ -804,7 +828,7 @@ pub struct QueryDrawing {
 impl Command for QueryDrawing {
     const ID: &'static str = "query.drawing";
     const TITLE: &'static str = "Drawing";
-    const DESCRIPTION: &'static str = "List drawings, or one drawing as built: view boxes (sheet mm), scales, off_sheet, measured dimensions (dangling ones flagged), notes, issues, text.";
+    const DESCRIPTION: &'static str = "List drawings, or one as built: view boxes (sheet mm), scales, measured or dangling dimensions, notes, issues, text.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
