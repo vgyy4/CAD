@@ -37,6 +37,9 @@ def rust_type(qt):
         const = True
         t = t[:-6].strip()
     base = TYPES.get(t)
+    m = re.match(r'^(?:NCollection_(?:Sequence|Array1|Vector)|std::vector)<(.*)>$', t)
+    if base is None and m:
+        base = f'Vec<{rust_type(m.group(1))}>'
     if base is None:
         base = re.sub(r'^gp_', '', t)
         base = base.replace('math_', '').replace('::', '_')
@@ -59,6 +62,7 @@ class Tx:
         self.names = names
         self.todo = 0
         self.statics = set()
+        self.self_name = 'self'
 
     def todo_expr(self, n, why=''):
         self.todo += 1
@@ -123,14 +127,14 @@ class Tx:
         return snake(name)
 
     def x_MemberExpr(self, n, inner):
-        base = self.e(inner[0]) if inner else 'self'
-        if base in ('this', '(*this)'):
-            base = 'self'
+        base = self.e(inner[0]) if inner else self.self_name
+        if base in ('this', '(*this)', 'self', '*self'):
+            base = self.self_name
         name = n.get('name', '?')
         return f'{base}.{snake(name)}'
 
     def x_CXXThisExpr(self, n, inner):
-        return 'self'
+        return self.self_name
 
     def x_UnaryOperator(self, n, inner):
         op = n['opcode']
@@ -189,7 +193,7 @@ class Tx:
     def x_CXXMemberCallExpr(self, n, inner):
         me = inner[0]
         args = [self.e(a) for a in inner[1:] if a.get('kind') != 'CXXDefaultArgExpr']
-        base = self.e(me['inner'][0]) if me.get('inner') else 'self'
+        base = self.e(me['inner'][0]) if me.get('inner') else self.self_name
         name = me.get('name', '?')
         key = f'{name}/{len(args)}'
         rname = self.names.get(key, self.names.get(name, snake(name)))
@@ -221,7 +225,7 @@ class Tx:
         if len(args) == 1 and ('&&' in ctor or 'const ' + n['type']['qualType'] + ' &' in ctor):
             return args[0]  # copy / move
         if not args:
-            return f'{t}::default()'
+            return f'<{t}>::default()' if '<' in t else f'{t}::default()'
         return f'{t}::new({", ".join(args)})'
     x_CXXTemporaryObjectExpr = x_CXXConstructExpr
 
@@ -247,7 +251,8 @@ class Tx:
                 init = [x for x in v.get('inner', []) if x.get('kind') not in ('FullComment',)]
                 val = self.e(init[0]) if init else None
                 if val is None or val.endswith('::default()'):
-                    val = {'f64': '0.0', 'i32': '0', 'bool': 'false'}.get(t, f'{t}::default()')
+                    dflt = f'<{t}>::default()' if '<' in t else f'{t}::default()'
+                    val = {'f64': '0.0', 'i32': '0', 'bool': 'false'}.get(t, dflt)
                 out += f'{p}let mut {snake(v["name"])}: {t} = {val};\n'
             return out
         if k == 'ReturnStmt':
@@ -300,6 +305,21 @@ class Tx:
             ps.append('&self' if n['type']['qualType'].endswith('const') else '&mut self')
         for x in params:
             ps.append(f'{snake(x.get("name", "_"))}: {rust_type(x["type"]["qualType"])}')
+        if n.get('kind') == 'CXXConstructorDecl':
+            ps = [p for p in ps if p not in ('&self', '&mut self')]
+            self.self_name = 'this'
+            init = ''
+            for x in n.get('inner', []):
+                if x.get('kind') == 'CXXCtorInitializer' and x.get('anyInit') and x.get('inner'):
+                    v = self.e(x['inner'][0])
+                    init += f'    this.{snake(x["anyInit"]["name"])} = {v};\n'
+            body_rs = self.s(body[0], 1)
+            self.self_name = 'self'
+            key = f'{n["name"]}/{len(params)}'
+            name = self.names.get(key, 'new' if len(params) == 0 else f'new_{len(params)}')
+            sig = f'pub fn {name}({", ".join(ps)}) -> Self'
+            return (f'// {cls + "::" if cls else ""}{n["name"]}\n{sig} {{\n    let mut this = Self::default();\n'
+                    f'{init}{body_rs}    this\n}}\n')
         name = self.fn_name(n, len(params))
         sig = f'pub fn {name}({", ".join(ps)})' + ('' if ret == '()' else f' -> {ret}')
         return f'// {cls + "::" if cls else ""}{n["name"]}\n{sig} {{\n{self.s(body[0], 1)}}}\n'
@@ -352,6 +372,15 @@ def decls(path, src=None):
                 buf = None
 
 
+def class_of(d):
+    """The class of a method, from its Itanium mangled name (`_ZN<len><Class>...`)."""
+    m = re.match(r'^_ZNK?(\d+)', d.get('mangledName', ''))
+    if not m or d.get('kind') not in ('CXXMethodDecl', 'CXXConstructorDecl'):
+        return None
+    start = m.end()
+    return d['mangledName'][start:start + int(m.group(1))]
+
+
 def main():
     ast, src = sys.argv[1], sys.argv[2]
     names = {}
@@ -377,12 +406,21 @@ def main():
         loc = d.get('loc', {})
         if src not in (loc.get('file') or '') and loc.get('file') is not None:
             continue
-        cls = None
+        cls = class_of(d)
         r = tx.function(d, cls)
         if r and d['id'] not in seen:
             seen.add(d['id'])
-            out.append(r)
-    sys.stdout.write('\n'.join(out))
+            out.append((cls, r))
+    # Free functions first, then one impl block per class, in source order.
+    blocks = [r for c, r in out if c is None]
+    classes = []
+    for c, _ in out:
+        if c is not None and c not in classes:
+            classes.append(c)
+    for c in classes:
+        body = '\n'.join('    ' + l if l else l for r in (r for cc, r in out if cc == c) for l in r.splitlines())
+        blocks.append(f'impl {rust_type(c)} {{\n{body}\n}}\n')
+    sys.stdout.write('\n'.join(blocks))
     sys.stderr.write(f'{len(out)} functions, {tx.todo} todo spots\n')
 
 
