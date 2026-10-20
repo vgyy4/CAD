@@ -6,7 +6,7 @@
 #![allow(clippy::float_cmp, clippy::too_many_arguments)]
 
 use super::BSplError;
-use super::flat::{build_knots, first_u_knot_index, last_u_knot_index, nb_poles, pole_index};
+use super::flat::{build_knots, first_u_knot_index, last_u_knot_index, locate_core, nb_poles, pole_index};
 use super::util::{R, count, epsilon, filled, ix, len_ix, mul, rd, rd1, to_i32, wr, wr1, zeros};
 use crate::gp;
 
@@ -1145,6 +1145,76 @@ pub fn increase_degree(
         pf += 1;
         wr1(&mut new_poles, i, rd1(&work.wpoles, pf)?)?;
     }
+    Ok((new_poles, new_knots, new_mults))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Trimming
+
+/// `BSplCLib::Trimming(Degree, Periodic, Dimension, Knots, Mults, Poles, U1, U2, NewKnots, NewMults, NewPoles)` on
+/// flat poles: the poles (`nb_new_poles` of them), knots and multiplicities (`nb_new_knots` of each) of the part of
+/// the curve between `u1` and `u2`. The sizes are those of the output arrays of the C++ (`PrepareTrimming` gives them).
+pub fn trimming(
+    degree: i32,
+    periodic: bool,
+    dimension: i32,
+    knots: &[f64],
+    mults: &[i32],
+    poles: &[f64],
+    u1: f64,
+    u2: f64,
+    nb_new_knots: usize,
+    nb_new_poles: usize,
+) -> R<CurveOut> {
+    check_structure(degree, periodic, knots, mults)?;
+    check_poles_len(degree, periodic, dimension, mults, poles)?;
+    let add_knots = [u1, u2];
+    let add_mults = [degree, degree];
+    let tolerance = epsilon(u1);
+    let (nb_temp_poles, nb_temp_knots) =
+        prepare_insert_core(degree, periodic, knots, mults, &add_knots, Some(&add_mults), tolerance, false)?
+            .ok_or(BSplError::OutOfRange)?;
+    if nb_temp_poles < 1 || nb_temp_knots < 1 {
+        return Err(BSplError::OutOfRange);
+    }
+    let mut temp_poles = zeros(mul(ix(nb_temp_poles), ix(dimension))?)?;
+    let mut temp_knots = zeros(count(nb_temp_knots)?)?;
+    let mut temp_mults = filled(count(nb_temp_knots)?, 0i32)?;
+    insert_knots_core(
+        degree,
+        periodic,
+        dimension,
+        poles,
+        knots,
+        mults,
+        &add_knots,
+        Some(&add_mults),
+        &mut temp_poles,
+        &mut temp_knots,
+        &mut temp_mults,
+        tolerance,
+        false,
+    )?;
+    // find in the temporary poles the index of the pole corresponding to U1
+    let (uf, ul) = if periodic { (rd1(&temp_knots, 1)?, rd1(&temp_knots, len_ix(&temp_knots))?) } else { (0.0, 1.0) };
+    let (k_index, _) = locate_core(&temp_knots, u1, periodic, 1, to_i32(len_ix(&temp_knots))?, uf, ul)?;
+    let p_index = ix(pole_index(degree, k_index, periodic, &temp_mults)?) * ix(dimension);
+
+    let mut new_poles = zeros(nb_new_poles)?;
+    for i in 1..=len_ix(&new_poles) {
+        wr1(&mut new_poles, i, rd1(&temp_poles, p_index + i)?)?;
+    }
+    let mut new_knots = zeros(nb_new_knots)?;
+    let mut new_mults = filled(nb_new_knots, 0i32)?;
+    for i in 1..=len_ix(&new_knots) {
+        wr1(&mut new_knots, i, rd1(&temp_knots, ix(k_index) + i - 1)?)?;
+        wr1(&mut new_mults, i, rd1(&temp_mults, ix(k_index) + i - 1)?)?;
+    }
+    let first = rd1(&new_mults, 1)?;
+    wr1(&mut new_mults, 1, first.min(degree) + 1)?;
+    let n = len_ix(&new_mults);
+    let last = rd1(&new_mults, n)?;
+    wr1(&mut new_mults, n, last.min(degree) + 1)?;
     Ok((new_poles, new_knots, new_mults))
 }
 

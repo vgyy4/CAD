@@ -68,6 +68,13 @@ pub struct Array2<T> {
     data: Vec<T>,
 }
 
+impl<T> Default for Array2<T> {
+    /// The empty array.
+    fn default() -> Self {
+        Self { rows: 0, cols: 0, data: Vec::new() }
+    }
+}
+
 impl<T> Array2<T> {
     /// A `rows` x `cols` array from its items row by row; `Err(Argument)` unless `data.len() == rows * cols`.
     pub fn new(rows: usize, cols: usize, data: Vec<T>) -> Result<Self, PLibError> {

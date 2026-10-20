@@ -18,7 +18,7 @@ pub use flat::{
 };
 pub use knotops::{
     increase_degree, increase_degree_count_knots, insert_knots, prepare_insert_knots, prepare_unperiodize, remove_knot,
-    unperiodize,
+    trimming, unperiodize,
 };
 
 /// The error type of `BSplCLib` and `BSplSLib`, standing for the exceptions of OCCT and for the checks that OCCT

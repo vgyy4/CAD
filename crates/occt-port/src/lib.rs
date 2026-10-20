@@ -10,6 +10,7 @@
 pub mod bnd;
 pub mod bsplclib;
 pub mod bsplslib;
+pub mod convert;
 pub mod cslib;
 pub mod elclib;
 pub mod elslib;
