@@ -313,7 +313,7 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     // 2 pi * (first moment of its section about the axis) per turn.
     let mut s = session();
     let t0 = std::time::Instant::now();
-    let r = run(&mut s, "generate.thread", json!({"diameter": "10 mm", "pitch": "1.5 mm", "length": "20 mm"}));
+    let r = run(&mut s, "generate.thread", json!({"diameter": "10 mm", "pitch": "1.5 mm", "length": "20 mm", "chamfer": false}));
     eprintln!("M10 x 1.5 x 20 built in {:?}", t0.elapsed());
     assert_eq!(r["rebuild_ok"], true, "{r}");
     let (d, p, l) = (10.0, 1.5, 20.0);
@@ -334,11 +334,19 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     let span = |i: usize| hi[i].as_f64().unwrap() - lo[i].as_f64().unwrap();
     assert!((span(0) - 10.0).abs() < 0.01 && (span(2) - 20.0).abs() < 1e-6, "{b}");
     // With a hex head (ISO 4017 M10) it is a bolt: the rod plus the head prism below it.
-    let r = run(&mut s, "generate.thread", json!({"name": "Bolt", "head_width": "16 mm", "head_height": "6.4 mm"}));
+    let r = run(&mut s, "generate.thread", json!({"name": "Bolt", "head_width": "16 mm", "head_height": "6.4 mm", "chamfer": false}));
     assert_eq!(r["rebuild_ok"], true, "{r}");
     let head = 3f64.sqrt() / 2.0 * 16.0 * 16.0 * 6.4;
     let vb = volume(&mut s, "Bolt");
     assert!((vb - want - head).abs() < 1e-4 * (want + head), "{vb} vs {}", want + head);
+    // The default chamfers both free ends 45 degrees from the minor diameter: less material,
+    // and the end faces shrink to the minor circle.
+    let r = run(&mut s, "generate.thread", json!({"name": "Chamfered"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let vc = volume(&mut s, "Chamfered");
+    assert!(vc < want && vc > 0.95 * want, "{vc} vs {want}");
+    let b = run(&mut s, "query.body", json!({"body": "Chamfered"}));
+    assert!((b["bbox_max_mm"][2].as_f64().unwrap() - 20.0).abs() < 1e-6, "{b}");
 }
 
 #[test]

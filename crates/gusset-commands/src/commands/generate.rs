@@ -488,6 +488,9 @@ pub struct GenerateThread {
     #[serde(default = "d_thread_l")]
     #[schemars(extend("x-essential" = true))]
     pub length: String,
+    /// 45 degree chamfer from the minor diameter at the free end(s) (default true).
+    #[serde(default = "d_true")]
+    pub chamfer: bool,
     /// Hex head across flats (makes a bolt; ISO 4017 M10: 16 mm).
     #[serde(default)]
     pub head_width: Option<String>,
@@ -498,6 +501,80 @@ pub struct GenerateThread {
     pub left: bool,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+fn d_true() -> bool {
+    true
+}
+
+/// A 45 degree chamfer cut at one end of a threaded rod: a triangle in the XZ plane from the
+/// minor radius at the end face out past the crests, revolved about Z.
+fn chamfer_features(
+    name: &str,
+    nm: &Names,
+    end: &str,
+    top: bool,
+    core: &str,
+    vals: [f64; 4],
+) -> Result<Vec<Feature>, CommandError> {
+    let [minor_r, outer_r, z_end, _] = vals;
+    let (d, p, l) = (nm.n("diameter"), nm.n("pitch"), nm.n("length"));
+    let inner = format!("({d} - 1.0825317547 * {p}) / 2");
+    let outer = format!("{d} / 2 + 0.1 * {p}");
+    let depth = format!("({outer}) - ({inner})");
+    let (zx, zi) = if top { (l.clone(), format!("{l} - ({depth})")) } else { ("0 mm".to_string(), depth.clone()) };
+    let zi_v = if top { z_end - (outer_r - minor_r) } else { outer_r - minor_r };
+    let pts = [
+        (inner.clone(), zx.clone(), [minor_r, z_end]),
+        (outer.clone(), zx, [outer_r, z_end]),
+        (outer, zi, [outer_r, zi_v]),
+    ];
+    let mut entities = Vec::new();
+    let mut constraints = Vec::new();
+    for (i, (x, z, v)) in pts.iter().enumerate() {
+        let id = format!("p{}", i + 1);
+        entities.push(SkEntity { id: id.clone(), geom: SkGeom::Point { x: v[0], y: v[1] }, construction: false });
+        for (k, kind, e) in [(0, SkConstraintKind::AtX, x), (1, SkConstraintKind::AtY, z)] {
+            constraints.push(SkConstraint {
+                id: format!("k{}", 10 + 2 * i + k),
+                kind,
+                entities: vec![id.clone()],
+                value: Some(parse_expr("chamfer", e)?),
+            });
+        }
+    }
+    for i in 0..3 {
+        entities.push(SkEntity {
+            id: format!("l{}", 4 + i),
+            geom: SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 3 + 1) },
+            construction: false,
+        });
+    }
+    let sk = format!("{name}_{end}_chamfer_sketch");
+    Ok(vec![
+        Feature::new(
+            sk.clone(),
+            FeatureKind::Sketch(SketchDef {
+                plane: PlaneRef::XZ,
+                next_id: 20,
+                entities,
+                constraints,
+                patterns: Vec::new(),
+                gear: None,
+            }),
+        ),
+        Feature::new(
+            format!("{name}_{end}_chamfer"),
+            FeatureKind::Revolve(RevolveDef {
+                profile: ProfileRef { sketch: sk, regions: Vec::new() },
+                axis: gusset_doc::AxisRef::Y,
+                angle: parse_expr("angle", "360 deg")?,
+                op: BodyOp::Cut,
+                body: Some(core.to_string()),
+                body_name: None,
+            }),
+        ),
+    ])
 }
 
 fn d_thread_d() -> String {
@@ -771,6 +848,21 @@ impl Command for GenerateThread {
                         body_name: None,
                     }),
                 ));
+            }
+            if self.chamfer {
+                let minor_r = (d - 1.082_531_754_7 * p) / 2.0;
+                let outer_r = d / 2.0 + 0.1 * p;
+                features.extend(chamfer_features(&name, &nm, "top", true, &core, [minor_r, outer_r, len, 0.0])?);
+                if head.is_none() {
+                    features.extend(chamfer_features(
+                        &name,
+                        &nm,
+                        "bottom",
+                        false,
+                        &core,
+                        [minor_r, outer_r, 0.0, 0.0],
+                    )?);
+                }
             }
             let mut at = rb;
             for f in features {
