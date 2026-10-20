@@ -33,9 +33,9 @@ pub use component::{ConfigureComponent, InsertComponent, QueryComponents, Update
 pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};
 pub use datum::{Combine, DatumPlane, MoveBody};
 pub use drawing::{
-    DrawingAddBalloon, DrawingAddDimension, DrawingAddNote, DrawingAddPartsList, DrawingAddView, DrawingCreate,
-    DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView, DrawingExport, DrawingMoveItem,
-    QueryDrawing, drawing_scene,
+    DrawingAddBalloon, DrawingAddDatum, DrawingAddDimension, DrawingAddGdt, DrawingAddNote, DrawingAddPartsList,
+    DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView,
+    DrawingExport, DrawingMoveItem, QueryDrawing, drawing_scene,
 };
 pub use generate::{GenerateGear, GenerateNut, GenerateSpring, GenerateThread};
 pub use hole::Hole;
@@ -2310,6 +2310,8 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
                         b.rename_feature(from, to);
                     }
                 }
+                gusset_doc::drawing::DrawingItem::Gdt(g) => g.a.rename_feature(from, to),
+                gusset_doc::drawing::DrawingItem::Datum(dd) => dd.a.rename_feature(from, to),
                 gusset_doc::drawing::DrawingItem::Balloon(b) => {
                     if b.body == from {
                         b.body = to.to_string();

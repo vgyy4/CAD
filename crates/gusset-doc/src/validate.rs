@@ -502,6 +502,34 @@ fn validate_drawings(
                     }
                 }
                 DrawingItem::PartsList(_) => {}
+                DrawingItem::Gdt(g) => {
+                    if d.view(&g.view).is_none() {
+                        out.push(issue(n, format!("gdt {}: no view '{}'", g.name, g.view)));
+                    }
+                    if bad_text(&g.tolerance, 30) || g.tolerance.contains('\n') {
+                        out.push(issue(n, format!("gdt {}: the tolerance text is too long", g.name)));
+                    }
+                    if g.datums.len() > 3 || (!g.symbol.takes_datums() && !g.datums.is_empty()) {
+                        let takes = if g.symbol.takes_datums() { "up to 3" } else { "no" };
+                        out.push(issue(n, format!("gdt {}: {} takes {takes} datums", g.name, g.symbol.keyword())));
+                    }
+                    for x in &g.datums {
+                        if !d.items.iter().any(|i| matches!(i, DrawingItem::Datum(dd) if &dd.name == x)) {
+                            out.push(issue(n, format!("gdt {}: no datum {x} on this drawing", g.name)));
+                        }
+                    }
+                }
+                DrawingItem::Datum(dd) => {
+                    if d.view(&dd.view).is_none() {
+                        out.push(issue(n, format!("datum {}: no view '{}'", dd.name, dd.view)));
+                    }
+                    if dd.name.chars().count() > 2 || !dd.name.chars().all(|ch| ch.is_ascii_uppercase()) {
+                        out.push(issue(
+                            n,
+                            format!("datum {}: a datum is named by one or two capital letters", dd.name),
+                        ));
+                    }
+                }
                 DrawingItem::Balloon(b) => {
                     if d.view(&b.view).is_none() {
                         out.push(issue(n, format!("balloon {}: no view '{}'", b.name, b.view)));

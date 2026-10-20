@@ -3,8 +3,8 @@
 
 use super::*;
 use gusset_doc::drawing::{
-    BalloonDef, DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, PartsListDef, Projection, SheetSize,
-    Side, ViewDef, ViewDir, ViewPlacement,
+    BalloonDef, DatumDef, DimDef, DimDirection, DimKind, Drawing, DrawingItem, GdtDef, GdtSymbol, NoteDef,
+    PartsListDef, Projection, SheetSize, Side, ViewDef, ViewDir, ViewPlacement,
 };
 use gusset_history::Actor;
 
@@ -19,6 +19,8 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<DrawingAddNote>(),
         spec::<DrawingAddPartsList>(),
         spec::<DrawingAddBalloon>(),
+        spec::<DrawingAddGdt>(),
+        spec::<DrawingAddDatum>(),
         spec::<DrawingMoveItem>(),
         spec::<DrawingDeleteItem>(),
         spec::<DrawingExport>(),
@@ -761,6 +763,117 @@ impl Command for DrawingAddBalloon {
     }
 }
 
+/// Adds a GD&T feature control frame with a leader to an edge.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingAddGdt {
+    pub drawing: String,
+    pub view: String,
+    pub a: String,
+    /// ISO 1101 name, e.g. flatness, position.
+    pub symbol: String,
+    pub tolerance: String,
+    /// Datum letters.
+    #[serde(default)]
+    pub datums: Vec<String>,
+    /// Lower-left corner, sheet mm.
+    pub at: [String; 2],
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for DrawingAddGdt {
+    const ID: &'static str = "drawing.add_gdt";
+    const TITLE: &'static str = "Add GD&T frame";
+    const DESCRIPTION: &'static str =
+        "Add a GD&T feature control frame (symbol, tolerance, datums) with a leader to an edge.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = pair("at", &self.at)?;
+        let symbol = GdtSymbol::from_keyword(&self.symbol).ok_or_else(|| {
+            let all: Vec<&str> = GdtSymbol::ALL.iter().map(|g| g.keyword()).collect();
+            CommandError::args(format!("unknown GD&T symbol '{}'", self.symbol))
+                .hint(format!("use one of {}", all.join(", ")))
+        })?;
+        let a = parse_edges(std::slice::from_ref(&self.a))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError::args("a: expected an edge name"))?;
+        let drawing = self.drawing.clone();
+        let created = std::cell::RefCell::new(String::new());
+        edit_checked(
+            s,
+            ctx,
+            "Add GD&T frame",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                let name = item_name(d, self.name, "Gdt")?;
+                *created.borrow_mut() = name.clone();
+                d.items.push(DrawingItem::Gdt(GdtDef {
+                    name: name.clone(),
+                    view: self.view,
+                    a,
+                    symbol,
+                    tolerance: self.tolerance,
+                    datums: self.datums,
+                    at,
+                }));
+                Ok(json!({ "gdt": name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&created.borrow())),
+            |_, _, _| Value::Null,
+        )
+    }
+}
+
+/// Adds a datum feature symbol on an edge.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingAddDatum {
+    pub drawing: String,
+    pub view: String,
+    pub a: String,
+    /// The datum letter, e.g. A.
+    pub letter: String,
+    /// Box centre, sheet mm.
+    pub at: [String; 2],
+}
+
+impl Command for DrawingAddDatum {
+    const ID: &'static str = "drawing.add_datum";
+    const TITLE: &'static str = "Add datum";
+    const DESCRIPTION: &'static str = "Add a datum feature symbol (a letter on an edge) for GD&T frames to refer to.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = pair("at", &self.at)?;
+        let a = parse_edges(std::slice::from_ref(&self.a))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError::args("a: expected an edge name"))?;
+        let (drawing, letter) = (self.drawing.clone(), self.letter.clone());
+        edit_checked(
+            s,
+            ctx,
+            "Add datum",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                if d.items.iter().any(|i| i.name() == self.letter) {
+                    return Err(CommandError::args(format!(
+                        "drawing '{}' already has an item {}",
+                        d.name, self.letter
+                    )));
+                }
+                d.items.push(DrawingItem::Datum(DatumDef { name: self.letter.clone(), view: self.view, a, at }));
+                Ok(json!({ "datum": self.letter }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&letter)),
+            |_, _, _| Value::Null,
+        )
+    }
+}
+
 /// Adds a text note.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -829,6 +942,8 @@ impl Command for DrawingMoveItem {
                 DrawingItem::Note(n) => n.at = at,
                 DrawingItem::PartsList(p) => p.at = at,
                 DrawingItem::Balloon(b) => b.at = at,
+                DrawingItem::Gdt(g) => g.at = at,
+                DrawingItem::Datum(d) => d.at = at,
                 DrawingItem::Dim(dim) => dim.text_at = Some(at),
             }
             Ok(json!({ "moved": self.item }))
@@ -937,7 +1052,11 @@ fn sheet_check(
                         .and_then(|d| d.error.as_ref())
                         .map(|e| format!("dimension {item}: {e}"))
                 })
-                .or_else(|| sc.issues.iter().find(|i| i.starts_with(&format!("balloon {item}:"))).cloned()),
+                .or_else(|| {
+                    ["balloon", "gdt", "datum"]
+                        .iter()
+                        .find_map(|k| sc.issues.iter().find(|i| i.starts_with(&format!("{k} {item}:"))).cloned())
+                }),
             None => sc.issues.iter().find(|i| i.contains("sheet scale")).cloned(),
         }
     };

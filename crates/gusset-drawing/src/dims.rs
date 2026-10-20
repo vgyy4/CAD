@@ -63,6 +63,24 @@ fn resolve(bodies: &[Arc<Body>], r: &EdgeRef) -> Result<Geo, String> {
     Err(format!("edge {r} is not in this view's bodies ({})", missing.unwrap_or_else(|| "no bodies".into())))
 }
 
+/// A point of edge `r` to attach a leader to: a line's midpoint, a point on a circle, else
+/// the edge's midpoint.
+pub(crate) fn edge_anchor(bodies: &[Arc<Body>], r: &EdgeRef) -> Result<[f64; 3], String> {
+    Ok(match resolve(bodies, r)? {
+        Geo::Line(a, z) => [(a[0] + z[0]) / 2.0, (a[1] + z[1]) / 2.0, (a[2] + z[2]) / 2.0],
+        Geo::Circle(c) => {
+            // Any direction in the circle's plane: across the normal from X (or Y).
+            let n = c.normal;
+            let pick = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+            let d = pick[0] * n[0] + pick[1] * n[1] + pick[2] * n[2];
+            let u = [pick[0] - d * n[0], pick[1] - d * n[1], pick[2] - d * n[2]];
+            let l = libm::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).max(1e-12);
+            [c.center[0] + c.radius * u[0] / l, c.center[1] + c.radius * u[1] / l, c.center[2] + c.radius * u[2] / l]
+        }
+        Geo::Other(m) => m,
+    })
+}
+
 fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
@@ -90,7 +108,7 @@ fn perp(a: [f64; 2]) -> [f64; 2] {
 }
 
 /// A filled arrow with its tip at `tip`, pointing along `d` (unit).
-fn arrow(scene: &mut Scene, style: Style, tip: [f64; 2], d: [f64; 2]) {
+pub(crate) fn arrow(scene: &mut Scene, style: Style, tip: [f64; 2], d: [f64; 2]) {
     let base = sub(tip, mul(d, ARROW_LEN));
     let w = mul(perp(d), ARROW_HALF);
     scene.push(style, Prim::Fill { points: vec![tip, add(base, w), sub(base, w)] });

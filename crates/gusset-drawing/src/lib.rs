@@ -10,6 +10,7 @@ pub mod detail;
 pub mod dims;
 pub mod dxf;
 pub mod dxf_read;
+mod gdt;
 pub mod pdf;
 pub mod raster;
 pub mod scene;
@@ -797,6 +798,38 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 })();
                 if let Err(e) = r {
                     scene.issues.push(format!("balloon {}: {e}", bl.name));
+                }
+            }
+            DrawingItem::Gdt(g) => {
+                let r = (|| -> Result<(), String> {
+                    let Some(Ok((p, pv))) = b.placed.get(g.view.as_str()) else {
+                        return Err(format!("view {} is not shown", g.view));
+                    };
+                    let at = [number(&g.at[0], cx.ev)?, number(&g.at[1], cx.ev)?];
+                    let target = pv.to_sheet(dims::edge_anchor(&p.bodies, &g.a)?);
+                    let start = scene.items.len();
+                    gdt::frame(&mut scene, at, g.symbol, &g.tolerance, &g.datums, target);
+                    handle(&mut scene, start, &g.name, at);
+                    Ok(())
+                })();
+                if let Err(e) = r {
+                    scene.issues.push(format!("gdt {}: {e}", g.name));
+                }
+            }
+            DrawingItem::Datum(dd) => {
+                let r = (|| -> Result<(), String> {
+                    let Some(Ok((p, pv))) = b.placed.get(dd.view.as_str()) else {
+                        return Err(format!("view {} is not shown", dd.view));
+                    };
+                    let at = [number(&dd.at[0], cx.ev)?, number(&dd.at[1], cx.ev)?];
+                    let target = pv.to_sheet(dims::edge_anchor(&p.bodies, &dd.a)?);
+                    let start = scene.items.len();
+                    gdt::datum(&mut scene, at, &dd.name, target);
+                    handle(&mut scene, start, &dd.name, at);
+                    Ok(())
+                })();
+                if let Err(e) = r {
+                    scene.issues.push(format!("datum {}: {e}", dd.name));
                 }
             }
             DrawingItem::PartsList(pl) => match (number(&pl.at[0], cx.ev), number(&pl.at[1], cx.ev)) {

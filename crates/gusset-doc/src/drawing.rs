@@ -158,6 +158,10 @@ pub enum DrawingItem {
     PartsList(PartsListDef),
     /// A balloon: the parts-list item number of `body`, with a leader to it in `view`.
     Balloon(BalloonDef),
+    /// A GD&T feature control frame with a leader to an edge.
+    Gdt(GdtDef),
+    /// A datum feature symbol on an edge.
+    Datum(DatumDef),
 }
 
 impl DrawingItem {
@@ -168,6 +172,8 @@ impl DrawingItem {
             DrawingItem::Note(n) => &n.name,
             DrawingItem::PartsList(p) => &p.name,
             DrawingItem::Balloon(b) => &b.name,
+            DrawingItem::Gdt(g) => &g.name,
+            DrawingItem::Datum(d) => &d.name,
         }
     }
 }
@@ -399,6 +405,99 @@ pub struct BalloonDef {
     pub at: [Expr; 2],
 }
 
+/// A geometric characteristic of ISO 1101 / ASME Y14.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdtSymbol {
+    Straightness,
+    Flatness,
+    Circularity,
+    Cylindricity,
+    ProfileLine,
+    ProfileSurface,
+    Perpendicularity,
+    Angularity,
+    Parallelism,
+    Position,
+    Concentricity,
+    Symmetry,
+    Runout,
+    TotalRunout,
+}
+
+impl GdtSymbol {
+    pub const ALL: [GdtSymbol; 14] = [
+        GdtSymbol::Straightness,
+        GdtSymbol::Flatness,
+        GdtSymbol::Circularity,
+        GdtSymbol::Cylindricity,
+        GdtSymbol::ProfileLine,
+        GdtSymbol::ProfileSurface,
+        GdtSymbol::Perpendicularity,
+        GdtSymbol::Angularity,
+        GdtSymbol::Parallelism,
+        GdtSymbol::Position,
+        GdtSymbol::Concentricity,
+        GdtSymbol::Symmetry,
+        GdtSymbol::Runout,
+        GdtSymbol::TotalRunout,
+    ];
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            GdtSymbol::Straightness => "straightness",
+            GdtSymbol::Flatness => "flatness",
+            GdtSymbol::Circularity => "circularity",
+            GdtSymbol::Cylindricity => "cylindricity",
+            GdtSymbol::ProfileLine => "profile_line",
+            GdtSymbol::ProfileSurface => "profile_surface",
+            GdtSymbol::Perpendicularity => "perpendicularity",
+            GdtSymbol::Angularity => "angularity",
+            GdtSymbol::Parallelism => "parallelism",
+            GdtSymbol::Position => "position",
+            GdtSymbol::Concentricity => "concentricity",
+            GdtSymbol::Symmetry => "symmetry",
+            GdtSymbol::Runout => "runout",
+            GdtSymbol::TotalRunout => "total_runout",
+        }
+    }
+
+    pub fn from_keyword(w: &str) -> Option<GdtSymbol> {
+        GdtSymbol::ALL.into_iter().find(|s| s.keyword() == w)
+    }
+
+    /// Form tolerances take no datum.
+    pub fn takes_datums(self) -> bool {
+        !matches!(
+            self,
+            GdtSymbol::Straightness | GdtSymbol::Flatness | GdtSymbol::Circularity | GdtSymbol::Cylindricity
+        )
+    }
+}
+
+/// A feature control frame at `at` (its lower-left corner, sheet mm): `symbol`, the
+/// `tolerance` text (user text, e.g. "Ø0.1 M") and up to three datum letters, with a leader to
+/// edge `a` in `view`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GdtDef {
+    pub name: String,
+    pub view: String,
+    pub a: EdgeRef,
+    pub symbol: GdtSymbol,
+    pub tolerance: String,
+    pub datums: Vec<String>,
+    pub at: [Expr; 2],
+}
+
+/// A datum feature symbol: its letter is the item's name, boxed at `at`, joined to edge `a`
+/// in `view` by a filled triangle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatumDef {
+    pub name: String,
+    pub view: String,
+    pub a: EdgeRef,
+    pub at: [Expr; 2],
+}
+
 /// A text note on the sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteDef {
@@ -536,6 +635,20 @@ fn print_item(item: &DrawingItem) -> String {
         DrawingItem::Balloon(b) => {
             format!("balloon {} (view: {}, body: {}, at: {})", b.name, b.view, b.body, pair(&b.at))
         }
+        DrawingItem::Gdt(g) => {
+            let datums =
+                if g.datums.is_empty() { String::new() } else { format!(", datums: [{}]", g.datums.join(", ")) };
+            format!(
+                "gdt {} (view: {}, a: {}, symbol: {}, tolerance: {}{datums}, at: {})",
+                g.name,
+                g.view,
+                g.a,
+                g.symbol.keyword(),
+                quote(&g.tolerance),
+                pair(&g.at)
+            )
+        }
+        DrawingItem::Datum(d) => format!("datum {} (view: {}, a: {}, at: {})", d.name, d.view, d.a, pair(&d.at)),
     }
 }
 
@@ -616,10 +729,12 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
             "note" => DrawingItem::Note(parse_note(&mut lc)?),
             "parts_list" => DrawingItem::PartsList(parse_parts_list(&mut lc)?),
             "balloon" => DrawingItem::Balloon(parse_balloon(&mut lc)?),
+            "gdt" => DrawingItem::Gdt(parse_gdt(&mut lc)?),
+            "datum" => DrawingItem::Datum(parse_datum(&mut lc)?),
             other => {
                 return Err(lc.err_hint(
                     format!("unknown drawing item '{other}'"),
-                    "items are: view, dim, note, parts_list, balloon",
+                    "items are: view, dim, note, parts_list, balloon, gdt, datum",
                 ));
             }
         };
@@ -807,6 +922,62 @@ fn parse_parts_list(c: &mut Cursor<'_>) -> Result<PartsListDef, ParseError> {
         Ok(())
     })?;
     Ok(PartsListDef { name, at: at.ok_or_else(|| missing(c, KW, "at"))? })
+}
+
+fn parse_gdt(c: &mut Cursor<'_>) -> Result<GdtDef, ParseError> {
+    const KW: &str = "gdt";
+    let name = c.ident()?.to_string();
+    let (mut view, mut a, mut symbol, mut tolerance, mut datums, mut at) = (None, None, None, None, Vec::new(), None);
+    parse_args(c, |key, c| {
+        match key {
+            "view" => view = Some(c.ident()?.to_string()),
+            "a" => a = Some(parse_edge(c)?),
+            "symbol" => {
+                let w = c.ident()?;
+                symbol = Some(GdtSymbol::from_keyword(w).ok_or_else(|| {
+                    c.err_hint(
+                        format!("unknown GD&T symbol '{w}'"),
+                        "flatness, position, perpendicularity, ... (see the grammar)",
+                    )
+                })?);
+            }
+            "tolerance" => tolerance = Some(c.string()?),
+            "datums" => datums = parse_ident_list(c, "datums")?,
+            "at" => at = Some(parse_pair(c)?),
+            key => return Err(unknown_arg(c, KW, key, "view, a, symbol, tolerance, datums, at")),
+        }
+        Ok(())
+    })?;
+    Ok(GdtDef {
+        name,
+        view: view.ok_or_else(|| missing(c, KW, "view"))?,
+        a: a.ok_or_else(|| missing(c, KW, "a"))?,
+        symbol: symbol.ok_or_else(|| missing(c, KW, "symbol"))?,
+        tolerance: tolerance.ok_or_else(|| missing(c, KW, "tolerance"))?,
+        datums,
+        at: at.ok_or_else(|| missing(c, KW, "at"))?,
+    })
+}
+
+fn parse_datum(c: &mut Cursor<'_>) -> Result<DatumDef, ParseError> {
+    const KW: &str = "datum";
+    let name = c.ident()?.to_string();
+    let (mut view, mut a, mut at) = (None, None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "view" => view = Some(c.ident()?.to_string()),
+            "a" => a = Some(parse_edge(c)?),
+            "at" => at = Some(parse_pair(c)?),
+            key => return Err(unknown_arg(c, KW, key, "view, a, at")),
+        }
+        Ok(())
+    })?;
+    Ok(DatumDef {
+        name,
+        view: view.ok_or_else(|| missing(c, KW, "view"))?,
+        a: a.ok_or_else(|| missing(c, KW, "a"))?,
+        at: at.ok_or_else(|| missing(c, KW, "at"))?,
+    })
 }
 
 fn parse_balloon(c: &mut Cursor<'_>) -> Result<BalloonDef, ParseError> {

@@ -348,3 +348,49 @@ fn a_balloon_names_a_part_and_points_at_it() {
     assert!(text.contains("balloon Balloon1 (view: F, body: Plate, at: [200, 190])"), "{text}");
     assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
 }
+
+#[test]
+fn gdt_frames_and_datums_are_drawn_and_checked() {
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    run(&mut s, "drawing.add_view", json!({"drawing": "D", "name": "F", "from": "top", "at": ["150", "150"]}));
+    let e5 = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))";
+    let e6 = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))";
+    run(
+        &mut s,
+        "drawing.add_datum",
+        json!({"drawing": "D", "view": "F", "a": e5, "letter": "A", "at": ["150", "120"]}),
+    );
+    let r = run(
+        &mut s,
+        "drawing.add_gdt",
+        json!({"drawing": "D", "view": "F", "a": e6, "symbol": "perpendicularity", "tolerance": "0.05", "datums": ["A"], "at": ["190", "160"]}),
+    );
+    assert_eq!(r["gdt"], "Gdt1", "{r}");
+    let sc = crate::commands::drawing_scene(&mut s, &gusset_history::Actor::User, "D").unwrap();
+    assert!(sc.issues.is_empty(), "{:?}", sc.issues);
+    let texts: Vec<&str> = sc
+        .items
+        .iter()
+        .filter_map(|i| match &i.prim {
+            gusset_drawing::scene::Prim::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"0.05") && texts.iter().filter(|t| **t == "A").count() == 2, "{texts:?}");
+    // A form tolerance takes no datum; a frame names only datums on the drawing.
+    let bad = |s: &mut Session, symbol: &str, datum: &str| {
+        err(
+            s,
+            "drawing.add_gdt",
+            json!({"drawing": "D", "view": "F", "a": e6, "symbol": symbol, "tolerance": "0.1", "datums": [datum], "at": ["190", "100"]}),
+        )
+    };
+    assert_eq!(bad(&mut s, "flatness", "A").code, "invalid_document");
+    assert_eq!(bad(&mut s, "position", "B").code, "invalid_document");
+    assert_eq!(bad(&mut s, "roundness", "A").code, "invalid_args");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("symbol: perpendicularity, tolerance: \"0.05\", datums: [A]"), "{text}");
+    assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
+}

@@ -641,6 +641,8 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   note <Name> (text: "...", at: [<x>, <y>])
   parts_list <Name> (at: [<x>, <y>])        # the bill of materials (as query.bom); at = top-left corner
   balloon <Name> (view: <view>, body: <body>, at: [<x>, <y>])   # the body's parts-list item, leader to its centre
+  gdt <Name> (view: <view>, a: <edge>, symbol: flatness | straightness | circularity | cylindricity | profile_line | profile_surface | perpendicularity | angularity | parallelism | position | concentricity | symmetry | runout | total_runout, tolerance: "0.05", [datums: [A, B]], at: [<x>, <y>])
+  datum <Letter> (view: <view>, a: <edge>, at: [<x>, <y>])   # a datum feature symbol; gdt frames name its letter (form tolerances take none)
 }
 ```
 
