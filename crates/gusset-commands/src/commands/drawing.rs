@@ -269,20 +269,20 @@ pub struct DrawingAddView {
     pub drawing: String,
     #[serde(default)]
     pub name: Option<String>,
-    /// Base view: front, back, top, bottom, left, right, iso or iso_back.
+    /// front, back, top, bottom, left, right, iso, iso_back.
     #[serde(default)]
     pub from: Option<String>,
-    /// Base view: centre on the sheet in mm from the lower-left corner.
+    /// Centre, sheet mm from the lower-left.
     #[serde(default)]
     pub at: Option<[String; 2]>,
-    /// Base view: bodies to show (default all).
     #[serde(default)]
     pub bodies: Vec<String>,
-    /// Projected view: the parent view and the side it is seen from.
     #[serde(default)]
     pub of: Option<String>,
+    /// top/bottom/left/right, as seen in the parent.
     #[serde(default)]
     pub side: Option<String>,
+    /// Sheet mm (20).
     #[serde(default)]
     pub gap: Option<String>,
     #[serde(default)]
@@ -291,15 +291,18 @@ pub struct DrawingAddView {
     pub hidden: Option<bool>,
     #[serde(default)]
     pub tangent: bool,
-    /// Centre marks and centrelines (default true).
     #[serde(default)]
     pub centers: Option<bool>,
+    /// Section label.
     #[serde(default)]
     pub section: Option<String>,
+    /// Cut offset, doc units (default mid).
     #[serde(default)]
     pub cut_at: Option<String>,
+    /// Detail: the view it enlarges.
     #[serde(default)]
     pub detail_of: Option<String>,
+    /// Detail centre, parent view coords.
     #[serde(default)]
     pub center: Option<[String; 2]>,
     #[serde(default)]
@@ -309,7 +312,8 @@ pub struct DrawingAddView {
 impl Command for DrawingAddView {
     const ID: &'static str = "drawing.add_view";
     const TITLE: &'static str = "Add view";
-    const DESCRIPTION: &'static str = "Add a view: base (from, at in sheet mm, bodies), projected (of, side; section+cut_at cuts it) or detail (detail_of, center, radius in doc units, at).";
+    const DESCRIPTION: &'static str =
+        "Add a base (from, at), projected (of, side, section) or detail view (detail_of).";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

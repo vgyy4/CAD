@@ -1578,6 +1578,10 @@ impl Command for SketchImportDxf {
             Ok(json!({
                 "lines": lines, "arcs": arcs, "circles": circles, "points": points.len(),
                 "unit_mm": read.unit_mm, "skipped_user_text": skipped,
+                // Dogfooding F5-13: a file without a unit was taken as mm silently.
+                "warnings": if read.units_known { json!([]) } else {
+                    json!(["the file states no unit ($INSUNITS): read as mm; pass scale to convert"])
+                },
             }))
         })
     }

@@ -174,6 +174,22 @@ fn gui_visibility(xml: &[u8]) -> Result<BTreeMap<String, bool>, String> {
     Ok(out)
 }
 
+/// Labels of the solid objects the GUI document hides (skipped by [`picks`]; dogfooding
+/// F5-10: they were left out without a word).
+///
+/// # Errors
+/// Malformed or oversized XML.
+pub fn hidden(document_xml: &[u8], gui_xml: &[u8]) -> Result<Vec<String>, String> {
+    let objects = document(document_xml)?;
+    let vis = gui_visibility(gui_xml)?;
+    Ok(objects
+        .iter()
+        .filter(|(_, o)| o.shape_file.is_some() && !helper(&o.kind))
+        .filter(|(name, _)| vis.iter().any(|(n, v)| n == *name && !*v))
+        .map(|(name, o)| o.label.clone().unwrap_or_else(|| name.clone()))
+        .collect())
+}
+
 /// The shapes to import from a document: the visible solid objects, or, when nothing
 /// says what is visible, the objects no other object uses.
 ///

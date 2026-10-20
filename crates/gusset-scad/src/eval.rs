@@ -847,7 +847,10 @@ impl Eval<'_> {
                     for o in objs.get(i).into_iter().flatten() {
                         self.prims += leaves(o);
                         if self.prims > self.lim.max_primitives {
-                            return err(line, "the model has too many primitives");
+                            return err(
+                                line,
+                                format!("the model has too many primitives (more than {})", self.lim.max_primitives),
+                            );
                         }
                         out.push(o.clone());
                     }
@@ -883,7 +886,7 @@ impl Eval<'_> {
     fn prim(&mut self, prim: Prim, line: u32) -> R<Vec<Obj>> {
         self.prims += 1;
         if self.prims > self.lim.max_primitives {
-            return err(line, "the model has too many primitives");
+            return err(line, format!("the model has too many primitives (more than {})", self.lim.max_primitives));
         }
         Ok(vec![Obj::D3(Csg::Leaf { prim, at: IDENTITY, line })])
     }
@@ -954,7 +957,11 @@ impl Eval<'_> {
                 }
                 self.prim(Prim::Cylinder { h, r1, r2, center }, line)
             }
-            "polyhedron" => err(line, "polyhedron is not supported yet"),
+            // Skipped with a warning like hull, not fatal to the other objects (F5-9).
+            "polyhedron" => {
+                self.warn(line, "'polyhedron' is not supported; skipped");
+                Ok(Vec::new())
+            }
             "square" | "circle" | "polygon" => {
                 let shape = match name {
                     "square" => {
@@ -1083,10 +1090,12 @@ impl Eval<'_> {
             "linear_extrude" => {
                 let h = positive(num(&self.arg(a, "height", 0), 100.0), "the height")?;
                 if self.arg(a, "twist", 99).num().is_some_and(|t| t != 0.0) {
-                    return err(line, "linear_extrude: twist is not supported");
+                    self.warn(line, "linear_extrude with twist is not supported; skipped");
+                    return Ok(Vec::new());
                 }
                 if !matches!(self.arg(a, "scale", 99), Value::Undef | Value::Num(1.0)) {
-                    return err(line, "linear_extrude: scale is not supported");
+                    self.warn(line, "linear_extrude with scale is not supported; skipped");
+                    return Ok(Vec::new());
                 }
                 let center = self.arg(a, "center", 1).truthy();
                 let kids = self.kids(children, sc)?;

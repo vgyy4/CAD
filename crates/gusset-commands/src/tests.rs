@@ -437,6 +437,8 @@ fn a_freecad_file_imports_its_visible_shapes_through_the_worker() {
     // The box imports; the cylinder's shape is refused (a warning); the sketch is skipped.
     assert_eq!(r["features"].as_array().unwrap().len(), 1, "{r}");
     assert!(r.to_string().contains("not BRep"), "{r}");
+    // Without GuiDocument.xml the import says it could not tell what is hidden (F5-10).
+    assert!(r.to_string().contains("visibility unknown"), "{r}");
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("format: fcstd") && text.contains("Base plate"), "{text}");
     assert_eq!(execute(&mut s, &u, "import.file", json!({"path": "empty.fcstd"})).unwrap_err().code, "io");

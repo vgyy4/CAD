@@ -386,3 +386,22 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 - A real FreeCAD-written `.FCStd`: compounds, `Part::FeaturePython`, links, placements that differ from the shape location, and older "Topology V1/V2" BRep text.
 - OpenSCAD `include`/`use` of other files, `children()`, `surface`, `projection` and `resize`.
 - Cancelling a long import, rate limits, and the in-app GUI drawing editor.
+
+### Run 5 fix status (2026-10-20)
+
+| Finding | Status |
+|---|---|
+| F5-1 | **Fixed**: `$fn` 3–30 on a circle or cylinder builds OpenSCAD's polygon or prism; small `$fn` on a sphere or cone is warned about |
+| F5-2 | **Fixed**: a read-only connection never saves, and a read-only agent creates no branch |
+| F5-3 | **Partly fixed**: overlapping dimension and note texts are listed in `issues`; automatic stacking of parallel dimensions is open |
+| F5-4 | **Fixed**: views outside the frame, over the title block or over each other, and notes outside the frame are in `issues`; a second view on the same side goes further out. Picking a standard scale that fits for `standard_views` is open |
+| F5-5 | **Fixed**: drawing items the sheet cannot draw are refused before committing |
+| F5-6 | **Fixed**: foreshortened lengths and axonometric distances are refused |
+| F5-7 | **Fixed**: an empty region selection leaves holes open (even-odd) |
+| F5-8 | Open: delete results do not name the drawing items they leave dangling |
+| F5-9 | **Fixed**: `polyhedron` and twisted or scaled `linear_extrude` are skipped with a warning; the primitive limit is stated. Error codes stay `io` |
+| F5-10 | **Fixed**: hidden objects and a missing `GuiDocument.xml` are warned about; the ZIP error names FreeCAD. Per-body labels in the result are open |
+| F5-11 | **Fixed**: `drawing_add_view` fields are described (within the tool-list budget); the export hint names the right format. Positions in `query_drawing` are open |
+| F5-12 | Open: read-only sessions cannot open a locked project |
+| F5-13 | **Partly fixed**: a DXF without `$INSUNITS` gives a warning; SPLINE and ELLIPSE import is open |
+| F5-14 | Open: drawing units and decimals (dimensions follow the document unit since review N4 only for model inputs) |

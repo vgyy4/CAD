@@ -27,6 +27,8 @@ pub struct Read {
     pub curves: Vec<Curve>,
     /// Millimetres per drawing unit (from `$INSUNITS`; 1 when absent or unitless).
     pub unit_mm: f64,
+    /// The file states its unit (`$INSUNITS` present and not 0, unitless).
+    pub units_known: bool,
     /// Entity types that were skipped, with their counts.
     pub skipped: BTreeMap<String, usize>,
 }
@@ -306,7 +308,9 @@ pub fn read(bytes: &[u8]) -> Result<Read, ReadError> {
         if !in_entities {
             match (prev, code) {
                 ((9, name), 70) if name.trim() == "$INSUNITS" => {
-                    out.unit_mm = unit_mm(value.trim().parse().unwrap_or(0))
+                    let code = value.trim().parse().unwrap_or(0);
+                    out.unit_mm = unit_mm(code);
+                    out.units_known = code != 0;
                 }
                 ((0, s), 2) if s.trim() == "SECTION" && value.trim() == "ENTITIES" => {
                     in_entities = true;

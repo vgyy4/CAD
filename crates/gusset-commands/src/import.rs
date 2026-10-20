@@ -276,7 +276,11 @@ fn freecad(
     cancel: &CancelFlag,
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
     let limits = gusset_meshio::Limits::default();
-    let bad = |e: gusset_meshio::MeshIoError| CommandError::new("io", format!("the FreeCAD file cannot be read: {e}"));
+    // The ZIP reader is shared with 3MF; name the right format (F5-10).
+    let bad = |e: gusset_meshio::MeshIoError| {
+        let e = e.to_string().replace("3MF ZIP container", "FreeCAD file (ZIP)");
+        CommandError::new("io", format!("the FreeCAD file cannot be read: {e}"))
+    };
     // One decompression budget for both passes, and the XML refused by its declared size
     // before it is inflated (security review X4).
     let mut budget = limits.max_decompressed_bytes;
@@ -302,6 +306,14 @@ fn freecad(
     // Each shape file is parsed once, however many objects name it (review X4).
     let mut parsed: std::collections::HashMap<&str, Result<Vec<Vec<u8>>, String>> = std::collections::HashMap::new();
     let (mut out, mut warnings) = (Vec::new(), Vec::new());
+    match get("GuiDocument.xml") {
+        Some(g) => {
+            for l in crate::fcstd::hidden(doc, g).map_err(|e| CommandError::new("io", e))?.into_iter().take(50) {
+                warnings.push(format!("skipped hidden object '{l}'"));
+            }
+        }
+        None => warnings.push("no GuiDocument.xml: visibility unknown, every top-level object imported".into()),
+    }
     let mut kept = 0usize;
     for p in &picks {
         if cancel.load(Ordering::Relaxed) {

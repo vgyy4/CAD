@@ -99,7 +99,7 @@ pub fn agent_export_name(rel: &str, allowed: &[&str]) -> Result<(), CommandError
             "not_allowed",
             format!("export file name refused: the extension must be one of .{}", allowed.join(", .")),
         )
-        .hint("name the file after its format, e.g. part.step or part.stl"));
+        .hint(format!("name the file after its format, e.g. part.{}", allowed.first().copied().unwrap_or("step"))));
     }
     Ok(())
 }
