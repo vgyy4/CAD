@@ -793,9 +793,35 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                     (Ok(offset), Ok(text_at)) => {
                         let v = dims::ViewCtx { bodies: &p.bodies, view: pv, units: cx.units };
                         let start = scene.items.len();
-                        let r = dims::draw(&mut scene, dim, &v, offset, text_at);
+                        let handles = scene.handles.len();
+                        let mut r = dims::draw(&mut scene, dim, &v, offset, text_at);
                         if let Some(at) = r.text_at {
                             handle(&mut scene, start, &dim.name, at);
+                        }
+                        // Automatic placement steps outwards while its text lands on an
+                        // earlier text (dogfooding F5-3: parallel dimensions stacked on one
+                        // line). A placement the user chose stays.
+                        if offset.is_none() && text_at.is_none() {
+                            let mut off = dims::DEFAULT_OFFSET;
+                            for _ in 0..MAX_RESTACK {
+                                let Some(me) = scene.handles.get(handles) else { break };
+                                let hit = scene.handles.get(..handles).unwrap_or(&[]).iter().any(|h| {
+                                    h.min[0] < me.max[0]
+                                        && me.min[0] < h.max[0]
+                                        && h.min[1] < me.max[1]
+                                        && me.min[1] < h.max[1]
+                                });
+                                if !hit {
+                                    break;
+                                }
+                                off += RESTACK_STEP;
+                                scene.items.truncate(start);
+                                scene.handles.truncate(handles);
+                                r = dims::draw(&mut scene, dim, &v, Some(off), None);
+                                if let Some(at) = r.text_at {
+                                    handle(&mut scene, start, &dim.name, at);
+                                }
+                            }
                         }
                         r
                     }
@@ -817,6 +843,11 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
     layout_issues(&mut scene, d, cx);
     scene
 }
+
+/// How far an automatically placed dimension steps out when its text meets another one,
+/// sheet mm, and how many steps it tries.
+const RESTACK_STEP: f64 = 7.0;
+const MAX_RESTACK: usize = 6;
 
 /// A box on the sheet: (min, max) corners, mm.
 type SheetBox = ([f64; 2], [f64; 2]);

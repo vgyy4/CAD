@@ -393,7 +393,7 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 |---|---|
 | F5-1 | **Fixed**: `$fn` 3–30 on a circle or cylinder builds OpenSCAD's polygon or prism; small `$fn` on a sphere or cone is warned about |
 | F5-2 | **Fixed**: a read-only connection never saves, and a read-only agent creates no branch |
-| F5-3 | **Partly fixed**: overlapping dimension and note texts are listed in `issues`; automatic stacking of parallel dimensions is open |
+| F5-3 | **Fixed**: an automatically placed dimension steps out (7 mm, up to 6 times) while its text meets an earlier one; overlaps that remain are listed in `issues` |
 | F5-4 | **Fixed**: views outside the frame, over the title block or over each other, and notes outside the frame are in `issues`; a second view on the same side goes further out. Picking a standard scale that fits for `standard_views` is open |
 | F5-5 | **Fixed**: drawing items the sheet cannot draw are refused before committing |
 | F5-6 | **Fixed**: foreshortened lengths and axonometric distances are refused |

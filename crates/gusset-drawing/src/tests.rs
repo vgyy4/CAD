@@ -421,3 +421,23 @@ fn a_second_view_on_the_same_side_goes_further_out() {
     assert!((t2.origin[0] - t1.origin[0]).abs() < 1e-9, "aligned with its parent");
     assert!(!s.issues.iter().any(|i| i.contains("overlap")), "{:?}", s.issues);
 }
+
+#[test]
+fn automatic_dimensions_step_out_instead_of_overlapping() {
+    // Dogfooding F5-3: in the front view the plate's front and back edges coincide, so two
+    // length dimensions with the default offset drew their texts on top of each other.
+    let e = |l: &str| format!("edge(Plate/cap(end), Plate/side(S/{l}))");
+    let s = scene(&format!(
+        "drawing D (size: A3, projection: first) {{
+  view Front (bodies: [Plate], from: front, at: [130, 160])
+  dim A (view: Front, kind: length, a: {})
+  dim B (view: Front, kind: length, a: {})
+}}
+",
+        e("l5"),
+        e("l7")
+    ));
+    assert!(!s.issues.iter().any(|i| i.contains("overlap")), "{:?}", s.issues);
+    let h = |n: &str| s.handles.iter().find(|h| h.item == n).unwrap_or_else(|| panic!("{n}"));
+    assert!((h("B").at[1] - h("A").at[1]).abs() >= 7.0 - 1e-9, "{:?} {:?}", h("A"), h("B"));
+}
