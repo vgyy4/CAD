@@ -347,6 +347,19 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     let head = 3f64.sqrt() / 2.0 * 16.0 * 16.0 * 6.4;
     let vb = volume(&mut s, "Bolt");
     assert!((vb - want - head).abs() < 1e-4 * (want + head), "{vb} vs {}", want + head);
+    // A socket head (ISO 4762 M10): a cylinder below the rod minus the hex socket cut up
+    // from its bottom face.
+    let r = run(
+        &mut s,
+        "generate.thread",
+        json!({"name": "Cap", "head_width": "16 mm", "socket": "8 mm", "chamfer": false}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let cap = PI * 8.0 * 8.0 * 10.0 - 3f64.sqrt() / 2.0 * 8.0 * 8.0 * 5.0;
+    let vs = volume(&mut s, "Cap");
+    assert!((vs - want - cap).abs() < 1e-4 * (want + cap), "{vs} vs {}", want + cap);
+    let b = run(&mut s, "query.body", json!({"body": "Cap"}));
+    assert!((b["bbox_min_mm"][2].as_f64().unwrap() + 10.0).abs() < 1e-6, "{b}");
     // The default chamfers both free ends 45 degrees from the minor diameter: less material,
     // and the end faces shrink to the minor circle.
     let r = run(&mut s, "generate.thread", json!({"name": "Chamfered"}));

@@ -37,3 +37,10 @@ thread generator.
 Modelled threads are exact and fast. Self-intersecting helices (a profile taller than the pitch)
 are the user's to avoid; OCCT then fails with a hint. Thread runouts and chamfered starts are
 later.
+
+## Amendment (2026-10-20): socket head cap screws
+`generate.thread` with `socket` (hex socket across flats) makes an ISO 4762-style screw:
+the head is a cylinder of diameter `head_width` (height defaults to the thread diameter)
+and the socket is a hexagon on a datum plane at the head's bottom face, cut up by
+`socket_depth` (default half the diameter). Values stay named parameters (ADR 0018); the
+OCCT test checks the exact volume of M10 (16 mm head, 10 mm high, 8 mm socket, 5 deep).

@@ -488,19 +488,61 @@ pub struct GenerateThread {
     #[serde(default = "d_thread_l")]
     #[schemars(extend("x-essential" = true))]
     pub length: String,
-    /// 45 degree chamfer from the minor diameter at the free end(s) (default true).
+    /// 45 deg chamfer at the free end(s).
     #[serde(default = "d_true")]
     pub chamfer: bool,
-    /// Hex head across flats (makes a bolt; ISO 4017 M10: 16 mm).
+    /// Head across flats (a bolt; M10: 16 mm).
     #[serde(default)]
     pub head_width: Option<String>,
-    /// Head height (ISO 4017 M10: 6.4 mm).
+    /// Head height (M10: 6.4 mm).
     #[serde(default)]
     pub head_height: Option<String>,
+    /// Hex socket width: a round socket head (M10: 8 mm).
+    #[serde(default)]
+    pub socket: Option<String>,
+    #[serde(default)]
+    pub socket_depth: Option<String>,
     #[serde(default)]
     pub left: bool,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+/// A regular hexagon about the origin, `width` across flats (`w` its parameter), with
+/// corners at 30 + 60 i degrees, as sketch entities and constraints.
+fn hexagon(w: &str, width: f64) -> Result<(Vec<SkEntity>, Vec<SkConstraint>), CommandError> {
+    let mut entities = Vec::new();
+    let mut constraints = Vec::new();
+    for i in 0..6 {
+        let a = (30.0 + 60.0 * i as f64).to_radians();
+        let id = format!("p{}", i + 1);
+        let rr = width / 3f64.sqrt();
+        entities.push(SkEntity {
+            id: id.clone(),
+            geom: SkGeom::Point { x: rr * libm::cos(a), y: rr * libm::sin(a) },
+            construction: false,
+        });
+        let deg = 30 + 60 * i;
+        for (k, kind, e) in [
+            (0, SkConstraintKind::AtX, format!("{w} / sqrt(3) * cos({deg} deg)")),
+            (1, SkConstraintKind::AtY, format!("{w} / sqrt(3) * sin({deg} deg)")),
+        ] {
+            constraints.push(SkConstraint {
+                id: format!("k{}", 30 + 2 * i + k),
+                kind,
+                entities: vec![id.clone()],
+                value: Some(parse_expr("hexagon", &e)?),
+            });
+        }
+    }
+    for i in 0..6 {
+        entities.push(SkEntity {
+            id: format!("l{}", 7 + i),
+            geom: SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 6 + 1) },
+            construction: false,
+        });
+    }
+    Ok((entities, constraints))
 }
 
 fn d_true() -> bool {
@@ -617,20 +659,35 @@ pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64, start: f64) -> Ve
 impl Command for GenerateThread {
     const ID: &'static str = "generate.thread";
     const TITLE: &'static str = "Thread";
-    const DESCRIPTION: &'static str = "Generate a threaded rod along Z (ISO 68-1 metric profile, exact helix) as named parameters, sketches and features.";
+    const DESCRIPTION: &'static str =
+        "Generate a threaded rod, bolt or socket screw along Z (ISO 68-1 thread, exact helix).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let socket = self.socket.is_some();
         let head = match (&self.head_width, &self.head_height) {
-            (None, None) => None,
-            (Some(w), h) => Some((w.clone(), h.clone().unwrap_or_else(|| format!("0.4 * ({w})")))),
-            (None, Some(_)) => return Err(CommandError::args("head_height needs head_width")),
+            (None, None) if !socket && self.socket_depth.is_none() => None,
+            (Some(w), h) => Some((
+                w.clone(),
+                h.clone().unwrap_or_else(|| if socket { self.diameter.clone() } else { format!("0.4 * ({w})") }),
+            )),
+            _ => return Err(CommandError::args("head_height, socket and socket_depth need head_width")),
         };
+        if self.socket_depth.is_some() && !socket {
+            return Err(CommandError::args("socket_depth needs socket"));
+        }
         let mut given =
             vec![("diameter", self.diameter.clone()), ("pitch", self.pitch.clone()), ("length", self.length.clone())];
         if let Some((w, h)) = &head {
             given.push(("head_width", w.clone()));
             given.push(("head_height", h.clone()));
+        }
+        if let Some(sw) = &self.socket {
+            given.push(("socket", sw.clone()));
+            given.push((
+                "socket_depth",
+                self.socket_depth.clone().unwrap_or_else(|| format!("0.5 * ({})", self.diameter)),
+            ));
         }
         let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
         for (what, src) in given {
@@ -676,12 +733,23 @@ impl Command for GenerateThread {
                 ("length", "rod length"),
                 ("head_width", "head width across flats"),
                 ("head_height", "head height"),
+                ("socket", "hex socket across flats"),
+                ("socket_depth", "hex socket depth"),
             ];
             if head.is_some() {
                 let (hw, hh) = (value("head_width")?, value("head_height")?);
                 if !(hw > d && hh > 0.0) {
                     return Err(CommandError::args("the head must be wider than the thread and have a height")
                         .hint("ISO 4017 M10: head_width 16 mm, head_height 6.4 mm"));
+                }
+                if socket {
+                    let (sw, sd) = (value("socket")?, value("socket_depth")?);
+                    if !(sw > 0.0 && 2.0 * sw / 3f64.sqrt() < hw && sd > 0.0 && sd < hh) {
+                        return Err(CommandError::args("the socket must fit inside the head and be shallower than it")
+                            .hint(
+                                "ISO 4762 M10: head_width 16 mm, head_height 10 mm, socket 8 mm, socket_depth 5 mm",
+                            ));
+                    }
                 }
             }
             for (what, e) in &exprs {
@@ -792,36 +860,24 @@ impl Command for GenerateThread {
             ];
             let mut features = features;
             if head.is_some() {
-                // A hexagon below the rod: the head, from z = 0 down by head_height.
-                let mut entities = Vec::new();
-                let mut constraints = Vec::new();
-                let hw = value("head_width")?;
-                for i in 0..6 {
-                    let a = (30.0 + 60.0 * i as f64).to_radians();
-                    let id = format!("p{}", i + 1);
-                    let rr = hw / 3f64.sqrt();
-                    entities.push(ent(&id, SkGeom::Point { x: rr * libm::cos(a), y: rr * libm::sin(a) }));
-                    let deg = 30 + 60 * i;
-                    let w = nm.n("head_width");
-                    constraints.push(c(
-                        format!("k{}", 30 + 2 * i),
-                        SkConstraintKind::AtX,
-                        &[&id],
-                        &format!("{w} / sqrt(3) * cos({deg} deg)"),
-                    )?);
-                    constraints.push(c(
-                        format!("k{}", 31 + 2 * i),
-                        SkConstraintKind::AtY,
-                        &[&id],
-                        &format!("{w} / sqrt(3) * sin({deg} deg)"),
-                    )?);
-                }
-                for i in 0..6 {
-                    entities.push(ent(
-                        &format!("l{}", 7 + i),
-                        SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 6 + 1) },
-                    ));
-                }
+                // The head below the rod, from z = 0 down by head_height: a hexagon, or a
+                // circle for a socket head.
+                let (entities, constraints) = if socket {
+                    let hw = value("head_width")?;
+                    (
+                        vec![
+                            ent("p1", SkGeom::Point { x: 0.0, y: 0.0 }),
+                            ent("c2", SkGeom::Circle { center: "p1".into(), radius: hw / 2.0 }),
+                        ],
+                        vec![
+                            c("k3".into(), SkConstraintKind::AtX, &["p1"], "0 mm")?,
+                            c("k4".into(), SkConstraintKind::AtY, &["p1"], "0 mm")?,
+                            c("k5".into(), SkConstraintKind::Diameter, &["c2"], &nm.n("head_width"))?,
+                        ],
+                    )
+                } else {
+                    hexagon(&nm.n("head_width"), value("head_width")?)?
+                };
                 let head_sk = format!("{name}_head_sketch");
                 if doc.feature(&head_sk).is_some() {
                     return Err(CommandError::args(format!("a feature named '{head_sk}' already exists")));
@@ -848,6 +904,45 @@ impl Command for GenerateThread {
                         body_name: None,
                     }),
                 ));
+                if socket {
+                    // The socket, cut up from the head's bottom face on a datum plane there.
+                    let (plane, sock_sk) = (format!("{name}_socket_plane"), format!("{name}_socket_sketch"));
+                    for f in [&plane, &sock_sk] {
+                        if doc.feature(f).is_some() {
+                            return Err(CommandError::args(format!("a feature named '{f}' already exists")));
+                        }
+                    }
+                    features.push(Feature::new(
+                        plane.clone(),
+                        FeatureKind::Plane(PlaneDef {
+                            base: PlaneRef::XY,
+                            kind: PlaneKind::Offset(parse_expr("head_height", &format!("-{}", nm.n("head_height")))?),
+                        }),
+                    ));
+                    let (entities, constraints) = hexagon(&nm.n("socket"), value("socket")?)?;
+                    features.push(Feature::new(
+                        sock_sk.clone(),
+                        FeatureKind::Sketch(SketchDef {
+                            plane: PlaneRef::Datum(plane),
+                            next_id: 50,
+                            entities,
+                            constraints,
+                            patterns: Vec::new(),
+                            gear: None,
+                        }),
+                    ));
+                    features.push(Feature::new(
+                        format!("{name}_socket"),
+                        FeatureKind::Extrude(ExtrudeDef {
+                            profile: ProfileRef { sketch: sock_sk, regions: Vec::new() },
+                            distance: parse_expr("socket_depth", &nm.n("socket_depth"))?,
+                            symmetric: false,
+                            op: BodyOp::Cut,
+                            body: Some(core.clone()),
+                            body_name: None,
+                        }),
+                    ));
+                }
             }
             if self.chamfer {
                 let minor_r = (d - 1.082_531_754_7 * p) / 2.0;
@@ -914,7 +1009,7 @@ fn d_nut_m() -> String {
 impl Command for GenerateNut {
     const ID: &'static str = "generate.nut";
     const TITLE: &'static str = "Nut";
-    const DESCRIPTION: &'static str = "Generate a hex nut along Z with an internal ISO metric thread (exact helix) as parameters, sketches and features.";
+    const DESCRIPTION: &'static str = "Generate a hex nut along Z with an internal ISO metric thread (exact helix).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
