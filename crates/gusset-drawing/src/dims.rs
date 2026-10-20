@@ -175,6 +175,8 @@ pub struct ViewCtx<'a> {
     pub bodies: &'a [Arc<Body>],
     pub view: &'a PlacedView,
     pub units: LengthUnit,
+    /// Decimal places; `None`: 2 in mm, 3 in inches.
+    pub decimals: Option<u32>,
 }
 
 /// Builds and draws dimension `d`. `offset` and `text_at` are already evaluated.
@@ -216,6 +218,7 @@ fn build(
         LengthUnit::Millimetre => (1.0, 2),
         LengthUnit::Inch => (1.0 / 25.4, 3),
     };
+    let decimals = v.decimals.map_or(decimals, |d| d.min(6) as i32);
     let label = |value: String| {
         let mut t = String::new();
         if let Some(p) = &d.prefix {

@@ -625,7 +625,7 @@ follow every model change.
 
 ```
 drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: first | third,
-                [scale: <number>], [title: "..."], [number: "..."], [material: "..."], [author: "..."]) {
+                [scale: <number>], [units: mm | in], [decimals: 0..6], [title: "..."], [number: "..."], [material: "..."], [author: "..."]) {
   view <Name> ([bodies: [<body>, ...]], from: front | back | top | bottom | left | right | iso | iso_back,
                at: [<x>, <y>], [scale: <number>], [hidden: true | false], [tangent: true],
                [centers: false])

@@ -259,3 +259,23 @@ fn deleting_a_measured_feature_names_the_dangling_dimensions() {
     let r = run(&mut s, "feature.delete", json!({"name": "Extrude2"}));
     assert_eq!(r["dangling_dimensions"], json!(["D/D1"]), "{r}");
 }
+
+#[test]
+fn a_drawing_can_dimension_in_inches_with_its_own_decimals() {
+    // Dogfooding F5-14: dimensions were in the document's unit only.
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "drawing.create", json!({"name": "D", "units": "in", "decimals": 2}));
+    run(&mut s, "drawing.add_view", json!({"drawing": "D", "name": "F", "from": "front", "at": ["150", "150"]}));
+    let e = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))";
+    run(&mut s, "drawing.add_dimension", json!({"drawing": "D", "view": "F", "kind": "length", "a": e}));
+    let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
+    assert_eq!(q["dimensions"][0]["text_user_text"], "1.57", "{q}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("units: in, decimals: 2"), "{text}");
+    assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
+    run(&mut s, "drawing.edit", json!({"drawing": "D", "units": "", "decimals": 1}));
+    let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
+    assert_eq!(q["dimensions"][0]["text_user_text"], "40", "{q}");
+    assert_eq!(err(&mut s, "drawing.edit", json!({"drawing": "D", "units": "ft"})).code, "invalid_args");
+}

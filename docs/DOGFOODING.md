@@ -404,4 +404,4 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 | F5-11 | **Fixed**: `drawing_add_view` fields are described (within the tool-list budget); the export hint names the right format. Positions in `query_drawing` are open |
 | F5-12 | Open: read-only sessions cannot open a locked project |
 | F5-13 | **Partly fixed**: a DXF without `$INSUNITS` gives a warning; SPLINE and ELLIPSE import is open |
-| F5-14 | Open: drawing units and decimals (dimensions follow the document unit since review N4 only for model inputs) |
+| F5-14 | **Fixed**: drawings take `units: mm | in` and `decimals: 0..6` (create, edit, text form); dual dimensions are open |

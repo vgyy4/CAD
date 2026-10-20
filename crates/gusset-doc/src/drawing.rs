@@ -31,6 +31,10 @@ pub struct Drawing {
     pub projection: Projection,
     /// Sheet scale: an expression without unit (0.5 is 1:2). `None`: 1.
     pub scale: Option<Expr>,
+    /// Unit of dimension values; `None`: the document's (dogfooding F5-14).
+    pub units: Option<gusset_units::quantity::LengthUnit>,
+    /// Decimal places of dimension values (0 to 6); `None`: 2 in mm, 3 in inches.
+    pub decimals: Option<u32>,
     /// Title block fields (user text).
     pub title: Option<String>,
     pub number: Option<String>,
@@ -48,6 +52,8 @@ impl Drawing {
             landscape: true,
             projection: Projection::First,
             scale: None,
+            units: None,
+            decimals: None,
             title: None,
             number: None,
             material: None,
@@ -384,6 +390,26 @@ fn pair(p: &[Expr; 2]) -> String {
     format!("[{}, {}]", p[0], p[1])
 }
 
+/// Most decimal places a drawing shows.
+pub const MAX_DECIMALS: u32 = 6;
+
+/// `mm` or `in`.
+pub fn unit_keyword(u: gusset_units::quantity::LengthUnit) -> &'static str {
+    match u {
+        gusset_units::quantity::LengthUnit::Millimetre => "mm",
+        gusset_units::quantity::LengthUnit::Inch => "in",
+    }
+}
+
+/// The unit a drawing keyword names.
+pub fn unit_of_keyword(w: &str) -> Option<gusset_units::quantity::LengthUnit> {
+    match w {
+        "mm" => Some(gusset_units::quantity::LengthUnit::Millimetre),
+        "in" => Some(gusset_units::quantity::LengthUnit::Inch),
+        _ => None,
+    }
+}
+
 /// Appends the canonical text of `d`.
 pub(crate) fn print_drawing(out: &mut String, d: &Drawing) {
     let mut args = vec![format!("size: {}", d.size.keyword())];
@@ -393,6 +419,12 @@ pub(crate) fn print_drawing(out: &mut String, d: &Drawing) {
     args.push(format!("projection: {}", if d.projection == Projection::First { "first" } else { "third" }));
     if let Some(s) = &d.scale {
         args.push(format!("scale: {s}"));
+    }
+    if let Some(u) = d.units {
+        args.push(format!("units: {}", unit_keyword(u)));
+    }
+    if let Some(n) = d.decimals {
+        args.push(format!("decimals: {n}"));
     }
     for (k, v) in [("title", &d.title), ("number", &d.number), ("material", &d.material), ("author", &d.author)] {
         if let Some(v) = v {
@@ -503,6 +535,14 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
                 })?;
             }
             "scale" => d.scale = Some(c.expr()?),
+            "units" => d.units = Some(keyword(c, "drawing units", "mm or in", unit_of_keyword)?),
+            "decimals" => {
+                let n = c.uint()?;
+                if n > MAX_DECIMALS {
+                    return Err(c.err(format!("decimals is {n}; at most {MAX_DECIMALS}")));
+                }
+                d.decimals = Some(n);
+            }
             "title" => d.title = Some(c.string()?),
             "number" => d.number = Some(c.string()?),
             "material" => d.material = Some(c.string()?),
@@ -512,7 +552,7 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
                     c,
                     KW,
                     key,
-                    "size, landscape, projection, scale, title, number, material, author",
+                    "size, landscape, projection, scale, units, decimals, title, number, material, author",
                 ));
             }
         }

@@ -109,6 +109,10 @@ pub struct DrawingCreate {
     #[serde(default)]
     pub scale: Option<String>,
     #[serde(default)]
+    pub units: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u32>,
+    #[serde(default)]
     pub title: Option<String>,
     /// Also add front, top, right and iso views of every body.
     #[serde(default)]
@@ -118,13 +122,15 @@ pub struct DrawingCreate {
 impl Command for DrawingCreate {
     const ID: &'static str = "drawing.create";
     const TITLE: &'static str = "New drawing";
-    const DESCRIPTION: &'static str = "Create a 2D drawing sheet (ISO/ANSI size, first or third angle, scale, title block). standard_views adds front, top, right and iso views.";
+    const DESCRIPTION: &'static str = "Create a drawing sheet (size, projection, scale, units, title block); standard_views adds front, top, right, iso.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let size = self.size.as_deref().map(size_of).transpose()?.unwrap_or(SheetSize::A3);
         let projection = self.projection.as_deref().map(projection_of).transpose()?.unwrap_or(Projection::First);
         let scale = opt_expr("scale", &self.scale)?;
+        let units = self.units.as_deref().map(units_of).transpose()?;
+        let decimals = self.decimals.map(decimals_of).transpose()?;
         let created = std::cell::RefCell::new(String::new());
         edit_checked(
             s,
@@ -150,6 +156,8 @@ impl Command for DrawingCreate {
                 d.landscape = !self.portrait;
                 d.projection = projection;
                 d.scale = scale;
+                d.units = units;
+                d.decimals = decimals;
                 d.title = self.title.filter(|t| !t.is_empty());
                 if self.standard_views {
                     let [w, h] = gusset_drawing::sheet_size(&d);
@@ -205,6 +213,10 @@ pub struct DrawingEdit {
     /// "" removes it (1:1).
     #[serde(default)]
     pub scale: Option<String>,
+    #[serde(default)]
+    pub units: Option<String>,
+    #[serde(default)]
+    pub decimals: Option<u32>,
     /// Title block fields; "" clears one.
     #[serde(default)]
     pub title: Option<String>,
@@ -219,8 +231,7 @@ pub struct DrawingEdit {
 impl Command for DrawingEdit {
     const ID: &'static str = "drawing.edit";
     const TITLE: &'static str = "Edit drawing";
-    const DESCRIPTION: &'static str =
-        "Change a drawing's size, orientation, projection, scale or title block fields (\"\" clears a field).";
+    const DESCRIPTION: &'static str = "Change a drawing's size, orientation, projection, scale, units or title block.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -231,6 +242,12 @@ impl Command for DrawingEdit {
             Some("") => Some(None),
             Some(t) => Some(Some(parse_expr("scale", t)?)),
         };
+        let units = match self.units.as_deref().map(str::trim) {
+            None => None,
+            Some("") => Some(None),
+            Some(u) => Some(Some(units_of(u)?)),
+        };
+        let decimals = self.decimals.map(decimals_of).transpose()?;
         let drawing = self.drawing.clone();
         edit_checked(
             s,
@@ -249,6 +266,12 @@ impl Command for DrawingEdit {
                 }
                 if let Some(sc) = scale {
                     d.scale = sc;
+                }
+                if let Some(u) = units {
+                    d.units = u;
+                }
+                if let Some(n) = decimals {
+                    d.decimals = Some(n);
                 }
                 set_text(&mut d.title, self.title);
                 set_text(&mut d.number, self.number);
@@ -498,7 +521,7 @@ impl Command for DrawingEditView {
 pub struct DrawingAddDimension {
     pub drawing: String,
     pub view: String,
-    /// length (one line), distance (two edges), diameter/radius (one circle), angle (two lines).
+    /// length, distance (2 edges), diameter, radius or angle (2 lines).
     pub kind: String,
     /// Edge names, e.g. "edge(Plate/cap(end), Plate/side(S/l5))".
     pub a: String,
@@ -794,6 +817,18 @@ fn scene(s: &mut Session, ctx: &CmdCtx, name: &str) -> Result<gusset_drawing::Sc
 ///
 /// # Errors
 /// No such drawing, or the branch does not evaluate.
+fn units_of(u: &str) -> Result<gusset_units::quantity::LengthUnit, CommandError> {
+    gusset_doc::drawing::unit_of_keyword(u.trim())
+        .ok_or_else(|| CommandError::args(format!("unknown drawing unit '{u}'")).hint("use mm or in"))
+}
+
+fn decimals_of(n: u32) -> Result<u32, CommandError> {
+    if n > gusset_doc::drawing::MAX_DECIMALS {
+        return Err(CommandError::args(format!("decimals is {n}; at most {}", gusset_doc::drawing::MAX_DECIMALS)));
+    }
+    Ok(n)
+}
+
 /// Refuses an edit the sheet cannot draw (dogfooding F5-5): an error of the item `item` of
 /// drawing `drawing` (a view or dimension), or with `item` `None` a sheet scale that does
 /// not evaluate, that the edit brings in. Errors already there before the edit (a

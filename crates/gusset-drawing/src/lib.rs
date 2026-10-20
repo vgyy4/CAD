@@ -791,7 +791,12 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 let text_at = dim.text_at.as_ref().map(|[x, y]| Ok::<_, String>([eval(x)?, eval(y)?])).transpose();
                 let r = match (offset, text_at) {
                     (Ok(offset), Ok(text_at)) => {
-                        let v = dims::ViewCtx { bodies: &p.bodies, view: pv, units: cx.units };
+                        let v = dims::ViewCtx {
+                            bodies: &p.bodies,
+                            view: pv,
+                            units: d.units.unwrap_or(cx.units),
+                            decimals: d.decimals,
+                        };
                         let start = scene.items.len();
                         let handles = scene.handles.len();
                         let mut r = dims::draw(&mut scene, dim, &v, offset, text_at);
