@@ -66,7 +66,7 @@ type CacheEntry = (Vec<Shape>, [u64; 7], Arc<Vec<HlrCurve>>);
 pub struct HlrCache {
     entries: Vec<CacheEntry>,
     /// Sections by (shapes, plane, view X): the cut shapes and their cut faces.
-    cuts: Vec<(Vec<Shape>, [u64; 8], Arc<Cut>)>,
+    cuts: Vec<(Vec<Shape>, Vec<u64>, Arc<Cut>)>,
     /// Projections computed (not found in the cache) so far.
     misses: usize,
 }
@@ -140,16 +140,18 @@ impl HlrCache {
         n: [f64; 3],
         x: [f64; 3],
         y: [f64; 3],
-        // The plane's offset along `n`, and a half section's split along `x`.
-        (c, half): (f64, Option<f64>),
+        // The zone axis in the plane, and the zones (ADR 0032 amendment: half and offset
+        // sections).
+        (u, zones): ([f64; 3], &[section::Zone]),
     ) -> Result<Arc<Cut>, String> {
-        let key = [n[0], n[1], n[2], x[0], x[1], x[2], c, half.unwrap_or(f64::NAN)].map(f64::to_bits);
+        let mut key: Vec<u64> = n.iter().chain(&x).chain(&u).map(|v| v.to_bits()).collect();
+        key.extend(zones.iter().flat_map(|z| [z.lo.to_bits(), z.hi.to_bits(), z.c.to_bits()]));
         let same = |s: &[Shape]| s.len() == shapes.len() && s.iter().zip(shapes).all(|(a, b)| a.ptr_eq(b));
         if let Some((_, _, cut)) = self.cuts.iter().find(|(s, kk, _)| *kk == key && same(s)) {
             return Ok(cut.clone());
         }
-        let kept = section::cut(k, shapes, n, x, c, half)?;
-        let faces = section::cut_faces(k, &kept, n, x, y, c)?;
+        let kept = section::cut(k, shapes, n, u, zones)?;
+        let faces = section::cut_faces(k, &kept, (n, u), x, y, zones)?;
         let cut = Arc::new(Cut { shapes: kept, faces });
         if self.cuts.len() >= CACHE_ENTRIES {
             self.cuts.remove(0);
@@ -247,6 +249,8 @@ struct SectionInfo {
     /// along X at this sheet Y; and the viewing direction on the sheet.
     vertical: bool,
     pos: f64,
+    /// An offset section's steps along the line: (sheet position along it, new `pos`).
+    jogs: Vec<(f64, f64)>,
     look: [f64; 2],
 }
 
@@ -467,26 +471,53 @@ impl Builder<'_, '_> {
                         }
                     };
                     let (st, sx, sy) = axes;
-                    // A half section splits at the part's middle along the view's X.
-                    let half = if sec.half {
-                        let (lo, hi, _, _) = section::extent(self.cx.kernel, &shapes, sx)
-                            .map_err(|e| format!("view {}: {e}", v.name))?;
-                        Some((lo + hi) / 2.0)
-                    } else {
-                        None
-                    };
-                    let cut = self
-                        .cache
-                        .cut(self.cx.kernel, &shapes, st, sx, sy, (c, half))
-                        .map_err(|e| format!("view {}: {e}", v.name))?;
                     // In the parent, `ct` is ±(its x) or ±(its y).
                     let vertical = matches!(side, Side::Left | Side::Right);
                     let sign = if matches!(side, Side::Top | Side::Right) { 1.0 } else { -1.0 };
                     let (o, s) = (if vertical { pv.origin[0] } else { pv.origin[1] }, pv.scale);
+                    let inf = f64::INFINITY;
+                    let mut jogs = Vec::new();
+                    let (u, zones) = if sec.half {
+                        // A half section splits at the part's middle along the view's X.
+                        let (lo, hi, _, _) = section::extent(self.cx.kernel, &shapes, sx)
+                            .map_err(|e| format!("view {}: {e}", v.name))?;
+                        (sx, vec![section::Zone { lo: (lo + hi) / 2.0, hi: inf, c }])
+                    } else if sec.steps.is_empty() {
+                        (sx, vec![section::Zone { lo: -inf, hi: inf, c }])
+                    } else {
+                        // An offset section: zones along the parent axis the line runs along.
+                        let u = if vertical { y } else { x };
+                        let along0 = if vertical { pv.origin[1] } else { pv.origin[0] };
+                        let mut zones = Vec::new();
+                        let (mut from, mut cur) = (-inf, c);
+                        for [at, next] in &sec.steps {
+                            let at = model_len(at, ev, self.cx.units)?;
+                            let next = model_len(next, ev, self.cx.units)?;
+                            if at <= from {
+                                return Err(format!("view {}: the section's steps must go one way", v.name));
+                            }
+                            zones.push(section::Zone { lo: from, hi: at, c: cur });
+                            jogs.push((along0 + s * at, o + s * sign * next));
+                            (from, cur) = (at, next);
+                        }
+                        zones.push(section::Zone { lo: from, hi: inf, c: cur });
+                        (u, zones)
+                    };
+                    let cut = self
+                        .cache
+                        .cut(self.cx.kernel, &shapes, st, sx, sy, (u, &zones))
+                        .map_err(|e| format!("view {}: {e}", v.name))?;
                     let pos = o + s * sign * c;
                     let look = if vertical { [-sign, 0.0] } else { [0.0, -sign] };
-                    section_info =
-                        Some(SectionInfo { cut, label: sec.label.clone(), parent: of.clone(), vertical, pos, look });
+                    section_info = Some(SectionInfo {
+                        cut,
+                        label: sec.label.clone(),
+                        parent: of.clone(),
+                        vertical,
+                        pos,
+                        jogs,
+                        look,
+                    });
                 }
                 let g = match gap {
                     Some(e) => number(e, ev)?,
@@ -753,7 +784,9 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                         let below = [(pv.min[0] + pv.max[0]) / 2.0, pv.min[1] - 6.0 - section::LABEL_H];
                         scene.text(below, section::LABEL_H, &label, Anchor::Center);
                         if let Some(Ok((_, ppv))) = b.placed.get(s.parent.as_str()) {
-                            section::cutting_plane(&mut scene, ppv.min, ppv.max, s.vertical, s.pos, s.look, &s.label);
+                            section::cutting_plane(
+                                &mut scene, ppv.min, ppv.max, s.vertical, s.pos, &s.jogs, s.look, &s.label,
+                            );
                         }
                     }
                     scene.views.push(pv.clone());

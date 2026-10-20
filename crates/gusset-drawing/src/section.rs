@@ -61,34 +61,56 @@ pub fn extent(k: &dyn Kernel, shapes: &[Shape], n: V3) -> Result<(f64, f64, V3, 
     Ok((lo, hi, centre, diag))
 }
 
-/// `shapes` with everything where `dot(p, n) > c` removed (with `half`, only where also
-/// `dot(p, x) > half`: a half section). Bodies entirely on the removed side are left out.
-pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64, half: Option<f64>) -> Result<Vec<Shape>, String> {
+/// A stretch of a section along the in-plane axis `u`: from `lo` to `hi` (model, along `u`;
+/// infinite for unbounded) the plane is at `dot(p, n) = c`. A full section is one unbounded
+/// zone, a half section one zone from the middle on, an offset section one zone per step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Zone {
+    pub lo: f64,
+    pub hi: f64,
+    pub c: f64,
+}
+
+/// `shapes` with, in each zone, everything beyond its plane removed. Bodies entirely on
+/// the removed side are left out.
+pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, u: V3, zones: &[Zone]) -> Result<Vec<Shape>, String> {
     let (lo, hi, centre, diag) = extent(k, shapes, n)?;
-    if c <= lo {
+    if zones.iter().all(|z| z.c <= lo) {
         return Err("the cutting plane leaves nothing to show".into());
     }
-    if c >= hi {
+    if zones.iter().all(|z| z.c >= hi) {
         return Err("the cutting plane misses the part".into());
     }
     let r = diag + 10.0;
-    // A box from the plane outwards: its profile lies in the plane (normal x × y = n).
-    let along = c - dot(centre, n);
-    let origin = [centre[0] + n[0] * along, centre[1] + n[1] * along, centre[2] + n[2] * along];
-    let frame = Frame { origin, x, y: cross(n, x) };
-    let lo_x = half.map_or(-r, |h| h - dot(centre, x));
-    let pts = [[lo_x, -r], [r, -r], [r, r], [lo_x, r]];
-    let edges = pts
-        .iter()
-        .zip(pts.iter().cycle().skip(1))
-        .zip(0u64..)
-        .map(|((a, b), tag)| ProfileEdge { seg: Seg2::Line { a: *a, b: *b }, tag })
-        .collect();
-    let profile = Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
-    let tool = k.extrude(&profile, &ExtrudeSpec { distance: 2.0 * r, symmetric: false }).map_err(|e| e.message)?.shape;
+    let du = dot(centre, u);
+    let mut tools = Vec::new();
+    for z in zones {
+        // A box from the zone's plane outwards, as wide as the zone along `u`.
+        let along = z.c - dot(centre, n);
+        let origin = [centre[0] + n[0] * along, centre[1] + n[1] * along, centre[2] + n[2] * along];
+        let frame = Frame { origin, x: u, y: cross(n, u) };
+        let (a, b) = (z.lo.max(du - r) - du, z.hi.min(du + r) - du);
+        if b <= a {
+            continue;
+        }
+        let pts = [[a, -r], [b, -r], [b, r], [a, r]];
+        let edges = pts
+            .iter()
+            .zip(pts.iter().cycle().skip(1))
+            .zip(0u64..)
+            .map(|((p, q), tag)| ProfileEdge { seg: Seg2::Line { a: *p, b: *q }, tag })
+            .collect();
+        let profile = Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+        tools.push(
+            k.extrude(&profile, &ExtrudeSpec { distance: 2.0 * r, symmetric: false }).map_err(|e| e.message)?.shape,
+        );
+    }
     let mut out = Vec::new();
     for s in shapes {
-        let kept = k.boolean(BoolOp::Cut, s, &tool).map_err(|e| e.message)?.shape;
+        let mut kept = s.clone();
+        for t in &tools {
+            kept = k.boolean(BoolOp::Cut, &kept, t).map_err(|e| e.message)?.shape;
+        }
         if k.topology(&kept).is_ok_and(|t| !t.faces.is_empty()) {
             out.push(kept);
         }
@@ -99,9 +121,32 @@ pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64, half: Option<
     Ok(out)
 }
 
-/// Triangles of `shapes` lying in the plane `dot(p, n) = c`, in view coordinates (x, y).
-pub fn cut_faces(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, y: V3, c: f64) -> Result<Vec<[[f64; 2]; 3]>, String> {
+/// Triangles of `shapes` lying in a zone's plane within the zone, in view coordinates (x, y).
+pub fn cut_faces(
+    k: &dyn Kernel,
+    shapes: &[Shape],
+    (n, u): (V3, V3),
+    x: V3,
+    y: V3,
+    zones: &[Zone],
+) -> Result<Vec<[[f64; 2]; 3]>, String> {
     let mut out = Vec::new();
+    for z in zones {
+        cut_faces_of(k, shapes, (n, u), x, y, *z, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn cut_faces_of(
+    k: &dyn Kernel,
+    shapes: &[Shape],
+    (n, u): (V3, V3),
+    x: V3,
+    y: V3,
+    z: Zone,
+    out: &mut Vec<[[f64; 2]; 3]>,
+) -> Result<(), String> {
+    let c = z.c;
     // The mesh stores f32 coordinates: allow their rounding, nothing more (review D9).
     let tol = 1e-4 + 2.0 * f64::from(f32::EPSILON) * c.abs();
     for s in shapes {
@@ -110,13 +155,14 @@ pub fn cut_faces(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, y: V3, c: f64) 
         for t in m.indices.chunks_exact(3) {
             let &[i, j, l] = t else { continue };
             let (Some(a), Some(b), Some(d)) = (p(i), p(j), p(l)) else { continue };
-            if [a, b, d].iter().all(|v| (dot(*v, n) - c).abs() < tol) {
+            let inside = |v: &V3| (dot(*v, n) - c).abs() < tol && (z.lo - tol..=z.hi + tol).contains(&dot(*v, u));
+            if [a, b, d].iter().all(inside) {
                 let q = |v: V3| [dot(v, x), dot(v, y)];
                 out.push([q(a), q(b), q(d)]);
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Hatch segments over the union of `tris`: lines at 45° `spacing` apart, and whether
@@ -190,23 +236,40 @@ pub fn hatch(tris: &[[[f64; 2]; 3]], spacing: f64) -> (Vec<Segment>, bool) {
 /// The cutting-plane line across a parent view's box `[min, max]` (sheet mm): `vertical`
 /// when it runs along the sheet's Y axis at `pos` (an X coordinate), else along X at `pos`
 /// (a Y coordinate). `look` is the viewing direction on the sheet (unit).
+///
+/// `jogs` makes it an offset section's line: `(along, pos)` pairs, where from `along` (a
+/// sheet coordinate along the line) on the line moves to `pos`; each step is drawn as a
+/// thick jog across.
+#[allow(clippy::too_many_arguments)]
 pub fn cutting_plane(
     scene: &mut Scene,
     min: [f64; 2],
     max: [f64; 2],
     vertical: bool,
     pos: f64,
+    jogs: &[(f64, f64)],
     look: [f64; 2],
     label: &str,
 ) {
     const OVER: f64 = 6.0;
     const THICK: f64 = 5.0;
-    let (a, b) = if vertical {
-        ([pos, min[1] - OVER], [pos, max[1] + OVER])
-    } else {
-        ([min[0] - OVER, pos], [max[0] + OVER, pos])
-    };
-    scene.line(Style::Center, a, b);
+    // Point at `along` on the line at `p` across it.
+    let at = |along: f64, p: f64| if vertical { [p, along] } else { [along, p] };
+    let (start, stop) = if vertical { (min[1] - OVER, max[1] + OVER) } else { (min[0] - OVER, max[0] + OVER) };
+    // A plane beyond the part is drawn just outside the view, not off the sheet.
+    let (lo_p, hi_p) = if vertical { (min[0] - OVER, max[0] + OVER) } else { (min[1] - OVER, max[1] + OVER) };
+    let mut from = start;
+    let mut cur = pos.clamp(lo_p, hi_p);
+    for &(along, next) in jogs {
+        let next = next.clamp(lo_p, hi_p);
+        let along = along.clamp(start, stop);
+        scene.line(Style::Center, at(from, cur), at(along, cur));
+        scene.line(Style::Visible, at(along, cur), at(along, next));
+        from = along;
+        cur = next;
+    }
+    scene.line(Style::Center, at(from, cur), at(stop, cur));
+    let (a, b) = (at(start, pos.clamp(lo_p, hi_p)), at(stop, cur));
     let u = if vertical { [0.0, 1.0] } else { [1.0, 0.0] };
     for (end, s) in [(a, 1.0), (b, -1.0)] {
         let inner = [end[0] + s * u[0] * THICK, end[1] + s * u[1] * THICK];

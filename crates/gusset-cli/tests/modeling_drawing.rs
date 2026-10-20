@@ -180,6 +180,16 @@ fn section_views_cut_the_part_and_hatch_the_cut() {
     let h = build("  view A (of: Front, side: top, section: A, half: true)\n");
     assert!(h.issues.is_empty(), "{:?}", h.issues);
     assert!((hatched(&h) - a / 2.0).abs() < 0.03 * a, "half hatched {} of {}", hatched(&h), a / 2.0);
+    // An offset section: cut at mid-height up to x = 30, then the plane steps above the
+    // part, so only the first half is hatched; the parent's line shows the jog.
+    let o = build("  view A (of: Front, side: top, section: A, steps: [[30 mm, 100 mm]])\n");
+    if let Ok(dir) = std::env::var("GUSSET_DRAWING_OUT") {
+        std::fs::write(format!("{dir}/offset_section.png"), gusset_drawing::raster::render(&o, 1400).to_png().unwrap())
+            .unwrap();
+    }
+    assert!(o.issues.is_empty(), "{:?}", o.issues);
+    assert!((hatched(&o) - a / 2.0).abs() < 0.03 * a, "offset hatched {} of {}", hatched(&o), a / 2.0);
+    assert!(count(&o, Style::Visible) > count(&s, Style::Visible), "the jog is drawn thick");
     // A vertical cut through the hole's axis (x = 30): two 15 x 20 strips beside the hole.
     let s = build("  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n");
     assert!(s.issues.is_empty(), "{:?}", s.issues);

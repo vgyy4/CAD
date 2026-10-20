@@ -206,7 +206,13 @@ pub struct SectionDef {
     /// A half section: only the half beyond the part's middle along the view's X is cut,
     /// the other half is drawn whole.
     pub half: bool,
+    /// An offset section: `[at, cut_at]` pairs, in order. From `at` along the cutting line
+    /// (model length, the parent's axis the line runs along) the plane moves to `cut_at`.
+    pub steps: Vec<[Expr; 2]>,
 }
+
+/// Most steps of one offset section.
+pub const MAX_SECTION_STEPS: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewPlacement {
@@ -604,6 +610,10 @@ fn print_item(item: &DrawingItem) -> String {
                 if sec.half {
                     args.push("half: true".into());
                 }
+                if !sec.steps.is_empty() {
+                    let s: Vec<String> = sec.steps.iter().map(pair).collect();
+                    args.push(format!("steps: [{}]", s.join(", ")));
+                }
             }
             if !v.centers {
                 args.push("centers: false".into());
@@ -761,7 +771,7 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
     let (mut bodies, mut from, mut at) = (None, None, None);
     let (mut of, mut side, mut gap) = (None, None, None);
     let (mut scale, mut hidden, mut tangent, mut centers) = (None, None, false, true);
-    let (mut section, mut cut_at, mut half) = (None, None, false);
+    let (mut section, mut cut_at, mut half, mut steps) = (None, None, false, Vec::new());
     let (mut detail_of, mut center, mut radius) = (None, None, None);
     parse_args(c, |key, c| {
         match key {
@@ -788,12 +798,27 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
             "radius" => radius = Some(c.expr()?),
             "cut_at" => cut_at = Some(c.expr()?),
             "half" => half = parse_bool(c)?,
+            "steps" => {
+                c.expect('[')?;
+                if !c.eat(']') {
+                    loop {
+                        steps.push(parse_pair(c)?);
+                        if steps.len() > MAX_SECTION_STEPS {
+                            return Err(c.err(format!("a section has at most {MAX_SECTION_STEPS} steps")));
+                        }
+                        if !c.eat(',') {
+                            break;
+                        }
+                    }
+                    c.expect(']')?;
+                }
+            }
             key => {
                 return Err(unknown_arg(
                     c,
                     KW,
                     key,
-                    "bodies, from, at, of, side, gap, section, cut_at, half, detail_of, center, radius, scale, hidden, \
+                    "bodies, from, at, of, side, gap, section, cut_at, half, steps, detail_of, center, radius, scale, hidden, \
                      tangent, centers",
                 ));
             }
@@ -855,10 +880,15 @@ fn parse_view(c: &mut Cursor<'_>) -> Result<ViewDef, ParseError> {
             if matches!(placement, ViewPlacement::Base { .. }) {
                 return Err(c.err_hint("a section is projected from the view it cuts", "add of: <view>, side: <side>"));
             }
-            Some(SectionDef { label, cut_at, half })
+            if half && !steps.is_empty() {
+                return Err(c.err("a section is either a half section or an offset section"));
+            }
+            Some(SectionDef { label, cut_at, half, steps })
         }
         (None, Some(_)) => return Err(c.err_hint("cut_at belongs to section views", "add section: <letter>")),
-        (None, None) if half => return Err(c.err_hint("half belongs to section views", "add section: <letter>")),
+        (None, None) if half || !steps.is_empty() => {
+            return Err(c.err_hint("half and steps belong to section views", "add section: <letter>"));
+        }
         (None, None) => None,
     };
     Ok(ViewDef { name, placement, scale, hidden, tangent, centers, section })

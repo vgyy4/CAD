@@ -658,6 +658,8 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   `side`; default the middle), the part towards the viewer is removed and the cut is
   hatched. The view is labelled "A–A" and the parent shows the cutting plane. `half: true`
   makes it a half section: only the half beyond the part's middle along the view's X is cut.
+  `steps: [[40 mm, 12 mm]]` makes it an offset section: from 40 mm along the cutting line (the
+  parent's axis it runs along) the plane moves to `cut_at` 12 mm; the parent shows the jog.
 - `view D (detail_of: Front, center: [x, y], radius: 5 mm, at: [x, y], [scale: 4])` is a
   circular detail: the parent's lines inside the circle (centre in the parent's axes,
   model mm), enlarged (default twice the parent's scale) and centred at `at` (sheet mm).

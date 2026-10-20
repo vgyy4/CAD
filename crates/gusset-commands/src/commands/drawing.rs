@@ -392,6 +392,7 @@ impl Command for DrawingAddView {
                     label: l.clone(),
                     cut_at: opt_expr("cut_at", &self.cut_at)?,
                     half: self.half,
+                    steps: Vec::new(),
                 })
             }
             (Some(_), _) => {
