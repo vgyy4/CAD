@@ -19,3 +19,5 @@ pub mod mathglob;
 pub mod mathlin;
 pub mod mathnd;
 pub mod plib;
+pub mod poly;
+pub mod toploc;
