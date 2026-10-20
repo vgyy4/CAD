@@ -334,3 +334,28 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     let span = |i: usize| hi[i].as_f64().unwrap() - lo[i].as_f64().unwrap();
     assert!((span(0) - 10.0).abs() < 0.01 && (span(2) - 20.0).abs() < 1e-6, "{b}");
 }
+
+#[test]
+fn a_generated_nut_is_the_hex_minus_the_hole_and_the_groove() {
+    // ADR 0034: the groove runs a pitch past both faces, so inside the nut its section is
+    // the same at every height: 2 pi * (first moment of the tooth) / pitch per unit height.
+    let mut s = session();
+    let t0 = std::time::Instant::now();
+    let r = run(&mut s, "generate.nut", json!({}));
+    eprintln!("M10 nut built in {:?}", t0.elapsed());
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let (d, p, w, m) = (10.0, 1.5, 16.0, 8.4);
+    let r1 = (d - 1.082_531_754_7 * p) / 2.0;
+    let pts = [[r1, 0.0], [d / 2.0, 5.0 * p / 16.0], [d / 2.0, 7.0 * p / 16.0], [r1, 0.75 * p]];
+    let moment: f64 = (0..4)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % 4]);
+            (a[0] + b[0]) * (a[0] * b[1] - b[0] * a[1]) / 6.0
+        })
+        .sum::<f64>()
+        .abs();
+    let hex = 3f64.sqrt() / 2.0 * w * w;
+    let want = (hex - PI * r1 * r1) * m - m * 2.0 * PI * moment / p;
+    let v = volume(&mut s, "Nut1");
+    assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
+}

@@ -10,7 +10,7 @@ use crate::gear::{self, GearValues, Names};
 use gusset_units::Dim;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<GenerateGear>(), spec::<GenerateSpring>(), spec::<GenerateThread>()]
+    vec![spec::<GenerateGear>(), spec::<GenerateSpring>(), spec::<GenerateThread>(), spec::<GenerateNut>()]
 }
 
 fn d_module() -> String {
@@ -510,7 +510,8 @@ const TOOTH_OVERLAP: f64 = 0.02;
 /// The tooth of the ISO 68-1 basic profile in the axial plane (x from the axis, z along it)
 /// for major radius `r` and pitch `p`, as parameter expressions over `d` and `p` names, with
 /// their values: root flat P/4 at the minor diameter, crest flat P/8, 60 degree flanks.
-pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64) -> Vec<(String, String, [f64; 2])> {
+/// `start` shifts it along the axis, in pitches.
+pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64, start: f64) -> Vec<(String, String, [f64; 2])> {
     // The flanks run on into the core by TOOTH_OVERLAP * pitch, so no tooth edge lies on the
     // core's surface (the union then cuts cleanly across it).
     let minor_v = (dv - 1.082_531_754_7 * pv) / 2.0;
@@ -519,7 +520,7 @@ pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64) -> Vec<(String, S
     let major = format!("{d} / 2");
     // A 60 degree flank rises 5/16 P over 5/8 H = 0.5413 P of depth: dz/dx = tan(30 deg).
     let run = TOOTH_OVERLAP / 3f64.sqrt();
-    let z = |k: f64| (format!("{k} * {p}"), k * pv);
+    let z = |k: f64| (format!("{} * {p}", k + start), (k + start) * pv);
     let pts = [
         // Shifted up by `run` so the tooth does not poke out below the rod.
         (inner.clone(), inner_v, z(0.0)),
@@ -634,7 +635,7 @@ impl Command for GenerateThread {
                 gear: None,
             };
             // The tooth in the XZ plane: six points, each placed by its parameters.
-            let tooth = thread_tooth(&nm.n("diameter"), &nm.n("pitch"), d, p);
+            let tooth = thread_tooth(&nm.n("diameter"), &nm.n("pitch"), d, p, 0.0);
             let mut entities = Vec::new();
             let mut constraints = Vec::new();
             for (i, (x, z, v)) in tooth.iter().enumerate() {
@@ -695,6 +696,222 @@ impl Command for GenerateThread {
                 "minor_diameter_mm": d - 1.082_531_754_7 * p,
                 "turns": (len - p) / p,
             }))
+        })
+    }
+}
+
+/// Generates a hex nut with an internal ISO metric thread along Z (ADR 0034).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateNut {
+    /// Thread major (nominal) diameter.
+    #[serde(default = "d_thread_d")]
+    #[schemars(extend("x-essential" = true))]
+    pub diameter: String,
+    #[serde(default = "d_thread_p")]
+    #[schemars(extend("x-essential" = true))]
+    pub pitch: String,
+    /// Width across flats (ISO 4032 M10: 16 mm).
+    #[serde(default = "d_nut_s")]
+    #[schemars(extend("x-essential" = true))]
+    pub width: String,
+    #[serde(default = "d_nut_m")]
+    #[schemars(extend("x-essential" = true))]
+    pub height: String,
+    #[serde(default)]
+    pub left: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn d_nut_s() -> String {
+    "16 mm".into()
+}
+fn d_nut_m() -> String {
+    "8.4 mm".into()
+}
+
+impl Command for GenerateNut {
+    const ID: &'static str = "generate.nut";
+    const TITLE: &'static str = "Nut";
+    const DESCRIPTION: &'static str = "Generate a hex nut along Z with an internal ISO metric thread (exact helix) as parameters, sketches and features.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let given =
+            [("diameter", &self.diameter), ("pitch", &self.pitch), ("width", &self.width), ("height", &self.height)];
+        let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
+        for (what, src) in given {
+            exprs.push((what, parse_expr(what, src)?));
+        }
+        edit(s, ctx, "Generate nut", |doc, rb| {
+            let name = feature_name(doc, self.name, "Nut")?;
+            let nm = Names::from_feature(&name);
+            let (hex_sk, hex, groove_sk) =
+                (format!("{name}_hex_sketch"), format!("{name}_hex"), format!("{name}_groove"));
+            let mut all = doc.params.clone();
+            for (what, e) in &exprs {
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
+            }
+            let vals = params::evaluate(&all, doc.units);
+            let value = |what: &str| -> Result<f64, CommandError> {
+                match vals.get(&nm.n(what)) {
+                    Some(Ok(q)) if q.dim == Dim::LENGTH => Ok(q.value),
+                    Some(Ok(q)) => Err(CommandError::args(format!("{what} must be a length, not {}", q.dim.name()))),
+                    Some(Err(e)) => Err(CommandError::args(format!("{what}: {}", e.message))),
+                    None => Err(CommandError::args(format!("{what} is missing"))),
+                }
+            };
+            let (d, p, w, m) = (value("diameter")?, value("pitch")?, value("width")?, value("height")?);
+            if !(d > 0.0 && p > 0.0 && p < d / 2.0 && w > d * 1.1 && m > p) {
+                return Err(CommandError::args(
+                    "a nut needs 0 < pitch < diameter / 2, width over 1.1 x diameter and height over a pitch",
+                )
+                .hint("for example M10: diameter 10 mm, pitch 1.5 mm, width 16 mm, height 8.4 mm"));
+            }
+            let mut new_params: Vec<Param> = Vec::new();
+            let notes = [
+                ("diameter", "thread major (nominal) diameter"),
+                ("pitch", "pitch"),
+                ("width", "width across flats"),
+                ("height", "nut height"),
+            ];
+            for (what, e) in &exprs {
+                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.into(),
+                    range: Default::default(),
+                });
+            }
+            let minor = format!("{} - 1.0825317547 * {}", nm.n("diameter"), nm.n("pitch"));
+            new_params.push(Param {
+                name: nm.n("minor"),
+                expr: parse_expr("minor", &minor)?,
+                comment: "thread minor diameter (basic profile)".into(),
+                range: Default::default(),
+            });
+            for p in &new_params {
+                if doc.params.iter().any(|q| q.name == p.name) {
+                    return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name))
+                        .hint("name the nut differently"));
+                }
+                validate_feature_name(&p.name).map_err(CommandError::args)?;
+            }
+            for f in [&hex_sk, &hex, &groove_sk] {
+                if doc.feature(f).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{f}' already exists"))
+                        .hint("name the nut differently"));
+                }
+            }
+            let created: Vec<String> = new_params.iter().map(|p| p.name.clone()).collect();
+            doc.params.extend(new_params);
+            let c = |id: String, kind, ents: &[&str], v: &str| -> Result<SkConstraint, CommandError> {
+                Ok(SkConstraint {
+                    id,
+                    kind,
+                    entities: ents.iter().map(|e| (*e).to_string()).collect(),
+                    value: Some(parse_expr("nut", v)?),
+                })
+            };
+            let ent = |id: &str, geom| SkEntity { id: id.into(), geom, construction: false };
+            // The hexagon (corners on the circle of radius width / sqrt(3)) and the hole.
+            let mut entities = Vec::new();
+            let mut constraints = Vec::new();
+            for i in 0..6 {
+                let a = (30.0 + 60.0 * i as f64).to_radians();
+                let rr = w / 3f64.sqrt();
+                let id = format!("p{}", i + 1);
+                entities.push(ent(&id, SkGeom::Point { x: rr * libm::cos(a), y: rr * libm::sin(a) }));
+                let deg = 30 + 60 * i;
+                constraints.push(c(
+                    format!("k{}", 30 + 2 * i),
+                    SkConstraintKind::AtX,
+                    &[&id],
+                    &format!("{} / sqrt(3) * cos({deg} deg)", nm.n("width")),
+                )?);
+                constraints.push(c(
+                    format!("k{}", 31 + 2 * i),
+                    SkConstraintKind::AtY,
+                    &[&id],
+                    &format!("{} / sqrt(3) * sin({deg} deg)", nm.n("width")),
+                )?);
+            }
+            for i in 0..6 {
+                entities.push(ent(
+                    &format!("l{}", 7 + i),
+                    SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 6 + 1) },
+                ));
+            }
+            entities.push(ent("p13", SkGeom::Point { x: 0.0, y: 0.0 }));
+            entities.push(ent("c14", SkGeom::Circle { center: "p13".into(), radius: (d - 1.082_531_754_7 * p) / 2.0 }));
+            constraints.push(c("k15".into(), SkConstraintKind::AtX, &["p13"], "0 mm")?);
+            constraints.push(c("k16".into(), SkConstraintKind::AtY, &["p13"], "0 mm")?);
+            constraints.push(c("k17".into(), SkConstraintKind::Diameter, &["c14"], &nm.n("minor"))?);
+            let hex_sketch =
+                SketchDef { plane: PlaneRef::XY, next_id: 50, entities, constraints, patterns: Vec::new(), gear: None };
+            // The groove: the bolt's tooth, started a pitch below the nut and run a pitch past
+            // its top, cut out of the hole's wall.
+            let tooth = thread_tooth(&nm.n("diameter"), &nm.n("pitch"), d, p, -1.0);
+            let mut entities = Vec::new();
+            let mut constraints = Vec::new();
+            for (i, (x, z, v)) in tooth.iter().enumerate() {
+                let id = format!("p{}", i + 1);
+                entities.push(ent(&id, SkGeom::Point { x: v[0], y: v[1] }));
+                constraints.push(c(format!("k{}", 20 + 2 * i), SkConstraintKind::AtX, &[&id], x)?);
+                constraints.push(c(format!("k{}", 21 + 2 * i), SkConstraintKind::AtY, &[&id], z)?);
+            }
+            for i in 0..tooth.len() {
+                let (a, b) = (format!("p{}", i + 1), format!("p{}", (i + 1) % tooth.len() + 1));
+                entities.push(ent(&format!("l{}", 7 + i), SkGeom::Line { a, b }));
+            }
+            let groove_sketch =
+                SketchDef { plane: PlaneRef::XZ, next_id: 40, entities, constraints, patterns: Vec::new(), gear: None };
+            let height = format!("{} + {}", nm.n("height"), nm.n("pitch"));
+            let features = vec![
+                Feature::new(hex_sk.clone(), FeatureKind::Sketch(hex_sketch)),
+                Feature::new(
+                    hex.clone(),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: hex_sk.clone(), regions: Vec::new() },
+                        distance: parse_expr("height", &nm.n("height"))?,
+                        symmetric: false,
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: Some(name.clone()),
+                    }),
+                ),
+                Feature::new(groove_sk.clone(), FeatureKind::Sketch(groove_sketch)),
+                Feature::new(
+                    format!("{name}_thread"),
+                    FeatureKind::Sweep(SweepDef {
+                        profile: ProfileRef { sketch: groove_sk.clone(), regions: Vec::new() },
+                        path: PathRef::Helix(gusset_doc::HelixDef {
+                            axis: gusset_doc::AxisRef::Z,
+                            pitch: parse_expr("pitch", &nm.n("pitch"))?,
+                            height: parse_expr("height", &height)?,
+                            left: self.left,
+                        }),
+                        orientation: Orientation::Frenet,
+                        twist: None,
+                        op: BodyOp::Cut,
+                        body: Some(hex.clone()),
+                        body_name: None,
+                    }),
+                ),
+            ];
+            let mut at = rb;
+            for f in features {
+                insert_feature(doc, at, f);
+                at = at.map(|r| r + 1);
+            }
+            Ok(json!({ "feature": format!("{name}_thread"), "body": name, "parameters": created }))
         })
     }
 }

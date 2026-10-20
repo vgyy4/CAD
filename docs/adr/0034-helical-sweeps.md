@@ -28,7 +28,9 @@ thread generator.
 3. **Generators** use it: `generate.thread` writes an ISO 68-1 external thread: a core at the minor
    diameter and the basic tooth (crest P/8, root 3P/4, 60 degree flanks run 2 % of P into the core so
    no tooth edge lies on the core surface, which made the union invalid) swept up `length - pitch`
-   and added; every point is driven by the parameters (M10 x 1.5 x 20: 0.9 s, exact volume). Springs keep the twisted section
+   and added; every point is driven by the parameters (M10 x 1.5 x 20: 0.9 s, exact volume).
+   `generate.nut` cuts the same tooth out of a hole at the minor diameter in a hexagon prism, started
+   a pitch below and run a pitch past the top, so the thread runs out of both faces. Springs keep the twisted section
    (exact volume, round wire across the axis; ADR 0018 amendment).
 
 ## Consequences
