@@ -502,6 +502,11 @@ fn validate_drawings(
                     }
                 }
                 DrawingItem::PartsList(_) => {}
+                DrawingItem::Balloon(b) => {
+                    if d.view(&b.view).is_none() {
+                        out.push(issue(n, format!("balloon {}: no view '{}'", b.name, b.view)));
+                    }
+                }
             }
         }
     }

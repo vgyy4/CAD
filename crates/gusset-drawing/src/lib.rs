@@ -774,6 +774,31 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 }
                 (Err(e), _) | (_, Err(e)) => scene.issues.push(format!("note {}: {e}", n.name)),
             },
+            DrawingItem::Balloon(bl) => {
+                let placed = match b.placed.get(bl.view.as_str()) {
+                    Some(Ok((_, pv))) => Ok(pv.clone()),
+                    _ => Err(format!("view {} is not shown", bl.view)),
+                };
+                let r = (|| -> Result<(), String> {
+                    let pv = placed?;
+                    let at = [number(&bl.at[0], cx.ev)?, number(&bl.at[1], cx.ev)?];
+                    let body = cx.ev.body(&bl.body).ok_or_else(|| format!("no body '{}'", bl.body))?;
+                    let rows = bom::rows(cx.kernel, cx.ev)?;
+                    let item = rows
+                        .iter()
+                        .find(|r| r.bodies.contains(&bl.body))
+                        .map(|r| r.item)
+                        .ok_or_else(|| format!("'{}' is not in the bill of materials", bl.body))?;
+                    let c = cx.kernel.mass_properties(&body.shape).map_err(|e| e.to_string())?.centroid;
+                    let start = scene.items.len();
+                    balloon(&mut scene, at, pv.to_sheet(c), item);
+                    handle(&mut scene, start, &bl.name, at);
+                    Ok(())
+                })();
+                if let Err(e) = r {
+                    scene.issues.push(format!("balloon {}: {e}", bl.name));
+                }
+            }
             DrawingItem::PartsList(pl) => match (number(&pl.at[0], cx.ev), number(&pl.at[1], cx.ev)) {
                 (Ok(x), Ok(y)) => match bom::rows(cx.kernel, cx.ev) {
                     Ok(rows) => {
@@ -865,6 +890,22 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
 /// sheet mm, and how many steps it tries.
 const RESTACK_STEP: f64 = 7.0;
 const MAX_RESTACK: usize = 6;
+
+/// Radius of a balloon, sheet mm.
+const BALLOON_R: f64 = 5.0;
+
+/// A balloon at `at` with `item` inside and a leader to `target`, ending in a dot.
+fn balloon(scene: &mut Scene, at: [f64; 2], target: [f64; 2], item: usize) {
+    scene.push(Style::Thin, Prim::Arc { center: at, radius: BALLOON_R, start: 0.0, end: TAU });
+    let (dx, dy) = (target[0] - at[0], target[1] - at[1]);
+    let len = libm::hypot(dx, dy);
+    if len > BALLOON_R {
+        let from = [at[0] + dx / len * BALLOON_R, at[1] + dy / len * BALLOON_R];
+        scene.line(Style::Thin, from, target);
+        scene.push(Style::Thin, Prim::Arc { center: target, radius: 0.6, start: 0.0, end: TAU });
+    }
+    scene.text([at[0], at[1] - 1.75], 3.5, item.to_string(), Anchor::Center);
+}
 
 /// Column widths of a parts list (item, part, quantity), its row height and most rows.
 const PARTS_COLS: [f64; 3] = [14.0, 70.0, 14.0];

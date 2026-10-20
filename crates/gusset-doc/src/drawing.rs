@@ -156,6 +156,8 @@ pub enum DrawingItem {
     Note(NoteDef),
     /// The bill of materials as a table (one row per part).
     PartsList(PartsListDef),
+    /// A balloon: the parts-list item number of `body`, with a leader to it in `view`.
+    Balloon(BalloonDef),
 }
 
 impl DrawingItem {
@@ -165,6 +167,7 @@ impl DrawingItem {
             DrawingItem::Dim(d) => &d.name,
             DrawingItem::Note(n) => &n.name,
             DrawingItem::PartsList(p) => &p.name,
+            DrawingItem::Balloon(b) => &b.name,
         }
     }
 }
@@ -386,6 +389,16 @@ pub struct PartsListDef {
     pub at: [Expr; 2],
 }
 
+/// A balloon at `at` (sheet mm) naming the part `body` is, with a leader to the body's
+/// centre as `view` shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BalloonDef {
+    pub name: String,
+    pub view: String,
+    pub body: String,
+    pub at: [Expr; 2],
+}
+
 /// A text note on the sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteDef {
@@ -520,6 +533,9 @@ fn print_item(item: &DrawingItem) -> String {
         }
         DrawingItem::Note(n) => format!("note {} (text: {}, at: {})", n.name, quote(&n.text), pair(&n.at)),
         DrawingItem::PartsList(p) => format!("parts_list {} (at: {})", p.name, pair(&p.at)),
+        DrawingItem::Balloon(b) => {
+            format!("balloon {} (view: {}, body: {}, at: {})", b.name, b.view, b.body, pair(&b.at))
+        }
     }
 }
 
@@ -599,10 +615,12 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
             "dim" => DrawingItem::Dim(parse_dim(&mut lc)?),
             "note" => DrawingItem::Note(parse_note(&mut lc)?),
             "parts_list" => DrawingItem::PartsList(parse_parts_list(&mut lc)?),
+            "balloon" => DrawingItem::Balloon(parse_balloon(&mut lc)?),
             other => {
-                return Err(
-                    lc.err_hint(format!("unknown drawing item '{other}'"), "items are: view, dim, note, parts_list")
-                );
+                return Err(lc.err_hint(
+                    format!("unknown drawing item '{other}'"),
+                    "items are: view, dim, note, parts_list, balloon",
+                ));
             }
         };
         if !lc.at_end() {
@@ -789,6 +807,27 @@ fn parse_parts_list(c: &mut Cursor<'_>) -> Result<PartsListDef, ParseError> {
         Ok(())
     })?;
     Ok(PartsListDef { name, at: at.ok_or_else(|| missing(c, KW, "at"))? })
+}
+
+fn parse_balloon(c: &mut Cursor<'_>) -> Result<BalloonDef, ParseError> {
+    const KW: &str = "balloon";
+    let name = c.ident()?.to_string();
+    let (mut view, mut body, mut at) = (None, None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "view" => view = Some(c.ident()?.to_string()),
+            "body" => body = Some(c.ident()?.to_string()),
+            "at" => at = Some(parse_pair(c)?),
+            key => return Err(unknown_arg(c, KW, key, "view, body, at")),
+        }
+        Ok(())
+    })?;
+    Ok(BalloonDef {
+        name,
+        view: view.ok_or_else(|| missing(c, KW, "view"))?,
+        body: body.ok_or_else(|| missing(c, KW, "body"))?,
+        at: at.ok_or_else(|| missing(c, KW, "at"))?,
+    })
 }
 
 fn parse_note(c: &mut Cursor<'_>) -> Result<NoteDef, ParseError> {

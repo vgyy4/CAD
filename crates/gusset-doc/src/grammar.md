@@ -635,6 +635,7 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
               [tolerance: "..."], [prefix: "..."])
   note <Name> (text: "...", at: [<x>, <y>])
   parts_list <Name> (at: [<x>, <y>])        # the bill of materials (as query.bom); at = top-left corner
+  balloon <Name> (view: <view>, body: <body>, at: [<x>, <y>])   # the body's parts-list item, leader to its centre
 }
 ```
 

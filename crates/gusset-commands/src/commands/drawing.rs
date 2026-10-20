@@ -3,8 +3,8 @@
 
 use super::*;
 use gusset_doc::drawing::{
-    DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, PartsListDef, Projection, SheetSize, Side, ViewDef,
-    ViewDir, ViewPlacement,
+    BalloonDef, DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, PartsListDef, Projection, SheetSize,
+    Side, ViewDef, ViewDir, ViewPlacement,
 };
 use gusset_history::Actor;
 
@@ -18,6 +18,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<DrawingEditDimension>(),
         spec::<DrawingAddNote>(),
         spec::<DrawingAddPartsList>(),
+        spec::<DrawingAddBalloon>(),
         spec::<DrawingMoveItem>(),
         spec::<DrawingDeleteItem>(),
         spec::<DrawingExport>(),
@@ -714,6 +715,52 @@ impl Command for DrawingAddPartsList {
     }
 }
 
+/// Adds a balloon: a body's parts-list item number with a leader to it.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingAddBalloon {
+    pub drawing: String,
+    pub view: String,
+    pub body: String,
+    /// Balloon centre, sheet mm.
+    pub at: [String; 2],
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for DrawingAddBalloon {
+    const ID: &'static str = "drawing.add_balloon";
+    const TITLE: &'static str = "Add balloon";
+    const DESCRIPTION: &'static str =
+        "Add a balloon with a body's parts-list item number and a leader to it in a view.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = pair("at", &self.at)?;
+        let drawing = self.drawing.clone();
+        let created = std::cell::RefCell::new(String::new());
+        edit_checked(
+            s,
+            ctx,
+            "Add balloon",
+            |doc, _| {
+                let d = find(doc, &self.drawing)?;
+                let name = item_name(d, self.name, "Balloon")?;
+                *created.borrow_mut() = name.clone();
+                d.items.push(DrawingItem::Balloon(BalloonDef {
+                    name: name.clone(),
+                    view: self.view,
+                    body: self.body,
+                    at,
+                }));
+                Ok(json!({ "balloon": name }))
+            },
+            |s, doc, ev| sheet_check(s, &ctx.actor, doc, ev, &drawing, Some(&created.borrow())),
+            |_, _, _| Value::Null,
+        )
+    }
+}
+
 /// Adds a text note.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -781,6 +828,7 @@ impl Command for DrawingMoveItem {
                 }
                 DrawingItem::Note(n) => n.at = at,
                 DrawingItem::PartsList(p) => p.at = at,
+                DrawingItem::Balloon(b) => b.at = at,
                 DrawingItem::Dim(dim) => dim.text_at = Some(at),
             }
             Ok(json!({ "moved": self.item }))
@@ -877,13 +925,19 @@ fn sheet_check(
         let cx = gusset_drawing::Context { ev, kernel: kernel.as_ref(), units: doc.units, cancel: None };
         let sc = gusset_drawing::build(d, &cx, &mut s.drawing_cache);
         match item {
-            Some(item) => sc.views.iter().find(|v| v.name == item).and_then(|v| v.error.clone()).or_else(|| {
-                sc.dims
-                    .iter()
-                    .find(|d| d.name == item)
-                    .and_then(|d| d.error.as_ref())
-                    .map(|e| format!("dimension {item}: {e}"))
-            }),
+            Some(item) => sc
+                .views
+                .iter()
+                .find(|v| v.name == item)
+                .and_then(|v| v.error.clone())
+                .or_else(|| {
+                    sc.dims
+                        .iter()
+                        .find(|d| d.name == item)
+                        .and_then(|d| d.error.as_ref())
+                        .map(|e| format!("dimension {item}: {e}"))
+                })
+                .or_else(|| sc.issues.iter().find(|i| i.starts_with(&format!("balloon {item}:"))).cloned()),
             None => sc.issues.iter().find(|i| i.contains("sheet scale")).cloned(),
         }
     };

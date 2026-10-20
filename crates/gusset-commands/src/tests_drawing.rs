@@ -316,3 +316,35 @@ fn a_parts_list_shows_the_bill_of_materials() {
     assert!(text.contains("parts_list Parts1 (at: [40, 130])"), "{text}");
     assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
 }
+
+#[test]
+fn a_balloon_names_a_part_and_points_at_it() {
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    run(&mut s, "drawing.add_view", json!({"drawing": "D", "name": "F", "from": "top", "at": ["150", "150"]}));
+    run(&mut s, "drawing.add_parts_list", json!({"drawing": "D", "at": ["30", "120"]}));
+    let r =
+        run(&mut s, "drawing.add_balloon", json!({"drawing": "D", "view": "F", "body": "Plate", "at": ["200", "190"]}));
+    assert_eq!(r["balloon"], "Balloon1", "{r}");
+    let sc = crate::commands::drawing_scene(&mut s, &gusset_history::Actor::User, "D").unwrap();
+    assert!(sc.issues.is_empty(), "{:?}", sc.issues);
+    // The leader ends at the plate's centre in the top view: (20, 10) of 40 x 20 at 1:1.
+    let ends: Vec<[f64; 2]> = sc
+        .items
+        .iter()
+        .filter_map(|i| match i.prim {
+            gusset_drawing::scene::Prim::Arc { center, radius, .. } if (radius - 0.6).abs() < 1e-9 => Some(center),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 1, "{ends:?}");
+    assert!((ends[0][0] - 150.0).abs() < 1e-6 && (ends[0][1] - 150.0).abs() < 1e-6, "{ends:?}");
+    // An unknown body is refused.
+    let e =
+        err(&mut s, "drawing.add_balloon", json!({"drawing": "D", "view": "F", "body": "Nope", "at": ["200", "190"]}));
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("balloon Balloon1 (view: F, body: Plate, at: [200, 190])"), "{text}");
+    assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
+}
