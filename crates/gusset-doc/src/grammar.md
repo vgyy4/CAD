@@ -634,6 +634,7 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
               [direction: aligned | horizontal | vertical], [offset: <length>], [text_at: [<x>, <y>]],
               [tolerance: "..."], [prefix: "..."])
   note <Name> (text: "...", at: [<x>, <y>])
+  parts_list <Name> (at: [<x>, <y>])        # the bill of materials (as query.bom); at = top-left corner
 }
 ```
 

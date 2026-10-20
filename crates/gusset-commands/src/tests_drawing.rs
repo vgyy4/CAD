@@ -279,3 +279,40 @@ fn a_drawing_can_dimension_in_inches_with_its_own_decimals() {
     assert_eq!(q["dimensions"][0]["text_user_text"], "40", "{q}");
     assert_eq!(err(&mut s, "drawing.edit", json!({"drawing": "D", "units": "ft"})).code, "invalid_args");
 }
+
+#[test]
+fn a_parts_list_shows_the_bill_of_materials() {
+    let mut s = session();
+    plate(&mut s);
+    for (i, x) in [60, 80].iter().enumerate() {
+        run(&mut s, "sketch.create", json!({"plane": "XY"}));
+        let sk = format!("Sketch{}", i + 2);
+        run(&mut s, "sketch.add_rectangle", json!({"sketch": sk, "x": x, "y": 0, "width": 10, "height": 10}));
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": sk, "distance": "5 mm", "body_name": format!("Block{}", i + 1)}),
+        );
+    }
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    let r = run(&mut s, "drawing.add_parts_list", json!({"drawing": "D", "at": ["30", "120"]}));
+    assert_eq!(r["parts_list"], "Parts1", "{r}");
+    let sc = crate::commands::drawing_scene(&mut s, &gusset_history::Actor::User, "D").unwrap();
+    let texts: Vec<&str> = sc
+        .items
+        .iter()
+        .filter_map(|i| match &i.prim {
+            gusset_drawing::scene::Prim::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    for t in ["ITEM", "PART", "QTY", "Plate", "Block1", "2"] {
+        assert!(texts.contains(&t), "{t}: {texts:?}");
+    }
+    let bom = run(&mut s, "query.bom", json!({}));
+    assert_eq!(bom["rows"].as_array().unwrap().len(), 2, "{bom}");
+    run(&mut s, "drawing.move_item", json!({"drawing": "D", "item": "Parts1", "at": ["40", "130"]}));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("parts_list Parts1 (at: [40, 130])"), "{text}");
+    assert_eq!(gusset_doc::Document::from_text(&text).unwrap().to_text(), text);
+}

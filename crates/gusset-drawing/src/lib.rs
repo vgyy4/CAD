@@ -4,6 +4,7 @@
 //! Views are projected with [`Kernel::hidden_lines`] and cached per (shapes, view), so
 //! moving a note or a dimension does not project the model again.
 
+pub mod bom;
 mod centers;
 pub mod detail;
 pub mod dims;
@@ -773,6 +774,17 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                 }
                 (Err(e), _) | (_, Err(e)) => scene.issues.push(format!("note {}: {e}", n.name)),
             },
+            DrawingItem::PartsList(pl) => match (number(&pl.at[0], cx.ev), number(&pl.at[1], cx.ev)) {
+                (Ok(x), Ok(y)) => match bom::rows(cx.kernel, cx.ev) {
+                    Ok(rows) => {
+                        let start = scene.items.len();
+                        parts_list(&mut scene, [x, y], &rows);
+                        handle(&mut scene, start, &pl.name, [x, y]);
+                    }
+                    Err(e) => scene.issues.push(format!("parts list {}: {e}", pl.name)),
+                },
+                (Err(e), _) | (_, Err(e)) => scene.issues.push(format!("parts list {}: {e}", pl.name)),
+            },
             DrawingItem::Dim(dim) => {
                 let Some(Ok((p, pv))) = b.placed.get(dim.view.as_str()) else {
                     let e = format!("view {} is not shown", dim.view);
@@ -853,6 +865,44 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
 /// sheet mm, and how many steps it tries.
 const RESTACK_STEP: f64 = 7.0;
 const MAX_RESTACK: usize = 6;
+
+/// Column widths of a parts list (item, part, quantity), its row height and most rows.
+const PARTS_COLS: [f64; 3] = [14.0, 70.0, 14.0];
+const PARTS_ROW: f64 = 7.0;
+const MAX_PARTS_ROWS: usize = 60;
+
+/// A parts list with its top-left corner at `at`: a header row, then one row per part.
+fn parts_list(scene: &mut Scene, at: [f64; 2], rows: &[bom::BomRow]) {
+    let shown = rows.len().min(MAX_PARTS_ROWS);
+    let w: f64 = PARTS_COLS.iter().sum();
+    let bottom = at[1] - PARTS_ROW * (shown + 1) as f64;
+    scene.rect(Style::Border, [at[0], bottom], [at[0] + w, at[1]]);
+    for i in 1..=shown {
+        let y = at[1] - PARTS_ROW * i as f64;
+        scene.line(Style::Thin, [at[0], y], [at[0] + w, y]);
+    }
+    let mut x = at[0];
+    for c in PARTS_COLS.iter().take(2) {
+        x += c;
+        scene.line(Style::Thin, [x, bottom], [x, at[1]]);
+    }
+    let cell = |scene: &mut Scene, row: usize, col: usize, t: &str| {
+        let x0 = at[0] + PARTS_COLS.iter().take(col).sum::<f64>();
+        scene.text([x0 + 1.5, at[1] - PARTS_ROW * (row + 1) as f64 + 2.0], 3.0, t, Anchor::Left);
+    };
+    for (col, h) in ["ITEM", "PART", "QTY"].iter().enumerate() {
+        cell(scene, 0, col, h);
+    }
+    for (i, r) in rows.iter().take(shown).enumerate() {
+        let name: String = r.part.chars().take(32).collect();
+        cell(scene, i + 1, 0, &r.item.to_string());
+        cell(scene, i + 1, 1, &name);
+        cell(scene, i + 1, 2, &r.bodies.len().to_string());
+    }
+    if rows.len() > shown {
+        scene.issues.push(format!("the parts list shows {shown} of {} parts", rows.len()));
+    }
+}
 
 /// A box on the sheet: (min, max) corners, mm.
 type SheetBox = ([f64; 2], [f64; 2]);

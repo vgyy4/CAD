@@ -3,8 +3,8 @@
 
 use super::*;
 use gusset_doc::drawing::{
-    DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, Projection, SheetSize, Side, ViewDef, ViewDir,
-    ViewPlacement,
+    DimDef, DimDirection, DimKind, Drawing, DrawingItem, NoteDef, PartsListDef, Projection, SheetSize, Side, ViewDef,
+    ViewDir, ViewPlacement,
 };
 use gusset_history::Actor;
 
@@ -17,6 +17,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<DrawingAddDimension>(),
         spec::<DrawingEditDimension>(),
         spec::<DrawingAddNote>(),
+        spec::<DrawingAddPartsList>(),
         spec::<DrawingMoveItem>(),
         spec::<DrawingDeleteItem>(),
         spec::<DrawingExport>(),
@@ -685,6 +686,34 @@ impl Command for DrawingEditDimension {
     }
 }
 
+/// Adds a parts list (the bill of materials as a table).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingAddPartsList {
+    pub drawing: String,
+    /// Top-left corner, sheet mm.
+    pub at: [String; 2],
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for DrawingAddPartsList {
+    const ID: &'static str = "drawing.add_parts_list";
+    const TITLE: &'static str = "Add parts list";
+    const DESCRIPTION: &'static str = "Add a parts list (item, part, quantity; as query_bom) to a drawing.";
+    const CATEGORY: Category = Category::Exchange;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let at = pair("at", &self.at)?;
+        edit(s, ctx, "Add parts list", |doc, _| {
+            let d = find(doc, &self.drawing)?;
+            let name = item_name(d, self.name, "Parts")?;
+            d.items.push(DrawingItem::PartsList(PartsListDef { name: name.clone(), at }));
+            Ok(json!({ "parts_list": name }))
+        })
+    }
+}
+
 /// Adds a text note.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -751,6 +780,7 @@ impl Command for DrawingMoveItem {
                         .hint("move the parent, or change this view's gap"));
                 }
                 DrawingItem::Note(n) => n.at = at,
+                DrawingItem::PartsList(p) => p.at = at,
                 DrawingItem::Dim(dim) => dim.text_at = Some(at),
             }
             Ok(json!({ "moved": self.item }))

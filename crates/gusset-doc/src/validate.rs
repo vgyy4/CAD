@@ -501,6 +501,7 @@ fn validate_drawings(
                         out.push(issue(n, format!("note {} is too long or has control characters", note.name)));
                     }
                 }
+                DrawingItem::PartsList(_) => {}
             }
         }
     }

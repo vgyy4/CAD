@@ -204,11 +204,6 @@ impl Command for StudyMotion {
 #[serde(deny_unknown_fields)]
 pub struct QueryBom {}
 
-/// Whether two measures agree to 1e-7 relative (identical parts, placed differently).
-fn same(a: f64, b: f64) -> bool {
-    (a - b).abs() <= 1e-7 * a.abs().max(b.abs()).max(1.0)
-}
-
 impl Command for QueryBom {
     const ID: &'static str = "query.bom";
     const TITLE: &'static str = "Bill of materials";
@@ -218,39 +213,22 @@ impl Command for QueryBom {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let ev = s.evaluate(&ctx.actor)?;
         let k = s.kernel().clone();
-        struct Row<'a> {
-            bodies: Vec<&'a str>,
-            m: gusset_kernel::MassProps,
-            faces: usize,
-            edges: usize,
-        }
-        let mut rows: Vec<Row<'_>> = Vec::new();
-        for b in &ev.bodies {
-            let m = k.mass_properties(&b.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-            let (faces, edges) = (b.topology.faces.len(), b.topology.edges.len());
-            let found = rows
-                .iter_mut()
-                .find(|r| r.faces == faces && r.edges == edges && same(r.m.volume, m.volume) && same(r.m.area, m.area));
-            match found {
-                Some(r) => r.bodies.push(&b.name),
-                None => rows.push(Row { bodies: vec![&b.name], m, faces, edges }),
-            }
-        }
+        // The same grouping as a drawing's parts list.
+        let rows = gusset_drawing::bom::rows(k.as_ref(), &ev).map_err(|e| CommandError::new("evaluation", e))?;
         let mut csv = String::from("item,part,quantity,bodies,volume_mm3,area_mm2\n");
         let mut out = Vec::new();
-        for (i, r) in rows.iter().enumerate() {
-            let part = r.bodies.first().copied().unwrap_or_default();
+        for r in &rows {
             csv.push_str(&format!(
                 "{},{},{},{},{},{}\n",
-                i + 1,
-                csv_field(part),
+                r.item,
+                csv_field(&r.part),
                 r.bodies.len(),
                 csv_field(&r.bodies.join(" ")),
-                r.m.volume,
-                r.m.area
+                r.volume,
+                r.area
             ));
-            out.push(json!({"item": i + 1, "part": part, "quantity": r.bodies.len(), "bodies": r.bodies,
-                            "volume_mm3": r.m.volume, "area_mm2": r.m.area, "faces": r.faces}));
+            out.push(json!({"item": r.item, "part": r.part, "quantity": r.bodies.len(), "bodies": r.bodies,
+                            "volume_mm3": r.volume, "area_mm2": r.area, "faces": r.faces}));
         }
         Ok(json!({ "rows": out, "csv": csv }))
     }

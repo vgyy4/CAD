@@ -154,6 +154,8 @@ pub enum DrawingItem {
     View(ViewDef),
     Dim(DimDef),
     Note(NoteDef),
+    /// The bill of materials as a table (one row per part).
+    PartsList(PartsListDef),
 }
 
 impl DrawingItem {
@@ -162,6 +164,7 @@ impl DrawingItem {
             DrawingItem::View(v) => &v.name,
             DrawingItem::Dim(d) => &d.name,
             DrawingItem::Note(n) => &n.name,
+            DrawingItem::PartsList(p) => &p.name,
         }
     }
 }
@@ -375,6 +378,14 @@ impl DimDirection {
     }
 }
 
+/// A parts list: the bodies grouped into parts, as a table whose top-left corner is `at`
+/// (sheet mm).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartsListDef {
+    pub name: String,
+    pub at: [Expr; 2],
+}
+
 /// A text note on the sheet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NoteDef {
@@ -508,6 +519,7 @@ fn print_item(item: &DrawingItem) -> String {
             format!("dim {} ({})", d.name, args.join(", "))
         }
         DrawingItem::Note(n) => format!("note {} (text: {}, at: {})", n.name, quote(&n.text), pair(&n.at)),
+        DrawingItem::PartsList(p) => format!("parts_list {} (at: {})", p.name, pair(&p.at)),
     }
 }
 
@@ -586,8 +598,11 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
             "view" => DrawingItem::View(parse_view(&mut lc)?),
             "dim" => DrawingItem::Dim(parse_dim(&mut lc)?),
             "note" => DrawingItem::Note(parse_note(&mut lc)?),
+            "parts_list" => DrawingItem::PartsList(parse_parts_list(&mut lc)?),
             other => {
-                return Err(lc.err_hint(format!("unknown drawing item '{other}'"), "items are: view, dim, note"));
+                return Err(
+                    lc.err_hint(format!("unknown drawing item '{other}'"), "items are: view, dim, note, parts_list")
+                );
             }
         };
         if !lc.at_end() {
@@ -760,6 +775,20 @@ fn parse_dim(c: &mut Cursor<'_>) -> Result<DimDef, ParseError> {
         tolerance,
         prefix,
     })
+}
+
+fn parse_parts_list(c: &mut Cursor<'_>) -> Result<PartsListDef, ParseError> {
+    const KW: &str = "parts_list";
+    let name = c.ident()?.to_string();
+    let mut at = None;
+    parse_args(c, |key, c| {
+        match key {
+            "at" => at = Some(parse_pair(c)?),
+            key => return Err(unknown_arg(c, KW, key, "at")),
+        }
+        Ok(())
+    })?;
+    Ok(PartsListDef { name, at: at.ok_or_else(|| missing(c, KW, "at"))? })
 }
 
 fn parse_note(c: &mut Cursor<'_>) -> Result<NoteDef, ParseError> {
