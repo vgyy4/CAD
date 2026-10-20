@@ -17,8 +17,22 @@ pub const MAX_VERTICES: usize = 100_000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
     Line([f64; 2], [f64; 2]),
-    Circle { center: [f64; 2], radius: f64 },
-    Arc { center: [f64; 2], radius: f64, start: f64, end: f64 },
+    Circle {
+        center: [f64; 2],
+        radius: f64,
+    },
+    Arc {
+        center: [f64; 2],
+        radius: f64,
+        start: f64,
+        end: f64,
+    },
+    /// Points on a SPLINE or ELLIPSE (its fit points, or samples of the exact curve), for an
+    /// interpolating sketch spline (dogfooding F5-13).
+    Spline {
+        points: Vec<[f64; 2]>,
+        closed: bool,
+    },
 }
 
 /// What was read.
@@ -130,7 +144,122 @@ fn mirror_x(c: Curve) -> Curve {
         Curve::Arc { center, radius, start, end } => {
             Curve::Arc { center: [-center[0], center[1]], radius, start: PI - end, end: PI - start }
         }
+        Curve::Spline { points, closed } => {
+            Curve::Spline { points: points.iter().map(|p| [-p[0], p[1]]).collect(), closed }
+        }
     }
+}
+
+/// Points of a curve and whether it is closed.
+type PointCurve = (Vec<[f64; 2]>, bool);
+
+/// Most points kept for one SPLINE or ELLIPSE (the sketch's spline limit).
+pub const MAX_CURVE_POINTS: usize = 1000;
+/// Samples per full turn of an ellipse, and per control point of a spline without fit points.
+const ELLIPSE_SAMPLES: usize = 64;
+const SPLINE_SAMPLES: usize = 8;
+
+/// Points on an ELLIPSE: centre, major axis end (relative), minor/major ratio, parameters.
+fn ellipse_points(c: [f64; 2], major: [f64; 2], ratio: f64, t0: f64, t1: f64) -> Option<PointCurve> {
+    let tau = std::f64::consts::TAU;
+    let a = libm::hypot(major[0], major[1]);
+    if !(a > 0.0 && ratio > 0.0 && ratio.is_finite()) {
+        return None;
+    }
+    // Not a loop: parameters can be up to 1e12 apart.
+    let mut sweep = (t1 - t0).rem_euclid(tau);
+    if sweep <= 1e-12 {
+        sweep = tau;
+    }
+    let closed = (sweep - tau).abs() < 1e-9;
+    let minor = [-major[1] * ratio, major[0] * ratio];
+    let n = ((ELLIPSE_SAMPLES as f64 * sweep / tau).ceil() as usize).max(4);
+    let last = if closed { n - 1 } else { n };
+    let pts = (0..=last)
+        .map(|i| {
+            let t = t0 + sweep * i as f64 / n as f64;
+            let (cs, sn) = (libm::cos(t), libm::sin(t));
+            [c[0] + major[0] * cs + minor[0] * sn, c[1] + major[1] * cs + minor[1] * sn]
+        })
+        .collect();
+    Some((pts, closed))
+}
+
+/// A point of the (rational) B-spline at `u` by de Boor's algorithm.
+fn de_boor(deg: usize, knots: &[f64], ctrl: &[[f64; 3]], u: f64) -> Option<[f64; 2]> {
+    let n = ctrl.len();
+    let lo = *knots.get(deg)?;
+    let hi = *knots.get(n)?;
+    let u = u.clamp(lo, hi);
+    // The span holding `u` (binary search: up to 100,000 knots).
+    let k = (knots.get(deg..n)?.partition_point(|&t| t <= u) + deg).saturating_sub(1).clamp(deg, n - 1);
+    let mut d: Vec<[f64; 3]> = (0..=deg).map(|j| ctrl.get(k + j - deg).copied()).collect::<Option<_>>()?;
+    for r in 1..=deg {
+        for j in (r..=deg).rev() {
+            let i = k + j - deg;
+            let (ti, tj) = (*knots.get(i)?, *knots.get(i + deg + 1 - r)?);
+            let a = if tj > ti { (u - ti) / (tj - ti) } else { 0.0 };
+            let (p, q) = (*d.get(j - 1)?, *d.get(j)?);
+            *d.get_mut(j)? = [(1.0 - a) * p[0] + a * q[0], (1.0 - a) * p[1] + a * q[1], (1.0 - a) * p[2] + a * q[2]];
+        }
+    }
+    let p = d.get(deg)?;
+    (p[2] != 0.0).then(|| [p[0] / p[2], p[1] / p[2]])
+}
+
+/// Points on a SPLINE entity: its fit points when it has them, else samples of the curve.
+fn spline_points(g: &Groups<'_>) -> Result<Option<PointCurve>, ReadError> {
+    let flags = get(g, 70).and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0);
+    let closed = flags & 1 == 1;
+    let pairs = |xc: i32, yc: i32| -> Result<Vec<[f64; 2]>, ReadError> {
+        let mut out = Vec::new();
+        let mut x = None;
+        for (code, v) in g {
+            if *code == xc {
+                x = Some(num(v)?);
+            } else if *code == yc
+                && let Some(px) = x.take()
+            {
+                if out.len() >= MAX_VERTICES {
+                    return Err(err("a spline has too many points"));
+                }
+                out.push([px, num(v)?]);
+            }
+        }
+        Ok(out)
+    };
+    let fit = pairs(11, 21)?;
+    if fit.len() >= 2 {
+        return Ok(Some((thin(fit), closed)));
+    }
+    let ctrl = pairs(10, 20)?;
+    let deg = get(g, 71).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(3);
+    let knots: Vec<f64> = g.iter().filter(|(c, _)| *c == 40).map(|(_, v)| num(v)).collect::<Result<_, _>>()?;
+    let weights: Vec<f64> = g.iter().filter(|(c, _)| *c == 41).map(|(_, v)| num(v)).collect::<Result<_, _>>()?;
+    if ctrl.len() <= deg || deg == 0 || deg > 10 || knots.len() != ctrl.len() + deg + 1 {
+        return Ok(None);
+    }
+    let w = |i: usize| if weights.len() == ctrl.len() { weights.get(i).copied().unwrap_or(1.0) } else { 1.0 };
+    let hom: Vec<[f64; 3]> = ctrl.iter().enumerate().map(|(i, p)| [p[0] * w(i), p[1] * w(i), w(i)]).collect();
+    let (lo, hi) = match (knots.get(deg), knots.get(ctrl.len())) {
+        (Some(a), Some(b)) if b > a => (*a, *b),
+        _ => return Ok(None),
+    };
+    let n = (ctrl.len() * SPLINE_SAMPLES).min(MAX_CURVE_POINTS - 1);
+    let last = if closed { n - 1 } else { n };
+    let pts: Option<Vec<[f64; 2]>> =
+        (0..=last).map(|i| de_boor(deg, &knots, &hom, lo + (hi - lo) * i as f64 / n as f64)).collect();
+    // Odd weights or knots can still overflow: such a spline is skipped.
+    Ok(pts.filter(|p| p.iter().flatten().all(|v| v.is_finite())).map(|p| (thin(p), closed)))
+}
+
+/// At most [`MAX_CURVE_POINTS`] points, evenly picked, ends kept.
+fn thin(p: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if p.len() <= MAX_CURVE_POINTS {
+        return p;
+    }
+    let n = p.len() - 1;
+    (0..MAX_CURVE_POINTS).filter_map(|i| p.get(i * n / (MAX_CURVE_POINTS - 1)).copied()).collect()
 }
 
 /// Maps `curves[from..]` from an object coordinate system to the world, or drops them
@@ -179,7 +308,7 @@ const MAX_GROUPS: usize = 4 * MAX_VERTICES + 64;
 
 /// Entity types whose groups are kept.
 fn wanted(kind: &str) -> bool {
-    matches!(kind, "LINE" | "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "SEQEND")
+    matches!(kind, "LINE" | "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "SEQEND" | "SPLINE" | "ELLIPSE")
 }
 
 /// A polyline vertex and the bulge to the next one.
@@ -212,8 +341,14 @@ fn finish<'a>(
     }
     // LINE is in world coordinates; the others in their object coordinate system.
     let from = curves.len();
-    let mirror =
-        if matches!(kind, "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE") { ocs_mirror(&g)? } else { Some(false) };
+    let mirror = if matches!(kind, "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE") {
+        ocs_mirror(&g)?
+    } else if matches!(kind, "SPLINE" | "ELLIPSE") {
+        // World coordinates, but only in the XY plane (a -Z normal does not mirror them).
+        ocs_mirror(&g)?.map(|_| false)
+    } else {
+        Some(false)
+    };
     match kind {
         "LINE" => curves.push(Curve::Line(
             [need(&g, 10, "LINE")?, need(&g, 20, "LINE")?],
@@ -274,6 +409,19 @@ fn finish<'a>(
             }
         }
         "SEQEND" => {}
+        "ELLIPSE" => {
+            let c = [need(&g, 10, "ELLIPSE")?, need(&g, 20, "ELLIPSE")?];
+            let m = [need(&g, 11, "ELLIPSE")?, need(&g, 21, "ELLIPSE")?];
+            let t0 = get(&g, 41).map(num).transpose()?.unwrap_or(0.0);
+            let t1 = get(&g, 42).map(num).transpose()?.unwrap_or(std::f64::consts::TAU);
+            if let Some((points, closed)) = ellipse_points(c, m, need(&g, 40, "ELLIPSE")?, t0, t1) {
+                curves.push(Curve::Spline { points, closed });
+            }
+        }
+        "SPLINE" => match spline_points(&g)? {
+            Some((points, closed)) => curves.push(Curve::Spline { points, closed }),
+            None => *skipped.entry("SPLINE (unreadable knots)".into()).or_default() += 1,
+        },
         other => *skipped.entry(other.chars().take(32).collect()).or_default() += 1,
     }
     to_world(curves, from, mirror, kind, skipped);
@@ -361,6 +509,9 @@ pub fn read(bytes: &[u8]) -> Result<Read, ReadError> {
             Curve::Arc { center, radius, start, end } => {
                 Curve::Arc { center: [center[0] * k, center[1] * k], radius: radius * k, start, end }
             }
+            Curve::Spline { points, closed } => {
+                Curve::Spline { points: points.iter().map(|p| [p[0] * k, p[1] * k]).collect(), closed }
+            }
         })
         .collect();
     Ok(out)
@@ -370,6 +521,32 @@ pub fn read(bytes: &[u8]) -> Result<Read, ReadError> {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ellipses_and_splines_become_point_splines() {
+        // Dogfooding F5-13: both were skipped.
+        let doc = "  0\nSECTION\n  2\nENTITIES\n\
+  0\nELLIPSE\n 10\n0\n 20\n0\n 11\n10\n 21\n0\n 40\n0.5\n 41\n0\n 42\n6.283185307179586\n\
+  0\nSPLINE\n 70\n0\n 71\n3\n 11\n0\n 21\n0\n 11\n5\n 21\n5\n 11\n10\n 21\n0\n\
+  0\nSPLINE\n 70\n0\n 71\n1\n 40\n0\n 40\n0\n 40\n1\n 40\n2\n 40\n2\n 10\n0\n 20\n0\n 10\n4\n 20\n4\n 10\n8\n 20\n0\n\
+  0\nENDSEC\n  0\nEOF\n";
+        let r = read(doc.as_bytes()).unwrap();
+        assert_eq!(r.curves.len(), 3, "{r:?}");
+        let Curve::Spline { points, closed: true } = &r.curves[0] else { panic!("{r:?}") };
+        assert_eq!(points.len(), ELLIPSE_SAMPLES);
+        // On the ellipse x²/100 + y²/25 = 1.
+        assert!(points.iter().all(|p| (p[0] * p[0] / 100.0 + p[1] * p[1] / 25.0 - 1.0).abs() < 1e-9), "{points:?}");
+        assert_eq!(r.curves[1], Curve::Spline { points: vec![[0.0, 0.0], [5.0, 5.0], [10.0, 0.0]], closed: false });
+        // Degree 1 through its control points: the samples lie on the polyline.
+        let Curve::Spline { points, closed: false } = &r.curves[2] else { panic!("{r:?}") };
+        assert_eq!(points.first(), Some(&[0.0, 0.0]));
+        assert_eq!(points.last(), Some(&[8.0, 0.0]));
+        assert!(points.iter().any(|p| (p[0] - 4.0).abs() < 1e-9 && (p[1] - 4.0).abs() < 1e-9), "{points:?}");
+        assert!(r.skipped.is_empty(), "{:?}", r.skipped);
+        // Parameters far apart are one sweep modulo a turn, not a long loop.
+        let far = doc.replace(" 41\n0\n 42\n6.283185307179586\n", " 41\n900000000000\n 42\n-900000000000\n");
+        assert!(matches!(read(far.as_bytes()).unwrap().curves[0], Curve::Spline { .. }));
+    }
 
     #[test]
     fn our_own_exports_read_back() {

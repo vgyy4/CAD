@@ -1522,7 +1522,16 @@ impl Command for SketchImportDxf {
         edit(s, ctx, "Import DXF", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
             // Refused before anything is added: the sketch would pass its entity cap (X6).
-            if d.entities.len() + read.curves.len() > gusset_sketch::sketch::MAX_ENTITIES {
+            // A spline also adds its points.
+            let size: usize = read
+                .curves
+                .iter()
+                .map(|c| match c {
+                    gusset_drawing::dxf_read::Curve::Spline { points, .. } => 1 + points.len(),
+                    _ => 1,
+                })
+                .sum();
+            if d.entities.len() + size > gusset_sketch::sketch::MAX_ENTITIES {
                 return Err(CommandError::args(format!(
                     "the file has {} curves: the sketch would pass {} entities",
                     read.curves.len(),
@@ -1542,8 +1551,26 @@ impl Command for SketchImportDxf {
                 Ok(id)
             };
             let (mut lines, mut arcs, mut circles) = (0, 0, 0);
+            let mut splines = 0;
             for c in &read.curves {
                 match *c {
+                    // Fit points of a DXF spline or samples of an ellipse (dogfooding F5-13).
+                    gusset_drawing::dxf_read::Curve::Spline { ref points, closed } => {
+                        let mut ids: Vec<String> = Vec::new();
+                        for p in points {
+                            let id = point(d, *p)?;
+                            if ids.last() != Some(&id) {
+                                ids.push(id);
+                            }
+                        }
+                        if closed && ids.len() > 1 && ids.first() == ids.last() {
+                            ids.pop();
+                        }
+                        if ids.len() >= if closed { 3 } else { 2 } {
+                            add_entity(d, SkGeom::Spline { points: ids, closed }, false);
+                            splines += 1;
+                        }
+                    }
                     gusset_drawing::dxf_read::Curve::Line(a, b) => {
                         let (pa, pb) = (point(d, a)?, point(d, b)?);
                         if pa != pb {
@@ -1576,7 +1603,7 @@ impl Command for SketchImportDxf {
             }
             store_solution(doc, &sk);
             Ok(json!({
-                "lines": lines, "arcs": arcs, "circles": circles, "points": points.len(),
+                "lines": lines, "arcs": arcs, "circles": circles, "splines": splines, "points": points.len(),
                 "unit_mm": read.unit_mm, "skipped_user_text": skipped,
                 // Dogfooding F5-13: a file without a unit was taken as mm silently.
                 "warnings": if read.units_known { json!([]) } else {
