@@ -21,6 +21,10 @@ Codex runs (about 0.7 M tokens) stopped early with the judge still failing (the 
 `FunctionSetRoot`, and Powell/FRPR/BFGS with wrong update orders); a Sonnet agent then
 finished it from their code in 15 minutes and about 0.27 M tokens. Drafts help with the
 straight-line numeric code; solvers with state machines need a careful translator.
+bnd (Bnd + CSLib, about 5,000 lines with the BVH parts the optimal OBB needs): Codex stopped after
+11 minutes with only `Bnd_Range` done, as on every package since mathnd; the judge agent's
+throwaway port had already passed every line. From here translations go to Sonnet agents, and
+Codex keeps small mechanical edits.
 
 ## Toolkits needed by a CAD app (lines incl. headers, without OCCT's own tests)
 | Toolkit | Packages | Lines | Status |
