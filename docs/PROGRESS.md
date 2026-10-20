@@ -155,8 +155,8 @@ Phase 3 has started (see Next).
      (own writer), `sketch.import_dxf` (own fuzzed reader). Milestone code review
      (docs/reviews/2026-10-19-v0.4-drawings-review.md): every finding D1-D14 and nit N1-N6
      fixed. Security review (docs/reviews/2026-10-19-v0.4-security-review.md): X1-X8 fixed
-     but X6's off-thread DXF import (accepted). Dogfooding run 5 (docs/DOGFOODING.md): every finding fixed (dual dimensions open). Next for drawings: deferred items
-     (half/offset sections, GD&T, BOM).
+     but X6's off-thread DXF import (accepted). Dogfooding run 5 (docs/DOGFOODING.md): every finding fixed (dual dimensions open). Parts list done (`parts_list`, `drawing.add_parts_list`, the same grouping as `query.bom`). Next for drawings: deferred items
+     (half/offset sections, GD&T, balloons).
    - v1 tier: `draft` done (ADR 0028: faces tapered about a neutral plane, pull direction
      from the plane or into the body, flip; OCCT golden tests in `modeling_draft.rs`).
      `text` done (ADR 0029: one line embossed or engraved on a plane or face, the app's two
