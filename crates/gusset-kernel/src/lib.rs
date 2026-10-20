@@ -62,6 +62,10 @@ pub enum SweepPath {
     Curves(Path2),
     /// Edges of an existing shape (indices into its topology), in any order, forming one chain.
     Edges { shape: Shape, edges: Vec<u32> },
+    /// A helix (ADR 0034) about the axis through `origin` along `axis`, starting in direction
+    /// `x` from it at `radius`, climbing `pitch` per turn (negative: left-handed) for
+    /// `height`. The profile keeps its angle to the axis, so a thread's profile stays exact.
+    Helix { origin: [f64; 3], axis: [f64; 3], x: [f64; 3], radius: f64, pitch: f64, height: f64 },
 }
 
 fn unsupported<T>(what: &str, kernel: &str) -> KResult<T> {

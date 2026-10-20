@@ -28,6 +28,9 @@
 #include <HLRBRep_PolyHLRToShape.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepLib.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom_CylindricalSurface.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
@@ -714,9 +717,12 @@ struct Swept {
 
 // Sweeps one closed profile wire along the spine into a solid.
 Swept sweep_loop(const TopoDS_Wire& prof, const std::vector<TaggedEdge>& tagged, const Spine& sp, const Frame& pf,
-                 int orientation, const TopoDS_Wire& guide, uint32_t region) {
+                 int orientation, const TopoDS_Wire& guide, uint32_t region, const gp_Dir* binormal = nullptr) {
   BRepOffsetAPI_MakePipeShell mk(sp.wire);
-  if (!guide.IsNull()) {
+  if (binormal) {
+    // A helix: the profile keeps its angle to the axis (ADR 0034), so a thread stays exact.
+    mk.SetMode(*binormal);
+  } else if (!guide.IsNull()) {
     // Parametric (not curvilinear) correspondence: the guide carries the path's parameter,
     // and OCCT's curvilinear pairing loses a few tenths of a percent of volume on twists.
     mk.SetMode(guide, false, BRepFill_NoContact);
@@ -1012,24 +1018,10 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
   GS_GUARD_END
 }
 
-int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* path_shape, const uint32_t* path_edges,
-             size_t npath_edges, int orientation, double twist, GsShape** out, GsBuf* origins) {
-  GS_GUARD_BEGIN
-  if (!p || !out || !origins) return fail("null argument");
-  if (!path_curves && !path_shape) return fail("the sweep has no path");
-  if (!std::isfinite(twist)) return fail("sweep twist must be a finite angle");
-  if (std::fabs(twist) > 100.0 * 2.0 * M_PI) return fail("sweep twist is over 100 turns");
-  Frame f = make_frame(p, 0.0);
-  std::vector<TaggedEdge> tagged;
-  std::vector<uint32_t> face_region;
-  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
-  Spine sp = make_spine(path_curves, path_shape, path_edges, npath_edges, f);
-  TopoDS_Wire guide;
-  if (std::fabs(twist) > 1e-12) {
-    if (sp.closed) return fail("a twist needs an open path (a closed path has no start and end to turn between)");
-    guide = twist_guide(sp, f, twist);
-  }
-
+// Sweeps the profile faces along `sp` into the result shape and its face origins.
+int sweep_faces(const std::vector<TopoDS_Face>& faces, const std::vector<TaggedEdge>& tagged,
+                const std::vector<uint32_t>& face_region, const Spine& sp, const Frame& f, int orientation,
+                const TopoDS_Wire& guide, const gp_Dir* binormal, GsShape** out, GsBuf* origins) {
   std::vector<TopoDS_Shape> solids;
   std::vector<Rec> recs;
   for (size_t ri = 0; ri < faces.size(); ++ri) {
@@ -1038,7 +1030,7 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
     for (TopExp_Explorer ex(faces[ri], TopAbs_WIRE); ex.More(); ex.Next()) {
       if (!ex.Current().IsSame(outer)) holes.push_back(TopoDS::Wire(ex.Current()));
     }
-    Swept body = sweep_loop(outer, tagged, sp, f, orientation, guide, face_region[ri]);
+    Swept body = sweep_loop(outer, tagged, sp, f, orientation, guide, face_region[ri], binormal);
     if (holes.empty()) {
       solids.push_back(body.solid);
       recs.insert(recs.end(), body.recs.begin(), body.recs.end());
@@ -1049,7 +1041,7 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
     std::vector<Rec> all = body.recs;
     std::vector<Swept> swept_holes;
     for (const auto& h : holes) {
-      Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri]);
+      Swept hole = sweep_loop(h, tagged, sp, f, orientation, guide, face_region[ri], binormal);
       tools.Append(hole.solid);
       all.insert(all.end(), hole.recs.begin(), hole.recs.end());
       swept_holes.push_back(hole);
@@ -1092,6 +1084,62 @@ int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* pa
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
+}
+
+int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* path_shape, const uint32_t* path_edges,
+             size_t npath_edges, int orientation, double twist, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !out || !origins) return fail("null argument");
+  if (!path_curves && !path_shape) return fail("the sweep has no path");
+  if (!std::isfinite(twist)) return fail("sweep twist must be a finite angle");
+  if (std::fabs(twist) > 100.0 * 2.0 * M_PI) return fail("sweep twist is over 100 turns");
+  Frame f = make_frame(p, 0.0);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+  Spine sp = make_spine(path_curves, path_shape, path_edges, npath_edges, f);
+  TopoDS_Wire guide;
+  if (std::fabs(twist) > 1e-12) {
+    if (sp.closed) return fail("a twist needs an open path (a closed path has no start and end to turn between)");
+    guide = twist_guide(sp, f, twist);
+  }
+
+  return sweep_faces(faces, tagged, face_region, sp, f, orientation, guide, nullptr, out, origins);
+  GS_GUARD_END
+}
+
+// A helix about `h` = origin (3), axis (3), start direction (3), radius; `pitch` per turn
+// (negative: left-handed), `height` along the axis (ADR 0034). An exact edge: a line on the
+// cylinder's (angle, height) parameter plane.
+int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double height, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !h || !out || !origins) return fail("null argument");
+  for (int i = 0; i < 10; ++i) {
+    if (!std::isfinite(h[i])) return fail("the helix has a non-finite value");
+  }
+  if (!std::isfinite(pitch) || !std::isfinite(height) || std::fabs(pitch) < 1e-6 || height <= 1e-6)
+    return fail("a helix needs a non-zero pitch and a positive height");
+  if (height / std::fabs(pitch) > 2000.0) return fail("the helix has more than 2000 turns");
+  if (!(h[9] > 1e-6)) return fail("the helix radius must be positive (the profile sits on the axis)");
+  gp_Pnt o(h[0], h[1], h[2]);
+  gp_Vec av(h[3], h[4], h[5]), xv(h[6], h[7], h[8]);
+  if (av.Magnitude() < 1e-12 || xv.Magnitude() < 1e-12) return fail("the helix axis or start direction is zero");
+  gp_Dir axis(av);
+  occ::handle<Geom_CylindricalSurface> cyl = new Geom_CylindricalSurface(gp_Ax3(o, axis, gp_Dir(xv)), h[9]);
+  // Left-handed: the angle runs backwards; the helix always climbs the axis.
+  gp_Dir2d d2(pitch < 0 ? -2.0 * M_PI : 2.0 * M_PI, std::fabs(pitch));
+  double len = height / std::fabs(pitch) * std::sqrt(4.0 * M_PI * M_PI + pitch * pitch);
+  occ::handle<Geom2d_Line> line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), d2);
+  TopoDS_Edge e = BRepBuilderAPI_MakeEdge(line, cyl, 0.0, len).Edge();
+  BRepLib::BuildCurves3d(e);
+  Spine sp;
+  sp.wire = BRepBuilderAPI_MakeWire(e).Wire();
+  sp.edges.push_back(e);
+  Frame f = make_frame(p, 0.0);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+  return sweep_faces(faces, tagged, face_region, sp, f, 0, TopoDS_Wire(), &axis, out, origins);
   GS_GUARD_END
 }
 

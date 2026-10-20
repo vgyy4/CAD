@@ -286,7 +286,8 @@ fn a_generated_spring_has_the_volume_of_its_section_times_its_length() {
     // A sweep of a section across the axis, twisted, keeps the section's area at every
     // height (Cavalieri): volume = pi (wire/2)^2 * pitch * turns.
     let mut s = session();
-    let r = run(&mut s, "generate.spring", json!({"wire": "1.5 mm", "diameter": "12 mm", "pitch": "4 mm", "turns": "5"}));
+    let r =
+        run(&mut s, "generate.spring", json!({"wire": "1.5 mm", "diameter": "12 mm", "pitch": "4 mm", "turns": "5"}));
     assert_eq!(r["rebuild_ok"], true, "{r}");
     let want = PI * 0.75 * 0.75 * 4.0 * 5.0;
     let v = volume(&mut s, "Spring1");

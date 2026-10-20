@@ -202,6 +202,18 @@ pub enum SweepPath<'a> {
     Edges(&'a RawShape, &'a [u32]),
 }
 
+/// Sweeps the regions of `p` along a helix (ADR 0034): `h` is origin, axis, start direction
+/// and radius; a negative `pitch` is left-handed; `height` along the axis.
+pub fn sweep_helix(p: &ProfileData, h: &[f64; 10], pitch: f64, height: f64) -> ShimResult<OpOut> {
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: `raw` points into live vectors, `h` holds the 10 values read; out-params are valid.
+    let rc = unsafe { sys::gs_sweep_helix(&raw, h.as_ptr(), pitch, height, &mut out, &mut origins) };
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 /// Sweeps the regions of `p` along `path`. `follow` turns the profile with the path
 /// (corrected Frenet), else it only slides; `twist` (radians) turns it about the path.
 pub fn sweep(p: &ProfileData, path: &SweepPath<'_>, follow: bool, twist: f64) -> ShimResult<OpOut> {

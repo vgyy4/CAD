@@ -294,6 +294,11 @@ loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], 
   `twist` turns the profile about the path by that angle (at most 100 turns) between the start and the end (it
   needs `frenet` and an open path); a helical gear is a sweep of the tooth outline along a
   straight line with a twist.
+- `path: helix(axis: Z, pitch: 1.5 mm, height: 20 mm[, left: true])` screws the profile about an
+  axis (`X`, `Y`, `Z` or a sketch line `Sketch.l3`), climbing `pitch` per turn for `height`
+  (at most 2000 turns), right-handed unless `left: true` (ADR 0034). The profile keeps its angle
+  to the axis, so a thread profile drawn in a plane through the axis stays exact; the helix
+  starts level with the profile and passes through it. No `twist`.
 - `loft` joins two or more closed profiles on different planes (a sketch on a datum plane per
   profile; `Sketch.regions(l5)` picks the region). Each must select exactly one region without
   holes. `ruled: true` joins neighbours with straight (ruled) surfaces, else one smooth

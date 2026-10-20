@@ -138,6 +138,14 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_sweep_helix(
+            p: *const GsProfile,
+            h: *const f64,
+            pitch: f64,
+            height: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_loft(
             sections: *const GsProfile,
             nsections: usize,

@@ -30,6 +30,13 @@ pub(crate) fn sweep(p: &ProfileData, path: &safe::SweepPath<'_>, follow: bool, t
     safe::sweep(p, path, follow, twist).map_err(sweep_err)
 }
 
+pub(crate) fn sweep_helix(p: &ProfileData, h: &[f64; 10], pitch: f64, height: f64) -> KResult<OpOut> {
+    safe::sweep_helix(p, h, pitch, height).map_err(|e| {
+        err(KernelErrorKind::OperationFailed)(e)
+            .with_hint("keep the profile beside the axis and smaller than the pitch, so the turns do not overlap")
+    })
+}
+
 pub(crate) fn loft(sections: &[ProfileData], ruled: bool) -> KResult<OpOut> {
     safe::loft(sections, ruled).map_err(|e| {
         let ke = err(KernelErrorKind::OperationFailed)(e);

@@ -249,13 +249,7 @@ fn print_feature(out: &mut String, f: &Feature) {
         }
         FeatureKind::Revolve(r) => {
             args.push(format!("profile: {}", print_profile(&r.profile)));
-            let axis = match &r.axis {
-                AxisRef::X => "X".to_string(),
-                AxisRef::Y => "Y".to_string(),
-                AxisRef::Z => "Z".to_string(),
-                AxisRef::SketchLine { sketch, entity } => format!("{sketch}.{entity}"),
-            };
-            args.push(format!("axis: {axis}"));
+            args.push(format!("axis: {}", print_axis(&r.axis)));
             args.push(format!("angle: {}", r.angle));
             args.push(format!("op: {}", r.op.keyword()));
             if let Some(b) = &r.body {
@@ -273,6 +267,10 @@ fn print_feature(out: &mut String, f: &Feature) {
                 PathRef::Edges(edges) => {
                     let list: Vec<String> = edges.iter().map(EdgeRef::to_string).collect();
                     format!("[{}]", list.join(", "))
+                }
+                PathRef::Helix(h) => {
+                    let left = if h.left { ", left: true" } else { "" };
+                    format!("helix(axis: {}, pitch: {}, height: {}{left})", print_axis(&h.axis), h.pitch, h.height)
                 }
             };
             args.push(format!("path: {path}"));
@@ -826,18 +824,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 if kw == "extrude" { distance = Some(e) } else { size = Some(e) }
             }
             ("extrude", "symmetric") => symmetric = parse_bool(c)?,
-            ("revolve", "axis") => {
-                let a = c.ident()?;
-                axis = Some(match a {
-                    "X" => AxisRef::X,
-                    "Y" => AxisRef::Y,
-                    "Z" => AxisRef::Z,
-                    sketch => {
-                        c.expect('.')?;
-                        AxisRef::SketchLine { sketch: sketch.to_string(), entity: c.ident()?.to_string() }
-                    }
-                });
-            }
+            ("revolve", "axis") => axis = Some(parse_axis(c)?),
             ("revolve", "angle") => angle = Some(c.expr()?),
             ("fillet" | "chamfer", "edges") => {
                 c.expect('[')?;
@@ -1046,13 +1033,66 @@ fn parse_edge_list(c: &mut Cursor<'_>) -> Result<Vec<EdgeRef>, ParseError> {
     Ok(list)
 }
 
-/// A sweep path: `Sketch2`, `Sketch2.curves(l3, a4)` or `[edge(...), ...]`.
+/// `X`, `Y`, `Z` or `Sketch.l3`.
+fn print_axis(a: &AxisRef) -> String {
+    match a {
+        AxisRef::X => "X".to_string(),
+        AxisRef::Y => "Y".to_string(),
+        AxisRef::Z => "Z".to_string(),
+        AxisRef::SketchLine { sketch, entity } => format!("{sketch}.{entity}"),
+    }
+}
+
+fn parse_axis(c: &mut Cursor<'_>) -> Result<AxisRef, ParseError> {
+    Ok(match c.ident()? {
+        "X" => AxisRef::X,
+        "Y" => AxisRef::Y,
+        "Z" => AxisRef::Z,
+        sketch => {
+            c.expect('.')?;
+            AxisRef::SketchLine { sketch: sketch.to_string(), entity: c.ident()?.to_string() }
+        }
+    })
+}
+
+/// `helix(axis: Z, pitch: 1.5 mm, height: 20 mm[, left: true])`, after `helix`.
+fn parse_helix(c: &mut Cursor<'_>) -> Result<PathRef, ParseError> {
+    let (mut axis, mut pitch, mut height, mut left) = (None, None, None, false);
+    parse_args(c, |key, c| {
+        match key {
+            "axis" => axis = Some(parse_axis(c)?),
+            "pitch" => pitch = Some(c.expr()?),
+            "height" => height = Some(c.expr()?),
+            "left" => left = parse_bool(c)?,
+            key => {
+                return Err(
+                    c.err_hint(format!("unknown helix argument '{key}'"), "helix takes axis, pitch, height, left")
+                );
+            }
+        }
+        Ok(())
+    })?;
+    let need =
+        |what: &str| c.err_hint(format!("helix needs {what}"), "e.g. helix(axis: Z, pitch: 1.5 mm, height: 20 mm)");
+    Ok(PathRef::Helix(HelixDef {
+        axis: axis.ok_or_else(|| need("an axis"))?,
+        pitch: pitch.ok_or_else(|| need("a pitch"))?,
+        height: height.ok_or_else(|| need("a height"))?,
+        left,
+    }))
+}
+
+/// A sweep path: `Sketch2`, `Sketch2.curves(l3, a4)`, `[edge(...), ...]` or `helix(...)`.
 fn parse_path(c: &mut Cursor<'_>) -> Result<PathRef, ParseError> {
     c.ws();
     if c.peek() == Some('[') {
         return Ok(PathRef::Edges(parse_edge_list(c)?));
     }
     let sketch = c.ident()?.to_string();
+    c.ws();
+    if sketch == "helix" && c.peek() == Some('(') {
+        return parse_helix(c);
+    }
     let mut curves = Vec::new();
     if c.eat('.') {
         if !c.eat_kw("curves") {

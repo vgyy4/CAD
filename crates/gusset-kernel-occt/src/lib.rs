@@ -338,6 +338,16 @@ mod imp {
                     }
                     ffi::sweep(&p, &sys::safe::SweepPath::Edges(raw(shape)?, edges), follow, spec.twist)?
                 }
+                SweepPath::Helix { origin, axis, x, radius, pitch, height } => {
+                    if spec.twist != 0.0 {
+                        return Err(invalid("a helical sweep has no twist").with_hint("remove the twist"));
+                    }
+                    let [o0, o1, o2] = *origin;
+                    let [a0, a1, a2] = *axis;
+                    let [x0, x1, x2] = *x;
+                    let h = [o0, o1, o2, a0, a1, a2, x0, x1, x2, *radius];
+                    ffi::sweep_helix(&p, &h, *pitch, *height)?
+                }
             };
             op_result(out)
         }

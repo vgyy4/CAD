@@ -726,3 +726,41 @@ fn hidden_lines_of_a_plate_with_a_hole() {
     let bad = HlrView { toward: [1.0, 0.0, 0.0], x: [2.0, 0.0, 0.0], exact: true, deflection: 0.01 };
     assert!(k().hidden_lines(&r.shape, &bad).is_err());
 }
+
+#[test]
+fn a_helical_sweep_of_an_axial_section_has_the_screw_volume() {
+    // ADR 0034: a section in a plane through the axis, screwed about it, sweeps
+    // area * 2 pi * centroid radius per turn, whatever the pitch.
+    let frame = Frame { origin: [5.0, 0.0, 0.0], ..Frame::XZ };
+    let spec = SweepSpec { orientation: SweepOrientation::Frenet, twist: 0.0 };
+    for pitch in [2.0, -2.0] {
+        let path = SweepPath::Helix {
+            origin: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            x: [1.0, 0.0, 0.0],
+            radius: 5.0,
+            pitch,
+            height: 10.0,
+        };
+        let t0 = std::time::Instant::now();
+        let r = k().sweep(&centred_square(0.25, frame), &path, &spec).unwrap();
+        let m = k().mass_properties(&r.shape).unwrap();
+        let want = 0.25 * 5.0 * std::f64::consts::TAU * 5.0;
+        // OCCT approximates the swept surfaces (2e-6 measured).
+        assert!(close(m.volume, want, 1e-5), "{pitch}: {} vs {want}", m.volume);
+        let b = k().bbox(&r.shape).unwrap();
+        assert!((b.max[2] - b.min[2] - 10.5).abs() < 1e-3, "{b:?}");
+        eprintln!("helix pitch {pitch}: {:?}", t0.elapsed());
+    }
+    // A twist on a helix is refused.
+    let path = SweepPath::Helix {
+        origin: [0.0; 3],
+        axis: [0.0, 0.0, 1.0],
+        x: [1.0, 0.0, 0.0],
+        radius: 5.0,
+        pitch: 2.0,
+        height: 10.0,
+    };
+    let twisted = SweepSpec { orientation: SweepOrientation::Frenet, twist: 1.0 };
+    assert!(k().sweep(&centred_square(0.25, frame), &path, &twisted).is_err());
+}

@@ -33,6 +33,11 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             match &mut d.path {
                 PathRef::Sketch { sketch, .. } => sketch_of(sketch),
                 PathRef::Edges(edges) => edges.iter_mut().for_each(|e| e.rename_feature(from, to)),
+                PathRef::Helix(h) => {
+                    if let gusset_doc::AxisRef::SketchLine { sketch, .. } = &mut h.axis {
+                        sketch_of(sketch);
+                    }
+                }
             }
             body_of(&mut d.body);
         }

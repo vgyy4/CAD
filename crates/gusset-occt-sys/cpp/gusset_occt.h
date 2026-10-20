@@ -103,6 +103,7 @@ int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axi
  * profile about the path between its start and end. */
 int gs_sweep(const GsProfile* p, const GsProfile* path_curves, const GsShape* path_shape, const uint32_t* path_edges,
              size_t npath_edges, int orientation, double twist, GsShape** out, GsBuf* origins);
+int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double height, GsShape** out, GsBuf* origins);
 /* Lofts through `nsections` profiles (each one region without holes); ruled != 0 joins
  * neighbouring sections with ruled surfaces instead of a smooth interpolation. */
 int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins);

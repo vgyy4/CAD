@@ -647,6 +647,11 @@ fn check_sweep(n: &str, d: &SweepDef, seen: &BTreeMap<&str, &Feature>, out: &mut
                 out.push(issue_h(n, "the path lists no edges", "select the edges to sweep along"));
             }
         }
+        PathRef::Helix(_) => {
+            if d.twist.is_some() {
+                out.push(issue_h(n, "a helical sweep has no twist", "remove the twist"));
+            }
+        }
     }
     if d.twist.is_some() && d.orientation == Orientation::Fixed {
         out.push(issue_h(

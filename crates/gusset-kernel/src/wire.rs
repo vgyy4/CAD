@@ -969,6 +969,13 @@ impl Wire for SweepPath {
                 w.u64(s.id_of(shape)?);
                 w.seq(edges, s)
             }
+            SweepPath::Helix { origin, axis, x, radius, pitch, height } => {
+                w.u8(2);
+                for v in origin.iter().chain(axis).chain(x).chain([radius, pitch, height]) {
+                    w.f64(*v);
+                }
+                Ok(())
+            }
         }
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
@@ -977,6 +984,21 @@ impl Wire for SweepPath {
             1 => {
                 let shape = s.shape(r.u64()?)?;
                 Ok(SweepPath::Edges { shape, edges: r.seq(s)? })
+            }
+            2 => {
+                let mut v = [0.0; 12];
+                for x in &mut v {
+                    *x = r.f64()?;
+                }
+                let [o0, o1, o2, a0, a1, a2, x0, x1, x2, radius, pitch, height] = v;
+                Ok(SweepPath::Helix {
+                    origin: [o0, o1, o2],
+                    axis: [a0, a1, a2],
+                    x: [x0, x1, x2],
+                    radius,
+                    pitch,
+                    height,
+                })
             }
             t => Err(WireError::bad_tag("SweepPath", t)),
         }
@@ -1284,14 +1306,29 @@ mod tests {
                 assert!(shape.ptr_eq(&b.shape));
                 assert_eq!(edges, vec![3, 1, 2]);
             }
-            SweepPath::Curves(_) => panic!("wrong variant"),
+            other => panic!("wrong variant: {other:?}"),
         }
         let curves = SweepPath::Curves(Path2 { frame: frame(), edges: profile().regions[0].outer.edges.clone() });
         match decode::<SweepPath>(&encode(&curves, &NoShapes).unwrap(), &NoShapes).unwrap() {
             SweepPath::Curves(p) => assert_eq!(p.edges, profile().regions[0].outer.edges),
-            SweepPath::Edges { .. } => panic!("wrong variant"),
+            other => panic!("wrong variant: {other:?}"),
         }
         assert!(encode(&path, &NoShapes).is_err());
+        // A helix carries its twelve numbers (ADR 0034).
+        let helix = SweepPath::Helix {
+            origin: [1.0, 2.0, 3.0],
+            axis: [0.0, 0.0, 1.0],
+            x: [1.0, 0.0, 0.0],
+            radius: 4.5,
+            pitch: -1.5,
+            height: 20.0,
+        };
+        match decode::<SweepPath>(&encode(&helix, &NoShapes).unwrap(), &NoShapes).unwrap() {
+            SweepPath::Helix { origin, radius, pitch, height, .. } => {
+                assert_eq!((origin, radius, pitch, height), ([1.0, 2.0, 3.0], 4.5, -1.5, 20.0));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

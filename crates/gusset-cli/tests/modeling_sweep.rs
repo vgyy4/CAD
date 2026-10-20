@@ -691,3 +691,49 @@ sketch Open (plane: Up, next_id: 4) {
     ok(&r);
     assert!(rel(volume(&ev, &r, "Loft1"), 1000.0, 1e-9));
 }
+
+#[test]
+fn a_helix_path_screws_the_profile_about_its_axis() {
+    // ADR 0034: a 1 x 0.5 mm section 4..5 mm from Z, 5 turns of 2 mm: area * 2 pi * 4.5 * 5.
+    let text = "gusset 1
+units mm
+
+param p = 2 mm
+
+sketch S (plane: XZ, next_id: 9) {
+  p1 = point(4, 0)
+  p2 = point(5, 0)
+  p3 = point(5, 0.5)
+  p4 = point(4, 0.5)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+sweep T (profile: S, path: helix(axis: Z, pitch: p, height: 5 * p), orientation: frenet, op: new)
+";
+    let doc = gusset_doc::Document::from_text(text).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(gusset_doc::Document::from_text(&doc.to_text()).unwrap(), doc, "round trip");
+    let mut ev = Evaluator::new(kernel());
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let want = 0.5 * std::f64::consts::TAU * 4.5 * 5.0;
+    let v = volume(&ev, &r, "T");
+    assert!((v - want).abs() < 1e-5 * want, "{v} vs {want}");
+    // Left-handed: the same volume; a profile on the axis is refused.
+    let left = gusset_doc::Document::from_text(&text.replace("height: 5 * p)", "height: 5 * p, left: true)")).unwrap();
+    let r = ev.evaluate(&left, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!((volume(&ev, &r, "T") - want).abs() < 1e-5 * want);
+    let on_axis = gusset_doc::Document::from_text(
+        &text
+            .replace("point(4, 0)", "point(-1, 0)")
+            .replace("point(4, 0.5)", "point(-1, 0.5)")
+            .replace("point(5, 0)", "point(1, 0)")
+            .replace("point(5, 0.5)", "point(1, 0.5)"),
+    )
+    .unwrap();
+    let r = ev.evaluate(&on_axis, None, &());
+    assert!(!r.errors().is_empty());
+}

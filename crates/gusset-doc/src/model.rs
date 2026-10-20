@@ -129,6 +129,11 @@ impl FeatureKind {
                 match &d.path {
                     PathRef::Sketch { sketch, .. } => add(sketch),
                     PathRef::Edges(edges) => edges.iter().for_each(|e| e.features(&mut add)),
+                    PathRef::Helix(h) => {
+                        if let AxisRef::SketchLine { sketch, .. } = &h.axis {
+                            add(sketch);
+                        }
+                    }
                 }
                 add_body(&mut add, &d.body);
             }
@@ -233,7 +238,13 @@ impl FeatureKind {
             }
             FeatureKind::Extrude(e) => take(&e.distance),
             FeatureKind::Revolve(r) => take(&r.angle),
-            FeatureKind::Sweep(d) => d.twist.iter().for_each(&mut take),
+            FeatureKind::Sweep(d) => {
+                d.twist.iter().for_each(&mut take);
+                if let PathRef::Helix(h) = &d.path {
+                    take(&h.pitch);
+                    take(&h.height);
+                }
+            }
             FeatureKind::Loft(_) => {}
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
             FeatureKind::Import(_) => {}
@@ -289,7 +300,13 @@ impl FeatureKind {
             }
             FeatureKind::Extrude(e) => out.push(&mut e.distance),
             FeatureKind::Revolve(r) => out.push(&mut r.angle),
-            FeatureKind::Sweep(d) => out.extend(d.twist.iter_mut()),
+            FeatureKind::Sweep(d) => {
+                out.extend(d.twist.iter_mut());
+                if let PathRef::Helix(h) = &mut d.path {
+                    out.push(&mut h.pitch);
+                    out.push(&mut h.height);
+                }
+            }
             FeatureKind::Loft(_) => {}
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => out.push(&mut b.size),
             FeatureKind::Import(_) => {}
@@ -701,6 +718,18 @@ pub enum PathRef {
     Sketch { sketch: String, curves: Vec<String> },
     /// Edges of an earlier body (persistent edge references), forming one chain.
     Edges(Vec<EdgeRef>),
+    /// A helix about an axis (ADR 0034).
+    Helix(HelixDef),
+}
+
+/// A helix about `axis` (world X, Y, Z or a sketch line), climbing `pitch` per turn for
+/// `height`, right-handed unless `left`. Its radius is the profile's distance from the axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelixDef {
+    pub axis: AxisRef,
+    pub pitch: Expr,
+    pub height: Expr,
+    pub left: bool,
 }
 
 /// Sweeps closed sketch regions along a path.
