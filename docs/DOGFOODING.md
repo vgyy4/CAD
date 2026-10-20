@@ -402,6 +402,6 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 | F5-9 | **Fixed**: `polyhedron` and twisted or scaled `linear_extrude` are skipped with a warning; the primitive limit is stated. Error codes stay `io` |
 | F5-10 | **Fixed**: hidden objects and a missing `GuiDocument.xml` are warned about; the ZIP error names FreeCAD. Per-body labels in the result are open |
 | F5-11 | **Fixed**: `drawing_add_view` fields are described (within the tool-list budget); the export hint names the right format. Positions in `query_drawing` are open |
-| F5-12 | Open: read-only sessions cannot open a locked project |
+| F5-12 | **Fixed**: `--read-only` on a project another window or server holds reads its last save, unlocked; the lock message says who holds it once |
 | F5-13 | **Partly fixed**: a DXF without `$INSUNITS` gives a warning; SPLINE and ELLIPSE import is open |
 | F5-14 | **Fixed**: drawings take `units: mm | in` and `decimals: 0..6` (create, edit, text form); dual dimensions are open |

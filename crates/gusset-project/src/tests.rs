@@ -672,3 +672,22 @@ fn saves_written_off_the_model_thread_keep_order_and_newer_recovery() {
     p.close();
     assert!(late.write().is_err());
 }
+
+#[test]
+fn a_held_project_can_be_read_as_last_saved() {
+    // Dogfooding F5-12: a read-only reviewer next to the server that holds the project.
+    let t = Tmp::new("held");
+    let file = t.0.join("part.gus");
+    let h = sample_history();
+    let mut p = Project::create(t.dirs()).unwrap();
+    p.save_as(&file, &h).unwrap();
+    p.close();
+    assert!(!Project::is_locked_elsewhere(&file, &t.dirs()));
+    let (holder, _, _) = Project::open(&file, t.dirs()).unwrap();
+    assert!(Project::is_locked_elsewhere(&file, &t.dirs()));
+    let e = Project::open(&file, t.dirs()).map(|_| ()).unwrap_err().to_string();
+    assert_eq!(e.matches("Gusset window").count(), 1, "{e}");
+    let read = Project::read_saved(&file).unwrap();
+    assert_eq!(read.head_document(read.main()).unwrap(), h.head_document(h.main()).unwrap());
+    holder.close();
+}

@@ -334,6 +334,19 @@ where
     let empty =
         || gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| McpError::Config(format!("{e:?}")));
     let (session, project, save_as) = match &options.project {
+        // A read-only connection to a project another server or window holds reads its
+        // last save, unlocked (dogfooding F5-12); it never writes.
+        Some(path)
+            if path.exists() && options.read_only && gusset_project::Project::is_locked_elsewhere(path, &dirs) =>
+        {
+            let history = gusset_project::Project::read_saved(path)
+                .map_err(|e| McpError::Command(gusset_commands::CommandError::new("io", e.to_string())))?;
+            eprintln!("gusset mcp: {} is open elsewhere; reading its last save", path.display());
+            let mut s = Session::from_history(history, options.kernel.clone());
+            s.project_dir = path.parent().map(Path::to_path_buf);
+            s.importer = options.importer.clone();
+            (s, None, None)
+        }
         Some(path) if path.exists() => {
             let (p, history, report) = gusset_project::Project::open(path, dirs)
                 .map_err(|e| McpError::Command(gusset_commands::CommandError::new("io", e.to_string())))?;

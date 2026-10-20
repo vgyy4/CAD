@@ -82,7 +82,8 @@ impl fmt::Display for ProjectError {
             ProjectError::Io { path, message } => write!(f, "could not access {}: {message}", path.display()),
             ProjectError::Damaged(m) => write!(f, "the project file is damaged: {m}"),
             ProjectError::Locked { path, holder } => {
-                write!(f, "{} is already open in another Gusset window ({holder})", path.display())
+                // `holder` says who has it (dogfooding F5-12: the text was said twice).
+                write!(f, "{}: {holder}", path.display())
             }
             ProjectError::Write(m) => write!(f, "saving failed: {m}"),
         }
@@ -452,6 +453,24 @@ impl Project {
         }
     }
 
+    /// Whether another window or server holds the project at `path` (its lock is taken).
+    pub fn is_locked_elsewhere(path: &Path, dirs: &DataDirs) -> bool {
+        let Ok(bytes) = std::fs::read(path) else { return false };
+        let Ok((_, meta, _)) = decode_full(&bytes, None) else { return false };
+        gusset_store::lock::is_held(&dirs.lock_file(&meta.id)).unwrap_or(false)
+    }
+
+    /// The history of a project file as last saved, without locking it or touching its
+    /// recovery data: for read-only sessions next to the one that holds it (F5-12).
+    ///
+    /// # Errors
+    /// The file cannot be read or is damaged.
+    pub fn read_saved(path: &Path) -> Result<History, ProjectError> {
+        let bytes =
+            std::fs::read(path).map_err(|e| ProjectError::Io { path: path.to_path_buf(), message: e.to_string() })?;
+        decode_full(&bytes, None).map(|(h, _, _)| h).map_err(|e| ProjectError::Damaged(e.to_string()))
+    }
+
     /// Opens a project file, handling damage and pending recovery (ADR 0007).
     pub fn open(path: &Path, dirs: DataDirs) -> Result<(Project, History, OpenReport), ProjectError> {
         dirs.ensure().map_err(|e| ProjectError::Io { path: dirs.data_dir().to_path_buf(), message: e.to_string() })?;
@@ -575,7 +594,10 @@ impl Project {
             && other != self.meta.id
             && gusset_store::lock::is_held(&self.dirs.lock_file(&other)).unwrap_or(false)
         {
-            return Err(ProjectError::Locked { path: path.to_path_buf(), holder: "another Gusset window".into() });
+            return Err(ProjectError::Locked {
+                path: path.to_path_buf(),
+                holder: "the project is open in another Gusset window or server".into(),
+            });
         }
         if self.path.is_none() || same {
             self.save_to(path, history)?;

@@ -83,8 +83,8 @@ pub enum LockError {
 impl fmt::Display for LockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LockError::Held(Some(info)) => write!(f, "the project is open in another Gusset window ({info})"),
-            LockError::Held(None) => f.write_str("the project is open in another Gusset window"),
+            LockError::Held(Some(info)) => write!(f, "the project is open in another Gusset window or server ({info})"),
+            LockError::Held(None) => f.write_str("the project is open in another Gusset window or server"),
             LockError::NotARegularFile(p) => write!(f, "refusing to use {} as a lock file", p.display()),
             LockError::Io(e) => write!(f, "cannot lock the project: {e}"),
         }
