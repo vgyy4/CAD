@@ -175,6 +175,11 @@ fn section_views_cut_the_part_and_hatch_the_cut() {
         .collect();
     assert!(texts.contains(&"A–A") && texts.iter().filter(|t| **t == "A").count() == 2, "{texts:?}");
     assert!(count(&s, Style::Center) > count(&base, Style::Center));
+    // A half section cuts only the half beyond the middle: half the hatched area (the hole
+    // is centred), and the other half keeps its outline.
+    let h = build("  view A (of: Front, side: top, section: A, half: true)\n");
+    assert!(h.issues.is_empty(), "{:?}", h.issues);
+    assert!((hatched(&h) - a / 2.0).abs() < 0.03 * a, "half hatched {} of {}", hatched(&h), a / 2.0);
     // A vertical cut through the hole's axis (x = 30): two 15 x 20 strips beside the hole.
     let s = build("  view B (of: Front, side: right, section: B, cut_at: 30 mm)\n");
     assert!(s.issues.is_empty(), "{:?}", s.issues);

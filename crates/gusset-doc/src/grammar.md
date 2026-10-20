@@ -656,7 +656,8 @@ drawing <Name> (size: A0..A4 | ANSI_A..ANSI_E, [landscape: false], projection: f
   `section: A` on a projected view makes it a full section: the parent's bodies are cut by
   a plane across the parent (at `cut_at`, model mm along the parent's axis pointing at
   `side`; default the middle), the part towards the viewer is removed and the cut is
-  hatched. The view is labelled "A–A" and the parent shows the cutting plane.
+  hatched. The view is labelled "A–A" and the parent shows the cutting plane. `half: true`
+  makes it a half section: only the half beyond the part's middle along the view's X is cut.
 - `view D (detail_of: Front, center: [x, y], radius: 5 mm, at: [x, y], [scale: 4])` is a
   circular detail: the parent's lines inside the circle (centre in the parent's axes,
   model mm), enlarged (default twice the parent's scale) and centred at `at` (sheet mm).

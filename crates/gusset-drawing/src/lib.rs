@@ -66,7 +66,7 @@ type CacheEntry = (Vec<Shape>, [u64; 7], Arc<Vec<HlrCurve>>);
 pub struct HlrCache {
     entries: Vec<CacheEntry>,
     /// Sections by (shapes, plane, view X): the cut shapes and their cut faces.
-    cuts: Vec<(Vec<Shape>, [u64; 7], Arc<Cut>)>,
+    cuts: Vec<(Vec<Shape>, [u64; 8], Arc<Cut>)>,
     /// Projections computed (not found in the cache) so far.
     misses: usize,
 }
@@ -140,14 +140,15 @@ impl HlrCache {
         n: [f64; 3],
         x: [f64; 3],
         y: [f64; 3],
-        c: f64,
+        // The plane's offset along `n`, and a half section's split along `x`.
+        (c, half): (f64, Option<f64>),
     ) -> Result<Arc<Cut>, String> {
-        let key = [n[0], n[1], n[2], x[0], x[1], x[2], c].map(f64::to_bits);
+        let key = [n[0], n[1], n[2], x[0], x[1], x[2], c, half.unwrap_or(f64::NAN)].map(f64::to_bits);
         let same = |s: &[Shape]| s.len() == shapes.len() && s.iter().zip(shapes).all(|(a, b)| a.ptr_eq(b));
         if let Some((_, _, cut)) = self.cuts.iter().find(|(s, kk, _)| *kk == key && same(s)) {
             return Ok(cut.clone());
         }
-        let kept = section::cut(k, shapes, n, x, c)?;
+        let kept = section::cut(k, shapes, n, x, c, half)?;
         let faces = section::cut_faces(k, &kept, n, x, y, c)?;
         let cut = Arc::new(Cut { shapes: kept, faces });
         if self.cuts.len() >= CACHE_ENTRIES {
@@ -466,9 +467,17 @@ impl Builder<'_, '_> {
                         }
                     };
                     let (st, sx, sy) = axes;
+                    // A half section splits at the part's middle along the view's X.
+                    let half = if sec.half {
+                        let (lo, hi, _, _) = section::extent(self.cx.kernel, &shapes, sx)
+                            .map_err(|e| format!("view {}: {e}", v.name))?;
+                        Some((lo + hi) / 2.0)
+                    } else {
+                        None
+                    };
                     let cut = self
                         .cache
-                        .cut(self.cx.kernel, &shapes, st, sx, sy, c)
+                        .cut(self.cx.kernel, &shapes, st, sx, sy, (c, half))
                         .map_err(|e| format!("view {}: {e}", v.name))?;
                     // In the parent, `ct` is ±(its x) or ±(its y).
                     let vertical = matches!(side, Side::Left | Side::Right);

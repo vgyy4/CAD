@@ -61,9 +61,9 @@ pub fn extent(k: &dyn Kernel, shapes: &[Shape], n: V3) -> Result<(f64, f64, V3, 
     Ok((lo, hi, centre, diag))
 }
 
-/// `shapes` with everything where `dot(p, n) > c` removed. Bodies entirely on the removed
-/// side are left out.
-pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64) -> Result<Vec<Shape>, String> {
+/// `shapes` with everything where `dot(p, n) > c` removed (with `half`, only where also
+/// `dot(p, x) > half`: a half section). Bodies entirely on the removed side are left out.
+pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64, half: Option<f64>) -> Result<Vec<Shape>, String> {
     let (lo, hi, centre, diag) = extent(k, shapes, n)?;
     if c <= lo {
         return Err("the cutting plane leaves nothing to show".into());
@@ -76,7 +76,8 @@ pub fn cut(k: &dyn Kernel, shapes: &[Shape], n: V3, x: V3, c: f64) -> Result<Vec
     let along = c - dot(centre, n);
     let origin = [centre[0] + n[0] * along, centre[1] + n[1] * along, centre[2] + n[2] * along];
     let frame = Frame { origin, x, y: cross(n, x) };
-    let pts = [[-r, -r], [r, -r], [r, r], [-r, r]];
+    let lo_x = half.map_or(-r, |h| h - dot(centre, x));
+    let pts = [[lo_x, -r], [r, -r], [r, r], [lo_x, r]];
     let edges = pts
         .iter()
         .zip(pts.iter().cycle().skip(1))

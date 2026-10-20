@@ -326,6 +326,9 @@ pub struct DrawingAddView {
     /// Cut offset, doc units (default mid).
     #[serde(default)]
     pub cut_at: Option<String>,
+    /// Half section.
+    #[serde(default)]
+    pub half: bool,
     /// Detail: the view it enlarges.
     #[serde(default)]
     pub detail_of: Option<String>,
@@ -385,12 +388,18 @@ impl Command for DrawingAddView {
                     return Err(CommandError::args("a section label is a letter, then up to 7 letters or digits")
                         .hint("e.g. A or B2"));
                 }
-                Some(gusset_doc::drawing::SectionDef { label: l.clone(), cut_at: opt_expr("cut_at", &self.cut_at)? })
+                Some(gusset_doc::drawing::SectionDef {
+                    label: l.clone(),
+                    cut_at: opt_expr("cut_at", &self.cut_at)?,
+                    half: self.half,
+                })
             }
             (Some(_), _) => {
                 return Err(CommandError::args("a section is projected from the view it cuts").hint("give of and side"));
             }
-            (None, _) if self.cut_at.is_some() => return Err(CommandError::args("cut_at needs section")),
+            (None, _) if self.cut_at.is_some() || self.half => {
+                return Err(CommandError::args("cut_at and half need section"));
+            }
             (None, _) => None,
         };
         let drawing = self.drawing.clone();
