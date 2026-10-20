@@ -404,4 +404,4 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 | F5-11 | **Fixed**: `drawing_add_view` fields are described (within the tool-list budget); the export hint names the right format. Positions in `query_drawing` are open |
 | F5-12 | **Fixed**: `--read-only` on a project another window or server holds reads its last save, unlocked; the lock message says who holds it once |
 | F5-13 | **Fixed**: SPLINE (fit points, or samples of the rational B-spline) and ELLIPSE (64 samples per turn) import as sketch splines through those points (close, not exact); a DXF without `$INSUNITS` gives a warning |
-| F5-14 | **Fixed**: drawings take `units: mm | in` and `decimals: 0..6` (create, edit, text form); dual dimensions are open |
+| F5-14 | **Fixed**: drawings take `units: mm | in`, `decimals: 0..6` and `dual: true` (the other unit in brackets) |

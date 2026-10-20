@@ -278,6 +278,11 @@ fn a_drawing_can_dimension_in_inches_with_its_own_decimals() {
     let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
     assert_eq!(q["dimensions"][0]["text_user_text"], "40", "{q}");
     assert_eq!(err(&mut s, "drawing.edit", json!({"drawing": "D", "units": "ft"})).code, "invalid_args");
+    // Dual dimensions: the other unit in brackets.
+    run(&mut s, "drawing.edit", json!({"drawing": "D", "dual": true, "decimals": 2}));
+    let q = run(&mut s, "query.drawing", json!({"drawing": "D"}));
+    assert_eq!(q["dimensions"][0]["text_user_text"], "40 [1.575]", "{q}");
+    assert!(s.document(&gusset_history::Actor::User).unwrap().to_text().contains("dual: true"));
 }
 
 #[test]

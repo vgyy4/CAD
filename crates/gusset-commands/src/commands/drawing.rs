@@ -106,7 +106,7 @@ pub struct DrawingCreate {
     pub size: Option<String>,
     #[serde(default)]
     pub portrait: bool,
-    /// first (ISO, default) or third (ASME).
+    /// first (ISO) or third (ASME).
     #[serde(default)]
     pub projection: Option<String>,
     /// Sheet scale, e.g. "0.5" for 1:2.
@@ -117,8 +117,10 @@ pub struct DrawingCreate {
     #[serde(default)]
     pub decimals: Option<u32>,
     #[serde(default)]
+    pub dual: Option<bool>,
+    #[serde(default)]
     pub title: Option<String>,
-    /// Also add front, top, right and iso views of every body.
+    /// Adds front, top, right, iso views.
     #[serde(default)]
     pub standard_views: bool,
 }
@@ -162,6 +164,7 @@ impl Command for DrawingCreate {
                 d.scale = scale;
                 d.units = units;
                 d.decimals = decimals;
+                d.dual = self.dual.unwrap_or(false);
                 d.title = self.title.filter(|t| !t.is_empty());
                 if self.standard_views {
                     let [w, h] = gusset_drawing::sheet_size(&d);
@@ -221,6 +224,8 @@ pub struct DrawingEdit {
     pub units: Option<String>,
     #[serde(default)]
     pub decimals: Option<u32>,
+    #[serde(default)]
+    pub dual: Option<bool>,
     /// Title block fields; "" clears one.
     #[serde(default)]
     pub title: Option<String>,
@@ -276,6 +281,9 @@ impl Command for DrawingEdit {
                 }
                 if let Some(n) = decimals {
                     d.decimals = Some(n);
+                }
+                if let Some(v) = self.dual {
+                    d.dual = v;
                 }
                 set_text(&mut d.title, self.title);
                 set_text(&mut d.number, self.number);

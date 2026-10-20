@@ -908,6 +908,7 @@ pub fn build(d: &Drawing, cx: &Context<'_>, cache: &mut HlrCache) -> Scene {
                             view: pv,
                             units: d.units.unwrap_or(cx.units),
                             decimals: d.decimals,
+                            dual: d.dual,
                         };
                         let start = scene.items.len();
                         let handles = scene.handles.len();

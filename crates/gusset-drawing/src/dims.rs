@@ -195,6 +195,8 @@ pub struct ViewCtx<'a> {
     pub units: LengthUnit,
     /// Decimal places; `None`: 2 in mm, 3 in inches.
     pub decimals: Option<u32>,
+    /// Also show lengths in the other unit, in brackets.
+    pub dual: bool,
 }
 
 /// Builds and draws dimension `d`. `offset` and `text_at` are already evaluated.
@@ -237,6 +239,18 @@ fn build(
         LengthUnit::Inch => (1.0 / 25.4, 3),
     };
     let decimals = v.decimals.map_or(decimals, |d| d.min(6) as i32);
+    // A length in the drawing's unit, with the other unit in brackets when dual.
+    let length = |value: f64| {
+        let t = number(value, decimals);
+        if !v.dual {
+            return t;
+        }
+        let mm = value / factor;
+        match v.units {
+            LengthUnit::Millimetre => format!("{t} [{}]", number(mm / 25.4, 3)),
+            LengthUnit::Inch => format!("{t} [{}]", number(mm, 2)),
+        }
+    };
     let label = |value: String| {
         let mut t = String::new();
         if let Some(p) = &d.prefix {
@@ -328,7 +342,7 @@ fn build(
             };
             let dir = fixed_dir.or(aligned_dir).ok_or("the two points coincide in this view")?;
             let value = dot(sub(p2, p1), dir).abs() / pv.scale * factor;
-            let text = label(number(value, decimals));
+            let text = label(length(value));
             let n = away(perp(dir), mul(add(p1, p2), 0.5));
             let at = linear(scene, p1, p2, dir, n, reach(n), offset, text_at, &text);
             Ok((value, text, at))
@@ -345,7 +359,7 @@ fn build(
             let r = c.radius * pv.scale;
             let dia = d.kind == DimKind::Diameter;
             let value = if dia { 2.0 * c.radius } else { c.radius } * factor;
-            let text = label(format!("{}{}", if dia { "Ø" } else { "R" }, number(value, decimals)));
+            let text = label(format!("{}{}", if dia { "Ø" } else { "R" }, length(value)));
             let u = text_at.and_then(|t| unit(sub(t, cs))).unwrap_or([libm::sqrt(0.5), libm::sqrt(0.5)]);
             let rim = add(cs, mul(u, r));
             let knee = match text_at {

@@ -35,6 +35,8 @@ pub struct Drawing {
     pub units: Option<gusset_units::quantity::LengthUnit>,
     /// Decimal places of dimension values (0 to 6); `None`: 2 in mm, 3 in inches.
     pub decimals: Option<u32>,
+    /// Lengths also in the other unit, in brackets.
+    pub dual: bool,
     /// Title block fields (user text).
     pub title: Option<String>,
     pub number: Option<String>,
@@ -54,6 +56,7 @@ impl Drawing {
             scale: None,
             units: None,
             decimals: None,
+            dual: false,
             title: None,
             number: None,
             material: None,
@@ -558,6 +561,9 @@ pub(crate) fn print_drawing(out: &mut String, d: &Drawing) {
     if let Some(n) = d.decimals {
         args.push(format!("decimals: {n}"));
     }
+    if d.dual {
+        args.push("dual: true".into());
+    }
     for (k, v) in [("title", &d.title), ("number", &d.number), ("material", &d.material), ("author", &d.author)] {
         if let Some(v) = v {
             args.push(format!("{k}: {}", quote(v)));
@@ -700,6 +706,7 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
                 }
                 d.decimals = Some(n);
             }
+            "dual" => d.dual = parse_bool(c)?,
             "title" => d.title = Some(c.string()?),
             "number" => d.number = Some(c.string()?),
             "material" => d.material = Some(c.string()?),
@@ -709,7 +716,7 @@ pub(crate) fn parse_drawing(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) ->
                     c,
                     KW,
                     key,
-                    "size, landscape, projection, scale, units, decimals, title, number, material, author",
+                    "size, landscape, projection, scale, units, decimals, dual, title, number, material, author",
                 ));
             }
         }
