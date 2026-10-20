@@ -306,3 +306,31 @@ fn a_generated_spring_has_the_volume_of_its_section_times_its_length() {
     let e = execute(&mut s, &CmdCtx::user(1), "generate.spring", json!({"wire": "2 mm", "pitch": "2 mm"})).unwrap_err();
     assert_eq!(e.code, "invalid_args");
 }
+
+#[test]
+fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
+    // ADR 0034: the tooth outside the core, screwed (L - P) / P turns, adds
+    // 2 pi * (first moment of its section about the axis) per turn.
+    let mut s = session();
+    let t0 = std::time::Instant::now();
+    let r = run(&mut s, "generate.thread", json!({"diameter": "10 mm", "pitch": "1.5 mm", "length": "20 mm"}));
+    eprintln!("M10 x 1.5 x 20 built in {:?}", t0.elapsed());
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let (d, p, l) = (10.0, 1.5, 20.0);
+    let r1 = (d - 1.082_531_754_7 * p) / 2.0;
+    let pts = [[r1, 0.0], [d / 2.0, 5.0 * p / 16.0], [d / 2.0, 7.0 * p / 16.0], [r1, 0.75 * p]];
+    let moment: f64 = (0..4)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % 4]);
+            (a[0] + b[0]) * (a[0] * b[1] - b[0] * a[1]) / 6.0
+        })
+        .sum::<f64>()
+        .abs();
+    let want = PI * r1 * r1 * l + (l - p) / p * 2.0 * PI * moment;
+    let v = volume(&mut s, "Thread1");
+    assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
+    let b = run(&mut s, "query.body", json!({"body": "Thread1"}));
+    let (lo, hi) = (&b["bbox_min_mm"], &b["bbox_max_mm"]);
+    let span = |i: usize| hi[i].as_f64().unwrap() - lo[i].as_f64().unwrap();
+    assert!((span(0) - 10.0).abs() < 0.01 && (span(2) - 20.0).abs() < 1e-6, "{b}");
+}

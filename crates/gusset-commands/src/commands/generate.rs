@@ -10,7 +10,7 @@ use crate::gear::{self, GearValues, Names};
 use gusset_units::Dim;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<GenerateGear>(), spec::<GenerateSpring>()]
+    vec![spec::<GenerateGear>(), spec::<GenerateSpring>(), spec::<GenerateThread>()]
 }
 
 fn d_module() -> String {
@@ -467,6 +467,233 @@ impl Command for GenerateSpring {
                 "helix_angle_deg": helix,
                 // The section is the wire's circle across the axis, not across the wire.
                 "note": "the wire section is round in the plane across the axis (exact for a small helix angle)",
+            }))
+        })
+    }
+}
+
+/// Generates an external ISO metric thread (ISO 68-1 basic profile) on a rod along Z
+/// (ADR 0034).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateThread {
+    /// Major (nominal) diameter.
+    #[serde(default = "d_thread_d")]
+    #[schemars(extend("x-essential" = true))]
+    pub diameter: String,
+    #[serde(default = "d_thread_p")]
+    #[schemars(extend("x-essential" = true))]
+    pub pitch: String,
+    /// Rod length.
+    #[serde(default = "d_thread_l")]
+    #[schemars(extend("x-essential" = true))]
+    pub length: String,
+    #[serde(default)]
+    pub left: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn d_thread_d() -> String {
+    "10 mm".into()
+}
+fn d_thread_p() -> String {
+    "1.5 mm".into()
+}
+fn d_thread_l() -> String {
+    "20 mm".into()
+}
+
+/// How far the tooth reaches into the core, per pitch, so the two unite cleanly.
+const TOOTH_OVERLAP: f64 = 0.02;
+
+/// The tooth of the ISO 68-1 basic profile in the axial plane (x from the axis, z along it)
+/// for major radius `r` and pitch `p`, as parameter expressions over `d` and `p` names, with
+/// their values: root flat P/4 at the minor diameter, crest flat P/8, 60 degree flanks.
+pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64) -> Vec<(String, String, [f64; 2])> {
+    // The flanks run on into the core by TOOTH_OVERLAP * pitch, so no tooth edge lies on the
+    // core's surface (the union then cuts cleanly across it).
+    let minor_v = (dv - 1.082_531_754_7 * pv) / 2.0;
+    let inner = format!("({d} - 1.0825317547 * {p}) / 2 - {TOOTH_OVERLAP} * {p}");
+    let inner_v = minor_v - TOOTH_OVERLAP * pv;
+    let major = format!("{d} / 2");
+    // A 60 degree flank rises 5/16 P over 5/8 H = 0.5413 P of depth: dz/dx = tan(30 deg).
+    let run = TOOTH_OVERLAP / 3f64.sqrt();
+    let z = |k: f64| (format!("{k} * {p}"), k * pv);
+    let pts = [
+        // Shifted up by `run` so the tooth does not poke out below the rod.
+        (inner.clone(), inner_v, z(0.0)),
+        (major.clone(), dv / 2.0, z(5.0 / 16.0 + run)),
+        (major, dv / 2.0, z(7.0 / 16.0 + run)),
+        (inner, inner_v, z(0.75 + 2.0 * run)),
+    ];
+    pts.into_iter().map(|(x, xv, (zs, zv))| (x, zs, [xv, zv])).collect()
+}
+
+impl Command for GenerateThread {
+    const ID: &'static str = "generate.thread";
+    const TITLE: &'static str = "Thread";
+    const DESCRIPTION: &'static str = "Generate a threaded rod along Z (ISO 68-1 metric profile, exact helix) as named parameters, sketches and features.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let given = [("diameter", &self.diameter), ("pitch", &self.pitch), ("length", &self.length)];
+        let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
+        for (what, src) in given {
+            exprs.push((what, parse_expr(what, src)?));
+        }
+        edit(s, ctx, "Generate thread", |doc, rb| {
+            let name = feature_name(doc, self.name, "Thread")?;
+            let nm = Names::from_feature(&name);
+            let (core_sk, core, tooth_sk) =
+                (format!("{name}_core_sketch"), format!("{name}_core"), format!("{name}_tooth"));
+            let mut all = doc.params.clone();
+            for (what, e) in &exprs {
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
+            }
+            let vals = params::evaluate(&all, doc.units);
+            let value = |what: &str| -> Result<f64, CommandError> {
+                match vals.get(&nm.n(what)) {
+                    Some(Ok(q)) if q.dim == Dim::LENGTH => Ok(q.value),
+                    Some(Ok(q)) => Err(CommandError::args(format!("{what} must be a length, not {}", q.dim.name()))),
+                    Some(Err(e)) => Err(CommandError::args(format!("{what}: {}", e.message))),
+                    None => Err(CommandError::args(format!("{what} is missing"))),
+                }
+            };
+            let (d, p, len) = (value("diameter")?, value("pitch")?, value("length")?);
+            if !(d > 0.0 && p > 0.0 && p < d / 2.0 && len > 2.0 * p) {
+                return Err(CommandError::args(
+                    "a thread needs 0 < pitch < diameter / 2 and a length over two pitches",
+                )
+                .hint("for example diameter 10 mm, pitch 1.5 mm, length 20 mm (M10 coarse)"));
+            }
+            if len / p > 2000.0 {
+                return Err(CommandError::args("the thread has more than 2000 turns"));
+            }
+            let mut new_params: Vec<Param> = Vec::new();
+            let notes = [("diameter", "major (nominal) diameter"), ("pitch", "pitch"), ("length", "rod length")];
+            for (what, e) in &exprs {
+                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.into(),
+                    range: Default::default(),
+                });
+            }
+            let minor = format!("{} - 1.0825317547 * {}", nm.n("diameter"), nm.n("pitch"));
+            new_params.push(Param {
+                name: nm.n("minor"),
+                expr: parse_expr("minor", &minor)?,
+                comment: "minor diameter (basic profile)".into(),
+                range: Default::default(),
+            });
+            for p in &new_params {
+                if doc.params.iter().any(|q| q.name == p.name) {
+                    return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name))
+                        .hint("name the thread differently"));
+                }
+                validate_feature_name(&p.name).map_err(CommandError::args)?;
+            }
+            for f in [&core_sk, &core, &tooth_sk] {
+                if doc.feature(f).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{f}' already exists"))
+                        .hint("name the thread differently"));
+                }
+            }
+            let created: Vec<String> = new_params.iter().map(|p| p.name.clone()).collect();
+            doc.params.extend(new_params);
+            let c = |id: String, kind, ents: &[&str], v: &str| -> Result<SkConstraint, CommandError> {
+                Ok(SkConstraint {
+                    id,
+                    kind,
+                    entities: ents.iter().map(|e| (*e).to_string()).collect(),
+                    value: Some(parse_expr("thread", v)?),
+                })
+            };
+            let ent = |id: &str, geom| SkEntity { id: id.into(), geom, construction: false };
+            // The core: a circle of the minor diameter at the origin.
+            let core_sketch = SketchDef {
+                plane: PlaneRef::XY,
+                next_id: 6,
+                entities: vec![
+                    ent("p1", SkGeom::Point { x: 0.0, y: 0.0 }),
+                    ent("c2", SkGeom::Circle { center: "p1".into(), radius: (d - 1.082_531_754_7 * p) / 2.0 }),
+                ],
+                constraints: vec![
+                    c("k3".into(), SkConstraintKind::AtX, &["p1"], "0 mm")?,
+                    c("k4".into(), SkConstraintKind::AtY, &["p1"], "0 mm")?,
+                    c("k5".into(), SkConstraintKind::Diameter, &["c2"], &nm.n("minor"))?,
+                ],
+                patterns: Vec::new(),
+                gear: None,
+            };
+            // The tooth in the XZ plane: six points, each placed by its parameters.
+            let tooth = thread_tooth(&nm.n("diameter"), &nm.n("pitch"), d, p);
+            let mut entities = Vec::new();
+            let mut constraints = Vec::new();
+            for (i, (x, z, v)) in tooth.iter().enumerate() {
+                let id = format!("p{}", i + 1);
+                entities.push(ent(&id, SkGeom::Point { x: v[0], y: v[1] }));
+                constraints.push(c(format!("k{}", 20 + 2 * i), SkConstraintKind::AtX, &[&id], x)?);
+                constraints.push(c(format!("k{}", 21 + 2 * i), SkConstraintKind::AtY, &[&id], z)?);
+            }
+            for i in 0..tooth.len() {
+                let (a, b) = (format!("p{}", i + 1), format!("p{}", (i + 1) % tooth.len() + 1));
+                entities.push(ent(&format!("l{}", 7 + i), SkGeom::Line { a, b }));
+            }
+            let tooth_sketch =
+                SketchDef { plane: PlaneRef::XZ, next_id: 40, entities, constraints, patterns: Vec::new(), gear: None };
+            // The helix stays inside the rod: its last turn's tooth ends 3/4 pitch above it.
+            let height = format!("{} - {}", nm.n("length"), nm.n("pitch"));
+            let features = vec![
+                Feature::new(core_sk.clone(), FeatureKind::Sketch(core_sketch)),
+                Feature::new(
+                    core.clone(),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
+                        distance: parse_expr("length", &nm.n("length"))?,
+                        symmetric: false,
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: Some(name.clone()),
+                    }),
+                ),
+                Feature::new(tooth_sk.clone(), FeatureKind::Sketch(tooth_sketch)),
+                Feature::new(
+                    format!("{name}_helix"),
+                    FeatureKind::Sweep(SweepDef {
+                        profile: ProfileRef { sketch: tooth_sk.clone(), regions: Vec::new() },
+                        path: PathRef::Helix(gusset_doc::HelixDef {
+                            axis: gusset_doc::AxisRef::Z,
+                            pitch: parse_expr("pitch", &nm.n("pitch"))?,
+                            height: parse_expr("height", &height)?,
+                            left: self.left,
+                        }),
+                        orientation: Orientation::Frenet,
+                        twist: None,
+                        op: BodyOp::Add,
+                        body: Some(core.clone()),
+                        body_name: None,
+                    }),
+                ),
+            ];
+            let mut at = rb;
+            for f in features {
+                insert_feature(doc, at, f);
+                at = at.map(|r| r + 1);
+            }
+            Ok(json!({
+                "feature": format!("{name}_helix"),
+                "body": name,
+                "parameters": created,
+                "minor_diameter_mm": d - 1.082_531_754_7 * p,
+                "turns": (len - p) / p,
             }))
         })
     }

@@ -25,7 +25,10 @@ thread generator.
    inside point seen from the axis, and the helix starts level with it, so the profile is on the
    helix. A twist with a helix, a non-positive pitch or height, more than 2000 turns, or a
    profile on the axis are errors. Pitch and height are expressions (parameters drive them).
-3. **Generators** use it: modelled threads (`generate.thread`). Springs keep the twisted section
+3. **Generators** use it: `generate.thread` writes an ISO 68-1 external thread: a core at the minor
+   diameter and the basic tooth (crest P/8, root 3P/4, 60 degree flanks run 2 % of P into the core so
+   no tooth edge lies on the core surface, which made the union invalid) swept up `length - pitch`
+   and added; every point is driven by the parameters (M10 x 1.5 x 20: 0.9 s, exact volume). Springs keep the twisted section
    (exact volume, round wire across the axis; ADR 0018 amendment).
 
 ## Consequences
