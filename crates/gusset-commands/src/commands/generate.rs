@@ -488,6 +488,12 @@ pub struct GenerateThread {
     #[serde(default = "d_thread_l")]
     #[schemars(extend("x-essential" = true))]
     pub length: String,
+    /// Hex head across flats (makes a bolt; ISO 4017 M10: 16 mm).
+    #[serde(default)]
+    pub head_width: Option<String>,
+    /// Head height (ISO 4017 M10: 6.4 mm).
+    #[serde(default)]
+    pub head_height: Option<String>,
     #[serde(default)]
     pub left: bool,
     #[serde(default)]
@@ -538,10 +544,20 @@ impl Command for GenerateThread {
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let given = [("diameter", &self.diameter), ("pitch", &self.pitch), ("length", &self.length)];
+        let head = match (&self.head_width, &self.head_height) {
+            (None, None) => None,
+            (Some(w), h) => Some((w.clone(), h.clone().unwrap_or_else(|| format!("0.4 * ({w})")))),
+            (None, Some(_)) => return Err(CommandError::args("head_height needs head_width")),
+        };
+        let mut given =
+            vec![("diameter", self.diameter.clone()), ("pitch", self.pitch.clone()), ("length", self.length.clone())];
+        if let Some((w, h)) = &head {
+            given.push(("head_width", w.clone()));
+            given.push(("head_height", h.clone()));
+        }
         let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
         for (what, src) in given {
-            exprs.push((what, parse_expr(what, src)?));
+            exprs.push((what, parse_expr(what, &src)?));
         }
         edit(s, ctx, "Generate thread", |doc, rb| {
             let name = feature_name(doc, self.name, "Thread")?;
@@ -577,7 +593,20 @@ impl Command for GenerateThread {
                 return Err(CommandError::args("the thread has more than 2000 turns"));
             }
             let mut new_params: Vec<Param> = Vec::new();
-            let notes = [("diameter", "major (nominal) diameter"), ("pitch", "pitch"), ("length", "rod length")];
+            let notes = [
+                ("diameter", "major (nominal) diameter"),
+                ("pitch", "pitch"),
+                ("length", "rod length"),
+                ("head_width", "head width across flats"),
+                ("head_height", "head height"),
+            ];
+            if head.is_some() {
+                let (hw, hh) = (value("head_width")?, value("head_height")?);
+                if !(hw > d && hh > 0.0) {
+                    return Err(CommandError::args("the head must be wider than the thread and have a height")
+                        .hint("ISO 4017 M10: head_width 16 mm, head_height 6.4 mm"));
+                }
+            }
             for (what, e) in &exprs {
                 let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
                 new_params.push(Param {
@@ -684,6 +713,65 @@ impl Command for GenerateThread {
                     }),
                 ),
             ];
+            let mut features = features;
+            if head.is_some() {
+                // A hexagon below the rod: the head, from z = 0 down by head_height.
+                let mut entities = Vec::new();
+                let mut constraints = Vec::new();
+                let hw = value("head_width")?;
+                for i in 0..6 {
+                    let a = (30.0 + 60.0 * i as f64).to_radians();
+                    let id = format!("p{}", i + 1);
+                    let rr = hw / 3f64.sqrt();
+                    entities.push(ent(&id, SkGeom::Point { x: rr * libm::cos(a), y: rr * libm::sin(a) }));
+                    let deg = 30 + 60 * i;
+                    let w = nm.n("head_width");
+                    constraints.push(c(
+                        format!("k{}", 30 + 2 * i),
+                        SkConstraintKind::AtX,
+                        &[&id],
+                        &format!("{w} / sqrt(3) * cos({deg} deg)"),
+                    )?);
+                    constraints.push(c(
+                        format!("k{}", 31 + 2 * i),
+                        SkConstraintKind::AtY,
+                        &[&id],
+                        &format!("{w} / sqrt(3) * sin({deg} deg)"),
+                    )?);
+                }
+                for i in 0..6 {
+                    entities.push(ent(
+                        &format!("l{}", 7 + i),
+                        SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 6 + 1) },
+                    ));
+                }
+                let head_sk = format!("{name}_head_sketch");
+                if doc.feature(&head_sk).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{head_sk}' already exists")));
+                }
+                features.push(Feature::new(
+                    head_sk.clone(),
+                    FeatureKind::Sketch(SketchDef {
+                        plane: PlaneRef::XY,
+                        next_id: 50,
+                        entities,
+                        constraints,
+                        patterns: Vec::new(),
+                        gear: None,
+                    }),
+                ));
+                features.push(Feature::new(
+                    format!("{name}_head"),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: head_sk, regions: Vec::new() },
+                        distance: parse_expr("head_height", &format!("-{}", nm.n("head_height")))?,
+                        symmetric: false,
+                        op: BodyOp::Add,
+                        body: Some(core.clone()),
+                        body_name: None,
+                    }),
+                ));
+            }
             let mut at = rb;
             for f in features {
                 insert_feature(doc, at, f);

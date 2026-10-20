@@ -333,6 +333,12 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     let (lo, hi) = (&b["bbox_min_mm"], &b["bbox_max_mm"]);
     let span = |i: usize| hi[i].as_f64().unwrap() - lo[i].as_f64().unwrap();
     assert!((span(0) - 10.0).abs() < 0.01 && (span(2) - 20.0).abs() < 1e-6, "{b}");
+    // With a hex head (ISO 4017 M10) it is a bolt: the rod plus the head prism below it.
+    let r = run(&mut s, "generate.thread", json!({"name": "Bolt", "head_width": "16 mm", "head_height": "6.4 mm"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let head = 3f64.sqrt() / 2.0 * 16.0 * 16.0 * 6.4;
+    let vb = volume(&mut s, "Bolt");
+    assert!((vb - want - head).abs() < 1e-4 * (want + head), "{vb} vs {}", want + head);
 }
 
 #[test]
