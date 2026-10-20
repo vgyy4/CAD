@@ -97,7 +97,7 @@ Phase 3 has started (see Next).
      named parameters, a parametric tooth sketch and an extrude/sweep for involute spur
      and helical gears (OCCT golden tests in `modeling_gear.rs`: volume 6e-6, tooth
      thickness, meshing). It is a command and a form but deliberately no text statement
-     (ADR 0018 §6). Next generators: threads/fasteners and springs; gear gaps: internal
+     (ADR 0018 §6). `generate.spring` done (ADR 0018 amendment: round wire, twisted sweep up Z, exact volume; OCCT test). Next generators: threads/fasteners; gear gaps: internal
      gears, racks, bevel/worm, standard-centre-distance shifts.
    - v0.3 first: load resilience (owner request 2026-10-13, DESIGN.md §1 "Heavy or
      impossible work never crashes the app"): kernel work in a supervised worker process,

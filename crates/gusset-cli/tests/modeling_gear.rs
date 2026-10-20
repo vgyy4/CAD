@@ -280,3 +280,28 @@ fn undercut_and_other_bad_gears_fail_cleanly() {
     run(&mut s, "param.set", json!({"name": "gear1_teeth", "expr": "22"}));
     assert!(volume(&mut s, "Gear1") > 0.0);
 }
+
+#[test]
+fn a_generated_spring_has_the_volume_of_its_section_times_its_length() {
+    // A sweep of a section across the axis, twisted, keeps the section's area at every
+    // height (Cavalieri): volume = pi (wire/2)^2 * pitch * turns.
+    let mut s = session();
+    let r = run(&mut s, "generate.spring", json!({"wire": "1.5 mm", "diameter": "12 mm", "pitch": "4 mm", "turns": "5"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let want = PI * 0.75 * 0.75 * 4.0 * 5.0;
+    let v = volume(&mut s, "Spring1");
+    assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
+    let b = run(&mut s, "query.body", json!({"body": "Spring1"}));
+    let (lo, hi) = (&b["bbox_min_mm"], &b["bbox_max_mm"]);
+    let span = |i: usize| hi[i].as_f64().unwrap() - lo[i].as_f64().unwrap();
+    // Outer diameter 13.5, free length 20.
+    assert!((span(2) - 20.0).abs() < 1e-3, "{b}");
+    assert!((span(0) - 13.5).abs() < 0.05, "{b}");
+    // A parameter edit rebuilds it.
+    run(&mut s, "param.set", json!({"name": "spring1_turns", "expr": "8"}));
+    let v8 = volume(&mut s, "Spring1");
+    assert!((v8 - want * 8.0 / 5.0).abs() < 1e-4 * want, "{v8}");
+    // Touching coils are refused.
+    let e = execute(&mut s, &CmdCtx::user(1), "generate.spring", json!({"wire": "2 mm", "pitch": "2 mm"})).unwrap_err();
+    assert_eq!(e.code, "invalid_args");
+}

@@ -148,3 +148,15 @@ Internal gears, racks, bevel and worm gears, tip relief and crowning, standard-c
 modification with shifts (the user adds the shifts so that they cancel, or moves the second
 gear), the "live preview" in the form (the command is fast and undoable), and a form for editing
 a generated gear as a whole: the parameter table does that.
+
+## Amendment (2026-10-20): springs
+`generate.spring` follows the same rules (one command; it writes only parameters, sketches and
+features). A helical compression spring of round wire along Z: parameters `<p>_wire`,
+`<p>_diameter` (mean coil diameter), `<p>_pitch`, `<p>_turns` and `<p>_length = pitch * turns`;
+a sketch with the wire's circle at `diameter / 2` (AtX, AtY and Diameter constraints on the
+parameters); an axis sketch like the helical gear's path; and a sweep with a twist of
+`turns * 360 deg`. The section is round in the plane across the axis, not across the wire, so the
+wire is very slightly flattened (cos of the helix angle, 0.997 for 4 mm pitch on 12 mm); in return
+the volume is exact (`pi (wire/2)^2 * pitch * turns`, Cavalieri) and it rebuilds from the
+parameters. Pitch at most 1.05 × wire is refused (touching coils make a self-intersecting sweep).
+Later: closed and ground ends, extension and torsion springs, rectangular wire.

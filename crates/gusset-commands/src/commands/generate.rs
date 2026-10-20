@@ -10,7 +10,7 @@ use crate::gear::{self, GearValues, Names};
 use gusset_units::Dim;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<GenerateGear>()]
+    vec![spec::<GenerateGear>(), spec::<GenerateSpring>()]
 }
 
 fn d_module() -> String {
@@ -282,8 +282,203 @@ impl Command for GenerateGear {
     }
 }
 
+/// Generates a helical compression spring of round wire along Z (ADR 0018 amendment).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateSpring {
+    #[serde(default = "d_wire")]
+    #[schemars(extend("x-essential" = true))]
+    pub wire: String,
+    /// Mean coil diameter.
+    #[serde(default = "d_mean")]
+    #[schemars(extend("x-essential" = true))]
+    pub diameter: String,
+    /// Axial distance per turn.
+    #[serde(default = "d_pitch")]
+    #[schemars(extend("x-essential" = true))]
+    pub pitch: String,
+    #[serde(default = "d_turns")]
+    #[schemars(extend("x-essential" = true))]
+    pub turns: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+fn d_wire() -> String {
+    "1.5 mm".into()
+}
+fn d_mean() -> String {
+    "12 mm".into()
+}
+fn d_pitch() -> String {
+    "4 mm".into()
+}
+fn d_turns() -> String {
+    "6".into()
+}
+
+impl Command for GenerateSpring {
+    const ID: &'static str = "generate.spring";
+    const TITLE: &'static str = "Spring";
+    const DESCRIPTION: &'static str = "Generate a helical spring (round wire along Z) as named parameters, a wire sketch, an axis and a twisted sweep.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let given =
+            [("wire", &self.wire), ("diameter", &self.diameter), ("pitch", &self.pitch), ("turns", &self.turns)];
+        let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
+        for (what, src) in given {
+            exprs.push((what, parse_expr(what, src)?));
+        }
+        edit(s, ctx, "Generate spring", |doc, rb| {
+            let name = feature_name(doc, self.name, "Spring")?;
+            let nm = Names::from_feature(&name);
+            let (sketch_name, path_name) = (format!("{name}_wire"), format!("{name}_axis"));
+            let mut all = doc.params.clone();
+            for (what, e) in &exprs {
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
+            }
+            let vals = params::evaluate(&all, doc.units);
+            let value = |what: &str, dim: Dim| -> Result<f64, CommandError> {
+                match vals.get(&nm.n(what)) {
+                    Some(Ok(q)) if q.dim == dim => Ok(q.value),
+                    Some(Ok(q)) => {
+                        Err(CommandError::args(format!("{what} must be {}, not {}", dim.name(), q.dim.name())))
+                    }
+                    Some(Err(e)) => Err(CommandError::args(format!("{what}: {}", e.message))),
+                    None => Err(CommandError::args(format!("{what} is missing"))),
+                }
+            };
+            let (wire, mean, pitch, turns) = (
+                value("wire", Dim::LENGTH)?,
+                value("diameter", Dim::LENGTH)?,
+                value("pitch", Dim::LENGTH)?,
+                value("turns", Dim::NONE)?,
+            );
+            if !(wire > 0.0 && mean > wire && turns > 0.0 && turns <= 200.0 && pitch.is_finite()) {
+                return Err(CommandError::args("a spring needs wire > 0, diameter > wire and 0 < turns <= 200")
+                    .hint("for example wire 1.5 mm, diameter 12 mm, 6 turns"));
+            }
+            // Coils that touch make a self-intersecting sweep.
+            if pitch <= wire * 1.05 {
+                return Err(CommandError::args(format!("the pitch ({pitch} mm) must exceed the wire ({wire} mm)"))
+                    .hint("a closed-coil spring is not supported; use a pitch a little over the wire"));
+            }
+            let notes = [
+                ("wire", "wire diameter"),
+                ("diameter", "mean coil diameter"),
+                ("pitch", "axial distance per turn"),
+                ("turns", "number of turns"),
+            ];
+            let mut new_params: Vec<Param> = Vec::new();
+            for (what, e) in &exprs {
+                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.into(),
+                    range: Default::default(),
+                });
+            }
+            let length = format!("{} * {}", nm.n("pitch"), nm.n("turns"));
+            new_params.push(Param {
+                name: nm.n("length"),
+                expr: parse_expr("length", &length)?,
+                comment: "free length".into(),
+                range: Default::default(),
+            });
+            for p in &new_params {
+                if doc.params.iter().any(|q| q.name == p.name) {
+                    return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name))
+                        .hint("name the spring differently"));
+                }
+                validate_feature_name(&p.name).map_err(CommandError::args)?;
+            }
+            for f in [&sketch_name, &path_name] {
+                if doc.feature(f).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{f}' already exists"))
+                        .hint("name the spring differently"));
+                }
+            }
+            let created: Vec<String> = new_params.iter().map(|p| p.name.clone()).collect();
+            doc.params.extend(new_params);
+            let c = |id: &str, kind, ents: &[&str], v: Option<String>| -> Result<SkConstraint, CommandError> {
+                Ok(SkConstraint {
+                    id: id.into(),
+                    kind,
+                    entities: ents.iter().map(|e| (*e).to_string()).collect(),
+                    value: v.map(|v| parse_expr("spring", &v)).transpose()?,
+                })
+            };
+            // The wire's section in the plane of the coil axis' foot (the sweep turns it).
+            let wire_sketch = SketchDef {
+                plane: PlaneRef::XY,
+                next_id: 6,
+                entities: vec![
+                    SkEntity { id: "p1".into(), geom: SkGeom::Point { x: mean / 2.0, y: 0.0 }, construction: false },
+                    SkEntity {
+                        id: "c2".into(),
+                        geom: SkGeom::Circle { center: "p1".into(), radius: wire / 2.0 },
+                        construction: false,
+                    },
+                ],
+                constraints: vec![
+                    c("k3", SkConstraintKind::AtX, &["p1"], Some(format!("{} / 2", nm.n("diameter"))))?,
+                    c("k4", SkConstraintKind::AtY, &["p1"], Some("0 mm".into()))?,
+                    c("k5", SkConstraintKind::Diameter, &["c2"], Some(nm.n("wire")))?,
+                ],
+                patterns: Vec::new(),
+                gear: None,
+            };
+            let twist = format!("{} * 360 deg", nm.n("turns"));
+            let features = vec![
+                Feature::new(sketch_name.clone(), FeatureKind::Sketch(wire_sketch)),
+                Feature::new(path_name.clone(), FeatureKind::Sketch(axis_sketch(&nm.n("length"), pitch * turns)?)),
+                Feature::new(
+                    name.clone(),
+                    FeatureKind::Sweep(SweepDef {
+                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new() },
+                        path: PathRef::Sketch { sketch: path_name.clone(), curves: Vec::new() },
+                        orientation: Orientation::Frenet,
+                        twist: Some(parse_expr("twist", &twist)?),
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: None,
+                    }),
+                ),
+            ];
+            let mut at = rb;
+            for f in features {
+                insert_feature(doc, at, f);
+                at = at.map(|r| r + 1);
+            }
+            let helix = libm::atan(pitch / (std::f64::consts::PI * mean)).to_degrees();
+            Ok(json!({
+                "feature": name,
+                "body": name,
+                "sketch": sketch_name,
+                "parameters": created,
+                "free_length_mm": pitch * turns,
+                "helix_angle_deg": helix,
+                // The section is the wire's circle across the axis, not across the wire.
+                "note": "the wire section is round in the plane across the axis (exact for a small helix angle)",
+            }))
+        })
+    }
+}
+
 /// A straight path along the gear axis, as long as the face width, driven by its parameter.
 fn path_sketch(nm: &Names, face_width: f64) -> Result<SketchDef, CommandError> {
+    axis_sketch(&nm.n("face_width"), face_width)
+}
+
+/// A straight path up the Z axis from the origin, `length` long, driven by parameter `param`.
+fn axis_sketch(param: &str, length: f64) -> Result<SketchDef, CommandError> {
     let point = |id: &str, y: f64| SkEntity { id: id.into(), geom: SkGeom::Point { x: 0.0, y }, construction: false };
     let constraint = |id: &str,
                       kind: SkConstraintKind,
@@ -302,13 +497,13 @@ fn path_sketch(nm: &Names, face_width: f64) -> Result<SketchDef, CommandError> {
         next_id: 7,
         entities: vec![
             point("p1", 0.0),
-            point("p2", face_width),
+            point("p2", length),
             SkEntity { id: "l3".into(), geom: SkGeom::Line { a: "p1".into(), b: "p2".into() }, construction: false },
         ],
         constraints: vec![
             constraint("k4", SkConstraintKind::Fixed, &["p1"], None)?,
             constraint("k5", SkConstraintKind::Vertical, &["l3"], None)?,
-            constraint("k6", SkConstraintKind::Distance, &["l3", "l3"], Some(&nm.n("face_width")))?,
+            constraint("k6", SkConstraintKind::Distance, &["l3", "l3"], Some(param))?,
         ],
         patterns: Vec::new(),
         gear: None,

@@ -37,7 +37,7 @@ pub use drawing::{
     DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView, DrawingExport, DrawingMoveItem,
     QueryDrawing, drawing_scene,
 };
-pub use generate::GenerateGear;
+pub use generate::{GenerateGear, GenerateSpring};
 pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
