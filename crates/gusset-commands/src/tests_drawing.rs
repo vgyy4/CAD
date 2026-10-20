@@ -243,3 +243,19 @@ fn drawing_items_the_sheet_cannot_draw_are_refused() {
     dim(&mut s, "length").unwrap();
     run(&mut s, "drawing.edit_dimension", json!({"drawing": "D", "dimension": "D1", "offset": "15"}));
 }
+
+#[test]
+fn deleting_a_measured_feature_names_the_dangling_dimensions() {
+    // Dogfooding F5-8: the delete said nothing.
+    let mut s = session();
+    plate(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 60, "y": 0, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "5 mm", "body_name": "Block"}));
+    run(&mut s, "drawing.create", json!({"name": "D"}));
+    run(&mut s, "drawing.add_view", json!({"drawing": "D", "name": "F", "from": "front", "at": ["150", "150"]}));
+    let e = "edge(Extrude2/cap(end), Extrude2/side(Sketch2/l5))";
+    run(&mut s, "drawing.add_dimension", json!({"drawing": "D", "view": "F", "kind": "length", "a": e}));
+    let r = run(&mut s, "feature.delete", json!({"name": "Extrude2"}));
+    assert_eq!(r["dangling_dimensions"], json!(["D/D1"]), "{r}");
+}

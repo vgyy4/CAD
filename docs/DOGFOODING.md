@@ -398,7 +398,7 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 | F5-5 | **Fixed**: drawing items the sheet cannot draw are refused before committing |
 | F5-6 | **Fixed**: foreshortened lengths and axonometric distances are refused |
 | F5-7 | **Fixed**: an empty region selection leaves holes open (even-odd) |
-| F5-8 | Open: delete results do not name the drawing items they leave dangling |
+| F5-8 | **Fixed**: `feature_delete` returns `dangling_dimensions` (drawing/dimension) |
 | F5-9 | **Fixed**: `polyhedron` and twisted or scaled `linear_extrude` are skipped with a warning; the primitive limit is stated. Error codes stay `io` |
 | F5-10 | **Fixed**: hidden objects and a missing `GuiDocument.xml` are warned about; the ZIP error names FreeCAD. Per-body labels in the result are open |
 | F5-11 | **Fixed**: `drawing_add_view` fields are described (within the tool-list budget); the export hint names the right format. Positions in `query_drawing` are open |

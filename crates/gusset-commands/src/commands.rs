@@ -2183,7 +2183,9 @@ impl Command for FeatureDelete {
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Delete");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        edit(s, ctx, &format!("Delete {}", self.name), |doc, _| {
+        // Drawing dimensions this delete leaves without their edge (dogfooding F5-8).
+        let before = drawing::dangling_dims(s, &ctx.actor);
+        let r = edit(s, ctx, &format!("Delete {}", self.name), |doc, _| {
             let i = doc
                 .feature_index(&self.name)
                 .ok_or_else(|| CommandError::not_found(format!("no feature '{}'", self.name)))?;
@@ -2219,7 +2221,9 @@ impl Command for FeatureDelete {
             }
             doc.features.remove(i);
             Ok(json!({}))
-        })
+        })?;
+        let new: Vec<String> = drawing::dangling_dims(s, &ctx.actor).difference(&before).cloned().collect();
+        Ok(if new.is_empty() { r } else { merge(r, json!({ "dangling_dimensions": new })) })
     }
 }
 

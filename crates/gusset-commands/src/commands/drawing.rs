@@ -830,6 +830,19 @@ fn sheet_check(
     Err(CommandError::args(after).hint("nothing was changed"))
 }
 
+/// `drawing/dimension` for every dimension of `actor`'s drawings that does not measure.
+pub(crate) fn dangling_dims(s: &mut Session, actor: &Actor) -> std::collections::BTreeSet<String> {
+    let names: Vec<String> =
+        s.document(actor).map(|d| d.drawings.iter().map(|d| d.name.clone()).collect()).unwrap_or_default();
+    let mut out = std::collections::BTreeSet::new();
+    for n in names {
+        if let Ok(sc) = drawing_scene(s, actor, &n) {
+            out.extend(sc.dims.iter().filter(|d| d.error.is_some()).map(|d| format!("{n}/{}", d.name)));
+        }
+    }
+    out
+}
+
 pub fn drawing_scene(s: &mut Session, actor: &Actor, name: &str) -> Result<gusset_drawing::Scene, CommandError> {
     let doc = s.document(actor)?;
     let d = doc
