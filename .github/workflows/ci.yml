@@ -36,7 +36,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The fuzz crate is outside the workspace (fuzz-miri.yml runs it on nightly);
@@ -62,7 +62,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.name }}
       - name: Install a software Vulkan/GL adapter (renderer GPU golden tests)
@@ -162,7 +162,7 @@ jobs:
           # Windows test executables find the DLLs through PATH (dev/CI only; the
           # shipped app loads them by absolute path, ADR 0008).
           echo "$RUNNER_TEMP/occt-install/bin" >> "$GITHUB_PATH"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: occt-${{ matrix.name }}
       - run: cargo clippy -p gusset-occt-sys -p gusset-kernel-occt -p gusset-cli -p gusset-worker -p gusset-kernel-worker --all-targets --locked -- -D warnings
