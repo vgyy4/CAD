@@ -1,0 +1,60 @@
+name: OCCT header drafts
+
+# Mechanical drafts of OCCT's headers (ADR 0025): class layouts as structs, enums and the
+# inline methods of .hxx/.lxx/.gxx files, with crates/occt-port/tools/cxx2rs.py; the .cxx
+# bodies come from the "OCCT drafts" workflow. One job per toolkit, results as artifacts. No secrets and no models are used; drafts are
+# reviewed and finished against the judges before anything is merged.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/new-session-nedlj5]
+    paths:
+      - .github/workflows/occt-header-drafts.yml
+      - crates/occt-port/tools/cxx2rs.py
+      - crates/occt-port/tools/draft-toolkit.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: occt-header-drafts
+  cancel-in-progress: true
+
+jobs:
+  draft:
+    name: header drafts (${{ matrix.toolkit }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every toolkit Gusset links (gusset-occt-sys) plus ones it could use (helix, mesh
+        # formats). Not drafted: TKernel (mapped to std), visualization, Draw, OCAF storage.
+        toolkit: [TKMath, TKG2d, TKG3d, TKGeomBase, TKBRep, TKGeomAlgo, TKTopAlgo, TKPrim,
+                  TKBO, TKBool, TKFillet, TKOffset, TKMesh, TKShHealing, TKXSBase, TKDESTEP,
+                  TKFeat, TKHLR, TKDE, TKDEIGES, TKXCAF, TKCAF, TKCDF, TKLCAF, TKVCAF,
+                  TKHelix, TKDEGLTF, TKDEOBJ, TKDEPLY, TKDESTL, TKDEVRML, TKRWMesh]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: OCCT source and generated headers (configure only, no build)
+        run: |
+          . deps/occt/occt.env
+          git clone --quiet --depth 1 --branch "$OCCT_TAG" "$OCCT_REPO" "$RUNNER_TEMP/occt"
+          test "$(git -C "$RUNNER_TEMP/occt" rev-parse HEAD)" = "$OCCT_COMMIT"
+          for p in deps/occt/patches/*.patch; do if [ -e "$p" ]; then git -C "$RUNNER_TEMP/occt" apply "$PWD/$p"; fi; done
+          cmake -S "$RUNNER_TEMP/occt" -B "$RUNNER_TEMP/occt-build" -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_MODULE_Draw=OFF -DBUILD_MODULE_Visualization=OFF -DUSE_TK=OFF -DUSE_FREETYPE=OFF \
+            -DUSE_OPENGL=OFF -DUSE_XLIB=OFF -DBUILD_DOC_Overview=OFF > /dev/null
+      - name: Draft
+        run: |
+          timeout 330m crates/occt-port/tools/draft-toolkit.sh "$RUNNER_TEMP/occt" \
+            "$RUNNER_TEMP/occt-build/include/opencascade" "${{ matrix.toolkit }}" "drafts/${{ matrix.toolkit }}" 4 headers \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: header-drafts-${{ matrix.toolkit }}
+          path: drafts/${{ matrix.toolkit }}
+          retention-days: 90

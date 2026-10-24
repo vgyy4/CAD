@@ -27,8 +27,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every toolkit Gusset links (gusset-occt-sys) plus ones it could use (helix, mesh
+        # formats). Not drafted: TKernel (mapped to std), visualization, Draw, OCAF storage.
         toolkit: [TKMath, TKG2d, TKG3d, TKGeomBase, TKBRep, TKGeomAlgo, TKTopAlgo, TKPrim,
-                  TKBO, TKBool, TKFillet, TKOffset, TKMesh, TKShHealing, TKXSBase, TKDESTEP]
+                  TKBO, TKBool, TKFillet, TKOffset, TKMesh, TKShHealing, TKXSBase, TKDESTEP,
+                  TKFeat, TKHLR, TKDE, TKDEIGES, TKXCAF, TKCAF, TKCDF, TKLCAF, TKVCAF,
+                  TKHelix, TKDEGLTF, TKDEOBJ, TKDEPLY, TKDESTL, TKDEVRML, TKRWMesh]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

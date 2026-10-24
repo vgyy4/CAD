@@ -381,6 +381,25 @@ def class_of(d):
     return d['mangledName'][start:start + int(m.group(1))]
 
 
+def record(d):
+    """A class's data members as a Rust struct; bases and nested types become comments."""
+    bases = ', '.join(b.get('type', {}).get('qualType', '?') for b in d.get('bases', []))
+    lines = [f'// {d.get("tagUsed", "class")} {d["name"]}' + (f' : {bases}' if bases else '')]
+    fields = [c for c in d.get('inner', []) if c.get('kind') == 'FieldDecl']
+    lines.append('#[derive(Debug, Clone, Default)]')
+    lines.append(f'pub struct {rust_type(d["name"])} {{')
+    for f in fields:
+        lines.append(f'    pub {snake(f.get("name", "_"))}: {rust_type(f["type"]["qualType"])},')
+    lines.append('}\n')
+    return '\n'.join(lines)
+
+
+def enum(d):
+    names = [c['name'] for c in d.get('inner', []) if c.get('kind') == 'EnumConstantDecl']
+    body = ''.join(f'    {n},\n' for n in names)
+    return f'#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum {rust_type(d["name"])} {{\n{body}}}\n'
+
+
 def main():
     ast, src = sys.argv[1], sys.argv[2]
     names = {}
@@ -400,7 +419,23 @@ def main():
             walk(c)
     for d in all_decls:
         walk(d)
+    types = []
     for d in all_decls:
+        if d.get('kind') == 'CXXRecordDecl' and d.get('completeDefinition') and d.get('name'):
+            cls = d['name']
+            types.append(record(d))
+            # Methods defined inside the class body (the inline code of headers).
+            for c in d.get('inner', []):
+                if c.get('kind') in ('CXXMethodDecl', 'CXXConstructorDecl') and not c.get('isImplicit') \
+                        and not c.get('name', '').startswith(('operator new', 'operator delete')):
+                    r = tx.function(c, cls)
+                    if r and c['id'] not in seen:
+                        seen.add(c['id'])
+                        out.append((cls, r))
+            continue
+        if d.get('kind') == 'EnumDecl' and d.get('name'):
+            types.append(enum(d))
+            continue
         if d.get('kind') not in ('FunctionDecl', 'CXXMethodDecl', 'CXXConstructorDecl'):
             continue
         loc = d.get('loc', {})
@@ -412,7 +447,7 @@ def main():
             seen.add(d['id'])
             out.append((cls, r))
     # Free functions first, then one impl block per class, in source order.
-    blocks = [r for c, r in out if c is None]
+    blocks = types + [r for c, r in out if c is None]
     classes = []
     for c, _ in out:
         if c is not None and c not in classes:
