@@ -40,7 +40,7 @@ Codex keeps small mechanical edits.
 |---|---|---|---|
 | TKernel | 19 | 132 k | mapped to Rust std (no literal translation) |
 | TKMath | 22 | 138 k | in progress (below) |
-| TKG2d | 7 | 23 k | — |
+| TKG2d | 7 | 23 k | Geom2d (+ Geom2dEval representations) done: 71 families, 1,278 oracle lines, 34,762 of 34,863 values bit-identical (worst 64 ulps); first class hierarchy (traits + `Arc<dyn Curve2d>`); 2D BSplCLib forms in `bsplclib::curve2d` |
 | TKG3d | 9 | 70 k | — |
 | TKGeomBase | 28 | 317 k | — |
 | TKBRep | 11 | 90 k | — |

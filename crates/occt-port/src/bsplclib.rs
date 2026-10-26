@@ -7,6 +7,7 @@ use crate::mathlin::MathError;
 use crate::plib::PLibError;
 
 pub(crate) mod basis;
+pub mod curve2d;
 pub(crate) mod flat;
 pub(crate) mod knotops;
 pub(crate) mod util;
