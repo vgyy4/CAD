@@ -114,7 +114,7 @@ Phase 3 has started (see Next).
      judged bit for bit against the C++ original by oracle programs; the LGPL port may
      only link into the kernel worker. Pilots done (gp subset, ElCLib, BSplCLib curve
      evaluation), math linear algebra, all of gp, ElSLib and the rest of ElCLib, PLib, BSplSLib (and the BSplCLib parts it needs); CSLib / Convert next; now translating TKMath package by package with Codex (GPT-6 Luna,
-     high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md.
+     high effort): oracle job, translation job, review. Status: crates/occt-port/STATUS.md. Mechanical cxx2rs drafts of all 32 toolkits Gusset links or could use (sources and headers) come from the GitHub workflows "OCCT drafts" / "OCCT header drafts" (no models, no secrets); each package is still judged, finished and reviewed in order (Geom2d next).
      2026-10-14: Codex reached its usage limit (until 2026-10-24) and Gemini CLI still
      refuses the account's tier, so math (linear algebra) and gp 3D continue with Sonnet
      subagents under the same judge rules; Codex takes the simple packages again after.
