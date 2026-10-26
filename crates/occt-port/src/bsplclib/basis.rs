@@ -3,7 +3,7 @@
 #![allow(clippy::float_cmp, clippy::too_many_arguments)]
 
 use super::BSplError;
-use super::flat::locate_parameter_range;
+use super::flat::locate_parameter_range_lenient;
 use super::util::{R, filled, ix, len_ix, rd, wr};
 use crate::gp;
 use crate::mathlin::Matrix;
@@ -26,7 +26,7 @@ fn eval_basis_core(
     let order = ix(order);
     let local_request = if ix(derivative_request) >= order { order - 1 } else { ix(derivative_request) };
     let num_poles = len_ix(flat_knots) - order;
-    let (ii, _new_param) = locate_parameter_range(
+    let (ii, _new_param) = locate_parameter_range_lenient(
         super::util::to_i32(order - 1)?,
         flat_knots,
         parameter,
@@ -93,10 +93,7 @@ fn eval_basis_core(
     Ok((0, first_non_zero))
 }
 
-/// `BSplCLib::EvalBsplineBasis(DerivativeRequest, Order, FlatKnots, Parameter, FirstNonZeroBsplineIndex,
-/// BsplineBasis, isPeriodic)`: returns the error code (0, 1 for a matrix whose bounds do not fit, 2 for a knot
-/// interval shorter than `gp::resolution()`) and the first non-zero B-spline index (0 for code 1). `basis` is
-/// updated in place.
+/// `BSplCLib::EvalBsplineBasis` (flat knots shorter than twice the order are unchecked: `Err`).
 pub fn eval_bspline_basis(
     derivative_request: i32,
     order: i32,
@@ -105,7 +102,26 @@ pub fn eval_bspline_basis(
     is_periodic: bool,
     basis: &mut Matrix,
 ) -> R<(i32, i32)> {
-    if order < 1 || derivative_request < 0 || (flat_knots.len() as i64) < 2 * i64::from(order) {
+    if (flat_knots.len() as i64) < 2 * i64::from(order) {
+        return Err(BSplError::OutOfRange);
+    }
+    eval_bspline_basis_lenient(derivative_request, order, flat_knots, parameter, is_periodic, basis)
+}
+
+/// The same for a surface direction with a single parameter, whose flat knots can be shorter than `2 * order`.
+/// `BSplCLib::EvalBsplineBasis(DerivativeRequest, Order, FlatKnots, Parameter, FirstNonZeroBsplineIndex,
+/// BsplineBasis, isPeriodic)`: returns the error code (0, 1 for a matrix whose bounds do not fit, 2 for a knot
+/// interval shorter than `gp::resolution()`) and the first non-zero B-spline index (0 for code 1). `basis` is
+/// updated in place.
+pub(crate) fn eval_bspline_basis_lenient(
+    derivative_request: i32,
+    order: i32,
+    flat_knots: &[f64],
+    parameter: f64,
+    is_periodic: bool,
+    basis: &mut Matrix,
+) -> R<(i32, i32)> {
+    if order < 1 || derivative_request < 0 {
         return Err(BSplError::OutOfRange);
     }
     let local_request = if derivative_request >= order { order - 1 } else { derivative_request };

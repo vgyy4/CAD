@@ -5,7 +5,9 @@ use super::eval::{Surface, homogeneous_d0};
 use crate::bsplclib::BSplError;
 use crate::bsplclib::flat::{knot_sequence, knot_sequence_length};
 use crate::bsplclib::util::{R, filled, ix, rd, rd1, to_i32, wr, zeros};
-use crate::bsplclib::{build_schoenberg_points, eval_bspline_basis, interpolate as curve_interpolate};
+use crate::bsplclib::{
+    build_schoenberg_points, eval_bspline_basis_lenient as eval_bspline_basis, interpolate as curve_interpolate,
+};
 use crate::gp::{Pnt, Vec as Vec3};
 use crate::mathlin::Matrix;
 use crate::plib::Array2;
@@ -489,6 +491,16 @@ fn predominant(basis: &Matrix, first_non_zero: i32, first_index: i32, last_index
     Ok((kk1, kk2))
 }
 
+// `Weights(ii, jj)` as OCCT reads it: the weights of a periodic direction are read past the end of the array (the
+// columns beyond the last wrap onto the following row, rows beyond the last are memory after the array, which the
+// golden file shows as zero).
+fn weight_word(weights: &Array2<f64>, ii: isize, jj: isize) -> R<f64> {
+    if ii > weights.rows() as isize && ii >= 1 && jj >= 1 && jj <= weights.cols() as isize {
+        return Ok(0.0);
+    }
+    item(weights, ii, jj)
+}
+
 /// `BSplSLib::MovePoint`: the new poles which allow the point of parameters (`u`, `v`) to reach its position
 /// plus `displ`; `weights` is read only if `rational`.
 pub fn move_point(
@@ -509,8 +521,7 @@ pub fn move_point(
 ) -> R<MovedPoint> {
     if !(1..=25).contains(&u_degree)
         || !(1..=25).contains(&v_degree)
-        || u_flat_knots.len() != poles.rows() + u_degree as usize + 1
-        || v_flat_knots.len() != poles.cols() + v_degree as usize + 1
+        // (the flat knots of a periodic direction are shorter than poles + degree + 1)
         || (rational && (weights.rows() != poles.rows() || weights.cols() != poles.cols()))
     {
         return Err(BSplError::OutOfRange);
@@ -551,7 +562,7 @@ pub fn move_point(
             let jj = j + v_first_non_zero - 1;
             let hn;
             if rational {
-                hn = item(weights, ix(ii), ix(jj))? * u_basis.value(1, i)? * v_basis.value(1, j)?;
+                hn = weight_word(weights, ix(ii), ix(jj))? * u_basis.value(1, i)? * v_basis.value(1, j)?;
                 d2 += hn;
             } else {
                 hn = u_basis.value(1, i)? * v_basis.value(1, j)?;

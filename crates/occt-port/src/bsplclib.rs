@@ -8,10 +8,12 @@ use crate::plib::PLibError;
 
 pub(crate) mod basis;
 pub mod curve2d;
+pub mod curve3d;
 pub(crate) mod flat;
 pub(crate) mod knotops;
 pub(crate) mod util;
 
+pub(crate) use basis::eval_bspline_basis_lenient;
 pub use basis::{build_schoenberg_points, eval_bspline_basis, interpolate};
 pub use flat::{
     bohm_buffer, build_knots, eval_buffer, knot_sequence, knot_sequence_length, locate_parameter_flat,

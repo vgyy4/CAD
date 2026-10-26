@@ -14,6 +14,7 @@ pub mod convert;
 pub mod cslib;
 pub mod elclib;
 pub mod elslib;
+pub mod geom;
 pub mod geom2d;
 pub mod gp;
 pub mod math1d;

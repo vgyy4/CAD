@@ -43,7 +43,7 @@ pub(crate) fn check_structure(degree: i32, periodic: bool, knots: &[f64], mults:
         }
         let first = first_u_knot_index(degree, mults)?;
         let last = last_u_knot_index(degree, mults)?;
-        if first < 1 || ix(last) > len_ix(knots) || first >= last {
+        if first < 1 || ix(last) > len_ix(knots) || first > last {
             return Err(BSplError::OutOfRange);
         }
     }

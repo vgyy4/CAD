@@ -437,7 +437,8 @@ pub fn locate_parameter_flat(degree: i32, knots: &[f64], u: f64, periodic: bool,
     locate_parameter_opt(degree, knots, None, u, periodic, knot_index)
 }
 
-/// `BSplCLib::LocateParameter(Degree, Knots, U, IsPeriodic, FromK1, ToK2, KnotIndex, NewU)`.
+/// `BSplCLib::LocateParameter(Degree, Knots, U, Periodic, FromK1, ToK2, KnotIndex, NewU)`; equal bounds are unchecked
+/// (`Err`) here, see [`locate_parameter_range_lenient`].
 pub fn locate_parameter_range(
     degree: i32,
     knots: &[f64],
@@ -446,13 +447,23 @@ pub fn locate_parameter_range(
     from_k1: i32,
     to_k2: i32,
 ) -> R<(i32, f64)> {
+    if from_k1 == to_k2 {
+        return Err(BSplError::OutOfRange);
+    }
+    locate_parameter_range_lenient(degree, knots, u, periodic, from_k1, to_k2)
+}
+
+/// The same with equal bounds allowed (`EvalBsplineBasis` of a surface direction with a single parameter).
+pub(crate) fn locate_parameter_range_lenient(
+    degree: i32,
+    knots: &[f64],
+    u: f64,
+    periodic: bool,
+    from_k1: i32,
+    to_k2: i32,
+) -> R<(i32, f64)> {
     let n = len_ix(knots);
-    if degree < 0
-        || n < ix(degree) + 1
-        || !(1..=n).contains(&ix(from_k1))
-        || !(1..=n).contains(&ix(to_k2))
-        || from_k1 == to_k2
-    {
+    if degree < 0 || n < ix(degree) + 1 || !(1..=n).contains(&ix(from_k1)) || !(1..=n).contains(&ix(to_k2)) {
         return Err(BSplError::OutOfRange);
     }
     if periodic {
