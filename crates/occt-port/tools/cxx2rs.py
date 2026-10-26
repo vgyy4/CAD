@@ -216,7 +216,52 @@ class Tx:
             return f'{args[0]} {op} {args[1]}'
         if op == '()' or op == '[]':
             return f'{args[0]}[{", ".join(args[1:])}]'
+        # Handles and iterators: `h->M()` is a method call through the Arc (auto-deref).
+        if op == '->' and len(args) == 1:
+            return args[0]
+        if op == '*' and len(args) == 1:
+            return f'(*{args[0]})'
+        if op in ('==', '!=', '<', '>', '<=', '>=', '|', '&', '^=', '|=', '&=') and len(args) == 2:
+            return f'{args[0]} {op} {args[1]}'
+        if op == '!' and len(args) == 1:
+            return f'!{args[0]}'
+        if op in ('++', '--') and len(args) >= 1:
+            return f'{args[0]}.{"next" if op == "++" else "prev"}()'
+        # Streams (Standard_OStream, Message_Messenger): `s << a << b` chains left to right.
+        if op == '<<' and len(args) == 2:
+            return f'{args[0]}.put(&{args[1]})'
+        if op == '>>' and len(args) == 2:
+            return f'{args[0]}.get(&mut {args[1]})'
         return self.todo_expr(n, f'operator{op}')
+
+    def x_StringLiteral(self, n, inner):
+        return n.get('value', '""')
+
+    def x_CharacterLiteral(self, n, inner):
+        return f'{n.get("value", 0)}u8'
+
+    def x_GNUNullExpr(self, n, inner):
+        return 'None'
+
+    def x_CXXDefaultInitExpr(self, n, inner):
+        return 'Default::default()'
+
+    def x_CXXConstCastExpr(self, n, inner):
+        return self.e(inner[0]) if inner else self.todo_expr(n)
+
+    def x_CXXNewExpr(self, n, inner):
+        # `new T(args)` assigned to a Handle(T): a shared allocation.
+        if n.get('isArray') or not inner:
+            return self.todo_expr(n, 'array new')
+        return f'Arc::new({self.e(inner[-1])})'
+
+    def x_UnaryExprOrTypeTraitExpr(self, n, inner):
+        if n.get('name') == 'sizeof':
+            if 'argType' in n:
+                return f'std::mem::size_of::<{rust_type(n["argType"]["qualType"])}>()'
+            if inner:
+                return f'std::mem::size_of_val(&{self.e(inner[0])})'
+        return self.todo_expr(n, n.get('name', ''))
 
     def x_CXXConstructExpr(self, n, inner):
         t = rust_type(n['type']['qualType'])
@@ -244,6 +289,8 @@ class Tx:
         if k == 'DeclStmt':
             out = ''
             for v in inner:
+                if v.get('kind') == 'StaticAssertDecl':
+                    continue
                 if v.get('kind') != 'VarDecl':
                     out += f'{p}{self.todo_expr(v)};\n'
                     continue
@@ -287,10 +334,63 @@ class Tx:
             return f'{p}continue;\n'
         if k == 'NullStmt':
             return ''
+        if k == 'StaticAssertDecl':
+            return ''
         if k == 'SwitchStmt':
-            self.todo += 1
-            return f'{p}todo!("switch on {self.e(inner[0])}");\n'
+            return self.switch(n, ind)
         return f'{p}{self.e(n)};\n'
+
+    def switch(self, n, ind):
+        """A C++ switch as a `match`: consecutive labels share an arm, `break` ends one; an
+        arm that falls through into the next is marked with todo!."""
+        p = '    ' * ind
+        inner = n.get('inner', [])
+        body = inner[-1].get('inner', []) if inner and inner[-1].get('kind') == 'CompoundStmt' else []
+        arms = []          # [patterns, statements, ended]
+
+        def label(x):
+            # Unwraps nested labels (`case A: case B: stmt`) into patterns plus a statement.
+            pats = []
+            while x.get('kind') in ('CaseStmt', 'DefaultStmt'):
+                ci = x.get('inner', [])
+                if x['kind'] == 'CaseStmt':
+                    pats.append(self.e(ci[0]) if ci else '_')
+                    x = ci[-1] if len(ci) > 1 else {}
+                else:
+                    pats.append('_')
+                    x = ci[0] if ci else {}
+            return pats, x
+
+        for x in body:
+            if x.get('kind') in ('CaseStmt', 'DefaultStmt'):
+                pats, st = label(x)
+                if arms and not arms[-1][1] and not arms[-1][2]:
+                    arms[-1][0] += pats
+                else:
+                    if arms and arms[-1][1] and not arms[-1][2]:
+                        self.todo += 1
+                        arms[-1][1].append(f'{p}        todo!("switch fallthrough");\n')
+                    arms.append([pats, [], False])
+                x = st
+                if not x.get('kind'):
+                    continue
+            if not arms:
+                continue
+            if x.get('kind') == 'BreakStmt':
+                arms[-1][2] = True
+                continue
+            arms[-1][1].append(self.s(x, ind + 2))
+            if x.get('kind') == 'ReturnStmt':
+                arms[-1][2] = True
+        out = f'{p}match {self.e(inner[0])} {{\n'
+        has_default = False
+        for pats, sts, _ in arms:
+            if '_' in pats:
+                pats, has_default = ['_'], True
+            out += f'{p}    {" | ".join(pats)} => {{\n{"".join(sts)}{p}    }}\n'
+        if not has_default:
+            out += f'{p}    _ => {{}}\n'
+        return out + f'{p}}}\n'
 
     # ---------------------------------------------------------------- functions
     def function(self, n, cls):

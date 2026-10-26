@@ -16,6 +16,15 @@ operations (what bit-identity rests on) and marking what it cannot translate wit
 `todo!`. No tokens, seconds per file: ElCLib's 66 functions come out with no gaps;
 math_FunctionRoots with 21. The translating agent starts from the draft and only fixes
 the marked spots, overload names (from the API doc) and ownership.
+
+Drafts of everything Gusset links (2026-10-24/26): the GitHub workflows "OCCT drafts" and
+"OCCT header drafts" run `tools/draft-toolkit.sh` over 32 toolkits (no network, no models;
+artifacts kept 90 days). First run: 4,744 `.cxx` and about 5,000 headers, 938 k draft lines,
+55,941 functions, 59 % without a `todo!`. Then cxx2rs learned handle `->`, streams,
+comparisons, strings, `new`, `sizeof` and `switch` (most of the 115 k gaps; `GeomAdaptor`
+headers went from 199 to 6), and header units include the source-tree header with a stream
+prelude, falling back to the package's `.cxx` (IGES headers no longer fail), with the
+toolkit's own directories on the include path (glTF drafts now).
 Measured on mathnd (12 files, about 4,000 C++ lines; drafts with 223 `todo!`s): three
 Codex runs (about 0.7 M tokens) stopped early with the judge still failing (the general
 `FunctionSetRoot`, and Powell/FRPR/BFGS with wrong update orders); a Sonnet agent then
