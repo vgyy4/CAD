@@ -149,6 +149,8 @@ class Tx:
             return f'*{v}'
         if op == '&':
             return f'&{v}'
+        if op == '~':
+            return f'!{v}'
         return self.todo_expr(n, op)
 
     def x_BinaryOperator(self, n, inner):
@@ -234,6 +236,23 @@ class Tx:
             return f'{args[0]}.get(&mut {args[1]})'
         return self.todo_expr(n, f'operator{op}')
 
+    def x_InitListExpr(self, n, inner):
+        return f'[{", ".join(self.e(x) for x in inner)}]'
+
+    def x_CXXDeleteExpr(self, n, inner):
+        return f'drop({self.e(inner[0])})' if inner else self.todo_expr(n)
+
+    def x_LambdaExpr(self, n, inner):
+        # The closure body is the last CompoundStmt; its parameters are on the call operator.
+        cls = next((x for x in inner if x.get('kind') == 'CXXRecordDecl'), {})
+        op = next((x for x in cls.get('inner', []) if x.get('kind') == 'CXXMethodDecl'), {})
+        ps = [f'{snake(x.get("name", "_"))}: {rust_type(x["type"]["qualType"])}'
+              for x in op.get('inner', []) if x.get('kind') == 'ParmVarDecl']
+        body = next((x for x in reversed(inner) if x.get('kind') == 'CompoundStmt'), None)
+        if body is None:
+            return self.todo_expr(n)
+        return f'|{", ".join(ps)}| {{\n{self.s(body, 2)}    }}'
+
     def x_StringLiteral(self, n, inner):
         return n.get('value', '""')
 
@@ -291,6 +310,10 @@ class Tx:
             for v in inner:
                 if v.get('kind') == 'StaticAssertDecl':
                     continue
+                if v.get('kind') in ('TypeAliasDecl', 'TypedefDecl'):
+                    under = v.get('type', {}).get('qualType', '?')
+                    out += f'{p}type {v.get("name", "T")} = {rust_type(under)};\n'
+                    continue
                 if v.get('kind') != 'VarDecl':
                     out += f'{p}{self.todo_expr(v)};\n'
                     continue
@@ -336,6 +359,22 @@ class Tx:
             return ''
         if k == 'StaticAssertDecl':
             return ''
+        if k == 'CXXForRangeStmt':
+            loopvar = [x for x in inner if x.get('kind') == 'DeclStmt']
+            name = '_'
+            if loopvar:
+                v = loopvar[-1].get('inner', [{}])[0]
+                name = snake(v.get('name', '_'))
+            rng = next((x for x in inner if x.get('kind') == 'DeclStmt'), None)
+            src = self.e(rng['inner'][0]['inner'][0]) if rng and rng.get('inner') and rng['inner'][0].get('inner') else 'todo!("range")'
+            body = inner[-1]
+            return f'{p}for {name} in {src}.iter() {{\n{self.s(body, ind + 1)}{p}}}\n'
+        if k == 'CXXTryStmt':
+            # The try body runs as is; handlers become comments for the reviewer.
+            out = f'{p}// try {{\n' + self.s(inner[0], ind) if inner else ''
+            for h in inner[1:]:
+                out += f'{p}// catch: {h.get("inner", [{}])[0].get("type", {}).get("qualType", "...")} (handler not translated)\n'
+            return out
         if k == 'SwitchStmt':
             return self.switch(n, ind)
         return f'{p}{self.e(n)};\n'
@@ -361,6 +400,16 @@ class Tx:
                     x = ci[0] if ci else {}
             return pats, x
 
+        def ends(x):
+            # True when control cannot fall through: return, throw, continue, or a block
+            # whose last statement ends.
+            k = x.get('kind')
+            if k in ('ReturnStmt', 'ContinueStmt', 'CXXThrowExpr', 'GotoStmt'):
+                return True
+            if k in ('ExprWithCleanups', 'CompoundStmt') and x.get('inner'):
+                return ends(x['inner'][-1])
+            return False
+
         for x in body:
             if x.get('kind') in ('CaseStmt', 'DefaultStmt'):
                 pats, st = label(x)
@@ -379,8 +428,14 @@ class Tx:
             if x.get('kind') == 'BreakStmt':
                 arms[-1][2] = True
                 continue
+            if x.get('kind') == 'CompoundStmt' and x.get('inner') and x['inner'][-1].get('kind') == 'BreakStmt':
+                # `case A: { ...; break; }`: the block's own break ends the arm.
+                x = dict(x, inner=x['inner'][:-1])
+                arms[-1][1].append(self.s(x, ind + 2))
+                arms[-1][2] = True
+                continue
             arms[-1][1].append(self.s(x, ind + 2))
-            if x.get('kind') == 'ReturnStmt':
+            if ends(x):
                 arms[-1][2] = True
         out = f'{p}match {self.e(inner[0])} {{\n'
         has_default = False
@@ -393,7 +448,11 @@ class Tx:
         return out + f'{p}}}\n'
 
     # ---------------------------------------------------------------- functions
+    RTTI = ('get_type_name', 'get_type_descriptor', 'DynamicType')
+
     def function(self, n, cls):
+        if n.get('name') in self.RTTI:
+            return None
         params = [x for x in n.get('inner', []) if x.get('kind') == 'ParmVarDecl']
         body = [x for x in n.get('inner', []) if x.get('kind') == 'CompoundStmt']
         if not body:
