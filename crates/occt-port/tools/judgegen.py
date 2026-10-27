@@ -2855,7 +2855,8 @@ use occt_port::plib::Array2;'''
 
 
 def mname(word):
-    return re.sub(r'[^A-Za-z0-9]', '_', word).lower()
+    # Nested names (`Class::Enum`) would leave `__`, which rustc's snake-case lint rejects.
+    return re.sub(r'_+', '_', re.sub(r'[^A-Za-z0-9]', '_', word)).lower()
 
 
 # --------------------------------------------------------------------------------------------------------------
