@@ -419,6 +419,9 @@ class Cls:
         self.in_pkg_name = (self.name == pkg)
 
 
+EXTRA_INC = []     # -I<package source dir>: public headers may include the package's private .pxx files
+
+
 def collect(pkg, headers_dir, occt, tmpdir):
     """Dump the AST of all headers of the package and build the model."""
     inc = os.path.join(occt, 'include', 'opencascade')
@@ -431,7 +434,7 @@ def collect(pkg, headers_dir, occt, tmpdir):
             f.write('#include <%s>\n' % h)
     jpath = os.path.join(tmpdir, 'ast.json')
     with open(jpath, 'w') as out:
-        r = subprocess.run(['clang++', '-std=c++17', '-fsyntax-only', '-I' + inc, '-Xclang', '-ast-dump=json', probe],
+        r = subprocess.run(['clang++', '-std=c++17', '-fsyntax-only', '-I' + inc] + EXTRA_INC + ['-Xclang', '-ast-dump=json', probe],
                            stdout=out, stderr=subprocess.PIPE, text=True)
     if os.path.getsize(jpath) < 1000:
         sys.exit('clang failed:\n' + r.stderr[-2000:])
@@ -1080,7 +1083,9 @@ static void h(double v) {
 static void in(long v) { buf += " " + std::to_string(v); ++ntok; }
 static void ob(bool v) { in(v ? 1 : 0); }
 static void ox() { buf += " x"; ++ntok; }   // a getter of an object's snapshot that raised
+static int g_nested = 0;   // > 0 while the sub-words of an obj_<Class> word are printed (only the obj word is recorded)
 static void word(const std::string& w, int start, int expect) {
+  if (g_nested) return;
   got_words.push_back(w);
   if (expect >= 0 && ntok - start != expect) {
     std::fprintf(stderr, "word %s printed %d tokens, expected %d in %s\n", w.c_str(), ntok - start, expect, cur_name.c_str());
@@ -1231,24 +1236,11 @@ static bool lines_close(const std::string& x, const std::string& y, double ulps)
   }
   return true;
 }
-// a call that may crash (it reads uninitialised memory): run it once in a child process first
-static bool survives(const std::function<void()>& body) {
-  fflush(stdout); fflush(stderr);
-  pid_t p = fork();
-  if (p == 0) {
-    signal(SIGSEGV, SIG_DFL); signal(SIGABRT, SIG_DFL); signal(SIGFPE, SIG_DFL);
-    alarm(3); mallopt(M_PERTURB, 0x6b); poison_stack(7); g_run_k = 7;
-    try { body(); } catch (Standard_Failure&) {} catch (Discard&) {} catch (std::exception&) {}
-    _exit(0);
-  }
-  int st = 0; waitpid(p, &st, 0);
-  return WIFEXITED(st) && WEXITSTATUS(st) == 0;
-}
-static bool emit(const std::function<void()>& body) {
-  if (!survives(body)) { fam_dropped[cur_name]++; buf.clear(); return false; }
+// Everything that executes the library runs in a forked child: a call that reads uninitialised memory or writes outside its
+// objects may crash (or corrupt the heap and crash later), and must not take the oracle with it. The child sends the final
+// record (and two flags) through a pipe; a child that crashes, hangs or exits abnormally gives a dropped case.
+static bool emit_core(const std::function<void()>& body, std::string& r1, bool& libm, bool& call_threw) {
   size_t keep_ntok = (size_t)ntok;
-  std::string r1;
-  bool libm = false, call_threw = false;
   for (int k = 0; k < POISON_RUNS; ++k) {
     bool dk = false;
     g_call_threw = false;
@@ -1256,23 +1248,50 @@ static bool emit(const std::function<void()>& body) {
     std::string rk = run_once(body, k, dk);
     if (k == 0) { libm = g_libm != c0; call_threw = g_call_threw; }
     ntok = (int)keep_ntok;
-    if (dk) { fam_dropped[cur_name]++; buf.clear(); return false; }
+    if (dk) return false;
     if (k == 0) r1 = rk;
-    else if (rk != r1) { fam_dropped[cur_name]++; buf.clear(); return false; }
+    else if (rk != r1) return false;
   }
   if (libm) {
-    fam_libm[cur_name] = true;
     for (uint64_t salt = 1; salt <= 24; ++salt) {
       g_perturb = true; g_salt = salt;
       bool dp = false;
       std::string rp = run_once(body, 0, dp);
       g_perturb = false;
       ntok = (int)keep_ntok;
-      if (dp || !lines_close(r1, rp, 2.0)) { fam_dropped[cur_name]++; buf.clear(); return false; }
+      if (dp || !lines_close(r1, rp, 2.0)) return false;
     }
   }
-  buf = r1;
-  g_call_threw = call_threw;
+  return true;
+}
+static bool write_all(int fd, const std::string& msg) {
+  size_t off = 0;
+  while (off < msg.size()) { ssize_t n = write(fd, msg.data() + off, msg.size() - off); if (n <= 0) return false; off += (size_t)n; }
+  return true;
+}
+static bool emit(const std::function<void()>& body) {
+  fflush(stdout); fflush(stderr);
+  int fd[2];
+  if (pipe(fd)) { std::fprintf(stderr, "pipe failed\n"); std::abort(); }
+  pid_t p = fork();
+  if (p == 0) {
+    close(fd[0]);
+    signal(SIGSEGV, SIG_DFL); signal(SIGABRT, SIG_DFL); signal(SIGFPE, SIG_DFL); signal(SIGBUS, SIG_DFL);
+    alarm(60);
+    std::string r1; bool libm = false, threw = false;
+    bool ok = emit_core(body, r1, libm, threw);
+    std::string msg = std::string(ok ? "1" : "0") + (libm ? "1" : "0") + (threw ? "1" : "0") + r1;
+    _exit(write_all(fd[1], msg) ? 0 : 3);
+  }
+  close(fd[1]);
+  std::string msg; char tmp[65536]; ssize_t n;
+  while ((n = read(fd[0], tmp, sizeof tmp)) > 0) msg.append(tmp, (size_t)n);
+  close(fd[0]);
+  int st = 0; waitpid(p, &st, 0);
+  if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0) || msg.size() < 3 || msg[0] != '1') { fam_dropped[cur_name]++; buf.clear(); return false; }
+  if (msg[1] == '1') fam_libm[cur_name] = true;
+  g_call_threw = msg[2] == '1';
+  buf = msg.substr(3);
   finish();
   return true;
 }
@@ -1295,7 +1314,6 @@ struct Cursor {
   const Raw& next() { return b.r.at(i++); }
 };
 static bool variable_word(const std::string& w) { return w == "trsf" || w == "trsf2d" || w.compare(0, 3, "arr") == 0 || w.compare(0, 4, "obj_") == 0; }
-static int g_nested = 0;   // > 0 while the sub-words of an obj_<Class> word are printed (only the obj word is recorded)
 static void pr(const Raw& r) {   // print the raw tokens of one schema word
   int s = ntok;
   for (size_t k = 0; k < r.pat.size(); ++k) { if (r.pat[k] == 'f') h(r.v[k]); else in((long)r.v[k]); }
@@ -1635,14 +1653,21 @@ static int g_probe_j = -1;
 static std::set<std::string> g_inout, g_probe_hits;
 static bool inout_flag(const char* n, int j) { return g_probe || g_inout.count(std::string(n) + ":" + std::to_string(j)) > 0; }
 static bool probe_diff(const std::function<void()>& body, int j) {
-  g_probe_j = -1;
-  if (!survives(body)) return false;
-  bool d1 = false, d2 = false;
-  std::string a = run_once(body, 0, d1);
-  g_probe_j = j;
-  std::string b = run_once(body, 0, d2);
-  g_probe_j = -1;
-  return !d1 && !d2 && a != b;
+  fflush(stdout); fflush(stderr);
+  pid_t p = fork();
+  if (p == 0) {
+    signal(SIGSEGV, SIG_DFL); signal(SIGABRT, SIG_DFL); signal(SIGFPE, SIG_DFL); signal(SIGBUS, SIG_DFL);
+    alarm(20);
+    g_probe_j = -1;
+    bool d1 = false, d2 = false;
+    std::string a = run_once(body, 0, d1);
+    g_probe_j = j;
+    std::string b = run_once(body, 0, d2);
+    g_probe_j = -1;
+    _exit(!d1 && !d2 && a != b ? 2 : 0);
+  }
+  int st = 0; waitpid(p, &st, 0);
+  return WIFEXITED(st) && WEXITSTATUS(st) == 2;
 }
 '''
 
@@ -3437,6 +3462,30 @@ def parse_errors(stderr, cpp_path, ranges, obj_ranges):
     return fams, objs, first
 
 
+class LinkError(Exception):
+    pass
+
+
+def parse_link_errors(stderr, plan_names):
+    """-> (families, classes, symbols) whose code references a symbol the linker cannot find."""
+    fams, objs, syms = set(), set(), set()
+    cur = None
+    for line in stderr.splitlines():
+        mm = re.search(r"in function `(.*)'", line)
+        if mm:
+            cur = mm.group(1)
+        mu = re.search(r"undefined reference to `(.*)'", line)
+        if mu and cur is not None:
+            syms.add(re.sub(r'\(.*$', '', mu.group(1)))
+            mf = re.search(r'\bfam_(\d+)\(\)', cur)
+            mo = re.search(r'\b(?:mk|gen)_obj_(\w+?)\(', cur)
+            if mf and int(mf.group(1)) < len(plan_names):
+                fams.add(plan_names[int(mf.group(1))])
+            elif mo:
+                objs.add(mo.group(1))
+    return fams, objs, syms
+
+
 def read_meta(path):
     meta = {}
     if os.path.exists(path):
@@ -3528,6 +3577,14 @@ def main():
     cxx = os.environ.get('CXX', 'c++')
     state_path = os.path.join(tmp, 'state.json')
 
+    srcroot = args.src or os.environ.get('OCCT_SRC') or os.path.join(os.path.dirname(os.path.abspath(args.occt)), 'occt-src')
+    pkgdir = None
+    for mod_ in sorted(glob.glob(os.path.join(srcroot, 'src', '*', '*', pkg))):
+        if os.path.isdir(mod_):
+            pkgdir = mod_
+            break
+    if pkgdir:
+        EXTRA_INC.append('-I' + pkgdir)
     print('[1/6] reading the AST of package %s' % pkg, flush=True)
     hdrs, decls = collect(pkg, None, args.occt, tmp)
     names = load_names(args.names)
@@ -3555,12 +3612,6 @@ def main():
     src_files = []
     src_skipped = []
     if not args.no_checks:
-        srcroot = args.src or os.path.join(os.path.dirname(os.path.abspath(args.occt)), 'occt-src')
-        pkgdir = None
-        for mod_ in sorted(glob.glob(os.path.join(srcroot, 'src', '*', '*', pkg))):
-            if os.path.isdir(mod_):
-                pkgdir = mod_
-                break
         if pkgdir is None:
             print('WARNING: no source directory for %s under %s: the library is linked as built (checks compiled out)' % (
                 pkg, srcroot), flush=True)
@@ -3614,11 +3665,11 @@ def main():
 
     def compile_run_cpp(path, optimize):
         exe = os.path.join(tmp, 'oracle-bin')
-        cmd = [cxx, '-std=c++17', optimize, '-w', path] + src_objs + ['-I' + inc, '-L' + libdir] + \
+        cmd = [cxx, '-std=c++17', optimize, '-w', path] + src_objs + ['-I' + inc] + EXTRA_INC + ['-L' + libdir] + \
               ['-l' + l for l in args.libs] + ['-ldl', '-o', exe]
         r = run(cmd)
         if r.returncode:
-            sys.exit('oracle does not link:\n' + r.stderr[-3000:])
+            raise LinkError(r.stderr)
         return exe
 
     def run_oracle(exe, env_extra, out_txt, meta_path):
@@ -3652,7 +3703,7 @@ def main():
             enum_hdrs = {e for e in ctx.used_enums if e not in m.enums}
             text, ranges, obj_ranges = build_cpp_full(m, plans, set(excluded), args.cases, set(), hdrs, enum_hdrs)
             open(cpp_path, 'w').write(text)
-            r = run([cxx, '-std=c++17', '-fsyntax-only', '-w', '-I' + inc, cpp_path])
+            r = run([cxx, '-std=c++17', '-fsyntax-only', '-w', '-I' + inc] + EXTRA_INC + [cpp_path])
             if r.returncode == 0:
                 break
             fams, objs, first = parse_errors(r.stderr, cpp_path, ranges, obj_ranges)
@@ -3666,7 +3717,26 @@ def main():
             sys.exit('could not get a compiling oracle')
 
         print('[3/6] exploratory run', flush=True)
-        exe = compile_run_cpp(cpp_path, '-O1')
+        for it in range(12):
+            try:
+                exe = compile_run_cpp(cpp_path, '-O1')
+                break
+            except LinkError as e_:
+                # a method that the headers declare but the library does not define (e.g. AppDef_MultiLine::SetParameter)
+                fams, objs, syms = parse_link_errors(e_.args[0], [p.name for p in plans])
+                if not fams and not objs:
+                    sys.exit('oracle does not link:\n' + e_.args[0][-3000:])
+                for n in fams:
+                    excluded[n] = 'not defined in the OCCT library (declared only: %s)' % ', '.join(sorted(syms))[:160]
+                bad_classes |= objs
+                print('   undefined symbols: excluded %d families, %d classes (%s)' % (
+                    len(fams), len(objs), ', '.join(sorted(syms))[:200]), flush=True)
+                ctx, m, plans, notgen = prepare()
+                enum_hdrs = {e for e in ctx.used_enums if e not in m.enums}
+                text, ranges, obj_ranges = build_cpp_full(m, plans, set(excluded), args.cases, set(), hdrs, enum_hdrs)
+                open(cpp_path, 'w').write(text)
+        else:
+            sys.exit('could not get a linking oracle')
         inout = set()
         if any(p.cands for p in plans if p.name not in excluded):
             probe_out = os.path.join(tmp, 'probe.txt')
@@ -3745,7 +3815,17 @@ def main():
             run_oracle(exe, {}, t1, os.path.join(tmp, 'meta1.tsv'))
             run_oracle(exe, {}, t2, mp)
             if open(t1, 'rb').read() != open(t2, 'rb').read():
-                sys.exit('the oracle output is not deterministic (two runs differ)')
+                l1, l2 = open(t1).read().splitlines(), open(t2).read().splitlines()
+                bad = collections.OrderedDict()
+                for i_ in range(max(len(l1), len(l2))):
+                    a_ = l1[i_] if i_ < len(l1) else ''
+                    b_ = l2[i_] if i_ < len(l2) else ''
+                    if a_ != b_:
+                        bad.setdefault((a_ or b_).split(' ', 1)[0], (i_ + 1, a_, b_))
+                msg = ['the oracle output is not deterministic (two runs differ); families that differ: %s' % ', '.join(bad)]
+                for n_, (i_, a_, b_) in list(bad.items())[:3]:
+                    msg.append('  %s line %d:\n    run 1: %s\n    run 2: %s' % (n_, i_, a_[:300], b_[:300]))
+                sys.exit('\n'.join(msg))
             final_txt = os.path.join(out, 'tests', pmod + '.txt')
             shutil.copyfile(t2, final_txt)
             nlines = sum(1 for _ in open(final_txt))
