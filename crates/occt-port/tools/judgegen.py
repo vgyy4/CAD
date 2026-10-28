@@ -18,8 +18,24 @@ Needs python3 (standard library only), clang++ (for the JSON AST) and a C++ comp
      TColStd arrays of those, out-parameters (non-const references; a scalar one that the call also reads is found by
      *probing* and becomes an in-out parameter) and objects of the package's classes built by a constructor it can drive
      (their state is read back through the zero-argument const getters: the *snapshot*). Everything else (operators,
-     handles, streams, abstract classes, callbacks, pointers, enums with explicit values...) is listed as "not generated"
-     in the API doc, with the reason, for a hand-written family;
+     handles of other kinds, streams, abstract classes, callbacks, pointers, enums with explicit values...) is listed as
+     "not generated" in the API doc, with the reason, for a hand-written family. Also driven:
+       * `Handle(Geom_*)` / `Handle(Geom2d_*)` curves and surfaces (any class of the Geom hierarchy, e.g. Geom_Curve,
+         Geom_BoundedCurve, Geom_Circle, Geom_Surface, Geom_Plane ...) as arguments and results. An argument is a printed
+         *recipe* (the grammar of the reviewed judges tests/geom.rs / tests/geom2d.rs: `kind ctor numbers ...`, recursive for
+         trimmed / offset curves and swept / trimmed / offset surfaces), rebuilt on the Rust side by builders copied from those
+         judges (`mod h3`, `mod h2` of the generated test); a class argument gets a recipe of the kinds the class can have and
+         arrives as `Arc<dyn Curve>` / `Arc<Circle>` ... A result is snapshotted through its evaluation: 1 (0 for a null handle),
+         bounds, periodicity, continuity, EvalD0 and EvalD1 at five parameters (surfaces: bounds, closedness / periodicity,
+         continuity, D0 / D1 at four points), `x` where an evaluation raised;
+       * adaptors: `Adaptor3d_Curve`, `Adaptor2d_Curve2d`, `Adaptor3d_Surface` (also as `Handle`) and `GeomAdaptor_Curve`,
+         `GeomAdaptor_Surface`, `Geom2dAdaptor_Curve` arguments, built from a printed description (use_range, bounds, recipe)
+         on the matching Geom curve / surface; results are snapshotted through the adaptor interface;
+       * `Geom_Curve::ResD1..3` / `Geom_Surface::ResD1..3` (also as `NCollection_Array1/2` of them, e.g. GeomGridEval::CurveD1)
+         and `Geom2dGridEval::CurveD1..3` as results; `Bnd_Box` / `Bnd_Box2d` arguments (a non-const reference is filled by the
+         call and printed afterwards: void flag, the corners, the gap);
+       * "make" classes (gce_Make*, GC_Make*): constructor + the zero-argument getters IsDone / Status / Value of the snapshot;
+         a package that only holds deprecated `using` aliases (GCE2d) says so and lists them;
      The shipped OCCT libraries are built with -DNo_Exception (every `Raise_if` check is compiled out). To get the
      documented behaviour the sources of the package (`--src`, default <occt>/../occt-src) are compiled into the oracle
      WITHOUT that define, so an out-of-range index or a zero divisor raises instead of returning garbage: a `throws`
@@ -120,6 +136,74 @@ def rust_ident(n):
     return n + '_' if n in KEYWORDS else n
 
 
+
+# --------------------------------------------------------------------------------------------------------------
+# handles of Geom_* / Geom2d_* curves and surfaces and the adaptors built from them. A handle argument is a printed
+# *recipe* (the grammar of the reviewed judges tests/geom.rs and tests/geom2d.rs); the Rust harness copies their builders.
+# class -> (family, Rust type inside Arc<..>, recipe kinds the class can have, concrete Rust struct or None)
+_C3 = {'Line': [0], 'Circle': [1], 'Ellipse': [2], 'Hyperbola': [3], 'Parabola': [4], 'BezierCurve': [5], 'BSplineCurve': [6],
+       'TrimmedCurve': [7], 'OffsetCurve': [8]}
+_S3 = {'Plane': [0], 'CylindricalSurface': [1], 'ConicalSurface': [2], 'SphericalSurface': [3], 'ToroidalSurface': [4],
+       'BezierSurface': [5], 'BSplineSurface': [6], 'SurfaceOfLinearExtrusion': [7], 'SurfaceOfRevolution': [8],
+       'RectangularTrimmedSurface': [9], 'OffsetSurface': [10]}
+H_INFO = {}
+for _n, _k in _C3.items():
+    H_INFO['Geom_' + _n] = ('c3', 'occt_port::geom::' + _n, _k, _n)
+    H_INFO['Geom2d_' + _n] = ('c2', 'occt_port::geom2d::' + _n, _k, _n)
+H_INFO['Geom_Curve'] = ('c3', 'dyn occt_port::geom::Curve', list(range(9)), None)
+H_INFO['Geom_BoundedCurve'] = ('c3', 'dyn occt_port::geom::BoundedCurve', [5, 6, 7], 'bounded')
+H_INFO['Geom_Conic'] = ('c3', 'dyn occt_port::geom::Conic', [1, 2, 3, 4], 'conic')
+H_INFO['Geom2d_Curve'] = ('c2', 'dyn occt_port::geom2d::Curve2d', list(range(9)), None)
+H_INFO['Geom2d_BoundedCurve'] = ('c2', 'dyn occt_port::geom2d::BoundedCurve2d', [5, 6, 7], 'bounded')
+H_INFO['Geom2d_Conic'] = ('c2', 'dyn occt_port::geom2d::Conic2d', [1, 2, 3, 4], 'conic')
+for _n, _k in _S3.items():
+    H_INFO['Geom_' + _n] = ('s3', 'occt_port::geom::' + _n, _k, _n)
+H_INFO['Geom_Surface'] = ('s3', 'dyn occt_port::geom::Surface', list(range(11)), None)
+H_INFO['Geom_ElementarySurface'] = ('s3', 'dyn occt_port::geom::ElementarySurface', [0, 1, 2, 3, 4], 'elementary')
+H_INFO['Geom_SweptSurface'] = ('s3', 'dyn occt_port::geom::SweptSurface', [7, 8], 'swept')
+H_INFO['Geom_BoundedSurface'] = ('s3', 'dyn occt_port::geom::BoundedSurface', [5, 6, 9], 'bounded')
+# adaptor class -> (family, Rust type; a trait object for the abstract bases, the struct otherwise, concrete)
+AD_INFO = {
+    'Adaptor3d_Curve': ('ac3', 'dyn occt_port::adaptor3d::Curve3dAdaptor', False),
+    'GeomAdaptor_Curve': ('ac3', 'occt_port::geomadaptor::Curve', True),
+    'Adaptor2d_Curve2d': ('ac2', 'dyn occt_port::adaptor2d::Curve2dAdaptor', False),
+    'Geom2dAdaptor_Curve': ('ac2', 'occt_port::geom2dadaptor::Curve', True),
+    'Adaptor3d_Surface': ('as3', 'dyn occt_port::adaptor3d::SurfaceAdaptor', False),
+    'GeomAdaptor_Surface': ('as3', 'occt_port::geomadaptor::Surface', True),
+}
+
+# Result structs (output only), also as the elements of NCollection arrays: C++ name -> (Rust type, [(C++ field, Rust field, word)])
+STRUCTS = collections.OrderedDict()
+
+
+def _structs():
+    c3 = [('Point', 'point', 'pnt'), ('D1', 'd1', 'vec'), ('D2', 'd2', 'vec'), ('D3', 'd3', 'vec')]
+    c2 = [('Point', 'point', 'pnt2d'), ('D1', 'd1', 'vec2d'), ('D2', 'd2', 'vec2d'), ('D3', 'd3', 'vec2d')]
+    sf = [('Point', 'point', 'pnt'), ('D1U', 'd1u', 'vec'), ('D1V', 'd1v', 'vec'), ('D2U', 'd2u', 'vec'), ('D2V', 'd2v', 'vec'),
+          ('D2UV', 'd2uv', 'vec'), ('D3U', 'd3u', 'vec'), ('D3V', 'd3v', 'vec'), ('D3UUV', 'd3uuv', 'vec'), ('D3UVV', 'd3uvv', 'vec')]
+    for d, nf in ((1, 2), (2, 3), (3, 4)):
+        STRUCTS['Geom_Curve::ResD%d' % d] = ('occt_port::geom::ResD%d' % d, c3[:nf])
+        STRUCTS['Geom2d_Curve::ResD%d' % d] = ('occt_port::geom2d::ResD%d' % d, c2[:nf])
+        STRUCTS['Geom2dGridEval::CurveD%d' % d] = ('occt_port::geom2dgrideval::CurveD%d' % d, c2[:nf])
+    for d, nf in ((1, 3), (2, 6), (3, 10)):
+        STRUCTS['Geom_Surface::ResD%d' % d] = ('occt_port::geom::SurfResD%d' % d, sf[:nf])
+
+
+_structs()
+STRUCT_ALIAS = {'GeomGridEval::CurveD%d' % d: 'Geom_Curve::ResD%d' % d for d in (1, 2, 3)}
+STRUCT_ALIAS.update({'GeomGridEval::SurfD%d' % d: 'Geom_Surface::ResD%d' % d for d in (1, 2, 3)})
+
+
+def struct_of(name):
+    n = STRUCT_ALIAS.get(name, name)
+    return n if n in STRUCTS else None
+
+BX_RS = {'Bnd_Box': 'occt_port::bnd::BndBox', 'Bnd_Box2d': 'occt_port::bnd::BndBox2d'}
+DOMAINS = {'MathUtils::Domain1D': ('occt_port::mathutils::Domain1D', ['min', 'max'], ['Min', 'Max']),
+           'MathUtils::Domain2D': ('occt_port::mathutils::Domain2D', ['umin', 'umax', 'vmin', 'vmax'], ['UMin', 'UMax', 'VMin', 'VMax'])}
+HANDLE_RX = re.compile(r'^(?:occ::|opencascade::)?handle<\s*([\w:]+)\s*>$|^Handle\((\w+)\)$')
+
+
 # --------------------------------------------------------------------------------------------------------------
 # clang AST streaming (as tools/cxx2rs.py, but tracking `includedFrom` correctly)
 
@@ -217,6 +301,13 @@ class Ctx:
         self.drivable = set()    # classes that can be built (fixpoint)
         self.used_enums = set()
         self.scope = None        # class whose members are being read (nested enums are written unqualified there)
+        self.saw_handle = False  # some signature mentions a handle / adaptor that can be driven
+        self.used_structs = set()   # result structs that a signature returns
+        self.saw_bx = False         # a signature takes a Bnd_Box / Bnd_Box2d
+        self.structs = {}           # namespace-level plain structs of the package: name -> [(field, type)]
+        self.alias_map = {}         # namespace-level `using A = B;` of the package: 'Pkg::A' -> 'B'
+        self.used_ns = []           # package structs that a signature returns (in dependency order)
+        self.saw_dom = False        # a signature takes a MathUtils::Domain1D / Domain2D
 
     def enum(self, name):
         if name in self.enums:
@@ -233,12 +324,58 @@ class Ctx:
         self.enums[name] = res
         return res
 
+    def field_kind(self, qt):
+        k, why, info = self.classify(qt)
+        return k
+
+    def struct_printable(self, name, seen=()):
+        """A namespace struct whose fields all are printable (scalars, enums, gp values, nested structs, arrays of structs)."""
+        if name in seen:
+            return False
+        for fname, qt in self.structs[name]:
+            ma = re.match(r'^NCollection_(?:DynamicArray|Array1|Vector)<\s*([\w:]+)\s*>$', qt.strip())
+            if ma:
+                en = ma.group(1)
+                if en not in self.structs and (pkg_q := self.pkg + '::' + en) in self.structs:
+                    en = pkg_q
+                if en in self.structs and self.struct_printable(en, seen + (name,)):
+                    continue
+                return False
+            t = split_type(qt)
+            if t['ptr'] or t['rref']:
+                return False
+            if t['base'] in self.structs:
+                if not self.struct_printable(t['base'], seen + (name,)):
+                    return False
+                continue
+            k = self.classify(qt)[0]
+            if k is None or k[0] not in ('f', 'i', 'b', 'enum', 'gp'):
+                return False
+        return True
+
+    def mark_ns(self, name):
+        """Registers a printable struct and the structs it contains (contained ones first)."""
+        for fname, qt in self.structs[name]:
+            ma = re.match(r'^NCollection_(?:DynamicArray|Array1|Vector)<\s*([\w:]+)\s*>$', qt.strip())
+            sub = ma.group(1) if ma else split_type(qt)['base']
+            if sub not in self.structs and (self.pkg + '::' + sub) in self.structs:
+                sub = self.pkg + '::' + sub
+            if sub in self.structs and sub not in self.used_ns:
+                self.mark_ns(sub)
+        if name not in self.used_ns:
+            self.used_ns.append(name)
+
     def classify(self, qt, desugared=None):
         """-> (kind tuple or None, reason). Kinds: ('f',) ('i',) ('b',) ('enum', name) ('gp', word)
         ('arr', elem) ('arr2', elem) ('cls', name) ('void',)."""
         t = split_type(qt)
         d = split_type(desugared) if desugared else t
         base, dbase = t['base'], d['base']
+        for _ in range(3):
+            if base in self.alias_map:
+                base = split_type(self.alias_map[base])['base']
+            if dbase in self.alias_map:
+                dbase = split_type(self.alias_map[dbase])['base']
         info = dict(t)
         if t['rref']:
             return None, 'rvalue reference', info
@@ -267,11 +404,54 @@ class Ctx:
             n = base if base in self.classes else dbase
             return ('cls', n), None, info
         for b in (base, dbase):
+            if b in DOMAINS:
+                self.saw_dom = True
+                return ('dom', b), None, info
+        for b in (base, dbase):
+            if b in self.structs and self.struct_printable(b):
+                if b not in self.used_ns:
+                    self.mark_ns(b)
+                return ('ns', b), None, info
+        for b in (base, dbase):
+            if b in ('size_t', 'std::size_t', 'Standard_Size', 'unsigned long', 'unsigned long long'):
+                return ('u',), None, info
+        for b in (base, dbase):
+            if b in ('Bnd_Box', 'Bnd_Box2d'):
+                self.saw_bx = True
+                return ('bx', b), None, info
+        for b in (base, dbase):
+            hm = HANDLE_RX.match(b)
+            if hm:
+                hn = hm.group(1) or hm.group(2)
+                if hn in H_INFO:
+                    self.saw_handle = True
+                    info['handle'] = True
+                    return ('h', hn), None, info
+                if hn in AD_INFO:
+                    self.saw_handle = True
+                    info['handle'] = True
+                    return ('ad', hn, True), None, info
+            if b in AD_INFO and not (t['ptr']):
+                self.saw_handle = True
+                info['handle'] = False
+                return ('ad', b, False), None, info
+        for b in (base, dbase):
             if self.scope and (self.scope + '::' + b) in self.enums:
                 b = self.scope + '::' + b
             if self.enum(b) is not None:
                 self.used_enums.add(b)
                 return ('enum', b), None, info
+        for b in (base, dbase):
+            sn = struct_of(b)
+            if sn:
+                self.used_structs.add(sn)
+                self.saw_handle = self.saw_handle or not sn.startswith('Geom2dGridEval')
+                return ('st', sn), None, info
+            ma = re.match(r'^NCollection_Array([12])<\s*([\w:]+)\s*>$', b)
+            if ma and struct_of(ma.group(2)):
+                self.used_structs.add(struct_of(ma.group(2)))
+                self.saw_handle = self.saw_handle or not struct_of(ma.group(2)).startswith('Geom2dGridEval')
+                return ('sarr', struct_of(ma.group(2)), int(ma.group(1))), None, info
         if re.search(r'handle<|Handle\(', base):
             return None, 'handle type ' + base, info
         return None, 'unsupported type ' + base, info
@@ -287,8 +467,14 @@ class Param:
         kind, why, info = ctx.classify(qt, desugared)
         self.kind, self.why, self.info = kind, why, info
         self.mode = 'in'
+        self.mutref = bool(kind and kind[0] == 'bx' and not info['const'] and info['ref'])   # a Bnd_Box that the call fills
+        if kind and kind[0] in ('st', 'sarr', 'u', 'ns'):
+            self.kind, self.why = None, 'result struct / unsigned value as argument'
+            kind = None
         if kind and not info['const'] and (info['ref']):
-            if kind[0] in ('f', 'i', 'b') or kind[0] == 'gp':
+            if kind[0] == 'bx':
+                pass
+            elif kind[0] in ('f', 'i', 'b') or kind[0] == 'gp':
                 self.mode = 'out'
             else:
                 self.kind, self.why = None, 'non-const reference to ' + qt
@@ -339,6 +525,16 @@ def kind_token(k):
         return t + '_' + k[1]
     if t == 'cls':
         return snake(strip_pkg(k[1]))
+    if t in ('h', 'ad'):
+        return snake(k[1])
+    if t in ('st', 'sarr'):
+        return snake(k[1].replace('::', '_'))
+    if t in ('bx', 'dom'):
+        return snake(k[1].replace('::', '_'))
+    if t == 'ns':
+        return snake(k[1].replace('::', '_'))
+    if t == 'u':
+        return 'usize'
     return '?'
 
 
@@ -454,6 +650,8 @@ class Model:
         self.skipped = []                           # (what, reason) not-API items we still list
         self.names = {}
         self.total_api = 0
+        self.aliases = collections.OrderedDict()   # deprecated `using Pkg_X = Other_Y;` names
+        self.structs = collections.OrderedDict()   # namespace-level plain structs: qualified name -> [(field, C++ type)]
 
 
 def build_model(pkg, decls, ctx, headers):
@@ -465,6 +663,25 @@ def build_model(pkg, decls, ctx, headers):
         if k == 'CXXRecordDecl' and d.get('completeDefinition') and n.startswith(pkg) and \
                 (n == pkg or n.startswith(pkg + '_')):
             recs[n] = d
+        elif k == 'NamespaceDecl' and n == pkg:
+            for ch in d.get('inner', []):
+                ck, cn = ch.get('kind'), ch.get('name', '')
+                if ck == 'TypeAliasDecl' and cn:
+                    ctx.alias_map[pkg + '::' + cn] = ch.get('type', {}).get('qualType', '')
+                if ck == 'EnumDecl' and cn:
+                    consts = [x['name'] for x in ch.get('inner', []) if x.get('kind') == 'EnumConstantDecl']
+                    explicit = any(i.get('kind') in ('ConstantExpr', 'IntegerLiteral', 'BinaryOperator') for x in ch.get('inner', [])
+                                   if x.get('kind') == 'EnumConstantDecl' for i in x.get('inner', []))
+                    m.enums[pkg + '::' + cn] = consts
+                    ctx.enums[pkg + '::' + cn] = None if explicit else consts
+                elif ck == 'CXXRecordDecl' and cn and ch.get('completeDefinition') and ch.get('tagUsed') == 'struct':
+                    flds = [(x['name'], x.get('type', {}).get('qualType', '?')) for x in ch.get('inner', [])
+                            if x.get('kind') == 'FieldDecl' and x.get('name')]
+                    if flds:
+                        m.structs[pkg + '::' + cn] = flds
+                        ctx.structs[pkg + '::' + cn] = flds
+        elif k in ('TypeAliasDecl', 'TypedefDecl') and n.startswith(pkg + '_'):
+            m.aliases[n] = d.get('type', {}).get('qualType', '?')
         elif k == 'EnumDecl' and n and (n.startswith(pkg + '_') or n == pkg):
             consts = [c['name'] for c in d.get('inner', []) if c.get('kind') == 'EnumConstantDecl']
             explicit = any(i.get('kind') in ('ConstantExpr', 'IntegerLiteral', 'BinaryOperator') for c in d.get('inner', [])
@@ -527,11 +744,17 @@ def build_model(pkg, decls, ctx, headers):
                 continue
             if access != 'public':
                 continue
-            if nm.startswith('operator'):
+            if nm.startswith('operator') and nm != 'operator()':
                 c.skipped.append((nm, 'operator (Rust traits are for the translator to choose)'))
                 continue
             kind = 'static' if ch.get('storageClass') == 'static' else 'method'
             fn = Fn(c, ch, ctx, kind)
+            if nm == 'operator()' and not (fn.ret and fn.ret[0] == 'u') and not any(
+                    q.kind and q.kind[0] in ('h', 'ad') for q in fn.params):
+                # a call operator is only a callable of the API for the hashers (a handle argument / a hash value);
+                # element access like gp_Mat::operator()(row, col) stays a Rust trait of the translator's choice
+                c.skipped.append((nm, 'operator (Rust traits are for the translator to choose)'))
+                continue
             if fn.pure:
                 c.abstract = True
             c.fns.append(fn)
@@ -692,6 +915,11 @@ def overload_names(group, base, names, keyfn):
     return res
 
 
+def base_name(cname):
+    """Rust base name of a C++ method: snake case; a call operator is `call` (a hasher's hash and equality are `call_1` / `call_2`)."""
+    return 'call' if cname == 'operator()' else snake(cname)
+
+
 def assign_names(m, names):
     """Rust names of every constructor / method / function: f.rust (with names.tsv) and f.fam (the default rule, used
     for the family names so that they do not depend on names.tsv)."""
@@ -719,7 +947,7 @@ def assign_names(m, names):
             if key == ('ctor',):
                 do(grp, 'new', lambda f, c=c: '%s::%s' % (c.name, c.name))
             else:
-                do(grp, rust_ident(snake(grp[0].cname)), lambda f, c=c: '%s::%s' % (c.name, f.cname))
+                do(grp, rust_ident(base_name(grp[0].cname)), lambda f, c=c: '%s::%s' % (c.name, f.cname))
     groups = collections.defaultdict(list)
     for f in m.free:
         groups[f.cname].append(f)
@@ -774,6 +1002,14 @@ def word_of(k):
         return t + '_' + k[1]
     if t == 'cls':
         return 'obj_' + k[1]
+    if t == 'h':
+        return 'h_' + k[1]
+    if t == 'ad':
+        return 'ad_' + k[1]
+    if t == 'bx':
+        return 'bx_' + k[1]
+    if t == 'dom':
+        return 'dom_' + k[1].replace('::', '_')
     raise ValueError(k)
 
 
@@ -997,6 +1233,7 @@ CPP_PRELUDE = r'''// GENERATED by tools/judgegen.py -- reference calls of OCCT 8
 #include <unistd.h>
 #include <sys/wait.h>
 #include <dlfcn.h>
+#include <sys/personality.h>
 @@INCLUDES@@
 #include <NCollection_Array1.hxx>
 #include <NCollection_Array2.hxx>
@@ -1069,6 +1306,12 @@ static std::set<std::string> seen;
 static std::map<std::string, int> fam_lines, fam_throws, fam_dropped;
 static std::map<std::string, bool> fam_libm;
 
+// A heap / stack / code address that reaches the output differs from run to run (ASLR): such a case is dropped. An output is
+// pointer-like when an integer does not fit 32 bits or a double is a denormal with a mantissa of more than 32 bits.
+static bool pointer_like(double v) {
+  uint64_t bits; std::memcpy(&bits, &v, 8);
+  return ((bits >> 52) & 0x7ff) == 0 && (bits & 0xfffffffffffffull) >= (1ull << 32);
+}
 static void hx(double v) {
   uint64_t bits; std::memcpy(&bits, &v, 8); char t[24]; std::snprintf(t, sizeof t, " %016llx", (unsigned long long)bits);
   buf += t; ++ntok;
@@ -1078,9 +1321,13 @@ static void h(double v) {
     if (!outphase) { std::fprintf(stderr, "non-finite input in %s: %s\n", cur_name.c_str(), buf.c_str()); std::abort(); }
     throw Discard();
   }
+  if (outphase && pointer_like(v)) throw Discard();
   hx(v);
 }
-static void in(long v) { buf += " " + std::to_string(v); ++ntok; }
+static void in(long v) {
+  if (outphase && (v > 0x7fffffffL || v < -0x80000000L)) throw Discard();
+  buf += " " + std::to_string(v); ++ntok;
+}
 static void ob(bool v) { in(v ? 1 : 0); }
 static void ox() { buf += " x"; ++ntok; }   // a getter of an object's snapshot that raised
 static int g_nested = 0;   // > 0 while the sub-words of an obj_<Class> word are printed (only the obj word is recorded)
@@ -1269,6 +1516,7 @@ static bool write_all(int fd, const std::string& msg) {
   while (off < msg.size()) { ssize_t n = write(fd, msg.data() + off, msg.size() - off); if (n <= 0) return false; off += (size_t)n; }
   return true;
 }
+static std::map<std::string, int> fam_hangs;
 static bool emit(const std::function<void()>& body) {
   fflush(stdout); fflush(stderr);
   int fd[2];
@@ -1277,7 +1525,7 @@ static bool emit(const std::function<void()>& body) {
   if (p == 0) {
     close(fd[0]);
     signal(SIGSEGV, SIG_DFL); signal(SIGABRT, SIG_DFL); signal(SIGFPE, SIG_DFL); signal(SIGBUS, SIG_DFL);
-    alarm(60);
+    alarm(20);
     std::string r1; bool libm = false, threw = false;
     bool ok = emit_core(body, r1, libm, threw);
     std::string msg = std::string(ok ? "1" : "0") + (libm ? "1" : "0") + (threw ? "1" : "0") + r1;
@@ -1288,6 +1536,7 @@ static bool emit(const std::function<void()>& body) {
   while ((n = read(fd[0], tmp, sizeof tmp)) > 0) msg.append(tmp, (size_t)n);
   close(fd[0]);
   int st = 0; waitpid(p, &st, 0);
+  if (WIFSIGNALED(st) && WTERMSIG(st) == SIGALRM) fam_hangs[cur_name]++;   // a call that does not return: the family gives up after a few
   if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0) || msg.size() < 3 || msg[0] != '1') { fam_dropped[cur_name]++; buf.clear(); return false; }
   if (msg[1] == '1') fam_libm[cur_name] = true;
   g_call_threw = msg[2] == '1';
@@ -1298,7 +1547,8 @@ static bool emit(const std::function<void()>& body) {
 
 // =================================================================================
 // raw inputs: what is printed on the left of ` | ` and what the call is rebuilt from
-struct Raw { std::string w, pat; Vd v; };
+struct CV; struct SV;
+struct Raw { std::string w, pat; Vd v; std::shared_ptr<CV> cv; std::shared_ptr<SV> sv; };
 struct RB {
   std::string pat; Vd v;
   void f(double x) { pat += 'f'; v.push_back(x); }
@@ -1313,7 +1563,7 @@ struct Cursor {
   explicit Cursor(const Bag& bag) : b(bag) {}
   const Raw& next() { return b.r.at(i++); }
 };
-static bool variable_word(const std::string& w) { return w == "trsf" || w == "trsf2d" || w.compare(0, 3, "arr") == 0 || w.compare(0, 4, "obj_") == 0; }
+static bool variable_word(const std::string& w) { return w == "trsf" || w == "trsf2d" || w.compare(0, 3, "arr") == 0 || w.compare(0, 4, "obj_") == 0 || w.compare(0, 2, "h_") == 0 || w.compare(0, 3, "ad_") == 0; }
 static void pr(const Raw& r) {   // print the raw tokens of one schema word
   int s = ntok;
   for (size_t k = 0; k < r.pat.size(); ++k) { if (r.pat[k] == 'f') h(r.v[k]); else in((long)r.v[k]); }
@@ -1598,6 +1848,8 @@ template <typename T, T (*F)(const double*)> static NCollection_Array2<T> mk_arr
 }
 static void o_f(double v) { h(v); }
 static void o_i(long v) { in(v); }
+// an unsigned 64 bit value (a hash): printed as `h` and 16 hex digits (not a float token)
+static void o_u(unsigned long long v) { char t[28]; std::snprintf(t, sizeof t, " h%016llx", v); buf += t; ++ntok; }
 static void o_b(bool v) { ob(v); }
 static void o_xyz(const gp_XYZ& p) { h(p.X()); h(p.Y()); h(p.Z()); }
 static void o_pnt(const gp_Pnt& p) { h(p.X()); h(p.Y()); h(p.Z()); }
@@ -1638,6 +1890,7 @@ ARR_OUT(pnt2d, o_pnt2d) ARR_OUT(vec2d, o_vec2d) ARR_OUT(dir2d, o_dir2d) ARR_OUT(
 #define ARR2_OUT(W, PRINT) template <class A> static void o_arr2_##W(const A& a) { in(a.LowerRow()); in(a.UpperRow()); in(a.LowerCol()); in(a.UpperCol()); for (int i = a.LowerRow(); i <= a.UpperRow(); ++i) for (int j = a.LowerCol(); j <= a.UpperCol(); ++j) PRINT(a(i, j)); }
 ARR2_OUT(f, o_f) ARR2_OUT(pnt, o_pnt)
 
+@@HANDLES@@
 static const char* g_only_fam = nullptr;
 static std::set<std::string> g_skip;
 static bool fam_wanted(const char* n) {
@@ -1672,7 +1925,18 @@ static bool probe_diff(const std::function<void()>& body, int j) {
 '''
 
 CPP_MAIN = r'''
-int main() {
+int main(int argc, char** argv) {
+  // The oracle runs with address space randomization off, so that its decisions (which calls crash, which read freed or
+  // uninitialised memory) do not depend on where the allocator puts things: two runs print the same bytes. A third run with
+  // randomization on (JG_ASLR=1) is compared line by line by the driver: a line that differs there depends on an address.
+  if (!std::getenv("JG_ASLR") && !std::getenv("JG_REEXEC")) {
+    int pers = personality(0xffffffff);
+    if (pers != -1 && !(pers & ADDR_NO_RANDOMIZE) && personality((unsigned long)pers | ADDR_NO_RANDOMIZE) != -1) {
+      setenv("JG_REEXEC", "1", 1);
+      execv("/proc/self/exe", argv);
+    }
+  }
+  (void)argc;
   signal(SIGPIPE, SIG_IGN);
   const char* c = std::getenv("JG_CASES");
   if (c) g_cases = std::atoi(c);
@@ -1713,6 +1977,666 @@ int main() {
 '''
 
 
+CPP_HANDLES = r'''
+// =================================================================================
+// handles: curve and surface recipes (the grammar of the reviewed judges tests/geom.rs and tests/geom2d.rs; docs/api-geom.md)
+//   crv (3D):  kind 0 line  1 circle  2 ellipse  3 hyperbola  4 parabola:  kind ctor v0..v8 [r | a b | f]
+//       line: ctor (0 Ax1, 1 gp_Lin, 2 point + direction) then o d (6 floats); circle, ellipse, hyperbola: ctor (0 gp_ object, 1 Ax2 form)
+//       then the frame o n x (9 floats) then r | a b; parabola: ctor (0 gp_Parab, 1 (Ax2, f), 2 (directrix Ax1, focus)) then o n x f
+//       (ctor 0, 1) or o d focus (ctor 2, 9 floats)
+//     kind 5 bezier: n n*(x y z) rat [nw nw*w]     kind 6 bspline: deg periodic nk nk*knot nm nm*mult np np*(x y z) rat [nw nw*w]
+//     kind 7 trimmed: u1 u2 sense adjust crv       kind 8 offset: offset notcheck dx dy dz crv
+//   crv2d: kind ctor ox oy dx dy sense then r | a b | a b | f [fx fy when kind 4 and ctor 3]; bezier / bspline with (x y);
+//     trimmed as above; offset: offset notcheck crv
+//   srf: kind 0 plane: ctor (0 Ax3, 1 gp_Pln, 2 point + normal, 3 coefficients) then frame (10) | frame (10) | o n (6) | A B C D
+//     kind 1 cylinder: ctor (0 (Ax3, r), 1 gp_Cylinder) frame r    kind 2 cone: ctor frame angle r    kind 3 sphere: ctor frame r
+//     kind 4 torus: ctor frame R r      kind 5 bezier: nu nv nu*nv*(x y z) rat [nw nw*w]   (u index major)
+//     kind 6 bspline: udeg vdeg uper vper nku knots nmu mults nkv knots nmv mults nu nv nu*nv*(x y z) rat [nw nw*w]
+//     kind 7 extrusion: dx dy dz crv       kind 8 revolution: o d (6) crv
+//     kind 9 rectangular trimmed: ctor (0: u1 u2 v1 v2 usense vsense, 1: p1 p2 utrim sense) srf      kind 10 offset: offset notcheck srf
+//   A frame is o n x flip (10 floats): gp_Ax3(o, n, x), YReverse when flip != 0.
+struct CV {
+  int dim = 3, kind = 0, ctor = 0;
+  double v[9] = {0, 0, 0, 0, 0, 1, 1, 0, 0};
+  int sense = 1;
+  double a = 0, b = 0, fx = 0, fy = 0;
+  int deg = 1, per = 0, rat = 0;
+  Vd knots; std::vector<int> mults; Vd px, py, pz; Vd w;
+  double u1 = 0, u2 = 1; int adj = 1; double off = 0; int notc = 0; double od[3] = {0, 0, 1};
+  std::shared_ptr<CV> basis;
+};
+struct SV {
+  int kind = 0, ctor = 0;
+  double fr[10] = {0, 0, 0, 0, 0, 1, 1, 0, 0, 0};
+  double a = 0, b = 0, c = 0, d = 0;
+  int nu = 0, nv = 0, udeg = 1, vdeg = 1, uper = 0, vper = 0, rat = 0;
+  Vd uk, vk; std::vector<int> um, vm; Vd px, py, pz; Vd w;
+  double dir[6] = {0, 0, 1, 0, 0, 1};
+  double t[4] = {0, 1, 0, 1}; int s1 = 1, s2 = 1, utrim = 1;
+  double off = 0; int notc = 0;
+  std::shared_ptr<CV> curve; std::shared_ptr<SV> basis;
+};
+static void p_pts(RB& b, const CV& c) {
+  b.i((long)c.px.size());
+  for (size_t i = 0; i < c.px.size(); ++i) { b.f(c.px[i]); b.f(c.py[i]); if (c.dim == 3) b.f(c.pz[i]); }
+}
+static void p_wts(RB& b, const CV& c) { b.i(c.rat); if (c.rat) { b.i((long)c.w.size()); for (double x : c.w) b.f(x); } }
+static void p_crv(RB& b, const CV& c) {
+  b.i(c.kind);
+  if (c.kind <= 4) {
+    b.i(c.ctor);
+    if (c.dim == 2) {
+      for (int i = 0; i < 4; ++i) b.f(c.v[i]);
+      b.i(c.sense);
+      if (c.kind == 1 || c.kind == 4) b.f(c.a);
+      if (c.kind == 2 || c.kind == 3) { b.f(c.a); b.f(c.b); }
+      if (c.kind == 4 && c.ctor == 3) { b.f(c.fx); b.f(c.fy); }
+    } else if (c.kind == 0) { for (int i = 0; i < 6; ++i) b.f(c.v[i]); }
+    else {
+      for (int i = 0; i < 9; ++i) b.f(c.v[i]);
+      if (c.kind == 1 || (c.kind == 4 && c.ctor != 2)) b.f(c.a);
+      if (c.kind == 2 || c.kind == 3) { b.f(c.a); b.f(c.b); }
+    }
+  } else if (c.kind == 5) {
+    p_pts(b, c); p_wts(b, c);
+  } else if (c.kind == 6) {
+    b.i(c.deg); b.i(c.per); b.i((long)c.knots.size());
+    for (double x : c.knots) b.f(x);
+    b.i((long)c.mults.size()); for (int m : c.mults) b.i(m);
+    p_pts(b, c); p_wts(b, c);
+  } else if (c.kind == 7) {
+    b.f(c.u1); b.f(c.u2); b.i(c.sense); b.i(c.adj); p_crv(b, *c.basis);
+  } else {
+    b.f(c.off); b.i(c.notc);
+    if (c.dim == 3) { b.f(c.od[0]); b.f(c.od[1]); b.f(c.od[2]); }
+    p_crv(b, *c.basis);
+  }
+}
+static void p_srf(RB& b, const SV& s) {
+  b.i(s.kind);
+  switch (s.kind) {
+    case 0:
+      b.i(s.ctor);
+      if (s.ctor <= 1) { for (int i = 0; i < 10; ++i) b.f(s.fr[i]); }
+      else if (s.ctor == 2) { for (int i = 0; i < 6; ++i) b.f(s.fr[i]); }
+      else { b.f(s.a); b.f(s.b); b.f(s.c); b.f(s.d); }
+      break;
+    case 1: case 3: b.i(s.ctor); for (int i = 0; i < 10; ++i) b.f(s.fr[i]); b.f(s.a); break;
+    case 2: case 4: b.i(s.ctor); for (int i = 0; i < 10; ++i) b.f(s.fr[i]); b.f(s.a); b.f(s.b); break;
+    case 5:
+      b.i(s.nu); b.i(s.nv);
+      for (size_t i = 0; i < s.px.size(); ++i) { b.f(s.px[i]); b.f(s.py[i]); b.f(s.pz[i]); }
+      b.i(s.rat); if (s.rat) { b.i((long)s.w.size()); for (double x : s.w) b.f(x); }
+      break;
+    case 6:
+      b.i(s.udeg); b.i(s.vdeg); b.i(s.uper); b.i(s.vper);
+      b.i((long)s.uk.size()); for (double x : s.uk) b.f(x);
+      b.i((long)s.um.size()); for (int m : s.um) b.i(m);
+      b.i((long)s.vk.size()); for (double x : s.vk) b.f(x);
+      b.i((long)s.vm.size()); for (int m : s.vm) b.i(m);
+      b.i(s.nu); b.i(s.nv);
+      for (size_t i = 0; i < s.px.size(); ++i) { b.f(s.px[i]); b.f(s.py[i]); b.f(s.pz[i]); }
+      b.i(s.rat); if (s.rat) { b.i((long)s.w.size()); for (double x : s.w) b.f(x); }
+      break;
+    case 7: b.f(s.dir[0]); b.f(s.dir[1]); b.f(s.dir[2]); p_crv(b, *s.curve); break;
+    case 8: for (int i = 0; i < 6; ++i) b.f(s.dir[i]); p_crv(b, *s.curve); break;
+    case 9:
+      b.i(s.ctor);
+      if (s.ctor == 0) { b.f(s.t[0]); b.f(s.t[1]); b.f(s.t[2]); b.f(s.t[3]); b.i(s.s1); b.i(s.s2); }
+      else { b.f(s.t[0]); b.f(s.t[1]); b.i(s.utrim); b.i(s.s1); }
+      p_srf(b, *s.basis);
+      break;
+    default: b.f(s.off); b.i(s.notc); p_srf(b, *s.basis); break;
+  }
+}
+
+typedef occ::handle<Geom_Curve> HC3;
+typedef occ::handle<Geom2d_Curve> HC2;
+typedef occ::handle<Geom_Surface> HS3;
+static gp_Pnt hp3(const double* v) { return gp_Pnt(v[0], v[1], v[2]); }
+static gp_Dir hd3(const double* v) { return gp_Dir(v[0], v[1], v[2]); }
+static gp_Ax2 hax2(const double* v) { return gp_Ax2(hp3(v), hd3(v + 3), hd3(v + 6)); }
+static gp_Ax3 hax3(const double* v) { gp_Ax3 r(hp3(v), hd3(v + 3), hd3(v + 6)); if (std::lround(v[9]) != 0) r.YReverse(); return r; }
+static gp_Ax2d hax2d(const double* v) { return gp_Ax2d(gp_Pnt2d(v[0], v[1]), gp_Dir2d(v[2], v[3])); }
+static HC3 build_c(const CV& c);
+static HC3 build_c3_basic(const CV& c) {
+  const double* v = c.v;
+  switch (c.kind) {
+    case 0:
+      if (c.ctor == 0) return new Geom_Line(gp_Ax1(hp3(v), hd3(v + 3)));
+      if (c.ctor == 1) return new Geom_Line(gp_Lin(gp_Ax1(hp3(v), hd3(v + 3))));
+      return new Geom_Line(hp3(v), hd3(v + 3));
+    case 1:
+      if (c.ctor == 0) return new Geom_Circle(gp_Circ(hax2(v), c.a));
+      return new Geom_Circle(hax2(v), c.a);
+    case 2:
+      if (c.ctor == 0) return new Geom_Ellipse(gp_Elips(hax2(v), c.a, c.b));
+      return new Geom_Ellipse(hax2(v), c.a, c.b);
+    case 3:
+      if (c.ctor == 0) return new Geom_Hyperbola(gp_Hypr(hax2(v), c.a, c.b));
+      return new Geom_Hyperbola(hax2(v), c.a, c.b);
+    default:
+      if (c.ctor == 0) return new Geom_Parabola(gp_Parab(hax2(v), c.a));
+      if (c.ctor == 1) return new Geom_Parabola(hax2(v), c.a);
+      return new Geom_Parabola(gp_Ax1(hp3(v), hd3(v + 3)), hp3(v + 6));
+  }
+}
+static HC3 build_c(const CV& c) {
+  if (c.kind <= 4) return build_c3_basic(c);
+  if (c.kind == 5 || c.kind == 6) {
+    NCollection_Array1<gp_Pnt> P(1, (int)c.px.size());
+    for (size_t i = 0; i < c.px.size(); ++i) P((int)i + 1) = gp_Pnt(c.px[i], c.py[i], c.pz[i]);
+    NCollection_Array1<double> W(1, (int)c.w.size());
+    for (size_t i = 0; i < c.w.size(); ++i) W((int)i + 1) = c.w[i];
+    if (c.kind == 5) { if (!c.rat) return new Geom_BezierCurve(P); return new Geom_BezierCurve(P, W); }
+    NCollection_Array1<double> K(1, (int)c.knots.size());
+    for (size_t i = 0; i < c.knots.size(); ++i) K((int)i + 1) = c.knots[i];
+    NCollection_Array1<int> M(1, (int)c.mults.size());
+    for (size_t i = 0; i < c.mults.size(); ++i) M((int)i + 1) = c.mults[i];
+    if (!c.rat) return new Geom_BSplineCurve(P, K, M, c.deg, c.per != 0);
+    return new Geom_BSplineCurve(P, W, K, M, c.deg, c.per != 0);
+  }
+  HC3 b = build_c(*c.basis);
+  if (c.kind == 7) return new Geom_TrimmedCurve(b, c.u1, c.u2, c.sense != 0, c.adj != 0);
+  return new Geom_OffsetCurve(b, c.off, gp_Dir(c.od[0], c.od[1], c.od[2]), c.notc != 0);
+}
+static HC2 build_c2(const CV& c) {
+  const double* v = c.v;
+  bool s = c.sense != 0;
+  if (c.kind <= 4) {
+    gp_Ax2d ax = hax2d(v);
+    switch (c.kind) {
+      case 0:
+        if (c.ctor == 0) return new Geom2d_Line(ax);
+        if (c.ctor == 1) return new Geom2d_Line(gp_Lin2d(ax));
+        return new Geom2d_Line(ax.Location(), ax.Direction());
+      case 1:
+        if (c.ctor == 0) return new Geom2d_Circle(gp_Circ2d(ax, c.a, s));
+        if (c.ctor == 1) return new Geom2d_Circle(ax, c.a, s);
+        return new Geom2d_Circle(gp_Ax22d(ax, s), c.a);
+      case 2:
+        if (c.ctor == 0) return new Geom2d_Ellipse(gp_Elips2d(ax, c.a, c.b, s));
+        if (c.ctor == 1) return new Geom2d_Ellipse(ax, c.a, c.b, s);
+        return new Geom2d_Ellipse(gp_Ax22d(ax, s), c.a, c.b);
+      case 3:
+        if (c.ctor == 0) return new Geom2d_Hyperbola(gp_Hypr2d(ax, c.a, c.b, s));
+        if (c.ctor == 1) return new Geom2d_Hyperbola(ax, c.a, c.b, s);
+        return new Geom2d_Hyperbola(gp_Ax22d(ax, s), c.a, c.b);
+      default:
+        if (c.ctor == 0) return new Geom2d_Parabola(gp_Parab2d(ax, c.a, s));
+        if (c.ctor == 1) return new Geom2d_Parabola(ax, c.a, s);
+        if (c.ctor == 2) return new Geom2d_Parabola(gp_Ax22d(ax, s), c.a);
+        return new Geom2d_Parabola(ax, gp_Pnt2d(c.fx, c.fy));
+    }
+  }
+  if (c.kind == 5 || c.kind == 6) {
+    NCollection_Array1<gp_Pnt2d> P(1, (int)c.px.size());
+    for (size_t i = 0; i < c.px.size(); ++i) P((int)i + 1) = gp_Pnt2d(c.px[i], c.py[i]);
+    NCollection_Array1<double> W(1, (int)c.w.size());
+    for (size_t i = 0; i < c.w.size(); ++i) W((int)i + 1) = c.w[i];
+    if (c.kind == 5) { if (!c.rat) return new Geom2d_BezierCurve(P); return new Geom2d_BezierCurve(P, W); }
+    NCollection_Array1<double> K(1, (int)c.knots.size());
+    for (size_t i = 0; i < c.knots.size(); ++i) K((int)i + 1) = c.knots[i];
+    NCollection_Array1<int> M(1, (int)c.mults.size());
+    for (size_t i = 0; i < c.mults.size(); ++i) M((int)i + 1) = c.mults[i];
+    if (!c.rat) return new Geom2d_BSplineCurve(P, K, M, c.deg, c.per != 0);
+    return new Geom2d_BSplineCurve(P, W, K, M, c.deg, c.per != 0);
+  }
+  HC2 b = build_c2(*c.basis);
+  if (c.kind == 7) return new Geom2d_TrimmedCurve(b, c.u1, c.u2, s, c.adj != 0);
+  return new Geom2d_OffsetCurve(b, c.off, c.notc != 0);
+}
+static HS3 build_s(const SV& s) {
+  switch (s.kind) {
+    case 0:
+      if (s.ctor == 0) return new Geom_Plane(hax3(s.fr));
+      if (s.ctor == 1) return new Geom_Plane(gp_Pln(hax3(s.fr)));
+      if (s.ctor == 2) return new Geom_Plane(gp_Pnt(s.fr[0], s.fr[1], s.fr[2]), gp_Dir(s.fr[3], s.fr[4], s.fr[5]));
+      return new Geom_Plane(s.a, s.b, s.c, s.d);
+    case 1: if (s.ctor == 0) return new Geom_CylindricalSurface(hax3(s.fr), s.a); return new Geom_CylindricalSurface(gp_Cylinder(hax3(s.fr), s.a));
+    case 2: if (s.ctor == 0) return new Geom_ConicalSurface(hax3(s.fr), s.a, s.b); return new Geom_ConicalSurface(gp_Cone(hax3(s.fr), s.a, s.b));
+    case 3: if (s.ctor == 0) return new Geom_SphericalSurface(hax3(s.fr), s.a); return new Geom_SphericalSurface(gp_Sphere(hax3(s.fr), s.a));
+    case 4: if (s.ctor == 0) return new Geom_ToroidalSurface(hax3(s.fr), s.a, s.b); return new Geom_ToroidalSurface(gp_Torus(hax3(s.fr), s.a, s.b));
+    case 5: case 6: {
+      NCollection_Array2<gp_Pnt> P(1, std::max(s.nu, 0), 1, std::max(s.nv, 0));
+      NCollection_Array2<double> W(1, std::max(s.nu, 0), 1, std::max(s.nv, 0));
+      for (int i = 0; i < s.nu; ++i) for (int j = 0; j < s.nv; ++j) {
+        size_t k = (size_t)(i * s.nv + j);
+        P(i + 1, j + 1) = gp_Pnt(s.px[k], s.py[k], s.pz[k]);
+        W(i + 1, j + 1) = k < s.w.size() ? s.w[k] : 1.0;
+      }
+      if (s.kind == 5) { if (!s.rat) return new Geom_BezierSurface(P); return new Geom_BezierSurface(P, W); }
+      NCollection_Array1<double> UK(1, (int)s.uk.size()), VK(1, (int)s.vk.size());
+      for (size_t i = 0; i < s.uk.size(); ++i) UK((int)i + 1) = s.uk[i];
+      for (size_t i = 0; i < s.vk.size(); ++i) VK((int)i + 1) = s.vk[i];
+      NCollection_Array1<int> UM(1, (int)s.um.size()), VM(1, (int)s.vm.size());
+      for (size_t i = 0; i < s.um.size(); ++i) UM((int)i + 1) = s.um[i];
+      for (size_t i = 0; i < s.vm.size(); ++i) VM((int)i + 1) = s.vm[i];
+      if (!s.rat) return new Geom_BSplineSurface(P, UK, VK, UM, VM, s.udeg, s.vdeg, s.uper != 0, s.vper != 0);
+      return new Geom_BSplineSurface(P, W, UK, VK, UM, VM, s.udeg, s.vdeg, s.uper != 0, s.vper != 0);
+    }
+    case 7: return new Geom_SurfaceOfLinearExtrusion(build_c(*s.curve), gp_Dir(s.dir[0], s.dir[1], s.dir[2]));
+    case 8: return new Geom_SurfaceOfRevolution(build_c(*s.curve), gp_Ax1(gp_Pnt(s.dir[0], s.dir[1], s.dir[2]), gp_Dir(s.dir[3], s.dir[4], s.dir[5])));
+    case 9: {
+      HS3 b = build_s(*s.basis);
+      if (s.ctor == 0) return new Geom_RectangularTrimmedSurface(b, s.t[0], s.t[1], s.t[2], s.t[3], s.s1 != 0, s.s2 != 0);
+      return new Geom_RectangularTrimmedSurface(b, s.t[0], s.t[1], s.utrim != 0, s.s1 != 0);
+    }
+    default: return new Geom_OffsetSurface(build_s(*s.basis), s.off, s.notc != 0);
+  }
+}
+template <class T, class B> static occ::handle<T> hdown(const occ::handle<B>& h) {
+  occ::handle<T> r = occ::down_cast<T>(h);
+  if (r.IsNull()) throw Discard();
+  return r;
+}
+
+// ----- random recipes (valid ones: a recipe whose objects cannot be built is regenerated)
+static void rdirv(double* d, int n) {
+  for (;;) {
+    RB t; ap_dir(t, n, nullptr);
+    double s = 0; for (int k = 0; k < n; ++k) s += t.v[k] * t.v[k];
+    if (s > 0.04) { for (int k = 0; k < n; ++k) d[k] = t.v[k]; return; }
+  }
+}
+static void rpnt(double* p, int n) { for (int k = 0; k < n; ++k) p[k] = crd(); }
+static void rframe3(double* v) {   // o n x (9)
+  rpnt(v, 3); rdirv(v + 3, 3);
+  for (;;) { rdirv(v + 6, 3); if (!near_par3(v + 3, v + 6)) break; }
+}
+static double rrad(double lo, double hi) { return coin(0.3) ? 0.5 * std::ceil(2 * rnd(lo, hi)) : rnd(lo, hi); }
+// knots / multiplicities / pole count of one B-spline direction; false when the combination is not usable
+static bool rbs(int& deg, bool per, Vd& k, std::vector<int>& m, int& np) {
+  k.clear(); m.clear();
+  deg = rint(1, 3);
+  if (per) {
+    int nk = rint(3, 6);
+    for (int i = 0; i < nk; ++i) { k.push_back(i == 0 ? rnd(-2, 2) : k.back() + (coin(0.5) ? 1.0 : rnd(0.3, 1.5))); m.push_back(1); }
+    np = nk - 1;
+    return np >= 2 && deg < np;
+  }
+  np = rint(deg + 1, deg + 4);
+  int inner = np - deg - 1;
+  int nk = rint(2, 2 + inner);
+  if (nk - 2 > inner) return false;
+  std::vector<int> mm(nk, 1);
+  mm[0] = mm[nk - 1] = deg + 1;
+  int rest = inner - (nk - 2);
+  for (int g = 0; g < rest; ++g) {
+    if (nk <= 2) return false;
+    int j = rint(1, nk - 2);
+    if (mm[j] >= deg) { bool ok = false; for (int t = 1; t < nk - 1; ++t) if (mm[t] < deg) { ++mm[t]; ok = true; break; } if (!ok) return false; }
+    else ++mm[j];
+  }
+  for (int i = 0; i < nk; ++i) { k.push_back(i == 0 ? rnd(-2, 2) : k.back() + (coin(0.5) ? 1.0 : rnd(0.3, 1.5))); m.push_back(mm[i]); }
+  return true;
+}
+static void rwts(std::vector<double>& w, size_t n) { w.clear(); for (size_t i = 0; i < n; ++i) w.push_back(coin(0.3) ? 1.0 : rnd(0.3, 3.0)); }
+static CV rcv(int dim, const std::vector<int>& kinds, int depth);
+static void cv_range(const CV& c, double& f, double& l) {
+  if (c.dim == 3) { HC3 h = build_c(c); f = h->FirstParameter(); l = h->LastParameter(); }
+  else { HC2 h = build_c2(c); f = h->FirstParameter(); l = h->LastParameter(); }
+  if (!(std::fabs(f) < 1e50) || !(std::fabs(l) < 1e50)) { f = -3; l = 3; }
+}
+static bool rcv_kind(CV& c, int kind, int depth) {
+  const int dim = c.dim;
+  c.kind = kind;
+  switch (kind) {
+    case 0: {
+      c.ctor = rint(0, 2);
+      if (dim == 3) { rpnt(c.v, 3); rdirv(c.v + 3, 3); } else { rpnt(c.v, 2); rdirv(c.v + 2, 2); }
+      return true;
+    }
+    case 1: case 2: case 3: case 4: {
+      c.ctor = dim == 3 ? (kind == 4 ? rint(0, 2) : rint(0, 1)) : (kind == 4 ? rint(0, 3) : rint(0, 2));
+      c.sense = coin(0.7) ? 1 : 0;
+      if (dim == 3) {
+        if (kind == 4 && c.ctor == 2) { rpnt(c.v, 3); rdirv(c.v + 3, 3); rpnt(c.v + 6, 3); }
+        else rframe3(c.v);
+      } else { rpnt(c.v, 2); rdirv(c.v + 2, 2); }
+      if (kind == 1) c.a = rrad(0.3, 5);
+      else if (kind == 2) { c.a = rrad(1, 5); c.b = c.a * rnd(0.2, 0.95); }
+      else if (kind == 3) { c.a = rrad(0.5, 4); c.b = rrad(0.5, 4); }
+      else { c.a = rrad(0.25, 4); c.fx = crd(); c.fy = crd(); }
+      return true;
+    }
+    case 5: {
+      int n = rint(2, 5);
+      c.px.clear(); c.py.clear(); c.pz.clear();
+      for (int i = 0; i < n; ++i) { c.px.push_back(crd()); c.py.push_back(crd()); c.pz.push_back(dim == 3 ? crd() : 0.0); }
+      c.rat = coin(0.4) ? 1 : 0;
+      if (c.rat) rwts(c.w, (size_t)n);
+      return true;
+    }
+    case 6: {
+      int np = 0; bool per = coin(0.15);
+      if (!rbs(c.deg, per, c.knots, c.mults, np)) return false;
+      c.per = per ? 1 : 0;
+      c.px.clear(); c.py.clear(); c.pz.clear();
+      for (int i = 0; i < np; ++i) { c.px.push_back(crd()); c.py.push_back(crd()); c.pz.push_back(dim == 3 ? crd() : 0.0); }
+      c.rat = coin(0.35) ? 1 : 0;
+      if (c.rat) rwts(c.w, (size_t)np);
+      return true;
+    }
+    case 7: {
+      if (depth > 0) return false;
+      static const std::vector<int> bk = {0, 1, 2, 3, 4, 5, 6};
+      c.basis = std::make_shared<CV>(rcv(dim, bk, depth + 1));
+      double f, l; cv_range(*c.basis, f, l);
+      double x = rnd(0, 0.5), y = rnd(0.55, 1.0);
+      c.u1 = f + (l - f) * x; c.u2 = f + (l - f) * y;
+      c.sense = coin(0.7) ? 1 : 0; c.adj = coin(0.5) ? 1 : 0;
+      return true;
+    }
+    default: {
+      if (depth > 0) return false;
+      static const std::vector<int> ok = {0, 1, 2, 5, 6};
+      c.basis = std::make_shared<CV>(rcv(dim, ok, depth + 1));
+      c.off = coin(0.2) ? 0.0 : rnd(-2, 2); c.notc = coin(0.5) ? 1 : 0;
+      if (dim == 3) rdirv(c.od, 3);
+      return true;
+    }
+  }
+}
+static CV rcv(int dim, const std::vector<int>& kinds, int depth) {
+  for (int t = 0; t < 80; ++t) {
+    CV c; c.dim = dim;
+    try {
+      if (!rcv_kind(c, kinds[(size_t)rint(0, (int)kinds.size() - 1)], depth)) continue;
+      if (dim == 3) (void)build_c(c); else (void)build_c2(c);
+      return c;
+    } catch (Standard_Failure&) {
+    } catch (Discard&) {
+    }
+  }
+  throw Discard();
+}
+static SV rsv(const std::vector<int>& kinds, int depth);
+static void sv_bounds(const SV& s, double& u1, double& u2, double& v1, double& v2) {
+  HS3 h = build_s(s);
+  h->Bounds(u1, u2, v1, v2);
+  if (!(std::fabs(u1) < 1e50)) u1 = -3;
+  if (!(std::fabs(u2) < 1e50)) u2 = 3;
+  if (!(std::fabs(v1) < 1e50)) v1 = -3;
+  if (!(std::fabs(v2) < 1e50)) v2 = 3;
+}
+static bool rsv_kind(SV& s, int kind, int depth) {
+  s.kind = kind;
+  switch (kind) {
+    case 0: case 1: case 2: case 3: case 4: {
+      s.ctor = kind == 0 ? rint(0, 3) : rint(0, 1);
+      if (kind == 0 && s.ctor == 3) {
+        double n[3]; rdirv(n, 3); s.a = n[0]; s.b = n[1]; s.c = n[2]; s.d = crd();
+        return true;
+      }
+      rframe3(s.fr); s.fr[9] = coin(0.2) ? 1 : 0;
+      if (kind == 1 || kind == 3) s.a = rrad(0.3, 4);
+      if (kind == 2) { s.a = (coin(0.2) ? -1 : 1) * rnd(0.1, 1.2); s.b = coin(0.3) ? 0.0 : rrad(0.2, 3); }
+      if (kind == 4) { s.a = rrad(1, 5); s.b = s.a * rnd(0.1, 0.9); }
+      return true;
+    }
+    case 5: {
+      s.nu = rint(2, 4); s.nv = rint(2, 4);
+      s.px.clear(); s.py.clear(); s.pz.clear();
+      for (int i = 0; i < s.nu * s.nv; ++i) { s.px.push_back(crd()); s.py.push_back(crd()); s.pz.push_back(crd()); }
+      s.rat = coin(0.4) ? 1 : 0;
+      if (s.rat) rwts(s.w, (size_t)(s.nu * s.nv));
+      return true;
+    }
+    case 6: {
+      bool up = coin(0.1), vp = coin(0.1);
+      if (!rbs(s.udeg, up, s.uk, s.um, s.nu)) return false;
+      if (!rbs(s.vdeg, vp, s.vk, s.vm, s.nv)) return false;
+      s.uper = up ? 1 : 0; s.vper = vp ? 1 : 0;
+      s.px.clear(); s.py.clear(); s.pz.clear();
+      for (int i = 0; i < s.nu * s.nv; ++i) { s.px.push_back(crd()); s.py.push_back(crd()); s.pz.push_back(crd()); }
+      s.rat = coin(0.3) ? 1 : 0;
+      if (s.rat) rwts(s.w, (size_t)(s.nu * s.nv));
+      return true;
+    }
+    case 7: case 8: {
+      static const std::vector<int> ck = {0, 1, 2, 5, 6};
+      s.curve = std::make_shared<CV>(rcv(3, ck, 1));
+      if (kind == 7) rdirv(s.dir, 3);
+      else { rpnt(s.dir, 3); rdirv(s.dir + 3, 3); }
+      return true;
+    }
+    case 9: {
+      if (depth > 0) return false;
+      static const std::vector<int> bk = {0, 1, 2, 3, 4, 5, 6};
+      s.basis = std::make_shared<SV>(rsv(bk, depth + 1));
+      double u1, u2, v1, v2; sv_bounds(*s.basis, u1, u2, v1, v2);
+      s.ctor = rint(0, 1);
+      double a = rnd(0, 0.45), b = rnd(0.55, 1), c = rnd(0, 0.45), d = rnd(0.55, 1);
+      s.t[0] = u1 + (u2 - u1) * a; s.t[1] = u1 + (u2 - u1) * b;
+      s.t[2] = v1 + (v2 - v1) * c; s.t[3] = v1 + (v2 - v1) * d;
+      if (s.ctor == 1) { s.utrim = coin(0.5) ? 1 : 0; if (!s.utrim) { s.t[0] = s.t[2]; s.t[1] = s.t[3]; } }
+      s.s1 = coin(0.7) ? 1 : 0; s.s2 = coin(0.7) ? 1 : 0;
+      return true;
+    }
+    default: {
+      if (depth > 0) return false;
+      static const std::vector<int> ok = {0, 1, 2, 3, 4};
+      s.basis = std::make_shared<SV>(rsv(ok, depth + 1));
+      s.off = coin(0.2) ? 0.0 : rnd(-1.5, 1.5); s.notc = coin(0.5) ? 1 : 0;
+      return true;
+    }
+  }
+}
+static SV rsv(const std::vector<int>& kinds, int depth) {
+  for (int t = 0; t < 80; ++t) {
+    SV s;
+    try {
+      if (!rsv_kind(s, kinds[(size_t)rint(0, (int)kinds.size() - 1)], depth)) continue;
+      (void)build_s(s);
+      return s;
+    } catch (Standard_Failure&) {
+    } catch (Discard&) {
+    }
+  }
+  throw Discard();
+}
+// recipes as raw inputs of a schema word
+static Raw g_hc(const Bag& B, const char* w, int dim, std::initializer_list<int> kinds) {
+  if (const Raw* l = B.last(w)) { if (coin(0.4)) return *l; }
+  CV c = rcv(dim, std::vector<int>(kinds), 0);
+  RB b; p_crv(b, c);
+  Raw r{w, b.pat, b.v}; r.cv = std::make_shared<CV>(c);
+  return r;
+}
+static Raw g_hs(const Bag& B, const char* w, std::initializer_list<int> kinds) {
+  if (const Raw* l = B.last(w)) { if (coin(0.4)) return *l; }
+  SV s = rsv(std::vector<int>(kinds), 0);
+  RB b; p_srf(b, s);
+  Raw r{w, b.pat, b.v}; r.sv = std::make_shared<SV>(s);
+  return r;
+}
+// adaptors: use_range first last, then the recipe of the curve / surface they load
+static Raw g_adc(const Bag& B, const char* w, int dim) {
+  if (const Raw* l = B.last(w)) { if (coin(0.4)) return *l; }
+  static const std::vector<int> all = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+  CV c = rcv(dim, all, 0);
+  double f, l; cv_range(c, f, l);
+  RB b; bool rng = coin(0.5);
+  double a = rnd(0, 0.45), z = rnd(0.55, 1);
+  b.i(rng ? 1 : 0);
+  if (rng) { b.f(f + (l - f) * a); b.f(f + (l - f) * z); } else { b.f(0.0); b.f(0.0); }
+  p_crv(b, c);
+  Raw r{w, b.pat, b.v}; r.cv = std::make_shared<CV>(c);
+  return r;
+}
+static Raw g_ads(const Bag& B, const char* w) {
+  if (const Raw* l = B.last(w)) { if (coin(0.4)) return *l; }
+  static const std::vector<int> all = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  SV s = rsv(all, 0);
+  double u1, u2, v1, v2; sv_bounds(s, u1, u2, v1, v2);
+  RB b; bool rng = coin(0.5);
+  double a = rnd(0, 0.45), z = rnd(0.55, 1), c = rnd(0, 0.45), d = rnd(0.55, 1);
+  b.i(rng ? 1 : 0);
+  if (rng) { b.f(u1 + (u2 - u1) * a); b.f(u1 + (u2 - u1) * z); b.f(v1 + (v2 - v1) * c); b.f(v1 + (v2 - v1) * d); }
+  else { b.f(0.0); b.f(0.0); b.f(0.0); b.f(0.0); }
+  p_srf(b, s);
+  Raw r{w, b.pat, b.v}; r.sv = std::make_shared<SV>(s);
+  return r;
+}
+static occ::handle<GeomAdaptor_Curve> mk_adc3(const Raw& r) {
+  HC3 h = build_c(*r.cv);
+  if (r.v.at(0) != 0) return new GeomAdaptor_Curve(h, r.v.at(1), r.v.at(2));
+  return new GeomAdaptor_Curve(h);
+}
+static occ::handle<Geom2dAdaptor_Curve> mk_adc2(const Raw& r) {
+  HC2 h = build_c2(*r.cv);
+  if (r.v.at(0) != 0) return new Geom2dAdaptor_Curve(h, r.v.at(1), r.v.at(2));
+  return new Geom2dAdaptor_Curve(h);
+}
+static occ::handle<GeomAdaptor_Surface> mk_ads3(const Raw& r) {
+  HS3 h = build_s(*r.sv);
+  if (r.v.at(0) != 0) return new GeomAdaptor_Surface(h, r.v.at(1), r.v.at(2), r.v.at(3), r.v.at(4));
+  return new GeomAdaptor_Surface(h);
+}
+
+// ----- snapshots of handles and adaptors: null flag, first / last parameter, closed, periodic, continuity, D0 and D1 at five
+// parameters (a surface: the bounds, closedness, continuity, D0 and D1 at four points); an evaluation that raised prints `x`
+static void snap_params(double f, double l, double* t) {
+  if (std::fabs(f) < 1e50 && std::fabs(l) < 1e50) { for (int k = 0; k < 5; ++k) t[k] = f + (l - f) * (k * 0.25); }
+  else { t[0] = -2; t[1] = -1; t[2] = 0.25; t[3] = 1; t[4] = 2; }
+}
+static void snap_uv(double u1, double u2, double v1, double v2, double* u, double* v) {
+  static const double K[4][2] = {{0.0, 0.0}, {0.25, 0.75}, {0.5, 0.5}, {1.0, 1.0}};
+  bool fu = std::fabs(u1) < 1e50 && std::fabs(u2) < 1e50, fv = std::fabs(v1) < 1e50 && std::fabs(v2) < 1e50;
+  for (int k = 0; k < 4; ++k) {
+    u[k] = fu ? u1 + (u2 - u1) * K[k][0] : -2.0 + k;
+    v[k] = fv ? v1 + (v2 - v1) * K[k][1] : 2.0 - k;
+  }
+}
+#define SNAP(...) try { __VA_ARGS__; } catch (Standard_Failure&) { ox(); }
+// a parameter bound: 1 and the value when finite, 0 otherwise
+static void hb(double x) { if (std::fabs(x) < 1e50) { in(1); h(x); } else in(0); }
+static void o_h_c3(const occ::handle<Geom_Curve>& c) {
+  if (c.IsNull()) { in(0); return; }
+  in(1);
+  const Geom_Curve& k = *c;
+  double f = 0, l = 0, t[5];
+  SNAP(f = k.FirstParameter(); hb(f)); SNAP(l = k.LastParameter(); hb(l));
+  SNAP(ob(k.IsPeriodic())); SNAP(in((long)static_cast<int>(k.Continuity())));
+  snap_params(f, l, t);
+  for (int i = 0; i < 5; ++i) { SNAP(o_pnt(k.EvalD0(t[i]))); }
+  for (int i = 0; i < 5; ++i) { SNAP(Geom_Curve::ResD1 r = k.EvalD1(t[i]); o_pnt(r.Point); o_vec(r.D1)); }
+}
+static void o_h_c2(const occ::handle<Geom2d_Curve>& c) {
+  if (c.IsNull()) { in(0); return; }
+  in(1);
+  const Geom2d_Curve& k = *c;
+  double f = 0, l = 0, t[5];
+  SNAP(f = k.FirstParameter(); hb(f)); SNAP(l = k.LastParameter(); hb(l));
+  SNAP(ob(k.IsPeriodic())); SNAP(in((long)static_cast<int>(k.Continuity())));
+  snap_params(f, l, t);
+  for (int i = 0; i < 5; ++i) { SNAP(o_pnt2d(k.EvalD0(t[i]))); }
+  for (int i = 0; i < 5; ++i) { SNAP(Geom2d_Curve::ResD1 r = k.EvalD1(t[i]); o_pnt2d(r.Point); o_vec2d(r.D1)); }
+}
+static void o_h_s3(const occ::handle<Geom_Surface>& s) {
+  if (s.IsNull()) { in(0); return; }
+  in(1);
+  const Geom_Surface& k = *s;
+  double u1 = 0, u2 = 0, v1 = 0, v2 = 0, u[4], v[4];
+  SNAP(k.Bounds(u1, u2, v1, v2); hb(u1); hb(u2); hb(v1); hb(v2));
+  SNAP(ob(k.IsUClosed())); SNAP(ob(k.IsVClosed())); SNAP(ob(k.IsUPeriodic())); SNAP(ob(k.IsVPeriodic()));
+  SNAP(in((long)static_cast<int>(k.Continuity())));
+  snap_uv(u1, u2, v1, v2, u, v);
+  for (int i = 0; i < 4; ++i) { SNAP(o_pnt(k.EvalD0(u[i], v[i]))); }
+  for (int i = 0; i < 4; ++i) { SNAP(Geom_Surface::ResD1 r = k.EvalD1(u[i], v[i]); o_pnt(r.Point); o_vec(r.D1U); o_vec(r.D1V)); }
+}
+template <class A> static void o_ad_c3(const A& c) {
+  double f = 0, l = 0, t[5];
+  SNAP(f = c.FirstParameter(); hb(f)); SNAP(l = c.LastParameter(); hb(l));
+  SNAP(ob(c.IsClosed())); SNAP(ob(c.IsPeriodic())); SNAP(in((long)static_cast<int>(c.Continuity())));
+  snap_params(f, l, t);
+  for (int i = 0; i < 5; ++i) { SNAP(gp_Pnt p; c.D0(t[i], p); o_pnt(p)); }
+  for (int i = 0; i < 5; ++i) { SNAP(gp_Pnt p; gp_Vec d; c.D1(t[i], p, d); o_pnt(p); o_vec(d)); }
+}
+template <class A> static void o_ad_c2(const A& c) {
+  double f = 0, l = 0, t[5];
+  SNAP(f = c.FirstParameter(); hb(f)); SNAP(l = c.LastParameter(); hb(l));
+  SNAP(ob(c.IsClosed())); SNAP(ob(c.IsPeriodic())); SNAP(in((long)static_cast<int>(c.Continuity())));
+  snap_params(f, l, t);
+  for (int i = 0; i < 5; ++i) { SNAP(gp_Pnt2d p; c.D0(t[i], p); o_pnt2d(p)); }
+  for (int i = 0; i < 5; ++i) { SNAP(gp_Pnt2d p; gp_Vec2d d; c.D1(t[i], p, d); o_pnt2d(p); o_vec2d(d)); }
+}
+template <class A> static void o_ad_s3(const A& s) {
+  double u1 = 0, u2 = 0, v1 = 0, v2 = 0, u[4], v[4];
+  SNAP(u1 = s.FirstUParameter(); u2 = s.LastUParameter(); v1 = s.FirstVParameter(); v2 = s.LastVParameter(); hb(u1); hb(u2); hb(v1); hb(v2));
+  SNAP(ob(s.IsUClosed())); SNAP(ob(s.IsVClosed())); SNAP(ob(s.IsUPeriodic())); SNAP(ob(s.IsVPeriodic()));
+  SNAP(in((long)static_cast<int>(s.UContinuity()))); SNAP(in((long)static_cast<int>(s.VContinuity())));
+  snap_uv(u1, u2, v1, v2, u, v);
+  for (int i = 0; i < 4; ++i) { SNAP(gp_Pnt p; s.D0(u[i], v[i], p); o_pnt(p)); }
+  for (int i = 0; i < 4; ++i) { SNAP(gp_Pnt p; gp_Vec a, b; s.D1(u[i], v[i], p, a, b); o_pnt(p); o_vec(a); o_vec(b)); }
+}
+'''
+
+CPP_BX = r'''
+// ----- Bnd_Box / Bnd_Box2d arguments (a call fills a box: the box is a raw input and is printed after the call)
+//   bx_Bnd_Box: kind (0 void, 1 Update) then 6 floats when kind is 1, gap;  bx_Bnd_Box2d: kind, 4 floats, gap
+static Raw g_bx(const char* w, int dim) {
+  RB b; bool full = coin(0.45);
+  b.i(full ? 1 : 0);
+  if (full) {
+    double lo[3], hi[3];
+    for (int k = 0; k < dim; ++k) { lo[k] = crd(); hi[k] = lo[k] + (coin(0.1) ? 0.0 : rnd(0.1, 4)); }
+    for (int k = 0; k < dim; ++k) b.f(lo[k]);
+    for (int k = 0; k < dim; ++k) b.f(hi[k]);
+  }
+  b.f(coin(0.6) ? 0.0 : rnd(0, 0.5));
+  return Raw{w, b.pat, b.v};
+}
+static Bnd_Box mk_bx(const Raw& r) {
+  Bnd_Box b; const Vd& v = r.v;
+  if (v.at(0) != 0) b.Update(v.at(1), v.at(2), v.at(3), v.at(4), v.at(5), v.at(6));
+  b.SetGap(v.at(v.size() - 1));
+  return b;
+}
+static Bnd_Box2d mk_bx2(const Raw& r) {
+  Bnd_Box2d b; const Vd& v = r.v;
+  if (v.at(0) != 0) b.Update(v.at(1), v.at(2), v.at(3), v.at(4));
+  b.SetGap(v.at(v.size() - 1));
+  return b;
+}
+static void o_bx(const Bnd_Box& b) {
+  ob(b.IsVoid());
+  if (!b.IsVoid()) { double x[6]; b.Get(x[0], x[1], x[2], x[3], x[4], x[5]); for (double d : x) h(d); h(b.GetGap()); }
+}
+static void o_bx2(const Bnd_Box2d& b) {
+  ob(b.IsVoid());
+  if (!b.IsVoid()) { double x[4]; b.Get(x[0], x[1], x[2], x[3]); for (double d : x) h(d); h(b.GetGap()); }
+}
+'''
+
+CPP_DOM = r'''
+// ----- MathUtils::Domain1D / Domain2D arguments (min max; umin umax vmin vmax)
+static Raw g_dom(const char* w, int n) {
+  RB b;
+  for (int k = 0; k < n; k += 2) {
+    double lo = crd(), hi = lo + (coin(0.08) ? -rnd(0, 1) : (coin(0.05) ? 0.0 : rnd(0.2, 7)));
+    b.f(lo); b.f(hi);
+  }
+  return Raw{w, b.pat, b.v};
+}
+static MathUtils::Domain1D mk_dom1(const Raw& r) { return MathUtils::Domain1D(r.v.at(0), r.v.at(1)); }
+static MathUtils::Domain2D mk_dom2(const Raw& r) { return MathUtils::Domain2D(r.v.at(0), r.v.at(1), r.v.at(2), r.v.at(3)); }
+static void o_dom1(const MathUtils::Domain1D& d) { h(d.Min); h(d.Max); }
+static void o_dom2(const MathUtils::Domain2D& d) { h(d.UMin); h(d.UMax); h(d.VMin); h(d.VMax); }
+'''
+
+H_HEADERS = ['Geom_Line', 'Geom_Circle', 'Geom_Ellipse', 'Geom_Hyperbola', 'Geom_Parabola', 'Geom_BezierCurve', 'Geom_BSplineCurve',
+             'Geom_TrimmedCurve', 'Geom_OffsetCurve', 'Geom_Plane', 'Geom_CylindricalSurface', 'Geom_ConicalSurface',
+             'Geom_SphericalSurface', 'Geom_ToroidalSurface', 'Geom_BezierSurface', 'Geom_BSplineSurface',
+             'Geom_SurfaceOfLinearExtrusion', 'Geom_SurfaceOfRevolution', 'Geom_RectangularTrimmedSurface', 'Geom_OffsetSurface',
+             'Geom2d_Line', 'Geom2d_Circle', 'Geom2d_Ellipse', 'Geom2d_Hyperbola', 'Geom2d_Parabola', 'Geom2d_BezierCurve',
+             'Geom2d_BSplineCurve', 'Geom2d_TrimmedCurve', 'Geom2d_OffsetCurve', 'GeomAdaptor_Curve', 'GeomAdaptor_Surface',
+             'Geom2dAdaptor_Curve', 'Adaptor3d_Curve', 'Adaptor3d_Surface', 'Adaptor2d_Curve2d', 'gp_Ax22d', 'gp_Lin2d',
+             'gp_Circ2d', 'gp_Elips2d', 'gp_Hypr2d', 'gp_Parab2d']
+H_LIBS = ['TKGeomBase', 'TKG3d', 'TKG2d']
+
+
 # --------------------------------------------------------------------------------------------------------------
 # C++ generation of the families
 
@@ -1742,7 +2666,21 @@ def cpp_type(k):
         return 'NCollection_Array2<%s>' % ELEM_CPP[k[1]]
     if t == 'cls':
         return 'std::unique_ptr<%s>' % k[1]
+    if t in ('h', 'ad'):
+        return 'occ::handle<%s>' % k[1]
+    if t in ('bx', 'dom'):
+        return k[1]
     raise ValueError(k)
+
+
+def arg_expr(p, j, padded=True):
+    """How the variable aJ of an `in` parameter is passed to the call (a gp value is `Padded` in the families)."""
+    k = p.kind
+    if k[0] == 'cls' or (k[0] == 'gp' and padded):
+        return '*a%d' % j
+    if k[0] == 'ad' and not p.info.get('handle'):
+        return '*a%d' % j
+    return 'a%d' % j
 
 
 def gen_stmt(p, B='B'):
@@ -1765,6 +2703,21 @@ def gen_stmt(p, B='B'):
         return 'put(%s, g_arr("%s", 2));' % (B, k[1])
     if t == 'cls':
         return '{ int s_ = ntok; ++g_nested; gen_obj_%s(%s, -1); --g_nested; word("obj_%s", s_, -1); }' % (k[1], B, k[1])
+    if t == 'bx':
+        return 'put(%s, g_bx("bx_%s", %d));' % (B, k[1], 3 if k[1] == 'Bnd_Box' else 2)
+    if t == 'dom':
+        return 'put(%s, g_dom("dom_%s", %d));' % (B, k[1].replace('::', '_'), len(DOMAINS[k[1]][1]))
+    if t == 'h':
+        fam, _, kinds, _ = H_INFO[k[1]]
+        ks = '{' + ', '.join(str(x) for x in kinds) + '}'
+        if fam == 's3':
+            return 'put(%s, g_hs(%s, "h_%s", %s));' % (B, B, k[1], ks)
+        return 'put(%s, g_hc(%s, "h_%s", %d, %s));' % (B, B, k[1], 3 if fam == 'c3' else 2, ks)
+    if t == 'ad':
+        fam = AD_INFO[k[1]][0]
+        if fam == 'as3':
+            return 'put(%s, g_ads(%s, "ad_%s"));' % (B, B, k[1])
+        return 'put(%s, g_adc(%s, "ad_%s", %d));' % (B, B, k[1], 3 if fam == 'ac3' else 2)
     raise ValueError(k)
 
 
@@ -1784,6 +2737,16 @@ def mk_expr(k, C='C'):
         return 'mk_arr2<%s, mkp_%s>(%s.next(), %d)' % (ELEM_CPP[e], e, C, stride_of(e))
     if t == 'cls':
         return 'mk_obj_%s(%s)' % (k[1], C)
+    if t == 'bx':
+        return 'mk_bx%s(%s.next())' % ('' if k[1] == 'Bnd_Box' else '2', C)
+    if t == 'dom':
+        return 'mk_dom%d(%s.next())' % (len(DOMAINS[k[1]][1]) // 2, C)
+    if t == 'h':
+        fam = H_INFO[k[1]][0]
+        fld, bld = {'c3': ('cv', 'build_c'), 'c2': ('cv', 'build_c2'), 's3': ('sv', 'build_s')}[fam]
+        return 'hdown<%s>(%s(*%s.next().%s))' % (k[1], bld, C, fld)
+    if t == 'ad':
+        return {'ac3': 'mk_adc3', 'ac2': 'mk_adc2', 'as3': 'mk_ads3'}[AD_INFO[k[1]][0]] + '(%s.next())' % C
     raise ValueError(k)
 
 
@@ -1803,6 +2766,25 @@ def print_stmt(k, var):
         return 'o_arr_%s(%s);' % (k[1], var)
     if t == 'arr2':
         return 'o_arr2_%s(%s);' % (k[1], var)
+    if t == 'u':
+        return 'o_u((unsigned long long)%s);' % var
+    if t == 'dom':
+        return 'o_dom%d(%s);' % (len(DOMAINS[k[1]][1]) // 2, var)
+    if t == 'ns':
+        return 'o_ns_%s(%s);' % (mname(k[1]), var)
+    if t == 'bx':
+        return 'o_bx%s(%s);' % ('' if k[1] == 'Bnd_Box' else '2', var)
+    if t == 'st':
+        return 'o_st_%s(%s);' % (mname(k[1]), var)
+    if t == 'sarr':
+        return 'o_sarr%d(%s, o_st_%s);' % (k[2], var, mname(k[1]))
+    if t == 'h':
+        return 'o_h_%s(%s);' % (H_INFO[k[1]][0], var)
+    if t == 'ad':
+        f = AD_INFO[k[1]][0]
+        if len(k) > 2 and k[2]:
+            return 'if (%s.IsNull()) in(0); else { in(1); o_ad_%s(*%s); }' % (var, {'ac3': 'c3', 'ac2': 'c2', 'as3': 's3'}[f], var)
+        return '{ in(1); o_ad_%s(%s); }' % ({'ac3': 'c3', 'ac2': 'c2', 'as3': 's3'}[f], var)
     raise ValueError(k)
 
 
@@ -1832,7 +2814,7 @@ def obj_helpers(c):
         args = []
         for j, p in enumerate(f.params if f else []):
             out.append('      %s a%d = %s;' % (cpp_type(p.kind), j, mk_expr(p.kind)))
-            args.append(('*a%d' if p.kind[0] == 'cls' else 'a%d') % j)
+            args.append(arg_expr(p, j, False))
         out.append('      return std::unique_ptr<%s>(new %s(%s)); }' % (n, n, ', '.join(args)))
     out.append('  }')
     out.append('  throw Discard();')
@@ -1843,7 +2825,7 @@ def obj_helpers(c):
 def snapshot_code(plan, var):
     out = []
     for g in plan.getters:
-        out.append('    try { auto g_ = %s->%s(); %s } catch (Standard_Failure&) { ox(); }' % (
+        out.append('    try { auto&& g_ = %s->%s(); %s } catch (Standard_Failure&) { ox(); }' % (
             var, g.cname, print_stmt(g.ret, 'g_')))
     return out
 
@@ -1863,7 +2845,7 @@ def family_code(idx, plan, m):
     if plan.kind == 'ctor_obj':
         nctor = len(plan.cls.drv_ctors)
     lim = 'g_cases * %d' % min(nctor, 4)
-    lines.append('  for (int att = 0; fam_wanted(N) && att < (g_probe ? 24 : MAXATT * %d) && fam_lines[N] < %s; ++att) {' % (
+    lines.append('  for (int att = 0; fam_wanted(N) && fam_hangs[N] < 2 && att < (g_probe ? 24 : MAXATT * %d) && fam_lines[N] < %s; ++att) {' % (
         max(nctor, 1), lim))
     lines.append('    g_att = att;')
     if cands:
@@ -1920,7 +2902,7 @@ def family_code(idx, plan, m):
                 body.append('      Padded<%s> a%d(%s);' % (cpp_type(p.kind), j, mk_expr(p.kind)))
             else:
                 body.append('      %s a%d = %s;' % (cpp_type(p.kind), j, mk_expr(p.kind)))
-            args.append(('*a%d' if p.kind[0] in ('cls', 'gp') else 'a%d') % j)
+            args.append(arg_expr(p, j))
         else:
             init = {'f': ' = 0', 'i': ' = 0', 'b': ' = false'}.get(p.kind[0], '')
             body.append('      %s o%d%s;' % (cpp_type(p.kind), j, init))
@@ -1949,10 +2931,13 @@ def family_code(idx, plan, m):
         if f.ret[0] == 'void':
             body.append('      %s(%s);' % (callee, al))
         else:
-            body.append('      auto r = %s(%s);' % (callee, al))
+            body.append('      auto&& r = %s(%s);' % (callee, al))
             body.append('      ' + print_stmt(f.ret, 'r'))
         for j, p in outs:
             body.append('      ' + print_stmt(p.kind, 'o%d' % j))
+        for j, p in enumerate(f.params):
+            if p.mutref:
+                body.append('      ' + print_stmt(p.kind, 'a%d' % j))
         if plan.mutates:
             if plan.recv[0] == 'gp':
                 body.append('      ' + print_stmt(('gp', plan.recv[1]), '(*s)'))
@@ -1975,8 +2960,40 @@ def build_cpp(m, plans, excluded, cases, skip_default, hdrs, enum_hdrs, inout_de
     """-> (text, {family: (first line, last line)}, {class: (first line, last line)} of the object helpers)"""
     ctx = m.ctx
     inc = ''.join('#include <%s>\n' % h for h in hdrs) + ''.join('#include <%s.hxx>\n' % e for e in sorted(enum_hdrs))
-    pre = CPP_PRELUDE.replace('@@BUILDNOTE@@', BUILD_NOTE[0]).replace('@@PKG@@', m.pkg).replace('@@INCLUDES@@', inc.rstrip('\n')).replace('@@CASES@@', str(cases))
+    if ctx.saw_handle:
+        inc += ''.join('#include <%s.hxx>\n' % h for h in H_HEADERS)
+    if ctx.saw_bx:
+        inc += '#include <Bnd_Box.hxx>\n#include <Bnd_Box2d.hxx>\n'
+    if ctx.saw_dom:
+        inc += '#include <MathUtils_Domain.hxx>\n'
+    pre = CPP_PRELUDE.replace('@@HANDLES@@', (CPP_HANDLES if ctx.saw_handle else '') + (CPP_BX if ctx.saw_bx else '') + (CPP_DOM if ctx.saw_dom else '')).replace('@@BUILDNOTE@@', BUILD_NOTE[0]).replace('@@PKG@@', m.pkg).replace('@@INCLUDES@@', inc.rstrip('\n')).replace('@@CASES@@', str(cases))
     parts = [pre]
+    if ctx.used_ns:
+        pr_ = []
+        for sn in ctx.used_ns:
+            body_ = []
+            for fname, qt in ctx.structs[sn]:
+                ma = re.match(r'^NCollection_(DynamicArray|Array1|Vector)<\s*([\w:]+)\s*>$', qt.strip())
+                if ma:
+                    en = ma.group(2)
+                    en = en if en in ctx.structs else m.pkg + '::' + en
+                    first = 'a_.Lower() + i_' if ma.group(1) == 'Array1' else 'i_'
+                    body_.append('{ const auto& a_ = v.%s; in(1); in((long)a_.Length()); for (int i_ = 0; i_ < a_.Length(); ++i_) o_ns_%s(a_.Value(%s)); }' % (fname, mname(en), first))
+                    continue
+                t_ = split_type(qt)['base']
+                if t_ in ctx.structs:
+                    body_.append('o_ns_%s(v.%s);' % (mname(t_), fname))
+                    continue
+                k_ = ctx.classify(qt)[0]
+                body_.append(print_stmt(k_, 'v.' + fname) if k_[0] != 'enum' else 'in((long)static_cast<int>(v.%s));' % fname)
+            pr_.append('static void o_ns_%s(const %s& v) { %s }' % (mname(sn), sn, ' '.join(body_)))
+        parts.append('\n'.join(pr_))
+    if ctx.used_structs:
+        pr_ = ['template <class A, class F> static void o_sarr1(const A& a, F f) { in(a.Lower()); in(a.Upper()); for (int i = a.Lower(); i <= a.Upper(); ++i) f(a(i)); }',
+               'template <class A, class F> static void o_sarr2(const A& a, F f) { in(a.LowerRow()); in(a.UpperRow()); in(a.LowerCol()); in(a.UpperCol()); for (int i = a.LowerRow(); i <= a.UpperRow(); ++i) for (int j = a.LowerCol(); j <= a.UpperCol(); ++j) f(a(i, j)); }']
+        for sn in sorted(ctx.used_structs):
+            pr_.append('static void o_st_%s(const %s& v) { %s }' % (mname(sn), sn, ' '.join('o_%s(v.%s);' % (w, cf) for cf, rf, w in STRUCTS[sn][1])))
+        parts.append('\n'.join(pr_))
     used = [c for c in ctx.classes.values() if c.name in ctx.drivable]
     for c in used:
         parts.append('static void gen_obj_%s(Bag& B, int sel);' % c.name)
@@ -2114,6 +3131,12 @@ impl Emit for i32 {
         g.i(*self);
     }
 }
+impl Emit for usize {
+    fn emit(&self, g: &mut Got) {
+        g.0.push(Tok::S(format!("h{:016x}", *self as u64)));
+    }
+}
+impl Plain for usize {}
 impl Emit for () {
     fn emit(&self, _: &mut Got) {}
 }
@@ -2879,6 +3902,1015 @@ RS_GP_USES = '''use occt_port::gp::{
 use occt_port::plib::Array2;'''
 
 
+RS_H_COMMON = r'''// ---------------------------------------------------------------------------------
+// Handles of curves and surfaces (recipes of the reviewed judges tests/geom.rs and tests/geom2d.rs) and their snapshots
+use std::sync::Arc;
+
+impl From<occt_port::gp::ConstructionError> for Thrown {
+    fn from(_: occt_port::gp::ConstructionError) -> Self {
+        Thrown
+    }
+}
+impl From<occt_port::geom::GeomError> for Thrown {
+    fn from(_: occt_port::geom::GeomError) -> Self {
+        Thrown
+    }
+}
+impl From<occt_port::geom2d::Geom2dError> for Thrown {
+    fn from(_: occt_port::geom2d::Geom2dError) -> Self {
+        Thrown
+    }
+}
+
+impl<T: Plain + ?Sized> Plain for Option<&T> {}
+impl<T: Emit + ?Sized> Emit for Option<&T> {
+    fn emit(&self, g: &mut Got) {
+        match self {
+            Some(x) => x.emit(g),
+            None => g.i(0),
+        }
+    }
+}
+
+/// A parameter bound: 1 and the value when finite, 0 otherwise.
+fn hb(g: &mut Got, x: f64) {
+    if x.abs() < 1e50 {
+        g.i(1);
+        g.f(x);
+    } else {
+        g.i(0);
+    }
+}
+
+/// The five parameters of a curve snapshot.
+fn snap_params(f: f64, l: f64) -> [f64; 5] {
+    if f.abs() < 1e50 && l.abs() < 1e50 {
+        std::array::from_fn(|k| f + (l - f) * (k as f64 * 0.25))
+    } else {
+        [-2.0, -1.0, 0.25, 1.0, 2.0]
+    }
+}
+
+/// The four (u, v) points of a surface snapshot.
+fn snap_uv(u1: f64, u2: f64, v1: f64, v2: f64) -> ([f64; 4], [f64; 4]) {
+    const K: [[f64; 2]; 4] = [[0.0, 0.0], [0.25, 0.75], [0.5, 0.5], [1.0, 1.0]];
+    let fu = u1.abs() < 1e50 && u2.abs() < 1e50;
+    let fv = v1.abs() < 1e50 && v2.abs() < 1e50;
+    let u = std::array::from_fn(|k| if fu { u1 + (u2 - u1) * K[k][0] } else { -2.0 + k as f64 });
+    let v = std::array::from_fn(|k| if fv { v1 + (v2 - v1) * K[k][1] } else { 2.0 - k as f64 });
+    (u, v)
+}
+
+/// Emits a value that may be missing: an `Err` prints `x` (the oracle's getter / evaluation raised).
+fn okx<T: Emit, E>(g: &mut Got, r: Result<T, E>) {
+    match r {
+        Ok(v) => g.put(&v),
+        Err(_) => g.x(),
+    }
+}
+'''
+
+RS_H_C3 = r'''fn conc3<T: Clone + 'static>(c: &dyn occt_port::geom::Curve) -> Result<Arc<T>, Thrown> {
+    use occt_port::geom::Geometry as _;
+    c.as_any().downcast_ref::<T>().map(|x| Arc::new(x.clone())).ok_or(Thrown)
+}
+fn conc3s<T: Clone + 'static>(c: &dyn occt_port::geom::Surface) -> Result<Arc<T>, Thrown> {
+    use occt_port::geom::Geometry as _;
+    c.as_any().downcast_ref::<T>().map(|x| Arc::new(x.clone())).ok_or(Thrown)
+}
+fn conic3(b: Box<dyn occt_port::geom::Curve>) -> Result<Arc<dyn occt_port::geom::Conic>, Thrown> {
+    use occt_port::geom::{Circle, Ellipse, Geometry as _, Hyperbola, Parabola};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<Circle>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Ellipse>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Hyperbola>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Parabola>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+fn bounded3(b: Box<dyn occt_port::geom::Curve>) -> Result<Arc<dyn occt_port::geom::BoundedCurve>, Thrown> {
+    use occt_port::geom::{BSplineCurve, BezierCurve, Geometry as _, TrimmedCurve};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<BezierCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<BSplineCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<TrimmedCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+fn elementary3(b: Box<dyn occt_port::geom::Surface>) -> Result<Arc<dyn occt_port::geom::ElementarySurface>, Thrown> {
+    use occt_port::geom::{ConicalSurface, CylindricalSurface, Geometry as _, Plane, SphericalSurface, ToroidalSurface};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<Plane>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<CylindricalSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<ConicalSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<SphericalSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<ToroidalSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+fn swept3(b: Box<dyn occt_port::geom::Surface>) -> Result<Arc<dyn occt_port::geom::SweptSurface>, Thrown> {
+    use occt_port::geom::{Geometry as _, SurfaceOfLinearExtrusion, SurfaceOfRevolution};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<SurfaceOfLinearExtrusion>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<SurfaceOfRevolution>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+fn bounded3s(b: Box<dyn occt_port::geom::Surface>) -> Result<Arc<dyn occt_port::geom::BoundedSurface>, Thrown> {
+    use occt_port::geom::{BSplineSurface, BezierSurface, Geometry as _, RectangularTrimmedSurface};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<BezierSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<BSplineSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<RectangularTrimmedSurface>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+
+/// The snapshot of a `Geom_Curve`: 1 (0 for a null handle), the bounds, periodicity, continuity, `EvalD0` and `EvalD1` at five
+/// parameters. The evaluations print `x` when they fail.
+fn snap_c3(g: &mut Got, k: &dyn occt_port::geom::Curve) {
+    g.i(1);
+    let (f, l) = (k.first_parameter(), k.last_parameter());
+    hb(g, f);
+    hb(g, l);
+    g.b(k.is_periodic());
+    g.i(k.continuity() as i32);
+    let t = snap_params(f, l);
+    for &u in &t {
+        okx(g, k.eval_d0(u));
+    }
+    for &u in &t {
+        match k.eval_d1(u) {
+            Ok(r) => {
+                g.put(&r.point);
+                g.put(&r.d1);
+            }
+            Err(_) => g.x(),
+        }
+    }
+}
+
+/// The snapshot of a `Geom_Surface`: 1, the bounds, closed / periodic in U and V, continuity, `EvalD0` and `EvalD1` at four points.
+fn snap_s3(g: &mut Got, k: &dyn occt_port::geom::Surface) {
+    g.i(1);
+    let (u1, u2, v1, v2) = k.bounds();
+    hb(g, u1);
+    hb(g, u2);
+    hb(g, v1);
+    hb(g, v2);
+    g.b(k.is_u_closed());
+    g.b(k.is_v_closed());
+    g.b(k.is_u_periodic());
+    g.b(k.is_v_periodic());
+    g.i(k.continuity() as i32);
+    let (u, v) = snap_uv(u1, u2, v1, v2);
+    for i in 0..4 {
+        okx(g, k.eval_d0(u[i], v[i]));
+    }
+    for i in 0..4 {
+        match k.eval_d1(u[i], v[i]) {
+            Ok(r) => {
+                g.put(&r.point);
+                g.put(&r.d1u);
+                g.put(&r.d1v);
+            }
+            Err(_) => g.x(),
+        }
+    }
+}
+'''
+
+RS_H_C2 = r'''fn conc2<T: Clone + 'static>(c: &dyn occt_port::geom2d::Curve2d) -> Result<Arc<T>, Thrown> {
+    use occt_port::geom2d::Geometry2d as _;
+    c.as_any().downcast_ref::<T>().map(|x| Arc::new(x.clone())).ok_or(Thrown)
+}
+fn conic2(b: Box<dyn occt_port::geom2d::Curve2d>) -> Result<Arc<dyn occt_port::geom2d::Conic2d>, Thrown> {
+    use occt_port::geom2d::{Circle, Ellipse, Geometry2d as _, Hyperbola, Parabola};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<Circle>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Ellipse>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Hyperbola>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<Parabola>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+fn bounded2(b: Box<dyn occt_port::geom2d::Curve2d>) -> Result<Arc<dyn occt_port::geom2d::BoundedCurve2d>, Thrown> {
+    use occt_port::geom2d::{BSplineCurve, BezierCurve, Geometry2d as _, TrimmedCurve};
+    let a = b.as_any();
+    if let Some(x) = a.downcast_ref::<BezierCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<BSplineCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    if let Some(x) = a.downcast_ref::<TrimmedCurve>() {
+        return Ok(Arc::new(x.clone()));
+    }
+    Err(Thrown)
+}
+
+/// The snapshot of a `Geom2d_Curve` (as `snap_c3`).
+fn snap_c2(g: &mut Got, k: &dyn occt_port::geom2d::Curve2d) {
+    g.i(1);
+    let (f, l) = (k.first_parameter(), k.last_parameter());
+    hb(g, f);
+    hb(g, l);
+    g.b(k.is_periodic());
+    g.i(k.continuity() as i32);
+    let t = snap_params(f, l);
+    for &u in &t {
+        okx(g, k.eval_d0(u));
+    }
+    for &u in &t {
+        match k.eval_d1(u) {
+            Ok(r) => {
+                g.put(&r.point);
+                g.put(&r.d1);
+            }
+            Err(_) => g.x(),
+        }
+    }
+}
+'''
+
+RS_H_AC3 = r'''/// The snapshot of an `Adaptor3d_Curve`.
+fn snap_ad_c3(g: &mut Got, k: &dyn occt_port::adaptor3d::Curve3dAdaptor) {
+    g.i(1);
+    let (f, l) = (k.first_parameter().ok(), k.last_parameter().ok());
+    for v in [f, l] {
+        match v {
+            Some(x) => hb(g, x),
+            None => g.x(),
+        }
+    }
+    okx(g, k.is_closed());
+    okx(g, k.is_periodic());
+    okx(g, k.continuity().map(|c| c as i32));
+    let t = snap_params(f.unwrap_or(0.0), l.unwrap_or(0.0));
+    for &u in &t {
+        okx(g, k.d0(u));
+    }
+    for &u in &t {
+        okx(g, k.d1(u));
+    }
+}
+'''
+
+RS_H_AC2 = r'''/// The snapshot of an `Adaptor2d_Curve2d`.
+fn snap_ad_c2(g: &mut Got, k: &dyn occt_port::adaptor2d::Curve2dAdaptor) {
+    g.i(1);
+    let (f, l) = (k.first_parameter().ok(), k.last_parameter().ok());
+    for v in [f, l] {
+        match v {
+            Some(x) => hb(g, x),
+            None => g.x(),
+        }
+    }
+    okx(g, k.is_closed());
+    okx(g, k.is_periodic());
+    okx(g, k.continuity().map(|c| c as i32));
+    let t = snap_params(f.unwrap_or(0.0), l.unwrap_or(0.0));
+    for &u in &t {
+        okx(g, k.d0(u));
+    }
+    for &u in &t {
+        okx(g, k.d1(u));
+    }
+}
+'''
+
+RS_H_AS3 = r'''/// The snapshot of an `Adaptor3d_Surface`.
+fn snap_ad_s3(g: &mut Got, k: &dyn occt_port::adaptor3d::SurfaceAdaptor) {
+    g.i(1);
+    let b = [k.first_u_parameter().ok(), k.last_u_parameter().ok(), k.first_v_parameter().ok(), k.last_v_parameter().ok()];
+    for v in b {
+        match v {
+            Some(x) => hb(g, x),
+            None => g.x(),
+        }
+    }
+    okx(g, k.is_u_closed());
+    okx(g, k.is_v_closed());
+    okx(g, k.is_u_periodic());
+    okx(g, k.is_v_periodic());
+    okx(g, k.u_continuity().map(|c| c as i32));
+    okx(g, k.v_continuity().map(|c| c as i32));
+    let (u, v) = snap_uv(b[0].unwrap_or(0.0), b[1].unwrap_or(0.0), b[2].unwrap_or(0.0), b[3].unwrap_or(0.0));
+    for i in 0..4 {
+        okx(g, k.d0(u[i], v[i]));
+    }
+    for i in 0..4 {
+        match k.d1(u[i], v[i]) {
+            Ok(r) => {
+                g.put(&r.point);
+                g.put(&r.d1u);
+                g.put(&r.d1v);
+            }
+            Err(_) => g.x(),
+        }
+    }
+}
+'''
+
+RS_H_MODS3 = r'''mod h3 {
+    use super::{bits, Rd, Thrown};
+    use occt_port::geom::{BSplineCurve, BSplineSurface, BezierCurve, BezierSurface, Circle, ConicalSurface, Curve, CylindricalSurface, Ellipse, Hyperbola, Line, OffsetCurve, OffsetSurface, Parabola, Plane, RectangularTrimmedSurface, SphericalSurface, Surface, SurfaceOfLinearExtrusion, SurfaceOfRevolution, ToroidalSurface, TrimmedCurve};
+    use occt_port::gp::{Ax1, Ax2, Ax3, Circ, Cone, Cylinder, Dir, Elips, Hypr, Lin, Parab, Pln, Pnt, Sphere, Torus};
+    use std::sync::Arc;
+
+    type R<T = ()> = Result<T, Thrown>;
+
+    /// `crv`: a curve recipe.
+    pub(super) enum CurveSpec {
+        /// Kinds 0..=4: line, circle, ellipse, hyperbola, parabola.
+        Basic {
+            kind: i32,
+            ctor: i32,
+            v: [f64; 9],
+            a: f64,
+            b: f64,
+        },
+        Bezier {
+            poles: Vec<Pnt>,
+            weights: Option<Vec<f64>>,
+        },
+        BSpline {
+            degree: i32,
+            periodic: bool,
+            knots: Vec<f64>,
+            mults: Vec<i32>,
+            poles: Vec<Pnt>,
+            weights: Option<Vec<f64>>,
+        },
+        Trimmed {
+            u1: f64,
+            u2: f64,
+            sense: bool,
+            adjust: bool,
+            basis: Box<CurveSpec>,
+        },
+        Offset {
+            offset: f64,
+            not_check_c0: bool,
+            dir: [f64; 3],
+            basis: Box<CurveSpec>,
+        },
+    }
+
+    /// `srf`: a surface recipe.
+    pub(super) enum SurfSpec {
+        Plane {
+            ctor: i32,
+            fr: [f64; 10],
+            abcd: [f64; 4],
+        },
+        Cylinder {
+            ctor: i32,
+            fr: [f64; 10],
+            r: f64,
+        },
+        Cone {
+            ctor: i32,
+            fr: [f64; 10],
+            ang: f64,
+            r: f64,
+        },
+        Sphere {
+            ctor: i32,
+            fr: [f64; 10],
+            r: f64,
+        },
+        Torus {
+            ctor: i32,
+            fr: [f64; 10],
+            major: f64,
+            minor: f64,
+        },
+        Bezier {
+            nu: usize,
+            nv: usize,
+            poles: Vec<Pnt>,
+            weights: Option<Vec<f64>>,
+        },
+        BSpline {
+            udeg: i32,
+            vdeg: i32,
+            uper: bool,
+            vper: bool,
+            uk: Vec<f64>,
+            um: Vec<i32>,
+            vk: Vec<f64>,
+            vm: Vec<i32>,
+            nu: usize,
+            nv: usize,
+            poles: Vec<Pnt>,
+            weights: Option<Vec<f64>>,
+        },
+        Extrusion {
+            dir: [f64; 3],
+            curve: Box<CurveSpec>,
+        },
+        Revolution {
+            axis: [f64; 6],
+            curve: Box<CurveSpec>,
+        },
+        Trimmed {
+            ctor: i32,
+            t: [f64; 4],
+            s1: bool,
+            s2: bool,
+            utrim: bool,
+            basis: Box<SurfSpec>,
+        },
+        Offset {
+            offset: f64,
+            not_check_c0: bool,
+            basis: Box<SurfSpec>,
+        },
+    }
+
+    impl Rd<'_> {
+        pub(super) fn fl3<const N: usize>(&mut self) -> [f64; N] {
+            let mut a = [0.0; N];
+            for v in &mut a {
+                *v = self.f();
+            }
+            a
+        }
+
+        pub(super) fn pnts3_n(&mut self, n: usize) -> Vec<Pnt> {
+            (0..n)
+                .map(|_| {
+                    let x = self.f();
+                    let y = self.f();
+                    let z = self.f();
+                    Pnt::new(x, y, z)
+                })
+                .collect()
+        }
+
+        pub(super) fn pnts3(&mut self) -> Vec<Pnt> {
+            let n = self.count();
+            self.pnts3_n(n)
+        }
+
+        pub(super) fn wts3(&mut self) -> Option<Vec<f64>> {
+            if self.i() == 0 {
+                return None;
+            }
+            let n = self.count();
+            Some((0..n).map(|_| self.f()).collect())
+        }
+
+        /// `crv`.
+        pub(super) fn crv(&mut self) -> CurveSpec {
+            let kind = self.i();
+            match kind {
+                0..=4 => {
+                    let ctor = self.i();
+                    let mut v = [0.0; 9];
+                    let (mut a, mut b) = (0.0, 0.0);
+                    if kind == 0 {
+                        for x in v.iter_mut().take(6) {
+                            *x = self.f();
+                        }
+                    } else {
+                        for x in &mut v {
+                            *x = self.f();
+                        }
+                        if kind == 1 || (kind == 4 && ctor != 2) {
+                            a = self.f();
+                        }
+                        if kind == 2 || kind == 3 {
+                            a = self.f();
+                            b = self.f();
+                        }
+                    }
+                    CurveSpec::Basic { kind, ctor, v, a, b }
+                }
+                5 => {
+                    let poles = self.pnts3();
+                    let weights = self.wts3();
+                    CurveSpec::Bezier { poles, weights }
+                }
+                6 => {
+                    let degree = self.i();
+                    let periodic = self.i() != 0;
+                    let nk = self.count();
+                    let knots = (0..nk).map(|_| self.f()).collect();
+                    let nm = self.count();
+                    let mults = (0..nm).map(|_| self.i()).collect();
+                    let poles = self.pnts3();
+                    let weights = self.wts3();
+                    CurveSpec::BSpline { degree, periodic, knots, mults, poles, weights }
+                }
+                7 => {
+                    let u1 = self.f();
+                    let u2 = self.f();
+                    let sense = self.i() != 0;
+                    let adjust = self.i() != 0;
+                    CurveSpec::Trimmed { u1, u2, sense, adjust, basis: Box::new(self.crv()) }
+                }
+                8 => {
+                    let offset = self.f();
+                    let not_check_c0 = self.i() != 0;
+                    let dir = self.fl3::<3>();
+                    CurveSpec::Offset { offset, not_check_c0, dir, basis: Box::new(self.crv()) }
+                }
+                k => panic!("bad curve kind {k}"),
+            }
+        }
+
+        /// `srf`.
+        pub(super) fn srf(&mut self) -> SurfSpec {
+            let kind = self.i();
+            match kind {
+                0 => {
+                    let ctor = self.i();
+                    let (mut fr, mut abcd) = ([0.0; 10], [0.0; 4]);
+                    match ctor {
+                        0 | 1 => fr = self.fl3::<10>(),
+                        2 => {
+                            let v = self.fl3::<6>();
+                            fr[..6].copy_from_slice(&v);
+                        }
+                        _ => abcd = self.fl3::<4>(),
+                    }
+                    SurfSpec::Plane { ctor, fr, abcd }
+                }
+                1 => {
+                    let ctor = self.i();
+                    let fr = self.fl3::<10>();
+                    SurfSpec::Cylinder { ctor, fr, r: self.f() }
+                }
+                2 => {
+                    let ctor = self.i();
+                    let fr = self.fl3::<10>();
+                    let ang = self.f();
+                    SurfSpec::Cone { ctor, fr, ang, r: self.f() }
+                }
+                3 => {
+                    let ctor = self.i();
+                    let fr = self.fl3::<10>();
+                    SurfSpec::Sphere { ctor, fr, r: self.f() }
+                }
+                4 => {
+                    let ctor = self.i();
+                    let fr = self.fl3::<10>();
+                    let major = self.f();
+                    SurfSpec::Torus { ctor, fr, major, minor: self.f() }
+                }
+                5 => {
+                    let nu = self.count();
+                    let nv = self.count();
+                    let poles = self.pnts3_n(nu * nv);
+                    let weights = self.wts3();
+                    SurfSpec::Bezier { nu, nv, poles, weights }
+                }
+                6 => {
+                    let udeg = self.i();
+                    let vdeg = self.i();
+                    let uper = self.i() != 0;
+                    let vper = self.i() != 0;
+                    let nku = self.count();
+                    let uk = (0..nku).map(|_| self.f()).collect();
+                    let nmu = self.count();
+                    let um = (0..nmu).map(|_| self.i()).collect();
+                    let nkv = self.count();
+                    let vk = (0..nkv).map(|_| self.f()).collect();
+                    let nmv = self.count();
+                    let vm = (0..nmv).map(|_| self.i()).collect();
+                    let nu = self.count();
+                    let nv = self.count();
+                    let poles = self.pnts3_n(nu * nv);
+                    let weights = self.wts3();
+                    SurfSpec::BSpline { udeg, vdeg, uper, vper, uk, um, vk, vm, nu, nv, poles, weights }
+                }
+                7 => {
+                    let dir = self.fl3::<3>();
+                    SurfSpec::Extrusion { dir, curve: Box::new(self.crv()) }
+                }
+                8 => {
+                    let axis = self.fl3::<6>();
+                    SurfSpec::Revolution { axis, curve: Box::new(self.crv()) }
+                }
+                9 => {
+                    let ctor = self.i();
+                    let (t, s1, s2, utrim);
+                    if ctor == 0 {
+                        t = self.fl3::<4>();
+                        s1 = self.i() != 0;
+                        s2 = self.i() != 0;
+                        utrim = true;
+                    } else {
+                        let (a, b) = (self.f(), self.f());
+                        t = [a, b, 0.0, 0.0];
+                        utrim = self.i() != 0;
+                        s1 = self.i() != 0;
+                        s2 = true;
+                    }
+                    SurfSpec::Trimmed { ctor, t, s1, s2, utrim, basis: Box::new(self.srf()) }
+                }
+                10 => {
+                    let offset = self.f();
+                    let not_check_c0 = self.i() != 0;
+                    SurfSpec::Offset { offset, not_check_c0, basis: Box::new(self.srf()) }
+                }
+                k => panic!("bad surface kind {k}"),
+            }
+        }
+
+    }
+
+    pub(super) fn ax3_of(f: &[f64]) -> R<Ax3> {
+        let g = |k: usize| f.get(k).copied().unwrap_or(0.0);
+        let mut r = Ax3::new(Pnt::new(g(0), g(1), g(2)), Dir::new(g(3), g(4), g(5))?, Dir::new(g(6), g(7), g(8))?)?;
+        if g(9).round() as i32 != 0 {
+            r.y_reverse();
+        }
+        Ok(r)
+    }
+
+    fn ax2_v(v: &[f64; 9]) -> R<Ax2> {
+        Ok(Ax2::new(Pnt::new(v[0], v[1], v[2]), Dir::new(v[3], v[4], v[5])?, &Dir::new(v[6], v[7], v[8])?)?)
+    }
+
+    /// `build` of the oracle.
+    pub(super) fn build(c: &CurveSpec) -> R<Box<dyn Curve>> {
+        Ok(match c {
+            CurveSpec::Basic { kind, ctor, v, a, b } => {
+                let o = Pnt::new(v[0], v[1], v[2]);
+                match *kind {
+                    0 => {
+                        let d = Dir::new(v[3], v[4], v[5])?;
+                        match ctor {
+                            0 => Box::new(Line::from_ax1(Ax1::new(o, d))),
+                            1 => Box::new(Line::from_lin(Lin::from_axis(Ax1::new(o, d)))),
+                            _ => Box::new(Line::new(o, d)),
+                        }
+                    }
+                    1 => {
+                        let ax = ax2_v(v)?;
+                        if *ctor == 0 {
+                            Box::new(Circle::from_circ(Circ::new(ax, *a)?))
+                        } else {
+                            Box::new(Circle::new(ax, *a)?)
+                        }
+                    }
+                    2 => {
+                        let ax = ax2_v(v)?;
+                        if *ctor == 0 {
+                            Box::new(Ellipse::from_elips(Elips::new(ax, *a, *b)?))
+                        } else {
+                            Box::new(Ellipse::new(ax, *a, *b)?)
+                        }
+                    }
+                    3 => {
+                        let ax = ax2_v(v)?;
+                        if *ctor == 0 {
+                            Box::new(Hyperbola::from_hypr(Hypr::new(ax, *a, *b)?))
+                        } else {
+                            Box::new(Hyperbola::new(ax, *a, *b)?)
+                        }
+                    }
+                    _ => match ctor {
+                        0 => Box::new(Parabola::from_parab(Parab::new(ax2_v(v)?, *a)?)),
+                        1 => Box::new(Parabola::new(ax2_v(v)?, *a)?),
+                        _ => Box::new(Parabola::from_directrix_focus(
+                            Ax1::new(o, Dir::new(v[3], v[4], v[5])?),
+                            Pnt::new(v[6], v[7], v[8]),
+                        )?),
+                    },
+                }
+            }
+            CurveSpec::Bezier { poles, weights } => match weights {
+                None => Box::new(BezierCurve::new(poles)?),
+                Some(w) => Box::new(BezierCurve::with_weights(poles, w)?),
+            },
+            CurveSpec::BSpline { degree, periodic, knots, mults, poles, weights } => match weights {
+                None => Box::new(BSplineCurve::new(poles, knots, mults, *degree, *periodic)?),
+                Some(w) => Box::new(BSplineCurve::with_weights(poles, w, knots, mults, *degree, *periodic)?),
+            },
+            CurveSpec::Trimmed { u1, u2, sense, adjust, basis } => {
+                let b: Arc<dyn Curve> = Arc::from(build(basis)?);
+                Box::new(TrimmedCurve::new(b, *u1, *u2, *sense, *adjust)?)
+            }
+            CurveSpec::Offset { offset, not_check_c0, dir, basis } => {
+                let b: Arc<dyn Curve> = Arc::from(build(basis)?);
+                Box::new(OffsetCurve::new(b, *offset, Dir::new(dir[0], dir[1], dir[2])?, *not_check_c0)?)
+            }
+        })
+    }
+
+    /// Poles (and weights) of a surface recipe as rows (the oracle fills the weights that are missing with 0).
+    fn rows_p(nu: usize, nv: usize, poles: &[Pnt]) -> Vec<Vec<Pnt>> {
+        (0..nu).map(|i| (0..nv).map(|j| poles[i * nv + j]).collect()).collect()
+    }
+
+    fn rows_w(nu: usize, nv: usize, w: &[f64]) -> Vec<Vec<f64>> {
+        (0..nu).map(|i| (0..nv).map(|j| w.get(i * nv + j).copied().unwrap_or(0.0)).collect()).collect()
+    }
+
+    pub(super) fn build_surface(s: &SurfSpec) -> R<Box<dyn Surface>> {
+        Ok(match s {
+            SurfSpec::Plane { ctor, fr, abcd } => match ctor {
+                0 => Box::new(Plane::from_ax3(ax3_of(fr)?)),
+                1 => Box::new(Plane::from_pln(Pln::new(ax3_of(fr)?))),
+                2 => Box::new(Plane::from_point_normal(Pnt::new(fr[0], fr[1], fr[2]), Dir::new(fr[3], fr[4], fr[5])?)),
+                _ => Box::new(Plane::from_coefficients(abcd[0], abcd[1], abcd[2], abcd[3])?),
+            },
+            SurfSpec::Cylinder { ctor, fr, r } => {
+                if *ctor == 0 {
+                    Box::new(CylindricalSurface::new(ax3_of(fr)?, *r)?)
+                } else {
+                    Box::new(CylindricalSurface::from_cylinder(Cylinder::new(ax3_of(fr)?, *r)?))
+                }
+            }
+            SurfSpec::Cone { ctor, fr, ang, r } => {
+                if *ctor == 0 {
+                    Box::new(ConicalSurface::new(ax3_of(fr)?, *ang, *r)?)
+                } else {
+                    Box::new(ConicalSurface::from_cone(Cone::new(ax3_of(fr)?, *ang, *r)?))
+                }
+            }
+            SurfSpec::Sphere { ctor, fr, r } => {
+                if *ctor == 0 {
+                    Box::new(SphericalSurface::new(ax3_of(fr)?, *r)?)
+                } else {
+                    Box::new(SphericalSurface::from_sphere(Sphere::new(ax3_of(fr)?, *r)?))
+                }
+            }
+            SurfSpec::Torus { ctor, fr, major, minor } => {
+                if *ctor == 0 {
+                    Box::new(ToroidalSurface::new(ax3_of(fr)?, *major, *minor)?)
+                } else {
+                    Box::new(ToroidalSurface::from_torus(Torus::new(ax3_of(fr)?, *major, *minor)?))
+                }
+            }
+            SurfSpec::Bezier { nu, nv, poles, weights } => {
+                let p = rows_p(*nu, *nv, poles);
+                match weights {
+                    None => Box::new(BezierSurface::new(&p)?),
+                    Some(w) => Box::new(BezierSurface::with_weights(&p, &rows_w(*nu, *nv, w))?),
+                }
+            }
+            SurfSpec::BSpline { udeg, vdeg, uper, vper, uk, um, vk, vm, nu, nv, poles, weights } => {
+                let p = rows_p(*nu, *nv, poles);
+                match weights {
+                    None => Box::new(BSplineSurface::new(&p, uk, vk, um, vm, *udeg, *vdeg, *uper, *vper)?),
+                    Some(w) => Box::new(BSplineSurface::with_weights(
+                        &p,
+                        &rows_w(*nu, *nv, w),
+                        uk,
+                        vk,
+                        um,
+                        vm,
+                        *udeg,
+                        *vdeg,
+                        *uper,
+                        *vper,
+                    )?),
+                }
+            }
+            SurfSpec::Extrusion { dir, curve } => {
+                let c: Arc<dyn Curve> = Arc::from(build(curve)?);
+                Box::new(SurfaceOfLinearExtrusion::new(c, Dir::new(dir[0], dir[1], dir[2])?)?)
+            }
+            SurfSpec::Revolution { axis, curve } => {
+                let c: Arc<dyn Curve> = Arc::from(build(curve)?);
+                let a = Ax1::new(Pnt::new(axis[0], axis[1], axis[2]), Dir::new(axis[3], axis[4], axis[5])?);
+                Box::new(SurfaceOfRevolution::new(c, a)?)
+            }
+            SurfSpec::Trimmed { ctor, t, s1, s2, utrim, basis } => {
+                let b: Arc<dyn Surface> = Arc::from(build_surface(basis)?);
+                if *ctor == 0 {
+                    Box::new(RectangularTrimmedSurface::new(b, t[0], t[1], t[2], t[3], *s1, *s2)?)
+                } else {
+                    Box::new(RectangularTrimmedSurface::new_param(b, t[0], t[1], *utrim, *s1)?)
+                }
+            }
+            SurfSpec::Offset { offset, not_check_c0, basis } => {
+                let b: Arc<dyn Surface> = Arc::from(build_surface(basis)?);
+                Box::new(OffsetSurface::new(b, *offset, *not_check_c0)?)
+            }
+        })
+    }
+
+}
+
+'''
+
+RS_H_MODS2 = r'''mod h2 {
+    use super::{bits, Rd, Thrown};
+    use occt_port::geom2d::{BSplineCurve, BezierCurve, Circle, Curve2d, Ellipse, Hyperbola, Line, OffsetCurve, Parabola, TrimmedCurve};
+    use occt_port::gp::{Ax1, Ax22d, Ax2d, Circ2d, Dir2d, Elips2d, Hypr2d, Lin2d, Parab2d, Pnt2d};
+    use std::sync::Arc;
+
+    type R<T = ()> = Result<T, Thrown>;
+
+    /// `crv`: a curve recipe.
+    pub(super) enum CurveSpec {
+        /// Kinds 0..=4: line, circle, ellipse, hyperbola, parabola.
+        Basic {
+            kind: i32,
+            ctor: i32,
+            o: [f64; 2],
+            d: [f64; 2],
+            sense: bool,
+            a: f64,
+            b: f64,
+            focus: [f64; 2],
+        },
+        Bezier {
+            poles: Vec<Pnt2d>,
+            weights: Option<Vec<f64>>,
+        },
+        BSpline {
+            degree: i32,
+            periodic: bool,
+            knots: Vec<f64>,
+            mults: Vec<i32>,
+            poles: Vec<Pnt2d>,
+            weights: Option<Vec<f64>>,
+        },
+        Trimmed {
+            u1: f64,
+            u2: f64,
+            sense: bool,
+            adjust: bool,
+            basis: Box<CurveSpec>,
+        },
+        Offset {
+            offset: f64,
+            not_check_c0: bool,
+            basis: Box<CurveSpec>,
+        },
+    }
+
+    impl Rd<'_> {
+        pub(super) fn pnts2(&mut self) -> Vec<Pnt2d> {
+            let n = self.count();
+            (0..n)
+                .map(|_| {
+                    let x = self.f();
+                    let y = self.f();
+                    Pnt2d::new(x, y)
+                })
+                .collect()
+        }
+
+        pub(super) fn wts2(&mut self) -> Option<Vec<f64>> {
+            if self.i() == 0 {
+                return None;
+            }
+            let n = self.count();
+            Some((0..n).map(|_| self.f()).collect())
+        }
+
+        /// `crv`.
+        pub(super) fn crv2d(&mut self) -> CurveSpec {
+            let kind = self.i();
+            match kind {
+                0..=4 => {
+                    let ctor = self.i();
+                    let o = [self.f(), self.f()];
+                    let d = [self.f(), self.f()];
+                    let sense = self.i() != 0;
+                    let (mut a, mut b, mut focus) = (0.0, 0.0, [0.0; 2]);
+                    match kind {
+                        1 | 4 => a = self.f(),
+                        2 | 3 => {
+                            a = self.f();
+                            b = self.f();
+                        }
+                        _ => {}
+                    }
+                    if kind == 4 && ctor == 3 {
+                        focus = [self.f(), self.f()];
+                    }
+                    CurveSpec::Basic { kind, ctor, o, d, sense, a, b, focus }
+                }
+                5 => {
+                    let poles = self.pnts2();
+                    let weights = self.wts2();
+                    CurveSpec::Bezier { poles, weights }
+                }
+                6 => {
+                    let degree = self.i();
+                    let periodic = self.i() != 0;
+                    let nk = self.count();
+                    let knots = (0..nk).map(|_| self.f()).collect();
+                    let nm = self.count();
+                    let mults = (0..nm).map(|_| self.i()).collect();
+                    let poles = self.pnts2();
+                    let weights = self.wts2();
+                    CurveSpec::BSpline { degree, periodic, knots, mults, poles, weights }
+                }
+                7 => {
+                    let u1 = self.f();
+                    let u2 = self.f();
+                    let sense = self.i() != 0;
+                    let adjust = self.i() != 0;
+                    CurveSpec::Trimmed { u1, u2, sense, adjust, basis: Box::new(self.crv2d()) }
+                }
+                8 => {
+                    let offset = self.f();
+                    let not_check_c0 = self.i() != 0;
+                    CurveSpec::Offset { offset, not_check_c0, basis: Box::new(self.crv2d()) }
+                }
+                k => panic!("bad curve kind {k}"),
+            }
+        }
+
+    }
+
+    fn ax_of(o: &[f64; 2], d: &[f64; 2]) -> R<Ax2d> {
+        Ok(Ax2d::new(Pnt2d::new(o[0], o[1]), Dir2d::new(d[0], d[1])?))
+    }
+
+    /// `build` of the oracle.
+    pub(super) fn build(c: &CurveSpec) -> R<Box<dyn Curve2d>> {
+        Ok(match c {
+            CurveSpec::Basic { kind, ctor, o, d, sense, a, b, focus } => {
+                let ax = ax_of(o, d)?;
+                let s = *sense;
+                match (*kind, *ctor) {
+                    (0, 0) => Box::new(Line::from_ax2d(ax)),
+                    (0, 1) => Box::new(Line::from_lin2d(Lin2d::from_ax2d(ax))),
+                    (0, _) => Box::new(Line::new(*ax.location(), *ax.direction())),
+                    (1, 0) => Box::new(Circle::from_circ2d(Circ2d::new(ax, *a, s)?)),
+                    (1, 1) => Box::new(Circle::new(ax, *a, s)?),
+                    (1, _) => Box::new(Circle::from_ax22d(Ax22d::from_ax2d(ax, s), *a)?),
+                    (2, 0) => Box::new(Ellipse::from_elips2d(Elips2d::new(ax, *a, *b, s)?)),
+                    (2, 1) => Box::new(Ellipse::new(ax, *a, *b, s)?),
+                    (2, _) => Box::new(Ellipse::from_ax22d(Ax22d::from_ax2d(ax, s), *a, *b)?),
+                    (3, 0) => Box::new(Hyperbola::from_hypr2d(Hypr2d::new(ax, *a, *b, s)?)),
+                    (3, 1) => Box::new(Hyperbola::new(ax, *a, *b, s)?),
+                    (3, _) => Box::new(Hyperbola::from_ax22d(Ax22d::from_ax2d(ax, s), *a, *b)?),
+                    (_, 0) => Box::new(Parabola::from_parab2d(Parab2d::new(ax, *a, s)?)),
+                    (_, 1) => Box::new(Parabola::new(ax, *a, s)?),
+                    (_, 2) => Box::new(Parabola::from_ax22d(Ax22d::from_ax2d(ax, s), *a)?),
+                    (_, _) => Box::new(Parabola::from_directrix_focus(ax, Pnt2d::new(focus[0], focus[1]))),
+                }
+            }
+            CurveSpec::Bezier { poles, weights } => match weights {
+                None => Box::new(BezierCurve::new(poles)?),
+                Some(w) => Box::new(BezierCurve::with_weights(poles, w)?),
+            },
+            CurveSpec::BSpline { degree, periodic, knots, mults, poles, weights } => match weights {
+                None => Box::new(BSplineCurve::new(poles, knots, mults, *degree, *periodic)?),
+                Some(w) => Box::new(BSplineCurve::with_weights(poles, w, knots, mults, *degree, *periodic)?),
+            },
+            CurveSpec::Trimmed { u1, u2, sense, adjust, basis } => {
+                let b: Arc<dyn Curve2d> = Arc::from(build(basis)?);
+                Box::new(TrimmedCurve::new(b, *u1, *u2, *sense, *adjust)?)
+            }
+            CurveSpec::Offset { offset, not_check_c0, basis } => {
+                let b: Arc<dyn Curve2d> = Arc::from(build(basis)?);
+                Box::new(OffsetCurve::new(b, *offset, *not_check_c0)?)
+            }
+        })
+    }
+
+}
+'''
+
 def mname(word):
     # Nested names (`Class::Enum`) would leave `__`, which rustc's snake-case lint rejects.
     return re.sub(r'_+', '_', re.sub(r'[^A-Za-z0-9]', '_', word)).lower()
@@ -2892,10 +4924,17 @@ class RsCtx:
         self.m = m
         self.rustmod = rustmod
         self.names = names
+        # a class of the package named like a gp type (GeomGridEval_Cone): the gp type is written `gp::Cone` in signatures
+        # a type of the package named `Result` (ExtremaPC::Result) hides the std one in the signatures of the doc and the stub
+        self.result_name = 'std::result::Result' if ('Result' in {c.short for c in m.ctx.classes.values()} or
+                                                      any(n.split('::')[-1] == 'Result' for n in m.ctx.structs)) else 'Result'
+        self.clash = {c.short for c in m.ctx.classes.values() if c.name not in GP_BY_CLASS} & {v[1] for v in GP.values()}
 
     def enum_path(self, e):
-        pkg = e.split('_')[0]
+        pkg = e.split('::')[0] if ('::' in e and '_' not in e.split('::')[0]) else e.split('_')[0]
         short = enum_short(e, self.names)
+        if '::' in short and '::' not in e:
+            return short            # names.tsv: `enum GeomAbs_Shape<TAB>occt_port::plib::GeomAbsShape` gives the full path
         mod = self.rustmod if pkg == self.m.pkg else pkg.lower()
         return ('gp::' if mod == 'gp' else 'occt_port::%s::' % mod) + short
 
@@ -2927,6 +4966,8 @@ def rs_in_type(rc, p):
         return enum_short(k[1], rc.names)
     if t == 'gp':
         n = 'gp::Vec' if k[1] == 'vec' else GP[k[1]][1]
+        if rc is not None and n in rc.clash:
+            n = 'gp::' + n
         return ('&' + n) if p.info['ref'] else n
     if t == 'arr':
         e = k[1]
@@ -2935,6 +4976,14 @@ def rs_in_type(rc, p):
         return '&Array2<%s>' % rs_elem(k[1])
     if t == 'cls':
         return ('&' if p.info['ref'] else '') + strip_pkg(k[1])
+    if t == 'bx':
+        return ('&mut %s' if p.mutref else '&%s') % BX_RS[k[1]]
+    if t == 'dom':
+        return ('&' if p.info['ref'] else '') + DOMAINS[k[1]][0]
+    if t == 'h':
+        return 'Arc<%s>' % H_INFO[k[1]][1]
+    if t == 'ad':
+        return ('Arc<%s>' if p.info.get('handle') else '&%s') % AD_INFO[k[1]][1]
     return '?'
 
 
@@ -2953,11 +5002,26 @@ def rs_out_type(k, rc=None):
     if t == 'enum':
         return enum_short(k[1], rc.names if rc else {})
     if t == 'gp':
-        return 'gp::Vec' if k[1] == 'vec' else GP[k[1]][1]
+        n = 'gp::Vec' if k[1] == 'vec' else GP[k[1]][1]
+        return 'gp::' + n if (rc is not None and n in rc.clash) else n
     if t == 'arr':
         return 'Vec<%s>' % rs_elem(k[1])
     if t == 'arr2':
         return 'Array2<%s>' % rs_elem(k[1])
+    if t == 'u':
+        return 'usize'
+    if t == 'dom':
+        return DOMAINS[k[1]][0]
+    if t == 'ns':
+        return 'occt_port::%s::%s' % (rc.rustmod if rc else 'pkg', k[1].split('::')[-1])
+    if t == 'st':
+        return STRUCTS[k[1]][0]
+    if t == 'sarr':
+        return ('Vec<%s>' if k[2] == 1 else 'Array2<%s>') % STRUCTS[k[1]][0]
+    if t == 'h':
+        return 'Arc<%s>' % H_INFO[k[1]][1]
+    if t == 'ad':
+        return ('Arc<%s>' if k[2] else '&%s') % AD_INFO[k[1]][1]
     return '()'
 
 
@@ -2978,7 +5042,7 @@ def ret_type(plan, rc=None):
     else:
         t = '(' + ', '.join(parts) + ')'
     if plan.can_throw:
-        t = 'Result<%s, Error>' % t
+        t = '%s<%s, Error>' % (rc.result_name if rc else 'Result', t)
     return t
 
 
@@ -3013,6 +5077,16 @@ def pass_expr(p, j, byval=()):
     t = k[0]
     if t in ('f', 'i', 'b', 'enum'):
         return v
+    if t == 'bx':
+        return ('&mut ' if p.mutref else '&') + v
+    if t == 'dom':
+        return ('&' + v) if p.info['ref'] else v
+    if t == 'h':
+        return v + '.clone()'
+    if t == 'ad':
+        if p.info.get('handle'):
+            return v + '.clone()'
+        return ('&' + v) if AD_INFO[k[1]][2] else '&*' + v
     if j in byval:
         return v + '.clone()'
     if t == 'gp':
@@ -3049,7 +5123,7 @@ def rs_arm(plan, rc):
             if p.mode == 'in' or j in plan.inout:
                 L.append('            let a%d = r.%s();' % (j, mname(word_of(p.kind))))
                 if p.kind[0] not in ('f', 'i', 'b'):
-                    reads.append(('a%d' % j, False))
+                    reads.append(('a%d' % j, p.mutref))
     for v, mu in reads:
         L.append('            let %s%s = %s?;' % ('mut ' if mu else '', v, v))
     arglist = [pass_expr(p, j, f.byval) for j, p in enumerate(f.params) if p.mode == 'in' or j in plan.inout] if f else []
@@ -3074,6 +5148,9 @@ def rs_arm(plan, rc):
         L.append('            g.put(&v);')
         if plan.mutates and plan.recv[0] == 'gp':
             L.append('            g.put(&s);')
+        for j, p in enumerate(f.params):
+            if p.mutref:
+                L.append('            g.put(&a%d);' % j)
     for gt in plan.getters:
         L.append('            match s.%s().lift() {' % gt.rust)
         L.append('                Ok(v) => g.put(&v),')
@@ -3088,10 +5165,29 @@ def rs_readers(m, rc, plans):
     ctx = m.ctx
     out = []
     arrs, enums, objs = set(), set(), set()
+    hs, ads, sts, bxs, doms, nss = set(), set(), set(), set(), set(), []
 
     def see(k):
         if k is None:
             return
+        if k[0] in ('st', 'sarr'):
+            sts.add(k[1])
+        if k[0] == 'bx':
+            bxs.add(k[1])
+        if k[0] == 'dom':
+            doms.add(k[1])
+        if k[0] == 'ns':
+            for sn_ in ctx.used_ns:
+                if sn_ not in nss:
+                    nss.append(sn_)
+                    for fname_, qt_ in ctx.structs[sn_]:
+                        fk_ = ctx.classify(qt_)[0]
+                        if fk_ and fk_[0] == 'enum':
+                            enums.add(fk_[1])
+        if k[0] == 'h':
+            hs.add(k[1])
+        elif k[0] == 'ad':
+            ads.add(k[1])
         if k[0] in ('arr', 'arr2'):
             arrs.add(k)
         elif k[0] == 'enum':
@@ -3119,9 +5215,9 @@ def rs_readers(m, rc, plans):
             for f in c.drv_ctors:
                 for q in (f.params if f else []):
                     k = q.kind
-                    before = (len(arrs), len(enums), len(objs))
+                    before = (len(arrs), len(enums), len(objs), len(hs), len(ads), len(bxs), len(doms))
                     see(k)
-                    if (len(arrs), len(enums), len(objs)) != before:
+                    if (len(arrs), len(enums), len(objs), len(hs), len(ads), len(bxs), len(doms)) != before:
                         changed = True
     fallible = {'dir', 'dir2d'}
     for k in sorted(arrs):
@@ -3176,7 +5272,162 @@ def rs_readers(m, rc, plans):
     for e in sorted(enums):
         path = rc.enum_path(e)
         emits.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n        g.i(*self as i32);\n    }\n}' % (path, path))
-    return '\n'.join(out), '\n'.join(emits)
+    hr, he = handle_rs(rc, hs, ads)
+    for dn in sorted(doms):
+        ty, rfs, cfs = DOMAINS[dn]
+        n_ = len(rfs)
+        hr.append('    fn %s(&mut self) -> Result<%s, Thrown> {\n        let v = [%s];\n        Ok(%s::new(%s))\n    }' % (
+            mname('dom_' + dn.replace('::', '_')), ty, ', '.join('self.f()' for _ in range(n_)), ty,
+            ', '.join('v[%d]' % i for i in range(n_))))
+        emits.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n%s\n    }\n}' % (
+            ty, ty, '\n'.join('        g.f(self.%s);' % f_ for f_ in rfs)))
+    for sn in nss:
+        ty = 'occt_port::%s::%s' % (rc.rustmod, sn.split('::')[-1])
+        lines_ = []
+        for fname, qt in ctx.structs[sn]:
+            lines_.append('        g.put(&self.%s);' % snake(fname))
+        emits.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n%s\n    }\n}' % (ty, ty, '\n'.join(lines_)))
+    for bn in sorted(bxs):
+        d3 = bn == 'Bnd_Box'
+        ty = BX_RS[bn]
+        hr.append('    fn %s(&mut self) -> Result<%s, Thrown> {\n        let mut b = %s::new();\n        if self.i() != 0 {\n            %s\n        }\n        b.set_gap(self.f());\n        Ok(b)\n    }' % (
+            mname('bx_' + bn), ty, ty,
+            'let (a, b2, c, d, e, f) = (self.f(), self.f(), self.f(), self.f(), self.f(), self.f());\n            b.update(a, b2, c, d, e, f);' if d3 else
+            'let (a, b2, c, d) = (self.f(), self.f(), self.f(), self.f());\n            b.update(a, b2, c, d);'))
+        emits.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n        g.b(self.is_void());\n'
+                     '        if let Ok(v) = self.get() {\n            for x in v {\n                g.f(x);\n            }\n            g.f(self.gap());\n        }\n    }\n}' % (ty, ty))
+    for sn in sorted(sts):
+        ty, flds = STRUCTS[sn]
+        emits.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n%s\n    }\n}' % (
+            ty, ty, '\n'.join('        g.put(&self.%s);' % rf for cf, rf, w in flds)))
+    # methods inherited from Geom_* / Adaptor* bases are trait methods of the translation
+    traits = set()
+    for c in ctx.classes.values():
+        for b in c.bases:
+            bn = split_type(b)['base']
+            if bn in AD_INFO:
+                traits.add(AD_INFO[bn][1].replace('dyn ', ''))
+            elif bn in H_INFO:
+                tyb = H_INFO[bn][1].replace('dyn ', '')
+                mod_ = tyb.rsplit('::', 1)[0]
+                fam = H_INFO[bn][0]
+                names_ = {'c3': ['Curve', 'BoundedCurve', 'Conic', 'Geometry'], 's3': ['Surface', 'ElementarySurface', 'SweptSurface', 'BoundedSurface', 'Geometry'],
+                          'c2': ['Curve2d', 'BoundedCurve2d', 'Conic2d', 'Geometry2d']}[fam]
+                for n_ in names_:
+                    traits.add(mod_ + '::' + n_)
+    if traits:
+        he = '\n'.join('use %s as _;' % t for t in sorted(traits)) + '\n' + (he or '')
+    return '\n'.join(out + hr), '\n'.join(emits + [he] if he else emits)
+
+
+def handle_rs(rc, hs, ads):
+    """Readers (methods of Rd) and the static / Emit text for the handle and adaptor words used."""
+    if not hs and not ads:
+        return [], ''
+    fams = {H_INFO[h][0] for h in hs}
+    afams = {AD_INFO[a][0] for a in ads}
+    # an adaptor loads the curve / surface recipe of its family
+    if 'ac3' in afams:
+        fams.add('c3')
+    if 'ac2' in afams:
+        fams.add('c2')
+    if 'as3' in afams:
+        fams.add('s3')
+    rd = []
+    em = [RS_H_COMMON]
+    if 'c3' in fams or 's3' in fams:
+        em.append(RS_H_MODS3)
+        em.append(RS_H_C3)
+    if 'c2' in fams:
+        em.append(RS_H_MODS2)
+        em.append(RS_H_C2)
+    if 'ac3' in afams:
+        em.append(RS_H_AC3)
+    if 'ac2' in afams:
+        em.append(RS_H_AC2)
+    if 'as3' in afams:
+        em.append(RS_H_AS3)
+    snapfn = {'c3': 'snap_c3', 'c2': 'snap_c2', 's3': 'snap_s3', 'ac3': 'snap_ad_c3', 'ac2': 'snap_ad_c2', 'as3': 'snap_ad_s3'}
+    done_ty = set()
+
+    def emit_impls(ty, fn):
+        if ty in done_ty:
+            return
+        done_ty.add(ty)
+        em.append('impl Plain for Arc<%s> {}\nimpl Emit for Arc<%s> {\n    fn emit(&self, g: &mut Got) {\n        %s(g, &**self);\n    }\n}' % (ty, ty, fn))
+        em.append('impl Plain for Option<Arc<%s>> {}\nimpl Emit for Option<Arc<%s>> {\n    fn emit(&self, g: &mut Got) {\n'
+                  '        match self {\n            Some(a) => %s(g, &**a),\n            None => g.i(0),\n        }\n    }\n}' % (ty, ty, fn))
+        if ty.startswith('dyn '):
+            em.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n        %s(g, self);\n    }\n}' % (ty, ty, fn))
+    for h in sorted(hs):
+        fam, ty, kinds, conc = H_INFO[h]
+        spec, bld = {'c3': ('self.crv()', 'h3::build'), 'c2': ('self.crv2d()', 'h2::build'), 's3': ('self.srf()', 'h3::build_surface')}[fam]
+        if conc is None:
+            conv = 'Ok(Arc::from(b))'
+        elif conc in ('bounded', 'conic', 'elementary', 'swept'):
+            conv = '%s%s(b)' % (conc, {'c3': '3', 'c2': '2', 's3': '3' + ('s' if conc == 'bounded' else '')}[fam])
+        else:
+            conv = '%s(&*b)' % ('conc3s::<%s>' if fam == 's3' else ('conc3::<%s>' if fam == 'c3' else 'conc2::<%s>')) % ty
+        rd.append('    fn %s(&mut self) -> Result<Arc<%s>, Thrown> {\n        let spec = %s;\n        let b = %s(&spec)?;\n        %s\n    }' % (
+            mname('h_' + h), ty, spec, bld, conv))
+        emit_impls(ty, snapfn[fam])
+    for a in sorted(ads):
+        fam, ty, conc = AD_INFO[a]
+        base = {'ac3': 'occt_port::geomadaptor::Curve', 'ac2': 'occt_port::geom2dadaptor::Curve', 'as3': 'occt_port::geomadaptor::Surface'}[fam]
+        rname = mname('ad_' + a)
+        if conc:
+            rd.append(AD_READER[fam].replace('@@NAME@@', rname).replace('@@TY@@', ty))
+            if ty not in done_ty:
+                done_ty.add(ty)
+                em.append('impl Plain for %s {}\nimpl Emit for %s {\n    fn emit(&self, g: &mut Got) {\n        %s(g, self);\n    }\n}' % (ty, ty, snapfn[fam]))
+        else:
+            rd.append('    fn %s(&mut self) -> Result<Arc<%s>, Thrown> {\n        Ok(Arc::new(self.%s()?))\n    }' % (rname, ty, mname('ad_' + {'ac3': 'GeomAdaptor_Curve', 'ac2': 'Geom2dAdaptor_Curve', 'as3': 'GeomAdaptor_Surface'}[fam])))
+            if 'ad_' + {'ac3': 'GeomAdaptor_Curve', 'ac2': 'Geom2dAdaptor_Curve', 'as3': 'GeomAdaptor_Surface'}[fam] not in ' '.join(ads_names(ads)):
+                a2 = {'ac3': 'GeomAdaptor_Curve', 'ac2': 'Geom2dAdaptor_Curve', 'as3': 'GeomAdaptor_Surface'}[fam]
+                rd.append(AD_READER[fam].replace('@@NAME@@', mname('ad_' + a2)).replace('@@TY@@', AD_INFO[a2][1]))
+            emit_impls(ty, snapfn[fam])
+    return rd, '\n\n'.join(em)
+
+
+def ads_names(ads):
+    return ['ad_' + a for a in ads if AD_INFO[a][2]]
+
+
+AD_READER = {
+    'ac3': '''    fn @@NAME@@(&mut self) -> Result<@@TY@@, Thrown> {
+        let use_range = self.i() != 0;
+        let (f, l) = (self.f(), self.f());
+        let spec = self.crv();
+        let c: Arc<dyn occt_port::geom::Curve> = Arc::from(h3::build(&spec)?);
+        if use_range {
+            @@TY@@::with_range(c, f, l).map_err(|_| Thrown)
+        } else {
+            @@TY@@::with_curve(c).map_err(|_| Thrown)
+        }
+    }''',
+    'ac2': '''    fn @@NAME@@(&mut self) -> Result<@@TY@@, Thrown> {
+        let use_range = self.i() != 0;
+        let (f, l) = (self.f(), self.f());
+        let spec = self.crv2d();
+        let c: Arc<dyn occt_port::geom2d::Curve2d> = Arc::from(h2::build(&spec)?);
+        if use_range {
+            @@TY@@::with_range(c, f, l).map_err(|_| Thrown)
+        } else {
+            @@TY@@::with_curve(c).map_err(|_| Thrown)
+        }
+    }''',
+    'as3': '''    fn @@NAME@@(&mut self) -> Result<@@TY@@, Thrown> {
+        let use_range = self.i() != 0;
+        let (u1, u2, v1, v2) = (self.f(), self.f(), self.f(), self.f());
+        let spec = self.srf();
+        let s: Arc<dyn occt_port::geom::Surface> = Arc::from(h3::build_surface(&spec)?);
+        if use_range {
+            @@TY@@::with_range(s, u1, u2, v1, v2, 0.0, 0.0).map_err(|_| Thrown)
+        } else {
+            @@TY@@::with_surface(s).map_err(|_| Thrown)
+        }
+    }''',
+}
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -3253,9 +5504,24 @@ def doc_entries(plans, m, ctor_throws=None):
     return out
 
 
+def struct_decl(ctx, sn, rc):
+    """The Rust shape of a namespace struct the judge reads fields of."""
+    flds = []
+    for fname, qt in ctx.structs[sn]:
+        ma = re.match(r'^NCollection_(?:DynamicArray|Array1|Vector)<\s*([\w:]+)\s*>$', qt.strip())
+        if ma:
+            ty = 'Vec<%s>' % ma.group(1).split('::')[-1]
+        elif split_type(qt)['base'] in ctx.structs:
+            ty = split_type(qt)['base'].split('::')[-1]
+        else:
+            ty = rs_out_type(ctx.classify(qt)[0], rc)
+        flds.append('pub %s: %s' % (snake(fname), ty))
+    return '#[derive(Debug, Clone, PartialEq)]\npub struct %s { %s }' % (sn.split('::')[-1], ', '.join(flds))
+
+
 def sig_of(q, rc):
     if q.fn is None:
-        return 'pub fn new() -> %s;' % ('Result<Self, Error>' if q.can_throw else 'Self')
+        return 'pub fn new() -> %s;' % ('%s<Self, Error>' % rc.result_name if q.can_throw else 'Self')
     return signature(q, rc)
 
 
@@ -3298,6 +5564,19 @@ def write_doc(path, m, plans, notgen, rc, args, cov, shown_names, pmod=None, wit
              '`Circ2d::from_ax22d` ..., `Lin2d::from_ax2d`, `Mat2d::from_columns`, `Trsf2d::new` + setters). Outputs are read '
              'through `x()/y()/z()`, `location()/direction()/x_direction()/y_direction()`, `position()/axis()`, `radius()` ..., '
              '`value(r, c)` (see the `Emit` impls in the test).\n')
+    if m.ctx.saw_handle or m.ctx.saw_bx:
+        L.append('* **Handles, adaptors, boxes.** A `Handle(Geom_*)` / `Handle(Geom2d_*)` argument is `Arc<dyn Curve>` / `Arc<dyn Surface>` '
+                 '(`Arc<Circle>` ... for a concrete class; `Arc<dyn Conic>` / `BoundedCurve` / `ElementarySurface` ... for the '
+                 'intermediate classes) built from a printed recipe by the builders copied from tests/geom.rs and tests/geom2d.rs '
+                 '(`Arc::from(Box)`); passed as `a.clone()`. An adaptor argument is built on such a curve / surface: '
+                 '`geomadaptor::Curve::with_curve / with_range(c, f, l)`, `geomadaptor::Surface::with_surface / '
+                 'with_range(s, u1, u2, v1, v2, 0.0, 0.0)`, `geom2dadaptor::Curve::with_curve / with_range` (the traits '
+                 '`adaptor3d::Curve3dAdaptor` / `SurfaceAdaptor`, `adaptor2d::Curve2dAdaptor`); a reference parameter takes '
+                 '`&dyn Trait` (`&*a`) or `&Struct`. A returned handle / adaptor is compared through its *snapshot* '
+                 '(null flag, bounds, continuity, D0 / D1 at fixed parameters; the module `geom` / `geom2d` / adaptor traits '
+                 'of the translation provide them). A `Bnd_Box` argument is `&BndBox` / `&mut BndBox` (`occt_port::bnd`); a '
+                 '`Bnd_Box&` is filled by the call and compared afterwards. `GeomAbs_*` enumerations are looked up in '
+                 '`occt_port::geomabs` unless names.tsv gives the full path (`enum GeomAbs_Shape<TAB>occt_port::plib::GeomAbsShape`).\n')
     if with_gaps:
         L.append('## Coverage\n')
         L.append('| | callables (ctors, methods, statics, free functions) |\n|---|---|')
@@ -3344,10 +5623,25 @@ def write_doc(path, m, plans, notgen, rc, args, cov, shown_names, pmod=None, wit
                 continue
             L.append('```rust\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum %s { %s }\n```\n' % (
                 enum_short(e, rc.names), ', '.join(rc.enum_variants(e))))
+    if m.ctx.used_ns:
+        L.append('## Result structs\n')
+        L.append('Plain data structs of the namespace `%s` that the families read field by field (public fields, in this order):\n' % m.pkg)
+        L.append('```rust')
+        for sn in m.ctx.used_ns:
+            L.append(struct_decl(m.ctx, sn, rc))
+        L.append('```\n')
     ext = [e for e in sorted(m.ctx.used_enums) if e not in m.enums]
     if ext:
         L.append('Enumerations of other packages used by the families (must exist in their modules, variants as above): ' +
                  ', '.join('`%s` = %s' % (e, ', '.join(rc.enum_variants(e))) for e in ext) + '.\n')
+    if m.aliases:
+        L.append('## Aliases\n')
+        L.append('These names of the package are only (deprecated) aliases of classes of another package; a judge for the '
+                 'target package covers them.\n')
+        L.append('| name | alias of |\n|---|---|')
+        for a_, t_ in m.aliases.items():
+            L.append('| `%s` | `%s` |' % (a_, t_))
+        L.append('')
     if with_gaps:
         L.append('## Not generated (needs a hand-written family)\n')
         L.append('Each item below is part of the public API but was not driven mechanically; the reviewer must add a family '
@@ -3364,14 +5658,16 @@ def write_stub(path, m, plans, rc, ctor_throws=None):
     Enums of other packages are written to <dir>/<package lower case>.rs (add `pub mod <pkg>;` for each)."""
     ext = collections.OrderedDict()
     for e in sorted(m.ctx.used_enums):
-        if e not in m.enums and m.ctx.enums.get(e):
+        if e not in m.enums and m.ctx.enums.get(e) and '::' not in enum_short(e, rc.names):
             ext.setdefault(e.split('_')[0].lower(), []).append(e)
     L = ['//! STUB generated by tools/judgegen.py: signatures only, to check that tests compile.',
          '#![allow(unused_variables, dead_code, clippy::all, unreachable_pub, missing_debug_implementations)]',
          '#![allow(unused_imports)]',
-         'use crate::gp::{self, Ax1, Ax2, Ax22d, Ax2d, Ax3, Circ, Circ2d, Cone, Cylinder, Dir, Dir2d, Elips, Elips2d, Hypr, '
-         'Hypr2d, Lin, Lin2d, Mat, Mat2d, Parab, Parab2d, Pln, Pnt, Pnt2d, Quaternion, Sphere, Torus, Trsf, Trsf2d, Vec2d, XY, XYZ};',
-         'use crate::plib::Array2;']
+         'use crate::gp::{self, %s};' % ', '.join(n_ for n_ in ('Ax1', 'Ax2', 'Ax22d', 'Ax2d', 'Ax3', 'Circ', 'Circ2d', 'Cone', 'Cylinder', 'Dir', 'Dir2d',
+                                                    'Elips', 'Elips2d', 'Hypr', 'Hypr2d', 'Lin', 'Lin2d', 'Mat', 'Mat2d', 'Parab', 'Parab2d',
+                                                    'Pln', 'Pnt', 'Pnt2d', 'Quaternion', 'Sphere', 'Torus', 'Trsf', 'Trsf2d', 'Vec2d', 'XY',
+                                                    'XYZ') if n_ not in rc.clash),
+         'use crate::plib::Array2;', 'use std::sync::Arc;', 'use crate as occt_port;']
     for mod_, es in ext.items():
         L.append('use crate::%s::{%s};' % (mod_, ', '.join(enum_short(e, rc.names) for e in es)))
     L += ['', '#[derive(Debug)]', 'pub struct Error;', '']
@@ -3386,6 +5682,9 @@ def write_stub(path, m, plans, rc, ctor_throws=None):
             continue
         L.append('#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum %s { %s }\n' % (
             enum_short(e, rc.names), ', '.join(rc.enum_variants(e))))
+    for sn in m.ctx.used_ns:
+        L.append(struct_decl(m.ctx, sn, rc))
+        L.append('')
     entries = doc_entries(plans, m, ctor_throws)
     classes = collections.OrderedDict()
     for c, q in entries:
@@ -3406,7 +5705,7 @@ def write_stub(path, m, plans, rc, ctor_throws=None):
                 if q.kind != 'ctor_gp' and q.fn is not None and q.fn.kind == 'method':
                     classes.setdefault(c, []).append(q)
     for c in m.ctx.classes.values():
-        if c.name in GP_BY_CLASS or getattr(c, 'namespace_like', False):
+        if c.name in GP_BY_CLASS or c.name == m.pkg:
             continue
         L.append('#[derive(Debug)]\npub struct %s;' % c.short)
     L.append('')
@@ -3700,6 +5999,10 @@ def main():
         print('[2/6] planning and checking that the oracle compiles', flush=True)
         for it in range(15):
             ctx, m, plans, notgen = prepare()
+            if ctx.saw_handle:
+                for l_ in H_LIBS:
+                    if l_ not in args.libs:
+                        args.libs.append(l_)
             enum_hdrs = {e for e in ctx.used_enums if e not in m.enums}
             text, ranges, obj_ranges = build_cpp_full(m, plans, set(excluded), args.cases, set(), hdrs, enum_hdrs)
             open(cpp_path, 'w').write(text)
@@ -3810,11 +6113,47 @@ def main():
             pcpp = os.path.join(out, 'oracle', pmod + '.cpp')
             open(pcpp, 'w').write(text)
             exe = compile_run_cpp(pcpp, '-O2')
+            by_plan_all = {p_.name: p_ for p_ in plans}
             t1, t2 = os.path.join(tmp, 'run1.txt'), os.path.join(tmp, 'run2.txt')
             mp = os.path.join(tmp, 'meta_%d.tsv' % k)
             run_oracle(exe, {}, t1, os.path.join(tmp, 'meta1.tsv'))
             run_oracle(exe, {}, t2, mp)
-            if open(t1, 'rb').read() != open(t2, 'rb').read():
+            badk = set()
+            if open(t1, 'rb').read() == open(t2, 'rb').read():
+                # a third run with address space randomization: a line whose outputs differ depends on an address
+                t3 = os.path.join(tmp, 'run3.txt')
+                run_oracle(exe, {'JG_ASLR': '1'}, t3, os.path.join(tmp, 'meta3.tsv'))
+                ref = {}
+                for l_ in open(t2):
+                    ref[l_.partition(' |')[0]] = l_
+                badk = set()
+                for l_ in open(t3):
+                    k_ = l_.partition(' |')[0]
+                    if k_ in ref and ref[k_] != l_:
+                        badk.add(k_)
+                if badk:
+                    fams_ = collections.Counter(k_.split(' ', 1)[0] for k_ in badk)
+                    print('   WARNING: %d lines print an address-dependent value (they differ when address space randomization '
+                          'is on) and are dropped: %s' % (len(badk), ', '.join('%s (%d)' % kv for kv in fams_.items())), flush=True)
+                    keep_ = [l_ for l_ in open(t2) if l_.partition(' |')[0] not in badk]
+                    open(t2, 'w').write(''.join(keep_))
+                    cnt_ = collections.Counter(l_.split(' ', 1)[0] for l_ in keep_)
+                    meta_ = read_meta(mp)
+                    for n_ in fams_:
+                        pl_ = by_plan_all.get(n_)
+                        need_ = 1 if (pl_ is None or not pl_.words or single_line(pl_, ctx) or small_domain(pl_, ctx) is not None) else 16
+                        if n_ in meta_:
+                            meta_[n_]['lines'] = cnt_.get(n_, 0) if cnt_.get(n_, 0) >= need_ else 0
+                            if meta_[n_]['lines'] == 0:
+                                keep_ = [l_ for l_ in keep_ if l_.split(' ', 1)[0] != n_]
+                                excluded[n_] = 'output depends on an address (differs with address space randomization)'
+                    open(t2, 'w').write(''.join(keep_))
+                    with open(mp, 'w') as f_:
+                        for n_ in [p_.name for p_ in part]:
+                            if n_ in meta_:
+                                mm_ = meta_[n_]
+                                f_.write('%s\t%d\t%d\t%d\t%d\n' % (n_, mm_['lines'], 1 if mm_['libm'] else 0, mm_['throws'], mm_['dropped']))
+            if not badk and open(t1, 'rb').read() != open(t2, 'rb').read():
                 l1, l2 = open(t1).read().splitlines(), open(t2).read().splitlines()
                 bad = collections.OrderedDict()
                 for i_ in range(max(len(l1), len(l2))):
@@ -3940,6 +6279,9 @@ def main():
         write_stub(os.path.join(out, 'src', rustmod + '.rs'), m, all_kept, rc, ctor_throws)
     for s_ in summaries:
         print('   %s: %d families, %d lines, %d bytes' % s_)
+    if m.aliases and not allfns:
+        print('   NOTE: package %s only holds %d deprecated aliases (%s ...): judge the package they alias instead' % (
+            pkg, len(m.aliases), ', '.join('%s=%s' % kv for kv in list(m.aliases.items())[:3])), flush=True)
     print('[6/6] done: callables generated %d of %d (%.1f %%); enums used: %d of %d; not generated: %d' % (
         total_cov['gen'], total_cov['total'], 100.0 * total_cov['gen'] / max(1, total_cov['total']),
         total_cov['enums'][0], total_cov['enums'][1], len(notgen)), flush=True)
