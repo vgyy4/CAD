@@ -1,0 +1,17 @@
+# the translated crate keeps the GeomAbs enums in the modules that first needed them
+enum GeomAbs_Shape	occt_port::plib::GeomAbsShape
+GeomAbs_Shape::GeomAbs_CN	Cn
+enum GeomAbs_CurveType	occt_port::adaptor2d::GeomAbsCurveType
+enum GeomAbs_SurfaceType	occt_port::adaptor3d::GeomAbsSurfaceType
+enum GeomAbs_IsoType	occt_port::adaptor3d::GeomAbsIsoType
+# Geom2dAdaptor / GeomAdaptor constructors are named by what they load
+Geom2dAdaptor_Curve::Geom2dAdaptor_Curve/0	new
+Geom2dAdaptor_Curve::Geom2dAdaptor_Curve/1	with_curve
+Geom2dAdaptor_Curve::Geom2dAdaptor_Curve/3	with_range
+Geom2dAdaptor_Curve::Load/1	load
+Geom2dAdaptor_Curve::Load/3	load_range
+Geom2dAdaptor_Curve::BSpline/0	bspline
+Convert_ParameterisationType::Convert_TgtThetaOver2_1	TgtThetaOver2_1
+Convert_ParameterisationType::Convert_TgtThetaOver2_2	TgtThetaOver2_2
+Convert_ParameterisationType::Convert_TgtThetaOver2_3	TgtThetaOver2_3
+Convert_ParameterisationType::Convert_TgtThetaOver2_4	TgtThetaOver2_4
