@@ -2,9 +2,9 @@
 //! (units), Origin (the base planes and the origin), Bodies, Sketches, Features, Construction
 //! (datum planes), Joints, Drawings, Parameters and Branches.
 //!
-//! The widgets only report what the user chose ([`Action`]); the app applies it. Origin,
-//! bodies and datum planes have no visibility in the scene yet, so their rows are read-only
-//! (no eye); sketches keep their eye toggle, their DOF line and "double-click edits".
+//! The widgets only report what the user chose ([`Action`]); the app applies it. Bodies and
+//! sketches have an eye toggle; origin and datum planes have no visibility in the scene yet,
+//! so their rows are read-only. Sketches also show their DOF line and "double-click edits".
 
 use crate::agents::plain;
 use crate::i18n::tr;
@@ -121,6 +121,8 @@ impl State {
 pub enum Action {
     /// The eye of a sketch: show or hide it.
     SetSketchVisible(String, bool),
+    /// The eye of a body: show or hide it in the viewport.
+    SetBodyVisible(String, bool),
     /// Double-click on a sketch.
     EditSketch(String),
     /// "+ Add parameter".
@@ -144,6 +146,8 @@ pub struct View<'a> {
     pub eval: Option<&'a Evaluation>,
     /// Whether a sketch is drawn in the viewport.
     pub sketch_visible: &'a dyn Fn(&str) -> bool,
+    /// Whether a body is drawn in the viewport.
+    pub body_visible: &'a dyn Fn(&str) -> bool,
     pub branch: Option<BranchId>,
     pub branches: &'a [BranchInfo],
 }
@@ -196,7 +200,7 @@ pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
         match c {
             Category::Document => document(ui, v),
             Category::Origin => origin(ui, v),
-            Category::Bodies => bodies(ui, v),
+            Category::Bodies => bodies(ui, v, &mut out),
             Category::Sketches => sketches(ui, v, &mut out),
             Category::Features | Category::Construction | Category::Joints => features(ui, v, c),
             Category::Parameters => parameters(ui, v, &mut out),
@@ -317,11 +321,24 @@ fn origin(ui: &mut Ui, v: &View<'_>) {
     }
 }
 
-fn bodies(ui: &mut Ui, v: &View<'_>) {
+fn bodies(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     for b in v.eval.iter().flat_map(|e| e.bodies.iter()) {
+        let shown = (v.body_visible)(&b.name);
         let mut r = Row::new(Tool::Body, &b.name);
-        r.indent = INDENT;
-        row(ui, v.pal, &r);
+        r.dimmed = !shown;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(theme::SPACE[1]);
+            let label = format!("{} {}", tr("browser.show_body"), b.name);
+            if icons::toggle(ui, shown, Icon::Eye, Icon::EyeOff, &label)
+                .on_hover_text(tr("browser.show_body_help"))
+                .clicked()
+            {
+                out.push(Action::SetBodyVisible(b.name.clone(), !shown));
+            }
+            r.indent = 0.0;
+            row(ui, v.pal, &r);
+        });
     }
 }
 

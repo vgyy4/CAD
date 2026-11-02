@@ -1733,11 +1733,13 @@ impl App {
         let actions = egui::ScrollArea::vertical()
             .show(ui, |ui| {
                 let visible = |name: &str| self.sketch_visible(name);
+                let body_visible = |name: &str| self.viewport.body_visible(name);
                 let view = browser::View {
                     pal: &pal,
                     doc: &doc,
                     eval: eval.as_deref(),
                     sketch_visible: &visible,
+                    body_visible: &body_visible,
                     branch: self.snapshot.branch,
                     branches: &self.snapshot.branches,
                 };
@@ -1756,6 +1758,7 @@ impl App {
             browser::Action::SetSketchVisible(name, on) => {
                 self.sketch_visibility.insert(name, on);
             }
+            browser::Action::SetBodyVisible(name, on) => self.viewport.set_body_visible(&name, on),
             browser::Action::EditSketch(name) => self.edit_sketch(&name),
             browser::Action::AddParam => self.start_command("param.set"),
             browser::Action::EditParam(name) => {

@@ -57,6 +57,8 @@ const EN: &[(&str, &str)] = &[
     ("browser.edit_sketch", "Double-click to edit this sketch"),
     ("browser.edit_param", "Double-click to change this parameter"),
     ("browser.show_sketch", "Visibility of"),
+    ("browser.show_body", "Visibility of"),
+    ("browser.show_body_help", "Show or hide this body in the viewport (hidden bodies cannot be picked)."),
     (
         "browser.show_sketch_help",
         "Show or hide this sketch in the viewport. Sketches used by a feature are hidden by default.",

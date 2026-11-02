@@ -156,6 +156,8 @@ pub struct Viewport {
     pub show_edges: bool,
     /// Wireframe style: edges only, hidden edges included (the navigation bar's toggle).
     pub wireframe: bool,
+    /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
+    hidden_bodies: std::collections::BTreeSet<String>,
     /// Camera moves jump instead of animating.
     pub reduce_motion: bool,
     request: Option<NavRequest>,
@@ -194,6 +196,7 @@ impl Default for Viewport {
             nav_mode: NavMode::Select,
             show_edges: true,
             wireframe: false,
+            hidden_bodies: std::collections::BTreeSet::new(),
             reduce_motion: false,
             request: None,
             anim: None,
@@ -217,7 +220,12 @@ impl Viewport {
     }
 
     /// Replaces the drawn model (a scene built on the model thread).
-    pub fn set_scene(&mut self, scene: Scene, bodies: Vec<BodyInfo>) {
+    pub fn set_scene(&mut self, mut scene: Scene, bodies: Vec<BodyInfo>) {
+        for (i, b) in bodies.iter().enumerate() {
+            if self.hidden_bodies.contains(&b.name) {
+                scene.set_visible(MeshId(i as u64), false);
+            }
+        }
         self.scene = Arc::new(scene);
         self.bodies = bodies;
         self.generation += 1;
@@ -228,6 +236,24 @@ impl Viewport {
 
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// Whether a body is drawn (the browser's eye). Hidden bodies are not drawn or picked.
+    pub fn body_visible(&self, name: &str) -> bool {
+        !self.hidden_bodies.contains(name)
+    }
+
+    /// Shows or hides a body; the choice survives rebuilds of the model.
+    pub fn set_body_visible(&mut self, name: &str, visible: bool) {
+        if visible {
+            self.hidden_bodies.remove(name);
+        } else {
+            self.hidden_bodies.insert(name.to_string());
+        }
+        if let Some(id) = self.mesh_of(name) {
+            Arc::make_mut(&mut self.scene).set_visible(id, visible);
+            self.revision += 1;
+        }
     }
 
     pub fn bodies(&self) -> &[BodyInfo] {

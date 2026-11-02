@@ -333,3 +333,26 @@ fn two_picked_faces_fill_the_joint_form() {
     assert_eq!(form.value("to"), Some("Base/side(S1/l5)"));
     assert_eq!(form.value("at"), Some("Lid/cap(start)"));
 }
+
+#[test]
+fn browser_body_eye_hides_the_body_and_keeps_it_hidden_across_rebuilds() {
+    let mut h = quick_harness(with_plane());
+    settle(&mut h);
+    assert!(h.state().viewport.body_visible("Extrude1"));
+    h.get_by_label("Visibility of Extrude1").click();
+    h.run();
+    assert!(!h.state().viewport.body_visible("Extrude1"));
+    let id = h.state().viewport.bodies().iter().position(|b| b.name == "Extrude1").expect("body");
+    let mesh = |h: &Harness<'static, App>| {
+        h.state().viewport.scene().mesh(gusset_render::MeshId(id as u64)).map(|m| m.visible())
+    };
+    assert_eq!(mesh(&h), Some(false));
+    // A rebuild of the model (a new datum plane) keeps the body hidden.
+    h.state_mut().run("feature.plane", json!({"base": "XY", "offset": "9 mm", "name": "Up2"})).unwrap();
+    h.state_mut().wait_idle();
+    settle(&mut h);
+    assert_eq!(mesh(&h), Some(false));
+    h.get_by_label("Visibility of Extrude1").click();
+    h.run();
+    assert_eq!(mesh(&h), Some(true));
+}
