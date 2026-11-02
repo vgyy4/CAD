@@ -19,7 +19,9 @@ use crate::viewport_gpu::{self, GpuTarget};
 use crate::viewport_nav::{self, CubeTarget, NavButton, NavMode, NavState};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use gusset_render::math::{Aabb, Vec3, cross, dot, normalize_or, rotate};
-use gusset_render::{Camera, Highlight, MeshId, NamedView, Projection, Scene, SoftwareRenderer, Theme, ViewOptions};
+use gusset_render::{
+    Camera, Highlight, MeshId, NamedView, Projection, Scene, Section, SoftwareRenderer, Theme, ViewOptions,
+};
 use std::sync::Arc;
 
 /// Names of one body's faces and edges, indexed like its mesh (`MeshId` = body index).
@@ -158,6 +160,41 @@ struct SoftwareImage {
     key: FrameKey,
 }
 
+/// A display-only section view: a plane across one world axis through the model's box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SectionView {
+    /// World axis the plane is perpendicular to: 0 = X, 1 = Y, 2 = Z.
+    pub axis: usize,
+    /// Where the plane sits across the model's box, 0..=1.
+    pub at: f32,
+    /// Keep the other half: by default the half towards -axis is removed, which shows the
+    /// cut from the front and the default isometric view.
+    pub flip: bool,
+}
+
+impl Default for SectionView {
+    fn default() -> Self {
+        SectionView { axis: 1, at: 0.5, flip: false }
+    }
+}
+
+impl SectionView {
+    /// The world plane for a model box; `None` when the box is empty.
+    #[must_use]
+    pub fn plane(&self, bounds: &Aabb) -> Option<Section> {
+        if bounds.is_empty() {
+            return None;
+        }
+        let k = self.axis.min(2);
+        let mut origin = bounds.center();
+        let (lo, hi) = (bounds.min.get(k).copied()?, bounds.max.get(k).copied()?);
+        *origin.get_mut(k)? = lo + (hi - lo) * f64::from(self.at.clamp(0.0, 1.0));
+        let mut normal = [0.0; 3];
+        *normal.get_mut(k)? = if self.flip { 1.0 } else { -1.0 };
+        Some(Section { origin, normal })
+    }
+}
+
 /// Viewport state kept across frames.
 pub struct Viewport {
     pub camera: Camera,
@@ -181,6 +218,8 @@ pub struct Viewport {
     pub wireframe: bool,
     /// What clicks pick (the ribbon's SELECT group).
     pub select_filter: SelectFilter,
+    /// Section view (the navigation bar's toggle), if on.
+    pub section: Option<SectionView>,
     /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
     hidden_bodies: std::collections::BTreeSet<String>,
     /// Camera moves jump instead of animating.
@@ -223,6 +262,7 @@ impl Default for Viewport {
             wireframe: false,
             hidden_bodies: std::collections::BTreeSet::new(),
             select_filter: SelectFilter::All,
+            section: None,
             reduce_motion: false,
             request: None,
             anim: None,
@@ -307,8 +347,9 @@ impl Viewport {
     pub fn pick(&self, size: Vec2, p: Pos2) -> Option<(Hit, Option<Vec3>)> {
         let vp = [f64::from(size.x), f64::from(size.y)];
         let px = [f64::from(p.x), f64::from(p.y)];
+        let section = self.section_plane();
         if self.select_filter != SelectFilter::Faces
-            && let Some(e) = self.scene.pick_edge(&self.camera, vp, px, 5.0)
+            && let Some(e) = self.scene.pick_edge_section(&self.camera, vp, px, 5.0, section.as_ref())
             && let Some(h) = self.hit_for_edge(e.mesh, e.edge)
         {
             return Some((h, Some(e.point)));
@@ -316,8 +357,14 @@ impl Viewport {
         if self.select_filter == SelectFilter::Edges {
             return None;
         }
-        let hit = self.scene.pick(&self.camera.ray(px, vp))?;
+        let hit = self.scene.pick_section(&self.camera.ray(px, vp), section.as_ref())?;
         Some((self.hit_for_face(hit.mesh, hit.face)?, Some(hit.point)))
+    }
+
+    /// The section plane in world space, when the section view is on.
+    #[must_use]
+    pub fn section_plane(&self) -> Option<Section> {
+        self.section.and_then(|s| s.plane(&self.scene.bounds()))
     }
 
     /// Applies hover and selection highlights to the scene (only when they changed).
@@ -548,6 +595,7 @@ impl Viewport {
             pixels_per_point: ppp,
             edges: self.show_edges || self.wireframe,
             faces: !self.wireframe,
+            section: self.section_plane(),
             ..ViewOptions::default()
         };
         let key = FrameKey {
@@ -614,9 +662,16 @@ impl Viewport {
             orthographic: self.camera.projection == Projection::Orthographic,
             edges: self.show_edges,
             wireframe: self.wireframe,
+            section: self.section.is_some(),
         };
         if let Some(b) = viewport_nav::nav_bar(ui, rect, state, pal) {
             self.nav_button(b);
+            ui.ctx().request_repaint();
+        }
+        if let Some(s) = &mut self.section
+            && viewport_nav::section_bar(ui, rect, s, pal)
+        {
+            self.hover_for = None;
             ui.ctx().request_repaint();
         }
     }
@@ -638,6 +693,10 @@ impl Viewport {
             }
             NavButton::Edges => self.show_edges = !self.show_edges,
             NavButton::Wireframe => self.wireframe = !self.wireframe,
+            NavButton::Section => {
+                self.section = if self.section.is_some() { None } else { Some(SectionView::default()) };
+                self.hover_for = None;
+            }
         }
     }
 
@@ -778,6 +837,17 @@ mod tests {
         v.select_filter = SelectFilter::Edges;
         assert_eq!(v.pick(size, center), None);
         assert!(matches!(v.pick(size, near_edge), Some((Hit::Edge { .. }, _))));
+        // A section keeping y >= 5 (three quarters across the quad): the center and the
+        // edge at y = -10 are cut away, the face beyond the plane still picks.
+        v.select_filter = SelectFilter::All;
+        v.section = Some(SectionView { axis: 1, at: 0.75, flip: false });
+        assert_eq!(v.pick(size, center), None);
+        assert_eq!(v.pick(size, near_edge), None);
+        let (p, _) = v.camera.project(&cm, [0.0, 8.0, 0.0], [400.0, 400.0]).unwrap();
+        let kept = Pos2::new(p[0] as f32, p[1] as f32);
+        assert!(matches!(v.pick(size, kept), Some((Hit::Face { ref name, .. }, _)) if name == "top"));
+        v.section = Some(SectionView { axis: 1, at: 0.75, flip: true });
+        assert!(v.pick(size, center).is_some());
     }
 
     #[test]

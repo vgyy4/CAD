@@ -13,7 +13,20 @@ struct Globals {
     light: vec4<f32>,    // sky, ground, specular, shininess
     // x: rim, y: 1 = orthographic, z: edge pull (perspective, fraction), w: edge pull (ortho)
     misc: vec4<f32>,
+    // Section plane in view space: n.p + w >= 0 is kept; xyz = 0 when there is no section.
+    clip: vec4<f32>,
+    cap: vec4<f32>, // rgb: cut face tint (linear)
 };
+
+const CAP_MIX: f32 = 0.6; // cut face tint amount (software.rs CAP_MIX)
+
+fn sectioned() -> bool {
+    return dot(g.clip.xyz, g.clip.xyz) > 0.5;
+}
+
+fn removed(view_pos: vec3<f32>) -> bool {
+    return dot(g.clip.xyz, view_pos) + g.clip.w < 0.0;
+}
 
 struct Draw {
     model_view: mat4x4<f32>,
@@ -91,15 +104,24 @@ fn shade(base: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if (removed(in.view_pos)) {
+        discard;
+    }
     var n = normalize(in.view_normal);
+    var base = d.color.rgb;
     if (!front) {
         n = -n;
+        // Through a section, back faces are the inside: draw them as the flat cut face.
+        if (sectioned()) {
+            n = -g.clip.xyz;
+            base = mix(base, g.cap.rgb, CAP_MIX);
+        }
     }
     var v = vec3<f32>(0.0, 0.0, 1.0);
     if (g.misc.y < 0.5) {
         v = normalize(-in.view_pos);
     }
-    return encode(shade(d.color.rgb, n, v));
+    return encode(shade(base, n, v));
 }
 
 // ---------------------------------------------------------------- edges
@@ -113,26 +135,43 @@ fn pull(vp: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(vp.xyz * (1.0 - g.misc.z), 1.0);
 }
 
+struct EdgeOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) view_pos: vec3<f32>,
+};
+
 @vertex
-fn vs_edge_line(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
-    return g.proj * pull(d.model_view * vec4<f32>(position, 1.0));
+fn vs_edge_line(@location(0) position: vec3<f32>) -> EdgeOut {
+    let vp = d.model_view * vec4<f32>(position, 1.0);
+    var o: EdgeOut;
+    o.pos = g.proj * pull(vp);
+    o.view_pos = vp.xyz;
+    return o;
 }
 
 @fragment
-fn fs_edge() -> @location(0) vec4<f32> {
+fn fs_edge(in: EdgeOut) -> @location(0) vec4<f32> {
+    if (removed(in.view_pos)) {
+        discard;
+    }
     return encode(d.color.rgb);
 }
 
 // Wide edges: one instance per segment, six vertices forming a screen-aligned quad.
 @vertex
 fn vs_edge_quad(@builtin(vertex_index) i: u32, @location(0) a: vec3<f32>, @location(1) b: vec3<f32>)
-    -> @builtin(position) vec4<f32> {
-    var ca = g.proj * pull(d.model_view * vec4<f32>(a, 1.0));
-    var cb = g.proj * pull(d.model_view * vec4<f32>(b, 1.0));
+    -> EdgeOut {
+    let va = d.model_view * vec4<f32>(a, 1.0);
+    let vb = d.model_view * vec4<f32>(b, 1.0);
+    var ca = g.proj * pull(va);
+    var cb = g.proj * pull(vb);
+    var o: EdgeOut;
     // Clip the segment against w = eps so both ends are in front of the eye.
     let eps = 1e-5;
     if (ca.w < eps && cb.w < eps) {
-        return vec4<f32>(2.0, 2.0, 2.0, 1.0); // outside clip space: discarded
+        o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0); // outside clip space: discarded
+        o.view_pos = va.xyz;
+        return o;
     }
     if (ca.w < eps) {
         ca = mix(ca, cb, (eps - ca.w) / (cb.w - ca.w));
@@ -159,5 +198,7 @@ fn vs_edge_quad(@builtin(vertex_index) i: u32, @location(0) a: vec3<f32>, @locat
     let along = select(-dir, dir, e > 0.5) * hw; // extend caps by half a width
     let off_px = nrm * s * hw + along;
     let off = off_px / (g.viewport.xy * 0.5) * c.w;
-    return vec4<f32>(c.xy + off, c.z, c.w);
+    o.pos = vec4<f32>(c.xy + off, c.z, c.w);
+    o.view_pos = select(va.xyz, vb.xyz, e > 0.5);
+    return o;
 }

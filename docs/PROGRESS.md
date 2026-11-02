@@ -52,9 +52,13 @@ Phase 3 has started (see Next).
   hidden across rebuilds); origin and datum planes are still read-only (no scene objects). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
-  and the software renderer).  The
+  and the software renderer). Section view done (the navigation bar's Section button and
+  a bar above it: a plane across X, Y or Z, flip, position slider; `ViewOptions::section`:
+  the GPU discards the removed half, the CPU renderer clips the geometry, back faces seen
+  through the cut draw as a flat tinted cut face; picking skips the removed half and the
+  cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

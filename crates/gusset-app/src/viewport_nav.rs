@@ -251,6 +251,7 @@ pub enum NavButton {
     Projection,
     Edges,
     Wireframe,
+    Section,
 }
 
 /// What the navigation bar shows as active.
@@ -260,6 +261,7 @@ pub struct NavState {
     pub orthographic: bool,
     pub edges: bool,
     pub wireframe: bool,
+    pub section: bool,
 }
 
 /// What a plain drag in the viewport does.
@@ -274,7 +276,7 @@ pub enum NavMode {
 }
 
 impl NavButton {
-    const ALL: [NavButton; 8] = [
+    const ALL: [NavButton; 9] = [
         NavButton::Orbit,
         NavButton::Pan,
         NavButton::Zoom,
@@ -283,6 +285,7 @@ impl NavButton {
         NavButton::Projection,
         NavButton::Edges,
         NavButton::Wireframe,
+        NavButton::Section,
     ];
 
     pub fn label(self) -> &'static str {
@@ -295,6 +298,7 @@ impl NavButton {
             NavButton::Projection => "Orthographic view",
             NavButton::Edges => "Show edges",
             NavButton::Wireframe => "Wireframe",
+            NavButton::Section => "Section view",
         }
     }
 
@@ -308,6 +312,7 @@ impl NavButton {
             NavButton::Projection => "Switch between perspective and orthographic",
             NavButton::Edges => "Show or hide model edges",
             NavButton::Wireframe => "Wireframe: edges only, hidden ones too",
+            NavButton::Section => "Section view: cut the model open along a plane",
         }
     }
 
@@ -321,6 +326,7 @@ impl NavButton {
             NavButton::Projection => Tool::Perspective,
             NavButton::Edges => Tool::Edges,
             NavButton::Wireframe => Tool::Wireframe,
+            NavButton::Section => Tool::Section,
         }
     }
 
@@ -332,6 +338,7 @@ impl NavButton {
             NavButton::Projection => Some(s.orthographic),
             NavButton::Edges => Some(s.edges),
             NavButton::Wireframe => Some(s.wireframe),
+            NavButton::Section => Some(s.section),
             NavButton::Fit | NavButton::Home => None,
         }
     }
@@ -393,6 +400,44 @@ pub fn nav_bar(ui: &mut egui::Ui, viewport: Rect, state: NavState, pal: &Palette
         }
     }
     clicked
+}
+
+/// The section view's controls, just above the navigation bar: the axis, flip and the
+/// plane's position. Returns whether anything changed.
+pub fn section_bar(ui: &mut egui::Ui, viewport: Rect, s: &mut crate::viewport::SectionView, pal: &Palette) -> bool {
+    let bar = nav_rect(viewport);
+    let before = *s;
+    egui::Area::new(ui.id().with("section_bar"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(Pos2::new(bar.left(), bar.top() - BTN - 3.0 * BAR_PAD))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(pal.bg_raised.gamma_multiply(0.94))
+                .stroke(Stroke::new(1.0, pal.border))
+                .corner_radius(theme::RADIUS_LG)
+                .inner_margin(BAR_PAD)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Section");
+                        for (k, name) in ["X", "Y", "Z"].into_iter().enumerate() {
+                            if ui
+                                .selectable_label(s.axis == k, name)
+                                .on_hover_text(format!("Cut across {name}"))
+                                .clicked()
+                            {
+                                s.axis = k;
+                            }
+                        }
+                        if ui.selectable_label(s.flip, "Flip").on_hover_text("Keep the other half").clicked() {
+                            s.flip = !s.flip;
+                        }
+                        ui.spacing_mut().slider_width = 140.0;
+                        ui.add(egui::Slider::new(&mut s.at, 0.0..=1.0).show_value(false).trailing_fill(true))
+                            .on_hover_text("Where the plane cuts the model");
+                    });
+                });
+        });
+    *s != before
 }
 
 /// Where the center of a cube face (normal `n`) is drawn when the cube is centered at `c`.

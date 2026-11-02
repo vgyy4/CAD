@@ -14,7 +14,7 @@ use crate::scene::{MeshId, Scene};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Size of the `Globals` uniform (see `shader.wgsl`).
-const GLOBALS_SIZE: u64 = 64 + 16 * 7;
+const GLOBALS_SIZE: u64 = 64 + 16 * 9;
 /// Size of the `Draw` uniform.
 const DRAW_SIZE: u64 = 64 + 16 * 4;
 /// Vertex stride: position `f32x3` + normal `snorm16x4`.
@@ -741,6 +741,9 @@ fn globals_bytes(plan: &FramePlan, size: [u32; 2], encode_srgb: bool) -> Vec<u8>
     push_vec4(&mut b, [l.fill_dir[0], l.fill_dir[1], l.fill_dir[2], l.fill]);
     push_vec4(&mut b, [l.sky, l.ground, l.specular, l.shininess]);
     push_vec4(&mut b, [l.rim, if plan.ortho { 1.0 } else { 0.0 }, plan.edge_bias_persp, plan.edge_bias_ortho]);
+    // No section: n = 0, w = 1 keeps everything (and `sectioned()` is false).
+    push_vec4(&mut b, plan.clip.unwrap_or([0.0, 0.0, 0.0, 1.0]));
+    push_vec4(&mut b, [plan.cap[0], plan.cap[1], plan.cap[2], 1.0]);
     b
 }
 

@@ -292,6 +292,20 @@ fn navigation_bar_buttons_work() {
     h.get_by_label("Wireframe").click();
     h.run();
     assert!(!h.state().viewport.wireframe);
+    // Section view: the toggle shows the controls; axis and flip change the plane.
+    assert!(h.state().viewport.section.is_none());
+    h.get_by_label("Section view").click();
+    h.run();
+    assert_eq!(h.state().viewport.section, Some(crate::viewport::SectionView::default()));
+    h.get_by_label("Z").click();
+    h.run();
+    h.get_by_label("Flip").click();
+    h.run();
+    let s = h.state().viewport.section.expect("section on");
+    assert_eq!((s.axis, s.flip), (2, true));
+    h.get_by_label("Section view").click();
+    h.run();
+    assert!(h.state().viewport.section.is_none());
 }
 
 #[test]

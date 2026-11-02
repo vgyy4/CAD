@@ -127,7 +127,10 @@ impl SoftwareRenderer {
                     let Some(idx) = data.indices.get(i..i + 3) else { continue };
                     let vs: Vec<ClipVert> = idx.iter().filter_map(|&k| verts.get(k as usize).copied()).collect();
                     if let [a, b, c] = vs.as_slice() {
-                        let poly = clip_near(&[*a, *b, *c]);
+                        let mut poly = clip_poly(&[*a, *b, *c], |v| v.clip[2]);
+                        if let Some(pl) = plan.clip {
+                            poly = clip_poly(&poly, |v| plane_dist(pl, v.view));
+                        }
                         for k in 1..poly.len().saturating_sub(1) {
                             if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
                                 raster_triangle(&mut t, [p0, p1, p2], *base, &plan);
@@ -140,8 +143,24 @@ impl SoftwareRenderer {
                 for seg in run.clone() {
                     let i = seg as usize * 2;
                     let (Some(a), Some(b)) = (data.edge_points.get(i), data.edge_points.get(i + 1)) else { continue };
-                    let pa = pulled(&d.model_view, *a, &plan);
-                    let pb = pulled(&d.model_view, *b, &plan);
+                    let (mut a, mut b) = (*a, *b);
+                    if let Some(pl) = plan.clip {
+                        let va = math::transform_point(&d.model_view, a.map(f64::from)).map(|c| c as f32);
+                        let vb = math::transform_point(&d.model_view, b.map(f64::from)).map(|c| c as f32);
+                        let (da, db) = (plane_dist(pl, va), plane_dist(pl, vb));
+                        if da < 0.0 && db < 0.0 {
+                            continue;
+                        }
+                        // Cut in object space (the model-view map is affine).
+                        let cut = |p: [f32; 3], q: [f32; 3], t: f32| zip_with(p, q, |x, y| x + (y - x) * t);
+                        if da < 0.0 {
+                            a = cut(a, b, da / (da - db));
+                        } else if db < 0.0 {
+                            b = cut(a, b, da / (da - db));
+                        }
+                    }
+                    let pa = pulled(&d.model_view, a, &plan);
+                    let pb = pulled(&d.model_view, b, &plan);
                     raster_line(
                         &mut t,
                         math::transform4(proj, pa),
@@ -181,12 +200,21 @@ fn pulled(model_view: &Mat4, p: [f32; 3], plan: &FramePlan) -> math::Vec3 {
     }
 }
 
-/// Clip a polygon against the near plane (`z >= 0` in wgpu clip space).
-fn clip_near(poly: &[ClipVert]) -> Vec<ClipVert> {
+/// How far a section's cut face is tinted towards `FramePlan::cap` (as in the shader).
+const CAP_MIX: f32 = 0.6;
+
+/// Signed distance of a view-space point to the section plane (kept side positive).
+fn plane_dist(pl: [f32; 4], v: [f32; 3]) -> f32 {
+    pl[0] * v[0] + pl[1] * v[1] + pl[2] * v[2] + pl[3]
+}
+
+/// Clip a polygon to `dist >= 0`: the near plane (`z >= 0` in wgpu clip space) or the
+/// section plane.
+fn clip_poly(poly: &[ClipVert], dist: impl Fn(&ClipVert) -> f32) -> Vec<ClipVert> {
     let mut out = Vec::with_capacity(poly.len() + 2);
     for (i, a) in poly.iter().enumerate() {
         let Some(b) = poly.get((i + 1) % poly.len()) else { continue };
-        let (da, db) = (a.clip[2], b.clip[2]);
+        let (da, db) = (dist(a), dist(b));
         if da >= 0.0 {
             out.push(*a);
         }
@@ -251,7 +279,13 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
             let n = attr(&|cv| cv.normal);
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
             let sign = if front { 1.0 } else { -1.0 };
-            let n = n.map(|c| c / nl * sign);
+            // Through a section, back faces are the inside: draw them as the flat cut face.
+            let (n, base) = match plan.clip {
+                Some(pl) if !front => {
+                    ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX))
+                }
+                _ => (n.map(|c| c / nl * sign), base),
+            };
             let vdir = if plan.ortho {
                 [0.0, 0.0, 1.0]
             } else {
@@ -350,13 +384,42 @@ mod tests {
     }
 
     #[test]
+    fn section_shows_a_darker_cut_face_or_nothing() {
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
+        let mut cam = Camera::default();
+        cam.set_view(crate::NamedView::Iso);
+        cam.fit(&s.bounds(), 1.0);
+        let towards_eye = cam.forward.map(|c| -c);
+        let at = |origin: [f64; 3]| {
+            let mut r = SoftwareRenderer::new();
+            r.set_options(ViewOptions {
+                section: Some(crate::Section { origin, normal: towards_eye }),
+                ..ViewOptions::default()
+            });
+            r.render_rgba(&s, &cam, [64, 64]).expect("render").pixel(32, 24).expect("px")
+        };
+        let whole = SoftwareRenderer::new().render_rgba(&s, &cam, [64, 64]).expect("render");
+        let whole = whole.pixel(32, 24).expect("px");
+        let cut = at([0.0; 3]);
+        assert!(cut[2] > cut[0] + 20 && cut != whole, "cut {cut:?} vs whole {whole:?}");
+        // A plane behind the whole part removes it: the background shows.
+        let gone = at(cam.forward.map(|c| c * 100.0));
+        let bg = Theme::Dark.colors();
+        let (top, bottom) = (bg.bg_top.bytes(), bg.bg_bottom.bytes());
+        assert!((0..3).all(|k| gone[k] <= top[k].max(bottom[k]) + 2), "{gone:?}");
+        // A plane past the part's far side keeps everything.
+        assert_eq!(at(towards_eye.map(|c| c * 100.0)), whole);
+    }
+
+    #[test]
     fn near_clipping_keeps_inside_part() {
         let poly = [
             ClipVert { clip: [0.0, 0.0, -1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
             ClipVert { clip: [1.0, 0.0, 1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
             ClipVert { clip: [0.0, 1.0, 1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
         ];
-        let out = clip_near(&poly);
+        let out = clip_poly(&poly, |v| v.clip[2]);
         assert_eq!(out.len(), 4);
         assert!(out.iter().all(|v| v.clip[2] >= -1e-6));
     }

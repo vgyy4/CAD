@@ -109,5 +109,10 @@ fn generate_gallery() {
                 h.run_steps(2);
             }
         });
+        // The section view: the bracket cut open across Y, with its controls.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.viewport.section = Some(crate::viewport::SectionView::default());
+        shoot(&dir, &format!("11-section-{t}"), a, |_| {});
     }
 }

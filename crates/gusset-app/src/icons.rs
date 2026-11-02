@@ -225,6 +225,8 @@ pub enum Tool {
     Perspective,
     Edges,
     Wireframe,
+    /// Section view: a box cut open.
+    Section,
     Search,
     Params,
     /// A solid body (the browser's Bodies).
@@ -299,6 +301,7 @@ impl Tool {
         Tool::Perspective,
         Tool::Edges,
         Tool::Wireframe,
+        Tool::Section,
         Tool::Search,
         Tool::Params,
         Tool::Body,
@@ -901,6 +904,12 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.line(&[(12.0, 12.0), (12.0, 21.0)], ink);
             pen.line(&[(4.0, 16.5), (12.0, 12.0)], a);
             pen.line(&[(12.0, 12.0), (20.0, 16.5)], a);
+        }
+        Tool::Section => {
+            // A box with its right half cut away: the cut face in the accent color.
+            pen.poly(&[(4.0, 7.5), (12.0, 3.0), (16.0, 5.25), (8.0, 9.75)], pen.fill, ink);
+            pen.poly(&[(4.0, 7.5), (8.0, 9.75), (8.0, 18.75), (4.0, 16.5)], pen.fill.gamma_multiply(0.7), ink);
+            pen.poly(&[(8.0, 9.75), (16.0, 5.25), (16.0, 14.25), (8.0, 18.75)], a.gamma_multiply(0.6), a);
         }
     }
 }

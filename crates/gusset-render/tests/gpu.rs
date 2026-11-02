@@ -143,6 +143,28 @@ fn software_golden_and_resemblance() {
     assert!(report.passed, "software fallback looks too different from the GPU path: {report}");
 }
 
+/// A section view: the GPU discards the removed half and draws the cut face like the
+/// CPU path, which clips the geometry instead.
+#[test]
+fn section_matches_software() {
+    let _g = serial();
+    let s = scene();
+    let cam = camera(&s);
+    let section = Some(gusset_render::Section { origin: s.bounds().center(), normal: cam.forward.map(|c| -c) });
+    let opts = ViewOptions { section, ..ViewOptions::default() };
+    let mut sw = SoftwareRenderer::new();
+    sw.set_options(opts);
+    let sw = sw.render_rgba(&s, &cam, SIZE).expect("software render");
+    let whole = SoftwareRenderer::new().render_rgba(&s, &cam, SIZE).expect("software render");
+    assert!(!diff(&whole, &sw, DiffTolerance { per_channel: 40, max_differing_ratio: 0.06 }).passed);
+    let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
+    r.renderer_mut().set_options(opts);
+    let (hw, _) = r.render_rgba(&s, &cam, SIZE).expect("render");
+    let report = diff(&hw, &sw, DiffTolerance { per_channel: 40, max_differing_ratio: 0.06 });
+    eprintln!("section gpu vs software: {report}");
+    assert!(report.passed, "section differs between GPU and CPU: {report}");
+}
+
 /// Every adapter class available here renders the same image within tolerance.
 #[test]
 fn each_available_adapter_matches_golden() {

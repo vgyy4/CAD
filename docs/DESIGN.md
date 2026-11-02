@@ -136,7 +136,8 @@ design system:
 - Ribbon: large icon tools for the most used commands, each group a dropdown with the
   rest (Create: sketch, extrude, revolve, sweep, loft, hole, generators...; Modify:
   fillet, chamfer, shell, combine, move, pattern, mirror; Construct: planes; Inspect:
-  measure, section; Insert: import; Select: filters). Every tool is also in Ctrl+K search.
+  measure, section (a view style: the navigation bar's Section toggle); Insert: import;
+  Select: filters). Every tool is also in Ctrl+K search.
 - Browser: Document settings (units), Origin (planes, axes), Bodies (visibility eye),
   Sketches (with DOF), Parameters, Branches; "show unused sketches" toggle.
 - Viewport: view cube (top right, clickable faces/edges/corners), navigation bar (bottom

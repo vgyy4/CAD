@@ -46,7 +46,7 @@ mod theme;
 mod view;
 
 pub use camera::{Camera, CameraMatrices, NamedView, Projection, Ray};
-pub use frame::ViewOptions;
+pub use frame::{Section, ViewOptions};
 pub use gpu::{FrameStats, Quality, Renderer};
 pub use headless::{
     AdapterPreference, AdapterReport, HeadlessRenderer, RenderError, classify_adapter, required_limits, tier_for,

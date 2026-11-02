@@ -23,6 +23,27 @@ pub struct ViewOptions {
     pub edge_width: f32,
     /// The lighting rig.
     pub lighting: Lighting,
+    /// Section view: the part of the model on the normal's side of this plane is hidden
+    /// and the cut shows as a flat face (DESIGN.md §2 Inspect: section).
+    pub section: Option<Section>,
+}
+
+/// A world-space section plane. Geometry on the side the normal points to is removed, so a
+/// camera on that side looks at the cut.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Section {
+    /// A point on the plane.
+    pub origin: Vec3,
+    /// The plane normal, towards the removed side (need not be unit length).
+    pub normal: Vec3,
+}
+
+impl Section {
+    /// Whether a world point is kept (on or behind the plane).
+    #[must_use]
+    pub fn keeps(&self, p: Vec3) -> bool {
+        math::dot(math::sub(p, self.origin), self.normal) <= 0.0
+    }
 }
 
 impl Default for ViewOptions {
@@ -34,6 +55,7 @@ impl Default for ViewOptions {
             faces: true,
             edge_width: 1.0,
             lighting: Lighting::DEFAULT,
+            section: None,
         }
     }
 }
@@ -76,6 +98,11 @@ pub(crate) struct FramePlan {
     pub edge_bias_ortho: f32,
     pub edge_width_px: f32,
     pub lighting: Lighting,
+    /// View-space section plane `[nx, ny, nz, w]`: points with `n.p + w >= 0` are kept;
+    /// back faces seen through the cut are drawn flat with normal `-n` (the cut face).
+    pub clip: Option<[f32; 4]>,
+    /// Tint of the cut face (the theme's pre-selection blue, linear), mixed by `CAP_MIX`.
+    pub cap: [f32; 3],
     pub draws: Vec<MeshDraw>,
 }
 
@@ -136,9 +163,22 @@ impl FramePlan {
             edge_bias_ortho: ((cm.far - cm.near) * 1.5e-3) as f32,
             edge_width_px: opts.edge_width_px(),
             lighting: opts.lighting,
+            cap: colors.preselect.linear(),
+            clip: opts.section.and_then(|sec| view_plane(&cm.view, &sec)),
             draws,
         }
     }
+}
+
+/// The section plane in view space, kept side positive; `None` for a degenerate normal.
+fn view_plane(view: &Mat4, sec: &Section) -> Option<[f32; 4]> {
+    let len = math::length(sec.normal);
+    if !(len.is_finite() && len > 1e-12) || !sec.origin.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let n = math::transform_dir(view, math::scale(sec.normal, -1.0 / len));
+    let o = math::transform_point(view, sec.origin);
+    Some([n[0] as f32, n[1] as f32, n[2] as f32, -math::dot(n, o) as f32])
 }
 
 /// Whether a mesh's world box is entirely outside one clip plane.
