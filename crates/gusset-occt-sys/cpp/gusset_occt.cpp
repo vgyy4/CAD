@@ -1143,6 +1143,38 @@ int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double hei
   GS_GUARD_END
 }
 
+// Whether every section is a uniformly scaled copy of the first about its own vertex
+// centroid, vertex for vertex in wire order (e.g. a generated bevel gear's heel and toe).
+// Such wires already correspond edge for edge, so ThruSections' compatibility pass, which
+// re-splits tangent-continuous wires by polar projection in O(n^2) distance searches, can
+// be skipped; any other loft keeps it.
+static bool similar_wires(const std::vector<TopoDS_Wire>& ws) {
+  if (ws.size() < 2) return false;
+  auto verts = [](const TopoDS_Wire& w) {
+    std::vector<gp_XYZ> v;
+    for (BRepTools_WireExplorer ex(w); ex.More(); ex.Next()) v.push_back(BRep_Tool::Pnt(ex.CurrentVertex()).XYZ());
+    return v;
+  };
+  auto centred = [](std::vector<gp_XYZ> v) {
+    gp_XYZ c(0, 0, 0);
+    for (const auto& p : v) c += p;
+    c /= double(v.size());
+    for (auto& p : v) p -= c;
+    return v;
+  };
+  const std::vector<gp_XYZ> v0 = centred(verts(ws[0]));
+  if (v0.size() < 3 || v0[0].Modulus() < 1e-9) return false;
+  for (size_t k = 1; k < ws.size(); ++k) {
+    const std::vector<gp_XYZ> vk = centred(verts(ws[k]));
+    if (vk.size() != v0.size()) return false;
+    const double s = vk[0].Modulus() / v0[0].Modulus();
+    for (size_t i = 0; i < v0.size(); ++i) {
+      if ((vk[i] - v0[i] * s).Modulus() > 1e-6 * (1.0 + v0[i].Modulus())) return false;
+    }
+  }
+  return true;
+}
+
 int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!sections || !out || !origins) return fail("null argument");
@@ -1175,6 +1207,7 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** ou
       if ((gp_Vec(normals[k]).Dot(d) >= 0) != first_fwd) wires[k].Reverse();
     }
   }
+  if (similar_wires(wires)) ts.CheckCompatibility(false);
   for (const auto& w : wires) ts.AddWire(w);
   ts.Build();
   if (!ts.IsDone()) return fail("the profiles cannot be lofted (are they similar, in a sensible order and not twisted?)");

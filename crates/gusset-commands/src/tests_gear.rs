@@ -442,3 +442,12 @@ fn internal_gears_refuse_what_does_not_apply() {
     // leaves no wall.
     assert!(fail(&mut s, json!({"internal_rim": "44 mm"})).contains("outer diameter over"));
 }
+
+#[test]
+fn bevel_gears_refuse_what_does_not_apply() {
+    let mut s = session();
+    assert!(fail(&mut s, json!({"cone_angle": "45 deg", "helix": "15 deg"})).contains("straight only"));
+    assert!(fail(&mut s, json!({"cone_angle": "45 deg", "internal_rim": "100 mm"})).contains("not both"));
+    // A face width over half the cone distance (20 teeth of module 2: 28.3 mm at 45 deg).
+    assert!(fail(&mut s, json!({"cone_angle": "45 deg", "face_width": "20 mm"})).contains("half the cone distance"));
+}

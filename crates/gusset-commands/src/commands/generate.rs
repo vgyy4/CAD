@@ -85,6 +85,9 @@ pub struct GenerateGear {
     /// Helix angle (0: spur).
     #[serde(default = "d_zero_deg")]
     pub helix: String,
+    /// Pitch cone angle: a bevel gear.
+    #[serde(default)]
+    pub cone_angle: Option<String>,
     /// Ring diameter: an internal gear.
     #[serde(default)]
     pub internal_rim: Option<String>,
@@ -96,8 +99,7 @@ pub struct GenerateGear {
 impl Command for GenerateGear {
     const ID: &'static str = "generate.gear";
     const TITLE: &'static str = "Gear";
-    const DESCRIPTION: &'static str =
-        "Generate an involute spur, helical or internal gear (ISO 53) as parameters, a tooth sketch and an extrude.";
+    const DESCRIPTION: &'static str = "Generate an involute spur, helical, bevel or internal gear (ISO 53).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -119,6 +121,17 @@ impl Command for GenerateGear {
             bore = "0 mm".into();
         }
         let rim = self.internal_rim.clone().unwrap_or_default();
+        let bevel = self.cone_angle.is_some();
+        if bevel {
+            if internal {
+                return Err(CommandError::args("a gear is bevel or internal, not both"));
+            }
+            if self.helix.trim() != "0 deg" && self.helix.trim() != "0" {
+                return Err(CommandError::args("bevel gears are straight only").hint("leave helix at 0 deg"));
+            }
+            // The loft takes one region per profile: a bore is cut afterwards.
+            bore = "0 mm".into();
+        }
         let given = [
             ("module", &self.module),
             ("teeth", &self.teeth),
@@ -136,6 +149,9 @@ impl Command for GenerateGear {
         }
         if internal {
             exprs.push(("rim", parse_expr("internal_rim", &rim)?));
+        }
+        if let Some(c) = &self.cone_angle {
+            exprs.push(("cone_angle", parse_expr("cone_angle", c)?));
         }
         edit(s, ctx, "Generate gear", |doc, rb| {
             let name = feature_name(doc, self.name, "Gear")?;
@@ -224,6 +240,8 @@ impl Command for GenerateGear {
                 ("fillet", "root fillet radius / module (ISO 53: 0.38)"),
                 ("helix", "helix angle at the pitch cylinder"),
             ];
+            let notes: Vec<(&str, &str)> =
+                notes.into_iter().chain([("cone_angle", "bevel gear: pitch cone angle (heel profile here)")]).collect();
             let internal_notes = [
                 ("shift", "internal gear: its tooth spaces are this tooth (x = 0.25: tip and root swapped)"),
                 ("backlash", "internal gear: tooth thinning that brings the space back to p / 2, less the backlash"),
@@ -270,7 +288,94 @@ impl Command for GenerateGear {
             let mut features = vec![Feature::new(sketch_name.clone(), FeatureKind::Sketch(sketch.def))];
             let profile = ProfileRef { sketch: sketch_name.clone(), regions: vec![sketch.region] };
             let width = parse_expr("face_width", &nm.n("face_width"))?;
-            if internal {
+            if bevel {
+                // A straight bevel gear: the heel profile here, a toe profile scaled to the
+                // cone apex on a plane b cos(d) up, and a ruled loft between them (ADR 0018
+                // amendment). The toe has its own parameter set so its sketch is checked
+                // like any generated gear.
+                let delta = value("cone_angle", Dim::ANGLE)?;
+                let k = 1.0 - v.face_width * libm::sin(delta) / g.pitch_radius;
+                if !(delta > 0.0 && delta < std::f64::consts::FRAC_PI_2 && k >= 0.5) {
+                    return Err(CommandError::args(
+                        "a bevel gear needs a cone angle between 0 and 90 deg and a face width at most half the cone distance",
+                    )
+                    .hint("the usual limit is a third of the cone distance: pitch radius / sin(cone angle) / 3"));
+                }
+                let toe_name = format!("{name}_toe");
+                let nt = Names::from_feature(&toe_name);
+                let (toe_plane, toe_sk) = (format!("{name}_toe_plane"), format!("{name}_toe_profile"));
+                for f in [&toe_plane, &toe_sk] {
+                    if doc.feature(f).is_some() {
+                        return Err(CommandError::args(format!("a feature named '{f}' already exists")));
+                    }
+                }
+                let kx = format!(
+                    "(1 - {} * sin({}) / ({} / 2))",
+                    nm.n("face_width"),
+                    nm.n("cone_angle"),
+                    nm.n("pitch_diameter")
+                );
+                let toe_src = [
+                    ("module", format!("{} * {kx}", nm.n("module"))),
+                    ("teeth", nm.n("teeth")),
+                    ("pressure_angle", nm.n("pressure_angle")),
+                    ("face_width", nm.n("face_width")),
+                    ("bore", "0 mm".to_string()),
+                    ("shift", nm.n("shift")),
+                    ("backlash", format!("{} * {kx}", nm.n("backlash"))),
+                    ("fillet", nm.n("fillet")),
+                ];
+                let mut toe_params = Vec::new();
+                for (what, src) in &toe_src {
+                    toe_params.push(Param {
+                        name: nt.n(what),
+                        expr: parse_expr(what, src)?,
+                        comment: "bevel gear toe (scaled toward the cone apex)".into(),
+                        range: Default::default(),
+                    });
+                }
+                for (pname, src, note) in gear::derived_params(&nt, false) {
+                    toe_params.push(Param {
+                        name: pname.clone(),
+                        expr: parse_expr(&pname, &src)?,
+                        comment: note.to_string(),
+                        range: Default::default(),
+                    });
+                }
+                for p in &toe_params {
+                    if doc.params.iter().any(|q| q.name == p.name) {
+                        return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name)));
+                    }
+                }
+                doc.params.extend(toe_params);
+                let vt = GearValues { module: v.module * k, backlash: v.backlash * k, bore: 0.0, ..v };
+                let gt = gear::Geometry::new(&vt).map_err(|e| CommandError::args(format!("toe: {}", e.message)))?;
+                let ft = gear::flank_like(&gt, &flank, k);
+                let mut toe = gear::profile_sketch(&nt, &gt, &ft, 0.0)
+                    .map_err(|e| CommandError::args(format!("toe: {}", e.message)))?;
+                toe.def.plane = PlaneRef::Datum(toe_plane.clone());
+                features.push(Feature::new(
+                    toe_plane.clone(),
+                    FeatureKind::Plane(PlaneDef {
+                        base: PlaneRef::XY,
+                        kind: PlaneKind::Offset(parse_expr(
+                            "toe",
+                            &format!("{} * cos({})", nm.n("face_width"), nm.n("cone_angle")),
+                        )?),
+                    }),
+                ));
+                features.push(Feature::new(toe_sk.clone(), FeatureKind::Sketch(toe.def)));
+                features.push(Feature::new(
+                    name.clone(),
+                    FeatureKind::Loft(LoftDef {
+                        profiles: vec![profile, ProfileRef { sketch: toe_sk, regions: vec![toe.region] }],
+                        ruled: true,
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: None,
+                    }),
+                ));
+            } else if internal {
                 let rim_d = value("rim", Dim::LENGTH)?;
                 if rim_d < 2.0 * g.tip_radius + 2.0 * v.module {
                     return Err(CommandError::args(format!(
@@ -380,6 +485,7 @@ impl Command for GenerateGear {
                 "sketch": sketch_name,
                 "helical": helical,
                 "internal": internal,
+                "bevel": bevel,
                 "parameters": created,
                 "pitch_diameter_mm": 2.0 * g.pitch_radius,
                 "base_diameter_mm": 2.0 * g.base_radius,
@@ -590,11 +696,11 @@ impl Command for GenerateSpring {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateWorm {
-    /// Axial module.
+    /// Axial.
     #[serde(default = "d_module")]
     #[schemars(extend("x-essential" = true))]
     pub module: String,
-    /// Reference diameter (default 10 m).
+    /// Default 10 m.
     #[serde(default)]
     pub diameter: Option<String>,
     #[serde(default = "d_thread_l")]
@@ -602,7 +708,7 @@ pub struct GenerateWorm {
     pub length: String,
     #[serde(default = "d_angle")]
     pub angle: String,
-    /// Number of starts (threads), 1 to 6.
+    /// Starts, 1 to 6.
     #[serde(default = "d_one")]
     pub starts: u32,
     #[serde(default)]
@@ -618,7 +724,7 @@ fn d_one() -> u32 {
 impl Command for GenerateWorm {
     const ID: &'static str = "generate.worm";
     const TITLE: &'static str = "Worm";
-    const DESCRIPTION: &'static str = "Generate a ZA worm along Z (exact helix, 1 to 6 starts).";
+    const DESCRIPTION: &'static str = "Generate a ZA worm along Z (exact helix).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -949,8 +1055,7 @@ pub struct GenerateRack {
 impl Command for GenerateRack {
     const ID: &'static str = "generate.rack";
     const TITLE: &'static str = "Rack";
-    const DESCRIPTION: &'static str =
-        "Generate a spur rack along X (ISO 53 basic rack) that meshes with generate_gear.";
+    const DESCRIPTION: &'static str = "Generate a spur rack along X (ISO 53).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

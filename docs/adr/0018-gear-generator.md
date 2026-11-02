@@ -201,3 +201,17 @@ sweep per start, one axial pitch apart (a helix is placed through its own profil
 starts cannot share one sweep; the evaluator now refuses a helical sweep of several
 regions instead of misplacing them). OCCT test: a two-start worm's exact volume. Worm
 wheels (throated, hobbed) and bevel gears are not done.
+
+## Amendment (2026-11-02): straight bevel gears
+`generate.gear` with `cone_angle` (the pitch cone angle d) makes a straight bevel gear: the
+heel profile in the XY plane, a toe profile on a datum plane b cos(d) higher scaled toward
+the cone apex by k = 1 - b sin(d) / r (its own `<name>_toe_*` parameters, module and
+backlash times k, so the toe sketch is checked like any generated gear), and a ruled loft
+between them. The toe flank reuses the heel's curve fractions (`gear::flank_like`), so the
+two sections are similar vertex for vertex; the shim then skips ThruSections' wire
+compatibility pass, which re-splits tangent-continuous wires with O(n^2) distance searches
+(over 10 minutes for 20 teeth, 7 s without). That pass still runs for any loft whose
+sections are not similar copies. Profiles are planar sections normal to the axis (not the
+back-cone/Tredgold octoid), spur only, no bore (cut one afterwards), face width at most
+half the cone distance. OCCT test: the volume is the frustum h A (1 + k + k^2) / 3 of the
+heel area A (a 1 mm spur gear with the same parameters). Worm wheels are not done.

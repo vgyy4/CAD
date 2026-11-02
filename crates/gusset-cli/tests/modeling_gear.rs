@@ -490,3 +490,32 @@ fn a_generated_worm_is_the_core_plus_the_swept_rack_tooth() {
     let v2 = volume(&mut s, "Twin");
     assert!((v2 - want2).abs() < 1e-4 * want2, "{v2} vs {want2}");
 }
+
+#[test]
+fn a_straight_bevel_gear_is_a_frustum_of_its_heel_profile() {
+    // The toe profile is the heel profile scaled by k about the axis, b cos(d) higher, and
+    // the loft is ruled: a cone frustum over the profile, V = h A (1 + k + k^2) / 3. The
+    // heel area A is a 1 mm spur gear's volume with the same parameters.
+    let mut s = session();
+    let (m, z, b, cone) = (2.0, 20.0, 6.0, 45f64.to_radians());
+    let r = run(
+        &mut s,
+        "generate.gear",
+        json!({"name": "Bevel", "module": "2 mm", "teeth": "20", "face_width": "6 mm", "cone_angle": "45 deg"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let r = run(
+        &mut s,
+        "generate.gear",
+        json!({"name": "Flat", "module": "2 mm", "teeth": "20", "face_width": "1 mm", "bore": "0 mm"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let area = volume(&mut s, "Flat");
+    let k = 1.0 - b * cone.sin() / (m * z / 2.0);
+    let h = b * cone.cos();
+    let want = h * area * (1.0 + k + k * k) / 3.0;
+    let v = volume(&mut s, "Bevel");
+    assert!((v - want).abs() < 1e-3 * want, "{v} vs {want}");
+    let bb = run(&mut s, "query.body", json!({"body": "Bevel"}));
+    assert!((bb["bbox_max_mm"][2].as_f64().unwrap() - h).abs() < 1e-6, "{bb}");
+}

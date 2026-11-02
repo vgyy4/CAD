@@ -163,6 +163,17 @@ fn refine(nums: &mut Vec<u32>, exact: &[[f64; 2]], make: &dyn Fn(u32) -> [f64; 2
 
 /// Picks fit points so that the splines stay within [`FLANK_TOLERANCE`] of the exact flank:
 /// a coarse even spacing, refined where a spline strays.
+/// The flank of `g` sampled at the same curve fractions as `like` (a gear whose geometry is
+/// `g` scaled, such as a bevel gear's toe against its heel): the two profiles then have the
+/// same points and edges, vertex for vertex, so a loft between them needs no re-splitting.
+pub fn flank_like(g: &Geometry, like: &Flank, scale: f64) -> Flank {
+    // By the curve each point lies on: the two point lists share the junction point.
+    let nums = |c: Curve| like.points.iter().filter(|p| p.on == c).map(|p| p.num).collect::<Vec<u32>>();
+    let mut f = Flank::from_nums(g, &nums(Curve::Fillet), &nums(Curve::Involute));
+    f.error = like.error * scale;
+    f
+}
+
 pub fn choose_flank(g: &Geometry) -> Result<Flank, GearError> {
     let (exact_fillet, exact_involute) = exact_flank(g);
     let coarse: Vec<u32> = (0..=6).map(|k| k * DEN / 6).collect();
