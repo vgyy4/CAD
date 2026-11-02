@@ -135,6 +135,16 @@ fn generate_gallery() {
                 .collect(),
             _ => Vec::new(),
         };
+        if let [l0, l1, ..] = lines.as_slice() {
+            a.run("sketch.add_constraint", json!({"sketch": "Profile", "kind": "horizontal", "entities": [l0]})).ok();
+            a.run("sketch.add_constraint", json!({"sketch": "Profile", "kind": "vertical", "entities": [l1]})).ok();
+            a.run(
+                "sketch.add_constraint",
+                json!({"sketch": "Profile", "kind": "distance", "entities": [l0, l0], "value": "leg"}),
+            )
+            .ok();
+            a.wait_idle();
+        }
         a.selection = lines
             .iter()
             .take(2)

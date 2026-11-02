@@ -1196,6 +1196,12 @@ impl App {
         self.scene.as_ref().map(|s| s.eval.clone())
     }
 
+    /// A sketch as drawn in the viewport (curves, points, constraint labels).
+    #[must_use]
+    pub fn drawn_sketch(&self, name: &str) -> Option<&DrawSketch> {
+        self.scene.as_ref()?.sketches.iter().find(|d| d.name == name)
+    }
+
     /// Stops the model thread and closes the project (window closing).
     fn shutdown(&mut self, discard_recovery: bool) {
         // Agents first, so no edit lands after the final dirty check below.
@@ -2664,7 +2670,24 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
         meshes.push((info, mesh));
     }
     let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
-    let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
+    let doc = s.document(&Actor::User).ok();
+    let def = |name: &str| {
+        doc.as_ref()?.features.iter().find(|f| f.name == name).and_then(|f| match &f.kind {
+            gusset_doc::FeatureKind::Sketch(d) => Some(d),
+            _ => None,
+        })
+    };
+    let sketches = eval
+        .sketches
+        .iter()
+        .map(|(name, s)| {
+            let mut d = sketch_drawing(name, s);
+            if let Some(def) = def(name) {
+                d.labels = constraint_labels(def, s);
+            }
+            d
+        })
+        .collect();
     Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
 }
 
@@ -2797,6 +2820,58 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
     d.points = s.points.values().map(|&p| w(p)).collect();
     d.point_ids = s.points.keys().cloned().collect();
     d
+}
+
+/// Constraint glyphs (ASCII: the UI fonts lack the drafting symbols) and dimension values
+/// at the entities they constrain, in world coordinates.
+fn constraint_labels(def: &gusset_doc::SketchDef, s: &gusset_eval::SketchResult) -> Vec<([f32; 3], String)> {
+    use gusset_doc::SkConstraintKind as K;
+    let pt = |id: &str| s.points.get(id).copied();
+    // Where an entity's label goes: a point itself, a line's middle, a circle's center.
+    let anchor = |id: &str| -> Option<[f64; 2]> {
+        if let Some(p) = pt(id) {
+            return Some(p);
+        }
+        if let Some((_, a, b)) = s.lines.iter().find(|(l, _, _)| l == id) {
+            let (a, b) = (pt(a)?, pt(b)?);
+            return Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
+        }
+        let center = s
+            .circles
+            .iter()
+            .find(|(c, _)| c == id)
+            .map(|(_, c)| c)
+            .or_else(|| s.arcs.iter().find(|(a, ..)| a == id).map(|(_, c, ..)| c))?;
+        pt(center)
+    };
+    def.constraints
+        .iter()
+        .filter_map(|c| {
+            let text = match c.kind {
+                K::Horizontal => "H".to_string(),
+                K::Vertical => "V".to_string(),
+                K::Parallel => "||".to_string(),
+                K::Perpendicular => "_|_".to_string(),
+                K::Equal => "=".to_string(),
+                K::Tangent => "T".to_string(),
+                K::Fixed => "Fix".to_string(),
+                K::Midpoint => "M".to_string(),
+                K::Symmetric => "S".to_string(),
+                // Coincident and on-curve points sit on their geometry: no label.
+                K::Coincident | K::PointOnLine | K::PointOnCircle => return None,
+                K::Radius => format!("R {}", c.value.as_ref()?),
+                K::Diameter => format!("D {}", c.value.as_ref()?),
+                _ => c.value.as_ref()?.to_string(),
+            };
+            let anchors: Vec<[f64; 2]> = c.entities.iter().filter_map(|e| anchor(e)).collect();
+            let n = anchors.len() as f64;
+            if n == 0.0 {
+                return None;
+            }
+            let mid = anchors.iter().fold([0.0, 0.0], |m, a| [m[0] + a[0] / n, m[1] + a[1] / n]);
+            Some((s.frame.to_world(mid).map(|v| v as f32), text))
+        })
+        .collect()
 }
 
 /// Whether a command only reads the model and reports a result (measure, overview).

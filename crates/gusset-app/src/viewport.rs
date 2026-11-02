@@ -42,6 +42,8 @@ pub struct DrawSketch {
     pub ids: Vec<String>,
     /// Point id of each point (may be shorter).
     pub point_ids: Vec<String>,
+    /// Constraint glyphs and dimension values, drawn while the sketch is edited.
+    pub labels: Vec<([f32; 3], String)>,
 }
 
 /// A construction plane (an origin plane or a datum plane), drawn as a translucent square
@@ -888,6 +890,20 @@ impl Viewport {
             }
         };
         for s in sketches {
+            if self.edit_sketch.as_deref() == Some(s.name.as_str()) {
+                // Labels on a pill; several at one anchor stack downwards.
+                let mut used: Vec<Pos2> = Vec::new();
+                for (p, text) in &s.labels {
+                    let Some(q) = to_screen(*p) else { continue };
+                    let n = used.iter().filter(|u| u.distance(q) < 1.0).count();
+                    used.push(q);
+                    let g = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(11.0), pal.accent);
+                    let at = q + Vec2::new(6.0, 4.0 + n as f32 * (g.size().y + 4.0));
+                    let r = Rect::from_min_size(at, g.size()).expand2(Vec2::new(3.0, 1.0));
+                    painter.rect_filled(r, 3.0, pal.bg_raised.gamma_multiply(0.9));
+                    painter.galley(at, g, pal.accent);
+                }
+            }
             for (i, pl) in s.polylines.iter().enumerate() {
                 let pts: Vec<Pos2> = pl.iter().filter_map(|&v| to_screen(v)).collect();
                 let c = shade(s, s.ids.get(i));

@@ -559,6 +559,10 @@ fn picked_sketch_items_offer_the_constraints_that_fit() {
     let kinds = constraint_kinds(&h);
     assert!(kinds.contains(&"parallel".to_string()), "{kinds:?}");
     assert!(h.state().selection.is_empty());
+    // The constraint shows as a glyph between the two lines.
+    let labels: Vec<String> =
+        h.state().drawn_sketch("S").map(|d| d.labels.iter().map(|(_, t)| t.clone()).collect()).unwrap_or_default();
+    assert_eq!(labels, ["||"]);
     // A dimension opens the form with the kind and entities filled in.
     h.state_mut().selection = vec![pick(&l1)];
     h.run();
