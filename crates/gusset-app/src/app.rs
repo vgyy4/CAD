@@ -846,19 +846,50 @@ impl App {
         if let Some(s) = self.active_sketch.clone().or(last_sketch) {
             form.set("sketch", &s);
         }
-        let edges: Vec<&str> = self
-            .selection
-            .iter()
-            .filter_map(|h| if let Hit::Edge { name, .. } = h { Some(name.as_str()) } else { None })
-            .collect();
+        self.fill_picks(form, false);
+        // A joint from two picks (ADR 0026): the first is the moving body's frame, the
+        // second the target.
+        if form.command == "feature.joint" {
+            for h in self.selection.iter().take(2) {
+                pick_joint_frame(form, h);
+            }
+        }
+        // The open drawing is the one drawing commands work on.
+        if let Some(d) = &self.active_drawing {
+            form.set("drawing", d);
+        }
+        // The sketch being edited wins over "the latest sketch".
+        if let Some(s) = &self.active_sketch {
+            form.set("sketch", s);
+        }
+    }
+
+    /// Puts the picked edges, faces, plane and sketch items into the form's fields that
+    /// take them. `live`: the form is already open and a pick changed the selection, so a
+    /// field is only overwritten by picks of its own kind (and `plane` has no XY default).
+    fn fill_picks(&self, form: &mut Form, live: bool) {
+        let names = |want: fn(&Hit) -> Option<&str>| -> Vec<&str> { self.selection.iter().filter_map(want).collect() };
+        let edges = names(|h| if let Hit::Edge { name, .. } = h { Some(name) } else { None });
         if !edges.is_empty() {
             form.set("edges", &edges.join(", "));
         }
-        let face = self.selection.iter().find_map(|h| match h {
+        let faces = names(|h| if let Hit::Face { name, .. } = h { Some(name) } else { None });
+        if !faces.is_empty() {
+            form.set("faces", &faces.join(", "));
+        }
+        let face = self.selection.iter().rev().find_map(|h| match h {
             Hit::Face { name, .. } | Hit::Plane { name } => Some(name.as_str()),
             Hit::Edge { .. } | Hit::Sketch { .. } => None,
         });
-        form.set("plane", face.unwrap_or("XY"));
+        match face {
+            Some(f) => {
+                form.set("plane", f);
+            }
+            None if !live => {
+                form.set("plane", "XY");
+            }
+            None => {}
+        }
         // Picked sketch items: what a constraint applies to, what is deleted, the point moved.
         let sketch = form.value("sketch").map(str::to_string);
         let items: Vec<&str> = self
@@ -884,21 +915,6 @@ impl App {
                 }
                 _ => {}
             }
-        }
-        // A joint from two picks (ADR 0026): the first is the moving body's frame, the
-        // second the target.
-        if form.command == "feature.joint" {
-            for h in self.selection.iter().take(2) {
-                pick_joint_frame(form, h);
-            }
-        }
-        // The open drawing is the one drawing commands work on.
-        if let Some(d) = &self.active_drawing {
-            form.set("drawing", d);
-        }
-        // The sketch being edited wins over "the latest sketch".
-        if let Some(s) = &self.active_sketch {
-            form.set("sketch", s);
         }
     }
 
@@ -2253,11 +2269,17 @@ impl App {
                 Some(h) => self.selection = vec![h],
                 None => self.selection.clear(),
             }
-            // With the joint form open, picks fill its frames.
-            if let (Some(form), Some(h)) = (self.form.as_mut(), self.selection.last())
-                && form.command == "feature.joint"
-            {
-                pick_joint_frame(form, h);
+            // With the joint form open, picks fill its frames; other forms take the picks
+            // their fields want (edges for a fillet, faces for a shell, a plane, ...).
+            if let Some(mut form) = self.form.take() {
+                if form.command == "feature.joint" {
+                    if let Some(h) = self.selection.last() {
+                        pick_joint_frame(&mut form, h);
+                    }
+                } else {
+                    self.fill_picks(&mut form, true);
+                }
+                self.form = Some(form);
             }
         }
         if empty {

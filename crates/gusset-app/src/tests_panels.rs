@@ -394,3 +394,48 @@ fn a_command_form_opens_in_the_properties_panel_and_closes() {
     h.run();
     assert!(h.state().form.is_none());
 }
+
+fn click_at(h: &mut Harness<'static, App>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+/// The first viewport pixel (on a coarse grid) whose pick matches `want`, in screen
+/// coordinates.
+fn find_pick(h: &Harness<'static, App>, want: fn(&crate::viewport::Hit) -> bool) -> Option<egui::Pos2> {
+    let v = &h.state().viewport;
+    let r = v.rect();
+    (0..(r.height() as i32 / 3))
+        .flat_map(|y| (0..(r.width() as i32 / 3)).map(move |x| egui::pos2(x as f32 * 3.0, y as f32 * 3.0)))
+        .find(|p| v.pick(r.size(), *p).is_some_and(|(hit, _)| want(&hit)))
+        .map(|p| r.min + p.to_vec2())
+}
+
+#[test]
+fn picks_made_with_a_form_open_fill_its_fields() {
+    use crate::viewport::Hit;
+    let mut h = quick_harness(with_plane());
+    settle(&mut h);
+    h.state_mut().start_command("feature.fillet");
+    h.run();
+    let at = find_pick(&h, |hit| matches!(hit, Hit::Edge { .. })).expect("an edge on screen");
+    click_at(&mut h, at);
+    let Some(Hit::Edge { name, .. }) = h.state().selection.last().cloned() else { panic!("no edge picked") };
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("edges")), Some(name.as_str()));
+    // A face pick fills `faces` (offset face) without touching other fields.
+    h.state_mut().selection.clear();
+    h.state_mut().start_command("feature.offset_face");
+    h.run();
+    let at = find_pick(&h, |hit| matches!(hit, Hit::Face { .. })).expect("a face on screen");
+    click_at(&mut h, at);
+    let Some(Hit::Face { name, .. }) = h.state().selection.last().cloned() else { panic!("no face picked") };
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("faces")), Some(name.as_str()));
+}
