@@ -376,7 +376,7 @@ impl Curve for OffsetCurve {
 }
 
 // Geom_OffsetCurveUtils::CalculateD0
-fn calculate_d0(value: &mut Pnt, d1: &gp::Vec, dir: &XYZ, offset: f64) -> bool {
+pub(crate) fn calculate_d0(value: &mut Pnt, d1: &gp::Vec, dir: &XYZ, offset: f64) -> bool {
     let mut ndir = d1.xyz().crossed(dir);
     let r = ndir.modulus();
     if r <= gp::resolution() {
@@ -388,7 +388,7 @@ fn calculate_d0(value: &mut Pnt, d1: &gp::Vec, dir: &XYZ, offset: f64) -> bool {
 }
 
 // Geom_OffsetCurveUtils::CalculateD1
-fn calculate_d1(value: &mut Pnt, d1: &mut gp::Vec, d2: &gp::Vec, dir: &XYZ, offset: f64) -> bool {
+pub(crate) fn calculate_d1(value: &mut Pnt, d1: &mut gp::Vec, d2: &gp::Vec, dir: &XYZ, offset: f64) -> bool {
     let tol = gp::resolution();
     let mut ndir = d1.xyz().crossed(dir);
     let mut dndir = d2.xyz().crossed(dir);
@@ -414,7 +414,7 @@ fn calculate_d1(value: &mut Pnt, d1: &mut gp::Vec, d2: &gp::Vec, dir: &XYZ, offs
 }
 
 // Geom_OffsetCurveUtils::CalculateD2
-fn calculate_d2(
+pub(crate) fn calculate_d2(
     value: &mut Pnt,
     d1: &mut gp::Vec,
     d2: &mut gp::Vec,
@@ -465,7 +465,7 @@ fn calculate_d2(
 
 // Geom_OffsetCurveUtils::CalculateD3
 #[allow(clippy::too_many_arguments)]
-fn calculate_d3(
+pub(crate) fn calculate_d3(
     value: &mut Pnt,
     d1: &mut gp::Vec,
     d2: &mut gp::Vec,

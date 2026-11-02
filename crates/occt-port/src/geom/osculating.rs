@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// `Geom_OsculatingSurface`.
 #[derive(Debug, Clone)]
-pub(super) struct OsculatingSurface {
+pub(crate) struct OsculatingSurface {
     basis_surf: Arc<dyn Surface>,
     osc1: Vec<BSplineSurface>,
     osc2: Vec<BSplineSurface>,

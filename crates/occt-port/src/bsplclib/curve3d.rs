@@ -725,6 +725,42 @@ pub fn build_cache(
     Ok((cache_poles, cache_weights))
 }
 
+/// `BSplCLib::BuildCache(U, SpanDomain, Periodic, Degree, SpanIndex, FlatKnots, Poles, Weights, CacheArray)` in 3D (the
+/// overload made for `BSplCLib_Cache`): the `degree + 1` rows of the cache array in row-major order. A row holds the
+/// 3 scaled coefficients and, when `weights` is given, a weight coefficient (a rational spline) or a column that is zero
+/// except for the 1 of the first row (a spline whose weights are all equal); `degree + 1` rows of `3 + 1`/`3` items.
+pub fn build_cache_span(
+    u: f64,
+    span_domain: f64,
+    periodic: bool,
+    degree: i32,
+    span_index: i32,
+    flat_knots: &[f64],
+    poles: &[Pnt],
+    weights: Option<&[f64]>,
+) -> R<Vec<f64>> {
+    let mut pr = prepare_eval(u, span_index, degree, periodic, poles, weights, flat_knots, None)?;
+    let dimension = usize::try_from(pr.dim).map_err(|_| BSplError::OutOfRange)?;
+    let cache_shift = if weights.is_some() && !pr.rational { dimension + 1 } else { dimension };
+    bohm_in_place(pr.u, degree, degree, &pr.knots, pr.dim, &mut pr.poles)?;
+    let mut coeff = 1.0;
+    let mut cache = Vec::new();
+    for i in 0..=usize::try_from(degree).map_err(|_| BSplError::OutOfRange)? {
+        for j in 0..dimension {
+            cache.push(rd(&pr.poles, (i * dimension + j) as isize)? * coeff);
+        }
+        coeff *= span_domain / (i + 1) as f64;
+        if cache_shift > dimension {
+            cache.push(0.0);
+        }
+    }
+    if cache_shift > dimension {
+        // theCacheArray.SetValue(LowerRow, LowerCol + cacheShift - 1, 1.0)
+        *cache.get_mut(cache_shift - 1).ok_or(BSplError::OutOfRange)? = 1.0;
+    }
+    Ok(cache)
+}
+
 // ---------------------------------------------------------------------------------------------
 // The flat-array templates with 2D poles and optional weights
 

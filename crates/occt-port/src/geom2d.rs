@@ -18,7 +18,7 @@ mod bezier;
 mod bspline;
 mod conics;
 mod line;
-mod offset;
+pub(crate) mod offset;
 mod point;
 pub mod rep_utils;
 mod trimmed;
@@ -60,6 +60,8 @@ pub enum Geom2dError {
     Program,
     /// `Standard_DimensionError`.
     Dimension,
+    /// `Standard_NotImplemented` (the evaluator curves of `Geom2dEval`: reversal and transformation).
+    NotImplemented,
     /// A wrong shape of a Rust argument, or an unchecked input of OCCT 8.0.1 as built.
     Argument,
     /// An error of `gp`.
@@ -154,6 +156,12 @@ pub trait Geometry2d: Any + std::fmt::Debug + Send + Sync {
     fn as_any(&self) -> &dyn Any;
     /// The object as mutable `Any`.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// `Transform` that can report `Standard_NotImplemented` (the `Geom2dEval` curves, whose `transform` does nothing);
+    /// the other classes never fail.
+    fn try_transform(&mut self, t: &Trsf2d) -> Result<()> {
+        self.transform(t);
+        Ok(())
+    }
     /// `Transform`.
     fn transform(&mut self, t: &Trsf2d);
     /// `Copy`.
@@ -318,6 +326,15 @@ pub trait Curve2d: Geometry2d {
     fn reverse(&mut self);
     /// `ReversedParameter`.
     fn reversed_parameter(&self, u: f64) -> f64;
+    /// `Reverse` that can report `Standard_NotImplemented` (the `Geom2dEval` curves, whose `reverse` does nothing).
+    fn try_reverse(&mut self) -> Result<()> {
+        self.reverse();
+        Ok(())
+    }
+    /// `ReversedParameter` that can report `Standard_NotImplemented` (the `Geom2dEval` curves).
+    fn try_reversed_parameter(&self, u: f64) -> Result<f64> {
+        Ok(self.reversed_parameter(u))
+    }
     /// `TransformedParameter`.
     fn transformed_parameter(&self, u: f64, _t: &Trsf2d) -> f64 {
         u

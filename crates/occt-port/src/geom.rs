@@ -23,7 +23,15 @@ mod conics;
 mod elementary;
 mod line;
 mod offset;
+/// The `Geom_OffsetCurveUtils::Calculate*` functions (for the adaptors of `geomadaptor`).
+pub(crate) mod offset_utils {
+    pub(crate) use super::offset::{calculate_d0, calculate_d1, calculate_d2, calculate_d3};
+}
 mod offsetsurf;
+/// The evaluation functions of `Geom_OffsetSurfaceUtils` (for the adaptors of `geomadaptor`).
+pub(crate) mod offset_surface_utils {
+    pub(crate) use super::offsetsurf::{OffsetBasis, evaluate_d0, evaluate_d1, evaluate_d2, evaluate_d3, evaluate_dn};
+}
 mod osculating;
 mod point;
 pub mod rep_utils;

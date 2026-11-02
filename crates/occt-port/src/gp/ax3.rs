@@ -1,5 +1,4 @@
 //! gp_Ax3
-use super::ax2::cross_or;
 use super::{
     ANGULAR, Ax1, Ax2, ConstructionError, Dir, Direction, Pnt, Trsf, Vec, cross_standard_dir, perpendicular_x,
     perpendicular_y,
@@ -98,6 +97,12 @@ impl Ax3Coplanar for Ax1 {
 }
 
 impl Ax3 {
+    /// `gp_Ax3(P, N, Vx)` without the construction checks (see `Dir::from_vec_unchecked`).
+    pub(crate) fn new_unchecked(p: Pnt, n: Dir, vx: Dir) -> Self {
+        let x = n.cross_crossed_unchecked(&vx, &n);
+        let y = n.crossed_unchecked(&x);
+        Self { loc: p, dir: n, x, y }
+    }
     // gp_Ax3::gp_Ax3(gp_Ax2)
     pub fn from_ax2(a: &Ax2) -> Self {
         Self { loc: a.loc, dir: a.dir, x: a.x, y: a.y }
@@ -132,8 +137,11 @@ impl Ax3 {
         } else {
             (b, -a, 0.)
         };
-        let x = Dir::new(dx, dy, dz).unwrap_or_default();
-        let y = cross_or(&v, &x, Dir::default_y());
+        let d = Dir::new(dx, dy, dz).unwrap_or_default();
+        // OCCT 8.0.1 forms the cross products on `gp_XYZ` (not normalized) and only then the directions:
+        // X = normalize((V ^ D) ^ V), Y = normalize(V ^ X). The rounding of X is observable in the results.
+        let x = Dir::from_xyz(v.xyz().crossed(d.xyz()).crossed(v.xyz())).unwrap_or_default();
+        let y = Dir::from_xyz(v.xyz().crossed(x.xyz())).unwrap_or_default();
         Self { loc: p, dir: v, x, y }
     }
     // gp_Ax3::gp_Ax3(P, gp_Dir::D V)

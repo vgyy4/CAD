@@ -182,3 +182,10 @@ continue towards TKG3d/TKGeomBase, and the modeling layer gets its own ADR.
 - The oracle files are a few hundred kB per package.
 - If bit-exactness fails for reasons outside our control (libm differences in `sin`,
   `cos`, `atan2`), tests fall back to a ULP bound for those values, documented per case.
+
+## Amendment (2026-11-02): on demand, not in bulk
+The owner stopped the bulk translation after Geom2d, Geom and 21 more packages (status in
+crates/occt-port/STATUS.md). From now on a package is translated only when the Gusset
+feature being worked on needs it: generate its judge with `tools/judgegen.py`, translate
+from the cxx2rs drafts (the "OCCT drafts" workflows), check it against the judge, review
+and merge. The rest of Gusset keeps using OCCT through gusset-occt-sys.

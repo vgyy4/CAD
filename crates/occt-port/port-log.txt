@@ -1,0 +1,50 @@
+mathinteg | families 19 | lines 304 | done
+mathlin_pkg | families 28 | lines 448 | values 2720/2730 bit-identical (12 throws lines) | done
+mathutils | families 40 | lines 658 | values 6922/6937 bit-identical (2 throws lines) | done
+mathpoly | families 18 | lines 288 | values 4739/4742 bit-identical | done
+mathroot | families 20 | lines 314 | values 1341/1343 bit-identical | done
+mathsys | families 17 | lines 260 | values 1539/1539 bit-identical | done
+mathopt | families 26 | lines 590 | values 2571/2571 | done
+adaptor2d | families 24 | lines 609 | values 1488/1488 | done
+bsplclib_cache | families 5 | lines 261 | values 14282/14282 (prerequisite sub-job: Cache, Intervals, BuildCache span index) | done
+geom2dadaptor | families 14 | lines 912 | values 5376/5392 bit-identical (others within 8 ulps; adaptor2d API adjusted: intervals Vec, bezier/bspline Option, geom2d_curve hook) | done
+geom2deval | families 24 | lines 474 | values 1735/1766 bit-identical (rest within 8 ulps) | done
+geom2dgrideval | families 17 | lines 944 | values 28654 of 28986 (rest within 8 ulps; adds Curve2dAdaptor::is_geom2d_adaptor, geom2d offset adjust_derivative pub(crate); B-spline grid DN passes a flat span with knots+mults: UB in C++ for span==nk, judge avoids) | done
+geom2dhash | families 31 | lines 750 | values all values integers, identical (hashes, booleans); includes Standard_HashUtils/CStringHasher functions | done
+topabs | families 17 | lines 459 | values all values integers, identical (print_state reproduces the C++ name table order) | done
+adaptor3d | families 38 | lines 1941 | values IsoCurve, CurveOnSurface, TopolTool, HVertex, InterFunc, HSurfaceTool; API: adaptor2d Geom3d error variant; topabs prerequisite; HSurfaceTool stand-in for GeomAdaptor_Curve; TopolTool members initialised; BSplSamplePnts uninitialised entries avoided in judge; cos_eval 8 ulps | done
+advapprox | families 23 | lines 616 | values all values bit-identical (trig functions of the judge are series); 99.5% line coverage; no changes to existing modules | done
+geomadaptor | families 33 | lines 1973 | values all bit-identical except trig families (8 ulps); gp unchecked ctors, geom OffsetBasis refactor, intervals_replace_array | done
+gprop | families 54 | lines 1424 | values 9090/9191 bit-identical (generated judge, Haiku)
+geomeval | SKIPPED | judge generation failed: oracle output not deterministic (pointer value in aht_bezier_curve_weights)
+geomgrideval | SKIPPED | judgegen 0 of 158 callables (0 %)
+geomhash | SKIPPED | judgegen 0 of 18 callables (0 %)
+advapp2var | BLOCKED (clippy too_many_arguments on judged 9-arg Iso::new_9; tests pass) | families 75 (partial: Context, Node, Iso, Patch, Framework, Network, SysBase) | lines 1506 judge lines | values 2963/2963 bit-identical, 175 throws matched | coverage 35.1 %
+appcont | SKIPPED | judgegen 0 of 13 callables (0 %)
+appdef | SKIPPED | judgegen oracle does not link (AppDef_MultiLine::SetParameter undefined)
+appparcurves | SKIPPED | judgegen schema mismatch in multi_b_sp_curve_new
+approx | SKIPPED | judgegen coverage 18.4 % (27 of 147)
+bndlib | SKIPPED | judgegen 0 of 35 callables (0 %)
+cpnts | SKIPPED | judge appears to depend on an uninitialised function pointer (MyGaussFunction default); not verified; coverage 35.3 %
+extremapc | SKIPPED | judgegen coverage 20.8 % (21 of 101)
+femtool | SKIPPED | judgegen oracle not deterministic
+extrema | SKIPPED | needs IntAna2d_AnaIntersection (intana2d not translated) for Extrema_ExtElC line/circle; partial ExtPElC, ExtPElC2d, ExtPElS, POn* kept in jobs/extrema
+gc | SKIPPED | needs gce_MakeLin/gce_MakeCirc etc. (gce not translated); judge generated 79.5 % coverage
+gce2d | SKIPPED | judgegen 0 of 0 callables
+gcpnts | SKIPPED | judgegen coverage 21.2 % (22 of 104)
+geom2dconvert | SKIPPED | judgegen coverage 16.3 % (7 of 43)
+geombndlib | SKIPPED | judgegen failed (compilation terminated)
+geomconvert: run stopped at the end of this session before judge generation finished; left open
+advapp2var | families 75 | lines 1506 | values 2963/2963 bit-identical, 175 throws | done
+advapp2var | families 75 | lines 1506 | values 2963/2963 bit-identical, 175 throws | coverage 35.1 %
+geomeval | BLOCKED | judge generator defect (T/AHT Bezier surfaces and AHT curve only judged on invalid constructions); TBezierSurface/AHTBezierSurface not translated; partial code in jobs/geomeval
+appcont | SKIPPED | judgegen coverage 0 % (0 of 13)
+appparcurves | families 19 | lines 1091 | values 488/488 bit-identical, 545 throws | done
+appdef | SKIPPED | judgegen coverage 21.1 % (84 of 398)
+femtool | SKIPPED | judgegen coverage 17.5 % (17 of 97)
+bndlib | WAITING | 22 of 35 callables translated (module functions, judge-verified bit-exact in a scratch check); Add2dCurve/Add3dCurve/AddSurface need GeomBndLib, whose judge is SKIPPED; partial code in jobs/bndlib, not merged
+cpnts | BLOCKED | 46 of 51 callables; judge 1 family mismatch (AbscissaPoint::init_2 2D: one case where OCCT's tolerance integration raises and the Rust one converges); UniformDeflection::next() trips clippy::should_implement_trait (lint allow not permitted by the rule); code in jobs/cpnts, not merged
+intana2d | BLOCKED | 43 of 45 callables translated (src/intana2d.rs); judge 4 families mismatch: OCCT leaves done=false in some conic perform cases where the Rust quartic solver (mathlin DirectPolynomialRoots) reports done; needs a check of mathlin's IsDone semantics against OCCT; not merged
+intana2d | SKIPPED (reviewer) | 3 attempts: Rust quartic solver mirrors OCCT math_DirectPolynomialRoots control flow and overflow guards; divergence not located; 4 families remain
+cpnts AbscissaPoint 2D Init-tolerance | SKIPPED (reviewer) | 2 attempts: OCCT Gauss Done logic mirrored; the throw source in the judge case not identified (possibly an adaptor call raising)
+geombndlib | IN PROGRESS | judge regenerated (prep.sh with bare lib names): 192 of 204 callables in 2 parts (tests/geombndlib_1.rs, geombndlib_2.rs); translation NOT started (5280 C++ lines in 30 files); next: write src/geombndlib*.rs, then bndlib (which needs geombndlib for 13 callables)

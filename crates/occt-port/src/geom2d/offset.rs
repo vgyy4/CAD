@@ -331,7 +331,7 @@ impl Curve2d for OffsetCurve {
 }
 
 // Geom2d_OffsetCurveUtils::CalculateD0
-fn calculate_d0(value: &mut Pnt2d, d1: &Vec2d, offset: f64) -> bool {
+pub(crate) fn calculate_d0(value: &mut Pnt2d, d1: &Vec2d, offset: f64) -> bool {
     if d1.square_magnitude() <= gp::resolution() {
         return false;
     }
@@ -347,7 +347,7 @@ fn xy_of(v: &Vec2d) -> XY {
 }
 
 // Geom2d_OffsetCurveUtils::CalculateD1
-fn calculate_d1(value: &mut Pnt2d, d1: &mut Vec2d, d2: &Vec2d, offset: f64) -> bool {
+pub(crate) fn calculate_d1(value: &mut Pnt2d, d1: &mut Vec2d, d2: &Vec2d, offset: f64) -> bool {
     let mut ndir = xy_of(d1);
     let mut dndir = xy_of(d2);
     let r2 = ndir.square_modulus();
@@ -372,7 +372,7 @@ fn calculate_d1(value: &mut Pnt2d, d1: &mut Vec2d, d2: &Vec2d, offset: f64) -> b
 }
 
 // Geom2d_OffsetCurveUtils::CalculateD2
-fn calculate_d2(
+pub(crate) fn calculate_d2(
     value: &mut Pnt2d,
     d1: &mut Vec2d,
     d2: &mut Vec2d,
@@ -418,7 +418,7 @@ fn calculate_d2(
 }
 
 // Geom2d_OffsetCurveUtils::CalculateD3
-fn calculate_d3(
+pub(crate) fn calculate_d3(
     value: &mut Pnt2d,
     d1: &mut Vec2d,
     d2: &mut Vec2d,
@@ -481,15 +481,15 @@ fn calculate_d3(
 }
 
 // The derivatives that Geom2d_OffsetCurveUtils::AdjustDerivative replaces.
-struct Derivatives<'a> {
-    d1: &'a mut Vec2d,
-    d2: &'a mut Vec2d,
-    d3: &'a mut Vec2d,
-    d4: &'a mut Vec2d,
+pub(crate) struct Derivatives<'a> {
+    pub(crate) d1: &'a mut Vec2d,
+    pub(crate) d2: &'a mut Vec2d,
+    pub(crate) d3: &'a mut Vec2d,
+    pub(crate) d4: &'a mut Vec2d,
 }
 
 // Geom2d_OffsetCurveUtils::AdjustDerivative
-fn adjust_derivative(
+pub(crate) fn adjust_derivative(
     curve: &dyn Curve2d,
     max_derivative: i32,
     u: f64,

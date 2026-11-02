@@ -1,0 +1,459 @@
+compose 0 0 | 0
+compose 0 1 | 1
+compose 0 2 | 2
+compose 0 3 | 3
+compose 1 0 | 1
+compose 1 1 | 0
+compose 1 2 | 2
+compose 1 3 | 3
+compose 2 0 | 2
+compose 2 1 | 2
+compose 2 2 | 2
+compose 2 3 | 3
+compose 3 0 | 3
+compose 3 1 | 3
+compose 3 2 | 2
+compose 3 3 | 3
+compose3 0 0 0 | 0
+compose3 0 0 1 | 1
+compose3 0 0 2 | 2
+compose3 0 0 3 | 3
+compose3 0 1 0 | 1
+compose3 0 1 1 | 0
+compose3 0 1 2 | 2
+compose3 0 1 3 | 3
+compose3 0 2 0 | 2
+compose3 0 2 1 | 2
+compose3 0 2 2 | 2
+compose3 0 2 3 | 3
+compose3 0 3 0 | 3
+compose3 0 3 1 | 3
+compose3 0 3 2 | 2
+compose3 0 3 3 | 3
+compose3 1 0 0 | 1
+compose3 1 0 1 | 0
+compose3 1 0 2 | 2
+compose3 1 0 3 | 3
+compose3 1 1 0 | 0
+compose3 1 1 1 | 1
+compose3 1 1 2 | 2
+compose3 1 1 3 | 3
+compose3 1 2 0 | 2
+compose3 1 2 1 | 2
+compose3 1 2 2 | 2
+compose3 1 2 3 | 3
+compose3 1 3 0 | 3
+compose3 1 3 1 | 3
+compose3 1 3 2 | 2
+compose3 1 3 3 | 3
+compose3 2 0 0 | 2
+compose3 2 0 1 | 2
+compose3 2 0 2 | 2
+compose3 2 0 3 | 3
+compose3 2 1 0 | 2
+compose3 2 1 1 | 2
+compose3 2 1 2 | 2
+compose3 2 1 3 | 3
+compose3 2 2 0 | 2
+compose3 2 2 1 | 2
+compose3 2 2 2 | 2
+compose3 2 2 3 | 3
+compose3 2 3 0 | 3
+compose3 2 3 1 | 3
+compose3 2 3 2 | 2
+compose3 2 3 3 | 3
+compose3 3 0 0 | 3
+compose3 3 0 1 | 3
+compose3 3 0 2 | 2
+compose3 3 0 3 | 3
+compose3 3 1 0 | 3
+compose3 3 1 1 | 3
+compose3 3 1 2 | 2
+compose3 3 1 3 | 3
+compose3 3 2 0 | 2
+compose3 3 2 1 | 2
+compose3 3 2 2 | 2
+compose3 3 2 3 | 3
+compose3 3 3 0 | 3
+compose3 3 3 1 | 3
+compose3 3 3 2 | 2
+compose3 3 3 3 | 3
+reverse 0 | 1
+reverse 1 | 0
+reverse 2 | 2
+reverse 3 | 3
+complement 0 | 1
+complement 1 | 0
+complement 2 | 3
+complement 3 | 2
+reverse_complement 0 | 0 0
+reverse_complement 1 | 1 1
+reverse_complement 2 | 3 3
+reverse_complement 3 | 2 2
+shape_to_string 0 | 8 67 79 77 80 79 85 78 68
+shape_to_string 1 | 9 67 79 77 80 83 79 76 73 68
+shape_to_string 2 | 5 83 79 76 73 68
+shape_to_string 3 | 5 83 72 69 76 76
+shape_to_string 4 | 4 70 65 67 69
+shape_to_string 5 | 4 87 73 82 69
+shape_to_string 6 | 4 69 68 71 69
+shape_to_string 7 | 6 86 69 82 84 69 88
+shape_to_string 8 | 5 83 72 65 80 69
+shape_print 0 | 8 67 79 77 80 79 85 78 68
+shape_print 1 | 9 67 79 77 80 83 79 76 73 68
+shape_print 2 | 5 83 79 76 73 68
+shape_print 3 | 5 83 72 69 76 76
+shape_print 4 | 4 70 65 67 69
+shape_print 5 | 4 87 73 82 69
+shape_print 6 | 4 69 68 71 69
+shape_print 7 | 6 86 69 82 84 69 88
+shape_print 8 | 5 83 72 65 80 69
+orientation_to_string 0 | 7 70 79 82 87 65 82 68
+orientation_to_string 1 | 8 82 69 86 69 82 83 69 68
+orientation_to_string 2 | 8 73 78 84 69 82 78 65 76
+orientation_to_string 3 | 8 69 88 84 69 82 78 65 76
+orientation_print 0 | 7 70 79 82 87 65 82 68
+orientation_print 1 | 8 82 69 86 69 82 83 69 68
+orientation_print 2 | 8 73 78 84 69 82 78 65 76
+orientation_print 3 | 8 69 88 84 69 82 78 65 76
+state_print 0 | 2 79 78
+state_print 1 | 2 73 78
+state_print 2 | 3 79 85 84
+state_print 3 | 7 85 78 75 78 79 87 78
+shape_from_string_try 8 67 79 77 80 79 85 78 68 | 1 0
+shape_from_string_try 8 99 111 109 112 111 117 110 100 | 1 0
+shape_from_string_try 8 67 111 109 112 111 85 78 68 | 1 0
+shape_from_string_try 9 67 79 77 80 79 85 78 68 83 | 0 7
+shape_from_string_try 7 67 79 77 80 79 85 78 | 0 7
+shape_from_string_try 5 65 69 73 66 83 | 0 7
+shape_from_string_try 10 102 113 122 111 105 116 98 110 98 98 | 0 7
+shape_from_string_try 9 67 79 77 80 83 79 76 73 68 | 1 1
+shape_from_string_try 9 99 111 109 112 115 111 108 105 100 | 1 1
+shape_from_string_try 9 67 111 109 112 115 79 76 73 68 | 1 1
+shape_from_string_try 10 67 79 77 80 83 79 76 73 68 32 | 0 7
+shape_from_string_try 2 67 79 | 0 7
+shape_from_string_try 4 79 74 84 69 | 0 7
+shape_from_string_try 5 102 99 98 116 108 | 0 7
+shape_from_string_try 5 83 79 76 73 68 | 1 2
+shape_from_string_try 5 115 111 108 105 100 | 1 2
+shape_from_string_try 5 83 111 76 105 100 | 1 2
+shape_from_string_try 6 83 79 76 73 68 83 | 0 7
+shape_from_string_try 1 83 | 0 7
+shape_from_string_try 4 110 104 116 121 | 0 7
+shape_from_string_try 5 83 72 69 76 76 | 1 3
+shape_from_string_try 5 115 104 101 108 108 | 1 3
+shape_from_string_try 5 115 104 69 108 76 | 1 3
+shape_from_string_try 6 83 72 69 76 76 32 | 0 7
+shape_from_string_try 3 83 72 69 | 0 7
+shape_from_string_try 2 83 80 | 0 7
+shape_from_string_try 5 105 121 114 105 104 | 0 7
+shape_from_string_try 4 70 65 67 69 | 1 4
+shape_from_string_try 4 102 97 99 101 | 1 4
+shape_from_string_try 4 102 97 67 101 | 1 4
+shape_from_string_try 5 70 65 67 69 83 | 0 7
+shape_from_string_try 1 70 | 0 7
+shape_from_string_try 0 | 0 7
+shape_from_string_try 9 122 101 105 107 114 121 115 109 112 | 0 7
+shape_from_string_try 4 87 73 82 69 | 1 5
+shape_from_string_try 4 119 105 114 101 | 1 5
+shape_from_string_try 4 87 73 114 69 | 1 5
+shape_from_string_try 5 87 73 82 69 32 | 0 7
+shape_from_string_try 3 87 73 82 | 0 7
+shape_from_string_try 4 77 89 82 66 | 0 7
+shape_from_string_try 8 103 109 112 99 99 112 112 103 | 0 7
+shape_from_string_try 4 69 68 71 69 | 1 6
+shape_from_string_try 4 101 100 103 101 | 1 6
+shape_from_string_try 4 69 100 71 101 | 1 6
+shape_from_string_try 5 69 68 71 69 83 | 0 7
+shape_from_string_try 3 69 68 71 | 0 7
+shape_from_string_try 6 65 68 83 72 66 67 | 0 7
+shape_from_string_try 3 112 107 113 | 0 7
+shape_from_string_try 6 86 69 82 84 69 88 | 1 7
+shape_from_string_try 6 118 101 114 116 101 120 | 1 7
+shape_from_string_try 6 86 101 82 116 101 120 | 1 7
+shape_from_string_try 7 86 69 82 84 69 88 32 | 0 7
+shape_from_string_try 3 86 69 82 | 0 7
+shape_from_string_try 4 80 85 75 78 | 0 7
+shape_from_string_try 8 97 121 120 105 118 111 97 121 | 0 7
+shape_from_string_try 5 83 72 65 80 69 | 1 8
+shape_from_string_try 5 115 104 97 112 101 | 1 8
+shape_from_string_try 5 83 104 97 80 69 | 1 8
+shape_from_string_try 6 83 72 65 80 69 83 | 0 7
+shape_from_string_try 1 82 | 0 7
+shape_from_string_try 5 108 122 104 103 101 | 0 7
+shape_from_string_try 8 67 111 77 112 111 85 110 100 | 1 0
+shape_from_string_try 9 67 79 77 80 79 85 78 68 32 | 0 7
+shape_from_string_try 4 67 79 77 80 | 0 7
+shape_from_string_try 6 65 81 89 71 73 76 | 0 7
+shape_from_string_try 8 106 107 106 116 118 108 106 101 | 0 7
+shape_from_string_try 9 67 79 109 80 83 79 76 105 100 | 1 1
+shape_from_string_try 10 67 79 77 80 83 79 76 73 68 83 | 0 7
+shape_from_string_try 1 81 | 0 7
+shape_from_string_try 4 99 99 107 98 | 0 7
+shape_from_string_try 5 83 79 76 73 100 | 1 2
+shape_from_string_try 6 83 79 76 73 68 32 | 0 7
+shape_from_string_try 1 114 | 0 7
+shape_from_string_try 5 115 104 69 76 76 | 1 3
+shape_from_string_try 6 83 72 69 76 76 83 | 0 7
+shape_from_string_try 11 100 120 116 107 122 101 100 121 99 99 99 | 0 7
+shape_from_string_try 4 70 97 67 101 | 1 4
+shape_from_string_try 5 70 65 67 69 32 | 0 7
+shape_from_string_try 3 70 65 67 | 0 7
+shape_from_string_try 3 83 81 79 | 0 7
+shape_from_string_try 1 99 | 0 7
+shape_from_string_try 4 87 73 82 101 | 1 5
+shape_from_string_try 5 87 73 82 69 83 | 0 7
+shape_from_string_try 4 77 69 86 75 | 0 7
+shape_from_string_try 6 116 113 120 104 101 99 | 0 7
+shape_from_string_try 4 101 100 71 69 | 1 6
+shape_from_string_try 5 69 68 71 69 32 | 0 7
+shape_from_string_try 1 69 | 0 7
+shape_from_string_try 1 84 | 0 7
+shape_from_string_try 3 116 114 99 | 0 7
+shape_from_string 8 67 79 77 80 79 85 78 68 | 0
+shape_from_string 8 99 111 109 112 111 117 110 100 | 0
+shape_from_string 8 99 79 109 112 111 85 78 68 | 0
+shape_from_string 9 67 79 77 80 79 85 78 68 83 | 8
+shape_from_string 5 67 79 77 80 79 | 8
+shape_from_string 1 89 | 8
+shape_from_string 11 109 103 117 115 116 109 113 105 116 103 98 | 8
+shape_from_string 9 67 79 77 80 83 79 76 73 68 | 1
+shape_from_string 9 99 111 109 112 115 111 108 105 100 | 1
+shape_from_string 9 99 79 77 80 115 79 108 73 100 | 1
+shape_from_string 10 67 79 77 80 83 79 76 73 68 32 | 8
+shape_from_string 1 67 | 8
+shape_from_string 5 70 77 86 88 73 | 8
+shape_from_string 6 122 99 103 106 108 108 | 8
+shape_from_string 5 83 79 76 73 68 | 2
+shape_from_string 5 115 111 108 105 100 | 2
+shape_from_string 5 83 79 76 73 100 | 2
+shape_from_string 6 83 79 76 73 68 83 | 8
+shape_from_string 4 83 79 76 73 | 8
+shape_from_string 3 78 70 74 | 8
+shape_from_string 2 119 112 | 8
+shape_from_string 5 83 72 69 76 76 | 3
+shape_from_string 5 115 104 101 108 108 | 3
+shape_from_string 5 83 104 69 108 76 | 3
+shape_from_string 6 83 72 69 76 76 32 | 8
+shape_from_string 0 | 8
+shape_from_string 6 121 107 116 115 100 98 | 8
+shape_from_string 4 70 65 67 69 | 4
+shape_from_string 4 102 97 99 101 | 4
+shape_from_string 4 70 97 67 69 | 4
+shape_from_string 5 70 65 67 69 83 | 8
+shape_from_string 3 70 65 67 | 8
+shape_from_string 2 76 72 | 8
+shape_from_string 11 109 115 116 115 116 108 118 112 100 110 117 | 8
+shape_from_string 4 87 73 82 69 | 5
+shape_from_string 4 119 105 114 101 | 5
+shape_from_string 4 87 73 82 101 | 5
+shape_from_string 5 87 73 82 69 32 | 8
+shape_from_string 2 87 73 | 8
+shape_from_string 4 79 90 82 78 | 8
+shape_from_string 10 108 116 107 119 111 99 117 113 111 102 | 8
+shape_from_string 4 69 68 71 69 | 6
+shape_from_string 4 101 100 103 101 | 6
+shape_from_string 4 101 100 71 69 | 6
+shape_from_string 5 69 68 71 69 83 | 8
+shape_from_string 1 69 | 8
+shape_from_string 8 87 85 67 73 65 88 90 74 | 8
+shape_from_string 4 117 121 103 122 | 8
+shape_from_string 6 86 69 82 84 69 88 | 7
+shape_from_string 6 118 101 114 116 101 120 | 7
+shape_from_string 6 86 101 82 84 69 88 | 7
+shape_from_string 7 86 69 82 84 69 88 32 | 8
+shape_from_string 4 86 69 82 84 | 8
+shape_from_string 7 78 84 89 90 73 75 84 | 8
+shape_from_string 6 110 122 118 107 112 120 | 8
+shape_from_string 5 83 72 65 80 69 | 8
+shape_from_string 5 115 104 97 112 101 | 8
+shape_from_string 5 115 104 97 112 69 | 8
+shape_from_string 6 83 72 65 80 69 83 | 8
+shape_from_string 4 83 72 65 80 | 8
+shape_from_string 5 71 83 77 67 74 | 8
+shape_from_string 7 118 99 120 119 111 104 110 | 8
+shape_from_string 8 67 111 109 112 79 85 110 68 | 0
+shape_from_string 9 67 79 77 80 79 85 78 68 32 | 8
+shape_from_string 7 67 79 77 80 79 85 78 | 8
+shape_from_string 7 75 90 86 73 69 65 70 | 8
+shape_from_string 7 117 104 118 110 106 102 102 | 8
+shape_from_string 9 99 111 109 112 83 79 76 73 100 | 1
+shape_from_string 10 67 79 77 80 83 79 76 73 68 83 | 8
+shape_from_string 7 67 79 77 80 83 79 76 | 8
+shape_from_string 1 74 | 8
+shape_from_string 6 106 115 114 110 104 119 | 8
+shape_from_string 5 115 111 76 73 68 | 2
+shape_from_string 6 83 79 76 73 68 32 | 8
+shape_from_string 1 83 | 8
+shape_from_string 3 75 85 90 | 8
+shape_from_string 3 111 121 116 | 8
+shape_from_string 5 83 72 101 108 76 | 3
+shape_from_string 6 83 72 69 76 76 83 | 8
+shape_from_string 4 83 72 69 76 | 8
+shape_from_string 6 101 107 98 115 104 111 | 8
+shape_from_string 4 70 65 99 101 | 4
+shape_from_string 5 70 65 67 69 32 | 8
+shape_from_string 1 70 | 8
+shape_from_string 2 80 90 | 8
+shape_from_string 11 103 101 107 104 119 103 101 119 118 111 117 | 8
+shape_from_string 4 119 73 82 101 | 5
+shape_from_string 5 87 73 82 69 83 | 8
+shape_from_string 3 87 73 82 | 8
+shape_from_string 8 69 85 65 87 73 84 86 84 | 8
+orientation_from_string_try 7 70 79 82 87 65 82 68 | 1 0
+orientation_from_string_try 7 102 111 114 119 97 114 100 | 1 0
+orientation_from_string_try 7 70 111 114 87 97 114 100 | 1 0
+orientation_from_string_try 8 70 79 82 87 65 82 68 83 | 0 3
+orientation_from_string_try 4 70 79 82 87 | 0 3
+orientation_from_string_try 2 78 73 | 0 3
+orientation_from_string_try 3 110 104 110 | 0 3
+orientation_from_string_try 8 82 69 86 69 82 83 69 68 | 1 1
+orientation_from_string_try 8 114 101 118 101 114 115 101 100 | 1 1
+orientation_from_string_try 8 82 69 86 101 114 115 101 68 | 1 1
+orientation_from_string_try 9 82 69 86 69 82 83 69 68 32 | 0 3
+orientation_from_string_try 1 82 | 0 3
+orientation_from_string_try 3 74 68 70 | 0 3
+orientation_from_string_try 5 106 106 117 99 110 | 0 3
+orientation_from_string_try 8 73 78 84 69 82 78 65 76 | 1 2
+orientation_from_string_try 8 105 110 116 101 114 110 97 108 | 1 2
+orientation_from_string_try 8 73 110 84 101 114 110 65 108 | 1 2
+orientation_from_string_try 9 73 78 84 69 82 78 65 76 83 | 0 3
+orientation_from_string_try 6 73 78 84 69 82 78 | 0 3
+orientation_from_string_try 7 85 77 83 70 80 67 81 | 0 3
+orientation_from_string_try 11 100 111 122 115 99 105 97 113 113 111 102 | 0 3
+orientation_from_string_try 8 69 88 84 69 82 78 65 76 | 1 3
+orientation_from_string_try 8 101 120 116 101 114 110 97 108 | 1 3
+orientation_from_string_try 8 101 88 116 69 114 110 65 76 | 1 3
+orientation_from_string_try 9 69 88 84 69 82 78 65 76 32 | 0 3
+orientation_from_string_try 4 69 88 84 69 | 0 3
+orientation_from_string_try 6 77 73 87 88 86 74 | 0 3
+orientation_from_string_try 5 106 104 122 105 99 | 0 3
+orientation_from_string_try 7 70 111 82 119 97 82 68 | 1 0
+orientation_from_string_try 2 85 67 | 0 3
+orientation_from_string_try 3 118 108 102 | 0 3
+orientation_from_string_try 8 82 101 118 101 82 83 69 68 | 1 1
+orientation_from_string_try 3 82 69 86 | 0 3
+orientation_from_string_try 7 76 83 72 80 68 74 66 | 0 3
+orientation_from_string_try 10 104 109 102 121 120 112 97 115 116 97 | 0 3
+orientation_from_string_try 8 105 110 116 69 82 78 97 76 | 1 2
+orientation_from_string_try 3 73 78 84 | 0 3
+orientation_from_string_try 0 | 0 3
+orientation_from_string_try 12 111 106 104 121 116 97 107 105 108 100 112 118 | 0 3
+orientation_from_string_try 3 77 73 90 | 0 3
+orientation_from_string_try 3 99 115 116 | 0 3
+orientation_from_string_try 7 70 111 82 87 65 114 68 | 1 0
+orientation_from_string_try 4 67 79 67 70 | 0 3
+orientation_from_string_try 7 101 114 103 106 113 118 108 | 0 3
+orientation_from_string_try 8 82 69 86 69 114 83 69 68 | 1 1
+orientation_from_string_try 6 82 69 86 69 82 83 | 0 3
+orientation_from_string_try 7 67 69 90 69 89 82 67 | 0 3
+orientation_from_string_try 7 100 114 107 120 99 105 116 | 0 3
+orientation_from_string_try 8 105 110 116 69 114 110 97 108 | 1 2
+orientation_from_string_try 4 73 78 84 69 | 0 3
+orientation_from_string_try 4 71 70 70 81 | 0 3
+orientation_from_string_try 8 117 114 107 122 99 121 114 111 | 0 3
+orientation_from_string_try 8 101 120 116 69 82 110 97 76 | 1 3
+orientation_from_string_try 2 69 88 | 0 3
+orientation_from_string_try 3 90 84 68 | 0 3
+orientation_from_string_try 12 122 108 113 105 112 106 104 104 113 117 98 119 | 0 3
+orientation_from_string_try 7 102 79 82 87 65 114 100 | 1 0
+orientation_from_string_try 1 70 | 0 3
+orientation_from_string_try 5 83 71 81 81 73 | 0 3
+orientation_from_string_try 7 102 99 99 111 118 107 110 | 0 3
+orientation_from_string_try 8 114 69 86 101 114 115 69 100 | 1 1
+orientation_from_string_try 7 82 69 86 69 82 83 69 | 0 3
+orientation_from_string_try 2 119 106 | 0 3
+orientation_from_string_try 8 105 110 84 101 114 110 65 76 | 1 2
+orientation_from_string_try 2 73 78 | 0 3
+orientation_from_string_try 8 85 79 81 88 89 68 84 73 | 0 3
+orientation_from_string_try 9 103 116 106 115 105 115 112 119 106 | 0 3
+orientation_from_string_try 8 101 120 116 69 82 78 97 76 | 1 3
+orientation_from_string_try 3 69 88 84 | 0 3
+orientation_from_string_try 3 66 78 65 | 0 3
+orientation_from_string 7 70 79 82 87 65 82 68 | 0
+orientation_from_string 7 102 111 114 119 97 114 100 | 0
+orientation_from_string 7 102 79 114 119 65 82 100 | 0
+orientation_from_string 8 70 79 82 87 65 82 68 83 | 0
+orientation_from_string 5 70 79 82 87 65 | 0
+orientation_from_string 8 68 89 81 76 80 65 70 69 | 0
+orientation_from_string 9 112 112 117 100 103 114 117 106 106 | 0
+orientation_from_string 8 82 69 86 69 82 83 69 68 | 1
+orientation_from_string 8 114 101 118 101 114 115 101 100 | 1
+orientation_from_string 8 82 69 86 101 114 83 69 100 | 1
+orientation_from_string 9 82 69 86 69 82 83 69 68 32 | 0
+orientation_from_string 7 82 69 86 69 82 83 69 | 0
+orientation_from_string 6 82 82 76 68 87 78 | 0
+orientation_from_string 9 114 105 117 100 112 108 119 106 121 | 0
+orientation_from_string 8 73 78 84 69 82 78 65 76 | 2
+orientation_from_string 8 105 110 116 101 114 110 97 108 | 2
+orientation_from_string 8 105 110 84 101 82 110 65 76 | 2
+orientation_from_string 9 73 78 84 69 82 78 65 76 83 | 0
+orientation_from_string 1 73 | 0
+orientation_from_string 2 78 83 | 0
+orientation_from_string 3 113 99 114 | 0
+orientation_from_string 8 69 88 84 69 82 78 65 76 | 3
+orientation_from_string 8 101 120 116 101 114 110 97 108 | 3
+orientation_from_string 8 101 88 84 101 114 110 97 108 | 3
+orientation_from_string 9 69 88 84 69 82 78 65 76 32 | 0
+orientation_from_string 3 69 88 84 | 0
+orientation_from_string 1 78 | 0
+orientation_from_string 8 98 99 104 116 103 119 121 120 | 0
+orientation_from_string 7 70 79 82 87 97 114 100 | 0
+orientation_from_string 1 77 | 0
+orientation_from_string 5 102 101 119 103 104 | 0
+orientation_from_string 8 114 101 118 101 114 115 69 100 | 1
+orientation_from_string 2 82 69 | 0
+orientation_from_string 7 78 66 77 75 78 81 89 | 0
+orientation_from_string 12 98 108 114 119 104 118 122 107 97 115 122 110 | 0
+orientation_from_string 8 73 78 116 69 114 110 97 76 | 2
+orientation_from_string 5 73 78 84 69 82 | 0
+orientation_from_string 8 89 74 86 86 66 76 85 85 | 0
+orientation_from_string 12 106 110 117 111 114 119 104 102 110 118 110 120 | 0
+orientation_from_string 8 69 120 84 69 114 110 97 108 | 3
+orientation_from_string 5 69 88 84 69 82 | 0
+orientation_from_string 0 | 0
+orientation_from_string 7 108 100 113 120 122 117 113 | 0
+orientation_from_string 7 70 111 114 119 97 114 100 | 0
+orientation_from_string 1 70 | 0
+orientation_from_string 4 66 81 77 76 | 0
+orientation_from_string 11 97 97 120 112 122 109 120 120 115 98 98 | 0
+orientation_from_string 8 82 69 86 69 114 115 69 68 | 1
+orientation_from_string 3 70 72 85 | 0
+orientation_from_string 7 118 104 101 105 105 97 101 | 0
+orientation_from_string 8 73 110 116 69 82 110 65 76 | 2
+orientation_from_string 4 72 80 90 87 | 0
+orientation_from_string 2 97 106 | 0
+orientation_from_string 8 69 88 84 101 82 110 65 76 | 3
+orientation_from_string 7 86 70 82 65 84 85 74 | 0
+orientation_from_string 11 98 97 110 116 119 99 114 102 98 114 112 | 0
+orientation_from_string 7 70 79 82 87 97 114 68 | 0
+orientation_from_string 1 68 | 0
+orientation_from_string 2 116 118 | 0
+orientation_from_string 8 114 69 86 69 114 83 101 68 | 1
+orientation_from_string 6 68 90 67 79 70 83 | 0
+orientation_from_string 10 98 119 122 117 105 97 115 110 113 102 | 0
+orientation_from_string 8 105 78 84 69 82 110 97 76 | 2
+orientation_from_string 5 67 76 70 87 69 | 0
+orientation_from_string 4 121 112 104 112 | 0
+orientation_from_string 8 101 88 116 101 114 78 97 108 | 3
+orientation_from_string 2 69 88 | 0
+orientation_from_string 6 69 74 76 77 88 89 | 0
+orientation_from_string 6 121 114 102 111 116 107 | 0
+orientation_from_string 7 70 79 114 87 65 82 68 | 0
+shape_roundtrip 0 | 1 0
+shape_roundtrip 1 | 1 1
+shape_roundtrip 2 | 1 2
+shape_roundtrip 3 | 1 3
+shape_roundtrip 4 | 1 4
+shape_roundtrip 5 | 1 5
+shape_roundtrip 6 | 1 6
+shape_roundtrip 7 | 1 7
+shape_roundtrip 8 | 1 8
+orientation_roundtrip 0 | 1 0
+orientation_roundtrip 1 | 1 1
+orientation_roundtrip 2 | 1 2
+orientation_roundtrip 3 | 1 3
+enum_values 0 | 0 0 0
+enum_values 1 | 1 1 7
+enum_values 2 | 2 2 8
+enum_values 3 | 3 3 4

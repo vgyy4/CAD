@@ -65,8 +65,7 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
   anything complex is done directly or by a Sonnet subagent.
 - Branch: this session pushes only to `claude/new-session-nedlj5`, which plays "main".
 - Owner rule: never stop to check in or ask whether to continue. Finish a step, push,
-  and start the next item in docs/PROGRESS.md "Next" (including the OCCT translation,
-  ADR 0025) without waiting; ask only for decisions that are genuinely the owner's.
-- Owner rule (OCCT translation, ADR 0025): packages that are simple, mechanical
-  translation go to Codex with the GPT-6 Luna model at high reasoning effort; this
-  session writes the oracle (judge) first and reviews the result at the end.
+  and start the next item in docs/PROGRESS.md "Next" without waiting; ask only for decisions that are genuinely the owner's.
+- Owner rule (OCCT translation, ADR 0025, 2026-11-02): no bulk translation. Translate an
+  OCCT package only when the Gusset work in hand needs it: judge from `tools/judgegen.py`,
+  translation from the cxx2rs drafts, then review and merge (crates/occt-port/STATUS.md).

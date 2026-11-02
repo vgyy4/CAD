@@ -197,6 +197,10 @@ frame_xy!(Cylinder, pos);
 frame_axis!(Cylinder, pos);
 
 impl Cylinder {
+    /// Unchecked constructor (see `Cone::new_unchecked`).
+    pub(crate) fn new_unchecked(a: Ax3, radius: f64) -> Self {
+        Self { pos: a, radius }
+    }
     // gp_Cylinder::gp_Cylinder(A3, Radius)
     pub fn new(a: Ax3, radius: f64) -> Result<Self, ConstructionError> {
         if radius < 0.0 {
@@ -297,6 +301,11 @@ frame_xy!(Cone, pos);
 frame_axis!(Cone, pos);
 
 impl Cone {
+    /// The constructor of code compiled without the `Standard_ConstructionError_Raise_if` checks (the `gp_Cone` constructor inlined
+    /// into the OCCT libraries): no validation.
+    pub(crate) fn new_unchecked(a: Ax3, semi_angle: f64, radius: f64) -> Self {
+        Self { pos: a, radius, semi_angle }
+    }
     // gp_Cone::gp_Cone(A3, Ang, Radius)
     pub fn new(a: Ax3, semi_angle: f64, radius: f64) -> Result<Self, ConstructionError> {
         let abs_ang = if semi_angle < 0. { -semi_angle } else { semi_angle };
@@ -422,6 +431,10 @@ frame_set_location!(Sphere, pos);
 frame_xy!(Sphere, pos);
 
 impl Sphere {
+    /// Unchecked constructor (see `Cone::new_unchecked`).
+    pub(crate) fn new_unchecked(a: Ax3, radius: f64) -> Self {
+        Self { pos: a, radius }
+    }
     // gp_Sphere::gp_Sphere(A3, Radius)
     pub fn new(a: Ax3, radius: f64) -> Result<Self, ConstructionError> {
         if radius < 0.0 {
@@ -531,6 +544,10 @@ frame_xy!(Torus, pos);
 frame_axis!(Torus, pos);
 
 impl Torus {
+    /// Unchecked constructor (see `Cone::new_unchecked`).
+    pub(crate) fn new_unchecked(a: Ax3, major: f64, minor: f64) -> Self {
+        Self { pos: a, major, minor }
+    }
     // gp_Torus::gp_Torus(A3, MajorRadius, MinorRadius)
     pub fn new(a: Ax3, major: f64, minor: f64) -> Result<Self, ConstructionError> {
         if minor < 0.0 || major < 0.0 {

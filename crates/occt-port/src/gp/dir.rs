@@ -85,6 +85,38 @@ fn normalize_result(coord: &mut XYZ) -> Result<(), ConstructionError> {
 }
 
 impl Dir {
+    /// `gp_Dir(gp_Vec)` as compiled into the OCCT libraries without the `Standard_ConstructionError_Raise_if` checks: a vector
+    /// of (nearly) zero length gives NaN coordinates instead of an error.
+    pub(crate) fn from_vec_unchecked(v: &Vec) -> Self {
+        let (x, y, z) = v.coords();
+        let sq_mod = x * x + y * y + z * z;
+        let res = resolution();
+        if ((1.0 - res)..=(1.0 + res)).contains(&sq_mod) {
+            return Self(XYZ::new(x, y, z));
+        }
+        let d = sq_mod.sqrt();
+        Self(XYZ::new(x / d, y / d, z / d))
+    }
+    /// Unchecked `Crossed` (see [`Dir::from_vec_unchecked`]).
+    pub(crate) fn crossed_unchecked(&self, right: &Dir) -> Dir {
+        let mut c = self.0;
+        c.cross(&right.0);
+        Self::normalize_unchecked(c)
+    }
+    /// Unchecked `CrossCrossed`.
+    pub(crate) fn cross_crossed_unchecked(&self, v1: &Dir, v2: &Dir) -> Dir {
+        let mut c = self.0;
+        c.cross_cross(&v1.0, &v2.0);
+        Self::normalize_unchecked(c)
+    }
+    fn normalize_unchecked(mut c: XYZ) -> Dir {
+        let sq_mod = c.square_modulus();
+        let res = resolution();
+        if !((1.0 - res)..=(1.0 + res)).contains(&sq_mod) {
+            c.divide(sq_mod.sqrt());
+        }
+        Self(c)
+    }
     // gp_Dir::gp_Dir(x, y, z)
     pub fn new(x: f64, y: f64, z: f64) -> Result<Self, ConstructionError> {
         Ok(Self(normalized_coords(x, y, z)?))

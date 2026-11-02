@@ -271,6 +271,11 @@ impl OffsetSurface {
         result
     }
 
+    /// The osculating surface that `Geom_OffsetSurfaceUtils` queries (the adaptors of `geomadaptor` use it).
+    pub(crate) fn osculating(&self) -> Option<&OsculatingSurface> {
+        self.osc_surf.as_ref()
+    }
+
     /// `UOsculatingSurface`: `Some((opposite, surface))` when it exists.
     pub fn u_osculating_surface(&self, u: f64, v: f64) -> Option<(bool, BSplineSurface)> {
         let osc = self.osc_surf.as_ref()?;
@@ -507,6 +512,42 @@ impl Surface for OffsetSurface {
 impl super::BoundedSurface for OffsetSurface {}
 
 // ---------------------------------------------------------------------------------------------
+// The basis of the evaluation functions: a Geom surface, or (for `GeomAdaptor_Surface`, which instantiates the C++ templates)
+// a surface adaptor. The methods have their own names so that they never clash with those of `Surface`.
+pub(crate) trait OffsetBasis {
+    fn ob_d1(&self, u: f64, v: f64) -> Result<SurfResD1>;
+    fn ob_d2(&self, u: f64, v: f64) -> Result<SurfResD2>;
+    fn ob_d3(&self, u: f64, v: f64) -> Result<SurfResD3>;
+    fn ob_dn(&self, u: f64, v: f64, nu: i32, nv: i32) -> Result<gp::Vec>;
+    fn ob_bounds(&self) -> (f64, f64, f64, f64);
+    fn ob_is_u_periodic(&self) -> bool;
+    fn ob_is_v_periodic(&self) -> bool;
+}
+impl<T: Surface + ?Sized> OffsetBasis for T {
+    fn ob_d1(&self, u: f64, v: f64) -> Result<SurfResD1> {
+        self.eval_d1(u, v)
+    }
+    fn ob_d2(&self, u: f64, v: f64) -> Result<SurfResD2> {
+        self.eval_d2(u, v)
+    }
+    fn ob_d3(&self, u: f64, v: f64) -> Result<SurfResD3> {
+        self.eval_d3(u, v)
+    }
+    fn ob_dn(&self, u: f64, v: f64, nu: i32, nv: i32) -> Result<gp::Vec> {
+        self.eval_dn(u, v, nu, nv)
+    }
+    fn ob_bounds(&self) -> (f64, f64, f64, f64) {
+        self.bounds()
+    }
+    fn ob_is_u_periodic(&self) -> bool {
+        self.is_u_periodic()
+    }
+    fn ob_is_v_periodic(&self) -> bool {
+        self.is_v_periodic()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Geom_OffsetSurfaceUtils
 
 // `NCollection_Array2<gp_Vec>(0, rows - 1, 0, cols - 1)`, zero initialized.
@@ -615,12 +656,12 @@ fn calculate_d0(value: &mut Pnt, d1u: &gp::Vec, d1v: &gp::Vec, offset: f64, sign
 
 // ComputeDerivatives (the oscillating surface is a `Geom_BSplineSurface`)
 #[allow(clippy::too_many_arguments)]
-fn compute_derivatives(
+fn compute_derivatives<B: OffsetBasis + ?Sized>(
     max_order_in: i32,
     min_order: i32,
     u: f64,
     v: f64,
-    basis: &dyn Surface,
+    basis: &B,
     nu: i32,
     nv: i32,
     along_u: bool,
@@ -667,11 +708,11 @@ fn compute_derivatives(
                 for j in i..=max_order + nv + 1 {
                     if i + j > min_order {
                         let osc_dn = osc.eval_dn(u, v, i, j)?;
-                        let basis_dn = basis.eval_dn(u, v, i, j)?;
+                        let basis_dn = basis.ob_dn(u, v, i, j)?;
                         der_surf_l.set(i, j, osc_dn)?;
                         der_surf.set(i, j, basis_dn)?;
                         if i != j && j <= nu + 1 {
-                            let basis_dnji = basis.eval_dn(u, v, j, i)?;
+                            let basis_dnji = basis.ob_dn(u, v, j, i)?;
                             let osc_dnji = osc.eval_dn(u, v, j, i)?;
                             der_surf.set(j, i, basis_dnji)?;
                             der_surf_l.set(j, i, osc_dnji)?;
@@ -684,11 +725,11 @@ fn compute_derivatives(
                 for i in j..=max_order + nu + 1 {
                     if i + j > min_order {
                         let osc_dn = osc.eval_dn(u, v, i, j)?;
-                        let basis_dn = basis.eval_dn(u, v, i, j)?;
+                        let basis_dn = basis.ob_dn(u, v, i, j)?;
                         der_surf_l.set(i, j, osc_dn)?;
                         der_surf.set(i, j, basis_dn)?;
                         if i != j && i <= nv + 1 {
-                            let basis_dnji = basis.eval_dn(u, v, j, i)?;
+                            let basis_dnji = basis.ob_dn(u, v, j, i)?;
                             let osc_dnji = osc.eval_dn(u, v, j, i)?;
                             der_surf.set(j, i, basis_dnji)?;
                             der_surf_l.set(j, i, osc_dnji)?;
@@ -713,11 +754,11 @@ fn compute_derivatives(
         for i in 0..=max_order + nu + 1 {
             for j in i..=max_order + nv + 1 {
                 if i + j > min_order {
-                    let dn = basis.eval_dn(u, v, i, j)?;
+                    let dn = basis.ob_dn(u, v, i, j)?;
                     der_surf.set(i, j, dn)?;
                     // `j <= theDerSurf.UpperRow() && i <= theDerSurf.UpperCol()`
                     if i != j && (j as usize) < der_surf.rows && (i as usize) < der_surf.cols {
-                        let dnji = basis.eval_dn(u, v, j, i)?;
+                        let dnji = basis.ob_dn(u, v, j, i)?;
                         der_surf.set(j, i, dnji)?;
                     }
                 }
@@ -735,7 +776,7 @@ fn compute_derivatives(
 
 // ReplaceDerivative
 #[allow(clippy::too_many_arguments)]
-fn replace_derivative(
+fn replace_derivative<B: OffsetBasis + ?Sized>(
     u: f64,
     v: f64,
     umin: f64,
@@ -745,7 +786,7 @@ fn replace_derivative(
     du: &mut gp::Vec,
     dv: &mut gp::Vec,
     square_tol: f64,
-    basis: &dyn Surface,
+    basis: &B,
 ) -> Result<bool> {
     let is_replace_du = du.square_magnitude() < square_tol;
     let is_replace_dv = dv.square_magnitude() < square_tol;
@@ -780,7 +821,7 @@ fn replace_derivative(
                 }
             }
             if !skip {
-                let r = basis.eval_d1(au, av)?;
+                let r = basis.ob_d1(au, av)?;
                 if is_replace_du && r.d1u.square_magnitude() > square_tol {
                     *du = r.d1u;
                     is_replaced = true;
@@ -839,12 +880,12 @@ fn normal_xyz(n: &Option<crate::gp::Dir>) -> Result<gp::XYZ> {
 
 // The `if (HasOsculating && !OscSurf.IsNull()) ComputeDerivatives(...osc...) else ComputeDerivatives(...no osc...)`.
 #[allow(clippy::too_many_arguments)]
-fn derivatives_with(
+fn derivatives_with<B: OffsetBasis + ?Sized>(
     max_order: i32,
     min_order: i32,
     u: f64,
     v: f64,
-    basis: &dyn Surface,
+    basis: &B,
     nu: i32,
     nv: i32,
     info: &OscInfo,
@@ -873,27 +914,27 @@ fn derivatives_with(
 }
 
 // EvaluateD0 (with the first derivatives): `None` is the C++ `false`.
-fn evaluate_d0(
+pub(crate) fn evaluate_d0<B: OffsetBasis + ?Sized>(
     u0: f64,
     v0: f64,
-    basis: &dyn Surface,
+    basis: &B,
     offset: f64,
     osc: Option<&OsculatingSurface>,
 ) -> Result<Option<Pnt>> {
-    let b1 = basis.eval_d1(u0, v0)?;
+    let b1 = basis.ob_d1(u0, v0)?;
     let mut value = b1.point;
     let (u_start, v_start) = (u0, v0);
     let (mut u, mut v) = (u0, v0);
-    let bounds = basis.bounds();
+    let bounds = basis.ob_bounds();
     let (umin, umax, vmin, vmax) = bounds;
-    let is_u_per = basis.is_u_periodic();
-    let is_v_per = basis.is_v_periodic();
+    let is_u_per = basis.ob_is_u_periodic();
+    let is_v_per = basis.ob_is_v_periodic();
     let mut d1u = b1.d1u;
     let mut d1v = b1.d1v;
     let mut first = true;
     loop {
         if !first {
-            let r = basis.eval_d1(u, v)?;
+            let r = basis.ob_d1(u, v)?;
             value = r.point;
             d1u = r.d1u;
             d1v = r.d1v;
@@ -946,30 +987,30 @@ fn evaluate_d0(
 }
 
 // EvaluateD1
-fn evaluate_d1(
+pub(crate) fn evaluate_d1<B: OffsetBasis + ?Sized>(
     u0: f64,
     v0: f64,
-    basis: &dyn Surface,
+    basis: &B,
     offset: f64,
     osc: Option<&OsculatingSurface>,
 ) -> Result<Option<SurfResD1>> {
-    let b2 = basis.eval_d2(u0, v0)?;
+    let b2 = basis.ob_d2(u0, v0)?;
     let mut value = b2.point;
     let mut the_d1u = b2.d1u;
     let mut the_d1v = b2.d1v;
     let (u_start, v_start) = (u0, v0);
     let (mut u, mut v) = (u0, v0);
-    let bounds = basis.bounds();
+    let bounds = basis.ob_bounds();
     let (umin, umax, vmin, vmax) = bounds;
-    let is_u_per = basis.is_u_periodic();
-    let is_v_per = basis.is_v_periodic();
+    let is_u_per = basis.ob_is_u_periodic();
+    let is_v_per = basis.ob_is_v_periodic();
     let mut d2u = b2.d2u;
     let mut d2v = b2.d2v;
     let mut d2uv = b2.d2uv;
     let mut first = true;
     loop {
         if !first {
-            let r = basis.eval_d2(u, v)?;
+            let r = basis.ob_d2(u, v)?;
             value = r.point;
             the_d1u = r.d1u;
             the_d1v = r.d1v;
@@ -1079,14 +1120,14 @@ fn evaluate_d1(
 }
 
 // EvaluateD2
-fn evaluate_d2(
+pub(crate) fn evaluate_d2<B: OffsetBasis + ?Sized>(
     u0: f64,
     v0: f64,
-    basis: &dyn Surface,
+    basis: &B,
     offset: f64,
     osc: Option<&OsculatingSurface>,
 ) -> Result<Option<SurfResD2>> {
-    let b3 = basis.eval_d3(u0, v0)?;
+    let b3 = basis.ob_d3(u0, v0)?;
     let mut value = b3.point;
     let mut the_d1u = b3.d1u;
     let mut the_d1v = b3.d1v;
@@ -1095,10 +1136,10 @@ fn evaluate_d2(
     let mut the_d2uv = b3.d2uv;
     let (u_start, v_start) = (u0, v0);
     let (mut u, mut v) = (u0, v0);
-    let bounds = basis.bounds();
+    let bounds = basis.ob_bounds();
     let (umin, umax, vmin, vmax) = bounds;
-    let is_u_per = basis.is_u_periodic();
-    let is_v_per = basis.is_v_periodic();
+    let is_u_per = basis.ob_is_u_periodic();
+    let is_v_per = basis.ob_is_v_periodic();
     let mut d3u = b3.d3u;
     let mut d3v = b3.d3v;
     let mut d3uuv = b3.d3uuv;
@@ -1106,7 +1147,7 @@ fn evaluate_d2(
     let mut first = true;
     loop {
         if !first {
-            let r = basis.eval_d3(u, v)?;
+            let r = basis.ob_d3(u, v)?;
             value = r.point;
             the_d1u = r.d1u;
             the_d1v = r.d1v;
@@ -1151,9 +1192,9 @@ fn evaluate_d2(
             let cs = der_nuv.to_cs()?;
             let r_d1u = der_surf.get(1, 0)?.added(&cslib::dn_normal(1, 0, &cs, order_u, order_v)?.multiplied(sign));
             let r_d1v = der_surf.get(0, 1)?.added(&cslib::dn_normal(0, 1, &cs, order_u, order_v)?.multiplied(sign));
-            let dn20 = basis.eval_dn(u, v, 2, 0)?;
-            let dn02 = basis.eval_dn(u, v, 0, 2)?;
-            let dn11 = basis.eval_dn(u, v, 1, 1)?;
+            let dn20 = basis.ob_dn(u, v, 2, 0)?;
+            let dn02 = basis.ob_dn(u, v, 0, 2)?;
+            let dn11 = basis.ob_dn(u, v, 1, 1)?;
             let mut r_d2u = dn20;
             let mut r_d2v = dn02;
             let mut r_d2uv = dn11;
@@ -1171,21 +1212,21 @@ fn evaluate_d2(
 }
 
 // EvaluateD3
-fn evaluate_d3(
+pub(crate) fn evaluate_d3<B: OffsetBasis + ?Sized>(
     u0: f64,
     v0: f64,
-    basis: &dyn Surface,
+    basis: &B,
     offset: f64,
     osc: Option<&OsculatingSurface>,
 ) -> Result<Option<SurfResD3>> {
     let (u_start, v_start) = (u0, v0);
     let (mut u, mut v) = (u0, v0);
-    let bounds = basis.bounds();
+    let bounds = basis.ob_bounds();
     let (umin, umax, vmin, vmax) = bounds;
-    let is_u_per = basis.is_u_periodic();
-    let is_v_per = basis.is_v_periodic();
+    let is_u_per = basis.ob_is_u_periodic();
+    let is_v_per = basis.ob_is_v_periodic();
     loop {
-        let r = basis.eval_d3(u, v)?;
+        let r = basis.ob_d3(u, v)?;
         let mut value = r.point;
         let (the_d1u, the_d1v) = (r.d1u, r.d1v);
         if is_infinite_coord(&the_d1u) || is_infinite_coord(&the_d1v) {
@@ -1223,13 +1264,13 @@ fn evaluate_d3(
             };
             let o_d1u = der_surf.get(1, 0)?.added(&dnn(1, 0)?);
             let o_d1v = der_surf.get(0, 1)?.added(&dnn(0, 1)?);
-            let mut o_d2u = basis.eval_dn(u, v, 2, 0)?;
-            let mut o_d2v = basis.eval_dn(u, v, 0, 2)?;
-            let mut o_d2uv = basis.eval_dn(u, v, 1, 1)?;
-            let mut o_d3u = basis.eval_dn(u, v, 3, 0)?;
-            let mut o_d3v = basis.eval_dn(u, v, 0, 3)?;
-            let mut o_d3uuv = basis.eval_dn(u, v, 2, 1)?;
-            let mut o_d3uvv = basis.eval_dn(u, v, 1, 2)?;
+            let mut o_d2u = basis.ob_dn(u, v, 2, 0)?;
+            let mut o_d2v = basis.ob_dn(u, v, 0, 2)?;
+            let mut o_d2uv = basis.ob_dn(u, v, 1, 1)?;
+            let mut o_d3u = basis.ob_dn(u, v, 3, 0)?;
+            let mut o_d3v = basis.ob_dn(u, v, 0, 3)?;
+            let mut o_d3uuv = basis.ob_dn(u, v, 2, 1)?;
+            let mut o_d3uvv = basis.ob_dn(u, v, 1, 2)?;
             o_d2u.add(&dnn(2, 0)?);
             o_d2v.add(&dnn(0, 2)?);
             o_d2uv.add(&dnn(1, 1)?);
@@ -1259,28 +1300,28 @@ fn evaluate_d3(
 }
 
 // EvaluateDN
-fn evaluate_dn(
+pub(crate) fn evaluate_dn<B: OffsetBasis + ?Sized>(
     u0: f64,
     v0: f64,
     nu: i32,
     nv: i32,
-    basis: &dyn Surface,
+    basis: &B,
     offset: f64,
     osc: Option<&OsculatingSurface>,
 ) -> Result<Option<gp::Vec>> {
-    let b1 = basis.eval_d1(u0, v0)?;
+    let b1 = basis.ob_d1(u0, v0)?;
     let (u_start, v_start) = (u0, v0);
     let (mut u, mut v) = (u0, v0);
-    let bounds = basis.bounds();
+    let bounds = basis.ob_bounds();
     let (umin, umax, vmin, vmax) = bounds;
-    let is_u_per = basis.is_u_periodic();
-    let is_v_per = basis.is_v_periodic();
+    let is_u_per = basis.ob_is_u_periodic();
+    let is_v_per = basis.ob_is_v_periodic();
     let mut d1u = b1.d1u;
     let mut d1v = b1.d1v;
     let mut first = true;
     loop {
         if !first {
-            let r = basis.eval_d1(u, v)?;
+            let r = basis.ob_d1(u, v)?;
             d1u = r.d1u;
             d1v = r.d1v;
         }
@@ -1306,7 +1347,7 @@ fn evaluate_dn(
         let _ = &normal;
         if nstatus == NormalStatus::Defined {
             let sign = offset * info.sign();
-            let basis_dn = basis.eval_dn(u, v, nu, nv)?;
+            let basis_dn = basis.ob_dn(u, v, nu, nv)?;
             let mut result = basis_dn;
             result.add(&cslib::dn_normal(nu, nv, &der_nuv.to_cs()?, n.order_u, n.order_v)?.multiplied(sign));
             return Ok(Some(result));
