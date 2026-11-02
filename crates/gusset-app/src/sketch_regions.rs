@@ -78,12 +78,13 @@ pub fn contains(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     inside
 }
 
-/// Each region's outer loop (sketch coordinates).
+/// The outer loops (sketch coordinates) of the regions `keep` accepts.
 #[must_use]
-pub fn outlines(s: &SketchResult) -> Vec<(String, Vec<[f64; 2]>)> {
+pub fn outlines(s: &SketchResult, keep: impl Fn(&str) -> bool) -> Vec<(String, Vec<[f64; 2]>)> {
     let Ok(regions) = &s.regions else { return Vec::new() };
     regions
         .iter()
+        .filter(|r| keep(&r.id))
         .map(|r| (r.id.clone(), chain(r.outer.iter().filter_map(|e| entity_polyline(s, e)).collect())))
         .collect()
 }
@@ -92,7 +93,7 @@ pub fn outlines(s: &SketchResult) -> Vec<(String, Vec<[f64; 2]>)> {
 #[must_use]
 pub fn region_at(s: &SketchResult, p: [f64; 2]) -> Option<String> {
     let Ok(regions) = &s.regions else { return None };
-    let outlines = outlines(s);
+    let outlines = outlines(s, |_| true);
     regions
         .iter()
         .filter(|r| outlines.iter().any(|(id, poly)| *id == r.id && contains(poly, p)))

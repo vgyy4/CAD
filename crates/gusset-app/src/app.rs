@@ -1973,9 +1973,8 @@ impl App {
         let picked: Vec<&str> = self.form.as_ref()?.value("regions")?.split(',').map(str::trim).collect();
         let w = |p: [f64; 2]| s.frame.to_world(p).map(|c| c as f32);
         Some(DrawSketch {
-            polylines: crate::sketch_regions::outlines(s)
+            polylines: crate::sketch_regions::outlines(s, |id| picked.contains(&id))
                 .into_iter()
-                .filter(|(id, _)| picked.contains(&id.as_str()))
                 .map(|(_, pl)| pl.into_iter().map(w).collect())
                 .collect(),
             emphasis: true,
