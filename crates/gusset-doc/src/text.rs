@@ -2091,6 +2091,51 @@ pub fn print_feature_object(f: &Feature) -> String {
     s
 }
 
+/// A one-line feature statement split into its head (`extrude E1`) and its named
+/// arguments in order (`distance` → `t + 2 mm`), for editing a feature in place. `None`
+/// for block statements (sketches, drawings) and anything not of that shape.
+pub fn statement_args(f: &Feature) -> Option<(String, Vec<(String, String)>)> {
+    let text = print_feature_object(f);
+    let line = text.trim_end();
+    if line.contains('\n') {
+        return None;
+    }
+    let open = line.find('(')?;
+    let inner = line.get(open + 1..)?.strip_suffix(')')?;
+    let head = line.get(..open)?.trim_end().to_string();
+    let mut args = Vec::new();
+    for part in split_top_level(inner) {
+        let (k, v) = part.split_once(':')?;
+        args.push((k.trim().to_string(), v.trim().to_string()));
+    }
+    Some((head, args))
+}
+
+/// The statement for a head and its arguments (the inverse of [`statement_args`]).
+pub fn statement_with_args(head: &str, args: &[(String, String)]) -> String {
+    let list: Vec<String> = args.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+    format!("{head} ({})\n", list.join(", "))
+}
+
+/// Splits at commas outside brackets and quotes.
+fn split_top_level(s: &str) -> Vec<&str> {
+    let (mut depth, mut quoted, mut start, mut out) = (0_i32, false, 0, Vec::new());
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                out.extend(s.get(start..i));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.extend(s.get(start..).filter(|r| !r.trim().is_empty()));
+    out
+}
+
 /// Parses a single-feature history object.
 pub fn parse_feature_object(s: &str) -> Result<Feature, ParseError> {
     let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;

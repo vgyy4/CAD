@@ -682,6 +682,26 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
 "#;
 
     #[test]
+    fn statements_split_into_arguments_and_back() {
+        let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
+        let mut split = 0;
+        for f in &doc.features {
+            let Some((head, args)) = text::statement_args(f) else { continue };
+            split += 1;
+            let back = text::statement_with_args(&head, &args);
+            assert_eq!(&text::parse_feature_object(&back).unwrap(), f, "{back}");
+        }
+        assert!(split >= 5, "{split}");
+        // Labels with commas and nested brackets stay one argument.
+        let (_, args) = text::statement_args(doc.feature("Pattern4").unwrap()).unwrap();
+        assert!(args.iter().any(|(k, v)| k == "through" && v == "[10 mm, 0 mm, 5 mm]"), "{args:?}");
+        // Sketches are blocks: not split.
+        assert!(
+            doc.features.iter().any(|f| matches!(f.kind, FeatureKind::Sketch(_)) && text::statement_args(f).is_none())
+        );
+    }
+
+    #[test]
     fn canonical_roundtrip() {
         // The text parser accepts the sample; validation is checked as well.
         let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));

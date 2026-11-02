@@ -21,6 +21,7 @@ mod component;
 mod configuration;
 mod datum;
 mod drawing;
+mod feature_edit;
 mod generate;
 mod hole;
 mod joint;
@@ -38,6 +39,7 @@ pub use drawing::{
     DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView,
     DrawingExport, DrawingMoveItem, QueryDrawing, drawing_scene,
 };
+pub use feature_edit::FeatureEdit;
 pub use generate::{
     GenerateGear, GenerateNut, GenerateRack, GenerateSpring, GenerateThread, GenerateWorm, QueryGearPair,
 };
@@ -56,6 +58,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(hole::specs());
     v.extend(ops::specs());
     v.extend(measure::specs());
+    v.extend(feature_edit::specs());
     v.extend(lettering::specs());
     v.extend(datum::specs());
     v.extend(joint::specs());

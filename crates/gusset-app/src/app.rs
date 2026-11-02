@@ -930,9 +930,55 @@ impl App {
         }
     }
 
+    /// Opens a feature's arguments in a form (`feature.edit`); sketches open in sketch mode.
+    pub fn edit_feature(&mut self, name: &str) {
+        let Some(f) = self.snapshot.doc.feature(name) else { return };
+        if matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)) {
+            self.edit_sketch(name);
+            return;
+        }
+        let Some((_, args)) = gusset_doc::text::statement_args(f) else { return };
+        let Some(spec) = gusset_commands::find("feature.edit") else { return };
+        let mut form = Form::new(spec);
+        form.fields.retain(|f| f.name == "name");
+        form.set("name", name);
+        for (k, v) in args {
+            form.fields.push(forms::Field {
+                label: forms::humanize(&k),
+                name: k,
+                help: String::new(),
+                kind: forms::FieldKind::Text,
+                required: true,
+                value: v,
+            });
+        }
+        self.form = Some(form);
+    }
+
+    /// The `feature.edit` arguments of an edit form: the changed values to set, the
+    /// emptied ones to remove.
+    fn feature_edit_args(form: &Form) -> Value {
+        let mut set = serde_json::Map::new();
+        let mut remove = Vec::new();
+        for f in form.fields.iter().filter(|f| f.name != "name") {
+            if f.value.trim().is_empty() {
+                remove.push(f.name.clone());
+            } else {
+                set.insert(f.name.clone(), Value::String(f.value.trim().to_string()));
+            }
+        }
+        json!({ "name": form.value("name").unwrap_or_default(), "set": set, "remove": remove })
+    }
+
     /// Sends the open form's command; the form closes when it succeeded.
     pub fn apply_form(&mut self) {
         let Some(form) = self.form.as_mut() else { return };
+        if form.command == "feature.edit" && form.fields.iter().any(|f| f.name != "name") {
+            let args = Self::feature_edit_args(form);
+            form.error = None;
+            self.submit_command("feature.edit", args, Then::Form);
+            return;
+        }
         match form.to_args() {
             Ok(args) => {
                 form.error = None;
@@ -2056,6 +2102,7 @@ impl App {
             }
             browser::Action::SetBodyVisible(name, on) => self.viewport.set_body_visible(&name, on),
             browser::Action::SetPlaneVisible(name, on) => self.viewport.set_plane_visible(&name, on),
+            browser::Action::EditFeature(name) => self.edit_feature(&name),
             browser::Action::EditSketch(name) => self.edit_sketch(&name),
             browser::Action::AddParam => self.start_command("param.set"),
             browser::Action::EditParam(name) => {

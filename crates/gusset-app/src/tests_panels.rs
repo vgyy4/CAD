@@ -439,3 +439,27 @@ fn picks_made_with_a_form_open_fill_its_fields() {
     let Some(Hit::Face { name, .. }) = h.state().selection.last().cloned() else { panic!("no face picked") };
     assert_eq!(h.state().form.as_ref().and_then(|f| f.value("faces")), Some(name.as_str()));
 }
+
+#[test]
+fn double_clicking_a_feature_edits_it_in_place() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let statement = |h: &Harness<'static, App>| {
+        h.state().snapshot.doc.feature("Extrude1").map(gusset_doc::text::print_feature_object).unwrap_or_default()
+    };
+    assert!(statement(&h).contains("distance: 10 mm"), "{}", statement(&h));
+    let at = h.get_by_label("extrude Extrude1").rect().center();
+    double_click_at(&mut h, at);
+    let form = h.state().form.as_ref().expect("edit form");
+    assert_eq!(
+        (form.command, form.value("name"), form.value("distance")),
+        ("feature.edit", Some("Extrude1"), Some("10 mm"))
+    );
+    h.state_mut().form.as_mut().map(|f| f.set("distance", "25 mm"));
+    h.get_by_label("OK").click();
+    settle(&mut h);
+    assert!(h.state().form.is_none(), "{:?}", h.state().form.as_ref().and_then(|f| f.error.clone()));
+    assert!(statement(&h).contains("distance: 25 mm"), "{}", statement(&h));
+    assert!(h.state().evaluation().is_some_and(|e| e.errors().is_empty()));
+    assert_eq!(h.state().snapshot.doc.feature_index("Extrude1"), Some(2));
+}

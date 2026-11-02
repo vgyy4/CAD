@@ -125,6 +125,8 @@ pub enum Action {
     SetBodyVisible(String, bool),
     /// Show or hide an origin or datum plane in the viewport.
     SetPlaneVisible(String, bool),
+    /// Double-click on a feature: edit its arguments in place.
+    EditFeature(String),
     /// Double-click on a sketch.
     EditSketch(String),
     /// "+ Add parameter".
@@ -207,7 +209,7 @@ pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
             Category::Bodies => bodies(ui, v, &mut out),
             Category::Sketches => sketches(ui, v, &mut out),
             Category::Construction => construction(ui, v, &mut out),
-            Category::Features | Category::Joints => features(ui, v, c),
+            Category::Features | Category::Joints => features(ui, v, c, &mut out),
             Category::Parameters => parameters(ui, v, &mut out),
             Category::Drawings => drawings(ui, v, &mut out),
             Category::Branches => branches(ui, v, &mut out),
@@ -337,8 +339,12 @@ fn origin(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
 fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     for f in features_of(v.doc, Category::Construction) {
         let status = v.eval.and_then(|e| e.status(&f.name));
-        let r = feature_row(f, status, v.pal);
+        let mut r = feature_row(f, status, v.pal);
+        r.clickable = true;
         let resp = plane_row(ui, v, &f.name, r, out);
+        if resp.double_clicked() {
+            out.push(Action::EditFeature(f.name.clone()));
+        }
         if let Some(tip) = failure_tip(status) {
             resp.on_hover_text(tip);
         }
@@ -475,13 +481,19 @@ fn drawings(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
 }
 
 /// Features and datum planes: read-only rows with their status and failure tooltip.
-fn features(ui: &mut Ui, v: &View<'_>, c: Category) {
+fn features(ui: &mut Ui, v: &View<'_>, c: Category, out: &mut Vec<Action>) {
     for f in features_of(v.doc, c) {
         let status = v.eval.and_then(|e| e.status(&f.name));
-        let resp = row(ui, v.pal, &feature_row(f, status, v.pal));
-        if let Some(tip) = failure_tip(status) {
-            resp.on_hover_text(tip);
+        let mut r = feature_row(f, status, v.pal);
+        r.clickable = true;
+        let resp = row(ui, v.pal, &r);
+        if resp.double_clicked() {
+            out.push(Action::EditFeature(f.name.clone()));
         }
+        match failure_tip(status) {
+            Some(tip) => resp.on_hover_text(tip),
+            None => resp.on_hover_text(tr("browser.edit_feature")),
+        };
     }
 }
 

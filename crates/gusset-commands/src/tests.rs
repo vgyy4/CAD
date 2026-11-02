@@ -1359,3 +1359,32 @@ fn measure_faces_and_edges_of_a_plate() {
     let err = execute(&mut s, &u, "query.measure", json!({"a": "nope"})).unwrap_err();
     assert!(err.hint.is_some_and(|h| h.contains("query_body")));
 }
+
+#[test]
+fn features_are_edited_in_place() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    // The plate is 40 x 20 x depth (10): make it 25 deep, in place.
+    let r = run(&mut s, &u, "feature.edit", json!({"name": "Extrude1", "set": {"distance": "25 mm"}}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert!(r["statement"].as_str().unwrap().contains("distance: 25 mm"), "{r}");
+    let b = run(&mut s, &u, "query.body", json!({}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 40.0 * 20.0 * 25.0).abs() < 1e-6, "{b}");
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert_eq!(doc.feature_index("Extrude1"), Some(1), "kept its place");
+    // One undo reverts it.
+    run(&mut s, &u, "history.undo", json!({}));
+    let b = run(&mut s, &u, "query.body", json!({}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 40.0 * 20.0 * 10.0).abs() < 1e-6, "{b}");
+    // Refusals: sketches, unknown arguments, bad values, missing features.
+    for (args, want) in [
+        (json!({"name": "Sketch1", "set": {"plane": "XZ"}}), "one-line"),
+        (json!({"name": "Extrude1", "set": {"colour": "red"}}), "colour"),
+        (json!({"name": "Extrude1", "set": {"distance": "10 mm)"}}), "Extrude1"),
+        (json!({"name": "Nope", "set": {}}), "Nope"),
+    ] {
+        let e = execute(&mut s, &u, "feature.edit", args.clone()).unwrap_err();
+        assert!(e.message.contains(want), "{args}: {e:?}");
+    }
+}

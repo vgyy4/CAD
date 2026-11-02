@@ -81,7 +81,13 @@ Phase 3 has started (see Next).
   `query.measure` (the INSPECT group's Measure; `Body` keeps `query.body`): one face or edge
   gives area, or length and radius; two give their angle and the distances that apply
   (between parallel planes, center to plane, between parallel lines, between centers), all
-  from the evaluated topology; the first two picks fill it. Properties panel done (the running command's form docks at the right
+  from the evaluated topology; the first two picks fill it.
+  Features are edited in place (DESIGN.md §1.5): `feature.edit {name, set, remove}` splits the
+  feature's one-line statement into its arguments (`gusset_doc::text::statement_args`),
+  changes them, parses it back and replaces the feature keeping its name, kind and place (one
+  undo); sketches are edited in sketch mode. In the app a double-click on a feature or datum
+  plane in the browser opens its arguments as a form. Still to do: live previews while
+  editing, and timeline-chip double-clicks. Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
