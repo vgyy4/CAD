@@ -37,7 +37,9 @@ pub use drawing::{
     DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView,
     DrawingExport, DrawingMoveItem, QueryDrawing, drawing_scene,
 };
-pub use generate::{GenerateGear, GenerateNut, GenerateRack, GenerateSpring, GenerateThread, QueryGearPair};
+pub use generate::{
+    GenerateGear, GenerateNut, GenerateRack, GenerateSpring, GenerateThread, GenerateWorm, QueryGearPair,
+};
 pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;

@@ -449,3 +449,31 @@ fn an_internal_gear_is_a_ring_minus_the_tooth_space_gear() {
     let v = volume(&mut s, "Ring");
     assert!((v - want).abs() < 1e-6 * want, "{v} vs {want}");
 }
+
+#[test]
+fn a_generated_worm_is_the_core_plus_the_swept_rack_tooth() {
+    // A helical sweep of a section in an axial plane has volume 2 pi * (first moment of the
+    // section about the axis) per turn; the tooth's part inside the core is counted once.
+    let mut s = session();
+    let r = run(&mut s, "generate.worm", json!({"module": "2 mm", "diameter": "20 mm", "length": "30 mm"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let (m, d1, l) = (2.0, 20.0, 30.0);
+    let (p, t) = (PI * m, (20f64).to_radians().tan());
+    let (rc, rp, ra) = (d1 / 2.0 - 1.25 * m, d1 / 2.0, d1 / 2.0 + m);
+    let hw_core = p / 4.0 + (1.25 * m + 0.02 * p) * t;
+    let hw_rc = p / 4.0 + (rp - rc) * t;
+    let hw_tip = p / 4.0 - m * t;
+    let pts = [[rc, hw_core - hw_rc], [ra, hw_core - hw_tip], [ra, hw_core + hw_tip], [rc, hw_core + hw_rc]];
+    let moment: f64 = (0..4)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % 4]);
+            (a[0] + b[0]) * (a[0] * b[1] - b[0] * a[1]) / 6.0
+        })
+        .sum::<f64>()
+        .abs();
+    let want = PI * rc * rc * l + (l - 2.0 * hw_core) / p * 2.0 * PI * moment;
+    let v = volume(&mut s, "Worm1");
+    assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
+    let b = run(&mut s, "query.body", json!({"body": "Worm1"}));
+    assert!((b["bbox_max_mm"][0].as_f64().unwrap() - ra).abs() < 0.01, "{b}");
+}

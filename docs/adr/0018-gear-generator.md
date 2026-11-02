@@ -189,3 +189,11 @@ cuts the profile from an extruded ring. Spur only, no shift, no bore; the rim mu
 wall of one module. OCCT test: the ring's volume is the full ring minus that tooth-space
 gear generated on its own. The space gear's root fillet rounds the internal tooth tips and
 its tip arc meets the flanks without a root fillet (a shaper-cut ring has one).
+
+## Amendment (2026-11-02): worms
+`generate.worm` makes a single-start ZA worm along Z: the basic-rack tooth in the axial
+section (straight flanks at the pressure angle, half-width p/4 at the reference diameter,
+addendum m, dedendum 1.25 m) swept along the exact helix (ADR 0034) of lead pi m around a
+core of the root diameter, the flanks running a little into the core as threads do. The
+reference diameter defaults to 10 m (diameter quotient 10). OCCT test: exact screw-sweep
+volume. Multi-start worms, worm wheels (throated, hobbed) and bevel gears are not done.

@@ -13,6 +13,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
     vec![
         spec::<GenerateGear>(),
         spec::<GenerateRack>(),
+        spec::<GenerateWorm>(),
         spec::<GenerateSpring>(),
         spec::<GenerateThread>(),
         spec::<GenerateNut>(),
@@ -577,6 +578,232 @@ impl Command for GenerateSpring {
                 "helix_angle_deg": helix,
                 // The section is the wire's circle across the axis, not across the wire.
                 "note": "the wire section is round in the plane across the axis (exact for a small helix angle)",
+            }))
+        })
+    }
+}
+
+/// Generates a single-start ZA worm along Z: the basic-rack tooth (straight flanks at the
+/// pressure angle in the axial section, axial pitch pi m, addendum m, dedendum 1.25 m)
+/// swept along an exact helix of lead pi m around a root-diameter core.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateWorm {
+    /// Axial module.
+    #[serde(default = "d_module")]
+    #[schemars(extend("x-essential" = true))]
+    pub module: String,
+    /// Reference diameter (default 10 m).
+    #[serde(default)]
+    pub diameter: Option<String>,
+    #[serde(default = "d_thread_l")]
+    #[schemars(extend("x-essential" = true))]
+    pub length: String,
+    #[serde(default = "d_angle")]
+    pub angle: String,
+    #[serde(default)]
+    pub left: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for GenerateWorm {
+    const ID: &'static str = "generate.worm";
+    const TITLE: &'static str = "Worm";
+    const DESCRIPTION: &'static str = "Generate a single-start ZA worm along Z (exact helix).";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let diameter = self.diameter.clone().unwrap_or_else(|| format!("10 * ({})", self.module));
+        let given =
+            [("module", &self.module), ("diameter", &diameter), ("length", &self.length), ("angle", &self.angle)];
+        let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
+        for (what, src) in given {
+            exprs.push((what, parse_expr(what, src)?));
+        }
+        edit(s, ctx, "Generate worm", |doc, rb| {
+            let name = feature_name(doc, self.name, "Worm")?;
+            let nm = Names::from_feature(&name);
+            let (core_sk, core, tooth_sk) =
+                (format!("{name}_core_sketch"), format!("{name}_core"), format!("{name}_tooth"));
+            let mut all = doc.params.clone();
+            for (what, e) in &exprs {
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
+            }
+            let vals = params::evaluate(&all, doc.units);
+            let value = |what: &str, dim: Dim| -> Result<f64, CommandError> {
+                match vals.get(&nm.n(what)) {
+                    Some(Ok(q)) if q.dim == dim => Ok(q.value),
+                    Some(Ok(q)) => {
+                        Err(CommandError::args(format!("{what} must be {}, not {}", dim.name(), q.dim.name())))
+                    }
+                    Some(Err(e)) => Err(CommandError::args(format!("{what}: {}", e.message))),
+                    None => Err(CommandError::args(format!("{what} is missing"))),
+                }
+            };
+            let (m, d1, len, alpha) = (
+                value("module", Dim::LENGTH)?,
+                value("diameter", Dim::LENGTH)?,
+                value("length", Dim::LENGTH)?,
+                value("angle", Dim::ANGLE)?,
+            );
+            let (pitch, t) = (std::f64::consts::PI * m, libm::tan(alpha));
+            let root = d1 - 2.5 * m;
+            // Half the tooth's axial width at the core (flanks run on into it, as threads do).
+            let hw_core = pitch / 4.0 + (1.25 * m + TOOTH_OVERLAP * pitch) * t;
+            if !(m > 0.0 && root > 2.0 * m && alpha > 0.0 && pitch / 4.0 > m * t && len > 2.0 * hw_core + pitch) {
+                return Err(CommandError::args(
+                    "a worm needs module > 0, a diameter over 4.5 modules, a pressure angle under about 38 deg and a length over two pitches",
+                )
+                .hint("for example module 2 mm, diameter 20 mm, length 30 mm"));
+            }
+            if len / pitch > 2000.0 {
+                return Err(CommandError::args("the worm has more than 2000 turns"));
+            }
+            let notes = [
+                ("module", "axial module"),
+                ("diameter", "reference diameter"),
+                ("length", "worm length"),
+                ("angle", "axial pressure angle"),
+            ];
+            let mut new_params: Vec<Param> = Vec::new();
+            for (what, e) in &exprs {
+                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.into(),
+                    range: Default::default(),
+                });
+            }
+            let (mn, dn, ln, an) = (nm.n("module"), nm.n("diameter"), nm.n("length"), nm.n("angle"));
+            new_params.push(Param {
+                name: nm.n("root"),
+                expr: parse_expr("root", &format!("{dn} - 2.5 * {mn}"))?,
+                comment: "root diameter".into(),
+                range: Default::default(),
+            });
+            for p in &new_params {
+                if doc.params.iter().any(|q| q.name == p.name) {
+                    return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name))
+                        .hint("name the worm differently"));
+                }
+                validate_feature_name(&p.name).map_err(CommandError::args)?;
+            }
+            for f in [&core_sk, &core, &tooth_sk] {
+                if doc.feature(f).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{f}' already exists"))
+                        .hint("name the worm differently"));
+                }
+            }
+            let created: Vec<String> = new_params.iter().map(|p| p.name.clone()).collect();
+            doc.params.extend(new_params);
+            let c = |id: String, kind, ents: &[&str], v: &str| -> Result<SkConstraint, CommandError> {
+                Ok(SkConstraint {
+                    id,
+                    kind,
+                    entities: ents.iter().map(|e| (*e).to_string()).collect(),
+                    value: Some(parse_expr("worm", v)?),
+                })
+            };
+            let ent = |id: &str, geom| SkEntity { id: id.into(), geom, construction: false };
+            let core_sketch = SketchDef {
+                plane: PlaneRef::XY,
+                next_id: 6,
+                entities: vec![
+                    ent("p1", SkGeom::Point { x: 0.0, y: 0.0 }),
+                    ent("c2", SkGeom::Circle { center: "p1".into(), radius: root / 2.0 }),
+                ],
+                constraints: vec![
+                    c("k3".into(), SkConstraintKind::AtX, &["p1"], "0 mm")?,
+                    c("k4".into(), SkConstraintKind::AtY, &["p1"], "0 mm")?,
+                    c("k5".into(), SkConstraintKind::Diameter, &["c2"], &nm.n("root"))?,
+                ],
+                patterns: Vec::new(),
+                gear: None,
+            };
+            // The tooth in the axial (XZ) section: a trapezoid from inside the core to the tip,
+            // half-width p/4 at the reference radius, flanks at the pressure angle.
+            let pe = format!("pi * {mn}");
+            let tan = format!("tan({an})");
+            let hw_c = format!("({pe} / 4 + (1.25 * {mn} + {TOOTH_OVERLAP} * {pe}) * {tan})");
+            let hw_t = format!("({pe} / 4 - {mn} * {tan})");
+            let hw_tip = pitch / 4.0 - m * t;
+            let (ri, ra) = (format!("{dn} / 2 - 1.25 * {mn} - {TOOTH_OVERLAP} * {pe}"), format!("{dn} / 2 + {mn}"));
+            let (ri_v, ra_v) = (d1 / 2.0 - 1.25 * m - TOOTH_OVERLAP * pitch, d1 / 2.0 + m);
+            let tooth = [
+                (ri.clone(), "0 mm".to_string(), [ri_v, 0.0]),
+                (ra.clone(), format!("{hw_c} - {hw_t}"), [ra_v, hw_core - hw_tip]),
+                (ra, format!("{hw_c} + {hw_t}"), [ra_v, hw_core + hw_tip]),
+                (ri, format!("2 * {hw_c}"), [ri_v, 2.0 * hw_core]),
+            ];
+            let mut entities = Vec::new();
+            let mut constraints = Vec::new();
+            for (i, (x, z, v)) in tooth.iter().enumerate() {
+                let id = format!("p{}", i + 1);
+                entities.push(ent(&id, SkGeom::Point { x: v[0], y: v[1] }));
+                constraints.push(c(format!("k{}", 20 + 2 * i), SkConstraintKind::AtX, &[&id], x)?);
+                constraints.push(c(format!("k{}", 21 + 2 * i), SkConstraintKind::AtY, &[&id], z)?);
+            }
+            for i in 0..tooth.len() {
+                let (a, b) = (format!("p{}", i + 1), format!("p{}", (i + 1) % tooth.len() + 1));
+                entities.push(ent(&format!("l{}", 7 + i), SkGeom::Line { a, b }));
+            }
+            let tooth_sketch =
+                SketchDef { plane: PlaneRef::XZ, next_id: 40, entities, constraints, patterns: Vec::new(), gear: None };
+            // The helix keeps the tooth inside the worm's length.
+            let height = format!("{ln} - 2 * {hw_c}");
+            let features = vec![
+                Feature::new(core_sk.clone(), FeatureKind::Sketch(core_sketch)),
+                Feature::new(
+                    core.clone(),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
+                        distance: parse_expr("length", &ln)?,
+                        symmetric: false,
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: Some(name.clone()),
+                    }),
+                ),
+                Feature::new(tooth_sk.clone(), FeatureKind::Sketch(tooth_sketch)),
+                Feature::new(
+                    format!("{name}_helix"),
+                    FeatureKind::Sweep(SweepDef {
+                        profile: ProfileRef { sketch: tooth_sk.clone(), regions: Vec::new() },
+                        path: PathRef::Helix(gusset_doc::HelixDef {
+                            axis: gusset_doc::AxisRef::Z,
+                            pitch: parse_expr("pitch", &pe)?,
+                            height: parse_expr("height", &height)?,
+                            left: self.left,
+                        }),
+                        orientation: Orientation::Frenet,
+                        twist: None,
+                        op: BodyOp::Add,
+                        body: Some(core.clone()),
+                        body_name: None,
+                    }),
+                ),
+            ];
+            let mut at = rb;
+            for f in features {
+                insert_feature(doc, at, f);
+                at = at.map(|r| r + 1);
+            }
+            let lead_angle = libm::atan(pitch / (std::f64::consts::PI * d1)).to_degrees();
+            Ok(json!({
+                "feature": format!("{name}_helix"),
+                "body": name,
+                "parameters": created,
+                "axial_pitch_mm": pitch,
+                "lead_angle_deg": lead_angle,
+                "tip_diameter_mm": d1 + 2.0 * m,
+                "root_diameter_mm": root,
             }))
         })
     }
