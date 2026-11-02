@@ -549,3 +549,27 @@ fn explicit_points_keep_their_ids() {
     let wall = face(&r, "H1/wall(e2)");
     assert!(close(wall.centroid[0], 45.0, 1e-6), "{:?}", wall.centroid);
 }
+
+/// `query.measure` on real topology: hole spacing from the walls' axes, plate thickness
+/// from the top and bottom planes.
+#[test]
+fn measure_hole_spacing_and_plate_thickness() {
+    let text = format!(
+        "{PLATE}
+sketch Marks (plane: {TOP}, next_id: 3) {{
+  p1 = point(10, 10)
+  p2 = point(50, 10)
+}}
+
+hole H1 (face: {TOP}, points: Marks, type: simple, diameter: 4 mm, through: true)
+"
+    );
+    let mut s = Session::new(&Document::from_text(&text).unwrap(), kernel(), &CmdCtx::user(0));
+    let u = CmdCtx::user(1);
+    let m = execute(&mut s, &u, "query.measure", json!({"a": "H1/wall(p1)", "b": "H1/wall(p2)"})).unwrap();
+    assert!((m["center_distance_mm"].as_f64().unwrap() - 40.0).abs() < 1e-6, "{m}");
+    assert_eq!(m["angle_deg"], 0.0, "{m}");
+    let m = execute(&mut s, &u, "query.measure", json!({"a": TOP, "b": "E1/cap(start)"})).unwrap();
+    assert!((m["distance_mm"].as_f64().unwrap() - 20.0).abs() < 1e-6, "{m}");
+    assert_eq!(m["distance_kind"], "between parallel planes");
+}
