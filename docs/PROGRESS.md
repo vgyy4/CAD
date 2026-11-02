@@ -162,8 +162,9 @@ Phase 3 has started (see Next).
      fonts through `gusset-text`/skrifa; OCCT tests in `modeling_text.rs`). `offset_face` done (ADR 0030: push/pull faces
      along their normals, holes change radius; OCCT tests in `modeling_offset.rs`). `move_face`
      done (ADR 0031: translate/turn faces rigidly, the faces around keep their surfaces and
-     stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). Next in the tier:
-     FreeCAD/OpenSCAD import, Parasolid XT.
+     stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). FreeCAD and OpenSCAD
+     import done (`gusset-scad`, FCStd in the import worker). Next in the tier: Parasolid XT
+     (clean-room reader, research in progress: docs/research/parasolid-xt.md).
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
