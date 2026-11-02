@@ -849,9 +849,35 @@ impl App {
         }
         let face = self.selection.iter().find_map(|h| match h {
             Hit::Face { name, .. } | Hit::Plane { name } => Some(name.as_str()),
-            Hit::Edge { .. } => None,
+            Hit::Edge { .. } | Hit::Sketch { .. } => None,
         });
         form.set("plane", face.unwrap_or("XY"));
+        // Picked sketch items: what a constraint applies to, what is deleted, the point moved.
+        let sketch = form.value("sketch").map(str::to_string);
+        let items: Vec<&str> = self
+            .selection
+            .iter()
+            .filter_map(|h| match h {
+                Hit::Sketch { sketch: s, id } if Some(s) == sketch.as_ref() => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        if !items.is_empty() {
+            match form.command {
+                "sketch.add_constraint" => {
+                    form.set("entities", &items.join(", "));
+                }
+                "sketch.delete_items" => {
+                    form.set("ids", &items.join(", "));
+                }
+                "sketch.move_point" => {
+                    if let Some(p) = items.first() {
+                        form.set("point", p);
+                    }
+                }
+                _ => {}
+            }
+        }
         // A joint from two picks (ADR 0026): the first is the moving body's frame, the
         // second the target.
         if form.command == "feature.joint" {
@@ -1328,6 +1354,25 @@ impl App {
             self.palette = None;
             self.selection.clear();
             self.viewport.nav_mode = NavMode::Select;
+        }
+        // Delete removes the picked items of the edited sketch.
+        if !ctx.egui_wants_keyboard_input()
+            && self.form.is_none()
+            && ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Delete)))
+            && let Some(sketch) = self.editing_sketch().map(str::to_string)
+        {
+            let ids: Vec<String> = self
+                .selection
+                .iter()
+                .filter_map(|h| match h {
+                    Hit::Sketch { sketch: s, id } if *s == sketch => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !ids.is_empty() {
+                self.selection.clear();
+                self.submit_command("sketch.delete_items", json!({ "sketch": sketch, "ids": ids }), Then::Notice);
+            }
         }
         // Single-key command shortcuts only when no text field has focus.
         if !ctx.egui_wants_keyboard_input() && self.form.is_none() && self.palette.is_none() {
@@ -2010,6 +2055,7 @@ impl App {
             .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
             .unwrap_or_default();
         self.viewport.planes = self.construction_planes();
+        self.viewport.edit_sketch = self.editing_sketch().map(str::to_string);
         let placing = self.placing();
         let preview = placing.as_ref().zip(self.form.as_ref()).map(|((frame, _), form)| {
             let cursor = self.place_cursor.as_ref().map(|c| c.at);
@@ -2021,6 +2067,7 @@ impl App {
                     .map(|pl| pl.into_iter().map(w).collect())
                     .collect(),
                 points: form.clicks.iter().map(|c| w(c.at)).chain(cursor.map(w)).collect(),
+                ..DrawSketch::default()
             }
         });
         let mut sketches = sketches;
@@ -2628,9 +2675,10 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
     };
     let pt = |id: &str| s.points.get(id).copied();
     let mut d = DrawSketch { name: name.to_string(), ..DrawSketch::default() };
-    for (_, a, b) in &s.lines {
+    for (id, a, b) in &s.lines {
         if let (Some(a), Some(b)) = (pt(a), pt(b)) {
             d.polylines.push(vec![w(a), w(b)]);
+            d.ids.push(id.clone());
         }
     }
     let arc = |c: [f64; 2], r: f64, a0: f64, a1: f64| -> Vec<[f32; 3]> {
@@ -2645,9 +2693,10 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
     for (id, c) in &s.circles {
         if let (Some(c), Some(&r)) = (pt(c), s.radii.get(id)) {
             d.polylines.push(arc(c, r, 0.0, std::f64::consts::TAU));
+            d.ids.push(id.clone());
         }
     }
-    for (_, c, st, en) in &s.arcs {
+    for (id, c, st, en) in &s.arcs {
         if let (Some(c), Some(st), Some(en)) = (pt(c), pt(st), pt(en)) {
             let r = (st[0] - c[0]).hypot(st[1] - c[1]);
             let a0 = (st[1] - c[1]).atan2(st[0] - c[0]);
@@ -2656,12 +2705,15 @@ fn sketch_drawing(name: &str, s: &gusset_eval::SketchResult) -> DrawSketch {
                 a1 += std::f64::consts::TAU;
             }
             d.polylines.push(arc(c, r, a0, a1));
+            d.ids.push(id.clone());
         }
     }
-    for (_, pts) in &s.splines {
+    for (id, pts) in &s.splines {
         d.polylines.push(pts.iter().map(|&p| w(p)).collect());
+        d.ids.push(id.clone());
     }
     d.points = s.points.values().map(|&p| w(p)).collect();
+    d.point_ids = s.points.keys().cloned().collect();
     d
 }
 
@@ -2731,6 +2783,7 @@ pub(crate) fn pick_joint_frame(form: &mut Form, h: &Hit) {
     let (body, name) = match h {
         Hit::Face { body, name, .. } | Hit::Edge { body, name, .. } => (Some(body), name),
         Hit::Plane { name } => (None, name),
+        Hit::Sketch { .. } => return,
     };
     if form.value("at").is_none_or(|v| v.trim().is_empty()) {
         form.set("at", name);

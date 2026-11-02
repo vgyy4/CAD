@@ -487,8 +487,24 @@ fn sketch_lines_are_placed_with_viewport_clicks_and_chain() {
     let f = h.state().form.as_ref().map(|f| (f.clicks.clone(), f.error.clone(), f.to_args()));
     assert_eq!(sketch_lines(&h, "S").len(), 6, "{f:?}");
     assert_eq!(h.state().form.as_ref().map(|f| (f.command, f.clicks.len())), Some(("sketch.add_rectangle", 0)));
-    // Closing the form ends the tool; clicks select again.
+    // Closing the form ends the tool; clicks select again: the first line's start point.
     h.state_mut().form = None;
     h.run();
     assert!(h.state().form.is_none());
+    let p1 = h.state().evaluation().and_then(|e| e.sketches.get("S")?.points.get(&lines[0].0).copied());
+    let at = p1.and_then(|p| h.state().viewport.screen_pos([p[0], p[1], 0.0])).expect("point on screen");
+    click_at(&mut h, at);
+    let first = crate::viewport::Hit::Sketch { sketch: "S".into(), id: lines[0].0.clone() };
+    assert_eq!(h.state().selection, vec![first]);
+    // A picked item fills the constraint form...
+    h.state_mut().start_command("sketch.add_constraint");
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("entities")), Some(lines[0].0.as_str()));
+    h.state_mut().form = None;
+    h.run();
+    // ...and Delete removes it (with the line that used it).
+    h.key_press(egui::Key::Delete);
+    settle(&mut h);
+    let left = sketch_lines(&h, "S");
+    assert_eq!(left.len(), 5, "{left:?}");
+    assert!(h.state().selection.is_empty());
 }

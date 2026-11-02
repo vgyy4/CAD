@@ -38,6 +38,10 @@ pub struct DrawSketch {
     pub name: String,
     pub polylines: Vec<Vec<[f32; 3]>>,
     pub points: Vec<[f32; 3]>,
+    /// Sketch entity id of each polyline (may be shorter: unnamed ones are not picked).
+    pub ids: Vec<String>,
+    /// Point id of each point (may be shorter).
+    pub point_ids: Vec<String>,
 }
 
 /// A construction plane (an origin plane or a datum plane), drawn as a translucent square
@@ -101,6 +105,11 @@ pub enum Hit {
     Plane {
         name: String,
     },
+    /// A point or curve of the sketch being edited (its id, e.g. `p3`, `l2`).
+    Sketch {
+        sketch: String,
+        id: String,
+    },
 }
 
 impl Hit {
@@ -108,6 +117,7 @@ impl Hit {
         match self {
             Hit::Face { body, name, .. } | Hit::Edge { body, name, .. } => format!("{body}: {name}"),
             Hit::Plane { name } => format!("{name} plane"),
+            Hit::Sketch { sketch, id } => format!("{sketch}: {id}"),
         }
     }
 
@@ -115,7 +125,7 @@ impl Hit {
     pub fn body(&self) -> &str {
         match self {
             Hit::Face { body, .. } | Hit::Edge { body, .. } => body,
-            Hit::Plane { .. } => "",
+            Hit::Plane { .. } | Hit::Sketch { .. } => "",
         }
     }
 }
@@ -285,6 +295,10 @@ pub struct Viewport {
     pub section: Option<SectionView>,
     /// Origin and datum planes (set by the app each frame); hidden ones are skipped.
     pub planes: Vec<DrawPlane>,
+    /// The sketch being edited: its points and curves are picked before the model.
+    pub edit_sketch: Option<String>,
+    /// Where the viewport was drawn last frame (screen coordinates).
+    last_rect: Rect,
     /// Planes the user hid; the origin planes start hidden.
     hidden_planes: std::collections::BTreeSet<String>,
     /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
@@ -331,6 +345,8 @@ impl Default for Viewport {
             select_filter: SelectFilter::All,
             section: None,
             planes: Vec::new(),
+            edit_sketch: None,
+            last_rect: Rect::NOTHING,
             hidden_planes: ["XY", "XZ", "YZ"].into_iter().map(String::from).collect(),
             reduce_motion: false,
             request: None,
@@ -437,6 +453,52 @@ impl Viewport {
         Some((Hit::Plane { name: p.name.clone() }, Some(point)))
     }
 
+    /// Where a world point appears on screen in the last drawn frame.
+    #[must_use]
+    pub fn screen_pos(&self, world: Vec3) -> Option<Pos2> {
+        let r = self.last_rect;
+        let aspect = f64::from(r.width()) / f64::from(r.height().max(1.0));
+        let cm = self.camera.matrices(aspect, &self.clip_bounds());
+        let (s, _) = self.camera.project(&cm, world, [f64::from(r.width()), f64::from(r.height())])?;
+        Some(r.min + Vec2::new(s[0] as f32, s[1] as f32))
+    }
+
+    /// The point (within 6 px, preferred) or curve (within 5 px) of a sketch under `p`.
+    pub fn pick_sketch(&self, s: &DrawSketch, size: Vec2, p: Pos2) -> Option<Hit> {
+        let aspect = f64::from(size.x) / f64::from(size.y.max(1.0));
+        let cm = self.camera.matrices(aspect, &self.clip_bounds());
+        let vp = [f64::from(size.x), f64::from(size.y)];
+        let at = |q: &[f32; 3]| {
+            self.camera.project(&cm, q.map(f64::from), vp).map(|(s, _)| Pos2::new(s[0] as f32, s[1] as f32))
+        };
+        let hit = |id: &String| Hit::Sketch { sketch: s.name.clone(), id: id.clone() };
+        let point = s
+            .points
+            .iter()
+            .zip(&s.point_ids)
+            .filter_map(|(q, id)| Some((at(q)?.distance(p), id)))
+            .filter(|(d, _)| *d <= 6.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, id)) = point {
+            return Some(hit(id));
+        }
+        let seg = |a: Pos2, b: Pos2| {
+            let ab = b - a;
+            let t = if ab.length_sq() > 1e-9 { ((p - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0) } else { 0.0 };
+            (a + ab * t).distance(p)
+        };
+        s.polylines
+            .iter()
+            .zip(&s.ids)
+            .filter_map(|(pl, id)| {
+                let pts: Vec<Pos2> = pl.iter().filter_map(at).collect();
+                let d = pts.windows(2).filter_map(|w| Some(seg(*w.first()?, *w.get(1)?))).fold(f32::INFINITY, f32::min);
+                (d <= 5.0).then_some((d, id))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, id)| hit(id))
+    }
+
     /// Whether a plane is drawn and picked.
     #[must_use]
     pub fn plane_visible(&self, name: &str) -> bool {
@@ -486,7 +548,7 @@ impl Viewport {
             match h {
                 Hit::Face { index, .. } => scene.set_face_highlight(m, *index, kind),
                 Hit::Edge { index, .. } => scene.set_edge_highlight(m, *index, kind),
-                Hit::Plane { .. } => false,
+                Hit::Plane { .. } | Hit::Sketch { .. } => false,
             };
         }
         self.applied = (self.hover.clone(), selection.to_vec());
@@ -650,6 +712,7 @@ impl Viewport {
         if rect.width() < 1.0 || rect.height() < 1.0 {
             return out;
         }
+        self.last_rect = rect;
         let aspect = f64::from(rect.width()) / f64::from(rect.height());
         if self.fit_pending {
             self.fit(sketches, aspect);
@@ -676,7 +739,11 @@ impl Viewport {
                 out.pointer_ray = Some(self.camera.ray([f64::from(rel.x), f64::from(rel.y)], vp));
                 let key = (rel, self.generation, rect.width().to_bits().into(), self.camera);
                 if self.hover_for.as_ref() != Some(&key) {
-                    let picked = self.pick(rect.size(), rel);
+                    let edited = sketches.iter().find(|s| self.edit_sketch.as_deref() == Some(s.name.as_str()));
+                    let picked = match edited.and_then(|s| self.pick_sketch(s, rect.size(), rel)) {
+                        Some(h) => Some((h, None)),
+                        None => self.pick(rect.size(), rel),
+                    };
                     self.hover = picked.as_ref().map(|(h, _)| h.clone());
                     self.hover_for = Some(key);
                     out.cursor_world = picked.and_then(|(_, p)| p);
@@ -753,15 +820,29 @@ impl Viewport {
                 color,
             );
         }
-        // Sketches on top of the model.
-        for s in sketches {
-            for pl in &s.polylines {
-                let pts: Vec<Pos2> = pl.iter().filter_map(|&v| to_screen(v)).collect();
-                painter.add(egui::Shape::line(pts, Stroke::new(1.6, pal.accent)));
+        // Sketches on top of the model; the edited sketch's picked items highlighted.
+        let shade = |s: &DrawSketch, id: Option<&String>| {
+            let Some(id) = id else { return pal.accent };
+            let h = Hit::Sketch { sketch: s.name.clone(), id: id.clone() };
+            if selection.contains(&h) {
+                pal.vp_select
+            } else if self.hover.as_ref() == Some(&h) {
+                pal.vp_preselect
+            } else {
+                pal.accent
             }
-            for &p in &s.points {
+        };
+        for s in sketches {
+            for (i, pl) in s.polylines.iter().enumerate() {
+                let pts: Vec<Pos2> = pl.iter().filter_map(|&v| to_screen(v)).collect();
+                let c = shade(s, s.ids.get(i));
+                let w = if c == pal.accent { 1.6 } else { 2.6 };
+                painter.add(egui::Shape::line(pts, Stroke::new(w, c)));
+            }
+            for (i, &p) in s.points.iter().enumerate() {
                 if let Some(q) = to_screen(p) {
-                    painter.circle_filled(q, 2.5, pal.accent);
+                    let c = shade(s, s.point_ids.get(i));
+                    painter.circle_filled(q, if c == pal.accent { 2.5 } else { 4.0 }, c);
                 }
             }
         }
