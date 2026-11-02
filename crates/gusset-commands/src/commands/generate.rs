@@ -45,7 +45,7 @@ fn d_zero_deg() -> String {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateGear {
-    /// Module; gears mesh when equal.
+    /// Module.
     #[serde(default = "d_module")]
     #[schemars(extend("x-essential" = true))]
     pub module: String,
@@ -53,7 +53,7 @@ pub struct GenerateGear {
     #[serde(default = "d_teeth")]
     #[schemars(extend("x-essential" = true))]
     pub teeth: String,
-    /// Rack angle (ISO 53: 20 deg).
+    /// Pressure angle.
     #[serde(default = "d_angle")]
     #[schemars(extend("x-essential" = true))]
     pub pressure_angle: String,
@@ -65,19 +65,19 @@ pub struct GenerateGear {
     #[serde(default = "d_bore")]
     #[schemars(extend("x-essential" = true))]
     pub bore: String,
-    /// Profile shift x (positive: thicker teeth).
+    /// Profile shift x.
     #[serde(default = "d_zero")]
     pub shift: String,
-    /// Tooth thinning at the pitch circle.
+    /// Tooth thinning.
     #[serde(default = "d_zero_mm")]
     pub backlash: String,
-    /// Root fillet / module (ISO 53: 0.38).
+    /// Root fillet / module.
     #[serde(default = "d_fillet")]
     pub fillet: String,
-    /// Helix angle; nonzero makes it helical.
+    /// Helix angle (0: spur).
     #[serde(default = "d_zero_deg")]
     pub helix: String,
-    /// Feature name; lowercase is the parameter prefix.
+    /// Feature name (parameter prefix).
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -488,20 +488,26 @@ pub struct GenerateThread {
     #[serde(default = "d_thread_l")]
     #[schemars(extend("x-essential" = true))]
     pub length: String,
-    /// 45 deg chamfer at the free end(s).
+    /// Chamfer the free ends.
     #[serde(default = "d_true")]
     pub chamfer: bool,
-    /// Head across flats (a bolt; M10: 16 mm).
+    /// Head across flats (a bolt).
     #[serde(default)]
     pub head_width: Option<String>,
-    /// Head height (M10: 6.4 mm).
+    /// Head height.
     #[serde(default)]
     pub head_height: Option<String>,
-    /// Hex socket width: a round socket head (M10: 8 mm).
+    /// Hex socket width (round head).
     #[serde(default)]
     pub socket: Option<String>,
     #[serde(default)]
     pub socket_depth: Option<String>,
+    /// Threaded length; the rest is plain shank.
+    #[serde(default)]
+    pub thread_length: Option<String>,
+    /// Thread run-out (default 2.5 P).
+    #[serde(default)]
+    pub runout: Option<String>,
     #[serde(default)]
     pub left: bool,
     #[serde(default)]
@@ -543,6 +549,70 @@ fn hexagon(w: &str, width: f64) -> Result<(Vec<SkEntity>, Vec<SkConstraint>), Co
         });
     }
     Ok((entities, constraints))
+}
+
+/// The plain shank of a partly threaded rod: a solid revolved from the rod's root (z = 0)
+/// to where the thread starts at the major diameter, then a cone down to the minor
+/// diameter over the run-out, so the thread groove fades into the shank instead of
+/// stopping at a step. `vals` = [major, minor, shank length, run-out] (for the sketch's
+/// initial positions; the constraints carry the parameters).
+fn shank_features(name: &str, nm: &Names, core: &str, vals: [f64; 4]) -> Result<Vec<Feature>, CommandError> {
+    let [d, minor, z0, ro] = vals;
+    let (dn, pn, ln, tl, rn) = (nm.n("diameter"), nm.n("pitch"), nm.n("length"), nm.n("thread_length"), nm.n("runout"));
+    let shank_end = format!("{ln} - {tl}");
+    let pts = [
+        ("0 mm".to_string(), "0 mm".to_string(), [0.0, 0.0]),
+        (format!("{dn} / 2"), "0 mm".to_string(), [d / 2.0, 0.0]),
+        (format!("{dn} / 2"), shank_end.clone(), [d / 2.0, z0]),
+        (format!("({dn} - 1.0825317547 * {pn}) / 2"), format!("{shank_end} + {rn}"), [minor / 2.0, z0 + ro]),
+        ("0 mm".to_string(), format!("{shank_end} + {rn}"), [0.0, z0 + ro]),
+    ];
+    let mut entities = Vec::new();
+    let mut constraints = Vec::new();
+    for (i, (x, z, v)) in pts.iter().enumerate() {
+        let id = format!("p{}", i + 1);
+        entities.push(SkEntity { id: id.clone(), geom: SkGeom::Point { x: v[0], y: v[1] }, construction: false });
+        for (k, kind, e) in [(0, SkConstraintKind::AtX, x), (1, SkConstraintKind::AtY, z)] {
+            constraints.push(SkConstraint {
+                id: format!("k{}", 10 + 2 * i + k),
+                kind,
+                entities: vec![id.clone()],
+                value: Some(parse_expr("shank", e)?),
+            });
+        }
+    }
+    for i in 0..5 {
+        entities.push(SkEntity {
+            id: format!("l{}", 6 + i),
+            geom: SkGeom::Line { a: format!("p{}", i + 1), b: format!("p{}", (i + 1) % 5 + 1) },
+            construction: false,
+        });
+    }
+    let sk = format!("{name}_shank_sketch");
+    Ok(vec![
+        Feature::new(
+            sk.clone(),
+            FeatureKind::Sketch(SketchDef {
+                plane: PlaneRef::XZ,
+                next_id: 30,
+                entities,
+                constraints,
+                patterns: Vec::new(),
+                gear: None,
+            }),
+        ),
+        Feature::new(
+            format!("{name}_shank"),
+            FeatureKind::Revolve(RevolveDef {
+                profile: ProfileRef { sketch: sk, regions: Vec::new() },
+                axis: gusset_doc::AxisRef::Y,
+                angle: parse_expr("angle", "360 deg")?,
+                op: BodyOp::Add,
+                body: Some(core.to_string()),
+                body_name: None,
+            }),
+        ),
+    ])
 }
 
 fn d_true() -> bool {
@@ -659,8 +729,7 @@ pub(crate) fn thread_tooth(d: &str, p: &str, dv: f64, pv: f64, start: f64) -> Ve
 impl Command for GenerateThread {
     const ID: &'static str = "generate.thread";
     const TITLE: &'static str = "Thread";
-    const DESCRIPTION: &'static str =
-        "Generate a threaded rod, bolt or socket screw along Z (ISO 68-1 thread, exact helix).";
+    const DESCRIPTION: &'static str = "Generate a threaded rod, bolt or socket screw along Z (ISO 68-1, exact helix).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -681,6 +750,12 @@ impl Command for GenerateThread {
         if let Some((w, h)) = &head {
             given.push(("head_width", w.clone()));
             given.push(("head_height", h.clone()));
+        }
+        if let Some(tl) = &self.thread_length {
+            given.push(("thread_length", tl.clone()));
+            given.push(("runout", self.runout.clone().unwrap_or_else(|| format!("2.5 * ({})", self.pitch))));
+        } else if self.runout.is_some() {
+            return Err(CommandError::args("runout needs thread_length"));
         }
         if let Some(sw) = &self.socket {
             given.push(("socket", sw.clone()));
@@ -733,6 +808,8 @@ impl Command for GenerateThread {
                 ("length", "rod length"),
                 ("head_width", "head width across flats"),
                 ("head_height", "head height"),
+                ("thread_length", "threaded length from the free end"),
+                ("runout", "thread run-out into the shank"),
                 ("socket", "hex socket across flats"),
                 ("socket_depth", "hex socket depth"),
             ];
@@ -944,6 +1021,16 @@ impl Command for GenerateThread {
                     ));
                 }
             }
+            if self.thread_length.is_some() {
+                let (tl, ro) = (value("thread_length")?, value("runout")?);
+                if !(tl > 2.0 * p && tl < len && ro >= 0.0 && tl - ro > p) {
+                    return Err(CommandError::args(
+                        "thread_length must be over two pitches and under the rod length, with room for the run-out",
+                    )
+                    .hint("ISO 4014 M10 x 60: thread_length 26 mm (b), runout 3.75 mm (2.5 P)"));
+                }
+                features.extend(shank_features(&name, &nm, &core, [d, d - 1.082_531_754_7 * p, len - tl, ro])?);
+            }
             if self.chamfer {
                 let minor_r = (d - 1.082_531_754_7 * p) / 2.0;
                 let outer_r = d / 2.0 + 0.1 * p;
@@ -986,7 +1073,7 @@ pub struct GenerateNut {
     #[serde(default = "d_thread_p")]
     #[schemars(extend("x-essential" = true))]
     pub pitch: String,
-    /// Width across flats (ISO 4032 M10: 16 mm).
+    /// Width across flats.
     #[serde(default = "d_nut_s")]
     #[schemars(extend("x-essential" = true))]
     pub width: String,

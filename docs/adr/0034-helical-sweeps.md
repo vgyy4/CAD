@@ -44,3 +44,12 @@ the head is a cylinder of diameter `head_width` (height defaults to the thread d
 and the socket is a hexagon on a datum plane at the head's bottom face, cut up by
 `socket_depth` (default half the diameter). Values stay named parameters (ADR 0018); the
 OCCT test checks the exact volume of M10 (16 mm head, 10 mm high, 8 mm socket, 5 deep).
+
+## Amendment (2026-11-02): partly threaded rods and run-outs
+`generate.thread` with `thread_length` makes a partly threaded rod or bolt (ISO 4014
+style): below the threaded length a plain shank at the major diameter, revolved as one
+profile with a cone from the major to the minor diameter over `runout` (default 2.5
+pitches, ISO 3508's coarse-thread value), so the groove fades into the shank instead of
+stopping at a step. The thread sweep itself is unchanged; the shank is added to the same
+body. OCCT test: the volume gained lies between the groove's volume over the shank and
+over shank plus run-out.

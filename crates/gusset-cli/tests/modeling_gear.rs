@@ -360,6 +360,17 @@ fn a_generated_thread_is_the_core_plus_the_screwed_tooth() {
     assert!((vs - want - cap).abs() < 1e-4 * (want + cap), "{vs} vs {}", want + cap);
     let b = run(&mut s, "query.body", json!({"body": "Cap"}));
     assert!((b["bbox_min_mm"][2].as_f64().unwrap() + 10.0).abs() < 1e-6, "{b}");
+    // Partly threaded (ISO 4014 style): a plain shank at the major diameter for the first
+    // length - thread_length, then a cone over the run-out where the groove fades out. The
+    // shank fills the groove there: per unit length the groove is the major disc minus the
+    // rod core and tooth, so the gain lies between groove * shank and groove * (shank +
+    // run-out).
+    let r = run(&mut s, "generate.thread", json!({"name": "Part", "thread_length": "12 mm", "chamfer": false}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let groove = PI * (d / 2.0) * (d / 2.0) - PI * r1 * r1 - 2.0 * PI * moment / p;
+    let (shank, runout) = (l - 12.0, 2.5 * p);
+    let gain = volume(&mut s, "Part") - want;
+    assert!(gain > 0.98 * groove * shank && gain < groove * (shank + runout), "{gain} vs groove {groove}");
     // The default chamfers both free ends 45 degrees from the minor diameter: less material,
     // and the end faces shrink to the minor circle.
     let r = run(&mut s, "generate.thread", json!({"name": "Chamfered"}));
