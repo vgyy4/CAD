@@ -423,3 +423,29 @@ fn a_generated_rack_is_a_base_strip_plus_trapezoid_teeth() {
     assert!((b["bbox_max_mm"][0].as_f64().unwrap() - n * p).abs() < 1e-6, "{b}");
     assert!((b["bbox_max_mm"][1].as_f64().unwrap() - m).abs() < 1e-6, "{b}");
 }
+
+#[test]
+fn an_internal_gear_is_a_ring_minus_the_tooth_space_gear() {
+    // ADR 0018 amendment: the tooth spaces of an internal gear are the teeth of an external
+    // gear with x = 0.25 thinned by 0.5 m tan(a), so the ring's volume is the full ring
+    // minus that gear's volume, generated here on its own.
+    let mut s = session();
+    let r = run(
+        &mut s,
+        "generate.gear",
+        json!({"name": "Ring", "module": "2 mm", "teeth": "40", "face_width": "10 mm", "internal_rim": "100 mm"}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let thin = 0.5 * 2.0 * (20f64).to_radians().tan();
+    let r = run(
+        &mut s,
+        "generate.gear",
+        json!({"name": "Space", "module": "2 mm", "teeth": "40", "face_width": "10 mm", "bore": "0 mm",
+               "shift": "0.25", "backlash": format!("{thin} mm")}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let space = volume(&mut s, "Space");
+    let want = PI * 50.0 * 50.0 * 10.0 - space;
+    let v = volume(&mut s, "Ring");
+    assert!((v - want).abs() < 1e-6 * want, "{v} vs {want}");
+}

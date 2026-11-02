@@ -84,6 +84,9 @@ pub struct GenerateGear {
     /// Helix angle (0: spur).
     #[serde(default = "d_zero_deg")]
     pub helix: String,
+    /// Ring diameter: an internal gear.
+    #[serde(default)]
+    pub internal_rim: Option<String>,
     /// Feature name (parameter prefix).
     #[serde(default)]
     pub name: Option<String>,
@@ -92,24 +95,46 @@ pub struct GenerateGear {
 impl Command for GenerateGear {
     const ID: &'static str = "generate.gear";
     const TITLE: &'static str = "Gear";
-    const DESCRIPTION: &'static str = "Generate an involute spur or helical gear (ISO 53) as named parameters, a tooth sketch and an extrude or sweep.";
+    const DESCRIPTION: &'static str =
+        "Generate an involute spur, helical or internal gear (ISO 53) as parameters, a tooth sketch and an extrude.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        // An internal gear (ADR 0018 amendment): its tooth spaces are the teeth of an
+        // external gear with profile shift +0.25 (tip at r + 1.25 m, root at r - m: the
+        // addendum and dedendum swapped) thinned by 0.5 m tan(a) back to p / 2 at the pitch
+        // circle, cut from a ring. The parameters describe that tooth-space gear.
+        let internal = self.internal_rim.is_some();
+        let (mut shift, mut backlash, mut bore) = (self.shift.clone(), self.backlash.clone(), self.bore.clone());
+        if internal {
+            if self.helix.trim() != "0 deg" && self.helix.trim() != "0" {
+                return Err(CommandError::args("internal gears are spur only").hint("leave helix at 0 deg"));
+            }
+            if self.shift.trim() != "0" {
+                return Err(CommandError::args("internal gears take no profile shift").hint("leave shift at 0"));
+            }
+            shift = "0.25".into();
+            backlash = format!("0.5 * ({}) * tan({}) - ({})", self.module, self.pressure_angle, self.backlash);
+            bore = "0 mm".into();
+        }
+        let rim = self.internal_rim.clone().unwrap_or_default();
         let given = [
             ("module", &self.module),
             ("teeth", &self.teeth),
             ("pressure_angle", &self.pressure_angle),
             ("face_width", &self.face_width),
-            ("bore", &self.bore),
-            ("shift", &self.shift),
-            ("backlash", &self.backlash),
+            ("bore", &bore),
+            ("shift", &shift),
+            ("backlash", &backlash),
             ("fillet", &self.fillet),
             ("helix", &self.helix),
         ];
         let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
         for (what, src) in given {
             exprs.push((what, parse_expr(what, src)?));
+        }
+        if internal {
+            exprs.push(("rim", parse_expr("internal_rim", &rim)?));
         }
         edit(s, ctx, "Generate gear", |doc, rb| {
             let name = feature_name(doc, self.name, "Gear")?;
@@ -198,11 +223,22 @@ impl Command for GenerateGear {
                 ("fillet", "root fillet radius / module (ISO 53: 0.38)"),
                 ("helix", "helix angle at the pitch cylinder"),
             ];
+            let internal_notes = [
+                ("shift", "internal gear: its tooth spaces are this tooth (x = 0.25: tip and root swapped)"),
+                ("backlash", "internal gear: tooth thinning that brings the space back to p / 2, less the backlash"),
+                ("rim", "outer diameter of the ring"),
+                ("bore", "internal gear: none (the ring is the gear)"),
+            ];
             for (what, e) in &exprs {
                 if *what == "helix" && !helical {
                     continue;
                 }
-                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                let note = internal_notes
+                    .iter()
+                    .filter(|_| internal)
+                    .chain(notes.iter())
+                    .find(|(w, _)| w == what)
+                    .map_or("", |(_, n)| n);
                 new_params.push(Param {
                     name: nm.n(what),
                     expr: e.clone(),
@@ -233,7 +269,73 @@ impl Command for GenerateGear {
             let mut features = vec![Feature::new(sketch_name.clone(), FeatureKind::Sketch(sketch.def))];
             let profile = ProfileRef { sketch: sketch_name.clone(), regions: vec![sketch.region] };
             let width = parse_expr("face_width", &nm.n("face_width"))?;
-            if helical {
+            if internal {
+                let rim_d = value("rim", Dim::LENGTH)?;
+                if rim_d < 2.0 * g.tip_radius + 2.0 * v.module {
+                    return Err(CommandError::args(format!(
+                        "the ring needs an outer diameter over {:.2} mm (tooth roots at {:.2} mm plus a wall of 1 module)",
+                        2.0 * g.tip_radius + 2.0 * v.module,
+                        2.0 * g.tip_radius
+                    )));
+                }
+                let ring_sketch = format!("{name}_ring");
+                if doc.feature(&ring_sketch).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{ring_sketch}' already exists")));
+                }
+                let c = |id: &str, kind, ents: &[&str], v: &str| -> Result<SkConstraint, CommandError> {
+                    Ok(SkConstraint {
+                        id: id.into(),
+                        kind,
+                        entities: ents.iter().map(|e| (*e).to_string()).collect(),
+                        value: Some(parse_expr("ring", v)?),
+                    })
+                };
+                let ring = SketchDef {
+                    plane: PlaneRef::XY,
+                    next_id: 6,
+                    entities: vec![
+                        SkEntity { id: "p1".into(), geom: SkGeom::Point { x: 0.0, y: 0.0 }, construction: false },
+                        SkEntity {
+                            id: "c2".into(),
+                            geom: SkGeom::Circle { center: "p1".into(), radius: rim_d / 2.0 },
+                            construction: false,
+                        },
+                    ],
+                    constraints: vec![
+                        c("k3", SkConstraintKind::AtX, &["p1"], "0 mm")?,
+                        c("k4", SkConstraintKind::AtY, &["p1"], "0 mm")?,
+                        c("k5", SkConstraintKind::Diameter, &["c2"], &nm.n("rim"))?,
+                    ],
+                    patterns: Vec::new(),
+                    gear: None,
+                };
+                features.insert(0, Feature::new(ring_sketch.clone(), FeatureKind::Sketch(ring)));
+                features.insert(
+                    1,
+                    Feature::new(
+                        name.clone(),
+                        FeatureKind::Extrude(ExtrudeDef {
+                            profile: ProfileRef { sketch: ring_sketch, regions: Vec::new() },
+                            distance: width.clone(),
+                            symmetric: false,
+                            op: BodyOp::New,
+                            body: None,
+                            body_name: None,
+                        }),
+                    ),
+                );
+                features.push(Feature::new(
+                    format!("{name}_teeth"),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile,
+                        distance: width,
+                        symmetric: false,
+                        op: BodyOp::Cut,
+                        body: Some(name.clone()),
+                        body_name: None,
+                    }),
+                ));
+            } else if helical {
                 features.push(Feature::new(path_name.clone(), FeatureKind::Sketch(path_sketch(&nm, v.face_width)?)));
                 let twist = format!(
                     "{} * tan({}) / ({} / 2) * 1 rad",
@@ -276,6 +378,7 @@ impl Command for GenerateGear {
                 "body": name,
                 "sketch": sketch_name,
                 "helical": helical,
+                "internal": internal,
                 "parameters": created,
                 "pitch_diameter_mm": 2.0 * g.pitch_radius,
                 "base_diameter_mm": 2.0 * g.base_radius,
@@ -504,7 +607,7 @@ fn involute(a: f64) -> f64 {
 impl Command for QueryGearPair {
     const ID: &'static str = "query.gear_pair";
     const TITLE: &'static str = "Gear pair shifts";
-    const DESCRIPTION: &'static str = "Profile shifts that make two spur gears mesh at a given centre distance.";
+    const DESCRIPTION: &'static str = "Profile shifts for two spur gears at a centre distance.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, _s: &mut Session, _ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -573,7 +676,7 @@ pub struct GenerateRack {
     pub angle: String,
     #[serde(default = "d_width")]
     pub width: String,
-    /// Material below the tooth roots (default 2 m).
+    /// Below the roots (default 2 m).
     #[serde(default)]
     pub base: Option<String>,
     #[serde(default)]

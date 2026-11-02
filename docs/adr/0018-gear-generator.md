@@ -177,3 +177,15 @@ pressure angle from `cos(aw) = a0 cos(a) / a` and the shift sum from
 the other gear's teeth unless `shift1` is given. It flags gears that would undercut
 (`x < (z_min - z) / z_min`, `z_min = 2 / sin^2(a)`), reports the tip shortening the shifted
 pair needs, and refuses shift sums beyond +-3. The shifts go into `generate.gear`'s `shift`.
+
+## Amendment (2026-11-02): internal gears
+`generate.gear` with `internal_rim` (the ring's outer diameter) makes an internal (ring)
+gear. Its tooth spaces are the teeth of an external gear with profile shift +0.25 (tip at
+r + 1.25 m and root at r - m: addendum and dedendum swapped) thinned by 0.5 m tan(a), which
+brings the space back to p / 2 at the pitch circle; the flanks stay involutes of the same
+base circle. The generator writes those values into the shift and backlash parameters
+(with notes), so the per-rebuild gear check and the parametric sketch work unchanged, and
+cuts the profile from an extruded ring. Spur only, no shift, no bore; the rim must leave a
+wall of one module. OCCT test: the ring's volume is the full ring minus that tooth-space
+gear generated on its own. The space gear's root fillet rounds the internal tooth tips and
+its tip arc meets the flanks without a root fillet (a shaper-cut ring has one).

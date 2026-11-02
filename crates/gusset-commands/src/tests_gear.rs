@@ -432,3 +432,13 @@ fn gear_pair_shifts_reproduce_the_centre_distance() {
         .is_err()
     );
 }
+
+#[test]
+fn internal_gears_refuse_what_does_not_apply() {
+    let mut s = session();
+    assert!(fail(&mut s, json!({"internal_rim": "100 mm", "helix": "15 deg"})).contains("spur only"));
+    assert!(fail(&mut s, json!({"internal_rim": "100 mm", "shift": "0.3"})).contains("no profile shift"));
+    // 20 teeth of module 2: the tooth roots of the ring are at 42.5 mm, so a 44 mm ring
+    // leaves no wall.
+    assert!(fail(&mut s, json!({"internal_rim": "44 mm"})).contains("outer diameter over"));
+}
