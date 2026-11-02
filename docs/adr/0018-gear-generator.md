@@ -160,3 +160,11 @@ wire is very slightly flattened (cos of the helix angle, 0.997 for 4 mm pitch on
 the volume is exact (`pi (wire/2)^2 * pitch * turns`, Cavalieri) and it rebuilds from the
 parameters. Pitch at most 1.05 × wire is refused (touching coils make a self-intersecting sweep).
 Later: closed and ground ends, extension and torsion springs, rectangular wire.
+
+## Amendment (2026-11-02): racks
+`generate.rack` writes an ISO 53 basic rack along X that meshes with `generate.gear` of the
+same module: one tooth period (root, straight flank at the pressure angle, tip at m, flank,
+root at -1.25 m) as lines placed by parameter expressions, repeated `teeth` times by a
+linear sketch pattern (dx = pi m), closed by a base strip of `base` (default 2 m), then
+extruded by `width`. The pitch line is y = 0, so a gear meshes when its centre is at
+y = its pitch radius. OCCT test: exact volume (base strip + trapezoid teeth).

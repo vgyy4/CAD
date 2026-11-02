@@ -405,3 +405,21 @@ fn a_generated_nut_is_the_hex_minus_the_hole_and_the_groove() {
     let v = volume(&mut s, "Nut1");
     assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
 }
+
+#[test]
+fn a_generated_rack_is_a_base_strip_plus_trapezoid_teeth() {
+    // ISO 53 basic rack: per tooth a trapezoid 2.25 m high, p/2 + 2.5 m tan(a) wide at the
+    // root and p/2 - 2 m tan(a) at the tip; below the roots a strip of `base` (2 m).
+    let mut s = session();
+    let r = run(&mut s, "generate.rack", json!({"module": "2 mm", "teeth": "12", "width": "10 mm"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let (m, n, w) = (2.0, 12.0, 10.0);
+    let (p, t) = (PI * m, (20f64).to_radians().tan());
+    let tooth = 2.25 * m * ((p / 2.0 + 2.5 * m * t) + (p / 2.0 - 2.0 * m * t)) / 2.0;
+    let want = w * (n * p * 2.0 * m + n * tooth);
+    let v = volume(&mut s, "Rack1");
+    assert!((v - want).abs() < 1e-6 * want, "{v} vs {want}");
+    let b = run(&mut s, "query.body", json!({"body": "Rack1"}));
+    assert!((b["bbox_max_mm"][0].as_f64().unwrap() - n * p).abs() < 1e-6, "{b}");
+    assert!((b["bbox_max_mm"][1].as_f64().unwrap() - m).abs() < 1e-6, "{b}");
+}

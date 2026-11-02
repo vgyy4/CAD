@@ -10,7 +10,13 @@ use crate::gear::{self, GearValues, Names};
 use gusset_units::Dim;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<GenerateGear>(), spec::<GenerateSpring>(), spec::<GenerateThread>(), spec::<GenerateNut>()]
+    vec![
+        spec::<GenerateGear>(),
+        spec::<GenerateRack>(),
+        spec::<GenerateSpring>(),
+        spec::<GenerateThread>(),
+        spec::<GenerateNut>(),
+    ]
 }
 
 fn d_module() -> String {
@@ -470,6 +476,207 @@ impl Command for GenerateSpring {
             }))
         })
     }
+}
+
+/// Generates a straight spur rack (ISO 53 basic rack: straight flanks at the pressure
+/// angle, addendum m, dedendum 1.25 m) that meshes with `generate_gear` of the same module.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateRack {
+    #[serde(default = "d_module")]
+    #[schemars(extend("x-essential" = true))]
+    pub module: String,
+    #[serde(default = "d_teeth")]
+    #[schemars(extend("x-essential" = true))]
+    pub teeth: String,
+    #[serde(default = "d_angle")]
+    pub angle: String,
+    #[serde(default = "d_width")]
+    pub width: String,
+    /// Material below the tooth roots (default 2 m).
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for GenerateRack {
+    const ID: &'static str = "generate.rack";
+    const TITLE: &'static str = "Rack";
+    const DESCRIPTION: &'static str =
+        "Generate a spur rack along X (ISO 53 basic rack) that meshes with generate_gear.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let base = self.base.clone().unwrap_or_else(|| format!("2 * ({})", self.module));
+        let given = [
+            ("module", &self.module),
+            ("teeth", &self.teeth),
+            ("angle", &self.angle),
+            ("width", &self.width),
+            ("base", &base),
+        ];
+        let mut exprs: Vec<(&str, gusset_units::expr::Expr)> = Vec::new();
+        for (what, src) in given {
+            exprs.push((what, parse_expr(what, src)?));
+        }
+        edit(s, ctx, "Generate rack", |doc, rb| {
+            let name = feature_name(doc, self.name, "Rack")?;
+            let nm = Names::from_feature(&name);
+            let sketch_name = format!("{name}_profile");
+            let mut all = doc.params.clone();
+            for (what, e) in &exprs {
+                all.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: String::new(),
+                    range: Default::default(),
+                });
+            }
+            let vals = params::evaluate(&all, doc.units);
+            let value = |what: &str, dim: Dim| -> Result<f64, CommandError> {
+                match vals.get(&nm.n(what)) {
+                    Some(Ok(q)) if q.dim == dim => Ok(q.value),
+                    Some(Ok(q)) => {
+                        Err(CommandError::args(format!("{what} must be {}, not {}", dim.name(), q.dim.name())))
+                    }
+                    Some(Err(e)) => Err(CommandError::args(format!("{what}: {}", e.message))),
+                    None => Err(CommandError::args(format!("{what} is missing"))),
+                }
+            };
+            let (m, n, alpha, width, base) = (
+                value("module", Dim::LENGTH)?,
+                value("teeth", Dim::NONE)?,
+                value("angle", Dim::ANGLE)?,
+                value("width", Dim::LENGTH)?,
+                value("base", Dim::LENGTH)?,
+            );
+            let t = libm::tan(alpha);
+            let pitch = std::f64::consts::PI * m;
+            // The root gap must stay open: pitch / 2 > 2 * dedendum * tan(angle).
+            if !(m > 0.0 && n.fract() == 0.0 && (2.0..=500.0).contains(&n) && width > 0.0 && base > 0.0)
+                || !(alpha > 0.0 && pitch / 2.0 > 2.5 * m * t)
+            {
+                return Err(CommandError::args(
+                    "a rack needs module > 0, 2 to 500 whole teeth, width and base > 0 and a pressure angle under about 32 deg",
+                )
+                .hint("for example module 2 mm, 20 teeth, 20 deg"));
+            }
+            let notes = [
+                ("module", "module"),
+                ("teeth", "number of teeth"),
+                ("angle", "pressure angle"),
+                ("width", "face width"),
+                ("base", "material below the tooth roots"),
+            ];
+            let mut new_params: Vec<Param> = Vec::new();
+            for (what, e) in &exprs {
+                let note = notes.iter().find(|(w, _)| w == what).map_or("", |(_, n)| n);
+                new_params.push(Param {
+                    name: nm.n(what),
+                    expr: e.clone(),
+                    comment: note.into(),
+                    range: Default::default(),
+                });
+            }
+            for p in &new_params {
+                if doc.params.iter().any(|q| q.name == p.name) {
+                    return Err(CommandError::args(format!("a parameter named '{}' already exists", p.name))
+                        .hint("name the rack differently"));
+                }
+                validate_feature_name(&p.name).map_err(CommandError::args)?;
+            }
+            if doc.feature(&sketch_name).is_some() {
+                return Err(CommandError::args(format!("a feature named '{sketch_name}' already exists"))
+                    .hint("name the rack differently"));
+            }
+            let created: Vec<String> = new_params.iter().map(|p| p.name.clone()).collect();
+            doc.params.extend(new_params);
+            let sketch = rack_sketch(&nm, [m, n, t, base])?;
+            let features = vec![
+                Feature::new(sketch_name.clone(), FeatureKind::Sketch(sketch)),
+                Feature::new(
+                    name.clone(),
+                    FeatureKind::Extrude(ExtrudeDef {
+                        profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new() },
+                        distance: parse_expr("width", &nm.n("width"))?,
+                        symmetric: false,
+                        op: BodyOp::New,
+                        body: None,
+                        body_name: None,
+                    }),
+                ),
+            ];
+            let mut at = rb;
+            for f in features {
+                insert_feature(doc, at, f);
+                at = at.map(|r| r + 1);
+            }
+            Ok(json!({
+                "feature": name,
+                "body": name,
+                "parameters": created,
+                "pitch_mm": pitch,
+                "length_mm": pitch * n,
+                "pitch_line_y_mm": 0.0,
+            }))
+        })
+    }
+}
+
+/// The rack profile in the XY plane: one tooth period (root, flank, tip, flank, root) from
+/// x = 0 repeated `teeth` times along X by a linear pattern, closed by a base strip. The
+/// pitch line is y = 0; roots at y = -1.25 m, tips at y = m. Every point is placed by an
+/// expression in the rack's parameters, so editing them reshapes the rack.
+fn rack_sketch(nm: &Names, vals: [f64; 4]) -> Result<SketchDef, CommandError> {
+    let [m, n, t, base] = vals;
+    let (mn, an, tn, bn) = (nm.n("module"), nm.n("angle"), nm.n("teeth"), nm.n("base"));
+    let p = std::f64::consts::PI * m;
+    let (ha, hf) = (m, 1.25 * m);
+    let pe = format!("pi * {mn}");
+    let tan = format!("tan({an})");
+    let hfe = format!("1.25 * {mn}");
+    let pts: [(String, String, [f64; 2]); 9] = [
+        ("0 mm".into(), format!("-{hfe}"), [0.0, -hf]),
+        (format!("{pe} / 4 - {hfe} * {tan}"), format!("-{hfe}"), [p / 4.0 - hf * t, -hf]),
+        (format!("{pe} / 4 + {mn} * {tan}"), mn.clone(), [p / 4.0 + ha * t, ha]),
+        (format!("3 * {pe} / 4 - {mn} * {tan}"), mn.clone(), [3.0 * p / 4.0 - ha * t, ha]),
+        (format!("3 * {pe} / 4 + {hfe} * {tan}"), format!("-{hfe}"), [3.0 * p / 4.0 + hf * t, -hf]),
+        (pe.clone(), format!("-{hfe}"), [p, -hf]),
+        (format!("{tn} * {pe}"), format!("-{hfe}"), [n * p, -hf]),
+        (format!("{tn} * {pe}"), format!("-{hfe} - {bn}"), [n * p, -hf - base]),
+        ("0 mm".into(), format!("-{hfe} - {bn}"), [0.0, -hf - base]),
+    ];
+    let mut entities = Vec::new();
+    let mut constraints = Vec::new();
+    for (i, (x, y, v)) in pts.iter().enumerate() {
+        let id = format!("p{}", i + 1);
+        entities.push(SkEntity { id: id.clone(), geom: SkGeom::Point { x: v[0], y: v[1] }, construction: false });
+        for (k, kind, e) in [(0, SkConstraintKind::AtX, x), (1, SkConstraintKind::AtY, y)] {
+            constraints.push(SkConstraint {
+                id: format!("k{}", 20 + 2 * i + k),
+                kind,
+                entities: vec![id.clone()],
+                value: Some(parse_expr("rack", e)?),
+            });
+        }
+    }
+    let line = |id: usize, a: usize, b: usize| SkEntity {
+        id: format!("l{id}"),
+        geom: SkGeom::Line { a: format!("p{a}"), b: format!("p{b}") },
+        construction: false,
+    };
+    // One period: p1 -> p2 -> p3 -> p4 -> p5 -> p6; the base: p7 -> p8 -> p9 -> p1.
+    for (i, (a, b)) in [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (7, 8), (8, 9), (9, 1)].into_iter().enumerate() {
+        entities.push(line(10 + i, a, b));
+    }
+    let pattern = SkPattern {
+        id: "g40".into(),
+        kind: SkPatternKind::Linear { dx: parse_expr("rack", &pe)?, dy: parse_expr("rack", "0 mm")? },
+        of: (10..15).map(|i| format!("l{i}")).collect(),
+        count: parse_expr("rack", &tn)?,
+    };
+    Ok(SketchDef { plane: PlaneRef::XY, next_id: 50, entities, constraints, patterns: vec![pattern], gear: None })
 }
 
 /// Generates an external ISO metric thread (ISO 68-1 basic profile) on a rod along Z
