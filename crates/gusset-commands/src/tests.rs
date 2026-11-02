@@ -1383,6 +1383,8 @@ fn features_are_edited_in_place() {
         (json!({"name": "Extrude1", "set": {"colour": "red"}}), "colour"),
         (json!({"name": "Extrude1", "set": {"distance": "10 mm)"}}), "Extrude1"),
         (json!({"name": "Nope", "set": {}}), "Nope"),
+        (json!({"name": "Extrude1", "set": {"op: cut, distance": "5 mm"}}), "not an argument name"),
+        (json!({"name": "Extrude1", "set": {"distance": "5 mm\r"}}), "one line"),
     ] {
         let e = execute(&mut s, &u, "feature.edit", args.clone()).unwrap_err();
         assert!(e.message.contains(want), "{args}: {e:?}");

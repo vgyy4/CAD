@@ -44,8 +44,13 @@ impl Command for FeatureEdit {
             for k in &self.remove {
                 args.retain(|(key, _)| key != k);
             }
+            let ident =
+                |k: &str| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if let Some(k) = self.set.keys().chain(&self.remove).find(|k| !ident(k)) {
+                return Err(CommandError::args(format!("'{k}' is not an argument name")));
+            }
             for (k, v) in &self.set {
-                if v.contains('\n') {
+                if v.contains(['\n', '\r']) {
                     return Err(CommandError::args(format!("'{k}' must be one line")));
                 }
                 match args.iter_mut().find(|(key, _)| key == k) {
