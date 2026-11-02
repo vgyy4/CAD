@@ -203,7 +203,9 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
     }
     ui.add_space(crate::theme::SPACE[2]);
     // The primary action, on the right in the accent color.
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // One row high: in the tall properties panel a plain layout would centre it vertically.
+    let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if crate::theme::primary_button(ui, tr("dialog.ok"), 72.0).clicked() {
             submit = true;
         }

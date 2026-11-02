@@ -52,9 +52,9 @@ Phase 3 has started (see Next).
   hidden across rebuilds); origin and datum planes are still read-only (no scene objects). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). Still to do: the SURFACE/INSPECT tabs, and the SELECT group. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
-  and the software renderer). The
-  screenshot gallery in docs/screenshots was not regenerated (it needs the real kernel
-  for the bracket model); phase 2 looks were checked with mock-kernel renders.
+  and the software renderer).  The
+  screenshot gallery in docs/screenshots was regenerated with the real kernel on
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.
