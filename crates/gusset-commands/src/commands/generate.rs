@@ -583,9 +583,10 @@ impl Command for GenerateSpring {
     }
 }
 
-/// Generates a single-start ZA worm along Z: the basic-rack tooth (straight flanks at the
-/// pressure angle in the axial section, axial pitch pi m, addendum m, dedendum 1.25 m)
-/// swept along an exact helix of lead pi m around a root-diameter core.
+/// Generates a ZA worm along Z: the basic-rack tooth (straight flanks at the pressure
+/// angle in the axial section, axial pitch pi m, addendum m, dedendum 1.25 m) swept along
+/// an exact helix of lead `starts` * pi m around a root-diameter core; a multi-start worm
+/// sweeps `starts` teeth one axial pitch apart.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateWorm {
@@ -601,16 +602,23 @@ pub struct GenerateWorm {
     pub length: String,
     #[serde(default = "d_angle")]
     pub angle: String,
+    /// Number of starts (threads), 1 to 6.
+    #[serde(default = "d_one")]
+    pub starts: u32,
     #[serde(default)]
     pub left: bool,
     #[serde(default)]
     pub name: Option<String>,
 }
 
+fn d_one() -> u32 {
+    1
+}
+
 impl Command for GenerateWorm {
     const ID: &'static str = "generate.worm";
     const TITLE: &'static str = "Worm";
-    const DESCRIPTION: &'static str = "Generate a single-start ZA worm along Z (exact helix).";
+    const DESCRIPTION: &'static str = "Generate a ZA worm along Z (exact helix, 1 to 6 starts).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -656,7 +664,12 @@ impl Command for GenerateWorm {
             let root = d1 - 2.5 * m;
             // Half the tooth's axial width at the core (flanks run on into it, as threads do).
             let hw_core = pitch / 4.0 + (1.25 * m + TOOTH_OVERLAP * pitch) * t;
-            if !(m > 0.0 && root > 2.0 * m && alpha > 0.0 && pitch / 4.0 > m * t && len > 2.0 * hw_core + pitch) {
+            let starts = self.starts;
+            let span = 2.0 * hw_core + f64::from(starts.saturating_sub(1)) * pitch;
+            if !(1..=6).contains(&starts) {
+                return Err(CommandError::args("a worm has 1 to 6 starts"));
+            }
+            if !(m > 0.0 && root > 2.0 * m && alpha > 0.0 && pitch / 4.0 > m * t && len > span + pitch) {
                 return Err(CommandError::args(
                     "a worm needs module > 0, a diameter over 4.5 modules, a pressure angle under about 38 deg and a length over two pitches",
                 )
@@ -742,22 +755,34 @@ impl Command for GenerateWorm {
                 (ra, format!("{hw_c} + {hw_t}"), [ra_v, hw_core + hw_tip]),
                 (ri, format!("2 * {hw_c}"), [ri_v, 2.0 * hw_core]),
             ];
-            let mut entities = Vec::new();
-            let mut constraints = Vec::new();
-            for (i, (x, z, v)) in tooth.iter().enumerate() {
-                let id = format!("p{}", i + 1);
-                entities.push(ent(&id, SkGeom::Point { x: v[0], y: v[1] }));
-                constraints.push(c(format!("k{}", 20 + 2 * i), SkConstraintKind::AtX, &[&id], x)?);
-                constraints.push(c(format!("k{}", 21 + 2 * i), SkConstraintKind::AtY, &[&id], z)?);
-            }
-            for i in 0..tooth.len() {
-                let (a, b) = (format!("p{}", i + 1), format!("p{}", (i + 1) % tooth.len() + 1));
-                entities.push(ent(&format!("l{}", 7 + i), SkGeom::Line { a, b }));
-            }
-            let tooth_sketch =
-                SketchDef { plane: PlaneRef::XZ, next_id: 40, entities, constraints, patterns: Vec::new(), gear: None };
-            // The helix keeps the tooth inside the worm's length.
-            let height = format!("{ln} - 2 * {hw_c}");
+            // One tooth sketch per start, one axial pitch apart: a helix is placed through its
+            // profile, so each start gets its own sketch and sweep.
+            let tooth_sketch = |s: u32| -> Result<SketchDef, CommandError> {
+                let dz = f64::from(s) * pitch;
+                let mut entities = Vec::new();
+                let mut constraints = Vec::new();
+                for (i, (x, z, v)) in tooth.iter().enumerate() {
+                    let id = format!("p{}", i + 1);
+                    entities.push(ent(&id, SkGeom::Point { x: v[0], y: v[1] + dz }));
+                    let zs = if s == 0 { z.clone() } else { format!("{z} + {s} * {pe}") };
+                    constraints.push(c(format!("k{}", 20 + 2 * i), SkConstraintKind::AtX, &[&id], x)?);
+                    constraints.push(c(format!("k{}", 21 + 2 * i), SkConstraintKind::AtY, &[&id], &zs)?);
+                }
+                for i in 0..tooth.len() {
+                    let (a, b) = (format!("p{}", i + 1), format!("p{}", (i + 1) % tooth.len() + 1));
+                    entities.push(ent(&format!("l{}", 7 + i), SkGeom::Line { a, b }));
+                }
+                Ok(SketchDef {
+                    plane: PlaneRef::XZ,
+                    next_id: 40,
+                    entities,
+                    constraints,
+                    patterns: Vec::new(),
+                    gear: None,
+                })
+            };
+            // The helix keeps every tooth inside the worm's length.
+            let height = format!("{ln} - 2 * {hw_c} - {} * {pe}", starts - 1);
             let features = vec![
                 Feature::new(core_sk.clone(), FeatureKind::Sketch(core_sketch)),
                 Feature::new(
@@ -771,14 +796,22 @@ impl Command for GenerateWorm {
                         body_name: Some(name.clone()),
                     }),
                 ),
-                Feature::new(tooth_sk.clone(), FeatureKind::Sketch(tooth_sketch)),
-                Feature::new(
-                    format!("{name}_helix"),
+            ];
+            let mut features = features;
+            for st in 0..starts {
+                let suffix = if st == 0 { String::new() } else { (st + 1).to_string() };
+                let sk = format!("{tooth_sk}{suffix}");
+                if st > 0 && doc.feature(&sk).is_some() {
+                    return Err(CommandError::args(format!("a feature named '{sk}' already exists")));
+                }
+                features.push(Feature::new(sk.clone(), FeatureKind::Sketch(tooth_sketch(st)?)));
+                features.push(Feature::new(
+                    format!("{name}_helix{suffix}"),
                     FeatureKind::Sweep(SweepDef {
-                        profile: ProfileRef { sketch: tooth_sk.clone(), regions: Vec::new() },
+                        profile: ProfileRef { sketch: sk, regions: Vec::new() },
                         path: PathRef::Helix(gusset_doc::HelixDef {
                             axis: gusset_doc::AxisRef::Z,
-                            pitch: parse_expr("pitch", &pe)?,
+                            pitch: parse_expr("pitch", &format!("{starts} * {pe}"))?,
                             height: parse_expr("height", &height)?,
                             left: self.left,
                         }),
@@ -788,19 +821,22 @@ impl Command for GenerateWorm {
                         body: Some(core.clone()),
                         body_name: None,
                     }),
-                ),
-            ];
+                ));
+            }
             let mut at = rb;
             for f in features {
                 insert_feature(doc, at, f);
                 at = at.map(|r| r + 1);
             }
-            let lead_angle = libm::atan(pitch / (std::f64::consts::PI * d1)).to_degrees();
+            let lead = f64::from(starts) * pitch;
+            let lead_angle = libm::atan(lead / (std::f64::consts::PI * d1)).to_degrees();
             Ok(json!({
                 "feature": format!("{name}_helix"),
                 "body": name,
                 "parameters": created,
                 "axial_pitch_mm": pitch,
+                "lead_mm": lead,
+                "starts": starts,
                 "lead_angle_deg": lead_angle,
                 "tip_diameter_mm": d1 + 2.0 * m,
                 "root_diameter_mm": root,

@@ -101,6 +101,12 @@ impl Evaluator {
         if height / pitch > 2000.0 {
             return Err(EvalError::new(name, ErrorCode::Expression, "the helix has more than 2000 turns"));
         }
+        // The helix is placed through the profile's region (its radius and start), so a
+        // second region would be swept along a helix that is not its own.
+        if regions.len() > 1 {
+            return Err(EvalError::new(name, ErrorCode::InvalidReference, "a helical sweep takes one profile region")
+                .with_hint("sweep each region with its own helix (one sweep per region)"));
+        }
         let inside = solved
             .profiles
             .iter()

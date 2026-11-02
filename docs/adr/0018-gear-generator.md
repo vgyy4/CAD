@@ -196,4 +196,8 @@ section (straight flanks at the pressure angle, half-width p/4 at the reference 
 addendum m, dedendum 1.25 m) swept along the exact helix (ADR 0034) of lead pi m around a
 core of the root diameter, the flanks running a little into the core as threads do. The
 reference diameter defaults to 10 m (diameter quotient 10). OCCT test: exact screw-sweep
-volume. Multi-start worms, worm wheels (throated, hobbed) and bevel gears are not done.
+volume. `starts` (1 to 6) makes a multi-start worm: lead `starts` pi m, one tooth sketch and
+sweep per start, one axial pitch apart (a helix is placed through its own profile, so
+starts cannot share one sweep; the evaluator now refuses a helical sweep of several
+regions instead of misplacing them). OCCT test: a two-start worm's exact volume. Worm
+wheels (throated, hobbed) and bevel gears are not done.

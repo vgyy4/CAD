@@ -476,4 +476,17 @@ fn a_generated_worm_is_the_core_plus_the_swept_rack_tooth() {
     assert!((v - want).abs() < 1e-4 * want, "{v} vs {want}");
     let b = run(&mut s, "query.body", json!({"body": "Worm1"}));
     assert!((b["bbox_max_mm"][0].as_f64().unwrap() - ra).abs() < 0.01, "{b}");
+    // Two starts: lead 2 p, two teeth one pitch apart, the helix shortened by one pitch;
+    // each tooth turns height / lead times, so together height / p turns of one section.
+    let r = run(
+        &mut s,
+        "generate.worm",
+        json!({"name": "Twin", "module": "2 mm", "diameter": "20 mm", "length": "40 mm", "starts": 2}),
+    );
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert!((r["lead_mm"].as_f64().unwrap() - 2.0 * p).abs() < 1e-12, "{r}");
+    let l2 = 40.0;
+    let want2 = PI * rc * rc * l2 + (l2 - 2.0 * hw_core - p) / p * 2.0 * PI * moment;
+    let v2 = volume(&mut s, "Twin");
+    assert!((v2 - want2).abs() < 1e-4 * want2, "{v2} vs {want2}");
 }
