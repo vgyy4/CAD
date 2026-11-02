@@ -834,8 +834,10 @@ impl App {
         if !edges.is_empty() {
             form.set("edges", &edges.join(", "));
         }
-        let face =
-            self.selection.iter().find_map(|h| if let Hit::Face { name, .. } = h { Some(name.as_str()) } else { None });
+        let face = self.selection.iter().find_map(|h| match h {
+            Hit::Face { name, .. } | Hit::Plane { name } => Some(name.as_str()),
+            Hit::Edge { .. } => None,
+        });
         form.set("plane", face.unwrap_or("XY"));
         // A joint from two picks (ADR 0026): the first is the moving body's frame, the
         // second the target.
@@ -1753,12 +1755,14 @@ impl App {
             .show(ui, |ui| {
                 let visible = |name: &str| self.sketch_visible(name);
                 let body_visible = |name: &str| self.viewport.body_visible(name);
+                let plane_visible = |name: &str| self.viewport.plane_visible(name);
                 let view = browser::View {
                     pal: &pal,
                     doc: &doc,
                     eval: eval.as_deref(),
                     sketch_visible: &visible,
                     body_visible: &body_visible,
+                    plane_visible: &plane_visible,
                     branch: self.snapshot.branch,
                     branches: &self.snapshot.branches,
                 };
@@ -1771,6 +1775,30 @@ impl App {
         }
     }
 
+    /// The origin planes and the datum planes, sized to the model.
+    fn construction_planes(&self) -> Vec<crate::viewport::DrawPlane> {
+        let b = self.viewport.scene().bounds();
+        let reach = if b.is_empty() {
+            0.0
+        } else {
+            (0..3)
+                .map(|k| b.min.get(k).copied().unwrap_or(0.0).abs().max(b.max.get(k).copied().unwrap_or(0.0).abs()))
+                .fold(0.0, f64::max)
+        };
+        let half = (reach * 0.6).max(10.0);
+        let plane = |name: &str, f: &gusset_kernel::Frame| crate::viewport::DrawPlane {
+            name: name.to_string(),
+            origin: f.origin,
+            x: f.x,
+            y: f.y,
+            half,
+        };
+        let base =
+            [("XY", gusset_kernel::Frame::XY), ("XZ", gusset_kernel::Frame::XZ), ("YZ", gusset_kernel::Frame::YZ)];
+        let datums = self.scene.as_ref().map(|s| s.eval.planes.clone()).unwrap_or_default();
+        base.iter().map(|(n, f)| plane(n, f)).chain(datums.iter().map(|(n, f)| plane(n, f))).collect()
+    }
+
     /// Applies what the user chose in the browser tree.
     pub fn browser_action(&mut self, action: browser::Action) {
         match action {
@@ -1778,6 +1806,7 @@ impl App {
                 self.sketch_visibility.insert(name, on);
             }
             browser::Action::SetBodyVisible(name, on) => self.viewport.set_body_visible(&name, on),
+            browser::Action::SetPlaneVisible(name, on) => self.viewport.set_plane_visible(&name, on),
             browser::Action::EditSketch(name) => self.edit_sketch(&name),
             browser::Action::AddParam => self.start_command("param.set"),
             browser::Action::EditParam(name) => {
@@ -1912,6 +1941,7 @@ impl App {
             .as_ref()
             .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
             .unwrap_or_default();
+        self.viewport.planes = self.construction_planes();
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
         let empty = self.viewport.scene().is_empty() && sketches.is_empty();
         if let Some(clicked) = out.clicked {
@@ -2586,10 +2616,15 @@ fn component_updates(v: &Value) -> Option<String> {
 /// Puts a picked face or edge into the joint form: `at` (and the moving `body`) while `at`
 /// is empty, else `to`.
 pub(crate) fn pick_joint_frame(form: &mut Form, h: &Hit) {
-    let (Hit::Face { body, name, .. } | Hit::Edge { body, name, .. }) = h;
+    let (body, name) = match h {
+        Hit::Face { body, name, .. } | Hit::Edge { body, name, .. } => (Some(body), name),
+        Hit::Plane { name } => (None, name),
+    };
     if form.value("at").is_none_or(|v| v.trim().is_empty()) {
         form.set("at", name);
-        form.set("body", body);
+        if let Some(body) = body {
+            form.set("body", body);
+        }
     } else if form.value("at") != Some(name.as_str()) {
         form.set("to", name);
     }

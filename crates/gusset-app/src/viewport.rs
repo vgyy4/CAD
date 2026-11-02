@@ -20,7 +20,7 @@ use crate::viewport_nav::{self, CubeTarget, NavButton, NavMode, NavState};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
 use gusset_render::math::{Aabb, Vec3, cross, dot, normalize_or, rotate};
 use gusset_render::{
-    Camera, Highlight, MeshId, NamedView, Projection, Scene, Section, SoftwareRenderer, Theme, ViewOptions,
+    Camera, Highlight, MeshId, NamedView, Projection, Ray, Scene, Section, SoftwareRenderer, Theme, ViewOptions,
 };
 use std::sync::Arc;
 
@@ -40,23 +40,82 @@ pub struct DrawSketch {
     pub points: Vec<[f32; 3]>,
 }
 
+/// A construction plane (an origin plane or a datum plane), drawn as a translucent square
+/// over the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrawPlane {
+    /// `XY`, `XZ`, `YZ` or the datum plane's name.
+    pub name: String,
+    pub origin: Vec3,
+    /// Unit in-plane directions.
+    pub x: Vec3,
+    pub y: Vec3,
+    /// Half the square's side.
+    pub half: f64,
+}
+
+impl DrawPlane {
+    fn corners(&self) -> [Vec3; 4] {
+        let at = |a: f64, b: f64| {
+            std::array::from_fn(|k| {
+                self.origin.get(k).copied().unwrap_or(0.0)
+                    + (self.x.get(k).copied().unwrap_or(0.0) * a + self.y.get(k).copied().unwrap_or(0.0) * b)
+                        * self.half
+            })
+        };
+        [at(-1.0, -1.0), at(1.0, -1.0), at(1.0, 1.0), at(-1.0, 1.0)]
+    }
+
+    /// Ray parameter where `ray` meets the square, if it does.
+    fn hit(&self, ray: &Ray) -> Option<f64> {
+        let n = cross(self.x, self.y);
+        let denom = dot(ray.dir, n);
+        if denom.abs() < 1e-12 {
+            return None;
+        }
+        let d0: Vec3 = std::array::from_fn(|k| self.origin.get(k).zip(ray.origin.get(k)).map_or(0.0, |(o, r)| o - r));
+        let t = dot(d0, n) / denom;
+        let d: Vec3 = std::array::from_fn(|k| {
+            ray.origin.get(k).zip(ray.dir.get(k)).map_or(0.0, |(o, r)| o + r * t)
+                - self.origin.get(k).copied().unwrap_or(0.0)
+        });
+        let inside = dot(d, self.x).abs() <= self.half && dot(d, self.y).abs() <= self.half;
+        (t >= 0.0 && inside).then_some(t)
+    }
+}
+
 /// What the cursor is over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {
-    Face { body: String, index: u32, name: String },
-    Edge { body: String, index: u32, name: String },
+    Face {
+        body: String,
+        index: u32,
+        name: String,
+    },
+    Edge {
+        body: String,
+        index: u32,
+        name: String,
+    },
+    /// An origin or datum plane.
+    Plane {
+        name: String,
+    },
 }
 
 impl Hit {
     pub fn label(&self) -> String {
         match self {
             Hit::Face { body, name, .. } | Hit::Edge { body, name, .. } => format!("{body}: {name}"),
+            Hit::Plane { name } => format!("{name} plane"),
         }
     }
 
-    fn body(&self) -> &str {
+    /// The body the hit is on (empty for planes).
+    pub fn body(&self) -> &str {
         match self {
             Hit::Face { body, .. } | Hit::Edge { body, .. } => body,
+            Hit::Plane { .. } => "",
         }
     }
 }
@@ -220,6 +279,10 @@ pub struct Viewport {
     pub select_filter: SelectFilter,
     /// Section view (the navigation bar's toggle), if on.
     pub section: Option<SectionView>,
+    /// Origin and datum planes (set by the app each frame); hidden ones are skipped.
+    pub planes: Vec<DrawPlane>,
+    /// Planes the user hid; the origin planes start hidden.
+    hidden_planes: std::collections::BTreeSet<String>,
     /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
     hidden_bodies: std::collections::BTreeSet<String>,
     /// Camera moves jump instead of animating.
@@ -263,6 +326,8 @@ impl Default for Viewport {
             hidden_bodies: std::collections::BTreeSet::new(),
             select_filter: SelectFilter::All,
             section: None,
+            planes: Vec::new(),
+            hidden_planes: ["XY", "XZ", "YZ"].into_iter().map(String::from).collect(),
             reduce_motion: false,
             request: None,
             anim: None,
@@ -357,8 +422,35 @@ impl Viewport {
         if self.select_filter == SelectFilter::Edges {
             return None;
         }
-        let hit = self.scene.pick_section(&self.camera.ray(px, vp), section.as_ref())?;
-        Some((self.hit_for_face(hit.mesh, hit.face)?, Some(hit.point)))
+        let ray = self.camera.ray(px, vp);
+        if let Some(hit) = self.scene.pick_section(&ray, section.as_ref()) {
+            return Some((self.hit_for_face(hit.mesh, hit.face)?, Some(hit.point)));
+        }
+        // Planes are see-through: they pick only where no body is under the cursor.
+        let (t, p) =
+            self.visible_planes().filter_map(|p| p.hit(&ray).map(|t| (t, p))).min_by(|a, b| a.0.total_cmp(&b.0))?;
+        let point = std::array::from_fn(|k| ray.origin.get(k).zip(ray.dir.get(k)).map_or(0.0, |(o, d)| o + d * t));
+        Some((Hit::Plane { name: p.name.clone() }, Some(point)))
+    }
+
+    /// Whether a plane is drawn and picked.
+    #[must_use]
+    pub fn plane_visible(&self, name: &str) -> bool {
+        !self.hidden_planes.contains(name)
+    }
+
+    /// Shows or hides a plane (kept across rebuilds by name).
+    pub fn set_plane_visible(&mut self, name: &str, on: bool) {
+        if on {
+            self.hidden_planes.remove(name);
+        } else {
+            self.hidden_planes.insert(name.to_string());
+        }
+        self.hover_for = None;
+    }
+
+    fn visible_planes(&self) -> impl Iterator<Item = &DrawPlane> {
+        self.planes.iter().filter(|p| self.plane_visible(&p.name))
     }
 
     /// The section plane in world space, when the section view is on.
@@ -390,6 +482,7 @@ impl Viewport {
             match h {
                 Hit::Face { index, .. } => scene.set_face_highlight(m, *index, kind),
                 Hit::Edge { index, .. } => scene.set_edge_highlight(m, *index, kind),
+                Hit::Plane { .. } => false,
             };
         }
         self.applied = (self.hover.clone(), selection.to_vec());
@@ -620,6 +713,32 @@ impl Viewport {
         let to_screen = |p: [f32; 3]| {
             self.camera.project(&cm, p.map(f64::from), vp).map(|(s, _)| rect.min + Vec2::new(s[0] as f32, s[1] as f32))
         };
+        // Construction planes: translucent squares over the model, with their names.
+        for p in self.visible_planes() {
+            let pts: Vec<Pos2> = p.corners().iter().filter_map(|c| to_screen(c.map(|v| v as f32))).collect();
+            let [_, _, _, label_at] = pts.as_slice() else { continue };
+            let hit = Hit::Plane { name: p.name.clone() };
+            let color = if selection.contains(&hit) {
+                pal.vp_select
+            } else if self.hover.as_ref() == Some(&hit) {
+                pal.vp_preselect
+            } else {
+                pal.accent
+            };
+            let label_at = *label_at;
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                color.gamma_multiply(0.06),
+                Stroke::new(1.0, color.gamma_multiply(0.7)),
+            ));
+            painter.text(
+                label_at + Vec2::new(4.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                &p.name,
+                egui::FontId::proportional(11.0),
+                color,
+            );
+        }
         // Sketches on top of the model.
         for s in sketches {
             for pl in &s.polylines {
@@ -848,6 +967,32 @@ mod tests {
         assert!(matches!(v.pick(size, kept), Some((Hit::Face { ref name, .. }, _)) if name == "top"));
         v.section = Some(SectionView { axis: 1, at: 0.75, flip: true });
         assert!(v.pick(size, center).is_some());
+    }
+
+    #[test]
+    fn planes_pick_where_no_body_is() {
+        let (scene, bodies, _) = build_scene(&[quad()]);
+        let mut v = Viewport::default();
+        v.set_scene(scene, bodies);
+        v.camera.set_view(gusset_render::NamedView::Top);
+        let size = Vec2::new(400.0, 400.0);
+        v.fit(&[], 1.0);
+        let xy = DrawPlane { name: "XY".into(), origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0], half: 50.0 };
+        v.planes = vec![xy];
+        let corner = Pos2::new(2.0, 2.0);
+        // Origin planes start hidden.
+        assert_eq!(v.pick(size, corner), None);
+        v.set_plane_visible("XY", true);
+        let hit = v.pick(size, corner);
+        assert!(
+            matches!(hit, Some((Hit::Plane { ref name }, Some(p))) if name == "XY" && p[2].abs() < 1e-6),
+            "{hit:?}"
+        );
+        // The body in front still wins.
+        assert!(matches!(v.pick(size, Pos2::new(200.0, 200.0)), Some((Hit::Face { .. }, _))));
+        // Edge-on planes are not hit.
+        v.planes[0].y = [0.0, 0.0, 1.0];
+        assert_eq!(v.pick(size, corner), None);
     }
 
     #[test]

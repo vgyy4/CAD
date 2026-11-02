@@ -62,6 +62,11 @@ const EN: &[(&str, &str)] = &[
     ("browser.edit_param", "Double-click to change this parameter"),
     ("browser.show_sketch", "Visibility of"),
     ("browser.show_body", "Visibility of"),
+    ("browser.show_plane", "Visibility of plane"),
+    (
+        "browser.show_plane_help",
+        "Show or hide this plane in the viewport (click a shown plane to use it, e.g. for a sketch).",
+    ),
     ("browser.show_body_help", "Show or hide this body in the viewport (hidden bodies cannot be picked)."),
     (
         "browser.show_sketch_help",

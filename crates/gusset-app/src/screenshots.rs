@@ -114,5 +114,11 @@ fn generate_gallery() {
         bracket(&mut a);
         a.viewport.section = Some(crate::viewport::SectionView::default());
         shoot(&dir, &format!("11-section-{t}"), a, |_| {});
+        // Construction planes: the XY origin plane shown from the browser's Origin.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.viewport.set_plane_visible("XY", true);
+        a.browser.set_open(crate::browser::Category::Origin, true);
+        shoot(&dir, &format!("12-planes-{t}"), a, |_| {});
     }
 }

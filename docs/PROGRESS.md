@@ -49,7 +49,10 @@ Phase 3 has started (see Next).
   owner feedback: one timeline bar (playback, chips in a recessed track, graph toggle),
   command line hidden by default (View menu, Ctrl+Shift+K), confirmations fade after 5 s.
   Bodies have an eye in the browser (hidden bodies are neither drawn nor picked, and stay
-  hidden across rebuilds); origin and datum planes are still read-only (no scene objects). Properties panel done (the running command's form docks at the right
+  hidden across rebuilds). Origin and datum planes are drawn as translucent squares over the
+  model with eyes in the browser (origin planes start hidden); a click on a shown plane where
+  no body is under the cursor picks it, and a picked plane fills a form's `plane` (sketches)
+  or a joint's `at`/`to`. Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
@@ -58,7 +61,7 @@ Phase 3 has started (see Next).
   through the cut draw as a flat tinted cut face; picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

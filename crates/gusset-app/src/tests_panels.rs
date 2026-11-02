@@ -358,6 +358,29 @@ fn browser_body_eye_hides_the_body_and_keeps_it_hidden_across_rebuilds() {
 }
 
 #[test]
+fn plane_eyes_show_origin_and_datum_planes_and_a_picked_plane_fills_the_form() {
+    let mut h = quick_harness(with_plane());
+    settle(&mut h);
+    // Origin planes start hidden, datum planes shown; the app hands all to the viewport.
+    let names: Vec<String> = h.state().viewport.planes.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(names, ["XY", "XZ", "YZ", "Up"]);
+    assert!(!h.state().viewport.plane_visible("XY") && h.state().viewport.plane_visible("Up"));
+    h.get_by_label("Origin").click();
+    h.run();
+    h.get_by_label("Visibility of plane XY").click();
+    h.run();
+    assert!(h.state().viewport.plane_visible("XY"));
+    h.get_by_label("Visibility of plane Up").click();
+    h.run();
+    assert!(!h.state().viewport.plane_visible("Up"));
+    // A picked plane is what a new sketch is placed on.
+    h.state_mut().selection = vec![crate::viewport::Hit::Plane { name: "Up".into() }];
+    h.state_mut().start_command("sketch.create");
+    h.run();
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("plane")), Some("Up"));
+}
+
+#[test]
 fn a_command_form_opens_in_the_properties_panel_and_closes() {
     let mut h = quick_harness(with_plane());
     settle(&mut h);

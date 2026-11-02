@@ -2,9 +2,9 @@
 //! (units), Origin (the base planes and the origin), Bodies, Sketches, Features, Construction
 //! (datum planes), Joints, Drawings, Parameters and Branches.
 //!
-//! The widgets only report what the user chose ([`Action`]); the app applies it. Bodies and
-//! sketches have an eye toggle; origin and datum planes have no visibility in the scene yet,
-//! so their rows are read-only. Sketches also show their DOF line and "double-click edits".
+//! The widgets only report what the user chose ([`Action`]); the app applies it. Bodies,
+//! sketches, origin planes and datum planes have an eye toggle; the origin point is
+//! read-only. Sketches also show their DOF line and "double-click edits".
 
 use crate::agents::plain;
 use crate::i18n::tr;
@@ -123,6 +123,8 @@ pub enum Action {
     SetSketchVisible(String, bool),
     /// The eye of a body: show or hide it in the viewport.
     SetBodyVisible(String, bool),
+    /// Show or hide an origin or datum plane in the viewport.
+    SetPlaneVisible(String, bool),
     /// Double-click on a sketch.
     EditSketch(String),
     /// "+ Add parameter".
@@ -148,6 +150,8 @@ pub struct View<'a> {
     pub sketch_visible: &'a dyn Fn(&str) -> bool,
     /// Whether a body is drawn in the viewport.
     pub body_visible: &'a dyn Fn(&str) -> bool,
+    /// Whether an origin or datum plane is drawn in the viewport.
+    pub plane_visible: &'a dyn Fn(&str) -> bool,
     pub branch: Option<BranchId>,
     pub branches: &'a [BranchInfo],
 }
@@ -199,10 +203,11 @@ pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
         }
         match c {
             Category::Document => document(ui, v),
-            Category::Origin => origin(ui, v),
+            Category::Origin => origin(ui, v, &mut out),
             Category::Bodies => bodies(ui, v, &mut out),
             Category::Sketches => sketches(ui, v, &mut out),
-            Category::Features | Category::Construction | Category::Joints => features(ui, v, c),
+            Category::Construction => construction(ui, v, &mut out),
+            Category::Features | Category::Joints => features(ui, v, c),
             Category::Parameters => parameters(ui, v, &mut out),
             Category::Drawings => drawings(ui, v, &mut out),
             Category::Branches => branches(ui, v, &mut out),
@@ -313,12 +318,51 @@ fn document(ui: &mut Ui, v: &View<'_>) {
     row(ui, v.pal, &r).on_hover_text(tr("browser.units_help"));
 }
 
-fn origin(ui: &mut Ui, v: &View<'_>) {
+fn origin(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     for (label, tool) in ORIGIN {
         let mut r = Row::new(tool, label);
-        r.indent = INDENT;
-        row(ui, v.pal, &r).on_hover_text(tr("browser.read_only"));
+        match label.strip_suffix(" plane") {
+            Some(plane) => {
+                plane_row(ui, v, plane, r, out);
+            }
+            None => {
+                r.indent = INDENT;
+                row(ui, v.pal, &r).on_hover_text(tr("browser.read_only"));
+            }
+        }
     }
+}
+
+/// Datum planes: their status like features, with a visibility eye.
+fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
+    for f in features_of(v.doc, Category::Construction) {
+        let status = v.eval.and_then(|e| e.status(&f.name));
+        let r = feature_row(f, status, v.pal);
+        let resp = plane_row(ui, v, &f.name, r, out);
+        if let Some(tip) = failure_tip(status) {
+            resp.on_hover_text(tip);
+        }
+    }
+}
+
+/// A plane's row with its eye.
+fn plane_row(ui: &mut Ui, v: &View<'_>, name: &str, mut r: Row, out: &mut Vec<Action>) -> egui::Response {
+    let shown = (v.plane_visible)(name);
+    r.dimmed = !shown;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(theme::SPACE[1]);
+        let label = format!("{} {name}", tr("browser.show_plane"));
+        if icons::toggle(ui, shown, Icon::Eye, Icon::EyeOff, &label)
+            .on_hover_text(tr("browser.show_plane_help"))
+            .clicked()
+        {
+            out.push(Action::SetPlaneVisible(name.to_string(), !shown));
+        }
+        r.indent = 0.0;
+        row(ui, v.pal, &r)
+    })
+    .inner
 }
 
 fn bodies(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
