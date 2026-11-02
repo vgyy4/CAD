@@ -17,7 +17,7 @@ pub mod scad_build;
 pub mod session;
 
 pub use error::CommandError;
-pub use registry::{Category, Command, CommandSpec, Flags, execute, find, registry};
+pub use registry::{Category, Command, CommandSpec, Flags, execute, find, preview, registry};
 pub use session::{AuditEntry, CmdCtx, CommitOutcome, Session, SessionConfig};
 
 #[cfg(test)]

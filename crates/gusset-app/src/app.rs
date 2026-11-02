@@ -158,6 +158,8 @@ pub(crate) enum Done {
         result: Result<Value, CommandError>,
     },
     Scene(Result<Result<SceneData, CommandError>, CommandError>),
+    /// A live preview of the open form (its key, and the tessellated would-be model).
+    Preview(String, Result<Result<(gusset_render::Scene, Vec<BodyInfo>), CommandError>, CommandError>),
     /// A drawing's scene (ADR 0032).
     Sheet(SheetKey, Result<gusset_drawing::Scene, CommandError>),
     Saved {
@@ -266,6 +268,11 @@ pub struct App {
     pub kernel_status: Option<String>,
     scene: Option<Drawn>,
     scene_requested: Option<(NodeId, Option<usize>)>,
+    /// Live preview (DESIGN.md §1.6): the key shown, the key asked for, and when the
+    /// current form's key was first seen (previews wait until typing pauses).
+    preview_shown: Option<String>,
+    preview_requested: Option<String>,
+    preview_since: Option<(String, f64)>,
     /// When to auto-save or write a recovery snapshot (settings: save mode, interval).
     save: SaveScheduler,
     /// The running import's cancel flag (the status bar offers Cancel).
@@ -359,6 +366,9 @@ impl App {
             kernel_status: None,
             scene: None,
             scene_requested: None,
+            preview_shown: None,
+            preview_requested: None,
+            preview_since: None,
             save: SaveScheduler::new(settings),
             import_cancel: None,
             after_save: None,
@@ -553,6 +563,59 @@ impl App {
         }
         self.request_scene();
         self.request_sheet();
+        if let Some(c) = ctx {
+            self.request_preview(c);
+        }
+    }
+
+    /// The open form's preview key and command: feature and generator forms whose
+    /// arguments are complete.
+    fn preview_wanted(&self) -> Option<(String, &'static str, Value)> {
+        let form = self.form.as_ref()?;
+        let id = form.command;
+        if !(id.starts_with("feature.") || id.starts_with("generate.")) {
+            return None;
+        }
+        let args = if id == "feature.edit" && form.fields.iter().any(|f| f.name != "name") {
+            Self::feature_edit_args(form)
+        } else {
+            form.to_args().ok()?
+        };
+        let key = format!("{id}|{args}|{:?}", self.snapshot.scene_key());
+        Some((key, id, args))
+    }
+
+    /// Asks the model thread for a live preview of the open form once typing pauses
+    /// (300 ms), one at a time; ends the preview when the form closes.
+    fn request_preview(&mut self, ctx: &egui::Context) {
+        let Some((key, id, args)) = self.preview_wanted() else {
+            self.preview_since = None;
+            if self.viewport.previewing() || self.preview_shown.is_some() {
+                self.viewport.end_preview();
+                self.preview_shown = None;
+                ctx.request_repaint();
+            }
+            return;
+        };
+        if self.preview_shown.as_ref() == Some(&key) || self.preview_requested.is_some() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        match &self.preview_since {
+            Some((k, t)) if *k == key => {
+                if now - t < PREVIEW_DELAY {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(PREVIEW_DELAY));
+                    return;
+                }
+            }
+            _ => {
+                self.preview_since = Some((key, now));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(PREVIEW_DELAY));
+                return;
+            }
+        }
+        self.preview_requested = Some(key.clone());
+        self.submit(move |s, _| build_preview(s, id, args), move |r| Done::Preview(key, r));
     }
 
     /// Builds the open drawing's scene on the model thread when the model changed.
@@ -588,7 +651,22 @@ impl App {
                 }
                 self.apply_command(&id, then, result);
             }
+            Done::Preview(key, r) => {
+                self.preview_requested = None;
+                let current = self.preview_wanted().map(|(k, ..)| k);
+                if current.as_ref() != Some(&key) {
+                    return; // the form changed meanwhile: the next frame asks again
+                }
+                match r {
+                    Ok(Ok((render, bodies))) => self.viewport.show_preview(render, bodies),
+                    // Not buildable as typed: the model stays; OK reports the error.
+                    _ => self.viewport.end_preview(),
+                }
+                self.preview_shown = Some(key);
+            }
             Done::Scene(Ok(Ok(data))) => {
+                self.viewport.end_preview();
+                self.preview_shown = None;
                 if self.scene.as_ref().is_none_or(|s| s.key != data.key) {
                     self.selection.clear();
                 }
@@ -2773,6 +2851,29 @@ impl Drop for App {
 
 /// The scene job: evaluates the user's branch and tessellates its bodies (on the model
 /// thread, so the UI thread never does the heavy work).
+/// How long typing must pause before a live preview is built (seconds).
+const PREVIEW_DELAY: f64 = 0.3;
+
+/// Tint of previewed bodies (sRGB): the accent family, so a preview never passes for the
+/// model.
+const PREVIEW_TINT: gusset_render::Srgb = gusset_render::Srgb(0x8FB8E8);
+
+/// A live preview of a feature or generator command: what it would build, tessellated
+/// and tinted. Nothing is committed (`gusset_commands::preview`).
+fn build_preview(
+    s: &mut Session,
+    id: &str,
+    args: Value,
+) -> Result<(gusset_render::Scene, Vec<BodyInfo>), CommandError> {
+    let eval = gusset_commands::preview(s, &App::ctx(), id, args)?;
+    let (mut render, bodies, _) = tessellated(s, &eval)?;
+    let ids: Vec<gusset_render::MeshId> = render.meshes().map(|(m, _)| m).collect();
+    for m in ids {
+        render.set_material(m, gusset_render::Material { color: PREVIEW_TINT });
+    }
+    Ok((render, bodies))
+}
+
 fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, CommandError> {
     let b = s.current_branch(&Actor::User);
     let (head, rollback) = {
@@ -2780,6 +2881,33 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
         (br.head, br.rollback)
     };
     let eval = s.evaluate(&Actor::User)?;
+    let (render, bodies, mesh_errors) = tessellated(s, &eval)?;
+    let doc = s.document(&Actor::User).ok();
+    let def = |name: &str| {
+        doc.as_ref()?.features.iter().find(|f| f.name == name).and_then(|f| match &f.kind {
+            gusset_doc::FeatureKind::Sketch(d) => Some(d),
+            _ => None,
+        })
+    };
+    let sketches = eval
+        .sketches
+        .iter()
+        .map(|(name, s)| {
+            let mut d = sketch_drawing(name, s);
+            if let Some(def) = def(name) {
+                d.labels = constraint_labels(def, s);
+            }
+            d
+        })
+        .collect();
+    Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+}
+
+/// The bodies and reference meshes of an evaluation as a render scene.
+fn tessellated(
+    s: &Session,
+    eval: &Evaluation,
+) -> Result<(gusset_render::Scene, Vec<BodyInfo>, Vec<String>), CommandError> {
     let kernel = s.kernel().clone();
     let tp = TessellationParams::default();
     let mut meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = Vec::with_capacity(eval.bodies.len());
@@ -2812,26 +2940,7 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
             BodyInfo { name: m.name.clone(), face_names: vec![format!("{}.mesh", m.name)], edge_names: Vec::new() };
         meshes.push((info, mesh));
     }
-    let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
-    let doc = s.document(&Actor::User).ok();
-    let def = |name: &str| {
-        doc.as_ref()?.features.iter().find(|f| f.name == name).and_then(|f| match &f.kind {
-            gusset_doc::FeatureKind::Sketch(d) => Some(d),
-            _ => None,
-        })
-    };
-    let sketches = eval
-        .sketches
-        .iter()
-        .map(|(name, s)| {
-            let mut d = sketch_drawing(name, s);
-            if let Some(def) = def(name) {
-                d.labels = constraint_labels(def, s);
-            }
-            d
-        })
-        .collect();
-    Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+    Ok(crate::viewport::build_scene(&meshes))
 }
 
 /// A placed sketch command to open again after its result (see `App::place_click`).

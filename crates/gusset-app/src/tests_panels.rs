@@ -474,3 +474,36 @@ fn double_clicking_a_feature_edits_it_in_place() {
     double_click_at(&mut h, at);
     assert_eq!(h.state().active_sketch(), Some("Base"));
 }
+
+#[test]
+fn feature_forms_show_a_live_preview_until_they_close() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let height = |h: &Harness<'static, App>| {
+        let b = h.state().viewport.scene().bounds();
+        b.max[2] - b.min[2]
+    };
+    assert!((height(&h) - 10.0).abs() < 1e-6);
+    h.state_mut().edit_feature("Extrude1");
+    h.state_mut().form.as_mut().map(|f| f.set("distance", "30 mm"));
+    // The preview waits for typing to pause, then builds on the model thread.
+    for _ in 0..4 {
+        h.run_steps(5);
+        h.state_mut().wait_idle();
+    }
+    h.run_steps(3);
+    assert!(h.state().viewport.previewing());
+    assert!((height(&h) - 30.0).abs() < 1e-6, "{}", height(&h));
+    // Nothing was committed; closing the form puts the model back.
+    assert!(
+        h.state()
+            .snapshot
+            .doc
+            .feature("Extrude1")
+            .is_some_and(|f| { gusset_doc::text::print_feature_object(f).contains("distance: 10 mm") })
+    );
+    h.state_mut().form = None;
+    h.run_steps(3);
+    assert!(!h.state().viewport.previewing());
+    assert!((height(&h) - 10.0).abs() < 1e-6, "{}", height(&h));
+}

@@ -1388,3 +1388,27 @@ fn features_are_edited_in_place() {
         assert!(e.message.contains(want), "{args}: {e:?}");
     }
 }
+
+#[test]
+fn previews_build_without_committing() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let before = s.document(&gusset_history::Actor::User).unwrap();
+    let head = s.history().branch(s.current_branch(&gusset_history::Actor::User)).unwrap().head;
+    // A thicker plate, previewed: the evaluation has it, the history does not.
+    let e = preview(&mut s, &u, "feature.edit", json!({"name": "Extrude1", "set": {"distance": "30 mm"}})).unwrap();
+    let body = e.bodies.first().unwrap();
+    let v = s.kernel().mass_properties(&body.shape).unwrap().volume;
+    assert!((v - 40.0 * 20.0 * 30.0).abs() < 1e-6, "{v}");
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap(), before);
+    assert_eq!(s.history().branch(s.current_branch(&gusset_history::Actor::User)).unwrap().head, head);
+    // A new feature too; then commands work normally again.
+    let e = preview(&mut s, &u, "feature.fillet", json!({"edges": [], "radius": "1 mm"}));
+    assert!(e.is_err(), "nothing selected: the command's own error");
+    let r = run(&mut s, &u, "feature.edit", json!({"name": "Extrude1", "set": {"distance": "12 mm"}}));
+    assert_eq!(r["rebuild_ok"], true);
+    // Only feature and generator commands are previewed.
+    let err = preview(&mut s, &u, "history.undo", json!({})).unwrap_err();
+    assert!(err.message.contains("no preview"), "{err:?}");
+}

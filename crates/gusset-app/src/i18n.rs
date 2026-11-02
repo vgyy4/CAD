@@ -65,6 +65,7 @@ const EN: &[(&str, &str)] = &[
     ("browser.show_plane", "Visibility of plane"),
     ("browser.edit_feature", "Double-click to edit this feature"),
     ("sketch.constrain", "Constrain"),
+    ("viewport.preview", "Preview"),
     ("sketch.place_hint", "Or click in the viewport to place the points (they snap to sketch points)."),
     (
         "browser.show_plane_help",

@@ -130,6 +130,29 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 
 /// Executes a command with policy enforcement (read-only agents, rate limits, approvals)
 /// and audit logging for agents.
+/// What a feature or generator command would build, without committing anything (live
+/// previews, DESIGN.md §1.6): the command runs in the session's preview mode, where its
+/// commit evaluates the edited document instead of making it. Not audited; only `feature.*`
+/// and `generate.*` commands (document edits without other side effects) are previewed.
+pub fn preview(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    id: &str,
+    args: Value,
+) -> Result<std::sync::Arc<gusset_eval::Evaluation>, CommandError> {
+    let spec = find(id).ok_or_else(|| CommandError::not_found(format!("unknown command '{id}'")))?;
+    if !(spec.flags.mutating && (id.starts_with("feature.") || id.starts_with("generate."))) {
+        return Err(CommandError::args(format!("{id} has no preview")));
+    }
+    s.begin_preview();
+    let r = check_policy(s, ctx, spec, false).and_then(|()| (spec.run)(s, ctx, args));
+    match (s.end_preview(), r) {
+        (Some(e), _) => Ok(e),
+        (None, Err(e)) => Err(e),
+        (None, Ok(_)) => Err(CommandError::args(format!("{id} changed nothing to preview"))),
+    }
+}
+
 pub fn execute(s: &mut Session, ctx: &CmdCtx, id: &str, args: Value) -> Result<Value, CommandError> {
     let spec = find(id).ok_or_else(|| {
         CommandError::not_found(format!("unknown command '{id}'")).hint("use the command search to list commands")

@@ -151,6 +151,17 @@ fn generate_gallery() {
             .map(|id| crate::viewport::Hit::Sketch { sketch: "Profile".into(), id: id.clone() })
             .collect();
         shoot(&dir, &format!("14-constrain-{t}"), a, |_| {});
+        // A live preview while a feature is edited: the body as it would be.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.edit_feature("Body");
+        a.form.as_mut().map(|f| f.set("distance", "width * 2"));
+        shoot(&dir, &format!("15-preview-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+        });
         // Sketch geometry placed with clicks: a line from a clicked point to the cursor.
         let mut a = app(theme);
         bracket(&mut a);

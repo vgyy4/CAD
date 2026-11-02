@@ -87,7 +87,13 @@ Phase 3 has started (see Next).
   changes them, parses it back and replaces the feature keeping its name, kind and place (one
   undo); sketches are edited in sketch mode. In the app a double-click on a feature or datum
   plane in the browser, or on a timeline chip, opens its arguments as a form (a sketch's
-  opens sketch mode). Still to do: live previews while editing. Properties panel done (the running command's form docks at the right
+  opens sketch mode). Live previews (DESIGN.md §1.6): while a feature or generator form has
+  complete arguments, the model thread builds what it would make once typing pauses
+  (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
+  model comes back when the form closes. `gusset_commands::preview` runs the command in the
+  session's preview mode, where the single commit point (`commit_with_rollback`) evaluates
+  the edited document instead of committing it (no history, no audit entry). Not yet: a
+  translucent overlay of before and after (the renderer has no transparency). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
@@ -96,7 +102,7 @@ Phase 3 has started (see Next).
   through the cut draw as a flat tinted cut face; picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar, live preview).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

@@ -116,6 +116,9 @@ pub struct Session {
     changes: Vec<Change>,
     /// Hidden-line projections of drawing views (ADR 0032).
     pub(crate) drawing_cache: gusset_drawing::HlrCache,
+    /// Preview mode ([`crate::preview`]): commits are evaluated into this slot instead of
+    /// being made. `None` outside preview mode.
+    preview: Option<Option<Arc<Evaluation>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -162,6 +165,7 @@ impl Session {
             config: SessionConfig::default(),
             audit,
             cache: VecDeque::new(),
+            preview: None,
             rate: BTreeMap::new(),
             project_dir: None,
             dirty: false,
@@ -320,6 +324,16 @@ impl Session {
         self.evaluate_branch(b)
     }
 
+    /// Enters preview mode: commits are evaluated, not made.
+    pub(crate) fn begin_preview(&mut self) {
+        self.preview = Some(None);
+    }
+
+    /// Leaves preview mode with what the previewed edit would build.
+    pub(crate) fn end_preview(&mut self) -> Option<Arc<Evaluation>> {
+        self.preview.take().flatten()
+    }
+
     /// Evaluates an arbitrary document (e.g. for previews) without committing it.
     pub fn evaluate_doc(&mut self, doc: &Document, rollback: Option<usize>) -> Evaluation {
         let blobs = HistoryBlobs(&self.history);
@@ -352,6 +366,11 @@ impl Session {
         let current = self.history.branch(branch).map_err(CommandError::history)?.rollback;
         let rollback = new_rollback.unwrap_or(current);
         let eval = Arc::new(self.evaluate_doc(doc, rollback));
+        if let Some(slot) = &mut self.preview {
+            // A preview: what the edit would build, and nothing committed.
+            *slot = Some(eval);
+            return Err(CommandError::new("preview", "previewed, not committed"));
+        }
         // A cancelled rebuild says nothing about the edit: it is rebuilt with the next one.
         let new_errors: Vec<String> = eval
             .errors()

@@ -318,6 +318,8 @@ pub struct Viewport {
     pub edit_sketch: Option<String>,
     /// Where the viewport was drawn last frame (screen coordinates).
     last_rect: Rect,
+    /// The model's scene and bodies while a live preview is shown in their place.
+    stash: Option<(Arc<Scene>, Vec<BodyInfo>)>,
     /// The sketch point a left drag started on: (sketch, point id).
     dragging: Option<(String, String)>,
     /// The hover when the button went down (a drag is reported only after the pointer
@@ -371,6 +373,7 @@ impl Default for Viewport {
             planes: Vec::new(),
             edit_sketch: None,
             last_rect: Rect::NOTHING,
+            stash: None,
             dragging: None,
             press_hover: None,
             hidden_planes: ["XY", "XZ", "YZ"].into_iter().map(String::from).collect(),
@@ -413,6 +416,32 @@ impl Viewport {
 
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// Shows a live preview in place of the model (kept aside until [`Self::end_preview`]).
+    pub fn show_preview(&mut self, scene: Scene, bodies: Vec<BodyInfo>) {
+        if self.stash.is_none() {
+            self.stash = Some((self.scene.clone(), std::mem::take(&mut self.bodies)));
+        }
+        self.set_scene(scene, bodies);
+    }
+
+    /// Puts the model back after a preview.
+    pub fn end_preview(&mut self) {
+        if let Some((scene, bodies)) = self.stash.take() {
+            self.scene = scene;
+            self.bodies = bodies;
+            self.generation += 1;
+            self.applied = (None, Vec::new());
+            self.hover = None;
+            self.hover_for = None;
+        }
+    }
+
+    /// Whether a live preview is shown.
+    #[must_use]
+    pub fn previewing(&self) -> bool {
+        self.stash.is_some()
     }
 
     /// Whether a body is drawn (the browser's eye). Hidden bodies are not drawn or picked.
@@ -930,6 +959,16 @@ impl Viewport {
             }
         }
         self.paint_triad(&painter, rect, pal);
+        if self.previewing() {
+            let g = painter.layout_no_wrap(
+                crate::i18n::tr("viewport.preview").into(),
+                egui::FontId::proportional(12.0),
+                pal.accent,
+            );
+            let at = rect.left_top() + Vec2::new(12.0, 12.0);
+            painter.rect_filled(Rect::from_min_size(at, g.size()).expand2(Vec2::new(6.0, 3.0)), 4.0, pal.bg_raised);
+            painter.galley(at, g, pal.accent);
+        }
         self.overlays(ui, rect, pal);
 
         if let Some(h) = &self.hover {
