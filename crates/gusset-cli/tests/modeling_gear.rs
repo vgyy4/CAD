@@ -485,6 +485,16 @@ fn a_generated_worm_is_the_core_plus_the_swept_rack_tooth() {
     );
     assert_eq!(r["rebuild_ok"], true, "{r}");
     assert!((r["lead_mm"].as_f64().unwrap() - 2.0 * p).abs() < 1e-12, "{r}");
+    // The suggested wheel is a helical gear that builds, with the lead angle as its helix.
+    let wheel = &r["wheel"];
+    let w = run(
+        &mut s,
+        "generate.gear",
+        json!({"name": "Wheel", "module": wheel["module"], "helix": wheel["helix"], "teeth": "30",
+               "face_width": "8 mm"}),
+    );
+    assert_eq!(w["rebuild_ok"], true, "{w}");
+    assert!((w["pitch_diameter_mm"].as_f64().unwrap() - 2.0 * 30.0).abs() < 1e-6, "{w}");
     let l2 = 40.0;
     let want2 = PI * rc * rc * l2 + (l2 - 2.0 * hw_core - p) / p * 2.0 * PI * moment;
     let v2 = volume(&mut s, "Twin");

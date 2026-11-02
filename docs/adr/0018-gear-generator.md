@@ -214,4 +214,9 @@ compatibility pass, which re-splits tangent-continuous wires with O(n^2) distanc
 sections are not similar copies. Profiles are planar sections normal to the axis (not the
 back-cone/Tredgold octoid), spur only, no bore (cut one afterwards), face width at most
 half the cone distance. OCCT test: the volume is the frustum h A (1 + k + k^2) / 3 of the
-heel area A (a 1 mm spur gear with the same parameters). Worm wheels are not done.
+heel area A (a 1 mm spur gear with the same parameters). Worm wheels: `generate.worm` returns a
+`wheel` object of `generate_gear` arguments (normal module m cos(lead angle), helix = lead
+angle, same hand), so the wheel's transverse module equals the worm's axial module and the
+centre distance is (worm pitch diameter + m z) / 2. The wheel is a non-throated helical gear
+(point contact, fine for printed and light-duty pairs); throated wheels are not done. OCCT
+test: a 30-tooth wheel from a two-start worm's suggestion has a 60 mm pitch diameter.

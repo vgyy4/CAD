@@ -943,6 +943,15 @@ impl Command for GenerateWorm {
                 "axial_pitch_mm": pitch,
                 "lead_mm": lead,
                 "starts": starts,
+                // A non-throated (helical) worm wheel: helix = lead angle, same hand, and a
+                // transverse module equal to the worm's axial module (normal = m cos(lead)).
+                "wheel": {
+                    "tool": "generate_gear",
+                    "module": format!("{} mm", m * libm::cos(lead_angle.to_radians())),
+                    "helix": format!("{lead_angle} deg"),
+                    "left_hand": self.left,
+                    "center_distance_mm_for_teeth": "(diameter + module * teeth) / 2",
+                },
                 "lead_angle_deg": lead_angle,
                 "tip_diameter_mm": d1 + 2.0 * m,
                 "root_diameter_mm": root,
