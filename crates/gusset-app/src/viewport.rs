@@ -139,8 +139,20 @@ pub struct Output {
     pub cursor_world: Option<Vec3>,
     /// The camera ray under the pointer (sketch placement).
     pub pointer_ray: Option<Ray>,
+    /// A sketch point being dragged (left drag from a point of the edited sketch).
+    pub drag: Option<PointDrag>,
     /// World size of one logical pixel at the view's target (snapping tolerances).
     pub pixel_size: f64,
+}
+
+/// A sketch point dragged in the viewport: where the pointer is, and whether the drag
+/// ended this frame.
+#[derive(Debug, Clone)]
+pub struct PointDrag {
+    pub sketch: String,
+    pub point: String,
+    pub ray: Ray,
+    pub done: bool,
 }
 
 /// Everything that determines the rendered image. A frame whose key equals the last
@@ -299,6 +311,11 @@ pub struct Viewport {
     pub edit_sketch: Option<String>,
     /// Where the viewport was drawn last frame (screen coordinates).
     last_rect: Rect,
+    /// The sketch point a left drag started on: (sketch, point id).
+    dragging: Option<(String, String)>,
+    /// The hover when the button went down (a drag is reported only after the pointer
+    /// moved off what it was pressed on).
+    press_hover: Option<Hit>,
     /// Planes the user hid; the origin planes start hidden.
     hidden_planes: std::collections::BTreeSet<String>,
     /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
@@ -347,6 +364,8 @@ impl Default for Viewport {
             planes: Vec::new(),
             edit_sketch: None,
             last_rect: Rect::NOTHING,
+            dragging: None,
+            press_hover: None,
             hidden_planes: ["XY", "XZ", "YZ"].into_iter().map(String::from).collect(),
             reduce_motion: false,
             request: None,
@@ -451,6 +470,35 @@ impl Viewport {
             self.visible_planes().filter_map(|p| p.hit(&ray).map(|t| (t, p))).min_by(|a, b| a.0.total_cmp(&b.0))?;
         let point = std::array::from_fn(|k| ray.origin.get(k).zip(ray.dir.get(k)).map_or(0.0, |(o, d)| o + d * t));
         Some((Hit::Plane { name: p.name.clone() }, Some(point)))
+    }
+
+    /// A left drag from a point of the edited sketch moves that point (select mode).
+    fn drag_point(&mut self, resp: &egui::Response, rect: Rect, sketches: &[&DrawSketch], out: &mut Output) {
+        if self.nav_mode != NavMode::Select {
+            self.dragging = None;
+            return;
+        }
+        if !resp.is_pointer_button_down_on() {
+            self.press_hover = self.hover.clone();
+        }
+        if resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some(Hit::Sketch { sketch, id }) = &self.press_hover
+            && sketches.iter().any(|s| s.name == *sketch && s.point_ids.contains(id))
+        {
+            self.dragging = Some((sketch.clone(), id.clone()));
+        }
+        let Some((sketch, point)) = self.dragging.clone() else { return };
+        let done = resp.drag_stopped() || !resp.dragged();
+        if let Some(p) = resp.interact_pointer_pos().or(resp.hover_pos()) {
+            let rel = p - rect.min;
+            let ray = self
+                .camera
+                .ray([f64::from(rel.x), f64::from(rel.y)], [f64::from(rect.width()), f64::from(rect.height())]);
+            out.drag = Some(PointDrag { sketch, point, ray, done });
+        }
+        if done {
+            self.dragging = None;
+        }
     }
 
     /// Where a world point appears on screen in the last drawn frame.
@@ -757,6 +805,7 @@ impl Viewport {
         if was_interacting && !self.interacting {
             self.hover_for = None;
         }
+        self.drag_point(&resp, rect, sketches, &mut out);
         self.apply_highlights(selection);
 
         let ppp = ui.ctx().pixels_per_point();

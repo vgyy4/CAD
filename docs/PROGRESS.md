@@ -62,7 +62,9 @@ Phase 3 has started (see Next).
   The edited sketch's points and curves are picked in the viewport before the model
   (`Hit::Sketch`; points within 6 px win over curves within 5 px) and highlighted; picks fill
   `sketch.add_constraint` entities, `sketch.delete_items` ids and `sketch.move_point`, and the
-  Delete key removes the picked items. Properties panel done (the running command's form docks at the right
+  Delete key removes the picked items. A left drag from a point of the edited sketch moves it
+  (rubber-band preview of its lines; `sketch.move_point` on release, so the solver keeps the
+  constraints). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and

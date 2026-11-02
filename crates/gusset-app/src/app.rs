@@ -248,6 +248,8 @@ pub struct App {
     pub selection: Vec<Hit>,
     /// The snapped point under the cursor while placing sketch geometry (preview).
     place_cursor: Option<Click>,
+    /// A sketch point being dragged: (sketch, point id, where it would go).
+    drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
     /// lines chain from their end).
     chain: Option<Chain>,
@@ -343,6 +345,7 @@ impl App {
             viewport: Viewport::default(),
             selection: Vec::new(),
             place_cursor: None,
+            drag_preview: None,
             chain: None,
             form: None,
             palette: None,
@@ -1876,6 +1879,31 @@ impl App {
         }
     }
 
+    /// A dragged sketch point follows the pointer on the sketch plane; on release it is
+    /// moved with `sketch.move_point` (the solver then keeps the constraints).
+    /// Returns whether the preview changed.
+    fn sketch_drag(&mut self, d: &crate::viewport::PointDrag) -> bool {
+        let to = self
+            .scene
+            .as_ref()
+            .and_then(|s| s.eval.sketches.get(&d.sketch))
+            .and_then(|s| sketch_place::on_plane(&s.frame, &d.ray))
+            .map(|p| p.map(|c| (c * 100.0).round() / 100.0));
+        if d.done {
+            self.drag_preview = None;
+            if let Some([x, y]) = to {
+                let args = json!({ "sketch": d.sketch, "point": d.point, "x": x, "y": y });
+                self.submit_command("sketch.move_point", args, Then::Notice);
+            }
+            true
+        } else {
+            let next = to.map(|p| (d.sketch.clone(), d.point.clone(), p));
+            let changed = next != self.drag_preview;
+            self.drag_preview = next;
+            changed
+        }
+    }
+
     /// Opens the placed command again after it succeeded; a line starts at the previous
     /// line's end point (`v["points"][1]`), so the lines join.
     fn restart_placing(&mut self, ch: Chain, v: &Value) {
@@ -2070,9 +2098,25 @@ impl App {
                 ..DrawSketch::default()
             }
         });
+        let dragged = self.drag_preview.as_ref().and_then(|(sk, id, to)| {
+            let s = self.scene.as_ref()?.eval.sketches.get(sk)?;
+            let w = |p: [f64; 2]| s.frame.to_world(p).map(|c| c as f32);
+            let ends = s.lines.iter().filter_map(|(_, a, b)| match (a == id, b == id) {
+                (true, _) => s.points.get(b),
+                (_, true) => s.points.get(a),
+                _ => None,
+            });
+            Some(DrawSketch {
+                polylines: ends.map(|&o| vec![w(o), w(*to)]).collect(),
+                points: vec![w(*to)],
+                ..DrawSketch::default()
+            })
+        });
         let mut sketches = sketches;
         sketches.extend(preview.as_ref());
+        sketches.extend(dragged.as_ref());
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
+
         if let Some((frame, points)) = &placing {
             // Placing sketch geometry: clicks are points on the sketch plane, not picks.
             let tol = out.pixel_size * 8.0;
@@ -2094,6 +2138,11 @@ impl App {
         }
         self.place_cursor = None;
         let empty = self.viewport.scene().is_empty() && sketches.is_empty();
+        if let Some(d) = &out.drag
+            && self.sketch_drag(d)
+        {
+            ui.ctx().request_repaint();
+        }
         if let Some(clicked) = out.clicked {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             match clicked {

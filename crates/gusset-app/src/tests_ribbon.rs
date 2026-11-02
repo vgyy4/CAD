@@ -507,4 +507,32 @@ fn sketch_lines_are_placed_with_viewport_clicks_and_chain() {
     let left = sketch_lines(&h, "S");
     assert_eq!(left.len(), 5, "{left:?}");
     assert!(h.state().selection.is_empty());
+    // Dragging a point moves it (sketch.move_point on release).
+    let id = left[0].1.clone();
+    let pos = |h: &Harness<'static, App>, id: &str| {
+        h.state().evaluation().and_then(|e| e.sketches.get("S")?.points.get(id).copied()).expect("point")
+    };
+    let before = pos(&h, &id);
+    let from = h.state().viewport.screen_pos([before[0], before[1], 0.0]).expect("on screen");
+    let to = from + egui::vec2(40.0, 25.0);
+    h.hover_at(from);
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(button(from, true));
+    h.run();
+    for k in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 6.0)));
+        h.run();
+    }
+    h.event(button(to, false));
+    settle(&mut h);
+    let after = pos(&h, &id);
+    let moved = (after[0] - before[0]).hypot(after[1] - before[1]);
+    assert!(moved > 1.0, "{before:?} -> {after:?}");
+    let landed = h.state().viewport.screen_pos([after[0], after[1], 0.0]).expect("on screen");
+    assert!(landed.distance(to) < 2.0, "{landed:?} vs {to:?}");
 }
