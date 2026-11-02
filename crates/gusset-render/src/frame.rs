@@ -17,6 +17,8 @@ pub struct ViewOptions {
     pub pixels_per_point: f32,
     /// Draw feature edges.
     pub edges: bool,
+    /// Draw shaded faces; off is the wireframe style (edges only, so hidden ones show too).
+    pub faces: bool,
     /// Edge width in logical pixels (DESIGN.md §5: 1 px).
     pub edge_width: f32,
     /// The lighting rig.
@@ -29,6 +31,7 @@ impl Default for ViewOptions {
             theme: Theme::Dark,
             pixels_per_point: 1.0,
             edges: true,
+            faces: true,
             edge_width: 1.0,
             lighting: Lighting::DEFAULT,
         }
@@ -99,10 +102,14 @@ impl FramePlan {
             let data = m.data();
             let model_view = math::mul(&cm.view, m.transform());
             let base = m.material().color.linear();
-            let tri_runs = SceneMesh::runs(&data.face_ranges, &m.face_highlights, data.triangle_count() as u32)
-                .into_iter()
-                .map(|(r, h)| (r, hl(h, base)))
-                .collect();
+            let tri_runs = if opts.faces {
+                SceneMesh::runs(&data.face_ranges, &m.face_highlights, data.triangle_count() as u32)
+                    .into_iter()
+                    .map(|(r, h)| (r, hl(h, base)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let edge_runs = if opts.edges {
                 SceneMesh::runs(&data.edge_ranges, &m.edge_highlights, (data.edge_points.len() / 2) as u32)
                     .into_iter()

@@ -154,6 +154,8 @@ pub struct Viewport {
     pub nav_mode: NavMode,
     /// Draw model edges (the navigation bar's view style toggle).
     pub show_edges: bool,
+    /// Wireframe style: edges only, hidden edges included (the navigation bar's toggle).
+    pub wireframe: bool,
     /// Camera moves jump instead of animating.
     pub reduce_motion: bool,
     request: Option<NavRequest>,
@@ -191,6 +193,7 @@ impl Default for Viewport {
             fit_pending: true,
             nav_mode: NavMode::Select,
             show_edges: true,
+            wireframe: false,
             reduce_motion: false,
             request: None,
             anim: None,
@@ -487,7 +490,8 @@ impl Viewport {
                 ThemeKind::Light => Theme::Light,
             },
             pixels_per_point: ppp,
-            edges: self.show_edges,
+            edges: self.show_edges || self.wireframe,
+            faces: !self.wireframe,
             ..ViewOptions::default()
         };
         let key = FrameKey {
@@ -553,6 +557,7 @@ impl Viewport {
             mode: self.nav_mode,
             orthographic: self.camera.projection == Projection::Orthographic,
             edges: self.show_edges,
+            wireframe: self.wireframe,
         };
         if let Some(b) = viewport_nav::nav_bar(ui, rect, state, pal) {
             self.nav_button(b);
@@ -576,6 +581,7 @@ impl Viewport {
                 };
             }
             NavButton::Edges => self.show_edges = !self.show_edges,
+            NavButton::Wireframe => self.wireframe = !self.wireframe,
         }
     }
 

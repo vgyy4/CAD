@@ -224,6 +224,7 @@ pub enum Tool {
     Home,
     Perspective,
     Edges,
+    Wireframe,
     Search,
     Params,
     /// A solid body (the browser's Bodies).
@@ -297,6 +298,7 @@ impl Tool {
         Tool::Home,
         Tool::Perspective,
         Tool::Edges,
+        Tool::Wireframe,
         Tool::Search,
         Tool::Params,
         Tool::Body,
@@ -888,6 +890,14 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(12.0, 3.0), (20.0, 7.5), (12.0, 12.0), (4.0, 7.5)], pen.fill, ink);
             pen.poly(&[(4.0, 7.5), (12.0, 12.0), (12.0, 21.0), (4.0, 16.5)], pen.fill.gamma_multiply(0.7), ink);
             pen.poly(&[(12.0, 12.0), (20.0, 7.5), (20.0, 16.5), (12.0, 21.0)], CLEAR, a);
+        }
+        Tool::Wireframe => {
+            // A cube as edges only; the three hidden edges show, lighter.
+            pen.poly(&[(12.0, 3.0), (20.0, 7.5), (12.0, 12.0), (4.0, 7.5)], CLEAR, ink);
+            pen.line(&[(4.0, 7.5), (4.0, 16.5), (12.0, 21.0), (20.0, 16.5), (20.0, 7.5)], ink);
+            pen.line(&[(12.0, 12.0), (12.0, 21.0)], ink);
+            pen.line(&[(4.0, 16.5), (12.0, 12.0)], a);
+            pen.line(&[(12.0, 12.0), (20.0, 16.5)], a);
         }
     }
 }

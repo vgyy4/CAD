@@ -328,6 +328,28 @@ mod tests {
     }
 
     #[test]
+    fn wireframe_draws_edges_but_no_faces() {
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
+        let mut cam = Camera::default();
+        cam.set_view(crate::NamedView::Front);
+        cam.fit(&s.bounds(), 1.0);
+        let mut r = SoftwareRenderer::new();
+        r.set_options(ViewOptions { faces: false, ..ViewOptions::default() });
+        let img = r.render_rgba(&s, &cam, [64, 64]).expect("render");
+        // The middle of the front face shows the background (no shading)...
+        let center = img.pixel(32, 32).expect("px");
+        let shaded = SoftwareRenderer::new().render_rgba(&s, &cam, [64, 64]).expect("render");
+        let lit = shaded.pixel(32, 32).expect("px");
+        assert!(center[0] + 40 < lit[0], "wireframe {center:?} vs shaded {lit:?}");
+        // ...while the box's outline is still drawn: some pixel along the middle row
+        // differs from its background neighbours.
+        let row: Vec<[u8; 4]> = (0..64).map(|x| img.pixel(x, 32).expect("px")).collect();
+        let edge = row.iter().any(|p| p.iter().zip(&center).take(3).any(|(a, b)| a.abs_diff(*b) > 15));
+        assert!(edge, "no edge on the middle row: {row:?}");
+    }
+
+    #[test]
     fn near_clipping_keeps_inside_part() {
         let poly = [
             ClipVert { clip: [0.0, 0.0, -1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },

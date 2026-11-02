@@ -250,6 +250,7 @@ pub enum NavButton {
     Home,
     Projection,
     Edges,
+    Wireframe,
 }
 
 /// What the navigation bar shows as active.
@@ -258,6 +259,7 @@ pub struct NavState {
     pub mode: NavMode,
     pub orthographic: bool,
     pub edges: bool,
+    pub wireframe: bool,
 }
 
 /// What a plain drag in the viewport does.
@@ -272,7 +274,7 @@ pub enum NavMode {
 }
 
 impl NavButton {
-    const ALL: [NavButton; 7] = [
+    const ALL: [NavButton; 8] = [
         NavButton::Orbit,
         NavButton::Pan,
         NavButton::Zoom,
@@ -280,6 +282,7 @@ impl NavButton {
         NavButton::Home,
         NavButton::Projection,
         NavButton::Edges,
+        NavButton::Wireframe,
     ];
 
     pub fn label(self) -> &'static str {
@@ -291,6 +294,7 @@ impl NavButton {
             NavButton::Home => "Home view",
             NavButton::Projection => "Orthographic view",
             NavButton::Edges => "Show edges",
+            NavButton::Wireframe => "Wireframe",
         }
     }
 
@@ -303,6 +307,7 @@ impl NavButton {
             NavButton::Home => "Home: isometric view, framed",
             NavButton::Projection => "Switch between perspective and orthographic",
             NavButton::Edges => "Show or hide model edges",
+            NavButton::Wireframe => "Wireframe: edges only, hidden ones too",
         }
     }
 
@@ -315,6 +320,7 @@ impl NavButton {
             NavButton::Home => Tool::Home,
             NavButton::Projection => Tool::Perspective,
             NavButton::Edges => Tool::Edges,
+            NavButton::Wireframe => Tool::Wireframe,
         }
     }
 
@@ -325,6 +331,7 @@ impl NavButton {
             NavButton::Zoom => Some(s.mode == NavMode::Zoom),
             NavButton::Projection => Some(s.orthographic),
             NavButton::Edges => Some(s.edges),
+            NavButton::Wireframe => Some(s.wireframe),
             NavButton::Fit | NavButton::Home => None,
         }
     }

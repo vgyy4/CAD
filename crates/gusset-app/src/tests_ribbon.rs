@@ -284,6 +284,14 @@ fn navigation_bar_buttons_work() {
     h.get_by_label("Show edges").click();
     h.run();
     assert!(!h.state().viewport.show_edges);
+    // Wireframe: edges only, and toggling it back restores the shaded faces.
+    assert!(!h.state().viewport.wireframe);
+    h.get_by_label("Wireframe").click();
+    h.run();
+    assert!(h.state().viewport.wireframe);
+    h.get_by_label("Wireframe").click();
+    h.run();
+    assert!(!h.state().viewport.wireframe);
 }
 
 #[test]

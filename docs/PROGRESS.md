@@ -50,8 +50,9 @@ Phase 3 has started (see Next).
   command line hidden by default (View menu, Ctrl+Shift+K), confirmations fade after 5 s.
   Origin, bodies and datum planes are read-only in the browser (the scene has no
   visibility for them yet). Still to do: a properties panel instead of the floating
-  command form, the SURFACE/INSPECT tabs, the SELECT group, and a wireframe view style
-  (gusset-render has no wireframe mode; the navigation bar toggles edges instead). The
+  command form, the SURFACE/INSPECT tabs, and the SELECT group. Wireframe view style done (the navigation bar's
+  Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
+  and the software renderer). The
   screenshot gallery in docs/screenshots was not regenerated (it needs the real kernel
   for the bracket model); phase 2 looks were checked with mock-kernel renders.
 
