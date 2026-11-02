@@ -168,3 +168,12 @@ root at -1.25 m) as lines placed by parameter expressions, repeated `teeth` time
 linear sketch pattern (dx = pi m), closed by a base strip of `base` (default 2 m), then
 extruded by `width`. The pitch line is y = 0, so a gear meshes when its centre is at
 y = its pitch radius. OCCT test: exact volume (base strip + trapezoid teeth).
+
+## Amendment (2026-11-02): profile shifts for a centre distance
+`query.gear_pair` answers the standard-centre-distance question for a spur pair: given
+module, tooth counts, pressure angle and the wanted centre distance `a`, the working
+pressure angle from `cos(aw) = a0 cos(a) / a` and the shift sum from
+`inv(aw) - inv(a) = 2 tan(a) (x1 + x2) / (z1 + z2)` (ISO 21771), split in proportion to
+the other gear's teeth unless `shift1` is given. It flags gears that would undercut
+(`x < (z_min - z) / z_min`, `z_min = 2 / sin^2(a)`), reports the tip shortening the shifted
+pair needs, and refuses shift sums beyond +-3. The shifts go into `generate.gear`'s `shift`.

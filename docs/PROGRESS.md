@@ -98,7 +98,7 @@ Phase 3 has started (see Next).
      and helical gears (OCCT golden tests in `modeling_gear.rs`: volume 6e-6, tooth
      thickness, meshing). It is a command and a form but deliberately no text statement
      (ADR 0018 §6). `generate.spring` done (ADR 0018 amendment: round wire, twisted sweep up Z, exact volume; OCCT test). `generate.thread` done (ADR 0034: exact helical sweeps in the kernel, `path: helix(...)`; ISO 68-1 external thread on a rod, OCCT test of the exact volume, M10 x 20 in 0.9 s). `generate.nut` done (hex nut with an internal thread cut along the helix, run a pitch past both faces; OCCT exact-volume test, 0.7 s). Bolts: `generate.thread` with `head_width`/`head_height` adds a hex head. Thread ends are chamfered 45 deg from the minor diameter (`chamfer`, default on). Socket head cap screws: `socket` (hex socket across flats, `socket_depth`) makes a round head with the socket cut from its bottom face (ISO 4762 M10 exact-volume OCCT test). Partly threaded rods and bolts: `thread_length` (plain shank) and `runout` (a cone where the thread fades out, default 2.5 P; OCCT test). Racks done (`generate.rack`, ISO 53 basic rack by a linear sketch pattern; OCCT exact volume). Next generators: gear gaps: internal
-     gears, bevel/worm, standard-centre-distance shifts.
+     gears, bevel/worm. Centre-distance shifts done (`query.gear_pair`, ISO 21771).
    - v0.3 first: load resilience (owner request 2026-10-13, DESIGN.md §1 "Heavy or
      impossible work never crashes the app"): kernel work in a supervised worker process,
      memory/time budgets per rebuild, cancel inside OCCT operations, fault-injection tests.

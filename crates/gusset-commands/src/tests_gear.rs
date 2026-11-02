@@ -393,3 +393,42 @@ fn narrow_tip_lands_are_warned_about() {
     let w = r["warnings"].to_string();
     assert!(w.contains("tip land") && w.contains("profile shift"), "{w}");
 }
+
+#[test]
+fn gear_pair_shifts_reproduce_the_centre_distance() {
+    let mut s = session();
+    let inv = |a: f64| a.tan() - a;
+    let (m, z1, z2, alpha) = (2.0, 14.0, 37.0, 20f64.to_radians());
+    let a0 = m * (z1 + z2) / 2.0;
+    // At the standard centre distance no shift is needed.
+    let r = run(&mut s, "query.gear_pair", json!({"module": m, "teeth1": 14, "teeth2": 37, "center_distance": a0}));
+    assert!(r["shift_sum"].as_f64().unwrap().abs() < 1e-12, "{r}");
+    // Spread to 52 mm: the returned shift sum, put back into the involute equation, gives
+    // the working pressure angle and with it exactly 52 mm.
+    let r = run(&mut s, "query.gear_pair", json!({"module": m, "teeth1": 14, "teeth2": 37, "center_distance": 52.0}));
+    let sum = r["shift_sum"].as_f64().unwrap();
+    let inv_aw = inv(alpha) + 2.0 * alpha.tan() * sum / (z1 + z2);
+    let mut aw = alpha;
+    for _ in 0..50 {
+        aw -= (inv(aw) - inv_aw) / (aw.tan() * aw.tan());
+    }
+    assert!((a0 * alpha.cos() / aw.cos() - 52.0).abs() < 1e-9, "{r}");
+    let (x1, x2) = (r["shift1"].as_f64().unwrap(), r["shift2"].as_f64().unwrap());
+    assert!((x1 + x2 - sum).abs() < 1e-12 && x1 > x2, "the pinion takes more shift: {r}");
+    // 14 teeth at x1 = -0.5 would undercut.
+    let r = run(
+        &mut s,
+        "query.gear_pair",
+        json!({"module": m, "teeth1": 14, "teeth2": 37, "center_distance": 52.0, "shift1": -0.5}),
+    );
+    assert_eq!(r["undercut_gears"], json!([1]), "{r}");
+    assert!(
+        execute(
+            &mut s,
+            &CmdCtx::user(1),
+            "query.gear_pair",
+            json!({"module": m, "teeth1": 14, "teeth2": 37, "center_distance": 80.0})
+        )
+        .is_err()
+    );
+}

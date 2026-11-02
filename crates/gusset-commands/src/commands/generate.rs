@@ -16,6 +16,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<GenerateSpring>(),
         spec::<GenerateThread>(),
         spec::<GenerateNut>(),
+        spec::<QueryGearPair>(),
     ]
 }
 
@@ -475,6 +476,85 @@ impl Command for GenerateSpring {
                 "note": "the wire section is round in the plane across the axis (exact for a small helix angle)",
             }))
         })
+    }
+}
+
+/// Spur pair shifts for a centre distance (ISO 21771).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryGearPair {
+    /// Module in mm.
+    pub module: f64,
+    pub teeth1: u32,
+    pub teeth2: u32,
+    /// Centre distance in mm.
+    pub center_distance: f64,
+    /// Degrees (default 20).
+    #[serde(default)]
+    pub pressure_angle: Option<f64>,
+    /// Shift of gear 1 (the rest to gear 2).
+    #[serde(default)]
+    pub shift1: Option<f64>,
+}
+
+fn involute(a: f64) -> f64 {
+    libm::tan(a) - a
+}
+
+impl Command for QueryGearPair {
+    const ID: &'static str = "query.gear_pair";
+    const TITLE: &'static str = "Gear pair shifts";
+    const DESCRIPTION: &'static str = "Profile shifts that make two spur gears mesh at a given centre distance.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, _s: &mut Session, _ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let (m, a) = (self.module, self.center_distance);
+        let (z1, z2) = (f64::from(self.teeth1), f64::from(self.teeth2));
+        let alpha = self.pressure_angle.unwrap_or(20.0).to_radians();
+        if !(m > 0.0 && a > 0.0 && z1 >= 6.0 && z2 >= 6.0 && alpha > 0.0 && alpha < 0.7) {
+            return Err(CommandError::args(
+                "needs module > 0, centre distance > 0, at least 6 teeth each and a pressure angle under 40 deg",
+            ));
+        }
+        let a0 = m * (z1 + z2) / 2.0;
+        let cos_aw = a0 * libm::cos(alpha) / a;
+        if !(cos_aw > 0.0 && cos_aw < 1.0) {
+            return Err(CommandError::args(format!(
+                "no working pressure angle for {a} mm: the standard centre distance is {a0} mm"
+            ))
+            .hint("the centre distance must be close to m (z1 + z2) / 2"));
+        }
+        // ISO 21771: cos(aw) = a0 cos(a) / a and inv(aw) - inv(a) = 2 tan(a) (x1 + x2) / (z1 + z2);
+        // the default split gives each gear a share in proportion to the other's teeth.
+        let aw = libm::acos(cos_aw);
+        let sum = (z1 + z2) * (involute(aw) - involute(alpha)) / (2.0 * libm::tan(alpha));
+        if sum.abs() > 3.0 {
+            return Err(CommandError::args(format!(
+                "{a} mm would need a shift sum of {sum:.2}; the standard centre distance is {a0} mm"
+            ))
+            .hint("shifts beyond about +-1.5 per gear are not usable"));
+        }
+        let x1 = self.shift1.unwrap_or(sum * z2 / (z1 + z2));
+        let x2 = sum - x1;
+        // Undercut-free minimum shift: z_min = 2 / sin^2(a) (17.1 teeth at 20 deg).
+        let z_min = 2.0 / (libm::sin(alpha) * libm::sin(alpha));
+        let undercut: Vec<u32> = [(1, z1, x1), (2, z2, x2)]
+            .into_iter()
+            .filter(|&(_, z, x)| x < (z_min - z) / z_min - 1e-9)
+            .map(|(i, _, _)| i)
+            .collect();
+        // With standard addenda the tips would close the clearance by (sum - (a - a0) / m) m.
+        let tip_shortening = sum - (a - a0) / m;
+        Ok(json!({
+            "standard_center_distance_mm": a0,
+            "working_pressure_angle_deg": aw.to_degrees(),
+            "shift_sum": sum,
+            "shift1": x1,
+            "shift2": x2,
+            "tip_shortening_mm": tip_shortening * m,
+            "undercut_gears": undercut,
+            "next": "pass shift1/shift2 as `shift` to generate_gear for each gear",
+        }))
     }
 }
 
