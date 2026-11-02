@@ -948,8 +948,9 @@ impl Command for GenerateWorm {
                 "wheel": {
                     "tool": "generate_gear",
                     "module": format!("{} mm", m * libm::cos(lead_angle.to_radians())),
-                    "helix": format!("{lead_angle} deg"),
-                    "left_hand": self.left,
+                    // Right-hand for a positive helix (ADR 0018), so a left-hand worm's
+                    // wheel takes a negative one.
+                    "helix": format!("{} deg", if self.left { -lead_angle } else { lead_angle }),
                     "center_distance_mm_for_teeth": "(diameter + module * teeth) / 2",
                 },
                 "lead_angle_deg": lead_angle,

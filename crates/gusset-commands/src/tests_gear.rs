@@ -451,3 +451,16 @@ fn bevel_gears_refuse_what_does_not_apply() {
     // A face width over half the cone distance (20 teeth of module 2: 28.3 mm at 45 deg).
     assert!(fail(&mut s, json!({"cone_angle": "45 deg", "face_width": "20 mm"})).contains("half the cone distance"));
 }
+
+#[test]
+fn the_worm_suggests_wheel_arguments_generate_gear_accepts() {
+    let mut s = session();
+    let w = run(&mut s, "generate.worm", json!({"module": "1 mm", "left": true}));
+    let Value::Object(mut wheel) = w["wheel"].clone() else { panic!("{w}") };
+    assert_eq!(wheel.remove("tool"), Some(json!("generate_gear")));
+    wheel.remove("center_distance_mm_for_teeth");
+    assert!(wheel["helix"].as_str().unwrap().starts_with('-'), "a left-hand worm's wheel: {wheel:?}");
+    wheel.insert("teeth".into(), json!("30"));
+    let r = execute(&mut s, &CmdCtx::user(1), "generate.gear", Value::Object(wheel));
+    assert!(r.is_ok(), "{r:?}");
+}
