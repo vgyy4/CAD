@@ -2167,7 +2167,7 @@ impl App {
                     ui.set_height(timeline::TRACK_H);
                     if n == 0 {
                         ui.centered_and_justified(|ui| ui.weak(tr("timeline.empty")));
-                        return None;
+                        return timeline::Out::default();
                     }
                     egui::ScrollArea::horizontal()
                         .stick_to_right(true)
@@ -2175,8 +2175,12 @@ impl App {
                         .inner
                 })
                 .inner;
-            if let Some(m) = moved {
+            let edit = moved.edit.and_then(|i| self.snapshot.doc.features.get(i)).map(|f| f.name.clone());
+            if let Some(m) = moved.marker {
                 self.set_rollback(if m >= n { None } else { Some(m) });
+            }
+            if let Some(name) = edit {
+                self.edit_feature(&name);
             }
             let label = if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") };
             let on = self.show_iterations;

@@ -462,4 +462,15 @@ fn double_clicking_a_feature_edits_it_in_place() {
     assert!(statement(&h).contains("distance: 25 mm"), "{}", statement(&h));
     assert!(h.state().evaluation().is_some_and(|e| e.errors().is_empty()));
     assert_eq!(h.state().snapshot.doc.feature_index("Extrude1"), Some(2));
+    // The timeline chip opens the same editor; a sketch's chip edits the sketch. (Time
+    // passes first, or egui counts the clicks as a triple click with the earlier ones.)
+    h.run_steps(20);
+    let at = h.get_by_label("Extrude1 (ok)").rect().center();
+    double_click_at(&mut h, at);
+    assert_eq!(h.state().form.as_ref().map(|f| (f.command, f.value("name"))), Some(("feature.edit", Some("Extrude1"))));
+    h.state_mut().form = None;
+    h.run_steps(20);
+    let at = h.get_by_label("Base (ok)").rect().center();
+    double_click_at(&mut h, at);
+    assert_eq!(h.state().active_sketch(), Some("Base"));
 }

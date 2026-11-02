@@ -191,9 +191,17 @@ const CHIP_ICON: f32 = 16.0;
 /// Height of the track the chips sit in.
 pub const TRACK_H: f32 = CHIP_H + 8.0;
 
+/// What the user did on the strip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Out {
+    /// The new marker, when the user moved it (drag released, or a key press).
+    pub marker: Option<usize>,
+    /// A chip was double-clicked: edit that feature.
+    pub edit: Option<usize>,
+}
+
 /// Draws the strip. `marker` is the number of active features (`items.len()` = all).
-/// Returns the new marker when the user moved it (drag released, or a key press).
-pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Option<usize> {
+pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Out {
     let n = items.len();
     let marker = marker.min(n);
     let id = ui.make_persistent_id("timeline-marker");
@@ -271,10 +279,14 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Op
 
     // Chips.
     let painter = ui.painter_at(strip.expand(2.0));
+    let mut edit = None;
     for (i, (it, rect)) in items.iter().zip(&chips).enumerate() {
         let active = i < marker_now;
         let st = chip_style(it, active, pal);
-        let chip = ui.interact(*rect, id.with(("chip", i)), Sense::hover());
+        let chip = ui.interact(*rect, id.with(("chip", i)), Sense::click());
+        if chip.double_clicked() {
+            edit = Some(i);
+        }
         let label = format!("{} ({})", it.name, chip_state(it, active).name());
         chip.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
         let hover = chip.hovered();
@@ -316,7 +328,7 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Op
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     resp.on_hover_text(crate::i18n::tr("timeline.rollback"));
-    result
+    Out { marker: result, edit }
 }
 
 #[cfg(test)]
