@@ -61,6 +61,11 @@ const SOLID: &[Group] = &[
             d("feature.sweep", "Sweep"),
             d("feature.loft", "Loft"),
             d("generate.gear", "Gear"),
+            d("generate.rack", "Rack"),
+            d("generate.worm", "Worm"),
+            d("generate.spring", "Spring"),
+            d("generate.thread", "Thread"),
+            d("generate.nut", "Nut"),
         ],
     },
     Group {
@@ -94,7 +99,18 @@ const SOLID: &[Group] = &[
         ],
     },
     Group { key: "ribbon.construct", large: 1, tools: &[d("feature.plane", "Plane")] },
-    Group { key: "ribbon.inspect", large: 1, tools: &[d("query.body", "Measure"), d("query.model", "Overview")] },
+    Group {
+        key: "ribbon.inspect",
+        large: 1,
+        tools: &[
+            d("query.body", "Measure"),
+            d("query.model", "Overview"),
+            d("query.interference", "Interference"),
+            d("query.joints", "Joints"),
+            d("query.bom", "Bill of materials"),
+            d("query.gear_pair", "Gear pair"),
+        ],
+    },
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },
 ];
 
