@@ -1447,7 +1447,12 @@ impl App {
         let pal = *theme::palette(self.theme);
         let action = ribbon::tabs(
             ui,
-            &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref(), drawing: self.active_drawing.as_deref() },
+            &Ribbon {
+                pal: &pal,
+                sketch: self.active_sketch.as_deref(),
+                drawing: self.active_drawing.as_deref(),
+                select: self.viewport.select_filter,
+            },
         );
         if let Some(a) = action {
             self.ribbon_action(a);
@@ -1459,7 +1464,12 @@ impl App {
         let pal = *theme::palette(self.theme);
         let action = ribbon::show(
             ui,
-            &Ribbon { pal: &pal, sketch: self.active_sketch.as_deref(), drawing: self.active_drawing.as_deref() },
+            &Ribbon {
+                pal: &pal,
+                sketch: self.active_sketch.as_deref(),
+                drawing: self.active_drawing.as_deref(),
+                select: self.viewport.select_filter,
+            },
         );
         if let Some(a) = action {
             self.ribbon_action(a);
@@ -1471,6 +1481,7 @@ impl App {
         match action {
             Action::Run(id) => self.start_command(id),
             Action::Search => self.palette = Some(String::new()),
+            Action::SelectFilter(f) => self.viewport.select_filter = f,
             Action::SolidTab | Action::FinishSketch => {
                 self.active_drawing = None;
                 self.finish_sketch();

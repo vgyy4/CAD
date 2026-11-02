@@ -28,6 +28,8 @@ pub enum Action {
     DrawingTab,
     /// The command search (Ctrl+K).
     Search,
+    /// The SELECT group: what clicks in the viewport pick.
+    SelectFilter(crate::viewport::SelectFilter),
 }
 
 /// One tool of a group.
@@ -199,6 +201,8 @@ pub struct Ribbon<'a> {
     pub sketch: Option<&'a str>,
     /// The drawing shown (the Drawing tab is active), if any.
     pub drawing: Option<&'a str>,
+    /// The viewport's selection filter (shown in the Solid tab's SELECT group).
+    pub select: crate::viewport::SelectFilter,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -396,6 +400,20 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         }
         if sketching && finish_button(ui, pal).clicked() {
             action = Some(Action::FinishSketch);
+        }
+        if !sketching && r.drawing.is_none() {
+            ui.vertical(|ui| {
+                ui.add_space(theme::SPACE[2]);
+                ui.label(tr(r.select.key()));
+                ui.menu_button(format!("{} \u{25be}", tr("ribbon.select")), |ui| {
+                    for f in crate::viewport::SelectFilter::ALL {
+                        if ui.radio(r.select == f, tr(f.key())).clicked() {
+                            action = Some(Action::SelectFilter(f));
+                            ui.close();
+                        }
+                    }
+                });
+            });
         }
     });
     action

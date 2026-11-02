@@ -82,6 +82,29 @@ pub(crate) struct FrameKey {
     pub interacting: bool,
 }
 
+/// What a click in the viewport may pick (the ribbon's SELECT group).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectFilter {
+    /// Edges near the pointer first, else the face under it.
+    #[default]
+    All,
+    Faces,
+    Edges,
+}
+
+impl SelectFilter {
+    pub const ALL: [SelectFilter; 3] = [SelectFilter::All, SelectFilter::Faces, SelectFilter::Edges];
+
+    /// The i18n key of its name.
+    pub fn key(self) -> &'static str {
+        match self {
+            SelectFilter::All => "select.all",
+            SelectFilter::Faces => "select.faces",
+            SelectFilter::Edges => "select.edges",
+        }
+    }
+}
+
 /// A camera move the UI asked for (the view cube, the navigation bar, the app).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NavRequest {
@@ -156,6 +179,8 @@ pub struct Viewport {
     pub show_edges: bool,
     /// Wireframe style: edges only, hidden edges included (the navigation bar's toggle).
     pub wireframe: bool,
+    /// What clicks pick (the ribbon's SELECT group).
+    pub select_filter: SelectFilter,
     /// Bodies the user hid (the browser's eye); kept across rebuilds by name.
     hidden_bodies: std::collections::BTreeSet<String>,
     /// Camera moves jump instead of animating.
@@ -197,6 +222,7 @@ impl Default for Viewport {
             show_edges: true,
             wireframe: false,
             hidden_bodies: std::collections::BTreeSet::new(),
+            select_filter: SelectFilter::All,
             reduce_motion: false,
             request: None,
             anim: None,
@@ -281,10 +307,14 @@ impl Viewport {
     pub fn pick(&self, size: Vec2, p: Pos2) -> Option<(Hit, Option<Vec3>)> {
         let vp = [f64::from(size.x), f64::from(size.y)];
         let px = [f64::from(p.x), f64::from(p.y)];
-        if let Some(e) = self.scene.pick_edge(&self.camera, vp, px, 5.0)
+        if self.select_filter != SelectFilter::Faces
+            && let Some(e) = self.scene.pick_edge(&self.camera, vp, px, 5.0)
             && let Some(h) = self.hit_for_edge(e.mesh, e.edge)
         {
             return Some((h, Some(e.point)));
+        }
+        if self.select_filter == SelectFilter::Edges {
+            return None;
         }
         let hit = self.scene.pick(&self.camera.ray(px, vp))?;
         Some((self.hit_for_face(hit.mesh, hit.face)?, Some(hit.point)))
@@ -738,8 +768,16 @@ mod tests {
         // The edge at y = -10 projects below the center in a top view.
         let cm = v.camera.matrices(1.0, &v.clip_bounds());
         let (p, _) = v.camera.project(&cm, [0.0, -10.0, 0.0], [400.0, 400.0]).unwrap();
-        let hit = v.pick(size, Pos2::new(p[0] as f32, p[1] as f32 - 2.0));
+        let near_edge = Pos2::new(p[0] as f32, p[1] as f32 - 2.0);
+        let hit = v.pick(size, near_edge);
         assert!(matches!(hit, Some((Hit::Edge { ref name, .. }, _)) if name == "e0"), "{hit:?}");
+        // The SELECT filter: faces only picks the face next to the edge, edges only picks
+        // nothing in the middle of a face.
+        v.select_filter = SelectFilter::Faces;
+        assert!(matches!(v.pick(size, near_edge), Some((Hit::Face { ref name, .. }, _)) if name == "top"));
+        v.select_filter = SelectFilter::Edges;
+        assert_eq!(v.pick(size, center), None);
+        assert!(matches!(v.pick(size, near_edge), Some((Hit::Edge { .. }, _))));
     }
 
     #[test]
