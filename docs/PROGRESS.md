@@ -141,7 +141,9 @@ Phase 3 has started (see Next).
      in `query_body`; blind with drill point or through; `standard` presets, ISO 273 / 261-262 /
      2306 / 4762 + DIN 974-1 / 10642, written as named parameters; names `Hole1/wall(p5)`;
      OCCT golden tests in `modeling_hole.rs` and the naming golden `hole_names`). Next:
-     DIN 974-1 / ISO 4762 / 10642 table values to be checked against the standards (ADR 0019 §5).
+     DIN 974-1 / ISO 4762 / 10642 table values to be checked against the standards (ADR 0019 §5):
+     needs the owner's copy (the standards are paywalled; a 2026-11-02 search found no public
+     DIN 974-1 depth table; the ISO 4762 heads and DIN 974-1 diameters match known values).
    - v0.2: generators (DESIGN.md §1, owner request): `generate.gear` (ADR 0018) writes
      named parameters, a parametric tooth sketch and an extrude/sweep for involute spur
      and helical gears (OCCT golden tests in `modeling_gear.rs`: volume 6e-6, tooth
