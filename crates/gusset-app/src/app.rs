@@ -890,6 +890,18 @@ impl App {
             }
             None => {}
         }
+        // Measure: the first two picked faces or edges.
+        if form.command == "query.measure" {
+            let picks: Vec<String> = self
+                .selection
+                .iter()
+                .filter(|h| matches!(h, Hit::Face { .. } | Hit::Edge { .. }))
+                .map(Hit::label)
+                .collect();
+            for (field, pick) in ["a", "b"].into_iter().zip(&picks) {
+                form.set(field, pick);
+            }
+        }
         // Picked sketch items: what a constraint applies to, what is deleted, the point moved.
         let sketch = form.value("sketch").map(str::to_string);
         let items: Vec<&str> = self

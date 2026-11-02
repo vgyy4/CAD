@@ -105,7 +105,8 @@ const SOLID: &[Group] = &[
         key: "ribbon.inspect",
         large: 1,
         tools: &[
-            d("query.body", "Measure"),
+            d("query.measure", "Measure"),
+            d("query.body", "Body"),
             d("query.model", "Overview"),
             d("query.interference", "Interference"),
             d("query.joints", "Joints"),

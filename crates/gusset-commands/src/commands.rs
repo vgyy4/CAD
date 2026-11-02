@@ -25,6 +25,7 @@ mod generate;
 mod hole;
 mod joint;
 mod lettering;
+mod measure;
 mod ops;
 mod sketch_ops;
 mod sweep;
@@ -43,6 +44,7 @@ pub use generate::{
 pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
+pub use measure::QueryMeasure;
 pub use ops::{Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
@@ -53,6 +55,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(generate::specs());
     v.extend(hole::specs());
     v.extend(ops::specs());
+    v.extend(measure::specs());
     v.extend(lettering::specs());
     v.extend(datum::specs());
     v.extend(joint::specs());

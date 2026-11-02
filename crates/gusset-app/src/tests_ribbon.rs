@@ -106,7 +106,7 @@ fn every_ribbon_command_starts_through_the_registry() {
 fn measure_body_shows_its_result() {
     let mut h = harness(with_body());
     h.run();
-    h.get_by_label(title("query.body")).click();
+    h.state_mut().start_command("query.body");
     h.run();
     assert_eq!(form_command(&h), Some("query.body"));
     h.state_mut().apply_form();
@@ -114,6 +114,18 @@ fn measure_body_shows_its_result() {
     h.run();
     assert!(h.state().form.is_none());
     h.get_by_label_contains("volume_mm3");
+    h.state_mut().dialog = None;
+    // Measure (the INSPECT group's large tool): a picked face is measured.
+    let body = h.state().evaluation().and_then(|e| e.bodies.first().cloned()).expect("body");
+    let face = body.names.faces.first().map(ToString::to_string).expect("face");
+    h.state_mut().selection = vec![crate::viewport::Hit::Face { body: body.name.clone(), index: 0, name: face }];
+    h.get_by_label(title("query.measure")).click();
+    h.run();
+    assert_eq!(form_command(&h), Some("query.measure"));
+    h.state_mut().apply_form();
+    h.state_mut().wait_idle();
+    h.run();
+    h.get_by_label_contains("area_mm2");
 }
 
 #[test]

@@ -1320,3 +1320,42 @@ fn branch_compare_with_base_shows_both_sides() {
     let plain = run(&mut s, &u, "branch.compare", json!({"a": "main", "b": "Idea"}));
     assert!(plain.get("base").is_none(), "{plain}");
 }
+
+#[test]
+fn measure_faces_and_edges_of_a_plate() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let b = run(&mut s, &u, "query.body", json!({"names": true}));
+    // The plate is 40 x 20 x 10: its top and bottom faces are 10 mm apart.
+    let faces = b["face_names"].as_array().unwrap();
+    let with_normal = |z: f64| {
+        faces
+            .iter()
+            .find(|f| f["normal"].as_array().is_some_and(|n| (n[2].as_f64().unwrap() - z).abs() < 1e-9))
+            .and_then(|f| f["name"].as_str())
+            .unwrap()
+            .to_string()
+    };
+    let (top, bottom) = (with_normal(1.0), with_normal(-1.0));
+    let m = run(&mut s, &u, "query.measure", json!({"a": top, "b": bottom}));
+    assert_eq!(m["distance_mm"], 10.0, "{m}");
+    assert_eq!(m["distance_kind"], "between parallel planes");
+    assert_eq!(m["angle_deg"], 0.0);
+    assert_eq!(m["a"]["area_mm2"], 800.0);
+    // A side face is perpendicular to the top.
+    let side = faces
+        .iter()
+        .find(|f| f["normal"].as_array().is_some_and(|n| n[2].as_f64().unwrap().abs() < 1e-9))
+        .and_then(|f| f["name"].as_str())
+        .unwrap()
+        .to_string();
+    let m = run(&mut s, &u, "query.measure", json!({"a": format!("Extrude1: {top}"), "b": side}));
+    assert_eq!(m["angle_deg"], 90.0, "{m}");
+    // One edge: its length; unknown names are refused with a hint.
+    let edge = b["edge_names"][0]["name"].as_str().unwrap().to_string();
+    let m = run(&mut s, &u, "query.measure", json!({"a": edge}));
+    assert!([40.0, 20.0, 10.0].contains(&m["a"]["length_mm"].as_f64().unwrap()), "{m}");
+    let err = execute(&mut s, &u, "query.measure", json!({"a": "nope"})).unwrap_err();
+    assert!(err.hint.is_some_and(|h| h.contains("query_body")));
+}
