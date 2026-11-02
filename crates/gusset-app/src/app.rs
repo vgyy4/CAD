@@ -1246,6 +1246,15 @@ impl App {
             .min_size(200.0)
             .resizable(true)
             .show(ui, |ui| self.browser(ui));
+        // The properties panel (DESIGN.md §2): the running command's form, docked at the
+        // right like Fusion's command dialog instead of floating over the model.
+        if self.form.is_some() {
+            egui::Panel::right("properties")
+                .default_size(320.0)
+                .min_size(260.0)
+                .resizable(true)
+                .show(ui, |ui| self.properties_panel(ui));
+        }
         if self.agents.show_panel {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
         }
@@ -1260,7 +1269,6 @@ impl App {
             }
         });
 
-        self.form_window(&ctx);
         self.palette_window(&ctx);
         self.dialogs(&ctx);
         // Last, so it is on top of every other dialog.
@@ -1942,23 +1950,21 @@ impl App {
         });
     }
 
-    fn form_window(&mut self, ctx: &egui::Context) {
-        // Below the view cube, which sits at the viewport's top right.
-        let form_top = (self.viewport.overlay_bottom + 8.0).max(80.0);
+    fn properties_panel(&mut self, ui: &mut egui::Ui) {
         let Some(form) = self.form.as_mut() else { return };
-        let mut open = true;
-        let mut submit = false;
-        egui::Window::new(form.title)
-            .id(egui::Id::new("command_form"))
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, form_top))
-            .show(ctx, |ui| submit = forms::show(ui, form));
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.strong(form.title);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui.small_button(tr("dialog.close")).clicked();
+            });
+        });
+        ui.separator();
+        let submit = egui::ScrollArea::vertical().show(ui, |ui| forms::show(ui, form)).inner;
         if submit {
             self.apply_form();
         }
-        if !open {
+        if close {
             self.form = None;
         }
     }

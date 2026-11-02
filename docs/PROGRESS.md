@@ -49,8 +49,8 @@ Phase 3 has started (see Next).
   owner feedback: one timeline bar (playback, chips in a recessed track, graph toggle),
   command line hidden by default (View menu, Ctrl+Shift+K), confirmations fade after 5 s.
   Bodies have an eye in the browser (hidden bodies are neither drawn nor picked, and stay
-  hidden across rebuilds); origin and datum planes are still read-only (no scene objects). Still to do: a properties panel instead of the floating
-  command form, the SURFACE/INSPECT tabs, and the SELECT group. Wireframe view style done (the navigation bar's
+  hidden across rebuilds); origin and datum planes are still read-only (no scene objects). Properties panel done (the running command's form docks at the right
+  instead of floating; Close button). Still to do: the SURFACE/INSPECT tabs, and the SELECT group. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). The
   screenshot gallery in docs/screenshots was not regenerated (it needs the real kernel

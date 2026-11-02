@@ -356,3 +356,18 @@ fn browser_body_eye_hides_the_body_and_keeps_it_hidden_across_rebuilds() {
     h.run();
     assert_eq!(mesh(&h), Some(true));
 }
+
+#[test]
+fn a_command_form_opens_in_the_properties_panel_and_closes() {
+    let mut h = quick_harness(with_plane());
+    settle(&mut h);
+    h.state_mut().start_command("feature.plane");
+    h.run();
+    assert!(h.state().form.is_some());
+    // The panel shows the command's title and its fields, with a Close button.
+    let title = h.state().form.as_ref().map(|f| f.title).unwrap_or_default();
+    assert!(h.query_all_by_label(title).count() >= 1);
+    h.get_by_label("Close").click();
+    h.run();
+    assert!(h.state().form.is_none());
+}
