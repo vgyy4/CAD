@@ -52,7 +52,13 @@ Phase 3 has started (see Next).
   hidden across rebuilds). Origin and datum planes are drawn as translucent squares over the
   model with eyes in the browser (origin planes start hidden); a click on a shown plane where
   no body is under the cursor picks it, and a picked plane fills a form's `plane` (sketches)
-  or a joint's `at`/`to`. Properties panel done (the running command's form docks at the right
+  or a joint's `at`/`to`.
+  Sketch geometry placed with viewport clicks (`sketch_place.rs`): while a sketch is edited,
+  the line, rectangle, circle, arc and polyline tools take their points from clicks on the
+  sketch plane (snapping to sketch points within 8 px, else rounded to 0.01 mm), with a
+  rubber-band preview; the filled form is submitted like a typed one, the tool stays on, and
+  lines chain from the previous end point (`from_point`), so they join. A polyline closes on
+  its first point or ends with OK. Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
@@ -61,7 +67,7 @@ Phase 3 has started (see Next).
   through the cut draw as a flat tinted cut face; picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

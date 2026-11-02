@@ -127,6 +127,10 @@ pub struct Output {
     pub clicked: Option<Option<Hit>>,
     /// World point under the cursor on the model, if any (for the status bar).
     pub cursor_world: Option<Vec3>,
+    /// The camera ray under the pointer (sketch placement).
+    pub pointer_ray: Option<Ray>,
+    /// World size of one logical pixel at the view's target (snapping tolerances).
+    pub pixel_size: f64,
 }
 
 /// Everything that determines the rendered image. A frame whose key equals the last
@@ -500,13 +504,20 @@ impl Viewport {
     /// `cam` framing the model and the given sketches (`None` when there is nothing).
     fn fitted(&self, cam: &Camera, sketches: &[&DrawSketch], aspect: f64) -> Option<Camera> {
         let mut b = self.scene.bounds();
-        for s in sketches {
+        // The click-placement preview (no name) follows the cursor: not part of the model.
+        for s in sketches.iter().filter(|s| !s.name.is_empty()) {
             for p in s.polylines.iter().flatten().chain(&s.points) {
                 b.include(p.map(f64::from));
             }
         }
         if b.is_empty() {
             return None;
+        }
+        if b.radius() < 1e-3 {
+            // A single point: frame 20 mm around it rather than collapsing onto it.
+            let c = b.center();
+            b.include(c.map(|v| v - 10.0));
+            b.include(c.map(|v| v + 10.0));
         }
         let mut c = *cam;
         c.fit(&b, aspect);
@@ -657,9 +668,12 @@ impl Viewport {
 
         // Hover: recomputed only when the pointer or the view changed.
         let pointer = resp.hover_pos().filter(|_| !self.interacting);
+        out.pixel_size = self.camera.pixel_size_at_target(f64::from(rect.height()));
         match pointer {
             Some(p) => {
                 let rel = (p - rect.min).to_pos2();
+                let vp = [f64::from(rect.width()), f64::from(rect.height())];
+                out.pointer_ray = Some(self.camera.ray([f64::from(rel.x), f64::from(rel.y)], vp));
                 let key = (rel, self.generation, rect.width().to_bits().into(), self.camera);
                 if self.hover_for.as_ref() != Some(&key) {
                     let picked = self.pick(rect.size(), rel);

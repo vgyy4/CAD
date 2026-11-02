@@ -39,6 +39,8 @@ pub struct Form {
     pub fields: Vec<Field>,
     pub show_more: bool,
     pub error: Option<String>,
+    /// Points placed with viewport clicks so far (sketch commands, [`crate::sketch_place`]).
+    pub clicks: Vec<crate::sketch_place::Click>,
 }
 
 fn type_names(prop: &Value) -> Vec<&str> {
@@ -129,6 +131,7 @@ impl Form {
             description: spec.description,
             fields,
             show_more: false,
+            clicks: Vec::new(),
             error: None,
         }
     }
@@ -171,6 +174,9 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
     use crate::i18n::tr;
     let mut submit = false;
     ui.label(egui::RichText::new(form.description).color(ui.visuals().widgets.noninteractive.fg_stroke.color));
+    if crate::sketch_place::clicks_needed(form.command).is_some() {
+        ui.label(egui::RichText::new(crate::i18n::tr("sketch.place_hint")).small().weak());
+    }
     ui.add_space(crate::theme::SPACE[2]);
     let has_optional = form.fields.iter().any(|f| !f.required);
     egui::Grid::new(("form", form.command))

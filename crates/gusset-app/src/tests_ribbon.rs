@@ -422,3 +422,73 @@ fn every_drawing_ribbon_command_is_registered() {
     }
     assert_eq!(crate::ribbon::drawing_command_ids().len(), 10);
 }
+
+/// The lines of sketch `name` as (start, end) point ids.
+fn sketch_lines(h: &Harness<'static, App>, name: &str) -> Vec<(String, String)> {
+    let doc = &h.state().snapshot.doc;
+    let Some(gusset_doc::FeatureKind::Sketch(s)) = doc.features.iter().find(|f| f.name == name).map(|f| &f.kind) else {
+        return Vec::new();
+    };
+    s.entities
+        .iter()
+        .filter_map(|e| match &e.geom {
+            gusset_doc::SkGeom::Line { a, b } => Some((a.clone(), b.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn sketch_lines_are_placed_with_viewport_clicks_and_chain() {
+    let mut h = harness(app());
+    h.state_mut().run("sketch.create", json!({"plane": "XY", "name": "S"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().edit_sketch("S");
+    h.state_mut().viewport.camera.set_view(NamedView::Top);
+    h.run();
+    h.state_mut().start_command("sketch.add_line");
+    h.run();
+    let settle = |h: &mut Harness<'static, App>| {
+        h.run_steps(3);
+        h.state_mut().wait_idle();
+        h.run_steps(3);
+    };
+    click_at(&mut h, egui::pos2(600.0, 400.0));
+    assert_eq!(h.state().form.as_ref().map(|f| f.clicks.len()), Some(1));
+    click_at(&mut h, egui::pos2(700.0, 450.0));
+    settle(&mut h);
+    let lines = sketch_lines(&h, "S");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    // Distinct clicks make distinct points (the camera did not collapse onto the plane).
+    let clicks = h.state().form.as_ref().map(|f| f.clicks.clone()).unwrap_or_default();
+    let start =
+        h.state().evaluation().and_then(|e| e.sketches.get("S").and_then(|s| s.points.get(&lines[0].0).copied()));
+    assert!(
+        start.zip(clicks.first()).is_some_and(|(a, b)| (a[0] - b.at[0]).hypot(a[1] - b.at[1]) > 1.0),
+        "{start:?} {clicks:?}"
+    );
+    // The tool goes on from the line's end point.
+    let form = h.state().form.as_ref().expect("the line tool continues");
+    assert_eq!(form.command, "sketch.add_line");
+    assert_eq!(form.clicks.len(), 1);
+    assert_eq!(form.clicks.first().and_then(|c| c.point.clone()), lines.first().map(|l| l.1.clone()));
+    click_at(&mut h, egui::pos2(650.0, 300.0));
+    settle(&mut h);
+    let lines = sketch_lines(&h, "S");
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1].0, lines[0].1, "the second line starts where the first ends");
+    // A rectangle from two opposite corners: four more lines.
+    h.state_mut().form = None;
+    h.state_mut().start_command("sketch.add_rectangle");
+    h.run();
+    click_at(&mut h, egui::pos2(500.0, 350.0));
+    click_at(&mut h, egui::pos2(560.0, 420.0));
+    settle(&mut h);
+    let f = h.state().form.as_ref().map(|f| (f.clicks.clone(), f.error.clone(), f.to_args()));
+    assert_eq!(sketch_lines(&h, "S").len(), 6, "{f:?}");
+    assert_eq!(h.state().form.as_ref().map(|f| (f.command, f.clicks.len())), Some(("sketch.add_rectangle", 0)));
+    // Closing the form ends the tool; clicks select again.
+    h.state_mut().form = None;
+    h.run();
+    assert!(h.state().form.is_none());
+}

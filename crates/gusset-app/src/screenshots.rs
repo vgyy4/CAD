@@ -120,5 +120,27 @@ fn generate_gallery() {
         a.viewport.set_plane_visible("XY", true);
         a.browser.set_open(crate::browser::Category::Origin, true);
         shoot(&dir, &format!("12-planes-{t}"), a, |_| {});
+        // Sketch geometry placed with clicks: a line from a clicked point to the cursor.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.edit_sketch("Profile");
+        a.viewport.camera.set_view(gusset_render::NamedView::Front);
+        a.viewport.fit_pending = true;
+        a.start_command("sketch.add_line");
+        shoot(&dir, &format!("13-sketch-line-{t}"), a, |h| {
+            let click = egui::pos2(700.0, 420.0);
+            h.hover_at(click);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos: click,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            h.run_steps(2);
+            h.hover_at(egui::pos2(860.0, 330.0));
+            h.run_steps(3);
+        });
     }
 }

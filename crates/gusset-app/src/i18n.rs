@@ -63,6 +63,7 @@ const EN: &[(&str, &str)] = &[
     ("browser.show_sketch", "Visibility of"),
     ("browser.show_body", "Visibility of"),
     ("browser.show_plane", "Visibility of plane"),
+    ("sketch.place_hint", "Or click in the viewport to place the points (they snap to sketch points)."),
     (
         "browser.show_plane_help",
         "Show or hide this plane in the viewport (click a shown plane to use it, e.g. for a sketch).",

@@ -15,6 +15,7 @@ use crate::i18n::tr;
 use crate::icons::{self, Icon};
 use crate::link::{self, Snapshot, Waker};
 use crate::ribbon::{self, Action, Ribbon};
+use crate::sketch_place::{self, Click};
 use crate::theme::{self, ThemeKind};
 use crate::timeline;
 use crate::viewport::{BodyInfo, DrawSketch, Hit, NavRequest, Viewport};
@@ -245,6 +246,11 @@ pub struct App {
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
+    /// The snapped point under the cursor while placing sketch geometry (preview).
+    place_cursor: Option<Click>,
+    /// The placed command to start again when its result arrives (sketch tools repeat,
+    /// lines chain from their end).
+    chain: Option<Chain>,
     pub form: Option<Form>,
     pub palette: Option<String>,
     pub code: Option<(String, Option<String>)>,
@@ -336,6 +342,8 @@ impl App {
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
+            place_cursor: None,
+            chain: None,
             form: None,
             palette: None,
             code: None,
@@ -740,6 +748,7 @@ impl App {
                 }
             }
             Then::Form => {
+                let chain = self.chain.take().filter(|c| c.command == id);
                 let Some(form) = self.form.as_mut().filter(|f| f.command == id) else {
                     self.report(id, &result);
                     return;
@@ -749,6 +758,9 @@ impl App {
                         let title = form.title;
                         self.form = None;
                         self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
+                        if let Some(ch) = chain {
+                            self.restart_placing(ch, &v);
+                        }
                         if id == "drawing.create"
                             && let Some(name) = v.get("drawing").and_then(Value::as_str)
                         {
@@ -823,7 +835,8 @@ impl App {
             .rev()
             .find(|f| matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)))
             .map(|f| f.name.clone());
-        if let Some(s) = last_sketch {
+        // The sketch being edited first, else the newest one.
+        if let Some(s) = self.active_sketch.clone().or(last_sketch) {
             form.set("sketch", &s);
         }
         let edges: Vec<&str> = self
@@ -1775,6 +1788,61 @@ impl App {
         }
     }
 
+    /// The edited sketch's plane and solved points while the open form places geometry
+    /// with clicks.
+    fn placing(&self) -> Option<(gusset_kernel::Frame, std::collections::BTreeMap<String, [f64; 2]>)> {
+        let form = self.form.as_ref()?;
+        sketch_place::clicks_needed(form.command)?;
+        let name = self.editing_sketch()?;
+        let s = self.scene.as_ref()?.eval.sketches.get(name)?;
+        Some((s.frame, s.points.clone()))
+    }
+
+    /// A click on the sketch plane while placing: adds the point, and fills and submits the
+    /// form once the command has all its points.
+    fn place_click(&mut self, c: Click, tol: f64) {
+        let Some(form) = self.form.as_mut() else { return };
+        let Some(needed) = sketch_place::clicks_needed(form.command) else { return };
+        let submit = match needed {
+            Some(n) => {
+                form.clicks.push(c);
+                form.clicks.len() >= n && {
+                    let clicks = form.clicks.clone();
+                    sketch_place::fill(form, &clicks, false)
+                }
+            }
+            None if sketch_place::closes(&form.clicks, &c, tol) => {
+                let clicks = form.clicks.clone();
+                sketch_place::fill(form, &clicks, true)
+            }
+            None => {
+                form.clicks.push(c);
+                let clicks = form.clicks.clone();
+                // An open polyline is complete whenever the user presses OK.
+                sketch_place::fill(form, &clicks, false);
+                false
+            }
+        };
+        if submit {
+            let start = (form.command == "sketch.add_line").then(|| form.clicks.last().cloned()).flatten();
+            let sketch = form.value("sketch").unwrap_or_default().to_string();
+            self.chain = Some(Chain { command: form.command, sketch, start });
+            self.apply_form();
+        }
+    }
+
+    /// Opens the placed command again after it succeeded; a line starts at the previous
+    /// line's end point (`v["points"][1]`), so the lines join.
+    fn restart_placing(&mut self, ch: Chain, v: &Value) {
+        self.start_command(ch.command);
+        let Some(form) = self.form.as_mut() else { return };
+        form.set("sketch", &ch.sketch);
+        if let Some(mut start) = ch.start {
+            start.point = v.pointer("/points/1").and_then(Value::as_str).map(String::from).or(start.point);
+            form.clicks.push(start);
+        }
+    }
+
     /// The origin planes and the datum planes, sized to the model.
     fn construction_planes(&self) -> Vec<crate::viewport::DrawPlane> {
         let b = self.viewport.scene().bounds();
@@ -1942,7 +2010,42 @@ impl App {
             .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
             .unwrap_or_default();
         self.viewport.planes = self.construction_planes();
+        let placing = self.placing();
+        let preview = placing.as_ref().zip(self.form.as_ref()).map(|((frame, _), form)| {
+            let cursor = self.place_cursor.as_ref().map(|c| c.at);
+            let w = |p: [f64; 2]| frame.to_world(p).map(|c| c as f32);
+            DrawSketch {
+                name: String::new(),
+                polylines: sketch_place::preview(form.command, &form.clicks, cursor)
+                    .into_iter()
+                    .map(|pl| pl.into_iter().map(w).collect())
+                    .collect(),
+                points: form.clicks.iter().map(|c| w(c.at)).chain(cursor.map(w)).collect(),
+            }
+        });
+        let mut sketches = sketches;
+        sketches.extend(preview.as_ref());
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
+        if let Some((frame, points)) = &placing {
+            // Placing sketch geometry: clicks are points on the sketch plane, not picks.
+            let tol = out.pixel_size * 8.0;
+            let cursor = out
+                .pointer_ray
+                .and_then(|r| sketch_place::on_plane(frame, &r))
+                .map(|p| sketch_place::snap(p, points.iter(), tol));
+            if cursor != self.place_cursor {
+                // The preview follows the cursor in the next frame.
+                ui.ctx().request_repaint();
+            }
+            self.place_cursor = cursor;
+            if out.clicked.is_some()
+                && let Some(c) = self.place_cursor.clone()
+            {
+                self.place_click(c, tol);
+            }
+            return;
+        }
+        self.place_cursor = None;
         let empty = self.viewport.scene().is_empty() && sketches.is_empty();
         if let Some(clicked) = out.clicked {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
@@ -2434,6 +2537,15 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     let (render, bodies, mesh_errors) = crate::viewport::build_scene(&meshes);
     let sketches = eval.sketches.iter().map(|(name, s)| sketch_drawing(name, s)).collect();
     Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+}
+
+/// A placed sketch command to open again after its result (see `App::place_click`).
+#[derive(Debug, Clone)]
+struct Chain {
+    command: &'static str,
+    sketch: String,
+    /// A line's end, where the next line starts.
+    start: Option<Click>,
 }
 
 /// Closes a project the window is done with. Changes the user did not choose to
