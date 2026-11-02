@@ -203,6 +203,9 @@ pub enum NavRequest {
     Fit,
     /// The isometric view, framed.
     Home,
+    /// Look straight at a plane (from its normal's side), `up` pointing up on screen
+    /// (sketch editing: the sketch's plane and its Y axis).
+    LookAt { normal: Vec3, up: Vec3 },
 }
 
 /// A camera move in progress.
@@ -687,6 +690,13 @@ impl Viewport {
                 base.set_view(NamedView::Iso);
                 let to = self.fitted(&base, sketches, aspect).unwrap_or(base);
                 self.go_to(to);
+            }
+            NavRequest::LookAt { normal, up } => {
+                let mut c = self.camera;
+                c.forward = normal.map(|v| -v);
+                c.up = up;
+                c.orthonormalize();
+                self.go_to(c);
             }
         }
     }

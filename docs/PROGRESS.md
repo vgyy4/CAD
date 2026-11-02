@@ -69,7 +69,9 @@ Phase 3 has started (see Next).
   parallel, perpendicular, equal, angle; point and line: on line, midpoint, distance; ...):
   geometric constraints are added at once, dimensions open the form with kind and entities
   filled in. While a sketch is edited its constraints show as labels at their entities (ASCII
-  glyphs H, V, ||, _|_, =, T, Fix, M, S; dimensions as their expression, R/D for radii). Properties panel done (the running command's form docks at the right
+  glyphs H, V, ||, _|_, =, T, Fix, M, S; dimensions as their expression, R/D for radii).
+  Starting or editing a sketch turns the camera to look straight at its plane (animated,
+  `NavRequest::LookAt`). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and

@@ -248,6 +248,8 @@ pub struct App {
     pub selection: Vec<Hit>,
     /// The snapped point under the cursor while placing sketch geometry (preview).
     place_cursor: Option<Click>,
+    /// A sketch to turn the camera to once its plane is known (editing starts).
+    look_at_sketch: Option<String>,
     /// A sketch point being dragged: (sketch, point id, where it would go).
     drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
@@ -346,6 +348,7 @@ impl App {
             selection: Vec::new(),
             place_cursor: None,
             drag_preview: None,
+            look_at_sketch: None,
             chain: None,
             form: None,
             palette: None,
@@ -772,8 +775,9 @@ impl App {
                         } else if id == "sketch.create"
                             && let Some(name) = v.get("sketch").and_then(Value::as_str)
                         {
-                            // A new sketch is edited right away.
+                            // A new sketch is edited right away, looked at straight on.
                             self.active_sketch = Some(name.to_string());
+                            self.look_at_sketch = Some(name.to_string());
                             self.active_sketch_seen = false;
                         } else if id.starts_with("feature.") && self.active_sketch.is_some() {
                             // A solid feature made from the sketch: its editing is over.
@@ -1632,6 +1636,7 @@ impl App {
 
     /// Starts editing an existing sketch: the Sketch tab and its tools become active.
     pub fn edit_sketch(&mut self, name: &str) {
+        self.look_at_sketch = Some(name.to_string());
         self.active_sketch = Some(name.to_string());
         self.active_sketch_seen = true;
         self.sketch_visibility.insert(name.to_string(), true);
@@ -2121,6 +2126,18 @@ impl App {
             .map(|s| s.sketches.iter().filter(|d| self.sketch_visible(&d.name)).collect())
             .unwrap_or_default();
         self.viewport.planes = self.construction_planes();
+        if let Some(name) = &self.look_at_sketch
+            && let Some(s) = self.scene.as_ref().and_then(|d| d.eval.sketches.get(name))
+        {
+            let f = s.frame;
+            let n = [
+                f.x[1] * f.y[2] - f.x[2] * f.y[1],
+                f.x[2] * f.y[0] - f.x[0] * f.y[2],
+                f.x[0] * f.y[1] - f.x[1] * f.y[0],
+            ];
+            self.viewport.request(NavRequest::LookAt { normal: n, up: f.y });
+            self.look_at_sketch = None;
+        }
         self.viewport.edit_sketch = self.editing_sketch().map(str::to_string);
         let placing = self.placing();
         let preview = placing.as_ref().zip(self.form.as_ref()).map(|((frame, _), form)| {

@@ -588,3 +588,17 @@ fn constraint_kinds(h: &Harness<'static, App>) -> Vec<String> {
     };
     s.constraints.iter().map(|c| c.kind.keyword().to_string()).collect()
 }
+
+#[test]
+fn editing_a_sketch_looks_straight_at_its_plane() {
+    let mut h = harness(app());
+    h.state_mut().run("sketch.create", json!({"plane": "XZ", "name": "F"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().viewport.reduce_motion = true;
+    h.run();
+    assert!(looks_like(&h, NamedView::Iso));
+    h.state_mut().edit_sketch("F");
+    h.run();
+    // XZ: the normal is -Y, so the camera looks along +Y with Z up (the front view).
+    assert!(looks_like(&h, NamedView::Front), "{:?}", h.state().viewport.camera);
+}
