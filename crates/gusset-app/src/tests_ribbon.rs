@@ -633,3 +633,51 @@ fn clicks_inside_sketch_regions_pick_the_extrude_profile() {
     assert!(!value(&h).split(", ").any(|v| v == first.id), "{}", value(&h));
     assert!(h.state().selection.is_empty());
 }
+
+/// The whole first-part flow with the mouse, as a user does it: a sketch on XY, a
+/// rectangle by two clicks, Finish sketch, Extrude with the region picked by a click.
+#[test]
+fn first_part_by_mouse_from_sketch_to_solid() {
+    let mut h = harness(app());
+    h.state_mut().viewport.reduce_motion = true;
+    let settle = |h: &mut Harness<'static, App>| {
+        h.run_steps(3);
+        h.state_mut().wait_idle();
+        h.run_steps(3);
+    };
+    h.run();
+    h.get_by_label("New sketch on XY").click();
+    h.run();
+    h.get_by_label("OK").click();
+    settle(&mut h);
+    assert_eq!(h.state().active_sketch(), Some("Sketch1"));
+    // The camera faces the XY plane: two clicks around the viewport's center make a
+    // rectangle; the tool stays on until Escape.
+    h.get_by_label(title("sketch.add_rectangle")).click();
+    h.run();
+    let c = h.state().viewport.rect().center();
+    click_at(&mut h, c - egui::vec2(60.0, 40.0));
+    click_at(&mut h, c + egui::vec2(60.0, 40.0));
+    settle(&mut h);
+    assert_eq!(form_command(&h), Some("sketch.add_rectangle"));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().form.is_none());
+    let regions = h.state().evaluation().and_then(|e| e.sketches.get("Sketch1")?.regions.clone().ok());
+    assert_eq!(regions.as_ref().map(Vec::len), Some(1), "{regions:?}");
+    h.get_by_label("Finish sketch").click();
+    h.run();
+    // Extrude: the sketch is filled in, a click inside the rectangle picks its region.
+    h.get_by_label(title("feature.extrude")).click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("sketch")), Some("Sketch1"));
+    let c = h.state().viewport.rect().center();
+    click_at(&mut h, c);
+    let picked = h.state().form.as_ref().and_then(|f| f.value("regions")).unwrap_or_default().to_string();
+    assert!(!picked.is_empty(), "no region picked");
+    h.state_mut().form.as_mut().map(|f| f.set("distance", "10 mm"));
+    h.get_by_label("OK").click();
+    settle(&mut h);
+    let ev = h.state().evaluation().expect("evaluated");
+    assert_eq!(ev.bodies.len(), 1, "{:?} / {:?}", h.state().notice, ev.statuses);
+}
