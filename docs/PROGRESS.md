@@ -164,7 +164,12 @@ Phase 3 has started (see Next).
      done (ADR 0031: translate/turn faces rigidly, the faces around keep their surfaces and
      stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). FreeCAD and OpenSCAD
      import done (`gusset-scad`, FCStd in the import worker). Next in the tier: Parasolid XT
-     (clean-room reader, research in progress: docs/research/parasolid-xt.md).
+     (clean-room reader; research done in docs/research/parasolid-xt.md: the public XT
+     Format Reference covers schema 12 only, modern files are deltas against the V13 base
+     schema whose field lists are not public; 38 public-domain samples exist in NIST's
+     usnistgov/engineering-design-models (Bentley, Unigraphics, VDS; old schemas, e.g.
+     SCH_901297). Plan: XT -> STEP text -> the sandboxed STEP import, ~5k lines; deferred
+     behind the app work (owner 2026-11-02: "start working on the actual app").
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
