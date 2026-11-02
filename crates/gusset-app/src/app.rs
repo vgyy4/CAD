@@ -1879,6 +1879,38 @@ impl App {
         }
     }
 
+    /// Sketch mode with picked sketch items and no form open: the constraints that fit them.
+    fn constrain_bar(&mut self, ui: &Ui, pal: &theme::Palette) {
+        if self.form.is_some() {
+            return;
+        }
+        let Some(sketch) = self.editing_sketch().map(str::to_string) else { return };
+        let ids: Vec<String> = self
+            .selection
+            .iter()
+            .filter_map(|h| match h {
+                Hit::Sketch { sketch: s, id } if *s == sketch => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let offered = crate::sketch_constrain::suggestions(&refs);
+        let Some(s) = crate::sketch_constrain::toolbar(ui, self.viewport.rect(), &offered, pal) else { return };
+        if s.value {
+            // A dimension: the form, filled in but for the value.
+            self.start_command("sketch.add_constraint");
+            if let Some(form) = self.form.as_mut() {
+                form.set("sketch", &sketch);
+                form.set("kind", s.kind);
+                form.set("entities", &s.entities.join(", "));
+            }
+        } else {
+            let args = json!({ "sketch": sketch, "kind": s.kind, "entities": s.entities });
+            self.submit_command("sketch.add_constraint", args, Then::Notice);
+            self.selection.clear();
+        }
+    }
+
     /// A dragged sketch point follows the pointer on the sketch plane; on release it is
     /// moved with `sketch.move_point` (the solver then keeps the constraints).
     /// Returns whether the preview changed.
@@ -2138,6 +2170,7 @@ impl App {
         }
         self.place_cursor = None;
         let empty = self.viewport.scene().is_empty() && sketches.is_empty();
+        self.constrain_bar(ui, &pal);
         if let Some(d) = &out.drag
             && self.sketch_drag(d)
         {

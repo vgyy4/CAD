@@ -536,3 +536,51 @@ fn sketch_lines_are_placed_with_viewport_clicks_and_chain() {
     let landed = h.state().viewport.screen_pos([after[0], after[1], 0.0]).expect("on screen");
     assert!(landed.distance(to) < 2.0, "{landed:?} vs {to:?}");
 }
+
+#[test]
+fn picked_sketch_items_offer_the_constraints_that_fit() {
+    let mut h = harness(app());
+    let a = h.state_mut();
+    a.run("sketch.create", json!({"plane": "XY", "name": "S"})).unwrap();
+    a.run("sketch.add_line", json!({"sketch": "S", "x1": 0, "y1": 0, "x2": 10, "y2": 1})).unwrap();
+    a.run("sketch.add_line", json!({"sketch": "S", "x1": 0, "y1": 5, "x2": 10, "y2": 7})).unwrap();
+    a.wait_idle();
+    a.edit_sketch("S");
+    let lines = sketch_lines(&h, "S");
+    let (l1, l2) = (lines_ids(&h)[0].clone(), lines_ids(&h)[1].clone());
+    assert_eq!(lines.len(), 2);
+    let pick = |id: &str| crate::viewport::Hit::Sketch { sketch: "S".into(), id: id.into() };
+    h.state_mut().selection = vec![pick(&l1), pick(&l2)];
+    h.run();
+    h.get_by_label("Parallel").click();
+    h.run_steps(3);
+    h.state_mut().wait_idle();
+    h.run_steps(3);
+    let kinds = constraint_kinds(&h);
+    assert!(kinds.contains(&"parallel".to_string()), "{kinds:?}");
+    assert!(h.state().selection.is_empty());
+    // A dimension opens the form with the kind and entities filled in.
+    h.state_mut().selection = vec![pick(&l1)];
+    h.run();
+    h.get_by_label("Length…").click();
+    h.run();
+    let form = h.state().form.as_ref().expect("form");
+    assert_eq!((form.command, form.value("kind")), ("sketch.add_constraint", Some("distance")));
+    assert_eq!(form.value("entities"), Some(format!("{l1}, {l1}").as_str()));
+}
+
+fn lines_ids(h: &Harness<'static, App>) -> Vec<String> {
+    let doc = &h.state().snapshot.doc;
+    let Some(gusset_doc::FeatureKind::Sketch(s)) = doc.features.iter().find(|f| f.name == "S").map(|f| &f.kind) else {
+        return Vec::new();
+    };
+    s.entities.iter().filter(|e| matches!(e.geom, gusset_doc::SkGeom::Line { .. })).map(|e| e.id.clone()).collect()
+}
+
+fn constraint_kinds(h: &Harness<'static, App>) -> Vec<String> {
+    let doc = &h.state().snapshot.doc;
+    let Some(gusset_doc::FeatureKind::Sketch(s)) = doc.features.iter().find(|f| f.name == "S").map(|f| &f.kind) else {
+        return Vec::new();
+    };
+    s.constraints.iter().map(|c| c.kind.keyword().to_string()).collect()
+}

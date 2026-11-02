@@ -64,7 +64,11 @@ Phase 3 has started (see Next).
   `sketch.add_constraint` entities, `sketch.delete_items` ids and `sketch.move_point`, and the
   Delete key removes the picked items. A left drag from a point of the edited sketch moves it
   (rubber-band preview of its lines; `sketch.move_point` on release, so the solver keeps the
-  constraints). Properties panel done (the running command's form docks at the right
+  constraints). A constraint toolbar at the top of the viewport offers what fits the picked
+  sketch items (`sketch_constrain.rs`: one line: horizontal, vertical, length; two lines:
+  parallel, perpendicular, equal, angle; point and line: on line, midpoint, distance; ...):
+  geometric constraints are added at once, dimensions open the form with kind and entities
+  filled in. Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
@@ -73,7 +77,7 @@ Phase 3 has started (see Next).
   through the cut draw as a flat tinted cut face; picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.

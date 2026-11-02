@@ -120,6 +120,27 @@ fn generate_gallery() {
         a.viewport.set_plane_visible("XY", true);
         a.browser.set_open(crate::browser::Category::Origin, true);
         shoot(&dir, &format!("12-planes-{t}"), a, |_| {});
+        // Two picked lines of the edited sketch: the constraints that fit them.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.edit_sketch("Profile");
+        a.viewport.camera.set_view(gusset_render::NamedView::Front);
+        a.viewport.fit_pending = true;
+        let lines: Vec<String> = match a.snapshot.doc.features.iter().find(|f| f.name == "Profile").map(|f| &f.kind) {
+            Some(gusset_doc::FeatureKind::Sketch(s)) => s
+                .entities
+                .iter()
+                .filter(|e| matches!(e.geom, gusset_doc::SkGeom::Line { .. }))
+                .map(|e| e.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        a.selection = lines
+            .iter()
+            .take(2)
+            .map(|id| crate::viewport::Hit::Sketch { sketch: "Profile".into(), id: id.clone() })
+            .collect();
+        shoot(&dir, &format!("14-constrain-{t}"), a, |_| {});
         // Sketch geometry placed with clicks: a line from a clicked point to the cursor.
         let mut a = app(theme);
         bracket(&mut a);

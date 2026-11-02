@@ -501,6 +501,12 @@ impl Viewport {
         }
     }
 
+    /// Where the viewport was drawn last frame.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.last_rect
+    }
+
     /// Where a world point appears on screen in the last drawn frame.
     #[must_use]
     pub fn screen_pos(&self, world: Vec3) -> Option<Pos2> {
