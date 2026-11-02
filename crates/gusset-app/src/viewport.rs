@@ -44,6 +44,8 @@ pub struct DrawSketch {
     pub point_ids: Vec<String>,
     /// Constraint glyphs and dimension values, drawn while the sketch is edited.
     pub labels: Vec<([f32; 3], String)>,
+    /// Drawn thick in the selection color (picked profile regions).
+    pub emphasis: bool,
 }
 
 /// A construction plane (an origin plane or a datum plane), drawn as a translucent square
@@ -916,7 +918,7 @@ impl Viewport {
             }
             for (i, pl) in s.polylines.iter().enumerate() {
                 let pts: Vec<Pos2> = pl.iter().filter_map(|&v| to_screen(v)).collect();
-                let c = shade(s, s.ids.get(i));
+                let c = if s.emphasis { pal.vp_select } else { shade(s, s.ids.get(i)) };
                 let w = if c == pal.accent { 1.6 } else { 2.6 };
                 painter.add(egui::Shape::line(pts, Stroke::new(w, c)));
             }

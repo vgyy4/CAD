@@ -15,6 +15,7 @@ pub mod ribbon;
 pub mod sheet;
 pub mod sketch_constrain;
 pub mod sketch_place;
+pub mod sketch_regions;
 pub mod theme;
 pub mod timeline;
 pub mod viewport;

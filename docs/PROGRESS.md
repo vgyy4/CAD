@@ -71,7 +71,11 @@ Phase 3 has started (see Next).
   filled in. While a sketch is edited its constraints show as labels at their entities (ASCII
   glyphs H, V, ||, _|_, =, T, Fix, M, S; dimensions as their expression, R/D for radii).
   Starting or editing a sketch turns the camera to look straight at its plane (animated,
-  `NavRequest::LookAt`). Properties panel done (the running command's form docks at the right
+  `NavRequest::LookAt`).
+  Profile regions are picked in the viewport: while a form with `regions` (extrude, revolve)
+  is open, its sketch is shown and a click inside a closed region toggles it in the field
+  (`sketch_regions.rs`: outer loops chained from the region's entities, the smallest
+  containing region wins, so holes work); picked regions are outlined in the selection color. Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and

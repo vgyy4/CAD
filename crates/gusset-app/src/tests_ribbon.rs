@@ -602,3 +602,34 @@ fn editing_a_sketch_looks_straight_at_its_plane() {
     // XZ: the normal is -Y, so the camera looks along +Y with Z up (the front view).
     assert!(looks_like(&h, NamedView::Front), "{:?}", h.state().viewport.camera);
 }
+
+#[test]
+fn clicks_inside_sketch_regions_pick_the_extrude_profile() {
+    let mut h = harness(app());
+    let a = h.state_mut();
+    a.run("sketch.create", json!({"plane": "XY", "name": "S"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "S", "x": 0, "y": 0, "width": 40, "height": 30})).unwrap();
+    a.run("sketch.add_circle", json!({"sketch": "S", "cx": 20, "cy": 15, "radius": 6})).unwrap();
+    a.wait_idle();
+    a.viewport.reduce_motion = true;
+    h.run();
+    h.state_mut().start_command("feature.extrude");
+    h.run();
+    h.run();
+    assert_eq!(h.state().form.as_ref().and_then(|f| f.value("sketch")), Some("S"));
+    let regions = h.state().evaluation().and_then(|e| e.sketches.get("S")?.regions.clone().ok()).expect("regions");
+    assert_eq!(regions.len(), 2, "{regions:?}");
+    let value =
+        |h: &Harness<'static, App>| h.state().form.as_ref().and_then(|f| f.value("regions")).unwrap_or("").to_string();
+    for r in &regions {
+        let at = h.state().viewport.screen_pos([r.at[0], r.at[1], 0.0]).expect("on screen");
+        click_at(&mut h, at);
+        assert!(value(&h).split(", ").any(|v| v == r.id), "{} after clicking {}", value(&h), r.id);
+    }
+    // A second click on a picked region drops it; the selection was not touched.
+    let first = regions.first().expect("region");
+    let at = h.state().viewport.screen_pos([first.at[0], first.at[1], 0.0]).expect("on screen");
+    click_at(&mut h, at);
+    assert!(!value(&h).split(", ").any(|v| v == first.id), "{}", value(&h));
+    assert!(h.state().selection.is_empty());
+}

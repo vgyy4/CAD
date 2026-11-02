@@ -1697,7 +1697,7 @@ impl App {
     /// Whether a sketch is drawn in the viewport: the one being edited, one the user
     /// made visible, or (by default) one no feature consumes as a profile.
     pub fn sketch_visible(&self, name: &str) -> bool {
-        if self.editing_sketch() == Some(name) {
+        if self.editing_sketch() == Some(name) || self.region_form_sketch() == Some(name) {
             return true;
         }
         match self.sketch_visibility.get(name) {
@@ -1959,6 +1959,44 @@ impl App {
         }
     }
 
+    /// The sketch whose regions the open form picks (it has `sketch` and `regions` fields).
+    fn region_form_sketch(&self) -> Option<&str> {
+        let form = self.form.as_ref()?;
+        form.fields.iter().find(|f| f.name == "regions")?;
+        form.value("sketch").map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// The picked regions of the region form's sketch, as thick outlines.
+    fn region_outlines(&self) -> Option<DrawSketch> {
+        let name = self.region_form_sketch()?;
+        let s = self.scene.as_ref()?.eval.sketches.get(name)?;
+        let picked: Vec<&str> = self.form.as_ref()?.value("regions")?.split(',').map(str::trim).collect();
+        let w = |p: [f64; 2]| s.frame.to_world(p).map(|c| c as f32);
+        Some(DrawSketch {
+            polylines: crate::sketch_regions::outlines(s)
+                .into_iter()
+                .filter(|(id, _)| picked.contains(&id.as_str()))
+                .map(|(_, pl)| pl.into_iter().map(w).collect())
+                .collect(),
+            emphasis: true,
+            ..DrawSketch::default()
+        })
+    }
+
+    /// A click on the region form's sketch plane inside a region toggles that region.
+    fn region_click(&mut self, ray: &gusset_render::Ray) -> bool {
+        let Some(name) = self.region_form_sketch() else { return false };
+        let Some(s) = self.scene.as_ref().and_then(|d| d.eval.sketches.get(name)) else { return false };
+        let Some(id) = sketch_place::on_plane(&s.frame, ray).and_then(|p| crate::sketch_regions::region_at(s, p))
+        else {
+            return false;
+        };
+        let Some(form) = self.form.as_mut() else { return false };
+        let list = crate::sketch_regions::toggle(form.value("regions").unwrap_or_default(), &id);
+        form.set("regions", &list);
+        true
+    }
+
     /// The origin planes and the datum planes, sized to the model.
     fn construction_planes(&self) -> Vec<crate::viewport::DrawPlane> {
         let b = self.viewport.scene().bounds();
@@ -2167,9 +2205,11 @@ impl App {
                 ..DrawSketch::default()
             })
         });
+        let regions = self.region_outlines();
         let mut sketches = sketches;
         sketches.extend(preview.as_ref());
         sketches.extend(dragged.as_ref());
+        sketches.extend(regions.as_ref());
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
 
         if let Some((frame, points)) = &placing {
@@ -2199,7 +2239,9 @@ impl App {
         {
             ui.ctx().request_repaint();
         }
-        if let Some(clicked) = out.clicked {
+        // With a form that takes regions, a click inside one toggles it.
+        let region_picked = out.clicked.is_some() && out.pointer_ray.is_some_and(|r| self.region_click(&r));
+        if let Some(clicked) = out.clicked.filter(|_| !region_picked) {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             match clicked {
                 Some(h) if add => {
