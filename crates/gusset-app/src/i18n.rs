@@ -17,6 +17,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.view", "View"),
     ("menu.navigation", "Mouse navigation"),
     ("quick.search", "Search"),
+    ("select.other", "Select (Alt+click lists everything under the pointer)"),
     ("menu.full_screen", "Full-screen viewport (F11)"),
     ("menu.theme_dark", "Dark theme"),
     ("menu.theme_light", "Light theme"),

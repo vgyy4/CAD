@@ -52,6 +52,26 @@ impl Scene {
         (!back || section.is_none()).then_some(hit)
     }
 
+    /// Every face along `ray` (nearest first, at most `max`), for "select other": each hit
+    /// is found by casting again just past the previous one.
+    #[must_use]
+    pub fn pick_all(&self, ray: &Ray, section: Option<&Section>, max: usize) -> Vec<PickHit> {
+        let mut out: Vec<PickHit> = Vec::new();
+        let mut skip = 0.0;
+        let step = self.bounds().radius().max(1e-6) * 1e-6;
+        while out.len() < max {
+            let start = Ray { origin: add(ray.origin, scale(ray.dir, skip)), dir: ray.dir };
+            let Some((mut h, _)) = self.pick_kept(&start, section) else { break };
+            h.distance += skip;
+            h.point = add(ray.origin, scale(ray.dir, h.distance));
+            skip = h.distance + step;
+            if !out.iter().any(|o| o.mesh == h.mesh && o.face == h.face) {
+                out.push(h);
+            }
+        }
+        out
+    }
+
     /// Closest face in the kept part of the ray, and whether it is seen from behind.
     fn pick_kept(&self, ray: &Ray, section: Option<&Section>) -> Option<(PickHit, bool)> {
         let (t0, t1) = match section {
@@ -241,6 +261,18 @@ mod tests {
         // Everything removed.
         let sec = Section { origin: [0.0, 1e3, 0.0], normal: [0.0, -1.0, 0.0] };
         assert_eq!(s.pick_section(&ray, Some(&sec)), None);
+    }
+
+    #[test]
+    fn pick_all_lists_every_face_along_the_ray() {
+        let s = scene();
+        // Looking along +Y through both boxes: front and back faces of each, nearest first.
+        let ray = Ray { origin: [1.0, -100.0, 2.0], dir: [0.0, 1.0, 0.0] };
+        let hits = s.pick_all(&ray, None, 16);
+        let order: Vec<(u64, u32)> = hits.iter().map(|h| (h.mesh.0, h.face)).collect();
+        assert_eq!(order, [(1, 2), (1, 3), (2, 2), (2, 3)], "{hits:?}");
+        assert!(hits.windows(2).all(|w| w[0].distance < w[1].distance));
+        assert_eq!(s.pick_all(&ray, None, 2).len(), 2);
     }
 
     #[test]

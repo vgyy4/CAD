@@ -97,7 +97,9 @@ Phase 3 has started (see Next).
   the quick bar at the pointer, both with the context tools (last command first; sketch tools and
   Finish sketch while sketching); `sketch.create` gave up its S shortcut for it. Mouse navigation
   presets (View > Mouse navigation: Gusset, Fusion, SolidWorks, FreeCAD, Onshape) and the theme
-  and reduced motion are kept between runs in `ui-prefs.json` in the data folder. Live previews (DESIGN.md §1.6): while a feature or generator form has
+  and reduced motion are kept between runs in `ui-prefs.json` in the data folder. Select other
+  (DESIGN.md §1.14): Alt+click lists everything under the pointer (the edge, every face along the
+  ray through all bodies, `Scene::pick_all`, and planes) to pick from (Shift adds). Live previews (DESIGN.md §1.6): while a feature or generator form has
   complete arguments, the model thread builds what it would make once typing pauses
   (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
   model comes back when the form closes. `gusset_commands::preview` runs the command in the

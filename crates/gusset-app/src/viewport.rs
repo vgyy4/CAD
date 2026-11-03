@@ -147,6 +147,8 @@ pub struct Output {
     pub drag: Option<PointDrag>,
     /// A right click without a drag: where to open the marking menu.
     pub menu_at: Option<Pos2>,
+    /// Where a primary click landed (screen), for "select other".
+    pub click_at: Option<Pos2>,
     /// World size of one logical pixel at the view's target (snapping tolerances).
     pub pixel_size: f64,
 }
@@ -692,6 +694,37 @@ impl Viewport {
             .map(|(_, id)| hit(id))
     }
 
+    /// Everything under the screen point `at`, nearest first: the edge there, every face
+    /// along the view ray through all bodies, and the planes ("select other", DESIGN.md
+    /// §1.14). The selection filter applies.
+    #[must_use]
+    pub fn pick_all(&self, at: Pos2) -> Vec<Hit> {
+        let r = self.last_rect;
+        let (size, p) = (r.size(), (at - r.min).to_pos2());
+        let vp = [f64::from(size.x), f64::from(size.y)];
+        let px = [f64::from(p.x), f64::from(p.y)];
+        let section = self.section_plane();
+        let mut out = Vec::new();
+        if self.select_filter != SelectFilter::Faces
+            && let Some(e) = self.scene.pick_edge_section(&self.camera, vp, px, 5.0, section.as_ref())
+            && let Some(h) = self.hit_for_edge(e.mesh, e.edge)
+        {
+            out.push(h);
+        }
+        if self.select_filter != SelectFilter::Edges {
+            let ray = self.camera.ray(px, vp);
+            for f in self.scene.pick_all(&ray, section.as_ref(), 16) {
+                out.extend(self.hit_for_face(f.mesh, f.face));
+            }
+            out.extend(
+                self.visible_planes()
+                    .filter(|pl| pl.hit(&ray).is_some())
+                    .map(|pl| Hit::Plane { name: pl.name.clone() }),
+            );
+        }
+        out
+    }
+
     /// Whether a plane is drawn and picked.
     #[must_use]
     pub fn plane_visible(&self, name: &str) -> bool {
@@ -964,6 +997,9 @@ impl Viewport {
         self.drag_point(&resp, rect, sketches, &mut out);
         if resp.secondary_clicked() {
             out.menu_at = resp.interact_pointer_pos();
+        }
+        if resp.clicked() {
+            out.click_at = resp.interact_pointer_pos();
         }
         self.apply_highlights(selection);
 

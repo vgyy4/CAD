@@ -258,6 +258,8 @@ pub struct App {
     pub quick: Option<egui::Pos2>,
     /// The last command started (the menus offer it first).
     last_command: Option<&'static str>,
+    /// "Select other": everything under an Alt+click, listed at that point.
+    pub picker: Option<(egui::Pos2, Vec<Hit>)>,
     /// Dimensions being typed at the cursor while placing sketch geometry, with the last
     /// error.
     pub entry: Option<(crate::value_entry::Entry, Option<String>)>,
@@ -371,6 +373,7 @@ impl App {
             marking: None,
             quick: None,
             last_command: None,
+            picker: None,
             entry: None,
             place_cursor: None,
             drag_preview: None,
@@ -1059,6 +1062,50 @@ impl App {
         }
     }
 
+    /// The "select other" list, when open: a click picks (Shift adds), anything else closes.
+    fn select_other(&mut self, ctx: &egui::Context) {
+        let Some((at, hits)) = self.picker.clone() else { return };
+        let mut chosen = None;
+        // (Just up-left of the click, so the click that opened it lands inside.)
+        let area = egui::Area::new(egui::Id::new("select_other"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at - egui::vec2(6.0, 6.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(tr("select.other")).small().weak());
+                    for h in &hits {
+                        if ui.selectable_label(self.selection.contains(h), h.label()).clicked() {
+                            chosen = Some(h.clone());
+                        }
+                    }
+                });
+            });
+        if let Some(h) = chosen {
+            if ctx.input(|i| i.modifiers.shift) {
+                if !self.selection.contains(&h) {
+                    self.selection.push(h);
+                }
+            } else {
+                self.selection = vec![h];
+            }
+            self.picker = None;
+            if let Some(mut form) = self.form.take() {
+                if form.command == "feature.joint" {
+                    if let Some(h) = self.selection.last() {
+                        pick_joint_frame(&mut form, h);
+                    }
+                } else if form.command != "feature.edit" {
+                    self.fill_picks(&mut form, true);
+                }
+                self.form = Some(form);
+            }
+        } else if ctx.input(|i| {
+            i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p))
+        }) {
+            self.picker = None;
+        }
+    }
+
     /// The marking menu and the quick bar, when open, and what was chosen in them.
     fn quick_menus(&mut self, ctx: &egui::Context) {
         use crate::quick_menus::{self as qm, Tool};
@@ -1594,6 +1641,7 @@ impl App {
         // Last, so it is on top of every other dialog.
         self.approval_modal(&ctx);
         self.quick_menus(&ctx);
+        self.select_other(&ctx);
     }
 
     fn handle_close(&mut self, ctx: &egui::Context) {
@@ -1639,6 +1687,7 @@ impl App {
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
             self.marking = None;
             self.quick = None;
+            self.picker = None;
             self.form = None;
             self.palette = None;
             self.selection.clear();
@@ -2594,6 +2643,18 @@ impl App {
         if let Some(at) = out.menu_at {
             self.marking = Some(at);
             self.quick = None;
+        }
+        // Alt+click: choose among everything under the pointer.
+        let alt = ui.input(|i| i.modifiers.alt);
+        if alt
+            && !region_picked
+            && let Some(at) = out.click_at
+        {
+            let all = self.viewport.pick_all(at);
+            if all.len() > 1 {
+                self.picker = Some((at, all));
+                return;
+            }
         }
         if let Some(clicked) = out.clicked.filter(|_| !region_picked) {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);

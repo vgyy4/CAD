@@ -617,3 +617,33 @@ fn saved_preferences_come_back_in_a_new_window() {
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn alt_click_lists_everything_under_the_pointer() {
+    use crate::viewport::Hit;
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let at = find_pick(&h, |hit| matches!(hit, Hit::Face { .. })).expect("a face on screen");
+    h.hover_at(at);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::ALT,
+        });
+    }
+    h.run();
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+    let (_, hits) = h.state().picker.clone().expect("the list opens");
+    let faces = hits.iter().filter(|x| matches!(x, Hit::Face { .. })).count();
+    assert!(faces >= 2, "the near face and the one behind it: {hits:?}");
+    // Picking the second entry selects it.
+    let second = hits[1].clone();
+    h.get_by_label(&second.label()).click();
+    h.run();
+    assert_eq!(h.state().selection, vec![second]);
+    assert!(h.state().picker.is_none());
+}
