@@ -164,6 +164,65 @@ fn refine(a: &Cv, b: &Cv, mut ua: f64, mut ub: f64, tol: f64, work: &mut u64) ->
     Some((ua.clamp(da.0, da.1), ub.clamp(db.0, db.1), scale(add(pa, pb), 0.5)))
 }
 
+/// The parameter of `cv` nearest to `p`, by Newton from `u` (a local search).
+fn project(cv: &Cv, p: V2, mut u: f64, work: &mut u64) -> f64 {
+    let (d0, d1) = domain(cv);
+    let h = 1e-6 * (d1 - d0);
+    for _ in 0..8 {
+        *work += 1;
+        let (c, v) = eval(cv, u);
+        let (_, vp) = eval(cv, (u + h).min(d1));
+        let (_, vm) = eval(cv, (u - h).max(d0));
+        let acc = scale(sub(vp, vm), 1.0 / ((u + h).min(d1) - (u - h).max(d0)).max(1e-300));
+        let g = dot(sub(c, p), v);
+        let gp = dot(v, v) + dot(sub(c, p), acc);
+        if gp <= 1e-300 {
+            break;
+        }
+        let nu = (u - g / gp).clamp(d0, d1);
+        let done = (nu - u).abs() <= 1e-14 * (d1 - d0);
+        u = nu;
+        if done {
+            break;
+        }
+    }
+    u
+}
+
+/// A tangential touch of `a` (between parameters `lo` and `hi`) with `b` (near `ub`): where
+/// `a` comes closest to `b`, by golden-section search, if that is within `tol`. (Newton on
+/// `a = b` fails at a touch, where the curves are parallel.)
+fn touch(a: &Cv, b: &Cv, lo: f64, hi: f64, ub: f64, tol: f64, work: &mut u64) -> Option<(f64, f64, V2)> {
+    let da = domain(a);
+    let (mut x0, mut x1) = (lo.min(hi).max(da.0), hi.max(lo).min(da.1));
+    let mut vb = ub;
+    let mut gap = |u: f64, work: &mut u64| {
+        let p = eval(a, u).0;
+        vb = project(b, p, vb, work);
+        (dist(p, eval(b, vb).0), vb)
+    };
+    let g = 0.5 * (libm::sqrt(5.0) - 1.0);
+    let (mut m0, mut m1) = (x1 - g * (x1 - x0), x0 + g * (x1 - x0));
+    let (mut f0, mut f1) = (gap(m0, work).0, gap(m1, work).0);
+    for _ in 0..60 {
+        if f0 <= f1 {
+            x1 = m1;
+            (m1, f1) = (m0, f0);
+            m0 = x1 - g * (x1 - x0);
+            f0 = gap(m0, work).0;
+        } else {
+            x0 = m0;
+            (m0, f0) = (m1, f1);
+            m1 = x0 + g * (x1 - x0);
+            f1 = gap(m1, work).0;
+        }
+    }
+    let u = 0.5 * (x0 + x1);
+    let (d, v) = gap(u, work);
+    let (pa, pb) = (eval(a, u).0, eval(b, v).0);
+    (d <= tol).then(|| (u, v, scale(add(pa, pb), 0.5)))
+}
+
 fn diag(c: &Cell) -> f64 {
     norm([c.bbox[2] - c.bbox[0], c.bbox[3] - c.bbox[1]])
 }
@@ -219,11 +278,11 @@ fn overlapping_cells(ca: &[Cell], cb: &[Cell], tol: f64, work: &mut Work) -> Res
     Ok(pairs)
 }
 
-/// Intersections of two curves of which at least one is a spline. Tangential touches (no
-/// transversal crossing) are not found. Fails when `work` passes [`MAX_INTERSECT_WORK`].
+/// Intersections of two curves of which at least one is a spline, tangential touches
+/// included. Fails when `work` passes [`MAX_INTERSECT_WORK`].
 pub(crate) fn numeric_hits(a: &Cv, b: &Cv, tol: f64, work: &mut Work) -> Result<Vec<V2>, TooMuchWork> {
     let (ca, cb) = (cells(a), cells(b));
-    let mut out: Vec<V2> = Vec::new();
+    let mut out: Vec<(f64, f64, V2)> = Vec::new();
     for (i, j) in overlapping_cells(&ca, &cb, tol, work)? {
         let (Some(x), Some(y)) = (ca.get(i), cb.get(j)) else { continue };
         let eps = cell_eps(x, y, tol);
@@ -248,16 +307,47 @@ pub(crate) fn numeric_hits(a: &Cv, b: &Cv, tol: f64, work: &mut Work) -> Result<
                 if seg_dist(pa0, pa1, pb0, pb1) > eps {
                     continue;
                 }
-                if let Some((_, _, p)) = refine(a, b, 0.5 * (ua0 + ua1), 0.5 * (ub0 + ub1), tol, &mut steps)
-                    && !out.iter().any(|q| dist(*q, p) <= 10.0 * tol)
+                let (ua, ub) = (0.5 * (ua0 + ua1), 0.5 * (ub0 + ub1));
+                let hit = match refine(a, b, ua, ub, tol, &mut steps) {
+                    Some(h) => Some(h),
+                    // Near a touch the polylines come within `eps` without crossing (once
+                    // per stretch of `a` that has no hit yet).
+                    None if !out.iter().any(|h| (ua0.min(ua1)..=ua0.max(ua1)).contains(&h.0)) => {
+                        touch(a, b, ua0, ua1, ub, tol, &mut steps)
+                    }
+                    None => None,
+                };
+                if let Some(h) = hit
+                    && !out.iter().any(|q| dist(q.2, h.2) <= 10.0 * tol)
                 {
-                    out.push(p);
+                    out.push(h);
                 }
             }
         }
         work.charge(steps)?;
     }
-    Ok(out)
+    // Near a touch the curves stay within `tol` of each other along a stretch, and Newton
+    // finds scattered points on it: such neighbours are one touch, at the closest pair.
+    out.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut merged: Vec<(f64, f64, V2)> = Vec::new();
+    let mut steps = 0u64;
+    for h in out {
+        if let Some(last) = merged.last_mut() {
+            let (um, vm) = (0.5 * (last.0 + h.0), 0.5 * (last.1 + h.1));
+            let pm = eval(a, um).0;
+            let vq = project(b, pm, vm, &mut steps);
+            if dist(eval(b, vq).0, pm) <= tol {
+                let pad = 0.5 * (h.0 - last.0);
+                if let Some(t) = touch(a, b, last.0 - pad, h.0 + pad, vq, tol, &mut steps) {
+                    *last = t;
+                }
+                continue;
+            }
+        }
+        merged.push(h);
+    }
+    work.charge(steps)?;
+    Ok(merged.into_iter().map(|h| h.2).collect())
 }
 
 /// Parameter of the curve point nearest to `p` (for a spline, a hit position found earlier).

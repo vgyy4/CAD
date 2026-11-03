@@ -222,3 +222,29 @@ fn bad_splines_are_rejected_cleanly() {
     assert!(s.add_constraint(gusset_sketch::Constraint::Horizontal(sp2)).is_err());
     assert!(matches!(s.entity(sp2).unwrap().geom, Geom::Spline { closed: true, .. }));
 }
+
+#[test]
+fn a_spline_touching_a_line_cuts_it() {
+    // A symmetric spline through (0, 0) is tangent to the x axis there.
+    let mut s = Sketch::new();
+    let pts = points(&mut s, &[[-10.0, 5.0], [0.0, 0.0], [10.0, 5.0]]);
+    s.add_spline(&pts, false).unwrap();
+    let line = s.add_line([-10.0, 0.0], [10.0, 0.0]).unwrap();
+    let c = gusset_sketch::cuts(&s, line, [-5.0, 0.0], TOL).unwrap();
+    assert_eq!(c.cuts.len(), 1, "{c:?}");
+    assert!(c.cuts[0].pos[0].abs() < 1e-4 && c.cuts[0].pos[1].abs() < 1e-6, "{c:?}");
+    // A line just below it is not cut.
+    let mut s = Sketch::new();
+    let pts = points(&mut s, &[[-10.0, 5.0], [0.0, 0.0], [10.0, 5.0]]);
+    s.add_spline(&pts, false).unwrap();
+    let line = s.add_line([-10.0, -0.01], [10.0, -0.01]).unwrap();
+    assert!(gusset_sketch::cuts(&s, line, [-5.0, 0.0], TOL).unwrap().cuts.is_empty());
+    // Closed by the line, the touch makes two regions.
+    let mut s = Sketch::new();
+    let pts = points(&mut s, &[[-10.0, 5.0], [0.0, 0.0], [10.0, 5.0]]);
+    s.add_spline(&pts, false).unwrap();
+    s.add_line([-10.0, 0.0], [10.0, 0.0]).unwrap();
+    s.add_line([-10.0, 5.0], [-10.0, 0.0]).unwrap();
+    s.add_line([10.0, 5.0], [10.0, 0.0]).unwrap();
+    assert_eq!(arrange(&s, TOL).unwrap().profiles.len(), 2);
+}

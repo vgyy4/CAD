@@ -28,7 +28,11 @@ turned into regions, so they share this record.
    the other curve), and pieces running along the same stretch (same end vertices, same
    midpoint) are merged into one edge, owned by the lowest entity. A circle drawn twice
    is one circle. Trim cuts at the overlap ends. Only a spline crossing itself is still
-   `SelfIntersecting`.
+   `SelfIntersecting`. A spline's tangential touch is found too: where Newton on
+   `a = b` fails (parallel curves) and the flattened curves come close without crossing,
+   a golden-section search finds where one curve comes closest to the other, a hit when
+   within `tol`; neighbouring hits along a stretch where the curves stay within `tol`
+   merge into one touch.
 3. Each curve becomes a chain of **pieces** between its cuts. A circle with one cut gets
    a second cut at the opposite point so every piece is a proper arc; an uncut circle
    stays a circle.
