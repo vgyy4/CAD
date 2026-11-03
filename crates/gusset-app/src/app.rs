@@ -342,7 +342,8 @@ impl App {
         let events = host.subscribe();
         let (done_tx, done_rx) = mpsc::channel();
         let agents = Agents::new(&host, waker.clone());
-        App {
+        let prefs = dirs.as_ref().map(|d| crate::prefs::load(&crate::prefs::path(d.data_dir()))).unwrap_or_default();
+        let mut app = App {
             host,
             kernel,
             snapshot: Snapshot::default(),
@@ -401,7 +402,11 @@ impl App {
             cmdline: cmdline::State::default(),
             notice_since: None,
             agents,
-        }
+        };
+        app.theme = prefs.theme;
+        app.reduce_motion = prefs.reduce_motion;
+        app.viewport.nav_preset = prefs.nav;
+        app
     }
 
     /// The model thread this window talks to (shared with the MCP server).
@@ -1034,6 +1039,19 @@ impl App {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The window preferences as they stand.
+    fn prefs(&self) -> crate::prefs::Prefs {
+        crate::prefs::Prefs { theme: self.theme, reduce_motion: self.reduce_motion, nav: self.viewport.nav_preset }
+    }
+
+    /// Keeps the preferences for the next run (a failure only costs the preference).
+    fn save_prefs(&mut self) {
+        let Some(dirs) = &self.dirs else { return };
+        if let Err(e) = crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &self.prefs()) {
+            self.notice = Some(Notice { text: format!("Preferences not saved: {e}"), hint: None, error: true });
         }
     }
 
@@ -1709,6 +1727,7 @@ impl App {
                 }
             });
             ui.menu_button(tr("menu.view"), |ui| {
+                let before = self.prefs();
                 if ui.radio(self.theme == ThemeKind::Dark, tr("menu.theme_dark")).clicked() {
                     self.theme = ThemeKind::Dark;
                 }
@@ -1717,6 +1736,16 @@ impl App {
                 }
                 if ui.checkbox(&mut self.reduce_motion, "Reduce motion").changed() {
                     self.theme_applied = None;
+                }
+                ui.menu_button(tr("menu.navigation"), |ui| {
+                    for p in crate::viewport::NavPreset::ALL {
+                        if ui.radio(self.viewport.nav_preset == p, p.name()).clicked() {
+                            self.viewport.nav_preset = p;
+                        }
+                    }
+                });
+                if self.prefs() != before {
+                    self.save_prefs();
                 }
                 if ui.button(tr("menu.code")).clicked() {
                     self.toggle_code();

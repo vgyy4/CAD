@@ -254,6 +254,94 @@ struct SoftwareImage {
     key: FrameKey,
 }
 
+/// Mouse navigation presets (DESIGN.md §1.16): which button and modifier orbit, pan and
+/// zoom with a drag. The wheel zooms at the pointer in every preset, and a plain left drag
+/// stays selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavPreset {
+    /// Right or middle drag orbits, with Shift pans.
+    #[default]
+    Gusset,
+    /// Middle drag pans, Shift + middle orbits.
+    Fusion,
+    /// Middle drag orbits, Ctrl + middle pans, Shift + middle zooms.
+    SolidWorks,
+    /// FreeCAD's gesture style: right drag orbits, Ctrl + right pans.
+    FreeCad,
+    /// Right drag orbits, middle drag (or Ctrl + right) pans.
+    Onshape,
+}
+
+/// What a drag does to the camera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragAction {
+    Orbit,
+    Pan,
+    Zoom,
+}
+
+impl NavPreset {
+    pub const ALL: [NavPreset; 5] =
+        [NavPreset::Gusset, NavPreset::Fusion, NavPreset::SolidWorks, NavPreset::FreeCad, NavPreset::Onshape];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            NavPreset::Gusset => "Gusset",
+            NavPreset::Fusion => "Fusion",
+            NavPreset::SolidWorks => "SolidWorks",
+            NavPreset::FreeCad => "FreeCAD",
+            NavPreset::Onshape => "Onshape",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<NavPreset> {
+        NavPreset::ALL.into_iter().find(|p| p.name().eq_ignore_ascii_case(s))
+    }
+
+    /// The camera action of a right or middle drag with these modifiers.
+    #[must_use]
+    pub fn drag(self, button: egui::PointerButton, m: egui::Modifiers) -> Option<DragAction> {
+        use DragAction::{Orbit, Pan, Zoom};
+        use egui::PointerButton::{Middle, Secondary};
+        Some(match (self, button) {
+            (NavPreset::Gusset, Middle | Secondary) => {
+                if m.shift {
+                    Pan
+                } else {
+                    Orbit
+                }
+            }
+            (NavPreset::Fusion, Middle) => {
+                if m.shift {
+                    Orbit
+                } else {
+                    Pan
+                }
+            }
+            (NavPreset::SolidWorks, Middle) => {
+                if m.command {
+                    Pan
+                } else if m.shift {
+                    Zoom
+                } else {
+                    Orbit
+                }
+            }
+            (NavPreset::FreeCad | NavPreset::Onshape, Secondary) => {
+                if m.command {
+                    Pan
+                } else {
+                    Orbit
+                }
+            }
+            (NavPreset::Onshape, Middle) => Pan,
+            _ => return None,
+        })
+    }
+}
+
 /// A display-only section view: a plane across one world axis through the model's box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectionView {
@@ -306,6 +394,8 @@ pub struct Viewport {
     pub fit_pending: bool,
     /// What a plain left drag does (the navigation bar's Orbit, Pan and Zoom tools).
     pub nav_mode: NavMode,
+    /// Which right and middle drags orbit, pan and zoom.
+    pub nav_preset: NavPreset,
     /// Draw model edges (the navigation bar's view style toggle).
     pub show_edges: bool,
     /// Wireframe style: edges only, hidden edges included (the navigation bar's toggle).
@@ -369,6 +459,7 @@ impl Default for Viewport {
             interacting: false,
             fit_pending: true,
             nav_mode: NavMode::Select,
+            nav_preset: NavPreset::Gusset,
             show_edges: true,
             wireframe: false,
             hidden_bodies: std::collections::BTreeSet::new(),
@@ -770,7 +861,7 @@ impl Viewport {
 
     fn camera_input(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect) -> bool {
         let mut moved = false;
-        let shift = ui.input(|i| i.modifiers.shift);
+        let mods = ui.input(|i| i.modifiers);
         let h = f64::from(rect.height());
         if self.nav_mode != NavMode::Select && resp.dragged_by(egui::PointerButton::Primary) {
             let d = resp.drag_delta();
@@ -782,13 +873,17 @@ impl Viewport {
             }
             moved = true;
         }
-        if resp.dragged_by(egui::PointerButton::Middle) || resp.dragged_by(egui::PointerButton::Secondary) {
+        for button in [egui::PointerButton::Middle, egui::PointerButton::Secondary] {
+            let Some(action) = resp.dragged_by(button).then(|| self.nav_preset.drag(button, mods)).flatten() else {
+                continue;
+            };
             let d = resp.drag_delta();
             if d != Vec2::ZERO {
-                if shift {
-                    self.camera.pan_pixels(f64::from(d.x), f64::from(d.y), h);
-                } else {
-                    self.camera.orbit_pixels(f64::from(d.x), f64::from(d.y), h);
+                let (dx, dy) = (f64::from(d.x), f64::from(d.y));
+                match action {
+                    DragAction::Orbit => self.camera.orbit_pixels(dx, dy, h),
+                    DragAction::Pan => self.camera.pan_pixels(dx, dy, h),
+                    DragAction::Zoom => self.camera.zoom((-dy * 0.01).exp()),
                 }
             }
             moved = true;
@@ -1199,6 +1294,26 @@ mod tests {
         assert!(matches!(v.pick(size, kept), Some((Hit::Face { ref name, .. }, _)) if name == "top"));
         v.section = Some(SectionView { axis: 1, at: 0.75, flip: true });
         assert!(v.pick(size, center).is_some());
+    }
+
+    #[test]
+    fn navigation_presets_map_drags() {
+        use egui::PointerButton::{Middle, Primary, Secondary};
+        let none = egui::Modifiers::NONE;
+        let shift = egui::Modifiers::SHIFT;
+        let ctrl = egui::Modifiers::COMMAND;
+        assert_eq!(NavPreset::Gusset.drag(Secondary, none), Some(DragAction::Orbit));
+        assert_eq!(NavPreset::Gusset.drag(Middle, shift), Some(DragAction::Pan));
+        assert_eq!(NavPreset::Fusion.drag(Middle, none), Some(DragAction::Pan));
+        assert_eq!(NavPreset::Fusion.drag(Middle, shift), Some(DragAction::Orbit));
+        assert_eq!(NavPreset::Fusion.drag(Secondary, none), None);
+        assert_eq!(NavPreset::SolidWorks.drag(Middle, ctrl), Some(DragAction::Pan));
+        assert_eq!(NavPreset::SolidWorks.drag(Middle, shift), Some(DragAction::Zoom));
+        assert_eq!(NavPreset::Onshape.drag(Middle, none), Some(DragAction::Pan));
+        assert_eq!(NavPreset::FreeCad.drag(Secondary, ctrl), Some(DragAction::Pan));
+        // A left drag is never navigation (it selects).
+        assert!(NavPreset::ALL.iter().all(|p| p.drag(Primary, none).is_none()));
+        assert_eq!(NavPreset::from_name("solidworks"), Some(NavPreset::SolidWorks));
     }
 
     #[test]

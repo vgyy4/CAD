@@ -92,7 +92,9 @@ Phase 3 has started (see Next).
   confirms and opens the command again with the same values. Cursor-local tools (DESIGN.md §1.3,
   `quick_menus.rs`): a right click in the viewport (no drag) opens a radial marking menu and S opens
   the quick bar at the pointer, both with the context tools (last command first; sketch tools and
-  Finish sketch while sketching); `sketch.create` gave up its S shortcut for it. Live previews (DESIGN.md §1.6): while a feature or generator form has
+  Finish sketch while sketching); `sketch.create` gave up its S shortcut for it. Mouse navigation
+  presets (View > Mouse navigation: Gusset, Fusion, SolidWorks, FreeCAD, Onshape) and the theme
+  and reduced motion are kept between runs in `ui-prefs.json` in the data folder. Live previews (DESIGN.md §1.6): while a feature or generator form has
   complete arguments, the model thread builds what it would make once typing pauses
   (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
   model comes back when the form closes. `gusset_commands::preview` runs the command in the

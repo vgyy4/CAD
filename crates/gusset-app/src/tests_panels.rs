@@ -600,3 +600,20 @@ fn marking_menu_and_quick_bar_start_context_tools() {
     h.run();
     assert!(h.state().quick.is_none());
 }
+
+#[test]
+fn saved_preferences_come_back_in_a_new_window() {
+    let dir = std::env::temp_dir().join(format!("gusset-app-prefs-{}", std::process::id()));
+    let dirs = gusset_store::paths::DataDirs::at(dir.join("data"), dir.join("cache"));
+    std::fs::create_dir_all(dirs.data_dir()).unwrap();
+    let want = crate::prefs::Prefs {
+        theme: crate::theme::ThemeKind::Light,
+        reduce_motion: true,
+        nav: crate::viewport::NavPreset::Fusion,
+    };
+    crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
+    let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
+    assert_eq!((a.theme, a.reduce_motion, a.viewport.nav_preset), (want.theme, want.reduce_motion, want.nav));
+    drop(a);
+    let _ = std::fs::remove_dir_all(&dir);
+}
