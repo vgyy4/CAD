@@ -129,6 +129,8 @@ pub enum Action {
     EditFeature(String),
     /// A choice from a feature's context menu.
     FeatureMenu(String, FeatureChoice),
+    /// Open the parameters table (batch editing).
+    ParamTable,
     /// Double-click on a sketch.
     EditSketch(String),
     /// "+ Add parameter".
@@ -601,6 +603,9 @@ fn parameters(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         ui.add_space(INDENT);
         if ui.small_button(format!("+ {}", tr("browser.add_param"))).clicked() {
             out.push(Action::AddParam);
+        }
+        if ui.small_button(tr("params.table")).clicked() {
+            out.push(Action::ParamTable);
         }
     });
 }

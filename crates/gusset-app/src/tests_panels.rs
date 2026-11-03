@@ -731,3 +731,29 @@ fn command_search_finds_features_parameters_and_settings() {
     assert_eq!(h.state().theme, crate::theme::ThemeKind::Light);
     assert!(h.state().palette.is_none());
 }
+
+#[test]
+fn the_parameters_table_applies_changes_in_one_step() {
+    let mut a = crate::tests::app();
+    a.run("param.set", json!({"name": "width", "expr": "40 mm"})).unwrap();
+    a.run("param.set", json!({"name": "depth", "expr": "width / 4"})).unwrap();
+    a.wait_idle();
+    let mut h = quick_harness(a);
+    settle(&mut h);
+    h.state_mut().open_param_table();
+    h.run();
+    let rows = h.state_mut().param_table.as_mut().expect("open");
+    assert_eq!(rows.len(), 3, "two parameters and the new-parameter row");
+    rows[0].1 = "60 mm".into();
+    rows[2].0 = "gap".into();
+    rows[2].1 = "2 mm".into();
+    h.get_by_label("Apply").click();
+    settle(&mut h);
+    assert!(h.state().param_table.is_none());
+    let expr = |h: &Harness<'static, App>, n: &str| {
+        h.state().snapshot.doc.params.iter().find(|p| p.name == n).map(|p| p.expr.to_string())
+    };
+    assert_eq!(expr(&h, "width"), Some("60 mm".into()));
+    assert_eq!(expr(&h, "gap"), Some("2 mm".into()));
+    assert_eq!(expr(&h, "depth"), Some("width / 4".into()), "unchanged rows are left alone");
+}

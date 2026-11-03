@@ -1455,3 +1455,24 @@ fn references_are_replaced_in_place() {
         assert!(err.message.contains(want), "{err:?}");
     }
 }
+
+#[test]
+fn several_parameters_change_in_one_step() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let r = run(&mut s, &u, "param.set_many", json!({"values": {"width": "60 mm", "depth": "width / 6"}}));
+    assert_eq!(r["values"]["depth"], "10 mm", "{r}");
+    let b = run(&mut s, &u, "query.body", json!({}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 60.0 * 20.0 * 10.0).abs() < 1e-6, "{b}");
+    // One undo reverts both.
+    run(&mut s, &u, "history.undo", json!({}));
+    let b = run(&mut s, &u, "query.body", json!({}));
+    assert!((b["volume_mm3"].as_f64().unwrap() - 40.0 * 20.0 * 10.0).abs() < 1e-6, "{b}");
+    // All or nothing: one bad value changes nothing.
+    let e =
+        execute(&mut s, &u, "param.set_many", json!({"values": {"width": "50 mm", "depth": "nope + 1"}})).unwrap_err();
+    assert!(e.message.contains("depth"), "{e:?}");
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert_eq!(doc.params.iter().find(|p| p.name == "width").unwrap().expr.to_string(), "40 mm");
+}

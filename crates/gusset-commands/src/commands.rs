@@ -75,6 +75,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<GetText>(),
         spec::<SetText>(),
         spec::<ParamSet>(),
+        spec::<ParamSetMany>(),
         spec::<ParamRename>(),
         spec::<ParamDelete>(),
         spec::<SketchCreate>(),
@@ -915,6 +916,52 @@ impl Command for ParamSet {
                 None => Value::Null,
             };
             Ok(json!({ "value": val }))
+        })
+    }
+}
+
+/// Sets several parameters' expressions at once: one undo step, all or nothing.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParamSetMany {
+    /// Parameter name to expression, e.g. `{"width": "40 mm", "depth": "width / 4"}`.
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+impl Command for ParamSetMany {
+    const ID: &'static str = "param.set_many";
+    const TITLE: &'static str = "Set parameters";
+    const DESCRIPTION: &'static str = "Change or create several parameters at once (one undo step, all or nothing).";
+    const CATEGORY: Category = Category::Parameters;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.values.is_empty() {
+            return Err(CommandError::args("give at least one parameter"));
+        }
+        let mut parsed = Vec::with_capacity(self.values.len());
+        for (name, src) in &self.values {
+            params::validate_name(name).map_err(CommandError::args)?;
+            parsed.push((name.clone(), parse_expr(name, src)?));
+        }
+        edit(s, ctx, &format!("Set {} parameters", parsed.len()), |doc, _| {
+            for (name, expr) in parsed {
+                match doc.params.iter_mut().find(|p| p.name == name) {
+                    Some(p) => p.expr = expr,
+                    None => doc.params.push(Param { name, expr, comment: String::new(), range: Default::default() }),
+                }
+            }
+            let v = params::evaluate(&doc.params, doc.units);
+            let mut values = serde_json::Map::new();
+            for name in self.values.keys() {
+                match v.get(name) {
+                    Some(Ok(q)) => {
+                        values.insert(name.clone(), json!(q.display(doc.units)));
+                    }
+                    Some(Err(e)) => return Err(CommandError::args(format!("{name}: {e}"))),
+                    None => {}
+                }
+            }
+            Ok(json!({ "values": values }))
         })
     }
 }

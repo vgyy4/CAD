@@ -260,6 +260,9 @@ pub struct App {
     last_command: Option<&'static str>,
     /// Recently opened or saved project files, newest first.
     pub recent: Vec<String>,
+    /// The parameters table, while open: (name, expression being edited, expression when
+    /// opened) per row; the last row adds a parameter.
+    pub param_table: Option<Vec<(String, String, String)>>,
     /// The rollback marker before an earlier sketch was edited (restored on Finish sketch).
     sketch_rollback: Option<Option<usize>>,
     /// "Select other": everything under an Alt+click, listed at that point.
@@ -379,6 +382,7 @@ impl App {
             last_command: None,
             sketch_rollback: None,
             recent: Vec::new(),
+            param_table: None,
             picker: None,
             entry: None,
             place_cursor: None,
@@ -1667,6 +1671,7 @@ impl App {
         });
 
         self.palette_window(&ctx);
+        self.param_table_window(&ctx);
         self.dialogs(&ctx);
         // Last, so it is on top of every other dialog.
         self.approval_modal(&ctx);
@@ -1841,6 +1846,9 @@ impl App {
                     self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.full_screen, tr("menu.full_screen"));
+                if ui.button(tr("params.title")).clicked() {
+                    self.open_param_table();
+                }
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
                 if ui.checkbox(&mut self.cmdline.visible, tr("menu.cmdline")).changed() && self.cmdline.visible {
                     self.cmdline.focus = true;
@@ -2479,6 +2487,7 @@ impl App {
             browser::Action::FeatureMenu(name, choice) => self.feature_choice(&name, choice),
             browser::Action::EditSketch(name) => self.edit_sketch(&name),
             browser::Action::AddParam => self.start_command("param.set"),
+            browser::Action::ParamTable => self.open_param_table(),
             browser::Action::EditParam(name) => {
                 self.start_command("param.set");
                 let expr = self.snapshot.doc.params.iter().find(|p| p.name == name).map(|p| p.expr.to_string());
@@ -2830,6 +2839,59 @@ impl App {
         }
     }
 
+    /// Opens the parameters table with the document's parameters and an empty row.
+    pub fn open_param_table(&mut self) {
+        let mut rows: Vec<(String, String, String)> =
+            self.snapshot.doc.params.iter().map(|p| (p.name.clone(), p.expr.to_string(), p.expr.to_string())).collect();
+        rows.push((String::new(), String::new(), String::new()));
+        self.param_table = Some(rows);
+    }
+
+    /// The parameters table (DESIGN.md §1.8): every expression editable; Apply sets the
+    /// changed ones (and a new one from the last row) in one step.
+    fn param_table_window(&mut self, ctx: &egui::Context) {
+        let Some(mut rows) = self.param_table.take() else { return };
+        let values = self.scene.as_ref().map(|s| s.eval.params.clone()).unwrap_or_default();
+        let (mut open, mut apply) = (true, false);
+        egui::Window::new(tr("params.title")).open(&mut open).collapsible(false).show(ctx, |ui| {
+            egui::Grid::new("param_table").num_columns(3).striped(true).show(ui, |ui| {
+                let last = rows.len().saturating_sub(1);
+                for (i, (name, expr, _)) in rows.iter_mut().enumerate() {
+                    if i == last {
+                        ui.add(egui::TextEdit::singleline(name).hint_text(tr("params.new")).desired_width(110.0));
+                    } else {
+                        ui.monospace(name.as_str());
+                    }
+                    ui.add(egui::TextEdit::singleline(expr).desired_width(180.0).font(egui::TextStyle::Monospace));
+                    let shown = match values.get(name.as_str()) {
+                        Some(Ok(q)) => q.to_string(),
+                        Some(Err(e)) => format!("error: {e}"),
+                        None => String::new(),
+                    };
+                    ui.weak(shown);
+                    ui.end_row();
+                }
+            });
+            if ui.button(tr("params.apply")).clicked() {
+                apply = true;
+            }
+        });
+        if apply {
+            let changed: serde_json::Map<String, Value> = rows
+                .iter()
+                .filter(|(name, expr, was)| !name.trim().is_empty() && !expr.trim().is_empty() && expr != was)
+                .map(|(name, expr, _)| (name.trim().to_string(), Value::String(expr.trim().to_string())))
+                .collect();
+            if !changed.is_empty() {
+                self.submit_command("param.set_many", json!({ "values": changed }), Then::Notice);
+            }
+            open = false;
+        }
+        if open {
+            self.param_table = Some(rows);
+        }
+    }
+
     /// Carries out a command-search choice.
     fn palette_choice(&mut self, t: crate::palette::Target) {
         use crate::palette::{Setting as S, Target as T};
@@ -2853,6 +2915,7 @@ impl App {
                         self.cmdline.focus = self.cmdline.visible;
                     }
                     S::Nav(p) => self.viewport.nav_preset = p,
+                    S::ParamTable => self.open_param_table(),
                 }
                 self.save_prefs();
             }

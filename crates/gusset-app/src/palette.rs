@@ -16,6 +16,7 @@ pub enum Setting {
     CodeView,
     CommandLine,
     Nav(NavPreset),
+    ParamTable,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +44,7 @@ fn settings() -> Vec<(String, Setting)> {
         ("Section view".to_string(), Setting::Section),
         ("Code view".to_string(), Setting::CodeView),
         ("Command line".to_string(), Setting::CommandLine),
+        ("Parameters table".to_string(), Setting::ParamTable),
     ];
     v.extend(NavPreset::ALL.iter().map(|p| (format!("Mouse navigation: {}", p.name()), Setting::Nav(*p))));
     v
