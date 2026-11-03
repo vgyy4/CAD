@@ -25,6 +25,11 @@ pub struct Prefs {
     /// defaults (DESIGN.md §1.3: customizable).
     pub quick_solid: Vec<String>,
     pub quick_sketch: Vec<String>,
+    /// Panel layout (DESIGN.md §1.15): the browser and the timeline collapsed, and the
+    /// browser docked at the right (the properties panel then at the left).
+    pub browser_collapsed: bool,
+    pub timeline_collapsed: bool,
+    pub docks_swapped: bool,
 }
 
 pub const MIN_SCALE: f32 = 0.75;
@@ -46,6 +51,9 @@ impl Default for Prefs {
             ui_scale: 1.0,
             quick_solid: Vec::new(),
             quick_sketch: Vec::new(),
+            browser_collapsed: false,
+            timeline_collapsed: false,
+            docks_swapped: false,
         }
     }
 }
@@ -103,6 +111,9 @@ pub fn load(path: &Path) -> Prefs {
             .unwrap_or(d.ui_scale),
         quick_solid: commands(&v, "quick_solid"),
         quick_sketch: commands(&v, "quick_sketch"),
+        browser_collapsed: v.get("browser_collapsed").and_then(Value::as_bool).unwrap_or(false),
+        timeline_collapsed: v.get("timeline_collapsed").and_then(Value::as_bool).unwrap_or(false),
+        docks_swapped: v.get("docks_swapped").and_then(Value::as_bool).unwrap_or(false),
     }
 }
 
@@ -139,6 +150,9 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "ui_scale": p.ui_scale,
         "quick_solid": p.quick_solid,
         "quick_sketch": p.quick_sketch,
+        "browser_collapsed": p.browser_collapsed,
+        "timeline_collapsed": p.timeline_collapsed,
+        "docks_swapped": p.docks_swapped,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -163,6 +177,8 @@ mod tests {
             browser_width: Some(300.0),
             ui_scale: 1.5,
             quick_sketch: vec!["sketch.trim".into()],
+            timeline_collapsed: true,
+            docks_swapped: true,
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");

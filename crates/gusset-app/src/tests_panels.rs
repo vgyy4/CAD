@@ -619,6 +619,9 @@ fn saved_preferences_come_back_in_a_new_window() {
         ui_scale: 1.25,
         quick_solid: vec!["feature.shell".into()],
         quick_sketch: Vec::new(),
+        browser_collapsed: true,
+        timeline_collapsed: false,
+        docks_swapped: true,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
@@ -626,6 +629,7 @@ fn saved_preferences_come_back_in_a_new_window() {
     assert_eq!(a.panel_widths, (Some(310.0), None));
     assert!((a.ui_scale - 1.25).abs() < 1e-6);
     assert_eq!(a.quick_tools, [vec!["feature.shell"], vec![]]);
+    assert!(a.browser_collapsed && !a.timeline_collapsed && a.docks_swapped);
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -864,4 +868,30 @@ fn timeline_groups_frame_and_fold_their_features() {
     h.state_mut().feature_choice(&names[0], crate::browser::FeatureChoice::Ungroup);
     settle(&mut h);
     assert!(h.state().snapshot.doc.features.first().is_some_and(|f| f.group.is_none()));
+}
+
+#[test]
+fn panels_collapse_and_swap_sides() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let browser_x = |h: &Harness<'static, App>| h.get_by_label_contains("Bodies").rect().center().x;
+    let left = browser_x(&h);
+    // Docked at the right: the browser moves past the viewport's centre.
+    h.state_mut().docks_swapped = true;
+    h.run();
+    let vp = h.state().viewport.rect().center().x;
+    assert!(left < vp && browser_x(&h) > vp, "{left} {} {vp}", browser_x(&h));
+    // Collapsed: only the rail's button is left; it brings the browser back.
+    h.state_mut().browser_collapsed = true;
+    h.run();
+    assert!(h.query_by_label_contains("Bodies").is_none());
+    h.get_by_label("‹").click();
+    h.run();
+    assert!(!h.state().browser_collapsed);
+    // The timeline folds to a one-line rail.
+    h.state_mut().timeline_collapsed = true;
+    h.run();
+    h.get_by_label("▴ Timeline").click();
+    h.run();
+    assert!(!h.state().timeline_collapsed);
 }

@@ -252,6 +252,10 @@ pub struct App {
     scale_applied: Option<f32>,
     /// The S quick bar's chosen tools outside and inside sketches (empty: the defaults).
     pub quick_tools: [Vec<&'static str>; 2],
+    /// Panel layout (DESIGN.md §1.15), kept with the preferences.
+    pub browser_collapsed: bool,
+    pub timeline_collapsed: bool,
+    pub docks_swapped: bool,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -383,6 +387,9 @@ impl App {
             ui_scale: 1.0,
             scale_applied: None,
             quick_tools: [Vec::new(), Vec::new()],
+            browser_collapsed: false,
+            timeline_collapsed: false,
+            docks_swapped: false,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -436,6 +443,9 @@ impl App {
         app.ui_scale = prefs.ui_scale;
         let ids = |v: &[String]| v.iter().filter_map(|id| gusset_commands::find(id)).map(|s| s.id).collect();
         app.quick_tools = [ids(&prefs.quick_solid), ids(&prefs.quick_sketch)];
+        app.browser_collapsed = prefs.browser_collapsed;
+        app.timeline_collapsed = prefs.timeline_collapsed;
+        app.docks_swapped = prefs.docks_swapped;
         app.viewport.nav_preset = prefs.nav;
         app.recent = prefs.recent;
         app.panel_widths = (prefs.browser_width, prefs.properties_width);
@@ -1126,6 +1136,9 @@ impl App {
             ui_scale: self.ui_scale,
             quick_solid: self.quick_tools[0].iter().map(|s| (*s).to_string()).collect(),
             quick_sketch: self.quick_tools[1].iter().map(|s| (*s).to_string()).collect(),
+            browser_collapsed: self.browser_collapsed,
+            timeline_collapsed: self.timeline_collapsed,
+            docks_swapped: self.docks_swapped,
         }
     }
 
@@ -1732,25 +1745,49 @@ impl App {
                 .show_separator_line(false)
                 .show(ui, |ui| self.command_line(ui));
         }
+        // The browser docks at the left and the properties panel at the right, or the other
+        // way round (View > Browser on the right).
+        let swapped = self.docks_swapped;
+        let side = move |id: &'static str, main: bool| {
+            if main != swapped { egui::Panel::left(id) } else { egui::Panel::right(id) }
+        };
+        let before = self.prefs();
         if !full {
-            egui::Panel::bottom("timeline")
-                .resizable(false)
-                .frame(bar(pal.bg_panel, 4, 4))
-                .show(ui, |ui| self.timeline(ui));
-            let w = egui::Panel::left("browser")
-                .default_size(self.panel_widths.0.unwrap_or(240.0))
-                .min_size(200.0)
-                .resizable(true)
-                .show(ui, |ui| self.browser(ui))
-                .response
-                .rect
-                .width();
-            self.keep_width(ui, 0, w);
+            if self.timeline_collapsed {
+                egui::Panel::bottom("timeline_rail").resizable(false).frame(bar(pal.bg_panel, 1, 1)).show(ui, |ui| {
+                    if ui.small_button(format!("▴ {}", tr("panel.timeline"))).clicked() {
+                        self.timeline_collapsed = false;
+                    }
+                });
+            } else {
+                egui::Panel::bottom("timeline")
+                    .resizable(false)
+                    .frame(bar(pal.bg_panel, 4, 4))
+                    .show(ui, |ui| self.timeline(ui));
+            }
+            if self.browser_collapsed {
+                side("browser_rail", true).exact_size(26.0).resizable(false).show(ui, |ui| {
+                    let arrow = if swapped { "‹" } else { "›" };
+                    if ui.button(arrow).on_hover_text(tr("panel.show_browser")).clicked() {
+                        self.browser_collapsed = false;
+                    }
+                });
+            } else {
+                let w = side("browser", true)
+                    .default_size(self.panel_widths.0.unwrap_or(240.0))
+                    .min_size(200.0)
+                    .resizable(true)
+                    .show(ui, |ui| self.browser(ui))
+                    .response
+                    .rect
+                    .width();
+                self.keep_width(ui, 0, w);
+            }
         }
         // The properties panel (DESIGN.md §2): the running command's form, docked at the
         // right like Fusion's command dialog instead of floating over the model.
         if self.form.is_some() {
-            let w = egui::Panel::right("properties")
+            let w = side("properties", false)
                 .default_size(self.panel_widths.1.unwrap_or(320.0))
                 .min_size(260.0)
                 .resizable(true)
@@ -1759,6 +1796,9 @@ impl App {
                 .rect
                 .width();
             self.keep_width(ui, 1, w);
+        }
+        if self.prefs() != before {
+            self.save_prefs();
         }
         if self.agents.show_panel && !full {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
@@ -1963,6 +2003,19 @@ impl App {
                     self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.full_screen, tr("menu.full_screen"));
+                let layout = self.prefs();
+                let mut shown = !self.browser_collapsed;
+                if ui.checkbox(&mut shown, tr("panel.browser")).changed() {
+                    self.browser_collapsed = !shown;
+                }
+                let mut shown = !self.timeline_collapsed;
+                if ui.checkbox(&mut shown, tr("panel.timeline")).changed() {
+                    self.timeline_collapsed = !shown;
+                }
+                ui.checkbox(&mut self.docks_swapped, tr("panel.browser_right"));
+                if self.prefs() != layout {
+                    self.save_prefs();
+                }
                 if ui.button(tr("params.title")).clicked() {
                     self.open_param_table();
                 }
