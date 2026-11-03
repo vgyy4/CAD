@@ -264,3 +264,11 @@ coordinates. Two things made such edits fail with a false `SketchConflict`:
 ### Consequences
 A failing parametric sketch costs up to 25 solves before the conflict is reported. The
 release solver budget tests are unchanged (the continuation never runs for them).
+
+### Amendment (2026-11-03): grids
+A linear pattern takes an optional second direction, `count2`, `dx2`, `dy2` (all three or
+none): `g11 = pattern_linear(of: [c7], count: 4, dx: 10 mm, dy: 0 mm, count2: rows, dx2:
+0 mm, dy2: 10 mm)` makes `count × count2` instances, all parameter-driven. The copy at
+column `j1` and row `j2` is numbered `j = j1 + 64·j2` (so `c7_65` is column 1, row 1), and
+each direction holds at most 63 instances; the numbers stay stable when either count
+changes. Patterning a pattern copy still explodes it.

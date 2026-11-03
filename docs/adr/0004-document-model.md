@@ -84,6 +84,7 @@ deterministic, readable text form for tests, golden files, agents and "Export as
    s5 = spline(p1, p2, p3, p4) closed
    g9 = pattern_linear(of: [l5, c7], count: n, dx: 10 mm, dy: 0 mm)
    g10 = pattern_circular(of: [l5], center: p3, count: 6, angle: 360 deg)
+   g11 = pattern_linear(of: [c7], count: 4, dx: 10 mm, dy: 0 mm, count2: rows, dx2: 0 mm, dy2: 10 mm)
    ```
    `Sketch1.regions(l5_r1, c7_2)` names regions by id (entity ids, `_rN` ranks, pattern
    copies `l5_2`). Patterns hold expressions, so they are parameter-driven declarative data

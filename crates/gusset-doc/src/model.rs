@@ -247,9 +247,14 @@ impl FeatureKind {
                 for p in &s.patterns {
                     take(&p.count);
                     match &p.kind {
-                        SkPatternKind::Linear { dx, dy } => {
+                        SkPatternKind::Linear { dx, dy, second } => {
                             take(dx);
                             take(dy);
+                            if let Some(g) = second {
+                                take(&g.count);
+                                take(&g.dx);
+                                take(&g.dy);
+                            }
                         }
                         SkPatternKind::Circular { angle, .. } => take(angle),
                     }
@@ -318,7 +323,12 @@ impl FeatureKind {
                 for p in &mut s.patterns {
                     out.push(&mut p.count);
                     match &mut p.kind {
-                        SkPatternKind::Linear { dx, dy } => out.extend([dx, dy]),
+                        SkPatternKind::Linear { dx, dy, second } => {
+                            out.extend([dx, dy]);
+                            if let Some(g) = second {
+                                out.extend([&mut g.count, &mut g.dx, &mut g.dy]);
+                            }
+                        }
                         SkPatternKind::Circular { angle, .. } => out.push(angle),
                     }
                 }
@@ -632,12 +642,25 @@ pub struct SkPattern {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SkPatternKind {
-    /// Copy `j` is shifted by `j * (dx, dy)`.
-    Linear { dx: Expr, dy: Expr },
+    /// Copy `j` is shifted by `j * (dx, dy)`; with a second direction, copy `(j1, j2)`
+    /// (numbered `j1 + 64 * j2`) by `j1 * (dx, dy) + j2 * (dx2, dy2)`: a grid.
+    Linear { dx: Expr, dy: Expr, second: Option<Box<SkGridDir>> },
     /// Copy `j` is turned about the point `center` by `j * step`: `angle / count` for a
     /// full turn, `angle / (count - 1)` otherwise.
     Circular { center: String, angle: Expr },
 }
+
+/// The second direction of a grid pattern: `count` rows (including the first), `(dx, dy)`
+/// apart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkGridDir {
+    pub count: Expr,
+    pub dx: Expr,
+    pub dy: Expr,
+}
+
+/// Copies per direction of a grid pattern (copy numbers are `j1 + 64 * j2`).
+pub const MAX_GRID_COUNT: u32 = 63;
 
 impl SkPatternKind {
     pub fn keyword(&self) -> &'static str {

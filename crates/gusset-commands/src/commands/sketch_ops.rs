@@ -650,8 +650,7 @@ pub struct SketchPattern {
     pub sketch: String,
     /// `linear` (dx, dy) or `circular` (center, angle).
     pub kind: String,
-    /// Source lines, circles, arcs or splines (one pattern each), or a pattern id to repeat
-    /// that pattern (it becomes ordinary entities: a grid).
+    /// Lines, circles, arcs, splines; or a pattern id (exploded into entities).
     pub entities: Vec<String>,
     /// Copies including the original, 2..=500 (expression).
     pub count: String,
@@ -660,6 +659,13 @@ pub struct SketchPattern {
     pub dx: Option<String>,
     #[serde(default)]
     pub dy: Option<String>,
+    /// Grid rows (2..=63, count then <= 63) and their shift.
+    #[serde(default)]
+    pub count2: Option<String>,
+    #[serde(default)]
+    pub dx2: Option<String>,
+    #[serde(default)]
+    pub dy2: Option<String>,
     /// Circular: centre point id.
     #[serde(default)]
     pub center: Option<String>,
@@ -751,7 +757,16 @@ impl Command for SketchPattern {
                         return Err(CommandError::args("dx and dy are both zero, so the copies would overlap")
                             .hint("give a spacing, for example dx: 10 mm"));
                     }
-                    SkPatternKind::Linear { dx, dy }
+                    let second = match &self.count2 {
+                        None => None,
+                        Some(c2) => {
+                            let count = parse_expr("count2", c2)?;
+                            let dx = parse_expr("dx2", self.dx2.as_deref().unwrap_or("0 mm"))?;
+                            let dy = parse_expr("dy2", self.dy2.as_deref().unwrap_or("0 mm"))?;
+                            Some(Box::new(gusset_doc::SkGridDir { count, dx, dy }))
+                        }
+                    };
+                    SkPatternKind::Linear { dx, dy, second }
                 }
                 "circular" => {
                     let center = self

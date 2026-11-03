@@ -224,7 +224,11 @@ fn print_feature(out: &mut String, f: &Feature) {
             for p in &s.patterns {
                 let of = p.of.join(", ");
                 let line = match &p.kind {
-                    SkPatternKind::Linear { dx, dy } => {
+                    SkPatternKind::Linear { dx, dy, second: Some(g) } => format!(
+                        "pattern_linear(of: [{of}], count: {}, dx: {dx}, dy: {dy}, count2: {}, dx2: {}, dy2: {})",
+                        p.count, g.count, g.dx, g.dy
+                    ),
+                    SkPatternKind::Linear { dx, dy, second: None } => {
                         format!("pattern_linear(of: [{of}], count: {}, dx: {dx}, dy: {dy})", p.count)
                     }
                     SkPatternKind::Circular { center, angle } => {
@@ -2094,6 +2098,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
 /// Parses the arguments of `pattern_linear(...)` / `pattern_circular(...)` (the cursor is at `(`).
 fn parse_sketch_pattern(c: &mut Cursor<'_>, id: String, circular: bool) -> Result<SkPattern, ParseError> {
     let (mut of, mut count, mut dx, mut dy, mut center, mut angle) = (None, None, None, None, None, None);
+    let (mut count2, mut dx2, mut dy2) = (None, None, None);
     parse_args(c, |key, c| {
         match (key, circular) {
             ("of", _) => {
@@ -2116,10 +2121,13 @@ fn parse_sketch_pattern(c: &mut Cursor<'_>, id: String, circular: bool) -> Resul
             ("count", _) => count = Some(c.expr()?),
             ("dx", false) => dx = Some(c.expr()?),
             ("dy", false) => dy = Some(c.expr()?),
+            ("count2", false) => count2 = Some(c.expr()?),
+            ("dx2", false) => dx2 = Some(c.expr()?),
+            ("dy2", false) => dy2 = Some(c.expr()?),
             ("center", true) => center = Some(c.ident()?.to_string()),
             ("angle", true) => angle = Some(c.expr()?),
             (other, _) => {
-                let allowed = if circular { "of, center, count, angle" } else { "of, count, dx, dy" };
+                let allowed = if circular { "of, center, count, angle" } else { "of, count, dx, dy, count2, dx2, dy2" };
                 return Err(unknown_arg(
                     c,
                     if circular { "pattern_circular" } else { "pattern_linear" },
@@ -2137,9 +2145,19 @@ fn parse_sketch_pattern(c: &mut Cursor<'_>, id: String, circular: bool) -> Resul
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
         }
     } else {
+        let second = match (count2, dx2, dy2) {
+            (None, None, None) => None,
+            (Some(count), Some(dx), Some(dy)) => Some(Box::new(SkGridDir { count, dx, dy })),
+            _ => {
+                return Err(
+                    c.err_hint("a grid needs count2, dx2 and dy2 together", "e.g. count2: 3, dx2: 0 mm, dy2: 10 mm")
+                );
+            }
+        };
         SkPatternKind::Linear {
             dx: dx.ok_or_else(|| missing(c, kw, "dx"))?,
             dy: dy.ok_or_else(|| missing(c, kw, "dy"))?,
+            second,
         }
     };
     Ok(SkPattern {

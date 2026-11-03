@@ -1233,7 +1233,7 @@ fn rack_sketch(nm: &Names, vals: [f64; 4]) -> Result<SketchDef, CommandError> {
     }
     let pattern = SkPattern {
         id: "g40".into(),
-        kind: SkPatternKind::Linear { dx: parse_expr("rack", &pe)?, dy: parse_expr("rack", "0 mm")? },
+        kind: SkPatternKind::Linear { dx: parse_expr("rack", &pe)?, dy: parse_expr("rack", "0 mm")?, second: None },
         of: (10..15).map(|i| format!("l{i}")).collect(),
         count: parse_expr("rack", &tn)?,
     };

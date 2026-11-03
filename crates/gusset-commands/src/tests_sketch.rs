@@ -553,3 +553,32 @@ fn patterns_explode_into_entities_for_constraints_trims_and_grids() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(!text.contains("l6_1"), "{text}");
 }
+
+#[test]
+fn a_linear_pattern_with_a_second_direction_is_a_parametric_grid() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    rect_sketch(&mut s, &u);
+    run(&mut s, &u, "param.set", json!({"name": "rows", "expr": "2"}));
+    run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5", "l6", "l7", "l8"], "count": "3", "dx": "20 mm",
+               "count2": "rows", "dy2": "10 mm"}),
+    );
+    let regs = regions(&mut s, &u, "Sketch1");
+    assert_eq!(regs.len(), 6, "{regs:?}");
+    // Column 1 of row 1 is copy 1 + 64.
+    assert!(regs.iter().any(|r| r.0 == "l5_65"), "{regs:?}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("count2: rows, dx2: 0 mm, dy2: 10 mm"), "{text}");
+    // More rows: the grid follows the parameter; copy numbers of the first rows stay.
+    run(&mut s, &u, "param.set", json!({"name": "rows", "expr": "3"}));
+    let regs = regions(&mut s, &u, "Sketch1");
+    assert_eq!(regs.len(), 9, "{regs:?}");
+    assert!(regs.iter().any(|r| r.0 == "l5_65") && regs.iter().any(|r| r.0 == "l5_130"), "{regs:?}");
+    // Over 63 per direction is refused.
+    let r = run(&mut s, &u, "param.set", json!({"name": "rows", "expr": "64"}));
+    assert!(r.to_string().contains("at most") || r.to_string().contains("between 2 and 63"), "{r}");
+}
