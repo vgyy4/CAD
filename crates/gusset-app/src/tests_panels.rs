@@ -550,3 +550,28 @@ fn feature_context_menus_suppress_and_roll_back() {
     h.run();
     assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("feature.delete"));
 }
+
+#[test]
+fn f11_gives_a_clean_viewport_and_ctrl_enter_repeats_a_command() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    h.get_by_label("Origin");
+    h.key_press(egui::Key::F11);
+    h.run();
+    assert!(h.state().full_screen);
+    assert!(h.query_by_label("Origin").is_none(), "the browser is hidden");
+    h.key_press(egui::Key::F11);
+    h.run();
+    h.get_by_label("Origin");
+    // A form confirmed with Ctrl+Enter opens again after it succeeds, with its values.
+    h.state_mut().start_command("param.set");
+    let form = h.state_mut().form.as_mut().expect("form");
+    form.set("name", "gap");
+    form.set("expr", "2 mm");
+    form.repeat = true;
+    h.state_mut().apply_form();
+    settle(&mut h);
+    assert!(h.state().snapshot.doc.params.iter().any(|p| p.name == "gap"));
+    let again = h.state().form.as_ref().expect("the command again");
+    assert_eq!((again.command, again.value("name"), again.repeat), ("param.set", Some("gap"), false));
+}

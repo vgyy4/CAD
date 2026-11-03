@@ -88,7 +88,8 @@ Phase 3 has started (see Next).
   undo); sketches are edited in sketch mode. In the app a double-click on a feature or datum
   plane in the browser, or on a timeline chip, opens its arguments as a form (a sketch's
   opens sketch mode); right-click on either gives edit, rename, suppress/unsuppress, roll back to
-  here and delete. Live previews (DESIGN.md §1.6): while a feature or generator form has
+  here and delete. F11 (View menu too) gives a clean full-screen viewport; Ctrl+Enter in a form
+  confirms and opens the command again with the same values. Live previews (DESIGN.md §1.6): while a feature or generator form has
   complete arguments, the model thread builds what it would make once typing pauses
   (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
   model comes back when the form closes. `gusset_commands::preview` runs the command in the

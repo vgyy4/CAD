@@ -250,6 +250,8 @@ pub struct App {
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
+    /// F11: a clean full-screen viewport (only the status bar and an open form stay).
+    pub full_screen: bool,
     /// The snapped point under the cursor while placing sketch geometry (preview).
     place_cursor: Option<Click>,
     /// A sketch to turn the camera to once its plane is known (editing starts).
@@ -355,6 +357,7 @@ impl App {
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
+            full_screen: false,
             place_cursor: None,
             drag_preview: None,
             look_at_sketch: None,
@@ -844,10 +847,20 @@ impl App {
                 match result {
                     Ok(v) => {
                         let title = form.title;
+                        // Ctrl+Enter: the same command again, with the values just used.
+                        let again = form.repeat.then(|| {
+                            let mut f = form.clone();
+                            f.repeat = false;
+                            f.error = None;
+                            f.clicks.clear();
+                            f
+                        });
                         self.form = None;
                         self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
                         if let Some(ch) = chain {
                             self.restart_placing(ch, &v);
+                        } else if let Some(f) = again {
+                            self.form = Some(f);
                         }
                         if id == "drawing.create"
                             && let Some(name) = v.get("drawing").and_then(Value::as_str)
@@ -1464,29 +1477,34 @@ impl App {
         let bar = |fill: egui::Color32, top: i8, bottom: i8| {
             egui::Frame::new().fill(fill).inner_margin(egui::Margin { left: 8, right: 8, top, bottom })
         };
-        egui::Panel::top("titlebar").frame(bar(pal.bg_app, 3, 3)).show(ui, |ui| self.title_bar(ui));
-        egui::Panel::top("tabs")
-            .frame(bar(pal.bg_panel, 4, 2))
-            .show_separator_line(false)
-            .show(ui, |ui| self.workspace_tabs(ui));
-        egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
+        let full = self.full_screen;
+        if !full {
+            egui::Panel::top("titlebar").frame(bar(pal.bg_app, 3, 3)).show(ui, |ui| self.title_bar(ui));
+            egui::Panel::top("tabs")
+                .frame(bar(pal.bg_panel, 4, 2))
+                .show_separator_line(false)
+                .show(ui, |ui| self.workspace_tabs(ui));
+            egui::Panel::top("ribbon").frame(bar(pal.bg_panel, 2, 4)).show(ui, |ui| self.ribbon(ui));
+        }
         // Bottom, from the edge up: status bar, command line (when shown), timeline.
         egui::Panel::bottom("status").frame(bar(pal.bg_app, 3, 3)).show(ui, |ui| self.status_bar(ui));
-        if self.cmdline.visible {
+        if self.cmdline.visible && !full {
             egui::Panel::bottom("cmdline")
                 .frame(bar(pal.bg_panel, 4, 4))
                 .show_separator_line(false)
                 .show(ui, |ui| self.command_line(ui));
         }
-        egui::Panel::bottom("timeline")
-            .resizable(false)
-            .frame(bar(pal.bg_panel, 4, 4))
-            .show(ui, |ui| self.timeline(ui));
-        egui::Panel::left("browser")
-            .default_size(240.0)
-            .min_size(200.0)
-            .resizable(true)
-            .show(ui, |ui| self.browser(ui));
+        if !full {
+            egui::Panel::bottom("timeline")
+                .resizable(false)
+                .frame(bar(pal.bg_panel, 4, 4))
+                .show(ui, |ui| self.timeline(ui));
+            egui::Panel::left("browser")
+                .default_size(240.0)
+                .min_size(200.0)
+                .resizable(true)
+                .show(ui, |ui| self.browser(ui));
+        }
         // The properties panel (DESIGN.md §2): the running command's form, docked at the
         // right like Fusion's command dialog instead of floating over the model.
         if self.form.is_some() {
@@ -1496,10 +1514,10 @@ impl App {
                 .resizable(true)
                 .show(ui, |ui| self.properties_panel(ui));
         }
-        if self.agents.show_panel {
+        if self.agents.show_panel && !full {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
         }
-        if self.code.is_some() {
+        if self.code.is_some() && !full {
             egui::Panel::right("code").default_size(360.0).resizable(true).show(ui, |ui| self.code_view(ui));
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
@@ -1548,6 +1566,9 @@ impl App {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Z))) {
             self.submit_command("history.undo", json!({}), Then::Notice);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::F11))) {
+            self.full_screen = !self.full_screen;
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
             self.form = None;
@@ -1651,6 +1672,7 @@ impl App {
                 if ui.button("Fit view").clicked() {
                     self.viewport.request(NavRequest::Fit);
                 }
+                ui.checkbox(&mut self.full_screen, tr("menu.full_screen"));
                 ui.checkbox(&mut self.agents.show_panel, tr("agents.title"));
                 if ui.checkbox(&mut self.cmdline.visible, tr("menu.cmdline")).changed() && self.cmdline.visible {
                     self.cmdline.focus = true;

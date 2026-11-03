@@ -41,6 +41,8 @@ pub struct Form {
     pub error: Option<String>,
     /// Points placed with viewport clicks so far (sketch commands, [`crate::sketch_place`]).
     pub clicks: Vec<crate::sketch_place::Click>,
+    /// Submitted with Ctrl+Enter: open the command again after it succeeds.
+    pub repeat: bool,
 }
 
 fn type_names(prop: &Value) -> Vec<&str> {
@@ -132,6 +134,7 @@ impl Form {
             fields,
             show_more: false,
             clicks: Vec::new(),
+            repeat: false,
             error: None,
         }
     }
@@ -197,6 +200,8 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                 };
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
+                    // Ctrl+Enter confirms and repeats (DESIGN.md §1.18).
+                    form.repeat = ui.input(|i| i.modifiers.command);
                 }
                 ui.end_row();
             }
