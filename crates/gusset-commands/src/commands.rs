@@ -95,6 +95,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<FeatureDelete>(),
         spec::<FeatureRename>(),
         spec::<FeatureSuppress>(),
+        spec::<FeatureGroup>(),
         spec::<FeatureMove>(),
         spec::<SetRollback>(),
         spec::<Undo>(),
@@ -2445,6 +2446,56 @@ impl Command for FeatureSuppress {
                 .find(|f| f.name == self.name)
                 .ok_or_else(|| CommandError::not_found(format!("no feature '{}'", self.name)))?;
             f.suppressed = self.suppressed;
+            Ok(json!({}))
+        })
+    }
+}
+
+/// Most characters of a timeline group name.
+const MAX_GROUP_NAME: usize = 80;
+
+/// Puts features into a timeline group (or takes them out).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureGroup {
+    pub features: Vec<String>,
+    /// Group name; omit to ungroup.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+impl Command for FeatureGroup {
+    const ID: &'static str = "feature.group";
+    const TITLE: &'static str = "Group features";
+    const DESCRIPTION: &'static str =
+        "Put features in a named timeline group (consecutive ones fold into one item), or omit group to ungroup.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let group = self.group.as_deref().map(str::trim).filter(|g| !g.is_empty()).map(str::to_string);
+        if let Some(g) = &group
+            && (g.chars().count() > MAX_GROUP_NAME || g.chars().any(char::is_control))
+        {
+            return Err(CommandError::args(format!(
+                "a group name has at most {MAX_GROUP_NAME} characters and no control characters"
+            )));
+        }
+        if self.features.is_empty() {
+            return Err(CommandError::args("name at least one feature"));
+        }
+        let label = match &group {
+            Some(g) => format!("Group {g}"),
+            None => "Ungroup".to_string(),
+        };
+        edit(s, ctx, &label, |doc, _| {
+            for name in &self.features {
+                let f = doc
+                    .features
+                    .iter_mut()
+                    .find(|f| &f.name == name)
+                    .ok_or_else(|| CommandError::not_found(format!("no feature '{name}'")))?;
+                f.group.clone_from(&group);
+            }
             Ok(json!({}))
         })
     }

@@ -120,7 +120,9 @@ Phase 3 has started (see Next).
   session's preview mode, where the single commit point (`commit_with_rollback`) evaluates
   the edited document instead of committing it (no history, no audit entry). The model
   as it was shows over the preview as accent-coloured edges, so before and after are seen
-  together (no translucent faces: the renderer has no transparency). The S quick bar is customizable (right click a ribbon tool: add to or remove from
+  together (no translucent faces: the renderer has no transparency). Timeline groups done (DESIGN.md §1.4: `group: "name"` on features, `feature.group`, the
+  chip/browser menu's Group…/Ungroup; a run of grouped chips is framed with its name, which
+  folds it to slivers). The S quick bar is customizable (right click a ribbon tool: add to or remove from
   the quick bar, per context, at most seven, kept with the preferences). Marking-menu flicks done (with a navigation preset that leaves the right button free, a
   right drag of 40 px or more runs the menu item in that direction without opening it,
   DESIGN.md §1.3). UI scale done (View > UI scale, 75 to 250 %, or Ctrl + plus/minus; kept in

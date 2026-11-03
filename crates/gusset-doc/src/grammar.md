@@ -24,7 +24,8 @@ extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
   built-ins (`pi`, `e`, `sin`, `sqrt`, ...) are not allowed. Feature names are unique.
 - Features run in order; a feature may only refer to earlier ones.
 - Arguments are `key: value`, separated by commas, each key at most once. Every
-  feature also accepts `label: "text"` and `suppressed: true`.
+  feature also accepts `label: "text"`, `group: "name"` (a timeline group: consecutive
+  features with the same group fold into one item, `feature.group`) and `suppressed: true`.
 - Expressions are arithmetic with units and parameter names: `40 mm`, `width / 2`,
   `2 * thickness + 1 in`, `30 deg`, `sqrt(2) * r`. Lengths: mm cm m um in ft thou;
   angles: deg rad. A bare number in a length slot uses the document unit.

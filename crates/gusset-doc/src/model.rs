@@ -35,13 +35,16 @@ pub struct Feature {
     pub label: Option<String>,
     /// Free-text note; printed as `#` comment lines before the statement.
     pub note: Option<String>,
+    /// Timeline group (DESIGN.md §1.4): consecutive features with the same group fold
+    /// into one timeline item. Untrusted user content, like `label`.
+    pub group: Option<String>,
     pub suppressed: bool,
     pub kind: FeatureKind,
 }
 
 impl Feature {
     pub fn new(name: impl Into<String>, kind: FeatureKind) -> Self {
-        Feature { name: name.into(), label: None, note: None, suppressed: false, kind }
+        Feature { name: name.into(), label: None, note: None, group: None, suppressed: false, kind }
     }
 }
 

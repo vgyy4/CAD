@@ -839,3 +839,29 @@ fn ribbon_tools_join_and_leave_the_quick_bar() {
     assert_eq!(solid.last(), Some(&"feature.mirror"));
     assert_eq!(solid.len(), crate::quick_menus::MAX_TOOLS);
 }
+
+#[test]
+fn timeline_groups_frame_and_fold_their_features() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let names: Vec<String> = h.state().snapshot.doc.features.iter().take(2).map(|f| f.name.clone()).collect();
+    h.state_mut().submit_command(
+        "feature.group",
+        json!({ "features": names, "group": "Base" }),
+        crate::app::Then::Notice,
+    );
+    settle(&mut h);
+    assert!(h.state().snapshot.doc.features.iter().take(2).all(|f| f.group.as_deref() == Some("Base")));
+    // The group's name tag folds the run and unfolds it again.
+    h.get_by_label("Group Base").click();
+    h.run();
+    let first = h.get_by_label_contains(&format!("{} (", names[0])).rect().width();
+    assert!(first < 10.0, "folded chips are slivers: {first}");
+    h.get_by_label("Group Base").click();
+    h.run();
+    assert!(h.get_by_label_contains(&format!("{} (", names[0])).rect().width() > 20.0);
+    // Ungroup from the chip's context menu.
+    h.state_mut().feature_choice(&names[0], crate::browser::FeatureChoice::Ungroup);
+    settle(&mut h);
+    assert!(h.state().snapshot.doc.features.first().is_some_and(|f| f.group.is_none()));
+}

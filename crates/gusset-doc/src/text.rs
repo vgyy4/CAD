@@ -180,6 +180,9 @@ fn print_common(f: &Feature, args: &mut Vec<String>) {
     if let Some(l) = &f.label {
         args.push(format!("label: {}", quote(l)));
     }
+    if let Some(g) = &f.group {
+        args.push(format!("group: {}", quote(g)));
+    }
     if f.suppressed {
         args.push("suppressed: true".into());
     }
@@ -787,6 +790,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut profile = None;
     let mut distance = None;
     let mut symmetric = false;
@@ -801,15 +805,16 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
-        "extrude" => "profile, distance, symmetric, op, body, body_name, label, suppressed",
-        "revolve" => "profile, axis, angle, op, body, body_name, label, suppressed",
-        "fillet" => "edges, radius, label, suppressed",
-        "chamfer" => "edges, distance, label, suppressed",
-        _ => "blob, format, file, label, suppressed",
+        "extrude" => "profile, distance, symmetric, op, body, body_name, label, group, suppressed",
+        "revolve" => "profile, axis, angle, op, body, body_name, label, group, suppressed",
+        "fillet" => "edges, radius, label, group, suppressed",
+        "chamfer" => "edges, distance, label, group, suppressed",
+        _ => "blob, format, file, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
             (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             ("extrude" | "revolve", "profile") => profile = Some(parse_profile(c)?),
             ("extrude" | "revolve", "op") => {
@@ -891,7 +896,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             file_name: file.unwrap_or_default(),
         }),
     };
-    Ok(Feature { name, label, note: None, suppressed, kind })
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 
 fn parse_dir(c: &mut Cursor<'_>) -> Result<DirRef, ParseError> {
@@ -927,6 +932,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut body = None;
     let mut faces: Option<Vec<FaceRef>> = None;
     let mut thickness = None;
@@ -940,16 +946,17 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut angle = None;
     let mut features: Vec<String> = Vec::new();
     let allowed = match kw {
-        "shell" => "body, faces, thickness, label, suppressed",
-        "draft" => "body, faces, plane, angle, flip, label, suppressed",
-        "offset_face" => "body, faces, distance, label, suppressed",
-        "mirror" => "body, plane, merge, label, suppressed",
-        "pattern_linear" => "body, direction, count, spacing, features, label, suppressed",
-        _ => "body, axis, through, count, angle, features, label, suppressed",
+        "shell" => "body, faces, thickness, label, group, suppressed",
+        "draft" => "body, faces, plane, angle, flip, label, group, suppressed",
+        "offset_face" => "body, faces, distance, label, group, suppressed",
+        "mirror" => "body, plane, merge, label, group, suppressed",
+        "pattern_linear" => "body, direction, count, spacing, features, label, group, suppressed",
+        _ => "body, axis, through, count, angle, features, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
             (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             (_, "body") => body = Some(c.ident()?.to_string()),
             ("shell" | "draft" | "offset_face", "faces") => faces = Some(parse_face_list(c)?),
@@ -1016,7 +1023,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             features,
         }),
     };
-    Ok(Feature { name, label, note: None, suppressed, kind })
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 
 /// `features: [A, B]` when a pattern repeats features.
@@ -1152,6 +1159,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut profile = None;
     let mut profiles: Option<Vec<ProfileRef>> = None;
     let mut path = None;
@@ -1162,12 +1170,13 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut body = None;
     let mut body_name = None;
     let allowed = match kw {
-        "sweep" => "profile, path, orientation, twist, op, body, body_name, label, suppressed",
-        _ => "profiles, ruled, op, body, body_name, label, suppressed",
+        "sweep" => "profile, path, orientation, twist, op, body, body_name, label, group, suppressed",
+        _ => "profiles, ruled, op, body, body_name, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
             (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             (_, "op") => {
                 let w = c.ident()?;
@@ -1229,7 +1238,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             body_name,
         }),
     };
-    Ok(Feature { name, label, note: None, suppressed, kind })
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 
 /// The hole statement (ADR 0019).
@@ -1237,6 +1246,7 @@ fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut face = None;
     let mut sites: Option<HoleSites> = None;
     let mut kind = None;
@@ -1250,10 +1260,11 @@ fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut pitch = None;
     let mut thread_depth = None;
     let allowed = "face, points, at, type, diameter, depth, through, point_angle, cbore_diameter, cbore_depth, \
-                   csink_diameter, csink_angle, thread, pitch, thread_depth, label, suppressed";
+                   csink_diameter, csink_angle, thread, pitch, thread_depth, label, group, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "face" => face = Some(parse_face(c)?),
             "points" | "at" => {
@@ -1376,7 +1387,7 @@ fn parse_hole(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         countersink,
         thread,
     });
-    Ok(Feature { name, label, note: None, suppressed, kind })
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 
 /// A plane: `XY`, `XZ`, `YZ`, a face reference (`Extrude1/cap(end)`) or the name of a
@@ -1433,6 +1444,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut body = None;
     let mut base = None;
     let mut offset = None;
@@ -1446,14 +1458,15 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut faces = None;
     let mut op = None;
     let allowed = match kw {
-        "plane" => "base, offset, axis, angle, label, suppressed",
-        "move" => "body, translate, axis, angle, through, copy, label, suppressed",
-        "move_face" => "body, faces, translate, axis, angle, through, label, suppressed",
-        _ => "body, tools, op, label, suppressed",
+        "plane" => "base, offset, axis, angle, label, group, suppressed",
+        "move" => "body, translate, axis, angle, through, copy, label, group, suppressed",
+        "move_face" => "body, faces, translate, axis, angle, through, label, group, suppressed",
+        _ => "body, tools, op, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
             (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             ("move" | "move_face" | "combine", "body") => body = Some(c.ident()?.to_string()),
             ("plane", "base") => base = Some(parse_plane(c)?),
@@ -1555,7 +1568,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             op: op.unwrap_or(BodyOp::Add),
         }),
     };
-    Ok(Feature { name, label, note: None, suppressed, kind })
+    Ok(Feature { name, label, note: None, group, suppressed, kind })
 }
 
 /// `[<face>, ...]`.
@@ -1630,15 +1643,17 @@ pub(crate) fn parse_pair(c: &mut Cursor<'_>) -> Result<[gusset_units::expr::Expr
 fn parse_text(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "text";
     const ALLOWED: &str =
-        "text, plane, at, height, distance, font, align, angle, op, body, body_name, label, suppressed";
+        "text, plane, at, height, distance, font, align, angle, op, body, body_name, label, group, suppressed";
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
     let (mut text, mut plane, mut at, mut height, mut distance) = (None, None, None, None, None);
     let (mut font, mut align, mut angle, mut op) = (TextFont::Sans, TextAlign::Left, None, None);
     let (mut body, mut body_name) = (None, None);
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "text" => text = Some(c.string()?),
             "plane" => plane = Some(parse_plane(c)?),
@@ -1692,7 +1707,7 @@ fn parse_text(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         body,
         body_name,
     };
-    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Text(Box::new(def)) })
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Text(Box::new(def)) })
 }
 
 /// `joint` statements (ADR 0026).
@@ -1700,12 +1715,14 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "component";
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
     let (mut source, mut version, mut document, mut body, mut set) = (None, None, None, None, Vec::new());
     let (mut configuration, mut branch) = (None, None);
-    const ALLOWED: &str = "source, version, document, branch, body, configuration, set, label, suppressed";
+    const ALLOWED: &str = "source, version, document, branch, body, configuration, set, label, group, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "source" => source = Some(c.string()?),
             "version" => version = Some(c.string()?),
@@ -1730,7 +1747,7 @@ fn parse_component(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         configuration,
         branch,
     };
-    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Component(def) })
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Component(def) })
 }
 
 /// `[name = <expr>, ...]` with distinct names.
@@ -1762,15 +1779,17 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     const KW: &str = "joint";
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
     let (mut kind, mut body, mut with, mut at, mut to) = (None, None, Vec::new(), None, None);
     let (mut angle, mut distance, mut x, mut y, mut angles) = (None, None, None, None, None);
     let (mut flip, mut offset, mut angle_limits, mut distance_limits) = (false, None, None, None);
     let mut free = Vec::new();
     const ALLOWED: &str = "type, body, with, at, to, angle, distance, x, y, angles, flip, offset, angle_limits, \
-                           distance_limits, free, label, suppressed";
+                           distance_limits, free, label, group, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "type" => {
                 let w = c.ident()?;
@@ -1847,7 +1866,7 @@ fn parse_joint(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         distance_limits,
         free,
     };
-    Ok(Feature { name, label, note: None, suppressed, kind: FeatureKind::Joint(Box::new(kind_def)) })
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Joint(Box::new(kind_def)) })
 }
 
 impl Cursor<'_> {
@@ -1871,18 +1890,25 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
     let name = c.ident()?.to_string();
     let mut label = None;
     let mut suppressed = false;
+    let mut group: Option<String> = None;
     let mut plane = None;
     let mut next_id = None;
     let mut gear = None;
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
             "suppressed" => suppressed = parse_bool(c)?,
             "next_id" => next_id = Some(c.uint()?),
             "plane" => plane = Some(parse_plane(c)?),
             "gear" => gear = Some(c.ident()?.to_string()),
             other => {
-                return Err(unknown_arg(c, "sketch", other, "plane, next_id (optional), gear, label, suppressed"));
+                return Err(unknown_arg(
+                    c,
+                    "sketch",
+                    other,
+                    "plane, next_id (optional), gear, label, group, suppressed",
+                ));
             }
         }
         Ok(())
@@ -2028,7 +2054,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
             .chain(def.patterns.iter().map(|g| g.id.as_str()));
         def.next_id = max.filter_map(suffix).max().map_or(1, |m| m.saturating_add(1));
     }
-    Ok((Feature { name, label, note: None, suppressed, kind: FeatureKind::Sketch(def) }, i))
+    Ok((Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Sketch(def) }, i))
 }
 
 /// Parses the arguments of `pattern_linear(...)` / `pattern_circular(...)` (the cursor is at `(`).

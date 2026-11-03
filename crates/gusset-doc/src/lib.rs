@@ -497,6 +497,15 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn timeline_groups_round_trip() {
+        let src = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 2, group: \"Base\") {\n  p1 = point(0, 0)\n}\n\n\
+                   plane P (base: XY, offset: 5 mm, group: \"Base\", suppressed: true)\n";
+        let doc = Document::from_text(src).unwrap();
+        assert_eq!(doc.to_text(), src);
+        assert!(doc.features.iter().all(|f| f.group.as_deref() == Some("Base")));
+    }
+
+    #[test]
     fn sketch_patterns_round_trip_and_are_validated() {
         let ok = "gusset 1\nunits mm\n\nparam n = 3\n\nsketch S (plane: XY, next_id: 9) {\n  p1 = point(0, 0)\n  p2 = point(5, 0)\n  l3 = line(p1, p2)\n  p4 = point(1, 1)\n  c5 = circle(p4, 1)\n  g6 = pattern_linear(of: [l3], count: n, dx: 10 mm, dy: 2 mm)\n  g7 = pattern_circular(of: [c5], center: p1, count: 6, angle: 360 deg)\n}\n\nextrude E (profile: S.regions(c5_2), distance: 1 mm, op: new)\n";
         let doc = Document::from_text(ok).unwrap();

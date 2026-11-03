@@ -351,6 +351,10 @@ pub enum FeatureChoice {
     RollHere,
     /// Take the rebuild error's suggested reference (DESIGN.md §1.9).
     AcceptSuggestion,
+    /// Put the feature in a timeline group (a form asks for the name).
+    Group,
+    /// Take the feature out of its timeline group.
+    Ungroup,
 }
 
 /// The suggested replacement of a failed feature's broken reference: (reference, suggestion).
@@ -363,7 +367,12 @@ pub fn suggestion(status: Option<&FeatureStatus>) -> Option<(&str, &str)> {
 }
 
 /// The right-click menu of a feature: edit, rename, suppress, roll back to here, delete.
-pub fn feature_menu(resp: &egui::Response, suppressed: bool, suggested: Option<&str>) -> Option<FeatureChoice> {
+pub fn feature_menu(
+    resp: &egui::Response,
+    suppressed: bool,
+    grouped: bool,
+    suggested: Option<&str>,
+) -> Option<FeatureChoice> {
     let mut out = None;
     resp.context_menu(|ui| {
         if let Some(s) = suggested
@@ -380,6 +389,11 @@ pub fn feature_menu(resp: &egui::Response, suppressed: bool, suggested: Option<&
                 FeatureChoice::Suppress(!suppressed),
             ),
             ("menu.feature.roll_here", FeatureChoice::RollHere),
+            if grouped {
+                ("menu.feature.ungroup", FeatureChoice::Ungroup)
+            } else {
+                ("menu.feature.group", FeatureChoice::Group)
+            },
             ("menu.feature.delete", FeatureChoice::Delete),
         ];
         for (key, choice) in items {
@@ -402,7 +416,7 @@ fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
         }
-        if let Some(c) = feature_menu(&resp, f.suppressed, suggestion(status).map(|(_, s)| s)) {
+        if let Some(c) = feature_menu(&resp, f.suppressed, f.group.is_some(), suggestion(status).map(|(_, s)| s)) {
             out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         if let Some(tip) = failure_tip(status) {
@@ -550,7 +564,7 @@ fn features(ui: &mut Ui, v: &View<'_>, c: Category, out: &mut Vec<Action>) {
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
         }
-        if let Some(c) = feature_menu(&resp, f.suppressed, suggestion(status).map(|(_, s)| s)) {
+        if let Some(c) = feature_menu(&resp, f.suppressed, f.group.is_some(), suggestion(status).map(|(_, s)| s)) {
             out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         match failure_tip(status) {

@@ -1263,6 +1263,15 @@ impl App {
                 self.submit_command("feature.suppress", json!({ "name": name, "suppressed": on }), Then::Notice);
             }
             C::Delete => self.submit_command("feature.delete", json!({ "name": name }), Then::Notice),
+            C::Group => {
+                self.start_command("feature.group");
+                let group = self.snapshot.doc.feature(name).and_then(|f| f.group.clone());
+                if let Some(form) = self.form.as_mut() {
+                    form.set("features", name);
+                    form.set("group", group.as_deref().unwrap_or("Group"));
+                }
+            }
+            C::Ungroup => self.submit_command("feature.group", json!({ "features": [name] }), Then::Notice),
             C::AcceptSuggestion => {
                 let status = self.scene.as_ref().and_then(|s| s.eval.status(name).cloned());
                 if let Some((from, to)) = browser::suggestion(status.as_ref()) {
@@ -2653,6 +2662,7 @@ impl App {
                     suppressed: f.suppressed,
                     status: eval.as_ref().and_then(|e| e.status(&f.name)),
                     deps: f.kind.dependencies(),
+                    group: f.group.as_deref(),
                 })
                 .collect();
             let track = egui::Frame::new()

@@ -19,6 +19,23 @@ pub struct Item<'a> {
     pub status: Option<&'a FeatureStatus>,
     /// Names of the features this one refers to (dependency highlighting).
     pub deps: Vec<String>,
+    /// Timeline group (DESIGN.md §1.4): a run of consecutive features with the same group
+    /// is framed and named, and folds to thin slivers when collapsed (click the name).
+    pub group: Option<&'a str>,
+}
+
+/// Runs of consecutive items in the same group: (group, first, last) indices.
+#[must_use]
+pub fn group_runs<'a>(items: &[Item<'a>]) -> Vec<(&'a str, usize, usize)> {
+    let mut out: Vec<(&'a str, usize, usize)> = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let Some(g) = it.group else { continue };
+        match out.last_mut() {
+            Some((lg, _, last)) if *lg == g && *last + 1 == i => *last = i,
+            _ => out.push((g, i, i)),
+        }
+    }
+    out
 }
 
 /// What a chip says about its feature.
@@ -190,6 +207,8 @@ const GAP: f32 = 8.0;
 const CHIP_H: f32 = 24.0;
 const CHIP_W: f32 = 28.0;
 const CHIP_ICON: f32 = 16.0;
+/// Width of a chip folded into a collapsed group.
+const FOLDED_W: f32 = 6.0;
 /// Height of the track the chips sit in.
 pub const TRACK_H: f32 = CHIP_H + 8.0;
 
@@ -211,18 +230,25 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
     let n = items.len();
     let marker = marker.min(n);
     let id = ui.make_persistent_id("timeline-marker");
+    // Collapsed groups (by name), kept in the UI memory.
+    let folded_id = ui.make_persistent_id("timeline-folded");
+    let folded: Vec<String> = ui.data(|d| d.get_temp(folded_id)).unwrap_or_default();
+    let runs = group_runs(items);
+    let is_folded = |i: usize| runs.iter().any(|(g, a, b)| (*a..=*b).contains(&i) && folded.iter().any(|f| f == g));
+    let chip_w = |i: usize| if is_folded(i) { FOLDED_W } else { CHIP_W };
     // Gap centers (marker positions) and chip rects, left to right.
     let height = TRACK_H;
-    let width = GAP * (n as f32 + 1.0) + CHIP_W * n as f32;
+    let width = GAP * (n as f32 + 1.0) + (0..n).map(chip_w).sum::<f32>();
     let (strip, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let mut gaps = Vec::with_capacity(n + 1);
     let mut chips = Vec::with_capacity(n);
     let mut x = strip.left();
-    for _ in items {
+    for i in 0..n {
         gaps.push(x + GAP * 0.5);
         x += GAP;
-        chips.push(Rect::from_min_size(Pos2::new(x, strip.center().y - CHIP_H * 0.5), Vec2::new(CHIP_W, CHIP_H)));
-        x += CHIP_W;
+        let w = chip_w(i);
+        chips.push(Rect::from_min_size(Pos2::new(x, strip.center().y - CHIP_H * 0.5), Vec2::new(w, CHIP_H)));
+        x += w;
     }
     gaps.push(x + GAP * 0.5);
     let nearest_gap = |px: f32| -> usize {
@@ -313,9 +339,12 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
         if chip.double_clicked() {
             edit = Some(i);
         }
-        if let Some(c) =
-            crate::browser::feature_menu(&chip, it.suppressed, crate::browser::suggestion(it.status).map(|(_, s)| s))
-        {
+        if let Some(c) = crate::browser::feature_menu(
+            &chip,
+            it.suppressed,
+            it.group.is_some(),
+            crate::browser::suggestion(it.status).map(|(_, s)| s),
+        ) {
             menu = Some((i, c));
         }
         let label = format!("{} ({})", it.name, chip_state(it, active).name());
@@ -328,6 +357,10 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
             Stroke::new(1.0, st.stroke),
             StrokeKind::Inside,
         );
+        if is_folded(i) {
+            chip.on_hover_text(describe(it, active));
+            continue;
+        }
         let ic = Rect::from_center_size(rect.center(), Vec2::splat(CHIP_ICON));
         icons::paint_tool(&painter, ic, icons::tool_for_keyword(it.keyword), st.ink);
         if let Some((badge, col)) = st.badge {
@@ -336,6 +369,39 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
             icons::paint(&painter, b, badge, col);
         }
         chip.on_hover_text(describe(it, active));
+    }
+
+    // Group frames: a bracket under each run with its name; clicking the name folds it.
+    let small = egui::FontId::proportional(9.0);
+    for (g, a, b) in &runs {
+        let (Some(ra), Some(rb)) = (chips.get(*a), chips.get(*b)) else { continue };
+        let frame = Rect::from_min_max(ra.min, rb.max).expand2(Vec2::new(3.0, 3.0));
+        painter.rect_stroke(
+            frame,
+            CornerRadius::same(theme::RADIUS_MD),
+            Stroke::new(1.0, pal.border),
+            StrokeKind::Outside,
+        );
+        let folded_now = folded.iter().any(|f| f == g);
+        let text = if folded_now { format!("▸ {g}") } else { (*g).to_string() };
+        let galley = painter.layout_no_wrap(text, small.clone(), pal.text_muted);
+        let tag =
+            Rect::from_min_size(Pos2::new(frame.left() + 2.0, frame.top() - 4.0), galley.size() + Vec2::new(4.0, 0.0));
+        painter.rect_filled(tag, CornerRadius::same(theme::RADIUS_SM), pal.bg_app);
+        painter.galley(tag.min + Vec2::new(2.0, 0.0), galley, pal.text_muted);
+        let resp = ui.interact(tag, id.with(("group", *g, *a)), Sense::click());
+        resp.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Button, true, format!("{} {g}", crate::i18n::tr("timeline.group")))
+        });
+        if resp.clicked() {
+            let mut f = folded.clone();
+            if folded_now {
+                f.retain(|x| x != g);
+            } else {
+                f.push((*g).to_string());
+            }
+            ui.data_mut(|d| d.insert_temp(folded_id, f));
+        }
     }
 
     // Marker: an accent bar with a grip, and a focus ring for keyboard users.
@@ -401,7 +467,8 @@ mod tests {
     fn failed_chips_use_danger_and_inactive_ones_are_dimmed() {
         let err = gusset_eval::EvalError::new("F", gusset_eval::ErrorCode::Expression, "boom");
         let failed = FeatureStatus::Failed(err);
-        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new() };
+        let item =
+            |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new(), group: None };
         let ok = chip_style(&item(Some(&FeatureStatus::Ok)), true, &DARK);
         assert_eq!(ok.text, DARK.text);
         let bad = chip_style(&item(Some(&failed)), true, &DARK);
@@ -419,7 +486,8 @@ mod tests {
         let failed = FeatureStatus::Failed(err(gusset_eval::ErrorCode::Expression));
         let cancelled = FeatureStatus::Failed(err(gusset_eval::ErrorCode::Cancelled));
         let blocked = FeatureStatus::Blocked { by: "A".into() };
-        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new() };
+        let item =
+            |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new(), group: None };
         let state = |s, active| chip_state(&item(s), active);
         assert_eq!(state(Some(&FeatureStatus::Ok), true), ChipState::Ok);
         assert_eq!(state(Some(&failed), true), ChipState::Failed);
@@ -435,6 +503,15 @@ mod tests {
         assert_eq!(badge(Some(&FeatureStatus::Ok)), None);
         assert_eq!(badge(Some(&FeatureStatus::Suppressed)).map(|b| b.0), Some(Icon::Ring));
         assert!(describe(&item(Some(&cancelled)), true).contains("cancelled"));
+    }
+
+    #[test]
+    fn consecutive_features_of_a_group_form_one_run() {
+        let item =
+            |name, group| Item { name, keyword: "fillet", suppressed: false, status: None, deps: Vec::new(), group };
+        let items =
+            [item("A", Some("g")), item("B", Some("g")), item("C", None), item("D", Some("g")), item("E", Some("h"))];
+        assert_eq!(group_runs(&items), vec![("g", 0, 1), ("g", 3, 3), ("h", 4, 4)]);
     }
 
     #[test]
