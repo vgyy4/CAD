@@ -214,10 +214,45 @@ pub fn tooltip_title(s: &CommandSpec) -> String {
     }
 }
 
+/// How long the pointer rests before a tooltip shows its longer explanation (DESIGN.md
+/// §1.19).
+const LONG_TOOLTIP: f64 = 1.2;
+
+/// The first sentence of a description, and the rest.
+fn split_first_sentence(text: &str) -> (&str, &str) {
+    match text.find(". ") {
+        Some(i) => (text.get(..=i).unwrap_or(text), text.get(i + 2..).unwrap_or("")),
+        None => (text, ""),
+    }
+}
+
+/// A command's tooltip: its icon, title and shortcut, and the first sentence; resting the
+/// pointer longer adds the rest of the description and the fields it asks for first.
 fn tooltip(ui: &mut Ui, s: &CommandSpec) {
-    ui.set_max_width(280.0);
-    ui.strong(tooltip_title(s));
-    ui.label(s.description);
+    ui.set_max_width(300.0);
+    ui.horizontal(|ui| {
+        if let Some(tool) = icons::tool_for_command(s.id) {
+            let pal =
+                theme::palette(if ui.visuals().dark_mode { theme::ThemeKind::Dark } else { theme::ThemeKind::Light });
+            icons::tool_icon(ui, tool, 28.0, Ink::new(pal));
+        }
+        ui.strong(tooltip_title(s));
+    });
+    let (first, rest) = split_first_sentence(s.description);
+    ui.label(first);
+    let still = ui.input(|i| i.pointer.time_since_last_movement());
+    if f64::from(still) < LONG_TOOLTIP {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(LONG_TOOLTIP - f64::from(still)));
+        return;
+    }
+    if !rest.is_empty() {
+        ui.label(rest);
+    }
+    let essentials: Vec<String> =
+        crate::forms::Form::new(s).fields.iter().filter(|f| f.required).map(|f| f.label.clone()).collect();
+    if !essentials.is_empty() {
+        ui.weak(format!("{}: {}", crate::i18n::tr("tooltip.asks"), essentials.join(", ")));
+    }
 }
 
 /// A small square icon button (the title bar's open, save, undo, redo). `label` is its
@@ -561,6 +596,15 @@ fn finish_button(ui: &mut Ui, pal: &Palette) -> egui::Response {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tooltips_lead_with_the_first_sentence() {
+        assert_eq!(
+            super::split_first_sentence("Does one thing. Then more. And more."),
+            ("Does one thing.", "Then more. And more.")
+        );
+        assert_eq!(super::split_first_sentence("Only one."), ("Only one.", ""));
+    }
+
     use super::*;
 
     #[test]
