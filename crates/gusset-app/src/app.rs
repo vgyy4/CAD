@@ -1157,6 +1157,13 @@ impl App {
                 self.submit_command("feature.suppress", json!({ "name": name, "suppressed": on }), Then::Notice);
             }
             C::Delete => self.submit_command("feature.delete", json!({ "name": name }), Then::Notice),
+            C::AcceptSuggestion => {
+                let status = self.scene.as_ref().and_then(|s| s.eval.status(name).cloned());
+                if let Some((from, to)) = browser::suggestion(status.as_ref()) {
+                    let args = json!({ "name": name, "from": from, "to": to });
+                    self.submit_command("feature.replace_reference", args, Then::Notice);
+                }
+            }
             C::RollHere => {
                 if let Some(i) = self.snapshot.doc.feature_index(name) {
                     let n = self.snapshot.doc.features.len();

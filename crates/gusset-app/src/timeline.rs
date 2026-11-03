@@ -313,7 +313,9 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
         if chip.double_clicked() {
             edit = Some(i);
         }
-        if let Some(c) = crate::browser::feature_menu(&chip, it.suppressed) {
+        if let Some(c) =
+            crate::browser::feature_menu(&chip, it.suppressed, crate::browser::suggestion(it.status).map(|(_, s)| s))
+        {
             menu = Some((i, c));
         }
         let label = format!("{} ({})", it.name, chip_state(it, active).name());

@@ -347,12 +347,29 @@ pub enum FeatureChoice {
     Delete,
     /// Move the rollback marker just after this feature.
     RollHere,
+    /// Take the rebuild error's suggested reference (DESIGN.md §1.9).
+    AcceptSuggestion,
+}
+
+/// The suggested replacement of a failed feature's broken reference: (reference, suggestion).
+#[must_use]
+pub fn suggestion(status: Option<&FeatureStatus>) -> Option<(&str, &str)> {
+    match status {
+        Some(FeatureStatus::Failed(e)) => e.reference.as_deref().zip(e.suggestion.as_deref()),
+        _ => None,
+    }
 }
 
 /// The right-click menu of a feature: edit, rename, suppress, roll back to here, delete.
-pub fn feature_menu(resp: &egui::Response, suppressed: bool) -> Option<FeatureChoice> {
+pub fn feature_menu(resp: &egui::Response, suppressed: bool, suggested: Option<&str>) -> Option<FeatureChoice> {
     let mut out = None;
     resp.context_menu(|ui| {
+        if let Some(s) = suggested
+            && ui.button(format!("{} {s}", tr("menu.feature.accept"))).clicked()
+        {
+            out = Some(FeatureChoice::AcceptSuggestion);
+            ui.close();
+        }
         let items = [
             ("menu.feature.edit", FeatureChoice::Edit),
             ("menu.feature.rename", FeatureChoice::Rename),
@@ -383,7 +400,7 @@ fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
         }
-        if let Some(c) = feature_menu(&resp, f.suppressed) {
+        if let Some(c) = feature_menu(&resp, f.suppressed, suggestion(status).map(|(_, s)| s)) {
             out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         if let Some(tip) = failure_tip(status) {
@@ -531,7 +548,7 @@ fn features(ui: &mut Ui, v: &View<'_>, c: Category, out: &mut Vec<Action>) {
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
         }
-        if let Some(c) = feature_menu(&resp, f.suppressed) {
+        if let Some(c) = feature_menu(&resp, f.suppressed, suggestion(status).map(|(_, s)| s)) {
             out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         match failure_tip(status) {

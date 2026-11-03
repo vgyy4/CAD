@@ -39,7 +39,7 @@ pub use drawing::{
     DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView,
     DrawingExport, DrawingMoveItem, QueryDrawing, drawing_scene,
 };
-pub use feature_edit::FeatureEdit;
+pub use feature_edit::{FeatureEdit, FeatureReplaceReference};
 pub use generate::{
     GenerateGear, GenerateNut, GenerateRack, GenerateSpring, GenerateThread, GenerateWorm, QueryGearPair,
 };

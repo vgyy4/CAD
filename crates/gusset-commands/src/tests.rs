@@ -1434,3 +1434,24 @@ fn imports_and_components_are_not_edited_in_place() {
         .unwrap_err();
     assert!(e.message.contains("import or a component"), "{e:?}");
 }
+
+#[test]
+fn references_are_replaced_in_place() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let b = run(&mut s, &u, "query.body", json!({"names": true}));
+    let e = |i: usize| b["edge_names"][i]["name"].as_str().unwrap().to_string();
+    let r = run(&mut s, &u, "feature.fillet", json!({"edges": [e(0)], "radius": "1 mm"}));
+    let name = r["feature"].as_str().unwrap().to_string();
+    let r = run(&mut s, &u, "feature.replace_reference", json!({"name": name, "from": e(0), "to": e(1)}));
+    assert_eq!(r["replaced"], 1, "{r}");
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    let text = gusset_doc::text::print_feature_object(doc.feature(&name).unwrap());
+    assert!(text.contains(&e(1)) && !text.contains(&format!("[{}]", e(0))), "{text}");
+    for (from, to, want) in [(e(0), e(2), "does not refer"), (e(1), "a, b".to_string(), "one face or edge")] {
+        let err = execute(&mut s, &u, "feature.replace_reference", json!({"name": name, "from": from, "to": to}))
+            .unwrap_err();
+        assert!(err.message.contains(want), "{err:?}");
+    }
+}

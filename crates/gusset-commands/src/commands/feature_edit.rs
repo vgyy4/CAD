@@ -9,7 +9,80 @@ use gusset_doc::text::{parse_feature_object, statement_args, statement_with_args
 use std::collections::BTreeMap;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<FeatureEdit>()]
+    vec![spec::<FeatureEdit>(), spec::<FeatureReplaceReference>()]
+}
+
+/// Replace a face or edge reference in a feature (accepting a rebuild error's suggestion).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureReplaceReference {
+    pub name: String,
+    /// The reference to replace, as written.
+    pub from: String,
+    pub to: String,
+}
+
+impl Command for FeatureReplaceReference {
+    const ID: &'static str = "feature.replace_reference";
+    const TITLE: &'static str = "Replace reference";
+    const DESCRIPTION: &'static str =
+        "Replace a face or edge reference in a feature, e.g. with a rebuild error's suggestion.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let name = self.name.clone();
+        let to = self.to.trim();
+        let one_ref = gusset_doc::refs::EdgeRef::parse(to).is_ok() || gusset_doc::refs::FaceRef::parse(to).is_ok();
+        if !one_ref || to.contains(['\n', '\r']) {
+            return Err(CommandError::args("the new reference must be one face or edge name"));
+        }
+        edit(s, ctx, &format!("Replace reference in {name}"), |doc, _| {
+            let i = doc.feature_index(&name).ok_or_else(|| CommandError::not_found(format!("no feature '{name}'")))?;
+            let f = doc.features.get(i).ok_or_else(|| CommandError::not_found(format!("no feature '{name}'")))?;
+            let (head, mut args) =
+                statement_args(f).ok_or_else(|| CommandError::args(format!("{name} is not a one-line feature")))?;
+            let mut replaced = 0;
+            for (_, v) in &mut args {
+                let (out, n) = replace_token(v, &self.from, &self.to);
+                *v = out;
+                replaced += n;
+            }
+            if replaced == 0 {
+                return Err(CommandError::not_found(format!("{name} does not refer to '{}'", self.from)));
+            }
+            let text = statement_with_args(&head, &args);
+            let new = parse_feature_object(&text).map_err(|e| CommandError::args(format!("{}: {e}", text.trim())))?;
+            if new.name != f.name || std::mem::discriminant(&new.kind) != std::mem::discriminant(&f.kind) {
+                return Err(CommandError::args("the name and kind of a feature cannot change"));
+            }
+            if let Some(slot) = doc.features.get_mut(i) {
+                *slot = new;
+            }
+            Ok(json!({ "feature": name, "replaced": replaced, "statement": text.trim() }))
+        })
+    }
+}
+
+/// Replaces whole occurrences of `from` in an argument value: bounded by the value's ends,
+/// brackets, commas or spaces (so `E1/cap(end)` does not match inside a longer name).
+fn replace_token(v: &str, from: &str, to: &str) -> (String, usize) {
+    let boundary = |c: Option<char>| c.is_none_or(|c| matches!(c, '[' | ']' | ',' | ' '));
+    let (mut out, mut rest, mut n) = (String::new(), v, 0);
+    while let Some(at) = rest.find(from).filter(|_| !from.is_empty()) {
+        // The character before the match: in `rest`, or the last one already written.
+        let before = if at > 0 { rest.get(..at).and_then(|p| p.chars().last()) } else { out.chars().last() };
+        let after = rest.get(at + from.len()..).and_then(|p| p.chars().next());
+        out.push_str(rest.get(..at).unwrap_or(""));
+        if boundary(before) && boundary(after) {
+            out.push_str(to);
+            n += 1;
+        } else {
+            out.push_str(from);
+        }
+        rest = rest.get(at + from.len()..).unwrap_or("");
+    }
+    out.push_str(rest);
+    (out, n)
 }
 
 /// Change arguments of an existing feature in place.
@@ -74,5 +147,18 @@ impl Command for FeatureEdit {
             }
             Ok(json!({ "feature": name, "statement": text.trim() }))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_token;
+
+    #[test]
+    fn whole_references_are_replaced() {
+        assert_eq!(replace_token("[E1/a, E1/ab, E1/a]", "E1/a", "E1/c"), ("[E1/c, E1/ab, E1/c]".into(), 2));
+        assert_eq!(replace_token("E1/cap(end)", "E1/cap(end)", "E1/x"), ("E1/x".into(), 1));
+        assert_eq!(replace_token("XE1/a", "E1/a", "Z"), ("XE1/a".into(), 0));
+        assert_eq!(replace_token("abc", "", "Z"), ("abc".into(), 0));
     }
 }

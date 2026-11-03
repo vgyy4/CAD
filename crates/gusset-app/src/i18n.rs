@@ -74,6 +74,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.feature.unsuppress", "Unsuppress"),
     ("menu.feature.roll_here", "Roll back to here"),
     ("menu.feature.delete", "Delete"),
+    ("menu.feature.accept", "Use suggested"),
     ("sketch.constrain", "Constrain"),
     ("viewport.preview", "Preview"),
     ("sketch.place_hint", "Or click in the viewport to place the points (they snap to sketch points)."),

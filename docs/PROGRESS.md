@@ -93,7 +93,9 @@ Phase 3 has started (see Next).
   undo); sketches are edited in sketch mode. In the app a double-click on a feature or datum
   plane in the browser, or on a timeline chip, opens its arguments as a form (a sketch's
   opens sketch mode); right-click on either gives edit, rename, suppress/unsuppress, roll back to
-  here and delete. F11 (View menu too) gives a clean full-screen viewport; Ctrl+Enter in a form
+  here and delete, and for a feature whose rebuild broke a reference with a suggestion, "Use
+  suggested ..." (`feature.replace_reference` swaps a whole face/edge reference in the statement;
+  DESIGN.md §1.9). F11 (View menu too) gives a clean full-screen viewport; Ctrl+Enter in a form
   confirms and opens the command again with the same values. Cursor-local tools (DESIGN.md §1.3,
   `quick_menus.rs`): a right click in the viewport (no drag) opens a radial marking menu and S opens
   the quick bar at the pointer, both with the context tools (last command first; sketch tools and
