@@ -1615,6 +1615,7 @@ dependencies = [
  "gusset-sketch",
  "gusset-store",
  "gusset-units",
+ "gusset-xt",
  "libc",
  "libm",
  "quick-xml 0.42.0",
@@ -1705,6 +1706,7 @@ dependencies = [
  "gusset-occt-sys",
  "gusset-sandbox",
  "gusset-worker",
+ "gusset-xt",
  "libm",
 ]
 
@@ -1887,6 +1889,13 @@ dependencies = [
  "gusset-sandbox",
  "libc",
  "serde_json",
+]
+
+[[package]]
+name = "gusset-xt"
+version = "0.1.0-mvp"
+dependencies = [
+ "libm",
 ]
 
 [[package]]

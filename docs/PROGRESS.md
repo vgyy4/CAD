@@ -251,13 +251,13 @@ Phase 3 has started (see Next).
      import done (`gusset-scad`, FCStd in the import worker). PLY and glTF 2.0 done (`gusset-meshio`:
      PLY ASCII/binary import and binary export; glTF `.glb` export and `.glb`/`.gltf` import with
      node transforms, metres/Y-up converted to mm/Z-up, only embedded buffers read; fuzz targets
-     `mesh_ply`, `mesh_gltf`; File > Export lists OBJ, PLY and glTF). Next in the tier: Parasolid XT
-     (clean-room reader; research done in docs/research/parasolid-xt.md: the public XT
-     Format Reference covers schema 12 only, modern files are deltas against the V13 base
-     schema whose field lists are not public; 38 public-domain samples exist in NIST's
-     usnistgov/engineering-design-models (Bentley, Unigraphics, VDS; old schemas, e.g.
-     SCH_901297). Plan: XT -> STEP text -> the sandboxed STEP import, ~5k lines; deferred
-     behind the app work (owner 2026-11-02: "start working on the actual app").
+     `mesh_ply`, `mesh_gltf`; File > Export lists OBJ, PLY and glTF). Parasolid XT done (ADR 0035, `gusset-xt`: clean-room
+     schema-driven reader of text and neutral binary, V4/V9 layouts inferred from NIST
+     samples, V12 from the public Reference, V14+ embedded deltas; converted to STEP and imported
+     by the sandboxed worker; `.x_t`/`.x_b`/`.xmt_txt` in `import.file`; fuzz target `xt_read`;
+     OCCT golden test against NIST's samples). Not yet: blends and SP-curves (skipped with a
+     warning), colours/names, assembly placements; V12 attribute definitions, B-surface pole
+     order, deltas and binary are unverified without sample files.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.

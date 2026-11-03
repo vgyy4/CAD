@@ -1476,3 +1476,30 @@ fn several_parameters_change_in_one_step() {
     let doc = s.document(&gusset_history::Actor::User).unwrap();
     assert_eq!(doc.params.iter().find(|p| p.name == "width").unwrap().expr.to_string(), "40 mm");
 }
+
+#[test]
+fn parasolid_files_go_through_the_xt_reader() {
+    struct Fake;
+    impl session::Importer for Fake {
+        fn import(
+            &self,
+            format: &str,
+            _: &[u8],
+            _: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            assert_eq!(format, "step");
+            Ok(vec![("part".into(), b"brep".to_vec())])
+        }
+    }
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-xt-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("part.x_t"), b"**PART2;SCH=SCH_1200000_12006;\n**END_OF_HEADER**\nT5 hello").unwrap();
+    s.project_dir = Some(d.clone());
+    s.importer = Some(Arc::new(Fake));
+    let e = execute(&mut s, &u, "import.file", json!({"path": "part.x_t"})).unwrap_err();
+    assert_eq!(e.code, "io");
+    assert!(e.message.starts_with("Parasolid:"), "{e:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

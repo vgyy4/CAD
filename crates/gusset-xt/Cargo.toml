@@ -1,0 +1,14 @@
+[package]
+name = "gusset-xt"
+description = "Parasolid XT (.x_t/.x_b) reader for Gusset (ADR 0035): clean-room decoder to STEP AP214"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libm.workspace = true
+
+[lints]
+workspace = true

@@ -278,6 +278,7 @@ dependencies = [
  "gusset-sketch",
  "gusset-store",
  "gusset-units",
+ "gusset-xt",
  "libc",
  "libm",
  "quick-xml",
@@ -337,6 +338,7 @@ dependencies = [
  "gusset-store",
  "gusset-units",
  "gusset-worker",
+ "gusset-xt",
  "libfuzzer-sys",
 ]
 
@@ -462,6 +464,13 @@ dependencies = [
  "gusset-occt-sys",
  "gusset-sandbox",
  "libc",
+]
+
+[[package]]
+name = "gusset-xt"
+version = "0.1.0-mvp"
+dependencies = [
+ "libm",
 ]
 
 [[package]]

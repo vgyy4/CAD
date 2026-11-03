@@ -44,7 +44,13 @@ enum Kind {
     FreeCad,
     /// An OpenSCAD file, evaluated here and built with the kernel (ADR 0033).
     Scad,
+    /// A Parasolid XT file, converted here to STEP and imported by the worker (ADR 0035).
+    Xt,
 }
+
+/// Tier note for Parasolid imports.
+pub const TIER_XT: &str =
+    "exact geometry from the Parasolid file (B-rep, no feature history; intersection curves are fitted)";
 
 /// Tier note for OpenSCAD imports.
 pub const TIER_SCAD: &str = "exact geometry built from the OpenSCAD program (B-rep, its parameters are not kept)";
@@ -157,19 +163,23 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "step" | "stp" => Kind::Brep(ImportFormat::Step),
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
         "fcstd" => Kind::FreeCad,
+        "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
         "scad" => Kind::Scad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad) && importer.is_none() {
-        return Err(CommandError::new("not_allowed", "STEP/IGES/FreeCAD import is not available in this session")
-            .hint("the sandboxed import worker (gusset-worker) was not found next to the program"));
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt) && importer.is_none() {
+        return Err(CommandError::new(
+            "not_allowed",
+            "STEP/IGES/Parasolid/FreeCAD import is not available in this session",
+        )
+        .hint("the sandboxed import worker (gusset-worker) was not found next to the program"));
     }
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
     let file_name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -196,6 +206,25 @@ impl ImportJob {
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
             }
             Kind::Scad => scad(&bytes, self.kernel.as_ref(), cancel)?,
+            Kind::Xt => {
+                let importer = self
+                    .importer
+                    .ok_or_else(|| CommandError::new("not_allowed", "Parasolid import is not available"))?;
+                let stem = Path::new(&self.file_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let c = gusset_xt::to_step(&bytes, &stem, &gusset_xt::Limits::default())
+                    .map_err(|e| CommandError::new("io", format!("Parasolid: {e}")))?;
+                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                })?;
+                let bodies =
+                    bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step });
+                let mut warnings = c.warnings;
+                warnings.truncate(50);
+                (bodies.collect::<Vec<_>>(), TIER_XT, warnings)
+            }
             Kind::FreeCad => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "FreeCAD import is not available"))?;

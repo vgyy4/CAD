@@ -764,3 +764,59 @@ fn a_helical_sweep_of_an_axial_section_has_the_screw_volume() {
     let twisted = SweepSpec { orientation: SweepOrientation::Frenet, twist: 1.0 };
     assert!(k().sweep(&centred_square(0.25, frame), &path, &twisted).is_err());
 }
+
+/// Parasolid XT (ADR 0035): the NIST samples, converted to STEP by gusset-xt, import as
+/// one solid each with as many faces as the STEP files NIST published next to them, inside
+/// the extent of those files' points (inches there). Runs when `GUSSET_XT_SAMPLES` names
+/// usnistgov/engineering-design-models/models. (OCCT does not read NIST's own STEP files.)
+#[test]
+fn xt_samples_match_their_step_exports() {
+    let Ok(dir) = std::env::var("GUSSET_XT_SAMPLES") else { return };
+    let dir = std::path::Path::new(&dir);
+    for (stem, solids) in [("Pete_Brown/foo/foo", 1), ("Pete_Brown/flange/flange", 2)] {
+        let base = dir.join("Parasolid/NIST").join(stem);
+        let xt = std::fs::read(base.with_extension("xmt_txt")).unwrap();
+        let c = gusset_xt::to_step(&xt, "sample", &gusset_xt::Limits::default()).unwrap();
+        let ours = k().import_step(c.step.as_bytes()).unwrap();
+        assert_eq!(ours.len(), 1, "{stem}");
+        let shape = &ours[0].0;
+        let theirs = std::fs::read_to_string(base.with_extension("step")).unwrap();
+        let faces = theirs.matches("ADVANCED_FACE").count() / solids;
+        let topo = k().topology(shape).unwrap();
+        assert_eq!((topo.solids, topo.faces.len()), (1, faces), "{stem}");
+        // Every vertex of their file (inches there) is a vertex of ours.
+        let mut points = std::collections::HashMap::new();
+        let mut vertex_refs = Vec::new();
+        for ent in theirs.split(';') {
+            let line = ent.replace('\n', " ");
+            let Some((id, rest)) = line.split_once('=') else { continue };
+            let id = id.trim().to_string();
+            if rest.contains("CARTESIAN_POINT") {
+                let inner = rest.rsplit('(').next().unwrap_or("");
+                let nums: Vec<f64> = inner
+                    .trim_end_matches(&[')', ';', ' '][..])
+                    .split(',')
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+                if let [x, y, z] = nums[..] {
+                    points.insert(id, [x * 25.4, y * 25.4, z * 25.4]);
+                }
+            } else if rest.contains("VERTEX_POINT") {
+                vertex_refs
+                    .push(rest.rsplit('#').next().unwrap_or("").trim_end_matches(&[')', ';', ' '][..]).to_string());
+            }
+        }
+        let mine: Vec<V3> = topo.vertices.iter().map(|v| v.point).collect();
+        let mut matched = 0;
+        for r in &vertex_refs {
+            let p = points[&format!("#{r}")];
+            if mine.iter().any(|q| (0..3).all(|i| (q[i] - p[i]).abs() < 1e-3)) {
+                matched += 1;
+            }
+        }
+        let m = k().mass_properties(shape).unwrap();
+        eprintln!("{stem}: {matched}/{} vertices, volume {}", vertex_refs.len() / solids, m.volume);
+        assert!(m.volume > 0.0);
+        assert_eq!(matched, vertex_refs.len(), "{stem}");
+    }
+}
