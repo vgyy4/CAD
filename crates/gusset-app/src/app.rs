@@ -263,6 +263,8 @@ pub struct App {
     /// The parameters table, while open: (name, expression being edited, expression when
     /// opened) per row; the last row adds a parameter.
     pub param_table: Option<Vec<(String, String, String)>>,
+    /// The browser's and the properties panel's widths, kept between runs.
+    pub panel_widths: (Option<f32>, Option<f32>),
     /// The rollback marker before an earlier sketch was edited (restored on Finish sketch).
     sketch_rollback: Option<Option<usize>>,
     /// "Select other": everything under an Alt+click, listed at that point.
@@ -383,6 +385,7 @@ impl App {
             sketch_rollback: None,
             recent: Vec::new(),
             param_table: None,
+            panel_widths: (None, None),
             picker: None,
             entry: None,
             place_cursor: None,
@@ -424,6 +427,7 @@ impl App {
         app.reduce_motion = prefs.reduce_motion;
         app.viewport.nav_preset = prefs.nav;
         app.recent = prefs.recent;
+        app.panel_widths = (prefs.browser_width, prefs.properties_width);
         app
     }
 
@@ -1064,6 +1068,23 @@ impl App {
         }
     }
 
+    /// Notes a panel's width once a resize ends (the pointer is up), and keeps it.
+    fn keep_width(&mut self, ui: &Ui, which: usize, w: f32) {
+        if ui.input(|i| i.pointer.any_down()) || !w.is_finite() {
+            return;
+        }
+        let slot = if which == 0 { &mut self.panel_widths.0 } else { &mut self.panel_widths.1 };
+        // The first frame records the width; a change of more than a pixel is a resize.
+        match *slot {
+            Some(old) if (old - w).abs() <= 1.0 => {}
+            None => *slot = Some(w),
+            Some(_) => {
+                *slot = Some(w);
+                self.save_prefs();
+            }
+        }
+    }
+
     /// The window preferences as they stand.
     fn prefs(&self) -> crate::prefs::Prefs {
         crate::prefs::Prefs {
@@ -1071,6 +1092,8 @@ impl App {
             reduce_motion: self.reduce_motion,
             nav: self.viewport.nav_preset,
             recent: self.recent.clone(),
+            browser_width: self.panel_widths.0,
+            properties_width: self.panel_widths.1,
         }
     }
 
@@ -1641,20 +1664,28 @@ impl App {
                 .resizable(false)
                 .frame(bar(pal.bg_panel, 4, 4))
                 .show(ui, |ui| self.timeline(ui));
-            egui::Panel::left("browser")
-                .default_size(240.0)
+            let w = egui::Panel::left("browser")
+                .default_size(self.panel_widths.0.unwrap_or(240.0))
                 .min_size(200.0)
                 .resizable(true)
-                .show(ui, |ui| self.browser(ui));
+                .show(ui, |ui| self.browser(ui))
+                .response
+                .rect
+                .width();
+            self.keep_width(ui, 0, w);
         }
         // The properties panel (DESIGN.md §2): the running command's form, docked at the
         // right like Fusion's command dialog instead of floating over the model.
         if self.form.is_some() {
-            egui::Panel::right("properties")
-                .default_size(320.0)
+            let w = egui::Panel::right("properties")
+                .default_size(self.panel_widths.1.unwrap_or(320.0))
                 .min_size(260.0)
                 .resizable(true)
-                .show(ui, |ui| self.properties_panel(ui));
+                .show(ui, |ui| self.properties_panel(ui))
+                .response
+                .rect
+                .width();
+            self.keep_width(ui, 1, w);
         }
         if self.agents.show_panel && !full {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
@@ -1749,6 +1780,12 @@ impl App {
         {
             self.selection.clear();
             self.submit_command("sketch.delete_items", json!({ "sketch": sketch, "ids": picked }), Then::Notice);
+        }
+        // X held: see through the model (DESIGN.md §1.14).
+        let see = !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_down(Key::X) && i.modifiers.is_none());
+        if see != self.viewport.see_through {
+            self.viewport.see_through = see;
+            ctx.request_repaint();
         }
         // S: the quick bar at the pointer (DESIGN.md §1.3).
         if !ctx.egui_wants_keyboard_input()

@@ -402,6 +402,8 @@ pub struct Viewport {
     pub show_edges: bool,
     /// Wireframe style: edges only, hidden edges included (the navigation bar's toggle).
     pub wireframe: bool,
+    /// Temporary see-through while X is held (DESIGN.md §1.14): the wireframe style.
+    pub see_through: bool,
     /// What clicks pick (the ribbon's SELECT group).
     pub select_filter: SelectFilter,
     /// Section view (the navigation bar's toggle), if on.
@@ -467,6 +469,7 @@ impl Default for Viewport {
             nav_preset: NavPreset::Gusset,
             show_edges: true,
             wireframe: false,
+            see_through: false,
             hidden_bodies: std::collections::BTreeSet::new(),
             select_filter: SelectFilter::All,
             section: None,
@@ -1015,8 +1018,8 @@ impl Viewport {
                 ThemeKind::Light => Theme::Light,
             },
             pixels_per_point: ppp,
-            edges: self.show_edges || self.wireframe,
-            faces: !self.wireframe,
+            edges: self.show_edges || self.wireframe || self.see_through,
+            faces: !(self.wireframe || self.see_through),
             section: self.section_plane(),
             ..ViewOptions::default()
         };

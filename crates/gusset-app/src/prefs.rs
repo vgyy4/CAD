@@ -9,20 +9,30 @@ use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "ui-prefs.json";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Prefs {
     pub theme: ThemeKind,
     pub reduce_motion: bool,
     pub nav: NavPreset,
     /// Recently opened or saved project files, newest first (at most [`MAX_RECENT`]).
     pub recent: Vec<String>,
+    /// Widths of the browser and the properties panel (DESIGN.md §1.15: layouts stay).
+    pub browser_width: Option<f32>,
+    pub properties_width: Option<f32>,
 }
 
 pub const MAX_RECENT: usize = 10;
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: ThemeKind::Dark, reduce_motion: false, nav: NavPreset::Gusset, recent: Vec::new() }
+        Prefs {
+            theme: ThemeKind::Dark,
+            reduce_motion: false,
+            nav: NavPreset::Gusset,
+            recent: Vec::new(),
+            browser_width: None,
+            properties_width: None,
+        }
     }
 }
 
@@ -69,7 +79,14 @@ pub fn load(path: &Path) -> Prefs {
             .take(MAX_RECENT)
             .map(str::to_string)
             .collect(),
+        browser_width: width(&v, "browser_width"),
+        properties_width: width(&v, "properties_width"),
     }
+}
+
+/// A panel width from the file, if it is a sane one.
+fn width(v: &Value, key: &str) -> Option<f32> {
+    v.get(key).and_then(Value::as_f64).filter(|w| (120.0..=2000.0).contains(w)).map(|w| w as f32)
 }
 
 /// Writes the preferences (durably: the old file stays whole if this fails).
@@ -82,6 +99,8 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "reduce_motion": p.reduce_motion,
         "navigation": p.nav.name(),
         "recent": p.recent,
+        "browser_width": p.browser_width,
+        "properties_width": p.properties_width,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -99,8 +118,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = path(&dir);
         assert_eq!(load(&p), Prefs::default());
-        let mut want =
-            Prefs { theme: ThemeKind::Light, reduce_motion: true, nav: NavPreset::SolidWorks, recent: Vec::new() };
+        let mut want = Prefs {
+            theme: ThemeKind::Light,
+            reduce_motion: true,
+            nav: NavPreset::SolidWorks,
+            browser_width: Some(300.0),
+            ..Prefs::default()
+        };
         remember(&mut want.recent, "/a.gus");
         remember(&mut want.recent, "/b.gus");
         remember(&mut want.recent, "/a.gus");

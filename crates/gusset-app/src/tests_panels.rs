@@ -611,10 +611,13 @@ fn saved_preferences_come_back_in_a_new_window() {
         reduce_motion: true,
         nav: crate::viewport::NavPreset::Fusion,
         recent: vec!["/tmp/a.gus".into()],
+        browser_width: Some(310.0),
+        properties_width: None,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
     assert_eq!((a.theme, a.reduce_motion, a.viewport.nav_preset), (want.theme, want.reduce_motion, want.nav));
+    assert_eq!(a.panel_widths, (Some(310.0), None));
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -756,4 +759,16 @@ fn the_parameters_table_applies_changes_in_one_step() {
     assert_eq!(expr(&h, "width"), Some("60 mm".into()));
     assert_eq!(expr(&h, "gap"), Some("2 mm".into()));
     assert_eq!(expr(&h, "depth"), Some("width / 4".into()), "unchanged rows are left alone");
+}
+
+#[test]
+fn holding_x_sees_through_the_model() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    h.key_down(egui::Key::X);
+    h.run();
+    assert!(h.state().viewport.see_through);
+    h.key_up(egui::Key::X);
+    h.run();
+    assert!(!h.state().viewport.see_through);
 }

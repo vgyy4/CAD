@@ -111,7 +111,9 @@ Phase 3 has started (see Next).
   browser's "Table…" or the search): every expression editable plus a new row; Apply sends the
   changed ones as `param.set_many` (one undo step, all or nothing). Ribbon tooltips show the
   tool's icon, title, shortcut and first sentence; resting the pointer 1.2 s adds the rest of the
-  description and the fields the command asks for (DESIGN.md §1.19). Live previews (DESIGN.md §1.6): while a feature or generator form has
+  description and the fields the command asks for (DESIGN.md §1.19). The browser's and the
+  properties panel's widths are kept with the preferences (§1.15); holding X sees through the model
+  (the wireframe style, §1.14). Live previews (DESIGN.md §1.6): while a feature or generator form has
   complete arguments, the model thread builds what it would make once typing pauses
   (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
   model comes back when the form closes. `gusset_commands::preview` runs the command in the
