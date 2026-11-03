@@ -610,6 +610,7 @@ fn saved_preferences_come_back_in_a_new_window() {
         theme: crate::theme::ThemeKind::Light,
         reduce_motion: true,
         nav: crate::viewport::NavPreset::Fusion,
+        recent: vec!["/tmp/a.gus".into()],
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
@@ -711,4 +712,22 @@ fn editing_an_earlier_sketch_rolls_back_and_ghosts_the_rest() {
     h.state_mut().edit_sketch("Free");
     settle(&mut h);
     assert_eq!(h.state().snapshot.rollback, Some(2));
+}
+
+#[test]
+fn command_search_finds_features_parameters_and_settings() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    h.state_mut().palette = Some("extrude1".into());
+    h.run();
+    h.get_by_label_contains("Edit Extrude1").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| (f.command, f.value("name"))), Some(("feature.edit", Some("Extrude1"))));
+    h.state_mut().form = None;
+    h.state_mut().palette = Some("light theme".into());
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert_eq!(h.state().theme, crate::theme::ThemeKind::Light);
+    assert!(h.state().palette.is_none());
 }

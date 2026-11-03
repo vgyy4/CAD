@@ -258,6 +258,8 @@ pub struct App {
     pub quick: Option<egui::Pos2>,
     /// The last command started (the menus offer it first).
     last_command: Option<&'static str>,
+    /// Recently opened or saved project files, newest first.
+    pub recent: Vec<String>,
     /// The rollback marker before an earlier sketch was edited (restored on Finish sketch).
     sketch_rollback: Option<Option<usize>>,
     /// "Select other": everything under an Alt+click, listed at that point.
@@ -376,6 +378,7 @@ impl App {
             quick: None,
             last_command: None,
             sketch_rollback: None,
+            recent: Vec::new(),
             picker: None,
             entry: None,
             place_cursor: None,
@@ -416,6 +419,7 @@ impl App {
         app.theme = prefs.theme;
         app.reduce_motion = prefs.reduce_motion;
         app.viewport.nav_preset = prefs.nav;
+        app.recent = prefs.recent;
         app
     }
 
@@ -756,6 +760,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.project_risky = gusset_store::paths::classify(&path).map(|r| format!("{r:?}"));
+                        self.remember_project(&path);
                         self.project_path = Some(path);
                         self.notice = Some(Notice { text: tr("status.saved").into(), hint: None, error: false });
                     }
@@ -1057,7 +1062,18 @@ impl App {
 
     /// The window preferences as they stand.
     fn prefs(&self) -> crate::prefs::Prefs {
-        crate::prefs::Prefs { theme: self.theme, reduce_motion: self.reduce_motion, nav: self.viewport.nav_preset }
+        crate::prefs::Prefs {
+            theme: self.theme,
+            reduce_motion: self.reduce_motion,
+            nav: self.viewport.nav_preset,
+            recent: self.recent.clone(),
+        }
+    }
+
+    /// Puts a project file first in the recent list (kept between runs).
+    fn remember_project(&mut self, path: &std::path::Path) {
+        crate::prefs::remember(&mut self.recent, &path.to_string_lossy());
+        self.save_prefs();
     }
 
     /// Keeps the preferences for the next run (a failure only costs the preference).
@@ -1442,6 +1458,7 @@ impl App {
     /// in after the question), they stay in its recovery file instead.
     fn finish_open(&mut self, path: PathBuf, project: Project, session: Session, report: OpenReport, discard: bool) {
         self.project_risky = project.risky.as_ref().map(|r| format!("{r:?}"));
+        self.remember_project(&path);
         self.project_path = Some(path);
         self.replace_host(move |old| {
             if let Some((s, Some(p))) = old {
@@ -2778,36 +2795,67 @@ impl App {
     }
 
     fn palette_window(&mut self, ctx: &egui::Context) {
-        let Some(query) = self.palette.as_mut() else { return };
+        let Some(mut query) = self.palette.take() else { return };
         let mut chosen = None;
         let mut close = false;
+        let doc = &self.snapshot.doc;
+        let recent = &self.recent;
         egui::Modal::new(egui::Id::new("palette")).show(ctx, |ui| {
             ui.set_width(460.0);
-            let r = ui.add(egui::TextEdit::singleline(query).hint_text(tr("search.hint")).desired_width(f32::INFINITY));
+            let r = ui
+                .add(egui::TextEdit::singleline(&mut query).hint_text(tr("search.hint")).desired_width(f32::INFINITY));
             r.request_focus();
-            let matches = search(query);
+            let matches = crate::palette::entries(&query, doc, recent);
             if matches.is_empty() {
                 ui.weak(tr("search.none"));
             }
-            for (i, spec) in matches.iter().take(12).enumerate() {
-                let label = format!("{}  —  {}", spec.title, spec.id);
-                if ui.selectable_label(i == 0, label).on_hover_text(spec.description).clicked() {
-                    chosen = Some(spec.id);
+            for (i, e) in matches.iter().take(12).enumerate() {
+                let label = format!("{}  —  {}", e.label, e.detail);
+                if ui.selectable_label(i == 0, label).clicked() {
+                    chosen = Some(e.target.clone());
                 }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                chosen = matches.first().map(|s| s.id);
+                chosen = matches.first().map(|e| e.target.clone());
             }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 close = true;
             }
         });
-        if close {
-            self.palette = None;
+        if !close && chosen.is_none() {
+            self.palette = Some(query);
         }
-        if let Some(id) = chosen {
-            self.palette = None;
-            self.start_command(id);
+        if let Some(t) = chosen {
+            self.palette_choice(t);
+        }
+    }
+
+    /// Carries out a command-search choice.
+    fn palette_choice(&mut self, t: crate::palette::Target) {
+        use crate::palette::{Setting as S, Target as T};
+        match t {
+            T::Command(id) => self.start_command(id),
+            T::Feature(name) => self.edit_feature(&name),
+            T::Param(name) => self.browser_action(browser::Action::EditParam(name)),
+            T::Recent(path) => self.request(Pending::Open(PathBuf::from(path))),
+            T::Setting(s) => {
+                match s {
+                    S::Theme(k) => self.theme = k,
+                    S::FullScreen => self.full_screen = !self.full_screen,
+                    S::Wireframe => self.viewport.wireframe = !self.viewport.wireframe,
+                    S::Section => {
+                        self.viewport.section =
+                            if self.viewport.section.is_some() { None } else { Some(Default::default()) };
+                    }
+                    S::CodeView => self.toggle_code(),
+                    S::CommandLine => {
+                        self.cmdline.visible = !self.cmdline.visible;
+                        self.cmdline.focus = self.cmdline.visible;
+                    }
+                    S::Nav(p) => self.viewport.nav_preset = p,
+                }
+                self.save_prefs();
+            }
         }
     }
 
