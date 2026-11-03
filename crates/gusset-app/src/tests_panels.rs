@@ -647,3 +647,48 @@ fn alt_click_lists_everything_under_the_pointer() {
     assert_eq!(h.state().selection, vec![second]);
     assert!(h.state().picker.is_none());
 }
+
+fn drag(h: &mut Harness<'static, App>, from: egui::Pos2, to: egui::Pos2) {
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    for k in 1..=8 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
+        h.run();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+}
+
+#[test]
+fn timeline_chips_reorder_by_drag_within_dependencies() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let order = |h: &Harness<'static, App>| -> Vec<String> {
+        h.state().snapshot.doc.features.iter().map(|f| f.name.clone()).collect()
+    };
+    assert_eq!(order(&h), ["Base", "Free", "Extrude1"]);
+    // The unused sketch moves to the end.
+    let from = h.get_by_label("Free (ok)").rect().center();
+    let to = h.get_by_label("Extrude1 (ok)").rect().right_center() + egui::vec2(6.0, 0.0);
+    drag(&mut h, from, to);
+    settle(&mut h);
+    assert_eq!(order(&h), ["Base", "Extrude1", "Free"]);
+    // The extrude cannot come before the sketch it uses: refused, order kept.
+    let from = h.get_by_label("Extrude1 (ok)").rect().center();
+    let to = h.get_by_label("Base (ok)").rect().left_center() - egui::vec2(6.0, 0.0);
+    drag(&mut h, from, to);
+    settle(&mut h);
+    assert_eq!(order(&h), ["Base", "Extrude1", "Free"]);
+    assert!(h.state().notice.as_ref().is_some_and(|n| n.error), "{:?}", h.state().notice);
+}

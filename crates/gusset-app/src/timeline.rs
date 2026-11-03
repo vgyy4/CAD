@@ -17,6 +17,8 @@ pub struct Item<'a> {
     pub keyword: &'a str,
     pub suppressed: bool,
     pub status: Option<&'a FeatureStatus>,
+    /// Names of the features this one refers to (dependency highlighting).
+    pub deps: Vec<String>,
 }
 
 /// What a chip says about its feature.
@@ -200,6 +202,8 @@ pub struct Out {
     pub edit: Option<usize>,
     /// A choice from a chip's context menu.
     pub menu: Option<(usize, crate::browser::FeatureChoice)>,
+    /// A chip dragged to another place: (from, to) positions (`feature.move` validates).
+    pub reorder: Option<(usize, usize)>,
 }
 
 /// Draws the strip. `marker` is the number of active features (`items.len()` = all).
@@ -283,10 +287,29 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
     let painter = ui.painter_at(strip.expand(2.0));
     let mut edit = None;
     let mut menu = None;
+    let (mut hovered, mut dragging, mut reorder) = (None, None, None);
     for (i, (it, rect)) in items.iter().zip(&chips).enumerate() {
         let active = i < marker_now;
         let st = chip_style(it, active, pal);
-        let chip = ui.interact(*rect, id.with(("chip", i)), Sense::click());
+        let chip = ui.interact(*rect, id.with(("chip", i)), Sense::click_and_drag());
+        if chip.hovered() || chip.dragged() {
+            hovered = Some(i);
+        }
+        if chip.dragged()
+            && let Some(p) = ui.ctx().pointer_interact_pos()
+        {
+            dragging = Some((i, nearest_gap(p.x)));
+        }
+        if chip.drag_stopped()
+            && let Some(p) = ui.ctx().pointer_interact_pos()
+        {
+            // Dropped into gap g: before chip g, so it lands at g, or g - 1 when moving right.
+            let g = nearest_gap(p.x);
+            let to = if g > i { g - 1 } else { g };
+            if to != i {
+                reorder = Some((i, to.min(n.saturating_sub(1))));
+            }
+        }
         if chip.double_clicked() {
             edit = Some(i);
         }
@@ -334,7 +357,37 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     resp.on_hover_text(crate::i18n::tr("timeline.rollback"));
-    Out { marker: result, edit, menu }
+    // Dependencies of the hovered chip: what it uses (accent) and what uses it (blue).
+    if let Some(h) = hovered.and_then(|h| items.get(h).map(|it| (h, it))) {
+        let (hi, it) = h;
+        for (j, (other, rect)) in items.iter().zip(&chips).enumerate() {
+            let color = if it.deps.iter().any(|d| d == other.name) {
+                Some(pal.accent)
+            } else if other.deps.iter().any(|d| d == it.name) {
+                Some(pal.vp_preselect)
+            } else {
+                None
+            };
+            if let Some(c) = color.filter(|_| j != hi) {
+                painter.rect_stroke(
+                    *rect,
+                    CornerRadius::same(theme::RADIUS_MD),
+                    Stroke::new(2.0, c),
+                    StrokeKind::Outside,
+                );
+            }
+        }
+    }
+    // Where a dragged chip would go.
+    if let Some((_, g)) = dragging
+        && let Some(&x) = gaps.get(g)
+    {
+        painter.line_segment(
+            [Pos2::new(x, strip.top() + 2.0), Pos2::new(x, strip.bottom() - 2.0)],
+            Stroke::new(2.0, pal.vp_preselect),
+        );
+    }
+    Out { marker: result, edit, menu, reorder }
 }
 
 #[cfg(test)]
@@ -346,7 +399,7 @@ mod tests {
     fn failed_chips_use_danger_and_inactive_ones_are_dimmed() {
         let err = gusset_eval::EvalError::new("F", gusset_eval::ErrorCode::Expression, "boom");
         let failed = FeatureStatus::Failed(err);
-        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status };
+        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new() };
         let ok = chip_style(&item(Some(&FeatureStatus::Ok)), true, &DARK);
         assert_eq!(ok.text, DARK.text);
         let bad = chip_style(&item(Some(&failed)), true, &DARK);
@@ -364,7 +417,7 @@ mod tests {
         let failed = FeatureStatus::Failed(err(gusset_eval::ErrorCode::Expression));
         let cancelled = FeatureStatus::Failed(err(gusset_eval::ErrorCode::Cancelled));
         let blocked = FeatureStatus::Blocked { by: "A".into() };
-        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status };
+        let item = |status| Item { name: "F", keyword: "fillet", suppressed: false, status, deps: Vec::new() };
         let state = |s, active| chip_state(&item(s), active);
         assert_eq!(state(Some(&FeatureStatus::Ok), true), ChipState::Ok);
         assert_eq!(state(Some(&failed), true), ChipState::Failed);

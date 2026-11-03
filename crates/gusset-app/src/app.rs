@@ -2470,6 +2470,7 @@ impl App {
                     keyword: f.kind.keyword(),
                     suppressed: f.suppressed,
                     status: eval.as_ref().and_then(|e| e.status(&f.name)),
+                    deps: f.kind.dependencies(),
                 })
                 .collect();
             let track = egui::Frame::new()
@@ -2493,6 +2494,8 @@ impl App {
                 .inner;
             let edit = moved.edit.and_then(|i| self.snapshot.doc.features.get(i)).map(|f| f.name.clone());
             let menu = moved.menu.and_then(|(i, c)| self.snapshot.doc.features.get(i).map(|f| (f.name.clone(), c)));
+            let reorder =
+                moved.reorder.and_then(|(i, to)| self.snapshot.doc.features.get(i).map(|f| (f.name.clone(), to)));
             if let Some(m) = moved.marker {
                 self.set_rollback(if m >= n { None } else { Some(m) });
             }
@@ -2501,6 +2504,10 @@ impl App {
             }
             if let Some((name, c)) = menu {
                 self.feature_choice(&name, c);
+            }
+            if let Some((name, index)) = reorder {
+                // Refused (with the reason in the status bar) when it breaks a dependency.
+                self.submit_command("feature.move", json!({ "name": name, "index": index }), Then::Notice);
             }
             let label = if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") };
             let on = self.show_iterations;
