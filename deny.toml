@@ -5,6 +5,13 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Same "unmaintained" notices as .cargo/audit.toml (egui's AccessKit -> atspi -> zbus on
+# Linux; no maintained replacement yet). Keep the two lists in step.
+ignore = [
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained; pulled in by AccessKit" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained; pulled in by AccessKit" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained; pulled in by AccessKit" },
+]
 
 [licenses]
 version = 2
