@@ -73,6 +73,8 @@ Phase 3 has started (see Next).
   geometric constraints are added at once, dimensions open the form with kind and entities
   filled in. While a sketch is edited its constraints show as labels at their entities (ASCII
   glyphs H, V, ||, _|_, =, T, Fix, M, S; dimensions as their expression, R/D for radii).
+  Editing an earlier sketch rolls the model back to just after it and ghosts the rest as faint
+  edges (DESIGN.md §1.5); Finish sketch puts the marker back.
   Starting or editing a sketch turns the camera to look straight at its plane (animated,
   `NavRequest::LookAt`).
   Profile regions are picked in the viewport: while a form with `regions` (extrude, revolve)

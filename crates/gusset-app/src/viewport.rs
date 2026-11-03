@@ -410,6 +410,9 @@ pub struct Viewport {
     pub planes: Vec<DrawPlane>,
     /// The sketch being edited: its points and curves are picked before the model.
     pub edit_sketch: Option<String>,
+    /// Edge segments (pairs) of the model as it was before a sketch edit rolled it back,
+    /// drawn faintly (DESIGN.md §1.5: sketch editing ghosts the downstream geometry).
+    pub ghost: Vec<[f32; 3]>,
     /// Where the viewport was drawn last frame (screen coordinates).
     last_rect: Rect,
     /// The model's scene and bodies while a live preview is shown in their place.
@@ -469,6 +472,7 @@ impl Default for Viewport {
             section: None,
             planes: Vec::new(),
             edit_sketch: None,
+            ghost: Vec::new(),
             last_rect: Rect::NOTHING,
             stash: None,
             dragging: None,
@@ -1038,6 +1042,14 @@ impl Viewport {
         let to_screen = |p: [f32; 3]| {
             self.camera.project(&cm, p.map(f64::from), vp).map(|(s, _)| rect.min + Vec2::new(s[0] as f32, s[1] as f32))
         };
+        // The ghost of the rolled-back model.
+        let faint = Stroke::new(1.0, pal.text_muted.gamma_multiply(0.5));
+        for seg in self.ghost.chunks_exact(2) {
+            let &[a, b] = seg else { continue };
+            if let (Some(a), Some(b)) = (to_screen(a), to_screen(b)) {
+                painter.line_segment([a, b], faint);
+            }
+        }
         // Construction planes: translucent squares over the model, with their names.
         for p in self.visible_planes() {
             let pts: Vec<Pos2> = p.corners().iter().filter_map(|c| to_screen(c.map(|v| v as f32))).collect();

@@ -258,6 +258,8 @@ pub struct App {
     pub quick: Option<egui::Pos2>,
     /// The last command started (the menus offer it first).
     last_command: Option<&'static str>,
+    /// The rollback marker before an earlier sketch was edited (restored on Finish sketch).
+    sketch_rollback: Option<Option<usize>>,
     /// "Select other": everything under an Alt+click, listed at that point.
     pub picker: Option<(egui::Pos2, Vec<Hit>)>,
     /// Dimensions being typed at the cursor while placing sketch geometry, with the last
@@ -373,6 +375,7 @@ impl App {
             marking: None,
             quick: None,
             last_command: None,
+            sketch_rollback: None,
             picker: None,
             entry: None,
             place_cursor: None,
@@ -896,8 +899,11 @@ impl App {
                             self.look_at_sketch = Some(name.to_string());
                             self.active_sketch_seen = false;
                         } else if id.starts_with("feature.") && self.active_sketch.is_some() {
-                            // A solid feature made from the sketch: its editing is over.
+                            // A solid feature made from the sketch: its editing is over (it
+                            // was inserted at the marker; the marker stays after it).
                             self.active_sketch = None;
+                            self.viewport.ghost.clear();
+                            self.sketch_rollback = None;
                         }
                     }
                     Err(e) => {
@@ -1989,6 +1995,23 @@ impl App {
 
     /// Starts editing an existing sketch: the Sketch tab and its tools become active.
     pub fn edit_sketch(&mut self, name: &str) {
+        // An earlier sketch is edited with the model rolled back to just after it, and the
+        // rest ghosted (DESIGN.md §1.5); Finish sketch puts the marker back.
+        let active = self.snapshot.rollback.unwrap_or(self.snapshot.doc.features.len());
+        if let Some(i) = self.snapshot.doc.feature_index(name)
+            && i + 1 < active
+            && self.sketch_rollback.is_none()
+        {
+            self.sketch_rollback = Some(self.snapshot.rollback);
+            self.viewport.ghost = self
+                .viewport
+                .scene()
+                .meshes()
+                .filter(|(_, m)| m.visible())
+                .flat_map(|(_, m)| m.world_edges())
+                .collect();
+            self.set_rollback(Some(i + 1));
+        }
         self.look_at_sketch = Some(name.to_string());
         self.active_sketch = Some(name.to_string());
         self.active_sketch_seen = true;
@@ -1998,8 +2021,17 @@ impl App {
     /// Ends sketch editing (the Solid tab comes back).
     pub fn finish_sketch(&mut self) {
         self.active_sketch = None;
+        self.end_sketch_rollback();
         if self.form.as_ref().is_some_and(|f| f.command.starts_with("sketch.")) {
             self.form = None;
+        }
+    }
+
+    /// Puts the rollback marker back after editing an earlier sketch, and drops the ghost.
+    fn end_sketch_rollback(&mut self) {
+        self.viewport.ghost.clear();
+        if let Some(prev) = self.sketch_rollback.take() {
+            self.set_rollback(prev);
         }
     }
 
@@ -2016,6 +2048,8 @@ impl App {
             self.active_sketch_seen = true;
         } else if self.active_sketch_seen {
             self.active_sketch = None;
+            self.viewport.ghost.clear();
+            self.sketch_rollback = None;
         }
     }
 

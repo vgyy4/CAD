@@ -56,6 +56,16 @@ impl SceneMesh {
         &self.data
     }
 
+    /// The mesh's edge segments in world space (pairs of points).
+    #[must_use]
+    pub fn world_edges(&self) -> Vec<[f32; 3]> {
+        self.data()
+            .edge_points
+            .iter()
+            .map(|p| crate::math::transform_point(self.transform(), p.map(f64::from)).map(|c| c as f32))
+            .collect()
+    }
+
     /// Object → world transform.
     #[must_use]
     pub fn transform(&self) -> &Mat4 {

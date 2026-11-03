@@ -692,3 +692,23 @@ fn timeline_chips_reorder_by_drag_within_dependencies() {
     assert_eq!(order(&h), ["Base", "Extrude1", "Free"]);
     assert!(h.state().notice.as_ref().is_some_and(|n| n.error), "{:?}", h.state().notice);
 }
+
+#[test]
+fn editing_an_earlier_sketch_rolls_back_and_ghosts_the_rest() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, None);
+    h.state_mut().edit_sketch("Base");
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(1), "rolled back to just after the sketch");
+    assert!(!h.state().viewport.ghost.is_empty(), "the extrude is ghosted");
+    assert!(h.state().evaluation().is_some_and(|e| e.bodies.is_empty()));
+    h.get_by_label("Finish sketch").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, None, "the marker is back");
+    assert!(h.state().viewport.ghost.is_empty());
+    // Free also comes before Extrude1, so editing it rolls back to just after it too.
+    h.state_mut().edit_sketch("Free");
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(2));
+}
