@@ -1014,6 +1014,31 @@ impl App {
         }
     }
 
+    /// Carries out a feature context-menu choice (browser rows and timeline chips).
+    pub fn feature_choice(&mut self, name: &str, choice: browser::FeatureChoice) {
+        use browser::FeatureChoice as C;
+        match choice {
+            C::Edit => self.edit_feature(name),
+            C::Rename => {
+                self.start_command("feature.rename");
+                if let Some(form) = self.form.as_mut() {
+                    form.set("from", name);
+                    form.set("to", name);
+                }
+            }
+            C::Suppress(on) => {
+                self.submit_command("feature.suppress", json!({ "name": name, "suppressed": on }), Then::Notice);
+            }
+            C::Delete => self.submit_command("feature.delete", json!({ "name": name }), Then::Notice),
+            C::RollHere => {
+                if let Some(i) = self.snapshot.doc.feature_index(name) {
+                    let n = self.snapshot.doc.features.len();
+                    self.set_rollback(if i + 1 >= n { None } else { Some(i + 1) });
+                }
+            }
+        }
+    }
+
     /// Opens a feature's arguments in a form (`feature.edit`); sketches open in sketch mode.
     pub fn edit_feature(&mut self, name: &str) {
         let Some(f) = self.snapshot.doc.feature(name) else { return };
@@ -1531,23 +1556,26 @@ impl App {
             self.viewport.nav_mode = NavMode::Select;
         }
         // Delete removes the picked items of the edited sketch.
-        if !ctx.egui_wants_keyboard_input()
-            && self.form.is_none()
-            && ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Delete)))
-            && let Some(sketch) = self.editing_sketch().map(str::to_string)
-        {
-            let ids: Vec<String> = self
+        // (Only when sketch items are picked: otherwise Delete stays feature.delete's key.)
+        let picked: Vec<String> = match self.editing_sketch() {
+            Some(sketch) => self
                 .selection
                 .iter()
                 .filter_map(|h| match h {
-                    Hit::Sketch { sketch: s, id } if *s == sketch => Some(id.clone()),
+                    Hit::Sketch { sketch: s, id } if s == sketch => Some(id.clone()),
                     _ => None,
                 })
-                .collect();
-            if !ids.is_empty() {
-                self.selection.clear();
-                self.submit_command("sketch.delete_items", json!({ "sketch": sketch, "ids": ids }), Then::Notice);
-            }
+                .collect(),
+            None => Vec::new(),
+        };
+        if !picked.is_empty()
+            && !ctx.egui_wants_keyboard_input()
+            && self.form.is_none()
+            && let Some(sketch) = self.editing_sketch().map(str::to_string)
+            && ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Delete)))
+        {
+            self.selection.clear();
+            self.submit_command("sketch.delete_items", json!({ "sketch": sketch, "ids": picked }), Then::Notice);
         }
         // Single-key command shortcuts only when no text field has focus.
         if !ctx.egui_wants_keyboard_input() && self.form.is_none() && self.palette.is_none() {
@@ -2194,6 +2222,7 @@ impl App {
             browser::Action::SetBodyVisible(name, on) => self.viewport.set_body_visible(&name, on),
             browser::Action::SetPlaneVisible(name, on) => self.viewport.set_plane_visible(&name, on),
             browser::Action::EditFeature(name) => self.edit_feature(&name),
+            browser::Action::FeatureMenu(name, choice) => self.feature_choice(&name, choice),
             browser::Action::EditSketch(name) => self.edit_sketch(&name),
             browser::Action::AddParam => self.start_command("param.set"),
             browser::Action::EditParam(name) => {
@@ -2267,11 +2296,15 @@ impl App {
                 })
                 .inner;
             let edit = moved.edit.and_then(|i| self.snapshot.doc.features.get(i)).map(|f| f.name.clone());
+            let menu = moved.menu.and_then(|(i, c)| self.snapshot.doc.features.get(i).map(|f| (f.name.clone(), c)));
             if let Some(m) = moved.marker {
                 self.set_rollback(if m >= n { None } else { Some(m) });
             }
             if let Some(name) = edit {
                 self.edit_feature(&name);
+            }
+            if let Some((name, c)) = menu {
+                self.feature_choice(&name, c);
             }
             let label = if self.show_iterations { tr("timeline.collapse") } else { tr("timeline.expand") };
             let on = self.show_iterations;

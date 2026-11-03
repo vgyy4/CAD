@@ -198,6 +198,8 @@ pub struct Out {
     pub marker: Option<usize>,
     /// A chip was double-clicked: edit that feature.
     pub edit: Option<usize>,
+    /// A choice from a chip's context menu.
+    pub menu: Option<(usize, crate::browser::FeatureChoice)>,
 }
 
 /// Draws the strip. `marker` is the number of active features (`items.len()` = all).
@@ -280,12 +282,16 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
     // Chips.
     let painter = ui.painter_at(strip.expand(2.0));
     let mut edit = None;
+    let mut menu = None;
     for (i, (it, rect)) in items.iter().zip(&chips).enumerate() {
         let active = i < marker_now;
         let st = chip_style(it, active, pal);
         let chip = ui.interact(*rect, id.with(("chip", i)), Sense::click());
         if chip.double_clicked() {
             edit = Some(i);
+        }
+        if let Some(c) = crate::browser::feature_menu(&chip, it.suppressed) {
+            menu = Some((i, c));
         }
         let label = format!("{} ({})", it.name, chip_state(it, active).name());
         chip.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
@@ -328,7 +334,7 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
     resp.on_hover_text(crate::i18n::tr("timeline.rollback"));
-    Out { marker: result, edit }
+    Out { marker: result, edit, menu }
 }
 
 #[cfg(test)]

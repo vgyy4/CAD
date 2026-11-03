@@ -127,6 +127,8 @@ pub enum Action {
     SetPlaneVisible(String, bool),
     /// Double-click on a feature: edit its arguments in place.
     EditFeature(String),
+    /// A choice from a feature's context menu.
+    FeatureMenu(String, FeatureChoice),
     /// Double-click on a sketch.
     EditSketch(String),
     /// "+ Add parameter".
@@ -335,6 +337,42 @@ fn origin(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     }
 }
 
+/// What a feature's context menu (browser rows, timeline chips) asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureChoice {
+    Edit,
+    Rename,
+    /// Suppress (`true`) or bring back (`false`).
+    Suppress(bool),
+    Delete,
+    /// Move the rollback marker just after this feature.
+    RollHere,
+}
+
+/// The right-click menu of a feature: edit, rename, suppress, roll back to here, delete.
+pub fn feature_menu(resp: &egui::Response, suppressed: bool) -> Option<FeatureChoice> {
+    let mut out = None;
+    resp.context_menu(|ui| {
+        let items = [
+            ("menu.feature.edit", FeatureChoice::Edit),
+            ("menu.feature.rename", FeatureChoice::Rename),
+            (
+                if suppressed { "menu.feature.unsuppress" } else { "menu.feature.suppress" },
+                FeatureChoice::Suppress(!suppressed),
+            ),
+            ("menu.feature.roll_here", FeatureChoice::RollHere),
+            ("menu.feature.delete", FeatureChoice::Delete),
+        ];
+        for (key, choice) in items {
+            if ui.button(tr(key)).clicked() {
+                out = Some(choice);
+                ui.close();
+            }
+        }
+    });
+    out
+}
+
 /// Datum planes: their status like features, with a visibility eye.
 fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     for f in features_of(v.doc, Category::Construction) {
@@ -344,6 +382,9 @@ fn construction(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
         let resp = plane_row(ui, v, &f.name, r, out);
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
+        }
+        if let Some(c) = feature_menu(&resp, f.suppressed) {
+            out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         if let Some(tip) = failure_tip(status) {
             resp.on_hover_text(tip);
@@ -489,6 +530,9 @@ fn features(ui: &mut Ui, v: &View<'_>, c: Category, out: &mut Vec<Action>) {
         let resp = row(ui, v.pal, &r);
         if resp.double_clicked() {
             out.push(Action::EditFeature(f.name.clone()));
+        }
+        if let Some(c) = feature_menu(&resp, f.suppressed) {
+            out.push(Action::FeatureMenu(f.name.clone(), c));
         }
         match failure_tip(status) {
             Some(tip) => resp.on_hover_text(tip),

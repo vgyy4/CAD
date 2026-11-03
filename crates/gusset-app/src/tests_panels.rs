@@ -507,3 +507,46 @@ fn feature_forms_show_a_live_preview_until_they_close() {
     assert!(!h.state().viewport.previewing());
     assert!((height(&h) - 10.0).abs() < 1e-6, "{}", height(&h));
 }
+
+fn right_click_at(h: &mut Harness<'static, App>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+}
+
+#[test]
+fn feature_context_menus_suppress_and_roll_back() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let suppressed =
+        |h: &Harness<'static, App>| h.state().snapshot.doc.feature("Extrude1").is_some_and(|f| f.suppressed);
+    assert!(!suppressed(&h));
+    let at = h.get_by_label("extrude Extrude1").rect().center();
+    right_click_at(&mut h, at);
+    h.get_by_label("Suppress").click();
+    settle(&mut h);
+    assert!(suppressed(&h));
+    // The timeline chip's menu: bring it back, then roll back to the first sketch.
+    h.run_steps(20);
+    let at = h.get_by_label_contains("Extrude1 (").rect().center();
+    right_click_at(&mut h, at);
+    h.get_by_label("Unsuppress").click();
+    settle(&mut h);
+    assert!(!suppressed(&h));
+    let at = h.get_by_label("Base (ok)").rect().center();
+    right_click_at(&mut h, at);
+    h.get_by_label("Roll back to here").click();
+    settle(&mut h);
+    assert_eq!(h.state().snapshot.rollback, Some(1));
+    // Outside sketch mode the Delete key is feature.delete's shortcut again.
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("feature.delete"));
+}
