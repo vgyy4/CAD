@@ -205,6 +205,15 @@ about the solved centre point (`step = angle / count` for a full turn, else
   splines, not points. Deleting a source removes it from the pattern; deleting the centre
   or the last source removes the pattern. Trimming a source keeps the new pieces in its
   pattern.
+* *Amended 2026-11-03:* `sketch.explode_pattern` turns a pattern's copies into ordinary
+  points and curves that keep the copy ids (`l5_2`, `p3_2`: ids may end in `_<k>`, the
+  same tag as the copy had, so face names and region ids survive) and removes the pattern.
+  `sketch.add_constraint` and `sketch.trim` on a copy explode its pattern first (the result
+  lists `exploded`). Naming a pattern id among `sketch.pattern`'s entities makes a pattern
+  of a pattern: the inner one is exploded with *fresh* ids (its copies' names would be
+  taken by the outer pattern's copies of the same sources), then the sources and copies are
+  repeated. Parametric nesting (the inner count still editable) is not supported. The
+  validator rejects a pattern that would make a copy id already used by an entity.
 * Limits: 2..=500 copies, 20 000 derived curves per sketch.
 * The count must be a whole number; otherwise the sketch fails with a hint, never rounds.
 

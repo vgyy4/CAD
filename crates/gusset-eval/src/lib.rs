@@ -1499,6 +1499,33 @@ pub fn solve_sketch_def(
     sketch::solve_sketch(name, def, params, units, Frame::XY).map(|s| s.result)
 }
 
+/// The copies one sketch pattern makes, from the solved sources: the copied points
+/// (`p3_2` → position) and curves (`l5_2`, geometry in copy ids, construction flag). For
+/// turning a pattern into ordinary entities (`sketch.explode_pattern`).
+pub fn pattern_copies(
+    name: &str,
+    def: &gusset_doc::SketchDef,
+    params: &ParamValues,
+    units: LengthUnit,
+    pattern: &str,
+) -> Result<PatternCopies, EvalError> {
+    let solved = solve_sketch_def(name, def, params, units)?;
+    let mut only = def.clone();
+    only.patterns.retain(|p| p.id == pattern);
+    let d = pattern::derive(name, &only, params, units, &solved.points, &solved.radii)?;
+    Ok(PatternCopies {
+        points: d.points,
+        curves: d.curves.into_iter().map(|c| (c.id, c.geom, c.construction)).collect(),
+    })
+}
+
+/// See [`pattern_copies`].
+#[derive(Debug, Clone, Default)]
+pub struct PatternCopies {
+    pub points: Vec<(String, [f64; 2])>,
+    pub curves: Vec<(String, gusset_doc::SkGeom, bool)>,
+}
+
 /// Parses a stored mesh blob (pure Rust, with gusset-meshio's limits) into one
 /// reference mesh body.
 fn read_mesh(name: &str, bytes: &[u8], fmt: gusset_meshio::Format) -> Result<MeshBody, EvalError> {

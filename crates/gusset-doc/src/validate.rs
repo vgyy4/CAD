@@ -813,12 +813,26 @@ fn check_sketch_entity(
     }
 }
 
+/// The prefix and number of a sketch item id: `l5`, or `l5_2` for an exploded pattern copy
+/// (copy numbers 1..4096, as `gusset_naming::entity_tag` encodes them).
 fn id_number(id: &str) -> Option<(char, u32)> {
     let mut chars = id.chars();
     let p = chars.next()?;
-    let num: u32 = chars.as_str().parse().ok()?;
-    if chars.as_str().starts_with('0') {
+    let (base, copy) = match chars.as_str().split_once('_') {
+        Some((b, k)) => (b, Some(k)),
+        None => (chars.as_str(), None),
+    };
+    let num: u32 = base.parse().ok()?;
+    if base.starts_with('0') || !base.bytes().all(|b| b.is_ascii_digit()) {
         return None;
+    }
+    if let Some(k) = copy {
+        let ok = !k.starts_with('0')
+            && k.bytes().all(|b| b.is_ascii_digit())
+            && k.parse::<u32>().is_ok_and(|k| (1..4096).contains(&k));
+        if !ok {
+            return None;
+        }
     }
     Some((p, num))
 }
@@ -916,6 +930,13 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
             out.push(issue(n, format!("pattern '{}' has more than {MAX_PATTERN_SOURCES} sources", p.id)));
         }
         for o in &p.of {
+            if o.contains('_') {
+                out.push(issue_h(
+                    n,
+                    format!("pattern '{}': source '{o}' is named like a copy, so its copies cannot be named", p.id),
+                    "sketch.pattern gives such a source a fresh id",
+                ));
+            }
             match kinds.get(o.as_str()) {
                 Some('l' | 'c' | 'a' | 's') => {
                     if !sourced.insert(o.as_str()) {
@@ -931,6 +952,22 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
                 }
                 None => out.push(issue(n, format!("pattern '{}' refers to unknown entity '{o}'", p.id))),
             }
+        }
+        // Copies are named `<source>_<j>`: an exploded copy with such an id would clash.
+        let mut named: Vec<&str> = p.of.iter().map(String::as_str).collect();
+        for o in &p.of {
+            if let Some(e) = s.entities.iter().find(|e| &e.id == o) {
+                named.extend(e.geom.refs());
+            }
+        }
+        if let Some(e) =
+            s.entities.iter().find(|e| named.iter().any(|o| e.id.strip_prefix(o).is_some_and(|r| r.starts_with('_'))))
+        {
+            out.push(issue_h(
+                n,
+                format!("pattern '{}' would make a copy named '{}', which is already an entity", p.id, e.id),
+                "explode or delete the old copies first",
+            ));
         }
         if let SkPatternKind::Circular { center, .. } = &p.kind
             && kinds.get(center.as_str()) != Some(&'p')
@@ -950,6 +987,15 @@ mod tests {
 
     fn issues(src: &str) -> Vec<String> {
         validate(&parse(src).unwrap()).iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn exploded_copy_ids_are_valid_ids() {
+        assert_eq!(id_number("l5_2"), Some(('l', 5)));
+        assert_eq!(id_number("p12"), Some(('p', 12)));
+        for bad in ["l5_", "l5_0", "l5_02", "l5_4096", "l05", "l5_2_3", "l_2", "l5x"] {
+            assert_eq!(id_number(bad), None, "{bad}");
+        }
     }
 
     #[test]

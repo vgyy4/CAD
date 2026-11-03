@@ -170,6 +170,11 @@ lateral faces `side(Sketch1/l5_2)`. A circular pattern spaces copies `angle / co
 for a full turn, else `angle / (count - 1)`; its centre is an ordinary point (it can be
 constrained). Copies are not solver geometry: constraints cannot refer to them. A curve
 belongs to at most one pattern. Ids `g<n>` share the sketch's counter.
+`sketch.explode_pattern` turns the copies into ordinary entities that keep their ids
+(`p3_2 = point(...)`, `l5_2 = line(p1_2, p2_2)`; an id may end in `_<1..4095>`), so faces
+named after them survive; constraining or trimming a copy does this for its pattern. A
+pattern of a pattern (a grid) explodes the inner one with fresh ids and repeats its sources
+and copies. A pattern must not make a copy whose id is already an entity.
 
 ```gusset
 gusset 1

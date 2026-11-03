@@ -270,7 +270,8 @@ Phase 3 has started (see Next).
   or cut from that body (OCCT exact-volume tests: a row of holes, a ring of bosses).
 - Sketch arrangement limits (ADR 0016): a spline that runs along another curve for a
   stretch is not merged with it (lines and arcs that overlap now share the stretch, and a
-  spline's tangential touch cuts both curves); a trimmed spline is refitted (close to, not exactly, the old curve); pattern copies cannot carry constraints or be trimmed; no patterns of patterns.
+  spline's tangential touch cuts both curves); a trimmed spline is refitted (close to, not exactly, the old curve); constraining or trimming a pattern copy, or patterning a pattern (a grid), explodes the
+  inner pattern into ordinary entities, so its count is no longer parametric.
 
 ## Decisions made without the owner (easy to reverse)
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is

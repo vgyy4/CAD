@@ -4,7 +4,161 @@ use super::*;
 use gusset_eval::{PartnerKind, TrimCut, TrimPlan};
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<SketchTrim>(), spec::<SketchPattern>()]
+    vec![spec::<SketchTrim>(), spec::<SketchPattern>(), spec::<SketchExplodePattern>()]
+}
+
+/// The pattern that makes `id` (a copy `l5_2` of a source curve, or `p3_2` of a point of
+/// one), if any.
+pub(super) fn pattern_of_copy(d: &SketchDef, id: &str) -> Option<String> {
+    if d.entities.iter().any(|e| e.id == id) {
+        return None;
+    }
+    let (base, k) = id.rsplit_once('_')?;
+    if k.is_empty() || !k.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    d.patterns
+        .iter()
+        .find(|p| {
+            p.of.iter().any(|o| o == base || d.entities.iter().any(|e| &e.id == o && e.geom.refs().contains(&base)))
+        })
+        .map(|p| p.id.clone())
+}
+
+/// Turns pattern `pattern` of sketch `sk` into ordinary entities that keep the copies' ids
+/// (so face names and references to them stay valid), or get fresh ids with `fresh` (when
+/// the sources are about to be patterned again, whose copies would take those names), and
+/// removes the pattern. Returns the new entity ids.
+pub(super) fn explode(doc: &mut Document, sk: &str, pattern: &str, fresh: bool) -> Result<Vec<String>, CommandError> {
+    let values = params::evaluate(&doc.params, doc.units);
+    let units = doc.units;
+    let d = sketch_mut(doc, sk)?;
+    if !d.patterns.iter().any(|p| p.id == pattern) {
+        return Err(CommandError::not_found(format!("no pattern '{pattern}' in {sk}")));
+    }
+    let copies = gusset_eval::pattern_copies(sk, d, &values, units, pattern).map_err(|e| {
+        let mut ce = CommandError::new("invalid_sketch", e.message);
+        ce.hint = e.hint;
+        ce
+    })?;
+    let mut made = Vec::new();
+    let mut rename: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let name =
+        |d: &mut SketchDef, rename: &mut std::collections::BTreeMap<String, String>, id: String, prefix: char| {
+            let new = if fresh { new_id(d, prefix) } else { id.clone() };
+            rename.insert(id, new.clone());
+            new
+        };
+    for (id, [x, y]) in copies.points {
+        let id = name(d, &mut rename, id, 'p');
+        d.entities.push(SkEntity { id: id.clone(), geom: SkGeom::Point { x, y }, construction: false });
+        made.push(id);
+    }
+    for (id, geom, construction) in copies.curves {
+        let id = name(d, &mut rename, id, geom.id_prefix());
+        let r = |p: &String| rename.get(p).cloned().unwrap_or_else(|| p.clone());
+        let geom = match geom {
+            SkGeom::Point { x, y } => SkGeom::Point { x, y },
+            SkGeom::Line { a, b } => SkGeom::Line { a: r(&a), b: r(&b) },
+            SkGeom::Circle { center, radius } => SkGeom::Circle { center: r(&center), radius },
+            SkGeom::Arc { center, start, end } => SkGeom::Arc { center: r(&center), start: r(&start), end: r(&end) },
+            SkGeom::Spline { points, closed } => SkGeom::Spline { points: points.iter().map(r).collect(), closed },
+        };
+        d.entities.push(SkEntity { id: id.clone(), geom, construction });
+        made.push(id);
+    }
+    d.patterns.retain(|p| p.id != pattern);
+    Ok(made)
+}
+
+/// Gives entity `from` the id `to` everywhere in the sketch.
+fn rename_entity(d: &mut SketchDef, from: &str, to: &str) {
+    let r = |s: &mut String| {
+        if s == from {
+            *s = to.to_string();
+        }
+    };
+    for e in &mut d.entities {
+        r(&mut e.id);
+        match &mut e.geom {
+            SkGeom::Point { .. } => {}
+            SkGeom::Line { a, b } => {
+                r(a);
+                r(b);
+            }
+            SkGeom::Circle { center, .. } => r(center),
+            SkGeom::Arc { center, start, end } => {
+                r(center);
+                r(start);
+                r(end);
+            }
+            SkGeom::Spline { points, .. } => points.iter_mut().for_each(r),
+        }
+    }
+    for c in &mut d.constraints {
+        c.entities.iter_mut().for_each(r);
+    }
+    for p in &mut d.patterns {
+        p.of.iter_mut().for_each(r);
+        if let SkPatternKind::Circular { center, .. } = &mut p.kind {
+            r(center);
+        }
+    }
+}
+
+/// Pattern sources (and their points) named like copies (`l5_2`, from an explode) would
+/// get copies `l5_2_1`, which no id can name: they get fresh ids first. Returns the
+/// renames.
+fn fresh_source_ids(d: &mut SketchDef, sources: &mut [String]) -> Vec<(String, String)> {
+    let mut renamed = Vec::new();
+    let mut names: Vec<String> = sources.to_vec();
+    for o in sources.iter() {
+        if let Some(e) = d.entities.iter().find(|e| &e.id == o) {
+            names.extend(e.geom.refs().iter().map(|r| (*r).to_string()));
+        }
+    }
+    for old in names {
+        if !old.contains('_') || renamed.iter().any(|(f, _)| f == &old) {
+            continue;
+        }
+        let prefix = old.chars().next().unwrap_or('p');
+        let new = new_id(d, prefix);
+        rename_entity(d, &old, &new);
+        for s in sources.iter_mut() {
+            if s == &old {
+                *s = new.clone();
+            }
+        }
+        renamed.push((old, new));
+    }
+    renamed
+}
+
+/// Turns a sketch pattern's copies into ordinary entities.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchExplodePattern {
+    pub sketch: String,
+    /// Pattern id (`g9`).
+    pub pattern: String,
+}
+
+impl Command for SketchExplodePattern {
+    const ID: &'static str = "sketch.explode_pattern";
+    const TITLE: &'static str = "Explode pattern";
+    const DESCRIPTION: &'static str = "Turn a sketch pattern's copies into ordinary entities with the same ids, so they take constraints and trims; the pattern goes.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let sk = self.sketch.clone();
+        let out = edit(s, ctx, "Explode pattern", |doc, _| {
+            let made = explode(doc, &sk, &self.pattern, false)?;
+            store_solution(doc, &sk);
+            Ok(json!({ "created": id_range(&made) }))
+        })?;
+        let status = sketch_status(s, ctx, &sk, false)?;
+        Ok(merge(out, json!({ "sketch_status": status })))
+    }
 }
 
 /// Deletes entities and everything that depends on them. Returns the deleted ids (the
@@ -68,6 +222,14 @@ impl Command for SketchTrim {
         }
         let sk = self.sketch.clone();
         let out = edit(s, ctx, "Trim", |doc, _| {
+            // A pattern copy becomes an ordinary entity first.
+            let exploded = match sketch_mut(doc, &sk).map(|d| pattern_of_copy(d, &self.entity))? {
+                Some(g) => {
+                    explode(doc, &sk, &g, false)?;
+                    Some(g)
+                }
+                None => None,
+            };
             let values = params::evaluate(&doc.params, doc.units);
             let units = doc.units;
             let d = sketch_mut(doc, &sk)?;
@@ -81,7 +243,10 @@ impl Command for SketchTrim {
             })?;
             let report = apply_trim(d, &self.entity, &plan)?;
             store_solution(doc, &sk);
-            Ok(report)
+            Ok(match exploded {
+                Some(g) => merge(report, json!({ "exploded": g })),
+                None => report,
+            })
         })?;
         let status = sketch_status(s, ctx, &sk, false)?;
         Ok(merge(out, json!({ "sketch_status": status })))
@@ -485,7 +650,8 @@ pub struct SketchPattern {
     pub sketch: String,
     /// `linear` (dx, dy) or `circular` (center, angle).
     pub kind: String,
-    /// Source lines, circles, arcs or splines (one pattern each).
+    /// Source lines, circles, arcs or splines (one pattern each), or a pattern id to repeat
+    /// that pattern (it becomes ordinary entities: a grid).
     pub entities: Vec<String>,
     /// Copies including the original, 2..=500 (expression).
     pub count: String,
@@ -534,8 +700,29 @@ impl Command for SketchPattern {
                 ))
                 .hint("the count includes the original"));
             }
-            let d = sketch_mut(doc, &sk)?;
+            // A pattern among the entities (a pattern of a pattern) or a copy: its pattern
+            // becomes ordinary entities, and a pattern stands for its sources and copies.
+            let mut entities: Vec<String> = Vec::new();
+            let mut exploded: Vec<String> = Vec::new();
             for e in &self.entities {
+                let d = sketch_mut(doc, &sk)?;
+                let inner = d.patterns.iter().find(|p| &p.id == e && Some(e) != self.id.as_ref()).map(|p| p.of.clone());
+                if let Some(sources) = inner {
+                    let made = explode(doc, &sk, e, true)?;
+                    entities.extend(sources);
+                    entities.extend(made.into_iter().filter(|m| !m.starts_with('p')));
+                    exploded.push(e.clone());
+                    continue;
+                }
+                if let Some(g) = pattern_of_copy(d, e).filter(|g| Some(g) != self.id.as_ref()) {
+                    explode(doc, &sk, &g, false)?;
+                    exploded.push(g);
+                }
+                entities.push(e.clone());
+            }
+            let d = sketch_mut(doc, &sk)?;
+            let renamed = fresh_source_ids(d, &mut entities);
+            for e in &entities {
                 match d.entities.iter().find(|x| &x.id == e).map(|x| &x.geom) {
                     None => return Err(CommandError::not_found(format!("no entity '{e}' in {sk}"))),
                     Some(SkGeom::Point { .. }) => {
@@ -551,7 +738,7 @@ impl Command for SketchPattern {
                 }
             }
             let mut seen = std::collections::BTreeSet::new();
-            if self.entities.is_empty() || !self.entities.iter().all(|e| seen.insert(e)) {
+            if entities.is_empty() || !entities.iter().all(|e| seen.insert(e)) {
                 return Err(CommandError::args("entities must be a non-empty list without repeats"));
             }
             let kind = match kind_name {
@@ -596,13 +783,21 @@ impl Command for SketchPattern {
                 }
                 None => new_id(d, 'g'),
             };
-            let pattern = SkPattern { id: id.clone(), kind, of: self.entities.clone(), count: count.clone() };
+            let pattern = SkPattern { id: id.clone(), kind, of: entities, count: count.clone() };
             match d.patterns.iter_mut().find(|p| p.id == id) {
                 Some(slot) => *slot = pattern,
                 None => d.patterns.push(pattern),
             }
             store_solution(doc, &sk);
-            Ok(json!({ "pattern": id, "copies": n.round() - 1.0 }))
+            let mut out = json!({ "pattern": id, "copies": n.round() - 1.0 });
+            if !exploded.is_empty() {
+                out = merge(out, json!({ "exploded": exploded }));
+            }
+            if !renamed.is_empty() {
+                let r: serde_json::Map<String, Value> = renamed.into_iter().map(|(f, t)| (f, json!(t))).collect();
+                out = merge(out, json!({ "renamed": r }));
+            }
+            Ok(out)
         })?;
         let status = sketch_status(s, ctx, &sk, false)?;
         Ok(merge(out, json!({ "sketch_status": status })))

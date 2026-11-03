@@ -48,7 +48,7 @@ pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
-pub use sketch_ops::{SketchPattern, SketchTrim};
+pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
 pub use sweep::{Loft, Sweep};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
@@ -1769,6 +1769,14 @@ impl Command for SketchAddConstraint {
         let sk = self.sketch.clone();
         let label = format!("Constrain {}", self.kind);
         let out = edit(s, ctx, &label, |doc, _| {
+            // Constraining a pattern copy turns its pattern into ordinary entities.
+            let mut exploded = Vec::new();
+            for e in &self.entities {
+                if let Some(g) = sketch_mut(doc, &sk).map(|d| sketch_ops::pattern_of_copy(d, e))? {
+                    sketch_ops::explode(doc, &sk, &g, false)?;
+                    exploded.push(g);
+                }
+            }
             let d = sketch_mut(doc, &sk)?;
             for e in &self.entities {
                 if !d.entities.iter().any(|x| &x.id == e) {
@@ -1778,7 +1786,11 @@ impl Command for SketchAddConstraint {
             let ents: Vec<&str> = self.entities.iter().map(String::as_str).collect();
             let k = add_constraint(d, kind, &ents, value);
             store_solution(doc, &sk);
-            Ok(json!({ "constraint": k }))
+            if exploded.is_empty() {
+                Ok(json!({ "constraint": k }))
+            } else {
+                Ok(json!({ "constraint": k, "exploded": exploded }))
+            }
         })?;
         let status = sketch_status(s, ctx, &sk, false)?;
         Ok(merge(out, json!({ "sketch_status": status })))

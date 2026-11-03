@@ -493,3 +493,63 @@ fn trim_refits_a_spline_through_its_kept_points() {
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(!text.contains("closed"), "{text}");
 }
+
+#[test]
+fn patterns_explode_into_entities_for_constraints_trims_and_grids() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    rect_sketch(&mut s, &u);
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5", "l6", "l7", "l8"], "count": "3", "dx": "20 mm"}),
+    );
+    let g = r["pattern"].as_str().unwrap().to_string();
+    // A pattern of the pattern is a grid: 3 x 2 rectangles.
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": [g], "count": "2", "dy": "10 mm"}),
+    );
+    assert_eq!(r["exploded"], json!([g]), "{r}");
+    let regs = regions(&mut s, &u, "Sketch1");
+    assert_eq!(regs.len(), 6, "{regs:?}");
+    // The row's copies became entities with fresh ids; constraining a copy of the grid
+    // explodes the grid, keeping the copy's id.
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.add_constraint",
+        json!({"sketch": "Sketch1", "kind": "horizontal", "entities": ["l5_1"]}),
+    );
+    assert_eq!(r["exploded"].as_array().unwrap().len(), 1, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(!text.contains("pattern_linear"), "{text}");
+    assert_eq!(regions(&mut s, &u, "Sketch1").len(), 6);
+    // Explicit explode, and trimming a copy, on a fresh pattern.
+    let mut s = session();
+    rect_sketch(&mut s, &u);
+    run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l5", "l6", "l7", "l8"], "count": "2", "dx": "5 mm"}),
+    );
+    // The copy overlaps the original: trim the copy's bottom edge inside the original.
+    let r = run(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": "l5_1", "x": 8, "y": 0}));
+    assert!(r["exploded"].is_string(), "{r}");
+    let e = fail(&mut s, &u, "sketch.explode_pattern", json!({"sketch": "Sketch1", "pattern": "g17"}));
+    assert_eq!(e.code, "not_found");
+    // Patterning an exploded copy renames it (and its points) first.
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.pattern",
+        json!({"sketch": "Sketch1", "kind": "linear", "entities": ["l6_1"], "count": "2", "dy": "20 mm"}),
+    );
+    assert!(r["renamed"]["l6_1"].is_string(), "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(!text.contains("l6_1"), "{text}");
+}
