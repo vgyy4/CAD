@@ -1755,7 +1755,7 @@ impl App {
         if !full {
             if self.timeline_collapsed {
                 egui::Panel::bottom("timeline_rail").resizable(false).frame(bar(pal.bg_panel, 1, 1)).show(ui, |ui| {
-                    if ui.small_button(format!("▴ {}", tr("panel.timeline"))).clicked() {
+                    if ui.small_button(format!("▸ {}", tr("panel.timeline"))).clicked() {
                         self.timeline_collapsed = false;
                     }
                 });

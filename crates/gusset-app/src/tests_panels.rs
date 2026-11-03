@@ -891,7 +891,7 @@ fn panels_collapse_and_swap_sides() {
     // The timeline folds to a one-line rail.
     h.state_mut().timeline_collapsed = true;
     h.run();
-    h.get_by_label("▴ Timeline").click();
+    h.get_by_label("▸ Timeline").click();
     h.run();
     assert!(!h.state().timeline_collapsed);
 }
