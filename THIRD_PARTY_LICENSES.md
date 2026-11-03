@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (364)
+- MIT License (368)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -1650,9 +1650,9 @@ limitations under the License.
 
 Used by:
 
-- [zstd-safe 8.1.0](https://github.com/gyscos/zstd-rs)
-- [zstd-sys 2.1.1+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
-- [zstd 0.14.1](https://github.com/gyscos/zstd-rs)
+- [zstd-safe 8.2.0](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd 0.14.3](https://github.com/gyscos/zstd-rs)
 
 ```text
 BSD 3-Clause License
@@ -1690,7 +1690,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.1+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```text
 BSD License
@@ -1730,7 +1730,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Used by:
 
-- [zstd-sys 2.1.1+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
+- [zstd-sys 2.1.2+zstd.1.5.7](https://github.com/gyscos/zstd-rs)
 
 ```text
 The auto-generated bindings are under the 3-clause BSD license:
@@ -1805,7 +1805,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
 
-- [clipboard-win 5.4.1](https://github.com/DoumanAsh/clipboard-win)
+- [clipboard-win 5.4.3](https://github.com/DoumanAsh/clipboard-win)
 
 ```text
 Boost Software License - Version 1.0 - August 17th, 2003
@@ -5681,6 +5681,7 @@ Used by:
 - [gusset-cli 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-commands 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-doc 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-drawing 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-eval 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-history 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-host 0.1.0-mvp](https://github.com/vgyy4/CAD)
@@ -5696,11 +5697,14 @@ Used by:
 - [gusset-project 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-render 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sandbox 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-scad 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sketch 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-store 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-text 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-units 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-update 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-worker 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-xt 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [accesskit 0.24.1](https://github.com/AccessKit/accesskit)
 - [accesskit_atspi_common 0.18.1](https://github.com/AccessKit/accesskit)
 - [accesskit_consumer 0.35.0](https://github.com/AccessKit/accesskit)
@@ -5789,7 +5793,7 @@ Used by:
 
 - [tokio-stream 0.1.19](https://github.com/tokio-rs/tokio)
 - [tokio-util 0.7.20](https://github.com/tokio-rs/tokio)
-- [tokio 1.53.2](https://github.com/tokio-rs/tokio)
+- [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```text
 MIT License
@@ -6085,7 +6089,7 @@ Used by:
 
 - [adler2 2.0.1](https://github.com/oyvindln/adler2)
 - [async-channel 2.5.0](https://github.com/smol-rs/async-channel)
-- [async-executor 1.14.0](https://github.com/smol-rs/async-executor)
+- [async-executor 1.14.1](https://github.com/smol-rs/async-executor)
 - [async-io 2.6.0](https://github.com/smol-rs/async-io)
 - [async-lock 3.4.2](https://github.com/smol-rs/async-lock)
 - [async-process 2.5.0](https://github.com/smol-rs/async-process)

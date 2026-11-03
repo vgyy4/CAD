@@ -286,6 +286,10 @@ Phase 3 has started (see Next).
   inner pattern into ordinary entities, so its count is no longer parametric.
 
 ## Decisions made without the owner (easy to reverse)
+- **cargo-audit ignores three "unmaintained" notices** (2026-11-03): RUSTSEC-2026-0370/0371/0372
+  (zvariant, zbus_names, zvariant_derive), reached only through egui's Linux accessibility
+  stack (accesskit -> AT-SPI -> zbus). Not vulnerabilities; no maintained replacement exists
+  and removing AccessKit would drop screen-reader support (DESIGN.md §1.22). `.cargo/audit.toml`.
 - **Branch workflow:** the session may only push to `claude/new-session-nedlj5`. That is
   also the repository's default branch, so it plays the role of "main". Feature
   branches are merged locally.

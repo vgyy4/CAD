@@ -391,9 +391,17 @@ where
         server.set_diagnostics(format!("{}\nGeometry kernel: {n}\n", gusset_hw::Diagnostics::collect().to_text()));
     }
     // Device and pipelines are ready before the first render_view (dogfooding F4-13).
-    if let Some(r) = options.renderer.clone() {
-        let _ = std::thread::Builder::new().name("gusset-render-warm".into()).spawn(move || r.warm());
-    }
+    // The process must not exit while this thread is inside the GPU driver (tearing a
+    // software driver's LLVM down under it aborted the process in CI): the end of this
+    // function waits for it, after the work is saved.
+    let warmed = options.renderer.clone().map(|r| {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _ = std::thread::Builder::new().name("gusset-render-warm".into()).spawn(move || {
+            r.warm();
+            let _ = tx.send(());
+        });
+        rx
+    });
     server.set_renderer(options.renderer.clone());
     server.set_read_only(options.read_only).map_err(McpError::Command)?;
     if let Some(a) = options.approvals.clone() {
@@ -427,8 +435,14 @@ where
             project.close();
         }
     }
+    if let Some(rx) = warmed {
+        let _ = tokio::task::spawn_blocking(move || rx.recv_timeout(WARM_WAIT)).await;
+    }
     served
 }
+
+/// Longest wait at exit for the renderer warm-up thread.
+const WARM_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How long after a change the headless server writes the file.
 const AUTOSAVE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);

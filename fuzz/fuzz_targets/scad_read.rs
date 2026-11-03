@@ -6,7 +6,14 @@ use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(src) = std::str::from_utf8(data) {
-        let lim = gusset_scad::Limits { max_steps: 100_000, max_depth: 64, max_primitives: 1000, max_vector: 10_000 };
+        let lim = gusset_scad::Limits {
+            max_steps: 100_000,
+            max_depth: 64,
+            max_primitives: 1000,
+            max_vector: 10_000,
+            max_cells: 1_000_000,
+            max_csg_depth: 64,
+        };
         let _ = gusset_scad::read_with(src, &lim);
     }
 });

@@ -2,7 +2,7 @@
 //! everything it returns must be finite and within its caps.
 #![no_main]
 
-use gusset_drawing::dxf_read::{self, Curve, MAX_CURVES, MAX_CURVE_POINTS};
+use gusset_drawing::dxf_read::{self, Curve, MAX_CURVE_POINTS, MAX_CURVES};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

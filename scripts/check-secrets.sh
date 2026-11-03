@@ -59,7 +59,7 @@ if [[ "${1:-}" != "--tree" ]]; then
     fail=1
   fi
   # Commits are authored as no-reply identities, never personal addresses.
-  allowed='^(noreply@anthropic\.com|noreply@github\.com|[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com|[A-Za-z0-9-]+\[bot\]@users\.noreply\.github\.com)$'
+  allowed='^(noreply@anthropic\.com|noreply@github\.com|[0-9]+\+[A-Za-z0-9-]+@users\.noreply\.github\.com|([0-9]+\+)?[A-Za-z0-9-]+\[bot\]@users\.noreply\.github\.com)$'
   while read -r commit author committer; do
     if ! [[ "$author" =~ $allowed && "$committer" =~ $allowed ]]; then
       echo "error: commit $commit has a personal author or committer address" >&2
