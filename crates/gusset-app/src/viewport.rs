@@ -415,6 +415,9 @@ pub struct Viewport {
     /// Edge segments (pairs) of the model as it was before a sketch edit rolled it back,
     /// drawn faintly (DESIGN.md §1.5: sketch editing ghosts the downstream geometry).
     pub ghost: Vec<[f32; 3]>,
+    /// Edge segments of the model a live preview stands in for, drawn over the preview so
+    /// before and after show together (DESIGN.md §1.6).
+    before: Vec<[f32; 3]>,
     /// Where the viewport was drawn last frame (screen coordinates).
     last_rect: Rect,
     /// The model's scene and bodies while a live preview is shown in their place.
@@ -476,6 +479,7 @@ impl Default for Viewport {
             planes: Vec::new(),
             edit_sketch: None,
             ghost: Vec::new(),
+            before: Vec::new(),
             last_rect: Rect::NOTHING,
             stash: None,
             dragging: None,
@@ -513,6 +517,7 @@ impl Viewport {
         }
         // A new model replaces any preview (and the model it stood in for).
         self.stash = None;
+        self.before.clear();
         self.scene = Arc::new(scene);
         self.bodies = bodies;
         self.generation += 1;
@@ -528,12 +533,19 @@ impl Viewport {
     /// Shows a live preview in place of the model (kept aside until [`Self::end_preview`]).
     pub fn show_preview(&mut self, scene: Scene, bodies: Vec<BodyInfo>) {
         let stash = self.stash.take().unwrap_or_else(|| (self.scene.clone(), std::mem::take(&mut self.bodies)));
+        let before = if self.before.is_empty() {
+            stash.0.meshes().filter(|(_, m)| m.visible()).flat_map(|(_, m)| m.world_edges()).collect()
+        } else {
+            std::mem::take(&mut self.before)
+        };
         self.set_scene(scene, bodies);
         self.stash = Some(stash);
+        self.before = before;
     }
 
     /// Puts the model back after a preview.
     pub fn end_preview(&mut self) {
+        self.before.clear();
         if let Some((scene, bodies)) = self.stash.take() {
             self.scene = scene;
             self.bodies = bodies;
@@ -542,6 +554,12 @@ impl Viewport {
             self.hover = None;
             self.hover_for = None;
         }
+    }
+
+    /// How many edge segments of the previewed-over model are drawn.
+    #[must_use]
+    pub fn before_edges(&self) -> usize {
+        self.before.len() / 2
     }
 
     /// Whether a live preview is shown.
@@ -1051,6 +1069,14 @@ impl Viewport {
             let &[a, b] = seg else { continue };
             if let (Some(a), Some(b)) = (to_screen(a), to_screen(b)) {
                 painter.line_segment([a, b], faint);
+            }
+        }
+        // Under a live preview, the model as it was: its edges over the preview.
+        let was = Stroke::new(1.0, pal.accent.gamma_multiply(0.55));
+        for seg in self.before.chunks_exact(2) {
+            let &[a, b] = seg else { continue };
+            if let (Some(a), Some(b)) = (to_screen(a), to_screen(b)) {
+                painter.line_segment([a, b], was);
             }
         }
         // Construction planes: translucent squares over the model, with their names.

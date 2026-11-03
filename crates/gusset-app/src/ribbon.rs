@@ -133,7 +133,12 @@ const SKETCH: &[Group] = &[
     Group {
         key: "ribbon.modify",
         large: 3,
-        tools: &[d("sketch.trim", "Trim"), d("sketch.move_point", "Move"), d("sketch.delete_items", "Delete")],
+        tools: &[
+            d("sketch.trim", "Trim"),
+            d("sketch.move_point", "Move"),
+            d("sketch.delete_items", "Delete"),
+            d("sketch.explode_pattern", "Explode"),
+        ],
     },
     Group { key: "ribbon.constraints", large: 1, tools: &[d("sketch.add_constraint", "Constrain")] },
     Group { key: "ribbon.inspect", large: 1, tools: &[d("query.sketch", "Status")] },

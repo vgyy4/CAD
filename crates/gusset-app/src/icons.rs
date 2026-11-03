@@ -361,7 +361,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "sketch.add_arc" => Tool::Arc,
         "sketch.add_constraint" => Tool::Constraint,
         "sketch.trim" => Tool::Trim,
-        "sketch.pattern" => Tool::SketchPattern,
+        "sketch.pattern" | "sketch.explode_pattern" => Tool::SketchPattern,
         "sketch.move_point" => Tool::MovePoint,
         "sketch.delete_items" => Tool::DeleteItems,
         "param.set" | "param.rename" | "param.delete" => Tool::Params,

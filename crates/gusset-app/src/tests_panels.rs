@@ -494,6 +494,8 @@ fn feature_forms_show_a_live_preview_until_they_close() {
     h.run_steps(3);
     assert!(h.state().viewport.previewing());
     assert!((height(&h) - 30.0).abs() < 1e-6, "{}", height(&h));
+    // The model as it was shows over the preview as edges (the 10 mm box: 12 edges).
+    assert!(h.state().viewport.before_edges() >= 12, "{}", h.state().viewport.before_edges());
     // Nothing was committed; closing the form puts the model back.
     assert!(
         h.state()
@@ -505,6 +507,7 @@ fn feature_forms_show_a_live_preview_until_they_close() {
     h.state_mut().form = None;
     h.run_steps(3);
     assert!(!h.state().viewport.previewing());
+    assert_eq!(h.state().viewport.before_edges(), 0);
     assert!((height(&h) - 10.0).abs() < 1e-6, "{}", height(&h));
 }
 
