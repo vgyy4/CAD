@@ -11,6 +11,7 @@ pub mod forms;
 pub mod i18n;
 pub mod icons;
 pub mod link;
+pub mod quick_menus;
 pub mod ribbon;
 pub mod sheet;
 pub mod sketch_constrain;

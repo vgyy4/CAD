@@ -162,6 +162,11 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // The marking menu (a right click in the viewport).
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.marking = Some(egui::pos2(760.0, 470.0));
+        shoot(&dir, &format!("16-marking-menu-{t}"), a, |_| {});
         // Sketch geometry placed with clicks: a line from a clicked point to the cursor.
         let mut a = app(theme);
         bracket(&mut a);

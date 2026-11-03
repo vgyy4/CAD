@@ -145,6 +145,8 @@ pub struct Output {
     pub pointer_ray: Option<Ray>,
     /// A sketch point being dragged (left drag from a point of the edited sketch).
     pub drag: Option<PointDrag>,
+    /// A right click without a drag: where to open the marking menu.
+    pub menu_at: Option<Pos2>,
     /// World size of one logical pixel at the view's target (snapping tolerances).
     pub pixel_size: f64,
 }
@@ -865,6 +867,9 @@ impl Viewport {
             self.hover_for = None;
         }
         self.drag_point(&resp, rect, sketches, &mut out);
+        if resp.secondary_clicked() {
+            out.menu_at = resp.interact_pointer_pos();
+        }
         self.apply_highlights(selection);
 
         let ppp = ui.ctx().pixels_per_point();

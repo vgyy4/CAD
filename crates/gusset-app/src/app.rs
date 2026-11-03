@@ -252,6 +252,12 @@ pub struct App {
     pub selection: Vec<Hit>,
     /// F11: a clean full-screen viewport (only the status bar and an open form stay).
     pub full_screen: bool,
+    /// The marking menu's center (a right click in the viewport), while it is open.
+    pub marking: Option<egui::Pos2>,
+    /// The S-key quick bar's position, while it is open.
+    pub quick: Option<egui::Pos2>,
+    /// The last command started (the menus offer it first).
+    last_command: Option<&'static str>,
     /// The snapped point under the cursor while placing sketch geometry (preview).
     place_cursor: Option<Click>,
     /// A sketch to turn the camera to once its plane is known (editing starts).
@@ -358,6 +364,9 @@ impl App {
             viewport: Viewport::default(),
             selection: Vec::new(),
             full_screen: false,
+            marking: None,
+            quick: None,
+            last_command: None,
             place_cursor: None,
             drag_preview: None,
             look_at_sketch: None,
@@ -919,6 +928,7 @@ impl App {
     /// Opens the dialog for a command (or runs it directly when it takes no input).
     pub fn start_command(&mut self, id: &str) {
         let Some(spec) = gusset_commands::find(id) else { return };
+        self.last_command = Some(spec.id);
         let mut form = Form::new(spec);
         if form.fields.is_empty() {
             let then = if inspects(spec.id) { Then::Show } else { Then::Notice };
@@ -1024,6 +1034,35 @@ impl App {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The marking menu and the quick bar, when open, and what was chosen in them.
+    fn quick_menus(&mut self, ctx: &egui::Context) {
+        use crate::quick_menus::{self as qm, Tool};
+        let tools = qm::tools(self.editing_sketch().is_some(), self.last_command);
+        let mut chosen = None;
+        if let Some(at) = self.marking {
+            match qm::marking(ctx, at, &tools) {
+                Some(Some(t)) => chosen = Some(t),
+                Some(None) => self.marking = None,
+                None => {}
+            }
+        }
+        if let Some(at) = self.quick {
+            match qm::quick_bar(ctx, at, &tools) {
+                Some(Some(t)) => chosen = Some(t),
+                Some(None) => self.quick = None,
+                None => {}
+            }
+        }
+        let Some(t) = chosen else { return };
+        self.marking = None;
+        self.quick = None;
+        match t {
+            Tool::Command(id) => self.start_command(id),
+            Tool::FinishSketch => self.finish_sketch(),
+            Tool::Search => self.palette = Some(String::new()),
         }
     }
 
@@ -1532,6 +1571,7 @@ impl App {
         self.dialogs(&ctx);
         // Last, so it is on top of every other dialog.
         self.approval_modal(&ctx);
+        self.quick_menus(&ctx);
     }
 
     fn handle_close(&mut self, ctx: &egui::Context) {
@@ -1571,6 +1611,8 @@ impl App {
             self.full_screen = !self.full_screen;
         }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
+            self.marking = None;
+            self.quick = None;
             self.form = None;
             self.palette = None;
             self.selection.clear();
@@ -1597,6 +1639,16 @@ impl App {
         {
             self.selection.clear();
             self.submit_command("sketch.delete_items", json!({ "sketch": sketch, "ids": picked }), Then::Notice);
+        }
+        // S: the quick bar at the pointer (DESIGN.md §1.3).
+        if !ctx.egui_wants_keyboard_input()
+            && self.form.is_none()
+            && self.palette.is_none()
+            && ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::S)))
+        {
+            let at = ctx.pointer_hover_pos().unwrap_or_else(|| self.viewport.rect().center());
+            self.quick = Some(at);
+            self.marking = None;
         }
         // Single-key command shortcuts only when no text field has focus.
         if !ctx.egui_wants_keyboard_input() && self.form.is_none() && self.palette.is_none() {
@@ -2465,6 +2517,10 @@ impl App {
         }
         // With a form that takes regions, a click inside one toggles it.
         let region_picked = out.clicked.is_some() && out.pointer_ray.is_some_and(|r| self.region_click(&r));
+        if let Some(at) = out.menu_at {
+            self.marking = Some(at);
+            self.quick = None;
+        }
         if let Some(clicked) = out.clicked.filter(|_| !region_picked) {
             let add = ui.input(|i| i.modifiers.shift || i.modifiers.command);
             match clicked {

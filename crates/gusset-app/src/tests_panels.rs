@@ -575,3 +575,28 @@ fn f11_gives_a_clean_viewport_and_ctrl_enter_repeats_a_command() {
     let again = h.state().form.as_ref().expect("the command again");
     assert_eq!((again.command, again.value("name"), again.repeat), ("param.set", Some("gap"), false));
 }
+
+#[test]
+fn marking_menu_and_quick_bar_start_context_tools() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    let c = h.state().viewport.rect().center();
+    right_click_at(&mut h, c);
+    assert!(h.state().marking.is_some(), "a right click opens the marking menu");
+    assert!(h.state().form.is_none(), "and runs nothing by itself");
+    // (The ribbon has an Extrude button too: the menu's is drawn last.)
+    h.get_all_by_label("Extrude").last().expect("menu item").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("feature.extrude"));
+    assert!(h.state().marking.is_none());
+    // The S quick bar leads with the last command; Esc closes it.
+    h.state_mut().form = None;
+    h.hover_at(c);
+    h.key_press(egui::Key::S);
+    h.run();
+    assert!(h.state().quick.is_some());
+    assert!(h.get_all_by_label("Extrude").count() >= 2, "the quick bar lists the last command");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().quick.is_none());
+}

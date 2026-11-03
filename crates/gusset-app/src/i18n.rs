@@ -15,6 +15,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.undo", "Undo"),
     ("menu.redo", "Redo"),
     ("menu.view", "View"),
+    ("quick.search", "Search"),
     ("menu.full_screen", "Full-screen viewport (F11)"),
     ("menu.theme_dark", "Dark theme"),
     ("menu.theme_light", "Light theme"),

@@ -1140,7 +1140,6 @@ impl Command for SketchCreate {
     const DESCRIPTION: &'static str = "Create a sketch on XY/XZ/YZ, a planar face (persistent face reference) or a datum plane. The result's `frame` gives the sketch plane in world mm: origin_mm, x_axis, y_axis and normal (sketch (u,v) maps to origin + u*x_axis + v*y_axis).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
-    const SHORTCUT: Option<&'static str> = Some("S");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let plane = datum::parse_plane_arg(s, ctx, &self.plane)?;
         let created = std::cell::RefCell::new(String::new());

@@ -89,7 +89,10 @@ Phase 3 has started (see Next).
   plane in the browser, or on a timeline chip, opens its arguments as a form (a sketch's
   opens sketch mode); right-click on either gives edit, rename, suppress/unsuppress, roll back to
   here and delete. F11 (View menu too) gives a clean full-screen viewport; Ctrl+Enter in a form
-  confirms and opens the command again with the same values. Live previews (DESIGN.md §1.6): while a feature or generator form has
+  confirms and opens the command again with the same values. Cursor-local tools (DESIGN.md §1.3,
+  `quick_menus.rs`): a right click in the viewport (no drag) opens a radial marking menu and S opens
+  the quick bar at the pointer, both with the context tools (last command first; sketch tools and
+  Finish sketch while sketching); `sketch.create` gave up its S shortcut for it. Live previews (DESIGN.md §1.6): while a feature or generator form has
   complete arguments, the model thread builds what it would make once typing pauses
   (300 ms, one at a time) and the viewport shows it tinted with a "Preview" badge; the
   model comes back when the form closes. `gusset_commands::preview` runs the command in the
@@ -104,7 +107,7 @@ Phase 3 has started (see Next).
   through the cut of a closed body draw as a flat tinted cut face at the cut plane's depth (a cap pass); picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
-  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar, live preview).
+  2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar, live preview, marking menu).
 
 ## Done for v0.2 after its reviews (2026-10-13)
 - Code and security review findings H1-H3, M1-M5, L1-L11, V1-V8 fixed.
