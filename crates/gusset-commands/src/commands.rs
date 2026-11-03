@@ -3302,7 +3302,7 @@ impl Command for ExportStep {
 pub struct ExportMesh {
     /// File name relative to the project folder.
     pub path: String,
-    /// `stl`, `stl_ascii`, `3mf` or `obj`. Default: from the file extension.
+    /// `stl`, `stl_ascii`, `3mf`, `obj`, `ply` or `glb`. Default: from the file extension.
     #[serde(default)]
     pub format: Option<String>,
     /// Maximum surface deviation in mm (default 0.01).
@@ -3352,6 +3352,8 @@ fn mesh_extensions(format: gusset_meshio::ExportFormat) -> &'static [&'static st
         gusset_meshio::ExportFormat::StlBinary | gusset_meshio::ExportFormat::StlAscii => &["stl"],
         gusset_meshio::ExportFormat::ThreeMf => &["3mf"],
         gusset_meshio::ExportFormat::Obj { .. } => &["obj"],
+        gusset_meshio::ExportFormat::Ply => &["ply"],
+        gusset_meshio::ExportFormat::Glb => &["glb"],
     }
 }
 
@@ -3362,6 +3364,8 @@ pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
         "stl_ascii" => Some(gusset_meshio::ExportFormat::StlAscii),
         "3mf" => Some(gusset_meshio::ExportFormat::ThreeMf),
         "obj" => Some(gusset_meshio::ExportFormat::Obj { normals: true }),
+        "ply" => Some(gusset_meshio::ExportFormat::Ply),
+        "glb" | "gltf" => Some(gusset_meshio::ExportFormat::Glb),
         _ => None,
     }
 }

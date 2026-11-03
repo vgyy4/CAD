@@ -356,6 +356,14 @@ fn mesh_export_writes_stl() {
     let e = execute(&mut s, &u, "export.mesh", json!({"path": "plate.stl"})).unwrap_err();
     assert_eq!(e.code, "confirmation_required");
     run(&mut s, &u, "export.mesh", json!({"path": "plate.3mf"}));
+    // PLY and glTF (GLB) by extension; both read back as the 40 x 20 x 10 plate.
+    for (file, scale) in [("plate.ply", 1.0), ("plate.glb", 1.0)] {
+        run(&mut s, &u, "export.mesh", json!({"path": file}));
+        let bytes = std::fs::read(d.join(file)).unwrap();
+        let m = gusset_meshio::import_bytes(&bytes, None, &gusset_meshio::ImportOptions::default()).unwrap();
+        let v = m.meshes[0].validation.signed_volume * scale;
+        assert!((v - 40.0 * 20.0 * 10.0).abs() < 1e-2, "{file}: {v}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

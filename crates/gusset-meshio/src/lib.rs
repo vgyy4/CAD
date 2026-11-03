@@ -1,4 +1,5 @@
-//! Mesh exchange for Gusset: STL (binary/ASCII), 3MF (core) and OBJ, both directions.
+//! Mesh exchange for Gusset: STL (binary/ASCII), 3MF (core), OBJ, PLY and glTF 2.0, both
+//! directions.
 //!
 //! * **Import** treats every file as hostile: size, triangle, vertex, ZIP and XML limits
 //!   ([`Limits`]), no panics, no unbounded allocation from declared counts, structured
@@ -36,7 +37,9 @@ use gusset_kernel::Mesh;
 
 pub mod archive;
 pub mod error;
+mod gltf;
 mod obj;
+mod ply;
 mod stl;
 mod threemf;
 pub mod utils;
@@ -53,6 +56,9 @@ pub enum Format {
     Stl,
     ThreeMf,
     Obj,
+    Ply,
+    /// glTF 2.0, binary (`.glb`) or JSON with embedded buffers (`.gltf`).
+    Gltf,
 }
 
 impl Format {
@@ -62,6 +68,8 @@ impl Format {
             "stl" => Some(Format::Stl),
             "3mf" => Some(Format::ThreeMf),
             "obj" => Some(Format::Obj),
+            "ply" => Some(Format::Ply),
+            "gltf" | "glb" => Some(Format::Gltf),
             _ => None,
         }
     }
@@ -70,6 +78,8 @@ impl Format {
             Format::Stl => "STL",
             Format::ThreeMf => "3MF",
             Format::Obj => "OBJ",
+            Format::Ply => "PLY",
+            Format::Gltf => "glTF",
         }
     }
 }
@@ -193,6 +203,10 @@ pub enum ExportFormat {
     Obj {
         normals: bool,
     },
+    /// Binary little-endian PLY (all bodies as one mesh).
+    Ply,
+    /// Binary glTF 2.0 (`.glb`): metres, Y up.
+    Glb,
 }
 
 /// Non-fatal findings while exporting.
@@ -318,6 +332,12 @@ pub fn detect_format(file_name: Option<&str>, bytes: &[u8]) -> Option<Format> {
     if bytes.starts_with(b"PK\x03\x04") {
         return Some(Format::ThreeMf);
     }
+    if bytes.starts_with(b"glTF") {
+        return Some(Format::Gltf);
+    }
+    if ply::looks_like_ply(bytes) {
+        return Some(Format::Ply);
+    }
     let ext =
         file_name.and_then(|n| Path::new(n).extension()).and_then(|e| e.to_str()).and_then(Format::from_extension);
     if ext.is_some() {
@@ -325,6 +345,9 @@ pub fn detect_format(file_name: Option<&str>, bytes: &[u8]) -> Option<Format> {
     }
     if stl::looks_like_stl(bytes) {
         return Some(Format::Stl);
+    }
+    if gltf::looks_like_gltf(bytes) {
+        return Some(Format::Gltf);
     }
     if obj::looks_like_obj(bytes) {
         return Some(Format::Obj);
@@ -346,6 +369,8 @@ pub fn import_bytes(bytes: &[u8], format: Option<Format>, opts: &ImportOptions) 
         Format::Stl => stl::import(bytes, opts, cancel, &mut report.warnings)?,
         Format::Obj => obj::import(bytes, opts, cancel, &mut report.warnings)?,
         Format::ThreeMf => threemf::import(bytes, opts, cancel, &mut report.warnings)?,
+        Format::Ply => ply::import(bytes, opts, cancel, &mut report.warnings)?,
+        Format::Gltf => gltf::import(bytes, opts, cancel, &mut report.warnings)?,
     };
     if meshes.iter().all(|m| m.mesh.indices.is_empty()) {
         return Err(MeshIoError::Empty { format });
@@ -402,6 +427,8 @@ pub fn export(bodies: &[ExportBody<'_>], format: ExportFormat, out: &mut dyn Wri
         ExportFormat::StlAscii => stl::write_ascii(bodies, out),
         ExportFormat::ThreeMf => threemf::write(bodies, out),
         ExportFormat::Obj { normals } => obj::write(bodies, normals, out),
+        ExportFormat::Ply => ply::write(bodies, out),
+        ExportFormat::Glb => gltf::write(bodies, out),
     }
 }
 

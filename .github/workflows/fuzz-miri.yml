@@ -46,6 +46,8 @@ jobs:
           - project_decode
           - mesh_stl
           - mesh_obj
+          - mesh_ply
+          - mesh_gltf
           - mesh_3mf
           - mesh_any
           - worker_request

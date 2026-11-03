@@ -90,6 +90,8 @@ pub enum PathPurpose {
     ExportStep,
     ExportStl,
     Export3mf,
+    /// Another mesh format, by its `export.mesh` format name (`obj`, `ply`, `glb`).
+    ExportMesh(&'static str),
 }
 
 /// Status-bar message.
@@ -1583,6 +1585,9 @@ impl App {
                         ("STEP…", PathPurpose::ExportStep, "step"),
                         ("STL…", PathPurpose::ExportStl, "stl"),
                         ("3MF…", PathPurpose::Export3mf, "3mf"),
+                        ("OBJ…", PathPurpose::ExportMesh("obj"), "obj"),
+                        ("PLY…", PathPurpose::ExportMesh("ply"), "ply"),
+                        ("glTF (GLB)…", PathPurpose::ExportMesh("glb"), "glb"),
                     ] {
                         if ui.button(label).clicked() {
                             self.dialog = Some(Dialog::Path { purpose, text: format!("part.{ext}"), error: None });
@@ -2803,7 +2808,7 @@ impl App {
                 self.request(Pending::Open(abs));
                 Ok(())
             }
-            PathPurpose::ExportStep | PathPurpose::ExportStl | PathPurpose::Export3mf => {
+            PathPurpose::ExportStep | PathPurpose::ExportStl | PathPurpose::Export3mf | PathPurpose::ExportMesh(_) => {
                 if abs.exists() {
                     // Never replace a file without asking (review L7).
                     self.dialog = Some(Dialog::Overwrite { purpose, path: abs });
@@ -2820,6 +2825,7 @@ impl App {
         let (id, extra) = match purpose {
             PathPurpose::ExportStl => ("export.mesh", json!({ "format": "stl" })),
             PathPurpose::Export3mf => ("export.mesh", json!({ "format": "3mf" })),
+            PathPurpose::ExportMesh(f) => ("export.mesh", json!({ "format": f })),
             _ => ("export.step", json!({})),
         };
         let text = path.to_string_lossy().into_owned();

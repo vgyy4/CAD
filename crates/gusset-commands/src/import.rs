@@ -162,7 +162,7 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .scad, .stl, .3mf, .obj"));
+                    .hint("supported: .step, .stp, .iges, .igs, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };

@@ -29,6 +29,9 @@ fn format_of(f: ExportFormat) -> Format {
         ExportFormat::StlBinary | ExportFormat::StlAscii => Format::Stl,
         ExportFormat::ThreeMf => Format::ThreeMf,
         ExportFormat::Obj { .. } => Format::Obj,
+        // Not in ALL: PLY merges the bodies and glTF converts to metres (their own tests).
+        ExportFormat::Ply => Format::Ply,
+        ExportFormat::Glb => Format::Gltf,
     }
 }
 
