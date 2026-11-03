@@ -383,7 +383,7 @@ pub fn show(ui: &mut Ui, items: &[Item<'_>], marker: usize, pal: &Palette) -> Ou
             StrokeKind::Outside,
         );
         let folded_now = folded.iter().any(|f| f == g);
-        let text = if folded_now { format!("▸ {g}") } else { (*g).to_string() };
+        let text = if folded_now { format!("+ {g}") } else { (*g).to_string() };
         let galley = painter.layout_no_wrap(text, small.clone(), pal.text_muted);
         let tag =
             Rect::from_min_size(Pos2::new(frame.left() + 2.0, frame.top() - 4.0), galley.size() + Vec2::new(4.0, 0.0));
