@@ -421,7 +421,8 @@ fn assemblies_place_their_bodies() {
 #[test]
 fn the_pole_order_that_fits_the_vertices_is_found() {
     // A bilinear patch with 2 x 3 poles (u-major), curved in z along v.
-    let poles = vec![[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 2.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 2.0, 0.0]];
+    let poles =
+        vec![[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 2.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 2.0, 0.0]];
     let s = crate::geom::Nurbs {
         degree: [1, 2],
         n: [2, 3],
