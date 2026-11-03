@@ -16,6 +16,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.redo", "Redo"),
     ("menu.view", "View"),
     ("menu.navigation", "Mouse navigation"),
+    ("menu.ui_scale", "UI scale"),
     ("quick.search", "Search"),
     ("tooltip.asks", "Asks for"),
     ("select.other", "Select (Alt+click lists everything under the pointer)"),

@@ -19,7 +19,14 @@ pub struct Prefs {
     /// Widths of the browser and the properties panel (DESIGN.md §1.15: layouts stay).
     pub browser_width: Option<f32>,
     pub properties_width: Option<f32>,
+    /// UI scale (DESIGN.md §1.22), [`MIN_SCALE`]..=[`MAX_SCALE`].
+    pub ui_scale: f32,
 }
+
+pub const MIN_SCALE: f32 = 0.75;
+pub const MAX_SCALE: f32 = 2.5;
+/// The scales the View menu offers.
+pub const SCALES: [f32; 7] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5];
 
 pub const MAX_RECENT: usize = 10;
 
@@ -32,6 +39,7 @@ impl Default for Prefs {
             recent: Vec::new(),
             browser_width: None,
             properties_width: None,
+            ui_scale: 1.0,
         }
     }
 }
@@ -81,6 +89,12 @@ pub fn load(path: &Path) -> Prefs {
             .collect(),
         browser_width: width(&v, "browser_width"),
         properties_width: width(&v, "properties_width"),
+        ui_scale: v
+            .get("ui_scale")
+            .and_then(Value::as_f64)
+            .map(|s| s as f32)
+            .filter(|s| (MIN_SCALE..=MAX_SCALE).contains(s))
+            .unwrap_or(d.ui_scale),
     }
 }
 
@@ -101,6 +115,7 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "recent": p.recent,
         "browser_width": p.browser_width,
         "properties_width": p.properties_width,
+        "ui_scale": p.ui_scale,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -123,6 +138,7 @@ mod tests {
             reduce_motion: true,
             nav: NavPreset::SolidWorks,
             browser_width: Some(300.0),
+            ui_scale: 1.5,
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");

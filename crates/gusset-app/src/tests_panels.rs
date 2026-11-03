@@ -616,11 +616,13 @@ fn saved_preferences_come_back_in_a_new_window() {
         recent: vec!["/tmp/a.gus".into()],
         browser_width: Some(310.0),
         properties_width: None,
+        ui_scale: 1.25,
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
     assert_eq!((a.theme, a.reduce_motion, a.viewport.nav_preset), (want.theme, want.reduce_motion, want.nav));
     assert_eq!(a.panel_widths, (Some(310.0), None));
+    assert!((a.ui_scale - 1.25).abs() < 1e-6);
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -774,4 +776,17 @@ fn holding_x_sees_through_the_model() {
     h.key_up(egui::Key::X);
     h.run();
     assert!(!h.state().viewport.see_through);
+}
+
+#[test]
+fn the_ui_scale_is_applied_and_keyboard_zoom_becomes_the_scale() {
+    let mut h = quick_harness(two_sketches());
+    h.state_mut().ui_scale = 1.5;
+    h.run();
+    assert!((h.ctx.zoom_factor() - 1.5).abs() < 1e-6);
+    // A zoom from elsewhere (Ctrl + plus) is taken over, within 75..=250 %.
+    h.ctx.set_zoom_factor(4.0);
+    h.run();
+    assert!((h.state().ui_scale - 2.5).abs() < 1e-6, "{}", h.state().ui_scale);
+    assert!((h.ctx.zoom_factor() - 2.5).abs() < 1e-6);
 }

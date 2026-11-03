@@ -247,6 +247,9 @@ pub struct App {
     pub theme: ThemeKind,
     pub reduce_motion: bool,
     theme_applied: Option<ThemeKind>,
+    /// UI scale (DESIGN.md §1.22) and the one last given to egui.
+    pub ui_scale: f32,
+    scale_applied: Option<f32>,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -375,6 +378,8 @@ impl App {
             dirs,
             theme: ThemeKind::Dark,
             reduce_motion: false,
+            ui_scale: 1.0,
+            scale_applied: None,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -425,6 +430,7 @@ impl App {
         };
         app.theme = prefs.theme;
         app.reduce_motion = prefs.reduce_motion;
+        app.ui_scale = prefs.ui_scale;
         app.viewport.nav_preset = prefs.nav;
         app.recent = prefs.recent;
         app.panel_widths = (prefs.browser_width, prefs.properties_width);
@@ -1085,6 +1091,24 @@ impl App {
         }
     }
 
+    /// Gives egui the UI scale; a zoom made with the keyboard (Ctrl + plus / minus) becomes
+    /// the new scale, kept within 75..=250 % and saved.
+    fn apply_scale(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        if let Some(applied) = self.scale_applied
+            && (zoom - applied).abs() > 1e-3
+            && (self.ui_scale - applied).abs() < 1e-3
+        {
+            self.ui_scale = zoom.clamp(crate::prefs::MIN_SCALE, crate::prefs::MAX_SCALE);
+            self.save_prefs();
+        }
+        let want = self.ui_scale.clamp(crate::prefs::MIN_SCALE, crate::prefs::MAX_SCALE);
+        if self.scale_applied != Some(want) || (zoom - want).abs() > 1e-3 {
+            ctx.set_zoom_factor(want);
+            self.scale_applied = Some(want);
+        }
+    }
+
     /// The window preferences as they stand.
     fn prefs(&self) -> crate::prefs::Prefs {
         crate::prefs::Prefs {
@@ -1094,6 +1118,7 @@ impl App {
             recent: self.recent.clone(),
             browser_width: self.panel_widths.0,
             properties_width: self.panel_widths.1,
+            ui_scale: self.ui_scale,
         }
     }
 
@@ -1614,6 +1639,7 @@ impl App {
             theme::apply(&ctx, self.theme, self.reduce_motion);
             self.theme_applied = Some(self.theme);
         }
+        self.apply_scale(&ctx);
         self.poll(Some(&ctx));
         if let Some(p) = self.after_save.take() {
             // Saved; check again (an agent may have edited since) before continuing.
@@ -1866,6 +1892,13 @@ impl App {
                 if ui.checkbox(&mut self.reduce_motion, "Reduce motion").changed() {
                     self.theme_applied = None;
                 }
+                ui.menu_button(tr("menu.ui_scale"), |ui| {
+                    for s in crate::prefs::SCALES {
+                        if ui.radio((self.ui_scale - s).abs() < 1e-3, format!("{:.0} %", s * 100.0)).clicked() {
+                            self.ui_scale = s;
+                        }
+                    }
+                });
                 ui.menu_button(tr("menu.navigation"), |ui| {
                     for p in crate::viewport::NavPreset::ALL {
                         if ui.radio(self.viewport.nav_preset == p, p.name()).clicked() {

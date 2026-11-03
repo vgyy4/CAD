@@ -120,7 +120,8 @@ Phase 3 has started (see Next).
   session's preview mode, where the single commit point (`commit_with_rollback`) evaluates
   the edited document instead of committing it (no history, no audit entry). The model
   as it was shows over the preview as accent-coloured edges, so before and after are seen
-  together (no translucent faces: the renderer has no transparency). Properties panel done (the running command's form docks at the right
+  together (no translucent faces: the renderer has no transparency). UI scale done (View > UI scale, 75 to 250 %, or Ctrl + plus/minus; kept in
+  the preferences, DESIGN.md §1.22). Properties panel done (the running command's form docks at the right
   instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
