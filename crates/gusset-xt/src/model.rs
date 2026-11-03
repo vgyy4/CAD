@@ -17,6 +17,8 @@ pub enum BodyKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub node: u32,
+    /// Where an assembly places this body: `x' = M x + T` (model space).
+    pub placement: Option<Xf>,
     pub kind: BodyKind,
     /// Outer shells first; void shells (cavities) are marked.
     pub shells: Vec<Shell>,
@@ -88,7 +90,7 @@ fn sense(g: &Graph, node: u32) -> bool {
 /// Builds the model from the decoded nodes.
 pub(crate) fn build(g: &Graph) -> Result<Model, XtError> {
     let mut m = Model::default();
-    for b in body_nodes(g, &mut m.warnings) {
+    for (b, placement) in body_nodes(g, &mut m.warnings) {
         let kind = match g.int(b, "body_type") {
             Some(1) => BodyKind::Solid,
             Some(2) => BodyKind::Wire,
@@ -123,7 +125,7 @@ pub(crate) fn build(g: &Graph) -> Result<Model, XtError> {
             m.warnings.push(format!("body {b} has no faces"));
             continue;
         }
-        m.bodies.push(Body { node: b, kind, shells });
+        m.bodies.push(Body { node: b, placement, kind, shells });
     }
     if m.bodies.is_empty() {
         return Err(XtError::Unsupported("the file holds no solid or sheet body".into()));
@@ -133,9 +135,83 @@ pub(crate) fn build(g: &Graph) -> Result<Model, XtError> {
 
 /// The bodies to import: the root body, the bodies of a root list of parts, or else every
 /// body node in the file (assemblies are flattened without their placements).
-fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<u32> {
+/// An affine placement: matrix and translation.
+pub type Xf = ([[f64; 3]; 3], [f64; 3]);
+
+/// `m x`.
+pub(crate) fn mat_vec(m: &[[f64; 3]; 3], x: [f64; 3]) -> [f64; 3] {
+    let [r0, r1, r2] = m;
+    let row = |r: &[f64; 3]| {
+        let [a, b, c] = r;
+        a * x[0] + b * x[1] + c * x[2]
+    };
+    [row(r0), row(r1), row(r2)]
+}
+
+/// `a(b(x))`.
+fn compose(a: &Xf, b: &Xf) -> Xf {
+    let [b0, b1, b2] = b.0;
+    // Columns of b, mapped by a.
+    let col = |j: usize| {
+        mat_vec(
+            &a.0,
+            [b0.get(j).copied().unwrap_or(0.0), b1.get(j).copied().unwrap_or(0.0), b2.get(j).copied().unwrap_or(0.0)],
+        )
+    };
+    let (c0, c1, c2) = (col(0), col(1), col(2));
+    let m = [[c0[0], c1[0], c2[0]], [c0[1], c1[1], c2[1]], [c0[2], c1[2], c2[2]]];
+    let t = mat_vec(&a.0, b.1);
+    (m, [t[0] + a.1[0], t[1] + a.1[1], t[2] + a.1[2]])
+}
+
+/// An instance's transform: `x' = (R x + t) * scale`, R stored row by row.
+fn placement_of(g: &Graph, tf: u32) -> Option<Xf> {
+    if tf == 0 {
+        return None;
+    }
+    let r: Vec<f64> = g
+        .list(tf, "rotation_matrix")
+        .iter()
+        .map(|v| if let crate::reader::Val::Real(x) = v { *x } else { 0.0 })
+        .collect();
+    let s = g.real(tf, "scale").filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0);
+    let t = g.vec3(tf, "translation_vector").unwrap_or([0.0; 3]);
+    let at = |i: usize| r.get(i).copied().unwrap_or(0.0) * s;
+    let m = if r.len() == 9 {
+        [[at(0), at(1), at(2)], [at(3), at(4), at(5)], [at(6), at(7), at(8)]]
+    } else {
+        [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]]
+    };
+    Some((m, t.map(|x| x * s)))
+}
+
+/// The bodies of an assembly with their placements (instances nest up to 32 deep).
+fn assembly_bodies(g: &Graph, asm: u32, xf: Option<Xf>, depth: u32, out: &mut Vec<(u32, Option<Xf>)>) {
+    if depth > 32 || out.len() > 100_000 {
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    let mut inst = g.ptr(asm, "sub_instance");
+    while inst != 0 && seen.insert(inst) {
+        let part = g.ptr(inst, "part");
+        let local = placement_of(g, g.ptr(inst, "transform"));
+        let total = match (&xf, &local) {
+            (Some(a), Some(b)) => Some(compose(a, b)),
+            (Some(a), None) => Some(*a),
+            (None, b) => *b,
+        };
+        match g.type_name(part) {
+            Some("BODY") => out.push((part, total)),
+            Some("ASSEMBLY") => assembly_bodies(g, part, total, depth + 1, out),
+            _ => {}
+        }
+        inst = g.ptr(inst, "next_in_part");
+    }
+}
+
+pub(crate) fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<(u32, Option<Xf>)> {
     match g.type_name(1) {
-        Some("BODY") => return vec![1],
+        Some("BODY") => return vec![(1, None)],
         Some("POINTER_LIS_BLOCK") => {
             let mut out = Vec::new();
             let mut block = 1;
@@ -145,7 +221,7 @@ fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<u32> {
                     if let crate::reader::Val::Ptr(p) = v
                         && g.type_name(*p) == Some("BODY")
                     {
-                        out.push(*p);
+                        out.push((*p, None));
                     }
                 }
                 block = g.ptr(block, "next_block");
@@ -155,11 +231,16 @@ fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<u32> {
             }
         }
         Some("ASSEMBLY") => {
-            warnings.push("an assembly was flattened: its parts are imported without their placements".into())
+            let mut out = Vec::new();
+            assembly_bodies(g, 1, None, 0, &mut out);
+            if !out.is_empty() {
+                return out;
+            }
+            warnings.push("an assembly without instances: its bodies are imported where they lie".into());
         }
         _ => {}
     }
-    g.nodes.iter().filter(|(i, _)| g.type_name(**i) == Some("BODY")).map(|(i, _)| *i).collect()
+    g.nodes.iter().filter(|(i, _)| g.type_name(**i) == Some("BODY")).map(|(i, _)| (*i, None)).collect()
 }
 
 fn shell(g: &Graph, s: u32, void: bool, m: &mut Model) -> Result<Shell, XtError> {
@@ -230,8 +311,35 @@ fn edge(g: &Graph, e: u32, m: &mut Model) {
     let head = g.ptr(e, "fin");
     let end = g.ptr(head, "vertex");
     let start = g.ptr(g.ptr(head, "other"), "vertex");
-    let curve = g.ptr(e, "curve");
+    // A tolerant edge has no curve of its own; its fins carry trimmed SP-curves.
+    let curve = match g.ptr(e, "curve") {
+        0 => g.ptr(head, "curve"),
+        c => c,
+    };
     let ends = if start != 0 && end != 0 { Some((start, end)) } else { None };
     let same_sense = curve == 0 || sense(g, curve);
     m.edges.insert(e, Edge { curve, ends, same_sense });
+}
+
+/// The `SDL/TYSA_NAME` attribute of a node, if it has one (a name the application gave).
+pub(crate) fn name_of(g: &Graph, node: u32) -> Option<String> {
+    for (idx, n) in &g.nodes {
+        if g.layouts.get(&n.ty).map(|l| l.name.as_str()) != Some("ATTRIBUTE") || g.ptr(*idx, "owner") != node {
+            continue;
+        }
+        let def = g.ptr(*idx, "definition");
+        if g.string(g.ptr(def, "identifier"), "string") != "SDL/TYSA_NAME" {
+            continue;
+        }
+        let value = g
+            .list(*idx, "fields")
+            .iter()
+            .find_map(|v| if let crate::reader::Val::Ptr(p) = v { Some(*p) } else { None })?;
+        let s: String = g.string(value, "values").chars().filter(|c| !c.is_control()).take(200).collect();
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
 }

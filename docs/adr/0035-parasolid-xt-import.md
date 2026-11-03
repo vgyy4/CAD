@@ -37,8 +37,17 @@ passes that text to the sandboxed STEP importer (no new OCCT code, no new unsafe
 * **Geometry.** Exact: plane, cylinder, cone (axis reversed; the natural normal flips),
   sphere, doughnut torus, B-surface, swept, spun and offset surfaces; line, circle,
   ellipse, B-curve, trimmed curve. Fitted: intersection curves (a C1 cubic through the chart
-  points). Skipped with a warning: blends, SP-curves, foreign geometry, self-intersecting
-  tori (the importer heals what it can). Metres are written as millimetres.
+  points); SP-curves (the 2D B-curve sampled through its surface; tolerant edges use their
+  fins' SP-curves); rolling-ball blends (circular arcs of the ball from its closest points
+  on the two support surfaces, along the spine, as a bicubic B-spline; line spines are
+  bounded by the blend faces' vertices). Skipped with a warning: cliff-edge blends, foreign
+  geometry, self-intersecting tori. Metres are written as millimetres.
+* **B-surface poles.** The Reference does not state their order: both readings are tried
+  against the vertices of the faces on the surface and the one they lie on is kept
+  (u-major when there is nothing to test).
+* **Names and assemblies.** A body's `SDL/TYSA_NAME` attribute names its STEP product.
+  Assemblies are walked instance by instance (nested up to 32 deep), each body written in
+  place with `x' = (R x + t) * scale` (R row by row; unverified on a sample).
 * **Untrusted input.** Node and element counts are capped, element counts are bounded by the
   bytes left, chains stop at repeats, geometry references cannot recurse forever; a fuzz
   target (`xt_read`) and a mutation test cover the decoder.
@@ -46,9 +55,7 @@ passes that text to the sandboxed STEP importer (no new OCCT code, no new unsafe
 ## Consequences
 * NIST samples (schemas 4035, 4039, 9008) convert; an OCCT golden test checks that the
   converted solids have NIST's face count and every vertex of NIST's own STEP export.
-* Unverified without sample files: V12 attribute definitions, B-surface pole order
-  (u-major assumed), embedded-delta details, neutral binary. Wrong guesses there fail
-  loudly (an unknown node type or a misread stream), they do not import wrong geometry
-  silently, except the pole order.
-* Later: blends and SP-curves by sampling and fitting, colours and names from attributes,
-  assembly placements (assemblies are flattened today).
+* Unverified without sample files: V12 attribute definitions, embedded-delta details,
+  neutral binary, the rotation matrix's storage order. Wrong guesses in the first three fail
+  loudly (an unknown node type or a misread stream).
+* Colours are not carried: the STEP path into the kernel keeps no styles.

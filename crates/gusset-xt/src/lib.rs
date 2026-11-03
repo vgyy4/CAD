@@ -9,6 +9,7 @@
 //! counts, element counts and chains are bounded.
 
 mod decode;
+mod eval;
 mod geom;
 mod model;
 mod reader;
@@ -16,7 +17,7 @@ mod schema;
 mod step;
 
 pub use decode::{Graph, Node, decode};
-pub use model::{BodyKind, Model};
+pub use model::{BodyKind, Model, Xf};
 pub use reader::Val;
 
 /// Why a file cannot be read.

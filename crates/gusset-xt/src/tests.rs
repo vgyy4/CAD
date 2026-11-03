@@ -1,5 +1,5 @@
 // Test-only code.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
 
 use crate::schema::{self, Code, Count, Family};
 use crate::{Limits, decode, to_step};
@@ -310,4 +310,129 @@ fn mutated_files_never_panic() {
         }
         let _ = to_step(&b, "x", &limits);
     }
+}
+
+#[test]
+fn a_rolling_ball_blend_is_arcs_between_its_supports() {
+    let r = 0.002;
+    let mut f = TextFile::new();
+    f.node(50, 2, &[("pvec", v3([0.0; 3])), ("normal", v3([0.0, 0.0, 1.0])), ("x_axis", v3([1.0, 0.0, 0.0]))]);
+    f.node(50, 3, &[("pvec", v3([0.0; 3])), ("normal", v3([1.0, 0.0, 0.0])), ("x_axis", v3([0.0, 1.0, 0.0]))]);
+    f.node(
+        56,
+        4,
+        &[
+            ("blend_type", vec![W::C(b'R')]),
+            ("surface", vec![n(2), n(3)]),
+            ("spine", vec![n(5)]),
+            ("range", vec![n(r), n(r)]),
+        ],
+    );
+    f.node(30, 5, &[("pvec", v3([r, 0.0, r])), ("direction", v3([0.0, 1.0, 0.0]))]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let hint = [[0.0, 0.0, 0.0], [0.0, 0.01, 0.0]];
+    let grid = crate::eval::blend_grid(&g, 4, &hint).unwrap();
+    assert_eq!(grid.len(), 9);
+    for row in &grid {
+        for p in row {
+            let d = ((p[0] - r).powi(2) + (p[2] - r).powi(2)).sqrt();
+            assert!((d - r).abs() < 1e-12, "{p:?}");
+        }
+        let (a, b) = (row[0], row[row.len() - 1]);
+        assert!(a[2].abs() < 1e-12 && b[0].abs() < 1e-12, "{a:?} {b:?}");
+        // The arc faces the corner.
+        let mid = row[row.len() / 2];
+        assert!(mid[0] < r && mid[2] < r, "{mid:?}");
+    }
+    let s = crate::eval::surface_through(&grid).unwrap();
+    assert_eq!((s.degree, s.n), ([3, 3], [25, 25]));
+}
+
+#[test]
+fn an_sp_curve_follows_its_surface() {
+    let mut f = TextFile::new();
+    f.node(50, 2, &[("pvec", v3([0.0, 0.0, 1.0])), ("normal", v3([0.0, 0.0, 1.0])), ("x_axis", v3([1.0, 0.0, 0.0]))]);
+    f.node(137, 3, &[("surface", vec![n(2)]), ("b_curve", vec![n(4)])]);
+    f.node(134, 4, &[("nurbs", vec![n(5)])]);
+    f.node(
+        136,
+        5,
+        &[
+            ("degree", vec![n(1)]),
+            ("n_vertices", vec![n(2)]),
+            ("vertex_dim", vec![n(2)]),
+            ("n_knots", vec![n(2)]),
+            ("knot_type", vec![n(1)]),
+            ("rational", vec![W::C(b'F')]),
+            ("curve_form", vec![n(1)]),
+            ("bspline_vertices", vec![n(6)]),
+            ("knot_mult", vec![n(7)]),
+            ("knots", vec![n(8)]),
+        ],
+    );
+    f.node(45, 6, &[("vertices", vec![n(0), n(0), n(2), n(3)])]);
+    f.node(127, 7, &[("mult", vec![n(2), n(2)])]);
+    f.node(128, 8, &[("knots", vec![n(0), n(1)])]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let pts = crate::eval::curve_samples(&g, 3, 5, 0).unwrap();
+    assert_eq!(pts.len(), 5);
+    for (i, p) in pts.iter().enumerate() {
+        let t = i as f64 / 4.0;
+        assert!(
+            (p[0] - 2.0 * t).abs() < 1e-12 && (p[1] - 3.0 * t).abs() < 1e-12 && (p[2] - 1.0).abs() < 1e-12,
+            "{p:?}"
+        );
+    }
+}
+
+#[test]
+fn assemblies_place_their_bodies() {
+    let mut f = TextFile::new();
+    // Assembly 1 holds body 4 twice (instance 2 turned 90 degrees about z and moved, then
+    // scaled 2x; instance 5 as it is) and sub-assembly 6, moved by (0, 0, 1), holding it
+    // once more.
+    f.node(10, 1, &[("sub_instance", vec![n(2)])]);
+    f.node(
+        11,
+        2,
+        &[("type", vec![n(1)]), ("part", vec![n(4)]), ("transform", vec![n(3)]), ("next_in_part", vec![n(5)])],
+    );
+    let rot = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].map(n).to_vec();
+    f.node(100, 3, &[("rotation_matrix", rot), ("translation_vector", v3([1.0, 0.0, 0.0])), ("scale", vec![n(2)])]);
+    f.node(12, 4, &[("body_type", vec![n(1)])]);
+    f.node(11, 5, &[("type", vec![n(1)]), ("part", vec![n(4)]), ("next_in_part", vec![n(7)])]);
+    f.node(10, 6, &[("sub_instance", vec![n(9)])]);
+    f.node(11, 7, &[("type", vec![n(1)]), ("part", vec![n(6)]), ("transform", vec![n(8)])]);
+    let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].map(n).to_vec();
+    f.node(100, 8, &[("rotation_matrix", id), ("translation_vector", v3([0.0, 0.0, 1.0])), ("scale", vec![n(1)])]);
+    f.node(11, 9, &[("type", vec![n(1)]), ("part", vec![n(4)]), ("transform", vec![n(3)])]);
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let mut w = Vec::new();
+    let bodies = crate::model::body_nodes(&g, &mut w);
+    assert_eq!(bodies.len(), 3, "{w:?}");
+    let apply =
+        |xf: &Option<crate::Xf>, p: [f64; 3]| xf.map_or(p, |(m, t)| crate::geom::add(crate::model::mat_vec(&m, p), t));
+    // (R x + t) * 2: x = (1, 0, 0) -> R x = (0, 1, 0) -> + t = (1, 1, 0) -> (2, 2, 0).
+    assert_eq!(apply(&bodies[0].1, [1.0, 0.0, 0.0]), [2.0, 2.0, 0.0]);
+    assert_eq!(apply(&bodies[1].1, [1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+    assert_eq!(apply(&bodies[2].1, [1.0, 0.0, 0.0]), [2.0, 2.0, 1.0]);
+}
+
+#[test]
+fn the_pole_order_that_fits_the_vertices_is_found() {
+    // A bilinear patch with 2 x 3 poles (u-major), curved in z along v.
+    let poles = vec![[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 2.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 2.0, 0.0]];
+    let s = crate::geom::Nurbs {
+        degree: [1, 2],
+        n: [2, 3],
+        poles,
+        weights: None,
+        mults: [vec![2, 2], vec![3, 3]],
+        knots: [vec![0.0, 1.0], vec![0.0, 1.0]],
+        closed: [false, false],
+    };
+    let corner = [0.5, 1.0, 0.5];
+    let right = crate::eval::nurbs_distance(&s, corner).unwrap();
+    let wrong = crate::eval::nurbs_distance(&crate::eval::transposed_poles(&s), corner).unwrap();
+    assert!(right < 1e-9 && wrong > 0.01, "{right} {wrong}");
 }

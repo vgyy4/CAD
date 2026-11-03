@@ -54,6 +54,11 @@ struct Writer<'a> {
     vertices: BTreeMap<u32, usize>,
     edges: BTreeMap<u32, Option<usize>>,
     warnings: Vec<String>,
+    /// Vertex positions of the faces on each surface (bounds for unbounded geometry).
+    hints: BTreeMap<u32, Vec<V3>>,
+    /// The placement of the body being written, and its length scale.
+    xf: Option<crate::model::Xf>,
+    scale: f64,
 }
 
 impl Writer<'_> {
@@ -65,10 +70,23 @@ impl Writer<'_> {
     }
 
     fn point(&mut self, p: V3) -> usize {
+        let p = match &self.xf {
+            Some((m, t)) => geom::add(crate::model::mat_vec(m, p), *t),
+            None => p,
+        };
         self.add(&format!("CARTESIAN_POINT('',({},{},{}))", real(p[0] * MM), real(p[1] * MM), real(p[2] * MM)))
     }
 
+    /// Millimetres per model unit, with the placement's scale.
+    fn mm(&self) -> f64 {
+        MM * self.scale
+    }
+
     fn dir(&mut self, d: V3) -> usize {
+        let d = match &self.xf {
+            Some((m, _)) => crate::model::mat_vec(m, d),
+            None => d,
+        };
         let d = geom::unit(d).unwrap_or([0.0, 0.0, 1.0]);
         self.add(&format!("DIRECTION('',({},{},{}))", real(d[0]), real(d[1]), real(d[2])))
     }
@@ -174,11 +192,11 @@ impl Writer<'_> {
             }
             "CIRCLE" => {
                 let a = self.place(g.vec3(c, "centre")?, g.vec3(c, "normal")?, g.vec3(c, "x_axis")?);
-                Some(self.add(&format!("CIRCLE('',#{a},{})", real(g.real(c, "radius")? * MM))))
+                Some(self.add(&format!("CIRCLE('',#{a},{})", real(g.real(c, "radius")? * self.mm()))))
             }
             "ELLIPSE" => {
                 let a = self.place(g.vec3(c, "centre")?, g.vec3(c, "normal")?, g.vec3(c, "x_axis")?);
-                let (r1, r2) = (g.real(c, "major_radius")? * MM, g.real(c, "minor_radius")? * MM);
+                let (r1, r2) = (g.real(c, "major_radius")? * self.mm(), g.real(c, "minor_radius")? * self.mm());
                 Some(self.add(&format!("ELLIPSE('',#{a},{},{})", real(r1), real(r2))))
             }
             "B_CURVE" => {
@@ -196,6 +214,10 @@ impl Writer<'_> {
                     .collect();
                 let n = geom::through(&pts)?;
                 Some(self.bspline(&n))
+            }
+            "SP_CURVE" => {
+                let pts = crate::eval::curve_samples(g, c, 33, 0)?;
+                Some(self.bspline(&geom::through(&pts)?))
             }
             _ => None,
         }
@@ -225,7 +247,10 @@ impl Writer<'_> {
             }
             "CYLINDER" => {
                 let a = self.place(g.vec3(s, "pvec")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
-                Some((self.add(&format!("CYLINDRICAL_SURFACE('',#{a},{})", real(g.real(s, "radius")? * MM))), false))
+                Some((
+                    self.add(&format!("CYLINDRICAL_SURFACE('',#{a},{})", real(g.real(s, "radius")? * self.mm()))),
+                    false,
+                ))
             }
             "CONE" => {
                 // XT uses the half cone away from its axis: R = P - vA + (r + v tan a)(...).
@@ -234,12 +259,15 @@ impl Writer<'_> {
                 let axis = g.vec3(s, "axis")?;
                 let a = self.place(g.vec3(s, "pvec")?, geom::scale(axis, -1.0), g.vec3(s, "x_axis")?);
                 let angle = libm::atan2(g.real(s, "sin_half_angle")?, g.real(s, "cos_half_angle")?);
-                let r = g.real(s, "radius")? * MM;
+                let r = g.real(s, "radius")? * self.mm();
                 Some((self.add(&format!("CONICAL_SURFACE('',#{a},{},{})", real(r), real(angle))), true))
             }
             "SPHERE" => {
                 let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
-                Some((self.add(&format!("SPHERICAL_SURFACE('',#{a},{})", real(g.real(s, "radius")? * MM))), false))
+                Some((
+                    self.add(&format!("SPHERICAL_SURFACE('',#{a},{})", real(g.real(s, "radius")? * self.mm()))),
+                    false,
+                ))
             }
             "TORUS" => {
                 let (ma, mi) = (g.real(s, "major_radius")?, g.real(s, "minor_radius")?);
@@ -248,10 +276,21 @@ impl Writer<'_> {
                     return None;
                 }
                 let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
-                Some((self.add(&format!("TOROIDAL_SURFACE('',#{a},{},{})", real(ma * MM), real(mi * MM))), false))
+                Some((
+                    self.add(&format!("TOROIDAL_SURFACE('',#{a},{},{})", real(ma * self.mm()), real(mi * self.mm()))),
+                    false,
+                ))
             }
             "B_SURFACE" => {
                 let n = geom::nurbs_surface(g, g.ptr(s, "nurbs"))?;
+                // The Reference does not say how the poles are ordered: keep the order in which
+                // the faces' own vertices lie on the surface (u-major when nothing tells).
+                let alt = crate::eval::transposed_poles(&n);
+                let hint = self.hints.get(&s).cloned().unwrap_or_default();
+                let worst = |c: &Nurbs| {
+                    hint.iter().take(16).filter_map(|p| crate::eval::nurbs_distance(c, *p)).fold(0.0f64, f64::max)
+                };
+                let n = if !hint.is_empty() && worst(&alt) < 0.5 * worst(&n) { alt } else { n };
                 Some((self.bspline_surface(&n), false))
             }
             "SWEPT_SURF" => {
@@ -271,7 +310,7 @@ impl Writer<'_> {
                 let base = g.ptr(s, "surface");
                 let (b, flipped) = self.surface(base)?;
                 // Along the basis's natural normal, negated when the basis sense is '-'.
-                let mut d = g.real(s, "offset")? * MM;
+                let mut d = g.real(s, "offset")? * self.mm();
                 if g.ch(base, "sense") == Some(b'-') {
                     d = -d;
                 }
@@ -279,6 +318,12 @@ impl Writer<'_> {
                     d = -d;
                 }
                 Some((self.add(&format!("OFFSET_SURFACE('',#{b},{},.F.)", real(d))), flipped))
+            }
+            "BLENDED_EDGE" => {
+                // No STEP counterpart: the rolling ball's arcs along the spine, fitted.
+                let hint = self.hints.get(&s).cloned().unwrap_or_default();
+                let grid = crate::eval::blend_grid(g, s, &hint)?;
+                Some((self.bspline_surface(&crate::eval::surface_through(&grid)?), false))
             }
             _ => None,
         }
@@ -322,6 +367,7 @@ impl Writer<'_> {
                 .list(g.ptr(c, "chart"), "hvec")
                 .iter()
                 .find_map(|v| if let crate::reader::Val::Vec3(p) = v { Some(*p) } else { None }),
+            "SP_CURVE" => crate::eval::curve_samples(g, c, 2, 0)?.first().copied(),
             _ => None,
         }
     }
@@ -429,7 +475,26 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         vertices: BTreeMap::new(),
         edges: BTreeMap::new(),
         warnings: m.warnings.clone(),
+        hints: BTreeMap::new(),
+        xf: None,
+        scale: 1.0,
     };
+    for f in m.bodies.iter().flat_map(|b| &b.shells).flat_map(|s| &s.faces) {
+        let pts = w.hints.entry(f.surface).or_default();
+        for l in &f.loops {
+            if let Loop::Edges(es) = l {
+                for (e, _) in es {
+                    if let Some((a, b)) = m.edges.get(e).and_then(|i| i.ends) {
+                        for v in [a, b] {
+                            if let Some(p) = g.vec3(g.ptr(v, "point"), "pvec") {
+                                pts.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
     w.add(&format!("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})"));
     let pc = w.add(&format!("PRODUCT_CONTEXT('',#{app},'mechanical')"));
@@ -444,6 +509,19 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
     ));
     let many = m.bodies.len() > 1;
     for (i, b) in m.bodies.iter().enumerate() {
+        // Geometry is written per placement: a body placed twice is written twice.
+        w.xf = b.placement;
+        w.scale = b.placement.map_or(1.0, |(m, _)| {
+            let [x, y, z] = m;
+            let det = geom::dot(x, geom::cross(y, z));
+            libm::cbrt(det.abs()).max(1e-12)
+        });
+        if b.placement.is_some() {
+            w.curves.clear();
+            w.surfaces.clear();
+            w.vertices.clear();
+            w.edges.clear();
+        }
         let items: Vec<usize> = match b.kind {
             BodyKind::Solid => {
                 let mut order: Vec<&Shell> = b.shells.iter().collect();
@@ -475,7 +553,11 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         } else {
             "MANIFOLD_SURFACE_SHAPE_REPRESENTATION"
         };
-        let label = if many { format!("{name} {}", i + 1) } else { name.to_string() };
+        let label = match crate::model::name_of(g, b.node) {
+            Some(n) => n,
+            None if many => format!("{name} {}", i + 1),
+            None => name.to_string(),
+        };
         let label = string(&label);
         let prod = w.add(&format!("PRODUCT({label},{label},'',(#{pc}))"));
         let pdf = w.add(&format!("PRODUCT_DEFINITION_FORMATION('','',#{prod})"));
