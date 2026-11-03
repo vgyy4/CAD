@@ -618,6 +618,12 @@ pub enum PartnerKind {
 pub struct TrimCut {
     /// Where the other curve meets the entity (sketch coordinates, mm).
     pub pos: [f64; 2],
+    /// Position along the entity (see `gusset_sketch::Cut::param`); for a spline, fit
+    /// point `i` is at `i`.
+    pub param: f64,
+    /// For a spline: points on it halfway (in parameter) between the cut and the fit point
+    /// before / after it, to keep its shape when it is refitted after a trim.
+    pub towards: [Option<[f64; 2]>; 2],
     /// The other curve's id and kind.
     pub partner: String,
     pub partner_kind: PartnerKind,
@@ -653,15 +659,15 @@ pub fn trim_plan(
         return Err(err(ErrorCode::InvalidReference, format!("sketch has no entity '{entity}'")));
     };
     let wrong = || {
-        err(ErrorCode::InvalidReference, format!("'{entity}' cannot be trimmed: it is not a line, arc or circle"))
-            .with_hint("pick a line, arc or circle that is not construction geometry (splines cannot be trimmed)")
+        err(ErrorCode::InvalidReference, format!("'{entity}' cannot be trimmed: it is not a curve"))
+            .with_hint("pick a line, arc, circle or spline that is not construction geometry")
     };
     let solved = sk::solve_continued(&s, &sk::SolveOptions::default());
     if solved.status == sk::SolveStatus::Failed {
         return Err(err(ErrorCode::SketchSolve, "the sketch could not be solved".to_string()));
     }
     match solved.sketch.entity(eid).map(|e| e.geom) {
-        Some(sk::Geom::Line { .. } | sk::Geom::Arc { .. } | sk::Geom::Circle { .. }) => {}
+        Some(sk::Geom::Line { .. } | sk::Geom::Arc { .. } | sk::Geom::Circle { .. } | sk::Geom::Spline { .. }) => {}
         _ => return Err(wrong()),
     }
     if solved.sketch.entity(eid).is_some_and(|e| e.construction) {
@@ -679,6 +685,36 @@ pub fn trim_plan(
         Some(SkGeom::Circle { .. } | SkGeom::Arc { .. }) => PartnerKind::Circle,
         _ => PartnerKind::Other,
     };
+    // A spline's points by parameter, to sample the curve near its cuts.
+    const PER: usize = 64;
+    let spline = match solved.sketch.entity(eid).map(|e| e.geom) {
+        Some(sk::Geom::Spline { closed, .. }) => {
+            let fit: Vec<[f64; 2]> = solved
+                .sketch
+                .spline_points(eid)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|&p| solved.sketch.point(p))
+                .collect();
+            let nseg = if closed { fit.len() } else { fit.len().saturating_sub(1) };
+            Some((sk::spline_polyline(&fit, closed, PER), nseg as f64, closed))
+        }
+        _ => None,
+    };
+    let sample = |u: f64| -> Option<[f64; 2]> {
+        let (poly, nseg, closed) = spline.as_ref()?;
+        let u = if *closed { u.rem_euclid(*nseg) } else { u.clamp(0.0, *nseg) };
+        poly.get((u * PER as f64).round() as usize).copied()
+    };
+    let towards = |u: f64| -> [Option<[f64; 2]>; 2] {
+        if spline.is_none() {
+            return [None, None];
+        }
+        let (fl, ce) = (u.floor(), u.ceil());
+        let before = if u - fl > 1e-6 { fl } else { u - 1.0 };
+        let after = if ce - u > 1e-6 { ce } else { u + 1.0 };
+        [sample(0.5 * (before + u)), sample(0.5 * (u + after))]
+    };
     let cuts: Vec<TrimCut> = c
         .cuts
         .iter()
@@ -686,13 +722,18 @@ pub fn trim_plan(
             let partner = back.get(&k.partner).copied().unwrap_or("").to_string();
             TrimCut {
                 pos: k.pos,
+                param: k.param,
+                towards: towards(k.param),
                 partner_kind: kind_of(&partner),
                 partner,
                 at_point: k.at_point.and_then(|p| back.get(&p).map(|s| (*s).to_string())),
             }
         })
         .collect();
-    let is_circle = matches!(solved.sketch.entity(eid).map(|e| e.geom), Some(sk::Geom::Circle { .. }));
+    let is_circle = matches!(
+        solved.sketch.entity(eid).map(|e| e.geom),
+        Some(sk::Geom::Circle { .. } | sk::Geom::Spline { closed: true, .. })
+    );
     let n = cuts.len();
     let (lo, hi) = if is_circle {
         if n < 2 {

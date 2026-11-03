@@ -486,7 +486,8 @@ pub(crate) fn check_pieces(pieces: &[Cv]) -> Result<(), ProfileError> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cut {
     /// Position along the entity: the fraction `0..1` from `a` to `b` for a line, the
-    /// counter-clockwise angle from `start` (arc) or from the +x axis (circle), in radians.
+    /// counter-clockwise angle from `start` (arc) or from the +x axis (circle), in radians;
+    /// for a spline, `i + t` in its `i`-th segment (fit point `i` is at `i`).
     pub param: f64,
     pub pos: [f64; 2],
     /// The other curve that meets the entity here.
@@ -516,16 +517,10 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
     }
     sketch.validate().map_err(ProfileError::Invalid)?;
     let mut cvs = crate::profile::collect(sketch, tol)?;
-    if matches!(sketch.entity(entity).map(|e| e.geom), Some(Geom::Spline { .. })) {
-        return Err(ProfileError::Invalid(SketchError::WrongKind {
-            entity,
-            expected: "a line, arc or circle (splines cannot be trimmed)",
-        }));
-    }
     let Some(idx) = cvs.iter().position(|c| c.id == entity) else {
         return Err(ProfileError::Invalid(SketchError::WrongKind {
             entity,
-            expected: "a line, arc or circle that is not construction geometry",
+            expected: "a line, arc, circle or spline that is not construction geometry",
         }));
     };
     let mut verts = Verts::new(tol);

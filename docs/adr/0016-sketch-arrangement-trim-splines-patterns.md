@@ -104,8 +104,8 @@ that rewrites the sketch definition:
   `fixed` on the surviving original end points (and, for a circle turned arc, on its
   centre plus a radius constraint with the current value). The result lists
   `constraints_added` and `constraints_dropped`.
-* Pattern copies (§4) are not cut by trim and cannot be trim targets; splines cannot be
-  trimmed (§3).
+* Pattern copies (§4) are not cut by trim and cannot be trim targets. Splines are
+  trimmed by refitting (§3, amended 2026-11-03).
 
 ## 3. Splines
 
@@ -166,8 +166,12 @@ index). A closed spline without cuts is a loop of its own (like a circle); one c
 adds a second cut at the opposite parameter.
 
 ### Limits
-Splines cannot be trimmed (a remaining piece is not a Catmull-Rom spline through a
-subset of the points); `sketch.trim` explains this. Curves cut by a spline get a new
+A remaining piece of a trimmed spline is not exactly a Catmull-Rom spline through a
+subset of the points. *Amended 2026-11-03:* `sketch.trim` refits it through the fit
+points it keeps, plus, next to each cut, a new free point on the old curve halfway (in
+parameter) to the neighbouring fit point, plus the cut point; the extra point keeps the
+shape close (exact at the kept fit points, a small change near the cut). A closed spline
+trimmed between two cuts becomes an open one. Curves cut by a spline get a new
 end point that is not constrained to the spline (no point-on-spline constraint yet).
 2..=1000 fit points (open needs at least 3, closed at least 3).
 

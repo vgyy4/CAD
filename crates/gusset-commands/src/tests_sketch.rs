@@ -198,7 +198,7 @@ fn trim_without_crossings_deletes_and_bad_picks_are_clean_errors() {
     assert_eq!(e.code, "not_found");
     run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": 0, "y1": 0, "x2": 30, "y2": 0}));
     let e = fail(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": "p4", "x": 0, "y": 0}));
-    assert!(e.message.contains("not a line, arc or circle") || e.message.contains("point"), "{e}");
+    assert!(e.message.contains("not a curve") || e.message.contains("point"), "{e}");
     let e = fail(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": "l6", "x": f64::NAN, "y": 0}));
     assert_eq!(e.code, "invalid_args");
 }
@@ -255,9 +255,7 @@ fn splines_are_ordinary_points_plus_a_curve_and_form_regions() {
     run(&mut s, &u, "sketch.move_point", json!({"sketch": "Sketch1", "point": "p3", "x": 0, "y": 14}));
     let regs2 = regions(&mut s, &u, "Sketch1");
     assert!(regs2[0].1 > regs[0].1, "{regs2:?}");
-    // Splines take no trim and no line constraints, with clear errors.
-    let e = fail(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": "s9", "x": 10, "y": 0}));
-    assert!(e.message.contains("spline") || e.message.contains("trimmed"), "{e:?}");
+    // Splines take no line constraints, with a clear error.
     let e = run(
         &mut s,
         &u,
@@ -452,4 +450,46 @@ fn parameter_driven_rectangle_and_circle_follow_the_parameter() {
 
 fn sketch_text(s: &Session) -> String {
     s.document(&gusset_history::Actor::User).unwrap().to_text()
+}
+
+#[test]
+fn trim_refits_a_spline_through_its_kept_points() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    let pts = json!([[0, 0], [10, 10], [20, 0], [30, 10], [40, 0]]);
+    let r = run(&mut s, &u, "sketch.add_polyline", json!({"sketch": "Sketch1", "points": pts, "spline": true}));
+    let spline = r["spline"].as_str().unwrap().to_string();
+    for x in [15, 25] {
+        run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch1", "x1": x, "y1": -5, "x2": x, "y2": 15}));
+    }
+    // The middle piece goes: two splines are left, each with a point next to its cut.
+    let r = run(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": spline, "x": 20, "y": 0}));
+    assert_eq!(r["kept"].as_array().unwrap().len(), 2, "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert_eq!(text.matches("spline(").count(), 2, "{text}");
+    // p3 (20, 0) was only on the removed piece.
+    assert!(r["deleted"].as_array().unwrap().iter().any(|d| d == "p3"), "{r}");
+    // The left piece still passes through its fit points and ends on the line x = 15.
+    let q = run(&mut s, &u, "query.sketch", json!({"sketch": "Sketch1"}));
+    assert_eq!(q["points"]["p2"], json!([10.0, 10.0]), "{q}");
+    // The left piece is no longer crossed: trimming it deletes it. A closed spline opens.
+    let r = run(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch1", "entity": spline, "x": 2, "y": 2}));
+    assert!(r["deleted"].as_array().unwrap().iter().any(|d| *d == json!(spline)), "{r}");
+    run(&mut s, &u, "sketch.create", json!({"plane": "XY"}));
+    let ring = json!([[-10, 0], [0, -10], [10, 0], [0, 10]]);
+    let r = run(
+        &mut s,
+        &u,
+        "sketch.add_polyline",
+        json!({"sketch": "Sketch2", "points": ring, "spline": true, "closed": true}),
+    );
+    let closed = r["spline"].as_str().unwrap().to_string();
+    run(&mut s, &u, "sketch.add_line", json!({"sketch": "Sketch2", "x1": -20, "y1": 5, "x2": 20, "y2": 5}));
+    assert_eq!(regions(&mut s, &u, "Sketch2").len(), 2);
+    run(&mut s, &u, "sketch.trim", json!({"sketch": "Sketch2", "entity": closed, "x": 0, "y": 10}));
+    let regs = regions(&mut s, &u, "Sketch2");
+    assert_eq!(regs.len(), 1, "{regs:?}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(!text.contains("closed"), "{text}");
 }

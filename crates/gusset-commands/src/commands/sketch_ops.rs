@@ -48,7 +48,7 @@ pub(super) fn delete_with_dependents(d: &mut SketchDef, ids: &[String]) -> (Vec<
 #[serde(deny_unknown_fields)]
 pub struct SketchTrim {
     pub sketch: String,
-    /// Line, arc or circle id.
+    /// Line, arc, circle or spline id.
     pub entity: String,
     /// Pick point (sketch mm) on the piece to delete.
     pub x: f64,
@@ -58,7 +58,7 @@ pub struct SketchTrim {
 impl Command for SketchTrim {
     const ID: &'static str = "sketch.trim";
     const TITLE: &'static str = "Trim";
-    const DESCRIPTION: &'static str = "Delete the piece of a line/arc/circle at (x, y) between crossing curves. New ends sit on the crossing curve or reuse a point there; a circle becomes an arc, a line cut mid-way two lines. A trimmed line loses length/midpoint/equal constraints. One undo step.";
+    const DESCRIPTION: &'static str = "Delete the piece of a curve at (x, y) between crossing curves. New ends sit on the crossing curve or reuse a point there; a circle becomes an arc, a line cut mid-way two lines, a spline is refitted through its kept points. A trimmed line loses length/midpoint/equal constraints. One undo step.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("T");
@@ -169,15 +169,119 @@ fn define_points_first(d: &mut SketchDef, id: &str) {
     }
 }
 
+/// Trims a spline: what is left is refitted through the fit points it keeps, a point on
+/// the old curve halfway to each cut (to keep its shape) and the new end points at the cuts.
+/// The kept curve can move slightly next to a cut.
+#[allow(clippy::too_many_arguments)]
+fn trim_spline(
+    d: &mut SketchDef,
+    id: &str,
+    points: &[String],
+    closed: bool,
+    lo: Option<&TrimCut>,
+    hi: Option<&TrimCut>,
+    construction: bool,
+    rep: &mut Report,
+) -> Result<(), CommandError> {
+    const EPS: f64 = 1e-9;
+    let n = points.len();
+    let at = |i: usize| points.get(i).cloned().unwrap_or_default();
+    // Fit points strictly between two parameters (forward, wrapping on a closed spline).
+    let between = |from: f64, to: f64| -> Vec<String> {
+        (0..n)
+            .filter(|&i| {
+                let u = i as f64;
+                if closed && to <= from { u > from + EPS || u < to - EPS } else { u > from + EPS && u < to - EPS }
+            })
+            .map(at)
+            .collect()
+    };
+    // A free point on the old curve next to a cut.
+    let near_cut =
+        |d: &mut SketchDef, at: Option<[f64; 2]>, rep: &mut Report| -> Result<Option<String>, CommandError> {
+            let Some([x, y]) = at else { return Ok(None) };
+            let id = add_point(d, x, y)?;
+            rep.created.push(id.clone());
+            Ok(Some(id))
+        };
+    let mut pieces: Vec<Vec<String>> = Vec::new();
+    match (closed, lo, hi) {
+        (_, None, None) => {
+            let (dead, gone) = delete_with_dependents(d, &[id.to_string()]);
+            rep.deleted.extend(dead);
+            rep.constraints_dropped.extend(gone);
+            for p in points {
+                drop_orphan_point(d, p, rep);
+            }
+            return Ok(());
+        }
+        (true, Some(lo), Some(hi)) => {
+            // The remainder runs forward from the end of the removed piece to its start.
+            let start = cut_point(d, hi, rep)?;
+            let end = cut_point(d, lo, rep)?;
+            let mut v = vec![start];
+            v.extend(near_cut(d, hi.towards[1], rep)?);
+            v.extend(between(hi.param, lo.param));
+            v.extend(near_cut(d, lo.towards[0], rep)?);
+            v.push(end);
+            pieces.push(v);
+        }
+        (true, _, _) => {
+            return Err(CommandError::args("a closed spline needs two crossings to trim")
+                .hint("draw the cutting curves across it"));
+        }
+        (false, lo, hi) => {
+            let last = (n.saturating_sub(1)) as f64;
+            if let Some(lo) = lo {
+                let end = cut_point(d, lo, rep)?;
+                let mut v = vec![at(0)];
+                v.extend(between(0.0, lo.param));
+                v.extend(near_cut(d, lo.towards[0], rep)?);
+                v.push(end);
+                pieces.push(v);
+            }
+            if let Some(hi) = hi {
+                let start = cut_point(d, hi, rep)?;
+                let mut v = vec![start];
+                v.extend(near_cut(d, hi.towards[1], rep)?);
+                v.extend(between(hi.param, last));
+                v.push(at(n.saturating_sub(1)));
+                pieces.push(v);
+            }
+        }
+    }
+    for v in &mut pieces {
+        v.dedup();
+        if v.len() < 3 {
+            return Err(CommandError::args("the trimmed spline would have no length"));
+        }
+    }
+    for (k, v) in pieces.into_iter().enumerate() {
+        let g = SkGeom::Spline { points: v, closed: false };
+        if k == 0 {
+            set_geom(d, id, g);
+            rep.kept.push(id.to_string());
+        } else {
+            let other = add_entity(d, g, construction);
+            define_points_first(d, &other);
+            rep.created.push(other.clone());
+            rep.kept.push(other);
+        }
+    }
+    for p in points {
+        drop_orphan_point(d, p, rep);
+    }
+    Ok(())
+}
+
 fn apply_trim(d: &mut SketchDef, id: &str, plan: &TrimPlan) -> Result<Value, CommandError> {
     let mut rep = Report::default();
     let geom = geom_of(d, id).cloned().ok_or_else(|| CommandError::not_found(format!("no entity '{id}'")))?;
     let construction = d.entities.iter().find(|e| e.id == id).is_some_and(|e| e.construction);
     match (&geom, &plan.lo, &plan.hi) {
         (SkGeom::Point { .. }, _, _) => return Err(CommandError::args(format!("'{id}' is a point, not a curve"))),
-        (SkGeom::Spline { .. }, _, _) => {
-            return Err(CommandError::args(format!("'{id}' is a spline, which cannot be trimmed"))
-                .hint("trim the curves that cross it, or delete it and draw a spline through other points"));
+        (SkGeom::Spline { points, closed }, lo, hi) => {
+            trim_spline(d, id, points, *closed, lo.as_ref(), hi.as_ref(), construction, &mut rep)?;
         }
         // The piece is the whole entity: nothing crosses it (or a circle is cut only once).
         (SkGeom::Line { a, b }, None, None) => {

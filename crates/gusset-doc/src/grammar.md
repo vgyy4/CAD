@@ -78,7 +78,9 @@ between the nearest crossings, keeping the new ends on the crossing curves.
 `s5 = spline(p1, p2, p3, p4)` is a smooth curve (centripetal Catmull-Rom) through at least
 three ordinary sketch points; add `closed` to join the last point back to the first. The
 points are normal points, so constraints (`fixed`, `coincident`, `distance`, `on_line`, ...)
-apply to them; the spline itself takes no constraints and cannot be trimmed. A closed spline
+apply to them; the spline itself takes no constraints. Trimming a spline refits what is left through
+the fit points it keeps, a new point on the old curve next to each cut and the cut points
+(a closed spline becomes an open one), so it can move slightly near a cut. A closed spline
 is a region; an open one cuts regions like any other curve. It must not cross itself. Create
 one with `sketch_add_polyline` and `spline: true`.
 
