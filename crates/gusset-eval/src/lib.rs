@@ -24,6 +24,7 @@ mod joint;
 mod ops;
 mod pattern;
 pub mod sketch;
+mod surface;
 mod sweep;
 mod text;
 
@@ -1075,6 +1076,7 @@ impl Evaluator {
             FeatureKind::Joint(d) => self.run_joint(s, name, d, units, params),
             FeatureKind::Component(d) => self.run_component(s, name, d, params, blobs),
             FeatureKind::Combine(d) => self.run_combine(s, name, d),
+            FeatureKind::Surface(d) => self.run_surface(s, name, d, units, params),
             FeatureKind::Hole(d) => self.run_hole(s, name, d, units, params),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {

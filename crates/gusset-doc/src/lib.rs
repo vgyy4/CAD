@@ -497,6 +497,25 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn surface_statements_round_trip_and_are_validated() {
+        let src = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 4) {\n  p1 = point(0, 0)\n  p2 = point(10, 0)\n  l3 = line(p1, p2)\n}\n\n\
+                   surface_extrude Wall (curves: S.curves(l3), distance: 5 mm, symmetric: true)\n\n\
+                   patch Lid (profile: S, body_name: Cap)\n\n\
+                   stitch Both (bodies: [Wall, Lid], tolerance: 0.01 mm)\n\n\
+                   thicken Solid (body: Both, thickness: 1 mm, both_sides: true)\n";
+        let doc = Document::from_text(src).unwrap();
+        assert_eq!(doc.to_text(), src);
+        assert_eq!(doc.features[4].kind.dependencies(), vec!["Both".to_string()]);
+        // A consumed body cannot be used again; one body is too few to stitch.
+        let bad = src.replace("thicken Solid (body: Both", "thicken Solid (body: Wall");
+        assert!(Document::from_text(&bad).unwrap_err().to_string().contains("Wall"));
+        let one = src.replace("[Wall, Lid]", "[Wall]");
+        assert!(Document::from_text(&one).unwrap_err().to_string().contains("at least two"));
+        let lines = src.replace("curves: S.curves(l3)", "curves: [edge(x)]");
+        assert!(Document::from_text(&lines).is_err());
+    }
+
+    #[test]
     fn timeline_groups_round_trip() {
         let src = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 2, group: \"Base\") {\n  p1 = point(0, 0)\n}\n\n\
                    plane P (base: XY, offset: 5 mm, group: \"Base\", suppressed: true)\n";

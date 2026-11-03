@@ -128,7 +128,9 @@ Phase 3 has started (see Next).
   right drag of 40 px or more runs the menu item in that direction without opening it,
   DESIGN.md §1.3). UI scale done (View > UI scale, 75 to 250 %, or Ctrl + plus/minus; kept in
   the preferences, DESIGN.md §1.22). Properties panel done (the running command's form docks at the right
-  instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). Still to do: the SURFACE/INSPECT tabs. Wireframe view style done (the navigation bar's
+  instead of floating; Close button). SELECT group done (a filter: faces and edges, faces only, edges only; it limits what viewport clicks pick). SURFACE tab done (ADR 0036: `surface_extrude`, `patch`, `thicken`, `stitch`;
+  sheet bodies; kernel ops through the shim, the worker protocol v9 and the OCCT tests;
+  `modeling_surface.rs`). INSPECT stays a ribbon group (measure, body, overview, ...). Wireframe view style done (the navigation bar's
   Wireframe button: `ViewOptions::faces` off draws edges only, hidden ones too, on the GPU
   and the software renderer). Section view done (the navigation bar's Section button and
   a bar above it: a plane across X, Y or Z, flip, position slider; `ViewOptions::section`:

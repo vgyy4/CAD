@@ -35,6 +35,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.diagnostics", "Diagnostics"),
     ("workspace.design", "Design"),
     ("tab.solid", "Solid"),
+    ("tab.surface", "Surface"),
     ("tab.sketch", "Sketch"),
     ("tab.drawing", "Drawing"),
     ("ribbon.create", "Create"),

@@ -356,6 +356,22 @@ sketch Top (plane: Up, next_id: 3) {
 loft Loft1 (profiles: [Profile, Top], ruled: true, op: new, body_name: Funnel)
 ```
 
+## Surfaces (ADR 0036)
+
+```
+surface_extrude Wall (curves: Sketch1.curves(l3, a5), distance: 20 mm, symmetric: false)
+patch Lid (profile: Sketch2.regions(l4))
+thicken Part (body: Wall, thickness: 2 mm, both_sides: false)
+stitch Closed (bodies: [Wall, Lid], tolerance: 0.01 mm)
+```
+
+`surface_extrude` sweeps one chain of sketch curves (open or closed; `Sketch1` alone means
+every curve) into a sheet body, its faces named `side(<sketch>/<entity>)`. `patch` fills
+sketch regions with planar sheet faces (`cap(start)`). `thicken` turns a sheet body into a
+solid in place (negative thickness: the other side; `both_sides`: half to each). `stitch`
+sews bodies along shared edges within the tolerance into one body, a solid when closed; the
+listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
+
 ## Datum planes, bodies and patterns
 
 ```

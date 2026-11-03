@@ -305,6 +305,37 @@ fn print_feature(out: &mut String, f: &Feature) {
             let key = if matches!(f.kind, FeatureKind::Fillet(_)) { "radius" } else { "distance" };
             args.push(format!("{key}: {}", b.size));
         }
+        FeatureKind::Surface(d) => {
+            match &d.op {
+                SurfaceOp::Extrude { curves, distance, symmetric } => {
+                    let p = match curves {
+                        PathRef::Sketch { sketch, curves } if curves.is_empty() => sketch.clone(),
+                        PathRef::Sketch { sketch, curves } => format!("{sketch}.curves({})", curves.join(", ")),
+                        _ => String::new(),
+                    };
+                    args.push(format!("curves: {p}"));
+                    args.push(format!("distance: {distance}"));
+                    if *symmetric {
+                        args.push("symmetric: true".into());
+                    }
+                }
+                SurfaceOp::Patch { profile } => args.push(format!("profile: {}", print_profile(profile))),
+                SurfaceOp::Thicken { body, thickness, both_sides } => {
+                    push_body(&mut args, body);
+                    args.push(format!("thickness: {thickness}"));
+                    if *both_sides {
+                        args.push("both_sides: true".into());
+                    }
+                }
+                SurfaceOp::Stitch { bodies, tolerance } => {
+                    args.push(format!("bodies: [{}]", bodies.join(", ")));
+                    args.push(format!("tolerance: {tolerance}"));
+                }
+            }
+            if let Some(n) = &d.body_name {
+                args.push(format!("body_name: {n}"));
+            }
+        }
         FeatureKind::Shell(d) => {
             push_body(&mut args, &d.body);
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
@@ -648,7 +679,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "move_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular"
-            | "plane" | "move" | "combine" | "hole" | "joint" | "component" => {
+            | "plane" | "move" | "combine" | "hole" | "joint" | "component" | "surface_extrude" | "patch"
+            | "thicken" | "stitch" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -671,6 +703,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_joint(&mut c)?
                 } else if kw == "component" {
                     parse_component(&mut c)?
+                } else if matches!(kw, "surface_extrude" | "patch" | "thicken" | "stitch") {
+                    parse_surface(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
                 } else {
@@ -2210,4 +2244,80 @@ pub fn parse_params_object(s: &str) -> Result<(Vec<Param>, Vec<Configuration>), 
         return Err(perr(1, "a parameter object must not contain features"));
     }
     Ok((doc.params, doc.configurations))
+}
+
+/// Surface statements (ADR 0036).
+fn parse_surface(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
+    let mut curves = None;
+    let mut profile = None;
+    let mut body = None;
+    let mut bodies: Option<Vec<String>> = None;
+    let mut amount = None;
+    let mut flag = false;
+    let mut body_name = None;
+    let allowed = match kw {
+        "surface_extrude" => "curves, distance, symmetric, body_name, label, group, suppressed",
+        "patch" => "profile, body_name, label, group, suppressed",
+        "thicken" => "body, thickness, both_sides, body_name, label, group, suppressed",
+        _ => "bodies, tolerance, body_name, label, group, suppressed",
+    };
+    parse_args(c, |key, c| {
+        match (kw, key) {
+            (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
+            (_, "suppressed") => suppressed = parse_bool(c)?,
+            (_, "body_name") => body_name = Some(c.ident()?.to_string()),
+            ("surface_extrude", "curves") => curves = Some(parse_path(c)?),
+            ("surface_extrude", "distance") | ("thicken", "thickness") | ("stitch", "tolerance") => {
+                amount = Some(c.expr()?)
+            }
+            ("surface_extrude", "symmetric") | ("thicken", "both_sides") => flag = parse_bool(c)?,
+            ("patch", "profile") => profile = Some(parse_profile(c)?),
+            ("thicken", "body") => body = Some(c.ident()?.to_string()),
+            ("stitch", "bodies") => {
+                c.expect('[')?;
+                let mut list = Vec::new();
+                if !c.eat(']') {
+                    loop {
+                        list.push(c.ident()?.to_string());
+                        if list.len() > MAX_LIST_ITEMS {
+                            return Err(c.err("too many bodies"));
+                        }
+                        if c.eat(',') {
+                            continue;
+                        }
+                        c.expect(']')?;
+                        break;
+                    }
+                }
+                bodies = Some(list);
+            }
+            (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let op = match kw {
+        "surface_extrude" => {
+            let curves = curves.ok_or_else(|| missing(c, kw, "curves"))?;
+            if !matches!(curves, PathRef::Sketch { .. }) {
+                return Err(c.err_hint("surface_extrude takes sketch curves", "e.g. curves: Sketch1.curves(l3, a4)"));
+            }
+            SurfaceOp::Extrude { curves, distance: amount.ok_or_else(|| missing(c, kw, "distance"))?, symmetric: flag }
+        }
+        "patch" => SurfaceOp::Patch { profile: profile.ok_or_else(|| missing(c, kw, "profile"))? },
+        "thicken" => {
+            SurfaceOp::Thicken { body, thickness: amount.ok_or_else(|| missing(c, kw, "thickness"))?, both_sides: flag }
+        }
+        _ => SurfaceOp::Stitch {
+            bodies: bodies.ok_or_else(|| missing(c, kw, "bodies"))?,
+            tolerance: amount.ok_or_else(|| missing(c, kw, "tolerance"))?,
+        },
+    };
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Surface(SurfaceDef { op, body_name }) })
 }

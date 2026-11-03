@@ -523,6 +523,22 @@ impl Kernel for RemoteKernel {
         self.op(&Request::Shell(shape.clone(), remove.to_vec(), thickness))
     }
 
+    fn extrude_curves(&self, curves: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
+        self.op(&Request::ExtrudeCurves(curves.clone(), *spec))
+    }
+
+    fn patch(&self, profile: &Profile) -> KResult<OpResult> {
+        self.op(&Request::Patch(profile.clone()))
+    }
+
+    fn thicken(&self, shape: &Shape, thickness: f64, both_sides: bool) -> KResult<OpResult> {
+        self.op(&Request::Thicken(shape.clone(), thickness, both_sides))
+    }
+
+    fn stitch(&self, shapes: &[Shape], tolerance: f64) -> KResult<OpResult> {
+        self.op(&Request::Stitch(shapes.to_vec(), tolerance))
+    }
+
     fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
         self.op(&Request::OffsetFaces(shape.clone(), faces.to_vec(), distance))
     }

@@ -59,6 +59,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Import(_) | FeatureKind::Component(_) => true,
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
+        FeatureKind::Surface(d) => !matches!(d.op, SurfaceOp::Thicken { .. }),
         _ => false,
     }
 }
@@ -77,6 +78,9 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         FeatureKind::Import(_) | FeatureKind::Component(_) => Some(&f.name),
         FeatureKind::Mirror(m) if !m.merge => Some(&f.name),
         FeatureKind::Move(m) if m.copy => Some(&f.name),
+        FeatureKind::Surface(d) if !matches!(d.op, SurfaceOp::Thicken { .. }) => {
+            Some(d.body_name.as_deref().unwrap_or(&f.name))
+        }
         _ => None,
     }
 }
@@ -323,6 +327,54 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 }
             }
             FeatureKind::Hole(d) => check_hole(n, d, &seen, &mut out),
+            FeatureKind::Surface(d) => match &d.op {
+                SurfaceOp::Extrude { curves, .. } => {
+                    if let PathRef::Sketch { sketch, curves } = curves {
+                        match seen.get(sketch.as_str()) {
+                            Some(g) if !matches!(g.kind, FeatureKind::Sketch(_)) => {
+                                out.push(issue(n, format!("'{sketch}' is not a sketch")));
+                            }
+                            None => out.push(issue(n, format!("unknown sketch '{sketch}'"))),
+                            _ => {}
+                        }
+                        let mut listed = BTreeSet::new();
+                        for c in curves {
+                            check_sketch_entity(n, sketch, c, None, &seen, &mut out);
+                            if !listed.insert(c.as_str()) {
+                                out.push(issue(n, format!("curve '{c}' is listed twice")));
+                            }
+                        }
+                    }
+                }
+                SurfaceOp::Patch { profile } => check_profile(n, profile, &seen, &mut out),
+                SurfaceOp::Thicken { body, .. } => {
+                    if d.body_name.is_some() {
+                        out.push(issue_h(n, "thicken keeps the sheet's body", "remove body_name"));
+                    }
+                    check_body_target(n, body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+                }
+                SurfaceOp::Stitch { bodies, .. } => {
+                    if bodies.len() < 2 {
+                        out.push(issue_h(n, "stitch needs at least two bodies", "list them: bodies: [Wall, Lid]"));
+                    }
+                    if bodies.len() > MAX_COMBINE_TOOLS {
+                        out.push(issue(n, format!("{} bodies; at most {MAX_COMBINE_TOOLS} per stitch", bodies.len())));
+                    }
+                    let mut listed = BTreeSet::new();
+                    for b in bodies {
+                        if !listed.insert(b.as_str()) {
+                            out.push(issue(n, format!("body '{b}' is listed twice")));
+                        }
+                        check_body_target(n, Some(b), true, &seen, &consumed, &mut out);
+                    }
+                    for b in bodies.iter().filter(|_| !f.suppressed) {
+                        if seen.get(b.as_str()).is_some_and(|g| creates_body(g)) && !consumed.contains_key(b.as_str()) {
+                            consumed.insert(b, n);
+                            live_bodies = live_bodies.saturating_sub(1);
+                        }
+                    }
+                }
+            },
             FeatureKind::Import(i) => {
                 if !is_hash(&i.blob) {
                     out.push(issue(n, "blob must be a 64-character lowercase hex hash"));

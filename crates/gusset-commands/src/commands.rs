@@ -29,6 +29,7 @@ mod lettering;
 mod measure;
 mod ops;
 mod sketch_ops;
+mod surface;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
@@ -49,6 +50,7 @@ pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
+pub use surface::{Patch, Stitch, SurfaceExtrude, Thicken};
 pub use sweep::{Loft, Sweep};
 
 pub(crate) fn all() -> Vec<CommandSpec> {
@@ -57,6 +59,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(generate::specs());
     v.extend(hole::specs());
     v.extend(ops::specs());
+    v.extend(surface::specs());
     v.extend(measure::specs());
     v.extend(feature_edit::specs());
     v.extend(lettering::specs());
@@ -439,7 +442,10 @@ fn live_body_features(doc: &Document, at: usize) -> Vec<&Feature> {
         .clone()
         .filter(|f| !f.suppressed)
         .filter_map(|f| match &f.kind {
-            FeatureKind::Combine(c) => Some(c.tools.iter().map(String::as_str)),
+            FeatureKind::Combine(c) => Some(c.tools.iter().map(String::as_str).collect::<Vec<_>>()),
+            FeatureKind::Surface(gusset_doc::SurfaceDef {
+                op: gusset_doc::SurfaceOp::Stitch { bodies, .. }, ..
+            }) => Some(bodies.iter().map(String::as_str).collect()),
             _ => None,
         })
         .flatten()
@@ -3249,6 +3255,7 @@ impl Command for QueryBody {
             "size_mm": bb.size(),
             "faces": body.topology.faces.len(),
             "edges": body.topology.edges.len(),
+            "kind": if body.topology.solids > 0 { "solid" } else { "sheet" },
         });
         if self.names {
             let faces: Vec<Value> = body

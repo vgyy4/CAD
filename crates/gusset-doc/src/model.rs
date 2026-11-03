@@ -72,6 +72,8 @@ pub enum FeatureKind {
     Hole(HoleDef),
     Joint(Box<JointDef>),
     Component(ComponentDef),
+    /// Surface operations (ADR 0036): sheets from curves or regions, thicken, stitch.
+    Surface(SurfaceDef),
 }
 
 impl FeatureKind {
@@ -86,6 +88,7 @@ impl FeatureKind {
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Import(_) => "import",
             FeatureKind::Shell(_) => "shell",
+            FeatureKind::Surface(d) => d.op.keyword(),
             FeatureKind::Draft(_) => "draft",
             FeatureKind::OffsetFace(_) => "offset_face",
             FeatureKind::MoveFace(_) => "move_face",
@@ -156,6 +159,13 @@ impl FeatureKind {
                     f.features(&mut add);
                 }
             }
+            FeatureKind::Surface(d) => match &d.op {
+                SurfaceOp::Extrude { curves: PathRef::Sketch { sketch, .. }, .. } => add(sketch),
+                SurfaceOp::Extrude { .. } => {}
+                SurfaceOp::Patch { profile } => add(&profile.sketch),
+                SurfaceOp::Thicken { body, .. } => add_body(&mut add, body),
+                SurfaceOp::Stitch { bodies, .. } => bodies.iter().for_each(|b| add(b)),
+            },
             FeatureKind::Mirror(d) => {
                 add_body(&mut add, &d.body);
                 d.plane.features(&mut add);
@@ -258,6 +268,12 @@ impl FeatureKind {
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
+            FeatureKind::Surface(d) => match &d.op {
+                SurfaceOp::Extrude { distance, .. } => take(distance),
+                SurfaceOp::Patch { .. } => {}
+                SurfaceOp::Thicken { thickness, .. } => take(thickness),
+                SurfaceOp::Stitch { tolerance, .. } => take(tolerance),
+            },
             FeatureKind::Draft(d) => take(&d.angle),
             FeatureKind::OffsetFace(d) => take(&d.distance),
             FeatureKind::Text(d) => {
@@ -320,6 +336,12 @@ impl FeatureKind {
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => out.push(&mut b.size),
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
+            FeatureKind::Surface(d) => match &mut d.op {
+                SurfaceOp::Extrude { distance, .. } => out.push(distance),
+                SurfaceOp::Patch { .. } => {}
+                SurfaceOp::Thicken { thickness, .. } => out.push(thickness),
+                SurfaceOp::Stitch { tolerance, .. } => out.push(tolerance),
+            },
             FeatureKind::Draft(d) => out.push(&mut d.angle),
             FeatureKind::OffsetFace(d) => out.push(&mut d.distance),
             FeatureKind::Text(d) => {
@@ -830,6 +852,39 @@ pub struct ImportDef {
     pub format: ImportFormat,
     /// Original file name (untrusted).
     pub file_name: String,
+}
+
+// ------------------------------------------------------------------ surfaces (ADR 0036)
+
+/// A surface operation and the name of the body it makes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceDef {
+    pub op: SurfaceOp,
+    /// Name of the body made; `None` = the feature name.
+    pub body_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceOp {
+    /// Sketch curves (open or closed chains) swept along the sketch normal into a sheet.
+    Extrude { curves: PathRef, distance: Expr, symmetric: bool },
+    /// Sketch regions filled as planar sheet faces.
+    Patch { profile: ProfileRef },
+    /// A sheet body thickened into a solid (it replaces the sheet).
+    Thicken { body: Option<String>, thickness: Expr, both_sides: bool },
+    /// Bodies sewn along shared edges; a closed result is a solid. The inputs are consumed.
+    Stitch { bodies: Vec<String>, tolerance: Expr },
+}
+
+impl SurfaceOp {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            SurfaceOp::Extrude { .. } => "surface_extrude",
+            SurfaceOp::Patch { .. } => "patch",
+            SurfaceOp::Thicken { .. } => "thicken",
+            SurfaceOp::Stitch { .. } => "stitch",
+        }
+    }
 }
 
 // ------------------------------------------------------------------ shell, mirror, patterns

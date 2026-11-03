@@ -22,6 +22,22 @@ pub(crate) fn extrude(p: &ProfileData, distance: f64, symmetric: bool) -> KResul
     safe::extrude(p, distance, symmetric).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> KResult<OpOut> {
+    safe::extrude_curves(p, distance, symmetric).map_err(err(KernelErrorKind::OperationFailed))
+}
+
+pub(crate) fn patch(p: &ProfileData) -> KResult<OpOut> {
+    safe::patch(p).map_err(err(KernelErrorKind::OperationFailed))
+}
+
+pub(crate) fn thicken(s: &RawShape, thickness: f64, both: bool) -> KResult<OpOut> {
+    safe::thicken(s, thickness, both).map_err(err(KernelErrorKind::OperationFailed))
+}
+
+pub(crate) fn stitch(shapes: &[&RawShape], tol: f64) -> KResult<OpOut> {
+    safe::stitch(shapes, tol).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn revolve(p: &ProfileData, axis_origin: [f64; 2], axis_dir: [f64; 2], angle: f64) -> KResult<OpOut> {
     safe::revolve(p, axis_origin, axis_dir, angle).map_err(err(KernelErrorKind::OperationFailed))
 }

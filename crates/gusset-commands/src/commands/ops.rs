@@ -103,12 +103,19 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
                 }
             }
         }
+        FeatureKind::Surface(d) => match &mut d.op {
+            gusset_doc::SurfaceOp::Extrude { curves: PathRef::Sketch { sketch, .. }, .. } => sketch_of(sketch),
+            gusset_doc::SurfaceOp::Extrude { .. } => {}
+            gusset_doc::SurfaceOp::Patch { profile } => sketch_of(&mut profile.sketch),
+            gusset_doc::SurfaceOp::Thicken { body, .. } => body_of(body),
+            gusset_doc::SurfaceOp::Stitch { bodies, .. } => bodies.iter_mut().for_each(sketch_of),
+        },
         _ => {}
     }
 }
 
 /// Resolves the body to work on now and stores its name in the feature.
-pub(super) fn body_for(
+pub(crate) fn body_for(
     doc: &Document,
     rb: Option<usize>,
     explicit: Option<String>,

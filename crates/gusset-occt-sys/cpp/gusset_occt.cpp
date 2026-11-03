@@ -54,6 +54,10 @@
 #include <BRepOffsetAPI_DraftAngle.hxx>
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <ShapeFix_Solid.hxx>
 #include <GeomAbs_JoinType.hxx>
 #include <gp_Trsf.hxx>
 #include <BRepAlgoAPI_Check.hxx>
@@ -2318,3 +2322,261 @@ int gs_brep_text_write(const GsShape* s, GsBuf* out) {
 }
 
 }  // extern "C"
+
+/* ------------------------------------------------------------------ surfaces (ADR 0036) */
+
+// Faces sewn into one shell when they share edges (each face stays when nothing is shared).
+static TopoDS_Shape sew_faces(const std::vector<TopoDS_Shape>& faces, double tol) {
+  BRepBuilderAPI_Sewing sew(tol);
+  for (const auto& f : faces) sew.Add(f);
+  sew.Perform();
+  TopoDS_Shape r = sew.SewedShape();
+  if (r.IsNull()) throw Standard_Failure("sewing produced no result");
+  return r;
+}
+
+int gs_extrude_curves(const GsProfile* p, double distance, int symmetric, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !out || !origins) return fail("null argument");
+  if (!std::isfinite(distance) || std::fabs(distance) < 1e-9) return fail("extrude distance must be non-zero");
+  if (!p->segs || !p->loops || p->nloops == 0) return fail("no curves to extrude");
+  double offset = symmetric ? -std::fabs(distance) / 2.0 : 0.0;
+  double len = symmetric ? std::fabs(distance) : distance;
+  Frame f = make_frame(p, offset);
+  gp_Vec v(f.n.X() * len, f.n.Y() * len, f.n.Z() * len);
+  std::vector<TopoDS_Shape> faces;
+  std::vector<uint64_t> tags;
+  for (size_t li = 0; li < p->nloops; ++li) {
+    const GsLoop& l = p->loops[li];
+    if (size_t(l.first) + l.count > p->nsegs) return fail("curves out of range");
+    for (uint32_t i = 0; i < l.count; ++i) {
+      const GsSeg& sg = p->segs[l.first + i];
+      TopoDS_Edge e = make_seg_edge(p, sg, f);
+      BRepPrimAPI_MakePrism mk(e, v, true);
+      mk.Build();
+      if (!mk.IsDone()) return fail("extruding a curve failed");
+      for (TopExp_Explorer fx(mk.Shape(), TopAbs_FACE); fx.More(); fx.Next()) {
+        faces.push_back(fx.Current());
+        tags.push_back(sg.tag);
+      }
+    }
+  }
+  if (faces.empty()) return fail("no curves to extrude");
+  TopoDS_Shape result = sew_faces(faces, 1e-6);
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  // Sewing keeps the faces' geometry: match each output face to its input by a point on it.
+  for (int i = 1; i <= out_faces.Extent(); ++i) {
+    GProp_GProps gp;
+    BRepGProp::SurfaceProperties(out_faces(i), gp);
+    gp_Pnt c = gp.CentreOfMass();
+    double best = 1e300;
+    size_t which = 0;
+    for (size_t k = 0; k < faces.size(); ++k) {
+      GProp_GProps g2;
+      BRepGProp::SurfaceProperties(faces[k], g2);
+      double d = g2.CentreOfMass().Distance(c);
+      if (d < best) {
+        best = d;
+        which = k;
+      }
+    }
+    push_origin(o, i - 1, GS_ORIGIN_LATERAL, int64_t(tags[which]), 0);
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_patch(const GsProfile* p, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !out || !origins) return fail("null argument");
+  Frame f = make_frame(p, 0.0);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+  if (faces.empty()) return fail("no region to fill");
+  TopoDS_Shape result;
+  if (faces.size() == 1) {
+    result = faces[0];
+  } else {
+    TopoDS_Compound comp;
+    BRep_Builder b;
+    b.MakeCompound(comp);
+    for (const auto& fc : faces) b.Add(comp, fc);
+    result = comp;
+  }
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (size_t i = 0; i < faces.size(); ++i) {
+    int idx = out_faces.FindIndex(faces[i]);
+    if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_CAP, 0, face_region[i]);
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+// The input faces' images in `r` (by Modified, else unchanged).
+static void input_origins(BRepBuilderAPI_MakeShape& mk, const TopoDS_Shape& in, const TopoDS_Shape& r, uint32_t input,
+                          int kind, std::vector<int64_t>& o) {
+  ShapeMap in_faces, out_faces;
+  TopExp::MapShapes(in, TopAbs_FACE, in_faces);
+  TopExp::MapShapes(r, TopAbs_FACE, out_faces);
+  for (int i = 1; i <= in_faces.Extent(); ++i) {
+    const ShapeList& mods = mk.Modified(in_faces(i));
+    if (mods.IsEmpty()) {
+      int idx = out_faces.FindIndex(in_faces(i));
+      if (idx > 0) push_origin(o, idx - 1, kind, input, i - 1);
+    }
+    for (ShapeList::Iterator it(mods); it.More(); it.Next()) {
+      int idx = out_faces.FindIndex(it.Value());
+      if (idx > 0) push_origin(o, idx - 1, kind, input, i - 1);
+    }
+  }
+}
+
+int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins) return fail("null argument");
+  if (!std::isfinite(thickness) || std::fabs(thickness) < 1e-9) return fail("thickness must be non-zero");
+  TopoDS_Shape base = s->s;
+  if (both) {
+    BRepOffsetAPI_MakeOffsetShape half;
+    half.PerformBySimple(base, -thickness / 2.0);
+    if (!half.IsDone()) return fail("thicken failed (offsetting the sheet)");
+    base = half.Shape();
+  }
+  BRepOffsetAPI_MakeThickSolid mk;
+  mk.MakeThickSolidBySimple(base, thickness);
+  if (!mk.IsDone()) return fail("thicken failed");
+  TopoDS_Shape result = mk.Shape();
+  if (result.IsNull()) return fail("thicken produced no result");
+  std::vector<int64_t> o;
+  input_origins(mk, base, result, 0, GS_ORIGIN_INPUT, o);
+  // The side walls along the sheet's free edges.
+  {
+    ShapeMap in_edges, out_faces;
+    TopExp::MapShapes(base, TopAbs_EDGE, in_edges);
+    TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+    for (int i = 1; i <= in_edges.Extent(); ++i) {
+      const ShapeList& gen = mk.Generated(in_edges(i));
+      for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
+        if (it.Value().ShapeType() != TopAbs_FACE) continue;
+        int idx = out_faces.FindIndex(it.Value());
+        if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_FROM_EDGE, 0, i - 1);
+      }
+    }
+    // Faces still without an origin (OCCT keeps no history for them): the nearest input face.
+    std::vector<bool> has(size_t(out_faces.Extent()), false);
+    for (size_t k = 0; k + 3 < o.size(); k += 4) {
+      int64_t f = o[k];
+      if (f >= 0 && size_t(f) < has.size()) has[size_t(f)] = true;
+    }
+    ShapeMap in_faces;
+    TopExp::MapShapes(base, TopAbs_FACE, in_faces);
+    for (int i = 1; i <= out_faces.Extent(); ++i) {
+      if (has[size_t(i - 1)] || in_faces.Extent() == 0) continue;
+      GProp_GProps gp;
+      BRepGProp::SurfaceProperties(out_faces(i), gp);
+      double best = 1e300;
+      int which = 1;
+      for (int j = 1; j <= in_faces.Extent(); ++j) {
+        GProp_GProps g2;
+        BRepGProp::SurfaceProperties(in_faces(j), g2);
+        double d = g2.CentreOfMass().Distance(gp.CentreOfMass());
+        if (d < best) {
+          best = d;
+          which = j;
+        }
+      }
+      push_origin(o, i - 1, GS_ORIGIN_INPUT, 0, which - 1);
+    }
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+int gs_stitch(const GsShape* const* shapes, size_t n, double tol, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!shapes || !out || !origins || n == 0) return fail("nothing to stitch");
+  if (!std::isfinite(tol) || tol <= 0) return fail("tolerance must be positive");
+  BRepBuilderAPI_Sewing sew(tol);
+  for (size_t i = 0; i < n; ++i) {
+    if (!shapes[i]) return fail("null shape");
+    sew.Add(shapes[i]->s);
+  }
+  sew.Perform();
+  TopoDS_Shape r = sew.SewedShape();
+  if (r.IsNull()) return fail("stitching produced no result");
+  // A closed shell becomes a solid.
+  TopoDS_Shape result = r;
+  for (TopExp_Explorer sx(r, TopAbs_SHELL); sx.More(); sx.Next()) {
+    const TopoDS_Shell& sh = TopoDS::Shell(sx.Current());
+    if (!BRep_Tool::IsClosed(sh)) continue;
+    BRepBuilderAPI_MakeSolid ms(sh);
+    if (!ms.IsDone()) continue;
+    ShapeFix_Solid fix;
+    fix.Init(ms.Solid());
+    fix.Perform();
+    TopoDS_Shape solid = fix.Solid();
+    if (!solid.IsNull() && TopExp_Explorer(r, TopAbs_SHELL).More()) {
+      int shells = 0;
+      for (TopExp_Explorer cx(r, TopAbs_SHELL); cx.More(); cx.Next()) ++shells;
+      if (shells == 1) result = solid;
+    }
+  }
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  for (size_t k = 0; k < n; ++k) {
+    ShapeMap in_faces;
+    TopExp::MapShapes(shapes[k]->s, TopAbs_FACE, in_faces);
+    for (int i = 1; i <= in_faces.Extent(); ++i) {
+      TopoDS_Shape img = sew.IsModified(in_faces(i)) ? sew.Modified(in_faces(i)) : in_faces(i);
+      int idx = out_faces.FindIndex(img);
+      if (idx <= 0) {
+        // After MakeSolid the faces are the same TShapes; compare without orientation.
+        for (int j = 1; j <= out_faces.Extent() && idx <= 0; ++j)
+          if (out_faces(j).IsSame(img)) idx = j;
+      }
+      if (idx > 0) push_origin(o, idx - 1, GS_ORIGIN_INPUT, int64_t(k), i - 1);
+    }
+  }
+  // Faces whose history was lost (healing copies them): the input face at the same place.
+  std::vector<bool> has(size_t(out_faces.Extent()), false);
+  for (size_t q = 0; q + 3 < o.size(); q += 4)
+    if (o[q] >= 0 && size_t(o[q]) < has.size()) has[size_t(o[q])] = true;
+  for (int i = 1; i <= out_faces.Extent(); ++i) {
+    if (has[size_t(i - 1)]) continue;
+    GProp_GProps gp;
+    BRepGProp::SurfaceProperties(out_faces(i), gp);
+    double best = 1e300;
+    int64_t bk = -1, bf = -1;
+    for (size_t k = 0; k < n; ++k) {
+      ShapeMap in_faces;
+      TopExp::MapShapes(shapes[k]->s, TopAbs_FACE, in_faces);
+      for (int j = 1; j <= in_faces.Extent(); ++j) {
+        GProp_GProps g2;
+        BRepGProp::SurfaceProperties(in_faces(j), g2);
+        double d = g2.CentreOfMass().Distance(gp.CentreOfMass()) + std::fabs(g2.Mass() - gp.Mass());
+        if (d < best) {
+          best = d;
+          bk = int64_t(k);
+          bf = j - 1;
+        }
+      }
+    }
+    if (bk >= 0) push_origin(o, i - 1, GS_ORIGIN_INPUT, bk, bf);
+  }
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}

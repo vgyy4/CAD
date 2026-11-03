@@ -185,6 +185,51 @@ pub fn extrude(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<Op
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Sheets swept from a profile's curves (ADR 0036).
+pub fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<OpOut> {
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: `raw` points into `p`'s vectors, alive for the call; out-params are valid.
+    let rc = unsafe { sys::gs_extrude_curves(&raw, distance, i32::from(symmetric), &mut out, &mut origins) };
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+/// A profile's regions as planar faces.
+pub fn patch(p: &ProfileData) -> ShimResult<OpOut> {
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: as for `extrude_curves`.
+    let rc = unsafe { sys::gs_patch(&raw, &mut out, &mut origins) };
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+/// A sheet made a solid of `thickness`.
+pub fn thicken(s: &RawShape, thickness: f64, both: bool) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; out-params valid.
+    let rc = s.with(|p| unsafe { sys::gs_thicken(p, thickness, i32::from(both), &mut out, &mut origins) });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
+/// Shapes sewn together; a closed result is a solid.
+pub fn stitch(shapes: &[&RawShape], tol: f64) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = with_many(shapes, |p| {
+        // SAFETY: every shape is locked and valid; `p` holds `shapes.len()` pointers alive
+        // for the call; out-params are valid.
+        unsafe { sys::gs_stitch(p.as_ptr(), p.len(), tol, &mut out, &mut origins) }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn revolve(p: &ProfileData, axis_origin: [f64; 2], axis_dir: [f64; 2], angle: f64) -> ShimResult<OpOut> {
     let raw = p.raw();
     let mut out = std::ptr::null_mut();

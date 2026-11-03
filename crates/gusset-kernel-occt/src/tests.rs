@@ -820,3 +820,43 @@ fn xt_samples_match_their_step_exports() {
         assert_eq!(matched, vertex_refs.len(), "{stem}");
     }
 }
+
+/// Surfaces (ADR 0036): sheets from open curves and regions, thickened and stitched.
+#[test]
+fn surfaces_extrude_patch_thicken_and_stitch() {
+    // An open L of two lines (30 + 20 mm) swept 10 mm: a sheet of 500 mm^2, two faces.
+    let l = Loop2 {
+        edges: vec![
+            ProfileEdge { seg: Seg2::Line { a: [0.0, 0.0], b: [30.0, 0.0] }, tag: 1 },
+            ProfileEdge { seg: Seg2::Line { a: [30.0, 0.0], b: [30.0, 20.0] }, tag: 2 },
+        ],
+    };
+    let curves = Profile { frame: Frame::XY, regions: vec![Region2 { outer: l, holes: vec![] }] };
+    let wall = k().extrude_curves(&curves, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let m = k().mass_properties(&wall.shape).unwrap();
+    assert!(close(m.area, 500.0, 1e-6), "{}", m.area);
+    assert_eq!(k().topology(&wall.shape).unwrap().solids, 0);
+    assert!(wall.face_origins.iter().flatten().any(|o| *o == FaceOrigin::Lateral { tag: 2 }));
+    // A 20 x 10 patch, thickened 2 mm: 400 mm^3; both sides gives the same volume.
+    let lid = k().patch(&boxp(20.0, 10.0)).unwrap();
+    assert!(close(k().mass_properties(&lid.shape).unwrap().area, 200.0, 1e-9));
+    for both in [false, true] {
+        let solid = k().thicken(&lid.shape, 2.0, both).unwrap();
+        let v = k().mass_properties(&solid.shape).unwrap().volume.abs();
+        assert!(close(v, 400.0, 1e-6), "{both}: {v}");
+    }
+    // A 20 x 10 x 5 box from its four walls and two patches, stitched: a solid.
+    let tube = k().extrude_curves(&boxp(20.0, 10.0), &ExtrudeSpec { distance: 5.0, symmetric: false }).unwrap();
+    let top_frame = Frame { origin: [0.0, 0.0, 5.0], ..Frame::XY };
+    let top = k().patch(&Profile { frame: top_frame, ..boxp(20.0, 10.0) }).unwrap();
+    let closed = k().stitch(&[tube.shape.clone(), lid.shape.clone(), top.shape.clone()], 1e-3).unwrap();
+    let t = k().topology(&closed.shape).unwrap();
+    assert_eq!((t.solids, t.faces.len()), (1, 6));
+    let v = k().mass_properties(&closed.shape).unwrap().volume.abs();
+    assert!(close(v, 1000.0, 1e-6), "{v}");
+    assert!(closed.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Input { input: 2, .. })));
+    // Without the top it stays a sheet.
+    let open = k().stitch(&[tube.shape, lid.shape], 1e-3).unwrap();
+    assert_eq!(k().topology(&open.shape).unwrap().solids, 0);
+    assert!(k().stitch(&[], 1e-3).is_err());
+}

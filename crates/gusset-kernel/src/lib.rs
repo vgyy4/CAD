@@ -216,6 +216,34 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("shell", self.name())
     }
 
+    /// Sheets (ADR 0036): every edge of the profile's loops (open or closed chains) swept
+    /// along the frame normal by `spec.distance` into a face reporting
+    /// [`FaceOrigin::Lateral`]; faces that share edges are sewn into one shell.
+    fn extrude_curves(&self, curves: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
+        let _ = (curves, spec);
+        unsupported("surface extrusion", self.name())
+    }
+
+    /// The profile's regions as planar sheet faces ([`FaceOrigin::Cap`], start).
+    fn patch(&self, profile: &Profile) -> KResult<OpResult> {
+        let _ = profile;
+        unsupported("patch", self.name())
+    }
+
+    /// A sheet thickened into a solid of `thickness` mm along its normals (`both_sides`:
+    /// half to each side). The sheet's faces report [`FaceOrigin::Input`] on their copies.
+    fn thicken(&self, shape: &Shape, thickness: f64, both_sides: bool) -> KResult<OpResult> {
+        let _ = (shape, thickness, both_sides);
+        unsupported("thicken", self.name())
+    }
+
+    /// Shapes sewn along edges within `tolerance` mm; a closed result is a solid. Faces
+    /// report [`FaceOrigin::Input`] with the index of their shape.
+    fn stitch(&self, shapes: &[Shape], tolerance: f64) -> KResult<OpResult> {
+        let _ = (shapes, tolerance);
+        unsupported("stitch", self.name())
+    }
+
     /// Tapers the faces `faces` (indices into the shape's topology) about their
     /// intersection with the neutral plane (ADR 0028). Every output face reports
     /// [`FaceOrigin::Input`]: drafted and neighbouring faces are modified, none are added.

@@ -20,6 +20,8 @@ pub enum Action {
     Run(&'static str),
     /// The Solid tab: leaves sketch editing.
     SolidTab,
+    /// The Surface tab (ADR 0036): the surface tools.
+    SurfaceTab,
     /// The Sketch tab: edits the latest sketch (or starts a new one).
     SketchTab,
     /// "Finish sketch".
@@ -119,6 +121,27 @@ const SOLID: &[Group] = &[
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },
 ];
 
+const SURFACE: &[Group] = &[
+    Group {
+        key: "ribbon.create",
+        large: 3,
+        tools: &[
+            d("sketch.create", "Sketch"),
+            d("feature.surface_extrude", "Extrude"),
+            d("feature.patch", "Patch"),
+            d("feature.revolve", "Revolve"),
+            d("feature.loft", "Loft"),
+        ],
+    },
+    Group {
+        key: "ribbon.modify",
+        large: 2,
+        tools: &[d("feature.thicken", "Thicken"), d("feature.stitch", "Stitch"), d("feature.combine", "Combine")],
+    },
+    Group { key: "ribbon.construct", large: 1, tools: &[d("feature.plane", "Plane")] },
+    Group { key: "ribbon.inspect", large: 1, tools: &[d("query.measure", "Measure"), d("query.body", "Body")] },
+];
+
 const SKETCH: &[Group] = &[
     Group {
         key: "ribbon.create",
@@ -213,6 +236,8 @@ pub struct Ribbon<'a> {
     pub select: crate::viewport::SelectFilter,
     /// The tools the S quick bar shows in this context (for the tools' context menus).
     pub quick: &'a [&'static str],
+    /// The Surface tab is chosen (outside sketches and drawings).
+    pub surface: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -302,7 +327,8 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         let sketching = r.sketch.is_some() && r.drawing.is_none();
         let drawing = r.drawing.is_some();
         for (label, active, act) in [
-            (tr("tab.solid"), !sketching && !drawing, Action::SolidTab),
+            (tr("tab.solid"), !sketching && !drawing && !r.surface, Action::SolidTab),
+            (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
         ] {
@@ -400,6 +426,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         DRAWING
     } else if sketching {
         SKETCH
+    } else if r.surface {
+        SURFACE
     } else {
         SOLID
     };

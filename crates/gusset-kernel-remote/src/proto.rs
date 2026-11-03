@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,10 @@ pub(crate) enum Request {
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
     MoveFaces(Shape, Vec<u32>, Vec<Transform>),
+    ExtrudeCurves(Profile, ExtrudeSpec),
+    Patch(Profile),
+    Thicken(Shape, f64, bool),
+    Stitch(Vec<Shape>, f64),
     HiddenLines(Shape, HlrView),
     Transform(Shape, Transform),
     Compound(Vec<Shape>),
@@ -142,6 +146,26 @@ impl Request {
                 put_shape(&mut w, s, shape)?;
                 put_u32s(&mut w, faces)?;
                 spec.put(&mut w, s)?;
+            }
+            Request::ExtrudeCurves(p, spec) => {
+                w.u8(29);
+                p.put(&mut w, s)?;
+                spec.put(&mut w, s)?;
+            }
+            Request::Patch(p) => {
+                w.u8(30);
+                p.put(&mut w, s)?;
+            }
+            Request::Thicken(shape, t, both) => {
+                w.u8(31);
+                put_shape(&mut w, s, shape)?;
+                w.f64(*t);
+                w.u8(u8::from(*both));
+            }
+            Request::Stitch(shapes, tol) => {
+                w.u8(32);
+                put_shapes(&mut w, s, shapes)?;
+                w.f64(*tol);
             }
             Request::Free(ids) => {
                 w.u8(1);
@@ -294,6 +318,10 @@ impl Request {
             26 => Request::OffsetFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?),
             27 => Request::MoveFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?, Wire::get(&mut r, s)?),
             28 => Request::HiddenLines(get_shape(&mut r, s)?, HlrView::get(&mut r, s)?),
+            29 => Request::ExtrudeCurves(Profile::get(&mut r, s)?, ExtrudeSpec::get(&mut r, s)?),
+            30 => Request::Patch(Profile::get(&mut r, s)?),
+            31 => Request::Thicken(get_shape(&mut r, s)?, r.f64()?, r.u8()? != 0),
+            32 => Request::Stitch(get_shapes(&mut r, s)?, r.f64()?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

@@ -725,3 +725,21 @@ fn typed_dimensions_place_the_next_point() {
     assert!((len - 25.0).abs() < 1e-6 && b[0] > a[0], "{a:?} -> {b:?}");
     assert!(h.state().entry.is_none());
 }
+
+#[test]
+fn the_surface_tab_shows_the_surface_tools() {
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_label("Thicken").is_none());
+    h.get_by_label("SURFACE").click();
+    h.run();
+    assert!(h.state().surface_tab);
+    h.get_by_label("Thicken").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("feature.thicken"));
+    h.state_mut().form = None;
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert!(!h.state().surface_tab);
+    assert!(h.query_by_label("Thicken").is_none());
+}

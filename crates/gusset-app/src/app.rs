@@ -256,6 +256,8 @@ pub struct App {
     pub browser_collapsed: bool,
     pub timeline_collapsed: bool,
     pub docks_swapped: bool,
+    /// The Surface tab is chosen (ADR 0036).
+    pub surface_tab: bool,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -390,6 +392,7 @@ impl App {
             browser_collapsed: false,
             timeline_collapsed: false,
             docks_swapped: false,
+            surface_tab: false,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -2087,6 +2090,7 @@ impl App {
                 drawing: self.active_drawing.as_deref(),
                 select: self.viewport.select_filter,
                 quick: &[],
+                surface: self.surface_tab,
             },
         );
         if let Some(a) = action {
@@ -2109,6 +2113,7 @@ impl App {
                 drawing: self.active_drawing.as_deref(),
                 select: self.viewport.select_filter,
                 quick: &quick,
+                surface: self.surface_tab,
             },
         );
         if let Some(a) = action {
@@ -2125,6 +2130,12 @@ impl App {
             Action::QuickBar(id, add) => self.set_quick_tool(id, add),
             Action::SolidTab | Action::FinishSketch => {
                 self.active_drawing = None;
+                self.surface_tab = false;
+                self.finish_sketch();
+            }
+            Action::SurfaceTab => {
+                self.active_drawing = None;
+                self.surface_tab = true;
                 self.finish_sketch();
             }
             Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {

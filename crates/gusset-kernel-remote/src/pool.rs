@@ -165,6 +165,25 @@ impl Kernel for PoolKernel {
         k.shell(&s, remove, thickness)
     }
 
+    fn extrude_curves(&self, curves: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
+        self.here()?.extrude_curves(curves, spec)
+    }
+
+    fn patch(&self, profile: &Profile) -> KResult<OpResult> {
+        self.here()?.patch(profile)
+    }
+
+    fn thicken(&self, shape: &Shape, thickness: f64, both_sides: bool) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.thicken(&s, thickness, both_sides)
+    }
+
+    fn stitch(&self, shapes: &[Shape], tolerance: f64) -> KResult<OpResult> {
+        let all: Vec<&Shape> = shapes.iter().collect();
+        let (k, s) = self.place(&all)?;
+        k.stitch(&s, tolerance)
+    }
+
     fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.offset_faces(&s, faces, distance)

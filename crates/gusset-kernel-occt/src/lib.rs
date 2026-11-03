@@ -405,6 +405,34 @@ mod imp {
             op_result(ffi::shell(raw(shape)?, remove, thickness)?)
         }
 
+        fn extrude_curves(&self, curves: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult> {
+            let p = profile_data(curves)?;
+            op_result(ffi::extrude_curves(&p, spec.distance, spec.symmetric)?)
+        }
+
+        fn patch(&self, profile: &Profile) -> KResult<OpResult> {
+            let p = profile_data(profile)?;
+            op_result(ffi::patch(&p)?)
+        }
+
+        fn thicken(&self, shape: &Shape, thickness: f64, both_sides: bool) -> KResult<OpResult> {
+            if !thickness.is_finite() || thickness.abs() < 1e-9 {
+                return Err(invalid("the thickness must be a non-zero length"));
+            }
+            op_result(ffi::thicken(raw(shape)?, thickness, both_sides)?)
+        }
+
+        fn stitch(&self, shapes: &[Shape], tolerance: f64) -> KResult<OpResult> {
+            if shapes.is_empty() {
+                return Err(invalid("nothing to stitch"));
+            }
+            if !tolerance.is_finite() || tolerance <= 0.0 {
+                return Err(invalid("the stitching tolerance must be a positive length"));
+            }
+            let raws = shapes.iter().map(raw).collect::<KResult<Vec<_>>>()?;
+            op_result(ffi::stitch(&raws, tolerance)?)
+        }
+
         fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }

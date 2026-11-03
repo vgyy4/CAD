@@ -118,6 +118,16 @@ int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double di
  * `faces` (indices into the shape's face order). */
 int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,
              GsBuf* origins);
+/* Surfaces (ADR 0036). Sheets from a profile's curves swept along its normal (each loop
+ * an open or closed chain; one face per segment, lateral origins by tag). */
+int gs_extrude_curves(const GsProfile* p, double distance, int symmetric, GsShape** out, GsBuf* origins);
+/* The profile's regions as planar faces (cap origins). */
+int gs_patch(const GsProfile* p, GsShape** out, GsBuf* origins);
+/* A sheet offset into a solid of `thickness` (along its normals; `both`: half each side). */
+int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBuf* origins);
+/* Shapes sewn along shared edges within `tol`; a closed result becomes a solid. Origins:
+ * input = which shape, face = its face. */
+int gs_stitch(const GsShape* const* shapes, size_t n, double tol, GsShape** out, GsBuf* origins);
 /* Tapers the faces `faces` of `s` about their intersection with the neutral plane through
  * (params[3..6]) normal to the pull direction params[0..3], by params[6] radians (> 0: the
  * faces lean inward along the pull direction). Every face reports INPUT origins. */

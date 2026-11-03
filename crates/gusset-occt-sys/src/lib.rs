@@ -119,6 +119,28 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_extrude_curves(
+            p: *const GsProfile,
+            distance: f64,
+            symmetric: i32,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_patch(p: *const GsProfile, out: *mut *mut GsShape, origins: *mut GsBuf) -> i32;
+        pub(crate) fn gs_thicken(
+            s: *const GsShape,
+            thickness: f64,
+            both: i32,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
+        pub(crate) fn gs_stitch(
+            shapes: *const *const GsShape,
+            n: usize,
+            tol: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_revolve(
             p: *const GsProfile,
             axis_origin: *const f64,

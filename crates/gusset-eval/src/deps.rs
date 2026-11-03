@@ -74,6 +74,13 @@ fn access(kind: &FeatureKind) -> Access {
             a.bodies.extend(d.tools.iter().cloned());
             a
         }
+        FeatureKind::Surface(d) => match &d.op {
+            gusset_doc::SurfaceOp::Extrude { .. } | gusset_doc::SurfaceOp::Patch { .. } => {
+                Access { bodies: Vec::new(), dynamic: false }
+            }
+            gusset_doc::SurfaceOp::Thicken { body, .. } => target(body.as_ref()),
+            gusset_doc::SurfaceOp::Stitch { bodies, .. } => Access { bodies: bodies.clone(), dynamic: false },
+        },
     }
 }
 
