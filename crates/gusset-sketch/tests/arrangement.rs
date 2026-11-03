@@ -149,14 +149,46 @@ fn two_circles_make_a_lens_and_two_lunes() {
 }
 
 #[test]
-fn overlapping_collinear_lines_are_an_error_with_a_hint_entity() {
+fn overlapping_collinear_lines_share_the_stretch() {
+    // Two lines on top of each other along [5, 10] bound nothing, without an error.
     let mut s = Sketch::new();
     let a = s.add_line([0.0, 0.0], [10.0, 0.0]).unwrap();
     let b = s.add_line([5.0, 0.0], [15.0, 0.0]).unwrap();
-    match arrange(&s, TOL) {
-        Err(ProfileError::SelfIntersecting { a: x, b: y, .. }) => assert_eq!((x, y), (a, b)),
-        other => panic!("{other:?}"),
-    }
+    let r = arrange(&s, TOL).unwrap();
+    assert!(r.profiles.is_empty());
+    assert_eq!(r.open_ends, vec![a, b]);
+    // Rectangles touching along part of an edge, or along a whole edge drawn twice, are
+    // two regions side by side.
+    let mut s = Sketch::new();
+    rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+    rect(&mut s, 10.0, 2.0, 10.0, 6.0);
+    assert_areas(&arrange(&s, TOL).unwrap(), &[60.0, 100.0]);
+    let mut s = Sketch::new();
+    rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+    rect(&mut s, 10.0, -5.0, 10.0, 30.0);
+    assert_areas(&arrange(&s, TOL).unwrap(), &[100.0, 300.0]);
+    let mut s = Sketch::new();
+    rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+    rect(&mut s, 10.0, 0.0, 10.0, 10.0);
+    rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+    assert_areas(&arrange(&s, TOL).unwrap(), &[100.0, 100.0]);
+}
+
+#[test]
+fn curves_on_the_same_circle_share_it() {
+    // A circle drawn twice is one region; an arc on a circle splits it but adds nothing.
+    let mut s = Sketch::new();
+    s.add_circle([0.0, 0.0], 5.0).unwrap();
+    s.add_circle([0.0, 0.0], 5.0).unwrap();
+    s.add_arc([0.0, 0.0], [5.0, 0.0], [0.0, 5.0]).unwrap();
+    assert_areas(&arrange(&s, TOL).unwrap(), &[25.0 * PI]);
+    // Two overlapping arcs and a chord: a half disc.
+    let mut s = Sketch::new();
+    s.add_arc([0.0, 0.0], [5.0, 0.0], [0.0, 5.0]).unwrap();
+    s.add_arc([0.0, 0.0], [0.0, 5.0], [-5.0, 0.0]).unwrap();
+    s.add_arc([0.0, 0.0], [3.5355339059327378, 3.5355339059327378], [-3.5355339059327378, 3.5355339059327378]).unwrap();
+    s.add_line([-5.0, 0.0], [5.0, 0.0]).unwrap();
+    assert_areas(&arrange(&s, TOL).unwrap(), &[12.5 * PI]);
 }
 
 #[test]

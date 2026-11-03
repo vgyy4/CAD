@@ -23,6 +23,12 @@ turned into regions, so they share this record.
    lines, arcs of one circle) are still an error (`SelfIntersecting`, now worded as an
    overlap): the arrangement would need a merged edge with two owners, and a hand-drawn
    overlap is nearly always a mistake.
+   *Amended 2026-11-03:* overlaps are no longer an error. Each curve is cut at both ends
+   of the shared stretch (for arcs and circles of one circle, at the arc ends lying on
+   the other curve), and pieces running along the same stretch (same end vertices, same
+   midpoint) are merged into one edge, owned by the lowest entity. A circle drawn twice
+   is one circle. Trim cuts at the overlap ends. Only a spline crossing itself is still
+   `SelfIntersecting`.
 3. Each curve becomes a chain of **pieces** between its cuts. A circle with one cut gets
    a second cut at the opposite point so every piece is a proper arc; an uncut circle
    stays a circle.

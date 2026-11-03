@@ -268,8 +268,9 @@ Phase 3 has started (see Next).
   `features: [...]`: what each feature added to or cut from its body (after minus before, before
   minus after, recorded per feature during evaluation) is copied per instance and united with
   or cut from that body (OCCT exact-volume tests: a row of holes, a ring of bosses).
-- Sketch arrangement limits (ADR 0016): curves that overlap along a stretch are an error;
-  a spline's tangential touch with another curve is not detected; splines cannot be
+- Sketch arrangement limits (ADR 0016): a spline overlapping another curve along a
+  stretch is reported as too much intersection work (lines and arcs that overlap now
+  share the stretch); a spline's tangential touch with another curve is not detected; splines cannot be
   trimmed; pattern copies cannot carry constraints or be trimmed; no patterns of patterns.
 
 ## Decisions made without the owner (easy to reverse)

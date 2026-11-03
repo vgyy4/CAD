@@ -67,14 +67,11 @@ fn on_arc(p: V2, c: V2, a0: f64, span: f64, slack: f64) -> bool {
     rel <= span + slack || rel >= TAU - slack
 }
 
-/// Candidate intersection points of two curves, or an overlap point.
-struct Hits {
-    points: Vec<V2>,
-    overlap: Option<V2>,
-}
-
-fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Hits {
-    let mut h = Hits { points: Vec::new(), overlap: None };
+/// Candidate meeting points of two segments. Collinear segments that overlap along a
+/// stretch meet at both ends of the shared stretch: each is cut there, and the shared
+/// piece is merged later (see [`dedup_pieces`]).
+fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Vec<V2> {
+    let mut h = Vec::new();
     let (d1, d2) = (sub(a1, a0), sub(b1, b0));
     let (l1, l2) = (norm(d1), norm(d2));
     let den = cross(d1, d2);
@@ -87,11 +84,11 @@ fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Hits {
         let t1 = dot(sub(b1, a0), d1) / l1;
         let lo = t0.min(t1).max(0.0);
         let hi = t0.max(t1).min(l1);
-        let at = add(a0, scale(d1, (lo + hi) * 0.5 / l1));
         if hi - lo > tol {
-            h.overlap = Some(at);
+            h.push(add(a0, scale(d1, lo / l1)));
+            h.push(add(a0, scale(d1, hi / l1)));
         } else if hi - lo >= -tol {
-            h.points.push(at);
+            h.push(add(a0, scale(d1, (lo + hi) * 0.5 / l1)));
         }
         return h;
     }
@@ -99,7 +96,7 @@ fn seg_seg(a0: V2, a1: V2, b0: V2, b1: V2, tol: f64) -> Hits {
     let u = cross(w, d1) / den;
     let (et, eu) = (tol / l1, tol / l2);
     if (-et..=1.0 + et).contains(&t) && (-eu..=1.0 + eu).contains(&u) {
-        h.points.push(add(a0, scale(d1, t)));
+        h.push(add(a0, scale(d1, t)));
     }
     h
 }
@@ -196,59 +193,46 @@ fn crossing_sign(a: &Cv, b: &Cv, p: V2) -> i8 {
     }
 }
 
-/// Points where two curves meet. `Err(at)` when they overlap along a stretch.
-/// What stops [`raw_points`]: two curves overlap along a stretch (at this point), or the
+/// Points where two curves meet (both ends of a stretch they share); `Err` when the
 /// intersection work limit was reached.
-enum Stop {
-    Overlap(V2),
-    TooMuchWork,
-}
-
-fn raw_points(a: &Cv, b: &Cv, tol: f64, work: &mut crate::curves::Work) -> Result<Vec<V2>, Stop> {
+fn raw_points(a: &Cv, b: &Cv, tol: f64, work: &mut crate::curves::Work) -> Result<Vec<V2>, ()> {
     if matches!(a.shape, Shape::Spline { .. }) || matches!(b.shape, Shape::Spline { .. }) {
-        return crate::curves::numeric_hits(a, b, tol, work).map_err(|_| Stop::TooMuchWork);
+        return crate::curves::numeric_hits(a, b, tol, work).map_err(|_| ());
     }
-    raw_points_analytic(a, b, tol).map_err(Stop::Overlap)
+    Ok(raw_points_analytic(a, b, tol))
 }
 
-fn raw_points_analytic(a: &Cv, b: &Cv, tol: f64) -> Result<Vec<V2>, V2> {
+fn raw_points_analytic(a: &Cv, b: &Cv, tol: f64) -> Vec<V2> {
     let circ = |s: &Shape| match *s {
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => Some((c, r)),
         Shape::Line | Shape::Spline { .. } => None,
     };
     let (ca, cb) = (circ(&a.shape), circ(&b.shape));
     let mut pts = match (ca, cb) {
-        (None, None) => {
-            let h = seg_seg(a.p[0], a.p[1], b.p[0], b.p[1], tol);
-            if let Some(o) = h.overlap {
-                return Err(o);
-            }
-            h.points
-        }
+        (None, None) => seg_seg(a.p[0], a.p[1], b.p[0], b.p[1], tol),
         (None, Some((c, r))) => seg_circle(a.p[0], a.p[1], c, r, tol),
         (Some((c, r)), None) => seg_circle(b.p[0], b.p[1], c, r, tol),
         (Some((c1, r1)), Some((c2, r2))) => match circle_circle(c1, r1, c2, r2, tol) {
             Some(p) => p,
             None => {
-                // Same circle: overlapping unless two arcs only share endpoints.
-                let at = add(c1, [r1, 0.0]);
-                return match (&a.shape, &b.shape) {
-                    (&Shape::Arc { a0, span, .. }, &Shape::Arc { a0: b0, span: sb, .. }) => {
-                        if arc_overlap(a0, span, b0, sb) > tol / r1 {
-                            let mid = a0 + 0.5 * span;
-                            Err(add(c1, [r1 * libm::cos(mid), r1 * libm::sin(mid)]))
-                        } else {
-                            // Arcs of one circle that only touch end to end share a vertex.
-                            Ok(Vec::new())
-                        }
-                    }
-                    _ => Err(at),
-                };
+                // Same circle: the curves meet where one's ends lie on the other (two full
+                // circles coincide entirely and are merged later). Arcs that only touch end
+                // to end share a vertex already.
+                if let (&Shape::Arc { a0, span, .. }, &Shape::Arc { a0: b0, span: sb, .. }) = (&a.shape, &b.shape)
+                    && arc_overlap(a0, span, b0, sb) <= tol / r1
+                {
+                    return Vec::new();
+                }
+                let ends =
+                    |cv: &Cv| if matches!(cv.shape, Shape::Arc { .. }) { vec![cv.p[0], cv.p[1]] } else { Vec::new() };
+                let mut e = ends(a);
+                e.extend(ends(b));
+                e
             }
         },
     };
     pts.retain(|&p| curve_on(a, p, tol) && curve_on(b, p, tol));
-    Ok(pts)
+    pts
 }
 
 /// One place where a curve is cut.
@@ -290,13 +274,7 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
             if b.bbox[1] > a.bbox[3] + tol || b.bbox[3] < a.bbox[1] - tol {
                 continue;
             }
-            let pts = raw_points(a, b, tol, &mut work).map_err(|stop| match stop {
-                Stop::Overlap(at) => {
-                    let (x, y) = if a.id < b.id { (a.id, b.id) } else { (b.id, a.id) };
-                    ProfileError::SelfIntersecting { a: x, b: y, at }
-                }
-                Stop::TooMuchWork => too_much(),
-            })?;
+            let pts = raw_points(a, b, tol, &mut work).map_err(|()| too_much())?;
             if pts.is_empty() {
                 continue;
             }
@@ -440,6 +418,56 @@ fn piece_of(cv: &Cv, v: [usize; 2], u: [f64; 2], verts: &Verts, piece: u32) -> C
     };
     let bbox = crate::profile::bbox_of(&shape, p);
     Cv { id: cv.id, shape, p, v, bbox, piece }
+}
+
+/// Merges pieces that run along the same stretch (curves that overlap, or a curve drawn
+/// twice): the piece of the lowest entity stays.
+pub(crate) fn dedup_pieces(pieces: &mut Vec<Cv>, verts: &Verts, tol: f64) {
+    let mid = |cv: &Cv| match cv.shape {
+        Shape::Arc { c, r, a0, span } => {
+            let m = a0 + 0.5 * span;
+            Some(add(c, [r * libm::cos(m), r * libm::sin(m)]))
+        }
+        Shape::Line => Some(scale(add(verts.at(cv.v[0]), verts.at(cv.v[1])), 0.5)),
+        Shape::Circle { .. } | Shape::Spline { .. } => None,
+    };
+    let mut seen: BTreeMap<(usize, usize), Vec<V2>> = BTreeMap::new();
+    let mut order: Vec<usize> = (0..pieces.len()).collect();
+    order.sort_by_key(|&i| pieces.get(i).map(|p| (p.id, p.piece)));
+    let mut keep = vec![true; pieces.len()];
+    for i in order {
+        let Some(cv) = pieces.get(i) else { continue };
+        let Some(m) = mid(cv) else { continue };
+        let key = (cv.v[0].min(cv.v[1]), cv.v[0].max(cv.v[1]));
+        let list = seen.entry(key).or_default();
+        if list.iter().any(|&q| dist(q, m) <= tol) {
+            if let Some(k) = keep.get_mut(i) {
+                *k = false;
+            }
+        } else {
+            list.push(m);
+        }
+    }
+    let mut k = keep.into_iter();
+    pieces.retain(|_| k.next().unwrap_or(true));
+}
+
+/// Merges full circles drawn twice (the lowest entity stays).
+pub(crate) fn dedup_circles(circles: &mut Vec<Cv>, tol: f64) {
+    circles.sort_by_key(|c| c.id);
+    let mut out: Vec<Cv> = Vec::new();
+    for c in circles.drain(..) {
+        let same = |o: &Cv| match (&o.shape, &c.shape) {
+            (&Shape::Circle { c: c1, r: r1 }, &Shape::Circle { c: c2, r: r2 }) => {
+                dist(c1, c2) <= tol && (r1 - r2).abs() <= tol
+            }
+            _ => false,
+        };
+        if !out.iter().any(same) {
+            out.push(c);
+        }
+    }
+    *circles = out;
 }
 
 /// Rejects zero-length pieces the tolerance cannot represent.

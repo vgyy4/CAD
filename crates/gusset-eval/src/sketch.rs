@@ -393,6 +393,9 @@ pub(crate) fn solve_sketch(
                 sk::ProfileError::Open { entities } => {
                     format!("the profile is not closed (open at {})", dnames(entities).join(", "))
                 }
+                sk::ProfileError::SelfIntersecting { a, b, .. } if a == b => {
+                    format!("{} crosses itself", dnames(&[*a]).join(""))
+                }
                 sk::ProfileError::SelfIntersecting { a, b, .. } => {
                     format!("{} and {} overlap along a stretch", dnames(&[*a]).join(""), dnames(&[*b]).join(""))
                 }
@@ -665,15 +668,10 @@ pub fn trim_plan(
         return Err(wrong());
     }
     let c = sk::cuts(&solved.sketch, eid, at, 1e-6).map_err(|e| match e {
-        sk::ProfileError::SelfIntersecting { a, b, .. } => err(
+        sk::ProfileError::SelfIntersecting { a, .. } => err(
             ErrorCode::InvalidSketch,
-            format!(
-                "{} and {} overlap along a stretch, so the cut points are not defined",
-                back.get(&a).copied().unwrap_or("?"),
-                back.get(&b).copied().unwrap_or("?")
-            ),
-        )
-        .with_hint("delete one of the overlapping curves first"),
+            format!("{} crosses itself, so the cut points are not defined", back.get(&a).copied().unwrap_or("?")),
+        ),
         other => err(ErrorCode::InvalidSketch, other.to_string()),
     })?;
     let kind_of = |id: &str| match def.entities.iter().find(|e| e.id == id).map(|e| &e.geom) {

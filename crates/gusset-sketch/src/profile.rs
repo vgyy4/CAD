@@ -141,7 +141,8 @@ pub enum ProfileError {
     Open {
         entities: Vec<EntityId>,
     },
-    /// Two curves overlap along a stretch (instead of crossing at points).
+    /// A curve (a spline) crosses itself; `a == b`. (Curves that overlap one another share
+    /// the stretch and are not an error.)
     SelfIntersecting {
         a: EntityId,
         b: EntityId,
@@ -175,7 +176,11 @@ impl fmt::Display for ProfileError {
                 Ok(())
             }
             ProfileError::SelfIntersecting { a, b, at } => {
-                write!(f, "{a} and {b} overlap along a stretch near ({}, {})", at[0], at[1])
+                if a == b {
+                    write!(f, "{a} crosses itself near ({}, {})", at[0], at[1])
+                } else {
+                    write!(f, "{a} and {b} overlap along a stretch near ({}, {})", at[0], at[1])
+                }
             }
             ProfileError::TooComplex { limit } => write!(f, "the sketch has more than {limit} crossings"),
             ProfileError::TooMuchWork { limit } => write!(
@@ -683,7 +688,8 @@ pub fn profiles(sketch: &Sketch, tol: f64) -> Result<Vec<Profile>, ProfileError>
 /// bridges bound nothing and are ignored (the entities with free ends are reported in
 /// [`Arrangement::open_ends`]). Profiles are ordered by the `(entity, piece, reversed)`
 /// key of their outer loop's smallest segment; every loop starts at its smallest such key.
-/// Points are ignored. Two curves must not overlap along a stretch.
+/// Points are ignored. Curves that overlap along a stretch share it: the stretch becomes one
+/// edge (of the lowest entity).
 pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
     if !(MIN_PROFILE_TOL..=MAX_PROFILE_TOL).contains(&tol) {
         return Err(ProfileError::BadTolerance);
@@ -718,6 +724,8 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
             circles.push(c);
         }
     }
+    arrange::dedup_pieces(&mut edges, &verts, tol);
+    arrange::dedup_circles(&mut circles, tol);
     arrange::check_pieces(&edges)?;
     let verts = verts.pts;
 

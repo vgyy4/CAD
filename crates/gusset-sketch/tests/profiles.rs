@@ -236,13 +236,13 @@ fn degenerate_and_bad_inputs_are_structured_errors() {
     assert_eq!(profiles(&Sketch::new(), f64::NAN), Err(ProfileError::BadTolerance));
     assert_eq!(profiles(&Sketch::new(), 0.0), Err(ProfileError::BadTolerance));
     assert_eq!(profiles(&Sketch::new(), TOL), Ok(vec![]));
-    // Two identical lines overlap.
+    // Two identical lines are one open edge, not a region.
     let mut s = Sketch::new();
     let p = s.add_point([0.0, 0.0]).unwrap();
     let q = s.add_point([5.0, 0.0]).unwrap();
     s.add_line_between(p, q).unwrap();
     s.add_line_between(q, p).unwrap();
-    assert!(matches!(profiles(&s, TOL), Err(ProfileError::SelfIntersecting { .. })));
+    assert!(matches!(profiles(&s, TOL), Err(ProfileError::Open { .. })));
 }
 
 #[test]
