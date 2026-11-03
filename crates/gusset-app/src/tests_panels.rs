@@ -790,3 +790,31 @@ fn the_ui_scale_is_applied_and_keyboard_zoom_becomes_the_scale() {
     assert!((h.state().ui_scale - 2.5).abs() < 1e-6, "{}", h.state().ui_scale);
     assert!((h.ctx.zoom_factor() - 2.5).abs() < 1e-6);
 }
+
+#[test]
+fn a_right_drag_flick_runs_the_marking_menu_item_in_its_direction() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    h.state_mut().viewport.nav_preset = crate::viewport::NavPreset::Fusion;
+    let c = h.state().viewport.rect().center();
+    h.hover_at(c);
+    let press = |h: &mut Harness<'static, App>, pos: egui::Pos2, pressed: bool| {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+    };
+    press(&mut h, c, true);
+    // Straight up: the first item (Sketch).
+    for k in 1..=6 {
+        h.hover_at(c - egui::vec2(0.0, 12.0 * k as f32));
+    }
+    press(&mut h, c - egui::vec2(0.0, 72.0), false);
+    h.run();
+    assert!(h.state().marking.is_none(), "a flick opens no menu");
+    assert_eq!(h.state().last_command, Some("sketch.create"));
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("sketch.create"));
+}

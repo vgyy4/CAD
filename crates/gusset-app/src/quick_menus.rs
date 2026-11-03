@@ -57,6 +57,22 @@ fn label(t: Tool) -> String {
     }
 }
 
+/// Shortest right drag (logical px) that counts as a flick toward a marking-menu item.
+pub const FLICK: f32 = 40.0;
+
+/// The item a flick in direction `dir` (screen, y down) chooses among `n` items placed
+/// clockwise from the top, as [`marking`] places them.
+#[must_use]
+pub fn flicked(dir: Vec2, n: usize) -> Option<usize> {
+    if n == 0 || dir.length() < 1e-3 {
+        return None;
+    }
+    let step = std::f32::consts::TAU / n as f32;
+    let a = dir.y.atan2(dir.x) + std::f32::consts::FRAC_PI_2;
+    let i = (a / step).round().rem_euclid(n as f32) as usize;
+    Some(i % n)
+}
+
 /// A primary click outside `rect` closes a menu (the right click that opened the marking
 /// menu does not).
 fn closes(ctx: &egui::Context, rect: egui::Rect) -> bool {
@@ -134,5 +150,16 @@ mod tests {
             1
         );
         assert!(tools(true, None).contains(&Tool::FinishSketch));
+    }
+
+    #[test]
+    fn a_flick_picks_the_item_in_its_direction() {
+        // Eight items clockwise from the top: up is 0, right 2, down 4, left 6.
+        assert_eq!(flicked(Vec2::new(0.0, -50.0), 8), Some(0));
+        assert_eq!(flicked(Vec2::new(50.0, 0.0), 8), Some(2));
+        assert_eq!(flicked(Vec2::new(0.0, 50.0), 8), Some(4));
+        assert_eq!(flicked(Vec2::new(-50.0, 0.0), 8), Some(6));
+        assert_eq!(flicked(Vec2::new(-40.0, -45.0), 8), Some(7));
+        assert_eq!(flicked(Vec2::ZERO, 8), None);
     }
 }

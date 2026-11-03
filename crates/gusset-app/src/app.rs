@@ -260,7 +260,7 @@ pub struct App {
     /// The S-key quick bar's position, while it is open.
     pub quick: Option<egui::Pos2>,
     /// The last command started (the menus offer it first).
-    last_command: Option<&'static str>,
+    pub(crate) last_command: Option<&'static str>,
     /// Recently opened or saved project files, newest first.
     pub recent: Vec<String>,
     /// The parameters table, while open: (name, expression being edited, expression when
@@ -1182,7 +1182,7 @@ impl App {
 
     /// The marking menu and the quick bar, when open, and what was chosen in them.
     fn quick_menus(&mut self, ctx: &egui::Context) {
-        use crate::quick_menus::{self as qm, Tool};
+        use crate::quick_menus as qm;
         let tools = qm::tools(self.editing_sketch().is_some(), self.last_command);
         let mut chosen = None;
         if let Some(at) = self.marking {
@@ -1200,6 +1200,12 @@ impl App {
             }
         }
         let Some(t) = chosen else { return };
+        self.run_quick_tool(t);
+    }
+
+    /// Runs a tool chosen in the marking menu, the quick bar or by a flick.
+    fn run_quick_tool(&mut self, t: crate::quick_menus::Tool) {
+        use crate::quick_menus::Tool;
         self.marking = None;
         self.quick = None;
         match t {
@@ -2787,6 +2793,13 @@ impl App {
         if let Some(at) = out.menu_at {
             self.marking = Some(at);
             self.quick = None;
+        }
+        // A right drag flicked toward a marking-menu item runs it without the menu.
+        if let Some(dir) = out.flick {
+            let tools = crate::quick_menus::tools(self.editing_sketch().is_some(), self.last_command);
+            if let Some(t) = crate::quick_menus::flicked(dir, tools.len()).and_then(|i| tools.get(i).copied()) {
+                self.run_quick_tool(t);
+            }
         }
         // Alt+click: choose among everything under the pointer.
         let alt = ui.input(|i| i.modifiers.alt);

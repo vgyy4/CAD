@@ -147,6 +147,9 @@ pub struct Output {
     pub drag: Option<PointDrag>,
     /// A right click without a drag: where to open the marking menu.
     pub menu_at: Option<Pos2>,
+    /// A right drag (with a navigation preset that leaves the right button free) released
+    /// this far from where it started: a marking-menu flick toward one of its items.
+    pub flick: Option<Vec2>,
     /// Where a primary click landed (screen), for "select other".
     pub click_at: Option<Pos2>,
     /// World size of one logical pixel at the view's target (snapping tolerances).
@@ -418,6 +421,8 @@ pub struct Viewport {
     /// Edge segments of the model a live preview stands in for, drawn over the preview so
     /// before and after show together (DESIGN.md §1.6).
     before: Vec<[f32; 3]>,
+    /// Where a right drag started (a possible marking-menu flick).
+    flick_from: Option<Pos2>,
     /// Where the viewport was drawn last frame (screen coordinates).
     last_rect: Rect,
     /// The model's scene and bodies while a live preview is shown in their place.
@@ -480,6 +485,7 @@ impl Default for Viewport {
             edit_sketch: None,
             ghost: Vec::new(),
             before: Vec::new(),
+            flick_from: None,
             last_rect: Rect::NOTHING,
             stash: None,
             dragging: None,
@@ -1022,6 +1028,17 @@ impl Viewport {
         self.drag_point(&resp, rect, sketches, &mut out);
         if resp.secondary_clicked() {
             out.menu_at = resp.interact_pointer_pos();
+        }
+        let mods = ui.input(|i| i.modifiers);
+        if resp.drag_started_by(egui::PointerButton::Secondary) {
+            self.flick_from = ui.input(|i| i.pointer.press_origin());
+        }
+        if resp.drag_stopped_by(egui::PointerButton::Secondary)
+            && self.nav_preset.drag(egui::PointerButton::Secondary, mods).is_none()
+            && let (Some(from), Some(to)) = (self.flick_from.take(), ui.input(|i| i.pointer.latest_pos()))
+            && (to - from).length() >= crate::quick_menus::FLICK
+        {
+            out.flick = Some(to - from);
         }
         if resp.clicked() {
             out.click_at = resp.interact_pointer_pos();
