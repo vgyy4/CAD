@@ -258,6 +258,9 @@ pub struct App {
     pub quick: Option<egui::Pos2>,
     /// The last command started (the menus offer it first).
     last_command: Option<&'static str>,
+    /// Dimensions being typed at the cursor while placing sketch geometry, with the last
+    /// error.
+    pub entry: Option<(crate::value_entry::Entry, Option<String>)>,
     /// The snapped point under the cursor while placing sketch geometry (preview).
     place_cursor: Option<Click>,
     /// A sketch to turn the camera to once its plane is known (editing starts).
@@ -368,6 +371,7 @@ impl App {
             marking: None,
             quick: None,
             last_command: None,
+            entry: None,
             place_cursor: None,
             drag_preview: None,
             look_at_sketch: None,
@@ -1628,6 +1632,10 @@ impl App {
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::F11))) {
             self.full_screen = !self.full_screen;
         }
+        // Esc first closes typed dimensions, and only them.
+        if self.entry.is_some() && ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
+            self.entry = None;
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&sc(Modifiers::NONE, Key::Escape))) {
             self.marking = None;
             self.quick = None;
@@ -2243,6 +2251,42 @@ impl App {
         }
     }
 
+    /// Typed dimensions while placing (DESIGN.md §1.7): a number typed after the first
+    /// click opens fields at the cursor; Enter places the point they give.
+    fn typed_dimensions(&mut self, ctx: &egui::Context, tol: f64) {
+        use crate::value_entry::{self as ve, Outcome};
+        let Some(form) = self.form.as_ref() else {
+            self.entry = None;
+            return;
+        };
+        let Some(first) = form.clicks.first().map(|c| c.at) else { return };
+        if self.entry.as_ref().is_some_and(|(e, _)| e.command != form.command) {
+            self.entry = None;
+        }
+        if self.entry.is_none() && !ctx.egui_wants_keyboard_input() {
+            let typed = ctx.input(|i| {
+                i.events.iter().find_map(|e| if let egui::Event::Text(t) = e { Some(t.clone()) } else { None })
+            });
+            if let Some(t) = typed.filter(|t| ve::starts_value(t)) {
+                self.entry = ve::start(form.command, &t).map(|e| (e, None));
+            }
+        }
+        let Some((mut e, err)) = self.entry.take() else { return };
+        let at = ctx.pointer_hover_pos().unwrap_or_else(|| self.viewport.rect().center());
+        match ve::show(ctx, at, &mut e, err.as_deref()) {
+            Outcome::Typing => self.entry = Some((e, err)),
+            Outcome::Cancel => {}
+            Outcome::Commit => {
+                let cursor = self.place_cursor.as_ref().map(|c| c.at);
+                let params = self.scene.as_ref().map(|s| s.eval.params.clone()).unwrap_or_default();
+                match ve::point(&e, first, cursor, &params) {
+                    Ok(p) => self.place_click(Click { at: p, point: None }, tol),
+                    Err(msg) => self.entry = Some((e, Some(msg))),
+                }
+            }
+        }
+    }
+
     /// Opens the placed command again after it succeeded; a line starts at the previous
     /// line's end point (`v["points"][1]`), so the lines join.
     fn restart_placing(&mut self, ch: Chain, v: &Value) {
@@ -2534,6 +2578,7 @@ impl App {
             {
                 self.place_click(c, tol);
             }
+            self.typed_dimensions(ui.ctx(), tol);
             return;
         }
         self.place_cursor = None;

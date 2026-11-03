@@ -58,7 +58,10 @@ Phase 3 has started (see Next).
   sketch plane (snapping to sketch points within 8 px, else rounded to 0.01 mm), with a
   rubber-band preview; the filled form is submitted like a typed one, the tool stays on, and
   lines chain from the previous end point (`from_point`), so they join. A polyline closes on
-  its first point or ends with OK.
+  its first point or ends with OK. After the first click, typing a number opens fields at the cursor
+  (`value_entry.rs`: a line's length and optional angle, a rectangle's width and height, a
+  circle's radius; expressions with units and parameters, a bare number is mm); Enter places
+  the point toward the cursor, Esc closes the fields.
   The edited sketch's points and curves are picked in the viewport before the model
   (`Hit::Sketch`; points within 6 px win over curves within 5 px) and highlighted; picks fill
   `sketch.add_constraint` entities, `sketch.delete_items` ids and `sketch.move_point`, and the

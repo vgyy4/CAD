@@ -693,3 +693,35 @@ fn first_part_by_mouse_from_sketch_to_solid() {
     let ev = h.state().evaluation().expect("evaluated");
     assert_eq!(ev.bodies.len(), 1, "{:?} / {:?}", h.state().notice, ev.statuses);
 }
+
+#[test]
+fn typed_dimensions_place_the_next_point() {
+    let mut h = harness(app());
+    h.state_mut().run("sketch.create", json!({"plane": "XY", "name": "S"})).unwrap();
+    h.state_mut().wait_idle();
+    h.state_mut().viewport.reduce_motion = true;
+    h.state_mut().edit_sketch("S");
+    h.run();
+    h.state_mut().start_command("sketch.add_line");
+    h.run();
+    let c = h.state().viewport.rect().center();
+    click_at(&mut h, c);
+    // Move right (the direction), then type the length and press Enter.
+    h.hover_at(c + egui::vec2(80.0, 0.0));
+    h.run();
+    h.event(egui::Event::Text("25".into()));
+    h.run();
+    assert!(h.state().entry.is_some(), "typing a number opens the fields");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    h.state_mut().wait_idle();
+    h.run_steps(3);
+    let lines = sketch_lines(&h, "S");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let ev = h.state().evaluation().expect("eval");
+    let s = ev.sketches.get("S").expect("sketch");
+    let (a, b) = (s.points[&lines[0].0], s.points[&lines[0].1]);
+    let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+    assert!((len - 25.0).abs() < 1e-6 && b[0] > a[0], "{a:?} -> {b:?}");
+    assert!(h.state().entry.is_none());
+}

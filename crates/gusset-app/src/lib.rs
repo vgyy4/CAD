@@ -20,6 +20,7 @@ pub mod sketch_place;
 pub mod sketch_regions;
 pub mod theme;
 pub mod timeline;
+pub mod value_entry;
 pub mod viewport;
 pub mod viewport_gpu;
 pub mod viewport_nav;
