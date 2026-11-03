@@ -29,6 +29,8 @@ pub struct Shell {
     pub faces: Vec<Face>,
     /// A cavity inside a solid.
     pub void: bool,
+    /// The region (lump) the shell bounds; shells of one lump are one solid (0: unknown).
+    pub lump: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +65,15 @@ pub struct Model {
     pub bodies: Vec<Body>,
     pub edges: BTreeMap<u32, Edge>,
     pub warnings: Vec<String>,
+    /// Shells, faces and loops already read for the body being built: a hostile file that
+    /// points many regions at one shell (or many loops at one fin chain) is read once.
+    seen: BTreeSet<u32>,
+    /// Faces read over all bodies and placements.
+    faces: usize,
 }
+
+/// Most faces one import may produce, over every body and assembly placement.
+const MAX_FACES: usize = 2_000_000;
 
 /// Longest chain walked (faces of a shell, fins of a loop and so on).
 const MAX_CHAIN: usize = 10_000_000;
@@ -102,11 +112,12 @@ pub(crate) fn build(g: &Graph) -> Result<Model, XtError> {
             continue;
         }
         let mut shells = Vec::new();
+        m.seen.clear();
         let regions = chain(g, g.ptr(b, "region"), "next")?;
         if regions.is_empty() {
             // V4 files: the body's shells directly.
             for s in chain(g, g.ptr(b, "shell"), "next")? {
-                shells.push(shell(g, s, false, &mut m)?);
+                shells.push(shell(g, s, 0, &mut m)?);
             }
         } else {
             for r in regions {
@@ -114,7 +125,7 @@ pub(crate) fn build(g: &Graph) -> Result<Model, XtError> {
                     continue;
                 }
                 for s in chain(g, g.ptr(r, "shell"), "next")? {
-                    shells.push(shell(g, s, false, &mut m)?);
+                    shells.push(shell(g, s, r, &mut m)?);
                 }
             }
             // In a solid, every shell but the one with the largest extent bounds a cavity:
@@ -185,14 +196,31 @@ fn placement_of(g: &Graph, tf: u32) -> Option<Xf> {
     Some((m, t.map(|x| x * s)))
 }
 
-/// The bodies of an assembly with their placements (instances nest up to 32 deep).
-fn assembly_bodies(g: &Graph, asm: u32, xf: Option<Xf>, depth: u32, out: &mut Vec<(u32, Option<Xf>)>) {
-    if depth > 32 || out.len() > 100_000 {
+/// Most instances one file's assembly tree may visit (shared sub-assemblies count once per
+/// use, so a hostile file cannot make the walk exponential).
+const MAX_INSTANCE_VISITS: usize = 100_000;
+
+/// The bodies of an assembly with their placements (instances nest up to 32 deep; an
+/// assembly that contains itself is not entered again).
+fn assembly_bodies(
+    g: &Graph,
+    asm: u32,
+    xf: Option<Xf>,
+    path: &mut Vec<u32>,
+    budget: &mut usize,
+    out: &mut Vec<(u32, Option<Xf>)>,
+) {
+    if path.len() > 32 || path.contains(&asm) {
         return;
     }
+    path.push(asm);
     let mut seen = BTreeSet::new();
     let mut inst = g.ptr(asm, "sub_instance");
     while inst != 0 && seen.insert(inst) {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         let part = g.ptr(inst, "part");
         let local = placement_of(g, g.ptr(inst, "transform"));
         let total = match (&xf, &local) {
@@ -202,11 +230,12 @@ fn assembly_bodies(g: &Graph, asm: u32, xf: Option<Xf>, depth: u32, out: &mut Ve
         };
         match g.type_name(part) {
             Some("BODY") => out.push((part, total)),
-            Some("ASSEMBLY") => assembly_bodies(g, part, total, depth + 1, out),
+            Some("ASSEMBLY") => assembly_bodies(g, part, total, path, budget, out),
             _ => {}
         }
         inst = g.ptr(inst, "next_in_part");
     }
+    path.pop();
 }
 
 pub(crate) fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<(u32, Option<Xf>)> {
@@ -232,7 +261,7 @@ pub(crate) fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<(u32, Opt
         }
         Some("ASSEMBLY") => {
             let mut out = Vec::new();
-            assembly_bodies(g, 1, None, 0, &mut out);
+            assembly_bodies(g, 1, None, &mut Vec::new(), &mut { MAX_INSTANCE_VISITS }, &mut out);
             if !out.is_empty() {
                 return out;
             }
@@ -243,8 +272,11 @@ pub(crate) fn body_nodes(g: &Graph, warnings: &mut Vec<String>) -> Vec<(u32, Opt
     g.nodes.iter().filter(|(i, _)| g.type_name(**i) == Some("BODY")).map(|(i, _)| (*i, None)).collect()
 }
 
-fn shell(g: &Graph, s: u32, void: bool, m: &mut Model) -> Result<Shell, XtError> {
+fn shell(g: &Graph, s: u32, lump: u32, m: &mut Model) -> Result<Shell, XtError> {
     let mut faces = Vec::new();
+    if !m.seen.insert(s) {
+        return Ok(Shell { faces, void: false, lump });
+    }
     // Back faces: the shell's region is behind them, so their normals point away from it.
     for f in chain(g, g.ptr(s, "face"), "next")? {
         if let Some(face) = face(g, f, false, m)? {
@@ -257,10 +289,17 @@ fn shell(g: &Graph, s: u32, void: bool, m: &mut Model) -> Result<Shell, XtError>
             faces.push(face);
         }
     }
-    Ok(Shell { faces, void })
+    Ok(Shell { faces, void: false, lump })
 }
 
 fn face(g: &Graph, f: u32, flip: bool, m: &mut Model) -> Result<Option<Face>, XtError> {
+    if !m.seen.insert(f) {
+        return Ok(None);
+    }
+    m.faces += 1;
+    if m.faces > MAX_FACES {
+        return Err(XtError::TooLarge(format!("more than {MAX_FACES} faces over all bodies and placements")));
+    }
     let surface = g.ptr(f, "surface");
     if surface == 0 {
         m.warnings.push(format!("face {f} has no surface and was skipped"));
@@ -271,6 +310,9 @@ fn face(g: &Graph, f: u32, flip: bool, m: &mut Model) -> Result<Option<Face>, Xt
     let mut loops = Vec::new();
     for l in chain(g, g.ptr(f, "loop"), "next")? {
         let first = g.ptr(l, "fin");
+        if !m.seen.insert(l) || (first != 0 && !m.seen.insert(first)) {
+            continue;
+        }
         let fins = chain(g, first, "forward")?;
         let mut out = Vec::new();
         let mut vertex = None;
@@ -321,25 +363,34 @@ fn edge(g: &Graph, e: u32, m: &mut Model) {
     m.edges.insert(e, Edge { curve, ends, same_sense });
 }
 
-/// The `SDL/TYSA_NAME` attribute of a node, if it has one (a name the application gave).
-pub(crate) fn name_of(g: &Graph, node: u32) -> Option<String> {
+/// The `SDL/TYSA_NAME` attributes of the file (names the application gave), by owner node;
+/// the first non-empty name of each owner wins.
+pub(crate) fn names(g: &Graph) -> BTreeMap<u32, String> {
+    let mut out = BTreeMap::new();
     for (idx, n) in &g.nodes {
-        if g.layouts.get(&n.ty).map(|l| l.name.as_str()) != Some("ATTRIBUTE") || g.ptr(*idx, "owner") != node {
+        if g.layouts.get(&n.ty).map(|l| l.name.as_str()) != Some("ATTRIBUTE") {
+            continue;
+        }
+        let owner = g.ptr(*idx, "owner");
+        if owner == 0 || out.contains_key(&owner) {
             continue;
         }
         let def = g.ptr(*idx, "definition");
         if g.string(g.ptr(def, "identifier"), "string") != "SDL/TYSA_NAME" {
             continue;
         }
-        let value = g
+        let Some(value) = g
             .list(*idx, "fields")
             .iter()
-            .find_map(|v| if let crate::reader::Val::Ptr(p) = v { Some(*p) } else { None })?;
+            .find_map(|v| if let crate::reader::Val::Ptr(p) = v { Some(*p) } else { None })
+        else {
+            continue;
+        };
         let s: String = g.string(value, "values").chars().filter(|c| !c.is_control()).take(200).collect();
         let s = s.trim().to_string();
         if !s.is_empty() {
-            return Some(s);
+            out.insert(owner, s);
         }
     }
-    None
+    out
 }

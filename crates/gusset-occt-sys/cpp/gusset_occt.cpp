@@ -2440,16 +2440,63 @@ static void input_origins(BRepBuilderAPI_MakeShape& mk, const TopoDS_Shape& in, 
   }
 }
 
+// For every sub-shape of `type` in `base` (an offset copy of `orig`), the index (0-based)
+// of the `orig` sub-shape it came from: by Modified, else the nearest by centre of mass.
+static std::vector<int64_t> back_to_input(BRepBuilderAPI_MakeShape& mk, const TopoDS_Shape& orig,
+                                          const TopoDS_Shape& base, TopAbs_ShapeEnum type) {
+  ShapeMap in, at;
+  TopExp::MapShapes(orig, type, in);
+  TopExp::MapShapes(base, type, at);
+  std::vector<int64_t> map(size_t(at.Extent()), -1);
+  for (int i = 1; i <= in.Extent(); ++i) {
+    const ShapeList& mods = mk.Modified(in(i));
+    if (mods.IsEmpty()) {
+      int idx = at.FindIndex(in(i));
+      if (idx > 0) map[size_t(idx - 1)] = i - 1;
+    }
+    for (ShapeList::Iterator it(mods); it.More(); it.Next()) {
+      int idx = at.FindIndex(it.Value());
+      if (idx > 0) map[size_t(idx - 1)] = i - 1;
+    }
+  }
+  auto centre = [type](const TopoDS_Shape& x) {
+    GProp_GProps gp;
+    if (type == TopAbs_FACE)
+      BRepGProp::SurfaceProperties(x, gp);
+    else
+      BRepGProp::LinearProperties(x, gp);
+    return gp.CentreOfMass();
+  };
+  for (int j = 1; j <= at.Extent(); ++j) {
+    if (map[size_t(j - 1)] >= 0 || in.Extent() == 0) continue;
+    gp_Pnt c = centre(at(j));
+    double best = 1e300;
+    for (int i = 1; i <= in.Extent(); ++i) {
+      double d = centre(in(i)).Distance(c);
+      if (d < best) {
+        best = d;
+        map[size_t(j - 1)] = i - 1;
+      }
+    }
+  }
+  return map;
+}
+
 int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!s || !out || !origins) return fail("null argument");
   if (!std::isfinite(thickness) || std::fabs(thickness) < 1e-9) return fail("thickness must be non-zero");
   TopoDS_Shape base = s->s;
+  // With both sides, the thickening starts from a half-offset copy; its faces and edges are
+  // mapped back to the sheet's so origins name the input body's own topology.
+  std::vector<int64_t> face_back, edge_back;
   if (both) {
     BRepOffsetAPI_MakeOffsetShape half;
     half.PerformBySimple(base, -thickness / 2.0);
     if (!half.IsDone()) return fail("thicken failed (offsetting the sheet)");
     base = half.Shape();
+    face_back = back_to_input(half, s->s, base, TopAbs_FACE);
+    edge_back = back_to_input(half, s->s, base, TopAbs_EDGE);
   }
   BRepOffsetAPI_MakeThickSolid mk;
   mk.MakeThickSolidBySimple(base, thickness);
@@ -2497,6 +2544,16 @@ int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBu
       push_origin(o, i - 1, GS_ORIGIN_INPUT, 0, which - 1);
     }
   }
+  if (both) {
+    std::vector<int64_t> kept;
+    for (size_t k = 0; k + 3 < o.size(); k += 4) {
+      const std::vector<int64_t>& back = o[k + 1] == GS_ORIGIN_FROM_EDGE ? edge_back : face_back;
+      int64_t at = o[k + 3];
+      if (at < 0 || size_t(at) >= back.size() || back[size_t(at)] < 0) continue;
+      push_origin(kept, o[k], o[k + 1], o[k + 2], back[size_t(at)]);
+    }
+    o.swap(kept);
+  }
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -2515,21 +2572,29 @@ int gs_stitch(const GsShape* const* shapes, size_t n, double tol, GsShape** out,
   sew.Perform();
   TopoDS_Shape r = sew.SewedShape();
   if (r.IsNull()) return fail("stitching produced no result");
-  // A closed shell becomes a solid.
+  // The result becomes a solid only when it is one closed shell holding every face: a
+  // sheet that did not connect within the tolerance keeps the result a (sheet) compound
+  // rather than being dropped.
   TopoDS_Shape result = r;
-  for (TopExp_Explorer sx(r, TopAbs_SHELL); sx.More(); sx.Next()) {
-    const TopoDS_Shell& sh = TopoDS::Shell(sx.Current());
-    if (!BRep_Tool::IsClosed(sh)) continue;
-    BRepBuilderAPI_MakeSolid ms(sh);
-    if (!ms.IsDone()) continue;
-    ShapeFix_Solid fix;
-    fix.Init(ms.Solid());
-    fix.Perform();
-    TopoDS_Shape solid = fix.Solid();
-    if (!solid.IsNull() && TopExp_Explorer(r, TopAbs_SHELL).More()) {
-      int shells = 0;
-      for (TopExp_Explorer cx(r, TopAbs_SHELL); cx.More(); cx.Next()) ++shells;
-      if (shells == 1) result = solid;
+  {
+    int shells = 0, all_faces = 0, shell_faces = 0;
+    TopoDS_Shell only;
+    for (TopExp_Explorer sx(r, TopAbs_SHELL); sx.More(); sx.Next()) {
+      ++shells;
+      only = TopoDS::Shell(sx.Current());
+    }
+    for (TopExp_Explorer fx(r, TopAbs_FACE); fx.More(); fx.Next()) ++all_faces;
+    if (shells == 1)
+      for (TopExp_Explorer fx(only, TopAbs_FACE); fx.More(); fx.Next()) ++shell_faces;
+    if (shells == 1 && shell_faces == all_faces && BRep_Tool::IsClosed(only)) {
+      BRepBuilderAPI_MakeSolid ms(only);
+      if (ms.IsDone()) {
+        ShapeFix_Solid fix;
+        fix.Init(ms.Solid());
+        fix.Perform();
+        TopoDS_Shape solid = fix.Solid();
+        if (!solid.IsNull()) result = solid;
+      }
     }
   }
   ShapeMap out_faces;

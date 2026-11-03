@@ -59,6 +59,14 @@ impl Evaluator {
                         .with_hint("enter a thickness such as 2 mm (negative thickens the other way)"));
                 }
                 let (bi, b) = ops::target_body(s, name, body.as_deref())?;
+                if b.topology.solids > 0 {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::InvalidReference,
+                        format!("'{}' is a solid; thicken takes a sheet", b.name),
+                    )
+                    .with_hint("use shell to hollow a solid, or thicken a surface body"));
+                }
                 let res = k.thicken(&b.shape, t, *both_sides).map_err(|ke| {
                     let mut e = kernel_err(name, "thicken", ke);
                     e.hint.get_or_insert_with(|| "try a smaller thickness, or thicken a smoother sheet".into());
@@ -79,6 +87,19 @@ impl Evaluator {
                 if bodies.len() > MAX_STITCH {
                     return Err(EvalError::new(name, ErrorCode::TooComplex, format!("at most {MAX_STITCH} bodies")));
                 }
+                if bodies.len() < 2 {
+                    return Err(EvalError::new(name, ErrorCode::InvalidReference, "stitch needs at least two bodies")
+                        .with_hint("list the sheets to sew, e.g. bodies: [Wall, Lid]"));
+                }
+                if let Some(dup) =
+                    bodies.iter().enumerate().find_map(|(i, b)| bodies.get(..i)?.contains(b).then_some(b))
+                {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::InvalidReference,
+                        format!("body '{dup}' is listed twice"),
+                    ));
+                }
                 let mut inputs: Vec<Arc<Body>> = Vec::new();
                 for t in bodies {
                     let b = s.bodies.iter().find(|b| &b.feature == t).cloned().ok_or_else(|| {
@@ -94,10 +115,10 @@ impl Evaluator {
                 let names =
                     name_body(&OpContext::Modify { feature: name, inputs: &in_names }, &res.face_origins, &topo)
                         .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
-                // The inputs are consumed; the stitched body takes the place of the first.
-                let first = s.bodies.iter().position(|b| bodies.first() == Some(&b.feature)).unwrap_or(s.bodies.len());
+                // The inputs are consumed; the stitched body takes the place of the earliest.
+                let at = s.bodies.iter().take_while(|b| !bodies.contains(&b.feature)).count();
                 s.bodies.retain(|b| !bodies.contains(&b.feature));
-                let at = first.min(s.bodies.len());
+                let at = at.min(s.bodies.len());
                 s.bodies.insert(
                     at,
                     Arc::new(Body {

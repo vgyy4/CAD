@@ -31,8 +31,11 @@ fn real(v: f64) -> String {
 }
 
 fn string(s: &str) -> String {
-    let clean: String =
-        s.chars().filter(|c| c.is_ascii() && !c.is_ascii_control()).map(|c| if c == '\'' { ' ' } else { c }).collect();
+    let clean: String = s
+        .chars()
+        .filter(|c| c.is_ascii() && !c.is_ascii_control())
+        .map(|c| if c == '\'' || c == '\\' { ' ' } else { c })
+        .collect();
     format!("'{clean}'")
 }
 
@@ -508,6 +511,8 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         "(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{unc})) GLOBAL_UNIT_ASSIGNED_CONTEXT((#{len},#{ang},#{sol})) REPRESENTATION_CONTEXT('',''))"
     ));
     let many = m.bodies.len() > 1;
+    let names = crate::model::names(g);
+    let mut previous: Option<Option<crate::model::Xf>> = None;
     for (i, b) in m.bodies.iter().enumerate() {
         // Geometry is written per placement: a body placed twice is written twice.
         w.xf = b.placement;
@@ -516,29 +521,43 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
             let det = geom::dot(x, geom::cross(y, z));
             libm::cbrt(det.abs()).max(1e-12)
         });
-        if b.placement.is_some() {
+        // The caches hold placed geometry: reuse them only under the same placement.
+        if previous.is_some_and(|p| p != b.placement) {
             w.curves.clear();
             w.surfaces.clear();
             w.vertices.clear();
             w.edges.clear();
         }
+        previous = Some(b.placement);
         let items: Vec<usize> = match b.kind {
             BodyKind::Solid => {
-                let mut order: Vec<&Shell> = b.shells.iter().collect();
-                order.sort_by(|x, y| extent(g, m, y).total_cmp(&extent(g, m, x)));
-                let mut it = order.into_iter();
-                let Some(outer) = it.next().and_then(|s| w.shell(m, s, true, false)) else { continue };
-                let mut voids: Vec<usize> = Vec::new();
-                for s in it {
-                    if let Some(cs) = w.shell(m, s, true, true) {
-                        voids.push(w.add(&format!("ORIENTED_CLOSED_SHELL('',*,#{cs},.F.)")));
+                // One solid per lump (region): within a lump, every shell but the one with
+                // the largest extent bounds a cavity. V4 files (no regions) are one lump.
+                let mut lumps: std::collections::BTreeMap<u32, Vec<&Shell>> = std::collections::BTreeMap::new();
+                for s in &b.shells {
+                    lumps.entry(s.lump).or_default().push(s);
+                }
+                let mut solids = Vec::new();
+                for mut order in lumps.into_values() {
+                    order.sort_by(|x, y| extent(g, m, y).total_cmp(&extent(g, m, x)));
+                    let mut it = order.into_iter();
+                    let Some(outer) = it.next().and_then(|s| w.shell(m, s, true, false)) else { continue };
+                    let mut voids: Vec<usize> = Vec::new();
+                    for s in it {
+                        if let Some(cs) = w.shell(m, s, true, true) {
+                            voids.push(w.add(&format!("ORIENTED_CLOSED_SHELL('',*,#{cs},.F.)")));
+                        }
                     }
+                    solids.push(if voids.is_empty() {
+                        w.add(&format!("MANIFOLD_SOLID_BREP('',#{outer})"))
+                    } else {
+                        w.add(&format!("BREP_WITH_VOIDS('',#{outer},{})", list(&voids)))
+                    });
                 }
-                if voids.is_empty() {
-                    vec![w.add(&format!("MANIFOLD_SOLID_BREP('',#{outer})"))]
-                } else {
-                    vec![w.add(&format!("BREP_WITH_VOIDS('',#{outer},{})", list(&voids)))]
+                if solids.is_empty() {
+                    continue;
                 }
+                solids
             }
             _ => {
                 let shells: Vec<usize> = b.shells.iter().filter_map(|s| w.shell(m, s, false, false)).collect();
@@ -553,8 +572,8 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         } else {
             "MANIFOLD_SURFACE_SHAPE_REPRESENTATION"
         };
-        let label = match crate::model::name_of(g, b.node) {
-            Some(n) => n,
+        let label = match names.get(&b.node) {
+            Some(n) => n.clone(),
             None if many => format!("{name} {}", i + 1),
             None => name.to_string(),
         };

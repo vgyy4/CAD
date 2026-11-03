@@ -82,14 +82,21 @@ fn poles(g: &Graph, verts: u32, dim: usize, rational: bool, count: usize) -> Opt
     Some((ps, rational.then_some(ws)))
 }
 
+/// Highest NURBS degree read (OCCT's own limit); higher degrees are refused, not evaluated.
+const MAX_DEGREE: usize = 25;
+
 fn valid(degree: usize, n: usize, mults: &[i64], knots: &[f64]) -> bool {
-    let total: i64 = mults.iter().sum();
-    degree >= 1
-        && mults.len() == knots.len()
-        && knots.len() >= 2
-        && usize::try_from(total).ok() == Some(n + degree + 1)
-        && knots.windows(2).all(|w| matches!(w, [a, b] if b > a))
-        && mults.iter().all(|m| *m >= 1 && usize::try_from(*m).is_ok_and(|m| m <= degree + 1))
+    // Bounds first, so the sum below cannot overflow.
+    if !(1..=MAX_DEGREE).contains(&degree)
+        || n < degree + 1
+        || mults.len() != knots.len()
+        || knots.len() < 2
+        || !mults.iter().all(|m| *m >= 1 && usize::try_from(*m).is_ok_and(|m| m <= degree + 1))
+    {
+        return false;
+    }
+    let total = mults.iter().try_fold(0usize, |acc, m| acc.checked_add(usize::try_from(*m).ok()?));
+    total == n.checked_add(degree + 1) && knots.windows(2).all(|w| matches!(w, [a, b] if b > a))
 }
 
 /// A B_CURVE's NURBS_CURVE.
@@ -268,6 +275,18 @@ pub(crate) fn eval_curve(c: &Nurbs, u: f64) -> Option<V3> {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_knot_vectors_are_refused() {
+        // A cubic Bezier is fine.
+        assert!(valid(3, 4, &[4, 4], &[0.0, 1.0]));
+        // No poles at all (the multiplicities still add up): refused, not looped over.
+        assert!(!valid(1, 0, &[1, 1], &[0.0, 1.0]));
+        // A degree past OCCT's limit.
+        assert!(!valid(1_000_000_000, 1_000_000_001, &[1_000_000_001, 1_000_000_001], &[0.0, 1.0]));
+        // Multiplicities that would overflow a sum.
+        assert!(!valid(3, 4, &[i64::MAX, i64::MAX], &[0.0, 1.0]));
+    }
 
     #[test]
     fn the_cubic_through_points_passes_through_them() {
