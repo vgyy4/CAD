@@ -78,6 +78,10 @@ pub fn fill(form: &mut Form, clicks: &[Click], closed: bool) -> bool {
             if let Some(p) = &a.point {
                 form.set("from_point", p);
             }
+            // An end snapped onto a point joins it, so outlines close (review R6).
+            if let Some(p) = b.point.as_ref().filter(|p| a.point.as_ref() != Some(*p)) {
+                form.set("to_point", p);
+            }
             true
         }
         ("sketch.add_rectangle", [a, b]) => {

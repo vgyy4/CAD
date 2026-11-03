@@ -37,6 +37,12 @@ impl Command for FeatureEdit {
         edit(s, ctx, &format!("Edit {name}"), |doc, _| {
             let i = doc.feature_index(&name).ok_or_else(|| CommandError::not_found(format!("no feature '{name}'")))?;
             let f = doc.features.get(i).ok_or_else(|| CommandError::not_found(format!("no feature '{name}'")))?;
+            // Imports and components carry checked file contents and pinned sources: only
+            // their own commands may change them (review R4).
+            if matches!(f.kind, gusset_doc::FeatureKind::Import(_) | gusset_doc::FeatureKind::Component(_)) {
+                return Err(CommandError::args(format!("{name} is an import or a component"))
+                    .hint("use import_file, assembly_update_component or assembly_configure_component"));
+            }
             let (head, mut args) = statement_args(f).ok_or_else(|| {
                 CommandError::args(format!("{name} is not a one-line feature"))
                     .hint("edit sketches with the sketch commands (sketch_add_constraint, sketch_move_point, ...)")

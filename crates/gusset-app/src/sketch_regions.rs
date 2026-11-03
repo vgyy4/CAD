@@ -92,13 +92,24 @@ pub fn outlines(s: &SketchResult, keep: impl Fn(&str) -> bool) -> Vec<(String, V
 /// The smallest region whose outer loop contains `p`.
 #[must_use]
 pub fn region_at(s: &SketchResult, p: [f64; 2]) -> Option<String> {
-    let Ok(regions) = &s.regions else { return None };
-    let outlines = outlines(s, |_| true);
-    regions
-        .iter()
-        .filter(|r| outlines.iter().any(|(id, poly)| *id == r.id && contains(poly, p)))
-        .min_by(|a, b| a.area.total_cmp(&b.area))
-        .map(|r| r.id.clone())
+    // The area inside the outer loop, not the region's net area: a thin ring around a big
+    // hole must lose to the hole's own region (review R3).
+    outlines(s, |_| true)
+        .into_iter()
+        .filter(|(_, poly)| contains(poly, p))
+        .min_by(|a, b| enclosed(&a.1).total_cmp(&enclosed(&b.1)))
+        .map(|(id, _)| id)
+}
+
+/// The area a closed polygon encloses (shoelace).
+#[must_use]
+pub fn enclosed(poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    let twice: f64 = (0..n)
+        .filter_map(|i| Some((poly.get(i)?, poly.get((i + 1) % n)?)))
+        .map(|(a, b)| a[0] * b[1] - b[0] * a[1])
+        .sum();
+    (twice / 2.0).abs()
 }
 
 /// Toggles `id` in a comma-separated list.
@@ -130,6 +141,7 @@ mod tests {
         assert!(contains(&sq, [5.0, 5.0]));
         assert!(!contains(&sq, [15.0, 5.0]));
         assert!(!contains(&sq, [5.0, -1.0]));
+        assert!((enclosed(&sq) - 100.0).abs() < 1e-9);
     }
 
     #[test]

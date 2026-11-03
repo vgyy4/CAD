@@ -695,6 +695,11 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
         // Labels with commas and nested brackets stay one argument.
         let (_, args) = text::statement_args(doc.feature("Pattern4").unwrap()).unwrap();
         assert!(args.iter().any(|(k, v)| k == "through" && v == "[10 mm, 0 mm, 5 mm]"), "{args:?}");
+        // A label with an escaped quote and a comma stays one argument (review R11).
+        let mut f = doc.feature("Pattern4").unwrap().clone();
+        f.label = Some("a \"b\", c".into());
+        let (head, args) = text::statement_args(&f).unwrap();
+        assert_eq!(text::parse_feature_object(&text::statement_with_args(&head, &args)).unwrap(), f, "{args:?}");
         // Sketches are blocks: not split.
         assert!(
             doc.features.iter().any(|f| matches!(f.kind, FeatureKind::Sketch(_)) && text::statement_args(f).is_none())

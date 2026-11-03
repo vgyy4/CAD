@@ -322,6 +322,8 @@ pub struct Viewport {
     stash: Option<(Arc<Scene>, Vec<BodyInfo>)>,
     /// The sketch point a left drag started on: (sketch, point id).
     dragging: Option<(String, String)>,
+    /// The last pointer ray of the running drag.
+    drag_ray: Option<Ray>,
     /// The hover when the button went down (a drag is reported only after the pointer
     /// moved off what it was pressed on).
     press_hover: Option<Hit>,
@@ -375,6 +377,7 @@ impl Default for Viewport {
             last_rect: Rect::NOTHING,
             stash: None,
             dragging: None,
+            drag_ray: None,
             press_hover: None,
             hidden_planes: ["XY", "XZ", "YZ"].into_iter().map(String::from).collect(),
             reduce_motion: false,
@@ -406,6 +409,8 @@ impl Viewport {
                 scene.set_visible(MeshId(i as u64), false);
             }
         }
+        // A new model replaces any preview (and the model it stood in for).
+        self.stash = None;
         self.scene = Arc::new(scene);
         self.bodies = bodies;
         self.generation += 1;
@@ -420,10 +425,9 @@ impl Viewport {
 
     /// Shows a live preview in place of the model (kept aside until [`Self::end_preview`]).
     pub fn show_preview(&mut self, scene: Scene, bodies: Vec<BodyInfo>) {
-        if self.stash.is_none() {
-            self.stash = Some((self.scene.clone(), std::mem::take(&mut self.bodies)));
-        }
+        let stash = self.stash.take().unwrap_or_else(|| (self.scene.clone(), std::mem::take(&mut self.bodies)));
         self.set_scene(scene, bodies);
+        self.stash = Some(stash);
     }
 
     /// Puts the model back after a preview.
@@ -527,13 +531,19 @@ impl Viewport {
         let done = resp.drag_stopped() || !resp.dragged();
         if let Some(p) = resp.interact_pointer_pos().or(resp.hover_pos()) {
             let rel = p - rect.min;
-            let ray = self
-                .camera
-                .ray([f64::from(rel.x), f64::from(rel.y)], [f64::from(rect.width()), f64::from(rect.height())]);
+            self.drag_ray = Some(
+                self.camera
+                    .ray([f64::from(rel.x), f64::from(rel.y)], [f64::from(rect.width()), f64::from(rect.height())]),
+            );
+        }
+        // Released off the viewport (no pointer position): finish at the last position,
+        // so the preview ends and the move is made (review R5).
+        if let Some(ray) = self.drag_ray {
             out.drag = Some(PointDrag { sketch, point, ray, done });
         }
         if done {
             self.dragging = None;
+            self.drag_ray = None;
         }
     }
 

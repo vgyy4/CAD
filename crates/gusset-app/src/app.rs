@@ -597,7 +597,9 @@ impl App {
             }
             return;
         };
-        if self.preview_shown.as_ref() == Some(&key) || self.preview_requested.is_some() {
+        // One preview at a time, and none while a command runs: previews must not delay
+        // real work on the model thread (review R10).
+        if self.preview_shown.as_ref() == Some(&key) || self.preview_requested.is_some() || self.busy() {
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -867,6 +869,8 @@ impl App {
                             Some(h) => format!("{} — {}: {h}", e.message, tr("error.fix")),
                             None => e.message.clone(),
                         });
+                        // Clicked points start over (review R2): the next clicks place anew.
+                        form.clicks.clear();
                     }
                 }
             }
@@ -1189,6 +1193,10 @@ impl App {
         self.scene_requested = None;
         self.selection.clear();
         self.viewport.set_scene(gusset_render::Scene::new(), Vec::new());
+        // A preview of the old project is gone with it (review R1).
+        self.preview_shown = None;
+        self.preview_requested = None;
+        self.preview_since = None;
         self.viewport.fit_pending = true;
     }
 
@@ -2417,7 +2425,8 @@ impl App {
                     if let Some(h) = self.selection.last() {
                         pick_joint_frame(&mut form, h);
                     }
-                } else {
+                } else if form.command != "feature.edit" {
+                    // (An edit form's fields are statement text: picks leave them, review R9.)
                     self.fill_picks(&mut form, true);
                 }
                 self.form = Some(form);

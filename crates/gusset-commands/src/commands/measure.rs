@@ -25,8 +25,7 @@ pub struct QueryMeasure {
 impl Command for QueryMeasure {
     const ID: &'static str = "query.measure";
     const TITLE: &'static str = "Measure";
-    const DESCRIPTION: &'static str =
-        "Area, length or radius of a face or edge; for two, their angle and distances (planes, lines, centers).";
+    const DESCRIPTION: &'static str = "Area, length or radius of a face or edge; for two, their angle (0 to 90 deg) and distances (planes, lines, centers).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -138,19 +137,30 @@ fn find(ev: &gusset_eval::Evaluation, name: &str) -> Result<Item, CommandError> 
         Some((b, n)) => (Some(b.trim()), n.trim()),
         None => (None, name.trim()),
     };
+    let mut found: Vec<(&str, Item)> = Vec::new();
     for b in ev.bodies.iter().filter(|b| body.is_none_or(|n| b.name == n)) {
         if let Some(i) = b.names.faces.iter().position(|f| f.to_string() == name)
             && let Some(f) = b.topology.faces.get(i)
         {
-            return Ok(Item::Face(f.clone()));
-        }
-        if let Some(i) = b.names.edges.iter().position(|e| e.to_string() == name)
+            found.push((&b.name, Item::Face(f.clone())));
+        } else if let Some(i) = b.names.edges.iter().position(|e| e.to_string() == name)
             && let Some(e) = b.topology.edges.get(i)
         {
             let ends =
                 e.vertices.iter().filter_map(|v| b.topology.vertices.get(*v as usize)).map(|v| v.point).collect();
-            return Ok(Item::Edge((e.clone(), ends)));
+            found.push((&b.name, Item::Edge((e.clone(), ends))));
         }
+    }
+    // A name in several bodies (copies, patterns) is ambiguous: say which (review R8).
+    if found.len() > 1 {
+        let bodies: Vec<&str> = found.iter().map(|(b, _)| *b).collect();
+        return Err(CommandError::args(format!("'{name}' is in several bodies: {}", bodies.join(", "))).hint(format!(
+            "name the body first, for example \"{}: {name}\"",
+            bodies.first().copied().unwrap_or("Body")
+        )));
+    }
+    if let Some((_, item)) = found.pop() {
+        return Ok(item);
     }
     Err(CommandError::not_found(format!("no face or edge '{name}'"))
         .hint("query_body with names: true lists the face and edge names"))

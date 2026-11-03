@@ -1414,3 +1414,15 @@ fn previews_build_without_committing() {
     let err = preview(&mut s, &u, "history.undo", json!({})).unwrap_err();
     assert!(err.message.contains("no preview"), "{err:?}");
 }
+
+#[test]
+fn imports_and_components_are_not_edited_in_place() {
+    let doc = Document::from_text(
+        "gusset 1\nunits mm\n\nimport Import1 (blob: \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\", format: step, file: \"bracket.step\")\n",
+    )
+    .unwrap();
+    let mut s = Session::new(&doc, Arc::new(MockKernel), &CmdCtx::user(0));
+    let e = execute(&mut s, &CmdCtx::user(1), "feature.edit", json!({"name": "Import1", "set": {"format": "stl"}}))
+        .unwrap_err();
+    assert!(e.message.contains("import or a component"), "{e:?}");
+}

@@ -2119,9 +2119,15 @@ pub fn statement_with_args(head: &str, args: &[(String, String)]) -> String {
 
 /// Splits at commas outside brackets and quotes.
 fn split_top_level(s: &str) -> Vec<&str> {
-    let (mut depth, mut quoted, mut start, mut out) = (0_i32, false, 0, Vec::new());
+    let (mut depth, mut quoted, mut escaped, mut start, mut out) = (0_i32, false, false, 0, Vec::new());
     for (i, ch) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
         match ch {
+            // An escaped quote inside a string does not end it (review R11).
+            '\\' if quoted => escaped = true,
             '"' => quoted = !quoted,
             '(' | '[' | '{' if !quoted => depth += 1,
             ')' | ']' | '}' if !quoted => depth -= 1,

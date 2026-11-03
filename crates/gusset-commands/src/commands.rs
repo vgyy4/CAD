@@ -1191,9 +1191,12 @@ pub struct SketchAddLine {
     pub y1: f64,
     pub x2: f64,
     pub y2: f64,
-    /// Reuse an existing point as the start instead of creating one.
+    /// Existing start point.
     #[serde(default)]
     pub from_point: Option<String>,
+    /// Existing end point.
+    #[serde(default)]
+    pub to_point: Option<String>,
     #[serde(default)]
     pub construction: bool,
 }
@@ -1201,7 +1204,7 @@ pub struct SketchAddLine {
 impl Command for SketchAddLine {
     const ID: &'static str = "sketch.add_line";
     const TITLE: &'static str = "Line";
-    const DESCRIPTION: &'static str = "Add a line segment to a sketch (coordinates in mm).";
+    const DESCRIPTION: &'static str = "Add a line to a sketch (mm).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("L");
@@ -1209,16 +1212,24 @@ impl Command for SketchAddLine {
         let sk = self.sketch.clone();
         edit(s, ctx, "Add line", |doc, _| {
             let d = sketch_mut(doc, &sk)?;
-            let a = match self.from_point {
-                Some(p) => {
-                    if !d.entities.iter().any(|e| e.id == p && matches!(e.geom, SkGeom::Point { .. })) {
-                        return Err(CommandError::not_found(format!("no point '{p}' in {sk}")));
-                    }
-                    p
+            let existing =
+                |d: &SketchDef, p: &str| d.entities.iter().any(|e| e.id == p && matches!(e.geom, SkGeom::Point { .. }));
+            for p in self.from_point.iter().chain(&self.to_point) {
+                if !existing(d, p) {
+                    return Err(CommandError::not_found(format!("no point '{p}' in {sk}")));
                 }
+            }
+            if self.from_point.is_some() && self.from_point == self.to_point {
+                return Err(CommandError::args("a line needs two different points"));
+            }
+            let a = match self.from_point {
+                Some(p) => p,
                 None => add_point(d, self.x1, self.y1)?,
             };
-            let b = add_point(d, self.x2, self.y2)?;
+            let b = match self.to_point {
+                Some(p) => p,
+                None => add_point(d, self.x2, self.y2)?,
+            };
             let l = add_entity(d, SkGeom::Line { a: a.clone(), b: b.clone() }, self.construction);
             store_solution(doc, &sk);
             Ok(json!({ "line": l, "points": [a, b] }))
