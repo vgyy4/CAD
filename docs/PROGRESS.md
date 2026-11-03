@@ -265,9 +265,10 @@ Phase 3 has started (see Next).
    - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
      plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
-2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14; `FaultFs`
-   covers reordered and torn writes in memory, a CI runner with the dm_flakey module is
-   needed). Agent keys (F2-2) and saves off the model thread are done.
+2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
+   `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk
+   off with dm-flakey `drop_writes` at a random moment, remounts and checks that the last
+   acknowledged save is whole (`gusset-store/tests/powerloss.rs`). Agent keys (F2-2) and saves off the model thread are done.
 3. Release: v0.1.0-mvp is published (pre-release, tag at e3ee7e0, run 38271195031):
    AppImage/deb/tar.gz for Linux x64+arm64, MSI/zip for Windows x64+arm64, dmg for
    macOS arm64, SBOMs, OCCT source, SHA256SUMS, update manifest. Releases can be

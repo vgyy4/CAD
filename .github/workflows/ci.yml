@@ -76,6 +76,22 @@ jobs:
           GUSSET_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --workspace --locked
 
+  powerloss:
+    # Saves on ext4 over dm-flakey, with the disk cut off mid-save (ADR 0007, review M14).
+    name: power loss on a real block device (dm-flakey)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: powerloss
+      - run: sudo apt-get update && sudo apt-get install -y dmsetup e2fsprogs
+      - run: ROUNDS=8 scripts/powerloss.sh
+
   deny:
     name: cargo-deny (licenses, advisories, bans, sources)
     runs-on: ubuntu-24.04
