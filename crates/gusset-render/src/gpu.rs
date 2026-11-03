@@ -84,6 +84,8 @@ impl Quality {
 struct Pipelines {
     background: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
+    /// The cut face of closed bodies under a section (writes the cut plane's depth).
+    mesh_cap: wgpu::RenderPipeline,
     edge_line: wgpu::RenderPipeline,
     edge_quad: wgpu::RenderPipeline,
 }
@@ -442,6 +444,19 @@ impl Renderer {
                 // Push faces back a little at grazing angles so edges stay visible.
                 wgpu::DepthBiasState { constant: 0, slope_scale: 1.0, clamp: 0.0 },
             ),
+            mesh_cap: make(
+                "gusset-render cut faces",
+                "vs_mesh",
+                "fs_cap",
+                &[Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &mesh_attrs,
+                })],
+                wgpu::PrimitiveTopology::TriangleList,
+                (true, wgpu::CompareFunction::Less),
+                no_bias,
+            ),
             edge_line: make(
                 "gusset-render edge lines",
                 "vs_edge_line",
@@ -596,24 +611,28 @@ impl Renderer {
         let stride = self.draw_stride as usize;
         let mut draw_bytes = vec![0_u8; n_draws as usize * stride];
         let mut slot = 1_usize; // slot 0: background (unused contents)
-        let mut put = |bytes: &mut Vec<u8>, mv: &math::Mat4, n: &[math::Vec3; 3], color: [f32; 3]| -> u32 {
-            let off = slot * stride;
-            let mut e = Vec::with_capacity(DRAW_SIZE as usize);
-            push_mat(&mut e, mv);
-            for c in n {
-                push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
-            }
-            push_vec4(&mut e, [color[0], color[1], color[2], 1.0]);
-            if let Some(dst) = bytes.get_mut(off..off + e.len()) {
-                dst.copy_from_slice(&e);
-            }
-            slot += 1;
-            off as u32
-        };
+        // `color.w`: 1 for a closed mesh (its back faces seen through a section are the cut).
+        let mut put =
+            |bytes: &mut Vec<u8>, mv: &math::Mat4, n: &[math::Vec3; 3], color: [f32; 3], closed: bool| -> u32 {
+                let off = slot * stride;
+                let mut e = Vec::with_capacity(DRAW_SIZE as usize);
+                push_mat(&mut e, mv);
+                for c in n {
+                    push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
+                }
+                push_vec4(&mut e, [color[0], color[1], color[2], if closed { 1.0 } else { 0.0 }]);
+                if let Some(dst) = bytes.get_mut(off..off + e.len()) {
+                    dst.copy_from_slice(&e);
+                }
+                slot += 1;
+                off as u32
+            };
         let mut offsets: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(plan.draws.len());
         for d in &plan.draws {
-            let tri = d.tri_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c)).collect();
-            let edge = d.edge_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c)).collect();
+            let tri =
+                d.tri_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed)).collect();
+            let edge =
+                d.edge_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed)).collect();
             offsets.push((tri, edge));
         }
         self.queue.write_buffer(&self.draw_buf, 0, &draw_bytes);
@@ -668,6 +687,20 @@ impl Renderer {
                     pass.draw_indexed(r.start * 3..r.end * 3, 0, 0..1);
                     stats.draw_calls += 1;
                     stats.triangles += u64::from(r.end - r.start);
+                }
+            }
+            if plan.clip.is_some() {
+                // The cut faces of closed bodies, at the cut plane's depth.
+                pass.set_pipeline(&pipes.mesh_cap);
+                for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.closed) {
+                    let Some(g) = self.meshes.get(&d.id) else { continue };
+                    pass.set_vertex_buffer(0, g.vertices.slice(..));
+                    pass.set_index_buffer(g.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    for ((r, _), off) in d.tri_runs.iter().zip(tri_offs) {
+                        pass.set_bind_group(1, &self.draw_bg, &[*off]);
+                        pass.draw_indexed(r.start * 3..r.end * 3, 0, 0..1);
+                        stats.draw_calls += 1;
+                    }
                 }
             }
             pass.set_pipeline(if quad_edges { &pipes.edge_quad } else { &pipes.edge_line });

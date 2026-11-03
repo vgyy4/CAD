@@ -107,21 +107,64 @@ fn fs_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     if (removed(in.view_pos)) {
         discard;
     }
+    // Through a section, a closed body's back faces are its cut: the cap pass draws them.
+    if (!front && sectioned() && d.color.w > 0.5) {
+        discard;
+    }
     var n = normalize(in.view_normal);
-    var base = d.color.rgb;
     if (!front) {
         n = -n;
-        // Through a section, back faces are the inside: draw them as the flat cut face.
-        if (sectioned()) {
-            n = -g.clip.xyz;
-            base = mix(base, g.cap.rgb, CAP_MIX);
-        }
     }
-    var v = vec3<f32>(0.0, 0.0, 1.0);
+    return encode(shade(d.color.rgb, n, view_dir(in.view_pos)));
+}
+
+fn view_dir(view_pos: vec3<f32>) -> vec3<f32> {
     if (g.misc.y < 0.5) {
-        v = normalize(-in.view_pos);
+        return normalize(-view_pos);
     }
-    return encode(shade(base, n, v));
+    return vec3<f32>(0.0, 0.0, 1.0);
+}
+
+struct CapFrag {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
+// Where the view ray through `view_pos` meets the section plane (view space); `w` = 0
+// when the plane is seen edge-on.
+fn on_section(view_pos: vec3<f32>) -> vec4<f32> {
+    if (g.misc.y > 0.5) {
+        // Orthographic: the ray runs along -z through (x, y).
+        if (abs(g.clip.z) < 1e-6) {
+            return vec4<f32>(0.0);
+        }
+        let z = -(g.clip.x * view_pos.x + g.clip.y * view_pos.y + g.clip.w) / g.clip.z;
+        return vec4<f32>(view_pos.xy, z, 1.0);
+    }
+    let k = dot(g.clip.xyz, view_pos);
+    if (abs(k) < 1e-9) {
+        return vec4<f32>(0.0);
+    }
+    return vec4<f32>(view_pos * (-g.clip.w / k), 1.0);
+}
+
+// The cut face of a closed body: its back faces seen through the section, drawn flat in the
+// cap tint at the depth of the cut plane (not of the far wall, so what lies behind the cut
+// stays hidden). Mirrors `raster_triangle`'s cap branch in software.rs.
+@fragment
+fn fs_cap(in: MeshOut, @builtin(front_facing) front: bool) -> CapFrag {
+    if (front || !sectioned() || d.color.w < 0.5 || removed(in.view_pos)) {
+        discard;
+    }
+    var o: CapFrag;
+    o.color = encode(shade(mix(d.color.rgb, g.cap.rgb, CAP_MIX), -g.clip.xyz, view_dir(in.view_pos)));
+    o.depth = in.pos.z;
+    let p = on_section(in.view_pos);
+    if (p.w > 0.5) {
+        let c = g.proj * vec4<f32>(p.xyz, 1.0);
+        o.depth = clamp(c.z / c.w, 0.0, 1.0);
+    }
+    return o;
 }
 
 // ---------------------------------------------------------------- edges

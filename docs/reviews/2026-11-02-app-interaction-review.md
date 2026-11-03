@@ -125,6 +125,9 @@ drag released off the viewport finishes at its last position), R6 (`sketch.add_l
 `to_point`; a snapped end joins the point), R8 (an ambiguous name in `query.measure` is an
 error naming the bodies; the angle is documented as 0 to 90 deg), R9 (picks leave edit
 forms alone), R10 (no preview while a command runs), R11 (escaped quotes in statements).
-Accepted: R7. The cut face is the far wall seen from behind, so far-wall edges show through it
-and open meshes are not pickable under a section. A true cap needs stencil capping in the
-renderer, which is not done.
+R7 fixed as well (2026-11-03): meshes know whether they are closed (watertight after
+welding), and only a closed body's back faces seen through a section are its cut face. A
+separate cap pass (`fs_cap`, and the software rasterizer's cap branch) draws them at the cut
+plane's depth instead of the far wall's, so what lies behind the cut stays hidden. Picking
+stops edges behind a cut face at the plane. Open meshes keep two-sided drawing and picking.
+Tests: a red box behind the cut is hidden (GPU and CPU), and far edges are not picked.

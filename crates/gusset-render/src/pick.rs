@@ -81,7 +81,8 @@ impl Scene {
                     distance: t,
                     point: add(ray.origin, scale(ray.dir, t)),
                 };
-                best = Some((hit, back_facing(data, hit.triangle, d)));
+                // Only a closed body has an inside: an open mesh's back faces are ordinary.
+                best = Some((hit, data.closed && back_facing(data, hit.triangle, d)));
             }
         }
         best
@@ -108,7 +109,11 @@ impl Scene {
         let bounds = self.bounds();
         let cm = camera.matrices(viewport[0] / viewport[1].max(1.0), &bounds);
         let ray = camera.ray(pixel, viewport);
-        let face_t = self.pick_kept(&ray, section).map(|(h, _)| h.distance);
+        // A cut face lies on the section plane: it hides the edges behind it (review R7).
+        let face_t = self.pick_kept(&ray, section).map(|(h, back)| match (back, section) {
+            (true, Some(sec)) => kept_interval(&ray, sec).map_or(h.distance, |(t0, _)| t0),
+            _ => h.distance,
+        });
         let tol = face_t.map_or(0.0, |t| t * 2e-3) + camera.pixel_size_at_target(viewport[1]) * 2.0;
         let mut best: Option<(EdgeHit, f64)> = None;
         for (id, m) in self.meshes() {
@@ -236,6 +241,24 @@ mod tests {
         // Everything removed.
         let sec = Section { origin: [0.0, 1e3, 0.0], normal: [0.0, -1.0, 0.0] };
         assert_eq!(s.pick_section(&ray, Some(&sec)), None);
+    }
+
+    #[test]
+    fn edges_behind_the_cut_face_are_not_picked() {
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
+        let mut cam = Camera::default();
+        cam.set_view(NamedView::Front);
+        cam.fit(&s.bounds(), 1.0);
+        let vp = [400.0, 400.0];
+        let cm = cam.matrices(1.0, &s.bounds());
+        let (p, _) = cam.project(&cm, [0.0, -5.0, 5.0], vp).expect("visible");
+        let near_top = [p[0], p[1] + 2.0];
+        assert!(s.pick_edge(&cam, vp, near_top, 5.0).is_some(), "the front top edge");
+        // Cut at y = 0 towards the eye: the front edges are gone, and the back ones lie
+        // behind the cut face.
+        let sec = Section { origin: [0.0; 3], normal: cam.forward.map(|c| -c) };
+        assert_eq!(s.pick_edge_section(&cam, vp, near_top, 5.0, Some(&sec)), None);
     }
 
     #[test]

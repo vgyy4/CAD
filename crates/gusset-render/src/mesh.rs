@@ -73,6 +73,41 @@ pub struct MeshData {
     pub(crate) edge_ranges: Vec<Range<u32>>,
     pub(crate) bounds: Aabb,
     pub(crate) bvh: Bvh,
+    /// Watertight: every edge (vertices welded by position) is shared by exactly two
+    /// triangles. Only a closed mesh has an inside, so only its back faces seen through a
+    /// section are the cut face.
+    pub(crate) closed: bool,
+}
+
+/// Whether a triangle mesh is watertight: with vertices welded on a grid of a millionth of
+/// the box, every edge is used by exactly two triangles.
+fn is_closed(positions: &[[f32; 3]], indices: &[u32], bounds: &Aabb) -> bool {
+    use std::collections::HashMap;
+    if indices.is_empty() || bounds.is_empty() {
+        return false;
+    }
+    let grid = (bounds.radius() * 2e-6).max(1e-9);
+    let mut weld: HashMap<[i64; 3], u32> = HashMap::new();
+    let ids: Vec<u32> = positions
+        .iter()
+        .map(|p| {
+            let key = p.map(|c| (f64::from(c) / grid).round() as i64);
+            let next = weld.len() as u32;
+            *weld.entry(key).or_insert(next)
+        })
+        .collect();
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+    for t in indices.chunks_exact(3) {
+        let v: Vec<u32> = t.iter().filter_map(|&i| ids.get(i as usize).copied()).collect();
+        let [a, b, c] = v.as_slice() else { return false };
+        if a == b || b == c || a == c {
+            continue; // degenerate after welding
+        }
+        for (x, y) in [(*a, *b), (*b, *c), (*c, *a)] {
+            *edges.entry((x.min(y), x.max(y))).or_insert(0) += 1;
+        }
+    }
+    !edges.is_empty() && edges.values().all(|&n| n == 2)
 }
 
 impl MeshData {
@@ -134,6 +169,7 @@ impl MeshData {
             return Err(MeshError::TooLarge);
         }
         let bvh = Bvh::build(&mesh.positions, &mesh.indices);
+        let closed = is_closed(&mesh.positions, &mesh.indices, &bounds);
         Ok(MeshData {
             positions: mesh.positions.clone(),
             normals,
@@ -143,6 +179,7 @@ impl MeshData {
             edge_ranges,
             bounds,
             bvh,
+            closed,
         })
     }
 

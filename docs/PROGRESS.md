@@ -99,7 +99,7 @@ Phase 3 has started (see Next).
   and the software renderer). Section view done (the navigation bar's Section button and
   a bar above it: a plane across X, Y or Z, flip, position slider; `ViewOptions::section`:
   the GPU discards the removed half, the CPU renderer clips the geometry, back faces seen
-  through the cut draw as a flat tinted cut face; picking skips the removed half and the
+  through the cut of a closed body draw as a flat tinted cut face at the cut plane's depth (a cap pass); picking skips the removed half and the
   cut face; display only, no document change). The
   screenshot gallery in docs/screenshots was regenerated with the real kernel on
   2026-11-02 (properties panel, body eyes, wireframe button, drawing tab, section view, planes, click-placed sketch line, constraint toolbar, live preview).

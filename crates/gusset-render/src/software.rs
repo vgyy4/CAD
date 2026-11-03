@@ -133,7 +133,7 @@ impl SoftwareRenderer {
                         }
                         for k in 1..poly.len().saturating_sub(1) {
                             if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
-                                raster_triangle(&mut t, [p0, p1, p2], *base, &plan);
+                                raster_triangle(&mut t, [p0, p1, p2], *base, &plan, d.closed);
                             }
                         }
                     }
@@ -233,7 +233,7 @@ fn to_screen(c: [f32; 4], w: usize, h: usize) -> Option<[f32; 4]> {
     Some([(c[0] * iw * 0.5 + 0.5) * w as f32, (0.5 - c[1] * iw * 0.5) * h as f32, c[2] * iw, iw])
 }
 
-fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &FramePlan) {
+fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &FramePlan, closed: bool) {
     let (Some(s0), Some(s1), Some(s2)) =
         (to_screen(v[0].clip, t.w, t.h), to_screen(v[1].clip, t.w, t.h), to_screen(v[2].clip, t.w, t.h))
     else {
@@ -261,11 +261,7 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
             if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
                 continue;
             }
-            let z = w0 * s0[2] + w1 * s1[2] + w2 * s2[2];
             let Some(i) = t.idx(x, y) else { continue };
-            if t.depth.get(i).is_none_or(|d| z >= *d) {
-                continue;
-            }
             // Perspective-correct attributes.
             let q = [w0 * s0[3], w1 * s1[3], w2 * s2[3]];
             let qs = q[0] + q[1] + q[2];
@@ -276,14 +272,23 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
                 let (a, b, c) = (f(v[0]), f(v[1]), f(v[2]));
                 zip_with(zip_with(a, b, |x, y| x * q[0] + y * q[1]), c, |xy, z| (xy + z * q[2]) / qs)
             };
+            // A closed body's back faces seen through a section are its cut face: at the cut
+            // plane's depth, not the far wall's, so what lies behind stays hidden (as
+            // `fs_cap` in the shader).
+            let cap = plan.clip.filter(|_| closed && !front);
+            let z = match cap.and_then(|pl| cap_depth(pl, attr(&|cv| cv.view), plan)) {
+                Some(zc) => zc,
+                None => w0 * s0[2] + w1 * s1[2] + w2 * s2[2],
+            };
+            if t.depth.get(i).is_none_or(|d| z >= *d) {
+                continue;
+            }
             let n = attr(&|cv| cv.normal);
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
             let sign = if front { 1.0 } else { -1.0 };
             // Through a section, back faces are the inside: draw them as the flat cut face.
-            let (n, base) = match plan.clip {
-                Some(pl) if !front => {
-                    ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX))
-                }
+            let (n, base) = match cap {
+                Some(pl) => ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX)),
                 _ => (n.map(|c| c / nl * sign), base),
             };
             let vdir = if plan.ortho {
@@ -296,6 +301,24 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
             t.plot(i, z, light.shade(base, n, vdir), false);
         }
     }
+}
+
+/// Depth (NDC z) of the point where the view ray through `view` meets the section plane.
+fn cap_depth(pl: [f32; 4], view: [f32; 3], plan: &FramePlan) -> Option<f32> {
+    let p = if plan.ortho {
+        if pl[2].abs() < 1e-6 {
+            return None;
+        }
+        [view[0], view[1], -(pl[0] * view[0] + pl[1] * view[1] + pl[3]) / pl[2]]
+    } else {
+        let k = pl[0] * view[0] + pl[1] * view[1] + pl[2] * view[2];
+        if k.abs() < 1e-9 {
+            return None;
+        }
+        view.map(|c| c * (-pl[3] / k))
+    };
+    let c = math::transform4(&plan.proj, p.map(f64::from));
+    (c[3].abs() > 1e-12).then(|| ((c[2] / c[3]) as f32).clamp(0.0, 1.0))
 }
 
 fn raster_line(t: &mut Target, a: [f64; 4], b: [f64; 4], color: [f32; 3], width_px: f32) {
@@ -410,6 +433,29 @@ mod tests {
         assert!((0..3).all(|k| gone[k] <= top[k].max(bottom[k]) + 2), "{gone:?}");
         // A plane past the part's far side keeps everything.
         assert_eq!(at(towards_eye.map(|c| c * 100.0)), whole);
+    }
+
+    #[test]
+    fn the_cut_face_hides_what_lies_behind_the_cut() {
+        // A red box inside a cut box, behind the cut plane: the cut face is at the plane, so
+        // it hides the red box (it used to be drawn at the far wall, behind the red box).
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
+        s.insert_mesh(MeshId(2), &demo::box_mesh([2.0; 3])).expect("ok");
+        s.set_transform(MeshId(2), math::translation([0.0, 3.0, 0.0]));
+        s.set_material(MeshId(2), crate::Material { color: crate::Srgb(0xFF0000) });
+        assert!(s.mesh(MeshId(1)).expect("m").data().closed);
+        let mut cam = Camera::default();
+        cam.set_view(crate::NamedView::Front);
+        cam.fit(&s.bounds(), 1.0);
+        let mut r = SoftwareRenderer::new();
+        let towards_eye = cam.forward.map(|c| -c);
+        r.set_options(ViewOptions {
+            section: Some(crate::Section { origin: [0.0; 3], normal: towards_eye }),
+            ..ViewOptions::default()
+        });
+        let c = r.render_rgba(&s, &cam, [64, 64]).expect("render").pixel(32, 32).expect("px");
+        assert!(c[2] > c[0], "the cut face (blue tint), not the red box: {c:?}");
     }
 
     #[test]

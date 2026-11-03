@@ -165,6 +165,27 @@ fn section_matches_software() {
     assert!(report.passed, "section differs between GPU and CPU: {report}");
 }
 
+/// The GPU cut face is at the cut plane's depth too: a red box inside the cut body, behind
+/// the plane, stays hidden.
+#[test]
+fn gpu_cut_face_hides_what_lies_behind_the_cut() {
+    let _g = serial();
+    let mut s = Scene::new();
+    s.insert_mesh(MeshId(1), &gusset_render::demo::box_mesh([10.0; 3])).expect("ok");
+    s.insert_mesh(MeshId(2), &gusset_render::demo::box_mesh([2.0; 3])).expect("ok");
+    s.set_transform(MeshId(2), translation([0.0, 3.0, 0.0]));
+    s.set_material(MeshId(2), gusset_render::Material { color: gusset_render::Srgb(0xFF0000) });
+    let mut cam = Camera::default();
+    cam.set_view(gusset_render::NamedView::Front);
+    cam.fit(&s.bounds(), 1.0);
+    let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
+    let section = Some(gusset_render::Section { origin: [0.0; 3], normal: cam.forward.map(|c| -c) });
+    r.renderer_mut().set_options(ViewOptions { section, ..ViewOptions::default() });
+    let (img, _) = r.render_rgba(&s, &cam, [64, 64]).expect("render");
+    let c = img.pixel(32, 32).expect("px");
+    assert!(c[2] > c[0], "the cut face (blue tint), not the red box: {c:?}");
+}
+
 /// Every adapter class available here renders the same image within tolerance.
 #[test]
 fn each_available_adapter_matches_golden() {

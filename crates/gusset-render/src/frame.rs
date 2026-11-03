@@ -83,6 +83,8 @@ pub(crate) struct MeshDraw {
     pub tri_runs: Vec<(Range<u32>, [f32; 3])>,
     /// Edge segment runs with a linear color.
     pub edge_runs: Vec<(Range<u32>, [f32; 3])>,
+    /// The mesh is watertight: its back faces seen through a section are the cut face.
+    pub closed: bool,
 }
 
 /// Everything needed to draw one frame.
@@ -152,6 +154,7 @@ impl FramePlan {
                 model_view,
                 tri_runs,
                 edge_runs,
+                closed: data.closed,
             });
         }
         FramePlan {
