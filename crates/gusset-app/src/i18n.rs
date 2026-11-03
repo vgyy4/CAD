@@ -18,6 +18,8 @@ const EN: &[(&str, &str)] = &[
     ("menu.navigation", "Mouse navigation"),
     ("menu.ui_scale", "UI scale"),
     ("quick.search", "Search"),
+    ("quick.add", "Add to quick bar (S)"),
+    ("quick.remove", "Remove from quick bar (S)"),
     ("tooltip.asks", "Asks for"),
     ("select.other", "Select (Alt+click lists everything under the pointer)"),
     ("menu.full_screen", "Full-screen viewport (F11)"),

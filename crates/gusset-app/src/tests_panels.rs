@@ -617,12 +617,15 @@ fn saved_preferences_come_back_in_a_new_window() {
         browser_width: Some(310.0),
         properties_width: None,
         ui_scale: 1.25,
+        quick_solid: vec!["feature.shell".into()],
+        quick_sketch: Vec::new(),
     };
     crate::prefs::save(&crate::prefs::path(dirs.data_dir()), &want).unwrap();
     let a = App::new(std::sync::Arc::new(gusset_kernel::mock::MockKernel), Some(dirs));
     assert_eq!((a.theme, a.reduce_motion, a.viewport.nav_preset), (want.theme, want.reduce_motion, want.nav));
     assert_eq!(a.panel_widths, (Some(310.0), None));
     assert!((a.ui_scale - 1.25).abs() < 1e-6);
+    assert_eq!(a.quick_tools, [vec!["feature.shell"], vec![]]);
     drop(a);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -817,4 +820,22 @@ fn a_right_drag_flick_runs_the_marking_menu_item_in_its_direction() {
     assert!(h.state().marking.is_none(), "a flick opens no menu");
     assert_eq!(h.state().last_command, Some("sketch.create"));
     assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("sketch.create"));
+}
+
+#[test]
+fn ribbon_tools_join_and_leave_the_quick_bar() {
+    let mut h = quick_harness(two_sketches());
+    settle(&mut h);
+    // Right click the Revolve tool: it is in the quick bar already, so it can be removed.
+    let at = h.get_all_by_label("Revolve").next().expect("the Revolve tool").rect().center();
+    right_click_at(&mut h, at);
+    h.get_by_label("Remove from quick bar (S)").click();
+    h.run();
+    assert!(!h.state().quick_tools[0].contains(&"feature.revolve"), "{:?}", h.state().quick_tools);
+    // Adding keeps at most seven, dropping the oldest.
+    h.state_mut().set_quick_tool("feature.draft", true);
+    h.state_mut().set_quick_tool("feature.mirror", true);
+    let solid = h.state().quick_tools[0].clone();
+    assert_eq!(solid.last(), Some(&"feature.mirror"));
+    assert_eq!(solid.len(), crate::quick_menus::MAX_TOOLS);
 }

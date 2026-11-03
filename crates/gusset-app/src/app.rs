@@ -250,6 +250,8 @@ pub struct App {
     /// UI scale (DESIGN.md §1.22) and the one last given to egui.
     pub ui_scale: f32,
     scale_applied: Option<f32>,
+    /// The S quick bar's chosen tools outside and inside sketches (empty: the defaults).
+    pub quick_tools: [Vec<&'static str>; 2],
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -380,6 +382,7 @@ impl App {
             reduce_motion: false,
             ui_scale: 1.0,
             scale_applied: None,
+            quick_tools: [Vec::new(), Vec::new()],
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -431,6 +434,8 @@ impl App {
         app.theme = prefs.theme;
         app.reduce_motion = prefs.reduce_motion;
         app.ui_scale = prefs.ui_scale;
+        let ids = |v: &[String]| v.iter().filter_map(|id| gusset_commands::find(id)).map(|s| s.id).collect();
+        app.quick_tools = [ids(&prefs.quick_solid), ids(&prefs.quick_sketch)];
         app.viewport.nav_preset = prefs.nav;
         app.recent = prefs.recent;
         app.panel_widths = (prefs.browser_width, prefs.properties_width);
@@ -1119,6 +1124,8 @@ impl App {
             browser_width: self.panel_widths.0,
             properties_width: self.panel_widths.1,
             ui_scale: self.ui_scale,
+            quick_solid: self.quick_tools[0].iter().map(|s| (*s).to_string()).collect(),
+            quick_sketch: self.quick_tools[1].iter().map(|s| (*s).to_string()).collect(),
         }
     }
 
@@ -1183,7 +1190,7 @@ impl App {
     /// The marking menu and the quick bar, when open, and what was chosen in them.
     fn quick_menus(&mut self, ctx: &egui::Context) {
         use crate::quick_menus as qm;
-        let tools = qm::tools(self.editing_sketch().is_some(), self.last_command);
+        let tools = qm::tools(self.editing_sketch().is_some(), self.last_command, self.quick_custom());
         let mut chosen = None;
         if let Some(at) = self.marking {
             match qm::marking(ctx, at, &tools) {
@@ -1201,6 +1208,31 @@ impl App {
         }
         let Some(t) = chosen else { return };
         self.run_quick_tool(t);
+    }
+
+    /// The quick bar's chosen tools in the current context (empty: the defaults).
+    fn quick_custom(&self) -> &[&'static str] {
+        let i = usize::from(self.editing_sketch().is_some());
+        self.quick_tools.get(i).map_or(&[], Vec::as_slice)
+    }
+
+    /// Adds a tool to the current context's quick bar (at most [`qm::MAX_TOOLS`]; the
+    /// oldest added goes) or removes it; the choice is kept with the preferences.
+    pub fn set_quick_tool(&mut self, id: &'static str, add: bool) {
+        use crate::quick_menus as qm;
+        let sketching = self.editing_sketch().is_some();
+        let Some(list) = self.quick_tools.get_mut(usize::from(sketching)) else { return };
+        if list.is_empty() {
+            *list = qm::defaults(sketching).to_vec();
+        }
+        list.retain(|t| *t != id);
+        if add {
+            list.push(id);
+            while list.len() > qm::MAX_TOOLS {
+                list.remove(0);
+            }
+        }
+        self.save_prefs();
     }
 
     /// Runs a tool chosen in the marking menu, the quick bar or by a flick.
@@ -1992,6 +2024,7 @@ impl App {
                 sketch: self.active_sketch.as_deref(),
                 drawing: self.active_drawing.as_deref(),
                 select: self.viewport.select_filter,
+                quick: &[],
             },
         );
         if let Some(a) = action {
@@ -2002,6 +2035,10 @@ impl App {
     /// The ribbon of the active tab.
     fn ribbon(&mut self, ui: &mut Ui) {
         let pal = *theme::palette(self.theme);
+        let quick: Vec<&'static str> = match self.quick_custom() {
+            [] => crate::quick_menus::defaults(self.editing_sketch().is_some()).to_vec(),
+            c => c.to_vec(),
+        };
         let action = ribbon::show(
             ui,
             &Ribbon {
@@ -2009,6 +2046,7 @@ impl App {
                 sketch: self.active_sketch.as_deref(),
                 drawing: self.active_drawing.as_deref(),
                 select: self.viewport.select_filter,
+                quick: &quick,
             },
         );
         if let Some(a) = action {
@@ -2022,6 +2060,7 @@ impl App {
             Action::Run(id) => self.start_command(id),
             Action::Search => self.palette = Some(String::new()),
             Action::SelectFilter(f) => self.viewport.select_filter = f,
+            Action::QuickBar(id, add) => self.set_quick_tool(id, add),
             Action::SolidTab | Action::FinishSketch => {
                 self.active_drawing = None;
                 self.finish_sketch();
@@ -2796,7 +2835,8 @@ impl App {
         }
         // A right drag flicked toward a marking-menu item runs it without the menu.
         if let Some(dir) = out.flick {
-            let tools = crate::quick_menus::tools(self.editing_sketch().is_some(), self.last_command);
+            let tools =
+                crate::quick_menus::tools(self.editing_sketch().is_some(), self.last_command, self.quick_custom());
             if let Some(t) = crate::quick_menus::flicked(dir, tools.len()).and_then(|i| tools.get(i).copied()) {
                 self.run_quick_tool(t);
             }

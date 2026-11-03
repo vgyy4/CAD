@@ -35,10 +35,20 @@ const SOLID: [&str; 7] = [
     "query.measure",
 ];
 
-/// The context tools, the last command first (at most eight).
+/// The default tools of a context (the quick bar starts from these).
 #[must_use]
-pub fn tools(sketching: bool, last: Option<&'static str>) -> Vec<Tool> {
-    let base: &[&'static str] = if sketching { &SKETCH } else { &SOLID };
+pub fn defaults(sketching: bool) -> &'static [&'static str] {
+    if sketching { &SKETCH } else { &SOLID }
+}
+
+/// The most tools a context's quick bar keeps.
+pub const MAX_TOOLS: usize = 7;
+
+/// The context tools, the last command first (at most eight). `custom` replaces the
+/// context's defaults when the user has chosen tools (an empty list means the defaults).
+#[must_use]
+pub fn tools(sketching: bool, last: Option<&'static str>, custom: &[&'static str]) -> Vec<Tool> {
+    let base: &[&'static str] = if custom.is_empty() { defaults(sketching) } else { custom };
     let mut out: Vec<Tool> = last.filter(|l| !base.contains(l)).map(Tool::Command).into_iter().collect();
     out.extend(base.iter().map(|id| Tool::Command(id)));
     if sketching {
@@ -139,17 +149,22 @@ mod tests {
 
     #[test]
     fn tools_follow_the_context_and_lead_with_the_last_command() {
-        let solid = tools(false, None);
+        let solid = tools(false, None, &[]);
         assert_eq!(solid.first(), Some(&Tool::Command("sketch.create")));
-        let sketch = tools(true, Some("feature.draft"));
+        let custom = tools(false, None, &["feature.shell"]);
+        assert_eq!(custom, vec![Tool::Command("feature.shell")]);
+        let sketch = tools(true, Some("feature.draft"), &[]);
         assert_eq!(sketch.first(), Some(&Tool::Command("feature.draft")));
         assert_eq!(sketch.len(), 8);
         // The last command is not listed twice.
         assert_eq!(
-            tools(false, Some("feature.extrude")).iter().filter(|t| **t == Tool::Command("feature.extrude")).count(),
+            tools(false, Some("feature.extrude"), &[])
+                .iter()
+                .filter(|t| **t == Tool::Command("feature.extrude"))
+                .count(),
             1
         );
-        assert!(tools(true, None).contains(&Tool::FinishSketch));
+        assert!(tools(true, None, &[]).contains(&Tool::FinishSketch));
     }
 
     #[test]

@@ -21,6 +21,10 @@ pub struct Prefs {
     pub properties_width: Option<f32>,
     /// UI scale (DESIGN.md §1.22), [`MIN_SCALE`]..=[`MAX_SCALE`].
     pub ui_scale: f32,
+    /// The S quick bar's tools (command ids) outside and inside sketches; empty means the
+    /// defaults (DESIGN.md §1.3: customizable).
+    pub quick_solid: Vec<String>,
+    pub quick_sketch: Vec<String>,
 }
 
 pub const MIN_SCALE: f32 = 0.75;
@@ -40,6 +44,8 @@ impl Default for Prefs {
             browser_width: None,
             properties_width: None,
             ui_scale: 1.0,
+            quick_solid: Vec::new(),
+            quick_sketch: Vec::new(),
         }
     }
 }
@@ -95,7 +101,22 @@ pub fn load(path: &Path) -> Prefs {
             .map(|s| s as f32)
             .filter(|s| (MIN_SCALE..=MAX_SCALE).contains(s))
             .unwrap_or(d.ui_scale),
+        quick_solid: commands(&v, "quick_solid"),
+        quick_sketch: commands(&v, "quick_sketch"),
     }
+}
+
+/// A list of known command ids from the file (unknown ones are dropped).
+fn commands(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(gusset_commands::find)
+        .map(|s| s.id.to_string())
+        .take(crate::quick_menus::MAX_TOOLS)
+        .collect()
 }
 
 /// A panel width from the file, if it is a sane one.
@@ -116,6 +137,8 @@ pub fn save(path: &Path, p: &Prefs) -> Result<(), String> {
         "browser_width": p.browser_width,
         "properties_width": p.properties_width,
         "ui_scale": p.ui_scale,
+        "quick_solid": p.quick_solid,
+        "quick_sketch": p.quick_sketch,
     });
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?;
     let check = |b: &[u8]| serde_json::from_slice::<Value>(b).map(|_| ()).map_err(|e| e.to_string());
@@ -139,6 +162,7 @@ mod tests {
             nav: NavPreset::SolidWorks,
             browser_width: Some(300.0),
             ui_scale: 1.5,
+            quick_sketch: vec!["sketch.trim".into()],
             ..Prefs::default()
         };
         remember(&mut want.recent, "/a.gus");

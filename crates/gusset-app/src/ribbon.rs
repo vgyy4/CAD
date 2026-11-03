@@ -30,6 +30,8 @@ pub enum Action {
     Search,
     /// The SELECT group: what clicks in the viewport pick.
     SelectFilter(crate::viewport::SelectFilter),
+    /// A tool's context menu: add it to (true) or remove it from the S quick bar.
+    QuickBar(&'static str, bool),
 }
 
 /// One tool of a group.
@@ -209,6 +211,8 @@ pub struct Ribbon<'a> {
     pub drawing: Option<&'a str>,
     /// The viewport's selection filter (shown in the Solid tab's SELECT group).
     pub select: crate::viewport::SelectFilter,
+    /// The tools the S quick bar shows in this context (for the tools' context menus).
+    pub quick: &'a [&'static str],
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -428,8 +432,12 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (def, s) in tools.iter().take(n_large) {
-                        if large_button(ui, def, s, pal).clicked() {
+                        let resp = large_button(ui, def, s, pal);
+                        if resp.clicked() {
                             action = Some(Action::Run(s.id));
+                        }
+                        if let Some(a) = quick_menu(&resp, s.id, r.quick) {
+                            action = Some(a);
                         }
                     }
                 });
@@ -535,6 +543,20 @@ fn dropdown(
             if menu_row(ui, s, pal).clicked() {
                 chosen = Some(Action::Run(s.id));
             }
+        }
+    });
+    chosen
+}
+
+/// A tool's context menu (right click): add it to or remove it from the S quick bar.
+fn quick_menu(resp: &egui::Response, id: &'static str, quick: &[&'static str]) -> Option<Action> {
+    let mut chosen = None;
+    resp.context_menu(|ui| {
+        let on = quick.contains(&id);
+        let label = if on { tr("quick.remove") } else { tr("quick.add") };
+        if ui.button(label).clicked() {
+            chosen = Some(Action::QuickBar(id, !on));
+            ui.close();
         }
     });
     chosen
