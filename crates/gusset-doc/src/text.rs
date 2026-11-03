@@ -357,6 +357,7 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("direction: {}", print_dir(&d.direction)));
             args.push(format!("count: {}", d.count));
             args.push(format!("spacing: {}", d.spacing));
+            push_features(&mut args, &d.features);
         }
         FeatureKind::PatternCircular(d) => {
             push_body(&mut args, &d.body);
@@ -366,6 +367,7 @@ fn print_feature(out: &mut String, f: &Feature) {
             }
             args.push(format!("count: {}", d.count));
             args.push(format!("angle: {}", d.angle));
+            push_features(&mut args, &d.features);
         }
         FeatureKind::Plane(d) => {
             args.push(format!("base: {}", print_plane(&d.base)));
@@ -936,13 +938,14 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut count = None;
     let mut spacing = None;
     let mut angle = None;
+    let mut features: Vec<String> = Vec::new();
     let allowed = match kw {
         "shell" => "body, faces, thickness, label, suppressed",
         "draft" => "body, faces, plane, angle, flip, label, suppressed",
         "offset_face" => "body, faces, distance, label, suppressed",
         "mirror" => "body, plane, merge, label, suppressed",
-        "pattern_linear" => "body, direction, count, spacing, label, suppressed",
-        _ => "body, axis, through, count, angle, label, suppressed",
+        "pattern_linear" => "body, direction, count, spacing, features, label, suppressed",
+        _ => "body, axis, through, count, angle, features, label, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -966,6 +969,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
                 through = Some([x, y, z]);
             }
             ("pattern_linear" | "pattern_circular", "count") => count = Some(c.expr()?),
+            ("pattern_linear" | "pattern_circular", "features") => features = parse_ident_list(c, "feature")?,
             ("pattern_linear", "spacing") | ("offset_face", "distance") => spacing = Some(c.expr()?),
             ("pattern_circular" | "draft", "angle") => angle = Some(c.expr()?),
             (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
@@ -1001,6 +1005,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             direction: dir.ok_or_else(|| missing(c, kw, "direction"))?,
             count: count.ok_or_else(|| missing(c, kw, "count"))?,
             spacing: spacing.ok_or_else(|| missing(c, kw, "spacing"))?,
+            features: std::mem::take(&mut features),
         }),
         _ => FeatureKind::PatternCircular(PatternCircularDef {
             body,
@@ -1008,9 +1013,17 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             through,
             count: count.ok_or_else(|| missing(c, kw, "count"))?,
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
+            features,
         }),
     };
     Ok(Feature { name, label, note: None, suppressed, kind })
+}
+
+/// `features: [A, B]` when a pattern repeats features.
+fn push_features(args: &mut Vec<String>, features: &[String]) {
+    if !features.is_empty() {
+        args.push(format!("features: [{}]", features.join(", ")));
+    }
 }
 
 /// `[edge(...), edge(...)]`.

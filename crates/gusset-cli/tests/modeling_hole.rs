@@ -573,3 +573,43 @@ hole H1 (face: {TOP}, points: Marks, type: simple, diameter: 4 mm, through: true
     assert!((m["distance_mm"].as_f64().unwrap() - 20.0).abs() < 1e-6, "{m}");
     assert_eq!(m["distance_kind"], "between parallel planes");
 }
+
+/// A feature pattern repeats only the hole (its removed material), not the plate: four
+/// holes in a row remove four times one hole's volume.
+#[test]
+fn a_feature_pattern_repeats_a_hole() {
+    let (ev, r) = eval(&format!(
+        "sketch Marks (plane: {TOP}, next_id: 2) {{
+  p1 = point(10, 10)
+}}
+
+hole H1 (face: {TOP}, points: Marks, type: simple, diameter: 4 mm, through: true)
+
+pattern_linear Row (direction: X, count: 4, spacing: 12 mm, features: [H1])"
+    ));
+    ok(&r);
+    let one = PI * 4.0 * 20.0;
+    assert!(close(PLATE_VOLUME - volume(&ev, &r), 4.0 * one, 1e-6), "{}", PLATE_VOLUME - volume(&ev, &r));
+    // The copies are named after the pattern: three new hole walls.
+    let walls = names(&r).iter().filter(|n| n.starts_with("Row/instance(")).count();
+    assert!(walls >= 3, "{:?}", names(&r));
+}
+
+/// Added material repeats too: a boss on the plate's top, repeated four times around a
+/// vertical axis through the plate's middle, adds four bosses.
+#[test]
+fn a_circular_feature_pattern_repeats_a_boss() {
+    let (ev, r) = eval(&format!(
+        "sketch BossS (plane: {TOP}, next_id: 3) {{
+  p1 = point(15, 20)
+  c2 = circle(p1, 3)
+}}
+
+extrude Boss (profile: BossS, distance: 5 mm, op: add, body: E1)
+
+pattern_circular Ring (axis: Z, through: [30 mm, 20 mm, 0 mm], count: 4, angle: 360 deg, features: [Boss])"
+    ));
+    ok(&r);
+    let boss = PI * 9.0 * 5.0;
+    assert!(close(volume(&ev, &r) - PLATE_VOLUME, 4.0 * boss, 1e-6), "{}", volume(&ev, &r) - PLATE_VOLUME);
+}

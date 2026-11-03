@@ -682,6 +682,16 @@ pattern_circular Pattern4 (axis: [0, 1, 0], through: [10 mm, 0 mm, 5 mm], count:
 "#;
 
     #[test]
+    fn feature_patterns_round_trip() {
+        let src = "gusset 1\nunits mm\n\nsketch S1 (plane: XY, next_id: 1) {\n}\n\nextrude E1 (profile: S1, distance: 5 mm, op: new)\n\npattern_linear P1 (direction: X, count: 3, spacing: 10 mm, features: [E1])\n";
+        let doc = Document::from_text(src).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), src);
+        let FeatureKind::PatternLinear(p) = &doc.feature("P1").unwrap().kind else { panic!() };
+        assert_eq!(p.features, ["E1"]);
+        assert_eq!(doc.feature("P1").unwrap().kind.dependencies(), ["E1"]);
+    }
+
+    #[test]
     fn statements_split_into_arguments_and_back() {
         let doc = text::parse(SAMPLE).unwrap_or_else(|e| panic!("{e}"));
         let mut split = 0;

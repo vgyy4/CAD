@@ -117,6 +117,40 @@ struct State {
     /// Joints evaluated so far and the body placements they made (closed loops re-place
     /// earlier bodies, ADR 0026 §1).
     joints: Arc<joint::Joints>,
+    /// What each feature did to the one body it changed (feature patterns repeat it).
+    effects: Effects,
+}
+
+/// Per feature, the body it changed before and after it (`before` is `None` for a feature
+/// that made a new body); a shared list like [`Statuses`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Effects(Option<Arc<EffectLink>>);
+
+#[derive(Debug)]
+pub(crate) struct EffectLink {
+    feature: String,
+    before: Option<Arc<Body>>,
+    after: Arc<Body>,
+    prev: Option<Arc<EffectLink>>,
+}
+
+impl Effects {
+    fn push(&mut self, feature: String, before: Option<Arc<Body>>, after: Arc<Body>) {
+        let prev = self.0.take();
+        self.0 = Some(Arc::new(EffectLink { feature, before, after, prev }));
+    }
+
+    /// The body a feature changed: (before, after).
+    pub(crate) fn get(&self, feature: &str) -> Option<(Option<Arc<Body>>, Arc<Body>)> {
+        let mut at = self.0.as_ref();
+        while let Some(l) = at {
+            if l.feature == feature {
+                return Some((l.before.clone(), l.after.clone()));
+            }
+            at = l.prev.as_ref();
+        }
+        None
+    }
 }
 
 /// Feature statuses as a list whose earlier part is shared, newest first.
@@ -899,8 +933,18 @@ impl Evaluator {
             return;
         }
         let before: Vec<usize> = s.bodies.iter().map(|b| Arc::as_ptr(b) as usize).collect();
+        let prev_bodies = s.bodies.clone();
         let r = self.run(s, f, units, params, blobs);
         prune_holes(s, &before);
+        if r.is_ok() {
+            // The body this feature changed, if exactly one (feature patterns repeat it).
+            let changed: Vec<&Arc<Body>> =
+                s.bodies.iter().filter(|b| !prev_bodies.iter().any(|p| Arc::ptr_eq(p, b))).collect();
+            if let [after] = changed.as_slice() {
+                let before = prev_bodies.iter().find(|p| p.feature == after.feature).cloned();
+                s.effects.push(f.name.clone(), before, Arc::clone(after));
+            }
+        }
         let status = match r {
             Ok(()) => FeatureStatus::Ok,
             Err(e) => {

@@ -264,8 +264,10 @@ Phase 3 has started (see Next).
    (ADR 0015); no update signing key yet, so the in-app updater refuses the manifest.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
-- Feature-level patterns (patterns repeat whole bodies; combine merges one feature's body
-  into the part) (dogfooding F-M4..M7). Sketch-level patterns exist (ADR 0016).
+- Feature-level patterns: done (2026-11-03). `pattern_linear` / `pattern_circular` take
+  `features: [...]`: what each feature added to or cut from its body (after minus before, before
+  minus after, recorded per feature during evaluation) is copied per instance and united with
+  or cut from that body (OCCT exact-volume tests: a row of holes, a ring of bosses).
 - Sketch arrangement limits (ADR 0016): curves that overlap along a stretch are an error;
   a spline's tangential touch with another curve is not detected; splines cannot be
   trimmed; pattern copies cannot carry constraints or be trimmed; no patterns of patterns.

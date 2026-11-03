@@ -1332,7 +1332,7 @@ mod size_tests {
         let pattern = registry().iter().find(|s| s.id == "feature.pattern_circular").expect("circular pattern command");
         assert_eq!(
             summary(pattern),
-            "Repeat a whole body around an axis (count, total angle) and unite the copies with it, e.g. a bolt circle."
+            "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle)."
         );
     }
 

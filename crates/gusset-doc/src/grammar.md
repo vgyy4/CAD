@@ -376,7 +376,9 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
 - `shell (faces: [<face>], thickness: <length>)` hollows a body; `mirror (plane: <plane>,
   [merge: true])` copies it across a plane; `pattern_linear (direction: X|Y|Z|[x, y, z],
   count: <n>, spacing: <length>)` and `pattern_circular (axis: ..., [through: [x, y, z]],
-  count: <n>, angle: <angle>)` repeat a body. All take an optional `body:`.
+  count: <n>, angle: <angle>)` repeat a body. All take an optional `body:`. A pattern with
+  `features: [<feature>, ...]` repeats only those features instead: what each one added to or
+  cut from its body is copied and applied to that body (a row of holes, a ring of bosses).
 - `draft (faces: [<face>], plane: <plane>, angle: <angle>, [flip: true])` tapers faces for
   molding: each face turns by `angle` about its line on the neutral `plane`, leaning inward
   along the pull direction (the part narrows that way; a negative angle leans it outward).

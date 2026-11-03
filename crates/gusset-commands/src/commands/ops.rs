@@ -78,8 +78,14 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             }
             d.plane.rename_feature(from, to);
         }
-        FeatureKind::PatternLinear(d) => body_of(&mut d.body),
-        FeatureKind::PatternCircular(d) => body_of(&mut d.body),
+        FeatureKind::PatternLinear(d) => {
+            body_of(&mut d.body);
+            d.features.iter_mut().for_each(sketch_of);
+        }
+        FeatureKind::PatternCircular(d) => {
+            body_of(&mut d.body);
+            d.features.iter_mut().for_each(sketch_of);
+        }
         FeatureKind::Plane(d) => {
             d.base.rename_feature(from, to);
             if let PlaneKind::Angle { axis: PlaneAxis::Edge(e), .. } = &mut d.kind {
@@ -325,6 +331,14 @@ impl Command for Mirror {
     }
 }
 
+/// The features a pattern repeats must exist.
+fn check_features(doc: &Document, features: &[String]) -> Result<(), CommandError> {
+    match features.iter().find(|f| doc.feature(f).is_none()) {
+        Some(f) => Err(CommandError::not_found(format!("no feature '{f}'"))),
+        None => Ok(()),
+    }
+}
+
 /// Repeats a body along a direction.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -338,6 +352,9 @@ pub struct PatternLinear {
     /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
+    /// Repeat only these features (holes, cuts, bosses) instead of the body.
+    #[serde(default)]
+    pub features: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -345,7 +362,7 @@ pub struct PatternLinear {
 impl Command for PatternLinear {
     const ID: &'static str = "feature.pattern_linear";
     const TITLE: &'static str = "Linear pattern";
-    const DESCRIPTION: &'static str = "Repeat a whole body along a direction (count, spacing) and unite the copies with it. For holes, use `feature_hole` with several `at` points in one call. Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it, along a direction (count, spacing). Uniting needs the OCCT kernel unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -355,13 +372,15 @@ impl Command for PatternLinear {
         let spacing = parse_expr("spacing", &self.spacing)?;
         edit(s, ctx, "Linear pattern", |doc, rb| {
             let name = feature_name(doc, self.name, "Pattern")?;
-            let body = body_for(doc, rb, self.body)?;
+            check_features(doc, &self.features)?;
+            let body = if self.features.is_empty() { body_for(doc, rb, self.body)? } else { None };
+            let features = self.features;
             insert_feature(
                 doc,
                 rb,
                 Feature::new(
                     name.clone(),
-                    FeatureKind::PatternLinear(PatternLinearDef { body, direction, count, spacing }),
+                    FeatureKind::PatternLinear(PatternLinearDef { body, direction, count, spacing, features }),
                 ),
             );
             Ok(json!({ "feature": name }))
@@ -386,6 +405,9 @@ pub struct PatternCircular {
     /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
+    /// Repeat only these features (holes, cuts, bosses) instead of the body.
+    #[serde(default)]
+    pub features: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -393,7 +415,7 @@ pub struct PatternCircular {
 impl Command for PatternCircular {
     const ID: &'static str = "feature.pattern_circular";
     const TITLE: &'static str = "Circular pattern";
-    const DESCRIPTION: &'static str = "Repeat a whole body around an axis (count, total angle) and unite the copies with it, e.g. a bolt circle. For holes, use `feature_hole` with several `at` points in one call. Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle). Uniting needs the OCCT kernel unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -406,13 +428,15 @@ impl Command for PatternCircular {
         };
         edit(s, ctx, "Circular pattern", |doc, rb| {
             let name = feature_name(doc, self.name, "Pattern")?;
-            let body = body_for(doc, rb, self.body)?;
+            check_features(doc, &self.features)?;
+            let body = if self.features.is_empty() { body_for(doc, rb, self.body)? } else { None };
+            let features = self.features;
             insert_feature(
                 doc,
                 rb,
                 Feature::new(
                     name.clone(),
-                    FeatureKind::PatternCircular(PatternCircularDef { body, axis, through, count, angle }),
+                    FeatureKind::PatternCircular(PatternCircularDef { body, axis, through, count, angle, features }),
                 ),
             );
             Ok(json!({ "feature": name }))

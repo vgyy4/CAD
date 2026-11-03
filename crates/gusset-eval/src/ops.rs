@@ -233,6 +233,9 @@ impl Evaluator {
         }
         let moves: Vec<Transform> =
             (1..count).map(|i| Transform::Translate(scale(dir, spacing * f64::from(i)))).collect();
+        if !d.features.is_empty() {
+            return self.run_feature_pattern(s, name, &d.features, &moves);
+        }
         self.run_pattern(s, name, d.body.as_deref(), &moves)
     }
 
@@ -258,7 +261,112 @@ impl Evaluator {
         let step = if full { angle / f64::from(count) } else { angle / f64::from(count - 1) };
         let turns: Vec<Transform> =
             (1..count).map(|i| Transform::Rotate { origin, axis, angle: step * f64::from(i) }).collect();
+        if !d.features.is_empty() {
+            return self.run_feature_pattern(s, name, &d.features, &turns);
+        }
         self.run_pattern(s, name, d.body.as_deref(), &turns)
+    }
+
+    /// Repeats features instead of a body: what each one removed from its body (before minus
+    /// after) and added to it (after minus before) is copied once per transform, the removed
+    /// copies are cut from that body and the added ones united with it.
+    fn run_feature_pattern(
+        &self,
+        s: &mut State,
+        name: &str,
+        features: &[String],
+        transforms: &[Transform],
+    ) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let mut target: Option<String> = None;
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        for f in features {
+            let (before, after) = s.effects.get(f).ok_or_else(|| {
+                EvalError::new(name, ErrorCode::InvalidReference, format!("{f} changed no body"))
+                    .with_hint("a feature pattern repeats features that add to or cut from one body")
+            })?;
+            let Some(before) = before else {
+                return Err(EvalError::new(name, ErrorCode::InvalidReference, format!("{f} made a new body"))
+                    .with_hint("repeat that body with a pattern of the body instead"));
+            };
+            match &target {
+                Some(t) if *t != after.feature => {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::InvalidReference,
+                        "the features change different bodies",
+                    )
+                    .with_hint("make one pattern per body"));
+                }
+                _ => target = Some(after.feature.clone()),
+            }
+            // The material each feature took away and the material it added.
+            for (a, b, into) in [(&before, &after, &mut removed), (&after, &before, &mut added)] {
+                // An empty difference (a hole adds nothing) is reported as an error by the
+                // kernel: nothing to repeat on that side.
+                let res = match k.boolean(BoolOp::Cut, &a.shape, &b.shape) {
+                    Ok(r) => r,
+                    Err(ke) if ke.message.contains("removed all material") => continue,
+                    Err(ke) => return Err(kernel_err(name, "pattern", ke)),
+                };
+                let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+                if topo.faces.is_empty() {
+                    continue;
+                }
+                let names = name_body(
+                    &OpContext::Modify { feature: name, inputs: &[&a.names, &b.names] },
+                    &res.face_origins,
+                    &topo,
+                )
+                .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+                into.push(Tool { shape: res.shape, names });
+            }
+        }
+        let Some(target) = target else { return Ok(()) };
+        let (bi, body) = target_body(s, name, Some(&target))?;
+        let copies = |tools: &[Tool]| -> Result<Vec<Tool>, EvalError> {
+            let mut out = Vec::new();
+            for (i, t) in transforms.iter().enumerate() {
+                let inst_no = u32::try_from(i + 1).unwrap_or(u32::MAX);
+                for tool in tools {
+                    let c = k.transform(&tool.shape, t).map_err(|ke| kernel_err(name, "pattern", ke))?;
+                    let topo = k.topology(&c.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+                    let names = name_body(
+                        &OpContext::Instance { feature: name, k: inst_no, input: &tool.names },
+                        &c.face_origins,
+                        &topo,
+                    )
+                    .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+                    out.push(Tool { shape: c.shape, names });
+                }
+            }
+            Ok(out)
+        };
+        let (cuts, adds) = (copies(&removed)?, copies(&added)?);
+        let per = body.topology.faces.len() as u64;
+        self.charge(s, name, "the pattern", cuts.len() + adds.len(), per)?;
+        let (mut shape, mut names, mut topo) = (body.shape.clone(), body.names.clone(), body.topology.clone());
+        if !cuts.is_empty() {
+            (shape, names, topo) = self.boolean_tools(
+                name,
+                BoolOp::Cut,
+                (&shape, &names),
+                &cuts,
+                "the pattern removes the whole body",
+                &|i, ke| {
+                    let mut e = kernel_err(name, "cut", ke);
+                    if let Some(i) = i {
+                        e.message = format!("copy {}: {}", i + 1, e.message);
+                    }
+                    e
+                },
+            )?;
+        }
+        if !adds.is_empty() {
+            (shape, names, topo) = self.unite(name, &shape, &names, &adds, |i| format!("copy {}: ", i + 1))?;
+        }
+        replace_body(s, bi, &body, shape, names, topo);
+        Ok(())
     }
 
     /// Copies the target body once per transform and unites all copies with it.

@@ -182,8 +182,14 @@ impl FeatureKind {
                     add_body(&mut add, &d.body);
                 }
             }
-            FeatureKind::PatternLinear(d) => add_body(&mut add, &d.body),
-            FeatureKind::PatternCircular(d) => add_body(&mut add, &d.body),
+            FeatureKind::PatternLinear(d) => {
+                add_body(&mut add, &d.body);
+                d.features.iter().for_each(|f| add(f));
+            }
+            FeatureKind::PatternCircular(d) => {
+                add_body(&mut add, &d.body);
+                d.features.iter().for_each(|f| add(f));
+            }
             FeatureKind::Plane(d) => {
                 d.base.features(&mut add);
                 if let PlaneKind::Angle { axis: PlaneAxis::Edge(e), .. } = &d.kind {
@@ -987,6 +993,9 @@ pub struct PatternLinearDef {
     pub count: Expr,
     /// Distance between neighbouring instances (negative reverses the direction).
     pub spacing: Expr,
+    /// Features to repeat instead of the whole body: what each one added to or removed
+    /// from its body is copied and applied to that body (holes, cuts, bosses).
+    pub features: Vec<String>,
 }
 
 /// Repeats a body around an axis and unites the copies with it.
@@ -1001,6 +1010,8 @@ pub struct PatternCircularDef {
     /// Total angle covered. A full turn (360 deg) spaces instances `angle / count` apart;
     /// a partial angle puts the last instance at `angle` (spacing `angle / (count - 1)`).
     pub angle: Expr,
+    /// Features to repeat instead of the whole body (see [`PatternLinearDef::features`]).
+    pub features: Vec<String>,
 }
 
 // ------------------------------------------------------------------ datum planes, move, combine
