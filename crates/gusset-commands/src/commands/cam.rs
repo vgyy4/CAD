@@ -41,6 +41,9 @@ pub struct CamJob {
     pub top: Option<f64>,
     #[serde(default)]
     pub safe: Option<f64>,
+    /// Ramp entry angle, deg (default 3; 0 plunges).
+    #[serde(default)]
+    pub ramp_deg: Option<f64>,
 }
 
 impl CamJob {
@@ -64,6 +67,7 @@ impl CamJob {
             feed: self.feed.unwrap_or(600.0),
             plunge: self.plunge.unwrap_or(200.0),
             rpm: self.rpm.unwrap_or(10_000.0),
+            ramp_deg: self.ramp_deg.unwrap_or(3.0),
         };
         let doc = s.document(&ctx.actor)?;
         let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)

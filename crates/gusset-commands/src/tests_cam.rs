@@ -38,7 +38,9 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     let w = run(&mut s, "cam.export_gcode", exp.clone());
     assert_eq!(w["written"], "pocket.nc", "{w}");
     let g = std::fs::read_to_string(s.project_dir.clone().unwrap().join("pocket.nc")).unwrap();
-    assert!(g.contains("G21 G90 G17") && g.contains("G1 Z-5 F200") && g.ends_with("M30\n"), "{g}");
+    // Ramped by default: down to the stock top at the plunge feed, then a spiral.
+    assert!(g.contains("G21 G90 G17") && g.contains("G1 Z0 F200") && g.ends_with("M30\n"), "{g}");
+    assert!(!g.contains("G1 Z-5 F200"), "no straight plunge to the full depth");
     assert_eq!(err(&mut s, "cam.export_gcode", exp).code, "confirmation_required");
     let mut typo = job.clone();
     typo["tool_diametr"] = json!(6.0);

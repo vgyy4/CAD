@@ -14,7 +14,17 @@ fn circle(c: [f64; 2], r: f64) -> Loop2 {
 }
 
 fn setup(d: f64) -> Setup {
-    Setup { tool_diameter: d, top: 0.0, depth: 5.0, stepdown: 2.0, safe: 5.0, feed: 800.0, plunge: 200.0, rpm: 12000.0 }
+    Setup {
+        tool_diameter: d,
+        top: 0.0,
+        depth: 5.0,
+        stepdown: 2.0,
+        safe: 5.0,
+        feed: 800.0,
+        plunge: 200.0,
+        rpm: 12000.0,
+        ramp_deg: 0.0,
+    }
 }
 
 fn extent(t: &Toolpath, z: f64) -> [f64; 4] {
@@ -97,4 +107,28 @@ fn a_tool_too_big_or_bad_numbers_are_refused() {
     s.safe = -1.0;
     assert!(toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).is_err());
     assert!(toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 1.5 }, &setup(6.0)).is_err());
+}
+
+#[test]
+fn a_ramp_spirals_down_the_ring_without_plunging_below_the_level_above() {
+    let mut s = setup(6.0);
+    s.ramp_deg = 3.0;
+    let t = toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 0.5 }, &s).unwrap();
+    let mut z_prev = s.safe;
+    let mut lowest_plunge = 0.0f64;
+    for m in &t.moves {
+        match m {
+            Move::Line { to, plunge: true } => lowest_plunge = lowest_plunge.min(to[2]),
+            Move::Line { to, plunge: false } | Move::Arc { to, .. } => {
+                // Never more than the ramp's slope over a move's length (moves here are
+                // at most the ring's longest side, 34 mm).
+                assert!(z_prev - to[2] <= 34.0 * libm::tan(3f64.to_radians()) + 1e-9 || z_prev == s.safe);
+                z_prev = to[2];
+            }
+            Move::Rapid(to) => z_prev = to[2],
+        }
+    }
+    // Plunges only go down to the level above (the top for the first level).
+    assert!(lowest_plunge >= -3.34, "{lowest_plunge}");
+    assert!(t.gcode(&s, "ramp").contains(" Z-"));
 }

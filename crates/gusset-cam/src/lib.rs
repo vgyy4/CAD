@@ -56,6 +56,9 @@ pub struct Setup {
     pub feed: f64,
     pub plunge: f64,
     pub rpm: f64,
+    /// Entry: spiral down along the ring at this angle (degrees) instead of plunging; 0
+    /// plunges straight down.
+    pub ramp_deg: f64,
 }
 
 /// One machine move, to the end point given.
@@ -178,6 +181,9 @@ fn check(s: &Setup) -> Result<(), CamError> {
     if !(s.top.is_finite() && s.safe.is_finite() && s.safe > s.top) {
         return bad("the safe height must be above the stock top");
     }
+    if !(s.ramp_deg.is_finite() && (0.0..=45.0).contains(&s.ramp_deg)) {
+        return bad("the ramp angle must be 0 (plunge) to 45 degrees");
+    }
     if !pos(s.feed) || !pos(s.plunge) || !(s.rpm.is_finite() && s.rpm >= 0.0) {
         return bad("feeds must be positive (and the spindle speed not negative)");
     }
@@ -238,12 +244,32 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
     let rings = rings(regions, op, s)?;
     let levels = levels(s);
     let mut moves = Vec::new();
-    for z in &levels {
+    let slope = libm::tan(s.ramp_deg.to_radians());
+    for (li, z) in levels.iter().enumerate() {
+        // Each ring is entered from the level above (the stock top for the first).
+        let above = if li == 0 { s.top } else { levels.get(li - 1).copied().unwrap_or(s.top) };
         for p in &rings {
             let Some(first) = p.get(0) else { continue };
-            moves.push(Move::Rapid([first.x, first.y, s.safe]));
-            moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
             let n = p.vertex_count();
+            moves.push(Move::Rapid([first.x, first.y, s.safe]));
+            let perimeter = p.path_length();
+            if slope > 0.0 && perimeter > 1e-9 {
+                // A helix along the ring, as many turns as the angle needs, then one
+                // full ring at the depth.
+                moves.push(Move::Line { to: [first.x, first.y, above], plunge: true });
+                let turns = ((above - z) / (perimeter * slope)).ceil().clamp(1.0, 1000.0) as usize;
+                let total = perimeter * turns as f64;
+                let mut run = 0.0;
+                for _ in 0..turns {
+                    for i in 0..n {
+                        let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
+                        run += seg_len(a, b);
+                        moves.push(segment(a, b, above - (above - z) * (run / total).min(1.0)));
+                    }
+                }
+            } else {
+                moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
+            }
             for i in 0..n {
                 let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
                 moves.push(segment(a, b, *z));
@@ -255,6 +281,18 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
         }
     }
     Ok(Toolpath { moves, rings: rings.len(), levels })
+}
+
+/// The length of the polyline segment from `a` to `b`.
+fn seg_len(a: PlineVertex<f64>, b: PlineVertex<f64>) -> f64 {
+    let d = libm::hypot(b.x - a.x, b.y - a.y);
+    if a.bulge.abs() < 1e-12 {
+        return d;
+    }
+    // Arc: sweep 4 atan(k), radius d (1 + k²) / 4|k|.
+    let k = a.bulge.abs();
+    let sweep = 4.0 * libm::atan(k);
+    sweep * d * (1.0 + k * k) / (4.0 * k)
 }
 
 /// The move along the polyline segment from `a` to `b` (an arc when `a` has a bulge).
@@ -363,10 +401,11 @@ impl Toolpath {
                     let a = at.unwrap_or(to);
                     let _ = writeln!(
                         g,
-                        "{} X{} Y{} I{} J{} F{}",
+                        "{} X{} Y{} Z{} I{} J{} F{}",
                         if ccw { "G3" } else { "G2" },
                         n(to[0]),
                         n(to[1]),
+                        n(to[2]),
                         n(center[0] - a[0]),
                         n(center[1] - a[1]),
                         n(s.feed)
