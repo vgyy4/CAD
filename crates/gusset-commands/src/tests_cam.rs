@@ -33,6 +33,18 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     let q = run(&mut s, "cam.toolpath", job.clone());
     assert_eq!(q["levels_mm"], json!([-1.67, -3.33, -5.0]), "{q}");
     assert!(q["rings"].as_u64().unwrap() >= 3 && q["minutes"].as_f64().unwrap() > 0.0, "{q}");
+    assert!(q.get("path").is_none(), "the path only on request");
+    let mut with = job.clone();
+    with["path"] = json!(true);
+    let p = run(&mut s, "cam.toolpath", with);
+    let lines = p["path"].as_array().unwrap();
+    assert!(!lines.is_empty(), "{p}");
+    // Inside the pocket, a tool radius in, and down to the depth.
+    for v in lines.iter().flat_map(|l| l.as_array().unwrap()) {
+        let [x, y, z] = [0, 1, 2].map(|i| v[i].as_f64().unwrap());
+        assert!((3.0 - 1e-6..=37.0 + 1e-6).contains(&x) && (3.0 - 1e-6..=17.0 + 1e-6).contains(&y), "{v}");
+        assert!((-5.0 - 1e-9..=5.0).contains(&z), "{v}");
+    }
     let mut exp = job.clone();
     exp["path"] = json!("pocket.nc");
     let w = run(&mut s, "cam.export_gcode", exp.clone());

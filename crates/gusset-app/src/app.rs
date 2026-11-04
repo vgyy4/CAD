@@ -291,6 +291,8 @@ pub struct App {
     place_cursor: Option<Click>,
     /// A sketch to turn the camera to once its plane is known (editing starts).
     look_at_sketch: Option<String>,
+    /// The last toolpath asked for (ADR 0040), drawn over the model until the model changes.
+    pub(crate) toolpath: Option<DrawSketch>,
     /// A sketch point being dragged: (sketch, point id, where it would go).
     drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
@@ -415,6 +417,7 @@ impl App {
             place_cursor: None,
             drag_preview: None,
             look_at_sketch: None,
+            toolpath: None,
             chain: None,
             form: None,
             palette: None,
@@ -519,8 +522,14 @@ impl App {
 
     /// Sends a registry command as the user without waiting; `then` says what to do with
     /// the result when it arrives.
-    pub fn submit_command(&mut self, id: &str, args: Value, then: Then) {
+    pub fn submit_command(&mut self, id: &str, mut args: Value, then: Then) {
         let ctx = Self::ctx();
+        if id == "cam.toolpath"
+            && let Some(o) = args.as_object_mut()
+        {
+            // The app previews the cut in the viewport.
+            o.entry("path").or_insert(Value::Bool(true));
+        }
         if id == "import.file" {
             // The worker parses on its own thread without holding the model, and the
             // user can cancel it (the sandboxed worker process is killed).
@@ -750,6 +759,9 @@ impl App {
                         error: true,
                     });
                 }
+                if self.scene.as_ref().is_some_and(|d| d.key != data.key) {
+                    self.toolpath = None;
+                }
                 self.viewport.set_scene(data.render, data.bodies);
                 self.scene = Some(Drawn { key: data.key, sketches: data.sketches, eval: data.eval });
             }
@@ -888,9 +900,14 @@ impl App {
             Then::Show => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
                 match result {
-                    Ok(v) => {
+                    Ok(mut v) => {
                         if self.form.as_ref().is_some_and(|f| f.command == id) {
                             self.form = None;
+                        }
+                        if id == "cam.toolpath"
+                            && let Some(path) = v.as_object_mut().and_then(|o| o.remove("path"))
+                        {
+                            self.toolpath = Some(toolpath_drawing(&path, theme::palette(self.theme).warning));
                         }
                         self.dialog = Some(Dialog::Message { title: title.into(), body: inspect_text(&v) });
                     }
@@ -2893,6 +2910,7 @@ impl App {
         sketches.extend(preview.as_ref());
         sketches.extend(dragged.as_ref());
         sketches.extend(regions.as_ref());
+        sketches.extend(self.toolpath.as_ref());
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
 
         if let Some((frame, points)) = &placing {
@@ -3661,6 +3679,20 @@ pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeS
             _ => Vec::new(),
         })
         .collect()
+}
+
+/// A `cam.toolpath` path (polylines of [x, y, z]) as an overlay.
+fn toolpath_drawing(path: &Value, tint: egui::Color32) -> DrawSketch {
+    let point = |v: &Value| -> Option<[f32; 3]> {
+        let a = v.as_array()?;
+        let c = |i: usize| a.get(i).and_then(Value::as_f64).map(|x| x as f32);
+        Some([c(0)?, c(1)?, c(2)?])
+    };
+    let polylines = path
+        .as_array()
+        .map(|ls| ls.iter().filter_map(|l| Some(l.as_array()?.iter().filter_map(point).collect())).collect())
+        .unwrap_or_default();
+    DrawSketch { name: "toolpath".into(), polylines, tint: Some(tint), ..DrawSketch::default() }
 }
 
 /// Builds polylines for a solved sketch on its plane.

@@ -778,3 +778,26 @@ fn the_manufacture_tab_shows_the_cam_tools() {
     h.run();
     assert!(!h.state().cam_tab);
 }
+
+#[test]
+fn a_toolpath_is_previewed_over_the_model_until_the_model_changes() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20})).unwrap();
+    let mut h = harness(a);
+    crate::tests::settle(&mut h);
+    let job = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": 4.0});
+    h.state_mut().submit_command("cam.toolpath", job, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    let tp = h.state().toolpath.clone().expect("a toolpath preview");
+    assert!(!tp.polylines.is_empty() && tp.tint.is_some());
+    assert!(tp.polylines.iter().flatten().all(|p| p[2] <= 5.0 && p[0] >= 2.99 && p[0] <= 37.01));
+    // The inspection dialog shows the numbers, not the path.
+    match &h.state().dialog {
+        Some(crate::app::Dialog::Message { body, .. }) => assert!(!body.contains("\"path\""), "{body}"),
+        d => panic!("{d:?}"),
+    }
+    h.state_mut().run("param.set", json!({"name": "w", "expr": "12 mm"})).unwrap();
+    crate::tests::settle(&mut h);
+    assert!(h.state().toolpath.is_none());
+}

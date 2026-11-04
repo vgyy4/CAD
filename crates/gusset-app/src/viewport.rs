@@ -46,6 +46,8 @@ pub struct DrawSketch {
     pub labels: Vec<([f32; 3], String)>,
     /// Drawn thick in the selection color (picked profile regions).
     pub emphasis: bool,
+    /// Drawn thin in this color instead (a toolpath preview).
+    pub tint: Option<Color32>,
 }
 
 /// A construction plane (an origin plane or a datum plane), drawn as a translucent square
@@ -1151,8 +1153,12 @@ impl Viewport {
             }
             for (i, pl) in s.polylines.iter().enumerate() {
                 let pts: Vec<Pos2> = pl.iter().filter_map(|&v| to_screen(v)).collect();
-                let c = if s.emphasis { pal.vp_select } else { shade(s, s.ids.get(i)) };
-                let w = if c == pal.accent { 1.6 } else { 2.6 };
+                let c = match s.tint {
+                    _ if s.emphasis => pal.vp_select,
+                    Some(t) => t,
+                    None => shade(s, s.ids.get(i)),
+                };
+                let w = if c == pal.accent || s.tint.is_some() { 1.6 } else { 2.6 };
                 painter.add(egui::Shape::line(pts, Stroke::new(w, c)));
             }
             for (i, &p) in s.points.iter().enumerate() {

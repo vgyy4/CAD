@@ -40,12 +40,26 @@ pub struct CamJob {
     pub ramp_deg: Option<f64>,
     #[serde(default)]
     pub peck: Option<f64>,
-    /// [count, width, height].
+    /// [n, width, height].
     #[serde(default)]
     pub tabs: Option<[f64; 3]>,
 }
 
 impl CamJob {
+    /// The sketch plane's placement.
+    fn frame(&self, s: &mut Session, ctx: &CmdCtx) -> Result<gusset_kernel::Frame, CommandError> {
+        let doc = s.document(&ctx.actor)?;
+        let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)
+        else {
+            return Err(CommandError::not_found(format!("no sketch '{}'", self.sketch)));
+        };
+        let (def, units) = (def.clone(), doc.units);
+        let params = s.evaluate(&ctx.actor)?.params.clone();
+        let solved = gusset_eval::solve_sketch_def(&self.sketch, &def, &params, units)
+            .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+        Ok(solved.frame)
+    }
+
     fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
         let op = match self.operation.as_str() {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
@@ -113,6 +127,83 @@ impl CamJob {
     }
 }
 
+/// Most points a preview path holds.
+const MAX_PATH_POINTS: usize = 200_000;
+
+/// The cutting moves (plunges included, rapids left out) as polylines in world
+/// coordinates: the sketch plane's frame, Z along its normal. Arcs are sampled every 10
+/// degrees. The flag is set when the path was cut short at `MAX_PATH_POINTS`.
+fn world_path(t: &Toolpath, f: &gusset_kernel::Frame) -> (Vec<Vec<[f64; 3]>>, bool) {
+    use gusset_cam::Move;
+    let nrm = f.normal();
+    let w = |p: [f64; 3]| {
+        let v = f.to_world([p[0], p[1]]);
+        let q = [v[0] + nrm[0] * p[2], v[1] + nrm[1] * p[2], v[2] + nrm[2] * p[2]];
+        q.map(|c| (c * 1000.0).round() / 1000.0)
+    };
+    let mut out: Vec<Vec<[f64; 3]>> = Vec::new();
+    let mut cur: Vec<[f64; 3]> = Vec::new();
+    let mut at: Option<[f64; 3]> = None;
+    let mut count = 0usize;
+    for m in &t.moves {
+        if count > MAX_PATH_POINTS {
+            if cur.len() > 1 {
+                out.push(cur);
+            }
+            return (out, true);
+        }
+        match *m {
+            Move::Rapid(to) => {
+                if cur.len() > 1 {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur.clear();
+                at = Some(to);
+            }
+            Move::Line { to, .. } => {
+                if cur.is_empty()
+                    && let Some(a) = at
+                {
+                    cur.push(w(a));
+                }
+                cur.push(w(to));
+                count += 1;
+                at = Some(to);
+            }
+            Move::Arc { to, center, ccw } => {
+                let a = at.unwrap_or(to);
+                if cur.is_empty() {
+                    cur.push(w(a));
+                }
+                let r = libm::hypot(a[0] - center[0], a[1] - center[1]);
+                let a0 = libm::atan2(a[1] - center[1], a[0] - center[0]);
+                let a1 = libm::atan2(to[1] - center[1], to[0] - center[0]);
+                let mut sw = a1 - a0;
+                if ccw && sw <= 0.0 {
+                    sw += std::f64::consts::TAU;
+                }
+                if !ccw && sw >= 0.0 {
+                    sw -= std::f64::consts::TAU;
+                }
+                let n = (sw.abs() / 10f64.to_radians()).ceil().clamp(1.0, 36.0) as usize;
+                for i in 1..n {
+                    let u = i as f64 / n as f64;
+                    let t = a0 + sw * u;
+                    let z = a[2] + (to[2] - a[2]) * u;
+                    cur.push(w([center[0] + r * libm::cos(t), center[1] + r * libm::sin(t), z]));
+                }
+                cur.push(w(to));
+                count += n;
+                at = Some(to);
+            }
+        }
+    }
+    if cur.len() > 1 {
+        out.push(cur);
+    }
+    (out, false)
+}
+
 fn summary(t: &Toolpath, s: &Setup) -> Value {
     let st = t.stats(s);
     let r = |v: f64| (v * 100.0).round() / 100.0;
@@ -131,6 +222,9 @@ fn summary(t: &Toolpath, s: &Setup) -> Value {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolpathQuery {
+    /// 3D polylines.
+    #[serde(default)]
+    pub path: bool,
     #[serde(flatten)]
     pub job: CamJob,
 }
@@ -138,12 +232,23 @@ pub struct ToolpathQuery {
 impl Command for ToolpathQuery {
     const ID: &'static str = "cam.toolpath";
     const TITLE: &'static str = "Toolpath";
-    const DESCRIPTION: &'static str = "2.5D pocket/profile/drill toolpath of a sketch (mm; feed 600, plunge 200, rpm 10000, ramp 3 deg, stepdown D/2, stepover 0.4, safe top+5): length, time.";
+    const DESCRIPTION: &'static str = "2.5D pocket/profile/drill toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4, safe top+5): length, time";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let (t, setup) = self.job.run(s, ctx)?;
-        Ok(summary(&t, &setup))
+        let mut out = summary(&t, &setup);
+        if self.path {
+            let frame = self.job.frame(s, ctx)?;
+            let (lines, cut_short) = world_path(&t, &frame);
+            if let Some(o) = out.as_object_mut() {
+                o.insert("path".into(), json!(lines));
+                if cut_short {
+                    o.insert("path_truncated".into(), json!(true));
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
