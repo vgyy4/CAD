@@ -268,9 +268,10 @@ Phase 3 has started (see Next).
      worker; fuzz target `sat_read`; OCCT test against Spatial's own STEP translations).
      Spheres, tori and B-spline surfaces (procedural ones by their stored approximation)
      and versions 2 and 3, periodic B-splines done too. Binary ACIS (`.sab`) and Fusion 360
-     `.f3d`/`.f3z` archives done (their `.smb` bodies), helices too. Next: helical sweep
-     surfaces (threads), Fusion component placements (the
-     design stream), then `.sldprt`.
+     `.f3d`/`.f3z` archives done (their `.smb` bodies), helices too. Fusion component placements
+     done (rigid occurrence matrices read from `Design1/BulkStream.dat`, gusset_sat::fusion;
+     36 of the Crickit HAT's parts land on its board). Next: helical sweep surfaces (threads),
+     nested component placements, `.f3z` designs placed relative to each other, then `.sldprt`.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

@@ -862,7 +862,27 @@ fn transform(sat: &Sat, body: &Rec) -> Xf {
     Xf { r: [a, b, c], t: tr, s, unit }
 }
 
-pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>), SatError> {
+/// `xf` followed by the placement `p` (millimetres, column vectors).
+fn placed(xf: Xf, p: &crate::fusion::Placement) -> Xf {
+    // Row vectors: p' = q Rᵀ + t, so the combined matrix is R_xf Rᵀ and the translation
+    // t_xf Rᵀ + t / unit (the writer scales by the unit last).
+    let rt = |v: V3| {
+        [
+            v[0] * p.r[0][0] + v[1] * p.r[0][1] + v[2] * p.r[0][2],
+            v[0] * p.r[1][0] + v[1] * p.r[1][1] + v[2] * p.r[1][2],
+            v[0] * p.r[2][0] + v[1] * p.r[2][1] + v[2] * p.r[2][2],
+        ]
+    };
+    let u = if xf.unit.abs() > 1e-300 { xf.unit } else { 1.0 };
+    let t = rt(xf.t);
+    Xf { r: xf.r.map(rt), t: [t[0] + p.t[0] / u, t[1] + p.t[1] / u, t[2] + p.t[2] / u], s: xf.s, unit: xf.unit }
+}
+
+pub(crate) fn write(
+    sat: &Sat,
+    name: &str,
+    place: Option<&crate::fusion::Placement>,
+) -> Result<(String, usize, Vec<String>), SatError> {
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
         sat,
@@ -909,6 +929,9 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
         let br = w.rec(*b)?;
         // Geometry is written per body (each has its own transform).
         w.xf = transform(sat, br);
+        if let Some(p) = place {
+            w.xf = placed(w.xf, p);
+        }
         w.vertices.clear();
         w.edges.clear();
         w.curves.clear();

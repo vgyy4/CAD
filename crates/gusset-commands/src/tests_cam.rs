@@ -125,3 +125,40 @@ fn a_cantilever_rod_has_its_natural_frequencies() {
     assert!(f.len() == 2 && f1 > 800.0 && f1 < 1000.0, "{r}");
     assert_eq!(err(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 11})).code, "invalid_args");
 }
+
+/// Fusion component placements on a real design: runs when `GUSSET_F3D_SAMPLES` names a
+/// folder holding Adafruit's Crickit HAT archive as `a.f3z` (not in the repository).
+#[test]
+fn fusion_components_are_placed_by_their_occurrences() {
+    let Ok(dir) = std::env::var("GUSSET_F3D_SAMPLES") else { return };
+    let bytes = std::fs::read(std::path::Path::new(&dir).join("a.f3z")).unwrap();
+    let limits = gusset_meshio::Limits::default();
+    let mut budget = limits.max_decompressed_bytes;
+    let designs =
+        gusset_meshio::archive::read_entries_within(&bytes, &limits, &|n| n.ends_with(".f3d"), u64::MAX, &mut budget)
+            .unwrap();
+    let mut placed = Vec::new();
+    for (_, d) in &designs {
+        let s = gusset_meshio::archive::read_entries_within(
+            d,
+            &limits,
+            &|n| n.ends_with("/BulkStream.dat"),
+            u64::MAX,
+            &mut budget,
+        )
+        .unwrap();
+        for (_, b) in &s {
+            placed.extend(gusset_sat::fusion::placements(b));
+        }
+    }
+    // 36 component bodies; the board's own 3 bodies stay in the root.
+    assert_eq!(placed.len(), 36, "{:?}", placed.iter().map(|p| &p.occurrence).collect::<Vec<_>>());
+    let sw1 = placed.iter().find(|p| p.occurrence == "BTN_KMR2_4.6X2.8:SW1").unwrap();
+    let t = sw1.placement.t;
+    assert!((t[0] - 8.001).abs() < 1e-2 && (t[1] - 20.447).abs() < 1e-2 && (t[2] - 1.57).abs() < 1e-2, "{t:?}");
+    // Every part lies on the 65 x 56 mm board.
+    for p in &placed {
+        let t = p.placement.t;
+        assert!((0.0..=66.0).contains(&t[0]) && (0.0..=57.0).contains(&t[1]), "{}: {t:?}", p.occurrence);
+    }
+}

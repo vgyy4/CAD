@@ -337,10 +337,13 @@ const MAX_F3D_PARTS: usize = 64;
 /// Largest inflated entry of a Fusion archive (a part, or a design inside an `.f3z`).
 const MAX_F3D_PART_BYTES: u64 = 256 << 20;
 
+/// Largest design stream read for component placements.
+const MAX_F3D_STREAM_BYTES: u64 = 256 << 20;
+
 /// A Fusion 360 `.f3d` archive: every `Breps.BlobParts/*.smb` (binary ACIS of the design's
 /// bodies; `.smbh` holds their history and is skipped), converted to STEP and imported.
-/// The design's component placements live in Fusion's own design stream and are not read,
-/// so bodies come in where their B-rep puts them.
+/// Each body is placed by its component's occurrence, read from the design stream
+/// (`Design1/BulkStream.dat`, gusset_sat::fusion); bodies of the root component stay put.
 fn f3d(
     bytes: &[u8],
     importer: &dyn Importer,
@@ -353,13 +356,17 @@ fn f3d(
     };
     let mut budget = limits.max_decompressed_bytes;
     let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
-    let mut parts =
-        gusset_meshio::archive::read_entries_within(bytes, &limits, &is_brep, MAX_F3D_PART_BYTES, &mut budget)
-            .map_err(bad)?;
-    // An `.f3z` holds whole `.f3d` designs (one per component); their parts, one level
-    // deep, share the decompression budget.
-    if parts.is_empty() {
-        let designs = gusset_meshio::archive::read_entries_within(
+    let is_stream = |n: &str| n.ends_with("/BulkStream.dat");
+    let wanted = |n: &str| is_brep(n) || is_stream(n);
+    let read = |data: &[u8], budget: &mut u64| {
+        gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget).map_err(bad)
+    };
+    // The designs: the file itself, or for an `.f3z` the `.f3d` designs it holds (one
+    // level deep, sharing the decompression budget).
+    let mut designs = vec![read(bytes, &mut budget)?];
+    if !designs.iter().flatten().any(|(n, _)| is_brep(n)) {
+        designs.clear();
+        let inner = gusset_meshio::archive::read_entries_within(
             bytes,
             &limits,
             &|n| n.to_ascii_lowercase().ends_with(".f3d"),
@@ -367,48 +374,71 @@ fn f3d(
             &mut budget,
         )
         .map_err(bad)?;
-        for (_, d) in designs.iter().take(MAX_F3D_PARTS) {
-            parts.extend(
-                gusset_meshio::archive::read_entries_within(d, &limits, &is_brep, MAX_F3D_PART_BYTES, &mut budget)
-                    .map_err(bad)?,
-            );
-            if parts.len() > MAX_F3D_PARTS {
-                break;
-            }
+        for (_, d) in inner.iter().take(MAX_F3D_PARTS) {
+            designs.push(read(d, &mut budget)?);
         }
     }
-    if parts.is_empty() {
+    let count = designs.iter().flatten().filter(|(n, _)| is_brep(n)).count();
+    if count == 0 {
         return Err(CommandError::new("io", "the Fusion file holds no B-rep bodies (Breps.BlobParts/*.smb)"));
     }
-    if parts.len() > MAX_F3D_PARTS {
+    if count > MAX_F3D_PARTS {
         return Err(CommandError::new("io", format!("the Fusion file has more than {MAX_F3D_PARTS} B-rep parts")));
     }
     let mut out = Vec::new();
-    let mut warnings =
-        vec!["Fusion component placements are not read: bodies are placed as their B-rep stores them".to_string()];
-    for (i, (_, data)) in parts.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(cancelled());
-        }
-        let stem = if parts.len() > 1 { format!("Fusion {}", i + 1) } else { "Fusion".to_string() };
-        let c = match gusset_sat::to_step(data, &stem, &gusset_sat::Limits::default()) {
-            Ok(c) => c,
-            Err(e) => {
-                warnings.push(format!("B-rep part {}: {e}", i + 1));
-                continue;
+    let mut warnings = Vec::new();
+    let mut placed = 0;
+    let mut i = 0;
+    for entries in &designs {
+        let places: std::collections::HashMap<String, gusset_sat::fusion::Placed> = entries
+            .iter()
+            .filter(|(n, _)| is_stream(n))
+            .flat_map(|(_, b)| gusset_sat::fusion::placements(b))
+            .map(|p| (p.brep.clone(), p))
+            .collect();
+        for (entry, data) in entries.iter().filter(|(n, _)| is_brep(n)) {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
             }
-        };
-        warnings.extend(c.warnings);
-        let bodies = importer
-            .import("step", c.step.as_bytes(), cancel)
-            .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
-        out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step }));
+            i += 1;
+            let id = entry.rsplit("BREP.").next().and_then(|t| t.split('.').next()).unwrap_or_default();
+            let place = places.get(id);
+            let stem = match place {
+                Some(p) => p.occurrence.clone(),
+                None if count > 1 => format!("Fusion {i}"),
+                None => "Fusion".to_string(),
+            };
+            let c = match gusset_sat::to_step_placed(
+                data,
+                &stem,
+                &gusset_sat::Limits::default(),
+                place.map(|p| &p.placement),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    warnings.push(format!("B-rep part {i}: {e}"));
+                    continue;
+                }
+            };
+            placed += usize::from(place.is_some());
+            warnings.extend(c.warnings);
+            let bodies = importer
+                .import("step", c.step.as_bytes(), cancel)
+                .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+            out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step }));
+        }
     }
     if out.is_empty() {
         return Err(CommandError::new(
             "io",
             format!("no body of the Fusion file could be read: {}", warnings.join("; ")),
         ));
+    }
+    if designs.len() > 1 {
+        warnings.push("the designs of a Fusion archive (.f3z) are not placed relative to each other".into());
+    }
+    if placed > 0 {
+        warnings.insert(0, format!("{placed} of {count} B-rep parts placed by their component occurrence"));
     }
     warnings.truncate(50);
     Ok((out, TIER_SAT, warnings))

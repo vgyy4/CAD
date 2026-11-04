@@ -90,3 +90,27 @@ fn shared_loops_and_endless_helices_are_refused() {
     assert!(e.as_ref().map_or(true, |c| c.warnings.iter().any(|w| w.contains("left out"))), "{e:?}");
     assert!(e.as_ref().map_or(true, |c| c.step.len() < 1 << 20));
 }
+
+#[test]
+fn a_placement_moves_every_point_after_the_bodys_own_transform() {
+    let points = |s: &str| -> Vec<[f64; 3]> {
+        s.lines()
+            .filter_map(|l| l.split_once("CARTESIAN_POINT('',(")?.1.split_once("))").map(|(v, _)| v.to_string()))
+            .map(|v| {
+                let c: Vec<f64> = v.split(',').map(|x| x.trim().trim_end_matches('.').parse().unwrap()).collect();
+                [c[0], c[1], c[2]]
+            })
+            .collect()
+    };
+    let sat = box_sat(700, [10.0, 20.0, 30.0]);
+    let plain = to_step(sat.as_bytes(), "b", &Limits::default()).unwrap();
+    // A quarter turn about Z, then 100 mm along X: (x, y, z) -> (100 - y, x, z).
+    let p = fusion::Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [100.0, 0.0, 0.0] };
+    let moved = to_step_placed(sat.as_bytes(), "b", &Limits::default(), Some(&p)).unwrap();
+    let (a, b) = (points(&plain.step), points(&moved.step));
+    assert!(!a.is_empty() && a.len() == b.len());
+    for (u, v) in a.iter().zip(&b) {
+        let want = [100.0 - u[1], u[0], u[2]];
+        assert!((0..3).all(|i| (v[i] - want[i]).abs() < 1e-9), "{u:?} -> {v:?}, want {want:?}");
+    }
+}

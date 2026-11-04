@@ -10,6 +10,7 @@
 
 #[doc(hidden)]
 pub mod fixtures;
+pub mod fusion;
 mod parse;
 mod step;
 
@@ -59,8 +60,19 @@ pub struct Converted {
 
 /// Converts a SAT file to STEP text (millimetres).
 pub fn to_step(bytes: &[u8], name: &str, limits: &Limits) -> Result<Converted, SatError> {
+    to_step_placed(bytes, name, limits, None)
+}
+
+/// As [`to_step`], with every body moved by `place` (millimetres) after its own transform:
+/// a Fusion component's occurrence.
+pub fn to_step_placed(
+    bytes: &[u8],
+    name: &str,
+    limits: &Limits,
+    place: Option<&fusion::Placement>,
+) -> Result<Converted, SatError> {
     let sat = parse(bytes, limits)?;
-    let (step, bodies, warnings) = step::write(&sat, name)?;
+    let (step, bodies, warnings) = step::write(&sat, name, place)?;
     Ok(Converted { step, bodies, version: sat.version, warnings })
 }
 

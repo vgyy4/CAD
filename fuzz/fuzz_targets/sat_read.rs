@@ -14,4 +14,6 @@ fuzz_target!(|data: &[u8]| {
     let mut bin = b"ASM BinaryFile8".to_vec();
     bin.extend_from_slice(data);
     let _ = gusset_sat::to_step(&bin, "fuzz", &limits);
+    // A Fusion design stream's component placements.
+    let _ = gusset_sat::fusion::placements(data);
 });

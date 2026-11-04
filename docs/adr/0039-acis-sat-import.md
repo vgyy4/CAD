@@ -97,3 +97,19 @@ designs) reads the parts of each design within the same budget.
   500 turns; the STEP text stops at 256 MiB (refused as too large); header lines are read to
   4 KiB; at most 10M values and 100 warnings; `.f3d` entries inflate to at most 256 MiB each;
   directions of non-finite length are refused.
+
+## Amendment (2026-11-04): Fusion component placements
+
+Read clean-room from sample designs (Adafruit's published Fusion files, kept outside the
+repository): `Design1/BulkStream.dat` is uncompressed, with names as UTF-16LE strings. A
+component lists its bodies as `BREP.<id>.smb`; its occurrence follows as a rigid 4×4 matrix
+(16 little-endian doubles, row-major, last row 0 0 0 1, centimetres), the occurrence name
+`<component>:<instance>` and the string `CreateComponent`. `gusset_sat::fusion::placements`
+pairs each body with the first occurrence after it unless another body comes first (the
+root component's bodies have none and stay put). It accepts only orthonormal matrices with
+determinant +1 and translations under 100 km, reads at most 10000 occurrences, and searches
+at most 600 bytes back from each name; it is in the `sat_read` fuzz target. The import
+names each placed body after its occurrence and composes the placement after the body's
+own ACIS transform. Not read yet: nested components (their matrices are relative to the
+parent) and the placement of `.f3z` designs relative to each other (warned).
+
