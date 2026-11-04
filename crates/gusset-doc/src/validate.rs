@@ -413,11 +413,14 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 SheetOp::Tab { profile } => check_profile(n, profile, &seen, &mut out),
                 SheetOp::EdgeFlange { body, .. } => {
                     match seen.get(body.as_str()) {
-                        Some(g) if !matches!(&g.kind, FeatureKind::Sheet(t) if matches!(t.op, SheetOp::Tab { .. })) => {
+                        Some(g)
+                            if !matches!(&g.kind, FeatureKind::Sheet(t)
+                                if matches!(t.op, SheetOp::Tab { .. } | SheetOp::Contour { .. })) =>
+                        {
                             out.push(issue_h(
                                 n,
-                                format!("'{body}' is not a tab"),
-                                "edge flanges bend off a tab's outline",
+                                format!("'{body}' is not a tab or a contour flange"),
+                                "edge flanges bend off a tab's outline or a contour flange's sides",
                             ));
                         }
                         None => out.push(issue(n, format!("unknown tab '{body}'"))),

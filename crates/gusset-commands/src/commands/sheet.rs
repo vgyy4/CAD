@@ -107,9 +107,9 @@ impl Command for Tab {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EdgeFlange {
-    /// The tab feature.
+    /// Tab or contour flange.
     pub body: String,
-    /// The tab sketch's outline line to bend along, e.g. `l5`.
+    /// Tab line `l5`, contour side `l2_start`/`l2_end`.
     pub line: String,
     /// Straight flange after the bend.
     pub length: String,
@@ -132,8 +132,7 @@ pub struct EdgeFlange {
 impl Command for EdgeFlange {
     const ID: &'static str = "feature.edge_flange";
     const TITLE: &'static str = "Edge flange";
-    const DESCRIPTION: &'static str =
-        "Bend a flange off one outline line of a tab (sheet metal); the flat pattern grows with it.";
+    const DESCRIPTION: &'static str = "Bend a flange off a tab line or contour flange side; the flat pattern grows.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -158,8 +157,8 @@ impl Command for EdgeFlange {
                 (Some(r), _) => parse_expr("bend_radius", r)?,
                 (None, Some(t)) => t,
                 (None, None) => {
-                    return Err(CommandError::args(format!("'{}' is not a tab", self.body))
-                        .hint("edge flanges bend off a tab made with feature_tab"));
+                    return Err(CommandError::args(format!("'{}' is not sheet metal", self.body))
+                        .hint("edge flanges bend off feature_tab or feature_contour_flange"));
                 }
             };
             let name = feature_name(doc, self.name, "EdgeFlange")?;

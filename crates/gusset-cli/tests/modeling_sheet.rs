@@ -220,3 +220,46 @@ fn a_hem_folds_back_over_the_tab() {
     let flat = b.sheet.as_ref().unwrap();
     assert!(near(flat.size()[0], 60.0 + std::f64::consts::PI * 2.0 + 8.0));
 }
+
+#[test]
+fn edge_flanges_stand_off_a_contour_flanges_sides() {
+    let area = |o: &Vec<[f64; 2]>| {
+        let n = o.len();
+        (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+    };
+    for flip in [false, true] {
+        let f = if flip { ", flip: true" } else { "" };
+        let (ev, r) = eval(&format!(
+            "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)\n\n\
+             edge_flange F1 (body: U, line: l6_start, length: 12 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5{f})\n\n\
+             edge_flange F2 (body: U, line: l5_end, length: 8 mm, angle: 60 deg, bend_radius: 1 mm, k_factor: 0.5{f})"
+        ));
+        assert!(r.errors().is_empty(), "{:?}", r.errors());
+        assert_eq!(r.bodies.len(), 1, "the flanges join the channel");
+        let b = r.body("U").unwrap();
+        let (t, rad, w) = (2.0, 3.0, 40.0);
+        let ra = rad + t;
+        let (s5, s6, s7) = (30.0 - ra, 60.0 - 2.0 * ra, 30.0 - ra);
+        let channel = w * (t * (s5 + s6 + s7) + 2.0 * FRAC_PI_2 * t * (rad + t / 2.0));
+        let flange = |len: f64, th: f64, r: f64, l: f64| l * (th * t * (r + t / 2.0) + len * t);
+        let volume = channel + flange(12.0, FRAC_PI_2, 2.0, s6) + flange(8.0, FRAC_PI_2 * 2.0 / 3.0, 1.0, s5);
+        let m = ev.kernel().mass_properties(&b.shape).unwrap();
+        assert!(near(m.volume, volume), "flip {flip}: {} vs {volume}", m.volume);
+        let flat = b.sheet.as_ref().unwrap();
+        assert_eq!(flat.bends.len(), 4);
+        assert!(near(area(&flat.outlines[0]) * t, volume), "at k = 0.5 the flat area times t is the volume");
+        let names: Vec<String> = b.names.faces.iter().map(ToString::to_string).collect();
+        for want in ["F1/flat(l6_start)", "F1/bend_in(l6_start)", "F2/end(l5_end)"] {
+            assert!(names.iter().any(|n| n == want), "{want} in {names:?}");
+        }
+    }
+    // Neighbouring sides would meet in the bend; an unknown side is named.
+    let (_, r) = eval(
+        "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)\n\n\
+         edge_flange F1 (body: U, line: l6_start, length: 12 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n\n\
+         edge_flange F2 (body: U, line: l5_start, length: 12 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n\n\
+         edge_flange F3 (body: U, line: l6, length: 12 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)",
+    );
+    let errs: Vec<String> = r.errors().iter().map(|e| e.to_string()).collect();
+    assert!(errs.iter().any(|e| e.contains("collide")) && errs.iter().any(|e| e.contains("names no side")), "{errs:?}");
+}

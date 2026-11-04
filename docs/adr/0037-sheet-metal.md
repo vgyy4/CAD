@@ -63,3 +63,17 @@ tab Plate (profile: S2.regions(l4), thickness: 2 mm)
   `allow_changed: true`, and edge flanges refuse such a tab (they would be built where the tab
   was). Edge flanges grow the flat outline before uniting, so a refused line changes nothing.
   Arcs in flat outlines are sampled within 0.005 mm.
+
+## Amendment (2026-11-04): edge flanges on contour flanges
+
+`edge_flange` also bends off a contour flange: `line: <line>_start` or `<line>_end` names
+the side edge of that line's straight at the low or high end of the width along the
+sketch normal (the sketch plane is the low end for a positive, non-symmetric width). The
+flange runs the straight's flat length (between its bend tangent lines), "up" is towards
+the material side of the straight, and the flat pattern grows from that straight's stretch
+of the developed rectangle's edge. The contour flange keeps its straights (trimmed sketch
+line, material direction, developed start) in the flat pattern for this. Flanges on
+neighbouring lines' same side are refused: they would meet inside the bend between them
+(corner reliefs and mitres are later work). A bare line name on a contour flange is refused
+with the two side names as the hint.
+

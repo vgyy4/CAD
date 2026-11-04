@@ -27,6 +27,8 @@ pub struct FlatPattern {
     pub bends: Vec<FlatBend>,
     /// For a tab: where its outline lies, so edge flanges can be bent off its lines.
     pub base: Option<TabBase>,
+    /// For a contour flange: its straights, so edge flanges can be bent off their sides.
+    pub contour: Option<ContourBase>,
     /// Features other than sheet-metal ones that changed the body since (cuts, holes,
     /// moves...): the pattern does not show what they did.
     pub changed_by: Vec<String>,
@@ -37,6 +39,26 @@ pub struct FlatPattern {
 pub struct TabBase {
     pub sketch: String,
     pub flip: bool,
+}
+
+/// Where a contour flange's straights lie: in its sketch, across `z` along the sketch
+/// normal (the flat pattern's `y = z - z[0]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContourBase {
+    pub sketch: String,
+    pub straights: Vec<Straight>,
+    pub z: [f64; 2],
+}
+
+/// One flat stretch of a contour flange: the sketch-side line from `a` to `b` (trimmed by
+/// the bends), the direction into the material, and where it starts in the flat pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Straight {
+    pub line: String,
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub inward: [f64; 2],
+    pub x0: f64,
 }
 
 /// One bend of a flat pattern: the zone between the lines `start` and `end` straightens
@@ -234,7 +256,15 @@ pub(crate) fn contour_section(
     let w = width.abs();
     let mut x = 0.0;
     let mut bends = Vec::new();
+    let mut straights = Vec::with_capacity(n);
     for i in 0..n {
+        straights.push(Straight {
+            line: name(i),
+            a: a0(i),
+            b: a1(i),
+            inward: mul(normal(dirs.get(i).copied().unwrap_or([1.0, 0.0])), side),
+            x0: x,
+        });
         x += straight.get(i).copied().unwrap_or(0.0);
         if i + 1 < n {
             let th = turns.get(i + 1).copied().unwrap_or(0.0);
@@ -256,6 +286,8 @@ pub(crate) fn contour_section(
         outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]],
         bends,
         base: None,
+        // The sketch and the width's span are filled in by the caller.
+        contour: Some(ContourBase { sketch: String::new(), straights, z: [0.0, w] }),
         changed_by: Vec::new(),
     };
     Ok(Section { edges, flat })
@@ -466,7 +498,16 @@ impl Evaluator {
                 let res = k
                     .extrude(&profile, &ExtrudeSpec { distance: width, symmetric: *symmetric })
                     .map_err(|ke| kernel_err(name, "contour flange", ke))?;
-                (res, Some(ids), sec.flat, sketch.clone(), Vec::new())
+                let mut flat = sec.flat;
+                if let Some(c) = &mut flat.contour {
+                    c.sketch = sketch.clone();
+                    c.z = if *symmetric {
+                        [-width.abs() / 2.0, width.abs() / 2.0]
+                    } else {
+                        [width.min(0.0), width.max(0.0)]
+                    };
+                }
+                (res, Some(ids), flat, sketch.clone(), Vec::new())
             }
             SheetOp::Tab { profile } => {
                 let (solved, frame) = sketch_input(name, &profile.sketch, s)?;
@@ -484,7 +525,14 @@ impl Evaluator {
                 (
                     res,
                     None,
-                    FlatPattern { thickness: t, outlines, bends: Vec::new(), base, changed_by: Vec::new() },
+                    FlatPattern {
+                        thickness: t,
+                        outlines,
+                        bends: Vec::new(),
+                        base,
+                        contour: None,
+                        changed_by: Vec::new(),
+                    },
                     profile.sketch.clone(),
                     regions,
                 )
@@ -588,6 +636,137 @@ pub(crate) fn edge_section(t: f64, e: &EdgeSpec) -> Vec<ProfileEdge> {
     edges
 }
 
+/// Where an edge flange bends: the line from `a` to `b` in the flat pattern with the
+/// outward direction `out` there, and the flange profile's frame and extrusion.
+struct Site {
+    a: P2,
+    b: P2,
+    out: P2,
+    frame: Frame,
+    along: f64,
+}
+
+type SiteError = (String, &'static str);
+
+/// A tab's outline line: the flat pattern is the tab's sketch.
+fn tab_site(s: &State, flat: &FlatPattern, base: &TabBase, line: &str, t: f64) -> Result<Site, SiteError> {
+    let sv = s
+        .solved
+        .get(&base.sketch)
+        .cloned()
+        .ok_or_else(|| (format!("'{}' is not evaluated", base.sketch), "rebuild the model"))?;
+    let (a, b) = sv.line_points.get(line).copied().ok_or_else(|| {
+        (format!("'{line}' is not a line of {}", base.sketch), "name an outline line of the tab's sketch")
+    })?;
+    let ab = sub(b, a);
+    let l = len(ab);
+    if l < 1e-6 {
+        return Err((format!("line {line} has no length"), "pick another line"));
+    }
+    // Outward: the side of the line that is outside the flat outline.
+    let mid = mul(addv(a, b), 0.5);
+    let perp = [-ab[1] / l, ab[0] / l];
+    let probe = (l * 1e-3).min(1e-2);
+    let (left, right) =
+        (inside(&flat.outlines, addv(mid, mul(perp, probe))), inside(&flat.outlines, sub(mid, mul(perp, probe))));
+    let out = match (left, right) {
+        (false, true) => perp,
+        (true, false) => mul(perp, -1.0),
+        _ => {
+            return Err((
+                format!("line {line} is not on the outline (or a flange next to it covers it)"),
+                "pick a line of the tab's outer boundary, not one inside it or already flanged",
+            ));
+        }
+    };
+    let fr = sv.frame;
+    let n3 = fr.normal();
+    let o3 = gusset_kernel::add(gusset_kernel::scale(fr.x, out[0]), gusset_kernel::scale(fr.y, out[1]));
+    let mut origin = fr.to_world(a);
+    if base.flip {
+        origin = gusset_kernel::sub(origin, gusset_kernel::scale(n3, t));
+    }
+    let e3 = gusset_kernel::sub(fr.to_world(b), fr.to_world(a));
+    let along = if gusset_kernel::dot(cross(o3, n3), e3) >= 0.0 { l } else { -l };
+    Ok(Site { a, b, out, frame: Frame { origin, x: o3, y: n3 }, along })
+}
+
+/// A contour flange's side edge `<line>_start` (the low side along its sketch normal) or
+/// `<line>_end`: the flange stands off that side of the straight.
+fn contour_site(s: &State, flat: &FlatPattern, c: &ContourBase, line: &str) -> Result<Site, SiteError> {
+    let hint = "name a contour line's side: l2_start (low side along the sketch normal) or l2_end";
+    let (id, hi) = match (line.strip_suffix("_start"), line.strip_suffix("_end")) {
+        (Some(id), _) => (id, false),
+        (_, Some(id)) => (id, true),
+        _ => return Err((format!("'{line}' names no side of a contour line"), hint)),
+    };
+    let i = c
+        .straights
+        .iter()
+        .position(|st| st.line == id)
+        .ok_or_else(|| (format!("'{id}' is not a line of the contour flange"), hint))?;
+    let st = c.straights.get(i).ok_or_else(|| (format!("no line '{id}'"), hint))?;
+    // Neighbouring flanges on the same side would meet inside the bend between them.
+    let side = if hi { "_end" } else { "_start" };
+    for j in [i.wrapping_sub(1), i + 1] {
+        if let Some(n) = c.straights.get(j)
+            && flat.bends.iter().any(|bd| bd.line == format!("{}{side}", n.line))
+        {
+            return Err((
+                format!("{}{side} already has a flange: flanges on neighbouring sides would collide", n.line),
+                "flange every other line on one side, or use the other side",
+            ));
+        }
+    }
+    if flat.bends.iter().any(|bd| bd.line == line) {
+        return Err((format!("{line} already has a flange"), "pick another side"));
+    }
+    let sv = s.solved.get(&c.sketch).cloned().ok_or_else(|| (format!("'{}' is not evaluated", c.sketch), hint))?;
+    let l = len(sub(st.b, st.a));
+    let w = c.z[1] - c.z[0];
+    let (y, out) = if hi { (w, [0.0, 1.0]) } else { (0.0, [0.0, -1.0]) };
+    let fr = sv.frame;
+    let n3 = fr.normal();
+    let o3 = gusset_kernel::scale(n3, if hi { 1.0 } else { -1.0 });
+    let y3 = gusset_kernel::add(gusset_kernel::scale(fr.x, st.inward[0]), gusset_kernel::scale(fr.y, st.inward[1]));
+    let zs = if hi { c.z[1] } else { c.z[0] };
+    let origin = gusset_kernel::add(fr.to_world(st.a), gusset_kernel::scale(n3, zs));
+    let e3 = gusset_kernel::sub(fr.to_world(st.b), fr.to_world(st.a));
+    let along = if gusset_kernel::dot(cross(o3, y3), e3) >= 0.0 { l } else { -l };
+    Ok(Site { a: [st.x0, y], b: [st.x0 + l, y], out, frame: Frame { origin, x: o3, y: y3 }, along })
+}
+
+/// Inserts the flange `a`, `pa`, `pb`, `b` into the outline edge that holds the line from
+/// `a` to `b` (the whole edge, or part of it); false when no edge holds it.
+fn splice(outlines: &mut [Vec<[f64; 2]>], a: P2, b: P2, pa: P2, pb: P2) -> bool {
+    let on = |p: P2, q: P2, x: P2| {
+        let pq = sub(q, p);
+        let l2 = pq[0] * pq[0] + pq[1] * pq[1];
+        if l2 <= 0.0 {
+            return None;
+        }
+        let u = ((x[0] - p[0]) * pq[0] + (x[1] - p[1]) * pq[1]) / l2;
+        let d = len(sub(x, addv(p, mul(pq, u))));
+        (d < 1e-6 && (-1e-9..=1.0 + 1e-9).contains(&u)).then_some(u)
+    };
+    for o in outlines.iter_mut() {
+        let n = o.len();
+        let hit = (0..n).find_map(|i| {
+            let (p, q) = (*o.get(i)?, *o.get((i + 1) % n)?);
+            let (ua, ub) = (on(p, q, a)?, on(p, q, b)?);
+            let pts = if ua <= ub { [a, pa, pb, b] } else { [b, pb, pa, a] };
+            let ins: Vec<[f64; 2]> =
+                pts.into_iter().filter(|x| len(sub(*x, p)) > 1e-9 && len(sub(*x, q)) > 1e-9).collect();
+            Some((i, ins))
+        });
+        if let Some((i, ins)) = hit {
+            o.splice(i + 1..i + 1, ins);
+            return true;
+        }
+    }
+    false
+}
+
 impl Evaluator {
     fn run_edge_flange(
         &self,
@@ -623,66 +802,35 @@ impl Evaluator {
             )
         })?;
         let flat = target.sheet.clone().ok_or_else(|| bad(format!("'{body}' is not sheet metal")))?;
-        let base = flat.base.clone().ok_or_else(|| {
-            bad(format!("'{body}' is not a tab")).with_hint("edge flanges bend off the outline lines of a tab")
-        })?;
         if let Some(by) = flat.changed_by.first() {
             return Err(bad(format!("'{body}' was changed by {by} since it was made"))
                 .with_hint("put edge flanges right after their tab, before cuts, holes or moves"));
         }
         let t = flat.thickness;
-        let sv =
-            s.solved.get(&base.sketch).cloned().ok_or_else(|| bad(format!("'{}' is not evaluated", base.sketch)))?;
-        let (a, b) = sv
-            .line_points
-            .get(line)
-            .copied()
-            .ok_or_else(|| bad(format!("'{line}' is not a line of {}", base.sketch)))?;
-        let ab = sub(b, a);
-        let l = len(ab);
-        if l < 1e-6 {
-            return Err(bad(format!("line {line} has no length")));
-        }
-        // Outward: the side of the line that is outside the flat outline.
-        let mid = mul(addv(a, b), 0.5);
-        let perp = [-ab[1] / l, ab[0] / l];
-        let probe = (l * 1e-3).min(1e-2);
-        let (left, right) =
-            (inside(&flat.outlines, addv(mid, mul(perp, probe))), inside(&flat.outlines, sub(mid, mul(perp, probe))));
-        let out2 = match (left, right) {
-            (false, true) => perp,
-            (true, false) => mul(perp, -1.0),
-            _ => {
-                return Err(bad(format!(
-                    "line {line} is not on the outline of {body} (or a flange next to it covers it)"
-                ))
-                .with_hint("pick a line of the tab's outer boundary, not one inside it or already flanged"));
+        let site = match (&flat.base, &flat.contour) {
+            (Some(base), _) => tab_site(s, &flat, base, line, t).map_err(|(m, h)| bad(m).with_hint(h))?,
+            (None, Some(c)) => contour_site(s, &flat, c, line).map_err(|(m, h)| bad(m).with_hint(h))?,
+            (None, None) => {
+                return Err(bad(format!("'{body}' is not a tab or a contour flange"))
+                    .with_hint("edge flanges bend off a tab's outline or a contour flange's sides"));
             }
         };
-        let fr = sv.frame;
-        let n3 = fr.normal();
-        let o3 = gusset_kernel::add(gusset_kernel::scale(fr.x, out2[0]), gusset_kernel::scale(fr.y, out2[1]));
-        let mut origin = fr.to_world(a);
-        if base.flip {
-            origin = gusset_kernel::sub(origin, gusset_kernel::scale(n3, t));
-        }
-        let frame = Frame { origin, x: o3, y: n3 };
-        let e3 = gusset_kernel::sub(fr.to_world(b), fr.to_world(a));
-        let along = if gusset_kernel::dot(cross(o3, n3), e3) >= 0.0 { l } else { -l };
+        let (a, b, out2) = (site.a, site.b, site.out);
+        let ab = sub(b, a);
         let mut edges = edge_section(t, e);
         if loop_area(&edges) < 0.0 {
             edges = reversed(edges);
         }
-        let profile = Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] };
+        let profile =
+            Profile { frame: site.frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] };
         let res = self
             .kernel
-            .extrude(&profile, &ExtrudeSpec { distance: along, symmetric: false })
+            .extrude(&profile, &ExtrudeSpec { distance: site.along, symmetric: false })
             .map_err(|ke| kernel_err(name, "edge flange", ke))?;
         // The flat pattern grows by the bend zone and the flange beyond the line.
         let ba = e.angle * (e.r + e.k * t);
         let reach = ba + e.length;
         let mut nf = (*flat).clone();
-        let near = |p: &[f64; 2], q: P2| len(sub(*p, q)) < 1e-6;
         let (pa, pb) = (addv(a, mul(out2, reach)), addv(b, mul(out2, reach)));
         // At a convex corner two flanges leave an open corner; at a concave one this flange
         // would run into the sheet already there (the tab or another flange).
@@ -695,27 +843,8 @@ impl Evaluator {
                 }
             }
         }
-        let mut grown = false;
-        for o in &mut nf.outlines {
-            let n = o.len();
-            let hit = (0..n).find_map(|i| {
-                let (p, q) = (o.get(i)?, o.get((i + 1) % n)?);
-                if near(p, a) && near(q, b) {
-                    Some((i, [pa, pb]))
-                } else if near(p, b) && near(q, a) {
-                    Some((i, [pb, pa]))
-                } else {
-                    None
-                }
-            });
-            if let Some((i, pts)) = hit {
-                o.splice(i + 1..i + 1, pts);
-                grown = true;
-                break;
-            }
-        }
-        if !grown {
-            return Err(bad(format!("line {line} is not one edge of {body}'s outline")));
+        if !splice(&mut nf.outlines, a, b, pa, pb) {
+            return Err(bad(format!("line {line} is not on {body}'s outline")));
         }
         nf.bends.push(FlatBend {
             line: line.to_string(),
@@ -832,13 +961,15 @@ mod eval_tests {
     }
 
     #[test]
-    fn edge_flanges_round_trip_and_need_a_tab() {
+    fn edge_flanges_round_trip_and_need_sheet_metal() {
         let src = format!(
             "{SRC}contour_flange Base (curves: S.curves(l4), width: 40 mm, thickness: 2 mm, bend_radius: 1 mm, k_factor: 0.5)\n\n\
              edge_flange E (body: Base, line: l4, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, flip: true)\n"
         );
-        let e = Document::from_text(&src).unwrap_err().to_string();
-        assert!(e.contains("not a tab"), "{e}");
+        // A contour flange takes a side of one of its lines; a hole feature is no sheet.
+        assert!(Document::from_text(&src).is_ok(), "{src}");
+        let e = Document::from_text(&src.replace("body: Base", "body: S")).unwrap_err().to_string();
+        assert!(e.contains("not a tab or a contour flange"), "{e}");
         let missing = src.replace(", length: 10 mm", "");
         assert!(Document::from_text(&missing).unwrap_err().to_string().contains("length"));
     }
