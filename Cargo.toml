@@ -89,6 +89,7 @@ gusset-sketch = { path = "crates/gusset-sketch", version = "0.1.0-mvp" }
 gusset-text = { path = "crates/gusset-text", version = "0.1.0-mvp" }
 gusset-scad = { path = "crates/gusset-scad", version = "0.1.0-mvp" }
 gusset-cam = { path = "crates/gusset-cam", version = "0.1.0-mvp" }
+gusset-fea = { path = "crates/gusset-fea", version = "0.1.0-mvp" }
 gusset-sat = { path = "crates/gusset-sat", version = "0.1.0-mvp" }
 gusset-xt = { path = "crates/gusset-xt", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }

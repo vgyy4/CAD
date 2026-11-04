@@ -20,6 +20,7 @@ gusset-meshio.workspace = true
 quick-xml.workspace = true
 gusset-scad.workspace = true
 gusset-cam.workspace = true
+gusset-fea.workspace = true
 gusset-sat.workspace = true
 gusset-xt.workspace = true
 gusset-store.workspace = true

@@ -64,3 +64,24 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     assert!(g.contains("G98 G83 X10 Y10 Z-6 R0 Q2") && g.contains("\nX30 Y10\n"), "{g}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
+
+#[test]
+fn a_bar_is_analysed_by_its_face_names() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"}));
+    let r = run(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+               "poisson": 0.0, "voxel": 5.0}),
+    );
+    // PL / EA = 1000 · 100 / (210000 · 100).
+    let exact = 1000.0 * 100.0 / (210_000.0 * 100.0);
+    let d = r["max_displacement_mm"].as_f64().unwrap();
+    assert!((d - exact).abs() < 1e-5, "{r}");
+    assert!((r["max_von_mises_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{r}");
+    assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
+    assert_eq!(err(&mut s, "sim.static", json!({"fixed": ["Nope/cap(end)"], "loads": []})).code, "not_found");
+}

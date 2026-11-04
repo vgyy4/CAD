@@ -303,6 +303,7 @@ dependencies = [
  "gusset-doc",
  "gusset-drawing",
  "gusset-eval",
+ "gusset-fea",
  "gusset-history",
  "gusset-kernel",
  "gusset-meshio",
@@ -355,6 +356,14 @@ dependencies = [
  "gusset-sketch",
  "gusset-text",
  "gusset-units",
+ "libm",
+]
+
+[[package]]
+name = "gusset-fea"
+version = "0.1.0-mvp"
+dependencies = [
+ "gusset-kernel",
  "libm",
 ]
 

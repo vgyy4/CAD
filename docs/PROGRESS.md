@@ -287,7 +287,10 @@ Phase 3 has started (see Next).
      passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,
      G2/G3 arcs), ramp entry along the ring (default 3 deg), drilling (G81/G83 at circle centres), holding tabs on profiles. Next: toolpaths in the document with a viewport
      preview.
-   - later: simulation, plugins.
+   - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
+     (hexahedra, matrix-free PCG), fixed faces and face loads by name, max displacement and von
+     Mises stress; `sim.static`. Next: refinement, stress colours in the viewport, modal analysis.
+   - later: plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
    `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk

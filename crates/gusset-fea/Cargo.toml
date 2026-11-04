@@ -1,0 +1,15 @@
+[package]
+name = "gusset-fea"
+description = "Linear static analysis on a voxel grid for Gusset (ADR 0041)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libm.workspace = true
+gusset-kernel.workspace = true
+
+[lints]
+workspace = true

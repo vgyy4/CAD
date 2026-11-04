@@ -121,6 +121,7 @@ const SOLID: &[Group] = &[
             d("query.joints", "Joints"),
             d("query.bom", "Bill of materials"),
             d("query.gear_pair", "Gear pair"),
+            d("sim.static", "Stress"),
         ],
     },
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },

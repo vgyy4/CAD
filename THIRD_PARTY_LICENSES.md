@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (372)
+- MIT License (373)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5684,6 +5684,7 @@ Used by:
 - [gusset-doc 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-drawing 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-eval 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-fea 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-history 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-host 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-hw 0.1.0-mvp](https://github.com/vgyy4/CAD)
