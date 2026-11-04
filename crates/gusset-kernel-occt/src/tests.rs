@@ -860,3 +860,84 @@ fn surfaces_extrude_patch_thicken_and_stitch() {
     assert_eq!(k().topology(&open.shape).unwrap().solids, 0);
     assert!(k().stitch(&[], 1e-3).is_err());
 }
+
+/// ACIS SAT (ADR 0039): exploratory pass over the files in `GUSSET_SAT_DIR` (prints, never
+/// fails). The asserting tests are below.
+#[test]
+fn sat_survey() {
+    let Ok(dir) = std::env::var("GUSSET_SAT_DIR") else { return };
+    let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    names.sort();
+    for p in names.into_iter().filter(|p| p.extension().is_some_and(|e| e == "sat")) {
+        let bytes = std::fs::read(&p).unwrap();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        match gusset_sat::to_step(&bytes, "s", &gusset_sat::Limits::default()) {
+            Err(e) => eprintln!("SURVEY {name}: convert: {e}"),
+            Ok(c) => match k().import_step(c.step.as_bytes()) {
+                Err(e) => eprintln!("SURVEY {name}: import: {e}"),
+                Ok(shapes) => {
+                    let mut s = String::new();
+                    for (shape, _) in &shapes {
+                        let t = k().topology(shape).unwrap();
+                        let m = k().mass_properties(shape).unwrap();
+                        s.push_str(&format!(" [solids {} faces {} vol {:.4}]", t.solids, t.faces.len(), m.volume));
+                    }
+                    if let Ok(theirs) = std::fs::read(p.with_extension("stp")) {
+                        match k().import_step(&theirs) {
+                            Ok(t) => {
+                                let v: f64 =
+                                    t.iter().map(|(sh, _)| k().mass_properties(sh).map_or(0.0, |m| m.volume)).sum();
+                                s.push_str(&format!(" oracle vol {v:.4}"));
+                            }
+                            Err(e) => s.push_str(&format!(" oracle: {e}")),
+                        }
+                    }
+                    eprintln!(
+                        "SURVEY {name}: bodies {} sat-faces {}{s}",
+                        c.bodies,
+                        String::from_utf8_lossy(&bytes).lines().filter(|l| l.starts_with("face ")).count()
+                    );
+                }
+            },
+        }
+    }
+}
+
+/// ACIS SAT (ADR 0039): a generated box imports as one solid of its exact volume, in both
+/// record layouts.
+#[test]
+fn a_sat_box_imports_with_its_volume() {
+    for v in [600, 700] {
+        let sat = gusset_sat::fixtures::box_sat(v, [10.0, 20.0, 30.0]);
+        let c = gusset_sat::to_step(sat.as_bytes(), "box", &gusset_sat::Limits::default()).unwrap();
+        let shapes = k().import_step(c.step.as_bytes()).unwrap();
+        assert_eq!(shapes.len(), 1);
+        let m = k().mass_properties(&shapes[0].0).unwrap();
+        assert!((m.volume - 6000.0).abs() < 1e-6, "{v}: {}", m.volume);
+    }
+}
+
+/// ACIS SAT against Spatial's own STEP translations of the same files (NIST, CMU
+/// spectrometer): the same volume. Runs when `GUSSET_SAT_SAMPLES` names
+/// usnistgov/engineering-design-models/models.
+#[test]
+fn sat_samples_match_their_step_translations() {
+    let Ok(dir) = std::env::var("GUSSET_SAT_SAMPLES") else { return };
+    let dir = std::path::Path::new(&dir).join("CMU/spectrometer");
+    for stem in [
+        "bearing_208_back_shorts_inner_link_outer.hh",
+        "bearing_208_link_42_inner_43.hh",
+        "bearing_shaft_57_link1_43.hh",
+        "bellow_upper_right.hh",
+        "bellows_spacer_right.hh",
+    ] {
+        let sat = std::fs::read(dir.join(format!("{stem}.sat"))).unwrap();
+        let c = gusset_sat::to_step(&sat, stem, &gusset_sat::Limits::default()).unwrap();
+        let ours = k().import_step(c.step.as_bytes()).unwrap();
+        let theirs = k().import_step(&std::fs::read(dir.join(format!("{stem}.sat.stp"))).unwrap()).unwrap();
+        let vol = |v: &[(Shape, String)]| v.iter().map(|(s, _)| k().mass_properties(s).unwrap().volume).sum::<f64>();
+        let (a, b) = (vol(&ours), vol(&theirs));
+        assert!((a - b).abs() <= 1e-6 * b.abs(), "{stem}: {a} vs {b}");
+        assert!(ours.iter().all(|(s, _)| k().topology(s).unwrap().solids == 1), "{stem}");
+    }
+}

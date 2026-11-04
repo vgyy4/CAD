@@ -21,3 +21,4 @@ workspace = true
 [dev-dependencies]
 libm.workspace = true
 gusset-xt.workspace = true
+gusset-sat.workspace = true

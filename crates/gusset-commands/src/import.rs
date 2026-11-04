@@ -46,11 +46,16 @@ enum Kind {
     Scad,
     /// A Parasolid XT file, converted here to STEP and imported by the worker (ADR 0035).
     Xt,
+    /// An ACIS SAT file, converted here to STEP and imported by the worker (ADR 0039).
+    Sat,
 }
 
 /// Tier note for Parasolid imports.
 pub const TIER_XT: &str =
     "exact geometry from the Parasolid file (B-rep, no feature history; intersection curves are fitted)";
+
+/// Tier note for ACIS SAT imports.
+pub const TIER_SAT: &str = "exact geometry from the ACIS file (B-rep, no feature history)";
 
 /// Tier note for OpenSCAD imports.
 pub const TIER_SCAD: &str = "exact geometry built from the OpenSCAD program (B-rep, its parameters are not kept)";
@@ -164,17 +169,18 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
         "fcstd" => Kind::FreeCad,
         "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
+        "sat" => Kind::Sat,
         "scad" => Kind::Scad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt) && importer.is_none() {
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sat) && importer.is_none() {
         return Err(CommandError::new(
             "not_allowed",
             "STEP/IGES/Parasolid/FreeCAD import is not available in this session",
@@ -224,6 +230,24 @@ impl ImportJob {
                 let mut warnings = c.warnings;
                 warnings.truncate(50);
                 (bodies.collect::<Vec<_>>(), TIER_XT, warnings)
+            }
+            Kind::Sat => {
+                let importer =
+                    self.importer.ok_or_else(|| CommandError::new("not_allowed", "ACIS import is not available"))?;
+                let stem = Path::new(&self.file_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let c = gusset_sat::to_step(&bytes, &stem, &gusset_sat::Limits::default())
+                    .map_err(|e| CommandError::new("io", format!("ACIS: {e}")))?;
+                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                })?;
+                let bodies =
+                    bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step });
+                let mut warnings = c.warnings;
+                warnings.truncate(50);
+                (bodies.collect::<Vec<_>>(), TIER_SAT, warnings)
             }
             Kind::FreeCad => {
                 let importer =

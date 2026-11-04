@@ -1,0 +1,41 @@
+# ADR 0039: ACIS SAT import
+
+Status: accepted (2026-11-04). PROMPT.md "Phase 3+": tier-2 native imports. ACIS is the
+kernel of Fusion 360 (its `.f3d` archives hold ACIS bodies), Inventor's and SolidEdge's
+exchange paths and many older CAD tools; `.sat` is its text save format.
+
+## Context
+After the Parasolid XT reader (ADR 0035), ACIS is the other kernel format a large share of
+commercial models exist in. OCCT has no ACIS reader. The NIST engineering design models
+repository holds about 48 500 `.sat` files (Drexel, CMU, PTC and others, ACIS 1 to 7), and for
+the CMU spectrometer files also Spatial's own STEP translation of each (`.sat.stp`).
+
+## Decision
+A new crate, `gusset-sat`, reads SAT text clean-room, from those sample files only (no
+vendor documentation or third-party reader code is used or committed), and writes STEP AP214
+that the sandboxed worker imports, exactly as for XT:
+
+* **Records**: three header lines, then `type fields #` records; version 7 adds an integer
+  and a pointer after each record's attribute (the transform record has only the integer) and
+  writes strings as `@len text`; versions 4 to 6 share one layout. Versions before 4 are
+  refused.
+* **Topology**: body, lump, shell (and subshells), face, loop, coedge, edge, vertex, point;
+  body transforms are applied (a 3x3 matrix by rows on row vectors, translation, scale), as the
+  samples show (their local geometry is centred and only the transformed bodies fit together).
+* **Geometry**: planes, cylinders, cones (radius `|major| + h sin/cos` along the axis, derived
+  from the cones' circular edges), lines, circles and ellipses. An edge without a curve (a
+  cone's apex) becomes a vertex loop. A shell with free edges is written as an open shell
+  (sheet) with a warning. Spline surfaces and curves (`spline-surface`, `intcurve-curve`),
+  spheres, tori and elliptical cones are refused with their type named.
+* **Limits**: records, tokens, chain lengths, faces and subshell depth are capped; the fuzz
+  target `sat_read` covers the reader.
+* `import.file` takes `.sat`.
+
+## Consequences
+* The OCCT tests import a generated box at its exact volume (both layouts) and, with
+  `GUSSET_SAT_SAMPLES`, five CMU files at the volume of Spatial's own STEP translations.
+  A survey of 29 fetched samples: every version 5 to 7 file without spline geometry imports
+  as solids; one sheet body comes through as a sheet.
+* Next: spline surfaces and intersection curves (the `exact`/`approx` B-spline data the
+  records carry), spheres and tori once samples show their layout, then `.f3d` (a zip whose
+  bodies are binary ACIS, SAB/SMB, a byte form of the same records).

@@ -274,6 +274,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-naming",
  "gusset-project",
+ "gusset-sat",
  "gusset-scad",
  "gusset-sketch",
  "gusset-store",
@@ -334,6 +335,7 @@ dependencies = [
  "gusset-kernel",
  "gusset-meshio",
  "gusset-project",
+ "gusset-sat",
  "gusset-scad",
  "gusset-store",
  "gusset-units",
@@ -410,6 +412,13 @@ dependencies = [
  "rlimit",
  "seccompiler",
  "windows-sys",
+]
+
+[[package]]
+name = "gusset-sat"
+version = "0.1.0-mvp"
+dependencies = [
+ "libm",
 ]
 
 [[package]]

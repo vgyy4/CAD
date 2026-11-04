@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (368)
+- MIT License (369)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5697,6 +5697,7 @@ Used by:
 - [gusset-project 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-render 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sandbox 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-sat 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-scad 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sketch 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-store 0.1.0-mvp](https://github.com/vgyy4/CAD)

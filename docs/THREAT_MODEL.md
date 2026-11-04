@@ -16,7 +16,7 @@ Last full revision: 2026-10-10 (Phase 1).
 ## 2. Attackers
 | ID | Attacker | Capabilities |
 |---|---|---|
-| T1 | Author of a malicious project or import file | Controls every byte of `.gus`, STEP, IGES, STL, 3MF, OBJ, `.f3d`, `.sldprt`, FCStd and `.scad` files the user opens |
+| T1 | Author of a malicious project or import file | Controls every byte of `.gus`, STEP, IGES, STL, 3MF, OBJ, `.f3d`, `.sldprt`, Parasolid XT, ACIS SAT, FCStd and `.scad` files the user opens |
 | T2 | Another local user on the same machine | Can create files in shared locations (`/tmp`, `C:\ProgramData`, shared folders) and connect to localhost ports |
 | T3 | A local process of the same user (malware) | Out of scope for full protection; we avoid making it easier (token file permissions, no DLL search hijack) |
 | T4 | Network attacker / malicious website | DNS rebinding against localhost MCP; MITM on update downloads |
