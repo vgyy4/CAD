@@ -70,6 +70,16 @@ text, and `gusset build --import box.f3d` gets its exact volume; the Adafruit pa
 with all their bodies, half of whose vertices match Adafruit's own STEP exports exactly (the
 rest are moved by component placements).
 
+### Amendment (same day): newer text, helices, partial faces, `.f3z`
+Text files of the newest versions (`.smt`, 22400; subtype names followed by a version number,
+`int_int_cur 22310 full nubs ...`) read as version 7. Helices (`helix_int_cur [version] F t0
+F t1 centre major minor pitch taper`, a point at `t` being `centre + major cos t + minor sin t +
+pitch t/2π`, checked against their edges' vertices) become C1 cubic B-splines through points
+at most a sixteenth of a turn apart, with the exact tangents. A face on geometry not read yet
+(helical sweeps `helix_spl_line`, tapered helices, elliptical cones) is left out with a
+warning instead of failing the file: its shell comes in as a sheet. `.f3z` (a ZIP of `.f3d`
+designs) reads the parts of each design within the same budget.
+
 ## Consequences
 * The OCCT tests import a generated box at its exact volume (both layouts) and, with
   `GUSSET_SAT_SAMPLES`, five CMU files at the volume of Spatial's own STEP translations.

@@ -44,10 +44,12 @@ fn hostile_input_is_refused_not_panicked_on() {
     let sat = box_sat(700, [1.0, 1.0, 1.0]);
     let small = Limits { max_records: 10, max_tokens: 1_000_000 };
     assert!(matches!(to_step(sat.as_bytes(), "x", &small), Err(SatError::TooLarge(_))));
-    // A spline surface is named, not guessed.
-    let spl = sat.replacen("plane-surface", "spline-surface", 1);
-    let e = to_step(spl.as_bytes(), "x", &Limits::default()).unwrap_err().to_string();
-    assert!(e.contains("spline-surface"), "{e}");
+    // A surface not read yet is named, and its face left out: the rest comes in as a sheet.
+    let odd = sat.replacen("plane-surface", "meshsurf-surface", 1);
+    let c = to_step(odd.as_bytes(), "x", &Limits::default()).unwrap();
+    assert!(c.warnings.iter().any(|w| w.contains("meshsurf-surface")), "{:?}", c.warnings);
+    assert_eq!(c.step.matches("ADVANCED_FACE").count(), 5);
+    assert!(c.step.contains("OPEN_SHELL"));
 }
 
 #[test]

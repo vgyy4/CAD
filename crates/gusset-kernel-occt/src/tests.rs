@@ -901,6 +901,9 @@ fn sat_survey() {
                             Err(e) => s.push_str(&format!(" oracle: {e}")),
                         }
                     }
+                    for w in c.warnings.iter().take(5) {
+                        eprintln!("SURVEY   warning: {w}");
+                    }
                     eprintln!(
                         "SURVEY {name}: bodies {} sat-faces {}{s}",
                         c.bodies,

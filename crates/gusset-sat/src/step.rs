@@ -175,6 +175,67 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     Ok(Bs3 { degree, knots, mults, points, weights })
 }
 
+/// Segments per turn of a helix fitted as a B-spline.
+const HELIX_SEGMENTS_PER_TURN: f64 = 16.0;
+
+/// A helix (`helix_int_cur [version] F t0 F t1 centre major minor pitch taper ...`): the
+/// point at `t` is `centre + major cos t + minor sin t + pitch t / 2π` (checked against the
+/// vertices of its edges), written as a C1 cubic B-spline through points at most 1/16 turn
+/// apart with the exact tangents there.
+fn helix(r: &Rec, from: usize) -> Result<Bs3, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("helix: {m}"));
+    let mut k = from;
+    if r.word(k).is_some_and(|w| w.parse::<i64>().is_ok()) && matches!(r.word(k + 1), Some("F" | "I" | "T")) {
+        k += 1;
+    }
+    let mut ends = [0.0f64; 2];
+    for e in &mut ends {
+        if !matches!(r.word(k), Some("F" | "T")) {
+            return Err(SatError::Unsupported("helices without a finite range are not read yet".into()));
+        }
+        *e = r.num(k + 1).ok_or_else(|| bad("range"))?;
+        k += 2;
+    }
+    let c = r.vec3(k).ok_or_else(|| bad("centre"))?;
+    let m = r.vec3(k + 3).ok_or_else(|| bad("major axis"))?;
+    let n = r.vec3(k + 6).ok_or_else(|| bad("minor axis"))?;
+    let p = r.vec3(k + 9).ok_or_else(|| bad("pitch"))?;
+    if r.num(k + 12).is_some_and(|t| t.abs() > 1e-12) {
+        return Err(SatError::Unsupported("tapered helices are not read yet".into()));
+    }
+    let [t0, t1] = ends;
+    let turns = (t1 - t0).abs() / std::f64::consts::TAU;
+    if t1 <= t0 || t1.is_nan() || t0.is_nan() || turns > 10_000.0 {
+        return Err(bad("range"));
+    }
+    let segs = ((turns * HELIX_SEGMENTS_PER_TURN).ceil() as usize).max(1);
+    let h = (t1 - t0) / segs as f64;
+    let tau = std::f64::consts::TAU;
+    let comb = |a: V3, b: V3, cc: V3, d: V3, (x, y, z, w): (f64, f64, f64, f64)| {
+        [
+            a[0] * x + b[0] * y + cc[0] * z + d[0] * w,
+            a[1] * x + b[1] * y + cc[1] * z + d[1] * w,
+            a[2] * x + b[2] * y + cc[2] * z + d[2] * w,
+        ]
+    };
+    let at = |t: f64| comb(c, m, n, p, (1.0, libm::cos(t), libm::sin(t), t / tau));
+    let tangent = |t: f64| comb(c, m, n, p, (0.0, -libm::sin(t), libm::cos(t), 1.0 / tau));
+    let step = |a: V3, d: V3, f: f64| [a[0] + d[0] * f, a[1] + d[1] * f, a[2] + d[2] * f];
+    let mut points = vec![at(t0)];
+    let mut knots = vec![t0];
+    let mut mults = vec![4];
+    for i in 0..segs {
+        let (a, b) = (t0 + h * i as f64, if i + 1 == segs { t1 } else { t0 + h * (i + 1) as f64 });
+        let (pa, pb, da, db) = (at(a), at(b), tangent(a), tangent(b));
+        points.push(step(pa, da, (b - a) / 3.0));
+        points.push(step(pb, db, -(b - a) / 3.0));
+        points.push(pb);
+        knots.push(b);
+        mults.push(if i + 1 == segs { 4 } else { 3 });
+    }
+    Ok(Bs3 { degree: 3, knots, mults, points, weights: None })
+}
+
 /// A B-spline surface (`exactsur`): `[full] nubs|nurbs <du> <dv> <words> <nu> <nv>`, the u
 /// then v knot vectors as for curves, then the control points, u major (each u row lists
 /// its points along v).
@@ -324,6 +385,8 @@ struct Writer<'a> {
     curves: BTreeMap<i64, (usize, bool)>,
     surfaces: BTreeMap<i64, (usize, bool)>,
     faces: usize,
+    /// Faces left out for geometry not read yet.
+    skipped: usize,
     /// Coedges per edge in the shell being written (an edge used once is a free edge).
     uses: BTreeMap<i64, u32>,
     warnings: Vec<String>,
@@ -443,7 +506,11 @@ impl Writer<'_> {
                 // `forward`/`reversed` (or `0`/`1`): the curve against its B-spline.
                 against = reversed(r.word(1));
                 let (def, open) = self.subtype(&r)?;
-                let b = bs3_curve(&def, open + 1)?;
+                let b = if def.word(open + 1) == Some("helix_int_cur") {
+                    helix(&def, open + 2)?
+                } else {
+                    bs3_curve(&def, open + 1)?
+                };
                 let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
                 let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
                 let knots: Vec<String> = b.knots.iter().map(|k| real(*k)).collect();
@@ -726,6 +793,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
         curves: BTreeMap::new(),
         surfaces: BTreeMap::new(),
         faces: 0,
+        skipped: 0,
         uses: BTreeMap::new(),
         warnings: Vec::new(),
     };
@@ -769,7 +837,18 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
                 let mut ids = Vec::new();
                 w.uses.clear();
                 for f in faces {
-                    ids.push(w.face(f)?);
+                    // A face with geometry not read yet is left out (its shell becomes a
+                    // sheet), so the rest of the part still comes in.
+                    match w.face(f) {
+                        Ok(id) => ids.push(id),
+                        Err(SatError::Unsupported(m)) => {
+                            w.skipped += 1;
+                            if w.skipped <= 20 {
+                                w.warnings.push(format!("a face was left out: {m}"));
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 if ids.is_empty() {
                     continue;

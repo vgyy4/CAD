@@ -172,13 +172,13 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "fcstd" => Kind::FreeCad,
         "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
         "sat" | "sab" => Kind::Sat,
-        "f3d" => Kind::F3d,
+        "f3d" | "f3z" => Kind::F3d,
         "scad" => Kind::Scad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
@@ -350,8 +350,29 @@ fn f3d(
     };
     let mut budget = limits.max_decompressed_bytes;
     let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
-    let parts =
+    let mut parts =
         gusset_meshio::archive::read_entries_within(bytes, &limits, &is_brep, u64::MAX, &mut budget).map_err(bad)?;
+    // An `.f3z` holds whole `.f3d` designs (one per component); their parts, one level
+    // deep, share the decompression budget.
+    if parts.is_empty() {
+        let designs = gusset_meshio::archive::read_entries_within(
+            bytes,
+            &limits,
+            &|n| n.to_ascii_lowercase().ends_with(".f3d"),
+            u64::MAX,
+            &mut budget,
+        )
+        .map_err(bad)?;
+        for (_, d) in designs.iter().take(MAX_F3D_PARTS) {
+            parts.extend(
+                gusset_meshio::archive::read_entries_within(d, &limits, &is_brep, u64::MAX, &mut budget)
+                    .map_err(bad)?,
+            );
+            if parts.len() > MAX_F3D_PARTS {
+                break;
+            }
+        }
+    }
     if parts.is_empty() {
         return Err(CommandError::new("io", "the Fusion file holds no B-rep bodies (Breps.BlobParts/*.smb)"));
     }

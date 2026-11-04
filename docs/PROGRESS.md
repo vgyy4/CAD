@@ -268,7 +268,8 @@ Phase 3 has started (see Next).
      worker; fuzz target `sat_read`; OCCT test against Spatial's own STEP translations).
      Spheres, tori and B-spline surfaces (procedural ones by their stored approximation)
      and versions 2 and 3, periodic B-splines done too. Binary ACIS (`.sab`) and Fusion 360
-     `.f3d` archives done (their `.smb` bodies). Next: Fusion component placements (the
+     `.f3d`/`.f3z` archives done (their `.smb` bodies), helices too. Next: helical sweep
+     surfaces (threads), Fusion component placements (the
      design stream), then `.sldprt`.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
