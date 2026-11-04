@@ -84,6 +84,70 @@ pub struct Toolpath {
     /// Rings cut per depth level.
     pub rings: usize,
     pub levels: Vec<f64>,
+    /// A drilling job: written as canned cycles (the moves expand them, for statistics).
+    pub drill: Option<Drill>,
+}
+
+/// Holes drilled straight down at `points` (in cutting order), pecking by `peck` if set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drill {
+    pub points: Vec<[f64; 2]>,
+    pub peck: Option<f64>,
+}
+
+/// Most holes one drilling job may have.
+const MAX_HOLES: usize = 100_000;
+
+/// Drills `points` to the setup's depth (the stepdown is not used; `peck` breaks chips).
+/// The holes are visited nearest first from the origin.
+pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Toolpath, CamError> {
+    check(s)?;
+    if points.is_empty() {
+        return Err(CamError::NothingToCut("no holes to drill (the sketch has no circles)".into()));
+    }
+    if points.len() > MAX_HOLES {
+        return Err(CamError::TooLarge("more than 100000 holes".into()));
+    }
+    if peck.is_some_and(|q| !(q.is_finite() && q > 0.0 && s.depth / q <= 1000.0)) {
+        return Err(CamError::Invalid("the peck depth must be positive (at most 1000 pecks)".into()));
+    }
+    if points.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(CamError::Invalid("a hole position is not a number".into()));
+    }
+    // Nearest neighbour order (quadratic, bounded by the hole count above).
+    let mut left: Vec<[f64; 2]> = points.to_vec();
+    let mut order = Vec::with_capacity(left.len());
+    let mut at = [0.0, 0.0];
+    while !left.is_empty() {
+        let (i, _) = left.iter().enumerate().fold((0, f64::INFINITY), |best, (i, p)| {
+            let d = libm::hypot(p[0] - at[0], p[1] - at[1]);
+            if d < best.1 { (i, d) } else { best }
+        });
+        let p = left.swap_remove(i);
+        at = p;
+        order.push(p);
+    }
+    let bottom = s.top - s.depth;
+    let mut moves = Vec::new();
+    for p in &order {
+        moves.push(Move::Rapid([p[0], p[1], s.safe]));
+        match peck {
+            Some(q) => {
+                let mut z = s.top;
+                while z > bottom + 1e-9 {
+                    z = (z - q).max(bottom);
+                    moves.push(Move::Line { to: [p[0], p[1], z], plunge: true });
+                    moves.push(Move::Rapid([p[0], p[1], s.top]));
+                }
+            }
+            None => moves.push(Move::Line { to: [p[0], p[1], bottom], plunge: true }),
+        }
+        moves.push(Move::Rapid([p[0], p[1], s.safe]));
+        if moves.len() > MAX_MOVES {
+            return Err(CamError::TooLarge("the toolpath has more than 5M moves".into()));
+        }
+    }
+    Ok(Toolpath { moves, rings: 0, levels: vec![bottom], drill: Some(Drill { points: order, peck }) })
 }
 
 /// Lengths (mm) and an estimated time (min) of a toolpath.
@@ -280,7 +344,7 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             }
         }
     }
-    Ok(Toolpath { moves, rings: rings.len(), levels })
+    Ok(Toolpath { moves, rings: rings.len(), levels, drill: None })
 }
 
 /// The length of the polyline segment from `a` to `b`.
@@ -373,6 +437,33 @@ impl Toolpath {
         let _ = writeln!(g, "G0 Z{}", n(s.safe));
         if s.rpm > 0.0 {
             let _ = writeln!(g, "S{} M3", n(s.rpm));
+        }
+        if let Some(d) = &self.drill {
+            // Canned cycles: G81 drill, or G83 peck drill; R the retract plane (the top).
+            let bottom = s.top - s.depth;
+            for (i, p) in d.points.iter().enumerate() {
+                let xy = format!("X{} Y{}", n(p[0]), n(p[1]));
+                if i > 0 {
+                    let _ = writeln!(g, "{xy}");
+                    continue;
+                }
+                let _ = writeln!(g, "G0 {xy}");
+                match d.peck {
+                    Some(q) => {
+                        let _ = writeln!(g, "G98 G83 {xy} Z{} R{} Q{} F{}", n(bottom), n(s.top), n(q), n(s.plunge));
+                    }
+                    None => {
+                        let _ = writeln!(g, "G98 G81 {xy} Z{} R{} F{}", n(bottom), n(s.top), n(s.plunge));
+                    }
+                }
+            }
+            g.push_str("G80\n");
+            let _ = writeln!(g, "G0 Z{}", n(s.safe));
+            if s.rpm > 0.0 {
+                g.push_str("M5\n");
+            }
+            g.push_str("M30\n");
+            return g;
         }
         let mut at: Option<[f64; 3]> = None;
         for m in &self.moves {

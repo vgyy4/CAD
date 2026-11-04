@@ -14,10 +14,10 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 pub struct CamJob {
     /// Its plane is z = 0.
     pub sketch: String,
-    /// Default: all.
+    /// Region ids (drill: circle ids); default: all.
     #[serde(default)]
     pub regions: Vec<String>,
-    /// `pocket`, `profile_outside` or `profile_inside`.
+    /// `pocket`, `profile_outside`, `profile_inside` or `drill` (circle centres).
     pub operation: String,
     pub tool_diameter: f64,
     pub depth: f64,
@@ -44,17 +44,21 @@ pub struct CamJob {
     /// Ramp entry angle, deg (default 3; 0 plunges).
     #[serde(default)]
     pub ramp_deg: Option<f64>,
+    /// Drill: peck depth (default: none, G81).
+    #[serde(default)]
+    pub peck: Option<f64>,
 }
 
 impl CamJob {
     fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
         let op = match self.operation.as_str() {
-            "pocket" => Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) },
-            "profile_outside" => Operation::Profile { outside: true },
-            "profile_inside" => Operation::Profile { outside: false },
+            "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
+            "profile_outside" => Some(Operation::Profile { outside: true }),
+            "profile_inside" => Some(Operation::Profile { outside: false }),
+            "drill" => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, profile_outside or profile_inside"));
+                    .hint("pocket, profile_outside, profile_inside or drill"));
             }
         };
         let top = self.top.unwrap_or(0.0);
@@ -77,9 +81,25 @@ impl CamJob {
         let def = def.clone();
         let units = doc.units;
         let params = s.evaluate(&ctx.actor)?.params.clone();
-        let regions = gusset_eval::sketch_regions(&self.sketch, &def, &params, units, &self.regions)
-            .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-        let t = gusset_cam::toolpath(&regions, op, &setup).map_err(|e| match e {
+        let t = match op {
+            Some(op) => {
+                let regions = gusset_eval::sketch_regions(&self.sketch, &def, &params, units, &self.regions)
+                    .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                gusset_cam::toolpath(&regions, op, &setup)
+            }
+            None => {
+                let solved = gusset_eval::solve_sketch_def(&self.sketch, &def, &params, units)
+                    .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                let pts: Vec<[f64; 2]> = solved
+                    .circles
+                    .iter()
+                    .filter(|(id, _)| self.regions.is_empty() || self.regions.contains(id))
+                    .filter_map(|(_, c)| solved.points.get(c).copied())
+                    .collect();
+                gusset_cam::drilling(&pts, self.peck, &setup)
+            }
+        };
+        let t = t.map_err(|e| match e {
             gusset_cam::CamError::Invalid(m) => CommandError::args(m),
             gusset_cam::CamError::NothingToCut(m) => {
                 CommandError::new("evaluation", m).hint("use a smaller tool or a larger region")

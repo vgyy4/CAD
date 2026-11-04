@@ -46,10 +46,21 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     typo["tool_diametr"] = json!(6.0);
     assert_eq!(err(&mut s, "cam.toolpath", typo).code, "invalid_args");
     let mut bad = job.clone();
-    bad["operation"] = json!("drill");
+    bad["operation"] = json!("engrave");
     assert_eq!(err(&mut s, "cam.toolpath", bad).code, "invalid_args");
     let mut big = job;
     big["tool_diameter"] = json!(30.0);
     assert_eq!(err(&mut s, "cam.toolpath", big).code, "evaluation");
+    // Holes at the sketch's circles.
+    run(&mut s, "sketch.add_circle", json!({"sketch": "Sketch1", "cx": 10, "cy": 10, "radius": 2}));
+    run(&mut s, "sketch.add_circle", json!({"sketch": "Sketch1", "cx": 30, "cy": 10, "radius": 2}));
+    let d = run(
+        &mut s,
+        "cam.export_gcode",
+        json!({"path": "holes.nc", "sketch": "Sketch1", "operation": "drill", "tool_diameter": 4.0, "depth": 6.0, "peck": 2.0}),
+    );
+    assert_eq!(d["written"], "holes.nc", "{d}");
+    let g = std::fs::read_to_string(s.project_dir.clone().unwrap().join("holes.nc")).unwrap();
+    assert!(g.contains("G98 G83 X10 Y10 Z-6 R0 Q2") && g.contains("\nX30 Y10\n"), "{g}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }

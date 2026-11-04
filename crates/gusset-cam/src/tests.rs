@@ -132,3 +132,20 @@ fn a_ramp_spirals_down_the_ring_without_plunging_below_the_level_above() {
     assert!(lowest_plunge >= -3.34, "{lowest_plunge}");
     assert!(t.gcode(&s, "ramp").contains(" Z-"));
 }
+
+#[test]
+fn holes_are_drilled_nearest_first_with_canned_cycles() {
+    let pts = [[30.0, 0.0], [10.0, 0.0], [20.0, 0.0]];
+    let t = drilling(&pts, Some(2.0), &setup(5.0)).unwrap();
+    let d = t.drill.as_ref().unwrap();
+    assert_eq!(d.points, vec![[10.0, 0.0], [20.0, 0.0], [30.0, 0.0]]);
+    let g = t.gcode(&setup(5.0), "holes");
+    assert!(g.contains("G98 G83 X10 Y0 Z-5 R0 Q2 F200") && g.contains("\nX20 Y0\n") && g.contains("G80\n"), "{g}");
+    // Pecks of 2, 2 and 1 per hole, each from the top: 2 + 4 + 5 mm of plunging per hole.
+    let st = t.stats(&setup(5.0));
+    assert!(st.plunge > 3.0 * 5.0 - 1e-9, "{st:?}");
+    let g = drilling(&pts, None, &setup(5.0)).unwrap().gcode(&setup(5.0), "holes");
+    assert!(g.contains("G98 G81 X10 Y0 Z-5 R0 F200"), "{g}");
+    assert!(drilling(&[], None, &setup(5.0)).is_err());
+    assert!(drilling(&pts, Some(0.0), &setup(5.0)).is_err());
+}
