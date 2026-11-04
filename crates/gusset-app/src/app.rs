@@ -260,6 +260,8 @@ pub struct App {
     pub surface_tab: bool,
     /// The Sheet Metal tab is chosen (ADR 0037).
     pub sheet_tab: bool,
+    /// The Manufacture tab is chosen (ADR 0040).
+    pub cam_tab: bool,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -396,6 +398,7 @@ impl App {
             docks_swapped: false,
             surface_tab: false,
             sheet_tab: false,
+            cam_tab: false,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -2095,6 +2098,7 @@ impl App {
                 quick: &[],
                 surface: self.surface_tab,
                 sheet: self.sheet_tab,
+                cam: self.cam_tab,
             },
         );
         if let Some(a) = action {
@@ -2119,6 +2123,7 @@ impl App {
                 quick: &quick,
                 surface: self.surface_tab,
                 sheet: self.sheet_tab,
+                cam: self.cam_tab,
             },
         );
         if let Some(a) = action {
@@ -2137,18 +2142,22 @@ impl App {
                 self.active_drawing = None;
                 self.surface_tab = false;
                 self.sheet_tab = false;
+                self.cam_tab = false;
                 self.finish_sketch();
             }
             Action::SurfaceTab => {
                 self.active_drawing = None;
-                self.surface_tab = true;
-                self.sheet_tab = false;
+                (self.surface_tab, self.sheet_tab, self.cam_tab) = (true, false, false);
                 self.finish_sketch();
             }
             Action::SheetTab => {
                 self.active_drawing = None;
-                self.surface_tab = false;
-                self.sheet_tab = true;
+                (self.surface_tab, self.sheet_tab, self.cam_tab) = (false, true, false);
+                self.finish_sketch();
+            }
+            Action::CamTab => {
+                self.active_drawing = None;
+                (self.surface_tab, self.sheet_tab, self.cam_tab) = (false, false, true);
                 self.finish_sketch();
             }
             Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {

@@ -761,3 +761,20 @@ fn the_sheet_metal_tab_shows_the_sheet_metal_tools() {
     assert!(!h.state().sheet_tab);
     assert!(h.query_by_label("Contour flange").is_none());
 }
+
+#[test]
+fn the_manufacture_tab_shows_the_cam_tools() {
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_label("Export G-code").is_none());
+    h.get_by_label("MANUFACTURE").click();
+    h.run();
+    assert!(h.state().cam_tab && !h.state().sheet_tab);
+    h.get_by_label("Export G-code").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("cam.export_gcode"));
+    h.state_mut().form = None;
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert!(!h.state().cam_tab);
+}

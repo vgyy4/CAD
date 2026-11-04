@@ -24,6 +24,8 @@ pub enum Action {
     SurfaceTab,
     /// The Sheet Metal tab (ADR 0037): flanges, tabs and the flat pattern.
     SheetTab,
+    /// The Manufacture tab (ADR 0040): toolpaths and G-code.
+    CamTab,
     /// The Sketch tab: edits the latest sketch (or starts a new one).
     SketchTab,
     /// "Finish sketch".
@@ -122,6 +124,12 @@ const SOLID: &[Group] = &[
         ],
     },
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },
+];
+
+const CAM: &[Group] = &[
+    Group { key: "ribbon.create", large: 1, tools: &[d("sketch.create", "Sketch")] },
+    Group { key: "ribbon.inspect", large: 1, tools: &[d("cam.toolpath", "Toolpath")] },
+    Group { key: "ribbon.export", large: 1, tools: &[d("cam.export_gcode", "G-code")] },
 ];
 
 const SHEET: &[Group] = &[
@@ -262,6 +270,8 @@ pub struct Ribbon<'a> {
     pub surface: bool,
     /// The Sheet Metal tab is chosen (outside sketches and drawings).
     pub sheet: bool,
+    /// The Manufacture tab is chosen.
+    pub cam: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -351,9 +361,10 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         let sketching = r.sketch.is_some() && r.drawing.is_none();
         let drawing = r.drawing.is_some();
         for (label, active, act) in [
-            (tr("tab.solid"), !sketching && !drawing && !r.surface && !r.sheet, Action::SolidTab),
+            (tr("tab.solid"), !sketching && !drawing && !r.surface && !r.sheet && !r.cam, Action::SolidTab),
             (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
             (tr("tab.sheet"), !sketching && !drawing && r.sheet, Action::SheetTab),
+            (tr("tab.cam"), !sketching && !drawing && r.cam, Action::CamTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
         ] {
@@ -455,6 +466,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         SURFACE
     } else if r.sheet {
         SHEET
+    } else if r.cam {
+        CAM
     } else {
         SOLID
     };
