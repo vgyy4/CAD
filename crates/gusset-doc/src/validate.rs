@@ -60,6 +60,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
         FeatureKind::Surface(d) => !matches!(d.op, SurfaceOp::Thicken { .. }),
+        FeatureKind::Sheet(_) => true,
         _ => false,
     }
 }
@@ -81,6 +82,7 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         FeatureKind::Surface(d) if !matches!(d.op, SurfaceOp::Thicken { .. }) => {
             Some(d.body_name.as_deref().unwrap_or(&f.name))
         }
+        FeatureKind::Sheet(d) => Some(d.body_name.as_deref().unwrap_or(&f.name)),
         _ => None,
     }
 }
@@ -374,6 +376,30 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                         }
                     }
                 }
+            },
+            FeatureKind::Sheet(d) => match &d.op {
+                SheetOp::Contour { curves, .. } => {
+                    if let PathRef::Sketch { sketch, curves } = curves {
+                        match seen.get(sketch.as_str()) {
+                            Some(g) if !matches!(g.kind, FeatureKind::Sketch(_)) => {
+                                out.push(issue(n, format!("'{sketch}' is not a sketch")));
+                            }
+                            None => out.push(issue(n, format!("unknown sketch '{sketch}'"))),
+                            _ => {}
+                        }
+                        if curves.len() > MAX_CONTOUR_LINES {
+                            out.push(issue(n, format!("{} lines; at most {MAX_CONTOUR_LINES}", curves.len())));
+                        }
+                        let mut listed = BTreeSet::new();
+                        for c in curves {
+                            check_sketch_entity(n, sketch, c, None, &seen, &mut out);
+                            if !listed.insert(c.as_str()) {
+                                out.push(issue(n, format!("line '{c}' is listed twice")));
+                            }
+                        }
+                    }
+                }
+                SheetOp::Tab { profile } => check_profile(n, profile, &seen, &mut out),
             },
             FeatureKind::Import(i) => {
                 if !is_hash(&i.blob) {

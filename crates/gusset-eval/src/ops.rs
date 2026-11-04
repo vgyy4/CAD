@@ -205,6 +205,7 @@ impl Evaluator {
                 names,
                 topology: topo,
                 holes: Vec::new(),
+                sheet: None,
             }));
             return Ok(());
         }
@@ -502,6 +503,7 @@ pub(crate) fn rebuilt_body(old: &Body, shape: Shape, names: BodyNames, topology:
         names,
         topology,
         holes: old.holes.clone(),
+        sheet: old.sheet.clone(),
     })
 }
 
@@ -627,6 +629,7 @@ impl Evaluator {
                 names,
                 topology: topo,
                 holes: Vec::new(),
+                sheet: None,
             }));
         } else {
             // A rigid move changes where the faces are, not what they are: names stay.
@@ -726,6 +729,7 @@ impl Evaluator {
                 names: slot.names.clone(),
                 topology: slot.topology.clone(),
                 holes: slot.holes.clone(),
+                sheet: slot.sheet.clone(),
             };
             b.holes.extend(tool_holes);
             *slot = Arc::new(b);

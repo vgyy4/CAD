@@ -278,6 +278,7 @@ impl Evaluator {
                 names,
                 topology: topo,
                 holes,
+                sheet: body.sheet.clone(),
             });
         }
         Ok(())

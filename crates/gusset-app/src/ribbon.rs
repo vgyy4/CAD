@@ -22,6 +22,8 @@ pub enum Action {
     SolidTab,
     /// The Surface tab (ADR 0036): the surface tools.
     SurfaceTab,
+    /// The Sheet Metal tab (ADR 0037): flanges, tabs and the flat pattern.
+    SheetTab,
     /// The Sketch tab: edits the latest sketch (or starts a new one).
     SketchTab,
     /// "Finish sketch".
@@ -119,6 +121,20 @@ const SOLID: &[Group] = &[
         ],
     },
     Group { key: "ribbon.insert", large: 1, tools: &[d("import.file", "Import")] },
+];
+
+const SHEET: &[Group] = &[
+    Group {
+        key: "ribbon.create",
+        large: 3,
+        tools: &[d("sketch.create", "Sketch"), d("feature.contour_flange", "Flange"), d("feature.tab", "Tab")],
+    },
+    Group { key: "ribbon.modify", large: 2, tools: &[d("feature.hole", "Hole"), d("feature.extrude", "Cut")] },
+    Group {
+        key: "ribbon.inspect",
+        large: 2,
+        tools: &[d("query.flat_pattern", "Flat pattern"), d("sheet.export_flat", "Export flat")],
+    },
 ];
 
 const SURFACE: &[Group] = &[
@@ -238,6 +254,8 @@ pub struct Ribbon<'a> {
     pub quick: &'a [&'static str],
     /// The Surface tab is chosen (outside sketches and drawings).
     pub surface: bool,
+    /// The Sheet Metal tab is chosen (outside sketches and drawings).
+    pub sheet: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -327,8 +345,9 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         let sketching = r.sketch.is_some() && r.drawing.is_none();
         let drawing = r.drawing.is_some();
         for (label, active, act) in [
-            (tr("tab.solid"), !sketching && !drawing && !r.surface, Action::SolidTab),
+            (tr("tab.solid"), !sketching && !drawing && !r.surface && !r.sheet, Action::SolidTab),
             (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
+            (tr("tab.sheet"), !sketching && !drawing && r.sheet, Action::SheetTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
         ] {
@@ -428,6 +447,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         SKETCH
     } else if r.surface {
         SURFACE
+    } else if r.sheet {
+        SHEET
     } else {
         SOLID
     };

@@ -128,6 +128,7 @@ impl Evaluator {
                         names,
                         topology: topo,
                         holes: Vec::new(),
+                        sheet: None,
                     }),
                 );
                 Ok(())

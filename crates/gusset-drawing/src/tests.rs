@@ -220,6 +220,7 @@ fn centre_marks_and_centrelines() {
         names: Default::default(),
         topology,
         holes: vec![],
+        sheet: None,
     });
     let view = |toward: [f64; 3], x: [f64; 3], y: [f64; 3]| PlacedView {
         name: "V".into(),

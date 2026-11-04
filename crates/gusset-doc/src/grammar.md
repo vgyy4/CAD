@@ -372,6 +372,23 @@ solid in place (negative thickness: the other side; `both_sides`: half to each).
 sews bodies along shared edges within the tolerance into one body, a solid when closed; the
 listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 
+## Sheet metal (ADR 0037)
+
+```
+contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44, [symmetric: true], [flip: true])
+tab Plate (profile: S2.regions(l4), thickness: 2 mm, [flip: true])
+```
+
+`contour_flange` bends an open chain of sketch lines at every corner (inside radius
+`bend_radius`) into a sheet `thickness` thick and `width` deep along the sketch normal. The
+material lies left of the travel direction from the first listed line (`flip`: right); the
+sketch lines are the faces `flat(<line>)`, the far side `flat_back(<line>)`, the bend after a
+line `bend_in(<line>)` / `bend_out(<line>)`, the free ends `start(<first line>)` and
+`end(<last line>)`, the width faces `cap(start|end)`. `tab` is a flat plate from sketch
+regions (`side(...)`, `cap(...)` as for extrusions; `flip`: below the sketch). Both keep a flat
+pattern: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
+`|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).
+
 ## Datum planes, bodies and patterns
 
 ```

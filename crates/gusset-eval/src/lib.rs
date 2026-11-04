@@ -23,6 +23,7 @@ mod hole;
 mod joint;
 mod ops;
 mod pattern;
+pub mod sheet;
 pub mod sketch;
 mod surface;
 mod sweep;
@@ -62,6 +63,9 @@ pub struct Body {
     /// The holes made by `hole` features, with their cosmetic threads (ADR 0019). A body
     /// made by mirroring, moving a copy or patterning starts without records.
     pub holes: Vec<HoleInfo>,
+    /// The flat pattern of a sheet-metal body (ADR 0037), as its feature built it; later
+    /// features that change the body keep it unchanged.
+    pub sheet: Option<Arc<sheet::FlatPattern>>,
 }
 
 /// A reference mesh body from an imported STL, 3MF or OBJ file (spec import tier 3).
@@ -1057,6 +1061,7 @@ impl Evaluator {
                     names,
                     topology: topo,
                     holes: body.holes.clone(),
+                    sheet: body.sheet.clone(),
                 });
                 if let Some(slot) = s.bodies.get_mut(bi) {
                     *slot = nb;
@@ -1077,6 +1082,7 @@ impl Evaluator {
             FeatureKind::Component(d) => self.run_component(s, name, d, params, blobs),
             FeatureKind::Combine(d) => self.run_combine(s, name, d),
             FeatureKind::Surface(d) => self.run_surface(s, name, d, units, params),
+            FeatureKind::Sheet(d) => self.run_sheet(s, name, d, units, params),
             FeatureKind::Hole(d) => self.run_hole(s, name, d, units, params),
             FeatureKind::Import(i) => {
                 let bytes = blobs.blob(&i.blob).ok_or_else(|| {
@@ -1109,6 +1115,7 @@ impl Evaluator {
                     names,
                     topology: topo,
                     holes: Vec::new(),
+                    sheet: None,
                 }));
                 Ok(())
             }
@@ -1137,6 +1144,7 @@ impl Evaluator {
                 names: tool_names,
                 topology: tool_topo,
                 holes: Vec::new(),
+                sheet: None,
             }));
             return Ok(());
         }
@@ -1187,6 +1195,7 @@ impl Evaluator {
             names,
             topology: topo,
             holes: body.holes.clone(),
+            sheet: body.sheet.clone(),
         });
         if let Some(slot) = s.bodies.get_mut(bi) {
             *slot = nb;
@@ -1216,6 +1225,7 @@ fn prune_holes(s: &mut State, before: &[usize]) {
             names: slot.names.clone(),
             topology: slot.topology.clone(),
             holes,
+            sheet: slot.sheet.clone(),
         });
     }
 }

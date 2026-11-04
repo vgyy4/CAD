@@ -100,6 +100,7 @@ impl Evaluator {
             names: gusset_naming::part_names(name, &body.names),
             topology: body.topology.clone(),
             holes: body.holes.clone(),
+            sheet: body.sheet.clone(),
         }));
         Ok(())
     }

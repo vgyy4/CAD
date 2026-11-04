@@ -258,6 +258,8 @@ pub struct App {
     pub docks_swapped: bool,
     /// The Surface tab is chosen (ADR 0036).
     pub surface_tab: bool,
+    /// The Sheet Metal tab is chosen (ADR 0037).
+    pub sheet_tab: bool,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -393,6 +395,7 @@ impl App {
             timeline_collapsed: false,
             docks_swapped: false,
             surface_tab: false,
+            sheet_tab: false,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -2091,6 +2094,7 @@ impl App {
                 select: self.viewport.select_filter,
                 quick: &[],
                 surface: self.surface_tab,
+                sheet: self.sheet_tab,
             },
         );
         if let Some(a) = action {
@@ -2114,6 +2118,7 @@ impl App {
                 select: self.viewport.select_filter,
                 quick: &quick,
                 surface: self.surface_tab,
+                sheet: self.sheet_tab,
             },
         );
         if let Some(a) = action {
@@ -2131,11 +2136,19 @@ impl App {
             Action::SolidTab | Action::FinishSketch => {
                 self.active_drawing = None;
                 self.surface_tab = false;
+                self.sheet_tab = false;
                 self.finish_sketch();
             }
             Action::SurfaceTab => {
                 self.active_drawing = None;
                 self.surface_tab = true;
+                self.sheet_tab = false;
+                self.finish_sketch();
+            }
+            Action::SheetTab => {
+                self.active_drawing = None;
+                self.surface_tab = false;
+                self.sheet_tab = true;
                 self.finish_sketch();
             }
             Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {

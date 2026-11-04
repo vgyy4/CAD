@@ -7,7 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart};
+use gusset_doc::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart};
 use gusset_kernel::{CapEnd, FaceOrigin, Topology, V3};
 use std::collections::BTreeMap;
 
@@ -61,6 +61,19 @@ pub fn hole_tag(part: HolePart) -> u64 {
     HolePart::ALL.iter().position(|p| *p == part).map_or(u64::MAX, |i| i as u64)
 }
 
+/// The profile tag of a sheet-metal cross-section edge (ADR 0037): face `part` at line
+/// number `line` of [`OpContext::Sheet`]'s `at` list.
+pub fn sheet_tag(part: SheetPart, line: usize) -> u64 {
+    let p = SheetPart::ALL.iter().position(|q| *q == part).unwrap_or(0);
+    (line as u64) * 8 + p as u64
+}
+
+/// The face part and line number a sheet-metal tag stands for.
+pub fn tag_sheet_part(tag: u64) -> Option<(SheetPart, usize)> {
+    let part = SheetPart::ALL.get(usize::try_from(tag % 8).ok()?).copied()?;
+    Some((part, usize::try_from(tag / 8).ok()?))
+}
+
 /// The face part a hole tool's profile tag stands for.
 pub fn tag_hole_part(tag: u64) -> Option<HolePart> {
     HolePart::ALL.get(usize::try_from(tag).ok()?).copied()
@@ -86,6 +99,9 @@ pub enum OpContext<'a> {
     /// The tool of one hole of a `hole` feature, a revolved profile whose edge tags are
     /// [`hole_tag`]s: faces are named `feature/<part>(at)`, `at` being the id of the hole.
     Hole { feature: &'a str, at: &'a str },
+    /// A sheet-metal cross-section extruded by `feature` (ADR 0037): lateral tags are
+    /// [`sheet_tag`]s over the sketch lines `at`, caps are `cap(start|end)`.
+    Sheet { feature: &'a str, at: &'a [String] },
     /// An imported body; faces are named by index.
     Import { feature: &'a str },
     /// A shell of the body whose names are `input`: surviving faces keep their names,
@@ -236,6 +252,14 @@ pub fn name_body(ctx: &OpContext<'_>, origins: &[Vec<FaceOrigin>], topo: &Topolo
                 }
                 (OpContext::Hole { feature, at }, FaceOrigin::Lateral { tag }) => tag_hole_part(*tag)
                     .map(|part| FaceRef::new(*feature, FaceKey::Hole { part, at: (*at).to_string() })),
+                (OpContext::Sheet { feature, at }, FaceOrigin::Lateral { tag }) => {
+                    tag_sheet_part(*tag).and_then(|(part, line)| {
+                        at.get(line).map(|a| FaceRef::new(*feature, FaceKey::Sheet { part, at: a.clone() }))
+                    })
+                }
+                (OpContext::Sheet { feature, .. }, FaceOrigin::Cap { end, .. }) => {
+                    Some(FaceRef::new(*feature, FaceKey::Cap { side: cap(*end), region: None }))
+                }
                 (OpContext::Loft { feature, .. }, FaceOrigin::Cap { end, .. }) => {
                     Some(FaceRef::new(*feature, FaceKey::Cap { side: cap(*end), region: None }))
                 }

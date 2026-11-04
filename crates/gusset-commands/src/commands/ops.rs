@@ -110,6 +110,11 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             gusset_doc::SurfaceOp::Thicken { body, .. } => body_of(body),
             gusset_doc::SurfaceOp::Stitch { bodies, .. } => bodies.iter_mut().for_each(sketch_of),
         },
+        FeatureKind::Sheet(d) => match &mut d.op {
+            gusset_doc::SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => sketch_of(sketch),
+            gusset_doc::SheetOp::Contour { .. } => {}
+            gusset_doc::SheetOp::Tab { profile } => sketch_of(&mut profile.sketch),
+        },
         _ => {}
     }
 }

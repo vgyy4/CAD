@@ -74,6 +74,8 @@ pub enum FeatureKind {
     Component(ComponentDef),
     /// Surface operations (ADR 0036): sheets from curves or regions, thicken, stitch.
     Surface(SurfaceDef),
+    /// Sheet metal (ADR 0037): contour flanges and tabs with a flat pattern.
+    Sheet(SheetDef),
 }
 
 impl FeatureKind {
@@ -89,6 +91,7 @@ impl FeatureKind {
             FeatureKind::Import(_) => "import",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::Surface(d) => d.op.keyword(),
+            FeatureKind::Sheet(d) => d.op.keyword(),
             FeatureKind::Draft(_) => "draft",
             FeatureKind::OffsetFace(_) => "offset_face",
             FeatureKind::MoveFace(_) => "move_face",
@@ -165,6 +168,11 @@ impl FeatureKind {
                 SurfaceOp::Patch { profile } => add(&profile.sketch),
                 SurfaceOp::Thicken { body, .. } => add_body(&mut add, body),
                 SurfaceOp::Stitch { bodies, .. } => bodies.iter().for_each(|b| add(b)),
+            },
+            FeatureKind::Sheet(d) => match &d.op {
+                SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => add(sketch),
+                SheetOp::Contour { .. } => {}
+                SheetOp::Tab { profile } => add(&profile.sketch),
             },
             FeatureKind::Mirror(d) => {
                 add_body(&mut add, &d.body);
@@ -279,6 +287,14 @@ impl FeatureKind {
                 SurfaceOp::Thicken { thickness, .. } => take(thickness),
                 SurfaceOp::Stitch { tolerance, .. } => take(tolerance),
             },
+            FeatureKind::Sheet(d) => {
+                take(&d.thickness);
+                if let SheetOp::Contour { width, bend_radius, k_factor, .. } = &d.op {
+                    take(width);
+                    take(bend_radius);
+                    take(k_factor);
+                }
+            }
             FeatureKind::Draft(d) => take(&d.angle),
             FeatureKind::OffsetFace(d) => take(&d.distance),
             FeatureKind::Text(d) => {
@@ -352,6 +368,14 @@ impl FeatureKind {
                 SurfaceOp::Thicken { thickness, .. } => out.push(thickness),
                 SurfaceOp::Stitch { tolerance, .. } => out.push(tolerance),
             },
+            FeatureKind::Sheet(d) => {
+                out.push(&mut d.thickness);
+                if let SheetOp::Contour { width, bend_radius, k_factor, .. } = &mut d.op {
+                    out.push(width);
+                    out.push(bend_radius);
+                    out.push(k_factor);
+                }
+            }
             FeatureKind::Draft(d) => out.push(&mut d.angle),
             FeatureKind::OffsetFace(d) => out.push(&mut d.distance),
             FeatureKind::Text(d) => {
@@ -909,6 +933,41 @@ impl SurfaceOp {
         }
     }
 }
+
+// ------------------------------------------------------------------ sheet metal (ADR 0037)
+
+/// A sheet-metal feature: a new body of constant `thickness` and its flat pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetDef {
+    pub op: SheetOp,
+    pub thickness: Expr,
+    /// Put the material on the other side of the sketch (right of a contour's direction,
+    /// or below the sketch plane for a tab).
+    pub flip: bool,
+    /// Name of the body made; `None` = the feature name.
+    pub body_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SheetOp {
+    /// An open chain of sketch lines bent at every corner (inside radius `bend_radius`),
+    /// `width` deep along the sketch normal.
+    Contour { curves: PathRef, width: Box<Expr>, symmetric: bool, bend_radius: Box<Expr>, k_factor: Box<Expr> },
+    /// Sketch regions as flat plates.
+    Tab { profile: ProfileRef },
+}
+
+impl SheetOp {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            SheetOp::Contour { .. } => "contour_flange",
+            SheetOp::Tab { .. } => "tab",
+        }
+    }
+}
+
+/// Most lines one contour flange may bend (each corner is one bend).
+pub const MAX_CONTOUR_LINES: usize = 64;
 
 // ------------------------------------------------------------------ shell, mirror, patterns
 

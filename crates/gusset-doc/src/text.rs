@@ -340,6 +340,35 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push(format!("body_name: {n}"));
             }
         }
+        FeatureKind::Sheet(d) => {
+            match &d.op {
+                SheetOp::Contour { curves, width, symmetric, bend_radius, k_factor } => {
+                    let p = match curves {
+                        PathRef::Sketch { sketch, curves } if curves.is_empty() => sketch.clone(),
+                        PathRef::Sketch { sketch, curves } => format!("{sketch}.curves({})", curves.join(", ")),
+                        _ => String::new(),
+                    };
+                    args.push(format!("curves: {p}"));
+                    args.push(format!("width: {width}"));
+                    if *symmetric {
+                        args.push("symmetric: true".into());
+                    }
+                    args.push(format!("thickness: {}", d.thickness));
+                    args.push(format!("bend_radius: {bend_radius}"));
+                    args.push(format!("k_factor: {k_factor}"));
+                }
+                SheetOp::Tab { profile } => {
+                    args.push(format!("profile: {}", print_profile(profile)));
+                    args.push(format!("thickness: {}", d.thickness));
+                }
+            }
+            if d.flip {
+                args.push("flip: true".into());
+            }
+            if let Some(n) = &d.body_name {
+                args.push(format!("body_name: {n}"));
+            }
+        }
         FeatureKind::Shell(d) => {
             push_body(&mut args, &d.body);
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
@@ -684,7 +713,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "move_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular"
             | "plane" | "move" | "combine" | "hole" | "joint" | "component" | "surface_extrude" | "patch"
-            | "thicken" | "stitch" => {
+            | "thicken" | "stitch" | "contour_flange" | "tab" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -709,6 +738,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_component(&mut c)?
                 } else if matches!(kw, "surface_extrude" | "patch" | "thicken" | "stitch") {
                     parse_surface(kw, &mut c)?
+                } else if matches!(kw, "contour_flange" | "tab") {
+                    parse_sheet(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
                 } else {
@@ -2262,6 +2293,67 @@ pub fn parse_params_object(s: &str) -> Result<(Vec<Param>, Vec<Configuration>), 
         return Err(perr(1, "a parameter object must not contain features"));
     }
     Ok((doc.params, doc.configurations))
+}
+
+/// Sheet-metal statements (ADR 0037).
+fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed) = (None, false);
+    let mut group: Option<String> = None;
+    let (mut curves, mut profile) = (None, None);
+    let (mut width, mut thickness, mut bend_radius, mut k_factor) = (None, None, None, None);
+    let (mut symmetric, mut flip) = (false, false);
+    let mut body_name = None;
+    let allowed = if kw == "tab" {
+        "profile, thickness, flip, body_name, label, group, suppressed"
+    } else {
+        "curves, width, symmetric, thickness, bend_radius, k_factor, flip, body_name, label, group, suppressed"
+    };
+    parse_args(c, |key, c| {
+        match (kw, key) {
+            (_, "label") => label = Some(c.string()?),
+            (_, "group") => group = Some(c.string()?),
+            (_, "suppressed") => suppressed = parse_bool(c)?,
+            (_, "body_name") => body_name = Some(c.ident()?.to_string()),
+            (_, "thickness") => thickness = Some(c.expr()?),
+            (_, "flip") => flip = parse_bool(c)?,
+            ("contour_flange", "curves") => curves = Some(parse_path(c)?),
+            ("contour_flange", "width") => width = Some(c.expr()?),
+            ("contour_flange", "symmetric") => symmetric = parse_bool(c)?,
+            ("contour_flange", "bend_radius") => bend_radius = Some(c.expr()?),
+            ("contour_flange", "k_factor") => k_factor = Some(c.expr()?),
+            ("tab", "profile") => profile = Some(parse_profile(c)?),
+            (_, key) => return Err(unknown_arg(c, kw, key, allowed)),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let thickness = thickness.ok_or_else(|| missing(c, kw, "thickness"))?;
+    let op = if kw == "tab" {
+        SheetOp::Tab { profile: profile.ok_or_else(|| missing(c, kw, "profile"))? }
+    } else {
+        let curves = curves.ok_or_else(|| missing(c, kw, "curves"))?;
+        if !matches!(curves, PathRef::Sketch { .. }) {
+            return Err(c.err_hint("contour_flange takes sketch lines", "e.g. curves: Sketch1.curves(l3, l4, l5)"));
+        }
+        SheetOp::Contour {
+            curves,
+            width: Box::new(width.ok_or_else(|| missing(c, kw, "width"))?),
+            symmetric,
+            bend_radius: Box::new(bend_radius.ok_or_else(|| missing(c, kw, "bend_radius"))?),
+            k_factor: Box::new(k_factor.ok_or_else(|| missing(c, kw, "k_factor"))?),
+        }
+    };
+    Ok(Feature {
+        name,
+        label,
+        note: None,
+        group,
+        suppressed,
+        kind: FeatureKind::Sheet(SheetDef { op, thickness, flip, body_name }),
+    })
 }
 
 /// Surface statements (ADR 0036).

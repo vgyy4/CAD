@@ -743,3 +743,21 @@ fn the_surface_tab_shows_the_surface_tools() {
     assert!(!h.state().surface_tab);
     assert!(h.query_by_label("Thicken").is_none());
 }
+
+#[test]
+fn the_sheet_metal_tab_shows_the_sheet_metal_tools() {
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_label("Contour flange").is_none());
+    h.get_by_label("SHEET METAL").click();
+    h.run();
+    assert!(h.state().sheet_tab && !h.state().surface_tab);
+    h.get_by_label("Contour flange").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("feature.contour_flange"));
+    h.state_mut().form = None;
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert!(!h.state().sheet_tab);
+    assert!(h.query_by_label("Contour flange").is_none());
+}

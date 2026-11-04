@@ -262,8 +262,12 @@ Phase 3 has started (see Next).
      chosen by the faces' vertices. Not yet: colours (the STEP path keeps no styles); V12
      attribute definitions, deltas and binary are unverified without sample files.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
-   - later: sheet metal, direct modeling, tier-2 native imports, CAM, simulation,
-     plugins.
+   - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
+     corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
+     faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
+     (`query.flat_pattern`, `sheet.export_flat` DXF/SVG 1:1), SHEET METAL tab; OCCT exact-volume
+     test `modeling_sheet.rs`. Next: edge flanges with bend reliefs, hems, unfolding later cuts.
+   - later: direct modeling, tier-2 native imports, CAM, simulation, plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
    `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk

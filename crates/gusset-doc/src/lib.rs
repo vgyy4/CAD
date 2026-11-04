@@ -22,7 +22,7 @@ pub const TEXT_GRAMMAR: &str = include_str!("grammar.md");
 
 pub use cursor::ParseError;
 pub use model::*;
-pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart};
+pub use refs::{CapSide, EdgeRef, FaceKey, FaceRef, HolePart, SheetPart};
 pub use validate::Issue;
 
 /// Why text could not be turned into a valid document.
