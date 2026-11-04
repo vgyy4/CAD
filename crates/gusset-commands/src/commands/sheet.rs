@@ -8,10 +8,10 @@ use gusset_units::expr::Expr;
 use std::sync::Arc;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<ContourFlange>(), spec::<Tab>(), spec::<FlatPatternQuery>(), spec::<ExportFlat>()]
+    vec![spec::<ContourFlange>(), spec::<Tab>(), spec::<EdgeFlange>(), spec::<FlatPatternQuery>(), spec::<ExportFlat>()]
 }
 
-fn sheet(name: String, op: SheetOp, thickness: Expr, flip: bool) -> Feature {
+fn sheet(name: String, op: SheetOp, thickness: Option<Expr>, flip: bool) -> Feature {
     Feature::new(name, FeatureKind::Sheet(SheetDef { op, thickness, flip, body_name: None }))
 }
 
@@ -65,7 +65,7 @@ impl Command for ContourFlange {
                 bend_radius: Box::new(bend_radius),
                 k_factor: Box::new(k_factor),
             };
-            insert_feature(doc, rb, sheet(name.clone(), op, thickness, self.flip));
+            insert_feature(doc, rb, sheet(name.clone(), op, Some(thickness), self.flip));
             Ok(json!({ "feature": name }))
         })
     }
@@ -97,7 +97,73 @@ impl Command for Tab {
         let thickness = parse_expr("thickness", &self.thickness)?;
         edit(s, ctx, "Tab", |doc, rb| {
             let name = feature_name(doc, self.name, "Tab")?;
-            insert_feature(doc, rb, sheet(name.clone(), SheetOp::Tab { profile }, thickness, self.flip));
+            insert_feature(doc, rb, sheet(name.clone(), SheetOp::Tab { profile }, Some(thickness), self.flip));
+            Ok(json!({ "feature": name }))
+        })
+    }
+}
+
+/// Bends a flange off one outline line of a tab.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeFlange {
+    /// The tab feature.
+    pub body: String,
+    /// The tab sketch's outline line to bend along, e.g. `l5`.
+    pub line: String,
+    /// Straight flange after the bend.
+    pub length: String,
+    /// Default `90 deg`.
+    #[serde(default)]
+    pub angle: Option<String>,
+    /// Inside radius (default: the thickness).
+    #[serde(default)]
+    pub bend_radius: Option<String>,
+    /// Default 0.44.
+    #[serde(default)]
+    pub k_factor: Option<String>,
+    /// Bend down instead of up.
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for EdgeFlange {
+    const ID: &'static str = "feature.edge_flange";
+    const TITLE: &'static str = "Edge flange";
+    const DESCRIPTION: &'static str =
+        "Bend a flange off one outline line of a tab (sheet metal); the flat pattern grows with it.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let length = parse_expr("length", &self.length)?;
+        let angle = parse_expr("angle", self.angle.as_deref().unwrap_or("90 deg"))?;
+        let k_factor = parse_expr("k_factor", self.k_factor.as_deref().unwrap_or("0.44"))?;
+        edit(s, ctx, "Edge flange", |doc, rb| {
+            // The default radius is the tab's thickness, as an expression.
+            let thickness = doc.features.iter().find(|f| f.name == self.body).and_then(|f| match &f.kind {
+                FeatureKind::Sheet(d) => d.thickness.clone(),
+                _ => None,
+            });
+            let bend_radius = match (&self.bend_radius, thickness) {
+                (Some(r), _) => parse_expr("bend_radius", r)?,
+                (None, Some(t)) => t,
+                (None, None) => {
+                    return Err(CommandError::args(format!("'{}' is not a tab", self.body))
+                        .hint("edge flanges bend off a tab made with feature_tab"));
+                }
+            };
+            let name = feature_name(doc, self.name, "EdgeFlange")?;
+            let op = SheetOp::EdgeFlange {
+                body: self.body,
+                line: self.line,
+                length: Box::new(length),
+                angle: Box::new(angle),
+                bend_radius: Box::new(bend_radius),
+                k_factor: Box::new(k_factor),
+            };
+            insert_feature(doc, rb, sheet(name.clone(), op, None, self.flip));
             Ok(json!({ "feature": name }))
         })
     }
@@ -148,7 +214,8 @@ impl Command for FlatPatternQuery {
                     "inner_radius_mm": tidy(b.inner_radius),
                     "k_factor": b.k_factor,
                     "allowance_mm": tidy(b.allowance),
-                    "zone_mm": [tidy(b.x0), tidy(b.x1)],
+                    "zone_start_mm": b.start.map(|p| p.map(tidy)),
+                    "zone_end_mm": b.end.map(|p| p.map(tidy)),
                 })
             })
             .collect();
@@ -228,20 +295,19 @@ pub(crate) fn scene(flat: &FlatPattern) -> Scene {
         sc.push(Style::Visible, Prim::Polyline { points: l.iter().map(|p| at(*p)).collect(), closed: true });
     }
     for b in &flat.bends {
-        for x in [b.x0, b.x1] {
-            sc.line(Style::Center, at([x, b.y0]), at([x, b.y1]));
+        for [p, q] in [b.start, b.end] {
+            sc.line(Style::Center, at(p), at(q));
         }
         let dir = if b.angle >= 0.0 { "UP" } else { "DOWN" };
+        let mid = [
+            (b.start[0][0] + b.start[1][0] + b.end[0][0] + b.end[1][0]) / 4.0,
+            (b.start[0][1] + b.start[1][1] + b.end[0][1] + b.end[1][1]) / 4.0,
+        ];
+        let (dir_x, dir_y) = (b.start[1][0] - b.start[0][0], b.start[1][1] - b.start[0][1]);
         let text = format!("{dir} {:.1}° R{:.2}", b.angle.abs().to_degrees(), b.inner_radius);
         sc.push(
             Style::Text,
-            Prim::Text {
-                at: at([(b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0]),
-                height: 2.5,
-                text,
-                anchor: Anchor::Center,
-                angle: std::f64::consts::FRAC_PI_2,
-            },
+            Prim::Text { at: at(mid), height: 2.5, text, anchor: Anchor::Center, angle: libm::atan2(dir_y, dir_x) },
         );
     }
     sc

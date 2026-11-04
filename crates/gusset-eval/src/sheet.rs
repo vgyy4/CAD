@@ -13,6 +13,7 @@ use super::*;
 use gusset_doc::{PathRef, SheetDef, SheetOp, SheetPart};
 use gusset_kernel::{ExtrudeSpec, Loop2, P2, Profile, ProfileEdge, Region2, Seg2};
 use gusset_naming::sheet_tag;
+use gusset_units::expr::Expr;
 
 /// The developed (unbent) shape of a sheet-metal body, in its own plane (mm).
 #[derive(Debug, Clone, PartialEq)]
@@ -21,11 +22,22 @@ pub struct FlatPattern {
     /// Closed outlines (the first is the outer boundary; the rest are cut-outs), as
     /// polylines without the closing point repeated.
     pub outlines: Vec<Vec<[f64; 2]>>,
-    /// The bends in order along the developed length (`x`).
+    /// The bends: a contour flange's in order along its developed length (`x`), then
+    /// those of edge flanges in feature order.
     pub bends: Vec<FlatBend>,
+    /// For a tab: where its outline lies, so edge flanges can be bent off its lines.
+    pub base: Option<TabBase>,
 }
 
-/// One bend of a flat pattern: the zone `x0..x1` straightens the bend after `line`.
+/// The sketch a tab was made from and the side its material is on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabBase {
+    pub sketch: String,
+    pub flip: bool,
+}
+
+/// One bend of a flat pattern: the zone between the lines `start` and `end` straightens
+/// the bend after `line`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FlatBend {
     /// The sketch line the bend follows.
@@ -36,11 +48,9 @@ pub struct FlatBend {
     pub k_factor: f64,
     /// Bend allowance: the developed length of the bend zone.
     pub allowance: f64,
-    pub x0: f64,
-    pub x1: f64,
-    /// Where the bend zone runs across the pattern (`y` from `y0` to `y1`).
-    pub y0: f64,
-    pub y1: f64,
+    /// The bend zone's first and last line across the pattern.
+    pub start: [[f64; 2]; 2],
+    pub end: [[f64; 2]; 2],
 }
 
 impl FlatPattern {
@@ -232,15 +242,14 @@ pub(crate) fn contour_section(
                 inner_radius: r,
                 k_factor: k,
                 allowance: ba,
-                x0: x,
-                x1: x + ba,
-                y0: 0.0,
-                y1: w,
+                start: [[x, 0.0], [x, w]],
+                end: [[x + ba, 0.0], [x + ba, w]],
             });
             x += ba;
         }
     }
-    let flat = FlatPattern { thickness: t, outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]], bends };
+    let flat =
+        FlatPattern { thickness: t, outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]], bends, base: None };
     Ok(Section { edges, flat })
 }
 
@@ -341,7 +350,21 @@ impl Evaluator {
         params: &ParamValues,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
-        let t = eval_expr(name, &d.thickness, Dim::LENGTH, params, units)?;
+        if let SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor } = &d.op {
+            let v = |e: &Expr, dim| eval_expr(name, e, dim, params, units);
+            let spec = EdgeSpec {
+                length: v(length, Dim::LENGTH)?,
+                angle: v(angle, Dim::ANGLE)?,
+                r: v(bend_radius, Dim::LENGTH)?,
+                k: v(k_factor, Dim::NONE)?,
+                down: d.flip,
+            };
+            return self.run_edge_flange(s, name, body, line, &spec);
+        }
+        let Some(thickness) = &d.thickness else {
+            return Err(EvalError::new(name, ErrorCode::Expression, "the thickness is missing"));
+        };
+        let t = eval_expr(name, thickness, Dim::LENGTH, params, units)?;
         if !(t > 1e-6 && t.is_finite()) {
             return Err(EvalError::new(name, ErrorCode::Expression, "the thickness must be a positive length")
                 .with_hint("enter the sheet thickness, for example 2 mm"));
@@ -439,8 +462,16 @@ impl Evaluator {
                     outlines.push(sample(&r.outer));
                     outlines.extend(r.holes.iter().map(sample));
                 }
-                (res, None, FlatPattern { thickness: t, outlines, bends: Vec::new() }, profile.sketch.clone(), regions)
+                let base = Some(TabBase { sketch: profile.sketch.clone(), flip: d.flip });
+                (
+                    res,
+                    None,
+                    FlatPattern { thickness: t, outlines, bends: Vec::new(), base },
+                    profile.sketch.clone(),
+                    regions,
+                )
             }
+            SheetOp::EdgeFlange { .. } => return Ok(()),
         };
         let body_name = d.body_name.as_deref();
         match &ctx_at {
@@ -468,6 +499,212 @@ impl Evaluator {
     }
 }
 
+/// The evaluated values of an edge flange.
+pub(crate) struct EdgeSpec {
+    pub(crate) length: f64,
+    pub(crate) angle: f64,
+    pub(crate) r: f64,
+    pub(crate) k: f64,
+    pub(crate) down: bool,
+}
+
+/// Inside test by the even-odd rule over all outlines.
+fn inside(outlines: &[Vec<[f64; 2]>], p: P2) -> bool {
+    let mut odd = false;
+    for l in outlines {
+        let n = l.len();
+        for i in 0..n {
+            let (Some(a), Some(b)) = (l.get(i), l.get((i + 1) % n)) else { continue };
+            if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// The cross-section of an edge flange in (u out of the tab, v along the sheet normal),
+/// the tab's sheet occupying v in [0, t] and ending at u = 0.
+pub(crate) fn edge_section(t: f64, e: &EdgeSpec) -> Vec<ProfileEdge> {
+    let (r, th) = (e.r, e.angle);
+    let c = [0.0, t + r];
+    let rad = [libm::sin(th), -libm::cos(th)];
+    let o1 = addv(c, mul(rad, r + t));
+    let i1 = addv(c, mul(rad, r));
+    let d = [libm::cos(th), libm::sin(th)];
+    let (o2, i2) = (addv(o1, mul(d, e.length)), addv(i1, mul(d, e.length)));
+    let tag = |p: SheetPart| sheet_tag(p, 0);
+    let mut edges = vec![
+        ProfileEdge {
+            seg: Seg2::Arc { center: c, start: [0.0, 0.0], end: o1, ccw: true },
+            tag: tag(SheetPart::BendOut),
+        },
+        ProfileEdge { seg: Seg2::Line { a: o1, b: o2 }, tag: tag(SheetPart::Flat) },
+        ProfileEdge { seg: Seg2::Line { a: o2, b: i2 }, tag: tag(SheetPart::End) },
+        ProfileEdge { seg: Seg2::Line { a: i2, b: i1 }, tag: tag(SheetPart::FlatBack) },
+    ];
+    if r > 1e-9 {
+        edges.push(ProfileEdge {
+            seg: Seg2::Arc { center: c, start: i1, end: [0.0, t], ccw: false },
+            tag: tag(SheetPart::BendIn),
+        });
+    }
+    edges.push(ProfileEdge { seg: Seg2::Line { a: [0.0, t], b: [0.0, 0.0] }, tag: tag(SheetPart::Start) });
+    if e.down {
+        // Mirrored across the sheet's mid-plane: the bend turns the other way.
+        let m = |p: P2| [p[0], t - p[1]];
+        edges = edges
+            .into_iter()
+            .map(|pe| ProfileEdge {
+                seg: match pe.seg {
+                    Seg2::Line { a, b } => Seg2::Line { a: m(a), b: m(b) },
+                    Seg2::Arc { center, start, end, ccw } => {
+                        Seg2::Arc { center: m(center), start: m(start), end: m(end), ccw: !ccw }
+                    }
+                    other => other,
+                },
+                tag: pe.tag,
+            })
+            .collect();
+    }
+    edges
+}
+
+impl Evaluator {
+    fn run_edge_flange(
+        &self,
+        s: &mut State,
+        name: &str,
+        body: &str,
+        line: &str,
+        e: &EdgeSpec,
+    ) -> Result<(), EvalError> {
+        let bad = |m: String| EvalError::new(name, ErrorCode::InvalidReference, m);
+        let expr = |m: &str| EvalError::new(name, ErrorCode::Expression, m.to_string());
+        if !(e.length > 1e-6 && e.length.is_finite()) {
+            return Err(expr("the flange length must be a positive length"));
+        }
+        if !(e.angle > MIN_BEND && e.angle < std::f64::consts::PI - 1e-3) {
+            return Err(expr("the bend angle must be between 0 and 180 deg").with_hint("90 deg for a right angle"));
+        }
+        if !(e.r >= 0.0 && e.r.is_finite()) {
+            return Err(expr("the bend radius must not be negative"));
+        }
+        if !(0.0..=1.0).contains(&e.k) {
+            return Err(expr("k_factor must be between 0 and 1"));
+        }
+        let target = s.bodies.iter().find(|b| b.feature == body).cloned().ok_or_else(|| {
+            EvalError::new(
+                name,
+                ErrorCode::NoTargetBody,
+                format!("body '{body}' does not exist (did its feature fail?)"),
+            )
+        })?;
+        let flat = target.sheet.clone().ok_or_else(|| bad(format!("'{body}' is not sheet metal")))?;
+        let base = flat.base.clone().ok_or_else(|| {
+            bad(format!("'{body}' is not a tab")).with_hint("edge flanges bend off the outline lines of a tab")
+        })?;
+        let t = flat.thickness;
+        let sv =
+            s.solved.get(&base.sketch).cloned().ok_or_else(|| bad(format!("'{}' is not evaluated", base.sketch)))?;
+        let (a, b) = sv
+            .line_points
+            .get(line)
+            .copied()
+            .ok_or_else(|| bad(format!("'{line}' is not a line of {}", base.sketch)))?;
+        let ab = sub(b, a);
+        let l = len(ab);
+        if l < 1e-6 {
+            return Err(bad(format!("line {line} has no length")));
+        }
+        // Outward: the side of the line that is outside the flat outline.
+        let mid = mul(addv(a, b), 0.5);
+        let perp = [-ab[1] / l, ab[0] / l];
+        let probe = (l * 1e-3).min(1e-2);
+        let (left, right) =
+            (inside(&flat.outlines, addv(mid, mul(perp, probe))), inside(&flat.outlines, sub(mid, mul(perp, probe))));
+        let out2 = match (left, right) {
+            (false, true) => perp,
+            (true, false) => mul(perp, -1.0),
+            _ => {
+                return Err(bad(format!("line {line} is not on the outline of {body}"))
+                    .with_hint("pick a line of the tab's outer boundary, not one inside it or already flanged"));
+            }
+        };
+        let fr = sv.frame;
+        let n3 = fr.normal();
+        let o3 = gusset_kernel::add(gusset_kernel::scale(fr.x, out2[0]), gusset_kernel::scale(fr.y, out2[1]));
+        let mut origin = fr.to_world(a);
+        if base.flip {
+            origin = gusset_kernel::sub(origin, gusset_kernel::scale(n3, t));
+        }
+        let frame = Frame { origin, x: o3, y: n3 };
+        let e3 = gusset_kernel::sub(fr.to_world(b), fr.to_world(a));
+        let along = if gusset_kernel::dot(cross(o3, n3), e3) >= 0.0 { l } else { -l };
+        let mut edges = edge_section(t, e);
+        if loop_area(&edges) < 0.0 {
+            edges = reversed(edges);
+        }
+        let profile = Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] };
+        let res = self
+            .kernel
+            .extrude(&profile, &ExtrudeSpec { distance: along, symmetric: false })
+            .map_err(|ke| kernel_err(name, "edge flange", ke))?;
+        let at = [line.to_string()];
+        self.combine(s, name, &OpContext::Sheet { feature: name, at: &at }, res, BodyOp::Add, (Some(body), None))?;
+        // The flat pattern grows by the bend zone and the flange beyond the line.
+        let ba = e.angle * (e.r + e.k * t);
+        let reach = ba + e.length;
+        let mut nf = (*flat).clone();
+        let near = |p: &[f64; 2], q: P2| len(sub(*p, q)) < 1e-6;
+        let (pa, pb) = (addv(a, mul(out2, reach)), addv(b, mul(out2, reach)));
+        let mut grown = false;
+        for o in &mut nf.outlines {
+            let n = o.len();
+            let hit = (0..n).find_map(|i| {
+                let (p, q) = (o.get(i)?, o.get((i + 1) % n)?);
+                if near(p, a) && near(q, b) {
+                    Some((i, [pa, pb]))
+                } else if near(p, b) && near(q, a) {
+                    Some((i, [pb, pa]))
+                } else {
+                    None
+                }
+            });
+            if let Some((i, pts)) = hit {
+                o.splice(i + 1..i + 1, pts);
+                grown = true;
+                break;
+            }
+        }
+        if !grown {
+            return Err(bad(format!("line {line} is not one edge of {body}'s outline")));
+        }
+        nf.bends.push(FlatBend {
+            line: line.to_string(),
+            angle: if e.down { -e.angle } else { e.angle },
+            inner_radius: e.r,
+            k_factor: e.k,
+            allowance: ba,
+            start: [a, b],
+            end: [addv(a, mul(out2, ba)), addv(b, mul(out2, ba))],
+        });
+        if let Some(slot) = s.bodies.iter_mut().find(|x| x.feature == body) {
+            let nb = Body {
+                name: slot.name.clone(),
+                feature: slot.feature.clone(),
+                shape: slot.shape.clone(),
+                names: slot.names.clone(),
+                topology: slot.topology.clone(),
+                holes: slot.holes.clone(),
+                sheet: Some(Arc::new(nf)),
+            };
+            *slot = Arc::new(nb);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -483,7 +720,7 @@ mod tests {
         let ba = std::f64::consts::FRAC_PI_2 * (1.0 + 0.5 * 2.0);
         let b = sec.flat.bends.first().unwrap_or_else(|| panic!("a bend"));
         assert!((b.allowance - ba).abs() < 1e-12);
-        assert!((b.x0 - 47.0).abs() < 1e-12);
+        assert!((b.start[0][0] - 47.0).abs() < 1e-12);
         let size = sec.flat.size();
         assert!((size[0] - (47.0 + 27.0 + ba)).abs() < 1e-9, "{size:?}");
         assert!((size[1] - 40.0).abs() < 1e-12);
@@ -492,7 +729,7 @@ mod tests {
         assert!((area - 2.0 * (47.0 + 27.0 + ba)).abs() < 1e-9, "{area}");
         // Flipped to the outside of the turn: side A is now the inside (radius r).
         let out = contour_section(&pts, &ids, 2.0, 1.0, 0.5, -1.0, 40.0).unwrap_or_else(|e| panic!("{e}"));
-        assert!((out.flat.bends.first().map_or(0.0, |b| b.x0) - 49.0).abs() < 1e-12);
+        assert!((out.flat.bends.first().map_or(0.0, |b| b.start[0][0]) - 49.0).abs() < 1e-12);
         assert!((loop_area(&out.edges).abs() - 2.0 * (49.0 + 29.0 + ba)).abs() < 1e-9);
     }
 
@@ -553,6 +790,18 @@ mod eval_tests {
         let d = Document::from_text(&closed).unwrap();
         let errs = ev.evaluate(&d, None, &());
         assert!(errs.errors().iter().any(|e| e.message.contains("closed")), "{:?}", errs.errors());
+    }
+
+    #[test]
+    fn edge_flanges_round_trip_and_need_a_tab() {
+        let src = format!(
+            "{SRC}contour_flange Base (curves: S.curves(l4), width: 40 mm, thickness: 2 mm, bend_radius: 1 mm, k_factor: 0.5)\n\n\
+             edge_flange E (body: Base, line: l4, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, flip: true)\n"
+        );
+        let e = Document::from_text(&src).unwrap_err().to_string();
+        assert!(e.contains("not a tab"), "{e}");
+        let missing = src.replace(", length: 10 mm", "");
+        assert!(Document::from_text(&missing).unwrap_err().to_string().contains("length"));
     }
 
     #[test]

@@ -353,13 +353,25 @@ fn print_feature(out: &mut String, f: &Feature) {
                     if *symmetric {
                         args.push("symmetric: true".into());
                     }
-                    args.push(format!("thickness: {}", d.thickness));
+                    if let Some(t) = &d.thickness {
+                        args.push(format!("thickness: {t}"));
+                    }
                     args.push(format!("bend_radius: {bend_radius}"));
                     args.push(format!("k_factor: {k_factor}"));
                 }
                 SheetOp::Tab { profile } => {
                     args.push(format!("profile: {}", print_profile(profile)));
-                    args.push(format!("thickness: {}", d.thickness));
+                    if let Some(t) = &d.thickness {
+                        args.push(format!("thickness: {t}"));
+                    }
+                }
+                SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor } => {
+                    args.push(format!("body: {body}"));
+                    args.push(format!("line: {line}"));
+                    args.push(format!("length: {length}"));
+                    args.push(format!("angle: {angle}"));
+                    args.push(format!("bend_radius: {bend_radius}"));
+                    args.push(format!("k_factor: {k_factor}"));
                 }
             }
             if d.flip {
@@ -713,7 +725,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "move_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular"
             | "plane" | "move" | "combine" | "hole" | "joint" | "component" | "surface_extrude" | "patch"
-            | "thicken" | "stitch" | "contour_flange" | "tab" => {
+            | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -738,7 +750,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_component(&mut c)?
                 } else if matches!(kw, "surface_extrude" | "patch" | "thicken" | "stitch") {
                     parse_surface(kw, &mut c)?
-                } else if matches!(kw, "contour_flange" | "tab") {
+                } else if matches!(kw, "contour_flange" | "tab" | "edge_flange") {
                     parse_sheet(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
@@ -2302,10 +2314,13 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut group: Option<String> = None;
     let (mut curves, mut profile) = (None, None);
     let (mut width, mut thickness, mut bend_radius, mut k_factor) = (None, None, None, None);
+    let (mut body, mut line, mut length, mut angle) = (None, None, None, None);
     let (mut symmetric, mut flip) = (false, false);
     let mut body_name = None;
     let allowed = if kw == "tab" {
         "profile, thickness, flip, body_name, label, group, suppressed"
+    } else if kw == "edge_flange" {
+        "body, line, length, angle, bend_radius, k_factor, flip, label, group, suppressed"
     } else {
         "curves, width, symmetric, thickness, bend_radius, k_factor, flip, body_name, label, group, suppressed"
     };
@@ -2314,8 +2329,14 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             (_, "label") => label = Some(c.string()?),
             (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
-            (_, "body_name") => body_name = Some(c.ident()?.to_string()),
-            (_, "thickness") => thickness = Some(c.expr()?),
+            ("contour_flange" | "tab", "body_name") => body_name = Some(c.ident()?.to_string()),
+            ("contour_flange" | "tab", "thickness") => thickness = Some(c.expr()?),
+            ("edge_flange", "body") => body = Some(c.ident()?.to_string()),
+            ("edge_flange", "line") => line = Some(c.ident()?.to_string()),
+            ("edge_flange", "length") => length = Some(c.expr()?),
+            ("edge_flange", "angle") => angle = Some(c.expr()?),
+            ("edge_flange", "bend_radius") => bend_radius = Some(c.expr()?),
+            ("edge_flange", "k_factor") => k_factor = Some(c.expr()?),
             (_, "flip") => flip = parse_bool(c)?,
             ("contour_flange", "curves") => curves = Some(parse_path(c)?),
             ("contour_flange", "width") => width = Some(c.expr()?),
@@ -2330,8 +2351,19 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     if !c.at_end() {
         return Err(c.err("unexpected text after ')'"));
     }
-    let thickness = thickness.ok_or_else(|| missing(c, kw, "thickness"))?;
-    let op = if kw == "tab" {
+    if kw != "edge_flange" && thickness.is_none() {
+        return Err(missing(c, kw, "thickness"));
+    }
+    let op = if kw == "edge_flange" {
+        SheetOp::EdgeFlange {
+            body: body.ok_or_else(|| missing(c, kw, "body"))?,
+            line: line.ok_or_else(|| missing(c, kw, "line"))?,
+            length: Box::new(length.ok_or_else(|| missing(c, kw, "length"))?),
+            angle: Box::new(angle.ok_or_else(|| missing(c, kw, "angle"))?),
+            bend_radius: Box::new(bend_radius.ok_or_else(|| missing(c, kw, "bend_radius"))?),
+            k_factor: Box::new(k_factor.ok_or_else(|| missing(c, kw, "k_factor"))?),
+        }
+    } else if kw == "tab" {
         SheetOp::Tab { profile: profile.ok_or_else(|| missing(c, kw, "profile"))? }
     } else {
         let curves = curves.ok_or_else(|| missing(c, kw, "curves"))?;

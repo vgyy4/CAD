@@ -377,6 +377,7 @@ listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 ```
 contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44, [symmetric: true], [flip: true])
 tab Plate (profile: S2.regions(l4), thickness: 2 mm, [flip: true])
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true])
 ```
 
 `contour_flange` bends an open chain of sketch lines at every corner (inside radius
@@ -386,7 +387,10 @@ sketch lines are the faces `flat(<line>)`, the far side `flat_back(<line>)`, the
 line `bend_in(<line>)` / `bend_out(<line>)`, the free ends `start(<first line>)` and
 `end(<last line>)`, the width faces `cap(start|end)`. `tab` is a flat plate from sketch
 regions (`side(...)`, `cap(...)` as for extrusions; `flip`: below the sketch). Both keep a flat
-pattern: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
+pattern. `edge_flange` bends a flange off one outline line of a tab (up along the sketch
+normal, `flip`: down): `length` of straight sheet after the bend; its faces are
+`<flange>/flat|flat_back|bend_in|bend_out|end(<line>)`, and the tab's flat pattern grows by the
+bend allowance plus the length beyond that line. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
 `|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).
 
 ## Datum planes, bodies and patterns

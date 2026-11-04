@@ -37,10 +37,20 @@ tab Plate (profile: S2.regions(l4), thickness: 2 mm)
   bend lines as centre lines with an "UP/DOWN 90° R2" note) or SVG through the drawing
   writers (ADR 0032).
 
+* **edge_flange** (phase 2, same day): a flange bent off one outline line of a tab,
+  `edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm,
+  k_factor: 0.44)`. Its cross-section (outer and inner bend arcs about one centre, the flange
+  `length` beyond) is built in the plane across the line, at the tab's side face, extruded
+  along the line and united with the tab; the line's outward side is found from the flat
+  outline. The tab's flat pattern gains the bend zone and the flange as a strip on that
+  outline edge. Lines inside the outline or already flanged are refused.
+
 ## Consequences
 * Volumes are exact (the OCCT test checks a U channel against
   `w (t Σ straights + Σ θ t (r + t/2))`, and at k = 0.5 the flat area times `t` equals it).
-* Not in this phase: edge flanges off an existing sheet's edge (with bend reliefs), hems,
+* Flanges on two adjacent lines of a tab overlap at their shared corner (no corner relief
+  yet), in the part and in the flat pattern.
+* Not yet: edge flanges off a contour flange or off another flange, bend reliefs, hems,
   jogs, corner reliefs, and unfolding features that cut the sheet after it was made (the flat
   pattern shows the flange as its feature built it). They follow as further `sheet` features,
   with a geometric unfold (planar and cylindrical faces of constant thickness) for the cuts.

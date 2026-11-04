@@ -266,7 +266,9 @@ Phase 3 has started (see Next).
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
      (`query.flat_pattern`, `sheet.export_flat` DXF/SVG 1:1), SHEET METAL tab; OCCT exact-volume
-     test `modeling_sheet.rs`. Next: edge flanges with bend reliefs, hems, unfolding later cuts.
+     test `modeling_sheet.rs`. Phase 2 done: `edge_flange` off a tab's outline line (angle, up or
+     down, length; the tab's flat pattern grows; OCCT exact-volume test). Next: corner reliefs for
+     flanges on adjacent lines, flanges off contour flanges and flanges, hems, unfolding later cuts.
    - later: direct modeling, tier-2 native imports, CAM, simulation, plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:

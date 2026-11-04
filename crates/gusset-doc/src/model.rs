@@ -173,6 +173,7 @@ impl FeatureKind {
                 SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => add(sketch),
                 SheetOp::Contour { .. } => {}
                 SheetOp::Tab { profile } => add(&profile.sketch),
+                SheetOp::EdgeFlange { body, .. } => add(body),
             },
             FeatureKind::Mirror(d) => {
                 add_body(&mut add, &d.body);
@@ -288,11 +289,22 @@ impl FeatureKind {
                 SurfaceOp::Stitch { tolerance, .. } => take(tolerance),
             },
             FeatureKind::Sheet(d) => {
-                take(&d.thickness);
-                if let SheetOp::Contour { width, bend_radius, k_factor, .. } = &d.op {
-                    take(width);
-                    take(bend_radius);
-                    take(k_factor);
+                if let Some(t) = &d.thickness {
+                    take(t);
+                }
+                match &d.op {
+                    SheetOp::Contour { width, bend_radius, k_factor, .. } => {
+                        take(width);
+                        take(bend_radius);
+                        take(k_factor);
+                    }
+                    SheetOp::EdgeFlange { length, angle, bend_radius, k_factor, .. } => {
+                        take(length);
+                        take(angle);
+                        take(bend_radius);
+                        take(k_factor);
+                    }
+                    SheetOp::Tab { .. } => {}
                 }
             }
             FeatureKind::Draft(d) => take(&d.angle),
@@ -369,11 +381,22 @@ impl FeatureKind {
                 SurfaceOp::Stitch { tolerance, .. } => out.push(tolerance),
             },
             FeatureKind::Sheet(d) => {
-                out.push(&mut d.thickness);
-                if let SheetOp::Contour { width, bend_radius, k_factor, .. } = &mut d.op {
-                    out.push(width);
-                    out.push(bend_radius);
-                    out.push(k_factor);
+                if let Some(t) = &mut d.thickness {
+                    out.push(t);
+                }
+                match &mut d.op {
+                    SheetOp::Contour { width, bend_radius, k_factor, .. } => {
+                        out.push(width);
+                        out.push(bend_radius);
+                        out.push(k_factor);
+                    }
+                    SheetOp::EdgeFlange { length, angle, bend_radius, k_factor, .. } => {
+                        out.push(length);
+                        out.push(angle);
+                        out.push(bend_radius);
+                        out.push(k_factor);
+                    }
+                    SheetOp::Tab { .. } => {}
                 }
             }
             FeatureKind::Draft(d) => out.push(&mut d.angle),
@@ -940,7 +963,8 @@ impl SurfaceOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SheetDef {
     pub op: SheetOp,
-    pub thickness: Expr,
+    /// The sheet thickness (`None` for an edge flange: it takes its body's).
+    pub thickness: Option<Expr>,
     /// Put the material on the other side of the sketch (right of a contour's direction,
     /// or below the sketch plane for a tab).
     pub flip: bool,
@@ -955,6 +979,17 @@ pub enum SheetOp {
     Contour { curves: PathRef, width: Box<Expr>, symmetric: bool, bend_radius: Box<Expr>, k_factor: Box<Expr> },
     /// Sketch regions as flat plates.
     Tab { profile: ProfileRef },
+    /// A flange bent off the outline line `line` of the tab `body`: `length` of straight
+    /// sheet after a bend of `angle` (up, or down with `flip`) with inside radius
+    /// `bend_radius`.
+    EdgeFlange {
+        body: String,
+        line: String,
+        length: Box<Expr>,
+        angle: Box<Expr>,
+        bend_radius: Box<Expr>,
+        k_factor: Box<Expr>,
+    },
 }
 
 impl SheetOp {
@@ -962,6 +997,7 @@ impl SheetOp {
         match self {
             SheetOp::Contour { .. } => "contour_flange",
             SheetOp::Tab { .. } => "tab",
+            SheetOp::EdgeFlange { .. } => "edge_flange",
         }
     }
 }

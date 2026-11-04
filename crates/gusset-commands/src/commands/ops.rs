@@ -114,6 +114,7 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             gusset_doc::SheetOp::Contour { curves: PathRef::Sketch { sketch, .. }, .. } => sketch_of(sketch),
             gusset_doc::SheetOp::Contour { .. } => {}
             gusset_doc::SheetOp::Tab { profile } => sketch_of(&mut profile.sketch),
+            gusset_doc::SheetOp::EdgeFlange { body, .. } => sketch_of(body),
         },
         _ => {}
     }

@@ -81,7 +81,10 @@ fn access(kind: &FeatureKind) -> Access {
             gusset_doc::SurfaceOp::Thicken { body, .. } => target(body.as_ref()),
             gusset_doc::SurfaceOp::Stitch { bodies, .. } => Access { bodies: bodies.clone(), dynamic: false },
         },
-        FeatureKind::Sheet(_) => Access { bodies: Vec::new(), dynamic: false },
+        FeatureKind::Sheet(d) => match &d.op {
+            gusset_doc::SheetOp::EdgeFlange { body, .. } => Access { bodies: vec![body.clone()], dynamic: false },
+            _ => Access { bodies: Vec::new(), dynamic: false },
+        },
     }
 }
 

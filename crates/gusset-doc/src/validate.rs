@@ -60,7 +60,7 @@ pub fn creates_body(f: &Feature) -> bool {
         FeatureKind::Mirror(m) => !m.merge,
         FeatureKind::Move(m) => m.copy,
         FeatureKind::Surface(d) => !matches!(d.op, SurfaceOp::Thicken { .. }),
-        FeatureKind::Sheet(_) => true,
+        FeatureKind::Sheet(d) => !matches!(d.op, SheetOp::EdgeFlange { .. }),
         _ => false,
     }
 }
@@ -82,7 +82,9 @@ pub fn created_body_name(f: &Feature) -> Option<&str> {
         FeatureKind::Surface(d) if !matches!(d.op, SurfaceOp::Thicken { .. }) => {
             Some(d.body_name.as_deref().unwrap_or(&f.name))
         }
-        FeatureKind::Sheet(d) => Some(d.body_name.as_deref().unwrap_or(&f.name)),
+        FeatureKind::Sheet(d) if !matches!(d.op, SheetOp::EdgeFlange { .. }) => {
+            Some(d.body_name.as_deref().unwrap_or(&f.name))
+        }
         _ => None,
     }
 }
@@ -400,6 +402,20 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     }
                 }
                 SheetOp::Tab { profile } => check_profile(n, profile, &seen, &mut out),
+                SheetOp::EdgeFlange { body, .. } => {
+                    match seen.get(body.as_str()) {
+                        Some(g) if !matches!(&g.kind, FeatureKind::Sheet(t) if matches!(t.op, SheetOp::Tab { .. })) => {
+                            out.push(issue_h(
+                                n,
+                                format!("'{body}' is not a tab"),
+                                "edge flanges bend off a tab's outline",
+                            ));
+                        }
+                        None => out.push(issue(n, format!("unknown tab '{body}'"))),
+                        _ => {}
+                    }
+                    check_body_target(n, Some(body), true, &seen, &consumed, &mut out);
+                }
             },
             FeatureKind::Import(i) => {
                 if !is_hash(&i.blob) {
