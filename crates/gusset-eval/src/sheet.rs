@@ -602,8 +602,12 @@ impl Evaluator {
         if !(e.length > 1e-6 && e.length.is_finite()) {
             return Err(expr("the flange length must be a positive length"));
         }
-        if !(e.angle > MIN_BEND && e.angle < std::f64::consts::PI - 1e-3) {
+        if !(e.angle > MIN_BEND && e.angle <= std::f64::consts::PI + 1e-9) {
             return Err(expr("the bend angle must be between 0 and 180 deg").with_hint("90 deg for a right angle"));
+        }
+        // A hem (folded back over the tab) keeps the gap of its bend.
+        if e.angle > std::f64::consts::PI - 1e-3 && e.r < 1e-6 {
+            return Err(expr("a hem (a bend near 180 deg) needs a bend radius").with_hint("e.g. bend_radius: 0.5 mm"));
         }
         if !(e.r >= 0.0 && e.r.is_finite()) {
             return Err(expr("the bend radius must not be negative"));

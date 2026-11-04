@@ -48,6 +48,8 @@ tab Plate (profile: S2.regions(l4), thickness: 2 mm)
 ## Consequences
 * Volumes are exact (the OCCT test checks a U channel against
   `w (t Σ straights + Σ θ t (r + t/2))`, and at k = 0.5 the flat area times `t` equals it).
+* Hems: an edge flange of up to 180 deg; near 180 deg it needs a bend radius and lies one bend
+  gap (`2 r`) above the tab (OCCT test).
 * Flanges on two lines meeting at an outside corner of a tab leave an open corner (each stays
   on its own side; their volumes add exactly, OCCT test); at an inside corner the second would
   run into the first and is refused.

@@ -278,7 +278,7 @@ Phase 3 has started (see Next).
      test `modeling_sheet.rs`. Phase 2 done: `edge_flange` off a tab's outline line (angle, up or
      down, length; the tab's flat pattern grows; OCCT exact-volume test). Flanges at outside
      corners leave an open corner; at inside corners they are refused. Next: flanges off contour
-     flanges and off flanges, closed corners, hems, unfolding later cuts.
+     flanges and off flanges, closed corners, unfolding later cuts. Hems done (`angle: 180 deg`).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Next:
      replace face, live rules.

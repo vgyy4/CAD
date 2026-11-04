@@ -388,7 +388,8 @@ line `bend_in(<line>)` / `bend_out(<line>)`, the free ends `start(<first line>)`
 `end(<last line>)`, the width faces `cap(start|end)`. `tab` is a flat plate from sketch
 regions (`side(...)`, `cap(...)` as for extrusions; `flip`: below the sketch). Both keep a flat
 pattern. `edge_flange` bends a flange off one outline line of a tab (up along the sketch
-normal, `flip`: down): `length` of straight sheet after the bend; its faces are
+normal, `flip`: down): `length` of straight sheet after the bend (`angle: 180 deg` with a radius is a hem, folded
+back over the tab); its faces are
 `<flange>/flat|flat_back|bend_in|bend_out|end(<line>)`, and the tab's flat pattern grows by the
 bend allowance plus the length beyond that line. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
 `|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).

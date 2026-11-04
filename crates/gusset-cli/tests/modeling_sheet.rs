@@ -199,3 +199,24 @@ edge_flange F2 (body: Plate, line: l10, length: 10 mm, angle: 90 deg, bend_radiu
     );
     assert!(!errs.iter().any(|e| e.starts_with("F1")), "{errs:?}");
 }
+
+#[test]
+fn a_hem_folds_back_over_the_tab() {
+    let src = format!(
+        "{TAB}\nedge_flange Hem (body: Plate, line: l6, length: 8 mm, angle: 180 deg, bend_radius: 1 mm, k_factor: 0.5)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let b = r.body("Plate").unwrap();
+    let t = 2.0;
+    let volume = 60.0 * 40.0 * t + 40.0 * (std::f64::consts::PI * t * (1.0 + t / 2.0) + 8.0 * t);
+    let m = ev.kernel().mass_properties(&b.shape).unwrap();
+    assert!(near(m.volume, volume), "{} vs {volume}", m.volume);
+    let bb = ev.kernel().bbox(&b.shape).unwrap();
+    assert!(near(bb.max[2], 2.0 * t + 2.0), "the hem lies one bend gap above the tab: {:?}", bb.max);
+    let flat = b.sheet.as_ref().unwrap();
+    assert!(near(flat.size()[0], 60.0 + std::f64::consts::PI * 2.0 + 8.0));
+}
