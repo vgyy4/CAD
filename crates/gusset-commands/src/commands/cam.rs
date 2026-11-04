@@ -95,6 +95,8 @@ impl CamJob {
                     .circles
                     .iter()
                     .filter(|(id, _)| self.regions.is_empty() || self.regions.contains(id))
+                    // Construction circles mark nothing to drill.
+                    .filter(|(id, _)| !def.entities.iter().any(|e| e.id == **id && e.construction))
                     .filter_map(|(_, c)| solved.points.get(c).copied())
                     .collect();
                 gusset_cam::drilling(&pts, self.peck, &setup)

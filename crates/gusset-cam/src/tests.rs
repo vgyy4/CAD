@@ -171,3 +171,54 @@ fn tabs_lift_the_last_profile_passes_over_bridges() {
     s.tabs = Some(Tabs { count: 40, width: 3.0, height: 1.5 });
     assert!(toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).is_err());
 }
+
+#[test]
+fn review_fixes_hold() {
+    // A ramp on a tabbed profile stops at the tabs' top and plunges the rest at the ring's
+    // start, so it never cuts through a tab.
+    let mut s = setup(6.0);
+    s.ramp_deg = 3.0;
+    s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.5 });
+    let t = toolpath(&[rect(100.0, 60.0)], Operation::Profile { outside: true }, &s).unwrap();
+    for m in &t.moves {
+        if let Move::Line { to, plunge: false } | Move::Arc { to, .. } = m {
+            assert!(!(to[2] < -3.5 - 1e-9 && to[2] > -5.0 + 1e-9), "a ramp below the tabs: {to:?}");
+        }
+    }
+    // Tabs: at least one, lower than the depth, and only on profiles; the spindle must turn.
+    for (count, height) in [(0, 1.0), (4, 5.0)] {
+        s.tabs = Some(Tabs { count, width: 3.0, height });
+        assert!(toolpath(&[rect(100.0, 60.0)], Operation::Profile { outside: true }, &s).is_err());
+    }
+    s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.0 });
+    assert!(toolpath(&[rect(100.0, 60.0)], Operation::Pocket { stepover: 0.5 }, &s).is_err());
+    assert!(drilling(&[[0.0, 0.0]], None, &s).is_err());
+    let mut s = setup(6.0);
+    s.rpm = 0.0;
+    assert!(toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 0.5 }, &s).is_err());
+    s.rpm = 1000.0;
+    s.feed = f64::MAX;
+    assert!(toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 0.5 }, &s).is_err());
+    // A wide stepover still clears the middle: a 40 x 14 pocket, D6, stepover 1.
+    let t = toolpath(&[rect(40.0, 14.0)], Operation::Pocket { stepover: 1.0 }, &setup(6.0)).unwrap();
+    let mid = t.moves.iter().any(|m| match m {
+        Move::Line { to, plunge: false } | Move::Arc { to, .. } => (to[1] - 7.0).abs() <= 1.0 + 1e-9,
+        _ => false,
+    });
+    assert!(mid, "the middle strip is left uncut");
+    // An arc that rounds to nothing is written as a straight cut, never `I0 J0`.
+    let t = Toolpath {
+        moves: vec![
+            Move::Rapid([0.0, 0.0, 5.0]),
+            Move::Line { to: [0.0, 0.0, -1.0], plunge: true },
+            Move::Arc { to: [0.00001, 0.00001, -1.0], center: [0.00002, 0.0], ccw: true },
+        ],
+        ..Toolpath::default()
+    };
+    let g = t.gcode(&setup(6.0), "tiny");
+    assert!(!g.contains("I0 J0") && g.contains("G40 G49 G80 G54"), "{g}");
+    // Curves are sampled to a tolerance: a large one gets more chords than a small one.
+    let big = [[0.0, 0.0], [0.0, 55.0], [45.0, 100.0], [100.0, 100.0]];
+    let small = [[0.0, 0.0], [0.0, 0.5], [0.5, 1.0], [1.0, 1.0]];
+    assert!(bezier_steps(&big) > 100 && bezier_steps(&small) <= 16, "{} {}", bezier_steps(&big), bezier_steps(&small));
+}

@@ -107,17 +107,20 @@ pub struct Drill {
 }
 
 /// Most holes one drilling job may have.
-const MAX_HOLES: usize = 100_000;
+const MAX_HOLES: usize = 20_000;
 
 /// Drills `points` to the setup's depth (the stepdown is not used; `peck` breaks chips).
 /// The holes are visited nearest first from the origin.
 pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Toolpath, CamError> {
     check(s)?;
+    if s.tabs.is_some() {
+        return Err(CamError::Invalid("tabs are for profiles only".into()));
+    }
     if points.is_empty() {
         return Err(CamError::NothingToCut("no holes to drill (the sketch has no circles)".into()));
     }
     if points.len() > MAX_HOLES {
-        return Err(CamError::TooLarge("more than 100000 holes".into()));
+        return Err(CamError::TooLarge("more than 20000 holes".into()));
     }
     if peck.is_some_and(|q| !(q.is_finite() && q > 0.0 && s.depth / q <= 1000.0)) {
         return Err(CamError::Invalid("the peck depth must be positive (at most 1000 pecks)".into()));
@@ -173,6 +176,10 @@ pub struct Stats {
 /// Most rings one pocket may have, and most moves one toolpath may hold.
 const MAX_RINGS: usize = 10_000;
 const MAX_MOVES: usize = 5_000_000;
+/// Largest length (mm), feed (mm/min) and spindle speed (rev/min) accepted.
+const MAX_SIZE: f64 = 100_000.0;
+const MAX_FEED: f64 = 1_000_000.0;
+const MAX_RPM: f64 = 1_000_000.0;
 /// Rapid feed assumed for time estimates (mm/min).
 const RAPID: f64 = 5000.0;
 
@@ -203,8 +210,9 @@ fn polyline(l: &Loop2) -> Polyline<f64> {
                 p.add(center[0] - radius, center[1], 1.0);
             }
             Seg2::Bezier { p: c } => {
-                for i in 0..16 {
-                    let u = f64::from(i) / 16.0;
+                let n = bezier_steps(&c);
+                for i in 0..n {
+                    let u = f64::from(i) / f64::from(n);
                     let v = 1.0 - u;
                     let w = [v * v * v, 3.0 * v * v * u, 3.0 * v * u * u, u * u * u];
                     let x = w.iter().zip(c.iter()).map(|(w, q)| w * q[0]).sum();
@@ -216,6 +224,19 @@ fn polyline(l: &Loop2) -> Polyline<f64> {
     }
     p
 }
+
+/// Chords for a cubic Bézier within `CHORD_TOL` of the curve: a chord of a curve whose
+/// second derivative is at most `M` (here 6 × the control polygon's largest second
+/// difference) strays at most `M h² / 8` over a parameter step `h`.
+fn bezier_steps(c: &[[f64; 2]; 4]) -> u32 {
+    let dd = |a: [f64; 2], b: [f64; 2], d: [f64; 2]| libm::hypot(a[0] - 2.0 * b[0] + d[0], a[1] - 2.0 * b[1] + d[1]);
+    let m = 6.0 * dd(c[0], c[1], c[2]).max(dd(c[1], c[2], c[3]));
+    let n = libm::ceil(libm::sqrt(m / (8.0 * CHORD_TOL)));
+    if n.is_finite() { n.clamp(4.0, 4096.0) as u32 } else { 4 }
+}
+
+/// Largest distance (mm) a sampled curve may stray from its chords.
+const CHORD_TOL: f64 = 0.002;
 
 /// The regions as one shape: outer loops counter-clockwise, holes clockwise.
 fn shape(regions: &[Region2]) -> Shape<f64> {
@@ -257,15 +278,28 @@ fn check(s: &Setup) -> Result<(), CamError> {
         return bad("the safe height must be above the stock top");
     }
     if let Some(t) = s.tabs
-        && !(t.count <= 100 && t.width.is_finite() && t.width > 0.0 && t.height.is_finite() && t.height > 0.0)
+        && !((1..=100).contains(&t.count)
+            && t.width.is_finite()
+            && t.width > 0.0
+            && t.height.is_finite()
+            && t.height > 0.0
+            && t.height < s.depth)
     {
-        return bad("tabs need a count of at most 100 and a positive width and height");
+        return bad("tabs need a count of 1 to 100, a positive width and a height below the depth");
     }
     if !(s.ramp_deg.is_finite() && (0.0..=45.0).contains(&s.ramp_deg)) {
         return bad("the ramp angle must be 0 (plunge) to 45 degrees");
     }
-    if !pos(s.feed) || !pos(s.plunge) || !(s.rpm.is_finite() && s.rpm >= 0.0) {
-        return bad("feeds must be positive (and the spindle speed not negative)");
+    if !pos(s.feed) || !pos(s.plunge) || !pos(s.rpm) {
+        return bad("feeds and the spindle speed must be positive");
+    }
+    // Sizes a machine could hold: G-code numbers stay short and finite.
+    let big = [s.tool_diameter, s.depth, s.top.abs(), s.safe.abs()].into_iter().any(|v| v > MAX_SIZE)
+        || s.feed > MAX_FEED
+        || s.plunge > MAX_FEED
+        || s.rpm > MAX_RPM;
+    if big {
+        return bad("a size above 100 m, a feed above 1000000 mm/min or a speed above 1000000 rev/min");
     }
     Ok(())
 }
@@ -303,7 +337,10 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
                 if all.len() > MAX_RINGS {
                     return Err(CamError::TooLarge("more than 10000 pocket rings: use a larger stepover".into()));
                 }
-                cur = cur.parallel_offset(stepover * s.tool_diameter, &opts);
+                let next = cur.parallel_offset(stepover * s.tool_diameter, &opts);
+                // A stepover above the radius leaves the middle uncut when the next ring
+                // would vanish: one more ring a radius in covers it.
+                cur = if stepover > 0.5 && plines_of(&next).is_empty() { cur.parallel_offset(r, &opts) } else { next };
             }
             // From the middle out: the last rings are the walls, cut last.
             all.into_iter().rev().flatten().collect()
@@ -321,10 +358,14 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
 /// Computes the toolpath of `op` on `regions`.
 pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpath, CamError> {
     check(s)?;
+    if s.tabs.is_some() && !matches!(op, Operation::Profile { .. }) {
+        return Err(CamError::Invalid("tabs are for profiles only".into()));
+    }
     let rings = rings(regions, op, s)?;
     let levels = levels(s);
     let mut moves = Vec::new();
     let slope = libm::tan(s.ramp_deg.to_radians());
+    let tab_top = s.tabs.map(|t| s.top - s.depth + t.height);
     for (li, z) in levels.iter().enumerate() {
         // Each ring is entered from the level above (the stock top for the first).
         let above = if li == 0 { s.top } else { levels.get(li - 1).copied().unwrap_or(s.top) };
@@ -333,24 +374,39 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             let n = p.vertex_count();
             moves.push(Move::Rapid([first.x, first.y, s.safe]));
             let perimeter = p.path_length();
-            if slope > 0.0 && perimeter > 1e-9 {
+            // A helix never runs below the tabs' top (it would cut through them): on the
+            // tabbed levels it stops there and the rest is plunged at the ring's start,
+            // which is never on a tab.
+            let floor = match tab_top {
+                Some(t) if matches!(op, Operation::Profile { .. }) => z.max(t),
+                _ => *z,
+            };
+            if slope > 0.0 && perimeter > 1e-9 && floor < above - 1e-9 {
                 // A helix along the ring, as many turns as the angle needs, then one
                 // full ring at the depth.
                 moves.push(Move::Line { to: [first.x, first.y, above], plunge: true });
-                let turns = ((above - z) / (perimeter * slope)).ceil().clamp(1.0, 1000.0) as usize;
+                let turns = ((above - floor) / (perimeter * slope)).ceil().max(1.0);
+                if turns * n as f64 + moves.len() as f64 > MAX_MOVES as f64 {
+                    return Err(CamError::TooLarge(
+                        "the ramp needs more than 5M moves: use a steeper ramp or plunge".into(),
+                    ));
+                }
+                let turns = turns as usize;
                 let total = perimeter * turns as f64;
                 let mut run = 0.0;
                 for _ in 0..turns {
                     for i in 0..n {
                         let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
                         run += seg_len(a, b);
-                        moves.push(segment(a, b, above - (above - z) * (run / total).min(1.0)));
+                        moves.push(segment(a, b, above - (above - floor) * (run / total).min(1.0)));
                     }
+                }
+                if floor > *z + 1e-9 {
+                    moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
                 }
             } else {
                 moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
             }
-            let tab_top = s.tabs.map(|t| s.top - s.depth + t.height);
             match (s.tabs, tab_top) {
                 (Some(t), Some(top)) if matches!(op, Operation::Profile { .. }) && *z < top - 1e-9 => {
                     tabbed_ring(p, *z, top, &t, s.tool_diameter, &mut moves)?;
@@ -543,11 +599,9 @@ impl Toolpath {
         let mut g = String::new();
         let _ = writeln!(g, "({clean})");
         let _ = writeln!(g, "(Gusset 2.5D toolpath: flat end mill D{} mm)", n(s.tool_diameter));
-        g.push_str("G21 G90 G17 G94\n");
+        g.push_str("G21 G90 G17 G94\nG40 G49 G80 G54\n");
         let _ = writeln!(g, "G0 Z{}", n(s.safe));
-        if s.rpm > 0.0 {
-            let _ = writeln!(g, "S{} M3", n(s.rpm));
-        }
+        let _ = writeln!(g, "S{} M3", n(s.rpm));
         if let Some(d) = &self.drill {
             // Canned cycles: G81 drill, or G83 peck drill; R the retract plane (the top).
             let bottom = s.top - s.depth;
@@ -569,10 +623,7 @@ impl Toolpath {
             }
             g.push_str("G80\n");
             let _ = writeln!(g, "G0 Z{}", n(s.safe));
-            if s.rpm > 0.0 {
-                g.push_str("M5\n");
-            }
-            g.push_str("M30\n");
+            g.push_str("M5\nM30\n");
             return g;
         }
         let mut at: Option<[f64; 3]> = None;
@@ -600,6 +651,14 @@ impl Toolpath {
                 }
                 Move::Arc { to, center, ccw } => {
                     let a = at.unwrap_or(to);
+                    // An arc too short to state after rounding (the same end as its start, or
+                    // a centre on it) is written as the straight cut it then is.
+                    let same = n(to[0]) == n(a[0]) && n(to[1]) == n(a[1]);
+                    if same || libm::hypot(center[0] - a[0], center[1] - a[1]) < 1e-3 {
+                        let _ = writeln!(g, "G1 X{} Y{} Z{} F{}", n(to[0]), n(to[1]), n(to[2]), n(s.feed));
+                        at = Some(to);
+                        continue;
+                    }
                     let _ = writeln!(
                         g,
                         "{} X{} Y{} Z{} I{} J{} F{}",
@@ -616,10 +675,7 @@ impl Toolpath {
             }
         }
         let _ = writeln!(g, "G0 Z{}", n(s.safe));
-        if s.rpm > 0.0 {
-            g.push_str("M5\n");
-        }
-        g.push_str("M30\n");
+        g.push_str("M5\nM30\n");
         g
     }
 }
