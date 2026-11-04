@@ -4,8 +4,8 @@
 //! Versions 1 to 7 (and later ones written in the version 7 layout) are read: bodies,
 //! lumps, shells, faces, loops, coedges, edges, vertices and points (tolerant ones too),
 //! with plane, cylinder, cone, sphere, torus and B-spline surfaces (procedural ones through
-//! their stored approximation) and line, circle, ellipse and B-spline curves. Periodic
-//! B-splines and elliptical cones are refused with their type named.
+//! their stored approximation) and line, circle, ellipse and B-spline curves. Elliptical
+//! cones are refused with their type named.
 
 #[doc(hidden)]
 pub mod fixtures;

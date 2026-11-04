@@ -51,7 +51,8 @@ radius turns the normal inward) and tori (`centre axis major minor uref`) map to
 knot vectors and the control points u major (rows along v; a part with 14 such faces closes
 into one solid only in this order). Procedural kinds (`sweepsur` and the like) are read as
 the B-spline approximation they store after their own data, with a warning. A wider sample of
-24 more NIST files: every one with geometry imports but one with periodic B-spline curves.
+24 more NIST files: every one with geometry imports. Periodic B-splines are written like open
+ones (end multiplicity `degree`, first point repeated last) and read alike.
 
 ## Consequences
 * The OCCT tests import a generated box at its exact volume (both layouts) and, with

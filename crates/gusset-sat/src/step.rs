@@ -128,10 +128,8 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     let rational = rational
         .ok_or_else(|| SatError::Unsupported(format!("{} of a kind without B-spline data is not read yet", r.ty)))?;
     let degree = r.num(k).map(|d| d as usize).filter(|d| (1..=MAX_DEGREE).contains(d)).ok_or_else(|| bad("degree"))?;
-    let closure = r.word(k + 1).unwrap_or("");
-    if closure == "periodic" {
-        return Err(SatError::Unsupported("periodic ACIS B-spline curves are not read yet".into()));
-    }
+    // `open`, `closed` or `periodic`: the samples' periodic curves are written like open ones
+    // (end knots of multiplicity `degree`, first and last points equal), so all read alike.
     let n = r.num(k + 2).filter(|n| *n >= 2.0 && *n <= 1e6).ok_or_else(|| bad("knot count"))? as usize;
     k += 3;
     let mut knots = Vec::with_capacity(n);
@@ -246,16 +244,13 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
     let (du, dv) = (deg(k).ok_or_else(|| bad("u degree"))?, deg(k + 1).ok_or_else(|| bad("v degree"))?);
     k += 2;
     // Rational/closure/singularity words up to the two knot counts.
-    let mut words = Vec::new();
+    let mut words: Vec<String> = Vec::new();
     while r.num(k).is_none() {
         words.push(r.word(k).ok_or_else(|| bad("knot counts"))?.to_string());
         k += 1;
         if words.len() > 8 {
             return Err(bad("knot counts"));
         }
-    }
-    if words.iter().any(|w| w == "periodic") {
-        return Err(SatError::Unsupported("periodic ACIS B-spline surfaces are not read yet".into()));
     }
     let count = |i: usize| r.num(i).filter(|n| *n >= 2.0 && *n <= 1e6).map(|n| n as usize);
     let (nu, nv) = (count(k).ok_or_else(|| bad("u knot count"))?, count(k + 1).ok_or_else(|| bad("v knot count"))?);
