@@ -349,9 +349,8 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.plane" => Tool::Plane,
         "query.measure" => Tool::Measure,
         "query.body" => Tool::Body,
-        "query.model" | "query.sketch" | "query.interference" | "query.bom" | "query.gear_pair" | "sim.static" => {
-            Tool::Info
-        }
+        "query.model" | "query.sketch" | "query.interference" | "query.bom" | "query.gear_pair" | "sim.static"
+        | "sim.modal" => Tool::Info,
         "query.joints" => Tool::Joint,
         "import.file" => Tool::Import,
         "export.step" | "export.mesh" => Tool::Export,

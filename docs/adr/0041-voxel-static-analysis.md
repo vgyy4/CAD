@@ -44,3 +44,19 @@ largest stress (`stress_bands: [{upto_mpa, quads}]`, at most 100000 faces). The 
 it, builds one mesh per band coloured blue to red, shows it in place of the model (the
 model's edges stay faintly drawn) while the result dialog is open, and lists the colours in
 the dialog.
+
+## Amendment (2026-11-04): natural frequencies
+
+`sim.modal` finds the lowest 1–10 natural frequencies of a body held at its fixed faces
+(density in kg/m³, default steel 7850). The mass is lumped (an eighth of each voxel's mass
+on each of its nodes), so `M` is diagonal and the problem becomes the standard one for
+`M^-1/2 K M^-1/2` on the free degrees of freedom. LOBPCG solves it (block of the modes asked
+plus 4, Jacobi preconditioner, Rayleigh-Ritz on `[X, W, P]` with the operator's images
+carried through the Gram-Schmidt and refreshed every 25 iterations, a cyclic-Jacobi dense
+eigensolver for the small projected matrix), until each wanted residual is below 1e-4 of
+its eigenvalue. A 100 × 10 × 10 mm steel cantilever at 2.5 mm voxels reads 848 Hz against
+835.5 Hz from beam theory, the two bending modes equal. The Jacobi preconditioner leaves
+the iteration count near the square root of the condition number (about 500 there); a
+multigrid preconditioner is the next step for large grids. gusset-fea is built at
+opt-level 2 in the dev profile so the tests stay fast.
+

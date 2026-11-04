@@ -111,3 +111,17 @@ fn a_bar_is_analysed_by_its_face_names() {
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": ["Nope/cap(end)"], "loads": []})).code, "not_found");
 }
+
+#[test]
+fn a_cantilever_rod_has_its_natural_frequencies() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"}));
+    let r = run(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 2, "voxel": 2.5}));
+    let f = r["frequencies_hz"].as_array().unwrap();
+    // Beam theory: 835.5 Hz, twice; stiff bricks read a little high.
+    let f1 = f[0].as_f64().unwrap();
+    assert!(f.len() == 2 && f1 > 800.0 && f1 < 1000.0, "{r}");
+    assert_eq!(err(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 11})).code, "invalid_args");
+}

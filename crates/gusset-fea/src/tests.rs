@@ -95,3 +95,42 @@ fn unheld_or_bad_problems_are_refused() {
     p.fixed = vec![99];
     assert!(solve(&p).is_err());
 }
+
+#[test]
+fn a_small_symmetric_matrix_has_its_eigenvalues() {
+    let (vals, vecs) = sym_eig(vec![2.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 5.0], 3);
+    for (got, want) in vals.iter().zip([1.0, 3.0, 5.0]) {
+        assert!((got - want).abs() < 1e-12, "{vals:?}");
+    }
+    // The first eigenvector is (1, -1, 0) / sqrt 2.
+    assert!((vecs[0].abs() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-9 && (vecs[0] + vecs[3]).abs() < 1e-9);
+}
+
+#[test]
+fn a_cantilever_rings_close_to_beam_theory() {
+    // 100 × 10 × 10 mm steel, fixed at x = 0: f1 = (1.8751² / 2π) sqrt(EI / (ρ A L⁴)), twice
+    // (the section is square, so it bends the same way both ways).
+    let mesh = box_mesh([100.0, 10.0, 10.0]);
+    let p = ModalProblem {
+        mesh: &mesh,
+        voxel: 2.5,
+        fixed: vec![0],
+        material: Material { young: 210_000.0, poisson: 0.3 },
+        density: 7.85e-9,
+        modes: 3,
+    };
+    let m = modes(&p).unwrap();
+    let ei = 210_000.0 * 10.0 * 10f64.powi(3) / 12.0;
+    let exact = 1.8751f64.powi(2) / (2.0 * std::f64::consts::PI) * (ei / (7.85e-9 * 100.0 * 100f64.powi(4))).sqrt();
+    let f = &m.frequencies;
+    assert_eq!(f.len(), 3);
+    assert!(f[0] > 0.95 * exact && f[0] < 1.2 * exact, "{f:?} vs {exact} ({} iterations)", m.iterations);
+    assert!((f[1] - f[0]).abs() < 0.01 * f[0], "{f:?}");
+    assert!(f[2] > 1.5 * f[0], "{f:?}");
+    let mut bad = p.clone();
+    bad.modes = 0;
+    assert!(modes(&bad).is_err());
+    bad.modes = 2;
+    bad.density = 0.0;
+    assert!(modes(&bad).is_err());
+}

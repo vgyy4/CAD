@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<StaticQuery>()]
+    vec![spec::<StaticQuery>(), spec::<ModalQuery>()]
 }
 
 /// A force on a face.
@@ -73,30 +73,12 @@ impl Command for StaticQuery {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let ev = s.evaluate(&ctx.actor)?;
-        let body = match &self.body {
-            Some(n) => ev.body(n).cloned().ok_or_else(|| CommandError::not_found(format!("no body '{n}'")))?,
-            None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies"))?,
-        };
-        let face = |f: &str| -> Result<usize, CommandError> {
-            let r = FaceRef::parse(f).map_err(|e| CommandError::args(format!("face {f}: {}", e.message)))?;
-            body.names
-                .face_index(&r)
-                .map(|i| i as usize)
-                .ok_or_else(|| CommandError::not_found(format!("face {f} is not on '{}'", body.name)))
-        };
+        let (body, mesh, voxel, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
         let mut loads = Vec::new();
         for l in &self.loads {
             loads.push(gusset_fea::Load { face: face(&l.face)?, force: l.force });
         }
-        let k = s.kernel().clone();
-        let mesh = k
-            .tessellate(&body.shape, &gusset_kernel::TessellationParams::default())
-            .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-        let bb = k.bbox(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-        let longest = bb.size().into_iter().fold(0.0f64, f64::max);
-        let voxel = self.voxel.unwrap_or(longest / 30.0);
         let p = gusset_fea::Problem {
             mesh: &mesh,
             voxel,
@@ -107,11 +89,7 @@ impl Command for StaticQuery {
                 poisson: self.poisson.unwrap_or(0.3),
             },
         };
-        let sol = gusset_fea::solve(&p).map_err(|e| match e {
-            gusset_fea::FeaError::Invalid(m) => CommandError::args(m),
-            gusset_fea::FeaError::TooLarge(m) => CommandError::new("too_large", m),
-            gusset_fea::FeaError::NotConverged(m) => CommandError::new("evaluation", m),
-        })?;
+        let sol = gusset_fea::solve(&p).map_err(fea_err)?;
         let r = |v: f64| (v * 1e6).round() / 1e6;
         let mut out = json!({
             "body": body.name,
@@ -135,5 +113,101 @@ impl Command for StaticQuery {
             }
         }
         Ok(out)
+    }
+}
+
+fn fea_err(e: gusset_fea::FeaError) -> CommandError {
+    match e {
+        gusset_fea::FeaError::Invalid(m) => CommandError::args(m),
+        gusset_fea::FeaError::TooLarge(m) => CommandError::new("too_large", m),
+        gusset_fea::FeaError::NotConverged(m) => CommandError::new("evaluation", m),
+    }
+}
+
+type FaceIndex = Box<dyn Fn(&str) -> Result<usize, CommandError>>;
+
+/// The body (default the latest), its mesh, the voxel size (default the longest side / 30)
+/// and a lookup from face names to the mesh's face indices.
+fn setup(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    body: Option<&str>,
+    voxel: Option<f64>,
+) -> Result<(std::sync::Arc<gusset_eval::Body>, gusset_kernel::Mesh, f64, FaceIndex), CommandError> {
+    let ev = s.evaluate(&ctx.actor)?;
+    let body = match body {
+        Some(n) => ev.body(n).cloned().ok_or_else(|| CommandError::not_found(format!("no body '{n}'")))?,
+        None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies"))?,
+    };
+    let k = s.kernel().clone();
+    let mesh = k
+        .tessellate(&body.shape, &gusset_kernel::TessellationParams::default())
+        .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+    let bb = k.bbox(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+    let longest = bb.size().into_iter().fold(0.0f64, f64::max);
+    let voxel = voxel.unwrap_or(longest / 30.0);
+    let b = body.clone();
+    let face: FaceIndex = Box::new(move |f: &str| {
+        let r = FaceRef::parse(f).map_err(|e| CommandError::args(format!("face {f}: {}", e.message)))?;
+        b.names
+            .face_index(&r)
+            .map(|i| i as usize)
+            .ok_or_else(|| CommandError::not_found(format!("face {f} is not on '{}'", b.name)))
+    });
+    Ok((body, mesh, voxel, face))
+}
+
+/// The lowest natural frequencies of a body.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModalQuery {
+    #[serde(default)]
+    pub body: Option<String>,
+    pub fixed: Vec<String>,
+    /// Default 3, at most 10.
+    #[serde(default)]
+    pub modes: Option<usize>,
+    /// MPa (default 210000).
+    #[serde(default)]
+    pub young: Option<f64>,
+    #[serde(default)]
+    pub poisson: Option<f64>,
+    /// kg/m3 (default 7850).
+    #[serde(default)]
+    pub density: Option<f64>,
+    #[serde(default)]
+    pub voxel: Option<f64>,
+}
+
+impl Command for ModalQuery {
+    const ID: &'static str = "sim.modal";
+    const TITLE: &'static str = "Natural frequencies";
+    const DESCRIPTION: &'static str = "Lowest natural frequencies (Hz) of a body held at its fixed faces.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = READ;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let (body, mesh, voxel, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
+        let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
+        let p = gusset_fea::ModalProblem {
+            mesh: &mesh,
+            voxel,
+            fixed,
+            material: gusset_fea::Material {
+                young: self.young.unwrap_or(210_000.0),
+                poisson: self.poisson.unwrap_or(0.3),
+            },
+            // kg/m3 to t/mm3.
+            density: self.density.unwrap_or(7850.0) * 1e-12,
+            modes: self.modes.unwrap_or(3),
+        };
+        let m = gusset_fea::modes(&p).map_err(fea_err)?;
+        let r = |v: f64| (v * 1e3).round() / 1e3;
+        Ok(json!({
+            "body": body.name,
+            "voxel_mm": r(voxel),
+            "elements": m.elements,
+            "iterations": m.iterations,
+            "frequencies_hz": m.frequencies.iter().map(|f| r(*f)).collect::<Vec<_>>(),
+        }))
     }
 }

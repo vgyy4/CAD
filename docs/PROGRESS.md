@@ -294,7 +294,10 @@ Phase 3 has started (see Next).
      (hexahedra, matrix-free PCG), fixed faces and face loads by name, max displacement and von
      Mises stress; `sim.static`. Stress colours done (`field: true` returns the voxel surface in
      8 stress bands; the app shows them blue to red in place of the model while the result is
-     open). Next: refinement near stress peaks, modal analysis. Note: the MCP tool list is at
+     open). Natural frequencies done (`sim.modal`: lumped
+     mass, LOBPCG with a Jacobi preconditioner; a cantilever reads 1.5 % above beam theory).
+     Next: refinement near stress peaks, a multigrid preconditioner (iterations grow as the
+     grid's square-root condition number), mode shapes in the viewport. Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
    - later: plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.

@@ -417,22 +417,39 @@ fn face_nodes(
     Ok(out.into_iter().collect())
 }
 
-/// Solves the problem.
-pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
+/// The voxel model of a body held at some faces: grid, elements, nodes, fixed degrees of
+/// freedom, the element stiffness and the Jacobi preconditioner.
+struct Model {
+    g: Grid,
+    n: [usize; 3],
+    h: f64,
+    elems: Vec<[usize; 3]>,
+    conn: Vec<[usize; 8]>,
+    used: Vec<Option<usize>>,
+    node_pos: Vec<V3>,
+    quads: Vec<([usize; 4], V3, usize, usize)>,
+    fixed: Vec<bool>,
+    fixed_nodes: usize,
+    ke: Vec<f64>,
+    b0: Vec<f64>,
+    diag: Vec<f64>,
+    material: Material,
+}
+
+fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<Model, FeaError> {
     let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
-    let m = p.material;
     if !(m.young.is_finite() && m.young > 0.0 && m.poisson.is_finite() && m.poisson > -0.99 && m.poisson < 0.49) {
         return bad("the material needs a positive Young's modulus and a Poisson ratio below 0.49");
     }
-    if !(p.voxel.is_finite() && p.voxel > 0.0) {
+    if !(voxel.is_finite() && voxel > 0.0) {
         return bad("the voxel size must be a positive length");
     }
-    if p.fixed.is_empty() {
+    if fixed_faces.is_empty() {
         return bad("fix at least one face, or the part is free to move");
     }
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
-    for q in &p.mesh.positions {
+    for q in &mesh.positions {
         for d in 0..3 {
             let v = f64::from(q.get(d).copied().unwrap_or(0.0));
             if let (Some(l), Some(h)) = (lo.get_mut(d), hi.get_mut(d)) {
@@ -444,7 +461,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     if !lo.iter().chain(&hi).all(|v| v.is_finite()) {
         return bad("the body has no geometry");
     }
-    let h = p.voxel;
+    let h = voxel;
     let n = [0, 1, 2].map(|d| {
         let span = hi.get(d).copied().unwrap_or(0.0) - lo.get(d).copied().unwrap_or(0.0);
         ((span / h - 1e-9).ceil().max(1.0)) as usize
@@ -454,7 +471,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         return Err(FeaError::TooLarge("the voxel grid is too fine for the body: use a larger voxel".into()));
     }
     let g = Grid { origin: lo, h, n };
-    let inside = voxelize(p.mesh, &g);
+    let inside = voxelize(mesh, &g);
     let elems: Vec<[usize; 3]> = (0..n[2])
         .flat_map(|k| (0..n[1]).flat_map(move |j| (0..n[0]).map(move |i| [i, j, k])))
         .filter(|[i, j, k]| inside.get(i + n[0] * (j + n[1] * k)).copied().unwrap_or(false))
@@ -492,8 +509,8 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let quads = boundary_quads(&g, &inside);
     let mut fixed = vec![false; dofs];
     let mut fixed_nodes = 0;
-    for f in &p.fixed {
-        for (id, _) in face_nodes(p.mesh, *f, &quads, &g, &used)? {
+    for f in fixed_faces {
+        for (id, _) in face_nodes(mesh, *f, &quads, &g, &used)? {
             fixed_nodes += 1;
             for d in 0..3 {
                 if let Some(x) = fixed.get_mut(3 * id + d) {
@@ -505,31 +522,36 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     if fixed_nodes == 0 {
         return bad("the fixed faces reach no voxel: use a smaller voxel");
     }
-    let mut f = vec![0.0; dofs];
-    let mut loaded_nodes = 0;
-    for l in &p.loads {
-        if !l.force.iter().all(|v| v.is_finite()) {
-            return bad("a load is not a number");
-        }
-        let ids = face_nodes(p.mesh, l.face, &quads, &g, &used)?;
-        if ids.is_empty() {
-            return bad("a loaded face reaches no voxel: use a smaller voxel");
-        }
-        loaded_nodes += ids.len();
-        let total: usize = ids.iter().map(|(_, c)| c).sum();
-        for (id, count) in ids {
-            let share = count as f64 / total.max(1) as f64;
+    let (ke, b0) = element(h, &m);
+    // Jacobi preconditioner.
+    let mut diag = vec![0.0; dofs];
+    for c in &conn {
+        for (a, id) in c.iter().enumerate() {
             for d in 0..3 {
-                if let Some(x) = f.get_mut(3 * id + d) {
-                    *x += l.force.get(d).copied().unwrap_or(0.0) * share;
+                if let Some(x) = diag.get_mut(3 * id + d) {
+                    *x += ke.get((3 * a + d) * 25).copied().unwrap_or(0.0);
                 }
             }
         }
     }
-    let (ke, b0) = element(h, &m);
-    let matvec = |u: &[f64], y: &mut [f64]| {
+    for (i, x) in diag.iter_mut().enumerate() {
+        if fixed.get(i).copied().unwrap_or(false) || *x <= 0.0 {
+            *x = 1.0;
+        }
+    }
+    Ok(Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, ke, b0, diag, material: m })
+}
+
+impl Model {
+    fn dofs(&self) -> usize {
+        self.node_pos.len() * 3
+    }
+
+    /// `y = K u`, with the fixed degrees of freedom passed through.
+    fn matvec(&self, u: &[f64], y: &mut [f64]) {
+        let (conn, ke, fixed) = (&self.conn, &self.ke, &self.fixed);
         y.iter_mut().for_each(|v| *v = 0.0);
-        for c in &conn {
+        for c in conn {
             let mut ue = [0.0; 24];
             for (a, id) in c.iter().enumerate() {
                 for d in 0..3 {
@@ -556,21 +578,36 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                 *x = u.get(i).copied().unwrap_or(0.0);
             }
         }
-    };
-    // Jacobi preconditioner.
-    let mut diag = vec![0.0; dofs];
-    for c in &conn {
-        for (a, id) in c.iter().enumerate() {
+    }
+}
+
+/// Solves the problem.
+pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
+    let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
+    let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
+    let Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, b0, diag, material: m, .. } = &md;
+    let (h, n, fixed_nodes, m) = (*h, *n, *fixed_nodes, *m);
+    let dofs = md.dofs();
+    let matvec = |u: &[f64], y: &mut [f64]| md.matvec(u, y);
+    let mut f = vec![0.0; dofs];
+    let mut loaded_nodes = 0;
+    for l in &p.loads {
+        if !l.force.iter().all(|v| v.is_finite()) {
+            return bad("a load is not a number");
+        }
+        let ids = face_nodes(p.mesh, l.face, quads, g, used)?;
+        if ids.is_empty() {
+            return bad("a loaded face reaches no voxel: use a smaller voxel");
+        }
+        loaded_nodes += ids.len();
+        let total: usize = ids.iter().map(|(_, c)| c).sum();
+        for (id, count) in ids {
+            let share = count as f64 / total.max(1) as f64;
             for d in 0..3 {
-                if let Some(x) = diag.get_mut(3 * id + d) {
-                    *x += ke.get((3 * a + d) * 25).copied().unwrap_or(0.0);
+                if let Some(x) = f.get_mut(3 * id + d) {
+                    *x += l.force.get(d).copied().unwrap_or(0.0) * share;
                 }
             }
-        }
-    }
-    for (i, x) in diag.iter_mut().enumerate() {
-        if fixed.get(i).copied().unwrap_or(false) || *x <= 0.0 {
-            *x = 1.0;
         }
     }
     for (i, x) in f.iter_mut().enumerate() {
@@ -581,7 +618,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let mut u = vec![0.0; dofs];
     let mut r = f.clone();
-    let mut z: Vec<f64> = r.iter().zip(&diag).map(|(r, d)| r / d).collect();
+    let mut z: Vec<f64> = r.iter().zip(diag).map(|(r, d)| r / d).collect();
     let mut pdir = z.clone();
     let mut ap = vec![0.0; dofs];
     let mut rz = dot(&r, &z);
@@ -606,7 +643,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                 *ri -= alpha * ai;
             }
         }
-        for (zi, (ri, di)) in z.iter_mut().zip(r.iter().zip(&diag)) {
+        for (zi, (ri, di)) in z.iter_mut().zip(r.iter().zip(diag)) {
             *zi = ri / di;
         }
         let rz_new = dot(&r, &z);
@@ -628,7 +665,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let dm = dmat(&m);
     let mut max_s = (0.0, [0.0; 3]);
     let mut vms = Vec::with_capacity(conn.len());
-    for (c, [i, j, k]) in conn.iter().zip(&elems) {
+    for (c, [i, j, k]) in conn.iter().zip(elems) {
         let mut ue = [0.0; 24];
         for (a, id) in c.iter().enumerate() {
             for d in 0..3 {
@@ -676,6 +713,293 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         loaded_nodes,
         surface,
     })
+}
+
+/// A natural-frequency analysis: the body held at `fixed` faces, `density` in t/mm³
+/// (steel 7.85e-9), the `modes` lowest frequencies.
+#[derive(Debug, Clone)]
+pub struct ModalProblem<'a> {
+    pub mesh: &'a Mesh,
+    pub voxel: f64,
+    pub fixed: Vec<usize>,
+    pub material: Material,
+    pub density: f64,
+    pub modes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Modes {
+    pub elements: usize,
+    pub iterations: usize,
+    /// Lowest first (Hz).
+    pub frequencies: Vec<f64>,
+}
+
+/// Most modes one analysis finds.
+pub const MAX_MODES: usize = 10;
+const MAX_EIGEN_ITERATIONS: usize = 3_000;
+
+/// Eigenvalues (ascending) and eigenvectors (columns, `v[row * k + col]`) of the symmetric
+/// `k × k` matrix `a`, by cyclic Jacobi rotations.
+fn sym_eig(mut a: Vec<f64>, k: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut v = vec![0.0; k * k];
+    for i in 0..k {
+        if let Some(x) = v.get_mut(i * k + i) {
+            *x = 1.0;
+        }
+    }
+    let at = |a: &[f64], i: usize, j: usize| a.get(i * k + j).copied().unwrap_or(0.0);
+    for _ in 0..100 {
+        let off: f64 = (0..k)
+            .flat_map(|i| (0..k).filter(move |j| *j != i).map(move |j| (i, j)))
+            .map(|(i, j)| at(&a, i, j).powi(2))
+            .sum();
+        let scale: f64 = (0..k).map(|i| at(&a, i, i).powi(2)).sum::<f64>().max(1e-300);
+        if off <= 1e-30 * scale {
+            break;
+        }
+        for p in 0..k {
+            for q in p + 1..k {
+                let apq = at(&a, p, q);
+                if apq.abs() < 1e-300 {
+                    continue;
+                }
+                let theta = (at(&a, q, q) - at(&a, p, p)) / (2.0 * apq);
+                let t = theta.signum().max(0.0).mul_add(2.0, -1.0) / (theta.abs() + libm::sqrt(theta * theta + 1.0));
+                let c = 1.0 / libm::sqrt(t * t + 1.0);
+                let sn = t * c;
+                for r in 0..k {
+                    let (arp, arq) = (at(&a, r, p), at(&a, r, q));
+                    if let Some(x) = a.get_mut(r * k + p) {
+                        *x = c * arp - sn * arq;
+                    }
+                    if let Some(x) = a.get_mut(r * k + q) {
+                        *x = sn * arp + c * arq;
+                    }
+                }
+                for r in 0..k {
+                    let (apr, aqr) = (at(&a, p, r), at(&a, q, r));
+                    if let Some(x) = a.get_mut(p * k + r) {
+                        *x = c * apr - sn * aqr;
+                    }
+                    if let Some(x) = a.get_mut(q * k + r) {
+                        *x = sn * apr + c * aqr;
+                    }
+                }
+                for r in 0..k {
+                    let (vrp, vrq) = (at(&v, r, p), at(&v, r, q));
+                    if let Some(x) = v.get_mut(r * k + p) {
+                        *x = c * vrp - sn * vrq;
+                    }
+                    if let Some(x) = v.get_mut(r * k + q) {
+                        *x = sn * vrp + c * vrq;
+                    }
+                }
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|i, j| at(&a, *i, *i).total_cmp(&at(&a, *j, *j)));
+    let vals = order.iter().map(|i| at(&a, *i, *i)).collect();
+    let mut vecs = vec![0.0; k * k];
+    for (col, src) in order.iter().enumerate() {
+        for r in 0..k {
+            if let Some(x) = vecs.get_mut(r * k + col) {
+                *x = at(&v, r, *src);
+            }
+        }
+    }
+    (vals, vecs)
+}
+
+/// The lowest natural frequencies: `K x = ω² M x` with a lumped mass, solved by LOBPCG on
+/// `M^-1/2 K M^-1/2` with a Jacobi preconditioner.
+pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
+    if !(p.density.is_finite() && p.density > 0.0) {
+        return Err(FeaError::Invalid("the density must be positive".into()));
+    }
+    if !(1..=MAX_MODES).contains(&p.modes) {
+        return Err(FeaError::Invalid(format!("ask for 1 to {MAX_MODES} modes")));
+    }
+    let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
+    let dofs = md.dofs();
+    let free: Vec<bool> = md.fixed.iter().map(|f| !f).collect();
+    let n_free = free.iter().filter(|f| **f).count();
+    let b = (p.modes + 4).min(n_free);
+    if b < p.modes {
+        return Err(FeaError::Invalid("too few free voxels for that many modes: use a smaller voxel".into()));
+    }
+    // Lumped mass: an eighth of each voxel's mass on each of its nodes.
+    let mut mass = vec![0.0; dofs];
+    let me = p.density * md.h * md.h * md.h / 8.0;
+    for c in &md.conn {
+        for id in c {
+            for d in 0..3 {
+                if let Some(x) = mass.get_mut(3 * id + d) {
+                    *x += me;
+                }
+            }
+        }
+    }
+    let inv_sqrt_m: Vec<f64> = mass.iter().map(|m| if *m > 0.0 { 1.0 / libm::sqrt(*m) } else { 0.0 }).collect();
+    let mut tmp_in = vec![0.0; dofs];
+    let mut tmp_out = vec![0.0; dofs];
+    let mut apply = |x: &[f64], y: &mut [f64]| {
+        for i in 0..dofs {
+            if let Some(t) = tmp_in.get_mut(i) {
+                let f = free.get(i).copied().unwrap_or(false);
+                *t = if f { x.get(i).copied().unwrap_or(0.0) * inv_sqrt_m.get(i).copied().unwrap_or(0.0) } else { 0.0 };
+            }
+        }
+        md.matvec(&tmp_in, &mut tmp_out);
+        for i in 0..dofs {
+            if let Some(v) = y.get_mut(i) {
+                let f = free.get(i).copied().unwrap_or(false);
+                *v = if f {
+                    tmp_out.get(i).copied().unwrap_or(0.0) * inv_sqrt_m.get(i).copied().unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+            }
+        }
+    };
+    // Preconditioner: the inverse diagonal of the scaled operator.
+    let precond: Vec<f64> = (0..dofs)
+        .map(|i| {
+            let m = mass.get(i).copied().unwrap_or(0.0);
+            let k = md.diag.get(i).copied().unwrap_or(1.0);
+            if free.get(i).copied().unwrap_or(false) && k > 0.0 { m / k } else { 0.0 }
+        })
+        .collect();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    // Modified Gram-Schmidt of the columns `s` (with their images `as_`), dropping the ones
+    // that are (nearly) dependent.
+    let orthonormalize = |s: &mut Vec<Vec<f64>>, as_: &mut Vec<Vec<f64>>| {
+        let mut out: (Vec<Vec<f64>>, Vec<Vec<f64>>) = (Vec::new(), Vec::new());
+        for (mut v, mut av) in s.drain(..).zip(as_.drain(..)) {
+            let n0 = libm::sqrt(dot(&v, &v));
+            for (q, aq) in out.0.iter().zip(&out.1) {
+                let c = dot(q, &v);
+                v.iter_mut().zip(q).for_each(|(x, y)| *x -= c * y);
+                av.iter_mut().zip(aq).for_each(|(x, y)| *x -= c * y);
+            }
+            let n = libm::sqrt(dot(&v, &v));
+            if n > 1e-10 * n0.max(1e-300) && n > 1e-300 {
+                v.iter_mut().for_each(|x| *x /= n);
+                av.iter_mut().for_each(|x| *x /= n);
+                out.0.push(v);
+                out.1.push(av);
+            }
+        }
+        *s = out.0;
+        *as_ = out.1;
+    };
+    // Deterministic start vectors.
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut x: Vec<Vec<f64>> = (0..b)
+        .map(|_| {
+            (0..dofs)
+                .map(|i| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    if free.get(i).copied().unwrap_or(false) {
+                        (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let image = |v: &Vec<f64>, apply: &mut dyn FnMut(&[f64], &mut [f64])| {
+        let mut y = vec![0.0; dofs];
+        apply(v, &mut y);
+        y
+    };
+    let mut ax: Vec<Vec<f64>> = x.iter().map(|v| image(v, &mut apply)).collect();
+    orthonormalize(&mut x, &mut ax);
+    let mut pdir: Vec<Vec<f64>> = Vec::new();
+    let mut apdir: Vec<Vec<f64>> = Vec::new();
+    let mut theta: Vec<f64> = Vec::new();
+    let combine = |cols: &[Vec<f64>], c: &[f64], k: usize, j: usize, from: usize| {
+        let mut out = vec![0.0; dofs];
+        for (r, col) in cols.iter().enumerate().skip(from) {
+            let w = c.get(r * k + j).copied().unwrap_or(0.0);
+            if w != 0.0 {
+                out.iter_mut().zip(col).for_each(|(o, v)| *o += w * v);
+            }
+        }
+        out
+    };
+    let mut iterations = 0;
+    loop {
+        // Rayleigh-Ritz on the basis [X, W, P].
+        let mut s: Vec<Vec<f64>> = x.clone();
+        let mut as_: Vec<Vec<f64>> = ax.clone();
+        if !theta.is_empty() {
+            let mut converged = true;
+            let mut w = Vec::with_capacity(x.len());
+            for (j, (xj, axj)) in x.iter().zip(&ax).enumerate() {
+                let th = theta.get(j).copied().unwrap_or(0.0);
+                let r: Vec<f64> = axj.iter().zip(xj).map(|(a, v)| a - th * v).collect();
+                if j < p.modes && libm::sqrt(dot(&r, &r)) > 1e-4 * th.abs().max(1e-300) {
+                    converged = false;
+                }
+                w.push(r.iter().zip(&precond).map(|(r, t)| r * t).collect::<Vec<f64>>());
+            }
+            if converged {
+                break;
+            }
+            if iterations >= MAX_EIGEN_ITERATIONS {
+                return Err(FeaError::NotConverged(
+                    "the frequency solver did not converge: fix more faces or use a larger voxel".into(),
+                ));
+            }
+            iterations += 1;
+            let aw: Vec<Vec<f64>> = w.iter().map(|v| image(v, &mut apply)).collect();
+            s.extend(w);
+            as_.extend(aw);
+            s.extend(pdir.iter().cloned());
+            as_.extend(apdir.iter().cloned());
+            // Refresh the tracked images now and then against drift.
+            if iterations % 25 == 0 {
+                as_ = s.iter().map(|v| image(v, &mut apply)).collect();
+            }
+        }
+        orthonormalize(&mut s, &mut as_);
+        let k = s.len();
+        let mut h = vec![0.0; k * k];
+        for i in 0..k {
+            for j in i..k {
+                let v = 0.5
+                    * (dot(s.get(i).map_or(&[][..], |v| v), as_.get(j).map_or(&[][..], |v| v))
+                        + dot(s.get(j).map_or(&[][..], |v| v), as_.get(i).map_or(&[][..], |v| v)));
+                if let Some(x) = h.get_mut(i * k + j) {
+                    *x = v;
+                }
+                if let Some(x) = h.get_mut(j * k + i) {
+                    *x = v;
+                }
+            }
+        }
+        let (vals, vecs) = sym_eig(h, k);
+        let keep = b.min(k);
+        theta = vals.into_iter().take(keep).collect();
+        let nx = x.len().min(k);
+        x = (0..keep).map(|j| combine(&s, &vecs, k, j, 0)).collect();
+        ax = (0..keep).map(|j| combine(&as_, &vecs, k, j, 0)).collect();
+        // The new search directions: the parts of the new vectors outside the old X.
+        pdir = (0..keep).map(|j| combine(&s, &vecs, k, j, nx)).collect();
+        apdir = (0..keep).map(|j| combine(&as_, &vecs, k, j, nx)).collect();
+        if k == nx {
+            pdir.clear();
+            apdir.clear();
+        }
+    }
+    let frequencies =
+        theta.iter().take(p.modes).map(|l| libm::sqrt(l.max(0.0)) / (2.0 * std::f64::consts::PI)).collect();
+    Ok(Modes { elements: md.conn.len(), iterations, frequencies })
 }
 
 #[cfg(test)]
