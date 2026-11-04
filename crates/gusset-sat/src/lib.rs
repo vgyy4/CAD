@@ -43,7 +43,9 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_records: 10_000_000, max_tokens: 200_000_000 }
+        // Some 60 bytes per token in memory: 10M tokens stay well under a gigabyte (a
+        // 100 MB text file of real geometry has fewer).
+        Limits { max_records: 5_000_000, max_tokens: 10_000_000 }
     }
 }
 

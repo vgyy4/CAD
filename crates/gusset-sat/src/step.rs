@@ -24,7 +24,7 @@ fn len(a: V3) -> f64 {
 }
 fn unit(a: V3) -> Option<V3> {
     let l = len(a);
-    (l > 1e-300).then(|| [a[0] / l, a[1] / l, a[2] / l])
+    (l > 1e-300 && l.is_finite()).then(|| [a[0] / l, a[1] / l, a[2] / l])
 }
 
 fn real(v: f64) -> String {
@@ -132,8 +132,8 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     // (end knots of multiplicity `degree`, first and last points equal), so all read alike.
     let n = r.num(k + 2).filter(|n| *n >= 2.0 && *n <= 1e6).ok_or_else(|| bad("knot count"))? as usize;
     k += 3;
-    let mut knots = Vec::with_capacity(n);
-    let mut mults = Vec::with_capacity(n);
+    let mut knots = Vec::with_capacity(n.min(1 << 16));
+    let mut mults = Vec::with_capacity(n.min(1 << 16));
     for _ in 0..n {
         let t = r.num(k).ok_or_else(|| bad("knot"))?;
         let m = r
@@ -151,8 +151,8 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     let total: usize = mults.iter().sum();
     let count = (total + 1).checked_sub(degree).filter(|c| *c > degree).ok_or_else(|| bad("too few control points"))?;
     let dim = if rational { 4 } else { 3 };
-    let mut points = Vec::with_capacity(count);
-    let mut weights = rational.then(|| Vec::with_capacity(count));
+    let mut points = Vec::with_capacity(count.min(1 << 16));
+    let mut weights = rational.then(|| Vec::with_capacity(count.min(1 << 16)));
     for _ in 0..count {
         let p = r.vec3(k).ok_or_else(|| bad("control point"))?;
         points.push(p);
@@ -174,6 +174,15 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     }
     Ok(Bs3 { degree, knots, mults, points, weights })
 }
+
+/// Most turns one helix may have (a long thread, not a hostile file's million).
+const MAX_HELIX_TURNS: f64 = 500.0;
+
+/// Most STEP text one conversion may write (the worker refuses 1 GiB).
+const MAX_OUTPUT: usize = 256 << 20;
+
+/// Most warnings kept.
+const MAX_WARNINGS: usize = 100;
 
 /// Segments per turn of a helix fitted as a B-spline.
 const HELIX_SEGMENTS_PER_TURN: f64 = 16.0;
@@ -205,7 +214,7 @@ fn helix(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     }
     let [t0, t1] = ends;
     let turns = (t1 - t0).abs() / std::f64::consts::TAU;
-    if t1 <= t0 || t1.is_nan() || t0.is_nan() || turns > 10_000.0 {
+    if t1 <= t0 || t1.is_nan() || t0.is_nan() || turns > MAX_HELIX_TURNS {
         return Err(bad("range"));
     }
     let segs = ((turns * HELIX_SEGMENTS_PER_TURN).ceil() as usize).max(1);
@@ -389,21 +398,51 @@ struct Writer<'a> {
     skipped: usize,
     /// Coedges per edge in the shell being written (an edge used once is a free edge).
     uses: BTreeMap<i64, u32>,
+    /// Shells, faces, loops and coedges already walked in the body being written: a file
+    /// that shares them (or nests subshells as a lattice) is walked once, not exponentially.
+    seen: std::collections::BTreeSet<i64>,
+    /// Lumps already written (by any body).
+    lumps: std::collections::BTreeSet<i64>,
+    /// Surfaces and curves that could not be read, with why (each is tried once).
+    failed: BTreeMap<i64, String>,
+    /// B-spline surfaces by their definition block (`{ ref n }` shares one).
+    defs: BTreeMap<(usize, usize), usize>,
+    /// The output passed [`MAX_OUTPUT`].
+    full: bool,
     warnings: Vec<String>,
 }
 
-impl Writer<'_> {
+impl<'a> Writer<'a> {
     fn add(&mut self, e: &str) -> usize {
         self.next += 1;
-        let _ = writeln!(self.out, "#{}={e};", self.next);
+        if self.out.len() + e.len() > MAX_OUTPUT {
+            self.full = true;
+        } else {
+            let _ = writeln!(self.out, "#{}={e};", self.next);
+        }
         self.next
     }
 
-    fn rec(&self, i: i64) -> Result<&Rec, SatError> {
-        self.sat.rec(i).ok_or_else(|| SatError::Malformed(format!("record ${i} does not exist")))
+    fn warn(&mut self, m: String) {
+        if self.warnings.len() < MAX_WARNINGS {
+            self.warnings.push(m);
+        }
     }
 
-    fn rec_of(&self, i: i64, ty: &str) -> Result<&Rec, SatError> {
+    fn check_full(&self) -> Result<(), SatError> {
+        if self.full {
+            Err(SatError::TooLarge(format!("the converted model passes {} MiB", MAX_OUTPUT >> 20)))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn rec(&self, i: i64) -> Result<&'a Rec, SatError> {
+        let sat: &'a Sat = self.sat;
+        sat.rec(i).ok_or_else(|| SatError::Malformed(format!("record ${i} does not exist")))
+    }
+
+    fn rec_of(&self, i: i64, ty: &str) -> Result<&'a Rec, SatError> {
         let r = self.rec(i)?;
         // Tolerant entities are subtypes: `tedge-edge`, `tcoedge-coedge`, `tvertex-vertex`.
         if r.ty == ty || r.ty.strip_suffix(ty).is_some_and(|p| p.ends_with('-')) {
@@ -432,17 +471,18 @@ impl Writer<'_> {
 
     /// The subtype block of a record: its own `{ ...` or the definition `{ ref n }` names,
     /// as (record, field of the `{`).
-    fn subtype(&self, r: &Rec) -> Result<(Rec, usize), SatError> {
+    fn subtype(&self, r: &'a Rec) -> Result<(&'a Rec, usize), SatError> {
         let open = (1..8)
             .find(|i| r.word(*i) == Some("{"))
             .ok_or_else(|| SatError::Malformed(format!("{} has no data block", r.ty)))?;
         if r.word(open + 1) != Some("ref") {
-            return Ok((r.clone(), open));
+            return Ok((r, open));
         }
         let n = r.num(open + 2).filter(|n| *n >= 0.0).ok_or_else(|| SatError::Malformed("a bad ref".into()))? as usize;
         let (ri, fi) =
             *self.sat.subtypes.get(n).ok_or_else(|| SatError::Malformed(format!("ref {n} names no subtype")))?;
-        let def = self.sat.recs.get(ri).cloned().ok_or_else(|| SatError::Malformed("a bad ref".into()))?;
+        let sat: &'a Sat = self.sat;
+        let def = sat.recs.get(ri).ok_or_else(|| SatError::Malformed("a bad ref".into()))?;
         Ok((def, fi))
     }
 
@@ -498,18 +538,29 @@ impl Writer<'_> {
         if let Some(v) = self.curves.get(&c) {
             return Ok(*v);
         }
-        let r = self.rec(c)?.clone();
+        if let Some(m) = self.failed.get(&c) {
+            return Err(SatError::Unsupported(m.clone()));
+        }
+        let r = self.curve_once(c);
+        if let Err(SatError::Unsupported(m)) = &r {
+            self.failed.insert(c, m.clone());
+        }
+        r
+    }
+
+    fn curve_once(&mut self, c: i64) -> Result<(usize, bool), SatError> {
+        let r = self.rec(c)?;
         let bad = || SatError::Malformed(format!("{} ${c} is incomplete", r.ty));
         let mut against = false;
         let id = match r.ty.as_str() {
             "intcurve-curve" => {
                 // `forward`/`reversed` (or `0`/`1`): the curve against its B-spline.
                 against = reversed(r.word(1));
-                let (def, open) = self.subtype(&r)?;
+                let (def, open) = self.subtype(r)?;
                 let b = if def.word(open + 1) == Some("helix_int_cur") {
-                    helix(&def, open + 2)?
+                    helix(def, open + 2)?
                 } else {
-                    bs3_curve(&def, open + 1)?
+                    bs3_curve(def, open + 1)?
                 };
                 let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
                 let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
@@ -567,7 +618,7 @@ impl Writer<'_> {
         if let Some(id) = self.edges.get(&e) {
             return Ok(*id);
         }
-        let r = self.rec_of(e, "edge")?.clone();
+        let r = self.rec_of(e, "edge")?;
         let bad = |w: &str| SatError::Malformed(format!("edge ${e} has no {w}"));
         let v0 = self.vertex(r.ptr(1).ok_or_else(|| bad("start vertex"))?)?;
         let v1 = self.vertex(r.ptr(self.lay.edge_end).ok_or_else(|| bad("end vertex"))?)?;
@@ -583,7 +634,18 @@ impl Writer<'_> {
         if let Some(v) = self.surfaces.get(&s) {
             return Ok(*v);
         }
-        let r = self.rec(s)?.clone();
+        if let Some(m) = self.failed.get(&s) {
+            return Err(SatError::Unsupported(m.clone()));
+        }
+        let r = self.surface_once(s);
+        if let Err(SatError::Unsupported(m)) = &r {
+            self.failed.insert(s, m.clone());
+        }
+        r
+    }
+
+    fn surface_once(&mut self, s: i64) -> Result<(usize, bool), SatError> {
+        let r = self.rec(s)?;
         let bad = || SatError::Malformed(format!("{} ${s} is incomplete", r.ty));
         let v = match r.ty.as_str() {
             "plane-surface" => {
@@ -645,10 +707,15 @@ impl Writer<'_> {
             }
             "spline-surface" => {
                 let against = reversed(r.word(1));
-                let (def, at) = self.subtype(&r)?;
+                let (def, at) = self.subtype(r)?;
+                // A definition shared through `{ ref n }` is written once.
+                let key = (std::ptr::from_ref(def) as usize, at);
+                if let Some(id) = self.defs.get(&key) {
+                    return Ok((*id, against));
+                }
                 let name = def.word(at + 1).unwrap_or("").to_string();
                 let b = if name == "exactsur" {
-                    bs3_surface(&def, at + 2)?
+                    bs3_surface(def, at + 2)?
                 } else {
                     // Procedural surfaces (sweeps, blends, offsets...) carry a B-spline
                     // approximation: `nubs|nurbs <du> <dv>` after their own data.
@@ -662,9 +729,9 @@ impl Writer<'_> {
                         })?;
                     let note = format!("'{name}' surfaces are read as their stored B-spline approximation");
                     if !self.warnings.contains(&note) {
-                        self.warnings.push(note);
+                        self.warn(note);
                     }
-                    bs3_surface(&def, start)?
+                    bs3_surface(def, start)?
                 };
                 let rows: Vec<String> = b
                     .points
@@ -701,6 +768,7 @@ impl Writer<'_> {
                         ))
                     }
                 };
+                self.defs.insert(key, id);
                 (id, against)
             }
             other => {
@@ -718,19 +786,26 @@ impl Writer<'_> {
         if self.faces > MAX_FACES {
             return Err(SatError::TooLarge(format!("more than {MAX_FACES} faces")));
         }
-        let r = self.rec_of(f, "face")?.clone();
+        self.check_full()?;
+        let r = self.rec_of(f, "face")?;
         let surf = r.ptr(5).ok_or_else(|| SatError::Malformed(format!("face ${f} has no surface")))?;
         let (sid, flipped) = self.surface(surf)?;
         let mut bounds = Vec::new();
         for l in self.chain(r.ptr(2), 1)? {
-            let lr = self.rec_of(l, "loop")?.clone();
+            if !self.seen.insert(l) {
+                return Err(SatError::Malformed(format!("loop ${l} belongs to more than one face")));
+            }
+            let lr = self.rec_of(l, "loop")?;
             let mut oriented = Vec::new();
             let mut apex = None;
             for ce in self.chain(lr.ptr(2), 1)? {
-                let cr = self.rec_of(ce, "coedge")?.clone();
+                if !self.seen.insert(ce) {
+                    return Err(SatError::Malformed(format!("coedge ${ce} belongs to more than one loop")));
+                }
+                let cr = self.rec_of(ce, "coedge")?;
                 let e = cr.ptr(4).ok_or_else(|| SatError::Malformed(format!("coedge ${ce} has no edge")))?;
                 // An edge without a curve is a point (a cone's apex): no edge in STEP.
-                let er = self.rec_of(e, "edge")?.clone();
+                let er = self.rec_of(e, "edge")?;
                 if er.ptr(self.lay.edge_curve).is_none() {
                     apex = er.ptr(1);
                     continue;
@@ -760,9 +835,16 @@ impl Writer<'_> {
         if depth > 64 {
             return Err(SatError::Malformed("subshells nest too deep".into()));
         }
-        let r = self.rec(sh)?.clone();
+        if !self.seen.insert(sh) {
+            return Ok(());
+        }
+        let r = self.rec(sh)?;
         let faces_at = if r.ty == "shell" { 3 } else { 2 };
-        out.extend(self.chain(r.ptr(faces_at), 1)?);
+        for f in self.chain(r.ptr(faces_at), 1)? {
+            if self.seen.insert(f) {
+                out.push(f);
+            }
+        }
         let sub_at = if r.ty == "shell" { 2 } else { 3 };
         for s in self.chain(r.ptr(sub_at), 1)? {
             self.shell_faces(s, depth + 1, out)?;
@@ -795,6 +877,11 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
         faces: 0,
         skipped: 0,
         uses: BTreeMap::new(),
+        seen: std::collections::BTreeSet::new(),
+        lumps: std::collections::BTreeSet::new(),
+        failed: BTreeMap::new(),
+        defs: BTreeMap::new(),
+        full: false,
         warnings: Vec::new(),
     };
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
@@ -819,17 +906,23 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
     let many = bodies.len() > 1;
     let mut written = 0;
     for (n, b) in bodies.iter().enumerate() {
-        let br = w.rec(*b)?.clone();
+        let br = w.rec(*b)?;
         // Geometry is written per body (each has its own transform).
-        w.xf = transform(sat, &br);
+        w.xf = transform(sat, br);
         w.vertices.clear();
         w.edges.clear();
         w.curves.clear();
         w.surfaces.clear();
+        w.defs.clear();
+        w.seen.clear();
         let mut solids = Vec::new();
         let mut sheets = Vec::new();
         for lump in w.chain(br.ptr(1), 1)? {
-            let lr = w.rec_of(lump, "lump")?.clone();
+            if !w.lumps.insert(lump) {
+                w.warn(format!("body {} shares a lump with an earlier body; it is written once", n + 1));
+                continue;
+            }
+            let lr = w.rec_of(lump, "lump")?;
             let mut shells = Vec::new();
             for sh in w.chain(lr.ptr(2), 1)? {
                 let mut faces = Vec::new();
@@ -844,7 +937,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
                         Err(SatError::Unsupported(m)) => {
                             w.skipped += 1;
                             if w.skipped <= 20 {
-                                w.warnings.push(format!("a face was left out: {m}"));
+                                w.warn(format!("a face was left out: {m}"));
                             }
                         }
                         Err(e) => return Err(e),
@@ -871,7 +964,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
             });
         }
         if !sheets.is_empty() {
-            w.warnings.push(format!("body {} has open shells (free edges); they are imported as sheets", n + 1));
+            w.warn(format!("body {} has open shells (free edges); they are imported as sheets", n + 1));
             let model = w.add(&format!("SHELL_BASED_SURFACE_MODEL('',{})", list(&sheets)));
             let label = string(&format!("{name} {} sheet", n + 1));
             let prod = w.add(&format!("PRODUCT({label},{label},'',(#{pc}))"));
@@ -884,7 +977,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
         }
         if solids.is_empty() {
             if sheets.is_empty() {
-                w.warnings.push(format!("body {} has no faces", n + 1));
+                w.warn(format!("body {} has no faces", n + 1));
             }
             continue;
         }
@@ -897,6 +990,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
         let rep = w.add(&format!("ADVANCED_BREP_SHAPE_REPRESENTATION('',{},#{ctx})", list(&solids)));
         w.add(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
     }
+    w.check_full()?;
     if written == 0 {
         return Err(SatError::Unsupported("the file holds no body with faces".into()));
     }

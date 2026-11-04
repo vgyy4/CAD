@@ -88,3 +88,12 @@ designs) reads the parts of each design within the same budget.
 * Next: spline surfaces and intersection curves (the `exact`/`approx` B-spline data the
   records carry), spheres and tori once samples show their layout, then `.f3d` (a zip whose
   bodies are binary ACIS, SAB/SMB, a byte form of the same records).
+* Security review (2026-11-04, every finding reproduced): the converter runs in the app
+  before the sandbox, so its costs are bounded there. Shells, faces, loops and coedges are
+  walked once per body (a lattice of subshells was exponential; a loop or coedge reached twice
+  is refused, which stopped a 1 MB file growing into 1 GB of STEP); lumps are written once over
+  all bodies; a surface or curve is read once even when it fails; a B-spline surface shared
+  through `{ ref n }` is written once; records are borrowed, never copied; helices have at most
+  500 turns; the STEP text stops at 256 MiB (refused as too large); header lines are read to
+  4 KiB; at most 10M values and 100 warnings; `.f3d` entries inflate to at most 256 MiB each;
+  directions of non-finite length are refused.

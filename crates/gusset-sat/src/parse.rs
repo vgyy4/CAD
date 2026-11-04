@@ -115,8 +115,11 @@ impl Lexer<'_> {
     }
 }
 
+/// The words of a header line (at most its first 4 KiB: a hostile file's endless line is
+/// not split into millions of words).
 fn words(line: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(line).split_whitespace().map(str::to_string).collect()
+    let line = line.get(..line.len().min(4096)).unwrap_or_default();
+    String::from_utf8_lossy(line).split_whitespace().take(64).map(str::to_string).collect()
 }
 
 /// Reads a SAT text file or its binary form (SAB, `ACIS BinaryFile` / `ASM BinaryFile`).

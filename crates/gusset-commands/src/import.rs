@@ -334,6 +334,9 @@ const MAX_FREECAD_BYTES: usize = 2 << 30;
 /// Most B-rep parts one Fusion archive may hold.
 const MAX_F3D_PARTS: usize = 64;
 
+/// Largest inflated entry of a Fusion archive (a part, or a design inside an `.f3z`).
+const MAX_F3D_PART_BYTES: u64 = 256 << 20;
+
 /// A Fusion 360 `.f3d` archive: every `Breps.BlobParts/*.smb` (binary ACIS of the design's
 /// bodies; `.smbh` holds their history and is skipped), converted to STEP and imported.
 /// The design's component placements live in Fusion's own design stream and are not read,
@@ -351,7 +354,8 @@ fn f3d(
     let mut budget = limits.max_decompressed_bytes;
     let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
     let mut parts =
-        gusset_meshio::archive::read_entries_within(bytes, &limits, &is_brep, u64::MAX, &mut budget).map_err(bad)?;
+        gusset_meshio::archive::read_entries_within(bytes, &limits, &is_brep, MAX_F3D_PART_BYTES, &mut budget)
+            .map_err(bad)?;
     // An `.f3z` holds whole `.f3d` designs (one per component); their parts, one level
     // deep, share the decompression budget.
     if parts.is_empty() {
@@ -359,13 +363,13 @@ fn f3d(
             bytes,
             &limits,
             &|n| n.to_ascii_lowercase().ends_with(".f3d"),
-            u64::MAX,
+            MAX_F3D_PART_BYTES,
             &mut budget,
         )
         .map_err(bad)?;
         for (_, d) in designs.iter().take(MAX_F3D_PARTS) {
             parts.extend(
-                gusset_meshio::archive::read_entries_within(d, &limits, &is_brep, u64::MAX, &mut budget)
+                gusset_meshio::archive::read_entries_within(d, &limits, &is_brep, MAX_F3D_PART_BYTES, &mut budget)
                     .map_err(bad)?,
             );
             if parts.len() > MAX_F3D_PARTS {

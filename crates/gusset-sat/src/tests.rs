@@ -70,3 +70,23 @@ fn the_binary_form_converts_like_the_text() {
     }
     let _ = to_step(&odd, "x", &Limits::default());
 }
+
+#[test]
+fn shared_loops_and_endless_helices_are_refused() {
+    // Two faces naming one loop (the review's 1 MB file that became 1 GB of STEP).
+    let sat = box_sat(700, [1.0, 1.0, 1.0]);
+    let mut lines: Vec<String> = sat.lines().map(str::to_string).collect();
+    let faces: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.starts_with("face ")).map(|(i, _)| i).collect();
+    let first_loop = lines[faces[0]].split_whitespace().nth(5).unwrap().to_string();
+    let second: Vec<String> = lines[faces[1]].split_whitespace().map(str::to_string).collect();
+    lines[faces[1]] = lines[faces[1]].replacen(&second[5], &first_loop, 1);
+    let e = to_step(lines.join("\n").as_bytes(), "x", &Limits::default()).unwrap_err().to_string();
+    assert!(e.contains("more than one face"), "{e}");
+    // A helix of a million turns (the review's 4 KB file that became 868 MB).
+    let first = sat.lines().find(|l| l.starts_with("straight-curve")).unwrap().to_string();
+    let helix =
+        "intcurve-curve $-1 -1 $-1 forward { helix_int_cur 22310 F 0 F 6283185 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1 } I I #";
+    let e = to_step(sat.replacen(&first, helix, 1).as_bytes(), "x", &Limits::default());
+    assert!(e.as_ref().map_or(true, |c| c.warnings.iter().any(|w| w.contains("left out"))), "{e:?}");
+    assert!(e.as_ref().map_or(true, |c| c.step.len() < 1 << 20));
+}
