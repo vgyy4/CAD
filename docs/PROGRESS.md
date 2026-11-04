@@ -269,7 +269,10 @@ Phase 3 has started (see Next).
      test `modeling_sheet.rs`. Phase 2 done: `edge_flange` off a tab's outline line (angle, up or
      down, length; the tab's flat pattern grows; OCCT exact-volume test). Next: corner reliefs for
      flanges on adjacent lines, flanges off contour flanges and flanges, hems, unfolding later cuts.
-   - later: direct modeling, tier-2 native imports, CAM, simulation, plugins.
+   - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
+     0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Next:
+     replace face, live rules.
+   - later: tier-2 native imports, CAM, simulation, plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
    `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk

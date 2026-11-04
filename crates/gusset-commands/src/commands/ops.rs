@@ -8,6 +8,7 @@ pub(super) fn specs() -> Vec<CommandSpec> {
         spec::<Shell>(),
         spec::<Draft>(),
         spec::<OffsetFace>(),
+        spec::<DeleteFace>(),
         spec::<MoveFace>(),
         spec::<Mirror>(),
         spec::<PatternLinear>(),
@@ -54,6 +55,12 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
         FeatureKind::Mirror(d) => {
             body_of(&mut d.body);
             d.plane.rename_feature(from, to);
+        }
+        FeatureKind::DeleteFace(d) => {
+            body_of(&mut d.body);
+            for f in &mut d.faces {
+                f.rename_feature(from, to);
+            }
         }
         FeatureKind::OffsetFace(d) => {
             body_of(&mut d.body);
@@ -131,6 +138,43 @@ pub(crate) fn body_for(
 
 fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
     faces.iter().map(|f| FaceRef::parse(f).map_err(|e| CommandError::args(format!("face '{f}': {e}")))).collect()
+}
+
+/// Removes faces; the neighbours close the gap (ADR 0038).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteFace {
+    /// Faces to remove (face refs from query_body), e.g. a hole's wall or a fillet.
+    pub faces: Vec<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for DeleteFace {
+    const ID: &'static str = "feature.delete_face";
+    const TITLE: &'static str = "Delete face";
+    const DESCRIPTION: &'static str =
+        "Remove faces (holes, fillets, bosses) and heal: the faces around grow to close the gap. Needs OCCT.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let faces = parse_faces(&self.faces)?;
+        if faces.is_empty() {
+            return Err(CommandError::args("no faces to delete").hint("list the faces to remove"));
+        }
+        for f in &faces {
+            check_face_resolves(s, ctx, f)?;
+        }
+        edit(s, ctx, "Delete face", |doc, rb| {
+            let name = feature_name(doc, self.name, "DeleteFace")?;
+            let body = body_for(doc, rb, self.body)?;
+            let def = gusset_doc::DeleteFaceDef { body, faces };
+            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::DeleteFace(def)));
+            Ok(json!({ "feature": name }))
+        })
+    }
 }
 
 /// Moves faces along their normals (ADR 0030).

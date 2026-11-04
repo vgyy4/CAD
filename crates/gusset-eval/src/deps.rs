@@ -61,6 +61,7 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::Shell(d) => target(d.body.as_ref()),
         FeatureKind::Draft(d) => target(d.body.as_ref()),
         FeatureKind::OffsetFace(d) => target(d.body.as_ref()),
+        FeatureKind::DeleteFace(d) => target(d.body.as_ref()),
         FeatureKind::MoveFace(d) => target(d.body.as_ref()),
         FeatureKind::Mirror(d) => target(d.body.as_ref()),
         FeatureKind::PatternLinear(d) => target(d.body.as_ref()),

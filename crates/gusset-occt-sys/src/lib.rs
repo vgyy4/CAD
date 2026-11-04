@@ -214,6 +214,13 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_delete_faces(
+            s: *const GsShape,
+            faces: *const u32,
+            nfaces: usize,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_offset_faces(
             s: *const GsShape,
             faces: *const u32,

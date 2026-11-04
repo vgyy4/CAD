@@ -252,6 +252,14 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("draft", self.name())
     }
 
+    /// Removes the faces `faces` (a hole's walls, a fillet, a boss's sides) and extends the
+    /// faces around them to close the gap (ADR 0038). Every output face reports
+    /// [`FaceOrigin::Input`].
+    fn delete_faces(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+        let _ = (shape, faces);
+        unsupported("delete face", self.name())
+    }
+
     /// Moves the faces `faces` along their normals by `distance` mm (> 0 outward, adding
     /// material; ADR 0030); the neighbouring faces stretch to follow. Every output face
     /// reports [`FaceOrigin::Input`].

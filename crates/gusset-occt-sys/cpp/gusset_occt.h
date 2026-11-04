@@ -125,6 +125,7 @@ int gs_extrude_curves(const GsProfile* p, double distance, int symmetric, GsShap
 int gs_patch(const GsProfile* p, GsShape** out, GsBuf* origins);
 /* A sheet offset into a solid of `thickness` (along its normals; `both`: half each side). */
 int gs_thicken(const GsShape* s, double thickness, int both, GsShape** out, GsBuf* origins);
+int gs_delete_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, GsShape** out, GsBuf* origins);
 /* Shapes sewn along shared edges within `tol`; a closed result becomes a solid. Origins:
  * input = which shape, face = its face. */
 int gs_stitch(const GsShape* const* shapes, size_t n, double tol, GsShape** out, GsBuf* origins);

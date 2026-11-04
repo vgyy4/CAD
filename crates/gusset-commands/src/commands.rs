@@ -49,7 +49,7 @@ pub use hole::Hole;
 pub use joint::{JointCommand, QueryJoints};
 pub use lettering::Text;
 pub use measure::QueryMeasure;
-pub use ops::{Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
+pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
 pub use surface::{Patch, Stitch, SurfaceExtrude, Thicken};

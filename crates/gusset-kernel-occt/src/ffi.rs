@@ -99,6 +99,10 @@ pub(crate) fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> KResult<OpOu
     safe::shell(s, faces, thickness).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn delete_faces(s: &RawShape, faces: &[u32]) -> KResult<OpOut> {
+    safe::delete_faces(s, faces).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn offset_faces(s: &RawShape, faces: &[u32], distance: f64) -> KResult<OpOut> {
     safe::offset_faces(s, faces, distance).map_err(err(KernelErrorKind::OperationFailed))
 }

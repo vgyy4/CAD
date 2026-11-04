@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub(crate) enum Request {
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
+    DeleteFaces(Shape, Vec<u32>),
     MoveFaces(Shape, Vec<u32>, Vec<Transform>),
     ExtrudeCurves(Profile, ExtrudeSpec),
     Patch(Profile),
@@ -166,6 +167,11 @@ impl Request {
                 w.u8(32);
                 put_shapes(&mut w, s, shapes)?;
                 w.f64(*tol);
+            }
+            Request::DeleteFaces(shape, faces) => {
+                w.u8(33);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, faces)?;
             }
             Request::Free(ids) => {
                 w.u8(1);
@@ -322,6 +328,7 @@ impl Request {
             30 => Request::Patch(Profile::get(&mut r, s)?),
             31 => Request::Thicken(get_shape(&mut r, s)?, r.f64()?, r.u8()? != 0),
             32 => Request::Stitch(get_shapes(&mut r, s)?, r.f64()?),
+            33 => Request::DeleteFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

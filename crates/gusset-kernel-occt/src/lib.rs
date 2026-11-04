@@ -437,6 +437,10 @@ mod imp {
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }
 
+        fn delete_faces(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+            op_result(ffi::delete_faces(raw(shape)?, faces)?)
+        }
+
         fn draft(&self, shape: &Shape, faces: &[u32], spec: &DraftSpec) -> KResult<OpResult> {
             let (d, n) = (spec.pull, spec.neutral);
             op_result(ffi::draft(raw(shape)?, faces, &[d[0], d[1], d[2], n[0], n[1], n[2], spec.angle])?)

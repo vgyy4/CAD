@@ -400,7 +400,7 @@ plane  <Name> (base: <plane>, offset: <length>)
 plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
 move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
 combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>])
-shell, draft, offset_face, move_face, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
+shell, draft, offset_face, delete_face, move_face, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
 text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length>, distance: <length>, [font: sans|mono], [align: left|center|right], [angle: <angle>], [op: ...], [body: ...], [body_name: ...])
 ```
 
@@ -430,6 +430,9 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   The pull direction is the plane's normal (XY: +Z), or into the body for a face of it;
   `flip: true` reverses it. Faces must be planar, cylindrical or conical and cross the
   plane; they keep their names.
+- `delete_face (faces: [<face>])` removes faces (a hole's walls, a fillet, a boss) and lets
+  the faces around extend to close the gap (ADR 0038); it fails, leaving the part as it was, when they
+  cannot (the top of a block).
 - `offset_face (faces: [<face>], distance: <length>)` pushes or pulls faces along their
   normals (direct edit, ADR 0030): positive adds material, negative removes it; the
   neighbouring faces stretch to follow and every face keeps its name. A cylindrical hole's

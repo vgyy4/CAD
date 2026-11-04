@@ -371,6 +371,16 @@ pub fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> ShimResult<OpOut> {
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Removes `faces`; the neighbouring faces extend to close the gap.
+pub fn delete_faces(s: &RawShape, faces: &[u32]) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    // SAFETY: shape locked and valid; `faces` alive for the call; out-params valid.
+    let rc = s.with(|p| unsafe { sys::gs_delete_faces(p, faces.as_ptr(), faces.len(), &mut out, &mut origins) });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn offset_faces(s: &RawShape, faces: &[u32], distance: f64) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

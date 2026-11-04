@@ -688,6 +688,8 @@ draft Draft2 (faces: [Extrude1/side(Sketch1/l6)], plane: Extrude1/cap(start), an
 
 offset_face OffsetFace1 (body: Extrude1, faces: [Extrude1/cap(end), Extrude1/side(Sketch1/l5)], distance: pitch / 4)
 
+delete_face DeleteFace1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l6)])
+
 move_face MoveFace1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5)], translate: [2 mm, 0 mm, pitch / 8])
 
 move_face MoveFace2 (faces: [Extrude1/side(Sketch1/l6), Extrude1/side(Sketch1/l7)], axis: Z, angle: 15 deg, through: [5 mm, 5 mm, 0 mm])

@@ -408,6 +408,11 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push(format!("body_name: {b}"));
             }
         }
+        FeatureKind::DeleteFace(d) => {
+            push_body(&mut args, &d.body);
+            let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
+            args.push(format!("faces: [{}]", faces.join(", ")));
+        }
         FeatureKind::OffsetFace(d) => {
             push_body(&mut args, &d.body);
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
@@ -723,9 +728,9 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                 doc.params.push(Param { name, expr, comment: notes.join("\n"), range });
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
-            | "draft" | "offset_face" | "move_face" | "text" | "mirror" | "pattern_linear" | "pattern_circular"
-            | "plane" | "move" | "combine" | "hole" | "joint" | "component" | "surface_extrude" | "patch"
-            | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange" => {
+            | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "pattern_linear"
+            | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint" | "component"
+            | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -735,7 +740,13 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     f
                 } else if matches!(
                     kw,
-                    "shell" | "draft" | "offset_face" | "mirror" | "pattern_linear" | "pattern_circular"
+                    "shell"
+                        | "draft"
+                        | "offset_face"
+                        | "delete_face"
+                        | "mirror"
+                        | "pattern_linear"
+                        | "pattern_circular"
                 ) {
                     parse_feature_ext(kw, &mut c)?
                 } else if matches!(kw, "plane" | "move" | "move_face" | "combine") {
@@ -1030,6 +1041,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
         "shell" => "body, faces, thickness, label, group, suppressed",
         "draft" => "body, faces, plane, angle, flip, label, group, suppressed",
         "offset_face" => "body, faces, distance, label, group, suppressed",
+        "delete_face" => "body, faces, label, group, suppressed",
         "mirror" => "body, plane, merge, label, group, suppressed",
         "pattern_linear" => "body, direction, count, spacing, features, label, group, suppressed",
         _ => "body, axis, through, count, angle, features, label, group, suppressed",
@@ -1040,7 +1052,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
             (_, "body") => body = Some(c.ident()?.to_string()),
-            ("shell" | "draft" | "offset_face", "faces") => faces = Some(parse_face_list(c)?),
+            ("shell" | "draft" | "offset_face" | "delete_face", "faces") => faces = Some(parse_face_list(c)?),
             ("shell", "thickness") => thickness = Some(c.expr()?),
             ("mirror" | "draft", "plane") => plane = Some(parse_plane(c)?),
             ("draft", "flip") => flip = parse_bool(c)?,
@@ -1073,6 +1085,9 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,
             thickness: thickness.ok_or_else(|| missing(c, kw, "thickness"))?,
         }),
+        "delete_face" => {
+            FeatureKind::DeleteFace(DeleteFaceDef { body, faces: faces.ok_or_else(|| missing(c, kw, "faces"))? })
+        }
         "offset_face" => FeatureKind::OffsetFace(OffsetFaceDef {
             body,
             faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,

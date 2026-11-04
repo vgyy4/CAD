@@ -61,6 +61,8 @@ pub enum FeatureKind {
     Shell(ShellDef),
     Draft(DraftDef),
     OffsetFace(OffsetFaceDef),
+    /// Faces removed and the gap closed by their neighbours (ADR 0038, direct edit).
+    DeleteFace(DeleteFaceDef),
     MoveFace(MoveFaceDef),
     Text(Box<TextDef>),
     Mirror(MirrorDef),
@@ -94,6 +96,7 @@ impl FeatureKind {
             FeatureKind::Sheet(d) => d.op.keyword(),
             FeatureKind::Draft(_) => "draft",
             FeatureKind::OffsetFace(_) => "offset_face",
+            FeatureKind::DeleteFace(_) => "delete_face",
             FeatureKind::MoveFace(_) => "move_face",
             FeatureKind::Text(_) => "text",
             FeatureKind::Mirror(_) => "mirror",
@@ -187,6 +190,12 @@ impl FeatureKind {
                 d.plane.features(&mut add);
             }
             FeatureKind::OffsetFace(d) => {
+                add_body(&mut add, &d.body);
+                for f in &d.faces {
+                    f.features(&mut add);
+                }
+            }
+            FeatureKind::DeleteFace(d) => {
                 add_body(&mut add, &d.body);
                 for f in &d.faces {
                     f.features(&mut add);
@@ -309,6 +318,7 @@ impl FeatureKind {
             }
             FeatureKind::Draft(d) => take(&d.angle),
             FeatureKind::OffsetFace(d) => take(&d.distance),
+            FeatureKind::DeleteFace(_) => {}
             FeatureKind::Text(d) => {
                 d.at.iter().chain([&d.height, &d.distance]).chain(d.angle.as_ref()).for_each(&mut take);
             }
@@ -401,6 +411,7 @@ impl FeatureKind {
             }
             FeatureKind::Draft(d) => out.push(&mut d.angle),
             FeatureKind::OffsetFace(d) => out.push(&mut d.distance),
+            FeatureKind::DeleteFace(_) => {}
             FeatureKind::Text(d) => {
                 let TextDef { at, height, distance, angle, .. } = &mut **d;
                 out.extend(at.iter_mut());
@@ -1026,6 +1037,15 @@ pub struct OffsetFaceDef {
     pub body: Option<String>,
     pub faces: Vec<FaceRef>,
     pub distance: Expr,
+}
+
+/// Removes faces of a body (a hole, a fillet, a boss's sides; ADR 0038): the faces around
+/// extend until they close the gap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeleteFaceDef {
+    /// Target body; `None` = the most recent body.
+    pub body: Option<String>,
+    pub faces: Vec<FaceRef>,
 }
 
 /// Tapers faces of a body about the neutral plane (ADR 0028): each face turns by `angle`

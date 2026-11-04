@@ -96,6 +96,30 @@ impl Evaluator {
         Ok(())
     }
 
+    /// Removes faces; the faces around close the gap (ADR 0038).
+    pub(crate) fn run_delete_face(
+        &self,
+        s: &mut State,
+        name: &str,
+        d: &gusset_doc::DeleteFaceDef,
+    ) -> Result<(), EvalError> {
+        let k = self.kernel.as_ref();
+        let (bi, body) = target_body(s, name, d.body.as_deref())?;
+        let faces = resolve_faces(name, &body, &d.faces, "re-select the face to delete")?;
+        let res = k.delete_faces(&body.shape, &faces).map_err(|ke| {
+            let mut e = kernel_err(name, "delete face", ke);
+            if e.hint.is_none() {
+                e.hint = Some("delete whole features' faces together (all faces of a hole or a fillet)".into());
+            }
+            e
+        })?;
+        let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+        let names = name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
+            .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+        replace_body(s, bi, &body, res.shape, names, topo);
+        Ok(())
+    }
+
     /// Moves faces rigidly (ADR 0031); the faces around stretch to follow.
     pub(crate) fn run_move_face(
         &self,

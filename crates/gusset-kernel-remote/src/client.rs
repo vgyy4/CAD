@@ -539,6 +539,10 @@ impl Kernel for RemoteKernel {
         self.op(&Request::Stitch(shapes.to_vec(), tolerance))
     }
 
+    fn delete_faces(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+        self.op(&Request::DeleteFaces(shape.clone(), faces.to_vec()))
+    }
+
     fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
         self.op(&Request::OffsetFaces(shape.clone(), faces.to_vec(), distance))
     }

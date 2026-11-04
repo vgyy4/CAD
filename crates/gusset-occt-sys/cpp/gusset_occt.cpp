@@ -44,6 +44,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -1503,6 +1504,46 @@ int gs_offset_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, doub
     }
   }
   check_valid(result, "offset");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+static void input_origins(BRepBuilderAPI_MakeShape& mk, const TopoDS_Shape& in, const TopoDS_Shape& r, uint32_t input,
+                          int kind, std::vector<int64_t>& o);
+
+// Removes faces and lets the neighbours grow over the gap (ADR 0038, defeaturing).
+int gs_delete_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!faces && nfaces)) return fail("null argument");
+  if (nfaces == 0) return fail("no faces to delete");
+  ShapeMap in_faces;
+  TopExp::MapShapes(s->s, TopAbs_FACE, in_faces);
+  BRepAlgoAPI_Defeaturing mk;
+  mk.SetShape(s->s);
+  mk.SetRunParallel(Standard_False);
+  mk.SetToFillHistory(Standard_True);
+  for (size_t i = 0; i < nfaces; ++i) {
+    if (in_faces.Extent() <= 0 || faces[i] >= uint32_t(in_faces.Extent())) return fail("face index out of range");
+    mk.AddFaceToRemove(in_faces(int(faces[i]) + 1));
+  }
+  mk.Build();
+  if (!mk.IsDone() || mk.HasErrors())
+    return fail("the faces cannot be removed: the faces around them do not close the gap");
+  TopoDS_Shape result = mk.Shape();
+  if (result.IsNull()) return fail("deleting faces produced no result");
+  // The algorithm leaves a face it cannot remove in place (with a warning): say so.
+  {
+    ShapeMap kept;
+    TopExp::MapShapes(result, TopAbs_FACE, kept);
+    for (size_t i = 0; i < nfaces; ++i)
+      if (kept.Contains(in_faces(int(faces[i]) + 1)))
+        return fail("the faces cannot be removed: the faces around them do not close the gap");
+  }
+  std::vector<int64_t> o;
+  input_origins(mk, s->s, result, 0, GS_ORIGIN_INPUT, o);
+  check_valid(result, "delete faces");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
