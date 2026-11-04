@@ -1536,6 +1536,21 @@ pub fn solve_sketch_def(
     sketch::solve_sketch(name, def, params, units, Frame::XY).map(|s| s.result)
 }
 
+/// The closed regions of a sketch (all, or those `select` names) in sketch coordinates
+/// (mm), with pattern copies, as kernel profile regions: for 2D work on a sketch such as
+/// CAM toolpaths (ADR 0040).
+pub fn sketch_regions(
+    name: &str,
+    def: &gusset_doc::SketchDef,
+    params: &ParamValues,
+    units: LengthUnit,
+    select: &[String],
+) -> Result<Vec<gusset_kernel::Region2>, EvalError> {
+    let solved = sketch::solve_sketch(name, def, params, units, Frame::XY)?;
+    let (profile, _) = sketch::kernel_profile(name, name, &solved, Frame::XY, select)?;
+    Ok(profile.regions)
+}
+
 /// The copies one sketch pattern makes, from the solved sources: the copied points
 /// (`p3_2` → position) and curves (`l5_2`, geometry in copy ids, construction flag). For
 /// turning a pattern into ordinary entities (`sketch.explode_pattern`).

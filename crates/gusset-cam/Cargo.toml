@@ -1,0 +1,16 @@
+[package]
+name = "gusset-cam"
+description = "2.5D milling toolpaths and G-code for Gusset (ADR 0040)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+libm.workspace = true
+cavalier_contours.workspace = true
+gusset-kernel.workspace = true
+
+[lints]
+workspace = true

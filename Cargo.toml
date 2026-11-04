@@ -29,6 +29,7 @@ indexing_slicing = "warn"
 mem_forget = "deny"
 
 [workspace.dependencies]
+cavalier_contours = { version = "0.9.0", default-features = false }
 libm = "0.2.16"
 blake3 = "1.8.7"
 quick-xml = { version = "0.42.0", default-features = false }
@@ -87,6 +88,7 @@ gusset-naming = { path = "crates/gusset-naming", version = "0.1.0-mvp" }
 gusset-sketch = { path = "crates/gusset-sketch", version = "0.1.0-mvp" }
 gusset-text = { path = "crates/gusset-text", version = "0.1.0-mvp" }
 gusset-scad = { path = "crates/gusset-scad", version = "0.1.0-mvp" }
+gusset-cam = { path = "crates/gusset-cam", version = "0.1.0-mvp" }
 gusset-sat = { path = "crates/gusset-sat", version = "0.1.0-mvp" }
 gusset-xt = { path = "crates/gusset-xt", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }

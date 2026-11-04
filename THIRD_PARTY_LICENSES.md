@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (369)
+- MIT License (372)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5678,6 +5678,7 @@ SOFTWARE.
 Used by:
 
 - [gusset-app 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-cam 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-cli 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-commands 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-doc 0.1.0-mvp](https://github.com/vgyy4/CAD)
@@ -5716,6 +5717,7 @@ Used by:
 - [accesskit_windows 0.32.1](https://github.com/AccessKit/accesskit)
 - [block2 0.5.1](https://github.com/madsmtm/objc2)
 - [block2 0.6.2](https://github.com/madsmtm/objc2)
+- [cavalier_contours 0.9.0](https://github.com/jbuckmccready/cavalier_contours)
 - [chrono 0.4.45](https://github.com/chronotope/chrono)
 - [dispatch 0.2.0](http://github.com/SSheldon/rust-dispatch)
 - [dpi 0.1.2](https://github.com/rust-windowing/winit)
@@ -6134,6 +6136,7 @@ Used by:
 - [serde_json 1.0.151](https://github.com/serde-rs/json)
 - [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr)
 - [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str)
+- [static_aabb2d_index 2.1.0](https://github.com/jbuckmccready/static_aabb2d_index)
 - [syn 2.0.119](https://github.com/dtolnay/syn)
 - [syn 3.0.7](https://github.com/dtolnay/syn)
 - [thiserror-impl 1.0.69](https://github.com/dtolnay/thiserror)

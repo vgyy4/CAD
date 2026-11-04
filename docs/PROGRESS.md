@@ -282,7 +282,12 @@ Phase 3 has started (see Next).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Next:
      replace face, live rules.
-   - later: tier-2 native imports, CAM, simulation, plugins.
+   - CAM phase 1 done (ADR 0040, `gusset-cam` on `cavalier_contours`): 2.5D pocket (islands
+     kept clear) and outside/inside profiles of sketch regions with a flat end mill in depth
+     passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,
+     G2/G3 arcs). Next: ramp entry, tabs, drilling, toolpaths in the document with a viewport
+     preview.
+   - later: simulation, plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
    `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk
