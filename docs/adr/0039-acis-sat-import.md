@@ -41,6 +41,18 @@ sense applied to the edge. Periodic B-splines are refused. An OCCT test closes a
 B-spline edge both ways round; the NIST version 1 parts (Boeing part, demo parts) and two
 files with intersection curves import as solids.
 
+### Amendment (same day): versions 2 and 3, spheres, tori, spline surfaces
+Versions 2 and 3 have the three header lines and version 1's edges. Lines in front of the
+first header line (a mailer's) are skipped. Tolerant entities (`tedge-edge`, `tcoedge-coedge`,
+`tvertex-vertex`) are read as their base type. Spheres (`centre radius uref pole`, a negative
+radius turns the normal inward) and tori (`centre axis major minor uref`) map to STEP's.
+`spline-surface` data blocks are numbered in file order (each `{` not followed by `ref`), and
+`{ ref n }` reuses the n-th; `exactsur` holds `nubs|nurbs du dv` words, two knot counts, both
+knot vectors and the control points u major (rows along v; a part with 14 such faces closes
+into one solid only in this order). Procedural kinds (`sweepsur` and the like) are read as
+the B-spline approximation they store after their own data, with a warning. A wider sample of
+24 more NIST files: every one with geometry imports but one with periodic B-spline curves.
+
 ## Consequences
 * The OCCT tests import a generated box at its exact volume (both layouts) and, with
   `GUSSET_SAT_SAMPLES`, five CMU files at the volume of Spatial's own STEP translations.

@@ -177,6 +177,119 @@ fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     Ok(Bs3 { degree, knots, mults, points, weights })
 }
 
+/// A B-spline surface (`exactsur`): `[full] nubs|nurbs <du> <dv> <words> <nu> <nv>`, the u
+/// then v knot vectors as for curves, then the control points, u major (each u row lists
+/// its points along v).
+struct Bs3Surface {
+    degree: [usize; 2],
+    knots: [Vec<f64>; 2],
+    mults: [Vec<usize>; 2],
+    /// `points[iu][iv]`.
+    points: Vec<Vec<V3>>,
+    weights: Option<Vec<Vec<f64>>>,
+}
+
+/// Most control points one B-spline surface may have.
+const MAX_SURFACE_POINTS: usize = 4_000_000;
+
+fn knot_vector(r: &Rec, k: &mut usize, n: usize, degree: usize) -> Result<(Vec<f64>, Vec<usize>), SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
+    let mut knots = Vec::with_capacity(n.min(1 << 16));
+    let mut mults = Vec::with_capacity(n.min(1 << 16));
+    for _ in 0..n {
+        let t = r.num(*k).ok_or_else(|| bad("knot"))?;
+        let m = r
+            .num(*k + 1)
+            .map(|m| m as usize)
+            .filter(|m| (1..=degree + 1).contains(m))
+            .ok_or_else(|| bad("multiplicity"))?;
+        if knots.last().is_some_and(|l| t <= *l) {
+            return Err(bad("knots do not increase"));
+        }
+        knots.push(t);
+        mults.push(m);
+        *k += 2;
+    }
+    Ok((knots, mults))
+}
+
+/// STEP's end knots repeat once more than ACIS's.
+fn step_ends(mults: &mut [usize], degree: usize) {
+    if let Some(m) = mults.first_mut() {
+        *m = (*m + 1).min(degree + 1);
+    }
+    if let Some(m) = mults.last_mut() {
+        *m = (*m + 1).min(degree + 1);
+    }
+}
+
+fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
+    let mut k = from;
+    let mut rational = None;
+    for _ in 0..4 {
+        match r.word(k) {
+            Some("nubs") => rational = Some(false),
+            Some("nurbs") => rational = Some(true),
+            Some("nullbs") => {
+                return Err(SatError::Unsupported("a spline surface without B-spline data is not read yet".into()));
+            }
+            _ => {}
+        }
+        k += 1;
+        if rational.is_some() {
+            break;
+        }
+    }
+    let rational = rational.ok_or_else(|| bad("no B-spline data"))?;
+    let deg = |i: usize| r.num(i).map(|d| d as usize).filter(|d| (1..=MAX_DEGREE).contains(d));
+    let (du, dv) = (deg(k).ok_or_else(|| bad("u degree"))?, deg(k + 1).ok_or_else(|| bad("v degree"))?);
+    k += 2;
+    // Rational/closure/singularity words up to the two knot counts.
+    let mut words = Vec::new();
+    while r.num(k).is_none() {
+        words.push(r.word(k).ok_or_else(|| bad("knot counts"))?.to_string());
+        k += 1;
+        if words.len() > 8 {
+            return Err(bad("knot counts"));
+        }
+    }
+    if words.iter().any(|w| w == "periodic") {
+        return Err(SatError::Unsupported("periodic ACIS B-spline surfaces are not read yet".into()));
+    }
+    let count = |i: usize| r.num(i).filter(|n| *n >= 2.0 && *n <= 1e6).map(|n| n as usize);
+    let (nu, nv) = (count(k).ok_or_else(|| bad("u knot count"))?, count(k + 1).ok_or_else(|| bad("v knot count"))?);
+    k += 2;
+    let (ku, mut mu) = knot_vector(r, &mut k, nu, du)?;
+    let (kv, mut mv) = knot_vector(r, &mut k, nv, dv)?;
+    let cu = (mu.iter().sum::<usize>() + 1).checked_sub(du).filter(|c| *c > du).ok_or_else(|| bad("too few points"))?;
+    let cv = (mv.iter().sum::<usize>() + 1).checked_sub(dv).filter(|c| *c > dv).ok_or_else(|| bad("too few points"))?;
+    if cu.saturating_mul(cv) > MAX_SURFACE_POINTS {
+        return Err(SatError::TooLarge("a spline surface has too many control points".into()));
+    }
+    let dim = if rational { 4 } else { 3 };
+    let mut points = Vec::with_capacity(cu);
+    let mut weights = rational.then(|| Vec::with_capacity(cu));
+    for _ in 0..cu {
+        let mut row = Vec::with_capacity(cv);
+        let mut wrow = Vec::with_capacity(cv);
+        for _ in 0..cv {
+            row.push(r.vec3(k).ok_or_else(|| bad("control point"))?);
+            if rational {
+                wrow.push(r.num(k + 3).filter(|w| *w > 0.0).ok_or_else(|| bad("weight"))?);
+            }
+            k += dim;
+        }
+        points.push(row);
+        if let Some(w) = weights.as_mut() {
+            w.push(wrow);
+        }
+    }
+    step_ends(&mut mu, du);
+    step_ends(&mut mv, dv);
+    Ok(Bs3Surface { degree: [du, dv], knots: [ku, kv], mults: [mu, mv], points, weights })
+}
+
 /// Most entries walked along one chain (faces of a shell, coedges of a loop, ...).
 const MAX_CHAIN: usize = 10_000_000;
 /// Most faces one file may produce.
@@ -192,7 +305,7 @@ struct Layout {
 
 impl Layout {
     fn of(version: u32) -> Layout {
-        if version < 200 {
+        if version < 400 {
             Layout { edge_end: 2, edge_curve: 4, edge_sense: 5 }
         } else {
             Layout { edge_end: 3, edge_curve: 6, edge_sense: 7 }
@@ -234,7 +347,12 @@ impl Writer<'_> {
 
     fn rec_of(&self, i: i64, ty: &str) -> Result<&Rec, SatError> {
         let r = self.rec(i)?;
-        if r.ty == ty { Ok(r) } else { Err(SatError::Malformed(format!("record ${i} is a {}, not a {ty}", r.ty))) }
+        // Tolerant entities are subtypes: `tedge-edge`, `tcoedge-coedge`, `tvertex-vertex`.
+        if r.ty == ty || r.ty.strip_suffix(ty).is_some_and(|p| p.ends_with('-')) {
+            Ok(r)
+        } else {
+            Err(SatError::Malformed(format!("record ${i} is a {}, not a {ty}", r.ty)))
+        }
     }
 
     fn chain(&self, first: Option<i64>, next_field: usize) -> Result<Vec<i64>, SatError> {
@@ -254,6 +372,22 @@ impl Writer<'_> {
         Ok(out)
     }
 
+    /// The subtype block of a record: its own `{ ...` or the definition `{ ref n }` names,
+    /// as (record, field of the `{`).
+    fn subtype(&self, r: &Rec) -> Result<(Rec, usize), SatError> {
+        let open = (1..8)
+            .find(|i| r.word(*i) == Some("{"))
+            .ok_or_else(|| SatError::Malformed(format!("{} has no data block", r.ty)))?;
+        if r.word(open + 1) != Some("ref") {
+            return Ok((r.clone(), open));
+        }
+        let n = r.num(open + 2).filter(|n| *n >= 0.0).ok_or_else(|| SatError::Malformed("a bad ref".into()))? as usize;
+        let (ri, fi) =
+            *self.sat.subtypes.get(n).ok_or_else(|| SatError::Malformed(format!("ref {n} names no subtype")))?;
+        let def = self.sat.recs.get(ri).cloned().ok_or_else(|| SatError::Malformed("a bad ref".into()))?;
+        Ok((def, fi))
+    }
+
     fn point(&mut self, p: V3) -> usize {
         let p = self.xf.point(p);
         self.add(&format!("CARTESIAN_POINT('',({},{},{}))", real(p[0]), real(p[1]), real(p[2])))
@@ -267,6 +401,20 @@ impl Writer<'_> {
     fn placement(&mut self, origin: V3, axis: V3, refd: V3) -> Result<usize, SatError> {
         let o = self.point(origin);
         let a = self.direction(axis)?;
+        // A missing or parallel reference direction (old files write planes with a zero u
+        // direction): any direction across the axis.
+        let ax = unit(axis).unwrap_or([0.0, 0.0, 1.0]);
+        let refd = match unit(refd) {
+            Some(r) if (r[0] * ax[0] + r[1] * ax[1] + r[2] * ax[2]).abs() < 1.0 - 1e-9 => r,
+            _ => {
+                let pick = if ax[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+                [
+                    pick[1] * ax[2] - pick[2] * ax[1],
+                    pick[2] * ax[0] - pick[0] * ax[2],
+                    pick[0] * ax[1] - pick[1] * ax[0],
+                ]
+            }
+        };
         let r = self.direction(refd)?;
         Ok(self.add(&format!("AXIS2_PLACEMENT_3D('',#{o},#{a},#{r})")))
     }
@@ -297,8 +445,8 @@ impl Writer<'_> {
             "intcurve-curve" => {
                 // `forward`/`reversed` (or `0`/`1`): the curve against its B-spline.
                 against = reversed(r.word(1));
-                let open = (1..8).find(|i| r.word(*i) == Some("{")).ok_or_else(bad)?;
-                let b = bs3_curve(&r, open + 1)?;
+                let (def, open) = self.subtype(&r)?;
+                let b = bs3_curve(&def, open + 1)?;
                 let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
                 let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
                 let knots: Vec<String> = b.knots.iter().map(|k| real(*k)).collect();
@@ -412,9 +560,88 @@ impl Writer<'_> {
                     (self.add(&format!("CONICAL_SURFACE('',#{pl},{},{})", real(radius), real(angle))), flipped)
                 }
             }
+            "sphere-surface" => {
+                let c = r.vec3(1).ok_or_else(bad)?;
+                let radius = r.num(4).ok_or_else(bad)?;
+                let uref = r.vec3(5).ok_or_else(bad)?;
+                let pole = r.vec3(8).ok_or_else(bad)?;
+                let pl = self.placement(c, pole, uref)?;
+                // A negative radius turns the normal inward.
+                (self.add(&format!("SPHERICAL_SURFACE('',#{pl},{})", real(self.xf.length(radius.abs())))), radius < 0.0)
+            }
+            "torus-surface" => {
+                let c = r.vec3(1).ok_or_else(bad)?;
+                let n = r.vec3(4).ok_or_else(bad)?;
+                let major = r.num(7).ok_or_else(bad)?;
+                let minor = r.num(8).ok_or_else(bad)?;
+                let uref = r.vec3(9).ok_or_else(bad)?;
+                let pl = self.placement(c, n, uref)?;
+                let (big, small) = (self.xf.length(major.abs()), self.xf.length(minor.abs()));
+                (self.add(&format!("TOROIDAL_SURFACE('',#{pl},{},{})", real(big), real(small))), minor < 0.0)
+            }
+            "spline-surface" => {
+                let against = reversed(r.word(1));
+                let (def, at) = self.subtype(&r)?;
+                let name = def.word(at + 1).unwrap_or("").to_string();
+                let b = if name == "exactsur" {
+                    bs3_surface(&def, at + 2)?
+                } else {
+                    // Procedural surfaces (sweeps, blends, offsets...) carry a B-spline
+                    // approximation: `nubs|nurbs <du> <dv>` after their own data.
+                    let is_int = |i: usize| def.num(i).is_some_and(|v| v.fract() == 0.0 && v >= 1.0);
+                    let start = (at + 2..def.f.len())
+                        .find(|i| matches!(def.word(*i), Some("nubs" | "nurbs")) && is_int(i + 1) && is_int(i + 2))
+                        .ok_or_else(|| {
+                            SatError::Unsupported(format!(
+                                "ACIS spline surfaces of kind '{name}' without a B-spline approximation are not read"
+                            ))
+                        })?;
+                    let note = format!("'{name}' surfaces are read as their stored B-spline approximation");
+                    if !self.warnings.contains(&note) {
+                        self.warnings.push(note);
+                    }
+                    bs3_surface(&def, start)?
+                };
+                let rows: Vec<String> = b
+                    .points
+                    .iter()
+                    .map(|row| {
+                        let ids: Vec<usize> = row.iter().map(|p| self.point(*p)).collect();
+                        list(&ids)
+                    })
+                    .collect();
+                let ints = |v: &[usize]| v.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
+                let reals = |v: &[f64]| v.iter().map(|x| real(*x)).collect::<Vec<_>>().join(",");
+                let tail = format!(
+                    "({}),({}),({}),({}),.UNSPECIFIED.",
+                    ints(&b.mults[0]),
+                    ints(&b.mults[1]),
+                    reals(&b.knots[0]),
+                    reals(&b.knots[1])
+                );
+                let id = match &b.weights {
+                    None => self.add(&format!(
+                        "B_SPLINE_SURFACE_WITH_KNOTS('',{},{},({}),.UNSPECIFIED.,.F.,.F.,.F.,{tail})",
+                        b.degree[0],
+                        b.degree[1],
+                        rows.join(",")
+                    )),
+                    Some(w) => {
+                        let wr: Vec<String> = w.iter().map(|row| format!("({})", reals(row))).collect();
+                        self.add(&format!(
+                            "(BOUNDED_SURFACE() B_SPLINE_SURFACE({},{},({}),.UNSPECIFIED.,.F.,.F.,.F.) B_SPLINE_SURFACE_WITH_KNOTS({tail}) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE())",
+                            b.degree[0],
+                            b.degree[1],
+                            rows.join(","),
+                            wr.join(",")
+                        ))
+                    }
+                };
+                (id, against)
+            }
             other => {
                 return Err(SatError::Unsupported(format!(
-                    "ACIS surfaces of type '{other}' are not read yet (only planes, cylinders and cones)"
+                    "ACIS surfaces of type '{other}' are not read yet (only planes, cylinders, cones, spheres, tori and B-spline surfaces)"
                 )));
             }
         };

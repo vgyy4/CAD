@@ -11,7 +11,7 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 | STL | import/export | 3 | in progress (`gusset-meshio`) | – | n/a | 0 |
 | 3MF | import/export | 3 | in progress | – | n/a | 0 |
 | OBJ | import/export | 3 | in progress | – | n/a | 0 |
-| ACIS SAT | import | 2 | done (ADR 0039, via STEP; analytic geometry and B-spline curves, versions 1 and 4 to 7; spline surfaces refused) | – | – | 0 |
+| ACIS SAT | import | 2 | done (ADR 0039, via STEP; versions 1 to 7; analytic and B-spline geometry, procedural surfaces by their stored approximation; periodic splines refused) | – | – | 0 |
 | Parasolid XT | import | 2 | done (ADR 0035, via STEP; outside the corpus, 4 of 5 NIST samples read, V3 refused) | – | – | 0 |
 | SolidWorks .sldprt | import | 2 | planned | – | – | 0 |
 | Fusion .f3d | import | 2 | planned | – | – | 0 |

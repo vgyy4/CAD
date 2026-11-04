@@ -1,5 +1,5 @@
-//! Version 1 files have only the first header line, edges without parameters and senses
-//! written `0`/`1`. Versions 4 to 6 share one layout (read from version 5 and 6 samples). The record stream: three header lines (`version records bodies flags`, the product
+//! Version 1 files have only the first header line; versions 1 to 3 write edges without
+//! parameters (version 1 with senses `0`/`1`). Versions 4 to 6 share one layout (read from version 5 and 6 samples). The record stream: three header lines (`version records bodies flags`, the product
 //! line, `scale resabs resnor`), then records `type fields... #` until the end marker.
 //! A field is a pointer `$n` (record number from 0, `$-1` for none) or a word (a number,
 //! `I` for an infinite interval end, `forward`, a string). From version 7 strings are
@@ -28,6 +28,9 @@ pub struct Sat {
     /// Millimetres per model unit (the third header line).
     pub scale: f64,
     pub recs: Vec<Rec>,
+    /// Subtype definitions (`{ exactsur ...`, every `{` not followed by `ref`) in file
+    /// order, as (record, field of the `{`): `{ ref n }` names the n-th.
+    pub subtypes: Vec<(usize, usize)>,
 }
 
 impl Sat {
@@ -120,12 +123,25 @@ fn words(line: &[u8]) -> Vec<String> {
 pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     let bad = |m: &str| SatError::Malformed(m.to_string());
     let mut lx = Lexer { b: bytes, pos: 0, at_strings: false };
-    let first = words(lx.line());
-    let version: u32 = first.first().and_then(|v| v.parse().ok()).ok_or_else(|| bad("no version number"))?;
-    if (200..400).contains(&version) || version < 100 {
-        return Err(SatError::Unsupported(format!(
-            "ACIS SAT version {version} cannot be read (versions 1, and 4 or later are); save it from a newer ACIS"
-        )));
+    // The first line `version records bodies flags`, after any lines a mailer or a tool
+    // put in front of it.
+    let mut version = None;
+    for _ in 0..50 {
+        let first = words(lx.line());
+        if first.len() >= 3
+            && first.iter().take(3).all(|w| w.parse::<i64>().is_ok())
+            && let Some(v) = first.first().and_then(|v| v.parse::<u32>().ok())
+        {
+            version = Some(v);
+            break;
+        }
+        if lx.pos >= bytes.len() {
+            break;
+        }
+    }
+    let version = version.ok_or_else(|| bad("no version number"))?;
+    if version < 100 {
+        return Err(SatError::Unsupported(format!("ACIS SAT version {version} cannot be read")));
     }
     // Version 1 files have no product and units lines.
     let scale = if version < 200 {
@@ -179,5 +195,13 @@ pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     if recs.is_empty() {
         return Err(bad("no records"));
     }
-    Ok(Sat { version, scale, recs })
+    let mut subtypes = Vec::new();
+    for (ri, r) in recs.iter().enumerate() {
+        for (fi, t) in r.f.iter().enumerate() {
+            if matches!(t, Tok::Word(w) if w == "{") && !matches!(r.f.get(fi + 1), Some(Tok::Word(w)) if w == "ref") {
+                subtypes.push((ri, fi));
+            }
+        }
+    }
+    Ok(Sat { version, scale, recs, subtypes })
 }
