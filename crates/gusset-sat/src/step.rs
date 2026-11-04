@@ -92,19 +92,128 @@ impl Xf {
     }
 }
 
+/// A B-spline curve as ACIS writes it inside `{ ... }`: `<subtype> [full] nubs|nurbs
+/// <degree> open|closed <n> <knot> <multiplicity>...` then the control points (`x y z`, or
+/// `x y z w` for nurbs). End knots carry multiplicity `degree` (one less than STEP's).
+struct Bs3 {
+    degree: usize,
+    knots: Vec<f64>,
+    mults: Vec<usize>,
+    points: Vec<V3>,
+    weights: Option<Vec<f64>>,
+}
+
+/// Highest B-spline degree read.
+const MAX_DEGREE: usize = 25;
+
+fn bs3_curve(r: &Rec, from: usize) -> Result<Bs3, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
+    let mut k = from;
+    // Skip to the representation word.
+    let mut rational = None;
+    for _ in 0..6 {
+        match r.word(k) {
+            Some("nubs") => rational = Some(false),
+            Some("nurbs") => rational = Some(true),
+            Some("nullbs") => {
+                return Err(SatError::Unsupported(format!("{} without a B-spline is not read yet", r.ty)));
+            }
+            _ => {}
+        }
+        k += 1;
+        if rational.is_some() {
+            break;
+        }
+    }
+    let rational = rational
+        .ok_or_else(|| SatError::Unsupported(format!("{} of a kind without B-spline data is not read yet", r.ty)))?;
+    let degree = r.num(k).map(|d| d as usize).filter(|d| (1..=MAX_DEGREE).contains(d)).ok_or_else(|| bad("degree"))?;
+    let closure = r.word(k + 1).unwrap_or("");
+    if closure == "periodic" {
+        return Err(SatError::Unsupported("periodic ACIS B-spline curves are not read yet".into()));
+    }
+    let n = r.num(k + 2).filter(|n| *n >= 2.0 && *n <= 1e6).ok_or_else(|| bad("knot count"))? as usize;
+    k += 3;
+    let mut knots = Vec::with_capacity(n);
+    let mut mults = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t = r.num(k).ok_or_else(|| bad("knot"))?;
+        let m = r
+            .num(k + 1)
+            .map(|m| m as usize)
+            .filter(|m| (1..=degree + 1).contains(m))
+            .ok_or_else(|| bad("multiplicity"))?;
+        if knots.last().is_some_and(|l| t <= *l) {
+            return Err(bad("knots do not increase"));
+        }
+        knots.push(t);
+        mults.push(m);
+        k += 2;
+    }
+    let total: usize = mults.iter().sum();
+    let count = (total + 1).checked_sub(degree).filter(|c| *c > degree).ok_or_else(|| bad("too few control points"))?;
+    let dim = if rational { 4 } else { 3 };
+    let mut points = Vec::with_capacity(count);
+    let mut weights = rational.then(|| Vec::with_capacity(count));
+    for _ in 0..count {
+        let p = r.vec3(k).ok_or_else(|| bad("control point"))?;
+        points.push(p);
+        if let Some(w) = weights.as_mut() {
+            let wt = r.num(k + 3).filter(|w| *w > 0.0).ok_or_else(|| bad("weight"))?;
+            w.push(wt);
+        }
+        k += dim;
+    }
+    // STEP's end knots repeat once more.
+    if let Some(m) = mults.first_mut() {
+        *m = (*m + 1).min(degree + 1);
+    }
+    if let Some(m) = mults.last_mut() {
+        *m = (*m + 1).min(degree + 1);
+    }
+    if mults.iter().sum::<usize>() != points.len() + degree + 1 {
+        return Err(bad("knots and control points do not match"));
+    }
+    Ok(Bs3 { degree, knots, mults, points, weights })
+}
+
 /// Most entries walked along one chain (faces of a shell, coedges of a loop, ...).
 const MAX_CHAIN: usize = 10_000_000;
 /// Most faces one file may produce.
 const MAX_FACES: usize = 2_000_000;
 
+/// Where version-dependent fields are.
+#[derive(Clone, Copy)]
+struct Layout {
+    edge_end: usize,
+    edge_curve: usize,
+    edge_sense: usize,
+}
+
+impl Layout {
+    fn of(version: u32) -> Layout {
+        if version < 200 {
+            Layout { edge_end: 2, edge_curve: 4, edge_sense: 5 }
+        } else {
+            Layout { edge_end: 3, edge_curve: 6, edge_sense: 7 }
+        }
+    }
+}
+
+/// A sense field: `reversed` (or `1` in version 1 files) against `forward` / `0`.
+fn reversed(w: Option<&str>) -> bool {
+    matches!(w, Some("reversed" | "1"))
+}
+
 struct Writer<'a> {
     sat: &'a Sat,
+    lay: Layout,
     out: String,
     next: usize,
     xf: Xf,
     vertices: BTreeMap<i64, usize>,
     edges: BTreeMap<i64, usize>,
-    curves: BTreeMap<i64, usize>,
+    curves: BTreeMap<i64, (usize, bool)>,
     surfaces: BTreeMap<i64, (usize, bool)>,
     faces: usize,
     /// Coedges per edge in the shell being written (an edge used once is a free edge).
@@ -176,13 +285,41 @@ impl Writer<'_> {
         Ok(id)
     }
 
-    fn curve(&mut self, c: i64) -> Result<usize, SatError> {
-        if let Some(id) = self.curves.get(&c) {
-            return Ok(*id);
+    /// The STEP curve and whether it runs against the ACIS curve.
+    fn curve(&mut self, c: i64) -> Result<(usize, bool), SatError> {
+        if let Some(v) = self.curves.get(&c) {
+            return Ok(*v);
         }
         let r = self.rec(c)?.clone();
         let bad = || SatError::Malformed(format!("{} ${c} is incomplete", r.ty));
+        let mut against = false;
         let id = match r.ty.as_str() {
+            "intcurve-curve" => {
+                // `forward`/`reversed` (or `0`/`1`): the curve against its B-spline.
+                against = reversed(r.word(1));
+                let open = (1..8).find(|i| r.word(*i) == Some("{")).ok_or_else(bad)?;
+                let b = bs3_curve(&r, open + 1)?;
+                let pts: Vec<usize> = b.points.iter().map(|p| self.point(*p)).collect();
+                let mults: Vec<String> = b.mults.iter().map(usize::to_string).collect();
+                let knots: Vec<String> = b.knots.iter().map(|k| real(*k)).collect();
+                let (m, k) = (mults.join(","), knots.join(","));
+                match &b.weights {
+                    None => self.add(&format!(
+                        "B_SPLINE_CURVE_WITH_KNOTS('',{},{},.UNSPECIFIED.,.F.,.F.,({m}),({k}),.UNSPECIFIED.)",
+                        b.degree,
+                        list(&pts)
+                    )),
+                    Some(w) => {
+                        let ws: Vec<String> = w.iter().map(|x| real(*x)).collect();
+                        self.add(&format!(
+                            "(BOUNDED_CURVE() B_SPLINE_CURVE({},{},.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS(({m}),({k}),.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE(({})) REPRESENTATION_ITEM(''))",
+                            b.degree,
+                            list(&pts),
+                            ws.join(",")
+                        ))
+                    }
+                }
+            }
             "straight-curve" => {
                 let root = r.vec3(1).ok_or_else(bad)?;
                 let dir = r.vec3(4).ok_or_else(bad)?;
@@ -210,8 +347,8 @@ impl Writer<'_> {
                 )));
             }
         };
-        self.curves.insert(c, id);
-        Ok(id)
+        self.curves.insert(c, (id, against));
+        Ok((id, against))
     }
 
     fn edge(&mut self, e: i64) -> Result<usize, SatError> {
@@ -221,9 +358,9 @@ impl Writer<'_> {
         let r = self.rec_of(e, "edge")?.clone();
         let bad = |w: &str| SatError::Malformed(format!("edge ${e} has no {w}"));
         let v0 = self.vertex(r.ptr(1).ok_or_else(|| bad("start vertex"))?)?;
-        let v1 = self.vertex(r.ptr(3).ok_or_else(|| bad("end vertex"))?)?;
-        let c = self.curve(r.ptr(6).ok_or_else(|| bad("curve"))?)?;
-        let same = r.word(7) != Some("reversed");
+        let v1 = self.vertex(r.ptr(self.lay.edge_end).ok_or_else(|| bad("end vertex"))?)?;
+        let (c, against) = self.curve(r.ptr(self.lay.edge_curve).ok_or_else(|| bad("curve"))?)?;
+        let same = reversed(r.word(self.lay.edge_sense)) == against;
         let id = self.add(&format!("EDGE_CURVE('',#{v0},#{v1},#{c},{})", if same { ".T." } else { ".F." }));
         self.edges.insert(e, id);
         Ok(id)
@@ -254,8 +391,11 @@ impl Writer<'_> {
                 }
                 // The interval: two ends, each `I` or `F <value>`.
                 let mut k = 11;
-                for _ in 0..2 {
-                    k += if r.word(k) == Some("F") { 2 } else { 1 };
+                // Version 1.05 cones have no interval; 1.06 and later do.
+                if matches!(r.word(k), Some("I" | "F")) {
+                    for _ in 0..2 {
+                        k += if r.word(k) == Some("F") { 2 } else { 1 };
+                    }
                 }
                 let sin = r.num(k).ok_or_else(bad)?;
                 let cos = r.num(k + 1).ok_or_else(bad)?;
@@ -300,13 +440,13 @@ impl Writer<'_> {
                 let e = cr.ptr(4).ok_or_else(|| SatError::Malformed(format!("coedge ${ce} has no edge")))?;
                 // An edge without a curve is a point (a cone's apex): no edge in STEP.
                 let er = self.rec_of(e, "edge")?.clone();
-                if er.ptr(6).is_none() {
+                if er.ptr(self.lay.edge_curve).is_none() {
                     apex = er.ptr(1);
                     continue;
                 }
                 let eid = self.edge(e)?;
                 *self.uses.entry(e).or_default() += 1;
-                let fwd = cr.word(5) != Some("reversed");
+                let fwd = !reversed(cr.word(5));
                 oriented.push(self.add(&format!("ORIENTED_EDGE('',*,*,#{eid},{})", if fwd { ".T." } else { ".F." })));
             }
             if oriented.is_empty() {
@@ -320,8 +460,7 @@ impl Writer<'_> {
             let lp = self.add(&format!("EDGE_LOOP('',{})", list(&oriented)));
             bounds.push(self.add(&format!("FACE_BOUND('',#{lp},.T.)")));
         }
-        let reversed = r.word(6) == Some("reversed");
-        let same = reversed == flipped;
+        let same = reversed(r.word(6)) == flipped;
         Ok(self.add(&format!("ADVANCED_FACE('',{},#{sid},{})", list(&bounds), if same { ".T." } else { ".F." })))
     }
 
@@ -354,6 +493,7 @@ pub(crate) fn write(sat: &Sat, name: &str) -> Result<(String, usize, Vec<String>
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
         sat,
+        lay: Layout::of(sat.version),
         out: String::new(),
         next: 0,
         xf: ident,

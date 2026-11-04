@@ -31,6 +31,16 @@ that the sandboxed worker imports, exactly as for XT:
   target `sat_read` covers the reader.
 * `import.file` takes `.sat`.
 
+### Amendment (same day): version 1 and B-spline curves
+Version 1 files (1.05, 1.06; the NIST `ACIS` folder) read too: one header line, edges
+without parameters (`start end coedge curve sense`), senses written `0`/`1`; 1.05 cones have
+no interval. `intcurve-curve` records (`exactcur`, `surfintcur`) carry their B-spline as
+`nubs|nurbs degree open|closed n (knot multiplicity)... points`, with end multiplicity
+`degree`; they become STEP B-spline curves (end multiplicities raised by one), the record's
+sense applied to the edge. Periodic B-splines are refused. An OCCT test closes a box with a
+B-spline edge both ways round; the NIST version 1 parts (Boeing part, demo parts) and two
+files with intersection curves import as solids.
+
 ## Consequences
 * The OCCT tests import a generated box at its exact volume (both layouts) and, with
   `GUSSET_SAT_SAMPLES`, five CMU files at the volume of Spatial's own STEP translations.

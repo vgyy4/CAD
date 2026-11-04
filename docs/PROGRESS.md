@@ -263,9 +263,10 @@ Phase 3 has started (see Next).
      attribute definitions, deltas and binary are unverified without sample files.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - ACIS SAT import done (ADR 0039, `gusset-sat`: clean-room reader of versions 4 to 7 from
-     the NIST samples; planes, cylinders, cones, lines, circles, ellipses; via STEP in the
+     the NIST samples, also version 1; planes, cylinders, cones, lines, circles, ellipses,
+     B-spline intersection curves; via STEP in the
      worker; fuzz target `sat_read`; OCCT test against Spatial's own STEP translations).
-     Next: spline geometry, spheres/tori, then `.f3d` (binary ACIS in a zip).
+     Next: spline surfaces, spheres/tori (need samples), then `.f3d` (binary ACIS in a zip).
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

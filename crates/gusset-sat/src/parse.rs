@@ -1,4 +1,5 @@
-//! Versions 4 to 6 share one layout (read from version 5 and 6 samples). The record stream: three header lines (`version records bodies flags`, the product
+//! Version 1 files have only the first header line, edges without parameters and senses
+//! written `0`/`1`. Versions 4 to 6 share one layout (read from version 5 and 6 samples). The record stream: three header lines (`version records bodies flags`, the product
 //! line, `scale resabs resnor`), then records `type fields... #` until the end marker.
 //! A field is a pointer `$n` (record number from 0, `$-1` for none) or a word (a number,
 //! `I` for an infinite interval end, `forward`, a string). From version 7 strings are
@@ -121,14 +122,19 @@ pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     let mut lx = Lexer { b: bytes, pos: 0, at_strings: false };
     let first = words(lx.line());
     let version: u32 = first.first().and_then(|v| v.parse().ok()).ok_or_else(|| bad("no version number"))?;
-    if version < 400 {
+    if (200..400).contains(&version) || version < 100 {
         return Err(SatError::Unsupported(format!(
-            "ACIS SAT version {version} is older than 4.0 and cannot be read; save it from a newer ACIS"
+            "ACIS SAT version {version} cannot be read (versions 1, and 4 or later are); save it from a newer ACIS"
         )));
     }
-    let _product = lx.line();
-    let units = words(lx.line());
-    let scale = units.first().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
+    // Version 1 files have no product and units lines.
+    let scale = if version < 200 {
+        1.0
+    } else {
+        let _product = lx.line();
+        let units = words(lx.line());
+        units.first().and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0)
+    };
     lx.at_strings = version >= 700;
     let mut recs = Vec::new();
     let mut tokens = 0usize;

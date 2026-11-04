@@ -1,10 +1,10 @@
 //! ACIS SAT text files (ADR 0039), read clean-room from sample files and converted to
 //! STEP AP214 for the sandboxed importer, as Parasolid XT is (ADR 0035).
 //!
-//! Versions 4 to 7 (and later ones written in the version 7 layout) are read: bodies,
-//! lumps, shells, faces, loops, coedges, edges, vertices and points, with plane,
-//! cylinder and cone surfaces and line, circle and ellipse curves. Other geometry (spline
-//! surfaces and curves, spheres, tori) is refused with its type named.
+//! Versions 1, and 4 to 7 (and later ones written in the version 7 layout) are read:
+//! bodies, lumps, shells, faces, loops, coedges, edges, vertices and points, with plane,
+//! cylinder and cone surfaces and line, circle, ellipse and B-spline (`intcurve`) curves.
+//! Other geometry (spline surfaces, spheres, tori) is refused with its type named.
 
 #[doc(hidden)]
 pub mod fixtures;

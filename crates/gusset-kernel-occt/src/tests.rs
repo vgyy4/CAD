@@ -941,3 +941,25 @@ fn sat_samples_match_their_step_translations() {
         assert!(ours.iter().all(|(s, _)| k().topology(s).unwrap().solids == 1), "{stem}");
     }
 }
+
+/// ACIS B-spline curves: a box edge given as an `intcurve` (forward, and reversed against
+/// its B-spline) still closes the solid.
+#[test]
+fn a_sat_box_with_a_spline_edge_imports() {
+    let sat = gusset_sat::fixtures::box_sat(700, [10.0, 20.0, 30.0]);
+    let first = sat.lines().find(|l| l.starts_with("straight-curve")).unwrap().to_string();
+    assert!(first.contains(" 0 0 0 0 1 0 "), "{first}");
+    for spline in [
+        "intcurve-curve $-1 -1 $-1 forward { exactcur full nubs 1 open 2 0 1 20 1 0 0 0 0 20 0 } I I #",
+        "intcurve-curve $-1 -1 $-1 reversed { exactcur full nubs 1 open 2 0 1 20 1 0 20 0 0 0 0 } I I #",
+    ] {
+        let text = sat.replacen(&first, spline, 1);
+        let c = gusset_sat::to_step(text.as_bytes(), "box", &gusset_sat::Limits::default()).unwrap();
+        assert!(c.step.contains("B_SPLINE_CURVE_WITH_KNOTS"));
+        let shapes = k().import_step(c.step.as_bytes()).unwrap();
+        let t = k().topology(&shapes[0].0).unwrap();
+        let m = k().mass_properties(&shapes[0].0).unwrap();
+        assert_eq!(t.solids, 1, "{spline}");
+        assert!((m.volume - 6000.0).abs() < 1e-6, "{spline}: {}", m.volume);
+    }
+}
