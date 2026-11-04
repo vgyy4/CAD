@@ -63,6 +63,16 @@ pub struct Solution {
     /// Grid nodes held and loaded.
     pub fixed_nodes: usize,
     pub loaded_nodes: usize,
+    /// The voxel model's outer faces with the von Mises stress (MPa) of their voxel, for
+    /// a stress picture.
+    pub surface: Vec<SurfaceQuad>,
+}
+
+/// One outer face of a voxel: its corners counter-clockwise seen from outside.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceQuad {
+    pub corners: [[f64; 3]; 4],
+    pub von_mises: f64,
 }
 
 /// Most voxels one analysis may have.
@@ -288,8 +298,9 @@ fn closest_on_triangle(p: V3, [a, b, c]: [V3; 3]) -> V3 {
 }
 
 /// The boundary quads of the voxel model (faces between a voxel and empty space), as their
-/// four grid nodes (grid indices), centre and normal axis.
-fn boundary_quads(g: &Grid, inside: &[bool]) -> Vec<([usize; 4], V3, usize)> {
+/// four grid nodes (grid indices, counter-clockwise seen from outside), centre, normal axis
+/// and the voxel's index in the grid.
+fn boundary_quads(g: &Grid, inside: &[bool]) -> Vec<([usize; 4], V3, usize, usize)> {
     let [nx, ny, nz] = g.n;
     let at = |i: i64, j: i64, k: i64| {
         i >= 0
@@ -341,7 +352,10 @@ fn boundary_quads(g: &Grid, inside: &[bool]) -> Vec<([usize; 4], V3, usize)> {
                                 }
                             }
                         }
-                        out.push((corners, centre, axis));
+                        if side == 0 {
+                            corners.swap(1, 3);
+                        }
+                        out.push((corners, centre, axis, i + nx * (j + ny * k)));
                     }
                 }
             }
@@ -355,7 +369,7 @@ fn boundary_quads(g: &Grid, inside: &[bool]) -> Vec<([usize; 4], V3, usize)> {
 fn face_nodes(
     mesh: &Mesh,
     face: usize,
-    quads: &[([usize; 4], V3, usize)],
+    quads: &[([usize; 4], V3, usize, usize)],
     g: &Grid,
     used: &[Option<usize>],
 ) -> Result<Vec<(usize, usize)>, FeaError> {
@@ -373,7 +387,7 @@ fn face_nodes(
     }
     let reach = g.h * 0.51;
     let mut out: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    for (corners, c, axis) in quads {
+    for (corners, c, axis, _) in quads {
         if (0..3).any(|d| {
             let v = c.get(d).copied().unwrap_or(0.0);
             v < lo.get(d).copied().unwrap_or(0.0) - reach || v > hi.get(d).copied().unwrap_or(0.0) + reach
@@ -613,6 +627,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     }
     let dm = dmat(&m);
     let mut max_s = (0.0, [0.0; 3]);
+    let mut vms = Vec::with_capacity(conn.len());
     for (c, [i, j, k]) in conn.iter().zip(&elems) {
         let mut ue = [0.0; 24];
         for (a, id) in c.iter().enumerate() {
@@ -634,7 +649,21 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
             let c = g.node_pos(*i, *j, *k).map(|v| v + h / 2.0);
             max_s = (vm, c);
         }
+        vms.push(vm);
     }
+    // The elements are in grid order, so a voxel's element is found by its grid index.
+    let lin: Vec<usize> = elems.iter().map(|[i, j, k]| i + n[0] * (j + n[1] * k)).collect();
+    let pos_of = |gi: usize| {
+        let (i, rest) = (gi % (n[0] + 1), gi / (n[0] + 1));
+        g.node_pos(i, rest % (n[1] + 1), rest / (n[1] + 1))
+    };
+    let surface = quads
+        .iter()
+        .filter_map(|(corners, _, _, cell)| {
+            let e = lin.binary_search(cell).ok()?;
+            Some(SurfaceQuad { corners: corners.map(pos_of), von_mises: vms.get(e).copied().unwrap_or(0.0) })
+        })
+        .collect();
     Ok(Solution {
         elements: conn.len(),
         nodes: node_pos.len(),
@@ -645,6 +674,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         max_von_mises_at: max_s.1,
         fixed_nodes,
         loaded_nodes,
+        surface,
     })
 }
 

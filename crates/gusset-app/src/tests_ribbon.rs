@@ -801,3 +801,29 @@ fn a_toolpath_is_previewed_over_the_model_until_the_model_changes() {
     crate::tests::settle(&mut h);
     assert!(h.state().toolpath.is_none());
 }
+
+#[test]
+fn a_stress_result_colours_the_body_while_it_is_open() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
+    a.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"})).unwrap();
+    let mut h = harness(a);
+    crate::tests::settle(&mut h);
+    let job = json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+                     "poisson": 0.0, "voxel": 5.0});
+    h.state_mut().submit_command("sim.static", job, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().stress_view && h.state().viewport.previewing());
+    // Uniform stress: one band, red.
+    assert_eq!(h.state().viewport.scene().meshes().count(), 1);
+    match &h.state().dialog {
+        Some(crate::app::Dialog::Message { body, .. }) => {
+            assert!(body.contains("red: ") && !body.contains("stress_bands"), "{body}");
+        }
+        d => panic!("{d:?}"),
+    }
+    h.state_mut().dialog = None;
+    crate::tests::settle(&mut h);
+    assert!(!h.state().stress_view && !h.state().viewport.previewing());
+}

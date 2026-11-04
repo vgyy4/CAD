@@ -25,21 +25,51 @@ pub struct StaticQuery {
     /// Faces held still.
     pub fixed: Vec<String>,
     pub loads: Vec<FaceLoad>,
-    /// MPa (default 210000, steel).
+    /// MPa (default 210000).
     #[serde(default)]
     pub young: Option<f64>,
     /// Default 0.3.
     #[serde(default)]
     pub poisson: Option<f64>,
-    /// Voxel edge, mm (default: the longest side / 30).
+    /// Voxel edge mm (default longest side/30).
     #[serde(default)]
     pub voxel: Option<f64>,
+    /// Stress bands.
+    #[serde(default)]
+    pub field: bool,
+}
+
+/// Colour bands of a stress picture.
+const BANDS: usize = 8;
+/// Most voxel faces a stress picture holds.
+const MAX_FIELD_QUADS: usize = 100_000;
+
+/// The surface quads sorted into `BANDS` equal stress bands from 0 to the largest stress:
+/// `[{upto_mpa, quads: [[12 coordinates]]}]`.
+fn bands(sol: &gusset_fea::Solution) -> Value {
+    let top = sol.surface.iter().map(|q| q.von_mises).fold(0.0f64, f64::max).max(1e-300);
+    let mut out: Vec<Vec<Vec<f64>>> = vec![Vec::new(); BANDS];
+    for q in sol.surface.iter().take(MAX_FIELD_QUADS) {
+        let b = ((q.von_mises / top * BANDS as f64) as usize).min(BANDS - 1);
+        if let Some(v) = out.get_mut(b) {
+            v.push(q.corners.iter().flatten().map(|c| (c * 1000.0).round() / 1000.0).collect());
+        }
+    }
+    let list: Vec<Value> = out
+        .into_iter()
+        .enumerate()
+        .map(
+            |(i, quads)| json!({"upto_mpa": (top * (i + 1) as f64 / BANDS as f64 * 1e3).round() / 1e3, "quads": quads}),
+        )
+        .collect();
+    json!(list)
 }
 
 impl Command for StaticQuery {
     const ID: &'static str = "sim.static";
     const TITLE: &'static str = "Static stress";
-    const DESCRIPTION: &'static str = "Linear static analysis on a voxel grid (mm, N, MPa): max displacement and von Mises stress. An estimate: check against hand calculations.";
+    const DESCRIPTION: &'static str =
+        "Linear static analysis on voxels (mm, N, MPa): max displacement, von Mises stress. An estimate.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -83,7 +113,7 @@ impl Command for StaticQuery {
             gusset_fea::FeaError::NotConverged(m) => CommandError::new("evaluation", m),
         })?;
         let r = |v: f64| (v * 1e6).round() / 1e6;
-        Ok(json!({
+        let mut out = json!({
             "body": body.name,
             "voxel_mm": r(voxel),
             "elements": sol.elements,
@@ -95,6 +125,15 @@ impl Command for StaticQuery {
             "max_von_mises_at_mm": sol.max_von_mises_at.map(r),
             "fixed_nodes": sol.fixed_nodes,
             "loaded_nodes": sol.loaded_nodes,
-        }))
+        });
+        if self.field
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert("stress_bands".into(), bands(&sol));
+            if sol.surface.len() > MAX_FIELD_QUADS {
+                o.insert("stress_bands_truncated".into(), json!(true));
+            }
+        }
+        Ok(out)
     }
 }

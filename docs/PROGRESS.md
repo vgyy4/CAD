@@ -291,7 +291,10 @@ Phase 3 has started (see Next).
      toolpaths saved in the document (setups and operations), climb milling, adaptive clearing.
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
      (hexahedra, matrix-free PCG), fixed faces and face loads by name, max displacement and von
-     Mises stress; `sim.static`. Next: refinement, stress colours in the viewport, modal analysis.
+     Mises stress; `sim.static`. Stress colours done (`field: true` returns the voxel surface in
+     8 stress bands; the app shows them blue to red in place of the model while the result is
+     open). Next: refinement near stress peaks, modal analysis. Note: the MCP tool list is at
+     its 600-byte average budget; new fields need trimming elsewhere.
    - later: plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:

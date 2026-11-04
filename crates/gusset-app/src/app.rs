@@ -293,6 +293,8 @@ pub struct App {
     look_at_sketch: Option<String>,
     /// The last toolpath asked for (ADR 0040), drawn over the model until the model changes.
     pub(crate) toolpath: Option<DrawSketch>,
+    /// A stress picture (ADR 0041) is shown in place of the model while its result is open.
+    pub(crate) stress_view: bool,
     /// A sketch point being dragged: (sketch, point id, where it would go).
     drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
@@ -418,6 +420,7 @@ impl App {
             drag_preview: None,
             look_at_sketch: None,
             toolpath: None,
+            stress_view: false,
             chain: None,
             form: None,
             palette: None,
@@ -529,6 +532,12 @@ impl App {
         {
             // The app previews the cut in the viewport.
             o.entry("path").or_insert(Value::Bool(true));
+        }
+        if id == "sim.static"
+            && let Some(o) = args.as_object_mut()
+        {
+            // The app colours the body by stress.
+            o.entry("field").or_insert(Value::Bool(true));
         }
         if id == "import.file" {
             // The worker parses on its own thread without holding the model, and the
@@ -670,6 +679,12 @@ impl App {
     fn request_preview(&mut self, ctx: &egui::Context) {
         let Some((key, id, args)) = self.preview_wanted() else {
             self.preview_since = None;
+            if self.stress_view {
+                if self.dialog.is_some() {
+                    return; // the stress picture stays while its result is open
+                }
+                self.stress_view = false;
+            }
             if self.viewport.previewing() || self.preview_shown.is_some() {
                 self.viewport.end_preview();
                 self.preview_shown = None;
@@ -739,6 +754,7 @@ impl App {
                 if current.as_ref() != Some(&key) {
                     return; // the form changed meanwhile: the next frame asks again
                 }
+                self.stress_view = false;
                 match r {
                     Ok(Ok((render, bodies))) => self.viewport.show_preview(render, bodies),
                     // Not buildable as typed: the model stays; OK reports the error.
@@ -748,6 +764,7 @@ impl App {
             }
             Done::Scene(Ok(Ok(data))) => {
                 self.viewport.end_preview();
+                self.stress_view = false;
                 self.preview_shown = None;
                 if self.scene.as_ref().is_none_or(|s| s.key != data.key) {
                     self.selection.clear();
@@ -908,6 +925,15 @@ impl App {
                             && let Some(path) = v.as_object_mut().and_then(|o| o.remove("path"))
                         {
                             self.toolpath = Some(toolpath_drawing(&path, theme::palette(self.theme).warning));
+                        }
+                        if id == "sim.static"
+                            && let Some(o) = v.as_object_mut()
+                            && let Some(bands) = o.remove("stress_bands")
+                        {
+                            let (scene, bodies, legend) = stress_scene(&bands);
+                            o.insert("colours".into(), json!(legend));
+                            self.viewport.show_preview(scene, bodies);
+                            self.stress_view = true;
                         }
                         self.dialog = Some(Dialog::Message { title: title.into(), body: inspect_text(&v) });
                     }
@@ -3679,6 +3705,65 @@ pub fn consumed_sketches(doc: &gusset_doc::Document) -> std::collections::BTreeS
             _ => Vec::new(),
         })
         .collect()
+}
+
+/// The colours of a stress picture's bands, low to high (blue, cyan, green, yellow, red).
+const STRESS_COLOURS: [(u32, &str); 8] = [
+    (0x2c_4b_d6, "blue"),
+    (0x2a_8c_e0, "light blue"),
+    (0x1f_b8_c4, "cyan"),
+    (0x3c_c2_6a, "green"),
+    (0xa6_d0_35, "yellow-green"),
+    (0xf2_c9_1c, "yellow"),
+    (0xf0_7c_1a, "orange"),
+    (0xd9_2b_2b, "red"),
+];
+
+/// A `sim.static` result's stress bands (`[{upto_mpa, quads}]`) as one coloured mesh per
+/// band, and the legend ("red: up to 10 MPa").
+fn stress_scene(bands: &Value) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<String>) {
+    let mut scene = gusset_render::Scene::new();
+    let mut bodies = Vec::new();
+    let mut legend = Vec::new();
+    let mut from = 0.0;
+    for (i, b) in bands.as_array().map(Vec::as_slice).unwrap_or_default().iter().enumerate() {
+        let upto = b["upto_mpa"].as_f64().unwrap_or(0.0);
+        let (rgb, name) = STRESS_COLOURS.get(i).copied().unwrap_or((0x80_80_80, "grey"));
+        legend.push(format!("{name}: {from} to {upto} MPa"));
+        from = upto;
+        let mut mesh = gusset_kernel::Mesh::default();
+        for q in b["quads"].as_array().map(Vec::as_slice).unwrap_or_default() {
+            let c: Vec<f32> = q
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|v| v.as_f64().map(|x| x as f32))
+                .collect();
+            let [ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz] = c.as_slice() else { continue };
+            let (u, w) = ([bx - ax, by - ay, bz - az], [cx - ax, cy - ay, cz - az]);
+            let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+            let base = mesh.positions.len() as u32;
+            mesh.positions.extend([[*ax, *ay, *az], [*bx, *by, *bz], [*cx, *cy, *cz], [*dx, *dy, *dz]]);
+            mesh.normals.extend([[n[0] / len, n[1] / len, n[2] / len]; 4]);
+            mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        if mesh.indices.is_empty() {
+            continue;
+        }
+        mesh.face_ranges = std::iter::once(0..(mesh.indices.len() / 3) as u32).collect();
+        let id = gusset_render::MeshId(bodies.len() as u64);
+        if scene.insert_mesh(id, &mesh).is_ok() {
+            scene.set_material(id, gusset_render::Material { color: gusset_render::Srgb(rgb) });
+            bodies.push(BodyInfo {
+                name: format!("stress up to {upto} MPa"),
+                face_names: vec![name.to_string()],
+                edge_names: Vec::new(),
+            });
+        }
+    }
+    (scene, bodies, legend)
 }
 
 /// A `cam.toolpath` path (polylines of [x, y, z]) as an overlay.

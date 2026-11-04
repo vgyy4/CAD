@@ -35,3 +35,12 @@ A new crate, `gusset-fea`, pure Rust:
 * Results are an estimate: curved faces become staircases (stress peaks there are not to be
   trusted) and the mesh is uniform. Next: refinement near loads and fixes (octree), stress
   colours in the viewport, modal analysis, and a tetrahedral path if a mesher is added.
+
+## Amendment (2026-11-04): stress picture
+
+`Solution::surface` holds every outer voxel face (wound to face outwards) with its voxel's von
+Mises stress. `sim.static` with `field: true` sorts them into 8 equal bands from 0 to the
+largest stress (`stress_bands: [{upto_mpa, quads}]`, at most 100000 faces). The app asks for
+it, builds one mesh per band coloured blue to red, shows it in place of the model (the
+model's edges stay faintly drawn) while the result dialog is open, and lists the colours in
+the dialog.

@@ -39,6 +39,18 @@ fn a_bar_in_tension_stretches_by_pl_over_ea() {
     // Uniform stress P/A = 10 MPa.
     assert!((s.max_von_mises - 10.0).abs() < 1e-6, "{}", s.max_von_mises);
     assert_eq!(s.fixed_nodes, 9);
+    // The stress picture: the bar's outside, 2·(2·2) + 4·(2·20) voxel faces at 10 MPa, each
+    // wound to face outwards.
+    assert_eq!(s.surface.len(), 8 + 160);
+    for q in &s.surface {
+        assert!((q.von_mises - 10.0).abs() < 1e-6, "{}", q.von_mises);
+        let [a, b, c, _] = q.corners;
+        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let mid = [0, 1, 2].map(|d| q.corners.iter().map(|p| p[d]).sum::<f64>() / 4.0);
+        let out = [mid[0] - 5.0, mid[1] - 5.0, mid[2] - 50.0];
+        assert!(n[0] * out[0] + n[1] * out[1] + n[2] * out[2] > 0.0, "{q:?}");
+    }
 }
 
 #[test]

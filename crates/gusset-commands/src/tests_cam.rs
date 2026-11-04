@@ -94,6 +94,20 @@ fn a_bar_is_analysed_by_its_face_names() {
     let d = r["max_displacement_mm"].as_f64().unwrap();
     assert!((d - exact).abs() < 1e-5, "{r}");
     assert!((r["max_von_mises_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{r}");
+    assert!(r.get("stress_bands").is_none());
+    let f = run(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+               "poisson": 0.0, "voxel": 5.0, "field": true}),
+    );
+    // Uniform stress: every voxel face in the top band.
+    let bands = f["stress_bands"].as_array().unwrap();
+    assert_eq!(bands.len(), 8);
+    let counts: Vec<usize> = bands.iter().map(|b| b["quads"].as_array().unwrap().len()).collect();
+    assert_eq!(counts.iter().sum::<usize>(), 168, "{counts:?}");
+    assert!((bands[7]["upto_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3);
+    assert_eq!(bands[7]["quads"][0].as_array().unwrap().len(), 12);
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": ["Nope/cap(end)"], "loads": []})).code, "not_found");
 }
