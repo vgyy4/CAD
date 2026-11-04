@@ -14,17 +14,17 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 pub struct CamJob {
     /// Its plane is z = 0.
     pub sketch: String,
-    /// Region ids (drill: circle ids); default: all.
+    /// Ids (drill: circles); default: all.
     #[serde(default)]
     pub regions: Vec<String>,
-    /// `pocket`, `profile_outside`, `profile_inside` or `drill` (circle centres).
+    /// pocket, profile_outside, profile_inside, drill.
     pub operation: String,
     pub tool_diameter: f64,
     pub depth: f64,
-    /// Default: half the tool diameter.
+    /// Default: half the diameter.
     #[serde(default)]
     pub stepdown: Option<f64>,
-    /// Pocket, of the diameter (default 0.4).
+    /// Pocket, of the diameter (0.4).
     #[serde(default)]
     pub stepover: Option<f64>,
     /// Default 600.
@@ -33,18 +33,18 @@ pub struct CamJob {
     /// Default 200.
     #[serde(default)]
     pub plunge: Option<f64>,
-    /// Default 10000; 0: no spindle.
+    /// 10000; 0: none.
     #[serde(default)]
     pub rpm: Option<f64>,
-    /// Stock top (0) and rapid height (top + 5).
+    /// Stock top (0), rapid height (top+5).
     #[serde(default)]
     pub top: Option<f64>,
     #[serde(default)]
     pub safe: Option<f64>,
-    /// Ramp entry angle, deg (default 3; 0 plunges).
+    /// Entry ramp, deg (3; 0 plunges).
     #[serde(default)]
     pub ramp_deg: Option<f64>,
-    /// Drill: peck depth (default: none, G81).
+    /// Drill peck depth.
     #[serde(default)]
     pub peck: Option<f64>,
 }
@@ -149,7 +149,7 @@ impl Command for ToolpathQuery {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportGcode {
-    /// `.nc`, `.gcode` or `.ngc` in the project folder.
+    /// .nc, .gcode or .ngc.
     pub path: String,
     #[serde(default)]
     pub overwrite: bool,
@@ -161,7 +161,7 @@ impl Command for ExportGcode {
     const ID: &'static str = "cam.export_gcode";
     const TITLE: &'static str = "Export G-code";
     const DESCRIPTION: &'static str =
-        "Write a 2.5D pocket or profile of sketch regions as metric G-code; check it before running.";
+        "Write a 2.5D pocket, profile or drilling of a sketch as metric G-code; check before running.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
