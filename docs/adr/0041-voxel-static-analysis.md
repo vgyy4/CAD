@@ -60,3 +60,21 @@ the iteration count near the square root of the condition number (about 500 ther
 multigrid preconditioner is the next step for large grids. gusset-fea is built at
 opt-level 2 in the dev profile so the tests stay fast.
 
+## Amendment (2026-11-04): review fixes
+
+A review found that a legal request could run for minutes to hours (a 200k-voxel static
+solve took 360 s; an 80k-voxel modal solve did not finish in 20 min). Both solvers now
+stop with `too_large` past a work budget of 1.5e8 element products (about half a minute
+on one core), and a frequency analysis takes at most 50k voxels. Before solving, every
+voxel must be reachable through shared faces from a held voxel: parts joined only along
+an edge or at a corner (which thin diagonal features voxelise into) are free to turn, and
+are refused with the count of loose voxels. The modal residual test has a floor at 1e-10
+of the operator's scale, so a zero frequency converges and is reported as a part free to
+move. A load whose nodes are all held is refused, the share of a load landing on held
+nodes is reported (`held_load_share`), a request without loads is refused, Young's
+modulus is bounded to 1e-3..1e9 MPa and forces to 1e12 N, and non-finite results are an
+error. Results are rounded to 6 significant digits. The stress picture holds at most
+20000 voxel faces and thins out evenly beyond that. The app ends the stress picture as
+soon as another dialog replaces its result. Not done: shell elements for thin sheet
+bodies, which cannot be voxelised finely enough.
+

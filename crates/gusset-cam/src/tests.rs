@@ -199,8 +199,9 @@ fn review_fixes_hold() {
     s.rpm = 1000.0;
     s.feed = f64::MAX;
     assert!(toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 0.5 }, &s).is_err());
-    // A wide stepover still clears the middle: a 40 x 14 pocket, D6, stepover 1.
-    let t = toolpath(&[rect(40.0, 14.0)], Operation::Pocket { stepover: 1.0 }, &setup(6.0)).unwrap();
+    // Steps wider than a radius would leave ridges: refused; at 0.5 the middle is cut.
+    assert!(toolpath(&[rect(40.0, 14.0)], Operation::Pocket { stepover: 0.6 }, &setup(6.0)).is_err());
+    let t = toolpath(&[rect(40.0, 14.0)], Operation::Pocket { stepover: 0.5 }, &setup(6.0)).unwrap();
     let mid = t.moves.iter().any(|m| match m {
         Move::Line { to, plunge: false } | Move::Arc { to, .. } => (to[1] - 7.0).abs() <= 1.0 + 1e-9,
         _ => false,

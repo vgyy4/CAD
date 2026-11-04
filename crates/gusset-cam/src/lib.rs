@@ -323,8 +323,12 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
         }
         Operation::Profile { outside: false } => plines_of(&base.parallel_offset(r, &opts)),
         Operation::Pocket { stepover } => {
-            if !(stepover > 0.0 && stepover <= 1.0) {
-                return Err(CamError::Invalid("the stepover must be above 0 and at most 1 (of the diameter)".into()));
+            // Rings at most a radius apart leave nothing standing between them: wider steps
+            // leave ridges in narrow arms and cusps in corners (review 2026-11-04).
+            if !(stepover > 0.0 && stepover <= 0.5) {
+                return Err(CamError::Invalid(
+                    "the stepover must be above 0 and at most 0.5 (of the diameter): wider steps leave ridges".into(),
+                ));
             }
             let mut all: Vec<Vec<Polyline<f64>>> = Vec::new();
             let mut cur = base.parallel_offset(r, &opts);
@@ -337,10 +341,7 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
                 if all.len() > MAX_RINGS {
                     return Err(CamError::TooLarge("more than 10000 pocket rings: use a larger stepover".into()));
                 }
-                let next = cur.parallel_offset(stepover * s.tool_diameter, &opts);
-                // A stepover above the radius leaves the middle uncut when the next ring
-                // would vanish: one more ring a radius in covers it.
-                cur = if stepover > 0.5 && plines_of(&next).is_empty() { cur.parallel_offset(r, &opts) } else { next };
+                cur = cur.parallel_offset(stepover * s.tool_diameter, &opts);
             }
             // From the middle out: the last rings are the walls, cut last.
             all.into_iter().rev().flatten().collect()

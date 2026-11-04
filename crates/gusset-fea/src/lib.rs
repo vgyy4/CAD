@@ -63,6 +63,8 @@ pub struct Solution {
     /// Grid nodes held and loaded.
     pub fixed_nodes: usize,
     pub loaded_nodes: usize,
+    /// The share of the load (by size) that fell on held nodes and so does nothing.
+    pub held_load: f64,
     /// The voxel model's outer faces with the von Mises stress (MPa) of their voxel, for
     /// a stress picture.
     pub surface: Vec<SurfaceQuad>,
@@ -374,7 +376,8 @@ fn face_nodes(
     used: &[Option<usize>],
 ) -> Result<Vec<(usize, usize)>, FeaError> {
     let r = mesh.face_ranges.get(face).ok_or_else(|| FeaError::Invalid(format!("no face {face}")))?;
-    let tris: Vec<[V3; 3]> = (r.start as usize..r.end as usize).filter_map(|t| tri(mesh, t)).collect();
+    let count = mesh.indices.len() / 3;
+    let tris: Vec<[V3; 3]> = (r.start as usize..(r.end as usize).min(count)).filter_map(|t| tri(mesh, t)).collect();
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     for p in tris.iter().flatten() {
@@ -438,7 +441,12 @@ struct Model {
 
 fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<Model, FeaError> {
     let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
-    if !(m.young.is_finite() && m.young > 0.0 && m.poisson.is_finite() && m.poisson > -0.99 && m.poisson < 0.49) {
+    if !(m.young.is_finite()
+        && (1e-3..=1e9).contains(&m.young)
+        && m.poisson.is_finite()
+        && m.poisson > -0.99
+        && m.poisson < 0.49)
+    {
         return bad("the material needs a positive Young's modulus and a Poisson ratio below 0.49");
     }
     if !(voxel.is_finite() && voxel > 0.0) {
@@ -511,7 +519,9 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
     let mut fixed_nodes = 0;
     for f in fixed_faces {
         for (id, _) in face_nodes(mesh, *f, &quads, &g, &used)? {
-            fixed_nodes += 1;
+            if !fixed.get(3 * id).copied().unwrap_or(true) {
+                fixed_nodes += 1;
+            }
             for d in 0..3 {
                 if let Some(x) = fixed.get_mut(3 * id + d) {
                     *x = true;
@@ -521,6 +531,15 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
     }
     if fixed_nodes == 0 {
         return bad("the fixed faces reach no voxel: use a smaller voxel");
+    }
+    // Every voxel must be held through faces: one joined to the rest only along an edge or
+    // at a corner (or not at all) is free to turn, and the solvers never converge.
+    let loose = loose_voxels(&elems, &conn, &fixed, n);
+    if loose > 0 {
+        return Err(FeaError::Invalid(format!(
+            "{loose} voxels are not held: they touch the held part only at edges or corners, or not at all \
+             (use a smaller voxel, or fix a face of each part)"
+        )));
     }
     let (ke, b0) = element(h, &m);
     // Jacobi preconditioner.
@@ -540,6 +559,59 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
         }
     }
     Ok(Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, ke, b0, diag, material: m })
+}
+
+/// The elements not reached through shared faces from an element with a held node.
+fn loose_voxels(elems: &[[usize; 3]], conn: &[[usize; 8]], fixed: &[bool], n: [usize; 3]) -> usize {
+    let lin = |[i, j, k]: [usize; 3]| i + n[0] * (j + n[1] * k);
+    // The elements are in grid order: find a neighbour by binary search.
+    let keys: Vec<usize> = elems.iter().map(|e| lin(*e)).collect();
+    let mut seen = vec![false; elems.len()];
+    let mut stack: Vec<usize> = conn
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.iter().any(|id| fixed.get(3 * id).copied().unwrap_or(false)))
+        .map(|(e, _)| e)
+        .collect();
+    for e in &stack {
+        if let Some(x) = seen.get_mut(*e) {
+            *x = true;
+        }
+    }
+    while let Some(e) = stack.pop() {
+        let Some(&[i, j, k]) = elems.get(e) else { continue };
+        let nb = [
+            (i > 0).then(|| [i - 1, j, k]),
+            (i + 1 < n[0]).then_some([i + 1, j, k]),
+            (j > 0).then(|| [i, j - 1, k]),
+            (j + 1 < n[1]).then_some([i, j + 1, k]),
+            (k > 0).then(|| [i, j, k - 1]),
+            (k + 1 < n[2]).then_some([i, j, k + 1]),
+        ];
+        for c in nb.into_iter().flatten() {
+            if let Ok(f) = keys.binary_search(&lin(c))
+                && let Some(x) = seen.get_mut(f)
+                && !*x
+            {
+                *x = true;
+                stack.push(f);
+            }
+        }
+    }
+    seen.iter().filter(|s| !**s).count()
+}
+
+/// Element products one analysis may compute (elements × matrix products): about half a
+/// minute of work on one core.
+const MAX_WORK: u64 = 150_000_000;
+
+fn over_budget(work: u64) -> Result<(), FeaError> {
+    if work > MAX_WORK {
+        return Err(FeaError::TooLarge(
+            "the analysis needs more work than allowed: use a larger voxel (or fewer modes)".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl Model {
@@ -591,9 +663,13 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let matvec = |u: &[f64], y: &mut [f64]| md.matvec(u, y);
     let mut f = vec![0.0; dofs];
     let mut loaded_nodes = 0;
+    if p.loads.is_empty() {
+        return bad("add a load: with none, nothing moves");
+    }
+    let (mut asked, mut held) = (0.0, 0.0);
     for l in &p.loads {
-        if !l.force.iter().all(|v| v.is_finite()) {
-            return bad("a load is not a number");
+        if !l.force.iter().all(|v| v.is_finite() && v.abs() <= 1e12) {
+            return bad("a load is not a number (or above 1e12 N)");
         }
         let ids = face_nodes(p.mesh, l.face, quads, g, used)?;
         if ids.is_empty() {
@@ -601,8 +677,16 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         }
         loaded_nodes += ids.len();
         let total: usize = ids.iter().map(|(_, c)| c).sum();
+        if ids.iter().all(|(id, _)| fixed.get(3 * id).copied().unwrap_or(false)) {
+            return bad("a load is on held voxels only (its face is fixed): it would do nothing");
+        }
+        let size = libm::sqrt(l.force.iter().map(|v| v * v).sum::<f64>());
+        asked += size;
         for (id, count) in ids {
             let share = count as f64 / total.max(1) as f64;
+            if fixed.get(3 * id).copied().unwrap_or(false) {
+                held += size * share;
+            }
             for d in 0..3 {
                 if let Some(x) = f.get_mut(3 * id + d) {
                     *x += l.force.get(d).copied().unwrap_or(0.0) * share;
@@ -630,6 +714,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                 "the solver did not converge: the part may be free to move (fix more faces)".into(),
             ));
         }
+        over_budget(iterations as u64 * conn.len() as u64)?;
         iterations += 1;
         matvec(&pdir, &mut ap);
         let pap = dot(&pdir, &ap);
@@ -652,6 +737,9 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         for (pi, zi) in pdir.iter_mut().zip(&z) {
             *pi = zi + beta * *pi;
         }
+    }
+    if !u.iter().all(|v| v.is_finite()) {
+        return Err(FeaError::NotConverged("the results are not finite: check the material and the loads".into()));
     }
     // Results.
     let mut max_d = (0.0, [0.0; 3]);
@@ -711,6 +799,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         max_von_mises_at: max_s.1,
         fixed_nodes,
         loaded_nodes,
+        held_load: if asked > 0.0 { held / asked } else { 0.0 },
         surface,
     })
 }
@@ -738,6 +827,8 @@ pub struct Modes {
 /// Most modes one analysis finds.
 pub const MAX_MODES: usize = 10;
 const MAX_EIGEN_ITERATIONS: usize = 3_000;
+/// Most voxels of a frequency analysis (each iteration costs a block of products).
+const MAX_MODAL_ELEMENTS: usize = 50_000;
 
 /// Eigenvalues (ascending) and eigenvectors (columns, `v[row * k + col]`) of the symmetric
 /// `k × k` matrix `a`, by cyclic Jacobi rotations.
@@ -822,6 +913,11 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
         return Err(FeaError::Invalid(format!("ask for 1 to {MAX_MODES} modes")));
     }
     let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
+    if md.conn.len() > MAX_MODAL_ELEMENTS {
+        return Err(FeaError::TooLarge(format!(
+            "more than {MAX_MODAL_ELEMENTS} voxels for a frequency analysis: use a larger voxel"
+        )));
+    }
     let dofs = md.dofs();
     let free: Vec<bool> = md.fixed.iter().map(|f| !f).collect();
     let n_free = free.iter().filter(|f| **f).count();
@@ -871,6 +967,9 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
             if free.get(i).copied().unwrap_or(false) && k > 0.0 { m / k } else { 0.0 }
         })
         .collect();
+    // The operator's scale (its largest diagonal entry): residuals are measured against it
+    // too, so a (near) zero frequency still converges, and is then reported.
+    let scale = precond.iter().filter(|t| **t > 0.0).map(|t| 1.0 / t).fold(0.0f64, f64::max).max(1e-300);
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     // Modified Gram-Schmidt of the columns `s` (with their images `as_`), dropping the ones
     // that are (nearly) dependent.
@@ -943,7 +1042,7 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
             for (j, (xj, axj)) in x.iter().zip(&ax).enumerate() {
                 let th = theta.get(j).copied().unwrap_or(0.0);
                 let r: Vec<f64> = axj.iter().zip(xj).map(|(a, v)| a - th * v).collect();
-                if j < p.modes && libm::sqrt(dot(&r, &r)) > 1e-4 * th.abs().max(1e-300) {
+                if j < p.modes && libm::sqrt(dot(&r, &r)) > 1e-4 * th.abs().max(1e-10 * scale) {
                     converged = false;
                 }
                 w.push(r.iter().zip(&precond).map(|(r, t)| r * t).collect::<Vec<f64>>());
@@ -957,6 +1056,7 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
                 ));
             }
             iterations += 1;
+            over_budget(iterations as u64 * 2 * b as u64 * md.conn.len() as u64)?;
             let aw: Vec<Vec<f64>> = w.iter().map(|v| image(v, &mut apply)).collect();
             s.extend(w);
             as_.extend(aw);
@@ -996,6 +1096,11 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
             pdir.clear();
             apdir.clear();
         }
+    }
+    if theta.iter().take(p.modes).any(|l| *l < 1e-9 * scale) {
+        return Err(FeaError::Invalid(
+            "the part is free to move (a frequency of zero): fix more faces, or join its parts by faces".into(),
+        ));
     }
     let frequencies =
         theta.iter().take(p.modes).map(|l| libm::sqrt(l.max(0.0)) / (2.0 * std::f64::consts::PI)).collect();

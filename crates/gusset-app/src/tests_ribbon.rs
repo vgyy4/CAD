@@ -827,3 +827,30 @@ fn a_stress_result_colours_the_body_while_it_is_open() {
     crate::tests::settle(&mut h);
     assert!(!h.state().stress_view && !h.state().viewport.previewing());
 }
+
+#[test]
+fn the_stress_picture_ends_under_another_dialog_and_a_failed_toolpath_clears_the_old() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
+    a.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"})).unwrap();
+    let mut h = harness(a);
+    crate::tests::settle(&mut h);
+    let job = json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+                     "poisson": 0.0, "voxel": 5.0});
+    h.state_mut().submit_command("sim.static", job, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().stress_view);
+    h.state_mut().dialog = Some(crate::app::Dialog::Message { title: "Other".into(), body: String::new() });
+    crate::tests::settle(&mut h);
+    assert!(!h.state().stress_view && !h.state().viewport.previewing());
+    h.state_mut().dialog = None;
+    let good = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 2.0, "depth": 1.0});
+    h.state_mut().submit_command("cam.toolpath", good, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().toolpath.is_some());
+    let bad = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 50.0, "depth": 1.0});
+    h.state_mut().submit_command("cam.toolpath", bad, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().toolpath.is_none());
+}

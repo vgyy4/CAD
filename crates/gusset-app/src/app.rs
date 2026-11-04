@@ -680,8 +680,11 @@ impl App {
         let Some((key, id, args)) = self.preview_wanted() else {
             self.preview_since = None;
             if self.stress_view {
-                if self.dialog.is_some() {
-                    return; // the stress picture stays while its result is open
+                // The stress picture stays while its own result is open (not under a later
+                // dialog).
+                let title = gusset_commands::find("sim.static").map_or("", |s| s.title);
+                if matches!(&self.dialog, Some(Dialog::Message { title: t, .. }) if t == title) {
+                    return;
                 }
                 self.stress_view = false;
             }
@@ -916,6 +919,9 @@ impl App {
             },
             Then::Show => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
+                if id == "cam.toolpath" && result.is_err() {
+                    self.toolpath = None; // an old toolpath is not this job's
+                }
                 match result {
                     Ok(mut v) => {
                         if self.form.as_ref().is_some_and(|f| f.command == id) {

@@ -41,15 +41,27 @@ pub struct StaticQuery {
 
 /// Colour bands of a stress picture.
 const BANDS: usize = 8;
-/// Most voxel faces a stress picture holds.
-const MAX_FIELD_QUADS: usize = 100_000;
+/// Most voxel faces a stress picture holds (about 2 MB of JSON); beyond it every k-th
+/// face is kept, so the picture thins out evenly instead of losing a side.
+const MAX_FIELD_QUADS: usize = 20_000;
+
+/// `v` to 6 significant digits (small results stay visible).
+fn sig(v: f64) -> f64 {
+    if v == 0.0 || !v.is_finite() {
+        return if v.is_finite() { 0.0 } else { f64::NAN };
+    }
+    let e = libm::floor(libm::log10(v.abs())) as i32;
+    let f = libm::pow(10.0, f64::from(5 - e));
+    libm::round(v * f) / f
+}
 
 /// The surface quads sorted into `BANDS` equal stress bands from 0 to the largest stress:
 /// `[{upto_mpa, quads: [[12 coordinates]]}]`.
 fn bands(sol: &gusset_fea::Solution) -> Value {
     let top = sol.surface.iter().map(|q| q.von_mises).fold(0.0f64, f64::max).max(1e-300);
     let mut out: Vec<Vec<Vec<f64>>> = vec![Vec::new(); BANDS];
-    for q in sol.surface.iter().take(MAX_FIELD_QUADS) {
+    let step = sol.surface.len().div_ceil(MAX_FIELD_QUADS).max(1);
+    for q in sol.surface.iter().step_by(step) {
         let b = ((q.von_mises / top * BANDS as f64) as usize).min(BANDS - 1);
         if let Some(v) = out.get_mut(b) {
             v.push(q.corners.iter().flatten().map(|c| (c * 1000.0).round() / 1000.0).collect());
@@ -58,9 +70,7 @@ fn bands(sol: &gusset_fea::Solution) -> Value {
     let list: Vec<Value> = out
         .into_iter()
         .enumerate()
-        .map(
-            |(i, quads)| json!({"upto_mpa": (top * (i + 1) as f64 / BANDS as f64 * 1e3).round() / 1e3, "quads": quads}),
-        )
+        .map(|(i, quads)| json!({"upto_mpa": sig(top * (i + 1) as f64 / BANDS as f64), "quads": quads}))
         .collect();
     json!(list)
 }
@@ -90,7 +100,7 @@ impl Command for StaticQuery {
             },
         };
         let sol = gusset_fea::solve(&p).map_err(fea_err)?;
-        let r = |v: f64| (v * 1e6).round() / 1e6;
+        let r = sig;
         let mut out = json!({
             "body": body.name,
             "voxel_mm": r(voxel),
@@ -104,12 +114,18 @@ impl Command for StaticQuery {
             "fixed_nodes": sol.fixed_nodes,
             "loaded_nodes": sol.loaded_nodes,
         });
+        if sol.held_load > 1e-9
+            && let Some(o) = out.as_object_mut()
+        {
+            // Load on nodes shared with a held face does nothing.
+            o.insert("held_load_share".into(), json!(sig(sol.held_load)));
+        }
         if self.field
             && let Some(o) = out.as_object_mut()
         {
             o.insert("stress_bands".into(), bands(&sol));
             if sol.surface.len() > MAX_FIELD_QUADS {
-                o.insert("stress_bands_truncated".into(), json!(true));
+                o.insert("stress_bands_thinned".into(), json!(true));
             }
         }
         Ok(out)
@@ -201,7 +217,7 @@ impl Command for ModalQuery {
             modes: self.modes.unwrap_or(3),
         };
         let m = gusset_fea::modes(&p).map_err(fea_err)?;
-        let r = |v: f64| (v * 1e3).round() / 1e3;
+        let r = sig;
         Ok(json!({
             "body": body.name,
             "voxel_mm": r(voxel),

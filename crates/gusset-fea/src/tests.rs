@@ -134,3 +134,55 @@ fn a_cantilever_rings_close_to_beam_theory() {
     bad.density = 0.0;
     assert!(modes(&bad).is_err());
 }
+
+/// Two meshes as one (the second moved by `d`), faces of the second after the first's.
+fn joined(a: Mesh, b: Mesh, d: [f32; 3]) -> Mesh {
+    let mut m = a;
+    let base = m.positions.len() as u32;
+    let tris = (m.indices.len() / 3) as u32;
+    m.positions.extend(b.positions.iter().map(|p| [p[0] + d[0], p[1] + d[1], p[2] + d[2]]));
+    m.normals.extend(b.normals);
+    m.indices.extend(b.indices.iter().map(|i| i + base));
+    m.face_ranges.extend(b.face_ranges.iter().map(|r| r.start + tris..r.end + tris));
+    m
+}
+
+#[test]
+fn parts_held_only_along_an_edge_and_loads_on_held_faces_are_refused() {
+    // A second cube touching the first along one edge only: free to turn about it.
+    let mesh = joined(box_mesh([10.0; 3]), box_mesh([10.0; 3]), [10.0, 10.0, 0.0]);
+    let steel = Material { young: 210_000.0, poisson: 0.3 };
+    let p = Problem {
+        mesh: &mesh,
+        voxel: 2.5,
+        fixed: vec![0],
+        loads: vec![Load { face: 7, force: [1.0, 0.0, 0.0] }],
+        material: steel,
+    };
+    let e = solve(&p).unwrap_err().to_string();
+    assert!(e.contains("not held"), "{e}");
+    let m = ModalProblem { mesh: &mesh, voxel: 2.5, fixed: vec![0], material: steel, density: 7.85e-9, modes: 1 };
+    assert!(modes(&m).unwrap_err().to_string().contains("not held"));
+    // A load on the fixed face does nothing; no load at all is refused too.
+    let bar = box_mesh([10.0, 10.0, 50.0]);
+    let on_held = Problem {
+        mesh: &bar,
+        voxel: 2.5,
+        fixed: vec![4],
+        loads: vec![Load { face: 4, force: [0.0, 0.0, 10.0] }],
+        material: steel,
+    };
+    assert!(solve(&on_held).unwrap_err().to_string().contains("held voxels only"));
+    let none = Problem { loads: Vec::new(), ..on_held.clone() };
+    assert!(solve(&none).is_err());
+    // A side load shares its edge nodes with the held face: that share is reported.
+    let side = Problem { loads: vec![Load { face: 0, force: [10.0, 0.0, 0.0] }], ..on_held };
+    let s = solve(&side).unwrap();
+    assert!(s.held_load > 0.0 && s.held_load < 0.2, "{}", s.held_load);
+    // Out-of-range material and loads.
+    let soft = Problem { material: Material { young: 1e-300, poisson: 0.3 }, ..side.clone() };
+    assert!(solve(&soft).is_err());
+    let huge = Problem { loads: vec![Load { face: 5, force: [1e300, 0.0, 0.0] }], ..side };
+    assert!(solve(&huge).is_err());
+    assert!(over_budget(MAX_WORK + 1).is_err() && over_budget(MAX_WORK).is_ok());
+}
