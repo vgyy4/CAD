@@ -267,8 +267,9 @@ Phase 3 has started (see Next).
      B-spline intersection curves; via STEP in the
      worker; fuzz target `sat_read`; OCCT test against Spatial's own STEP translations).
      Spheres, tori and B-spline surfaces (procedural ones by their stored approximation)
-     and versions 2 and 3, periodic B-splines done too. Next: `.f3d` (binary ACIS, SAB, in a
-     zip; needs sample files).
+     and versions 2 and 3, periodic B-splines done too. Binary ACIS (`.sab`) and Fusion 360
+     `.f3d` archives done (their `.smb` bodies). Next: Fusion component placements (the
+     design stream), then `.sldprt`.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

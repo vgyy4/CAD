@@ -91,3 +91,28 @@ fn build_imports_iges_through_the_sandboxed_worker() {
     assert!(text.contains("exact geometry"), "{text}");
     assert!(text.contains("volume 11272.584 mm³"), "{text}");
 }
+
+/// Fusion 360 archives (ADR 0039): a `.f3d` whose `Breps.BlobParts/*.smb` holds a box in
+/// binary ACIS imports as that box.
+#[cfg(gusset_occt)]
+#[test]
+fn build_imports_a_fusion_archive() {
+    let dir = std::env::temp_dir().join(format!("gusset-cli-f3d-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sab = gusset_sat::fixtures::to_binary(&gusset_sat::fixtures::box_sat(700, [10.0, 20.0, 30.0]));
+    let zip = gusset_meshio::archive::write(&[
+        ("Manifest.dat", b"x".as_slice()),
+        ("FusionAssetName[Active]/Breps.BlobParts/BREP.0.smb", sab.as_slice()),
+        ("FusionAssetName[Active]/Breps.BlobParts/BREP.1.smbh", b"history".as_slice()),
+    ])
+    .unwrap();
+    let f3d = dir.join("box.f3d");
+    std::fs::write(&f3d, zip).unwrap();
+    let empty = dir.join("empty.gus.txt");
+    std::fs::write(&empty, "gusset 1\nunits mm\n").unwrap();
+    let out = gusset().arg("build").arg(&empty).arg("--import").arg(&f3d).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("volume 6000.000 mm³"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

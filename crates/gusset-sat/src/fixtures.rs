@@ -131,3 +131,61 @@ pub fn box_sat(version: u32, size: [f64; 3]) -> String {
     let product = if v7 { "@4 test @9 ACIS 7.0 @4 date" } else { "4 test 9 ACIS 6.0 4 date" };
     format!("{version} 0 1 0\n{product}\n1 1e-06 1e-10\n{}\nEnd-of-ACIS-data\n", recs.join("\n"))
 }
+
+/// The binary (SAB) form of a version 7 text file, as Fusion writes it: for tests.
+pub fn to_binary(text: &str) -> Vec<u8> {
+    let mut out = b"ASM BinaryFile8".to_vec();
+    for v in [22500i64, 0, 1, 0] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    let s = |out: &mut Vec<u8>, tag: u8, v: &str| {
+        out.push(tag);
+        out.push(u8::try_from(v.len()).unwrap_or(255));
+        out.extend_from_slice(v.as_bytes().get(..v.len().min(255)).unwrap_or_default());
+    };
+    s(&mut out, 0x07, "gusset test");
+    s(&mut out, 0x07, "ASM 225");
+    s(&mut out, 0x07, "today");
+    for d in [1.0f64, 1e-6, 1e-10] {
+        out.push(0x06);
+        out.extend_from_slice(&d.to_le_bytes());
+    }
+    let body = text.lines().skip(3).collect::<Vec<_>>().join("\n");
+    for rec in body.split(" #") {
+        let mut words = rec.split_whitespace();
+        let Some(ty) = words.next() else { continue };
+        if ty.starts_with("End-of") {
+            break;
+        }
+        let parts: Vec<&str> = ty.split('-').collect();
+        for (i, p) in parts.iter().enumerate() {
+            s(&mut out, if i + 1 == parts.len() { 0x0d } else { 0x0e }, p);
+        }
+        let mut it = words.peekable();
+        while let Some(w) = it.next() {
+            if let Some(p) = w.strip_prefix('$').and_then(|p| p.parse::<i64>().ok()) {
+                out.push(0x0c);
+                out.extend_from_slice(&p.to_le_bytes());
+            } else if let Some(n) = w.strip_prefix('@').and_then(|n| n.parse::<usize>().ok()) {
+                let t: String = it.next().unwrap_or("").chars().take(n).collect();
+                s(&mut out, 0x07, &t);
+            } else if let Ok(i) = w.parse::<i64>() {
+                out.push(0x04);
+                out.extend_from_slice(&i.to_le_bytes());
+            } else if let Ok(d) = w.parse::<f64>() {
+                out.push(0x06);
+                out.extend_from_slice(&d.to_le_bytes());
+            } else {
+                match w {
+                    "reversed" => out.push(0x0a),
+                    "forward" | "forward_v" | "I" | "single" => out.push(0x0b),
+                    other => s(&mut out, 0x0d, other),
+                }
+            }
+        }
+        out.push(0x11);
+    }
+    s(&mut out, 0x0d, "End-of-ASM-data");
+    out.push(0x11);
+    out
+}

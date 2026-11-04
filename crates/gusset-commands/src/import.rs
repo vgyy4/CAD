@@ -48,6 +48,8 @@ enum Kind {
     Xt,
     /// An ACIS SAT file, converted here to STEP and imported by the worker (ADR 0039).
     Sat,
+    /// A Fusion 360 archive: its binary ACIS bodies (`.smb`), as SAT (ADR 0039).
+    F3d,
 }
 
 /// Tier note for Parasolid imports.
@@ -169,18 +171,19 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
         "fcstd" => Kind::FreeCad,
         "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
-        "sat" => Kind::Sat,
+        "sat" | "sab" => Kind::Sat,
+        "f3d" => Kind::F3d,
         "scad" => Kind::Scad,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sat) && importer.is_none() {
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sat | Kind::F3d) && importer.is_none() {
         return Err(CommandError::new(
             "not_allowed",
             "STEP/IGES/Parasolid/FreeCAD import is not available in this session",
@@ -248,6 +251,11 @@ impl ImportJob {
                 let mut warnings = c.warnings;
                 warnings.truncate(50);
                 (bodies.collect::<Vec<_>>(), TIER_SAT, warnings)
+            }
+            Kind::F3d => {
+                let importer =
+                    self.importer.ok_or_else(|| CommandError::new("not_allowed", "Fusion import is not available"))?;
+                f3d(&bytes, importer.as_ref(), cancel)?
             }
             Kind::FreeCad => {
                 let importer =
@@ -323,6 +331,64 @@ const MAX_FREECAD_BYTES: usize = 2 << 30;
 
 /// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape
 /// the worker refuses is reported as a warning; none at all is an error.
+/// Most B-rep parts one Fusion archive may hold.
+const MAX_F3D_PARTS: usize = 64;
+
+/// A Fusion 360 `.f3d` archive: every `Breps.BlobParts/*.smb` (binary ACIS of the design's
+/// bodies; `.smbh` holds their history and is skipped), converted to STEP and imported.
+/// The design's component placements live in Fusion's own design stream and are not read,
+/// so bodies come in where their B-rep puts them.
+fn f3d(
+    bytes: &[u8],
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let limits = gusset_meshio::Limits::default();
+    let bad = |e: gusset_meshio::MeshIoError| {
+        let e = e.to_string().replace("3MF ZIP container", "Fusion file (ZIP)");
+        CommandError::new("io", format!("the Fusion file cannot be read: {e}"))
+    };
+    let mut budget = limits.max_decompressed_bytes;
+    let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
+    let parts =
+        gusset_meshio::archive::read_entries_within(bytes, &limits, &is_brep, u64::MAX, &mut budget).map_err(bad)?;
+    if parts.is_empty() {
+        return Err(CommandError::new("io", "the Fusion file holds no B-rep bodies (Breps.BlobParts/*.smb)"));
+    }
+    if parts.len() > MAX_F3D_PARTS {
+        return Err(CommandError::new("io", format!("the Fusion file has more than {MAX_F3D_PARTS} B-rep parts")));
+    }
+    let mut out = Vec::new();
+    let mut warnings =
+        vec!["Fusion component placements are not read: bodies are placed as their B-rep stores them".to_string()];
+    for (i, (_, data)) in parts.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(cancelled());
+        }
+        let stem = if parts.len() > 1 { format!("Fusion {}", i + 1) } else { "Fusion".to_string() };
+        let c = match gusset_sat::to_step(data, &stem, &gusset_sat::Limits::default()) {
+            Ok(c) => c,
+            Err(e) => {
+                warnings.push(format!("B-rep part {}: {e}", i + 1));
+                continue;
+            }
+        };
+        warnings.extend(c.warnings);
+        let bodies = importer
+            .import("step", c.step.as_bytes(), cancel)
+            .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+        out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step }));
+    }
+    if out.is_empty() {
+        return Err(CommandError::new(
+            "io",
+            format!("no body of the Fusion file could be read: {}", warnings.join("; ")),
+        ));
+    }
+    warnings.truncate(50);
+    Ok((out, TIER_SAT, warnings))
+}
+
 fn freecad(
     bytes: &[u8],
     importer: &dyn Importer,

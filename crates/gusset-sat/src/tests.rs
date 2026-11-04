@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
 use super::*;
-use crate::fixtures::box_sat;
+use crate::fixtures::{box_sat, to_binary};
 
 #[test]
 fn both_layouts_parse_to_the_same_fields() {
@@ -48,4 +48,23 @@ fn hostile_input_is_refused_not_panicked_on() {
     let spl = sat.replacen("plane-surface", "spline-surface", 1);
     let e = to_step(spl.as_bytes(), "x", &Limits::default()).unwrap_err().to_string();
     assert!(e.contains("spline-surface"), "{e}");
+}
+
+#[test]
+fn the_binary_form_converts_like_the_text() {
+    let text = box_sat(700, [10.0, 20.0, 30.0]);
+    let a = to_step(text.as_bytes(), "box", &Limits::default()).unwrap();
+    let b = to_step(&to_binary(&text), "box", &Limits::default()).unwrap();
+    assert_eq!(a.step, b.step);
+    assert_eq!(b.version, 22500);
+    // Truncated or unknown tags are refused, not panicked on.
+    let bin = to_binary(&text);
+    for n in [16, 50, 200, bin.len() - 3] {
+        let _ = to_step(&bin[..n], "x", &Limits::default());
+    }
+    let mut odd = bin.clone();
+    if let Some(x) = odd.get_mut(200) {
+        *x = 0x7f;
+    }
+    let _ = to_step(&odd, "x", &Limits::default());
 }

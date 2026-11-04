@@ -54,6 +54,22 @@ the B-spline approximation they store after their own data, with a warning. A wi
 24 more NIST files: every one with geometry imports. Periodic B-splines are written like open
 ones (end multiplicity `degree`, first point repeated last) and read alike.
 
+### Amendment (same day): binary ACIS and Fusion 360 archives
+SAB, the binary form (`ASM BinaryFile8` in Fusion 360's `.smb` parts; read from Adafruit's
+public CAD parts), is a stream of tagged values that maps one to one onto the version 7
+records: integers, doubles, strings, pointers, two-valued words (0x0b the first, `forward`
+or an infinite interval end; 0x0a the second), three-double positions and vectors, `{`/`}`,
+type names as `0x0e` parts closed by a `0x0d` identifier, and 0x11 ending each record; the
+header's doubles give the unit (Fusion: 10, centimetres). Newer versions write an integer
+between a vertex's edge and point. `.sab` reads like `.sat`; `.f3d` is a ZIP whose
+`Breps.BlobParts/*.smb` entries are read with the hardened archive reader (one decompression
+budget, at most 64 parts; `.smbh`, the history, is skipped). Fusion's component placements are
+in its own design stream and are not read: bodies come in where their B-rep stores them (a
+warning says so). Tests: the generated box's binary form converts to the same STEP as its
+text, and `gusset build --import box.f3d` gets its exact volume; the Adafruit parts import
+with all their bodies, half of whose vertices match Adafruit's own STEP exports exactly (the
+rest are moved by component placements).
+
 ## Consequences
 * The OCCT tests import a generated box at its exact volume (both layouts) and, with
   `GUSSET_SAT_SAMPLES`, five CMU files at the volume of Spatial's own STEP translations.

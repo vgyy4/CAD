@@ -119,8 +119,187 @@ fn words(line: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(line).split_whitespace().map(str::to_string).collect()
 }
 
-/// Reads a SAT text file.
+/// Reads a SAT text file or its binary form (SAB, `ACIS BinaryFile` / `ASM BinaryFile`).
 pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
+    for magic in [&b"ACIS BinaryFile"[..], b"ASM BinaryFile"] {
+        if let Some(rest) = bytes.strip_prefix(magic) {
+            return parse_binary(rest, limits);
+        }
+    }
+    parse_text(bytes, limits)
+}
+
+/// Binary SAB, read from Fusion 360 `.smb` files: `ASM BinaryFile<w>` (`w` the integer
+/// width, 4 or 8), four integers (version, records, bodies, flags), then tagged values:
+/// 0x04 integer, 0x06 double, 0x07/0x08/0x12 string (u8/u16/u32 length), 0x0a/0x0b the
+/// second/first value of a two-valued word (`reversed`/`forward`, finite/`I`), 0x0c pointer,
+/// 0x0d identifier ending a type name whose earlier parts are 0x0e identifiers, 0x0f/0x10
+/// `{`/`}`, 0x11 end of record, 0x13/0x14 three doubles (position, vector), 0x15 an
+/// enumeration value. The header's product strings and unit doubles come first; the
+/// records then read like version 7 text ones.
+fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
+    let bad = |m: String| SatError::Malformed(m);
+    let width = match b.first() {
+        Some(b'8') => 8,
+        Some(b'4') => 4,
+        _ => return Err(bad("unknown binary integer width".into())),
+    };
+    let mut rd = Bin { b, pos: 1, width };
+    let version = u32::try_from(rd.int()?).map_err(|_| bad("a bad version".into()))?;
+    for _ in 0..3 {
+        rd.int()?;
+    }
+    let mut recs: Vec<Rec> = Vec::new();
+    let mut cur: Vec<Tok> = Vec::new();
+    let mut ty = String::new();
+    // The type is complete once its final 0x0d identifier is read.
+    let mut typed = false;
+    let mut units: Vec<f64> = Vec::new();
+    let mut tokens = 0usize;
+    while rd.pos < b.len() {
+        let tag = rd.take(1)?.first().copied().unwrap_or(0);
+        tokens += 1;
+        if tokens > limits.max_tokens {
+            return Err(SatError::TooLarge(format!("more than {} values", limits.max_tokens)));
+        }
+        // Before the first record: the product strings and the unit doubles.
+        let header = recs.is_empty() && ty.is_empty();
+        match tag {
+            0x04 | 0x15 => cur.push(Tok::Word(rd.int()?.to_string())),
+            0x06 => {
+                let v = rd.f64()?;
+                if header {
+                    units.push(v);
+                } else {
+                    cur.push(Tok::Word(format!("{v:?}")));
+                }
+            }
+            0x07 | 0x08 | 0x12 => {
+                let s = rd.string(tag)?;
+                if !header {
+                    cur.push(Tok::Word(s));
+                }
+            }
+            0x0e | 0x0d => {
+                let s = rd.string(tag)?;
+                if typed {
+                    cur.push(Tok::Word(s));
+                } else {
+                    ty.push_str(&s);
+                    if tag == 0x0e {
+                        ty.push('-');
+                    } else {
+                        typed = true;
+                    }
+                }
+            }
+            0x0a => cur.push(Tok::Word("T".into())),
+            0x0b => cur.push(Tok::Word("I".into())),
+            0x0c => cur.push(Tok::Ptr(rd.int()?)),
+            0x0f => cur.push(Tok::Word("{".into())),
+            0x10 => cur.push(Tok::Word("}".into())),
+            0x13 | 0x14 => {
+                for _ in 0..3 {
+                    let v = rd.f64()?;
+                    cur.push(Tok::Word(format!("{v:?}")));
+                }
+            }
+            0x11 => {
+                let mut f = std::mem::take(&mut cur);
+                let t = std::mem::take(&mut ty);
+                typed = false;
+                if t.starts_with("End-of-") {
+                    break;
+                }
+                // As in version 7 text: an integer, then (but in a transform) a pointer.
+                if matches!(f.get(1), Some(Tok::Word(w)) if w.parse::<i64>().is_ok()) {
+                    f.remove(1);
+                    if t != "transform" && matches!(f.get(1), Some(Tok::Ptr(_))) {
+                        f.remove(1);
+                    }
+                }
+                if recs.len() >= limits.max_records {
+                    return Err(SatError::TooLarge(format!("more than {} records", limits.max_records)));
+                }
+                recs.push(Rec { ty: t, f });
+            }
+            other => return Err(bad(format!("unknown binary tag 0x{other:02x} at byte {}", rd.pos + 14))),
+        }
+    }
+    if recs.is_empty() {
+        return Err(bad("no records".into()));
+    }
+    let scale = units.first().copied().filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0);
+    let subtypes = subtypes_of(&recs);
+    Ok(Sat { version, scale, recs, subtypes })
+}
+
+struct Bin<'a> {
+    b: &'a [u8],
+    pos: usize,
+    width: usize,
+}
+
+impl Bin<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], SatError> {
+        let s = self
+            .b
+            .get(self.pos..self.pos.saturating_add(n))
+            .ok_or_else(|| SatError::Malformed("the file ends early".into()))?;
+        self.pos += n;
+        Ok(s)
+    }
+
+    fn int(&mut self) -> Result<i64, SatError> {
+        let w = self.width;
+        let s = self.take(w)?;
+        let short = || SatError::Malformed("a short integer".into());
+        Ok(if w == 8 {
+            i64::from_le_bytes(s.try_into().map_err(|_| short())?)
+        } else {
+            i64::from(i32::from_le_bytes(s.try_into().map_err(|_| short())?))
+        })
+    }
+
+    fn f64(&mut self) -> Result<f64, SatError> {
+        let s = self.take(8)?;
+        Ok(f64::from_le_bytes(s.try_into().map_err(|_| SatError::Malformed("a short double".into()))?))
+    }
+
+    /// A string after its tag: u8 length (0x07, 0x0d, 0x0e), u16 (0x08) or u32 (0x12).
+    fn string(&mut self, tag: u8) -> Result<String, SatError> {
+        let n = match tag {
+            0x08 => {
+                let s = self.take(2)?;
+                usize::from(u16::from_le_bytes([s.first().copied().unwrap_or(0), s.get(1).copied().unwrap_or(0)]))
+            }
+            0x12 => {
+                let s = self.take(4)?;
+                let mut a = [0u8; 4];
+                a.copy_from_slice(s);
+                u32::from_le_bytes(a) as usize
+            }
+            _ => usize::from(self.take(1)?.first().copied().unwrap_or(0)),
+        };
+        Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
+    }
+}
+
+/// Subtype definitions in file order (see [`Sat::subtypes`]).
+fn subtypes_of(recs: &[Rec]) -> Vec<(usize, usize)> {
+    let mut subtypes = Vec::new();
+    for (ri, r) in recs.iter().enumerate() {
+        for (fi, t) in r.f.iter().enumerate() {
+            if matches!(t, Tok::Word(w) if w == "{") && !matches!(r.f.get(fi + 1), Some(Tok::Word(w)) if w == "ref") {
+                subtypes.push((ri, fi));
+            }
+        }
+    }
+    subtypes
+}
+
+/// Reads a SAT text file.
+fn parse_text(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     let bad = |m: &str| SatError::Malformed(m.to_string());
     let mut lx = Lexer { b: bytes, pos: 0, at_strings: false };
     // The first line `version records bodies flags`, after any lines a mailer or a tool
@@ -195,13 +374,6 @@ pub fn parse(bytes: &[u8], limits: &Limits) -> Result<Sat, SatError> {
     if recs.is_empty() {
         return Err(bad("no records"));
     }
-    let mut subtypes = Vec::new();
-    for (ri, r) in recs.iter().enumerate() {
-        for (fi, t) in r.f.iter().enumerate() {
-            if matches!(t, Tok::Word(w) if w == "{") && !matches!(r.f.get(fi + 1), Some(Tok::Word(w)) if w == "ref") {
-                subtypes.push((ri, fi));
-            }
-        }
-    }
+    let subtypes = subtypes_of(&recs);
     Ok(Sat { version, scale, recs, subtypes })
 }

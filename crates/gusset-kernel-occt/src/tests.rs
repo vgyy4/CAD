@@ -861,6 +861,14 @@ fn surfaces_extrude_patch_thicken_and_stitch() {
     assert!(k().stitch(&[], 1e-3).is_err());
 }
 
+/// Writes `step` to `GUSSET_SAT_DUMP` (if set) and imports it.
+fn dump_and_import(name: &str, step: &str) -> KResult<Vec<(Shape, String)>> {
+    if let Ok(d) = std::env::var("GUSSET_SAT_DUMP") {
+        let _ = std::fs::write(std::path::Path::new(&d).join(format!("{name}.ours.step")), step);
+    }
+    k().import_step(step.as_bytes())
+}
+
 /// ACIS SAT (ADR 0039): exploratory pass over the files in `GUSSET_SAT_DIR` (prints, never
 /// fails). The asserting tests are below.
 #[test]
@@ -873,7 +881,7 @@ fn sat_survey() {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         match gusset_sat::to_step(&bytes, "s", &gusset_sat::Limits::default()) {
             Err(e) => eprintln!("SURVEY {name}: convert: {e}"),
-            Ok(c) => match k().import_step(c.step.as_bytes()) {
+            Ok(c) => match dump_and_import(&name, &c.step) {
                 Err(e) => eprintln!("SURVEY {name}: import: {e}"),
                 Ok(shapes) => {
                     let mut s = String::new();
@@ -885,9 +893,10 @@ fn sat_survey() {
                     if let Ok(theirs) = std::fs::read(p.with_extension("stp")) {
                         match k().import_step(&theirs) {
                             Ok(t) => {
-                                let v: f64 =
-                                    t.iter().map(|(sh, _)| k().mass_properties(sh).map_or(0.0, |m| m.volume)).sum();
-                                s.push_str(&format!(" oracle vol {v:.4}"));
+                                let vols: Vec<f64> =
+                                    t.iter().map(|(sh, _)| k().mass_properties(sh).map_or(0.0, |m| m.volume)).collect();
+                                let v: f64 = vols.iter().sum();
+                                s.push_str(&format!(" oracle vol {v:.4} {vols:.4?}"));
                             }
                             Err(e) => s.push_str(&format!(" oracle: {e}")),
                         }

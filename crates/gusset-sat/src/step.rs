@@ -310,7 +310,7 @@ impl Layout {
 
 /// A sense field: `reversed` (or `1` in version 1 files) against `forward` / `0`.
 fn reversed(w: Option<&str>) -> bool {
-    matches!(w, Some("reversed" | "1"))
+    matches!(w, Some("reversed" | "1" | "T"))
 }
 
 struct Writer<'a> {
@@ -419,7 +419,9 @@ impl Writer<'_> {
             return Ok(*id);
         }
         let r = self.rec_of(v, "vertex")?;
-        let p = r.ptr(2).ok_or_else(|| SatError::Malformed(format!("vertex ${v} has no point")))?;
+        // Newer versions write an integer between the edge and the point.
+        let at = if r.word(2).is_some_and(|w| w.parse::<i64>().is_ok()) { 3 } else { 2 };
+        let p = r.ptr(at).ok_or_else(|| SatError::Malformed(format!("vertex ${v} has no point")))?;
         let pr = self.rec_of(p, "point")?;
         let xyz = pr.vec3(1).ok_or_else(|| SatError::Malformed(format!("point ${p} has no coordinates")))?;
         let cp = self.point(xyz);
@@ -535,9 +537,9 @@ impl Writer<'_> {
                 // The interval: two ends, each `I` or `F <value>`.
                 let mut k = 11;
                 // Version 1.05 cones have no interval; 1.06 and later do.
-                if matches!(r.word(k), Some("I" | "F")) {
+                if matches!(r.word(k), Some("I" | "F" | "T")) {
                     for _ in 0..2 {
-                        k += if r.word(k) == Some("F") { 2 } else { 1 };
+                        k += if matches!(r.word(k), Some("F" | "T")) { 2 } else { 1 };
                     }
                 }
                 let sin = r.num(k).ok_or_else(bad)?;
