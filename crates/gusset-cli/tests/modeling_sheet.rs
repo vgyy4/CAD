@@ -139,3 +139,63 @@ fn edge_flanges_on_a_tab_have_exact_volumes_and_grow_the_flat_pattern() {
     };
     assert!(r.errors().iter().any(|e| e.feature == "F2" && e.message.contains("outline")), "{:?}", r.errors());
 }
+
+#[test]
+fn flanges_on_adjacent_lines_leave_an_open_corner() {
+    let src = format!(
+        "{TAB}\nedge_flange F1 (body: Plate, line: l5, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n\n\
+         edge_flange F2 (body: Plate, line: l6, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let b = r.body("Plate").unwrap();
+    let t = 2.0;
+    let flange = |len: f64, rad: f64, l: f64| l * (FRAC_PI_2 * t * (rad + t / 2.0) + len * t);
+    // No overlap: the two flanges' volumes add up exactly.
+    let volume = 60.0 * 40.0 * t + flange(10.0, 2.0, 60.0) + flange(10.0, 2.0, 40.0);
+    let m = ev.kernel().mass_properties(&b.shape).unwrap();
+    assert!(near(m.volume, volume), "{} vs {volume}", m.volume);
+    assert_eq!(b.sheet.as_ref().unwrap().bends.len(), 2);
+}
+
+#[test]
+fn flanges_meeting_at_an_inside_corner_are_refused() {
+    // An L: the inside corner is at (20, 20), between l11 (along x) and l12 (along y).
+    let src = "gusset 1
+units mm
+
+sketch L (plane: XY, next_id: 13) {
+  p1 = point(0, 0)
+  p2 = point(40, 0)
+  p3 = point(40, 20)
+  p4 = point(20, 20)
+  p5 = point(20, 40)
+  p6 = point(0, 40)
+  l7 = line(p1, p2)
+  l8 = line(p2, p3)
+  l9 = line(p3, p4)
+  l10 = line(p4, p5)
+  l11 = line(p5, p6)
+  l12 = line(p6, p1)
+}
+
+tab Plate (profile: L, thickness: 2 mm)
+
+edge_flange F1 (body: Plate, line: l9, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)
+
+edge_flange F2 (body: Plate, line: l10, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)
+";
+    let doc = gusset_doc::Document::from_text(src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    let errs: Vec<String> = r.errors().iter().map(|e| format!("{}: {}", e.feature, e.message)).collect();
+    assert!(
+        errs.iter().any(|e| e.starts_with("F2") && (e.contains("run into") || e.contains("covers it"))),
+        "{errs:?}"
+    );
+    assert!(!errs.iter().any(|e| e.starts_with("F1")), "{errs:?}");
+}

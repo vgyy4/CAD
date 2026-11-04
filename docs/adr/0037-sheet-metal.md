@@ -48,8 +48,9 @@ tab Plate (profile: S2.regions(l4), thickness: 2 mm)
 ## Consequences
 * Volumes are exact (the OCCT test checks a U channel against
   `w (t Σ straights + Σ θ t (r + t/2))`, and at k = 0.5 the flat area times `t` equals it).
-* Flanges on two adjacent lines of a tab overlap at their shared corner (no corner relief
-  yet), in the part and in the flat pattern.
+* Flanges on two lines meeting at an outside corner of a tab leave an open corner (each stays
+  on its own side; their volumes add exactly, OCCT test); at an inside corner the second would
+  run into the first and is refused.
 * Not yet: edge flanges off a contour flange or off another flange, bend reliefs, hems,
   jogs, corner reliefs, and unfolding features that cut the sheet after it was made (the flat
   pattern shows the flange as its feature built it). They follow as further `sheet` features,

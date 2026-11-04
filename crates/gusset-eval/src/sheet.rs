@@ -649,8 +649,10 @@ impl Evaluator {
             (false, true) => perp,
             (true, false) => mul(perp, -1.0),
             _ => {
-                return Err(bad(format!("line {line} is not on the outline of {body}"))
-                    .with_hint("pick a line of the tab's outer boundary, not one inside it or already flanged"));
+                return Err(bad(format!(
+                    "line {line} is not on the outline of {body} (or a flange next to it covers it)"
+                ))
+                .with_hint("pick a line of the tab's outer boundary, not one inside it or already flanged"));
             }
         };
         let fr = sv.frame;
@@ -678,6 +680,17 @@ impl Evaluator {
         let mut nf = (*flat).clone();
         let near = |p: &[f64; 2], q: P2| len(sub(*p, q)) < 1e-6;
         let (pa, pb) = (addv(a, mul(out2, reach)), addv(b, mul(out2, reach)));
+        // At a convex corner two flanges leave an open corner; at a concave one this flange
+        // would run into the sheet already there (the tab or another flange).
+        for f in [0.02, 0.5, 0.98] {
+            let along = addv(a, mul(ab, f));
+            for depth in [0.25, 0.75] {
+                if inside(&flat.outlines, addv(along, mul(out2, reach * depth))) {
+                    return Err(bad(format!("a flange on {line} would run into the sheet next to it"))
+                        .with_hint("flange lines at outside corners only, or shorten the neighbouring flange"));
+                }
+            }
+        }
         let mut grown = false;
         for o in &mut nf.outlines {
             let n = o.len();

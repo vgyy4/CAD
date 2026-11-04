@@ -276,8 +276,9 @@ Phase 3 has started (see Next).
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
      (`query.flat_pattern`, `sheet.export_flat` DXF/SVG 1:1), SHEET METAL tab; OCCT exact-volume
      test `modeling_sheet.rs`. Phase 2 done: `edge_flange` off a tab's outline line (angle, up or
-     down, length; the tab's flat pattern grows; OCCT exact-volume test). Next: corner reliefs for
-     flanges on adjacent lines, flanges off contour flanges and flanges, hems, unfolding later cuts.
+     down, length; the tab's flat pattern grows; OCCT exact-volume test). Flanges at outside
+     corners leave an open corner; at inside corners they are refused. Next: flanges off contour
+     flanges and off flanges, closed corners, hems, unfolding later cuts.
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Next:
      replace face, live rules.
