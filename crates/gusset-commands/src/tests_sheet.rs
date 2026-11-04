@@ -65,3 +65,33 @@ fn a_contour_flange_is_made_queried_and_exported_flat() {
     assert_eq!(err(&mut s, "query.flat_pattern", json!({"body": "Block"})).code, "invalid_args");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
+
+#[test]
+fn a_tab_changed_by_a_move_has_a_marked_flat_pattern() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    run(&mut s, "feature.tab", json!({"profile": "Sketch1", "thickness": "2 mm"}));
+    run(&mut s, "feature.move_body", json!({"body": "Tab1", "translate": ["10 mm", "0 mm", "0 mm"]}));
+    let q = run(&mut s, "query.flat_pattern", json!({}));
+    assert_eq!(q["changed_by"], json!(["Move1"]), "{q}");
+    assert!(q["warning"].as_str().is_some_and(|w| w.contains("Move1")), "{q}");
+    assert_eq!(err(&mut s, "sheet.export_flat", json!({"path": "flat.dxf"})).code, "invalid_args");
+    run(&mut s, "sheet.export_flat", json!({"path": "flat.dxf", "allow_changed": true}));
+    // An edge flange after the cut is refused, and so is a line that is not a name.
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    assert!(ev.errors().is_empty());
+    let r = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.edge_flange",
+        json!({"body": "Tab1", "line": "l3", "length": "10 mm"}),
+    );
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    assert!(r.is_err() || ev.errors().iter().any(|e| e.message.contains("changed by Move1")), "{:?}", ev.errors());
+    assert_eq!(
+        err(&mut s, "feature.edge_flange", json!({"body": "Tab1", "line": "l3) x", "length": "10 mm"})).code,
+        "invalid_args"
+    );
+    let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
+}

@@ -140,6 +140,14 @@ impl Command for EdgeFlange {
         let length = parse_expr("length", &self.length)?;
         let angle = parse_expr("angle", self.angle.as_deref().unwrap_or("90 deg"))?;
         let k_factor = parse_expr("k_factor", self.k_factor.as_deref().unwrap_or("0.44"))?;
+        let ident = |v: &str| {
+            v.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && v.len() <= 64
+        };
+        if !ident(&self.line) || !ident(&self.body) {
+            return Err(CommandError::args("body and line must be names such as Tab1 and l5"));
+        }
         edit(s, ctx, "Edge flange", |doc, rb| {
             // The default radius is the tab's thickness, as an expression.
             let thickness = doc.features.iter().find(|f| f.name == self.body).and_then(|f| match &f.kind {
@@ -224,6 +232,8 @@ impl Command for FlatPatternQuery {
             "thickness_mm": tidy(flat.thickness),
             "size_mm": [tidy(size[0]), tidy(size[1])],
             "bends": bends,
+            "changed_by": flat.changed_by,
+            "warning": stale(&flat),
         }))
     }
 }
@@ -239,6 +249,9 @@ pub struct ExportFlat {
     pub body: Option<String>,
     #[serde(default)]
     pub overwrite: bool,
+    /// Write it even when later features changed the body (they are not in it).
+    #[serde(default)]
+    pub allow_changed: bool,
 }
 
 impl Command for ExportFlat {
@@ -262,6 +275,12 @@ impl Command for ExportFlat {
             }
         }
         let (body, flat) = flat_of(s, ctx, self.body.as_deref())?;
+        if let Some(w) = stale(&flat)
+            && !self.allow_changed
+        {
+            return Err(CommandError::args(format!("'{body}' was {w}"))
+                .hint("pass allow_changed: true to export it anyway, or make the cuts as sheet-metal features"));
+        }
         let sc = scene(&flat);
         let bytes = if dxf {
             gusset_drawing::dxf::to_dxf(&sc, gusset_drawing::dxf::Profile::default()).into_bytes()
@@ -271,6 +290,16 @@ impl Command for ExportFlat {
         crate::paths::write_file(&path, p, &bytes)?;
         Ok(json!({ "written": p, "bytes": bytes.len(), "body": body }))
     }
+}
+
+/// Why the flat pattern may not match the part, if it may not.
+fn stale(flat: &FlatPattern) -> Option<String> {
+    (!flat.changed_by.is_empty()).then(|| {
+        format!(
+            "changed after it was made by {}: the flat pattern shows the sheet metal without those changes",
+            flat.changed_by.join(", ")
+        )
+    })
 }
 
 fn tidy(v: f64) -> f64 {

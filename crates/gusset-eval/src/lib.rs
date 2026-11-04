@@ -941,6 +941,30 @@ impl Evaluator {
         let prev_bodies = s.bodies.clone();
         let r = self.run(s, f, units, params, blobs);
         prune_holes(s, &before);
+        if r.is_ok() && !matches!(f.kind, FeatureKind::Sheet(_)) {
+            // A sheet-metal body changed by another feature: its flat pattern no longer
+            // shows everything (review: stale flat patterns).
+            for b in s.bodies.iter_mut() {
+                if prev_bodies.iter().any(|p| Arc::ptr_eq(p, b)) {
+                    continue;
+                }
+                if let Some(old) = b.sheet.as_deref() {
+                    let mut flat = old.clone();
+                    if !flat.changed_by.contains(&f.name) {
+                        flat.changed_by.push(f.name.clone());
+                    }
+                    *b = Arc::new(Body {
+                        name: b.name.clone(),
+                        feature: b.feature.clone(),
+                        shape: b.shape.clone(),
+                        names: b.names.clone(),
+                        topology: b.topology.clone(),
+                        holes: b.holes.clone(),
+                        sheet: Some(Arc::new(flat)),
+                    });
+                }
+            }
+        }
         if r.is_ok() {
             // The body this feature changed, if exactly one (feature patterns repeat it).
             let changed: Vec<&Arc<Body>> =

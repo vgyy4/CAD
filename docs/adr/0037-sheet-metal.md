@@ -54,3 +54,9 @@ tab Plate (profile: S2.regions(l4), thickness: 2 mm)
   jogs, corner reliefs, and unfolding features that cut the sheet after it was made (the flat
   pattern shows the flange as its feature built it). They follow as further `sheet` features,
   with a geometric unfold (planar and cylindrical faces of constant thickness) for the cuts.
+* Review (2026-11-04): a body changed by any non-sheet feature after its sheet-metal
+  feature (a cut, a hole, a move, a joint) records that feature in the flat pattern's
+  `changed_by`; `query.flat_pattern` warns, `sheet.export_flat` refuses without
+  `allow_changed: true`, and edge flanges refuse such a tab (they would be built where the tab
+  was). Edge flanges grow the flat outline before uniting, so a refused line changes nothing.
+  Arcs in flat outlines are sampled within 0.005 mm.

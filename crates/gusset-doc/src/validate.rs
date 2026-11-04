@@ -385,6 +385,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     }
                 }
             },
+            FeatureKind::Sheet(d) if d.thickness.is_some() == matches!(d.op, SheetOp::EdgeFlange { .. }) => {
+                out.push(issue(n, "a contour_flange or tab needs a thickness; an edge_flange takes its tab's"));
+            }
             FeatureKind::Sheet(d) => match &d.op {
                 SheetOp::Contour { curves, .. } => {
                     if let PathRef::Sketch { sketch, curves } = curves {

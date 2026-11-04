@@ -27,6 +27,9 @@ pub struct FlatPattern {
     pub bends: Vec<FlatBend>,
     /// For a tab: where its outline lies, so edge flanges can be bent off its lines.
     pub base: Option<TabBase>,
+    /// Features other than sheet-metal ones that changed the body since (cuts, holes,
+    /// moves...): the pattern does not show what they did.
+    pub changed_by: Vec<String>,
 }
 
 /// The sketch a tab was made from and the side its material is on.
@@ -248,8 +251,13 @@ pub(crate) fn contour_section(
             x += ba;
         }
     }
-    let flat =
-        FlatPattern { thickness: t, outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]], bends, base: None };
+    let flat = FlatPattern {
+        thickness: t,
+        outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]],
+        bends,
+        base: None,
+        changed_by: Vec::new(),
+    };
     Ok(Section { edges, flat })
 }
 
@@ -294,6 +302,15 @@ fn reversed(edges: Vec<ProfileEdge>) -> Vec<ProfileEdge> {
         .collect()
 }
 
+/// Chord tolerance of sampled arcs in flat outlines (mm).
+const CHORD_TOL: f64 = 0.005;
+
+/// Segments for an arc of `sweep` radians and radius `r` within [`CHORD_TOL`].
+fn arc_steps(r: f64, sweep: f64) -> usize {
+    let step = if r > CHORD_TOL { 2.0 * libm::acos(1.0 - CHORD_TOL / r) } else { sweep };
+    ((sweep / step.max(1e-4)).ceil() as usize).clamp(1, 4096)
+}
+
 /// A loop sampled as a polyline (arcs and circles in steps of at most 5 degrees).
 fn sample(l: &Loop2) -> Vec<[f64; 2]> {
     let mut out = Vec::new();
@@ -311,15 +328,16 @@ fn sample(l: &Loop2) -> Vec<[f64; 2]> {
                 if !ccw && sweep >= 0.0 {
                     sweep -= std::f64::consts::TAU;
                 }
-                let steps = (sweep.abs() / 5f64.to_radians()).ceil().max(1.0) as usize;
+                let steps = arc_steps(r, sweep.abs());
                 for s in 0..steps {
                     let a = a0 + sweep * (s as f64) / (steps as f64);
                     out.push([center[0] + r * libm::cos(a), center[1] + r * libm::sin(a)]);
                 }
             }
             Seg2::Circle { center, radius } => {
-                for s in 0..72 {
-                    let a = std::f64::consts::TAU * f64::from(s) / 72.0;
+                let steps = arc_steps(radius, std::f64::consts::TAU);
+                for s in 0..steps {
+                    let a = std::f64::consts::TAU * (s as f64) / (steps as f64);
                     out.push([center[0] + radius * libm::cos(a), center[1] + radius * libm::sin(a)]);
                 }
             }
@@ -466,7 +484,7 @@ impl Evaluator {
                 (
                     res,
                     None,
-                    FlatPattern { thickness: t, outlines, bends: Vec::new(), base },
+                    FlatPattern { thickness: t, outlines, bends: Vec::new(), base, changed_by: Vec::new() },
                     profile.sketch.clone(),
                     regions,
                 )
@@ -604,6 +622,10 @@ impl Evaluator {
         let base = flat.base.clone().ok_or_else(|| {
             bad(format!("'{body}' is not a tab")).with_hint("edge flanges bend off the outline lines of a tab")
         })?;
+        if let Some(by) = flat.changed_by.first() {
+            return Err(bad(format!("'{body}' was changed by {by} since it was made"))
+                .with_hint("put edge flanges right after their tab, before cuts, holes or moves"));
+        }
         let t = flat.thickness;
         let sv =
             s.solved.get(&base.sketch).cloned().ok_or_else(|| bad(format!("'{}' is not evaluated", base.sketch)))?;
@@ -650,8 +672,6 @@ impl Evaluator {
             .kernel
             .extrude(&profile, &ExtrudeSpec { distance: along, symmetric: false })
             .map_err(|ke| kernel_err(name, "edge flange", ke))?;
-        let at = [line.to_string()];
-        self.combine(s, name, &OpContext::Sheet { feature: name, at: &at }, res, BodyOp::Add, (Some(body), None))?;
         // The flat pattern grows by the bend zone and the flange beyond the line.
         let ba = e.angle * (e.r + e.k * t);
         let reach = ba + e.length;
@@ -689,6 +709,8 @@ impl Evaluator {
             start: [a, b],
             end: [addv(a, mul(out2, ba)), addv(b, mul(out2, ba))],
         });
+        let at = [line.to_string()];
+        self.combine(s, name, &OpContext::Sheet { feature: name, at: &at }, res, BodyOp::Add, (Some(body), None))?;
         if let Some(slot) = s.bodies.iter_mut().find(|x| x.feature == body) {
             let nb = Body {
                 name: slot.name.clone(),
