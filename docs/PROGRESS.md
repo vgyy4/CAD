@@ -285,7 +285,7 @@ Phase 3 has started (see Next).
    - CAM phase 1 done (ADR 0040, `gusset-cam` on `cavalier_contours`): 2.5D pocket (islands
      kept clear) and outside/inside profiles of sketch regions with a flat end mill in depth
      passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,
-     G2/G3 arcs), ramp entry along the ring (default 3 deg), drilling (G81/G83 at circle centres). Next: tabs, toolpaths in the document with a viewport
+     G2/G3 arcs), ramp entry along the ring (default 3 deg), drilling (G81/G83 at circle centres), holding tabs on profiles. Next: toolpaths in the document with a viewport
      preview.
    - later: simulation, plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.

@@ -12,41 +12,37 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CamJob {
-    /// Its plane is z = 0.
     pub sketch: String,
-    /// Ids (drill: circles); default: all.
+    /// Default all.
     #[serde(default)]
     pub regions: Vec<String>,
     /// pocket, profile_outside, profile_inside, drill.
     pub operation: String,
     pub tool_diameter: f64,
     pub depth: f64,
-    /// Default: half the diameter.
     #[serde(default)]
     pub stepdown: Option<f64>,
-    /// Pocket, of the diameter (0.4).
+    /// x diameter.
     #[serde(default)]
     pub stepover: Option<f64>,
-    /// Default 600.
     #[serde(default)]
     pub feed: Option<f64>,
-    /// Default 200.
     #[serde(default)]
     pub plunge: Option<f64>,
-    /// 10000; 0: none.
     #[serde(default)]
     pub rpm: Option<f64>,
-    /// Stock top (0), rapid height (top+5).
     #[serde(default)]
     pub top: Option<f64>,
     #[serde(default)]
     pub safe: Option<f64>,
-    /// Entry ramp, deg (3; 0 plunges).
+    /// 0 plunges.
     #[serde(default)]
     pub ramp_deg: Option<f64>,
-    /// Drill peck depth.
     #[serde(default)]
     pub peck: Option<f64>,
+    /// [count, width, height].
+    #[serde(default)]
+    pub tabs: Option<[f64; 3]>,
 }
 
 impl CamJob {
@@ -72,6 +68,11 @@ impl CamJob {
             plunge: self.plunge.unwrap_or(200.0),
             rpm: self.rpm.unwrap_or(10_000.0),
             ramp_deg: self.ramp_deg.unwrap_or(3.0),
+            tabs: self.tabs.map(|[c, w, h]| gusset_cam::Tabs {
+                count: if c.is_finite() && c >= 0.0 { c.min(1000.0) as usize } else { 1000 },
+                width: w,
+                height: h,
+            }),
         };
         let doc = s.document(&ctx.actor)?;
         let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)
@@ -135,8 +136,7 @@ pub struct ToolpathQuery {
 impl Command for ToolpathQuery {
     const ID: &'static str = "cam.toolpath";
     const TITLE: &'static str = "Toolpath";
-    const DESCRIPTION: &'static str =
-        "2.5D pocket or profile toolpath of sketch regions (flat end mill): rings, depth passes, length, time.";
+    const DESCRIPTION: &'static str = "2.5D pocket/profile/drill toolpath of a sketch (mm; feed 600, plunge 200, rpm 10000, ramp 3 deg, stepdown D/2, stepover 0.4, safe top+5): length, time.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -160,8 +160,7 @@ pub struct ExportGcode {
 impl Command for ExportGcode {
     const ID: &'static str = "cam.export_gcode";
     const TITLE: &'static str = "Export G-code";
-    const DESCRIPTION: &'static str =
-        "Write a 2.5D pocket, profile or drilling of a sketch as metric G-code; check before running.";
+    const DESCRIPTION: &'static str = "Write cam_toolpath's toolpath as metric G-code; check it before running.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

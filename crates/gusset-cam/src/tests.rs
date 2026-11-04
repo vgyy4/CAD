@@ -24,6 +24,7 @@ fn setup(d: f64) -> Setup {
         plunge: 200.0,
         rpm: 12000.0,
         ramp_deg: 0.0,
+        tabs: None,
     }
 }
 
@@ -148,4 +149,25 @@ fn holes_are_drilled_nearest_first_with_canned_cycles() {
     assert!(g.contains("G98 G81 X10 Y0 Z-5 R0 F200"), "{g}");
     assert!(drilling(&[], None, &setup(5.0)).is_err());
     assert!(drilling(&pts, Some(0.0), &setup(5.0)).is_err());
+}
+
+#[test]
+fn tabs_lift_the_last_profile_passes_over_bridges() {
+    let mut s = setup(6.0);
+    s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.5 });
+    let t = toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).unwrap();
+    // The last level (-5) runs at -5 except over the tabs, at -3.5.
+    let zs: Vec<f64> = t
+        .moves
+        .iter()
+        .filter_map(|m| match m {
+            Move::Line { to, plunge: false } | Move::Arc { to, .. } => Some(to[2]),
+            _ => None,
+        })
+        .collect();
+    assert!(zs.iter().any(|z| (z + 3.5).abs() < 1e-9) && zs.iter().any(|z| (z + 5.0).abs() < 1e-9), "{zs:?}");
+    let g = t.gcode(&s, "tabs");
+    assert!(g.contains("Z-3.5"), "{g}");
+    s.tabs = Some(Tabs { count: 40, width: 3.0, height: 1.5 });
+    assert!(toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).is_err());
 }

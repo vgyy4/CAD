@@ -59,6 +59,17 @@ pub struct Setup {
     /// Entry: spiral down along the ring at this angle (degrees) instead of plunging; 0
     /// plunges straight down.
     pub ramp_deg: f64,
+    /// Holding tabs left on a profile's last passes.
+    pub tabs: Option<Tabs>,
+}
+
+/// Bridges of uncut stock that hold a part cut out by a profile: `count` evenly spaced
+/// along the ring, `width` long and `height` high above the final depth.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tabs {
+    pub count: usize,
+    pub width: f64,
+    pub height: f64,
 }
 
 /// One machine move, to the end point given.
@@ -245,6 +256,11 @@ fn check(s: &Setup) -> Result<(), CamError> {
     if !(s.top.is_finite() && s.safe.is_finite() && s.safe > s.top) {
         return bad("the safe height must be above the stock top");
     }
+    if let Some(t) = s.tabs
+        && !(t.count <= 100 && t.width.is_finite() && t.width > 0.0 && t.height.is_finite() && t.height > 0.0)
+    {
+        return bad("tabs need a count of at most 100 and a positive width and height");
+    }
     if !(s.ramp_deg.is_finite() && (0.0..=45.0).contains(&s.ramp_deg)) {
         return bad("the ramp angle must be 0 (plunge) to 45 degrees");
     }
@@ -334,9 +350,17 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             } else {
                 moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
             }
-            for i in 0..n {
-                let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
-                moves.push(segment(a, b, *z));
+            let tab_top = s.tabs.map(|t| s.top - s.depth + t.height);
+            match (s.tabs, tab_top) {
+                (Some(t), Some(top)) if matches!(op, Operation::Profile { .. }) && *z < top - 1e-9 => {
+                    tabbed_ring(p, *z, top, &t, s.tool_diameter, &mut moves)?;
+                }
+                _ => {
+                    for i in 0..n {
+                        let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
+                        moves.push(segment(a, b, *z));
+                    }
+                }
             }
             moves.push(Move::Rapid([first.x, first.y, s.safe]));
             if moves.len() > MAX_MOVES {
@@ -345,6 +369,92 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
         }
     }
     Ok(Toolpath { moves, rings: rings.len(), levels, drill: None })
+}
+
+/// The part of the segment from `a` to `b` between length fractions `t0` and `t1`: its start
+/// and the move to its end at height `z`.
+fn piece(a: PlineVertex<f64>, b: PlineVertex<f64>, t0: f64, t1: f64, z: f64) -> ([f64; 2], Move) {
+    if a.bulge.abs() < 1e-12 {
+        let at = |t: f64| [a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t];
+        let e = at(t1);
+        return (at(t0), Move::Line { to: [e[0], e[1], z], plunge: false });
+    }
+    let Move::Arc { center, ccw, .. } = segment(a, b, z) else {
+        return ([a.x, a.y], Move::Line { to: [b.x, b.y, z], plunge: false });
+    };
+    let r = libm::hypot(a.x - center[0], a.y - center[1]);
+    let a0 = libm::atan2(a.y - center[1], a.x - center[0]);
+    let sweep = 4.0 * libm::atan(a.bulge);
+    let at = |t: f64| [center[0] + r * libm::cos(a0 + sweep * t), center[1] + r * libm::sin(a0 + sweep * t)];
+    let e = at(t1);
+    (at(t0), Move::Arc { to: [e[0], e[1], z], center, ccw })
+}
+
+/// One ring at depth `z` that rises to `tab_top` over each tab (tool radius added on both
+/// sides, so the stock left is the tab's width).
+fn tabbed_ring(
+    p: &Polyline<f64>,
+    z: f64,
+    tab_top: f64,
+    t: &Tabs,
+    tool: f64,
+    moves: &mut Vec<Move>,
+) -> Result<(), CamError> {
+    let n = p.vertex_count();
+    let total = p.path_length();
+    let span = t.width + tool;
+    if t.count == 0 || total <= 0.0 {
+        return Ok(());
+    }
+    if span * t.count as f64 >= total * 0.9 {
+        return Err(CamError::Invalid("the tabs do not fit on the profile: fewer or narrower tabs".into()));
+    }
+    let tabs: Vec<(f64, f64)> = (0..t.count)
+        .map(|k| {
+            let c = total * (k as f64 + 0.5) / t.count as f64;
+            (c - span / 2.0, c + span / 2.0)
+        })
+        .collect();
+    let in_tab = |s: f64| tabs.iter().any(|(a, b)| s > *a && s < *b);
+    let mut run = 0.0;
+    let mut cur_z = z;
+    for i in 0..n {
+        let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
+        let len = seg_len(a, b);
+        if len <= 0.0 {
+            continue;
+        }
+        // Break the segment at every tab edge inside it.
+        let mut cuts: Vec<f64> = vec![0.0, 1.0];
+        for (s0, s1) in &tabs {
+            for e in [*s0, *s1] {
+                let f = (e - run) / len;
+                if f > 1e-9 && f < 1.0 - 1e-9 {
+                    cuts.push(f);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        for w in cuts.windows(2) {
+            let [f0, f1] = [w.first().copied().unwrap_or(0.0), w.get(1).copied().unwrap_or(1.0)];
+            let mid = run + len * (f0 + f1) / 2.0;
+            let zz = if in_tab(mid) { tab_top } else { z };
+            let (start, mv) = piece(a, b, f0, f1, zz);
+            if (zz - cur_z).abs() > 1e-12 {
+                // Up onto the tab, or back down after it.
+                moves.push(Move::Line { to: [start[0], start[1], zz], plunge: zz < cur_z });
+                cur_z = zz;
+            }
+            moves.push(mv);
+        }
+        run += len;
+    }
+    if (cur_z - z).abs() > 1e-12
+        && let Some(f) = p.get(0)
+    {
+        moves.push(Move::Line { to: [f.x, f.y, z], plunge: true });
+    }
+    Ok(())
 }
 
 /// The length of the polyline segment from `a` to `b`.
