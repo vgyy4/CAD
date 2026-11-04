@@ -78,3 +78,21 @@ error. Results are rounded to 6 significant digits. The stress picture holds at 
 soon as another dialog replaces its result. Not done: shell elements for thin sheet
 bodies, which cannot be voxelised finely enough.
 
+## Amendment (2026-11-04): multigrid preconditioner
+
+Both solvers now precondition with a geometric multigrid V-cycle (`mg.rs`) instead of
+Jacobi. Coarser levels are made of voxels of twice the edge covering the finer ones, down
+to 64 voxels or 10 levels; each coarse voxel's stiffness is rediscretised and scaled by
+its filled share of the fine voxels below it (without that the coarse body is too stiff
+where it overhangs the part, and the cycle helped only threefold). The prolongation is
+trilinear on the shared grid nodes, restriction its transpose; smoothing is one weighted
+Jacobi sweep before and after the coarse correction (weight 0.9 over a 15-step power
+estimate of the largest eigenvalue), 40 sweeps on the coarsest level; held degrees of
+freedom are zero on every level. The cycle is symmetric and positive, so CG and LOBPCG keep
+their guarantees; LOBPCG applies it as `M^½ V M^½`. Measured (release, one core): an
+80k-voxel cantilever took 77 CG iterations against 997, a 64k-voxel cube 27 against 382,
+about 2.7 times faster in time with the element product rewritten to slices (5 times
+faster than before both changes); the 100 × 10 × 10 mm cantilever's frequencies took 30
+LOBPCG iterations against 525, same values. The work budget counts 6 stiffness products
+per iteration.
+

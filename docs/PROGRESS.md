@@ -297,8 +297,8 @@ Phase 3 has started (see Next).
      8 stress bands; the app shows them blue to red in place of the model while the result is
      open). Natural frequencies done (`sim.modal`: lumped
      mass, LOBPCG with a Jacobi preconditioner; a cantilever reads 1.5 % above beam theory).
-     Next: refinement near stress peaks, a multigrid preconditioner (iterations grow as the
-     grid's square-root condition number), mode shapes in the viewport. Note: the MCP tool list is at
+     Next: refinement near stress peaks, mode shapes in the viewport. Multigrid preconditioner
+     done (both solvers; 13–17× fewer iterations, 2.7× faster). Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
    - later: plugins.
    Every milestone goes through the reviewer, security reviewer and dogfooding.

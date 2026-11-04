@@ -67,6 +67,8 @@ fn a_cantilever_bends_close_to_beam_theory() {
     let s = solve(&p).unwrap();
     let i = 10.0 * 10f64.powi(3) / 12.0;
     let exact = 100.0 * 100f64.powi(3) / (3.0 * 200_000.0 * i);
+    // The multigrid cycle keeps the iterations few (Jacobi took 207 here).
+    assert!(s.iterations < 120, "{} iterations", s.iterations);
     // Full-integration bricks are a little stiff in bending.
     assert!(s.max_displacement > 0.8 * exact && s.max_displacement < 1.05 * exact, "{} vs {exact}", s.max_displacement);
     // Root stress M c / I = 100·100·5/I = 60 MPa, read at element centres half a voxel in.
@@ -124,6 +126,8 @@ fn a_cantilever_rings_close_to_beam_theory() {
     let exact = 1.8751f64.powi(2) / (2.0 * std::f64::consts::PI) * (ei / (7.85e-9 * 100.0 * 100f64.powi(4))).sqrt();
     let f = &m.frequencies;
     assert_eq!(f.len(), 3);
+    // Multigrid-preconditioned LOBPCG: 30 iterations here (Jacobi took 525).
+    assert!(m.iterations < 120, "{} iterations", m.iterations);
     assert!(f[0] > 0.95 * exact && f[0] < 1.2 * exact, "{f:?} vs {exact} ({} iterations)", m.iterations);
     assert!((f[1] - f[0]).abs() < 0.01 * f[0], "{f:?}");
     assert!(f[2] > 1.5 * f[0], "{f:?}");

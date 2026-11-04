@@ -7,6 +7,8 @@
 
 use gusset_kernel::Mesh;
 
+mod mg;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeaError {
     Invalid(String),
@@ -605,6 +607,9 @@ fn loose_voxels(elems: &[[usize; 3]], conn: &[[usize; 8]], fixed: &[bool], n: [u
 /// minute of work on one core.
 const MAX_WORK: u64 = 150_000_000;
 
+/// Stiffness products of one preconditioned iteration (the multigrid cycle and the product).
+const CYCLE_PRODUCTS: u64 = 6;
+
 fn over_budget(work: u64) -> Result<(), FeaError> {
     if work > MAX_WORK {
         return Err(FeaError::TooLarge(
@@ -621,35 +626,7 @@ impl Model {
 
     /// `y = K u`, with the fixed degrees of freedom passed through.
     fn matvec(&self, u: &[f64], y: &mut [f64]) {
-        let (conn, ke, fixed) = (&self.conn, &self.ke, &self.fixed);
-        y.iter_mut().for_each(|v| *v = 0.0);
-        for c in conn {
-            let mut ue = [0.0; 24];
-            for (a, id) in c.iter().enumerate() {
-                for d in 0..3 {
-                    if let Some(x) = ue.get_mut(3 * a + d) {
-                        *x = u.get(3 * id + d).copied().unwrap_or(0.0);
-                    }
-                }
-            }
-            for (a, id) in c.iter().enumerate() {
-                for d in 0..3 {
-                    let row = 3 * a + d;
-                    let mut acc = 0.0;
-                    for (col, uv) in ue.iter().enumerate() {
-                        acc += ke.get(row * 24 + col).copied().unwrap_or(0.0) * uv;
-                    }
-                    if let Some(x) = y.get_mut(3 * id + d) {
-                        *x += acc;
-                    }
-                }
-            }
-        }
-        for (i, x) in y.iter_mut().enumerate() {
-            if fixed.get(i).copied().unwrap_or(false) {
-                *x = u.get(i).copied().unwrap_or(0.0);
-            }
-        }
+        mg::product(&self.conn, &[], &self.ke, &self.fixed, u, y);
     }
 }
 
@@ -657,7 +634,7 @@ impl Model {
 pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
     let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
-    let Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, b0, diag, material: m, .. } = &md;
+    let Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, b0, material: m, .. } = &md;
     let (h, n, fixed_nodes, m) = (*h, *n, *fixed_nodes, *m);
     let dofs = md.dofs();
     let matvec = |u: &[f64], y: &mut [f64]| md.matvec(u, y);
@@ -702,7 +679,9 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let mut u = vec![0.0; dofs];
     let mut r = f.clone();
-    let mut z: Vec<f64> = r.iter().zip(diag).map(|(r, d)| r / d).collect();
+    let mg = mg::Hierarchy::new(elems, n, used, conn, fixed, h, m);
+    let pre = |r: &[f64]| mg.apply(r);
+    let mut z: Vec<f64> = pre(&r);
     let mut pdir = z.clone();
     let mut ap = vec![0.0; dofs];
     let mut rz = dot(&r, &z);
@@ -714,7 +693,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                 "the solver did not converge: the part may be free to move (fix more faces)".into(),
             ));
         }
-        over_budget(iterations as u64 * conn.len() as u64)?;
+        over_budget(iterations as u64 * CYCLE_PRODUCTS * conn.len() as u64)?;
         iterations += 1;
         matvec(&pdir, &mut ap);
         let pap = dot(&pdir, &ap);
@@ -728,9 +707,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                 *ri -= alpha * ai;
             }
         }
-        for (zi, (ri, di)) in z.iter_mut().zip(r.iter().zip(diag)) {
-            *zi = ri / di;
-        }
+        z = pre(&r);
         let rz_new = dot(&r, &z);
         let beta = rz_new / rz;
         rz = rz_new;
@@ -938,6 +915,14 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
         }
     }
     let inv_sqrt_m: Vec<f64> = mass.iter().map(|m| if *m > 0.0 { 1.0 / libm::sqrt(*m) } else { 0.0 }).collect();
+    // The preconditioner: `A⁻¹ = M^½ K⁻¹ M^½`, with the multigrid cycle for `K⁻¹`.
+    let sqrt_m: Vec<f64> =
+        mass.iter().zip(&free).map(|(m, f)| if *f && *m > 0.0 { libm::sqrt(*m) } else { 0.0 }).collect();
+    let mg = mg::Hierarchy::new(&md.elems, md.n, &md.used, &md.conn, &md.fixed, md.h, md.material);
+    let precondition = |r: &[f64]| -> Vec<f64> {
+        let x: Vec<f64> = r.iter().zip(&sqrt_m).map(|(a, b)| a * b).collect();
+        mg.apply(&x).iter().zip(&sqrt_m).map(|(a, b)| a * b).collect()
+    };
     let mut tmp_in = vec![0.0; dofs];
     let mut tmp_out = vec![0.0; dofs];
     let mut apply = |x: &[f64], y: &mut [f64]| {
@@ -1045,7 +1030,7 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
                 if j < p.modes && libm::sqrt(dot(&r, &r)) > 1e-4 * th.abs().max(1e-10 * scale) {
                     converged = false;
                 }
-                w.push(r.iter().zip(&precond).map(|(r, t)| r * t).collect::<Vec<f64>>());
+                w.push(precondition(&r));
             }
             if converged {
                 break;
@@ -1056,7 +1041,7 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
                 ));
             }
             iterations += 1;
-            over_budget(iterations as u64 * 2 * b as u64 * md.conn.len() as u64)?;
+            over_budget(iterations as u64 * CYCLE_PRODUCTS * b as u64 * md.conn.len() as u64)?;
             let aw: Vec<Vec<f64>> = w.iter().map(|v| image(v, &mut apply)).collect();
             s.extend(w);
             as_.extend(aw);
