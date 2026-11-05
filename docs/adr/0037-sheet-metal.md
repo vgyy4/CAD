@@ -113,3 +113,17 @@ on the two faces differ). Edge flanges' bends are unfolded the same way, each fl
 (`FlangeEnd::bend`: the profile frame, the line it starts from in the pattern, centre, start,
 outer radius, turn and allowance); points on its outer face (`bend_out`) are mapped.
 
+## Amendment (2026-11-05): closed corners
+
+`edge_flange ... close: true` closes the outside corners the new flange makes with flanges
+already bent off the neighbouring tab lines. Both must be 90 degree flanges bent the same
+way, off a tab's outline; the lines must share an end at an outside corner. The walls butt:
+the new flange's wall runs on past the corner by the other's inside radius plus the
+thickness (covering the corner), the other's wall by the new one's inside radius (up to the
+new wall's inside face). The bends are not extended, which leaves a square relief at the
+corner. Each extension is a strip of the wall's section extruded past the line's end and
+added to the body (faces named `<feature>/flat(<line>_corner)` and so on); the flat pattern
+gains a matching flap on each strip's side. Without such a neighbour the flange is refused.
+OCCT test `a_closed_corner_butts_the_walls_and_keeps_a_relief`: exact volumes and flat
+areas, up and down.
+

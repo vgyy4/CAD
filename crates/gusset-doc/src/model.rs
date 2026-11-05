@@ -1000,6 +1000,9 @@ pub enum SheetOp {
         angle: Box<Expr>,
         bend_radius: Box<Expr>,
         k_factor: Box<Expr>,
+        /// Close the corners with neighbouring flanges (walls butt, the bends keep a
+        /// square relief).
+        close: bool,
     },
 }
 

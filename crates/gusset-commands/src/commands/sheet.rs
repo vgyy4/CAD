@@ -125,6 +125,9 @@ pub struct EdgeFlange {
     /// Bend down instead of up.
     #[serde(default)]
     pub flip: bool,
+    /// Close corners.
+    #[serde(default)]
+    pub close: bool,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -132,7 +135,7 @@ pub struct EdgeFlange {
 impl Command for EdgeFlange {
     const ID: &'static str = "feature.edge_flange";
     const TITLE: &'static str = "Edge flange";
-    const DESCRIPTION: &'static str = "Bend a flange off a tab line or contour flange side; the flat pattern grows.";
+    const DESCRIPTION: &'static str = "Bend a flange off a tab line, contour side or flange end.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -169,6 +172,7 @@ impl Command for EdgeFlange {
                 angle: Box::new(angle),
                 bend_radius: Box::new(bend_radius),
                 k_factor: Box::new(k_factor),
+                close: self.close,
             };
             insert_feature(doc, rb, sheet(name.clone(), op, None, self.flip));
             Ok(json!({ "feature": name }))

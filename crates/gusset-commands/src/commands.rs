@@ -1322,7 +1322,7 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm) (one undo step); neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns id ranges {first, last, count}.";
+    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm); neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns id ranges {first, last, count}.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -3382,7 +3382,7 @@ pub struct ExportStep {
 impl Command for ExportStep {
     const ID: &'static str = "export.step";
     const TITLE: &'static str = "Export STEP/IGES";
-    const DESCRIPTION: &'static str = "Export bodies of your branch (all, or those in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file in the project folder. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
+    const DESCRIPTION: &'static str = "Export bodies (all, or those in `bodies`) as STEP (AP214, mm; .step/.stp) or IGES (.igs/.iges) to a file in the project folder. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -3498,7 +3498,7 @@ pub fn mesh_format(name: &str) -> Option<gusset_meshio::ExportFormat> {
 impl Command for ExportMesh {
     const ID: &'static str = "export.mesh";
     const TITLE: &'static str = "Export mesh (STL/3MF/OBJ)";
-    const DESCRIPTION: &'static str = "Export bodies (all, or those in `bodies`) as STL, 3MF or OBJ (mm) to a file in the project folder, for 3D printing. Overlapping bodies are not merged; export them separately. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
+    const DESCRIPTION: &'static str = "Export bodies (all, or those in `bodies`) as STL, 3MF or OBJ (mm) to a file in the project folder. Overlapping bodies are not merged; export them separately. Reports rebuild_ok/rebuild_errors; failed features are missing from the file.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

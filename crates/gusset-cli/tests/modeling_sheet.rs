@@ -451,3 +451,42 @@ extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: Plate)
     assert!((xmin - lo).abs() < 0.05 && (xmax - hi).abs() < 0.05, "{xmin}..{xmax} vs {lo}..{hi}");
     assert!((ymin - 19.0).abs() < 0.05 && (ymax - 21.0).abs() < 0.05, "{ymin}..{ymax}");
 }
+
+#[test]
+fn a_closed_corner_butts_the_walls_and_keeps_a_relief() {
+    let area = |o: &Vec<[f64; 2]>| {
+        let n = o.len();
+        (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+    };
+    for f in ["", ", flip: true"] {
+        let src = format!(
+            "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5{f})\n\n\
+             edge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5, close: true{f})\n"
+        );
+        let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), src);
+        let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+        let mut ev = Evaluator::new(k);
+        let r = ev.evaluate(&doc, None, &());
+        assert!(r.errors().is_empty(), "{:?}", r.errors());
+        let b = r.body("Plate").unwrap();
+        let t = 2.0;
+        let flange = |len: f64, l: f64| l * (FRAC_PI_2 * t * (3.0 + t / 2.0) + len * t);
+        // F2's wall runs on past the corner by F1's radius and thickness (5), F1's by F2's
+        // radius (3), up to F2's inside.
+        let volume = 60.0 * 40.0 * t + flange(15.0, 40.0) + flange(15.0, 60.0) + 15.0 * t * 5.0 + 15.0 * t * 3.0;
+        let m = ev.kernel().mass_properties(&b.shape).unwrap();
+        assert!(near(m.volume, volume), "{f}: {} vs {volume}", m.volume);
+        let flat = b.sheet.as_ref().unwrap();
+        assert_eq!(flat.outlines.len(), 1);
+        assert!(near(area(&flat.outlines[0]) * t, volume), "{f}: flat {} vs {volume}", area(&flat.outlines[0]) * t);
+    }
+    // Nothing to close with: refused.
+    let src = format!(
+        "{TAB}\nedge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5, close: true)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap();
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let r = Evaluator::new(k).evaluate(&doc, None, &());
+    assert!(r.errors().iter().any(|e| e.to_string().contains("outside corner")), "{:?}", r.errors());
+}

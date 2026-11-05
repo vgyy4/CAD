@@ -74,6 +74,10 @@ pub struct FlangeBend {
     pub radius: f64,
     pub turn: f64,
     pub allowance: f64,
+    /// The flat length after the bend.
+    pub length: f64,
+    /// Bent off a tab's outline line (corners can be closed between such flanges).
+    pub on_tab: bool,
 }
 
 /// Where a contour flange's straights lie: in its sketch, across `z` along the sketch
@@ -468,7 +472,7 @@ impl Evaluator {
         params: &ParamValues,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
-        if let SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor } = &d.op {
+        if let SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor, close } = &d.op {
             let v = |e: &Expr, dim| eval_expr(name, e, dim, params, units);
             let spec = EdgeSpec {
                 length: v(length, Dim::LENGTH)?,
@@ -476,6 +480,7 @@ impl Evaluator {
                 r: v(bend_radius, Dim::LENGTH)?,
                 k: v(k_factor, Dim::NONE)?,
                 down: d.flip,
+                close: *close,
             };
             return self.run_edge_flange(s, name, body, line, &spec);
         }
@@ -641,6 +646,7 @@ pub(crate) struct EdgeSpec {
     pub(crate) r: f64,
     pub(crate) k: f64,
     pub(crate) down: bool,
+    pub(crate) close: bool,
 }
 
 /// Inside test by the even-odd rule over all outlines.
@@ -961,6 +967,8 @@ impl Evaluator {
                 radius: r + t,
                 turn: if e.down { -th } else { th },
                 allowance: ba,
+                length: len,
+                on_tab: flat.base.is_some() && end.is_none(),
             };
             nf.flange_ends.push(FlangeEnd {
                 flange: name.to_string(),
@@ -983,6 +991,74 @@ impl Evaluator {
         });
         let at = [line.to_string()];
         self.combine(s, name, &OpContext::Sheet { feature: name, at: &at }, res, BodyOp::Add, (Some(body), None))?;
+        if e.close {
+            let me = Wall {
+                frame: site.frame,
+                along: site.along,
+                a,
+                b,
+                out: out2,
+                r: e.r,
+                len: e.length,
+                down: e.down,
+                ba,
+                name: format!("{line}_corner"),
+            };
+            if !(flat.base.is_some() && end.is_none()) {
+                return Err(bad(format!("close joins flanges off a tab's outline; {line} is not one")));
+            }
+            if (e.angle - std::f64::consts::FRAC_PI_2).abs() > 1e-9 {
+                return Err(expr("close joins 90 deg flanges").with_hint("bend 90 deg, or leave the corner open"));
+            }
+            let mut closed = 0;
+            for fe in flat.flange_ends.iter().filter(|fe| fe.bend.on_tab) {
+                let fb = &fe.bend;
+                let other = Wall {
+                    frame: fb.frame,
+                    along: fb.along,
+                    a: fb.a,
+                    b: fb.b,
+                    out: fb.out,
+                    r: fb.radius - t,
+                    len: fb.length,
+                    down: fb.turn < 0.0,
+                    ba: fb.allowance,
+                    name: format!("{}_corner", fe.flange),
+                };
+                if (fb.turn.abs() - std::f64::consts::FRAC_PI_2).abs() > 1e-9 || other.down != me.down {
+                    continue;
+                }
+                let Some((p, me_start, other_start)) = me.corner_with(&other) else { continue };
+                // The new flange's wall covers the corner; the other runs up to its inside.
+                for (w, at_start, ext) in [(&me, me_start, other.r + t), (&other, other_start, me.r)] {
+                    let res = self
+                        .kernel
+                        .extrude(
+                            &w.extension(t, at_start),
+                            &ExtrudeSpec { distance: w.reach(at_start, ext), symmetric: false },
+                        )
+                        .map_err(|ke| kernel_err(name, "closed corner", ke))?;
+                    let at = [w.name.clone()];
+                    self.combine(
+                        s,
+                        name,
+                        &OpContext::Sheet { feature: name, at: &at },
+                        res,
+                        BodyOp::Add,
+                        (Some(body), None),
+                    )?;
+                    let (q1, q2, away) = w.flap(p, at_start, ext);
+                    if !splice(&mut nf.outlines, q1, q2, addv(q1, away), addv(q2, away)) {
+                        return Err(bad(format!("the corner at {line} cannot be closed in the flat pattern")));
+                    }
+                }
+                closed += 1;
+            }
+            if closed == 0 {
+                return Err(bad(format!("no 90 deg flange meets {line} at an outside corner to close"))
+                    .with_hint("flange the neighbouring line first (same direction, 90 deg), then close"));
+            }
+        }
         if let Some(slot) = s.bodies.iter_mut().find(|x| x.feature == body) {
             let nb = Body {
                 name: slot.name.clone(),
@@ -996,6 +1072,85 @@ impl Evaluator {
             *slot = Arc::new(nb);
         }
         Ok(())
+    }
+}
+
+/// A 90 degree edge flange's wall, for closing corners: its profile frame and run along the
+/// line, the line in the flat pattern (`a` to `b`, outward `out`), inside radius, flat
+/// length, direction and bend allowance.
+struct Wall {
+    frame: Frame,
+    along: f64,
+    a: P2,
+    b: P2,
+    out: P2,
+    r: f64,
+    len: f64,
+    down: bool,
+    ba: f64,
+    name: String,
+}
+
+impl Wall {
+    /// The shared end `p` of this wall's line and `o`'s, if they meet at an outside corner
+    /// (each line leaves `p` against the other's outward direction), and whether `p` is the
+    /// start of each line.
+    fn corner_with(&self, o: &Wall) -> Option<(P2, bool, bool)> {
+        let near = |x: P2, y: P2| len(sub(x, y)) < 1e-6;
+        for (p, ms) in [(self.a, true), (self.b, false)] {
+            for (q, os) in [(o.a, true), (o.b, false)] {
+                if !near(p, q) {
+                    continue;
+                }
+                let unit = |v: P2| mul(v, 1.0 / len(v).max(1e-300));
+                let away_me = unit(sub(if ms { self.b } else { self.a }, p));
+                let away_o = unit(sub(if os { o.b } else { o.a }, p));
+                let dot = |x: P2, y: P2| x[0] * y[0] + x[1] * y[1];
+                if dot(away_o, self.out) < -0.99 && dot(away_me, o.out) < -0.99 {
+                    return Some((p, ms, os));
+                }
+            }
+        }
+        None
+    }
+
+    /// The wall's flat part (beyond the bend) as a profile at the line's start or end.
+    fn extension(&self, t: f64, at_start: bool) -> Profile {
+        let r = self.r;
+        // The 90 degree section's flat part: outer (o) and inner (i) faces from the bend's end.
+        let (o1, i1) = ([r + t, t + r], [r, t + r]);
+        let (o2, i2) = (addv(o1, [0.0, self.len]), addv(i1, [0.0, self.len]));
+        let m = |p: P2| if self.down { [p[0], t - p[1]] } else { p };
+        let tag = |p: SheetPart| sheet_tag(p, 0);
+        let mut edges = vec![
+            ProfileEdge { seg: Seg2::Line { a: m(o1), b: m(o2) }, tag: tag(SheetPart::Flat) },
+            ProfileEdge { seg: Seg2::Line { a: m(o2), b: m(i2) }, tag: tag(SheetPart::End) },
+            ProfileEdge { seg: Seg2::Line { a: m(i2), b: m(i1) }, tag: tag(SheetPart::FlatBack) },
+            ProfileEdge { seg: Seg2::Line { a: m(i1), b: m(o1) }, tag: tag(SheetPart::Start) },
+        ];
+        if loop_area(&edges) < 0.0 {
+            edges = reversed(edges);
+        }
+        let mut frame = self.frame;
+        if !at_start {
+            frame.origin = gusset_kernel::add(frame.origin, gusset_kernel::scale(frame.normal(), self.along));
+        }
+        Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] }
+    }
+
+    /// The signed extrusion that carries the profile `ext` past the line's start or end.
+    fn reach(&self, at_start: bool, ext: f64) -> f64 {
+        let s = if self.along >= 0.0 { 1.0 } else { -1.0 };
+        if at_start { -s * ext } else { s * ext }
+    }
+
+    /// In the flat pattern: the strip's side edge at the corner (from where the bend ends to
+    /// the flange's end) and the way past the corner the flap reaches.
+    fn flap(&self, p: P2, at_start: bool, ext: f64) -> (P2, P2, P2) {
+        let far = if at_start { self.b } else { self.a };
+        let d = sub(p, far);
+        let away = mul(d, ext / len(d).max(1e-300));
+        (addv(p, mul(self.out, self.ba)), addv(p, mul(self.out, self.ba + self.len)), away)
     }
 }
 
