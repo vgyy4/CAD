@@ -70,7 +70,7 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
         }
         FeatureKind::MoveFace(d) => {
             body_of(&mut d.body);
-            for f in &mut d.faces {
+            for f in d.faces.iter_mut().chain(d.onto.as_mut()) {
                 f.rename_feature(from, to);
             }
         }
@@ -233,6 +233,8 @@ pub struct MoveFace {
     #[serde(default)]
     pub through: Option<[String; 3]>,
     #[serde(default)]
+    pub onto: Option<String>,
+    #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
@@ -241,11 +243,28 @@ pub struct MoveFace {
 impl Command for MoveFace {
     const ID: &'static str = "feature.move_face";
     const TITLE: &'static str = "Move face";
-    const DESCRIPTION: &'static str = "Turn (first) and/or translate faces, e.g. slide a hole; the faces around stretch to follow or the move is refused. Needs OCCT.";
+    const DESCRIPTION: &'static str = "Turn (first) and/or translate faces, or move them onto a parallel face (onto); neighbours stretch or it fails.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (translate, rotation) = super::datum::motion(&self.translate, &self.axis, &self.angle, &self.through)?;
+        let onto = match &self.onto {
+            Some(f) => {
+                if self.translate.is_some() || self.axis.is_some() || self.angle.is_some() {
+                    return Err(CommandError::args("onto replaces translate and the turn: give one or the other"));
+                }
+                let r = parse_faces(std::slice::from_ref(f))?.into_iter().next();
+                if let Some(r) = &r {
+                    check_face_resolves(s, ctx, r)?;
+                }
+                r
+            }
+            None => None,
+        };
+        let (translate, rotation) = if onto.is_some() {
+            (None, None)
+        } else {
+            super::datum::motion(&self.translate, &self.axis, &self.angle, &self.through)?
+        };
         let faces = parse_faces(&self.faces)?;
         if faces.is_empty() {
             return Err(CommandError::args("no faces to move").hint("list the faces to move"));
@@ -256,7 +275,7 @@ impl Command for MoveFace {
         edit(s, ctx, "Move face", |doc, rb| {
             let name = feature_name(doc, self.name, "MoveFace")?;
             let body = body_for(doc, rb, self.body)?;
-            let def = MoveFaceDef { body, faces, translate, rotation };
+            let def = MoveFaceDef { body, faces, translate, rotation, onto };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::MoveFace(def)));
             Ok(json!({ "feature": name }))
         })

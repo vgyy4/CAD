@@ -38,3 +38,14 @@ normals, and the defeaturing algorithm removes faces instead of moving them.
   parameter, a turn, a boss with its top, a zero move, the command).
 - Not yet: moves that need the neighbours to change shape (Fusion extends or tilts them),
   replace face, delete face with healing.
+
+## Amendment (2026-11-05): onto (replace face)
+
+`move_face` takes `onto: <face>` instead of a motion: the planar faces move along their
+normal onto the plane of that face, a parallel planar face of any body (read when the
+feature is rebuilt, so the motion follows the face when it moves). A tilted target is
+refused before the kernel is asked: turning a face onto it would reshape the faces around
+it, which a face move cannot do (use draft). Laying a face flush with a neighbouring face,
+where a face between them would vanish, is refused by the kernel with a hint to extrude up
+to the face and combine instead. OCCT tests in `modeling_move.rs`.
+

@@ -133,6 +133,9 @@ impl Evaluator {
         let mut steps = motion_steps(name, d.translate.as_ref(), d.rotation.as_ref(), params, units)?;
         let (bi, body) = target_body(s, name, d.body.as_deref())?;
         let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
+        if let Some(target) = &d.onto {
+            steps = onto_steps(name, s, &body, &faces, target)?;
+        }
         // A zero move (a parameter at 0) leaves the body as it is.
         steps.retain(|t| match t {
             Transform::Translate(v) => v.iter().any(|c| c.abs() > 1e-9),
@@ -144,7 +147,13 @@ impl Evaluator {
         }
         let res = k.move_faces(&body.shape, &faces, &steps).map_err(|ke| {
             let mut e = kernel_err(name, "move face", ke);
-            if e.hint.is_none() {
+            if d.onto.is_some() {
+                e.hint = Some(
+                    "laying a face onto a plane where a face around it would vanish (flush) is not supported: \
+                     extrude up to it and combine instead"
+                        .into(),
+                );
+            } else if e.hint.is_none() {
                 e.hint = Some("move the faces less far, or together with the faces around them".into());
             }
             e
@@ -794,6 +803,44 @@ fn motion_steps(
         steps.push(Transform::Translate(length_point(feature, translate, params, units)?));
     }
     Ok(steps)
+}
+
+/// The motion that lays the (planar) faces `faces` of `body` onto the plane of `target`, a
+/// parallel planar face of any body: a translation along the normal.
+fn onto_steps(
+    name: &str,
+    s: &State,
+    body: &Body,
+    faces: &[u32],
+    target: &gusset_doc::FaceRef,
+) -> Result<Vec<Transform>, EvalError> {
+    use gusset_kernel::{SurfaceKind, cross, dot, norm, scale, sub};
+    let bad = |m: String| EvalError::new(name, ErrorCode::InvalidReference, m);
+    let plane = |b: &Body, fi: u32| -> Option<([f64; 3], [f64; 3])> {
+        let f = b.topology.faces.get(fi as usize)?;
+        matches!(f.kind, SurfaceKind::Plane).then_some((f.centroid, f.normal))
+    };
+    let first = *faces.first().ok_or_else(|| bad("no faces to move".into()))?;
+    let (c1, n1) = plane(body, first)
+        .ok_or_else(|| bad("onto lays planar faces only".into()).with_hint("pick a flat face to move"))?;
+    for f in faces {
+        let (c, n) = plane(body, *f).ok_or_else(|| bad("onto lays planar faces only".into()))?;
+        if norm(cross(n, n1)) > 1e-9 || dot(sub(c, c1), n1).abs() > 1e-6 {
+            return Err(bad("the faces to lay onto a plane must lie in one plane".into()));
+        }
+    }
+    let (c2, n2) =
+        s.bodies.iter().find_map(|b| b.names.face_index(target).and_then(|fi| plane(b, fi))).ok_or_else(|| {
+            bad(format!("{target} is not a planar face of the model"))
+                .with_hint("pick a flat face to lay the faces onto")
+        })?;
+    if norm(cross(n1, n2)) > 1e-9 {
+        // Turning a face onto a tilted plane reshapes the faces around it, which a face move
+        // cannot do.
+        return Err(bad(format!("{target} is not parallel to the faces to move"))
+            .with_hint("onto slides faces along their normal; to tilt a face use draft"));
+    }
+    Ok(vec![Transform::Translate(scale(n2, dot(sub(c2, c1), n2)))])
 }
 
 /// Three length expressions as a point in mm; `None` = the origin.

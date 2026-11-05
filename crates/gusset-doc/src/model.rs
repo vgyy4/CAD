@@ -203,7 +203,7 @@ impl FeatureKind {
             }
             FeatureKind::MoveFace(d) => {
                 add_body(&mut add, &d.body);
-                for f in &d.faces {
+                for f in d.faces.iter().chain(&d.onto) {
                     f.features(&mut add);
                 }
             }
@@ -1284,6 +1284,9 @@ pub struct MoveFaceDef {
     /// Translation along the world X, Y and Z axes (lengths).
     pub translate: Option<[Expr; 3]>,
     pub rotation: Option<MoveRotation>,
+    /// Instead of a motion: move the (planar) faces onto this planar face's plane
+    /// (replace face; the motion follows the face when it moves).
+    pub onto: Option<FaceRef>,
 }
 
 /// Moves a body: first turns it about an axis, then translates it (world axes). With

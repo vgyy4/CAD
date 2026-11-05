@@ -158,3 +158,85 @@ fn move_face_command_drives_the_real_kernel() {
     let b = execute(&mut s, &u, "query.body", json!({})).unwrap();
     assert!(near(b["volume_mm3"].as_f64().unwrap(), 8000.0 - std::f64::consts::PI * 90.0), "{b}");
 }
+
+/// A step: the box (40 × 20 × 10) with a lower block (20 × 20 × 6) added beside it.
+const STEP: &str = "
+sketch S3 (plane: XY, next_id: 9) {
+  p1 = point(40, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 20)
+  p4 = point(40, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Low (profile: S3, distance: 6 mm, op: add, body: Extrude1)
+";
+
+/// A block 8 mm high beside the step, as its own body.
+const REF8: &str = "
+sketch S4 (plane: XY, next_id: 9) {
+  p1 = point(100, 0)
+  p2 = point(110, 0)
+  p3 = point(110, 20)
+  p4 = point(100, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Ref (profile: S4, distance: 8 mm, op: new)
+";
+
+#[test]
+fn a_face_laid_onto_another_faces_plane_moves_to_it() {
+    let src = format!("{STEP}{REF8}\nmove_face Raise (body: Extrude1, faces: [Low/cap(end)], onto: Ref/cap(end))");
+    let doc = gusset_doc::Document::from_text(&format!("{BOX}\n{src}\n")).unwrap();
+    assert!(doc.to_text().contains("onto: Ref/cap(end)"), "{}", doc.to_text());
+    let (ev, r) = eval(BOX, &src);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    // The low step rises from 6 to 8 mm.
+    assert!(
+        near(volume(&ev, &r, "Extrude1"), 40.0 * 20.0 * 10.0 + 20.0 * 20.0 * 8.0),
+        "{}",
+        volume(&ev, &r, "Extrude1")
+    );
+    // Flush with the top would make the step's wall vanish: refused, saying so.
+    let (_, r) = eval(BOX, &format!("{STEP}\nmove_face Flush (faces: [Low/cap(end)], onto: Extrude1/cap(end))"));
+    assert!(r.errors().iter().any(|e| e.hint.as_deref().is_some_and(|h| h.contains("vanish"))), "{:?}", r.errors());
+    // onto and a motion together are refused.
+    assert!(
+        gusset_doc::Document::from_text(&format!(
+            "{BOX}\n{STEP}\nmove_face F (faces: [Low/cap(end)], onto: Extrude1/cap(end), translate: [1 mm, 0 mm, 0 mm])"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn a_face_is_not_laid_onto_a_tilted_plane() {
+    // A block beside the box, turned 10 degrees: the box's top would have to tilt, which
+    // reshapes its sides; refused with the way to do it.
+    let tilt = "
+sketch S5 (plane: XY, next_id: 9) {
+  p1 = point(40, 0)
+  p2 = point(60, 0)
+  p3 = point(60, 20)
+  p4 = point(40, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Wedge (profile: S5, distance: 10 mm, op: new)
+
+move Tilt (body: Wedge, axis: Y, angle: 10 deg, through: [40 mm, 0 mm, 10 mm])
+
+move_face Lay (body: Extrude1, faces: [Extrude1/cap(end)], onto: Wedge/cap(end))";
+    let (_, r) = eval(BOX, tilt);
+    assert!(r.errors().iter().any(|e| e.to_string().contains("not parallel")), "{:?}", r.errors());
+}

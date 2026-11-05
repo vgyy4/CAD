@@ -476,6 +476,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
             args.push(format!("faces: [{}]", faces.join(", ")));
             push_motion(&mut args, &d.translate, &d.rotation);
+            if let Some(f) = &d.onto {
+                args.push(format!("onto: {f}"));
+            }
         }
         FeatureKind::Move(d) => {
             push_body(&mut args, &d.body);
@@ -1552,11 +1555,12 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut copy = false;
     let mut tools: Option<Vec<String>> = None;
     let mut faces = None;
+    let mut onto = None;
     let mut op = None;
     let allowed = match kw {
         "plane" => "base, offset, axis, angle, label, group, suppressed",
         "move" => "body, translate, axis, angle, through, copy, label, group, suppressed",
-        "move_face" => "body, faces, translate, axis, angle, through, label, group, suppressed",
+        "move_face" => "body, faces, translate, axis, angle, through, onto, label, group, suppressed",
         _ => "body, tools, op, label, group, suppressed",
     };
     parse_args(c, |key, c| {
@@ -1584,6 +1588,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             ("move" | "move_face", "axis") => axis = Some(parse_dir(c)?),
             ("move" | "move_face", "through") => through = Some(parse_vec3(c)?),
             ("move_face", "faces") => faces = Some(parse_face_list(c)?),
+            ("move_face", "onto") => onto = Some(parse_face(c)?),
             ("move", "copy") => copy = parse_bool(c)?,
             ("combine", "tools") => {
                 c.expect('[')?;
@@ -1645,7 +1650,10 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 (Some(_), None) => return Err(missing(c, kw, "angle")),
                 _ => return Err(missing(c, kw, "axis")),
             };
-            if translate.is_none() && rotation.is_none() {
+            if onto.is_some() && (translate.is_some() || rotation.is_some()) {
+                return Err(c.err_hint("'onto' replaces the motion", "give onto, or a translate and a turn"));
+            }
+            if translate.is_none() && rotation.is_none() && onto.is_none() {
                 return Err(c.err_hint(
                     format!("'{kw}' needs a translate, or an axis and an angle"),
                     "e.g. translate: [10 mm, 0 mm, 0 mm]",
@@ -1655,7 +1663,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 FeatureKind::Move(MoveDef { body, translate, rotation, copy })
             } else {
                 let faces = faces.ok_or_else(|| missing(c, kw, "faces"))?;
-                FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation })
+                FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation, onto })
             }
         }
         _ => FeatureKind::Combine(CombineDef {
