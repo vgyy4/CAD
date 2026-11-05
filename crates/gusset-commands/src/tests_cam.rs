@@ -106,7 +106,7 @@ fn a_bar_is_analysed_by_its_face_names() {
     assert_eq!(bands.len(), 8);
     let counts: Vec<usize> = bands.iter().map(|b| b["quads"].as_array().unwrap().len()).collect();
     assert_eq!(counts.iter().sum::<usize>(), 168, "{counts:?}");
-    assert!((bands[7]["upto_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3);
+    assert!((bands[7]["upto"].as_f64().unwrap() - 10.0).abs() < 1e-3);
     assert_eq!(bands[7]["quads"][0].as_array().unwrap().len(), 12);
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": ["Nope/cap(end)"], "loads": []})).code, "not_found");
@@ -124,6 +124,17 @@ fn a_cantilever_rod_has_its_natural_frequencies() {
     let f1 = f[0].as_f64().unwrap();
     assert!(f.len() == 2 && f1 > 800.0 && f1 < 1000.0, "{r}");
     assert_eq!(err(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 11})).code, "invalid_args");
+    assert!(r.get("shape_bands").is_none());
+    let sh = run(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 1, "voxel": 5.0, "shape": 1}));
+    let bands = sh["shape_bands"].as_array().unwrap();
+    assert_eq!(bands.len(), 8);
+    // The free end moves most: the top band holds faces near z = 100 (moved by up to 10 mm).
+    let top = bands[7]["quads"].as_array().unwrap();
+    assert!(!top.is_empty() && top.iter().all(|q| q[2].as_f64().unwrap() > 60.0), "{}", bands[7]);
+    assert_eq!(
+        err(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 1, "shape": 2})).code,
+        "invalid_args"
+    );
 }
 
 /// Fusion component placements on a real design: runs when `GUSSET_F3D_SAMPLES` names a

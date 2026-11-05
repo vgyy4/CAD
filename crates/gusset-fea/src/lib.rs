@@ -791,6 +791,8 @@ pub struct ModalProblem<'a> {
     pub material: Material,
     pub density: f64,
     pub modes: usize,
+    /// A mode (0 = the lowest) whose shape to return on the outer voxel faces.
+    pub shape: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -799,6 +801,16 @@ pub struct Modes {
     pub iterations: usize,
     /// Lowest first (Hz).
     pub frequencies: Vec<f64>,
+    /// The asked mode's shape on the outer voxel faces, the largest motion 1.
+    pub shape: Vec<ShapeQuad>,
+}
+
+/// One outer face of a voxel (corners counter-clockwise seen from outside) and how far each
+/// corner moves in a mode shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapeQuad {
+    pub corners: [[f64; 3]; 4],
+    pub motion: [[f64; 3]; 4],
 }
 
 /// Most modes one analysis finds.
@@ -1089,7 +1101,30 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
     }
     let frequencies =
         theta.iter().take(p.modes).map(|l| libm::sqrt(l.max(0.0)) / (2.0 * std::f64::consts::PI)).collect();
-    Ok(Modes { elements: md.conn.len(), iterations, frequencies })
+    let mut shape = Vec::new();
+    if let Some(k) = p.shape.filter(|k| *k < p.modes)
+        && let Some(x) = x.get(k)
+    {
+        // Back from the scaled space: u = M^-1/2 x, then the largest motion to 1.
+        let u: Vec<f64> = x.iter().zip(&inv_sqrt_m).map(|(a, b)| a * b).collect();
+        let node = |id: usize| [0, 1, 2].map(|d| u.get(3 * id + d).copied().unwrap_or(0.0));
+        let big = (0..u.len() / 3).map(|id| libm::sqrt(node(id).iter().map(|v| v * v).sum())).fold(0.0f64, f64::max);
+        let n = md.n;
+        let pos_of = |gi: usize| {
+            let (i, rest) = (gi % (n[0] + 1), gi / (n[0] + 1));
+            md.g.node_pos(i, rest % (n[1] + 1), rest / (n[1] + 1))
+        };
+        if big > 0.0 {
+            for (corners, _, _, _) in &md.quads {
+                let motion = corners.map(|gi| match md.used.get(gi).copied().flatten() {
+                    Some(id) => node(id).map(|v| v / big),
+                    None => [0.0; 3],
+                });
+                shape.push(ShapeQuad { corners: corners.map(pos_of), motion });
+            }
+        }
+    }
+    Ok(Modes { elements: md.conn.len(), iterations, frequencies, shape })
 }
 
 #[cfg(test)]

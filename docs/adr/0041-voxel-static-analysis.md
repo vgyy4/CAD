@@ -96,3 +96,12 @@ faster than before both changes); the 100 × 10 × 10 mm cantilever's frequencie
 LOBPCG iterations against 525, same values. The work budget counts 6 stiffness products
 per iteration.
 
+## Amendment (2026-11-04): mode shapes
+
+`sim.modal` with `shape: k` (1 = the lowest mode) also returns that mode's shape: the outer
+voxel faces moved by the mode (the largest motion drawn as a tenth of the body's longest
+side), sorted into 8 bands by how far each face moves relative to the largest motion
+(`shape_bands`, the same `[{upto, quads}]` form as `stress_bands`, whose bound is now
+`upto` for both). The app asks for the lowest mode's shape and shows it like the stress
+picture, while the result dialog is open.
+

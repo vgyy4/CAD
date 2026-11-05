@@ -295,6 +295,8 @@ pub struct App {
     pub(crate) toolpath: Option<DrawSketch>,
     /// A stress picture (ADR 0041) is shown in place of the model while its result is open.
     pub(crate) stress_view: bool,
+    /// The title of the result dialog the picture belongs to.
+    picture_of: String,
     /// A sketch point being dragged: (sketch, point id, where it would go).
     drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
@@ -421,6 +423,7 @@ impl App {
             look_at_sketch: None,
             toolpath: None,
             stress_view: false,
+            picture_of: String::new(),
             chain: None,
             form: None,
             palette: None,
@@ -538,6 +541,12 @@ impl App {
         {
             // The app colours the body by stress.
             o.entry("field").or_insert(Value::Bool(true));
+        }
+        if id == "sim.modal"
+            && let Some(o) = args.as_object_mut()
+        {
+            // And shows the lowest mode's shape.
+            o.entry("shape").or_insert(json!(1));
         }
         if id == "import.file" {
             // The worker parses on its own thread without holding the model, and the
@@ -682,8 +691,7 @@ impl App {
             if self.stress_view {
                 // The stress picture stays while its own result is open (not under a later
                 // dialog).
-                let title = gusset_commands::find("sim.static").map_or("", |s| s.title);
-                if matches!(&self.dialog, Some(Dialog::Message { title: t, .. }) if t == title) {
+                if matches!(&self.dialog, Some(Dialog::Message { title: t, .. }) if *t == self.picture_of) {
                     return;
                 }
                 self.stress_view = false;
@@ -932,14 +940,20 @@ impl App {
                         {
                             self.toolpath = Some(toolpath_drawing(&path, theme::palette(self.theme).warning));
                         }
-                        if id == "sim.static"
+                        let picture = match id {
+                            "sim.static" => Some(("stress_bands", "MPa")),
+                            "sim.modal" => Some(("shape_bands", "of the largest motion")),
+                            _ => None,
+                        };
+                        if let Some((key, unit)) = picture
                             && let Some(o) = v.as_object_mut()
-                            && let Some(bands) = o.remove("stress_bands")
+                            && let Some(bands) = o.remove(key)
                         {
-                            let (scene, bodies, legend) = stress_scene(&bands);
+                            let (scene, bodies, legend) = stress_scene(&bands, unit);
                             o.insert("colours".into(), json!(legend));
                             self.viewport.show_preview(scene, bodies);
                             self.stress_view = true;
+                            self.picture_of = title.to_string();
                         }
                         self.dialog = Some(Dialog::Message { title: title.into(), body: inspect_text(&v) });
                     }
@@ -3725,17 +3739,17 @@ const STRESS_COLOURS: [(u32, &str); 8] = [
     (0xd9_2b_2b, "red"),
 ];
 
-/// A `sim.static` result's stress bands (`[{upto_mpa, quads}]`) as one coloured mesh per
-/// band, and the legend ("red: up to 10 MPa").
-fn stress_scene(bands: &Value) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<String>) {
+/// A `sim.static` or `sim.modal` result's bands (`[{upto, quads}]`) as one coloured mesh per
+/// band, and the legend ("red: 8.75 to 10 MPa").
+fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<String>) {
     let mut scene = gusset_render::Scene::new();
     let mut bodies = Vec::new();
     let mut legend = Vec::new();
     let mut from = 0.0;
     for (i, b) in bands.as_array().map(Vec::as_slice).unwrap_or_default().iter().enumerate() {
-        let upto = b["upto_mpa"].as_f64().unwrap_or(0.0);
+        let upto = b["upto"].as_f64().unwrap_or(0.0);
         let (rgb, name) = STRESS_COLOURS.get(i).copied().unwrap_or((0x80_80_80, "grey"));
-        legend.push(format!("{name}: {from} to {upto} MPa"));
+        legend.push(format!("{name}: {from} to {upto} {unit}"));
         from = upto;
         let mut mesh = gusset_kernel::Mesh::default();
         for q in b["quads"].as_array().map(Vec::as_slice).unwrap_or_default() {
@@ -3763,7 +3777,7 @@ fn stress_scene(bands: &Value) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<Stri
         if scene.insert_mesh(id, &mesh).is_ok() {
             scene.set_material(id, gusset_render::Material { color: gusset_render::Srgb(rgb) });
             bodies.push(BodyInfo {
-                name: format!("stress up to {upto} MPa"),
+                name: format!("up to {upto} {unit}"),
                 face_names: vec![name.to_string()],
                 edge_names: Vec::new(),
             });

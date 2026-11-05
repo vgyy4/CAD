@@ -854,3 +854,26 @@ fn the_stress_picture_ends_under_another_dialog_and_a_failed_toolpath_clears_the
     crate::tests::settle(&mut h);
     assert!(h.state().toolpath.is_none());
 }
+
+#[test]
+fn a_mode_shape_is_shown_while_its_frequencies_are_open() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 10, "height": 10})).unwrap();
+    a.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"})).unwrap();
+    let mut h = harness(a);
+    crate::tests::settle(&mut h);
+    let job = json!({"fixed": ["Extrude1/cap(start)"], "modes": 1, "voxel": 5.0});
+    h.state_mut().submit_command("sim.modal", job, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().stress_view && h.state().viewport.previewing());
+    match &h.state().dialog {
+        Some(crate::app::Dialog::Message { body, .. }) => {
+            assert!(body.contains("of the largest motion") && !body.contains("shape_bands"), "{body}");
+        }
+        d => panic!("{d:?}"),
+    }
+    h.state_mut().dialog = None;
+    crate::tests::settle(&mut h);
+    assert!(!h.state().stress_view && !h.state().viewport.previewing());
+}

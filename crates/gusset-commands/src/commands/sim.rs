@@ -55,24 +55,32 @@ fn sig(v: f64) -> f64 {
     libm::round(v * f) / f
 }
 
-/// The surface quads sorted into `BANDS` equal stress bands from 0 to the largest stress:
-/// `[{upto_mpa, quads: [[12 coordinates]]}]`.
-fn bands(sol: &gusset_fea::Solution) -> Value {
-    let top = sol.surface.iter().map(|q| q.von_mises).fold(0.0f64, f64::max).max(1e-300);
+/// Quads (12 coordinates each) with a value, sorted into `BANDS` equal bands from 0 to the
+/// largest value: `[{upto, quads}]`, thinned evenly past `MAX_FIELD_QUADS`.
+fn bands(quads: &[([f64; 12], f64)]) -> Value {
+    let top = quads.iter().map(|q| q.1).fold(0.0f64, f64::max).max(1e-300);
     let mut out: Vec<Vec<Vec<f64>>> = vec![Vec::new(); BANDS];
-    let step = sol.surface.len().div_ceil(MAX_FIELD_QUADS).max(1);
-    for q in sol.surface.iter().step_by(step) {
-        let b = ((q.von_mises / top * BANDS as f64) as usize).min(BANDS - 1);
-        if let Some(v) = out.get_mut(b) {
-            v.push(q.corners.iter().flatten().map(|c| (c * 1000.0).round() / 1000.0).collect());
+    let step = quads.len().div_ceil(MAX_FIELD_QUADS).max(1);
+    for (c, v) in quads.iter().step_by(step) {
+        let b = ((v / top * BANDS as f64) as usize).min(BANDS - 1);
+        if let Some(list) = out.get_mut(b) {
+            list.push(c.iter().map(|x| (x * 1000.0).round() / 1000.0).collect());
         }
     }
     let list: Vec<Value> = out
         .into_iter()
         .enumerate()
-        .map(|(i, quads)| json!({"upto_mpa": sig(top * (i + 1) as f64 / BANDS as f64), "quads": quads}))
+        .map(|(i, quads)| json!({"upto": sig(top * (i + 1) as f64 / BANDS as f64), "quads": quads}))
         .collect();
     json!(list)
+}
+
+fn flat(c: [[f64; 3]; 4]) -> [f64; 12] {
+    let mut out = [0.0; 12];
+    for (o, v) in out.iter_mut().zip(c.iter().flatten()) {
+        *o = *v;
+    }
+    out
 }
 
 impl Command for StaticQuery {
@@ -123,7 +131,8 @@ impl Command for StaticQuery {
         if self.field
             && let Some(o) = out.as_object_mut()
         {
-            o.insert("stress_bands".into(), bands(&sol));
+            let quads: Vec<([f64; 12], f64)> = sol.surface.iter().map(|q| (flat(q.corners), q.von_mises)).collect();
+            o.insert("stress_bands".into(), bands(&quads));
             if sol.surface.len() > MAX_FIELD_QUADS {
                 o.insert("stress_bands_thinned".into(), json!(true));
             }
@@ -193,12 +202,15 @@ pub struct ModalQuery {
     pub density: Option<f64>,
     #[serde(default)]
     pub voxel: Option<f64>,
+    /// Mode to picture.
+    #[serde(default)]
+    pub shape: Option<usize>,
 }
 
 impl Command for ModalQuery {
     const ID: &'static str = "sim.modal";
     const TITLE: &'static str = "Natural frequencies";
-    const DESCRIPTION: &'static str = "Lowest natural frequencies (Hz) of a body held at its fixed faces.";
+    const DESCRIPTION: &'static str = "Lowest natural frequencies (Hz) of a held body.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -215,15 +227,50 @@ impl Command for ModalQuery {
             // kg/m3 to t/mm3.
             density: self.density.unwrap_or(7850.0) * 1e-12,
             modes: self.modes.unwrap_or(3),
+            // 1 is the lowest mode.
+            shape: self.shape.and_then(|k| k.checked_sub(1)),
         };
+        if self.shape.is_some_and(|k| k == 0 || k > p.modes) {
+            return Err(CommandError::args("shape names a mode from 1 to modes"));
+        }
         let m = gusset_fea::modes(&p).map_err(fea_err)?;
         let r = sig;
-        Ok(json!({
+        let mut out = json!({
             "body": body.name,
             "voxel_mm": r(voxel),
             "elements": m.elements,
             "iterations": m.iterations,
             "frequencies_hz": m.frequencies.iter().map(|f| r(*f)).collect::<Vec<_>>(),
-        }))
+        });
+        if !m.shape.is_empty()
+            && let Some(o) = out.as_object_mut()
+        {
+            // Drawn moved by a tenth of the body's longest side at the largest motion,
+            // coloured by how far each face moves (relative, 0 to 1).
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for c in m.shape.iter().flat_map(|q| q.corners) {
+                for ((l, h), v) in lo.iter_mut().zip(hi.iter_mut()).zip(c) {
+                    *l = l.min(v);
+                    *h = h.max(v);
+                }
+            }
+            let amp = 0.1 * lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
+            let quads: Vec<([f64; 12], f64)> = m
+                .shape
+                .iter()
+                .map(|q| {
+                    let mut moved = q.corners;
+                    for (c, mv) in moved.iter_mut().zip(&q.motion) {
+                        for (x, d) in c.iter_mut().zip(mv) {
+                            *x += amp * d;
+                        }
+                    }
+                    let size = q.motion.iter().map(|v| libm::sqrt(v.iter().map(|x| x * x).sum())).sum::<f64>() / 4.0;
+                    (flat(moved), size)
+                })
+                .collect();
+            o.insert("shape_bands".into(), bands(&quads));
+        }
+        Ok(out)
     }
 }

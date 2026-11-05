@@ -120,6 +120,7 @@ fn a_cantilever_rings_close_to_beam_theory() {
         material: Material { young: 210_000.0, poisson: 0.3 },
         density: 7.85e-9,
         modes: 3,
+        shape: Some(0),
     };
     let m = modes(&p).unwrap();
     let ei = 210_000.0 * 10.0 * 10f64.powi(3) / 12.0;
@@ -131,6 +132,17 @@ fn a_cantilever_rings_close_to_beam_theory() {
     assert!(f[0] > 0.95 * exact && f[0] < 1.2 * exact, "{f:?} vs {exact} ({} iterations)", m.iterations);
     assert!((f[1] - f[0]).abs() < 0.01 * f[0], "{f:?}");
     assert!(f[2] > 1.5 * f[0], "{f:?}");
+    // The first bending shape: still at the held end, the most motion at the free end.
+    let mag = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let at = |x: f64| {
+        m.shape
+            .iter()
+            .flat_map(|q| q.corners.iter().zip(&q.motion))
+            .filter(|(c, _)| (c[0] - x).abs() < 1e-9)
+            .map(|(_, v)| mag(*v))
+            .fold(0.0f64, f64::max)
+    };
+    assert!(!m.shape.is_empty() && at(0.0) < 1e-12 && (at(100.0) - 1.0).abs() < 1e-9, "{} {}", at(0.0), at(100.0));
     let mut bad = p.clone();
     bad.modes = 0;
     assert!(modes(&bad).is_err());
@@ -165,7 +177,15 @@ fn parts_held_only_along_an_edge_and_loads_on_held_faces_are_refused() {
     };
     let e = solve(&p).unwrap_err().to_string();
     assert!(e.contains("not held"), "{e}");
-    let m = ModalProblem { mesh: &mesh, voxel: 2.5, fixed: vec![0], material: steel, density: 7.85e-9, modes: 1 };
+    let m = ModalProblem {
+        mesh: &mesh,
+        voxel: 2.5,
+        fixed: vec![0],
+        material: steel,
+        density: 7.85e-9,
+        modes: 1,
+        shape: None,
+    };
     assert!(modes(&m).unwrap_err().to_string().contains("not held"));
     // A load on the fixed face does nothing; no load at all is refused too.
     let bar = box_mesh([10.0, 10.0, 50.0]);
