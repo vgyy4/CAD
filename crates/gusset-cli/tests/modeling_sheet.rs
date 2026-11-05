@@ -418,3 +418,36 @@ extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)"
     let (x0, x1) = (z.start[0][0], z.end[0][0]);
     assert!(flat.outlines[1].iter().all(|p| p[0] > x0 - 2.0 && p[0] < x1 + 2.0), "{x0} {x1} {:?}", flat.outlines[1]);
 }
+
+#[test]
+fn a_hole_through_an_edge_flanges_bend_is_developed_with_it() {
+    let src = format!(
+        "{TAB}
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5)
+
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(61.5, 20)
+  c2 = circle(p1, 1)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: Plate)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    // The bend's outer face: radius 5 about (60, z 5); x = 60.5 and 62.5 lie at asin(0.1)
+    // and asin(0.5) round it, along its 2π mm zone beyond the tab's edge at x = 60.
+    let (lo, hi) = (60.0 + libm::asin(0.1) * 4.0, 60.0 + libm::asin(0.5) * 4.0);
+    let (mut xmin, mut xmax, mut ymin, mut ymax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in &flat.outlines[1] {
+        (xmin, xmax, ymin, ymax) = (xmin.min(p[0]), xmax.max(p[0]), ymin.min(p[1]), ymax.max(p[1]));
+    }
+    assert!((xmin - lo).abs() < 0.05 && (xmax - hi).abs() < 0.05, "{xmin}..{xmax} vs {lo}..{hi}");
+    assert!((ymin - 19.0).abs() < 0.05 && (ymax - 21.0).abs() < 0.05, "{ymin}..{ymax}");
+}

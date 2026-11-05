@@ -109,5 +109,7 @@ zone in the pattern (`ContourBase::bends`). A point on the bend's sketch-side fa
 the zone's start plus the share of the turn its angle makes, times the allowance, and the
 height across the width as for straights. The outline is the cut's outline on the sketch
 side: exact for cuts square to the sheet, an approximation for oblique ones (whose outlines
-on the two faces differ). Edge flanges' bends still mark the pattern.
+on the two faces differ). Edge flanges' bends are unfolded the same way, each flange keeping its bend
+(`FlangeEnd::bend`: the profile frame, the line it starts from in the pattern, centre, start,
+outer radius, turn and allowance); points on its outer face (`bend_out`) are mapped.
 

@@ -282,7 +282,8 @@ Phase 3 has started (see Next).
      flange's sides done (`line: l6_start` / `l6_end`; OCCT exact-volume test). Flanges off
      flanges done (`line: F1_end`). Later cuts through flat regions are unfolded into cut-outs.
      Cuts across contour bends
-     done. Next: closed corners, cuts across edge-flange bends. Hems done (`angle: 180 deg`).
+     done. Cuts across edge-flange bends done too.
+     Next: closed corners. Hems done (`angle: 180 deg`).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Replace face done
      (`move_face ... onto:` a parallel face). Next: live rules, tilting onto planes.

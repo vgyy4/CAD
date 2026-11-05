@@ -54,6 +54,26 @@ pub struct FlangeEnd {
     pub out: [f64; 2],
     pub frame: Frame,
     pub along: f64,
+    /// The flange's own bend, for cuts across it.
+    pub bend: FlangeBend,
+}
+
+/// An edge flange's bend: its profile's frame and run along the line, where the bend starts
+/// in the flat pattern (the line from `a` to `b`, outward `out`), and in the section its
+/// centre, the direction to its start on the outer face (`bend_out`), that face's radius,
+/// its signed turn and its allowance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlangeBend {
+    pub frame: Frame,
+    pub along: f64,
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub out: [f64; 2],
+    pub centre: [f64; 2],
+    pub start: [f64; 2],
+    pub radius: f64,
+    pub turn: f64,
+    pub allowance: f64,
 }
 
 /// Where a contour flange's straights lie: in its sketch, across `z` along the sketch
@@ -929,6 +949,19 @@ impl Evaluator {
             let e3 = gusset_kernel::scale(f.normal(), site.along.signum());
             let l = site.along.abs();
             let along = if gusset_kernel::dot(cross(x, y), e3) >= 0.0 { l } else { -l };
+            let (centre, start) = if e.down { ([0.0, -r], [0.0, 1.0]) } else { ([0.0, t + r], [0.0, -1.0]) };
+            let bend = FlangeBend {
+                frame: f,
+                along: site.along,
+                a,
+                b,
+                out: out2,
+                centre,
+                start,
+                radius: r + t,
+                turn: if e.down { -th } else { th },
+                allowance: ba,
+            };
             nf.flange_ends.push(FlangeEnd {
                 flange: name.to_string(),
                 a: pa,
@@ -936,6 +969,7 @@ impl Evaluator {
                 out: out2,
                 frame: Frame { origin: at(o2), x, y },
                 along,
+                bend,
             });
         }
         nf.bends.push(FlatBend {
@@ -975,6 +1009,8 @@ enum FlatMap<'a> {
     Flange(&'a FlangeEnd),
     /// A contour flange bend's sketch-side face.
     Bend(&'a BendZone, &'a ContourBase, Frame),
+    /// An edge flange bend's outer face.
+    FlangeBend(&'a FlangeBend),
 }
 
 impl FlatMap<'_> {
@@ -1006,6 +1042,17 @@ impl FlatMap<'_> {
                 let phi = libm::atan2(sn, cs);
                 let share = (phi / z.turn).clamp(-1e-6, 1.0 + 1e-6);
                 ([z.x0 + share * z.allowance, dot(d, f.normal()) - c.z[0]], (rad - z.radius).abs())
+            }
+            FlatMap::FlangeBend(fb) => {
+                let f = fb.frame;
+                let d = sub3(p, f.origin);
+                let q = sub([dot(d, f.x), dot(d, f.y)], fb.centre);
+                let (cs, sn) = (fb.start[0] * q[0] + fb.start[1] * q[1], fb.start[0] * q[1] - fb.start[1] * q[0]);
+                let share = (libm::atan2(sn, cs) / fb.turn).clamp(-1e-6, 1.0 + 1e-6);
+                let s = dot(d, scale(f.normal(), fb.along.signum()));
+                let ab = sub(fb.b, fb.a);
+                let u = mul(ab, 1.0 / len(ab).max(1e-300));
+                (addv(addv(fb.a, mul(u, s)), mul(fb.out, share * fb.allowance)), (len(q) - fb.radius).abs())
             }
             FlatMap::Flange(fe) => {
                 let f = fe.frame;
@@ -1091,6 +1138,15 @@ impl Evaluator {
                         }
                         (Some(_), _, _) => (Kind::Back, None),
                         _ => (Kind::Other, None),
+                    }
+                }
+                FaceKey::Sheet { part: part @ (SheetPart::BendIn | SheetPart::BendOut), .. }
+                    if n.feature != b.feature =>
+                {
+                    match flat.flange_ends.iter().find(|fe| fe.flange == n.feature) {
+                        Some(fe) if *part == SheetPart::BendOut => (Kind::Primary, Some(FlatMap::FlangeBend(&fe.bend))),
+                        Some(_) => (Kind::Back, None),
+                        None => (Kind::Other, None),
                     }
                 }
                 FaceKey::Sheet { part: SheetPart::FlatBack, .. } => (Kind::Back, None),
