@@ -88,3 +88,18 @@ fold back over the tab, a flipped second one turns outward. A second flange on t
 is refused. OCCT test `a_flange_bends_off_another_flanges_far_edge`: exact volumes and the
 flat area at k = 0.5 for three up/down combinations.
 
+## Amendment (2026-11-05): unfolding later cuts
+
+A feature that changes a sheet body no longer always marks its flat pattern stale. If the
+change is a cut through flat regions only, it is unfolded: every face the feature made must
+meet both a flat's sketch-side face (a tab's start cap, `flat(..)` of a contour flange or an
+edge flange) and its back, and no other sheet face (a bend, an end, the tab's sides). The
+edges between the new faces and the sketch-side flats are then mapped into the flat pattern
+(the tab's sketch coordinates; a contour straight's developed start plus the distance along
+it and the height across the width; a flange's far edge less the distance back from it)
+and joined into cut-out outlines. Every mapped point must lie on its face's plane (a moved
+sheet is not a cut) and inside the pattern. Anything else, a notch across an edge, a cut
+through a bend, added material, is marked as before (`changed_by`). OCCT tests: a hole
+through a tab becomes a circle of the same radius in the pattern; a hole through a U
+channel's bottom lands where that straight develops.
+

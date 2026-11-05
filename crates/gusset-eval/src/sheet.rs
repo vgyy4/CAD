@@ -933,6 +933,199 @@ impl Evaluator {
     }
 }
 
+/// How a sheet face maps to the flat pattern.
+enum FlatMap<'a> {
+    /// A tab's face on its sketch plane: the sketch's own coordinates.
+    Tab(Frame),
+    /// A contour flange straight's sketch-side face.
+    Straight(&'a Straight, &'a ContourBase, Frame),
+    /// An edge flange's outer face.
+    Flange(&'a FlangeEnd),
+}
+
+impl FlatMap<'_> {
+    /// The flat-pattern point of `p`, and how far `p` lies off the face's plane.
+    fn map(&self, p: gusset_kernel::V3) -> (P2, f64) {
+        use gusset_kernel::{dot, scale, sub as sub3};
+        match self {
+            FlatMap::Tab(f) => {
+                let d = sub3(p, f.origin);
+                ([dot(d, f.x), dot(d, f.y)], dot(d, f.normal()).abs())
+            }
+            FlatMap::Straight(st, c, f) => {
+                let a = f.to_world(st.a);
+                let ab = sub3(f.to_world(st.b), a);
+                let l = gusset_kernel::norm(ab).max(1e-300);
+                let dir = scale(ab, 1.0 / l);
+                let n = f.normal();
+                let inward = gusset_kernel::add(scale(f.x, st.inward[0]), scale(f.y, st.inward[1]));
+                let d = sub3(p, a);
+                ([st.x0 + dot(d, dir), dot(sub3(p, f.origin), n) - c.z[0]], dot(d, inward).abs())
+            }
+            FlatMap::Flange(fe) => {
+                let f = fe.frame;
+                let e = scale(f.normal(), fe.along.signum());
+                let d = sub3(p, f.origin);
+                let (s, back) = (dot(d, e), -dot(d, f.x));
+                let ab = sub(fe.b, fe.a);
+                let u = mul(ab, 1.0 / len(ab).max(1e-300));
+                (addv(addv(fe.a, mul(u, s)), mul(fe.out, -back)), dot(d, f.y).abs())
+            }
+        }
+    }
+}
+
+/// Joins polylines end to end into closed loops (ends within `tol`); `None` when they do not
+/// close.
+fn chain_loops(mut pieces: Vec<Vec<P2>>, tol: f64) -> Option<Vec<Vec<P2>>> {
+    let near = |a: P2, b: P2| len(sub(a, b)) <= tol;
+    let mut loops = Vec::new();
+    while let Some(mut cur) = pieces.pop() {
+        let start = *cur.first()?;
+        loop {
+            let end = *cur.last()?;
+            if cur.len() > 2 && near(end, start) {
+                cur.pop();
+                break;
+            }
+            let i = pieces
+                .iter()
+                .position(|p| p.first().is_some_and(|q| near(*q, end)) || p.last().is_some_and(|q| near(*q, end)))?;
+            let mut next = pieces.swap_remove(i);
+            if !next.first().is_some_and(|q| near(*q, end)) {
+                next.reverse();
+            }
+            cur.extend(next.into_iter().skip(1));
+        }
+        if cur.len() >= 3 {
+            loops.push(cur);
+        }
+    }
+    Some(loops)
+}
+
+impl Evaluator {
+    /// The cut-outs a later feature made through the flat regions of sheet body `b`, as flat
+    /// pattern outlines; `None` when the change is not that (it touches a bend or an edge,
+    /// adds material, or moved the sheet): then the flat pattern is marked stale instead.
+    pub(crate) fn unfold_cuts(&self, s: &State, b: &Body, flat: &FlatPattern) -> Option<Vec<Vec<[f64; 2]>>> {
+        use gusset_doc::{CapSide, FaceKey};
+        #[derive(Clone, Copy, PartialEq)]
+        enum Kind {
+            Primary,
+            Back,
+            Other,
+            New,
+        }
+        let names = &b.names.faces;
+        let tab_frame = flat.base.as_ref().and_then(|t| s.solved.get(&t.sketch)).map(|sv| sv.frame);
+        let contour_frame = flat.contour.as_ref().and_then(|c| s.solved.get(&c.sketch)).map(|sv| sv.frame);
+        let mut maps: Vec<Option<FlatMap<'_>>> = Vec::with_capacity(names.len());
+        let mut kinds = Vec::with_capacity(names.len());
+        for n in names {
+            let (kind, map) = match &n.key {
+                FaceKey::Sheet { part: SheetPart::Flat, at } if n.feature == b.feature => {
+                    let c = flat.contour.as_ref();
+                    let m = c.zip(contour_frame).and_then(|(c, f)| {
+                        c.straights.iter().find(|st| &st.line == at).map(|st| FlatMap::Straight(st, c, f))
+                    });
+                    (Kind::Primary, m)
+                }
+                FaceKey::Sheet { part: SheetPart::Flat, .. } => {
+                    let m = flat.flange_ends.iter().find(|fe| fe.flange == n.feature).map(FlatMap::Flange);
+                    (Kind::Primary, m)
+                }
+                FaceKey::Sheet { part: SheetPart::FlatBack, .. } => (Kind::Back, None),
+                FaceKey::Sheet { .. } => (Kind::Other, None),
+                FaceKey::Cap { side: CapSide::Start, .. } if n.feature == b.feature && flat.base.is_some() => {
+                    (Kind::Primary, tab_frame.map(FlatMap::Tab))
+                }
+                FaceKey::Cap { side: CapSide::End, .. } if n.feature == b.feature && flat.base.is_some() => {
+                    (Kind::Back, None)
+                }
+                _ if n.feature == b.feature => (Kind::Other, None),
+                _ => (Kind::New, None),
+            };
+            kinds.push(kind);
+            maps.push(map);
+        }
+        if !kinds.contains(&Kind::New) {
+            return None;
+        }
+        // Every new face is a wall through the sheet: it meets a flat and its back, and no
+        // other sheet face.
+        let mut meets = vec![(false, false); kinds.len()];
+        for e in &b.topology.edges {
+            let fs: Vec<usize> = e.faces.iter().map(|f| *f as usize).collect();
+            for (i, j) in [(0, 1), (1, 0)] {
+                let (Some(&a), Some(&c)) = (fs.get(i), fs.get(j)) else { continue };
+                if kinds.get(a) != Some(&Kind::New) {
+                    continue;
+                }
+                match kinds.get(c) {
+                    Some(Kind::Primary) => meets.get_mut(a).map(|m| m.0 = true).unwrap_or(()),
+                    Some(Kind::Back) => meets.get_mut(a).map(|m| m.1 = true).unwrap_or(()),
+                    Some(Kind::Other) => return None,
+                    _ => {}
+                }
+            }
+        }
+        if kinds.iter().zip(&meets).any(|(k, m)| *k == Kind::New && !(m.0 && m.1)) {
+            return None;
+        }
+        // The loops: the edges between new faces and the flats on the sketch side, mapped.
+        let mesh = self.kernel.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).ok()?;
+        let tol = (flat.thickness * 1e-3).max(1e-4);
+        let mut pieces = Vec::new();
+        for (ei, e) in b.topology.edges.iter().enumerate() {
+            let fs: Vec<usize> = e.faces.iter().map(|f| *f as usize).collect();
+            let primary = fs.iter().find(|f| kinds.get(**f) == Some(&Kind::Primary));
+            let new = fs.iter().any(|f| kinds.get(*f) == Some(&Kind::New));
+            let (Some(pf), true) = (primary, new) else { continue };
+            let map = maps.get(*pf)?.as_ref()?;
+            let poly = mesh.edges.get(ei)?;
+            let mut pts = Vec::with_capacity(poly.len());
+            for q in poly {
+                let (p2, off) = map.map(q.map(f64::from));
+                if off > tol * 10.0 {
+                    return None; // the sheet moved: not a cut of it
+                }
+                pts.push(p2);
+            }
+            pieces.push(pts);
+        }
+        if pieces.is_empty() {
+            return None;
+        }
+        let loops = chain_loops(pieces, tol * 10.0)?;
+        // Each cut-out lies inside the pattern.
+        if loops
+            .iter()
+            .any(|l| l.iter().any(|p| !inside(&flat.outlines, *p) && !on_outline(&flat.outlines, *p, tol * 10.0)))
+        {
+            return None;
+        }
+        Some(loops)
+    }
+}
+
+/// Whether `p` lies on one of the outlines (within `tol`).
+fn on_outline(outlines: &[Vec<[f64; 2]>], p: P2, tol: f64) -> bool {
+    outlines.iter().any(|o| {
+        let n = o.len();
+        (0..n).any(|i| {
+            let (Some(a), Some(b)) = (o.get(i), o.get((i + 1) % n)) else { return false };
+            let ab = sub(*b, *a);
+            let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+            if l2 <= 0.0 {
+                return len(sub(p, *a)) <= tol;
+            }
+            let u = (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0);
+            len(sub(p, addv(*a, mul(ab, u)))) <= tol
+        })
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {

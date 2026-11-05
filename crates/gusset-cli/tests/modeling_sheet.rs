@@ -322,3 +322,61 @@ fn a_flange_bends_off_another_flanges_far_edge() {
     };
     assert!(r.errors().iter().any(|e| e.to_string().contains("already has a flange")), "{:?}", r.errors());
 }
+
+#[test]
+fn a_hole_cut_through_a_flat_is_unfolded_into_the_pattern() {
+    let src = format!(
+        "{TAB}
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(30, 20)
+  c2 = circle(p1, 5)
+}}
+
+extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: Plate)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2, "the plate and the hole");
+    let hole = &flat.outlines[1];
+    let r_mean =
+        hole.iter().map(|p| ((p[0] - 30.0).powi(2) + (p[1] - 20.0).powi(2)).sqrt()).sum::<f64>() / hole.len() as f64;
+    assert!((r_mean - 5.0).abs() < 1e-3 && hole.len() >= 8, "{r_mean} {}", hole.len());
+    // A cut across the plate's edge (a notch) changes the outline: still marked.
+    let notch = src.replace("point(30, 20)", "point(60, 20)");
+    let doc = gusset_doc::Document::from_text(&notch).unwrap();
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.body("Plate").unwrap().sheet.as_ref().unwrap().changed_by, ["Cut"]);
+}
+
+#[test]
+fn a_hole_through_a_contour_flanges_straight_lands_where_it_develops() {
+    let (_, r) = eval(
+        "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)
+
+sketch C (plane: XY, next_id: 3) {
+  p1 = point(30, -20)
+  c2 = circle(p1, 4)
+}
+
+extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: U)",
+    );
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    // l5's straight (30 - 5) and its bend (π/2 · (3 + 1)), then 25 mm along l6.
+    let cx = 25.0 + FRAC_PI_2 * 4.0 + 25.0;
+    let hole = &flat.outlines[1];
+    let (mx, my) = (
+        hole.iter().map(|p| p[0]).sum::<f64>() / hole.len() as f64,
+        hole.iter().map(|p| p[1]).sum::<f64>() / hole.len() as f64,
+    );
+    assert!((mx - cx).abs() < 0.05 && (my - 20.0).abs() < 0.05, "{mx} {my} vs {cx} 20");
+}

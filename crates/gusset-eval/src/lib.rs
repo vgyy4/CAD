@@ -944,16 +944,29 @@ impl Evaluator {
         if r.is_ok() && !matches!(f.kind, FeatureKind::Sheet(_)) {
             // A sheet-metal body changed by another feature: its flat pattern no longer
             // shows everything (review: stale flat patterns).
-            for b in s.bodies.iter_mut() {
-                if prev_bodies.iter().any(|p| Arc::ptr_eq(p, b)) {
-                    continue;
-                }
-                if let Some(old) = b.sheet.as_deref() {
-                    let mut flat = old.clone();
-                    if !flat.changed_by.contains(&f.name) {
-                        flat.changed_by.push(f.name.clone());
+            let touched: Vec<usize> = s
+                .bodies
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| b.sheet.is_some() && !prev_bodies.iter().any(|p| Arc::ptr_eq(p, b)))
+                .map(|(i, _)| i)
+                .collect();
+            for i in touched {
+                let Some(b) = s.bodies.get(i).cloned() else { continue };
+                let Some(old) = b.sheet.as_deref() else { continue };
+                let mut flat = old.clone();
+                // A cut through flat regions only is unfolded into cut-outs; anything else
+                // leaves the pattern marked as not showing the change.
+                match old.changed_by.is_empty().then(|| self.unfold_cuts(s, &b, old)).flatten() {
+                    Some(cuts) => flat.outlines.extend(cuts),
+                    None => {
+                        if !flat.changed_by.contains(&f.name) {
+                            flat.changed_by.push(f.name.clone());
+                        }
                     }
-                    *b = Arc::new(Body {
+                }
+                if let Some(slot) = s.bodies.get_mut(i) {
+                    *slot = Arc::new(Body {
                         name: b.name.clone(),
                         feature: b.feature.clone(),
                         shape: b.shape.clone(),
