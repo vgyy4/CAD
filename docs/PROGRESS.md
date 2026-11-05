@@ -290,7 +290,8 @@ Phase 3 has started (see Next).
      G2/G3 arcs), ramp entry along the ring (default 3 deg), drilling (G81/G83 at circle centres), holding tabs on profiles. Viewport preview done (`cam.toolpath` with `path: true`
      returns the cut as world polylines; the app draws the last toolpath until the model
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Next:
-     toolpaths saved in the document (setups and operations), climb milling, adaptive clearing.
+     toolpaths saved in the document (setups and operations), adaptive clearing. Climb milling done (the default;
+     `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
      (hexahedra, matrix-free PCG), fixed faces and face loads by name, max displacement and von
      Mises stress; `sim.static`. Stress colours done (`field: true` returns the voxel surface in

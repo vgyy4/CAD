@@ -61,6 +61,9 @@ pub struct Setup {
     pub ramp_deg: f64,
     /// Holding tabs left on a profile's last passes.
     pub tabs: Option<Tabs>,
+    /// Climb milling (the material on the right of the tool's travel, with the spindle
+    /// turning clockwise, M3); false for conventional milling.
+    pub climb: bool,
 }
 
 /// Bridges of uncut stock that hold a part cut out by a profile: `count` evenly spaced
@@ -347,6 +350,17 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
             all.into_iter().rev().flatten().collect()
         }
     };
+    // Each ring's direction: climb milling keeps the material on the right of the travel
+    // (clockwise round material inside the ring, counter-clockwise round material outside).
+    let mut out = out;
+    for p in &mut out {
+        let ccw = p.area() > 0.0;
+        let material_inside = matches!(op, Operation::Profile { outside: true }) || !ccw;
+        let want_ccw = material_inside != s.climb;
+        if ccw != want_ccw {
+            p.invert_direction_mut();
+        }
+    }
     if out.is_empty() {
         return Err(CamError::NothingToCut(format!(
             "a {} mm tool does not fit the region",

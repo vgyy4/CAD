@@ -25,6 +25,7 @@ fn setup(d: f64) -> Setup {
         rpm: 12000.0,
         ramp_deg: 0.0,
         tabs: None,
+        climb: true,
     }
 }
 
@@ -222,4 +223,36 @@ fn review_fixes_hold() {
     let big = [[0.0, 0.0], [0.0, 55.0], [45.0, 100.0], [100.0, 100.0]];
     let small = [[0.0, 0.0], [0.0, 0.5], [0.5, 1.0], [1.0, 1.0]];
     assert!(bezier_steps(&big) > 100 && bezier_steps(&small) <= 16, "{} {}", bezier_steps(&big), bezier_steps(&small));
+}
+
+#[test]
+fn climb_milling_runs_clockwise_round_a_part_and_conventional_the_other_way() {
+    // The signed area of the cut's path at the last level: negative when clockwise.
+    let turn = |t: &Toolpath| {
+        let z = *t.levels.last().unwrap();
+        let pts: Vec<[f64; 2]> = t
+            .moves
+            .iter()
+            .filter_map(|m| match m {
+                Move::Line { to, plunge: false } | Move::Arc { to, .. } if (to[2] - z).abs() < 1e-9 => {
+                    Some([to[0], to[1]])
+                }
+                _ => None,
+            })
+            .collect();
+        (0..pts.len())
+            .map(|i| pts[i][0] * pts[(i + 1) % pts.len()][1] - pts[(i + 1) % pts.len()][0] * pts[i][1])
+            .sum::<f64>()
+    };
+    let mut s = setup(6.0);
+    let climb = toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).unwrap();
+    assert!(turn(&climb) < 0.0, "round the part clockwise");
+    assert!(climb.gcode(&s, "c").contains("G2 "));
+    s.climb = false;
+    let conv = toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: true }, &s).unwrap();
+    assert!(turn(&conv) > 0.0);
+    // A pocket's wall: material outside, so climb runs counter-clockwise.
+    s.climb = true;
+    let pocket = toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: false }, &s).unwrap();
+    assert!(turn(&pocket) > 0.0);
 }

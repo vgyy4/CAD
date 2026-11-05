@@ -207,7 +207,7 @@ pub struct QueryBom {}
 impl Command for QueryBom {
     const ID: &'static str = "query.bom";
     const TITLE: &'static str = "Bill of materials";
-    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (wherever they are placed; mirror images too). Rows with quantity, body names, volume and area, and the same as CSV.";
+    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (mirror images too). Rows with quantity, body names, volume and area, and the same as CSV.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

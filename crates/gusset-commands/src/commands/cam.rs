@@ -13,7 +13,6 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 #[serde(deny_unknown_fields)]
 pub struct CamJob {
     pub sketch: String,
-    /// Default all.
     #[serde(default)]
     pub regions: Vec<String>,
     /// pocket, profile_outside, profile_inside, drill.
@@ -43,6 +42,9 @@ pub struct CamJob {
     /// [n, width, height].
     #[serde(default)]
     pub tabs: Option<[f64; 3]>,
+    /// Not climb.
+    #[serde(default)]
+    pub conventional: bool,
 }
 
 impl CamJob {
@@ -87,6 +89,7 @@ impl CamJob {
                 width: w,
                 height: h,
             }),
+            climb: !self.conventional,
         };
         let doc = s.document(&ctx.actor)?;
         let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)
