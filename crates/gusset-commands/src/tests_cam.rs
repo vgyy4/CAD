@@ -95,6 +95,15 @@ fn a_bar_is_analysed_by_its_face_names() {
     assert!((d - exact).abs() < 1e-5, "{r}");
     assert!((r["max_von_mises_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{r}");
     assert!(r.get("stress_bands").is_none());
+    // The peak re-solved finer: uniform tension stays 10 MPa.
+    let fine = run(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+               "poisson": 0.0, "voxel": 5.0, "refine": true}),
+    );
+    let f = &fine["refined"];
+    assert!((f["max_von_mises_mpa"].as_f64().unwrap() - 10.0).abs() < 1e-2 && f["voxel_mm"] == 1.25, "{fine}");
     let f = run(
         &mut s,
         "sim.static",

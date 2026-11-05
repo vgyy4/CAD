@@ -105,3 +105,17 @@ side), sorted into 8 bands by how far each face moves relative to the largest mo
 `upto` for both). The app asks for the lowest mode's shape and shows it like the stress
 picture, while the result dialog is open.
 
+## Amendment (2026-11-04): refinement at the peak (submodel)
+
+`sim.static` with `refine: true` solves again in a box around the stress peak (three coarse
+voxels each way) with voxels four times finer. The box's grid starts at its own corner;
+its voxels are found by the same ray parity (crossings counted along the whole ray). The
+nodes on the box's faces that cut the material are held at the coarse displacement,
+interpolated trilinearly in the coarse voxel holding them; the fine problem is solved for
+the change from that (right-hand side less `K u0`). Held faces and loads inside the box
+apply as before; loads outside it are skipped. The fine voxels along the cut faces are left
+out of the peak, since they carry the coarse solution's error. A bar in tension keeps its
+10 MPa; a 2.5 mm cantilever's root reads 41.6 MPa coarse and 56.2 MPa refined against
+60 MPa from beam theory. Near sharp inside corners and held edges the stress has no
+finite limit, so the refined value is a trend, not a number (said in the code's docs).
+

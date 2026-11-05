@@ -37,6 +37,9 @@ pub struct StaticQuery {
     /// Stress bands.
     #[serde(default)]
     pub field: bool,
+    /// Refine the peak.
+    #[serde(default)]
+    pub refine: bool,
 }
 
 /// Colour bands of a stress picture.
@@ -87,7 +90,7 @@ impl Command for StaticQuery {
     const ID: &'static str = "sim.static";
     const TITLE: &'static str = "Static stress";
     const DESCRIPTION: &'static str =
-        "Linear static analysis on voxels (mm, N, MPa): max displacement, von Mises stress. An estimate.";
+        "Linear static analysis on voxels (mm, N, MPa): max displacement, von Mises stress.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -107,7 +110,12 @@ impl Command for StaticQuery {
                 poisson: self.poisson.unwrap_or(0.3),
             },
         };
-        let sol = gusset_fea::solve(&p).map_err(fea_err)?;
+        let (sol, refined) = if self.refine {
+            let (s, r) = gusset_fea::solve_refined(&p).map_err(fea_err)?;
+            (s, Some(r))
+        } else {
+            (gusset_fea::solve(&p).map_err(fea_err)?, None)
+        };
         let r = sig;
         let mut out = json!({
             "body": body.name,
@@ -122,6 +130,21 @@ impl Command for StaticQuery {
             "fixed_nodes": sol.fixed_nodes,
             "loaded_nodes": sol.loaded_nodes,
         });
+        if let Some(f) = refined
+            && let Some(o) = out.as_object_mut()
+        {
+            // The peak again in a box around it with voxels four times finer.
+            o.insert(
+                "refined".into(),
+                json!({
+                    "voxel_mm": sig(f.voxel),
+                    "max_von_mises_mpa": sig(f.max_von_mises),
+                    "max_von_mises_at_mm": f.max_von_mises_at.map(sig),
+                    "box_mm": [f.lo.map(sig), f.hi.map(sig)],
+                    "elements": f.elements,
+                }),
+            );
+        }
         if sol.held_load > 1e-9
             && let Some(o) = out.as_object_mut()
         {
@@ -189,7 +212,7 @@ pub struct ModalQuery {
     #[serde(default)]
     pub body: Option<String>,
     pub fixed: Vec<String>,
-    /// Default 3, at most 10.
+    /// Default 3.
     #[serde(default)]
     pub modes: Option<usize>,
     /// MPa (default 210000).

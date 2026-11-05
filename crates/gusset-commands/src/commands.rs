@@ -3231,7 +3231,7 @@ pub struct QueryBody {
 impl Command for QueryBody {
     const ID: &'static str = "query.body";
     const TITLE: &'static str = "Measure body";
-    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, face normals are given for planar faces only (null otherwise) and edges carry seam: true when they border the same face on both sides (a cylinder's cut line).";
+    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, face normals are given for planar faces only and edges carry seam: true when they border the same face on both sides.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     const SHORTCUT: Option<&'static str> = Some("M");
@@ -3284,7 +3284,7 @@ impl Command for QueryBody {
                 .iter()
                 .zip(&body.topology.edges)
                 .map(|(n, e)| {
-                    // A seam edge borders one face on both sides (a cylinder's cut line).
+                    // A seam edge borders one face on both sides.
                     let mut faces = e.faces.clone();
                     faces.dedup();
                     json!({"name": n.to_string(), "kind": format!("{:?}", e.kind), "length_mm": e.length, "midpoint_mm": e.midpoint, "seam": faces.len() < 2})

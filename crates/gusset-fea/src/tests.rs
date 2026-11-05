@@ -210,3 +210,33 @@ fn parts_held_only_along_an_edge_and_loads_on_held_faces_are_refused() {
     assert!(solve(&huge).is_err());
     assert!(over_budget(MAX_WORK + 1).is_err() && over_budget(MAX_WORK).is_ok());
 }
+
+#[test]
+fn a_submodel_keeps_a_uniform_stress_and_sharpens_a_peak() {
+    // Uniform tension: the box around the peak has the same 10 MPa throughout.
+    let bar = box_mesh([10.0, 10.0, 100.0]);
+    let p = Problem {
+        mesh: &bar,
+        voxel: 2.5,
+        fixed: vec![4],
+        loads: vec![Load { face: 5, force: [0.0, 0.0, 1000.0] }],
+        material: Material { young: 200_000.0, poisson: 0.0 },
+    };
+    let (coarse, fine) = solve_refined(&p).unwrap();
+    assert!((coarse.max_von_mises - 10.0).abs() < 1e-6, "{}", coarse.max_von_mises);
+    assert!((fine.max_von_mises - 10.0).abs() < 1e-3, "{fine:?}");
+    assert!((fine.voxel - 2.5 / 4.0).abs() < 1e-12 && fine.elements > 0);
+    // A cantilever's root: the finer voxels read nearer the surface, so the peak grows
+    // towards M c / I = 60 MPa (and past it at the held edge, where it has no limit).
+    let beam = box_mesh([100.0, 10.0, 10.0]);
+    let q = Problem {
+        mesh: &beam,
+        voxel: 2.5,
+        fixed: vec![0],
+        loads: vec![Load { face: 1, force: [0.0, 0.0, -100.0] }],
+        material: Material { young: 200_000.0, poisson: 0.3 },
+    };
+    let (c, f) = solve_refined(&q).unwrap();
+    assert!(f.max_von_mises > c.max_von_mises && f.max_von_mises > 0.8 * 60.0, "{} -> {f:?}", c.max_von_mises);
+    assert!(f.max_von_mises_at[0] < 10.0, "near the root: {f:?}");
+}

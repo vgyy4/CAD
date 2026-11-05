@@ -441,7 +441,16 @@ struct Model {
     material: Material,
 }
 
-fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<Model, FeaError> {
+/// `region`: a box to grid instead of the whole body (a submodel; its origin is the box's
+/// low corner). `held`: further nodes to hold, by position (a submodel's cut faces).
+fn build(
+    mesh: &Mesh,
+    voxel: f64,
+    fixed_faces: &[usize],
+    m: Material,
+    region: Option<(V3, V3)>,
+    held: &dyn Fn(V3) -> bool,
+) -> Result<Model, FeaError> {
     let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
     if !(m.young.is_finite()
         && (1e-3..=1e9).contains(&m.young)
@@ -454,7 +463,7 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
     if !(voxel.is_finite() && voxel > 0.0) {
         return bad("the voxel size must be a positive length");
     }
-    if fixed_faces.is_empty() {
+    if fixed_faces.is_empty() && region.is_none() {
         return bad("fix at least one face, or the part is free to move");
     }
     let mut lo = [f64::INFINITY; 3];
@@ -470,6 +479,9 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
     }
     if !lo.iter().chain(&hi).all(|v| v.is_finite()) {
         return bad("the body has no geometry");
+    }
+    if let Some((a, b)) = region {
+        (lo, hi) = (a, b);
     }
     let h = voxel;
     let n = [0, 1, 2].map(|d| {
@@ -521,6 +533,18 @@ fn build(mesh: &Mesh, voxel: f64, fixed_faces: &[usize], m: Material) -> Result<
     let mut fixed_nodes = 0;
     for f in fixed_faces {
         for (id, _) in face_nodes(mesh, *f, &quads, &g, &used)? {
+            if !fixed.get(3 * id).copied().unwrap_or(true) {
+                fixed_nodes += 1;
+            }
+            for d in 0..3 {
+                if let Some(x) = fixed.get_mut(3 * id + d) {
+                    *x = true;
+                }
+            }
+        }
+    }
+    for (id, pos) in node_pos.iter().enumerate() {
+        if held(*pos) {
             if !fixed.get(3 * id).copied().unwrap_or(true) {
                 fixed_nodes += 1;
             }
@@ -632,8 +656,70 @@ impl Model {
 
 /// Solves the problem.
 pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
+    solve_in(p, None).map(|(s, _, _)| s)
+}
+
+/// A submodel: the box from `lo` to `hi`, its cut faces moving as the coarse solution `u` of
+/// `coarse` says.
+struct Sub<'a> {
+    lo: V3,
+    hi: V3,
+    coarse: &'a Model,
+    u: &'a [f64],
+}
+
+impl Model {
+    /// The displacement of the solution `u` at `p`: trilinear in the voxel holding `p` (or
+    /// the nearest voxel around it, clamped).
+    fn displacement_at(&self, u: &[f64], p: V3) -> V3 {
+        let n = self.n;
+        let mut f = [0.0; 3];
+        for ((o, pv), ov) in f.iter_mut().zip(p).zip(self.g.origin) {
+            *o = (pv - ov) / self.h;
+        }
+        let [n0, n1, _] = n;
+        let lin = |[a, b, c]: [usize; 3]| a + n0 * (b + n1 * c);
+        let mut base = [0usize; 3];
+        for ((b, fv), nv) in base.iter_mut().zip(f).zip(n) {
+            *b = libm::floor(fv).clamp(0.0, nv.saturating_sub(1) as f64) as usize;
+        }
+        let [b0, b1, b2] = base;
+        for dk in [0i64, -1, 1] {
+            for dj in [0i64, -1, 1] {
+                for di in [0i64, -1, 1] {
+                    let c = [b0 as i64 + di, b1 as i64 + dj, b2 as i64 + dk];
+                    if c.iter().zip(n).any(|(v, nn)| *v < 0 || *v >= nn as i64) {
+                        continue;
+                    }
+                    let c = c.map(|v| v as usize);
+                    let Ok(e) = self.elems.binary_search_by_key(&lin(c), |x| lin(*x)) else { continue };
+                    let Some(conn) = self.conn.get(e) else { continue };
+                    let mut xi = [0.0; 3];
+                    for ((x, fv), cv) in xi.iter_mut().zip(f).zip(c) {
+                        *x = (fv - cv as f64).clamp(0.0, 1.0);
+                    }
+                    let mut out = [0.0; 3];
+                    for (id, off) in conn.iter().zip(CORNERS) {
+                        let w: f64 = off.iter().zip(xi).map(|(o, x)| if *o == 1 { x } else { 1.0 - x }).product();
+                        for (o, d) in out.iter_mut().zip(0..3) {
+                            *o += w * u.get(3 * id + d).copied().unwrap_or(0.0);
+                        }
+                    }
+                    return out;
+                }
+            }
+        }
+        [0.0; 3]
+    }
+}
+
+fn solve_in(p: &Problem<'_>, sub: Option<&Sub<'_>>) -> Result<(Solution, Model, Vec<f64>), FeaError> {
     let bad = |m: &str| Err(FeaError::Invalid(m.to_string()));
-    let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
+    let eps = p.voxel * 1e-6;
+    let on_cut = |q: V3| {
+        sub.is_some_and(|s| q.iter().zip(s.lo).zip(s.hi).any(|((q, l), h)| (q - l).abs() < eps || (q - h).abs() < eps))
+    };
+    let md = build(p.mesh, p.voxel, &p.fixed, p.material, sub.map(|s| (s.lo, s.hi)), &on_cut)?;
     let Model { g, n, h, elems, conn, used, node_pos, quads, fixed, fixed_nodes, b0, material: m, .. } = &md;
     let (h, n, fixed_nodes, m) = (*h, *n, *fixed_nodes, *m);
     let dofs = md.dofs();
@@ -650,11 +736,17 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         }
         let ids = face_nodes(p.mesh, l.face, quads, g, used)?;
         if ids.is_empty() {
+            if sub.is_some() {
+                continue; // a load outside the submodel's box
+            }
             return bad("a loaded face reaches no voxel: use a smaller voxel");
         }
         loaded_nodes += ids.len();
         let total: usize = ids.iter().map(|(_, c)| c).sum();
         if ids.iter().all(|(id, _)| fixed.get(3 * id).copied().unwrap_or(false)) {
+            if sub.is_some() {
+                continue;
+            }
             return bad("a load is on held voxels only (its face is fixed): it would do nothing");
         }
         let size = libm::sqrt(l.force.iter().map(|v| v * v).sum::<f64>());
@@ -669,6 +761,26 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
                     *x += l.force.get(d).copied().unwrap_or(0.0) * share;
                 }
             }
+        }
+    }
+    // A submodel's cut faces move as the coarse solution says: solve for the change from
+    // that, with the right-hand side less what those motions already push.
+    let mut u0 = vec![0.0; dofs];
+    if let Some(sb) = sub {
+        for (id, pos) in node_pos.iter().enumerate() {
+            if on_cut(*pos) {
+                let v = sb.coarse.displacement_at(sb.u, *pos);
+                for (d, x) in v.iter().enumerate() {
+                    if let Some(t) = u0.get_mut(3 * id + d) {
+                        *t = *x;
+                    }
+                }
+            }
+        }
+        let mut ku0 = vec![0.0; dofs];
+        md.matvec(&u0, &mut ku0);
+        for (x, k) in f.iter_mut().zip(&ku0) {
+            *x -= k;
         }
     }
     for (i, x) in f.iter_mut().enumerate() {
@@ -715,6 +827,9 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
             *pi = zi + beta * *pi;
         }
     }
+    for (a, b) in u.iter_mut().zip(&u0) {
+        *a += b;
+    }
     if !u.iter().all(|v| v.is_finite()) {
         return Err(FeaError::NotConverged("the results are not finite: check the material and the loads".into()));
     }
@@ -747,8 +862,11 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
             0.5 * ((s[0] - s[1]).powi(2) + (s[1] - s[2]).powi(2) + (s[2] - s[0]).powi(2))
                 + 3.0 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]),
         );
-        if vm > max_s.0 {
-            let c = g.node_pos(*i, *j, *k).map(|v| v + h / 2.0);
+        let c = g.node_pos(*i, *j, *k).map(|v| v + h / 2.0);
+        // In a submodel the layer along the cut faces is left out: it carries the coarse
+        // solution's error.
+        let near_cut = sub.is_some_and(|sb| c.iter().zip(sb.lo).zip(sb.hi).any(|((v, l), hh)| v - l < h || hh - v < h));
+        if vm > max_s.0 && !near_cut {
             max_s = (vm, c);
         }
         vms.push(vm);
@@ -766,7 +884,7 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
             Some(SurfaceQuad { corners: corners.map(pos_of), von_mises: vms.get(e).copied().unwrap_or(0.0) })
         })
         .collect();
-    Ok(Solution {
+    let sol = Solution {
         elements: conn.len(),
         nodes: node_pos.len(),
         iterations,
@@ -778,7 +896,50 @@ pub fn solve(p: &Problem<'_>) -> Result<Solution, FeaError> {
         loaded_nodes,
         held_load: if asked > 0.0 { held / asked } else { 0.0 },
         surface,
-    })
+    };
+    Ok((sol, md, u))
+}
+
+/// A refined look at the stress peak (a submodel).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refined {
+    pub elements: usize,
+    pub iterations: usize,
+    pub voxel: f64,
+    /// The submodel's box.
+    pub lo: [f64; 3],
+    pub hi: [f64; 3],
+    pub max_von_mises: f64,
+    pub max_von_mises_at: [f64; 3],
+}
+
+/// Coarse voxels from the peak to the submodel box's sides, and how much finer it is.
+const SUB_REACH: f64 = 3.0;
+const SUB_FACTOR: f64 = 4.0;
+
+/// Solves the problem, then again in a box around the stress peak with voxels four times
+/// finer, its cut faces moving as the coarse solution says (submodelling). Near a sharp
+/// inside corner or a held edge the stress has no finite limit, and the refined value
+/// keeps growing with refinement: read it as a trend, not a number.
+pub fn solve_refined(p: &Problem<'_>) -> Result<(Solution, Refined), FeaError> {
+    let (coarse, md, u) = solve_in(p, None)?;
+    let c = coarse.max_von_mises_at;
+    let reach = SUB_REACH * p.voxel;
+    let lo = c.map(|v| v - reach);
+    let hi = c.map(|v| v + reach);
+    let fine = Problem { voxel: p.voxel / SUB_FACTOR, ..p.clone() };
+    let sub = Sub { lo, hi, coarse: &md, u: &u };
+    let (s, _, _) = solve_in(&fine, Some(&sub))?;
+    let refined = Refined {
+        elements: s.elements,
+        iterations: s.iterations,
+        voxel: fine.voxel,
+        lo,
+        hi,
+        max_von_mises: s.max_von_mises,
+        max_von_mises_at: s.max_von_mises_at,
+    };
+    Ok((coarse, refined))
 }
 
 /// A natural-frequency analysis: the body held at `fixed` faces, `density` in t/mm³
@@ -901,7 +1062,7 @@ pub fn modes(p: &ModalProblem<'_>) -> Result<Modes, FeaError> {
     if !(1..=MAX_MODES).contains(&p.modes) {
         return Err(FeaError::Invalid(format!("ask for 1 to {MAX_MODES} modes")));
     }
-    let md = build(p.mesh, p.voxel, &p.fixed, p.material)?;
+    let md = build(p.mesh, p.voxel, &p.fixed, p.material, None, &|_| false)?;
     if md.conn.len() > MAX_MODAL_ELEMENTS {
         return Err(FeaError::TooLarge(format!(
             "more than {MAX_MODAL_ELEMENTS} voxels for a frequency analysis: use a larger voxel"
