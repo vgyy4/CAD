@@ -29,6 +29,8 @@ pub struct FlatPattern {
     pub base: Option<TabBase>,
     /// For a contour flange: its straights, so edge flanges can be bent off their sides.
     pub contour: Option<ContourBase>,
+    /// The far ends of edge flanges, so further flanges can be bent off them.
+    pub flange_ends: Vec<FlangeEnd>,
     /// Features other than sheet-metal ones that changed the body since (cuts, holes,
     /// moves...): the pattern does not show what they did.
     pub changed_by: Vec<String>,
@@ -39,6 +41,19 @@ pub struct FlatPattern {
 pub struct TabBase {
     pub sketch: String,
     pub flip: bool,
+}
+
+/// An edge flange's far edge: the line from `a` to `b` in the flat pattern (outward `out`),
+/// and in space the frame of a flange bent off it and how far that one runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlangeEnd {
+    /// The edge flange feature.
+    pub flange: String,
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub out: [f64; 2],
+    pub frame: Frame,
+    pub along: f64,
 }
 
 /// Where a contour flange's straights lie: in its sketch, across `z` along the sketch
@@ -288,6 +303,7 @@ pub(crate) fn contour_section(
         base: None,
         // The sketch and the width's span are filled in by the caller.
         contour: Some(ContourBase { sketch: String::new(), straights, z: [0.0, w] }),
+        flange_ends: Vec::new(),
         changed_by: Vec::new(),
     };
     Ok(Section { edges, flat })
@@ -531,6 +547,7 @@ impl Evaluator {
                         bends: Vec::new(),
                         base,
                         contour: None,
+                        flange_ends: Vec::new(),
                         changed_by: Vec::new(),
                     },
                     profile.sketch.clone(),
@@ -807,7 +824,15 @@ impl Evaluator {
                 .with_hint("put edge flanges right after their tab, before cuts, holes or moves"));
         }
         let t = flat.thickness;
+        let end = line.strip_suffix("_end").and_then(|f| flat.flange_ends.iter().find(|x| x.flange == f));
         let site = match (&flat.base, &flat.contour) {
+            _ if end.is_some() => {
+                let x = end.ok_or_else(|| bad(format!("no flange end '{line}'")))?;
+                if flat.bends.iter().any(|bd| bd.line == line) {
+                    return Err(bad(format!("{line} already has a flange")).with_hint("pick another edge"));
+                }
+                Site { a: x.a, b: x.b, out: x.out, frame: x.frame, along: x.along }
+            }
             (Some(base), _) => tab_site(s, &flat, base, line, t).map_err(|(m, h)| bad(m).with_hint(h))?,
             (None, Some(c)) => contour_site(s, &flat, c, line).map_err(|(m, h)| bad(m).with_hint(h))?,
             (None, None) => {
@@ -845,6 +870,41 @@ impl Evaluator {
         }
         if !splice(&mut nf.outlines, a, b, pa, pb) {
             return Err(bad(format!("line {line} is not on {body}'s outline")));
+        }
+        // This flange's far edge, for a flange bent off it: its outer face's end in the
+        // section, the new frame along the flange and across its thickness (towards the
+        // inner face), the same run along the line.
+        {
+            let (r, th, len) = (e.r, e.angle, e.length);
+            let c = [0.0, t + r];
+            let rad = [libm::sin(th), -libm::cos(th)];
+            let d = [libm::cos(th), libm::sin(th)];
+            let o2 = addv(addv(c, mul(rad, r + t)), mul(d, len));
+            let i2 = addv(addv(c, mul(rad, r)), mul(d, len));
+            let m = |p: P2| if e.down { [p[0], t - p[1]] } else { p };
+            let (o2, i2) = (m(o2), m(i2));
+            let d = if e.down { [d[0], -d[1]] } else { d };
+            let f = site.frame;
+            let at = |q: P2| {
+                gusset_kernel::add(
+                    f.origin,
+                    gusset_kernel::add(gusset_kernel::scale(f.x, q[0]), gusset_kernel::scale(f.y, q[1])),
+                )
+            };
+            let dir = |v: P2| gusset_kernel::add(gusset_kernel::scale(f.x, v[0]), gusset_kernel::scale(f.y, v[1]));
+            let x = dir(d);
+            let y = dir(mul(sub(i2, o2), 1.0 / t));
+            let e3 = gusset_kernel::scale(f.normal(), site.along.signum());
+            let l = site.along.abs();
+            let along = if gusset_kernel::dot(cross(x, y), e3) >= 0.0 { l } else { -l };
+            nf.flange_ends.push(FlangeEnd {
+                flange: name.to_string(),
+                a: pa,
+                b: pb,
+                out: out2,
+                frame: Frame { origin: at(o2), x, y },
+                along,
+            });
         }
         nf.bends.push(FlatBend {
             line: line.to_string(),

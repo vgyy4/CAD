@@ -263,3 +263,62 @@ fn edge_flanges_stand_off_a_contour_flanges_sides() {
     let errs: Vec<String> = r.errors().iter().map(|e| e.to_string()).collect();
     assert!(errs.iter().any(|e| e.contains("collide")) && errs.iter().any(|e| e.contains("names no side")), "{errs:?}");
 }
+
+#[test]
+fn a_flange_bends_off_another_flanges_far_edge() {
+    let area = |o: &Vec<[f64; 2]>| {
+        let n = o.len();
+        (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+    };
+    for (down, down2) in [(false, false), (false, true), (true, false)] {
+        let f1 = if down { ", flip: true" } else { "" };
+        let f2 = if down2 { ", flip: true" } else { "" };
+        let src = format!(
+            "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5{f1})\n\n\
+             edge_flange F2 (body: Plate, line: F1_end, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5{f2})\n"
+        );
+        let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+        let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+        let mut ev = Evaluator::new(k);
+        let r = ev.evaluate(&doc, None, &());
+        assert!(r.errors().is_empty(), "{:?}", r.errors());
+        assert_eq!(r.bodies.len(), 1);
+        let b = r.body("Plate").unwrap();
+        let t = 2.0;
+        let flange = |len: f64, th: f64, rad: f64, l: f64| l * (th * t * (rad + t / 2.0) + len * t);
+        let volume = 60.0 * 40.0 * t + flange(15.0, FRAC_PI_2, 3.0, 40.0) + flange(10.0, FRAC_PI_2, 2.0, 40.0);
+        let m = ev.kernel().mass_properties(&b.shape).unwrap();
+        assert!(near(m.volume, volume), "{down} {down2}: {} vs {volume}", m.volume);
+        let flat = b.sheet.as_ref().unwrap();
+        assert_eq!(flat.bends.len(), 2);
+        assert!(near(area(&flat.outlines[0]) * t, volume), "at k = 0.5 the flat area times t is the volume");
+        let names: Vec<String> = b.names.faces.iter().map(ToString::to_string).collect();
+        assert!(names.iter().any(|n| n == "F2/flat(F1_end)"), "{names:?}");
+        let bb = ev.kernel().bbox(&b.shape).unwrap();
+        // Up then up folds back over the tab; flipping the second sends it outward; a
+        // downward first flange mirrors the whole below the tab.
+        let want = match (down, down2) {
+            (false, false) => ([65.0, 24.0], 0.0),
+            (false, true) => ([77.0, 24.0], 0.0),
+            _ => ([65.0, 2.0], -22.0),
+        };
+        assert!(
+            near(bb.max[0], want.0[0]) && near(bb.max[2], want.0[1]) && near(bb.min[2], want.1),
+            "{down} {down2}: {bb:?}"
+        );
+    }
+    // Twice off the same end is refused.
+    let src = format!(
+        "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5)\n\n\
+         edge_flange F2 (body: Plate, line: F1_end, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n\n\
+         edge_flange F3 (body: Plate, line: F1_end, length: 10 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.5)\n"
+    );
+    let (_, r) = {
+        let doc = gusset_doc::Document::from_text(&src).unwrap();
+        let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+        let mut ev = Evaluator::new(k);
+        let r = ev.evaluate(&doc, None, &());
+        (ev, r)
+    };
+    assert!(r.errors().iter().any(|e| e.to_string().contains("already has a flange")), "{:?}", r.errors());
+}

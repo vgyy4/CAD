@@ -109,7 +109,7 @@ impl Command for Tab {
 pub struct EdgeFlange {
     /// Tab or contour flange.
     pub body: String,
-    /// Tab line `l5`, contour side `l2_start`/`l2_end`.
+    /// `l5`, `l2_start`/`l2_end` or flange `F1_end`.
     pub line: String,
     /// Straight flange after the bend.
     pub length: String,

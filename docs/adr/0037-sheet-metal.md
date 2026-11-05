@@ -77,3 +77,14 @@ neighbouring lines' same side are refused: they would meet inside the bend betwe
 (corner reliefs and mitres are later work). A bare line name on a contour flange is refused
 with the two side names as the hint.
 
+## Amendment (2026-11-05): flanges off flanges
+
+`edge_flange` with `line: <flange>_end` bends off the far edge of an earlier edge flange on
+the same body. Every edge flange records that edge in the flat pattern (`flange_ends`): the
+line its strip ends on in the flat layout, and the frame of a flange bent off it (origin at
+the end of its outer face, x along it, y across its thickness towards the inner face, the
+same run along the line). "Up" is then towards the first flange's inner face: two flanges up
+fold back over the tab, a flipped second one turns outward. A second flange on the same end
+is refused. OCCT test `a_flange_bends_off_another_flanges_far_edge`: exact volumes and the
+flat area at k = 0.5 for three up/down combinations.
+
