@@ -113,3 +113,10 @@ names each placed body after its occurrence and composes the placement after the
 own ACIS transform. Not read yet: nested components (their matrices are relative to the
 parent) and the placement of `.f3z` designs relative to each other (warned).
 
+Binary B-spline surfaces (2026-11-05): a survey of all 42 bodies of the Fusion samples found
+one part lost. Its binary `spline-surface` wrote the four closure/singularity words as
+enumeration values (`0 0 0 0`) before the knot counts, and the reader took the first `0`
+for a count. The reader now tries that layout first when four small integers follow the
+degrees, then falls back to counts right after them. Binary files also name exact B-spline
+surfaces `exact_spl_sur` (text: `exactsur`): read as exact, not as an approximation.
+

@@ -322,9 +322,27 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
             return Err(bad("knot counts"));
         }
     }
+    // The binary form writes the four closure/singularity words as enumeration values
+    // (`0 0 0 0` for open, open, none, none): numbers before the counts. Read that layout
+    // first when it is there, else the counts come next.
+    if words.is_empty()
+        && (k..k + 4).all(|i| r.num(i).is_some_and(|v| (0.0..=3.0).contains(&v) && v.fract().abs() < 1e-12))
+    {
+        let mut kb = k + 4;
+        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational) {
+            return Ok(sf);
+        }
+    }
+    bs3_surface_rest(r, &mut k, du, dv, rational)
+}
+
+/// A B-spline surface from its knot counts on (`k` at the u count).
+fn bs3_surface_rest(r: &Rec, k: &mut usize, du: usize, dv: usize, rational: bool) -> Result<Bs3Surface, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("{}: {m}", r.ty));
     let count = |i: usize| r.num(i).filter(|n| *n >= 2.0 && *n <= 1e6).map(|n| n as usize);
-    let (nu, nv) = (count(k).ok_or_else(|| bad("u knot count"))?, count(k + 1).ok_or_else(|| bad("v knot count"))?);
-    k += 2;
+    let (nu, nv) = (count(*k).ok_or_else(|| bad("u knot count"))?, count(*k + 1).ok_or_else(|| bad("v knot count"))?);
+    *k += 2;
+    let mut k = *k;
     let (ku, mut mu) = knot_vector(r, &mut k, nu, du)?;
     let (kv, mut mv) = knot_vector(r, &mut k, nv, dv)?;
     let cu = (mu.iter().sum::<usize>() + 1).checked_sub(du).filter(|c| *c > du).ok_or_else(|| bad("too few points"))?;
@@ -714,7 +732,7 @@ impl<'a> Writer<'a> {
                     return Ok((*id, against));
                 }
                 let name = def.word(at + 1).unwrap_or("").to_string();
-                let b = if name == "exactsur" {
+                let b = if name == "exactsur" || name == "exact_spl_sur" {
                     bs3_surface(def, at + 2)?
                 } else {
                     // Procedural surfaces (sweeps, blends, offsets...) carry a B-spline
@@ -1023,4 +1041,29 @@ pub(crate) fn write(
     text.push_str(&w.out);
     text.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
     Ok((text, written, w.warnings))
+}
+
+#[cfg(test)]
+mod surface_layout_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::parse::{Rec, Tok};
+
+    fn rec(s: &str) -> Rec {
+        Rec { ty: "spline-surface".into(), f: s.split_whitespace().map(|w| Tok::Word(w.into())).collect() }
+    }
+
+    #[test]
+    fn the_binary_forms_enumeration_values_read_like_the_texts_words() {
+        let pts = "0 0 0 1 0 0 0 1 0 1 1 1";
+        let text = rec(&format!("nubs 1 1 open open none none 2 2 0 1 1 1 0 1 1 1 {pts}"));
+        let bin = rec(&format!("nubs 1 1 0 0 0 0 2 2 0 1 1 1 0 1 1 1 {pts}"));
+        let (a, b) = (bs3_surface(&text, 0).unwrap(), bs3_surface(&bin, 0).unwrap());
+        assert_eq!(a.points, b.points);
+        assert_eq!(a.knots, b.knots);
+        assert_eq!(a.points.len(), 2);
+        // Without descriptors at all, the counts come right after the degrees.
+        let bare = rec(&format!("nubs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
+        assert_eq!(bs3_surface(&bare, 0).unwrap().points, a.points);
+    }
 }
