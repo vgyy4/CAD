@@ -63,6 +63,25 @@ pub struct ContourBase {
     pub sketch: String,
     pub straights: Vec<Straight>,
     pub z: [f64; 2],
+    /// The bends between the straights, in order.
+    pub bends: Vec<BendZone>,
+}
+
+/// A contour flange's bend: in the sketch, its centre, the direction from the centre to
+/// where the bend starts on the sketch side, and its signed turn; in the flat pattern,
+/// where its zone starts and how long it is. `line` is the straight before it, `outer` says
+/// whether its sketch-side face is the bend's outside (`bend_out`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BendZone {
+    pub line: String,
+    pub centre: [f64; 2],
+    pub start: [f64; 2],
+    /// The sketch-side face's radius.
+    pub radius: f64,
+    pub turn: f64,
+    pub x0: f64,
+    pub allowance: f64,
+    pub outer: bool,
 }
 
 /// One flat stretch of a contour flange: the sketch-side line from `a` to `b` (trimmed by
@@ -272,6 +291,7 @@ pub(crate) fn contour_section(
     let mut x = 0.0;
     let mut bends = Vec::new();
     let mut straights = Vec::with_capacity(n);
+    let mut zones = Vec::with_capacity(n);
     for i in 0..n {
         straights.push(Straight {
             line: name(i),
@@ -284,6 +304,18 @@ pub(crate) fn contour_section(
         if i + 1 < n {
             let th = turns.get(i + 1).copied().unwrap_or(0.0);
             let ba = th.abs() * (r + k * t);
+            let cc = centre(i + 1);
+            let sd = sub(a1(i), cc);
+            zones.push(BendZone {
+                line: name(i),
+                centre: cc,
+                start: mul(sd, 1.0 / len(sd).max(1e-300)),
+                radius: len(sd),
+                turn: th,
+                x0: x,
+                allowance: ba,
+                outer: parts(i + 1).0 == SheetPart::BendOut,
+            });
             bends.push(FlatBend {
                 line: name(i),
                 angle: th * side,
@@ -302,7 +334,7 @@ pub(crate) fn contour_section(
         bends,
         base: None,
         // The sketch and the width's span are filled in by the caller.
-        contour: Some(ContourBase { sketch: String::new(), straights, z: [0.0, w] }),
+        contour: Some(ContourBase { sketch: String::new(), straights, z: [0.0, w], bends: zones }),
         flange_ends: Vec::new(),
         changed_by: Vec::new(),
     };
@@ -941,6 +973,8 @@ enum FlatMap<'a> {
     Straight(&'a Straight, &'a ContourBase, Frame),
     /// An edge flange's outer face.
     Flange(&'a FlangeEnd),
+    /// A contour flange bend's sketch-side face.
+    Bend(&'a BendZone, &'a ContourBase, Frame),
 }
 
 impl FlatMap<'_> {
@@ -961,6 +995,17 @@ impl FlatMap<'_> {
                 let inward = gusset_kernel::add(scale(f.x, st.inward[0]), scale(f.y, st.inward[1]));
                 let d = sub3(p, a);
                 ([st.x0 + dot(d, dir), dot(sub3(p, f.origin), n) - c.z[0]], dot(d, inward).abs())
+            }
+            FlatMap::Bend(z, c, f) => {
+                // Into the sketch plane, then the angle from the bend's start, as a share of
+                // its turn, along its zone.
+                let d = sub3(p, f.origin);
+                let q = sub([dot(d, f.x), dot(d, f.y)], z.centre);
+                let rad = len(q);
+                let (cs, sn) = (z.start[0] * q[0] + z.start[1] * q[1], z.start[0] * q[1] - z.start[1] * q[0]);
+                let phi = libm::atan2(sn, cs);
+                let share = (phi / z.turn).clamp(-1e-6, 1.0 + 1e-6);
+                ([z.x0 + share * z.allowance, dot(d, f.normal()) - c.z[0]], (rad - z.radius).abs())
             }
             FlatMap::Flange(fe) => {
                 let f = fe.frame;
@@ -1034,6 +1079,19 @@ impl Evaluator {
                 FaceKey::Sheet { part: SheetPart::Flat, .. } => {
                     let m = flat.flange_ends.iter().find(|fe| fe.flange == n.feature).map(FlatMap::Flange);
                     (Kind::Primary, m)
+                }
+                FaceKey::Sheet { part: part @ (SheetPart::BendIn | SheetPart::BendOut), at }
+                    if n.feature == b.feature =>
+                {
+                    let c = flat.contour.as_ref();
+                    let zone = c.and_then(|c| c.bends.iter().find(|z| &z.line == at));
+                    match (zone, c, contour_frame) {
+                        (Some(z), Some(c), Some(f)) if z.outer == (*part == SheetPart::BendOut) => {
+                            (Kind::Primary, Some(FlatMap::Bend(z, c, f)))
+                        }
+                        (Some(_), _, _) => (Kind::Back, None),
+                        _ => (Kind::Other, None),
+                    }
                 }
                 FaceKey::Sheet { part: SheetPart::FlatBack, .. } => (Kind::Back, None),
                 FaceKey::Sheet { .. } => (Kind::Other, None),

@@ -103,3 +103,11 @@ through a bend, added material, is marked as before (`changed_by`). OCCT tests: 
 through a tab becomes a circle of the same radius in the pattern; a hole through a U
 channel's bottom lands where that straight develops.
 
+Cuts across a contour flange's bends are unfolded too (2026-11-05): each bend keeps its
+centre, the direction to its start on the sketch side, its turn, its radius there and its
+zone in the pattern (`ContourBase::bends`). A point on the bend's sketch-side face maps to
+the zone's start plus the share of the turn its angle makes, times the allowance, and the
+height across the width as for straights. The outline is the cut's outline on the sketch
+side: exact for cuts square to the sheet, an approximation for oblique ones (whose outlines
+on the two faces differ). Edge flanges' bends still mark the pattern.
+

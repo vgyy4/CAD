@@ -380,3 +380,41 @@ extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: U)",
     );
     assert!((mx - cx).abs() < 0.05 && (my - 20.0).abs() < 0.05, "{mx} {my} vs {cx} 20");
 }
+
+#[test]
+fn a_hole_through_a_bend_is_developed_with_it() {
+    let base = "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)";
+    // A short vertical hole at the corner between l6 and l7: in through the bend's outside,
+    // out through its inside, clear of the walls.
+    let (_, r) = eval(&format!(
+        "{base}
+
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(56.5, -20)
+  c2 = circle(p1, 1)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)"
+    ));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let b = r.body("U").unwrap();
+    let flat = b.sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    // Developed from its outline on the bend's sketch side (the outside, radius 5, centre
+    // (55, 5)): x = 55.5 and 57.5 lie at asin(0.1) and asin(0.5) round from the bend's start,
+    // each angle a share of the quarter turn along its 2π mm zone (π/2 · (3 + 1)); the zone
+    // starts after l5's straight (25), its bend (2π) and l6's straight (50).
+    let x0 = 25.0 + FRAC_PI_2 * 4.0 + 50.0;
+    let (lo, hi) = (x0 + libm::asin(0.1) * 4.0, x0 + libm::asin(0.5) * 4.0);
+    let h = &flat.outlines[1];
+    let (mut xmin, mut xmax, mut ymin, mut ymax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for p in h {
+        (xmin, xmax, ymin, ymax) = (xmin.min(p[0]), xmax.max(p[0]), ymin.min(p[1]), ymax.max(p[1]));
+    }
+    assert!((xmin - lo).abs() < 0.05 && (xmax - hi).abs() < 0.05, "{xmin}..{xmax} vs {lo}..{hi}");
+    assert!((ymin - 19.0).abs() < 0.05 && (ymax - 21.0).abs() < 0.05, "{ymin}..{ymax}");
+    let z = &flat.bends[1];
+    let (x0, x1) = (z.start[0][0], z.end[0][0]);
+    assert!(flat.outlines[1].iter().all(|p| p[0] > x0 - 2.0 && p[0] < x1 + 2.0), "{x0} {x1} {:?}", flat.outlines[1]);
+}
