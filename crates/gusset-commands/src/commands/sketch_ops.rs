@@ -212,7 +212,7 @@ pub struct SketchTrim {
 impl Command for SketchTrim {
     const ID: &'static str = "sketch.trim";
     const TITLE: &'static str = "Trim";
-    const DESCRIPTION: &'static str = "Delete the piece of a curve at (x, y) between crossing curves. New ends sit on the crossing curve; a circle becomes an arc, a line cut mid-way two lines, a spline is refitted through its kept points. A trimmed line loses length/midpoint/equal constraints.";
+    const DESCRIPTION: &'static str = "Delete the piece of a curve at (x, y) between crossing curves; a circle becomes an arc, a mid-line cut gives two lines, a spline is refitted. A trimmed line loses length/midpoint/equal constraints.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("T");
@@ -672,7 +672,7 @@ pub struct SketchPattern {
     /// Circular: total angle (default 360 deg).
     #[serde(default)]
     pub angle: Option<String>,
-    /// Id of an existing pattern to replace.
+    /// Id of a pattern to replace.
     #[serde(default)]
     pub id: Option<String>,
 }

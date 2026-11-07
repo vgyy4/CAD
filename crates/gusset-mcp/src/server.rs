@@ -115,6 +115,8 @@ pub(crate) struct Shared {
     grants: RwLock<Arc<crate::grants::Grants>>,
     diagnostics: RwLock<Option<String>>,
     elicitation_timeout: Duration,
+    /// Stateless clients already told their earlier branches (once per agent name).
+    told: std::sync::Mutex<std::collections::HashSet<String>>,
     request_deadline: RwLock<Duration>,
     next_instance: AtomicU64,
 }
@@ -142,6 +144,7 @@ impl Shared {
             keys: RwLock::new(Arc::default()),
             diagnostics: RwLock::new(None),
             elicitation_timeout: Duration::from_secs(600),
+            told: std::sync::Mutex::new(std::collections::HashSet::new()),
             request_deadline: RwLock::new(DEFAULT_REQUEST_DEADLINE),
             next_instance: AtomicU64::new(1),
         }
@@ -774,6 +777,29 @@ impl GussetMcp {
         req: &CallToolRequestParams,
         ctx: &RequestContext<RoleServer>,
     ) -> CallToolResponse {
+        let mut out = self.call_command_once(spec, req, ctx).await;
+        // A stateless (2026-07-28) client never sends `initialize`, where a connecting client
+        // learns its earlier branches: its first completed command carries the note instead
+        // (dogfooding F6-13).
+        if is_modern(ctx)
+            && let CallToolResponse::Complete(r) = &mut out
+        {
+            let agent = self.agent(ctx);
+            let first = self.shared.told.lock().is_ok_and(|mut t| t.insert(agent));
+            let client = ctx.client_info().map(|i| i.name).unwrap_or_default();
+            if first && let Some(note) = earlier_branches_note(&self.shared.host, &client) {
+                r.content.push(ContentBlock::text(note.trim().to_string()));
+            }
+        }
+        out
+    }
+
+    async fn call_command_once(
+        &self,
+        spec: &'static CommandSpec,
+        req: &CallToolRequestParams,
+        ctx: &RequestContext<RoleServer>,
+    ) -> CallToolResponse {
         let agent = self.agent(ctx);
         let args = Value::Object(req.arguments.clone().unwrap_or_default());
         if args.get("approved").is_some() {
@@ -1387,12 +1413,12 @@ mod size_tests {
         let shell = registry().iter().find(|s| s.id == "feature.shell").expect("shell command");
         assert_eq!(
             summary(shell),
-            "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box)."
+            "Hollow a body to a wall thickness, removing the selected faces (e.g. the top: open box)."
         );
         let pattern = registry().iter().find(|s| s.id == "feature.pattern_circular").expect("circular pattern command");
         assert_eq!(
             summary(pattern),
-            "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle)."
+            "Repeat a body or some of its features (e.g. a bolt circle of holes) around an axis."
         );
     }
 

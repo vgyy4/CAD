@@ -39,7 +39,7 @@ pub(super) fn vec3(what: &str, v: &[String; 3]) -> Result<[gusset_units::expr::E
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DatumPlane {
-    /// `XY` (default), `XZ`, `YZ`, a planar face reference or a datum plane name.
+    /// XY (default), XZ, YZ, a planar face reference or datum plane name.
     #[serde(default)]
     pub base: Option<String>,
     /// Length along the plane's normal, e.g. `10 mm`. Use this or axis with angle.
@@ -48,7 +48,7 @@ pub struct DatumPlane {
     /// `X`, `Y`, `Z` (through the origin) or a straight `edge(...)` reference.
     #[serde(default)]
     pub axis: Option<String>,
-    /// Expression such as `30 deg`, right-hand rule about the axis.
+    /// e.g. `30 deg`, right-hand about the axis.
     #[serde(default)]
     pub angle: Option<String>,
     #[serde(default)]
@@ -58,7 +58,7 @@ pub struct DatumPlane {
 impl Command for DatumPlane {
     const ID: &'static str = "feature.plane";
     const TITLE: &'static str = "Datum plane";
-    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or a datum plane along its normal (XY +Z, XZ -Y, YZ +X), or turned about an axis (X/Y/Z or a straight edge). Usable by sketch_create and feature_mirror; returns its frame.";
+    const DESCRIPTION: &'static str = "Construction plane: offset from XY/XZ/YZ, a face or a datum plane along its normal (XY +Z, XZ -Y, YZ +X), or turned about an axis (X/Y/Z or a straight edge). Usable by sketch_create, feature_mirror; returns its frame.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -140,22 +140,22 @@ pub(super) fn motion(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MoveBody {
-    /// Three length expressions along world X, Y, Z, e.g. `["10 mm", "0 mm", "h"]`.
+    /// Lengths along world X, Y, Z, e.g. `["10 mm", "0 mm", "h"]`.
     #[serde(default)]
     pub translate: Option<[String; 3]>,
     /// `X`, `Y`, `Z` or a vector like `[0, 0, 1]`; needs angle.
     #[serde(default)]
     pub axis: Option<String>,
-    /// Expression such as `45 deg`.
+    /// e.g. `45 deg`.
     #[serde(default)]
     pub angle: Option<String>,
-    /// A point on the axis, three length expressions (default: the origin).
+    /// Point on the axis, three lengths (default: origin).
     #[serde(default)]
     pub through: Option<[String; 3]>,
     /// Keep the original and add the moved copy.
     #[serde(default)]
     pub copy: bool,
-    /// Body to move (default: the latest).
+    /// Body to move (default: latest).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -202,7 +202,7 @@ pub struct Combine {
     /// `add` (default), `cut` or `intersect`.
     #[serde(default)]
     pub op: Option<String>,
-    /// Target body (default: the latest body that is not a tool).
+    /// Target body (default: latest non-tool body).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -212,7 +212,7 @@ pub struct Combine {
 impl Command for Combine {
     const ID: &'static str = "feature.combine";
     const TITLE: &'static str = "Combine bodies";
-    const DESCRIPTION: &'static str = "Unite (add), subtract (cut) or intersect tool bodies with a target body; the tools are consumed. For holes, use `feature_hole` with several `at` points in one call. To pattern a feature: make it its own body (op new), pattern that, then combine.";
+    const DESCRIPTION: &'static str = "Unite (add), subtract (cut) or intersect tool bodies with a target; the tools are consumed. For holes use `feature_hole` (several `at` points). To pattern a feature: make it a body (op new), pattern that, then combine.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

@@ -87,7 +87,7 @@ pub struct QueryInterference {
 impl Command for QueryInterference {
     const ID: &'static str = "query.interference";
     const TITLE: &'static str = "Interference";
-    const DESCRIPTION: &'static str = "Pairs of bodies that overlap, with the shared volume and its centroid. Bodies that only touch do not count. At most 2000 pairs are intersected (truncated: true beyond).";
+    const DESCRIPTION: &'static str = "Pairs of overlapping bodies with shared volume and centroid; merely touching bodies do not count. At most 2000 pairs are intersected (truncated: true beyond).";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -122,7 +122,7 @@ pub struct StudyMotion {
     /// Bodies to record (default: all).
     #[serde(default)]
     pub bodies: Vec<String>,
-    /// Also check interference at every step.
+    /// Also check interference per step.
     #[serde(default)]
     pub interference: bool,
 }
@@ -130,7 +130,7 @@ pub struct StudyMotion {
 impl Command for StudyMotion {
     const ID: &'static str = "study.motion";
     const TITLE: &'static str = "Motion study";
-    const DESCRIPTION: &'static str = "Sweep a parameter from `from` to `to` in equal steps (the document is not changed); per step: rebuild errors, body centroids, optional interference.";
+    const DESCRIPTION: &'static str = "Sweep a parameter from `from` to `to` in equal steps (document unchanged); per step: rebuild errors, body centroids, optional interference.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -207,7 +207,7 @@ pub struct QueryBom {}
 impl Command for QueryBom {
     const ID: &'static str = "query.bom";
     const TITLE: &'static str = "Bill of materials";
-    const DESCRIPTION: &'static str = "The bodies grouped into parts: bodies with the same volume, area and face and edge counts count as one part (mirror images too). Rows with quantity, body names, volume and area, and the same as CSV.";
+    const DESCRIPTION: &'static str = "Bodies grouped into parts: same volume, area and face/edge counts = one part (mirror images too). Rows: quantity, body names, volume, area; also as CSV.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

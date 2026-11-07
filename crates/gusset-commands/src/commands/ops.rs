@@ -153,7 +153,7 @@ fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeleteFace {
-    /// Faces to remove (face refs from query_body), e.g. a hole's wall or a fillet.
+    /// Faces to remove (refs from query_body), e.g. a hole's wall or fillet.
     pub faces: Vec<String>,
     #[serde(default)]
     pub body: Option<String>,
@@ -191,7 +191,7 @@ impl Command for DeleteFace {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OffsetFace {
-    /// Faces to move (face refs from query_body).
+    /// Faces to move (refs from query_body).
     pub faces: Vec<String>,
     /// Along the face normals (`2 mm`); negative moves them in.
     pub distance: String,
@@ -231,7 +231,7 @@ impl Command for OffsetFace {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MoveFace {
-    /// Faces to move (face refs from query_body).
+    /// Faces to move (refs from query_body).
     pub faces: Vec<String>,
     /// As in feature_move_body.
     #[serde(default)]
@@ -417,7 +417,7 @@ pub struct Draft {
     /// Reverse the pull direction (plane normal, or into the body for a face).
     #[serde(default)]
     pub flip: bool,
-    /// Body to change (default: the latest body).
+    /// Body to change (default: latest).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -427,7 +427,8 @@ pub struct Draft {
 impl Command for Draft {
     const ID: &'static str = "feature.draft";
     const TITLE: &'static str = "Draft";
-    const DESCRIPTION: &'static str = "Taper faces by an angle about a neutral plane so a molded or cast part releases. Needs the OCCT kernel. Returns body_changes.";
+    const DESCRIPTION: &'static str =
+        "Taper faces by an angle about a neutral plane (mold/cast release). Needs OCCT. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -455,12 +456,12 @@ impl Command for Draft {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Shell {
-    /// Faces to remove (face refs from query_body, e.g. `Extrude1/cap(end)`); empty = closed hollow. Inner walls: `<feature>/inner(<face>)`.
+    /// Faces to remove (refs from query_body, e.g. `Extrude1/cap(end)`); empty = closed hollow. Inner walls: `<feature>/inner(<face>)`.
     #[serde(default)]
     pub faces: Vec<String>,
     /// Wall thickness (`2 mm`); positive inward, negative outward.
     pub thickness: String,
-    /// Body to hollow (default: the latest body).
+    /// Body to hollow (default: latest).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -470,7 +471,7 @@ pub struct Shell {
 impl Command for Shell {
     const ID: &'static str = "feature.shell";
     const TITLE: &'static str = "Shell";
-    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint if the walls are too thick. Returns body_changes.";
+    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top: open box). Needs OCCT. Fails with a hint if walls are too thick. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -497,13 +498,13 @@ impl Command for Shell {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mirror {
-    /// `XY`, `XZ`, `YZ` (through the origin), a planar face reference such as
+    /// XY, XZ, YZ (through the origin), a planar face like
     /// `Extrude1/side(Sketch1/l6)` or a datum plane name (feature_plane).
     pub plane: String,
-    /// true: unite with the source body; false (default): a new body named after the feature. Faces: `<feature>/mirror(<face>)`.
+    /// true: unite with the source; false (default): a new body named after the feature. Faces: `<feature>/mirror(<face>)`.
     #[serde(default)]
     pub merge: bool,
-    /// Body to mirror (default: the latest body).
+    /// Body to mirror (default: latest).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -545,14 +546,14 @@ fn check_features(doc: &Document, features: &[String]) -> Result<(), CommandErro
 pub struct PatternLinear {
     /// `X`, `Y`, `Z` or a vector such as `[1, 0.5, 0]` (unitless components).
     pub direction: String,
-    /// Instances including the original, a whole number >= 2 (may be an expression).
+    /// Instances incl. the original, whole number >= 2 (may be an expression).
     pub count: String,
     /// Distance between neighbours, e.g. `15 mm` (negative reverses).
     pub spacing: String,
-    /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
+    /// Body to repeat (default: latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
-    /// Repeat only these features (holes, cuts, bosses) instead of the body.
+    /// Repeat only these features (holes, cuts, bosses), not the body.
     #[serde(default)]
     pub features: Vec<String>,
     #[serde(default)]
@@ -562,7 +563,8 @@ pub struct PatternLinear {
 impl Command for PatternLinear {
     const ID: &'static str = "feature.pattern_linear";
     const TITLE: &'static str = "Linear pattern";
-    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it, along a direction (count, spacing). Uniting needs OCCT unless the copies stay apart.";
+    const DESCRIPTION: &'static str =
+        "Repeat a body or some of its features along a direction. Uniting needs OCCT unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -594,18 +596,18 @@ impl Command for PatternLinear {
 pub struct PatternCircular {
     /// `X`, `Y`, `Z` or a vector like `[0, 1, 0]`.
     pub axis: String,
-    /// A point on the axis, three lengths (default: the origin).
+    /// Point on the axis, three lengths (default: origin).
     #[serde(default)]
     pub through: Option<[String; 3]>,
-    /// Instances including the original, a whole number >= 2 (may be an expression).
+    /// Instances incl. the original, whole number >= 2 (may be an expression).
     pub count: String,
     /// Total angle, default `360 deg` (full turn: spaced angle/count; less: last at the angle).
     #[serde(default)]
     pub angle: Option<String>,
-    /// Body to repeat (default: the latest). Faces: `<feature>/instance(k, <face>)`.
+    /// Body to repeat (default: latest). Faces: `<feature>/instance(k, <face>)`.
     #[serde(default)]
     pub body: Option<String>,
-    /// Repeat only these features (holes, cuts, bosses) instead of the body.
+    /// Repeat only these features (holes, cuts, bosses), not the body.
     #[serde(default)]
     pub features: Vec<String>,
     #[serde(default)]
@@ -615,7 +617,7 @@ pub struct PatternCircular {
 impl Command for PatternCircular {
     const ID: &'static str = "feature.pattern_circular";
     const TITLE: &'static str = "Circular pattern";
-    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle). Uniting needs OCCT unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a body or some of its features (e.g. a bolt circle of holes) around an axis. Uniting needs OCCT unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

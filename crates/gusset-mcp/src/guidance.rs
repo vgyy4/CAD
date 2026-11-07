@@ -94,7 +94,7 @@ pub fn tool_description(spec: &CommandSpec) -> String {
     } else if f.agent_approval {
         // The full approval rules are in the server instructions (rule 3); tool
         // descriptions only flag the tools they apply to, to keep tools/list small.
-        d.push_str(" Needs the user's approval (rule 3); never work around it.");
+        d.push_str(" Needs user approval (rule 3); never work around it.");
     }
     if f.destructive {
         d.push_str(" Destructive (undoable): confirm: true only after the user agreed.");

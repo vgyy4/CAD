@@ -227,7 +227,7 @@ pub struct InsertComponent {
 impl Command for InsertComponent {
     const ID: &'static str = "assembly.insert_component";
     const TITLE: &'static str = "Insert component";
-    const DESCRIPTION: &'static str = "Bring in a body of another .gus document as a component pinned to its current version (a stored copy), at its own coordinates; place it with feature_joint. Faces: <Name>/part(<face there>).";
+    const DESCRIPTION: &'static str = "Insert a body of another .gus document as a component pinned to its current version (stored copy), at its own coordinates; place it with feature_joint. Faces: <Name>/part(<face there>).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -332,7 +332,7 @@ pub struct ConfigureComponent {
 impl Command for ConfigureComponent {
     const ID: &'static str = "assembly.configure_component";
     const TITLE: &'static str = "Configure component";
-    const DESCRIPTION: &'static str = "Set parameters of a component's document from this one ({\"teeth\": \"30\", \"w\": \"2 * a\"}; null restores its own value) and/or pick one of its configurations, e.g. two sizes of one part.";
+    const DESCRIPTION: &'static str = "Set parameters of a component's document from this one ({\"teeth\": \"30\", \"w\": \"2 * a\"}; null restores its own value) and/or pick one of its configurations.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -375,8 +375,8 @@ impl Command for ConfigureComponent {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryComponents {
-    /// Only read sources inside the project folder; others report `source_error` (the
-    /// app's check after opening a project, which must not touch other files).
+    /// Only read sources in the project folder; others report `source_error` (for the
+    /// app's post-open check).
     #[serde(default)]
     pub local_only: bool,
 }

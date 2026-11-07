@@ -19,7 +19,7 @@ pub struct FaceLoad {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StaticQuery {
-    /// Default: the latest body.
+    /// Default: latest body.
     #[serde(default)]
     pub body: Option<String>,
     /// Faces held still.

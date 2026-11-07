@@ -34,7 +34,7 @@ pub struct Text {
     /// new (default), add, cut, intersect.
     #[serde(default)]
     pub op: Option<String>,
-    /// Target body for add/cut/intersect (default: the latest body).
+    /// Target for add/cut/intersect (default: latest body).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]

@@ -188,7 +188,7 @@ impl Command for EdgeFlange {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FlatPatternQuery {
-    /// Default: the latest sheet-metal body.
+    /// Default: latest sheet-metal body.
     #[serde(default)]
     pub body: Option<String>,
 }
@@ -284,12 +284,12 @@ impl Command for FlatPatternQuery {
 pub struct ExportFlat {
     /// `.dxf` or `.svg` in the project folder.
     pub path: String,
-    /// Default: the latest sheet-metal body.
+    /// Default: latest sheet-metal body.
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
     pub overwrite: bool,
-    /// Write it even when later features changed the body (they are not in it).
+    /// Write even if later features changed the body (they are not in it).
     #[serde(default)]
     pub allow_changed: bool,
 }

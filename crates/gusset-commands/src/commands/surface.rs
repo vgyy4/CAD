@@ -82,7 +82,7 @@ pub struct Thicken {
     /// Half the thickness to each side.
     #[serde(default)]
     pub both_sides: bool,
-    /// Sheet body (default: the latest body).
+    /// Sheet body (default: latest).
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]

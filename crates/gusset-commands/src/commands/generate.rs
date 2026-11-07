@@ -1834,7 +1834,7 @@ impl Command for GenerateThread {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GenerateNut {
-    /// Thread major (nominal) diameter.
+    /// Major (nominal) diameter.
     #[serde(default = "d_thread_d")]
     #[schemars(extend("x-essential" = true))]
     pub diameter: String,

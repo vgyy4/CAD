@@ -1210,7 +1210,7 @@ impl Command for DrawingExport {
     const ID: &'static str = "drawing.export";
     const TITLE: &'static str = "Export drawing";
     const DESCRIPTION: &'static str =
-        "Write a drawing as SVG, DXF (a layer per line type) or PDF to a file in the project folder.";
+        "Write a drawing as SVG, DXF (a layer per line type) or PDF to the project folder.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
