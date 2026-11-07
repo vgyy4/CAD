@@ -394,8 +394,9 @@ back over the tab); its faces are
 bend allowance plus the length beyond that line. `line` may also be a contour flange's side,
 `l6_start` / `l6_end` (the low / high end of the width along the sketch normal), or an earlier
 edge flange's far edge, `F1_end` (up = towards that flange's inner face). `close: true`
-(90 deg flanges off a tab's outline) butts this flange's wall against flanges already on the
-neighbouring lines at outside corners, leaving a square relief at the bend; `close: mitre`
+(flanges off a tab's outline bent the same way, up to 90 deg) butts this flange's wall against
+flanges already on the neighbouring lines at outside corners, leaving a square relief at the
+bend (below 90 deg both walls run to the plane that mirrors one into the other; equal radii); `close: mitre`
 cuts both walls on the corner's diagonal instead, 0.1 mm apart. A later cut through
 flat regions or bends (an extrude cut, a hole) appears in the flat pattern as a cut-out; a cut
 that notches an edge or adds material marks the pattern `changed_by` instead. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance

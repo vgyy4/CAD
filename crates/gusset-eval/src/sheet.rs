@@ -1026,13 +1026,15 @@ impl Evaluator {
                 len: e.length,
                 down: e.down,
                 ba,
+                angle: e.angle,
                 name: format!("{line}_corner"),
             };
             if !(flat.base.is_some() && end.is_none()) {
                 return Err(bad(format!("close joins flanges off a tab's outline; {line} is not one")));
             }
-            if (e.angle - std::f64::consts::FRAC_PI_2).abs() > 1e-9 {
-                return Err(expr("close joins 90 deg flanges").with_hint("bend 90 deg, or leave the corner open"));
+            if e.angle > std::f64::consts::FRAC_PI_2 + 1e-9 {
+                return Err(expr("close joins flanges bent up to 90 deg")
+                    .with_hint("bend 90 deg or less, or leave the corner open"));
             }
             let mut closed = 0;
             for fe in flat.flange_ends.iter().filter(|fe| fe.bend.on_tab) {
@@ -1047,12 +1049,45 @@ impl Evaluator {
                     len: fb.length,
                     down: fb.turn < 0.0,
                     ba: fb.allowance,
+                    angle: fb.turn.abs(),
                     name: format!("{}_corner", fe.flange),
                 };
-                if (fb.turn.abs() - std::f64::consts::FRAC_PI_2).abs() > 1e-9 || other.down != me.down {
+                if (other.angle - me.angle).abs() > 1e-9 || other.down != me.down {
                     continue;
                 }
                 let Some((p, me_start, other_start)) = me.corner_with(&other) else { continue };
+                if (me.angle - std::f64::consts::FRAC_PI_2).abs() > 1e-9 {
+                    // Other angles: both walls run to the plane that mirrors one into the
+                    // other (equal radii), 0.1 mm short of it for a mitre.
+                    if (me.r - other.r).abs() > 1e-9 {
+                        return Err(bad(format!(
+                            "{line}: closing a corner at {:.4} deg needs equal bend radii",
+                            me.angle.to_degrees()
+                        ))
+                        .with_hint("give both flanges the same bend radius"));
+                    }
+                    let gap = if e.mitre { MITRE_GAP } else { 0.0 };
+                    for (w, ws, o, os) in [(&me, me_start, &other, other_start), (&other, other_start, &me, me_start)] {
+                        let res = w
+                            .angled_end(self.kernel.as_ref(), t, ws, o, os, gap)
+                            .map_err(|ke| kernel_err(name, "closed corner", ke))?;
+                        let at = [w.name.clone()];
+                        self.combine(
+                            s,
+                            name,
+                            &OpContext::Sheet { feature: name, at: &at },
+                            res,
+                            BodyOp::Add,
+                            (Some(body), None),
+                        )?;
+                        let (q1, q2, a1, a2) = w.angled_flap(p, ws, gap);
+                        if !splice(&mut nf.outlines, q1, q2, addv(q1, a1), addv(q2, a2)) {
+                            return Err(bad(format!("the corner at {line} cannot be closed in the flat pattern")));
+                        }
+                    }
+                    closed += 1;
+                    continue;
+                }
                 // Overlap: the new flange's wall covers the corner and the other runs up to its
                 // inside. Mitre: each runs to the diagonal through the corner's inner and outer
                 // edges (`d` shifts it when the radii differ); the flat flap is as wide as the
@@ -1128,6 +1163,8 @@ struct Wall {
     len: f64,
     down: bool,
     ba: f64,
+    /// The bend angle (rad, 0 to a right angle).
+    angle: f64,
     name: String,
 }
 
@@ -1206,6 +1243,113 @@ impl Wall {
         let height = scale(self.frame.y, up);
         let distance = if dot3(cross(frame.x, frame.y), height) >= 0.0 { self.len } else { -self.len };
         (Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] }, distance)
+    }
+
+    /// The wall's direction past its line's start or end, in space.
+    fn beyond(&self, at_start: bool) -> gusset_kernel::V3 {
+        gusset_kernel::scale(self.frame.normal(), self.reach(at_start, 1.0).signum())
+    }
+
+    /// The line's end at the corner, in space (the profile frame's origin there).
+    fn corner_point(&self, at_start: bool) -> gusset_kernel::V3 {
+        if at_start {
+            self.frame.origin
+        } else {
+            gusset_kernel::add(self.frame.origin, gusset_kernel::scale(self.frame.normal(), self.along))
+        }
+    }
+
+    /// For a corner at another angle: the wall's flat part carried well past the line's end
+    /// and cut off at the plane that mirrors it into `o` (moved `gap / 2` towards this wall).
+    fn angled_end(
+        &self,
+        k: &dyn gusset_kernel::Kernel,
+        t: f64,
+        at_start: bool,
+        o: &Wall,
+        o_start: bool,
+        gap: f64,
+    ) -> gusset_kernel::KResult<gusset_kernel::OpResult> {
+        use gusset_kernel::{add as add3, cross, norm, scale, sub as sub3};
+        let (r, th) = (self.r, self.angle);
+        let c = [0.0, t + r];
+        let rad = [libm::sin(th), -libm::cos(th)];
+        let d = [libm::cos(th), libm::sin(th)];
+        let (o1, i1) = (addv(c, mul(rad, r + t)), addv(c, mul(rad, r)));
+        let (o2, i2) = (addv(o1, mul(d, self.len)), addv(i1, mul(d, self.len)));
+        let m = |p: P2| if self.down { [p[0], t - p[1]] } else { p };
+        let tag = |p: SheetPart| sheet_tag(p, 0);
+        let mut edges = vec![
+            ProfileEdge { seg: Seg2::Line { a: m(o1), b: m(o2) }, tag: tag(SheetPart::Flat) },
+            ProfileEdge { seg: Seg2::Line { a: m(o2), b: m(i2) }, tag: tag(SheetPart::End) },
+            ProfileEdge { seg: Seg2::Line { a: m(i2), b: m(i1) }, tag: tag(SheetPart::FlatBack) },
+            ProfileEdge { seg: Seg2::Line { a: m(i1), b: m(o1) }, tag: tag(SheetPart::Start) },
+        ];
+        if loop_area(&edges) < 0.0 {
+            edges = reversed(edges);
+        }
+        let mut frame = self.frame;
+        frame.origin = self.corner_point(at_start);
+        let reach = 2.0 * (r + t + self.len) + 1.0;
+        let prism = k.extrude(
+            &Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] },
+            &ExtrudeSpec { distance: self.reach(at_start, reach), symmetric: false },
+        )?;
+        // The half space past the mirror plane: a block on the plane, along its normal.
+        let n = sub3(self.beyond(at_start), o.beyond(o_start));
+        let n = scale(n, 1.0 / norm(n).max(1e-300));
+        let up = self.frame.y;
+        let side = cross(n, up);
+        let origin = sub3(self.corner_point(at_start), scale(n, gap / 2.0));
+        let big = 2.0 * reach;
+        let sq = [[-big, -big], [big, -big], [big, big], [-big, big]];
+        let block_edges: Vec<ProfileEdge> = sq
+            .iter()
+            .zip(sq.iter().cycle().skip(1))
+            .map(|(a, b)| ProfileEdge { seg: Seg2::Line { a: *a, b: *b }, tag: 0 })
+            .collect();
+        let bframe = Frame { origin: add3(origin, [0.0; 3]), x: up, y: side };
+        let dist = if gusset_kernel::dot(bframe.normal(), n) >= 0.0 { big } else { -big };
+        let block = k.extrude(
+            &Profile {
+                frame: bframe,
+                regions: vec![Region2 { outer: Loop2 { edges: block_edges }, holes: Vec::new() }],
+            },
+            &ExtrudeSpec { distance: dist, symmetric: false },
+        )?;
+        let cut = k.boolean(gusset_kernel::BoolOp::Cut, &prism.shape, &block.shape)?;
+        // Name the result like the plain extrusion: the prism's faces keep their origins,
+        // the cut face takes the far cap's place.
+        use gusset_kernel::FaceOrigin;
+        let face_origins = cut
+            .face_origins
+            .iter()
+            .map(|os| {
+                os.iter()
+                    .flat_map(|o| match o {
+                        FaceOrigin::Input { input: 0, face } => {
+                            prism.face_origins.get(*face as usize).cloned().unwrap_or_default()
+                        }
+                        _ => vec![FaceOrigin::Cap { end: gusset_kernel::CapEnd::End, region: 0 }],
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(gusset_kernel::OpResult { shape: cut.shape, face_origins })
+    }
+
+    /// In the flat pattern for a corner at another angle: the strip's side edge (from the
+    /// bend's end to the flange's end) and how far past the corner the flap reaches at each
+    /// end: the neutral layer's offset from the line, less the half gap across the plane.
+    fn angled_flap(&self, p: P2, at_start: bool, gap: f64) -> (P2, P2, P2, P2) {
+        let far = if at_start { self.b } else { self.a };
+        let dir = sub(p, far);
+        let u = mul(dir, 1.0 / len(dir).max(1e-300));
+        let rn = self.ba / self.angle.max(1e-300);
+        let c = gap / std::f64::consts::SQRT_2;
+        let w0 = (rn * libm::sin(self.angle) - c).max(0.0);
+        let w1 = (rn * libm::sin(self.angle) + self.len * libm::cos(self.angle) - c).max(0.0);
+        (addv(p, mul(self.out, self.ba)), addv(p, mul(self.out, self.ba + self.len)), mul(u, w0), mul(u, w1))
     }
 
     /// The signed extrusion that carries the profile `ext` past the line's start or end.

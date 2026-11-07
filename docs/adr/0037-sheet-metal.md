@@ -147,3 +147,13 @@ Welded shut, a mitre would be the same solid as the butt joint. In the flat patt
 is as wide as its wedge at the neutral layer. Unequal bend radii shift the diagonal. OCCT
 test: volume, the two mitre faces and the flat area, with the flange bent up and down.
 
+## Amendment (2026-11-07): closed corners at other angles
+
+Flanges bent the same way at less than 90 degrees (equal radii) close their corner on the
+plane that mirrors one wall into the other: each wall's flat part is carried well past its
+line's end and cut off at that plane (0.05 mm short of it for a mitre). In the flat pattern
+each flap is a trapezoid: at a height u up the wall it reaches the neutral layer's distance
+from the line, rn sin(angle) + u cos(angle), less the half gap. Walls leaning back past 90
+degrees would have to be trimmed, not extended, and are refused. OCCT test at 60 degrees:
+volume and flat area for close and mitre, up and down.
+
