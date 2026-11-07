@@ -325,6 +325,28 @@ impl Command for ModalQuery {
                 })
                 .collect();
             o.insert("shape_bands".into(), bands(&quads));
+            // Mode shapes have no physical size: say how this one is drawn and where and
+            // which way it moves most (dogfooding F6-14).
+            let peak = m
+                .shape
+                .iter()
+                .flat_map(|q| q.corners.iter().zip(&q.motion))
+                .map(|(c, v)| (c, v, libm::sqrt(v.iter().map(|x| x * x).sum())))
+                .fold(None, |best: Option<(&[f64; 3], &[f64; 3], f64)>, cur| match best {
+                    Some(b) if b.2 >= cur.2 => Some(b),
+                    _ => Some(cur),
+                });
+            if let Some((at, v, len)) = peak.filter(|p| p.2 > 0.0) {
+                o.insert(
+                    "shape_scale".into(),
+                    json!({
+                        "drawn_mm": r(amp * len),
+                        "note": "relative shape: the largest motion is drawn at a tenth of the body's longest side",
+                        "largest_at_mm": at.map(r),
+                        "direction": v.map(|x| r(x / len)),
+                    }),
+                );
+            }
         }
         Ok(out)
     }

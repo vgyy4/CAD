@@ -117,7 +117,8 @@ impl CamJob {
         self.resolved(s, ctx)?.frame_of(s, ctx)
     }
 
-    fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
+    /// The toolpath, its setup and warnings about the job.
+    fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup, Vec<String>), CommandError> {
         self.resolved(s, ctx)?.run_of(s, ctx)
     }
 
@@ -134,7 +135,8 @@ impl CamJob {
         Ok(solved.frame)
     }
 
-    fn run_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
+    fn run_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup, Vec<String>), CommandError> {
+        let mut warnings = Vec::new();
         let sketch = self.sketch.clone().unwrap_or_default();
         let (tool, depth) = (self.tool_diameter.unwrap_or(0.0), self.depth.unwrap_or(0.0));
         let op = match self.operation.as_deref().unwrap_or_default() {
@@ -193,6 +195,16 @@ impl CamJob {
                     // Each circle milled to its own size on a helix.
                     gusset_cam::helical_bore(&holes, &setup)
                 } else {
+                    // A drill cuts its own size: holes of another size are only spotted
+                    // (dogfooding F6-11).
+                    let off = holes.iter().filter(|(_, d)| (d - tool).abs() > 1e-3 * tool.max(1.0)).count();
+                    if off > 0 {
+                        warnings.push(format!(
+                            "{off} of {} holes are not {} mm across: a drill cuts its own size (use bore to mill them)",
+                            holes.len(),
+                            (tool * 1000.0).round() / 1000.0
+                        ));
+                    }
                     let pts: Vec<[f64; 2]> = holes.iter().map(|(c, _)| *c).collect();
                     gusset_cam::drilling(&pts, self.peck, &setup)
                 }
@@ -205,7 +217,7 @@ impl CamJob {
             }
             gusset_cam::CamError::TooLarge(m) => CommandError::new("too_large", m),
         })?;
-        Ok((t, setup))
+        Ok((t, setup, warnings))
     }
 }
 
@@ -286,10 +298,10 @@ fn world_path(t: &Toolpath, f: &gusset_kernel::Frame) -> (Vec<Vec<[f64; 3]>>, bo
     (out, false)
 }
 
-fn summary(t: &Toolpath, s: &Setup) -> Value {
+fn summary(t: &Toolpath, s: &Setup, warnings: &[String]) -> Value {
     let st = t.stats(s);
     let r = |v: f64| (v * 100.0).round() / 100.0;
-    json!({
+    let mut out = json!({
         "rings": t.rings,
         "levels_mm": t.levels.iter().map(|z| r(*z)).collect::<Vec<_>>(),
         "moves": t.moves.len(),
@@ -297,7 +309,13 @@ fn summary(t: &Toolpath, s: &Setup) -> Value {
         "plunge_mm": r(st.plunge),
         "rapid_mm": r(st.rapid),
         "minutes": r(st.minutes),
-    })
+    });
+    if !warnings.is_empty()
+        && let Some(o) = out.as_object_mut()
+    {
+        o.insert("warnings".into(), json!(warnings));
+    }
+    out
 }
 
 /// The toolpath of a pocket or profile on sketch regions, summarised.
@@ -318,8 +336,8 @@ impl Command for ToolpathQuery {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (t, setup) = self.job.run(s, ctx)?;
-        let mut out = summary(&t, &setup);
+        let (t, setup, warnings) = self.job.run(s, ctx)?;
+        let mut out = summary(&t, &setup, &warnings);
         if self.path {
             let frame = self.job.frame(s, ctx)?;
             let (lines, cut_short) = world_path(&t, &frame);
@@ -364,14 +382,14 @@ impl Command for ExportGcode {
                 return Err(CommandError::approval("overwriting an exported file"));
             }
         }
-        let (t, setup) = self.job.run(s, ctx)?;
+        let (t, setup, warnings) = self.job.run(s, ctx)?;
         let what = self.job.job.clone().unwrap_or_else(|| {
             format!("{} {}", self.job.sketch.as_deref().unwrap_or(""), self.job.operation.as_deref().unwrap_or(""))
         });
         let title = format!("{what} {p}");
         let g = t.gcode(&setup, &title);
         crate::paths::write_file(&path, p, g.as_bytes())?;
-        let mut out = summary(&t, &setup);
+        let mut out = summary(&t, &setup, &warnings);
         if let Some(o) = out.as_object_mut() {
             o.insert("written".into(), json!(p));
             o.insert("bytes".into(), json!(g.len()));

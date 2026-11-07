@@ -432,7 +432,7 @@ from `tools/list`, `commands`, schemas, resources and errors.
 | F6-8 | major | F3D import: construction sheets as bodies, generic names | Sheets left out when the file has solids (warned; a surfaces-only file keeps them); placed bodies take their occurrence's name. Hidden or superseded solids: open. |
 | F6-9 | major | A line with `NaN`/`1e999` was dropped silently, the client hung | Fixed: answered with a JSON-RPC parse error (−32700, id null); the session goes on (test). |
 | F6-10 | minor | Ramp stopped at the tab top then plunged | Fixed: ramps down along stretches outside the tabs, re-cut at depth (tests). |
-| F6-11 | minor | G83 `R` at the stock top | Fixed: R = top + min(1 mm, (safe - top) / 2). Tool ≠ hole warning open. |
+| F6-11 | minor | G83 `R` at the stock top | Fixed: R = top + min(1 mm, (safe - top) / 2); a drill job whose holes are not the tool's size says so in `warnings` (use `bore`). |
 | F6-12 | minor | Duplicate G-code lines, no tool line, one operation per file | Duplicates and `(T1 D.. flat end mill)` fixed; several jobs in the document now (`cam_job`), one program per job. |
 | F6-13 | minor | Reconnecting starts on Main with an empty undo stack | A reconnecting client is told its earlier branches in the initialize instructions (names are still never reused); 2026-07-28 discover clients not yet. |
-| F6-14 | minor | Grammar resource lacked the new syntax; modal shape has no scale | Grammar updated (sheet sides/ends, `close`, cut-outs, `onto`, `cam_job`); shape scale open. |
+| F6-14 | minor | Grammar resource lacked the new syntax; modal shape has no scale | Fixed: grammar updated (sheet sides/ends, `close`, cut-outs, `onto`, `cam_job`); `sim.modal` with `shape` returns `shape_scale` (drawn size of the largest motion, where it is and its direction). |

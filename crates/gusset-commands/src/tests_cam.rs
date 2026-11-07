@@ -72,6 +72,14 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
         json!({"path": "holes.nc", "sketch": "Sketch1", "operation": "drill", "tool_diameter": 4.0, "depth": 6.0, "peck": 2.0}),
     );
     assert_eq!(d["written"], "holes.nc", "{d}");
+    assert!(d.get("warnings").is_none(), "{d}");
+    // A drill of another size than the holes is warned about (F6-11).
+    let w = run(
+        &mut s,
+        "cam.toolpath",
+        json!({"sketch": "Sketch1", "operation": "drill", "tool_diameter": 3.0, "depth": 6.0}),
+    );
+    assert!(w["warnings"][0].as_str().unwrap().starts_with("2 of 2 holes are not 3 mm across"), "{w}");
     let g = std::fs::read_to_string(s.project_dir.clone().unwrap().join("holes.nc")).unwrap();
     assert!(g.contains("G98 G83 X10 Y10 Z-6 R1 Q2") && g.contains("\nX30 Y10\n"), "{g}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
@@ -156,6 +164,11 @@ fn a_cantilever_rod_has_its_natural_frequencies() {
     // The free end moves most: the top band holds faces near z = 100 (moved by up to 10 mm).
     let top = bands[7]["quads"].as_array().unwrap();
     assert!(!top.is_empty() && top.iter().all(|q| q[2].as_f64().unwrap() > 60.0), "{}", bands[7]);
+    // The scale is stated (F6-14): the free end swings sideways, drawn 10 mm.
+    let sc = &sh["shape_scale"];
+    assert!((sc["drawn_mm"].as_f64().unwrap() - 10.0).abs() < 1e-6, "{sc}");
+    assert!(sc["largest_at_mm"][2].as_f64().unwrap() > 95.0, "{sc}");
+    assert!(sc["direction"][2].as_f64().unwrap().abs() < 0.2, "{sc}");
     assert_eq!(
         err(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 1, "shape": 2})).code,
         "invalid_args"
