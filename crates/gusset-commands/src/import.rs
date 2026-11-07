@@ -385,48 +385,67 @@ fn f3d(
     if count > MAX_F3D_PARTS {
         return Err(CommandError::new("io", format!("the Fusion file has more than {MAX_F3D_PARTS} B-rep parts")));
     }
-    let mut out = Vec::new();
-    let mut warnings = Vec::new();
-    let mut placed = 0;
-    let mut i = 0;
-    for entries in &designs {
-        let places: std::collections::HashMap<String, gusset_sat::fusion::Placed> = entries
-            .iter()
-            .filter(|(n, _)| is_stream(n))
-            .flat_map(|(_, b)| gusset_sat::fusion::placements(b))
-            .map(|p| (p.brep.clone(), p))
-            .collect();
-        for (entry, data) in entries.iter().filter(|(n, _)| is_brep(n)) {
-            if cancel.load(Ordering::Relaxed) {
-                return Err(cancelled());
-            }
-            i += 1;
-            let id = entry.rsplit("BREP.").next().and_then(|t| t.split('.').next()).unwrap_or_default();
-            let place = places.get(id);
-            let stem = match place {
-                Some(p) => p.occurrence.clone(),
-                None if count > 1 => format!("Fusion {i}"),
-                None => "Fusion".to_string(),
-            };
-            let c = match gusset_sat::to_step_placed(
-                data,
-                &stem,
-                &gusset_sat::Limits::default(),
-                place.map(|p| &p.placement),
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    warnings.push(format!("B-rep part {i}: {e}"));
+    // Solid bodies only, when there are any: Fusion keeps construction and decal surfaces
+    // (a board's printed canvas) as sheet bodies beside the solids (dogfooding F6-8). A file
+    // of surfaces only is read again with its sheets.
+    let (mut out, mut warnings, mut placed, mut skipped) = (Vec::new(), Vec::new(), 0, 0);
+    for keep_sheets in [false, true] {
+        (out, warnings, placed, skipped) = (Vec::new(), Vec::new(), 0, 0);
+        let mut i = 0;
+        for entries in &designs {
+            let places: std::collections::HashMap<String, gusset_sat::fusion::Placed> = entries
+                .iter()
+                .filter(|(n, _)| is_stream(n))
+                .flat_map(|(_, b)| gusset_sat::fusion::placements(b))
+                .map(|p| (p.brep.clone(), p))
+                .collect();
+            for (entry, data) in entries.iter().filter(|(n, _)| is_brep(n)) {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(cancelled());
+                }
+                i += 1;
+                let id = entry.rsplit("BREP.").next().and_then(|t| t.split('.').next()).unwrap_or_default();
+                let place = places.get(id);
+                let stem = match place {
+                    Some(p) => p.occurrence.clone(),
+                    None if count > 1 => format!("Fusion {i}"),
+                    None => "Fusion".to_string(),
+                };
+                let c = match gusset_sat::to_step_placed(
+                    data,
+                    &stem,
+                    &gusset_sat::Limits::default(),
+                    place.map(|p| &p.placement),
+                    keep_sheets,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warnings.push(format!("B-rep part {i}: {e}"));
+                        continue;
+                    }
+                };
+                placed += usize::from(place.is_some());
+                skipped += c.skipped_sheets;
+                warnings.extend(c.warnings);
+                if c.bodies == 0 {
                     continue;
                 }
-            };
-            placed += usize::from(place.is_some());
-            warnings.extend(c.warnings);
-            let bodies = importer
-                .import("step", c.step.as_bytes(), cancel)
-                .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
-            out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step }));
+                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                })?;
+                out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
+                    name,
+                    blob,
+                    format: ImportFormat::Step,
+                }));
+            }
         }
+        if !out.is_empty() || skipped == 0 {
+            break;
+        }
+    }
+    if skipped > 0 {
+        warnings.insert(0, format!("{skipped} sheet (surface) bodies left out; the solids are imported"));
     }
     if out.is_empty() {
         return Err(CommandError::new(

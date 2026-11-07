@@ -13,8 +13,8 @@ use gusset_history::Actor;
 use gusset_host::HostHandle;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequest, ElicitRequestParams,
-    ElicitationAction, ElicitationSchema, Implementation, InitializeResult, InputRequest, InputRequests,
-    InputRequiredResult, JsonObject, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+    ElicitationAction, ElicitationSchema, Implementation, InitializeRequestParams, InitializeResult, InputRequest,
+    InputRequests, InputRequiredResult, JsonObject, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
     ResourceContents, ResourceTemplate, ServerCapabilities, Tool, ToolAnnotations,
 };
@@ -222,6 +222,53 @@ fn recorded_agents(host: &HostHandle) -> Vec<String> {
         out
     })
     .unwrap_or_default()
+}
+
+/// One sentence naming up to 5 live branches earlier connections of the same client
+/// created (`agent/<client>-<n>`, most recent first, with their edit count), or `None`.
+/// Agent names are never reused, so a reconnecting agent would not otherwise learn that
+/// its earlier work exists (dogfooding F6-13).
+fn earlier_branches_note(host: &HostHandle, client: &str) -> Option<String> {
+    let base = crate::agents::sanitize_client_name(client);
+    let prefix = format!("{base}-");
+    host.with_session(|s| {
+        let h = s.history();
+        let mut found: Vec<_> = h
+            .branches()
+            .into_iter()
+            .filter(|b| {
+                b.id != h.main()
+                    && b.name.starts_with("agent/")
+                    && matches!(&b.created_by, Actor::Agent(n)
+                        if n.strip_prefix(&prefix).is_some_and(|r| !r.is_empty() && r.bytes().all(|c| c.is_ascii_digit())))
+            })
+            .collect();
+        found.sort_by_key(|b| std::cmp::Reverse((b.created_at, b.id)));
+        let items: Vec<String> = found
+            .iter()
+            .take(5)
+            .map(|b| {
+                let mut edits = 0usize;
+                let mut at = Some(b.head);
+                while let Some(n) = at.and_then(|id| h.node(id).ok()) {
+                    if n.actor != b.created_by {
+                        break;
+                    }
+                    edits += 1;
+                    at = n.parent;
+                }
+                format!("{} ({edits} edits)", b.name)
+            })
+            .collect();
+        (!items.is_empty()).then(|| {
+            format!(
+                "\n\nEarlier branches of this client: {}. To continue that work, switch to it with branch_switch.",
+                items.join(", ")
+            )
+        })
+    })
+    .ok()
+    .flatten()
 }
 
 /// How a handler instance is reached; decides how agent identity is keyed.
@@ -1187,6 +1234,19 @@ impl ServerHandler for GussetMcp {
         InitializeResult::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
             .with_server_info(Implementation::new("gusset", env!("CARGO_PKG_VERSION")).with_title("Gusset CAD"))
             .with_instructions(INSTRUCTIONS)
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        context.peer.set_peer_info(request.clone());
+        let mut info = self.negotiate_initialize(&request)?;
+        if let Some(note) = earlier_branches_note(&self.shared.host, &request.client_info.name) {
+            info.instructions = Some(format!("{}{note}", info.instructions.unwrap_or_default()));
+        }
+        Ok(info)
     }
 
     async fn list_tools(

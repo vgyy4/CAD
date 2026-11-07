@@ -54,13 +54,15 @@ impl Default for Limits {
 pub struct Converted {
     pub step: String,
     pub bodies: usize,
+    /// Sheet (open-shell) bodies left out when sheets were not asked for.
+    pub skipped_sheets: usize,
     pub version: u32,
     pub warnings: Vec<String>,
 }
 
 /// Converts a SAT file to STEP text (millimetres).
 pub fn to_step(bytes: &[u8], name: &str, limits: &Limits) -> Result<Converted, SatError> {
-    to_step_placed(bytes, name, limits, None)
+    to_step_placed(bytes, name, limits, None, true)
 }
 
 /// As [`to_step`], with every body moved by `place` (millimetres) after its own transform:
@@ -70,10 +72,11 @@ pub fn to_step_placed(
     name: &str,
     limits: &Limits,
     place: Option<&fusion::Placement>,
+    keep_sheets: bool,
 ) -> Result<Converted, SatError> {
     let sat = parse(bytes, limits)?;
-    let (step, bodies, warnings) = step::write(&sat, name, place)?;
-    Ok(Converted { step, bodies, version: sat.version, warnings })
+    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets)?;
+    Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 
 #[cfg(test)]

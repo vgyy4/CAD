@@ -106,11 +106,22 @@ fn a_placement_moves_every_point_after_the_bodys_own_transform() {
     let plain = to_step(sat.as_bytes(), "b", &Limits::default()).unwrap();
     // A quarter turn about Z, then 100 mm along X: (x, y, z) -> (100 - y, x, z).
     let p = fusion::Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [100.0, 0.0, 0.0] };
-    let moved = to_step_placed(sat.as_bytes(), "b", &Limits::default(), Some(&p)).unwrap();
+    let moved = to_step_placed(sat.as_bytes(), "b", &Limits::default(), Some(&p), true).unwrap();
     let (a, b) = (points(&plain.step), points(&moved.step));
     assert!(!a.is_empty() && a.len() == b.len());
     for (u, v) in a.iter().zip(&b) {
         let want = [100.0 - u[1], u[0], u[2]];
         assert!((0..3).all(|i| (v[i] - want[i]).abs() < 1e-9), "{u:?} -> {v:?}, want {want:?}");
     }
+}
+
+#[test]
+fn sheets_are_left_out_when_not_asked_for() {
+    // One face on a surface not read yet leaves an open shell: a sheet body.
+    let sat = box_sat(700, [1.0, 1.0, 1.0]).replacen("plane-surface", "meshsurf-surface", 1);
+    let with = to_step_placed(sat.as_bytes(), "x", &Limits::default(), None, true).unwrap();
+    assert_eq!((with.bodies, with.skipped_sheets), (1, 0));
+    let without = to_step_placed(sat.as_bytes(), "x", &Limits::default(), None, false).unwrap();
+    assert_eq!((without.bodies, without.skipped_sheets), (0, 1));
+    assert!(without.step.is_empty());
 }

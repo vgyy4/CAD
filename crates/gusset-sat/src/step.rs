@@ -900,7 +900,8 @@ pub(crate) fn write(
     sat: &Sat,
     name: &str,
     place: Option<&crate::fusion::Placement>,
-) -> Result<(String, usize, Vec<String>), SatError> {
+    keep_sheets: bool,
+) -> Result<(String, usize, usize, Vec<String>), SatError> {
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
         sat,
@@ -943,6 +944,7 @@ pub(crate) fn write(
         .collect();
     let many = bodies.len() > 1;
     let mut written = 0;
+    let mut skipped = 0;
     for (n, b) in bodies.iter().enumerate() {
         let br = w.rec(*b)?;
         // Geometry is written per body (each has its own transform).
@@ -1004,6 +1006,10 @@ pub(crate) fn write(
                 w.add(&format!("BREP_WITH_VOIDS('',#{outer},{})", list(&voids)))
             });
         }
+        if !sheets.is_empty() && !keep_sheets {
+            skipped += 1;
+            sheets.clear();
+        }
         if !sheets.is_empty() {
             w.warn(format!("body {} has open shells (free edges); they are imported as sheets", n + 1));
             let model = w.add(&format!("SHELL_BASED_SURFACE_MODEL('',{})", list(&sheets)));
@@ -1017,7 +1023,7 @@ pub(crate) fn write(
             written += 1;
         }
         if solids.is_empty() {
-            if sheets.is_empty() {
+            if sheets.is_empty() && keep_sheets {
                 w.warn(format!("body {} has no faces", n + 1));
             }
             continue;
@@ -1033,6 +1039,9 @@ pub(crate) fn write(
     }
     w.check_full()?;
     if written == 0 {
+        if skipped > 0 {
+            return Ok((String::new(), 0, skipped, w.warnings));
+        }
         return Err(SatError::Unsupported("the file holds no body with faces".into()));
     }
     let mut text = String::from("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ACIS SAT converted by Gusset'),'2;1');\n");
@@ -1040,7 +1049,7 @@ pub(crate) fn write(
     text.push_str("FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n");
     text.push_str(&w.out);
     text.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
-    Ok((text, written, w.warnings))
+    Ok((text, written, skipped, w.warnings))
 }
 
 #[cfg(test)]

@@ -830,6 +830,29 @@ async fn agent_identity_is_not_reused_after_restart() {
     assert!(names.contains(&"agent/bot-1".to_string()) && names.contains(&"agent/bot-2".to_string()), "{names:?}");
 }
 
+/// F6-13: a reconnecting agent is told about its client's earlier branches (names stay
+/// unique); other clients and projects without such branches hear nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnecting_agent_is_told_about_its_clients_earlier_branches() {
+    let server = McpServer::new(host());
+    let c = connect(&server, Client::new("Bot", None), false).await;
+    let first = c.peer_info().and_then(|i| i.instructions.clone()).unwrap();
+    assert!(!first.contains("Earlier branches"), "{first}");
+    ok(&call(&c, "param_set", json!({"name": "w", "expr": "1 mm"})).await);
+    c.cancel().await.unwrap();
+
+    let c = connect(&server, Client::new("bot", None), false).await;
+    let again = c.peer_info().and_then(|i| i.instructions.clone()).unwrap();
+    assert!(again.contains("Earlier branches of this client: agent/bot-1 (1 edits)"), "{again}");
+    assert!(again.contains("branch_switch"), "{again}");
+    c.cancel().await.unwrap();
+
+    let other = connect(&server, Client::new("other", None), false).await;
+    let text = other.peer_info().and_then(|i| i.instructions.clone()).unwrap();
+    assert!(!text.contains("Earlier branches"), "{text}");
+    other.cancel().await.unwrap();
+}
+
 /// Review H5: agents import meshes over MCP (through the host's off-thread import path);
 /// a FIFO in the project folder is refused instead of hanging the session (review #11).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
