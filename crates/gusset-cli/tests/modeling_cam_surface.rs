@@ -71,3 +71,35 @@ fn waterlines_ring_a_boss_at_its_radius_plus_the_tool_radius() {
         ring.iter().fold((f64::MAX, 0.0f64), |a, d| (a.0.min(*d), a.1.max(*d)))
     );
 }
+
+#[test]
+fn a_short_stickout_lifts_the_tool_away_from_a_tall_boss() {
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 60, "height": 60}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_circle", json!({"sketch": "Sketch2", "cx": 30, "cy": 30, "radius": 5}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "30 mm", "op": "add"}));
+    let job = |holder: Value| {
+        json!({"sketch": "Sketch1", "operation": "surface_flat", "tool_diameter": 6.0, "top": 30.0,
+            "depth": 25.0, "safe": 35.0, "stepover": 0.5, "holder": holder})
+    };
+    // A 40 mm holder 10 mm above the tip hits the 25 mm tall boss around it: lifted, with a warning.
+    let r = run(&mut s, "cam.toolpath", job(json!([6.0, 8.0, 40.0, 10.0])));
+    let w = r["warnings"].to_string();
+    assert!(w.contains("holder:") && w.contains("leaving material"), "{r}");
+    // With 40 mm stickout nothing touches.
+    let r = run(&mut s, "cam.toolpath", job(json!([6.0, 35.0, 40.0, 40.0])));
+    assert!(!r["warnings"].to_string().contains("holder:"), "{r}");
+    // A 2D operation says the holder is not checked.
+    let r = run(
+        &mut s,
+        "cam.toolpath",
+        json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": 1.0,
+            "holder": [6.0, 8.0, 40.0, 10.0]}),
+    );
+    assert!(r["warnings"].to_string().contains("only for 3D"), "{r}");
+}

@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface/waterline/steep/pencil_ball, ..._flat
+    /// pocket(_adaptive/_rest), profile_outside/_inside, drill/bore, surface/waterline/steep/pencil_ball, ..._flat
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -28,7 +28,7 @@ pub struct CamJob {
     pub depth: Option<f64>,
     #[serde(default)]
     pub stepdown: Option<f64>,
-    /// x diameter.
+    /// xD
     #[serde(default)]
     pub stepover: Option<f64>,
     #[serde(default)]
@@ -49,12 +49,15 @@ pub struct CamJob {
     /// pocket_rest: earlier D.
     #[serde(default)]
     pub previous: Option<f64>,
-    /// [n, width, height].
+    /// [n, w, h]
     #[serde(default)]
-    pub tabs: Option<[f64; 3]>,
+    pub tabs: Option<Vec<f64>>,
     /// Not climb.
     #[serde(default)]
     pub conventional: bool,
+    /// 3D [shank D, flute, holder D, stickout]
+    #[serde(default)]
+    pub holder: Option<Vec<f64>>,
 }
 
 impl CamJob {
@@ -109,10 +112,11 @@ impl CamJob {
             peck: opt(&d.peck, Dim::LENGTH)?,
             previous: opt(&d.previous, Dim::LENGTH)?,
             tabs: match &d.tabs {
-                Some([n, w, h]) => Some([v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
+                Some([n, w, h]) => Some(vec![v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
                 None => None,
             },
             conventional: d.conventional,
+            holder: self.holder.clone(),
         })
     }
 
@@ -156,6 +160,9 @@ impl CamJob {
         let mut warnings = Vec::new();
         let sketch = self.sketch.clone().unwrap_or_default();
         let (tool, depth) = (self.tool_diameter.unwrap_or(0.0), self.depth.unwrap_or(0.0));
+        if self.holder.is_some() && !self.operation.as_deref().is_some_and(|o| SURFACE_OPS.contains(&o)) {
+            warnings.push("holder is checked only for 3D finishing; ignored".to_string());
+        }
         let op = match self.operation.as_deref().unwrap_or_default() {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
             "pocket_adaptive" => Some(Operation::PocketAdaptive { stepover: self.stepover.unwrap_or(0.25) }),
@@ -185,11 +192,15 @@ impl CamJob {
             plunge: self.plunge.unwrap_or(200.0),
             rpm: self.rpm.unwrap_or(10_000.0),
             ramp_deg: self.ramp_deg.unwrap_or(3.0),
-            tabs: self.tabs.map(|[c, w, h]| gusset_cam::Tabs {
-                count: if c.is_finite() && c >= 0.0 { c.min(1000.0) as usize } else { 1000 },
-                width: w,
-                height: h,
-            }),
+            tabs: match self.tabs.as_deref() {
+                None => None,
+                Some(&[c, w, h]) => Some(gusset_cam::Tabs {
+                    count: if c.is_finite() && c >= 0.0 { c.min(1000.0) as usize } else { 1000 },
+                    width: w,
+                    height: h,
+                }),
+                Some(_) => return Err(CommandError::args("tabs takes [count, width, height]")),
+            },
             climb: !self.conventional,
         };
         let doc = s.document(&ctx.actor)?;
@@ -292,7 +303,7 @@ impl CamJob {
                     bounds: Some((lo, hi)),
                     stock_to_leave: 0.0,
                 };
-                match op {
+                let t = match op {
                     "waterline_ball" | "waterline_flat" => {
                         gusset_cam::waterline_finish(&surface, cutter, &water, &setup)
                     }
@@ -310,6 +321,33 @@ impl CamJob {
                         &setup,
                     ),
                     _ => gusset_cam::raster_finish(&surface, cutter, &spec, &setup),
+                };
+                match (t, self.holder.as_deref()) {
+                    (_, Some(h)) if h.len() != 4 => Err(gusset_cam::CamError::Invalid(
+                        "holder takes [shank D, flute length, holder D, stickout]".into(),
+                    )),
+                    (Ok(t), Some(&[shank, flute, holder_d, stickout])) => {
+                        let h = gusset_cam::Holder {
+                            shank_diameter: shank,
+                            flute_length: flute,
+                            holder_diameter: holder_d,
+                            stickout,
+                        };
+                        let report = gusset_cam::check_holder(&surface, cutter, &setup, &h, &t)
+                            .map_err(|e| CommandError::args(e.to_string()))?;
+                        if report.total_collisions == 0 {
+                            Ok(t)
+                        } else {
+                            let (lifted, rise, n) = gusset_cam::lift_for_holder(&surface, &setup, &h, &t)
+                                .map_err(|e| CommandError::args(e.to_string()))?;
+                            warnings.push(format!(
+                                "holder: {} collisions (deepest {:.3} mm); {n} positions lifted by up to {rise:.3} mm, leaving material there",
+                                report.total_collisions, -report.min_clearance
+                            ));
+                            Ok(lifted)
+                        }
+                    }
+                    (t, _) => t,
                 }
             }
             None => {
@@ -475,7 +513,7 @@ pub struct ToolpathQuery {
 impl Command for ToolpathQuery {
     const ID: &'static str = "cam.toolpath";
     const TITLE: &'static str = "Toolpath";
-    const DESCRIPTION: &'static str = "Toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4, adaptive 0.25, safe top+5): length, time";
+    const DESCRIPTION: &'static str = "Toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4, adaptive 0.25, safe top+5)";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
