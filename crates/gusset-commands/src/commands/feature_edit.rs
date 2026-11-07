@@ -9,7 +9,43 @@ use gusset_doc::text::{parse_feature_object, statement_args, statement_with_args
 use std::collections::BTreeMap;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<FeatureEdit>(), spec::<FeatureReplaceReference>()]
+    vec![spec::<FeatureEdit>(), spec::<FeatureReplaceReference>(), spec::<FeatureAdd>()]
+}
+
+/// Add one feature written as in the code view.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureAdd {
+    /// e.g. `cam_job Job1(sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: 3 mm)`
+    pub statement: String,
+}
+
+impl Command for FeatureAdd {
+    const ID: &'static str = "feature.add";
+    const TITLE: &'static str = "Add feature from text";
+    const DESCRIPTION: &'static str = "Add one feature from its code-view statement (document_get_text shows the grammar), at the rollback point; for kinds without a command, e.g. cam_job.";
+    const CATEGORY: Category = Category::Timeline;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let text = self.statement.trim();
+        let f = parse_feature_object(text).map_err(|e| CommandError::args(e.to_string()))?;
+        // Imports, components and sketches have their own commands (checked contents, ids).
+        if matches!(
+            f.kind,
+            gusset_doc::FeatureKind::Import(_)
+                | gusset_doc::FeatureKind::Component(_)
+                | gusset_doc::FeatureKind::Sketch(_)
+        ) {
+            return Err(CommandError::args("imports, components and sketches have their own commands")
+                .hint("import_file, assembly_insert_component, sketch_create"));
+        }
+        let name = f.name.clone();
+        edit(s, ctx, &format!("Add {name}"), |doc, rb| {
+            let name = feature_name(doc, Some(f.name.clone()), "")?;
+            insert_feature(doc, rb, f);
+            Ok(json!({ "feature": name }))
+        })
+    }
 }
 
 /// Replace a face or edge reference in a feature (accepting a rebuild error's suggestion).

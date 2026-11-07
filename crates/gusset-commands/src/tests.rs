@@ -1369,6 +1369,22 @@ fn measure_faces_and_edges_of_a_plate() {
 }
 
 #[test]
+fn a_feature_is_added_from_its_statement() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let stmt = "cam_job Job1(sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: 2 mm)";
+    let r = run(&mut s, &u, "feature.add", json!({ "statement": stmt }));
+    assert_eq!(r["feature"], "Job1", "{r}");
+    let t = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(t.to_string().contains("cam_job Job1 ("), "{t}");
+    // Taken names, sketches and malformed text are refused.
+    for bad in [stmt, "sketch Sketch9(plane: XY) {}", "cam_job Job2(sketch: Sketch1"] {
+        assert!(execute(&mut s, &u, "feature.add", json!({ "statement": bad })).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn features_are_edited_in_place() {
     let mut s = session();
     let u = CmdCtx::user(1);

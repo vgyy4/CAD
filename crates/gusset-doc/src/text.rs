@@ -2564,7 +2564,7 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 operation = Some(CamOp::from_keyword(w).ok_or_else(|| {
                     c.err_hint(
                         format!("unknown operation '{w}'"),
-                        "pocket, profile_outside, profile_inside, drill or bore",
+                        "pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface/waterline/steep _ball/_flat, pencil_ball",
                     )
                 })?);
             }
