@@ -2546,7 +2546,10 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "operation" => {
                 let w = c.ident()?;
                 operation = Some(CamOp::from_keyword(w).ok_or_else(|| {
-                    c.err_hint(format!("unknown operation '{w}'"), "pocket, profile_outside, profile_inside or drill")
+                    c.err_hint(
+                        format!("unknown operation '{w}'"),
+                        "pocket, profile_outside, profile_inside, drill or bore",
+                    )
                 })?);
             }
             "tool_diameter" => tool = Some(c.expr()?),

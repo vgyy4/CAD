@@ -245,3 +245,20 @@ fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
     }
     assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n, "nothing committed");
 }
+
+#[test]
+fn circles_are_bored_to_their_size_on_a_helix() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_circle", json!({"sketch": "Sketch1", "cx": 20, "cy": 10, "radius": 5}));
+    let job = json!({"path": "bore.nc", "sketch": "Sketch1", "operation": "bore", "tool_diameter": 6.0, "depth": 4.0, "stepdown": 2.0});
+    run(&mut s, "cam.export_gcode", job);
+    let g = std::fs::read_to_string(s.project_dir.clone().unwrap().join("bore.nc")).unwrap();
+    // Climb in a hole: counter-clockwise arcs of radius 2 about the circle's centre.
+    let arcs: Vec<&str> = g.lines().filter(|l| l.starts_with("G3 ")).collect();
+    assert!(!arcs.is_empty() && !g.contains("G2 "), "{g}");
+    assert!(g.contains("Z-4"), "{g}");
+    let too_wide = json!({"sketch": "Sketch1", "operation": "bore", "tool_diameter": 4.0, "depth": 4.0});
+    assert_eq!(err(&mut s, "cam.toolpath", too_wide).code, "invalid_args");
+    let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
+}

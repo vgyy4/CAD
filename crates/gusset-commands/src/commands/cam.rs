@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket, profile_outside, profile_inside, drill.
+    /// pocket, profile_outside, profile_inside, drill, bore
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -141,10 +141,10 @@ impl CamJob {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
-            "drill" => None,
+            "drill" | "bore" => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, profile_outside, profile_inside or drill"));
+                    .hint("pocket, profile_outside, profile_inside, drill or bore"));
             }
         };
         let top = self.top.unwrap_or(0.0);
@@ -181,15 +181,21 @@ impl CamJob {
             None => {
                 let solved = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-                let pts: Vec<[f64; 2]> = solved
+                let holes: Vec<([f64; 2], f64)> = solved
                     .circles
                     .iter()
                     .filter(|(id, _)| self.regions.is_empty() || self.regions.contains(id))
                     // Construction circles mark nothing to drill.
                     .filter(|(id, _)| !def.entities.iter().any(|e| e.id == **id && e.construction))
-                    .filter_map(|(_, c)| solved.points.get(c).copied())
+                    .filter_map(|(id, c)| Some((solved.points.get(c).copied()?, 2.0 * solved.radii.get(id).copied()?)))
                     .collect();
-                gusset_cam::drilling(&pts, self.peck, &setup)
+                if self.operation.as_deref() == Some("bore") {
+                    // Each circle milled to its own size on a helix.
+                    gusset_cam::helical_bore(&holes, &setup)
+                } else {
+                    let pts: Vec<[f64; 2]> = holes.iter().map(|(c, _)| *c).collect();
+                    gusset_cam::drilling(&pts, self.peck, &setup)
+                }
             }
         };
         let t = t.map_err(|e| match e {

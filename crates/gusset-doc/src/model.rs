@@ -1693,6 +1693,8 @@ pub enum CamOp {
     ProfileOutside,
     ProfileInside,
     Drill,
+    /// Circles milled to their size on a helix.
+    Bore,
 }
 
 impl CamOp {
@@ -1702,11 +1704,12 @@ impl CamOp {
             CamOp::ProfileOutside => "profile_outside",
             CamOp::ProfileInside => "profile_inside",
             CamOp::Drill => "drill",
+            CamOp::Bore => "bore",
         }
     }
 
     pub fn from_keyword(s: &str) -> Option<CamOp> {
-        [CamOp::Pocket, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill]
+        [CamOp::Pocket, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill, CamOp::Bore]
             .into_iter()
             .find(|o| o.keyword() == s)
     }
