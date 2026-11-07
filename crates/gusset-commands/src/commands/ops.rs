@@ -385,11 +385,17 @@ impl Command for MoveFace {
                     e.code == gusset_eval::ErrorCode::Unsupported || e.message.contains("is not supported by the")
                 };
                 match ev.errors().iter().find(|e| e.feature == *name).filter(|e| !unsupported(e)) {
-                    Some(e) => Err(CommandError::args(e.message.clone()).hint(
-                        e.hint
+                    Some(e) => {
+                        let mut hint = e
+                            .hint
                             .clone()
-                            .unwrap_or_else(|| "move the faces less far, or with the faces around them".into()),
-                    )),
+                            .unwrap_or_else(|| "move the faces less far, or with the faces around them".into());
+                        if !rules {
+                            // F10-8: say what rules would have done.
+                            hint.push_str("; rules: true also moves coplanar and coaxial faces");
+                        }
+                        Err(CommandError::args(e.message.clone()).hint(hint))
+                    }
                     None => Ok(()),
                 }
             },

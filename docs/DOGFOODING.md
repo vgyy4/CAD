@@ -828,3 +828,86 @@ of a revolve, 256 or more positions in one hole.
 | F9-8 | Fixed: sim_static says sheet metal runs on shells. |
 | F9-9 | Open (nit): element-size scatter on bent sheets within 3 %. |
 | F9-10 | Open (nit): the Onshape sample's bodies list. |
+
+## Run 10 — run 9 fixes and three end-to-end parts (2026-11-07)
+
+Setup: debug `gusset` with real OCCT and workers (`CARGO_INCREMENTAL=0`, 3 min rebuild after the
+run 9 fixes), `gusset mcp --no-attach` over stdio behind run 9's Python client (a daemon and
+unix socket per project; three projects, `dogfood10/`). 183 client calls (28 `run`, 37
+`cam_toolpath`, 35 `query_body`, 20 `get_text`, 14 `sim_static`, 14 `document_set_text`), learned
+from `tools/list` (31 tools, 18.9 kB), `commands` (12.4 kB, `commands {name}` gives one command's
+schema) and error messages. Paths were checked by sampling every move at 0.05 mm against the analytic
+surface (ball: centre-to-profile distance in the (rho, z) plane), flat patterns by parsing the DXF,
+the shell by beam/plate theory. Debug build, so timings are upper bounds.
+
+| # | Part | Result | Notes |
+|---|---|---|---|
+| 1 | Run 9 fixes: 60x40x20 block (box = footprint, +-5, +-10), dome R30 in a +-30 box, plate + d30 boss, plate + square boss, 45 deg V-groove, counterbore block, 60x40x20 | F9-1/2/3/4/6 hold (hand checks below) | 40 calls |
+| 2 | (a) Sheet-metal enclosure: tab 120x80x1.5, four 25 mm flanges (r1.5), F2..F4 `close: true` (also `mitre`, k 0.44), 4 x d6 in the base, d8 in a flange, flat pattern + DXF, `sim_static` | volume, flat size, outline area, cut-outs and DXF circle positions equal the hand values; shell static within 25 % of a strip estimate (F10-5, F10-6) | 45 calls |
+| 3 | (b) Machined bracket 100x60x10 + d24 x 12 boss (base fillet r3) + pocket 40x40x6 + 4 x d6 through: `pocket`, `pocket_adaptive`, `pocket_rest`, `drill`, `waterline_ball/flat`, `steep_ball`, `surface_ball`, `pencil_ball`, six `cam_job`s in the document, G-code | contours, levels and G83 cycle exact; `surface_ball` gouges 0.48 mm on the steep boss wall (F10-1) | 70 calls |
+| 4 | (c) `.gtree.json` v2 of my own (block, `shell` inside/bottom open, `Pad` join, `mirror` of the pad, counterbore `hole` + `pattern_linear` x3) imported, then `move_face` with rules (default, `false`, cbore wall, top face, refusals), undo/redo | all 11 features ok, volume exact; every move equals area x distance; 3 refusals commit nothing | 25 calls |
+
+Hand checks:
+
+| Check | Hand | Gusset |
+|---|---|---|
+| `waterline_ball` D6 on the 60x40x20 block, box -10..70 x -10..50, level z 0: contour round the block at 3 mm | `2 (60 + 40) + 2 pi 3` = 218.85 | 218.83, one piece, x -3..63, y -3..43 |
+| Same, box 0..60 x -5..45 (the long sides inside, the ends clipped) | two runs of 60 | two pieces at y -3 and y 43, x 0..59.768, joined by rapid, `cut_mm` 119.54 (F10-7) |
+| Same, box = footprint or +-1 | tool centre can never reach the contour | `no waterline contour crosses the surface` (waterline); `steep_*` returns raster only, `levels_mm: []` (F10-2) |
+| Dome R30, box +-30, `waterline_ball` D6 stepdown 5: rho at z 25..0 = `sqrt(33^2 - (z + 3)^2)` | 17.464 / 23.664 / 27.659 / 30.332 / 32.016 / 32.863 | 17.455 / 23.657 / 27.654 / 30.325 / 32.012 / 32.857 as before; the four levels past the box are four open runs each (rho 30.32, 32.01, 32.86), no segment on the box edge; worst gap over all moves -0.0138; `steep_ball` worst gap -0.023 |
+| Plate + boss d30, `pencil_ball` D6 / D4 with the plate as box: loop at floor z 10, rho = 15 + 3 / 15 + 2 | 113.10 / 106.81 | 113.08 (rho 17.995..18.0, tip z 10) / 107.06 (rho 16.996..17.0; +0.2 %) |
+| Plate + 30x30 square boss, D6: rounded square, x 22..58, y 12..48 | 138.85 | 138.84, x 22..58, y 12..48, z 10 |
+| 45 deg V-groove, valley z 5, `pencil_ball` D6: centre `3 / sin 45` above the valley | tip z 6.2426 | 6.243 along x 20, y 0.375..29.625 (ends one grid step short, never past) |
+| Boss d24 with base fillet r3 on a plate (fillet axis rho 15, z 13), D6 = fillet radius: `waterline_ball` levels 18/14/10, `waterline_flat` | rho 15 / 15 / 15; flat 15 / 15 / 18 (disc clears the fillet foot); `2 pi (15 + 15 + 18)` = 301.6 | ball 14.996..15.0 x2 and 15.032..15.037 at 10; flat 14.996..15.0 x2 and 17.995..18.0; `cut_mm` 282.9 / 301.53 |
+| Same boss, `pencil_ball` D4 (ball r2 inside the r3 fillet, smooth), depth to z 10 | nothing | `no concave crease sharper than the bitangency angle` (hint wrong, F10-4); D6 (= fillet radius) gives the loop rho 15, 94.46 vs 94.25 |
+| Same part, D4 with depth to z 4 (pocket floor): inset rectangle x 14..50, y 12..48 at tip z 4 | `2 (36 + 36)` = 144 | 144.7 incl. plunge, x 14..50, y 12..48, z 4; plus four 3-4 mm stubs at the pocket's rim corners (F10-4) |
+| Pocket 40x40 D8, stepover 0.4 (3.2 mm), two levels 7, 4 (top 10, stepdown 3) | rings 32/25.6/19.2/12.8/6.4 square: 128 + 102.4 + 76.8 + 51.2 + 25.6 = 384 per level | 384.0 per level at z 7 and 4, tool centre x 16..48, y 14..46; `cut_mm` 1741 includes 973 mm of ramp (F10-3) |
+| `pocket_rest` D4 after D10 (corner arc r5): leg 15 - 12 = 3 (2.92), arc of centre radius 3, leg | 10.4 per corner per level, 83.2 | 41.6 per level (x 14..50, y 12..48), corner loops 2.92 + 4.6 + 2.92; `cut_mm` 582.95, 500 of it ramp |
+| `drill` D6 peck 4 in 10: four holes | G83 `Z0 R11 Q4` | `G98 G83 X8 Y8 Z0 R11 Q4 F200`, then X8 Y52, X92 Y52, X92 Y8, `G80` |
+| G-code z / x range of `Fin` (waterline) | z 10..27, x 75 +- 15 | z 10..27 (safe 27), x 59.966..90.034 (+0.034); 407 lines |
+| Bracket: plate 100x60x10 + boss d24 x 12 (`65428.672`), fillet r3 (`r^2 (1 - pi/4) 2 pi (12 + 0.2234 r)` = 153.76), pocket 9600, 4 holes `4 pi 9 x 10` | 54851.459 | 54851.456136 (fillet +153.757386) |
+| Enclosure, k 0.5, 4 closed corners (1.5 mm, r1.5): `14400 + 400 (pi/4)(2 r t + t^2) + 400 x 25 x 1.5` + 4 corners x 2 x 3.375 x 25 | 31520.575 + 675 = 32195.575 | 32195.575041 (`close: true` on F2..F4) |
+| Holes: 4 x d6 and d8 in the flange (t 1.5) | -169.646 / -75.398 | -169.646003 / -75.398224 |
+| Flat size: `120 + 2 (25 + pi/2 (1.5 + 0.5 x 1.5))`, k 0.44 | 177.0686 x 137.0686 / 176.7858 x 136.7858 | same; outline area (DXF, 36 vertices) 21463.7166 x 1.5 = 32195.57 (k 0.5); k 0.44 true / mitre 21407.168 / 21375.026 |
+| Flat hole in the flange at height 15: `-(3.534 + 15 - 3)` | y -15.534 (DXF 23.0 with the 38.534 offset) | circle (98.534, 23.0) r 4; the four base circles at 20/100/20/100 + 38.534 |
+| Mitre gap, 0.1 mm on the diagonal: `4 x 0.1 x (1.5 sqrt 2) x 25` | 21.21 | 31950.531 - 31929.318 = 21.213 |
+| Enclosure shell static (all flange faces, base underside held), 10 N on `F1/flat(l5)`: root stress `6 M / t^2` with `M = w L / 2`, `w = 10 / 120`, `L = 26.5` | 2.94 MPa; tip `w L^3 / (8 D)` = 0.0030 mm (D = E t^3 / 12 (1 - nu^2)) | element 12 / 10 / 8 / 6 / 5: 0.00364 / 0.00352 / 0.00369 / 0.00402 / 0.00392 mm; 2.36 / 2.39 / 2.54 / 3.07 / 3.96 MPa (6.8 s at 5 mm) |
+| Tree: base 80x50x20 `shell` inside 2, bottom open (`80000 - 76 x 46 x 18`), two pads 20x20x8 (mirror at x 40), 3 counterbore holes cut through the 2 mm top (`3 pi 36 x 2`) | `17072 + 6400 - 678.584` = 22793.416 | 22793.415987, imported in 0.42 s, 11 features all ok |
+| `move_face` of `Pad/cap(end)` +3 z, rules default / `false` | +2400 (both pad tops, `also_moved: [Pad_Mir1/cap(end)]`) / +1200 | +2400.0 / +1200.0; undo and redo return 22793.416 and 28514.832 |
+| `move_face` of the top face (area 2860.708) +2 / -1 | +5721.416 / -2860.708 | +5721.415987 / -2860.707993 |
+| Counterbore block: floor -3 / wall +5 with rules | -254.469 / 0 | -254.469005 / 0, `also_moved: [H1/wall(e1)]` |
+
+Run 9 fixes seen holding: F9-1 (an explicit box limits the tool centre; contours are cut into runs
+that end on the box edge and are joined by rapids; no segment along the box in any case tried), F9-2
+(cylinder, square boss; exact radii), F9-3 (the crease line stops inside the part, a smooth fillet
+gives nothing, no 0.45 mm pieces), F9-4 (a cbore wall with `rules: false`, a sideways or turning move,
+and a pad top 10 mm down are refused; query_model shows no new feature each time), F9-6 (debug
+build: `steep_ball` on the boss 6.7 s against 173 s, waterline 4 s against 75 s, `waterline_flat`
+0.7 s, `surface_ball` 0.5 s, `pencil_ball` 8-12 s against 140 s; the G-code export of a job still
+recomputes: 3.9 s for the waterline job), F9-8 (the description says "sheet metal on shells").
+
+| ID | Sev | Item | Expected |
+|---|---|---|---|
+| F10-1 | major | `surface_ball` (D6, stepover 0.1 and 0.05, box = the bracket's 100x60, top 22, depth 12) joins samples across a steep wall with one straight move: the segment (89.222, 27.6, 20.765) -> (89.82, 27.6, 10.0) drops 10.8 mm in 0.6 mm of x and cuts 0.484 mm into the boss's rim and wall (centre-to-profile distance 2.516 for r 3). 107 of 959 segments gouge by more than 0.05 mm; the vertices themselves are within 0.004 mm of the surface, and the worst gap does not change with the stepover (-0.4839 at both), so the x sampling is the cause. `steep_ball` on the same part: worst -0.023, waterline -0.034. | Refine the samples where the height jumps (or split at the CL surface's steep part) so the chord error stays under the tolerance; `surface_flat` was not checked. |
+| F10-2 | minor | A box equal to (or a little bigger than) the part's footprint, the natural region, gives `no waterline contour crosses the surface`, hint `use a smaller tool or a larger region`: the message says nothing about the box limiting the tool centre (the contour lies 3 mm outside); `steep_*` in the same case returns the raster over the top and `levels_mm: []` without a note. The 3 mm of box growth is the fix, not "a smaller tool". | Say "the contour lies outside the region (it limits the tool centre); grow it by the tool radius" and mention the empty levels in `steep_*`. |
+| F10-3 | minor | 2.5D entries are mostly air: the pocket (D8, 2 levels) is 1741 mm of which 973 mm is ramp at 3 deg, every ring ramps down again from the stock top (10) through a ring the inner ring has already cleared (ring 2 at x 25.6 lies inside the +-4 cleared round ring 1); `pocket_rest` 583 mm of which 500 mm is the same spiral, 10 turns of a 10 mm corner for 3 mm of depth. Estimates (3.26 min for the pocket) count it at feed. | Enter each ring from the depth already cut, or at the previous ring's z; drop the spiral for a short corner pass. |
+| F10-4 | minor | `pencil_ball`: (a) four 3-4 mm stubs per pocket at the rim corners (x 12.75..14, y 10.75..12, z 8..10.85 and the three mirror positions, two of them asymmetric: z top 10.854 / 9.854): the ball is not touching two surfaces there; (b) `depth` that ends above the creases (here: pocket floor at z 4, depth to z 10) reports `no concave crease sharper than the bitangency angle` after 11.6 s with the hint `use a smaller tool or a larger region`; neither is the answer; a smooth r3 fillet with D4 correctly gives nothing. | Drop pieces that are not held by two surfaces at their ends; hint "no crease between top and top - depth; increase depth". |
+| F10-5 | minor | `sim_static` on the 177x137x28 enclosure: the default element size fails with `too_large` ("the shell model needs more than 40000 triangles: give a larger element size") although the longest side / 30 is 5.9 mm and `voxel` 6 is 12.5k triangles; the argument is called `voxel` ("Voxel edge mm (default longest side/30)") and nothing says it is the shell element size. The size check runs before the face lookup, so a wrong face name appears only at a coarse size. After `close` on all flanges the end faces merge: only `F1/end(l5)` exists (area 627 = four ends + corner pieces, centroid at the middle of the part), `F3/end(l7)` is `face F3/end(l7) is not on 'Plate'` without candidates, so a load on one flange's end is not possible (a load on `F1/end(l5)` is spread over all four). | Pick the default from the thickness/area so that it fits, or fall back; describe `voxel` as the shell element size; list candidate faces in the error; name the merged face for what it is. |
+| F10-6 | nit | Mesh scatter on the closed enclosure: tip 0.00364 / 0.00352 / 0.00369 / 0.00402 / 0.00392 mm for element 12 / 10 / 8 / 6 / 5 (+-7 %, 20-30 % above the strip estimate 0.0030 with the d8 hole and the open corners), root stress 2.36 .. 3.96 MPa (hand 2.94) rising with refinement at the clamp; the location of the peak moves. | Say that the clamp stress does not converge (as F9-9). |
+| F10-7 | nit | A waterline run clipped by the box ends 0.23 mm short at one end (x 59.768 of 60.0, 0.0 at the other); the cut at that level is 0.46 mm shorter than the contour inside the box. | End on the box edge. |
+| F10-8 | nit | `feature_move_face` with numbers (`translate: [5, 0, 0]`): `invalid type: integer `5`, expected a string`, no field name and no hint that lengths are strings with units (the sketch tools take numbers); `commands {name}` shows it. For `rules: false` on a counterbore wall the hint is `move the faces less far, or together with the faces around them` (the answer is `rules: true`). | Name the field and an example (`"5 mm"`); mention `rules`. |
+| F10-9 | nit | G-code of 3D jobs still starts `(Gusset 2.5D toolpath: ball end mill D6 mm)`; the export recomputes the path (3.9 s, as long as the toolpath; F9-6's open part); `cam_toolpath` with `path: true` costs up to 23 kB for a waterline and a steep path comes as a pointer of 28 kB (7 `get_text` pages), `query_body names` of the enclosure is 15 kB. | |
+
+What worked well: the closed-corner enclosure equals the hand volume to 1e-6 (the 2 x 3.375 x 25
+corner pieces), holes in the base and across a flange unfold to the right DXF positions, k 0.44
+and 0.5 give the hand flat size, the mitre gap equals `4 x 0.1 x 1.5 sqrt 2 x 25`; `commands {name}`
+makes each rarely used tool's schema cheap to learn; `cam_job`s in the text equal the direct calls
+and `drill` exports a G83 cycle with the right `R` and `Q`; the v2 tree with a shell, mirror and
+pattern imports in 0.4 s with exact volume and `move_face` live rules move exactly the coplanar pad
+tops, also after undo and redo; `onto` a plane the face already lies in is refused with a clear
+message; 3D finishing is now interactive (seconds) in a debug build.
+
+Not tested: `surface_flat` and `steep_flat` for chord gouges; `pencil_ball` on a creased curved
+part; mitre/close at 120 and 150 deg with the holes of this run; `sim_modal` of the enclosure;
+bores (`bore`) and `profile_*` tabs on the bracket; G-code run on a controller; a `cam_job` with
+a holder; F9-5 (flange collisions past 90 deg without `close`), F9-10 not re-checked.

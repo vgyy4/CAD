@@ -314,8 +314,18 @@ fn shell_model(
         }
     }
     let longest = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
-    let h = voxel.unwrap_or((longest / per_side).max(thickness));
-    let mid = gusset_fea::skin::mid_surface(mesh, thickness, h).map_err(fea_err)?;
+    let mut h = voxel.unwrap_or((longest / per_side).max(thickness));
+    // Left to us, the size grows until the model fits (a large enclosure: F10-5).
+    let mut tries = 0;
+    let mid = loop {
+        match gusset_fea::skin::mid_surface(mesh, thickness, h) {
+            Err(gusset_fea::FeaError::TooLarge(_)) if voxel.is_none() && tries < 6 => {
+                h *= 1.5;
+                tries += 1;
+            }
+            r => break r.map_err(fea_err)?,
+        }
+    };
     let mut held = Vec::new();
     for f in fixed {
         held.extend(gusset_fea::skin::nodes_on_face(mesh, *f, &mid, SHELL_TOL));
@@ -370,10 +380,18 @@ fn setup(
     let b = body.clone();
     let face: FaceIndex = Box::new(move |f: &str| {
         let r = FaceRef::parse(f).map_err(|e| CommandError::args(format!("face {f}: {}", e.message)))?;
-        b.names
-            .face_index(&r)
-            .map(|i| i as usize)
-            .ok_or_else(|| CommandError::not_found(format!("face {f} is not on '{}'", b.name)))
+        b.names.face_index(&r).map(|i| i as usize).ok_or_else(|| {
+            // Name the body's faces of the same feature first (F10-5).
+            let feature = f.split('/').next().unwrap_or_default();
+            let mut names: Vec<String> = b.names.faces.iter().map(ToString::to_string).collect();
+            names.sort_by_key(|n| !n.starts_with(&format!("{feature}/")));
+            names.truncate(8);
+            CommandError::not_found(format!("face {f} is not on '{}'", b.name)).hint(format!(
+                "faces of '{}' include: {}",
+                b.name,
+                names.join(", ")
+            ))
+        })
     });
     Ok((body, mesh, voxel, shortest, face))
 }

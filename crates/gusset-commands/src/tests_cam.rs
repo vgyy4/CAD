@@ -153,6 +153,13 @@ fn a_bar_is_analysed_by_its_face_names() {
     let agent = execute(&mut s, &CmdCtx::agent("a", 2), "sim.static", fine).unwrap();
     assert!(count(&user) > 2000 && count(&agent) <= 2000, "{} {}", count(&user), count(&agent));
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
+    // An unknown face lists the body's faces of that feature (F10-5).
+    let e = err(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/side(Sketch1/l99)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1]}]}),
+    );
+    assert!(e.hint.as_deref().is_some_and(|h| h.contains("Extrude1/cap(")), "{e:?}");
     assert_eq!(
         err(
             &mut s,
