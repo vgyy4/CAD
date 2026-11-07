@@ -49,3 +49,12 @@ it, which a face move cannot do (use draft). Laying a face flush with a neighbou
 where a face between them would vanish, is refused by the kernel with a hint to extrude up
 to the face and combine instead. OCCT tests in `modeling_move.rs`.
 
+## Amendment (2026-11-07): onto a tilted plane
+
+`onto` a planar face that is neither parallel nor perpendicular turns the faces about the
+line where their plane meets the target's, by the smaller angle that makes them parallel (the
+faces keep their side). A rigid move cannot do this, because the faces around would have to
+change shape, so it is a draft: the pull lies in the faces, across that line, and the neutral
+plane holds the line. The draft's sign is chosen by checking the turned face's normal.
+Tested with OCCT for hinges on the face's edge, inside it and beyond it (exact volumes).
+

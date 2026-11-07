@@ -5,7 +5,7 @@ use gusset_doc::{
     CombineDef, DirRef, DraftDef, MirrorDef, MoveDef, MoveFaceDef, MoveRotation, OffsetFaceDef, PatternCircularDef,
     PatternLinearDef, ShellDef,
 };
-use gusset_kernel::{DraftSpec, KernelError, Transform};
+use gusset_kernel::{DraftSpec, FaceOrigin, KernelError, Transform};
 use gusset_naming::BodyNames;
 
 /// Most instances one pattern may create (the evaluation's work limits also apply,
@@ -135,6 +135,9 @@ impl Evaluator {
         let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
         if let Some(target) = &d.onto {
             steps = onto_steps(name, s, &body, &faces, target)?;
+            if let [Transform::Rotate { origin, axis, angle }] = steps.as_slice() {
+                return self.tilt_faces(s, name, (bi, &body), &faces, (*origin, *axis, *angle));
+            }
         }
         // A zero move (a parameter at 0) leaves the body as it is.
         steps.retain(|t| match t {
@@ -163,6 +166,61 @@ impl Evaluator {
             .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
         replace_body(s, bi, &body, res.shape, names, topo);
         Ok(())
+    }
+
+    /// Turns planar faces about a line in their plane (`move_face onto` a tilted plane):
+    /// a draft whose pull lies in the faces, across the hinge, so the faces around are
+    /// re-cut against the turned plane instead of carried along rigidly.
+    fn tilt_faces(
+        &self,
+        s: &mut State,
+        name: &str,
+        (bi, body): (usize, &Body),
+        faces: &[u32],
+        (origin, axis, angle): ([f64; 3], [f64; 3], f64),
+    ) -> Result<(), EvalError> {
+        use gusset_kernel::{cross, dot, norm};
+        let k = self.kernel.as_ref();
+        let first = faces.first().and_then(|f| body.topology.faces.get(*f as usize));
+        let n1 = first.map(|f| f.normal).unwrap_or([0.0, 0.0, 1.0]);
+        // Where the normal must end: n1 turned by `angle` about `axis`.
+        let want = turn(n1, axis, angle);
+        let pull = cross(axis, n1);
+        let fail = |ke| {
+            let mut e = kernel_err(name, "move face", ke);
+            e.hint = Some("tilt the face less, or onto a plane that crosses it nearer".into());
+            e
+        };
+        // The sign of a draft depends on which side the material is: try one, check the
+        // turned face's normal, else the other.
+        let mut last = None;
+        for a in [angle, -angle] {
+            let res = match k.draft(&body.shape, faces, &DraftSpec { pull, neutral: origin, angle: a }) {
+                Ok(r) => r,
+                Err(ke) => {
+                    last = Some(ke);
+                    continue;
+                }
+            };
+            let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
+            let turned = res.face_origins.iter().zip(&topo.faces).find_map(|(o, f)| {
+                o.iter()
+                    .any(|x| matches!(x, FaceOrigin::Input { face, .. } if Some(face) == faces.first()))
+                    .then_some(f.normal)
+            });
+            if turned.is_some_and(|n| norm(cross(n, want)) < 1e-6 && dot(n, want) > 0.0) {
+                let names =
+                    name_body(&OpContext::Modify { feature: name, inputs: &[&body.names] }, &res.face_origins, &topo)
+                        .map_err(|e| EvalError::new(name, ErrorCode::KernelFailure, e.0))?;
+                replace_body(s, bi, body, res.shape, names, topo);
+                return Ok(());
+            }
+        }
+        Err(match last {
+            Some(ke) => fail(ke),
+            None => EvalError::new(name, ErrorCode::KernelFailure, "the face could not be turned onto the plane")
+                .with_hint("tilt the face less, or onto a plane that crosses it nearer"),
+        })
     }
 
     /// Tapers faces about the neutral plane (ADR 0028). The pull direction is the plane's
@@ -806,7 +864,8 @@ fn motion_steps(
 }
 
 /// The motion that lays the (planar) faces `faces` of `body` onto the plane of `target`, a
-/// parallel planar face of any body: a translation along the normal.
+/// planar face of any body: a translation along the normal when parallel, else a turn
+/// about the line where the two planes meet.
 fn onto_steps(
     name: &str,
     s: &State,
@@ -814,7 +873,7 @@ fn onto_steps(
     faces: &[u32],
     target: &gusset_doc::FaceRef,
 ) -> Result<Vec<Transform>, EvalError> {
-    use gusset_kernel::{SurfaceKind, cross, dot, norm, scale, sub};
+    use gusset_kernel::{SurfaceKind, add, cross, dot, norm, scale, sub};
     let bad = |m: String| EvalError::new(name, ErrorCode::InvalidReference, m);
     let plane = |b: &Body, fi: u32| -> Option<([f64; 3], [f64; 3])> {
         let f = b.topology.faces.get(fi as usize)?;
@@ -834,13 +893,32 @@ fn onto_steps(
             bad(format!("{target} is not a planar face of the model"))
                 .with_hint("pick a flat face to lay the faces onto")
         })?;
-    if norm(cross(n1, n2)) > 1e-9 {
-        // Turning a face onto a tilted plane reshapes the faces around it, which a face move
-        // cannot do.
-        return Err(bad(format!("{target} is not parallel to the faces to move"))
-            .with_hint("onto slides faces along their normal; to tilt a face use draft"));
+    let along = cross(n1, n2);
+    if norm(along) <= 1e-9 {
+        return Ok(vec![Transform::Translate(scale(n2, dot(sub(c2, c1), n2)))]);
     }
-    Ok(vec![Transform::Translate(scale(n2, dot(sub(c2, c1), n2)))])
+    if dot(n1, n2).abs() < 1e-6 {
+        return Err(bad(format!("{target} is perpendicular to the faces to move"))
+            .with_hint("onto turns a face at most short of a right angle; pick a face it can tilt onto"));
+    }
+    // A tilted plane: turn the faces about the line where their plane meets the target's,
+    // by the smaller angle that makes them parallel (the face keeps its side: its normal
+    // ends along n2 or -n2, whichever is nearer).
+    let t = if dot(n1, n2) >= 0.0 { n2 } else { scale(n2, -1.0) };
+    let u = cross(n1, t);
+    let uu = dot(u, u);
+    let (d1, d2) = (dot(c1, n1), dot(c2, t));
+    // The point of the intersection line nearest the origin.
+    let origin = scale(add(scale(cross(t, u), d1), scale(cross(u, n1), d2)), 1.0 / uu);
+    let angle = libm::atan2(libm::sqrt(uu), dot(n1, t));
+    Ok(vec![Transform::Rotate { origin, axis: scale(u, 1.0 / libm::sqrt(uu)), angle }])
+}
+
+/// `v` turned by `angle` (radians) about the unit vector `axis` (Rodrigues).
+fn turn(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] {
+    use gusset_kernel::{add, cross, dot, scale};
+    let (s, c) = (libm::sin(angle), libm::cos(angle));
+    add(add(scale(v, c), scale(cross(axis, v), s)), scale(axis, dot(axis, v) * (1.0 - c)))
 }
 
 /// Three length expressions as a point in mm; `None` = the origin.

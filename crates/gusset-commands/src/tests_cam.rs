@@ -249,7 +249,7 @@ fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
     run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "10 mm"}));
     let n = s.document(&gusset_history::Actor::User).unwrap().features.len();
     for (target, why) in [
-        ("Extrude1/side(Sketch1/l5)", "not parallel"),
+        ("Extrude1/side(Sketch1/l5)", "perpendicular"),
         ("Extrude1/cap(end)", "already lies"),
         ("Extrude1/cap(start)", "no material"),
     ] {

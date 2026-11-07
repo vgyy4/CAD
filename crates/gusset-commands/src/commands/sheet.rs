@@ -234,8 +234,9 @@ impl Command for FlatPatternQuery {
         let cutouts: Vec<Value> = flat
             .outlines
             .iter()
+            .enumerate()
             .skip(1)
-            .map(|o| {
+            .map(|(oi, o)| {
                 let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
                 for p in o {
                     lo = [lo[0].min(p[0]), lo[1].min(p[1])];
@@ -251,7 +252,14 @@ impl Command for FlatPatternQuery {
                     .sum::<f64>()
                     .abs()
                     / 2.0;
-                json!({"bbox_mm": [lo.map(tidy), hi.map(tidy)], "area_mm2": tidy(area)})
+                match flat.circles.iter().find(|c| c.outline == oi) {
+                    Some(c) => json!({
+                        "bbox_mm": [lo.map(tidy), hi.map(tidy)],
+                        "area_mm2": tidy(std::f64::consts::PI * c.radius * c.radius),
+                        "circle": {"centre_mm": c.centre.map(tidy), "radius_mm": tidy(c.radius)},
+                    }),
+                    None => json!({"bbox_mm": [lo.map(tidy), hi.map(tidy)], "area_mm2": tidy(area)}),
+                }
             })
             .collect();
         Ok(json!({
@@ -350,8 +358,16 @@ pub(crate) fn scene(flat: &FlatPattern) -> Scene {
     }
     let at = |p: [f64; 2]| [p[0] - lo[0] + margin, p[1] - lo[1] + margin];
     let mut sc = Scene { size: [size[0] + 2.0 * margin, size[1] + 2.0 * margin], ..Scene::default() };
-    for l in &flat.outlines {
-        sc.push(Style::Visible, Prim::Polyline { points: l.iter().map(|p| at(*p)).collect(), closed: true });
+    for (i, l) in flat.outlines.iter().enumerate() {
+        match flat.circles.iter().find(|c| c.outline == i) {
+            Some(c) => sc.push(
+                Style::Visible,
+                Prim::Arc { center: at(c.centre), radius: c.radius, start: 0.0, end: std::f64::consts::TAU },
+            ),
+            None => {
+                sc.push(Style::Visible, Prim::Polyline { points: l.iter().map(|p| at(*p)).collect(), closed: true })
+            }
+        }
     }
     for b in &flat.bends {
         for [p, q] in [b.start, b.end] {

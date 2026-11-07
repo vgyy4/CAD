@@ -287,7 +287,8 @@ Phase 3 has started (see Next).
      90 degree flanges at outside tab corners, square relief). Next: mitred corners, other angles. Hems done (`angle: 180 deg`).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Replace face done
-     (`move_face ... onto:` a parallel face). Next: live rules, tilting onto planes.
+     (`move_face ... onto:` a parallel face); tilting onto a tilted plane done (turned about the
+     planes' common line through the kernel's draft). Next: live rules.
    - CAM phase 1 done (ADR 0040, `gusset-cam` on `cavalier_contours`): 2.5D pocket (islands
      kept clear) and outside/inside profiles of sketch regions with a flat end mill in depth
      passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,

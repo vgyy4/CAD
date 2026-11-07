@@ -244,7 +244,8 @@ pub struct MoveFace {
 impl Command for MoveFace {
     const ID: &'static str = "feature.move_face";
     const TITLE: &'static str = "Move face";
-    const DESCRIPTION: &'static str = "Turn (first) and/or translate faces, or move them onto a parallel face (onto); neighbours stretch or it fails.";
+    const DESCRIPTION: &'static str =
+        "Turn (first) and/or translate faces, or lay them onto a face's plane (onto); neighbours stretch or it fails.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -285,14 +286,18 @@ impl Command for MoveFace {
             };
             let not_planar = |r: &FaceRef| {
                 CommandError::args(format!("{r} is not a planar face"))
-                    .hint("onto lays planar faces onto a parallel planar face")
+                    .hint("onto lays planar faces onto a planar face")
             };
             let (c2, n2) = plane(target).ok_or_else(|| not_planar(target))?;
             for f in &faces {
                 let (c1, n1) = plane(f).ok_or_else(|| not_planar(f))?;
+                if gusset_kernel::dot(n1, n2).abs() < 1e-6 {
+                    return Err(CommandError::args(format!("{target} is perpendicular to {f}"))
+                        .hint("onto turns a face at most short of a right angle; pick a face it can tilt onto"));
+                }
                 if gusset_kernel::norm(gusset_kernel::cross(n1, n2)) > 1e-9 {
-                    return Err(CommandError::args(format!("{target} is not parallel to {f}"))
-                        .hint("onto slides faces along their normal; to tilt a face use draft"));
+                    // Tilted: turned about the line where the planes meet (evaluator).
+                    continue;
                 }
                 if gusset_kernel::dot(gusset_kernel::sub(c2, c1), n2).abs() < 1e-9 {
                     return Err(CommandError::args(format!("{f} already lies in the plane of {target}")));

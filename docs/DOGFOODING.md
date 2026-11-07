@@ -425,7 +425,7 @@ from `tools/list`, `commands`, schemas, resources and errors.
 | F6-1 | major | Cuts not unfolded with two flanges or a side flange | Fixed: faces of the sheet's own features (flange end caps) are sheet faces, not the cut's (OCCT test). |
 | F6-2 | major | A second cut wrote the first cut's outline again | Fixed: outlines already in the pattern are not added again (OCCT test). |
 | F6-3 | major | Export hint named a missing feature; no cut-outs in `query_flat_pattern` | Fixed: hint says what unfolds; `cutouts: [{bbox_mm, area_mm2}]`. |
-| F6-4 | minor | Bend cut-outs mapped from the sketch-side face, circles as polylines | Open (ADR 0037 notes the approximation). |
+| F6-4 | minor | Bend cut-outs mapped from the sketch-side face, circles as polylines | Fixed: bend cut-outs are mapped on the neutral surface along the cut direction (width = neutral arc length); full circles on flats are carried as circles into `query.flat_pattern` and the DXF (ADR 0037). |
 | F6-5 | major | Default voxel gave one voxel through a 10 mm bar, 118 % off, no warning | Fixed: default is the smaller of longest/30 and shortest/4 (within the cell cap); `caveats` when fewer than 3 voxels span the thinnest side or the peak sits at a held face. |
 | F6-6 | minor | Loose-part refusal advised a smaller voxel | Fixed: advises joining the parts by faces or fixing each. |
 | F6-7 | minor | `onto` a tilted, coplanar or opposite face committed a failing feature | Fixed: refused before committing (test). |

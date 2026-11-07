@@ -957,8 +957,19 @@ impl Evaluator {
                 let mut flat = old.clone();
                 // A cut through flat regions only is unfolded into cut-outs; anything else
                 // leaves the pattern marked as not showing the change.
-                match old.changed_by.is_empty().then(|| self.unfold_cuts(s, &b, old)).flatten() {
-                    Some(cuts) => flat.outlines.extend(cuts),
+                let dir = match &f.kind {
+                    FeatureKind::Extrude(e) => s.solved.get(&e.profile.sketch).map(|sv| sv.frame.normal()),
+                    _ => None,
+                };
+                match old.changed_by.is_empty().then(|| self.unfold_cuts(s, &b, old, dir)).flatten() {
+                    Some(cuts) => {
+                        for c in cuts {
+                            if let Some((centre, radius)) = c.circle {
+                                flat.circles.push(sheet::FlatCircle { outline: flat.outlines.len(), centre, radius });
+                            }
+                            flat.outlines.push(c.outline);
+                        }
+                    }
                     None => {
                         if !flat.changed_by.contains(&f.name) {
                             flat.changed_by.push(f.name.clone());

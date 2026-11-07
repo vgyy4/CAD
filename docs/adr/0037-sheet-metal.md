@@ -113,6 +113,16 @@ on the two faces differ). Edge flanges' bends are unfolded the same way, each fl
 (`FlangeEnd::bend`: the profile frame, the line it starts from in the pattern, centre, start,
 outer radius, turn and allowance); points on its outer face (`bend_out`) are mapped.
 
+Neutral surface and circles (2026-11-07, dogfooding F6-4): a point on a bend face is first
+moved along the extrude cut's direction onto the neutral surface (radius `allowance / |turn|`
+= r + k t) and then mapped, so a cut across a bend is as wide as the neutral arc whichever
+face its loop came from (if that does not close the loops, e.g. a slanted cut at a bend's
+edge, the sketch-side face is used as before). Cut-outs on flat faces are unchanged. A full
+circle on a flat face (a closed circular edge, or a circle hole of a tab's sketch) is kept as
+`FlatPattern::circles` (centre, radius, index into `outlines`), reported by
+`query.flat_pattern` as `cutouts[].circle` and written to the DXF as a CIRCLE entity (SVG:
+a circle too); its polyline stays in `outlines` for sizes and areas.
+
 ## Amendment (2026-11-05): closed corners
 
 `edge_flange ... close: true` closes the outside corners the new flange makes with flanges

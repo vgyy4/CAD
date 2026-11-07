@@ -446,7 +446,9 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   wall moved by `distance` changes its radius by that much (outward from the material).
 - `move_face (faces: [<face>], translate: [x, y, z], axis: <dir>, angle: <angle>, through: [x, y, z])`,
   or `move_face (faces: [<face>], onto: <face>)`: planar faces slide along their normal onto the
-  plane of a parallel planar face of any body (re-read on rebuild); a tilted target is refused.
+  plane of a parallel planar face of any body (re-read on rebuild); onto a tilted plane they turn
+  about the line where the two planes meet (the faces around are re-cut, as by a draft); a
+  perpendicular target is refused.
   moves faces rigidly (direct edit, ADR 0031): a turn about `axis` through `through` (default
   the origin), then the translation, as in `move`; give either or both. The faces around keep
   their surfaces and stretch to follow, so they must contain the moved edges: a hole or boss

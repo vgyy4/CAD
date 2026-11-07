@@ -217,9 +217,9 @@ fn a_face_laid_onto_another_faces_plane_moves_to_it() {
 }
 
 #[test]
-fn a_face_is_not_laid_onto_a_tilted_plane() {
-    // A block beside the box, turned 10 degrees: the box's top would have to tilt, which
-    // reshapes its sides; refused with the way to do it.
+fn a_face_laid_onto_a_tilted_plane_turns_about_where_the_planes_meet() {
+    // A block beside the box, turned 10 degrees about the box's top edge at x = 40: the
+    // box's top tilts about that edge and its sides stretch to follow.
     let tilt = "
 sketch S5 (plane: XY, next_id: 9) {
   p1 = point(40, 0)
@@ -237,6 +237,46 @@ extrude Wedge (profile: S5, distance: 10 mm, op: new)
 move Tilt (body: Wedge, axis: Y, angle: 10 deg, through: [40 mm, 0 mm, 10 mm])
 
 move_face Lay (body: Extrude1, faces: [Extrude1/cap(end)], onto: Wedge/cap(end))";
-    let (_, r) = eval(BOX, tilt);
-    assert!(r.errors().iter().any(|e| e.to_string().contains("not parallel")), "{:?}", r.errors());
+    let (ev, r) = eval(BOX, tilt);
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    // Top: z = 10 + tan(10 deg) (40 - x) over 0..40 x 0..20.
+    let want = 8000.0 + 16000.0 * libm::tan(10f64.to_radians());
+    assert!(near(volume(&ev, &r, "Extrude1"), want), "{} vs {want}", volume(&ev, &r, "Extrude1"));
+    // The top keeps its name.
+    assert!(names(&r, "Extrude1").iter().any(|n| n == "Extrude1/cap(end)"), "{:?}", names(&r, "Extrude1"));
+}
+
+#[test]
+fn a_tilt_hinged_inside_or_beyond_the_face_keeps_the_exact_volume() {
+    // A reference block turned about Y through (hx, 0, 10); the box's top is laid onto it.
+    let lay = |hx: f64, deg: f64| {
+        format!(
+            "
+sketch S5 (plane: XY, next_id: 9) {{
+  p1 = point(100, 0)
+  p2 = point(120, 0)
+  p3 = point(120, 20)
+  p4 = point(100, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+extrude Ref (profile: S5, distance: 10 mm, op: new)
+
+move Tilt (body: Ref, axis: Y, angle: {deg} deg, through: [{hx} mm, 0 mm, 10 mm])
+
+move_face Lay (body: Extrude1, faces: [Extrude1/cap(end)], onto: Ref/cap(end))"
+        )
+    };
+    // Top after the tilt: z = 10 + tan(deg) (hx - x) over 0..40 x 0..20.
+    for (hx, deg) in [(20.0, 10.0), (60.0, 5.0), (-30.0, -4.0)] {
+        let (ev, r) = eval(BOX, &lay(hx, deg));
+        assert!(r.errors().is_empty(), "{hx} {deg}: {:?}", r.errors());
+        let t = libm::tan(f64::to_radians(deg));
+        let want = 20.0 * (400.0 + t * (40.0 * hx - 800.0));
+        let got = volume(&ev, &r, "Extrude1");
+        assert!(near(got, want), "{hx} {deg}: {got} vs {want}");
+    }
 }

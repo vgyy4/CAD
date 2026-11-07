@@ -22,6 +22,8 @@ pub struct FlatPattern {
     /// Closed outlines (the first is the outer boundary; the rest are cut-outs), as
     /// polylines without the closing point repeated.
     pub outlines: Vec<Vec<[f64; 2]>>,
+    /// Cut-outs that are full circles (their polyline is in `outlines`).
+    pub circles: Vec<FlatCircle>,
     /// The bends: a contour flange's in order along its developed length (`x`), then
     /// those of edge flanges in feature order.
     pub bends: Vec<FlatBend>,
@@ -34,6 +36,14 @@ pub struct FlatPattern {
     /// Features other than sheet-metal ones that changed the body since (cuts, holes,
     /// moves...): the pattern does not show what they did.
     pub changed_by: Vec<String>,
+}
+
+/// A circular cut-out of the flat pattern: `outlines[outline]` is its polyline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlatCircle {
+    pub outline: usize,
+    pub centre: [f64; 2],
+    pub radius: f64,
 }
 
 /// The sketch a tab was made from and the side its material is on.
@@ -355,6 +365,7 @@ pub(crate) fn contour_section(
     let flat = FlatPattern {
         thickness: t,
         outlines: vec![vec![[0.0, 0.0], [x, 0.0], [x, w], [0.0, w]]],
+        circles: Vec::new(),
         bends,
         base: None,
         // The sketch and the width's span are filled in by the caller.
@@ -590,9 +601,15 @@ impl Evaluator {
                     .extrude(&kp, &ExtrudeSpec { distance, symmetric: false })
                     .map_err(|ke| kernel_err(name, "tab", ke))?;
                 let mut outlines = Vec::new();
+                let mut circles = Vec::new();
                 for r in &kp.regions {
                     outlines.push(sample(&r.outer));
-                    outlines.extend(r.holes.iter().map(sample));
+                    for h in &r.holes {
+                        if let [ProfileEdge { seg: Seg2::Circle { center, radius }, .. }] = h.edges.as_slice() {
+                            circles.push(FlatCircle { outline: outlines.len(), centre: *center, radius: *radius });
+                        }
+                        outlines.push(sample(h));
+                    }
                 }
                 let base = Some(TabBase { sketch: profile.sketch.clone(), flip: d.flip });
                 (
@@ -601,6 +618,7 @@ impl Evaluator {
                     FlatPattern {
                         thickness: t,
                         outlines,
+                        circles,
                         bends: Vec::new(),
                         base,
                         contour: None,
@@ -1169,8 +1187,15 @@ enum FlatMap<'a> {
 }
 
 impl FlatMap<'_> {
-    /// The flat-pattern point of `p`, and how far `p` lies off the face's plane.
-    fn map(&self, p: gusset_kernel::V3) -> (P2, f64) {
+    /// Whether the face is flat (a circle on it develops as a circle).
+    fn is_flat(&self) -> bool {
+        matches!(self, FlatMap::Tab(_) | FlatMap::Straight(..) | FlatMap::Flange(_))
+    }
+
+    /// The flat-pattern point of `p`, and how far `p` lies off the face's plane. On a bend
+    /// face, `p` is first moved along the cut direction `dir` onto the neutral surface, so the
+    /// flat size is the neutral arc length whichever side the loop came from.
+    fn map(&self, p: gusset_kernel::V3, dir: Option<gusset_kernel::V3>) -> (P2, f64) {
         use gusset_kernel::{dot, scale, sub as sub3};
         match self {
             FlatMap::Tab(f) => {
@@ -1193,6 +1218,9 @@ impl FlatMap<'_> {
                 let d = sub3(p, f.origin);
                 let q = sub([dot(d, f.x), dot(d, f.y)], z.centre);
                 let rad = len(q);
+                let p = to_neutral(p, dir, f, z.centre, z.allowance / z.turn.abs().max(1e-300));
+                let d = sub3(p, f.origin);
+                let q = sub([dot(d, f.x), dot(d, f.y)], z.centre);
                 let (cs, sn) = (z.start[0] * q[0] + z.start[1] * q[1], z.start[0] * q[1] - z.start[1] * q[0]);
                 let phi = libm::atan2(sn, cs);
                 let share = (phi / z.turn).clamp(-1e-6, 1.0 + 1e-6);
@@ -1200,6 +1228,9 @@ impl FlatMap<'_> {
             }
             FlatMap::FlangeBend(fb) => {
                 let f = fb.frame;
+                let o = sub3(p, f.origin);
+                let off = (len(sub([dot(o, f.x), dot(o, f.y)], fb.centre)) - fb.radius).abs();
+                let p = to_neutral(p, dir, &f, fb.centre, fb.allowance / fb.turn.abs().max(1e-300));
                 let d = sub3(p, f.origin);
                 let q = sub([dot(d, f.x), dot(d, f.y)], fb.centre);
                 let (cs, sn) = (fb.start[0] * q[0] + fb.start[1] * q[1], fb.start[0] * q[1] - fb.start[1] * q[0]);
@@ -1207,7 +1238,7 @@ impl FlatMap<'_> {
                 let s = dot(d, scale(f.normal(), fb.along.signum()));
                 let ab = sub(fb.b, fb.a);
                 let u = mul(ab, 1.0 / len(ab).max(1e-300));
-                (addv(addv(fb.a, mul(u, s)), mul(fb.out, share * fb.allowance)), (len(q) - fb.radius).abs())
+                (addv(addv(fb.a, mul(u, s)), mul(fb.out, share * fb.allowance)), off)
             }
             FlatMap::Flange(fe) => {
                 let f = fe.frame;
@@ -1220,6 +1251,41 @@ impl FlatMap<'_> {
             }
         }
     }
+}
+
+/// `p` moved along `dir` onto the neutral surface (radius `rn` round `centre`, in the
+/// sketch frame `f`) of a bend; unchanged without a direction or when the line misses it.
+fn to_neutral(
+    p: gusset_kernel::V3,
+    dir: Option<gusset_kernel::V3>,
+    f: &Frame,
+    centre: P2,
+    rn: f64,
+) -> gusset_kernel::V3 {
+    use gusset_kernel::{add, dot, scale, sub as sub3};
+    let Some(d) = dir else { return p };
+    let o = sub3(p, f.origin);
+    let q = sub([dot(o, f.x), dot(o, f.y)], centre);
+    let dq = [dot(d, f.x), dot(d, f.y)];
+    let a = dq[0] * dq[0] + dq[1] * dq[1];
+    if a < 1e-12 {
+        return p;
+    }
+    let b = q[0] * dq[0] + q[1] * dq[1];
+    let disc = b * b - a * (q[0] * q[0] + q[1] * q[1] - rn * rn);
+    if disc < 0.0 {
+        return p;
+    }
+    let sq = libm::sqrt(disc);
+    let (t1, t2) = ((-b - sq) / a, (-b + sq) / a);
+    add(p, scale(d, if t1.abs() <= t2.abs() { t1 } else { t2 }))
+}
+
+/// One cut-out developed into the flat pattern: its outline, and its centre and radius when
+/// it is a full circle.
+pub(crate) struct Cut {
+    pub outline: Vec<[f64; 2]>,
+    pub circle: Option<(P2, f64)>,
 }
 
 /// Joins polylines end to end into closed loops (ends within `tol`); `None` when they do not
@@ -1255,7 +1321,13 @@ impl Evaluator {
     /// The cut-outs a later feature made through the flat regions of sheet body `b`, as flat
     /// pattern outlines; `None` when the change is not that (it touches a bend or an edge,
     /// adds material, or moved the sheet): then the flat pattern is marked stale instead.
-    pub(crate) fn unfold_cuts(&self, s: &State, b: &Body, flat: &FlatPattern) -> Option<Vec<Vec<[f64; 2]>>> {
+    pub(crate) fn unfold_cuts(
+        &self,
+        s: &State,
+        b: &Body,
+        flat: &FlatPattern,
+        dir: Option<gusset_kernel::V3>,
+    ) -> Option<Vec<Cut>> {
         use gusset_doc::{CapSide, FaceKey};
         #[derive(Clone, Copy, PartialEq)]
         enum Kind {
@@ -1347,30 +1419,56 @@ impl Evaluator {
             return None;
         }
         // The loops: the edges between new faces and the flats on the sketch side, mapped.
+        // Bend faces are mapped at the neutral surface along the cut direction; if that does
+        // not close the loops (a cut slanted at a bend's edge), the sketch-side face is used.
         let mesh = self.kernel.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).ok()?;
         let tol = (flat.thickness * 1e-3).max(1e-4);
-        let mut pieces = Vec::new();
-        for (ei, e) in b.topology.edges.iter().enumerate() {
-            let fs: Vec<usize> = e.faces.iter().map(|f| *f as usize).collect();
-            let primary = fs.iter().find(|f| kinds.get(**f) == Some(&Kind::Primary));
-            let new = fs.iter().any(|f| kinds.get(*f) == Some(&Kind::New));
-            let (Some(pf), true) = (primary, new) else { continue };
-            let map = maps.get(*pf)?.as_ref()?;
-            let poly = mesh.edges.get(ei)?;
-            let mut pts = Vec::with_capacity(poly.len());
-            for q in poly {
-                let (p2, off) = map.map(q.map(f64::from));
-                if off > tol * 10.0 {
-                    return None; // the sheet moved: not a cut of it
+        let attempts: &[Option<gusset_kernel::V3>] = if dir.is_some() { &[dir, None] } else { &[None] };
+        let mut found = None;
+        'attempt: for dir in attempts {
+            let mut pieces = Vec::new();
+            let mut cuts: Vec<Cut> = Vec::new();
+            for (ei, e) in b.topology.edges.iter().enumerate() {
+                let fs: Vec<usize> = e.faces.iter().map(|f| *f as usize).collect();
+                let primary = fs.iter().find(|f| kinds.get(**f) == Some(&Kind::Primary));
+                let new = fs.iter().any(|f| kinds.get(*f) == Some(&Kind::New));
+                let (Some(pf), true) = (primary, new) else { continue };
+                let map = maps.get(*pf)?.as_ref()?;
+                let poly = mesh.edges.get(ei)?;
+                let mut pts = Vec::with_capacity(poly.len());
+                for q in poly {
+                    let (p2, off) = map.map(q.map(f64::from), *dir);
+                    if off > tol * 10.0 {
+                        return None; // the sheet moved: not a cut of it
+                    }
+                    pts.push(p2);
                 }
-                pts.push(p2);
+                // A full circle on a flat face is carried as a circle.
+                let circle = match (&e.circle, e.kind == gusset_kernel::CurveKind::Circle && e.vertices.len() == 1) {
+                    (Some(c), true) if map.is_flat() => Some((map.map(c.center, None).0, c.radius)),
+                    _ => None,
+                };
+                match circle {
+                    Some(c) if pts.len() >= 4 => {
+                        if pts.first().zip(pts.last()).is_some_and(|(a, z)| len(sub(*a, *z)) <= tol * 10.0) {
+                            pts.pop();
+                        }
+                        cuts.push(Cut { outline: pts, circle: Some(c) });
+                    }
+                    _ => pieces.push(pts),
+                }
             }
-            pieces.push(pts);
+            if !pieces.is_empty() {
+                let Some(loops) = chain_loops(pieces, tol * 10.0) else { continue 'attempt };
+                cuts.extend(loops.into_iter().map(|outline| Cut { outline, circle: None }));
+            }
+            found = Some(cuts);
+            break;
         }
-        if pieces.is_empty() {
+        let mut cuts = found?;
+        if cuts.is_empty() {
             return None;
         }
-        let mut loops = chain_loops(pieces, tol * 10.0)?;
         // An earlier cut's outlines are found again (its faces are not the sheet's): keep
         // only those not already in the pattern.
         let key = |o: &[[f64; 2]]| {
@@ -1387,21 +1485,20 @@ impl Evaluator {
                 / 2.0;
             (c, area)
         };
-        loops.retain(|l| {
-            let (c, a) = key(l);
+        cuts.retain(|l| {
+            let (c, a) = key(&l.outline);
             !flat.outlines.iter().skip(1).any(|o| {
                 let (c2, a2) = key(o);
                 len(sub(c, c2)) < tol * 10.0 && (a - a2).abs() <= 1e-3 * a.max(a2).max(1e-9)
             })
         });
         // Each cut-out lies inside the pattern.
-        if loops
-            .iter()
-            .any(|l| l.iter().any(|p| !inside(&flat.outlines, *p) && !on_outline(&flat.outlines, *p, tol * 10.0)))
-        {
+        if cuts.iter().any(|l| {
+            l.outline.iter().any(|p| !inside(&flat.outlines, *p) && !on_outline(&flat.outlines, *p, tol * 10.0))
+        }) {
             return None;
         }
-        Some(loops)
+        Some(cuts)
     }
 }
 

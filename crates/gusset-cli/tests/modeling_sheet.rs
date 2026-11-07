@@ -406,7 +406,7 @@ extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)"
     // each angle a share of the quarter turn along its 2π mm zone (π/2 · (3 + 1)); the zone
     // starts after l5's straight (25), its bend (2π) and l6's straight (50).
     let x0 = 25.0 + FRAC_PI_2 * 4.0 + 50.0;
-    let (lo, hi) = (x0 + libm::asin(0.1) * 4.0, x0 + libm::asin(0.5) * 4.0);
+    let (lo, hi) = (x0 + libm::asin(0.5 / 4.0) * 4.0, x0 + libm::asin(2.5 / 4.0) * 4.0);
     let h = &flat.outlines[1];
     let (mut xmin, mut xmax, mut ymin, mut ymax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for p in h {
@@ -443,7 +443,7 @@ extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: Plate)
     assert_eq!(flat.outlines.len(), 2);
     // The bend's outer face: radius 5 about (60, z 5); x = 60.5 and 62.5 lie at asin(0.1)
     // and asin(0.5) round it, along its 2π mm zone beyond the tab's edge at x = 60.
-    let (lo, hi) = (60.0 + libm::asin(0.1) * 4.0, 60.0 + libm::asin(0.5) * 4.0);
+    let (lo, hi) = (60.0 + libm::asin(0.5 / 4.0) * 4.0, 60.0 + libm::asin(2.5 / 4.0) * 4.0);
     let (mut xmin, mut xmax, mut ymin, mut ymax) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for p in &flat.outlines[1] {
         (xmin, xmax, ymin, ymax) = (xmin.min(p[0]), xmax.max(p[0]), ymin.min(p[1]), ymax.max(p[1]));
@@ -523,4 +523,71 @@ extrude Cut2 (profile: D, distance: 20 mm, symmetric: true, op: cut, body: Plate
     let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
     assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
     assert_eq!(flat.outlines.len(), 3, "{:?}", flat.outlines.iter().map(Vec::len).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_cut_across_a_bend_is_as_wide_as_the_neutral_arc() {
+    let base = "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)";
+    // A rectangular hole over the l6/l7 bend (centre (55, 5), outside radius 5, inside 3, neutral
+    // 4), x from 55.5 to 57.5, cut straight down: its walls cross the neutral surface at
+    // asin(0.5 / 4) and asin(2.5 / 4) from the bend's start.
+    let (_, r) = eval(&format!(
+        "{base}
+
+sketch C (plane: XY, next_id: 9) {{
+  p1 = point(55.5, -22)
+  p2 = point(57.5, -22)
+  p3 = point(57.5, -18)
+  p4 = point(55.5, -18)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)"
+    ));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    let h = &flat.outlines[1];
+    let (xmin, xmax) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    let x0 = 25.0 + FRAC_PI_2 * 4.0 + 50.0;
+    let (lo, hi) = (x0 + libm::asin(0.5 / 4.0) * 4.0, x0 + libm::asin(2.5 / 4.0) * 4.0);
+    // (Mesh vertices are single precision: 1e-4 is as close as they allow.)
+    assert!((xmin - lo).abs() < 1e-4 && (xmax - hi).abs() < 1e-4, "{xmin}..{xmax} vs {lo}..{hi}");
+    assert!(((xmax - xmin) - 4.0 * (libm::asin(0.625) - libm::asin(0.125))).abs() < 1e-4);
+    assert!(flat.circles.is_empty());
+}
+
+#[test]
+fn a_round_hole_stays_a_circle_in_the_flat_pattern_query_and_dxf() {
+    use gusset_commands::{CmdCtx, Session, execute};
+    let src = format!(
+        "{TAB}
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(30, 20)
+  c2 = circle(p1, 5)
+}}
+
+extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: Plate)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+    let dir = std::env::temp_dir().join(format!("gusset-sheet-circle-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project_dir = Some(dir.clone());
+    let u = CmdCtx::user(1);
+    let q = execute(&mut s, &u, "query.flat_pattern", serde_json::json!({})).unwrap();
+    let cut = &q["cutouts"][0];
+    assert_eq!(q["cutouts"].as_array().unwrap().len(), 1, "{q}");
+    assert_eq!(cut["circle"]["radius_mm"], 5.0, "{q}");
+    assert_eq!(cut["circle"]["centre_mm"], serde_json::json!([30.0, 20.0]), "{q}");
+    execute(&mut s, &u, "sheet.export_flat", serde_json::json!({"path": "flat.dxf"})).unwrap();
+    let dxf = std::fs::read_to_string(dir.join("flat.dxf")).unwrap();
+    assert_eq!(dxf.matches("CIRCLE").count(), 1, "{dxf}");
+    let _ = std::fs::remove_dir_all(dir);
 }
