@@ -119,3 +119,34 @@ out of the peak, since they carry the coarse solution's error. A bar in tension 
 60 MPa from beam theory. Near sharp inside corners and held edges the stress has no
 finite limit, so the refined value is a trend, not a number (said in the code's docs).
 
+
+## Amendment (2026-11-07): shell elements
+
+Voxels are poor for thin sheet metal (a 1-2 mm sheet needs tiny voxels), so
+`gusset_fea::shell::shell_static` solves a mid-surface mesh of flat 4-node shells
+(`ShellMesh { nodes, quads, tris }`, `ShellProblem { mesh, thickness, material, fixed, loads }`;
+mm, N, MPa). Not wired into commands yet.
+
+- Element: flat in its own plane (local frame from the quad's diagonals, nodes projected on
+  the mean plane, so a folded mesh such as an L-bracket works: each element is rotated to
+  global axes), six dofs per node. Membrane: bilinear plane stress with Wilson-Taylor
+  incompatible modes condensed out (exact for rectangles in bending). Plate: Mindlin
+  (shear factor 5/6) with MITC4 assumed natural shear strains (Bathe-Dvorkin), so no shear
+  locking in the thin limit. Drilling: a penalty `0.05 G t A` on `theta_z - (v,x - u,y)/2`,
+  which keeps the rotation about the normal defined without perturbing the membrane.
+- Solver: 6x6-block CSR, Jacobi-preconditioned CG (relative residual 1e-10); fixed nodes
+  clamp all six dofs; more than 200 000 nodes is refused (`TooLarge`). Jacobi CG needs
+  about 100 iterations on a 16x16 plate and about 1600 on the t = 0.1 mm strip; large thin
+  meshes would want a stronger preconditioner.
+- Output: node displacements and rotations, per-quad von Mises at the element centre on the
+  top and bottom surfaces (membrane plus or minus bending, transverse shear left out).
+- Limits: triangles are rejected with a clear error (mesh quads only); uniform thickness;
+  warped quads are flattened, not corrected; stresses are element-centre values, so the
+  clamped-edge peak reads low on coarse meshes; folds are rigid joints (the shared node has
+  one set of six dofs), which is right for bent sheet but not for hinges.
+- Tests (`shell/tests.rs`), against closed form: cantilever strip 100 x 10 x 1 on a 20 x 2
+  mesh, tip load across the thickness, 1.2 % off PL^3/3EI (tilted copy identical to 1e-9
+  relative); in-plane loading, 0.4 % on 40 x 4 and 0.2 % on 20 x 2; clamped square plate
+  under uniform nodal load vs `0.00126 q a^4 / D`, 0.9 % on 16 x 16; thickness 0.1 vs 1,
+  deflection ratio 999 against 1000; an L-bracket under tip loads along either axis, 1.2 %
+  and 0.9 % off beam superposition.

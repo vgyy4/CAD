@@ -137,3 +137,13 @@ gains a matching flap on each strip's side. Without such a neighbour the flange 
 OCCT test `a_closed_corner_butts_the_walls_and_keeps_a_relief`: exact volumes and flat
 areas, up and down.
 
+## Amendment (2026-11-07): mitred corners
+
+`close: mitre` (command: `mitre: true`) closes an outside corner between two 90 degree
+flanges with both walls cut on the corner's diagonal, the plane through its inner and outer
+vertical edges, instead of one wall running past the other. Each wall gets a wedge past its
+line's end, bounded by that plane shifted 0.05 mm back, so the walls are 0.1 mm apart.
+Welded shut, a mitre would be the same solid as the butt joint. In the flat pattern each flap
+is as wide as its wedge at the neutral layer. Unequal bend radii shift the diagonal. OCCT
+test: volume, the two mitre faces and the flat area, with the flange bent up and down.
+

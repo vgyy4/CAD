@@ -365,7 +365,7 @@ fn print_feature(out: &mut String, f: &Feature) {
                         args.push(format!("thickness: {t}"));
                     }
                 }
-                SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor, close } => {
+                SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor, close, mitre } => {
                     args.push(format!("body: {body}"));
                     args.push(format!("line: {line}"));
                     args.push(format!("length: {length}"));
@@ -373,7 +373,7 @@ fn print_feature(out: &mut String, f: &Feature) {
                     args.push(format!("bend_radius: {bend_radius}"));
                     args.push(format!("k_factor: {k_factor}"));
                     if *close {
-                        args.push("close: true".into());
+                        args.push(if *mitre { "close: mitre" } else { "close: true" }.into());
                     }
                 }
             }
@@ -2374,7 +2374,7 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let (mut curves, mut profile) = (None, None);
     let (mut width, mut thickness, mut bend_radius, mut k_factor) = (None, None, None, None);
     let (mut body, mut line, mut length, mut angle) = (None, None, None, None);
-    let (mut symmetric, mut flip, mut close) = (false, false, false);
+    let (mut symmetric, mut flip, mut close, mut mitre) = (false, false, false, false);
     let mut body_name = None;
     let allowed = if kw == "tab" {
         "profile, thickness, flip, body_name, label, group, suppressed"
@@ -2396,7 +2396,15 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             ("edge_flange", "angle") => angle = Some(c.expr()?),
             ("edge_flange", "bend_radius") => bend_radius = Some(c.expr()?),
             ("edge_flange", "k_factor") => k_factor = Some(c.expr()?),
-            ("edge_flange", "close") => close = parse_bool(c)?,
+            ("edge_flange", "close") => {
+                // true, false, or mitre (closed, the walls meeting on the diagonal).
+                match c.ident()? {
+                    "true" => close = true,
+                    "false" => close = false,
+                    "mitre" => (close, mitre) = (true, true),
+                    other => return Err(c.err(format!("expected true, false or mitre, found '{other}'"))),
+                }
+            }
             (_, "flip") => flip = parse_bool(c)?,
             ("contour_flange", "curves") => curves = Some(parse_path(c)?),
             ("contour_flange", "width") => width = Some(c.expr()?),
@@ -2423,6 +2431,7 @@ fn parse_sheet(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             bend_radius: Box::new(bend_radius.ok_or_else(|| missing(c, kw, "bend_radius"))?),
             k_factor: Box::new(k_factor.ok_or_else(|| missing(c, kw, "k_factor"))?),
             close,
+            mitre,
         }
     } else if kw == "tab" {
         SheetOp::Tab { profile: profile.ok_or_else(|| missing(c, kw, "profile"))? }

@@ -128,6 +128,9 @@ pub struct EdgeFlange {
     /// Close corners.
     #[serde(default)]
     pub close: bool,
+    /// Meet on the diagonal.
+    #[serde(default)]
+    pub mitre: bool,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -172,7 +175,8 @@ impl Command for EdgeFlange {
                 angle: Box::new(angle),
                 bend_radius: Box::new(bend_radius),
                 k_factor: Box::new(k_factor),
-                close: self.close,
+                close: self.close || self.mitre,
+                mitre: self.mitre,
             };
             insert_feature(doc, rb, sheet(name.clone(), op, None, self.flip));
             Ok(json!({ "feature": name }))

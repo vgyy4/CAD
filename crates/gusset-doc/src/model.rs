@@ -1009,6 +1009,9 @@ pub enum SheetOp {
         /// Close the corners with neighbouring flanges (walls butt, the bends keep a
         /// square relief).
         close: bool,
+        /// With `close`: the walls meet on the corner's diagonal (a 45 degree mitre)
+        /// instead of one running past the other.
+        mitre: bool,
     },
 }
 

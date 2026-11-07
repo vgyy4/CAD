@@ -483,7 +483,7 @@ impl Evaluator {
         params: &ParamValues,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
-        if let SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor, close } = &d.op {
+        if let SheetOp::EdgeFlange { body, line, length, angle, bend_radius, k_factor, close, mitre } = &d.op {
             let v = |e: &Expr, dim| eval_expr(name, e, dim, params, units);
             let spec = EdgeSpec {
                 length: v(length, Dim::LENGTH)?,
@@ -492,6 +492,7 @@ impl Evaluator {
                 k: v(k_factor, Dim::NONE)?,
                 down: d.flip,
                 close: *close,
+                mitre: *mitre,
             };
             return self.run_edge_flange(s, name, body, line, &spec);
         }
@@ -657,6 +658,9 @@ impl Evaluator {
     }
 }
 
+/// The gap between mitred walls (mm): welded shut they would be the butt joint.
+const MITRE_GAP: f64 = 0.1;
+
 /// The evaluated values of an edge flange.
 pub(crate) struct EdgeSpec {
     pub(crate) length: f64,
@@ -665,6 +669,8 @@ pub(crate) struct EdgeSpec {
     pub(crate) k: f64,
     pub(crate) down: bool,
     pub(crate) close: bool,
+    /// Closed corners meet on the diagonal.
+    pub(crate) mitre: bool,
 }
 
 /// Inside test by the even-odd rule over all outlines.
@@ -1047,15 +1053,31 @@ impl Evaluator {
                     continue;
                 }
                 let Some((p, me_start, other_start)) = me.corner_with(&other) else { continue };
-                // The new flange's wall covers the corner; the other runs up to its inside.
-                for (w, at_start, ext) in [(&me, me_start, other.r + t), (&other, other_start, me.r)] {
-                    let res = self
-                        .kernel
-                        .extrude(
+                // Overlap: the new flange's wall covers the corner and the other runs up to its
+                // inside. Mitre: each runs to the diagonal through the corner's inner and outer
+                // edges (`d` shifts it when the radii differ); the flat flap is as wide as the
+                // wedge at the neutral layer.
+                let walls = if e.mitre {
+                    let rn = |w: &Wall| w.ba / std::f64::consts::FRAC_PI_2;
+                    // Each wall stops half the gap short of the diagonal (measured across it).
+                    let c = MITRE_GAP / std::f64::consts::SQRT_2;
+                    let (d1, d2) = (other.r - me.r - c, me.r - other.r - c);
+                    [(&me, me_start, rn(&me) + d1, Some(d1)), (&other, other_start, rn(&other) + d2, Some(d2))]
+                } else {
+                    [(&me, me_start, other.r + t, None), (&other, other_start, me.r, None)]
+                };
+                for (w, at_start, ext, mitre) in walls {
+                    let res = match mitre {
+                        None => self.kernel.extrude(
                             &w.extension(t, at_start),
                             &ExtrudeSpec { distance: w.reach(at_start, ext), symmetric: false },
-                        )
-                        .map_err(|ke| kernel_err(name, "closed corner", ke))?;
+                        ),
+                        Some(d) => {
+                            let (profile, distance) = w.mitre(t, at_start, d);
+                            self.kernel.extrude(&profile, &ExtrudeSpec { distance, symmetric: false })
+                        }
+                    }
+                    .map_err(|ke| kernel_err(name, "closed corner", ke))?;
                     let at = [w.name.clone()];
                     self.combine(
                         s,
@@ -1154,6 +1176,36 @@ impl Wall {
             frame.origin = gusset_kernel::add(frame.origin, gusset_kernel::scale(frame.normal(), self.along));
         }
         Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] }
+    }
+
+    /// The wall's mitred end past the line's start or end: a profile across the wall's
+    /// height (thickness offset `x` from the line, `s` past its end) bounded by the diagonal
+    /// `s = x + d`, and the signed extrusion up the wall's flat length.
+    fn mitre(&self, t: f64, at_start: bool, d: f64) -> (Profile, f64) {
+        use gusset_kernel::{add as add3, cross, dot as dot3, scale};
+        let r = self.r;
+        let base =
+            if at_start { self.frame.origin } else { add3(self.frame.origin, scale(self.frame.normal(), self.along)) };
+        // The flat part starts at height t + r (mirrored when bent down).
+        let (h0, up) = if self.down { (-r, -1.0) } else { (t + r, 1.0) };
+        let beyond = scale(self.frame.normal(), self.reach(at_start, 1.0).signum());
+        let frame = Frame { origin: add3(base, scale(self.frame.y, h0)), x: self.frame.x, y: beyond };
+        let tag = |p: SheetPart| sheet_tag(p, 0);
+        let pts = [[r, 0.0], [r + t, 0.0], [r + t, r + t + d], [r, (r + d).max(0.0)]];
+        let tags = [SheetPart::Start, SheetPart::Flat, SheetPart::End, SheetPart::FlatBack];
+        let mut edges: Vec<ProfileEdge> = pts
+            .iter()
+            .zip(pts.iter().cycle().skip(1))
+            .zip(tags)
+            .filter(|((a, b), _)| len(sub(**b, **a)) > 1e-9)
+            .map(|((a, b), p)| ProfileEdge { seg: Seg2::Line { a: *a, b: *b }, tag: tag(p) })
+            .collect();
+        if loop_area(&edges) < 0.0 {
+            edges = reversed(edges);
+        }
+        let height = scale(self.frame.y, up);
+        let distance = if dot3(cross(frame.x, frame.y), height) >= 0.0 { self.len } else { -self.len };
+        (Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] }, distance)
     }
 
     /// The signed extrusion that carries the profile `ext` past the line's start or end.

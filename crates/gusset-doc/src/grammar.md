@@ -377,7 +377,7 @@ listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 ```
 contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44, [symmetric: true], [flip: true])
 tab Plate (profile: S2.regions(l4), thickness: 2 mm, [flip: true])
-edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true], [close: true])
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true], [close: true|mitre])
 ```
 
 `contour_flange` bends an open chain of sketch lines at every corner (inside radius
@@ -395,7 +395,8 @@ bend allowance plus the length beyond that line. `line` may also be a contour fl
 `l6_start` / `l6_end` (the low / high end of the width along the sketch normal), or an earlier
 edge flange's far edge, `F1_end` (up = towards that flange's inner face). `close: true`
 (90 deg flanges off a tab's outline) butts this flange's wall against flanges already on the
-neighbouring lines at outside corners, leaving a square relief at the bend. A later cut through
+neighbouring lines at outside corners, leaving a square relief at the bend; `close: mitre`
+cuts both walls on the corner's diagonal instead, 0.1 mm apart. A later cut through
 flat regions or bends (an extrude cut, a hole) appears in the flat pattern as a cut-out; a cut
 that notches an edge or adds material marks the pattern `changed_by` instead. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
 `|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).

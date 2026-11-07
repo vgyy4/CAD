@@ -284,7 +284,7 @@ Phase 3 has started (see Next).
      Cuts across contour bends
      done. Cuts across edge-flange bends done too.
      Closed corners done (`close: true`,
-     90 degree flanges at outside tab corners, square relief). Next: mitred corners, other angles. Hems done (`angle: 180 deg`).
+     90 degree flanges at outside tab corners, square relief). Mitred corners done (`close: mitre`, walls cut on the diagonal 0.1 mm apart). Next: closed corners at other angles. Hems done (`angle: 180 deg`).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Replace face done
      (`move_face ... onto:` a parallel face); tilting onto a tilted plane done (turned about the
