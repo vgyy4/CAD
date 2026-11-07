@@ -829,6 +829,36 @@ fn a_stress_result_colours_the_body_while_it_is_open() {
 }
 
 #[test]
+fn results_surface_warnings_moved_faces_and_the_shell_method() {
+    let v = json!({"warnings": ["drill 3 mm is not a standard size"], "also_moved": ["Extrude1/side(1)"]});
+    let t = crate::app::done_text("Move face", &v);
+    assert!(t.contains("not a standard size") && t.contains("also moved: Extrude1/side(1)"), "{t}");
+    assert_eq!(crate::app::done_text("Hole", &json!({})), "Hole: done");
+    let s = crate::app::simulation_summary(&json!({"method": "shell", "element_mm": 2.5, "elements": 80}));
+    assert_eq!(s.as_deref(), Some("Sheet body: shell model, elements 2.5 mm, 80 elements"));
+    assert!(crate::app::simulation_summary(&json!({"method": "voxel"})).is_none());
+}
+
+#[test]
+fn a_3d_toolpath_keeps_its_heights_in_the_preview() {
+    let path = json!([[[0.0, 0.0, 10.0], [5.0, 0.0, 7.5], [10.0, 0.0, 2.0]], [[0.0, 5.0, 1.0]]]);
+    let d = crate::app::toolpath_drawing(&path, egui::Color32::RED);
+    assert_eq!(d.polylines.len(), 2);
+    let z: Vec<f32> = d.polylines.first().map(|l| l.iter().map(|p| p[2]).collect()).unwrap_or_default();
+    assert_eq!(z, vec![10.0, 7.5, 2.0]);
+}
+
+#[test]
+fn the_cam_operation_field_is_in_the_toolpath_form() {
+    let mut h = harness(app());
+    crate::tests::settle(&mut h);
+    h.state_mut().start_command("cam.toolpath");
+    crate::tests::settle(&mut h);
+    let f = h.state().form.as_ref().map(|f| f.fields.iter().any(|x| x.name == "operation"));
+    assert_eq!(f, Some(true));
+}
+
+#[test]
 fn the_stress_picture_ends_under_another_dialog_and_a_failed_toolpath_clears_the_old() {
     let mut a = app();
     a.run("sketch.create", json!({"plane": "XY"})).unwrap();

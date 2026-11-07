@@ -30,6 +30,31 @@ pub struct Field {
     pub value: String,
 }
 
+/// Known values of free-text fields, offered as a dropdown next to the text box. The
+/// schemas stay plain strings (the MCP tool list is size-budgeted), so the GUI knows them.
+#[must_use]
+pub fn suggestions(command: &str, field: &str) -> &'static [&'static str] {
+    match (command, field) {
+        ("cam.toolpath" | "cam.export_gcode", "operation") => &[
+            "pocket",
+            "pocket_adaptive",
+            "pocket_rest",
+            "profile_outside",
+            "profile_inside",
+            "drill",
+            "bore",
+            "surface_ball",
+            "surface_flat",
+            "waterline_ball",
+            "waterline_flat",
+            "steep_ball",
+            "steep_flat",
+            "pencil_ball",
+        ],
+        _ => &[],
+    }
+}
+
 /// A form for one command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Form {
@@ -196,7 +221,30 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                         f.value = b.to_string();
                         r
                     }
-                    _ => ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(220.0).hint_text(&f.help)),
+                    _ => {
+                        let known = suggestions(form.command, &f.name);
+                        if known.is_empty() {
+                            ui.add(egui::TextEdit::singleline(&mut f.value).desired_width(220.0).hint_text(&f.help))
+                        } else {
+                            ui.horizontal(|ui| {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(&mut f.value).desired_width(180.0).hint_text(&f.help),
+                                );
+                                egui::ComboBox::from_id_salt(("form-suggest", form.command, &f.name))
+                                    .selected_text("")
+                                    .width(24.0)
+                                    .show_ui(ui, |ui| {
+                                        for k in known {
+                                            if ui.selectable_label(f.value == *k, *k).clicked() {
+                                                (*k).clone_into(&mut f.value);
+                                            }
+                                        }
+                                    });
+                                r
+                            })
+                            .inner
+                        }
+                    }
                 };
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
@@ -237,6 +285,14 @@ mod tests {
                 assert!(form.to_args().is_ok(), "{}", spec.id);
             }
         }
+    }
+
+    #[test]
+    fn the_cam_operation_field_offers_the_known_operations() {
+        let ops = suggestions("cam.toolpath", "operation");
+        assert!(ops.contains(&"waterline_ball") && ops.contains(&"pocket_rest") && ops.contains(&"steep_flat"));
+        assert_eq!(ops, suggestions("cam.export_gcode", "operation"));
+        assert!(suggestions("cam.toolpath", "sketch").is_empty());
     }
 
     #[test]

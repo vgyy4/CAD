@@ -612,9 +612,9 @@ impl App {
 
     fn report(&mut self, id: &str, r: &Result<Value, CommandError>) {
         match r {
-            Ok(_) => {
+            Ok(v) => {
                 let title = gusset_commands::find(id).map_or(id, |s| s.title);
-                self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
+                self.notice = Some(Notice { text: done_text(title, v), hint: None, error: false });
             }
             Err(e) => self.notice = Some(Notice { text: e.message.clone(), hint: e.hint.clone(), error: true }),
         }
@@ -940,6 +940,9 @@ impl App {
                         {
                             self.toolpath = Some(toolpath_drawing(&path, theme::palette(self.theme).warning));
                         }
+                        if !result_notes(&v).is_empty() {
+                            self.notice = Some(Notice { text: done_text(title, &v), hint: None, error: false });
+                        }
                         let picture = match id {
                             "sim.static" => Some(("stress_bands", "MPa")),
                             "sim.modal" => Some(("shape_bands", "of the largest motion")),
@@ -955,7 +958,11 @@ impl App {
                             self.stress_view = true;
                             self.picture_of = title.to_string();
                         }
-                        self.dialog = Some(Dialog::Message { title: title.into(), body: inspect_text(&v) });
+                        let mut body = inspect_text(&v);
+                        if let Some(head) = simulation_summary(&v) {
+                            body = format!("{head}\n{body}");
+                        }
+                        self.dialog = Some(Dialog::Message { title: title.into(), body });
                     }
                     Err(e) => match self.form.as_mut().filter(|f| f.command == id) {
                         Some(form) => {
@@ -986,7 +993,7 @@ impl App {
                             f
                         });
                         self.form = None;
-                        self.notice = Some(Notice { text: format!("{title}: done"), hint: None, error: false });
+                        self.notice = Some(Notice { text: done_text(title, &v), hint: None, error: false });
                         if let Some(ch) = chain {
                             self.restart_placing(ch, &v);
                         } else if let Some(f) = again {
@@ -3787,7 +3794,7 @@ fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInf
 }
 
 /// A `cam.toolpath` path (polylines of [x, y, z]) as an overlay.
-fn toolpath_drawing(path: &Value, tint: egui::Color32) -> DrawSketch {
+pub(crate) fn toolpath_drawing(path: &Value, tint: egui::Color32) -> DrawSketch {
     let point = |v: &Value| -> Option<[f32; 3]> {
         let a = v.as_array()?;
         let c = |i: usize| a.get(i).and_then(Value::as_f64).map(|x| x as f32);
@@ -3914,6 +3921,42 @@ fn clip_result(s: &str, max: usize) -> String {
 
 fn inspects(id: &str) -> bool {
     gusset_commands::find(id).is_some_and(|s| s.category == gusset_commands::Category::Inspect)
+}
+
+/// What a result asks the user to notice: CAM `warnings` (drill sizes and the like),
+/// faces a move dragged along (`also_moved`) and a cut-short preview path.
+pub(crate) fn result_notes(v: &Value) -> Vec<String> {
+    let list = |key: &str| -> Vec<String> {
+        v.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().map(|x| x.as_str().map_or_else(|| x.to_string(), str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    let mut notes: Vec<String> = list("warnings");
+    let moved = list("also_moved");
+    if !moved.is_empty() {
+        notes.push(format!("also moved: {}", moved.join(", ")));
+    }
+    if v.get("path_truncated") == Some(&Value::Bool(true)) {
+        notes.push("the previewed toolpath is cut short".into());
+    }
+    notes
+}
+
+/// "Title: done", with the result's notes after it.
+pub(crate) fn done_text(title: &str, v: &Value) -> String {
+    let notes = result_notes(v);
+    if notes.is_empty() { format!("{title}: done") } else { format!("{title}: done. {}", notes.join("; ")) }
+}
+
+/// The first line of a simulation result: shell results say so and give the element size.
+pub(crate) fn simulation_summary(v: &Value) -> Option<String> {
+    if v.get("method").and_then(Value::as_str)? != "shell" {
+        return None;
+    }
+    let size = v.get("element_mm").and_then(Value::as_f64).map_or(String::new(), |h| format!(", elements {h} mm"));
+    let count = v.get("elements").and_then(Value::as_u64).map_or(String::new(), |n| format!(", {n} elements"));
+    Some(format!("Sheet body: shell model{size}{count}"))
 }
 
 /// A command result as readable text for the inspection dialog.
