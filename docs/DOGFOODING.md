@@ -692,3 +692,125 @@ several faces at once; trees with `symmetric`, `intersect`, arcs in this run (ru
 | F8-14 | Open (nits). |
 | F8-15 | Fixed: 3D finishing without `top` is refused with what to give. |
 
+
+## Run 9 — 3D CAM strategies, live rules, corners past 90, tree v2 (2026-11-07)
+
+Setup: debug `gusset` with real OCCT and workers (`CARGO_INCREMENTAL=0`, 14 s from a warm cache),
+`gusset mcp --no-attach` over stdio behind run 8's stdlib Python client (one daemon per project
+plus a unix-socket caller, five projects in parallel); 608 tool calls (120 `document_set_text`,
+119 `run`, 109 `query_body`, 100 `get_text`, 47 `cam_toolpath`, 39 `sim_static`), files in the
+session's scratch directory (`dogfood9/`, projects and exports in `dogfood9/proj/`). Learned from
+`tools/list` (31 tools, 18.9 kB), `commands` (88 commands, 11.9 kB), the grammar resource (44.8 kB)
+and error messages. CAM paths were checked by sampling every cutting move at 0.05 mm against the
+analytic surface (ball: centre-to-sphere distance; flat: highest surface point under the disc),
+flat patterns by parsing the exported DXF, simulation against beam theory. Debug build, so the
+timings are upper bounds.
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | CAM on a R30 revolved dome (box +-40 and +-30): `waterline_ball/flat`, `steep_ball/flat`, `cam_job`s | contour radii exact, no gouge to 0.02 mm with the box clear of the part; boxed in, the path gouges (F9-1) | 40 | |
+| 2 | CAM on an 80x60x10 plate with a d30 x 20 boss, base filleted r3: `waterline_*`, `steep_*`, `surface_*`, `pencil_ball`, G-code | contours and heights exact; `pencil_ball` finds no crease at a vertical wall (F9-2) | 60 | steep: 73-173 s each |
+| 3 | `pencil_ball` on a V-groove, on floor + wall at 90/89.99/89.9/89/85/80/70/60/45 deg, on a square boss | V-groove exact; walls of 90 deg are missed (F9-2) | 25 | |
+| 4 | `move_face` rules: block with a slot (coplanar tops), counterbore wall and floor, two separate pads | `also_moved` correct; `rules: false` gives the old behaviour | 30 | |
+| 5 | Sheet metal: 100x60x2 tab, two 20 mm flanges (r2, k 0.5) at 90/120/150 deg, none / `close: true` / `close: mitre`; plan corners of 60 and 120 deg at 60/90/120/150 deg flange angle | volume by hand and flat area x t agree for every closed and mitred variant (24 + 9 builds) | 110 | |
+| 6 | Cut d5 straddling bend and wall at 90, 120, 150 deg | unfolds as one cut-out each | 20 | |
+| 7 | `.gtree.json` v2 of my own design: counterbore hole + `pattern_linear`, hole + `pattern_circular` (360 and 4 over 180), `mirror` of a cut (`features`) and of a body (`target`, `merge`), `shell` inside/outside; ten broken variants; the three plugin samples | volumes exact; every broken variant skipped with a reason | 60 | |
+| 8 | `sim_static`/`sim_modal` on a 100x20x2 tab + 36 mm flange (r2) at element 6..2 and default; closed corners at 60/90/120/150 deg; `field`, `shape` | meshes at every size tried; within 2 % of beam theory | 90 | |
+
+Hand checks:
+
+| Check | Hand | Gusset |
+|---|---|---|
+| Dome R30, `waterline_ball` D6 stepdown 5, box +-40: tip z 25..0, centre on the R33 sphere, `rho = sqrt(33^2 - (z + 3)^2)` | 17.464 / 23.664 / 27.659 / 30.332 / 32.016 / 32.863 | 17.455 / 23.657 / 27.654 / 30.325 / 32.012 / 32.857; `cut_mm` 1030.11 against `2 pi sum rho` 1030.4; worst gap -0.018 (chord) |
+| Same, `waterline_flat` (disc clears the dome at `rho - 3`): `rho = sqrt(900 - z^2) + 3` | 19.583 / 25.361 / 28.981 / 31.284 / 32.58 / 33.0 | 19.574 / 25.353 / 28.974 / 31.277 / 32.575 / 32.998; `cut_mm` 1072.78 against 1073.1 |
+| `steep_ball`/`steep_flat` on the dome: 45 deg at `rho = 33 sin 45` = 23.3, tip z 20.3; raster inside, contours below | first level 18 (ball) / 21 (flat), raster `z = sqrt(33^2 - rho^2) - 3` | levels 18..0 / 21..0; raster z within 0.01 of the formula; worst gap -0.018 / (flat: the -0.89 is 0.01 mm of radius on the vertical rim); `cam_job` JW/JS equal the direct calls (1030.11 / 5329.84 mm) |
+| Plate + boss R15 h20 on z 10, base fillet r3, ball D4 (r2): centre on a circle r1 round the fillet axis (18, 13): `rho = 17` for tip z >= 11, 18 at the floor level 10 | 17.0 x7, 18.0 | 16.996-17.000 for 27.5..12.5, 18.02-18.05 at 10; worst gap -0.014 |
+| Same, `waterline_flat` D6, stepdown 5: `rho = 18` (z >= 13), 21 at z 10 | 18 / 18 / 18 / 21 | 17.995-18.0 x3, 20.995-21.0 |
+| Boss, `steep_ball` D6 = fillet radius: centre on the fillet axis, `rho = 18` at every level; `steep_flat` at z 12 (disc over the fillet: `13 - sqrt(9 - (18 - rho')^2) = 12`, `rho' = 15.17`, `rho = rho' + 3`) | 18.0 / 18.17 | 17.995-18.0 for 27..12 and 18.03-18.07 at 10; flat z 12: 18.167-18.172 |
+| Boss `surface_ball` at `rho` 17.8 (ball over the top edge): `30 - 3 + sqrt(9 - 2.8^2)` | 28.077 | 28.065; no sample under the surface by more than 0.004 (ball) / 0.06 (flat, my reference's grid) |
+| V-groove (slopes 15/20, valley at z 5), `pencil_ball` D6: centre `r / cos(36.87)` = 3.75 above the valley | tip z 5.75 | 5.75 on x = 20 (F9-3 for the ends) |
+| Waterline on a 60x40x20 block, sketch = footprint, D6 at the floor level: contour 100 x 2 + `2 pi 3` | 218.85 mm | 199.84 mm, the path runs along the box edge (F9-1) |
+| Plate 80x60x10 + boss d30 x 20 (`48000 + pi 225 x 20`, 62137.17); fillet r3 `r^2 (1 - pi/4) 2 pi (15 + 0.2234 x 3)` | 62137.17 / +190.16 | 62137.166941 / +190.163729 |
+| Block 60x40x20, slot 10 wide 5 deep across; move the left top +5 with rules: `46000 + 2 x 1000 x 5` | 56000 | 56000, `also_moved: [E1/cap(end)#2]`; `rules: false` 51000 |
+| Counterbore d6/d12 x 5 in 60x40x20: `48000 - pi 9 x 20 - pi 27 x 5` | 47010.398 | 47010.398314; move `cbore_wall` +5 in x: `also_moved: [H1/wall(e1)]`, volume and area unchanged, hole at x 35; floor -3: `-pi 27 x 3` = -254.469 |
+| Tab 100x60x2 + two 20 mm flanges r2 k 0.5, unclosed, 90 deg: `12000 + theta x 960 + 6400` | 19907.964 | 19907.964474; 120: hand 20410.6 / 150: 20913.3, solid 20346.688 / 20777.908 (F9-5) |
+| Closed corner at 120 deg: walls cut at the plane `y = x - 40` (and `x = y + 40`); wall 1 = `integral (60 + 0.866 rho - 0.5 s)` over rho 2..4, s 0..20 = 2303.92, wall 2 = 3903.92, bends `2.0944 x 6 x 160` = 2010.62 | 20218.46 | 20218.465395 |
+| Closed corner at 150 deg (`x = 100 + 0.5 rho - 0.866 s`): walls 2113.59 + 3713.59, bends 2513.27 | 20340.45 | 20340.4538 |
+| Mitre gap, 0.1 mm on the diagonal: `0.1 x 40 / sin(corner / 2)` | 90 / 120 / 150 deg flange, square tab: -5.657; 60 deg tab corner: -8.0; 120 deg tab corner: -4.619 | -5.657 at all three flange angles; -8.000 (corner 60) / -4.618 (corner 120) for every flange angle |
+| Flat area x t = volume at k 0.5, closed and mitred, 3 flange angles + 8 plan x angle cases | equal | equal to 0.001 mm3 in all 33 cases; DXF outlines 12 vertices (past 90) / 14 (90 and below) |
+| Flat size at 120 deg: `100 + 2.0944 x 3 + 20` | 126.283 x 86.283 | 126.283185 x 86.283185 |
+| Cut d5 across bend and wall (axis x, depth 4, centre at the bend end): bend `22.923` + wall `19.635` | 42.558 | 42.557033 at 90, 120 and 150 deg; flat cut-out area 20.857 by hand, 20.781 / 20.777 / 20.778 (polyline, -0.4 %), bbox x 101.7575..107.2124 by hand, 101.7575..107.2124 at 90 deg |
+| Tree T1: 60x40x12 block, 3 counterbore holes (d6, d12 x 4) by `pattern_linear` | 26764.248 | 26764.24796 |
+| T2: d60 disk x 10, d4 hole at r20, `pattern_circular` 6 x 360 / 4 x 180 | 27520.352 / 27771.679 | 27520.351645 / 27771.679058 |
+| T3: 20x20x10, slot 4x10x4 mirrored across x = 10 (`features`); the same across the tilted plane `x + y = 10` (overlaps the first slot and the edge: `4000 - 160 - 80 + 36`) | 3680 / 3796 | 3680.0 / 3796.0 |
+| T3b: base + boss 6x10x5, whole body mirrored across x = 0 with `merge` | 8600 | 8600.0 (bbox x -20..20) |
+| T4: 40x30x20 `shell` inside 2, top removed: `24000 - 36 x 26 x 18`; outside: `44 x 34 x 22 - 24000` | 7152 / 8912 | 7152.0 / 8912.0 (bbox -2..42) |
+| T1 with a countersink d10 x 90 deg (cone frustum 102.63, cylinder 56.55 per hole) / blind depth 8 with a 118 deg point | 27643.894 / 27052.573 | 27643.893903 / 27052.573166 |
+| Plugin samples: Fusion 7740.0886 + 2356.194; SolidWorks 8538.053 | same | same; Onshape imports one body of 10096.283 (its `revolve` says `join`, the file's `bodies` list two parts), the `loft` is skipped with its reason |
+| Bracket 100x20x2 + 36 mm flange (r2, k 0.5), 10 N down on the flange end: beam `P 103^3 / 3EI` 1.3009 and turning `P 103^2 / 2EI` 0.018945 rad x 39 | 1.496 mm | element 6 / 5 / 4 / 3 / 2.5 / 2 / default 2.6: 1.4573 / 1.4603 / 1.4357 / 1.4686 / 1.4700 / 1.4677 / 1.4702 (-1.8 %, scatter 2.4 %) |
+| Same, root stress `M c / I` = 1030 x 1 / 13.33 | 77.3 MPa | 78.3 / 78.4 / 78.7 / 80.2 / 80.3 / 80.7 / 80.3 (+1.3 to +4.5 %) |
+| Same, `sim_modal` first mode: `1/(2 pi) sqrt(3EI/L^3 / (0.2357 m_beam + m_wall))` with 0.0324 kg beam and 0.0122 kg wall | 99.2 Hz | 98.74 (default, 14.8 s) / 97.09 (5 mm); 379.1, 495.8 |
+
+Observed behaviour worth knowing. The 3D finishing operations only cut inside the box of the
+sketch's regions and tell nothing about it; a box tighter than the part's footprint plus the tool
+radius clips contours (F9-1). Levels: `waterline_*` and `steep_*` start one `stepdown` below
+`top` and end on `top - depth`; a level above the part is not listed. `steep_flat` stops at
+the foot of a boss (no floor level), `steep_ball` has it. The result of a 3D operation reuses
+`rings` (raster lines + contours). `cam_export_gcode` computes the path again (73 s for the
+boss job, 72 s for the dome job, as long as `cam_toolpath`). Paths over about 4 kB come back as
+a `full_text` pointer: the steep dome path is 40 kB (10 `get_text` calls), the refs from earlier
+calls stayed valid for the whole session. `move_face` with `rules` pulls along every coplanar
+face of the body, also a separate pad of the same height (`also_moved` lists it); the tool
+defaults `rules` to true while the text language treats absent as off (the tool writes
+`rules: true` into the text). After `close` the end faces of flanges past 90 deg are split, so
+a load or support must name `F1/end(l6)#1`; the plain name is `not on 'Plate'` without
+candidates. Sheet metal: past 90 deg a flange leans over the tab; `close: true` cuts each wall at
+the mirror plane (walls shorter than the tab edge), `mitre` leaves the same 0.1 mm diagonal gap.
+`sketch_create` on a leaning flange face puts the sketch origin at the world origin's projection
+onto that plane (87 mm away from the wall at 120 deg), which needs a frame calculation to place
+a hole.
+
+| ID | Sev | Item | Expected |
+|---|---|---|---|
+| F9-1 | major | `waterline_*` (and the contour part of `steep_*`) keep the part of a contour inside the box of the regions and join the ends with a straight cutting move along the box edge, so the tool is dragged through the part. 60x40x20 block, sketch = its footprint, `waterline_ball` D6 `top: 20, depth: 20, stepdown: 100`: path `(0,0,0) -> (0,40,0) -> (59.77,40,0) -> (60,39.68,0) -> (60,0,0) -> (0,0,0)` at tip z 0, i.e. the ball centre on the wall plane (3 mm into the block); the contour round the block would be 218.85 mm, `cut_mm` is 199.84. Dome R30 in a box +-30: for the levels 10, 5, 0 (`rho` 30.3 .. 32.9, beyond the box) one chord of 8.9 / 22.3 / 26.8 mm joins the clipped ends and cuts 0.3 / 1.95 / 2.85 mm into the rim (worst gap, centre to sphere). With a box +-40 the same job has no gouge. The natural region (the part's own outline) triggers it. | Drop the parts of a contour that leave the box and lift (rapid) over the gap, or grow the box by the tool radius; say what was clipped. |
+| F9-2 | major | `pencil_ball` finds no crease at an inside corner between a floor and a vertical wall, the most common one: plate + boss d30 (D6 and D4, with the box of the plate), plate + square boss, floor + wall: `no concave crease sharper than the bitangency angle`, hint `use a smaller tool or a larger region` (neither helps). A wall of 89.9 deg gives `only isolated crease points found`; 89 / 85 / 80 / 70 / 60 / 45 deg give one line (about 37 mm). A V-groove gives the exact valley (tip z 5.75). The ADR's test is a corner of two 45 deg planes. | Find the 90 deg corner (the profile jump at a vertical wall), or say that vertical walls are not seen; fix the hint. |
+| F9-3 | minor | `pencil_ball` path shape and cost: along the V-groove (30 mm long) the path runs 2.75 mm past each end (y -2.75 .. 32.9) with the tip falling to z 3.5 / 3.07 below the valley's 5.75, `cut_mm` 38.02 for a 30 mm crease; with a fillet r3 and a ball r2 (smooth, expected nothing) it returns 8 pieces of 0.45 mm at `rho` 17, one per 45 deg of the boss, `cut_mm` 3.65, `rings` 8, after 140 s (debug). | Stop at the part's end; drop pieces shorter than a few grid steps; unconnected pieces should not be reported as a path. |
+| F9-4 | minor | `feature_move_face` that cannot be built (`rules: false` on a counterbore wall, a sideways or turning move of a pad top with rules) is committed with `committed_with_errors` (`move face produced an invalid solid ...`, `the faces next to the moved ones would have to change shape ...`) and `rebuild_ok: false`; the result also lists `also_moved` although nothing moved. Run 8's F8-12 refused up front. Related: the tool's `rules` defaults to true, the grammar says absent = off. | Refuse before committing; say in the tool description that text without `rules` is off. |
+| F9-5 | minor | Flanges past 90 deg without `close` overlap each other in the corner: the solid is smaller than the sum of its parts (20346.688 at 120 deg and 20777.908 at 150 deg, against 20410.619 / 20913.274 by hand), while `query_flat_pattern`/`sheet_export_flat` draw both flanges in full (DXF area x t = 20410.6 / 20913.3) with `changed_by: []` and no warning. | Warn that the flanges collide and suggest `close`. |
+| F9-6 | minor | 3D CAM time (debug build): `steep_ball` 73 s (dome, 75 rings) and 173 s (boss, stepover 0.1, 125 rings), `waterline_ball` D4 over the boss 75 s but 3 s for `waterline_flat`, `pencil_ball` 140 s (F9-3); `cam_export_gcode` repeats the whole computation; steep results carry 11.6 m of rapids for 5.3 m of cutting (dome), 10.1 m for 11.0 m (boss). No progress, no estimate. | Reuse the last path for the export; report an estimate or `too_slow` before minutes of work. |
+| F9-7 | nit | Agent-sized outputs are smaller but not small: `sim_static field` on the 6888-element bracket 111 kB (`stress_bands_thinned: true`, 28 pages of `get_text`), `sim_modal shape: 1` 82 kB (21 pages), a steep 3D path 40 kB; the quads of the stress bands are unordered samples. | A min/max/percentile summary with the location, bands on request. |
+| F9-8 | nit | `sim_static`/`sim_modal` descriptions still say "on voxels"; on a sheet body the `voxel` argument is the shell element size (the result says `element_mm`, `too_large` says "give a larger element size"). `shape` is a mode number (1-based, integer) while `field` is a boolean; `shape: true` is `expected usize`, `shape: 0` is `shape names a mode from 1 to modes`. A load on a face that does not exist (`F9/end(l6)`) is `face F9/end(l6) is not on 'Br'` without the candidate names that the feature tools give. | Mention shells and `element` in the schema; candidates in the error. |
+| F9-9 | nit | Mesh scatter on the bent bracket: displacement 1.4357..1.4702 across element sizes 6..2 (non-monotonic: element 4 is lowest), peak stress at the clamp +1.3 to +4.5 % of `M c / I`. Closed 120 deg corner at 8 / 5 / 4 mm: 0.0637 / 0.0716 / 0.0729 mm and 6.9 / 8.2 / 8.2 MPa (8 mm is 13 % / 16 % off 4 mm, 5 mm is 2 % / 1 % off). | Probably fine for a shell model; say that the stress at a clamped edge does not converge. |
+| F9-10 | nit | The Onshape plugin sample's `bodies` (two parts, 7740.0886 + 2356.194) disagree with its own `revolve` (`operation: join`): one body of 10096.283 comes out and the import warns nothing about the changed body count. | Warn when the body count differs from `bodies`. |
+
+Run 8 fixes seen holding: F8-1 (the bent bracket meshes at every element size tried, 6..2 mm and
+the default; default solve 2 s against 87 s; modal default 14.8 s instead of `deadline_exceeded`),
+F8-3 (closed and mitred corners at 60 and 120 deg plan corners), F8-7 (holes across a bend and
+its wall unfold, also past 90 deg), F8-8 (surface finishing within 0.01 mm of the dome and boss),
+F8-9 (G-code says `ball end mill D6 mm`; the first line still says `Gusset 2.5D toolpath`),
+F8-10 (shell modal defaults), F8-13 (no loads is refused), F8-15 (`top` missing is refused with
+`e.g. top: the model's highest point, depth: down to the lowest to finish`; `stepdown: 0` is
+`stepdown must be positive`; `pencil_flat` is refused with the operation list).
+
+What worked well: contour radii of `waterline_*` and `steep_*` match the analytic offset surfaces
+to 0.01 mm (ball and flat, dome and boss with a fillet), the raster part of `steep_*` follows the
+drop-cutter heights, `cam_job`s equal the direct calls, G-code headers name the ball mill and the
+G-code z range equals the path's; the `rules` option does what the grammar says, reports
+`also_moved`, and `rules: false` is the old behaviour; closed and mitred corners at 90, 120 and
+150 deg (and at 60 / 120 deg plan corners) agree with a hand integral of the cut walls to 6 digits
+and the flat pattern equals the volume at k 0.5 in all 33 cases, the mitre gap follows the corner
+angle; a hole across a bend and its wall unfolds with the right bounding box; the v2 tree
+importer is exact for hole variants, linear and circular patterns, feature and body mirrors (also
+across a tilted vertical plane) and both shell sides, and every broken variant (no face at the
+point, a position off the face, a count of 1, an unknown feature, v2 types in a v1 file, a mirror
+or shell face that does not exist) is skipped with a precise reason and its dependants named; bent
+sheet bodies now solve in seconds.
+
+Not tested: `steep_*` with `regions`; `surface_*` with a rotated sketch; `pencil_ball` on a part
+that has a crease between curved faces (boss on a sphere); a `cam_job` with a holder; G-code on a
+controller; closed corners past 90 deg on three or more flanges, hems with `close`, `close` off a
+contour flange; simulation of closed 120 / 150 deg corners against a hand model (only that they
+solve and agree across sizes); `sim_modal` shapes read out; `move_face` with `rules` on a tilted
+`onto` target, in a model with several bodies, or on cones; the `revolve` axis fix of run 8;
+trees with parameters driving `count` or `spacing`, `pattern_*` of a fillet or chamfer, `mirror`
+of a revolve, 256 or more positions in one hole.

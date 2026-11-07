@@ -98,7 +98,7 @@ impl Command for StaticQuery {
     const ID: &'static str = "sim.static";
     const TITLE: &'static str = "Static stress";
     const DESCRIPTION: &'static str =
-        "Linear static analysis on voxels (mm, N, MPa): max displacement, von Mises stress.";
+        "Linear statics on voxels, sheet metal on shells (mm, N, MPa): max displacement, von Mises.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

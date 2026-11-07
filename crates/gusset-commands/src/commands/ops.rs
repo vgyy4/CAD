@@ -357,7 +357,6 @@ impl Command for MoveFace {
         } else {
             Vec::new()
         };
-        let laying = onto.is_some();
         let added = std::cell::RefCell::new(String::new());
         edit_checked(
             s,
@@ -376,16 +375,21 @@ impl Command for MoveFace {
                 })
             },
             |s, doc, _| {
-                // Laying a face onto a plane that crosses the body fails in the kernel: try
-                // it first and refuse, rather than commit a failing feature (F7-8).
-                if !laying {
-                    return Ok(());
-                }
+                // A move the kernel cannot build (onto a plane across the body, faces whose
+                // neighbours would have to change shape) is tried first and refused, rather
+                // than committed as a failing feature (F7-8, F9-4).
                 let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(doc, None, &());
                 let name = added.borrow();
-                match ev.errors().iter().find(|e| e.feature == *name) {
-                    Some(e) => Err(CommandError::args(e.message.clone())
-                        .hint(e.hint.clone().unwrap_or_else(|| "pick a plane the faces can reach".into()))),
+                // A kernel without face moves (the mock) commits as before.
+                let unsupported = |e: &&gusset_eval::EvalError| {
+                    e.code == gusset_eval::ErrorCode::Unsupported || e.message.contains("is not supported by the")
+                };
+                match ev.errors().iter().find(|e| e.feature == *name).filter(|e| !unsupported(e)) {
+                    Some(e) => Err(CommandError::args(e.message.clone()).hint(
+                        e.hint
+                            .clone()
+                            .unwrap_or_else(|| "move the faces less far, or with the faces around them".into()),
+                    )),
                     None => Ok(()),
                 }
             },

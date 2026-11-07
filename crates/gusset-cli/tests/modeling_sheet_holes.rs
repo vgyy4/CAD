@@ -79,4 +79,16 @@ fn laying_a_face_through_the_body_is_refused_before_committing() {
     run(&mut s, "feature.extrude", json!({"sketch": "Sketch3", "distance": "15 mm", "op": "new"}));
     let ok = run(&mut s, "feature.move_face", json!({"faces": ["Extrude1/cap(end)"], "onto": "Extrude3/cap(end)"}));
     assert_eq!(ok["rebuild_ok"], true, "{ok}");
+    // A move the kernel cannot build (the top slid sideways off its walls) is refused too
+    // (F9-4).
+    let n = s.document(&gusset_history::Actor::User).unwrap().features.len();
+    let e = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.move_face",
+        json!({"faces": ["Extrude1/cap(end)"], "translate": ["5 mm", "0 mm", "0 mm"], "rules": false}),
+    )
+    .expect_err("refused");
+    assert_eq!(e.code, "invalid_args", "{e:?}");
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n, "nothing committed");
 }
