@@ -47,6 +47,13 @@ const BANDS: usize = 8;
 /// Most voxel faces a stress picture holds (about 2 MB of JSON); beyond it every k-th
 /// face is kept, so the picture thins out evenly instead of losing a side.
 const MAX_FIELD_QUADS: usize = 20_000;
+/// For agents: fewer quads, coordinates to 0.01 mm (a field read through MCP cost ~100
+/// pages at the app's size: dogfooding F8-11).
+const AGENT_FIELD_QUADS: usize = 2_000;
+
+fn field_cap(ctx: &CmdCtx) -> usize {
+    if ctx.is_agent() { AGENT_FIELD_QUADS } else { MAX_FIELD_QUADS }
+}
 
 /// `v` to 6 significant digits (small results stay visible).
 fn sig(v: f64) -> f64 {
@@ -60,14 +67,15 @@ fn sig(v: f64) -> f64 {
 
 /// Quads (12 coordinates each) with a value, sorted into `BANDS` equal bands from 0 to the
 /// largest value: `[{upto, quads}]`, thinned evenly past `MAX_FIELD_QUADS`.
-fn bands(quads: &[([f64; 12], f64)]) -> Value {
+fn bands(quads: &[([f64; 12], f64)], cap: usize) -> Value {
     let top = quads.iter().map(|q| q.1).fold(0.0f64, f64::max).max(1e-300);
     let mut out: Vec<Vec<Vec<f64>>> = vec![Vec::new(); BANDS];
-    let step = quads.len().div_ceil(MAX_FIELD_QUADS).max(1);
+    let step = quads.len().div_ceil(cap.max(1)).max(1);
+    let scale = if cap < MAX_FIELD_QUADS { 100.0 } else { 1000.0 };
     for (c, v) in quads.iter().step_by(step) {
         let b = ((v / top * BANDS as f64) as usize).min(BANDS - 1);
         if let Some(list) = out.get_mut(b) {
-            list.push(c.iter().map(|x| (x * 1000.0).round() / 1000.0).collect());
+            list.push(c.iter().map(|x| (x * scale).round() / scale).collect());
         }
     }
     let list: Vec<Value> = out
@@ -104,7 +112,7 @@ impl Command for StaticQuery {
         if let Some(sheet) = &body.sheet
             && !self.refine
         {
-            return self.shell(&body, &mesh, sheet.thickness, fixed, &face);
+            return self.shell(&body, &mesh, sheet.thickness, fixed, &face, field_cap(ctx));
         }
         let mut loads = Vec::new();
         for l in &self.loads {
@@ -171,8 +179,8 @@ impl Command for StaticQuery {
             && let Some(o) = out.as_object_mut()
         {
             let quads: Vec<([f64; 12], f64)> = sol.surface.iter().map(|q| (flat(q.corners), q.von_mises)).collect();
-            o.insert("stress_bands".into(), bands(&quads));
-            if sol.surface.len() > MAX_FIELD_QUADS {
+            o.insert("stress_bands".into(), bands(&quads, field_cap(ctx)));
+            if sol.surface.len() > field_cap(ctx) {
                 o.insert("stress_bands_thinned".into(), json!(true));
             }
         }
@@ -190,6 +198,7 @@ impl StaticQuery {
         thickness: f64,
         fixed: Vec<usize>,
         face: &FaceIndex,
+        cap: usize,
     ) -> Result<Value, CommandError> {
         let (mid, held, h) = shell_model(mesh, thickness, self.voxel, &fixed, 40.0)?;
         let tol = SHELL_TOL;
@@ -276,8 +285,8 @@ impl StaticQuery {
                     (flat(c), *v)
                 })
                 .collect();
-            o.insert("stress_bands".into(), bands(&field));
-            if field.len() > MAX_FIELD_QUADS {
+            o.insert("stress_bands".into(), bands(&field, cap));
+            if field.len() > cap {
                 o.insert("stress_bands_thinned".into(), json!(true));
             }
         }
@@ -392,6 +401,7 @@ impl ModalQuery {
         mesh: &gusset_kernel::Mesh,
         thickness: f64,
         fixed: &[usize],
+        cap: usize,
     ) -> Result<Value, CommandError> {
         // Modes need many solves: a coarser default than statics (F8-10).
         let (mid, held, h) = shell_model(mesh, thickness, self.voxel, fixed, 25.0)?;
@@ -446,7 +456,7 @@ impl ModalQuery {
                     (flat(c.map(|x| x.0)), c.iter().map(|x| x.1).sum::<f64>() / 4.0)
                 })
                 .collect();
-            o.insert("shape_bands".into(), bands(&field));
+            o.insert("shape_bands".into(), bands(&field, cap));
             let (i, d) =
                 shape.iter().enumerate().fold((0, [0.0; 3]), |b, (i, d)| if len(d) > len(&b.1) { (i, *d) } else { b });
             let l = len(&d).max(1e-300);
@@ -503,7 +513,7 @@ impl Command for ModalQuery {
         }
         // Sheet metal: modes of the mid-surface shell model.
         if let Some(sheet) = &body.sheet {
-            return self.shell(&body, &mesh, sheet.thickness, &fixed);
+            return self.shell(&body, &mesh, sheet.thickness, &fixed, field_cap(ctx));
         }
         let p = gusset_fea::ModalProblem {
             mesh: &mesh,
@@ -564,7 +574,7 @@ impl Command for ModalQuery {
                     (flat(moved), size)
                 })
                 .collect();
-            o.insert("shape_bands".into(), bands(&quads));
+            o.insert("shape_bands".into(), bands(&quads, field_cap(ctx)));
             // Mode shapes have no physical size: say how this one is drawn and where and
             // which way it moves most (dogfooding F6-14).
             let peak = m

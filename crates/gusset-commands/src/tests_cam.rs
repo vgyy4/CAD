@@ -143,6 +143,15 @@ fn a_bar_is_analysed_by_its_face_names() {
     assert_eq!(counts.iter().sum::<usize>(), 168, "{counts:?}");
     assert!((bands[7]["upto"].as_f64().unwrap() - 10.0).abs() < 1e-3);
     assert_eq!(bands[7]["quads"][0].as_array().unwrap().len(), 12);
+    // Agents get a lighter field (F8-11): at most 2000 quads, coordinates to 0.01 mm.
+    let fine = json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1000]}],
+        "poisson": 0.0, "voxel": 1.0, "field": true});
+    let count = |v: &Value| {
+        v["stress_bands"].as_array().unwrap().iter().map(|b| b["quads"].as_array().unwrap().len()).sum::<usize>()
+    };
+    let user = run(&mut s, "sim.static", fine.clone());
+    let agent = execute(&mut s, &CmdCtx::agent("a", 2), "sim.static", fine).unwrap();
+    assert!(count(&user) > 2000 && count(&agent) <= 2000, "{} {}", count(&user), count(&agent));
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
     assert_eq!(
         err(

@@ -686,7 +686,7 @@ several faces at once; trees with `symmetric`, `intersect`, arcs in this run (ru
 | F8-8 | Fixed: 3D finishing tessellates the model at 0.01 mm. |
 | F8-9 | Fixed: ball operations' G-code says ball end mill. |
 | F8-10 | Fixed: shell modes default to the longest side / 25 elements. |
-| F8-11 | Open: field and shape outputs are large (paged). |
+| F8-11 | Fixed for agents: `field`/`shape` bands hold at most 2000 quads with coordinates to 0.01 mm (the app keeps 20000). |
 | F8-12 | Fixed: `move_face` with faces on two bodies is refused up front. |
 | F8-13 | Fixed: `sim_static` with no loads is refused. |
 | F8-14 | Open (nits). |
