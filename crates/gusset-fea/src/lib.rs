@@ -9,6 +9,7 @@ use gusset_kernel::Mesh;
 
 mod mg;
 pub mod shell;
+pub mod skin;
 pub use shell::{ShellMesh, ShellProblem, ShellSolution, shell_static};
 
 #[derive(Debug, Clone, PartialEq)]

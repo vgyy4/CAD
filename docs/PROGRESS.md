@@ -307,7 +307,8 @@ Phase 3 has started (see Next).
      open). Natural frequencies done (`sim.modal`: lumped
      mass, LOBPCG with a Jacobi preconditioner; a cantilever reads 1.5 % above beam theory).
      Mode shapes in the viewport done (`shape: k`). Refinement at the stress peak done (`refine: true`, a submodel four times finer). Next:
-     shell elements for thin sheet bodies. Multigrid preconditioner
+     shell elements for thin sheet bodies done (sheet bodies in `sim.static` run on MITC4 flat shells
+     over their mid-surface; next: a stronger shell preconditioner, modal on shells). Multigrid preconditioner
      done (both solvers; 13–17× fewer iterations, 2.7× faster). Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
    - Feature-tree interchange done (ADR 0042): `import_file` on a `.gtree.json` appends

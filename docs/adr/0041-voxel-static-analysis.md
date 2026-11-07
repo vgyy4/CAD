@@ -150,3 +150,17 @@ mm, N, MPa). Not wired into commands yet.
   under uniform nodal load vs `0.00126 q a^4 / D`, 0.9 % on 16 x 16; thickness 0.1 vs 1,
   deflection ratio 999 against 1000; an L-bracket under tip loads along either axis, 1.2 %
   and 0.9 % off beam superposition.
+
+## Amendment (2026-11-07): sheet bodies on shells in `sim.static`
+
+A sheet-metal body (one with a flat pattern) is analysed on the flat-shell elements:
+`gusset_fea::skin::mid_surface` takes one side of the sheet from the body's surface mesh (the
+faces reached from the largest one across smooth edges: flats and bends, not the thickness
+strips or hole walls), refines it by splitting the longest edge first to the element size
+(`voxel`, default the longest side / 40 but at least the thickness), cuts each triangle into
+three quads and moves the nodes in by half the thickness. Held and loaded faces take the nodes
+whose own point, or its point on either surface, lies on the face (loads shared equally). The
+result says `method: shell`. OCCT tests: a 100 x 10 x 1 strip within 1 % of beam theory, and
+the strip with a 90 degree flange within 10 % (the bend's own give left out). `refine` still
+uses voxels. Jacobi-PCG needs many iterations on thin sheets; a stronger preconditioner is next.
+

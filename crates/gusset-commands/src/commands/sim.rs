@@ -96,6 +96,12 @@ impl Command for StaticQuery {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let (body, mesh, voxel, shortest, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
+        // Sheet metal: shell elements on its mid-surface (voxels would need tiny cells).
+        if let Some(sheet) = &body.sheet
+            && !self.refine
+        {
+            return self.shell(&body, &mesh, sheet.thickness, fixed, &face);
+        }
         let mut loads = Vec::new();
         for l in &self.loads {
             loads.push(gusset_fea::Load { face: face(&l.face)?, force: l.force });
@@ -163,6 +169,113 @@ impl Command for StaticQuery {
             let quads: Vec<([f64; 12], f64)> = sol.surface.iter().map(|q| (flat(q.corners), q.von_mises)).collect();
             o.insert("stress_bands".into(), bands(&quads));
             if sol.surface.len() > MAX_FIELD_QUADS {
+                o.insert("stress_bands_thinned".into(), json!(true));
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl StaticQuery {
+    /// The analysis of a sheet-metal body on flat-shell elements over its mid-surface
+    /// (element size `voxel`, default the longest side / 40, at least the thickness).
+    fn shell(
+        &self,
+        body: &gusset_eval::Body,
+        mesh: &gusset_kernel::Mesh,
+        thickness: f64,
+        fixed: Vec<usize>,
+        face: &FaceIndex,
+    ) -> Result<Value, CommandError> {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in &mesh.positions {
+            for ((l, h), c) in lo.iter_mut().zip(hi.iter_mut()).zip(p) {
+                *l = l.min(f64::from(*c));
+                *h = h.max(f64::from(*c));
+            }
+        }
+        let longest = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
+        let h = self.voxel.unwrap_or((longest / 40.0).max(thickness));
+        let mid = gusset_fea::skin::mid_surface(mesh, thickness, h).map_err(fea_err)?;
+        // Faces are matched within the tessellation's own tolerance.
+        let tol = 0.06;
+        let mut held = Vec::new();
+        for f in &fixed {
+            held.extend(gusset_fea::skin::nodes_on_face(mesh, *f, &mid, tol));
+        }
+        held.sort_unstable();
+        held.dedup();
+        if held.is_empty() {
+            return Err(CommandError::args("the held faces touch no node of the shell model"));
+        }
+        let mut loads: Vec<(u32, [f64; 3])> = Vec::new();
+        let mut loaded = 0;
+        for l in &self.loads {
+            let on = gusset_fea::skin::nodes_on_face(mesh, face(&l.face)?, &mid, tol);
+            if on.is_empty() {
+                return Err(CommandError::args(format!("the load on {} touches no node of the shell model", l.face)));
+            }
+            let share = 1.0 / on.len() as f64;
+            loaded += on.len();
+            loads.extend(on.into_iter().map(|n| (n, l.force.map(|c| c * share))));
+        }
+        let nodes = mid.mesh.nodes.clone();
+        let quads = mid.mesh.quads.clone();
+        let p = gusset_fea::ShellProblem {
+            mesh: mid.mesh,
+            thickness,
+            material: gusset_fea::Material {
+                young: self.young.unwrap_or(210_000.0),
+                poisson: self.poisson.unwrap_or(0.3),
+            },
+            fixed: held.clone(),
+            loads,
+        };
+        let sol = gusset_fea::shell_static(&p).map_err(fea_err)?;
+        let len = |v: &[f64; 3]| libm::sqrt(v.iter().map(|x| x * x).sum());
+        let at_disp = sol
+            .displacement
+            .iter()
+            .zip(&nodes)
+            .fold((0.0, [0.0; 3]), |b, (d, p)| if len(d) > b.0 { (len(d), *p) } else { b })
+            .1;
+        let quad_at = |q: &[u32; 4]| {
+            q.iter()
+                .filter_map(|i| nodes.get(*i as usize))
+                .fold([0.0; 3], |a, p| [a[0] + p[0] / 4.0, a[1] + p[1] / 4.0, a[2] + p[2] / 4.0])
+        };
+        let vm: Vec<f64> = sol.von_mises_top.iter().zip(&sol.von_mises_bottom).map(|(a, b)| a.max(*b)).collect();
+        let at_vm =
+            vm.iter().zip(&quads).fold((0.0, [0.0; 3]), |b, (v, q)| if *v > b.0 { (*v, quad_at(q)) } else { b }).1;
+        let r = sig;
+        let mut out = json!({
+            "body": body.name,
+            "method": "shell",
+            "element_mm": r(h),
+            "thickness_mm": r(thickness),
+            "elements": quads.len(),
+            "nodes": nodes.len(),
+            "iterations": sol.iterations,
+            "max_displacement_mm": r(sol.max_displacement),
+            "max_displacement_at_mm": at_disp.map(r),
+            "max_von_mises_mpa": r(sol.max_von_mises),
+            "max_von_mises_at_mm": at_vm.map(r),
+            "fixed_nodes": held.len(),
+            "loaded_nodes": loaded,
+        });
+        if self.field
+            && let Some(o) = out.as_object_mut()
+        {
+            let field: Vec<([f64; 12], f64)> = quads
+                .iter()
+                .zip(&vm)
+                .map(|(q, v)| {
+                    let c = q.map(|i| nodes.get(i as usize).copied().unwrap_or([0.0; 3]));
+                    (flat(c), *v)
+                })
+                .collect();
+            o.insert("stress_bands".into(), bands(&field));
+            if field.len() > MAX_FIELD_QUADS {
                 o.insert("stress_bands_thinned".into(), json!(true));
             }
         }

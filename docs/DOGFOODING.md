@@ -436,3 +436,109 @@ from `tools/list`, `commands`, schemas, resources and errors.
 | F6-12 | minor | Duplicate G-code lines, no tool line, one operation per file | Duplicates and `(T1 D.. flat end mill)` fixed; several jobs in the document now (`cam_job`), one program per job. |
 | F6-13 | minor | Reconnecting starts on Main with an empty undo stack | A reconnecting client is told its earlier branches in the initialize instructions (names are still never reused); 2026-07-28 discover clients not yet. |
 | F6-14 | minor | Grammar resource lacked the new syntax; modal shape has no scale | Fixed: grammar updated (sheet sides/ends, `close`, cut-outs, `onto`, `cam_job`); `sim.modal` with `shape` returns `shape_scale` (drawn size of the largest motion, where it is and its direction). |
+
+## Run 7 — feature-tree import, tilting, adaptive CAM, sheet circles (2026-11-07)
+
+Setup: debug `gusset` with real OCCT and workers (`CARGO_INCREMENTAL=0`, built in 16 s from a warm
+cache), `gusset mcp --no-attach` over stdio behind run 6's stdlib Python client (a daemon per
+project plus a unix-socket caller); about 330 calls, files in the session's scratch directory
+(`dogfood7/`, projects in `dogfood7/proj/`). Learned from `tools/list`, `commands` (with a
+`name` for the schema), the grammar resource and error messages; ADR 0042 was needed for the
+`.gtree.json` format, since nothing in the MCP surface describes it (F7-13).
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | Feature-tree import: 4 parameters (two with expressions), base on XY with parameter-driven dimensions, fillet and chamfer by edge midpoint, ring boss on an offset sketch plane (`join`), pocket on a flipped YZ-parallel plane (`cut`), 270 deg revolve, an unsupported feature, a tilted-plane sketch + extrude | exact; skips reported per feature; 21 malformed trees | 97 | Import is one undo step; a second tree with a rotated plane, an arc, `symmetric` and `intersect` was exact too. |
+| 2 | `move_face onto` a tilted plane: a box's top onto a wedge's 14 deg face, a cylinder's cap onto the same face; refusals | works, refusals right but two late failures (F7-8, F7-9) | 46 | Volume, area and centroid match hand. |
+| 3 | CAM on an L pocket: `pocket` vs `pocket_adaptive`, G-code, `cam_job` x2 in the document, drilling with the wrong tool | works; adaptive is 5x the length | 42 | Tool path swept on a 0.25 mm grid; no gouge, same coverage, adaptive radial cut within the stepover. |
+| 4 | Sheet metal: tab + 90 deg flange, round hole in the tab, hole across the bend, hole in the flange wall, flat pattern, DXF/SVG | circles reach the DXF; two bugs with several cut-outs (F7-1, F7-2) | 69 | |
+| 5 | Simulation: 100x20x5 cantilever, static (tip load) and modal with `shape` | within a few % of beam theory, converging | 21 | `shape_scale` right. |
+
+Hand checks:
+
+| Check | Hand | Gusset |
+|---|---|---|
+| Imported base volume: 60x40x12 less fillet r3 (`(1-pi/4) r^2 h` = 23.18) less chamfer 2 (24) plus ring boss `pi (10^2-5^2) 8` less pocket `6x20x15` | 28837.7786 mm3 | 28837.778594 |
+| 270 deg ring, `0.75 pi (20^2-10^2) 10`, bbox x 80..120, y -20..20 | 7068.5835 mm3 | 7068.583471, bbox as hand |
+| `w` 60 -> 80 (so `h` = 16; boss now sticks out 4 mm; the pocket becomes a void): 80x40x16 - 30.90 - 32 + `pi 75 4` - 1800 | 50279.58 mm3 | 50279.575132; undo gives 28837.778594 again |
+| Rotated-plane symmetric extrude intersected with a 5x5x2 box (triangle of 12.5 mm2 x 2); semicircle `pi 50 4` on a sketch origin-shifted to x = 200 | 25 / 628.3185 mm3 | 25.0 / 628.318531 |
+| Box top moved onto the wedge plane z = 15 + x/4: volume stays 32000 (mean top height 20), z max 25, area `1649.24 + 600 + 1000 + 1600 + 1600`, centroid x 21.667 | 32000 / 25 / 6449.24 / 21.667 | 32000 / 25 / 6449.24225 / 21.666667 |
+| Cylinder (r10, h30) cap onto the same plane at x = 20 (plane crosses at z = 20): volume `pi 100 20`, cap area `314.159 x 1.030776`, z max 22.5 | 6283.19 / 323.83 / 22.5 | 6283.185307 / 323.827959 / 22.5 |
+| L pocket area (60x20 + 20x30) | 1800 mm2 | region 1800; swept coverage 1771.1 of 1827.6 grid mm2 for both operations (the rest are the five convex corners and grid edge), nothing outside the region |
+| Flat pattern of 100x60x2 tab + 20 mm flange (r2, k 0.44): 100 + (pi/2)(2 + 0.88) + 20 | 124.5239 x 60 | 124.523893 x 60; allowance 4.523893 |
+| Plate volume: flat 124.5239x60x2 = 14942.86 plus (quarter annulus 9.4248 - 4.5239x2) x 60 = 22.62 | 14965.49 mm3 | 14965.486678 |
+| Round hole d10 at (30,30): area / volume removed | 78.54 / 157.08 | circle r5 at (30,30), 78.539816 / 157.079633 |
+| Hole across the bend (d1.8 at x = 101, neutral radius 2.88): x extent `2.88 asin(1.9/2.88)` + 100 | 102.0749 | bbox 100.100..102.0749; area 2.7627 vs 2.7713 numeric (0.3 %, polyline) |
+| Hole d6 in the flange wall at (30, z = 14): flat x = 100 + 4.5239 + 10 | circle at (114.5239, 30) | circle at (114.523893, 30) r3 (when alone, see F7-2) |
+| DXF circle for the d10 hole | (30, 30) | `CIRCLE` at (40, 40) r5: the pattern sits 10 mm in from the origin (F7-12) |
+| Tip load 100 N: `PL^3/(3EI)` = 0.7619 + shear 0.0015 | 0.7634 mm | 0.7269 / 0.7358 / 0.7483 at voxel 1.25 (default) / 1 / 0.5: -4.8 / -3.6 / -2.0 %; voxel 2.5 warns "fewer than 3 voxels across the thinnest side" |
+| (By mistake I loaded the top face: uniform 1 N/mm, `wL^4/(8EI)`) | 0.2857 mm | 0.2716 / 0.2749 / 0.2796 (converging) |
+| First bending frequency `(3.516/2 pi) sqrt(EI/(rho A L^4))` | 417.8 Hz (then 1671 lateral, 2618 second bend) | 425.8 (+1.9 %) / 1629.6 (-2.5 %) / 2636.4 (+0.7 %) at voxel 1 |
+| `shape: 1` / `shape: 2` | bending in z / in y, largest motion at the tip, drawn 10 mm | `shape_scale` direction (0.035, 0, 0.999) / (-0.13, -0.99, 0) at (100, 10, 0) / (100, 0, 2.5), `drawn_mm` 10 |
+
+Feature-tree import, observed: a `fixed` + `distance` sketch with a `parameter` keeps the
+dimension linked to the imported parameter (`distance(p1, p2, w)`); a plane parallel to
+XY/YZ becomes a datum plane (`Boss_plane`, offset 12 mm; `Pocket_plane`, base YZ offset 60 mm)
+with the sketch re-projected and the cut distance sign flipped for the flipped normal; a
+tilted plane, an `unsupported` feature, a missing sketch or target, a fillet whose midpoint
+matches no edge, a profile pick outside every region, an unknown `operation`/`type`, a
+radius too big for the edge, a zero or missing distance, and an injection-style sketch name
+(`a b){ evil\nparam x = 1`) each skip just that feature with a reason in
+`skipped_user_text` (the injected name never reached the document text). Malformed
+JSON, a wrong `format`, `version: 2`, a truncated file, `../` paths and a missing file are
+refused with an error; names that clash get `_2`, `_3` suffixes (so importing twice works).
+
+CAM, observed (6 mm flat end mill, L pocket, defaults, depth 4): `pocket` 2239 mm cut, 3.99 min,
+126 moves, 3 kB of G-code; `pocket_adaptive` 11420 mm, 19.55 min, 3266 moves, 108 kB (35x the
+lines). Stepover 0.4 explicit, depth 12, one 12 mm level: adaptive 4435 mm / 7.6 min against
+pocket (four 3 mm levels) 4576 mm / 8.5 min; stepover 0.2 + stepdown 12 + feed 1500: 8942 mm /
+6.3 min. Walking the exported single-level paths over a 0.2 mm grid: `pocket` cuts more than
+5.9 mm wide over 11.9 % of its length (up to 6.2 mm), `pocket_adaptive` never over 5.8 mm
+and above the 2.4 mm stepover over 0.8 % (plunge, slot starts), mean 0.37 mm. Arc I/J radii
+agree to 0.0001 mm, floor at -4, header/footer fine, climb direction matches ADR 0040
+(material on the right, M3; my first reading of it was backwards, the code is right).
+`drill` with a 4 mm tool over holes of 4, 4, 4 and 8 mm: `warnings: ["1 of 4 holes are not
+4 mm across: a drill cuts its own size (use bore to mill them)"]` (3 mm tool: 4 of 4); G83
+with `R1 Q2`. `cam_job` blocks (`Clear`, `Holes`) written with `document_set_text`, then
+`cam_toolpath`/`cam_export_gcode` with `job:` and one program per job; extra fields next to
+`job` are refused with a clear message, so is an unknown job.
+
+| ID | Sev | Item | Expected |
+|---|---|---|---|
+| F7-1 | major | Flat pattern lists a cut-out again (as a polygon tagged `circle`) when a later hole is made: tab + flange, hole in the flange, then a hole in the tab gives 3 cut-outs, then a fifth after another hole; the DXF has two `CIRCLE`s at the same place (laser double cut). | Each hole once (F6-2 said outlines already in the pattern are not added again). Repro: `proj/e3.gus`. |
+| F7-2 | major | After a cut across a bend (hole at x = 101 on the bend), a later hole through the flange wall is not unfolded: `changed_by`, warning, and `sheet_export_flat` refuses without `allow_changed`. The same wall hole on its own is unfolded to a circle at (114.52, 30). Also a `feature_extrude` cut through the wall in the same model was refused. | Wall hole mapped as without the bend cut (the grammar says flat regions and bends are unfolded). Repro: `proj/d.gus`, `proj/e3.gus`. |
+| F7-3 | minor | `.gtree.json` import: two parameters with the same name are merged silently, the later value wins (`Base` became 40 wide, the chamfer's edge was not found); no warning. A dimension `parameter` naming no parameter, a constraint of unknown type and a `value` on `horizontal` are dropped or ignored silently too. | A warning for each dropped constraint/duplicate. |
+| F7-4 | minor | A parameter expression that parses but cannot be evaluated (`1/0`) is stored as `param w_2 = 1 / 0`; every dependent feature errors afterwards (`Base_2: constraint 'k14': unknown parameter 'w_2'` in `query_model.errors`) and the import report mentions nothing but the volume mismatch. Unparsable ones (`w +`) are handled (value used, warning). | Fall back to the value with a warning; report rebuild errors in the import result. |
+| F7-5 | minor | No bound on an extrude `distance`: 1e13 imported, volume 2.4e16 mm3 (the ADR amendment says numbers below 1e12). | Skip with a reason. |
+| F7-6 | minor | Two imported trees compare the whole model's volume with the source's `bodies`: a second import into a non-empty document, or a tree with a `bodies` list shorter than its result, warns "differs" with wrong numbers (35906 against 28838 because I listed one of two bodies; 71836 on the second import). The ADR describes per-body `mismatches`; the result has one total. An empty tree reports success with 0 features and the same warning. | Per-body comparison of the bodies the import made; refuse or say so for an empty tree. |
+| F7-7 | minor | `feature_move_face` without `body`: the body defaults to the latest one, not the face's, and the feature is committed with `Tilt1: face BoxA/cap(end) no longer exists (re-select the face to move)`. A missing `onto` face (`Wedge/side(W/l99)`) lists candidates from a different body (`Cyl/...`). | Body taken from the face reference; candidates from the named body; at least "body: X is not the face's body". |
+| F7-8 | minor | `onto` a plane the moved face would cross the body at (the bottom face onto the top tilted plane, the cylinder cap onto a plane at z 0..5) is committed with `committed_with_errors` (kernel: "draft produced an invalid solid ..."), while perpendicular, curved (moved or target), coplanar and `translate` + `onto` are refused before committing (good). | Refuse these too, or at least say why in one hint; the undo hint is there. |
+| F7-9 | nit | Adaptive pocket: the default `stepover` is 0.25 (results equal 0.25 exactly), the tool description says 0.4; at the same stepdown and feed it is 5x longer and slower, and 36x the G-code, and nothing says its benefit comes from stepdown/feed (a 12 mm level at 1500 mm/min cut the time to a third of `pocket`). | State the adaptive default and a hint about stepdown/feed in the description or result. |
+| F7-10 | nit | `cam_job` can only be created by `document_set_text` with the whole document (no command; `cam_toolpath`'s `job` says only "A cam_job."). | A `cam_job` command or the grammar section named in the tool description. |
+| F7-11 | nit | `feature_hole` `at` wants strings (`invalid type: integer 30, expected a string`) while `sketch_add_circle` takes numbers. | Numbers accepted as mm. |
+| F7-12 | nit | `sheet_export_flat` (DXF and SVG) places the pattern 10 mm in from the origin (`CIRCLE` at (40, 40) for a hole at (30, 30)); neither the result nor the description says so ("1:1"). | Say it (or put the pattern at 0,0 / return `offset_mm`). |
+| F7-13 | nit | The `.gtree.json` format is documented nowhere in the MCP surface (no resource, no schema; the "not a Gusset feature tree" hint points at the exporter plugins); an agent writing one must read ADR 0042 in the repository. | A short resource or the hint naming the format. |
+| F7-14 | nit | `drill` G-code moves to the first hole twice (`G0 X5 Y5` then `G98 G83 X5 Y5`); warning says "1 of 4 holes are not". | Cosmetic. |
+
+What worked well: the import turns a hand-written tree into ordinary editable features
+(readable text, parameter-driven dimensions, datum planes) in one undoable step, with exact
+volumes, and every skip names its reason (`skipped_user_text`, untrusted strings wrapped as
+such); one bad feature never spoils the rest; the file limits and path checks hold. Moving a
+face onto a tilted plane is exact (area, centroid) on a box and on a cylinder, and the
+refusals for perpendicular, curved, coplanar and `onto` + `translate` come before anything is
+committed with a hint. Adaptive clearing does what the ADR says (measured). `drill` warns about
+holes that are not the tool's size, and `cam_job`s give one program each. Circles survive into
+the flat pattern and the DXF (`CIRCLE`), a hole across a bend comes out as the right-sized
+polygon (neutral arc length). `sim_static` warns about too coarse voxels, `sim_modal`
+refuses oversized grids with the limit, `shape_scale` gives direction, size and place of the
+largest motion, and `shape_bands` (250 kB) is not inlined but paged by `get_text`. Field-name
+errors list the accepted fields. Output sizes: `import_file` 1.4-2.2 kB, `query_model` about
+1 kB per 4 features, `query_flat_pattern` 0.4-0.8 kB, `cam_toolpath` 0.2 kB.
+
+Not tested: a tree with sketch constraints beyond `fixed`/`distance`/`radius`/`horizontal`/`vertical`,
+`chamfer` and `fillet` of several edges, `revolve` with a world axis, 2000-feature and 32 MiB
+limits, the plugins themselves; `profile_inside`, tabs/ramps, `bore` and islands in the adaptive
+pocket; `pocket_adaptive` in a `cam_job` with `regions`; a flange off a contour flange with
+cut-outs; `contour_flange` holes; hems; `sim.static` on the L bracket and with `field: true`
+or `render_view` of a mode shape; `move_face` with `angle`/`axis` on a tilted target, several
+faces at once, and `onto` on a face of a body that is later moved.
