@@ -564,3 +564,6 @@ fn steep_shallow_threshold_extremes_and_errors() {
     let bad = SteepShallowSpec { steep_deg: 90.0, ..flat };
     assert!(matches!(steep_shallow_finish(&sf, Cutter::Ball, &bad, &s), Err(CamError::Invalid(_))));
 }
+
+mod boxed;
+mod perf;

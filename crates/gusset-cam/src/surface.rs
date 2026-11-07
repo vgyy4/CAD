@@ -65,6 +65,8 @@ impl Profile {
 struct Dropper {
     tris: Vec<[[f64; 3]; 3]>,
     zmax: Vec<f64>,
+    /// XY bounding box `(x0, y0, x1, y1)` per triangle.
+    bbox: Vec<[f64; 4]>,
     min: [f64; 2],
     cell: f64,
     nx: usize,
@@ -107,10 +109,12 @@ impl Dropper {
         let mut cells = vec![Vec::new(); nx * ny];
         let mut entries = 0usize;
         let mut zmax = Vec::with_capacity(tris.len());
+        let mut bbox = Vec::with_capacity(tris.len());
         for (ti, t) in tris.iter().enumerate() {
             zmax.push(t.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max));
             let lo = |k: usize| t.iter().map(|p| p.get(k).copied().unwrap_or(0.0)).fold(f64::INFINITY, f64::min);
             let hi = |k: usize| t.iter().map(|p| p.get(k).copied().unwrap_or(0.0)).fold(f64::NEG_INFINITY, f64::max);
+            bbox.push([lo(0), lo(1), hi(0), hi(1)]);
             let (x0, x1) = (cell_of(lo(0), lo_xy[0], cell, nx), cell_of(hi(0), lo_xy[0], cell, nx));
             let (y0, y1) = (cell_of(lo(1), lo_xy[1], cell, ny), cell_of(hi(1), lo_xy[1], cell, ny));
             entries += (x1 - x0 + 1) * (y1 - y0 + 1);
@@ -126,7 +130,32 @@ impl Dropper {
             }
         }
         let stamp = vec![0; tris.len()];
-        Ok(Dropper { tris, zmax, min: lo_xy, cell, nx, ny, cells, stamp, epoch: 0, prof })
+        Ok(Dropper { tris, zmax, bbox, min: lo_xy, cell, nx, ny, cells, stamp, epoch: 0, prof })
+    }
+
+    /// Indices of the triangles whose XY box is within `r` of `(x, y)`.
+    fn near_tris(&mut self, x: f64, y: f64, r: f64) -> Vec<u32> {
+        let (x0, x1) =
+            (cell_of(x - r, self.min[0], self.cell, self.nx), cell_of(x + r, self.min[0], self.cell, self.nx));
+        let (y0, y1) =
+            (cell_of(y - r, self.min[1], self.cell, self.ny), cell_of(y + r, self.min[1], self.cell, self.ny));
+        let mut out: Vec<u32> = Vec::new();
+        for iy in y0..=y1 {
+            for ix in x0..=x1 {
+                let Some(list) = self.cells.get(iy * self.nx + ix) else { continue };
+                for &ti in list {
+                    let Some(bb) = self.bbox.get(ti as usize) else { continue };
+                    let dx = (bb[0] - x).max(x - bb[2]).max(0.0);
+                    let dy = (bb[1] - y).max(y - bb[3]).max(0.0);
+                    if dx * dx + dy * dy <= r * r {
+                        out.push(ti);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Lowest tool tip Z at `(x, y)` that does not gouge any triangle; `None` if no triangle
@@ -158,6 +187,14 @@ impl Dropper {
                     // The tip cannot be pushed above the triangle's highest point.
                     if best.is_some_and(|b| zm <= b) {
                         continue;
+                    }
+                    // Nothing of the triangle within the cutter's radius.
+                    if let Some(bb) = self.bbox.get(ti as usize) {
+                        let dx = (bb[0] - x).max(x - bb[2]).max(0.0);
+                        let dy = (bb[1] - y).max(y - bb[3]).max(0.0);
+                        if dx * dx + dy * dy > r * r {
+                            continue;
+                        }
                     }
                     if let Some(z) = tri_drop(t, x, y, self.prof) {
                         best = Some(best.map_or(z, |b| b.max(z)));
@@ -252,8 +289,31 @@ fn edge_drop(p: [f64; 3], q: [f64; 3], x: f64, y: f64, prof: Profile) -> Option<
         // Flat: h is 0 inside the radius, so the maximum is at an end of the interval.
         return Some(f(t0).max(f(t1)));
     }
-    // Concave in t (a line minus a convex function): ternary search.
-    for _ in 0..70 {
+    if (prof.c - prof.r).abs() <= 1e-12 {
+        // Ball: the centre touches the edge's line at distance r (closed form); the maximum of
+        // the concave f over [t0, t1] is there if the contact is inside, else at an end.
+        let mut best = f(t0).max(f(t1));
+        let dd = qa + d[2] * d[2];
+        let a_dot = w[0] * d[0] + w[1] * d[1];
+        let ww = w[0] * w[0] + w[1] * w[1];
+        // With a = p_z - centre_z: qa a^2 - 2 (A dz) a + (ww dd - A^2 - r^2 dd) = 0.
+        let (qa2, qb2, qc2) = (qa, -2.0 * a_dot * d[2], ww * dd - a_dot * a_dot - prof.r * prof.r * dd);
+        let disc2 = qb2 * qb2 - 4.0 * qa2 * qc2;
+        if disc2 >= 0.0 {
+            let sq2 = libm::sqrt(disc2);
+            for a in [(-qb2 - sq2) / (2.0 * qa2), (-qb2 + sq2) / (2.0 * qa2)] {
+                let t = -(a_dot + a * d[2]) / dd;
+                if t >= t0 && t <= t1 {
+                    best = best.max(f(t));
+                }
+            }
+        }
+        return Some(best);
+    }
+    // Concave in t (a line minus a convex function): ternary search to a tenth of a micron.
+    let span_mm = libm::sqrt(qa + d[2] * d[2]) * (t1 - t0);
+    let iters = (libm::log(span_mm.max(1e-9) / 1e-7) / libm::log(1.5)).clamp(1.0, 70.0) as usize;
+    for _ in 0..iters {
         let m1 = t0 + (t1 - t0) / 3.0;
         let m2 = t1 - (t1 - t0) / 3.0;
         if f(m1) < f(m2) {
@@ -263,6 +323,42 @@ fn edge_drop(p: [f64; 3], q: [f64; 3], x: f64, y: f64, prof: Profile) -> Option<
         }
     }
     Some(f(0.5 * (t0 + t1)))
+}
+
+/// Most runs ordered by nearest neighbour (quadratic).
+const MAX_ORDERED_RUNS: usize = 6000;
+
+/// Orders runs greedily by the distance from the end of the last one to either end of the next
+/// (a run may be reversed), starting with the first.
+fn order_runs(mut runs: Vec<Vec<[f64; 3]>>) -> Vec<Vec<[f64; 3]>> {
+    let mut out = Vec::with_capacity(runs.len());
+    if runs.is_empty() {
+        return out;
+    }
+    let mut cur = runs.remove(0);
+    loop {
+        let end = cur.last().copied();
+        out.push(cur);
+        let Some(e) = end else { break };
+        let d2 = |q: &[f64; 3]| (q[0] - e[0]) * (q[0] - e[0]) + (q[1] - e[1]) * (q[1] - e[1]);
+        let mut best: Option<(f64, usize, bool)> = None;
+        for (k, r) in runs.iter().enumerate() {
+            for (p, rev) in [(r.first(), false), (r.last(), true)] {
+                if let Some(p) = p {
+                    let d = d2(p);
+                    if best.is_none_or(|b| d < b.0) {
+                        best = Some((d, k, rev));
+                    }
+                }
+            }
+        }
+        let Some((_, k, rev)) = best else { break };
+        cur = runs.swap_remove(k);
+        if rev {
+            cur.reverse();
+        }
+    }
+    out
 }
 
 /// Keeps the points of a polyline `(u, z)` that matter within `tol` (Douglas-Peucker).
@@ -394,6 +490,8 @@ fn raster_impl(
     let mut samples = 0usize;
     let mut max_z = f64::NEG_INFINITY;
     let mut lines = 0usize;
+    let mut n_pts = 0usize;
+    let mut out_runs: Vec<Vec<[f64; 3]>> = Vec::new();
     for li in 0..nlines {
         let o = (omin + li as f64 * spec.stepover).min(omax);
         let q = [nrm[0] * o, nrm[1] * o];
@@ -454,24 +552,36 @@ fn raster_impl(
                 pts.reverse();
             }
             let xyz = |&(u, z): &(f64, f64)| [q[0] + d[0] * u, q[1] + d[1] * u, z];
-            let Some(first) = pts.first().map(xyz) else { continue };
-            // Link: up and across at the safe height, then down to just above the first point.
-            if let Some(Move::Line { to, .. }) = moves.last() {
-                moves.push(Move::Rapid([to[0], to[1], s.safe]));
+            if pts.is_empty() {
+                continue;
             }
-            moves.push(Move::Rapid([first[0], first[1], s.safe]));
-            moves.push(Move::Rapid([first[0], first[1], s.safe.min(first[2] + 1.0)]));
-            moves.push(Move::Line { to: first, plunge: true });
-            for p in pts.iter().skip(1) {
-                moves.push(Move::Line { to: xyz(p), plunge: false });
-            }
+            n_pts += pts.len() + 3;
+            out_runs.push(pts.iter().map(xyz).collect());
             emitted = true;
         }
         if emitted {
             lines += 1;
         }
-        if moves.len() > MAX_MOVES {
+        if n_pts > MAX_MOVES {
             return Err(CamError::TooLarge("too many moves".into()));
+        }
+    }
+    // Shallow runs are scattered over the part: visit them nearest first (either end) rather than
+    // line by line, which cuts the rapid travel; full rasters keep their zig-zag.
+    if shallow.is_some() && out_runs.len() <= MAX_ORDERED_RUNS {
+        out_runs = order_runs(out_runs);
+    }
+    for run in &out_runs {
+        let Some(&first) = run.first() else { continue };
+        // Link: up and across at the safe height, then down to just above the first point.
+        if let Some(Move::Line { to, .. }) = moves.last() {
+            moves.push(Move::Rapid([to[0], to[1], s.safe]));
+        }
+        moves.push(Move::Rapid([first[0], first[1], s.safe]));
+        moves.push(Move::Rapid([first[0], first[1], s.safe.min(first[2] + 1.0)]));
+        moves.push(Move::Line { to: first, plunge: true });
+        for p in run.iter().skip(1) {
+            moves.push(Move::Line { to: *p, plunge: false });
         }
     }
     if moves.is_empty() && shallow.is_none() {

@@ -101,3 +101,5 @@ fn errors_and_caps() {
     // 20 mm / (0.05 / 8) nodes per side is far over the cap.
     assert!(matches!(pencil_finish(&s, Cutter::Ball, &spec(), &setup(0.1)), Err(CamError::TooLarge(_))));
 }
+
+mod walls;

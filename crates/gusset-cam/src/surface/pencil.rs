@@ -1,7 +1,7 @@
 //! Pencil finishing: a ball cutter traced along concave creases of the surface (ADR 0040,
 //! "Pencil finishing" amendment).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{Cutter, Dropper, Profile, Surface3d, mesh_bounds};
 use crate::{CamError, MAX_MOVES, Move, Setup, Toolpath};
@@ -12,6 +12,11 @@ const MAX_NODES: usize = 3_000_000;
 const MAX_POINTS: usize = 500_000;
 /// Fine samples per grid step used to locate a crease.
 const FINE: usize = 16;
+/// Slope of the cutter-location field (rise per run) from which a step counts as a vertical
+/// wall: tan 80 degrees.
+const WALL_SLOPE: f64 = 5.67;
+/// Shortest crease line kept, in grid steps.
+const MIN_CHAIN_STEPS: f64 = 4.0;
 
 /// Pencil finishing parameters (mm, degrees).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,6 +32,123 @@ pub struct PencilSpec {
 
 fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
     libm::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]))
+}
+
+/// Free boundary of the mesh (vertices welded at 0.1 micron): a ball resting on a boundary edge
+/// is not held there, so such a contact does not support a crease.
+struct Topo {
+    ids: Vec<[u32; 3]>,
+    boundary_edges: HashSet<(u32, u32)>,
+    boundary_vertices: HashSet<u32>,
+}
+
+impl Topo {
+    fn new(s: &Surface3d) -> Self {
+        let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let mut vid: Vec<u32> = Vec::with_capacity(s.positions.len());
+        for p in s.positions {
+            let q = |v: f32| libm::round(f64::from(v) * 1e4) as i64;
+            let n = weld.len() as u32;
+            vid.push(*weld.entry((q(p[0]), q(p[1]), q(p[2]))).or_insert(n));
+        }
+        let mut ids = Vec::new();
+        let mut count: HashMap<(u32, u32), u32> = HashMap::new();
+        for t in s.indices.chunks_exact(3) {
+            let g = |k: usize| t.get(k).and_then(|&i| vid.get(i as usize)).copied().unwrap_or(0);
+            let v = [g(0), g(1), g(2)];
+            ids.push(v);
+            for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+                *count.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        let boundary_edges: HashSet<(u32, u32)> = count.iter().filter(|(_, c)| **c == 1).map(|(k, _)| *k).collect();
+        let boundary_vertices = boundary_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
+        Topo { ids, boundary_edges, boundary_vertices }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Region {
+    Face,
+    Edge(usize),
+    Vertex(usize),
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Closest point of triangle `t` to `p`, and where on the triangle it lies (edge `k` joins
+/// vertex `k` to `k + 1`).
+fn closest_on_tri(p: [f64; 3], t: &[[f64; 3]; 3]) -> ([f64; 3], Region) {
+    let [a, b, c] = *t;
+    let at = |o: [f64; 3], u: [f64; 3], k: f64| [o[0] + k * u[0], o[1] + k * u[1], o[2] + k * u[2]];
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return (a, Region::Vertex(0));
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return (b, Region::Vertex(1));
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return (at(a, ab, d1 / (d1 - d3)), Region::Edge(0));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return (c, Region::Vertex(2));
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return (at(a, ac, d2 / (d2 - d6)), Region::Edge(2));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return (at(b, sub(c, b), w), Region::Edge(1));
+    }
+    let den = va + vb + vc;
+    if den.abs() < 1e-300 {
+        return (a, Region::Vertex(0));
+    }
+    let (v, w) = (vb / den, vc / den);
+    (at(at(a, ab, v), ac, w), Region::Face)
+}
+
+/// Whether a ball of radius `r` with its centre at `c` rests on two surfaces whose normals
+/// differ by at least `ang`: contacts on the mesh's free boundary do not count.
+fn supported(d: &mut Dropper, topo: &Topo, c: [f64; 3], r: f64, ang: f64) -> bool {
+    let tol = 0.005 * r + 1e-4;
+    let mut us: Vec<[f64; 3]> = Vec::new();
+    for ti in d.near_tris(c[0], c[1], r + tol) {
+        let (Some(t), Some(ids)) = (d.tris.get(ti as usize), topo.ids.get(ti as usize)) else { continue };
+        let (q, region) = closest_on_tri(c, t);
+        let u = sub(q, c);
+        let dist = libm::sqrt(dot(u, u));
+        if dist > r + tol || dist < 1e-12 {
+            continue;
+        }
+        let free = match region {
+            Region::Face => false,
+            Region::Edge(k) => {
+                let (a, b) = (ids.get(k).copied().unwrap_or(0), ids.get((k + 1) % 3).copied().unwrap_or(0));
+                topo.boundary_edges.contains(&(a.min(b), a.max(b)))
+            }
+            Region::Vertex(k) => topo.boundary_vertices.contains(&ids.get(k).copied().unwrap_or(0)),
+        };
+        if !free {
+            us.push([u[0] / dist, u[1] / dist, u[2] / dist]);
+        }
+    }
+    us.iter().any(|a| us.iter().any(|b| libm::acos(dot(*a, *b).clamp(-1.0, 1.0)) >= ang))
 }
 
 /// A uniform XY bucket index over a point list.
@@ -94,6 +216,41 @@ fn simplify3(pts: &[[f64; 3]], tol: f64) -> Vec<[f64; 3]> {
     pts.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect()
 }
 
+/// Crease points accepted so far, and what decides on the next one.
+struct Accepted {
+    pts: Vec<[f64; 3]>,
+    dedup: Buckets,
+    h: f64,
+    r: f64,
+    ang: f64,
+    bmin: [f64; 2],
+    bmax: [f64; 2],
+    bottom: f64,
+}
+
+impl Accepted {
+    /// Adds the tool tip position `p` if it is in the box, above the stock bottom, held by two
+    /// surfaces (not by the mesh's free boundary) and not within half a grid step of another.
+    fn add(&mut self, d: &mut Dropper, topo: &Topo, p: [f64; 3]) -> Result<(), CamError> {
+        let [x, y, z] = p;
+        if x < self.bmin[0] || x > self.bmax[0] || y < self.bmin[1] || y > self.bmax[1] || z < self.bottom {
+            return Ok(());
+        }
+        if self.dedup.near(p).any(|q| self.pts.get(q).is_some_and(|o| libm::hypot(o[0] - x, o[1] - y) < self.h / 2.0)) {
+            return Ok(());
+        }
+        if !supported(d, topo, [x, y, z + self.r], self.r, self.ang) {
+            return Ok(());
+        }
+        self.dedup.insert(p, self.pts.len());
+        self.pts.push(p);
+        if self.pts.len() > MAX_POINTS {
+            return Err(CamError::TooLarge("too many crease points; raise the bitangency angle".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Pencil finishing with a ball cutter: traces the concave creases where the ball touches two
 /// surfaces at once, as cutting moves at the exact cutter-location height.
 ///
@@ -157,8 +314,8 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
     let ang = spec.bitangency_angle_deg.to_radians();
     let bottom = s.top - s.depth;
 
-    let mut pts: Vec<[f64; 3]> = Vec::new();
-    let mut dedup = Buckets::new(h);
+    let topo = Topo::new(surface);
+    let mut acc = Accepted { pts: Vec::new(), dedup: Buckets::new(h), h, r, ang, bmin, bmax, bottom };
     for j in 1..ny.saturating_sub(1) {
         for i in 1..nx.saturating_sub(1) {
             let f0 = at(i, j);
@@ -177,6 +334,35 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
                     let l = libm::hypot(di as f64, dj as f64);
                     best = Some((turn, [di as f64 / l, dj as f64 / l]));
                 }
+            }
+            // A vertical (or nearly vertical) wall rising from this node: the cutter-location
+            // field steps up by more than a grid step times `WALL_SLOPE`. The ball touches the
+            // wall and the floor where the field leaves the floor's height.
+            let mut wall = false;
+            for (di, dj) in [(1i64, 0i64), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
+                let (ni, nj) = ((i as i64 + di) as usize, (j as i64 + dj) as usize);
+                let fnb = at(ni, nj);
+                let sp = h * libm::hypot(di as f64, dj as f64);
+                if !(f0.is_finite() && fnb.is_finite() && (fnb - f0) / sp >= WALL_SLOPE) {
+                    continue;
+                }
+                wall = true;
+                let ([xa, ya], [xb, yb]) = (node(i, j), node(ni, nj));
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..30 {
+                    let m = 0.5 * (lo + hi);
+                    match dropper.drop(xa + m * (xb - xa), ya + m * (yb - ya)) {
+                        Some(z) if z <= f0 + 1e-4 => lo = m,
+                        _ => hi = m,
+                    }
+                }
+                let (x, y) = (xa + lo * (xb - xa), ya + lo * (yb - ya));
+                if let Some(z) = dropper.drop(x, y) {
+                    acc.add(&mut dropper, &topo, [x, y, z])?;
+                }
+            }
+            if wall {
+                continue;
             }
             let Some((_, e)) = best else { continue };
             let [cx, cy] = node(i, j);
@@ -215,24 +401,11 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
                 continue;
             }
             let (x, y) = (cx + e[0] * t, cy + e[1] * t);
-            if x < bmin[0] || x > bmax[0] || y < bmin[1] || y > bmax[1] {
-                continue;
-            }
             let Some(z) = dropper.drop(x, y) else { continue };
-            if z < bottom {
-                continue;
-            }
-            let p = [x, y, z];
-            if dedup.near(p).any(|q| pts.get(q).is_some_and(|o| libm::hypot(o[0] - x, o[1] - y) < h / 2.0)) {
-                continue;
-            }
-            dedup.insert(p, pts.len());
-            pts.push(p);
-            if pts.len() > MAX_POINTS {
-                return Err(CamError::TooLarge("too many crease points; raise the bitangency angle".into()));
-            }
+            acc.add(&mut dropper, &topo, [x, y, z])?;
         }
     }
+    let pts = acc.pts;
     if pts.is_empty() {
         return Err(CamError::NothingToCut("no concave crease sharper than the bitangency angle".into()));
     }
@@ -278,7 +451,15 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
         let mut chain = back;
         chain.push(p0);
         chain.extend(fwd);
-        if chain.len() >= 2 {
+        let length: f64 = chain.iter().zip(chain.iter().skip(1)).map(|(a, b)| dist3(*a, *b)).sum();
+        if chain.len() >= 2 && length >= MIN_CHAIN_STEPS * h {
+            // A ring (a boss on a floor): close it.
+            if let (Some(&f), Some(&l)) = (chain.first(), chain.last())
+                && chain.len() >= 4
+                && dist3(f, l) <= link
+            {
+                chain.push(f);
+            }
             chains.push(simplify3(&chain, spec.tolerance));
         }
     }

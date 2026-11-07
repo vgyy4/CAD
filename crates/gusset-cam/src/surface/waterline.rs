@@ -25,6 +25,8 @@ pub struct WaterlineSpec {
     pub tolerance: f64,
     /// XY box the tool tip stays in; `None` is the mesh's XY bounds grown by the tool radius and a grid cell
     /// (so the tool is clear of the mesh at the box edge and every contour closes).
+    /// With an explicit box a contour that leaves it is cut as open runs ending on the box edge (never
+    /// along it); the box limits the tool centre and is not grown.
     pub bounds: Option<([f64; 2], [f64; 2])>,
     /// Material left on the surface, as a rise in Z.
     pub stock_to_leave: f64,
@@ -102,6 +104,12 @@ impl Grid {
         x >= self.bmin[0] - e && x <= self.bmax[0] + e && y >= self.bmin[1] - e && y <= self.bmax[1] + e
     }
 
+    /// Whether the grid edge `key` has one end in the box and one out of it.
+    fn on_box_edge(&self, key: usize) -> bool {
+        let (a, b) = self.ends(key);
+        self.in_box(a.0, a.1) != self.in_box(b.0, b.1)
+    }
+
     /// Cutter-location Z, `-inf` where the tool is free of the mesh or out of the box.
     fn cl(&self, d: &mut Dropper, x: f64, y: f64) -> f64 {
         if !self.in_box(x, y) {
@@ -166,12 +174,37 @@ fn contours(g: &Grid, d: &mut Dropper, vals: &[f64], level: f64, steep: Option<(
             cur = n;
         }
         let pts: Vec<(f64, f64)> = chain.iter().map(|&k| edge_point(g, d, level, k)).collect();
-        match steep {
-            None => pieces.push(Piece { pts, closed }),
-            Some((deg, delta, bottom)) => {
-                let st: Vec<bool> =
-                    pts.iter().map(|&(x, y)| slope_deg(d, [x, y], delta, bottom, g.stock) >= deg).collect();
-                split_steep(&pts, &st, closed, &mut pieces);
+        // Where the contour leaves the box the field edge crosses the box, and the contour only
+        // closes along the box. Those points are not on the part's contour: drop them and the
+        // steps next to them, which leaves open runs (never a cut along the box).
+        let n = pts.len();
+        let bad: Vec<bool> = chain.iter().map(|&k| g.on_box_edge(k)).collect();
+        let mut parts: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
+        if let Some(k0) = bad.iter().position(|&b| b) {
+            let mut run = Vec::new();
+            for m in 1..=n {
+                let idx = (k0 + m) % n;
+                match (bad.get(idx), pts.get(idx)) {
+                    (Some(false), Some(&p)) => run.push(p),
+                    _ => {
+                        if run.len() >= 2 {
+                            parts.push((std::mem::take(&mut run), false));
+                        }
+                        run.clear();
+                    }
+                }
+            }
+        } else {
+            parts.push((pts, closed));
+        }
+        for (pts, closed) in parts {
+            match steep {
+                None => pieces.push(Piece { pts, closed }),
+                Some((deg, delta, bottom)) => {
+                    let st: Vec<bool> =
+                        pts.iter().map(|&(x, y)| slope_deg(d, [x, y], delta, bottom, g.stock) >= deg).collect();
+                    split_steep(&pts, &st, closed, &mut pieces);
+                }
             }
         }
     }
@@ -219,7 +252,9 @@ fn edge_point(g: &Grid, d: &mut Dropper, level: f64, key: usize) -> (f64, f64) {
     }
     // The end that is clear of the mesh: a jump in the field (a wall) must not leave the point
     // on the gouging side.
-    if sa { b } else { a }
+    let p = if sa { b } else { a };
+    // A point found at the box edge stays in the box.
+    (p.0.clamp(g.bmin[0], g.bmax[0]), p.1.clamp(g.bmin[1], g.bmax[1]))
 }
 
 fn link_to(moves: &mut Vec<Move>, pts: &[(f64, f64)], z: f64, safe: f64) {
