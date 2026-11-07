@@ -51,7 +51,7 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     let mut full = job.clone();
     full["tool_diameter"] = json!(3.0);
     let fl = run(&mut s, "cam.toolpath", full);
-    assert!(rr["cut_mm"].as_f64().unwrap() < 0.3 * fl["cut_mm"].as_f64().unwrap(), "{rr} vs {fl}");
+    assert!(rr["cut_mm"].as_f64().unwrap() < 0.35 * fl["cut_mm"].as_f64().unwrap(), "{rr} vs {fl}");
     let mut with = job.clone();
     with["path"] = json!(true);
     let p = run(&mut s, "cam.toolpath", with);

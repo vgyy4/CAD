@@ -325,6 +325,56 @@ fn edge_drop(p: [f64; 3], q: [f64; 3], x: f64, y: f64, prof: Profile) -> Option<
     Some(f(0.5 * (t0 + t1)))
 }
 
+/// Deepest subdivision of a chord (the sampling step divided by 2^this).
+const MAX_REFINE_DEPTH: usize = 9;
+
+/// Pushes the interior points that keep the chord `a..b` of a cutter-location profile from
+/// passing below the true height by more than `eps`: probes the chord (the middle, and the
+/// quarter points when the heights differ much) and splits at the middle where it is too low.
+#[allow(clippy::too_many_arguments)]
+fn refine_chord(
+    sample: &mut dyn FnMut(f64) -> f64,
+    a: (f64, f64),
+    b: (f64, f64),
+    eps: f64,
+    depth: usize,
+    samples: &mut usize,
+    max_z: &mut f64,
+    out: &mut Vec<(f64, f64)>,
+) {
+    if depth >= MAX_REFINE_DEPTH || *samples > MAX_SAMPLES || (b.0 - a.0).abs() < 1e-6 {
+        return;
+    }
+    let mid = 0.5 * (a.0 + b.0);
+    let zm = sample(mid);
+    *samples += 1;
+    let chord = |t: f64| a.1 + (b.1 - a.1) * t;
+    let mut low = zm > chord(0.5) + eps;
+    let (du, dz) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
+    if !low && dz > 20.0 * eps {
+        // A steep chord may span a wall (a step in the height): probe it close to both ends
+        // as well, where a step hides longest (halving distances down to 1/128).
+        const PROBES: [f64; 12] =
+            [0.25, 0.75, 0.125, 0.875, 0.0625, 0.9375, 0.03125, 0.96875, 0.015625, 0.984375, 0.0078125, 0.9921875];
+        let n = if dz > du { PROBES.len() } else { 2 };
+        for &t in PROBES.iter().take(n) {
+            let z = sample(a.0 + (b.0 - a.0) * t);
+            *samples += 1;
+            if z > chord(t) + eps {
+                low = true;
+                break;
+            }
+        }
+    }
+    if low {
+        let m = (mid, zm);
+        *max_z = max_z.max(zm);
+        refine_chord(sample, a, m, eps, depth + 1, samples, max_z, out);
+        out.push(m);
+        refine_chord(sample, m, b, eps, depth + 1, samples, max_z, out);
+    }
+}
+
 /// Most runs ordered by nearest neighbour (quadratic).
 const MAX_ORDERED_RUNS: usize = 6000;
 
@@ -362,7 +412,17 @@ fn order_runs(mut runs: Vec<Vec<[f64; 3]>>) -> Vec<Vec<[f64; 3]>> {
 }
 
 /// Keeps the points of a polyline `(u, z)` that matter within `tol` (Douglas-Peucker).
-fn simplify(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
+pub(super) fn simplify(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
+    simplify_impl(pts, tol, false)
+}
+
+/// Like `simplify` for a cutter-location profile `(u, z)`: a point that lies above the chord
+/// that would replace it by more than `tol` is kept as well (the chord would gouge there).
+fn simplify_cl(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
+    simplify_impl(pts, tol, true)
+}
+
+fn simplify_impl(pts: &[(f64, f64)], tol: f64, rise: bool) -> Vec<(f64, f64)> {
     let n = pts.len();
     if n < 3 {
         return pts.to_vec();
@@ -381,11 +441,15 @@ fn simplify(pts: &[(f64, f64)], tol: f64) -> Vec<(f64, f64)> {
         let mut worst = (0.0, None);
         for k in i + 1..j {
             let Some(&(u, z)) = pts.get(k) else { continue };
-            let dev = if len < 1e-12 {
+            let mut dev = if len < 1e-12 {
                 libm::hypot(u - u0, z - z0)
             } else {
                 ((u1 - u0) * (z0 - z) - (u0 - u) * (z1 - z0)).abs() / len
             };
+            if rise && (u1 - u0).abs() > 1e-12 {
+                let chord = z0 + (z1 - z0) * (u - u0) / (u1 - u0);
+                dev = dev.max(z - chord);
+            }
             if dev > worst.0 {
                 worst = (dev, Some(k));
             }
@@ -523,6 +587,26 @@ fn raster_impl(
             max_z = max_z.max(z);
             pts.push((u, z));
         }
+        // Between two samples the chord can pass below the true cutter-location height (a steep
+        // wall, a fillet): subdivide where it does.
+        let mut sample = |u: f64| {
+            let (x, y) = (q[0] + d[0] * u, q[1] + d[1] * u);
+            dropper.drop(x, y).map_or(bottom, |z| (z + spec.stock_to_leave).max(bottom))
+        };
+        let eps = (spec.tolerance * 0.5).clamp(1e-4, 2e-3);
+        let mut refined: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+        for w in pts.windows(2) {
+            let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
+            refined.push(a);
+            refine_chord(&mut sample, a, b, eps, 0, &mut samples, &mut max_z, &mut refined);
+            if samples > MAX_SAMPLES {
+                return Err(CamError::TooLarge("too many samples; raise the step or stepover".into()));
+            }
+        }
+        if let Some(&l) = pts.last() {
+            refined.push(l);
+        }
+        let pts = refined;
         let mut runs: Vec<Vec<(f64, f64)>> = match shallow {
             None => vec![pts],
             Some(deg) => {
@@ -547,7 +631,7 @@ fn raster_impl(
         }
         let mut emitted = false;
         for run in runs {
-            let mut pts = simplify(&run, spec.tolerance);
+            let mut pts = simplify_cl(&run, spec.tolerance);
             if lines % 2 == 1 {
                 pts.reverse();
             }

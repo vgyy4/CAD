@@ -170,7 +170,7 @@ fn surface_samples(p: &[[f32; 3]], i: &[u32]) -> Vec<[f64; 3]> {
     let mut samples: Vec<[f64; 3]> = p.iter().map(|v| [f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]).collect();
     for k in 0..i.len() / 3 {
         let t = tri(k);
-        for _ in 0..12 {
+        for _ in 0..40 {
             let (mut u, mut v) = (rnd(), rnd());
             if u + v > 1.0 {
                 u = 1.0 - u;
@@ -566,4 +566,5 @@ fn steep_shallow_threshold_extremes_and_errors() {
 }
 
 mod boxed;
+mod gouge;
 mod perf;

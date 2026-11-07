@@ -102,4 +102,5 @@ fn errors_and_caps() {
     assert!(matches!(pencil_finish(&s, Cutter::Ball, &spec(), &setup(0.1)), Err(CamError::TooLarge(_))));
 }
 
+mod rim;
 mod walls;

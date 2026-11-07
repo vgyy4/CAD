@@ -346,7 +346,12 @@ impl CamJob {
         let t = t.map_err(|e| match e {
             gusset_cam::CamError::Invalid(m) => CommandError::args(m),
             gusset_cam::CamError::NothingToCut(m) => {
-                CommandError::new("evaluation", m).hint("use a smaller tool or a larger region")
+                let hint = if m.contains("grow the region") {
+                    "grow the region by the tool radius on every side (it limits the tool centre)"
+                } else {
+                    "use a smaller tool or a larger region"
+                };
+                CommandError::new("evaluation", m).hint(hint)
             }
             gusset_cam::CamError::TooLarge(m) => CommandError::new("too_large", m),
         })?;

@@ -8,6 +8,7 @@
 //! the ring, a retract. The G-code is metric and absolute (G21 G90 G17), with G2/G3 arcs given
 //! by I/J centre offsets.
 
+use cavalier_contours::core::math::Vector2;
 use cavalier_contours::polyline::{PlineSource, PlineSourceMut, PlineVertex, Polyline};
 use cavalier_contours::shape_algorithms::{Shape, ShapeOffsetOptions};
 use gusset_kernel::{Loop2, Region2, Seg2};
@@ -531,10 +532,45 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
         for slot in &slots {
             slot.moves(above, *z, slope, s, &mut moves)?;
         }
-        for p in &rings {
+        // Pocket rings run from the middle out: a ring whose start is a stepover from the
+        // previous ring's start, with the feed move between them inside what that ring cut,
+        // is entered from there at the depth (no ramp through cleared material, F10-3).
+        let chain = matches!(op, Operation::Pocket { .. } | Operation::PocketRest { .. }) && s.tabs.is_none();
+        let mut prev: Option<(Polyline<f64>, usize)> = None;
+        for ring in &rings {
+            // The ring starts at its vertex nearest the previous ring's start.
+            let rotated = match &prev {
+                Some((pp, _)) if chain => pp.get(0).and_then(|v| rotate_to_nearest(ring, (v.x, v.y))),
+                _ => None,
+            };
+            let p = rotated.as_ref().unwrap_or(ring);
             let Some(first) = p.get(0) else { continue };
             let n = p.vertex_count();
-            moves.push(Move::Rapid([first.x, first.y, s.safe]));
+            let linked = match &prev {
+                Some((pp, mark)) if chain => {
+                    // The centre stays within 0.6 diameters of the previous ring: an ordinary
+                    // stepover's engagement at most.
+                    let reach = 0.6 * s.tool_diameter;
+                    let from = pp.get(0).map(|v| (v.x, v.y));
+                    let ok = from.is_some_and(|(fx, fy)| {
+                        (0..=8).all(|k| {
+                            let t = k as f64 / 8.0;
+                            let pt = Vector2::new(fx + (first.x - fx) * t, fy + (first.y - fy) * t);
+                            pp.closest_point(pt, 1e-9).is_some_and(|c| c.distance <= reach)
+                        })
+                    });
+                    if ok {
+                        moves.truncate(*mark);
+                    }
+                    ok
+                }
+                _ => false,
+            };
+            if linked {
+                moves.push(Move::Line { to: [first.x, first.y, *z], plunge: false });
+            } else {
+                moves.push(Move::Rapid([first.x, first.y, s.safe]));
+            }
             let perimeter = p.path_length();
             // A helix never runs below the tabs' top (it would cut through them): on the
             // tabbed levels it stops there and the rest of the descent is a ramp along the
@@ -545,7 +581,9 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
                 _ => *z,
             };
             let mut entry = *z;
-            if slope > 0.0 && perimeter > 1e-9 && floor < above - 1e-9 {
+            if linked {
+                // Already at the depth, in the cleared ring.
+            } else if slope > 0.0 && perimeter > 1e-9 && floor < above - 1e-9 {
                 // A helix along the ring, as many turns as the angle needs, then one
                 // full ring at the depth.
                 moves.push(Move::Line { to: [first.x, first.y, above], plunge: true });
@@ -585,6 +623,7 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
                     }
                 }
             }
+            prev = Some((p.clone(), moves.len()));
             moves.push(Move::Rapid([first.x, first.y, s.safe]));
             if moves.len() > MAX_MOVES {
                 return Err(CamError::TooLarge("the toolpath has more than 5M moves".into()));
@@ -592,6 +631,22 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
         }
     }
     Ok(Toolpath { moves, rings: rings.len() + slots.len(), levels, drill: None })
+}
+
+/// `p` with its vertex nearest `to` first (closed polylines only); `None` if that is the first
+/// already.
+fn rotate_to_nearest(p: &Polyline<f64>, to: (f64, f64)) -> Option<Polyline<f64>> {
+    let n = p.vertex_count();
+    let d2 = |v: PlineVertex<f64>| (v.x - to.0) * (v.x - to.0) + (v.y - to.1) * (v.y - to.1);
+    let best = (0..n).filter_map(|i| p.get(i).map(|v| (i, d2(v)))).min_by(|a, b| a.1.total_cmp(&b.1))?.0;
+    if best == 0 || !p.is_closed() {
+        return None;
+    }
+    let mut out = Polyline::new_closed();
+    for k in 0..n {
+        out.add_vertex(p.get((best + k) % n)?);
+    }
+    Some(out)
 }
 
 /// The part of the segment from `a` to `b` between length fractions `t0` and `t1`: its start
@@ -837,7 +892,7 @@ impl Toolpath {
             .collect();
         let mut g = String::new();
         let _ = writeln!(g, "({clean})");
-        let _ = writeln!(g, "(Gusset 2.5D toolpath: flat end mill D{} mm)", n(s.tool_diameter));
+        let _ = writeln!(g, "(Gusset toolpath: flat end mill D{} mm)", n(s.tool_diameter));
         let _ = writeln!(g, "(T1 D{} flat end mill)", n(s.tool_diameter));
         g.push_str("G21 G90 G17 G94\nG40 G49 G80 G54\n");
         put(&mut g, &format!("G0 Z{}", n(s.safe)));
@@ -952,3 +1007,5 @@ fn put(g: &mut String, line: &str) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_run10;

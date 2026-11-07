@@ -911,3 +911,17 @@ Not tested: `surface_flat` and `steep_flat` for chord gouges; `pencil_ball` on a
 part; mitre/close at 120 and 150 deg with the holes of this run; `sim_modal` of the enclosure;
 bores (`bore`) and `profile_*` tabs on the bracket; G-code run on a controller; a `cam_job` with
 a holder; F9-5 (flange collisions past 90 deg without `close`), F9-10 not re-checked.
+
+### Run 10 fix status (2026-11-07)
+
+| # | Status |
+|---|---|
+| F10-1 | Fixed: raster chords are checked against the true cutter-location height (midpoint, quarter and end-halving probes, split to depth 9) and line simplification keeps any point the chord would cut below; a brute-force check samples every cutting segment every 0.05 mm (gap under 0.005 mm) for ball, flat and bull on a vertical-wall boss and a steep fillet. |
+| F10-2 | Fixed: an explicit box that holds no contour says the box limits the tool centre and to grow it by the tool radius; steep_* reports the same instead of a raster alone. |
+| F10-3 | Partly: rings after the first start nearest the previous ring and are entered by a feed move at depth (ramp under 25 % of cutting on a square pocket); the first ring of a rest pocket still spirals in. |
+| F10-4 | Partly: a ball held only by sharp rim edges no longer makes a pencil crease (synthetic rim test; the run-10 part not re-run); a depth above the creases fails at once with what to change. |
+| F10-5 | Fixed: the shell element size grows until a large sheet part fits when none is given; unknown faces list the body's faces of that feature. |
+| F10-6 | Open (nit): mesh scatter on the enclosure shell. |
+| F10-7 | Fixed: clipped waterline runs reach the box edge. |
+| F10-8 | Fixed in part: move_face refusals with rules off say what rules would move; the type error for a number where a length string is expected still names no field. |
+| F10-9 | Fixed: the G-code header says "Gusset toolpath"; exports reuse the last toolpath for the same job and model; output sizes as before. |

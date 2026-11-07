@@ -35,15 +35,19 @@ fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 /// Free boundary of the mesh (vertices welded at 0.1 micron): a ball resting on a boundary edge
-/// is not held there, so such a contact does not support a crease.
+/// is not held there, so such a contact does not support a crease. Neither is a ball on a sharp
+/// (convex) edge or vertex, whose faces differ by more than the bitangency angle: it rolls over
+/// the feature (a pocket's rim corner) rather than sitting in a valley (F10-4).
 struct Topo {
     ids: Vec<[u32; 3]>,
     boundary_edges: HashSet<(u32, u32)>,
     boundary_vertices: HashSet<u32>,
+    sharp_edges: HashSet<(u32, u32)>,
+    sharp_vertices: HashSet<u32>,
 }
 
 impl Topo {
-    fn new(s: &Surface3d) -> Self {
+    fn new(s: &Surface3d, ang: f64) -> Self {
         let mut weld: HashMap<(i64, i64, i64), u32> = HashMap::new();
         let mut vid: Vec<u32> = Vec::with_capacity(s.positions.len());
         for p in s.positions {
@@ -53,17 +57,36 @@ impl Topo {
         }
         let mut ids = Vec::new();
         let mut count: HashMap<(u32, u32), u32> = HashMap::new();
+        let mut normals: HashMap<(u32, u32), Vec<[f64; 3]>> = HashMap::new();
         for t in s.indices.chunks_exact(3) {
             let g = |k: usize| t.get(k).and_then(|&i| vid.get(i as usize)).copied().unwrap_or(0);
             let v = [g(0), g(1), g(2)];
             ids.push(v);
+            let pt = |k: usize| {
+                t.get(k)
+                    .and_then(|&i| s.positions.get(i as usize))
+                    .map_or([0.0; 3], |p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+            };
+            let (e1, e2) = (sub(pt(1), pt(0)), sub(pt(2), pt(0)));
+            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let nl = libm::sqrt(dot(n, n));
             for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
                 *count.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                if nl > 1e-12 {
+                    normals.entry((a.min(b), a.max(b))).or_default().push([n[0] / nl, n[1] / nl, n[2] / nl]);
+                }
             }
         }
+        // Edges whose faces (as lines: orientation does not matter) differ by more than `ang`.
+        let sharp_edges: HashSet<(u32, u32)> = normals
+            .iter()
+            .filter(|(_, ns)| ns.iter().any(|a| ns.iter().any(|b| libm::acos(dot(*a, *b).abs().clamp(0.0, 1.0)) > ang)))
+            .map(|(k, _)| *k)
+            .collect();
+        let sharp_vertices = sharp_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
         let boundary_edges: HashSet<(u32, u32)> = count.iter().filter(|(_, c)| **c == 1).map(|(k, _)| *k).collect();
         let boundary_vertices = boundary_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
-        Topo { ids, boundary_edges, boundary_vertices }
+        Topo { ids, boundary_edges, boundary_vertices, sharp_edges, sharp_vertices }
     }
 }
 
@@ -127,7 +150,7 @@ fn closest_on_tri(p: [f64; 3], t: &[[f64; 3]; 3]) -> ([f64; 3], Region) {
 /// differ by at least `ang`: contacts on the mesh's free boundary do not count.
 fn supported(d: &mut Dropper, topo: &Topo, c: [f64; 3], r: f64, ang: f64) -> bool {
     let tol = 0.005 * r + 1e-4;
-    let mut us: Vec<[f64; 3]> = Vec::new();
+    let mut us: Vec<([f64; 3], bool)> = Vec::new();
     for ti in d.near_tris(c[0], c[1], r + tol) {
         let (Some(t), Some(ids)) = (d.tris.get(ti as usize), topo.ids.get(ti as usize)) else { continue };
         let (q, region) = closest_on_tri(c, t);
@@ -136,19 +159,26 @@ fn supported(d: &mut Dropper, topo: &Topo, c: [f64; 3], r: f64, ang: f64) -> boo
         if dist > r + tol || dist < 1e-12 {
             continue;
         }
-        let free = match region {
-            Region::Face => false,
+        // (free boundary, sharp edge or vertex)
+        let (free, sharp) = match region {
+            Region::Face => (false, false),
             Region::Edge(k) => {
                 let (a, b) = (ids.get(k).copied().unwrap_or(0), ids.get((k + 1) % 3).copied().unwrap_or(0));
-                topo.boundary_edges.contains(&(a.min(b), a.max(b)))
+                let key = (a.min(b), a.max(b));
+                (topo.boundary_edges.contains(&key), topo.sharp_edges.contains(&key))
             }
-            Region::Vertex(k) => topo.boundary_vertices.contains(&ids.get(k).copied().unwrap_or(0)),
+            Region::Vertex(k) => {
+                let v = ids.get(k).copied().unwrap_or(0);
+                (topo.boundary_vertices.contains(&v), topo.sharp_vertices.contains(&v))
+            }
         };
         if !free {
-            us.push([u[0] / dist, u[1] / dist, u[2] / dist]);
+            us.push(([u[0] / dist, u[1] / dist, u[2] / dist], sharp));
         }
     }
-    us.iter().any(|a| us.iter().any(|b| libm::acos(dot(*a, *b).clamp(-1.0, 1.0)) >= ang))
+    // Two contacts, at least one of them on a face (or a smooth edge): a ball that touches two
+    // sharp edges only sits on a rim and rolls off.
+    us.iter().any(|(a, sa)| us.iter().any(|(b, sb)| !(*sa && *sb) && libm::acos(dot(*a, *b).clamp(-1.0, 1.0)) >= ang))
 }
 
 /// A uniform XY bucket index over a point list.
@@ -226,6 +256,10 @@ struct Accepted {
     bmin: [f64; 2],
     bmax: [f64; 2],
     bottom: f64,
+    /// Crease points found below the stock bottom (and so dropped).
+    below: usize,
+    /// Highest of them.
+    below_top: f64,
 }
 
 impl Accepted {
@@ -233,7 +267,12 @@ impl Accepted {
     /// surfaces (not by the mesh's free boundary) and not within half a grid step of another.
     fn add(&mut self, d: &mut Dropper, topo: &Topo, p: [f64; 3]) -> Result<(), CamError> {
         let [x, y, z] = p;
-        if x < self.bmin[0] || x > self.bmax[0] || y < self.bmin[1] || y > self.bmax[1] || z < self.bottom {
+        if x < self.bmin[0] || x > self.bmax[0] || y < self.bmin[1] || y > self.bmax[1] {
+            return Ok(());
+        }
+        if z < self.bottom {
+            self.below += 1;
+            self.below_top = self.below_top.max(z);
             return Ok(());
         }
         if self.dedup.near(p).any(|q| self.pts.get(q).is_some_and(|o| libm::hypot(o[0] - x, o[1] - y) < self.h / 2.0)) {
@@ -249,6 +288,16 @@ impl Accepted {
         }
         Ok(())
     }
+}
+
+fn no_crease_below_depth(bottom: f64, highest: f64) -> String {
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
+    format!(
+        "the creases lie below the depth: the stock bottom is at z {} and no crease is higher than z {}; \
+         increase the depth",
+        r3(bottom),
+        r3(highest)
+    )
 }
 
 /// Pencil finishing with a ball cutter: traces the concave creases where the ball touches two
@@ -313,9 +362,26 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
     let at = |i: usize, j: usize| field.get(j * nx + i).copied().unwrap_or(f64::NAN);
     let ang = spec.bitangency_angle_deg.to_radians();
     let bottom = s.top - s.depth;
+    // The tool tip never rises above the highest vertex: a stock bottom above it leaves no
+    // crease to find (checked before the long scan).
+    let zmax = surface.positions.iter().map(|p| f64::from(p[2])).fold(f64::NEG_INFINITY, f64::max);
+    if bottom > zmax + 1e-9 {
+        return Err(CamError::NothingToCut(no_crease_below_depth(bottom, zmax)));
+    }
 
-    let topo = Topo::new(surface);
-    let mut acc = Accepted { pts: Vec::new(), dedup: Buckets::new(h), h, r, ang, bmin, bmax, bottom };
+    let topo = Topo::new(surface, ang);
+    let mut acc = Accepted {
+        pts: Vec::new(),
+        dedup: Buckets::new(h),
+        h,
+        r,
+        ang,
+        bmin,
+        bmax,
+        bottom,
+        below: 0,
+        below_top: f64::NEG_INFINITY,
+    };
     for j in 1..ny.saturating_sub(1) {
         for i in 1..nx.saturating_sub(1) {
             let f0 = at(i, j);
@@ -406,6 +472,9 @@ pub fn pencil_finish(surface: &Surface3d, cutter: Cutter, spec: &PencilSpec, s: 
         }
     }
     let pts = acc.pts;
+    if pts.is_empty() && acc.below > 0 {
+        return Err(CamError::NothingToCut(no_crease_below_depth(bottom, acc.below_top)));
+    }
     if pts.is_empty() {
         return Err(CamError::NothingToCut("no concave crease sharper than the bitangency angle".into()));
     }

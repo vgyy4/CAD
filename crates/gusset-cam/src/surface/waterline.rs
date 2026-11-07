@@ -181,17 +181,27 @@ fn contours(g: &Grid, d: &mut Dropper, vals: &[f64], level: f64, steep: Option<(
         let bad: Vec<bool> = chain.iter().map(|&k| g.on_box_edge(k)).collect();
         let mut parts: Vec<(Vec<(f64, f64)>, bool)> = Vec::new();
         if let Some(k0) = bad.iter().position(|&b| b) {
+            let finish = |mut run: Vec<(f64, f64)>, parts: &mut Vec<(Vec<(f64, f64)>, bool)>| {
+                // The run ends where the contour meets the box: carry both ends on, along the
+                // contour's own direction, to the box edge (at most two cells).
+                if run.len() >= 2 {
+                    let first = extend_to_box(g, run.get(1).copied(), run.first().copied());
+                    let last = extend_to_box(g, run.iter().rev().nth(1).copied(), run.last().copied());
+                    if let Some(p) = first {
+                        run.insert(0, p);
+                    }
+                    if let Some(p) = last {
+                        run.push(p);
+                    }
+                    parts.push((run, false));
+                }
+            };
             let mut run = Vec::new();
             for m in 1..=n {
                 let idx = (k0 + m) % n;
                 match (bad.get(idx), pts.get(idx)) {
                     (Some(false), Some(&p)) => run.push(p),
-                    _ => {
-                        if run.len() >= 2 {
-                            parts.push((std::mem::take(&mut run), false));
-                        }
-                        run.clear();
-                    }
+                    _ => finish(std::mem::take(&mut run), &mut parts),
                 }
             }
         } else {
@@ -209,6 +219,27 @@ fn contours(g: &Grid, d: &mut Dropper, vals: &[f64], level: f64, steep: Option<(
         }
     }
     pieces
+}
+
+/// The point where the ray from `from` through `end` (the contour's last step) leaves the box,
+/// if that is within two grid cells beyond `end` and not already there.
+fn extend_to_box(g: &Grid, from: Option<(f64, f64)>, end: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    let (f, e) = (from?, end?);
+    let (dx, dy) = (e.0 - f.0, e.1 - f.1);
+    let len = libm::hypot(dx, dy);
+    if len < 1e-12 {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let mut t = f64::INFINITY;
+    for (p, u, lo, hi) in [(e.0, ux, g.bmin[0], g.bmax[0]), (e.1, uy, g.bmin[1], g.bmax[1])] {
+        if u > 1e-12 {
+            t = t.min((hi - p) / u);
+        } else if u < -1e-12 {
+            t = t.min((lo - p) / u);
+        }
+    }
+    (t.is_finite() && t > 1e-6 && t <= 2.0 * g.h).then_some((e.0 + ux * t, e.1 + uy * t))
 }
 
 /// Keeps the steep runs of a contour: all of it if every point is steep.
@@ -395,6 +426,23 @@ fn waterline_impl(
     Ok(out)
 }
 
+/// Why no contour was found: with an explicit box it limits the tool centre, and the contour
+/// lies about one tool radius outside the part.
+fn no_contour_message(spec: &WaterlineSpec, s: &Setup) -> String {
+    if spec.bounds.is_some() {
+        let r = s.tool_diameter / 2.0;
+        format!(
+            "no waterline contour crosses the surface inside the region: the region limits the tool centre, which \
+             stays about one tool radius ({} mm) outside the part's outline, so the contour lies outside the box; \
+             grow the region by the tool radius ({} mm) on every side",
+            (r * 1000.0).round() / 1000.0,
+            (r * 1000.0).round() / 1000.0
+        )
+    } else {
+        "no waterline contour crosses the surface".into()
+    }
+}
+
 /// Waterline finishing: contours at constant Z, from the top down to the bottom
 /// (`top - depth`) every `spec.stepdown`. At each level the tool tip sits at that Z, touching
 /// the mesh without gouging it (drop-cutter); the contour of that cutter-location field is
@@ -411,9 +459,22 @@ pub fn waterline_finish(
 ) -> Result<Toolpath, CamError> {
     let w = waterline_impl(surface, cutter, spec, s, None)?;
     if w.moves.is_empty() {
-        return Err(CamError::NothingToCut("no waterline contour crosses the surface".into()));
+        return Err(CamError::NothingToCut(no_contour_message(spec, s)));
     }
     Ok(Toolpath { moves: w.moves, rings: w.pieces, levels: w.levels, drill: None })
+}
+
+/// Whether the box is smaller than the mesh's XY bounds grown by the tool radius on some side.
+fn box_cuts_into_outline(surface: &Surface3d, s: &Setup, b: ([f64; 2], [f64; 2])) -> bool {
+    let Some((lo, hi)) = mesh_bounds(surface.positions) else { return false };
+    let r = s.tool_diameter / 2.0;
+    (0..2).any(|k| {
+        let (l, h, bl, bh) = (lo.get(k), hi.get(k), b.0.get(k), b.1.get(k));
+        match (l, h, bl, bh) {
+            (Some(l), Some(h), Some(bl), Some(bh)) => *bl > l - r + 1e-9 || *bh < h + r - 1e-9,
+            _ => false,
+        }
+    })
 }
 
 /// Steep/shallow finishing: waterline contours where the cutter-location field's slope is at
@@ -426,6 +487,14 @@ pub fn steep_shallow_finish(
     s: &Setup,
 ) -> Result<Toolpath, CamError> {
     let w = waterline_impl(surface, cutter, &spec.waterline, s, Some(spec.steep_deg))?;
+    if w.moves.is_empty() && spec.waterline.bounds.is_some_and(|b| box_cuts_into_outline(surface, s, b)) {
+        // The steep walls' contours may lie outside the box: the raster alone would leave them
+        // uncut without a word, so say so (unless there is no contour at all inside the box).
+        let all = waterline_impl(surface, cutter, &spec.waterline, s, None)?;
+        if all.moves.is_empty() {
+            return Err(CamError::NothingToCut(no_contour_message(&spec.waterline, s)));
+        }
+    }
     let rt = raster_impl(surface, cutter, &spec.raster, s, Some(spec.steep_deg))?;
     let mut moves = w.moves;
     if let (Some(Move::Line { to, .. }), true) = (moves.last(), !rt.moves.is_empty()) {
