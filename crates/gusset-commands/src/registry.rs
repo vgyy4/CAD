@@ -96,7 +96,21 @@ impl CommandSpec {
 
 fn run_erased<C: Command>(s: &mut Session, ctx: &CmdCtx, v: Value) -> Result<Value, CommandError> {
     let v = if v.is_null() { Value::Object(Default::default()) } else { v };
-    let args: C = serde_json::from_value(v).map_err(|e| CommandError::args(format!("{}: {e}", C::ID)))?;
+    // The field at fault is named (dogfooding F10-8: "expected a string" alone did not say
+    // which length wanted units).
+    let args: C = serde_path_to_error::deserialize(v).map_err(|e| {
+        let path = e.path().to_string();
+        let inner = e.inner().to_string();
+        let mut err = if path == "." {
+            CommandError::args(format!("{}: {inner}", C::ID))
+        } else {
+            CommandError::args(format!("{}: `{path}`: {inner}", C::ID))
+        };
+        if inner.contains("expected a string") {
+            err = err.hint("lengths and angles are strings with units, e.g. \"10 mm\" or \"30 deg\"");
+        }
+        err
+    })?;
     args.run(s, ctx)
 }
 

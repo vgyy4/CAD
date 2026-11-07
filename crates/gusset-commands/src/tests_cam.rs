@@ -322,6 +322,10 @@ fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
         json!({"faces": ["Extrude1/cap(end)", "Extrude2/cap(end)"], "translate": ["0 mm", "0 mm", "1 mm"]}),
     );
     assert!(e.message.contains("more than one body"), "{e:?}");
+    // A number where a length is wanted names the field and says how (F10-8).
+    let e = err(&mut s, "feature.move_face", json!({"faces": ["Extrude1/cap(end)"], "translate": [1, 0, 0]}));
+    assert!(e.message.contains("`translate"), "{e:?}");
+    assert!(e.hint.as_deref().is_some_and(|h| h.contains("\"10 mm\"")), "{e:?}");
 }
 
 #[test]

@@ -14,6 +14,7 @@ pub mod link;
 pub mod palette;
 pub mod prefs;
 pub mod quick_menus;
+pub mod results_panel;
 pub mod ribbon;
 pub mod sheet;
 pub mod sketch_constrain;

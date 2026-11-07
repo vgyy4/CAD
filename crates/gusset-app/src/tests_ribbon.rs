@@ -792,11 +792,9 @@ fn a_toolpath_is_previewed_over_the_model_until_the_model_changes() {
     let tp = h.state().toolpath.clone().expect("a toolpath preview");
     assert!(!tp.polylines.is_empty() && tp.tint.is_some());
     assert!(tp.polylines.iter().flatten().all(|p| p[2] <= 5.0 && p[0] >= 2.99 && p[0] <= 37.01));
-    // The inspection dialog shows the numbers, not the path.
-    match &h.state().dialog {
-        Some(crate::app::Dialog::Message { body, .. }) => assert!(!body.contains("\"path\""), "{body}"),
-        d => panic!("{d:?}"),
-    }
+    // The results panel shows the numbers, not the path.
+    let r = h.state().results.as_ref().expect("a results panel");
+    assert!(r.data.get("path").is_none() && r.data.get("cut_mm").is_some());
     h.state_mut().run("param.set", json!({"name": "w", "expr": "12 mm"})).unwrap();
     crate::tests::settle(&mut h);
     assert!(h.state().toolpath.is_none());
@@ -817,13 +815,9 @@ fn a_stress_result_colours_the_body_while_it_is_open() {
     assert!(h.state().stress_view && h.state().viewport.previewing());
     // Uniform stress: one band, red.
     assert_eq!(h.state().viewport.scene().meshes().count(), 1);
-    match &h.state().dialog {
-        Some(crate::app::Dialog::Message { body, .. }) => {
-            assert!(body.contains("red: ") && !body.contains("stress_bands"), "{body}");
-        }
-        d => panic!("{d:?}"),
-    }
-    h.state_mut().dialog = None;
+    let r = h.state().results.as_ref().expect("a results panel");
+    assert!(r.legend.iter().any(|b| b.text.starts_with("red: ")) && r.data.get("stress_bands").is_none());
+    h.state_mut().results_action(crate::results_panel::Action::Close);
     crate::tests::settle(&mut h);
     assert!(!h.state().stress_view && !h.state().viewport.previewing());
 }
@@ -897,13 +891,115 @@ fn a_mode_shape_is_shown_while_its_frequencies_are_open() {
     h.state_mut().submit_command("sim.modal", job, crate::app::Then::Show);
     crate::tests::settle(&mut h);
     assert!(h.state().stress_view && h.state().viewport.previewing());
-    match &h.state().dialog {
-        Some(crate::app::Dialog::Message { body, .. }) => {
-            assert!(body.contains("of the largest motion") && !body.contains("shape_bands"), "{body}");
-        }
-        d => panic!("{d:?}"),
-    }
-    h.state_mut().dialog = None;
+    let r = h.state().results.as_ref().expect("a results panel");
+    assert!(r.legend.iter().any(|b| b.text.contains("of the largest motion")), "{:?}", r.legend);
+    assert!(r.data.get("shape_bands").is_none() && r.data.get("frequencies_hz").is_some());
+    h.state_mut().results_action(crate::results_panel::Action::Close);
     crate::tests::settle(&mut h);
     assert!(!h.state().stress_view && !h.state().viewport.previewing());
+}
+
+fn canned_sim() -> crate::results_panel::Results {
+    use crate::results_panel::{Band, Kind, Results};
+    Results {
+        kind: Kind::Modal,
+        title: "Modal analysis".into(),
+        job: json!({"modes": 3, "shape": 2}),
+        data: json!({"method": "shell", "element_mm": 2.5, "elements": 80,
+            "max_displacement_mm": 0.125, "max_displacement_at_mm": [1.0, 2.0, 3.0],
+            "max_von_mises_mpa": 42.5, "max_von_mises_at_mm": [4.0, 5.0, 6.0],
+            "frequencies_hz": [110.5, 340.0, 902.25], "warnings": ["thin walls under two elements"]}),
+        legend: vec![Band { rgb: 0x2b6cd9, text: "blue: 0 to 5 MPa".into() }],
+        stale: false,
+        path_visible: true,
+    }
+}
+
+#[test]
+fn the_results_panel_shows_a_simulation_and_frames_the_peaks() {
+    let mut h = harness(app());
+    crate::tests::settle(&mut h);
+    h.state_mut().viewport.reduce_motion = true;
+    h.state_mut().reduce_motion = true;
+    h.state_mut().results = Some(canned_sim());
+    h.run();
+    h.get_by_label_contains("Max displacement: 0.125 mm");
+    h.get_by_label_contains("Max von Mises: 42.5 MPa");
+    h.get_by_label_contains("(4, 5, 6) mm");
+    h.get_by_label_contains("shell");
+    h.get_by_label_contains("2.5 mm");
+    h.get_by_label_contains("1: 110.5 Hz");
+    h.get_by_label_contains("3: 902.25 Hz");
+    h.get_by_label_contains("thin walls");
+    h.get_by_label_contains("blue: 0 to 5 MPa");
+    // The first "Show" button frames the displacement peak.
+    h.get_all_by_label("Show").next().expect("a Show button").click();
+    h.run();
+    let t = h.state().viewport.camera.target;
+    assert!(same(t, [1.0, 2.0, 3.0]), "{t:?}");
+    // The request itself (before the frame consumes it).
+    h.state_mut().results_action(crate::results_panel::Action::Frame([4.0, 5.0, 6.0]));
+    assert_eq!(
+        h.state().viewport.pending_request(),
+        Some(crate::viewport::NavRequest::FrameOn { point: [4.0, 5.0, 6.0] })
+    );
+}
+
+#[test]
+fn the_results_panel_shows_a_cam_job_and_hides_the_path() {
+    use crate::results_panel::{Kind, Results};
+    let mut h = harness(app());
+    crate::tests::settle(&mut h);
+    h.state_mut().results = Some(Results {
+        kind: Kind::Cam,
+        title: "Toolpath".into(),
+        job: json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": 4.0}),
+        data: json!({"levels_mm": [-2.0, -4.0], "cut_mm": 310.5, "plunge_mm": 12.0, "rapid_mm": 80.0,
+            "minutes": 1.25, "warnings": ["drill 3 mm is not a standard size"]}),
+        legend: Vec::new(),
+        stale: false,
+        path_visible: true,
+    });
+    h.run();
+    h.get_by_label_contains("pocket");
+    h.get_by_label_contains("6 mm");
+    h.get_by_label_contains("2 (-2, -4)");
+    h.get_by_label_contains("310.5 mm");
+    h.get_by_label_contains("12 mm");
+    h.get_by_label_contains("80 mm");
+    h.get_by_label_contains("1.25 min");
+    h.get_by_label_contains("not a standard size");
+    h.state_mut().toolpath = Some(crate::viewport::DrawSketch { name: "toolpath".into(), ..Default::default() });
+    h.get_by_label("Show the path in the viewport").click();
+    h.run();
+    assert!(h.state().results.as_ref().is_some_and(|r| !r.path_visible));
+    h.get_by_label("Export G-code…").click();
+    h.run();
+    let f = h.state().form.as_ref().expect("the export form");
+    assert_eq!(f.command, "cam.export_gcode");
+    assert_eq!(f.value("operation"), Some("pocket"));
+    assert_eq!(f.value("tool_diameter"), Some("6.0"));
+}
+
+#[test]
+fn the_results_panel_goes_out_of_date_when_the_model_changes() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20})).unwrap();
+    let mut h = harness(a);
+    crate::tests::settle(&mut h);
+    let job = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": 4.0});
+    h.state_mut().submit_command("cam.toolpath", job, crate::app::Then::Show);
+    crate::tests::settle(&mut h);
+    assert!(h.state().results.as_ref().is_some_and(|r| !r.stale));
+    assert!(h.query_by_label_contains("Out of date").is_none());
+    h.state_mut().run("param.set", json!({"name": "w", "expr": "12 mm"})).unwrap();
+    crate::tests::settle(&mut h);
+    assert!(h.state().results.as_ref().is_some_and(|r| r.stale));
+    h.get_by_label_contains("Out of date");
+    // Re-run brings a current result back.
+    h.get_by_label("Re-run").click();
+    crate::tests::settle(&mut h);
+    assert!(h.state().results.as_ref().is_some_and(|r| !r.stale));
+    assert!(h.state().toolpath.is_some());
 }

@@ -296,7 +296,10 @@ pub struct App {
     /// A stress picture (ADR 0041) is shown in place of the model while its result is open.
     pub(crate) stress_view: bool,
     /// The title of the result dialog the picture belongs to.
-    picture_of: String,
+    /// The simulation or CAM result shown in the results panel (until the model changes).
+    pub(crate) results: Option<crate::results_panel::Results>,
+    /// The arguments the latest result commands were sent with (for the panel's re-run).
+    last_jobs: std::collections::BTreeMap<String, Value>,
     /// A sketch point being dragged: (sketch, point id, where it would go).
     drag_preview: Option<(String, String, [f64; 2])>,
     /// The placed command to start again when its result arrives (sketch tools repeat,
@@ -423,7 +426,8 @@ impl App {
             look_at_sketch: None,
             toolpath: None,
             stress_view: false,
-            picture_of: String::new(),
+            results: None,
+            last_jobs: std::collections::BTreeMap::new(),
             chain: None,
             form: None,
             palette: None,
@@ -530,6 +534,9 @@ impl App {
     /// the result when it arrives.
     pub fn submit_command(&mut self, id: &str, mut args: Value, then: Then) {
         let ctx = Self::ctx();
+        if crate::results_panel::Kind::of(id).is_some() {
+            self.last_jobs.insert(id.to_string(), args.clone());
+        }
         if id == "cam.toolpath"
             && let Some(o) = args.as_object_mut()
         {
@@ -689,9 +696,9 @@ impl App {
         let Some((key, id, args)) = self.preview_wanted() else {
             self.preview_since = None;
             if self.stress_view {
-                // The stress picture stays while its own result is open (not under a later
-                // dialog).
-                if matches!(&self.dialog, Some(Dialog::Message { title: t, .. }) if *t == self.picture_of) {
+                // The stress picture stays while its result is open and current (not under
+                // a dialog).
+                if self.results.as_ref().is_some_and(|r| !r.stale) && self.dialog.is_none() {
                     return;
                 }
                 self.stress_view = false;
@@ -789,6 +796,9 @@ impl App {
                 }
                 if self.scene.as_ref().is_some_and(|d| d.key != data.key) {
                     self.toolpath = None;
+                    if let Some(r) = &mut self.results {
+                        r.stale = true;
+                    }
                 }
                 self.viewport.set_scene(data.render, data.bodies);
                 self.scene = Some(Drawn { key: data.key, sketches: data.sketches, eval: data.eval });
@@ -940,9 +950,11 @@ impl App {
                         {
                             self.toolpath = Some(toolpath_drawing(&path, theme::palette(self.theme).warning));
                         }
-                        if !result_notes(&v).is_empty() {
+                        let panel = crate::results_panel::Kind::of(id);
+                        if panel.is_none() && !result_notes(&v).is_empty() {
                             self.notice = Some(Notice { text: done_text(title, &v), hint: None, error: false });
                         }
+                        let mut legend_of = Vec::new();
                         let picture = match id {
                             "sim.static" => Some(("stress_bands", "MPa")),
                             "sim.modal" => Some(("shape_bands", "of the largest motion")),
@@ -953,10 +965,23 @@ impl App {
                             && let Some(bands) = o.remove(key)
                         {
                             let (scene, bodies, legend) = stress_scene(&bands, unit);
-                            o.insert("colours".into(), json!(legend));
                             self.viewport.show_preview(scene, bodies);
                             self.stress_view = true;
-                            self.picture_of = title.to_string();
+                            legend_of = legend;
+                        }
+                        if let Some(kind) = panel {
+                            let job = self.last_jobs.get(id).cloned().unwrap_or(Value::Null);
+                            let path_visible = self.results.as_ref().is_none_or(|r| r.kind != kind || r.path_visible);
+                            self.results = Some(crate::results_panel::Results {
+                                kind,
+                                title: title.to_string(),
+                                job,
+                                data: v,
+                                legend: legend_of,
+                                stale: false,
+                                path_visible,
+                            });
+                            return;
                         }
                         let mut body = inspect_text(&v);
                         if let Some(head) = simulation_summary(&v) {
@@ -1879,6 +1904,18 @@ impl App {
         if self.prefs() != before {
             self.save_prefs();
         }
+        if let Some(r) = self.results.clone() {
+            let pal = *theme::palette(self.theme);
+            let actions = side("results", false)
+                .default_size(300.0)
+                .min_size(240.0)
+                .resizable(true)
+                .show(ui, |ui| crate::results_panel::show(ui, &r, &pal))
+                .inner;
+            for a in actions {
+                self.results_action(a);
+            }
+        }
         if self.agents.show_panel && !full {
             egui::Panel::right("agents").default_size(380.0).resizable(true).show(ui, |ui| self.agents_panel(ui));
         }
@@ -2517,6 +2554,42 @@ impl App {
         });
     }
 
+    /// Carries out a click in the results panel.
+    pub(crate) fn results_action(&mut self, a: crate::results_panel::Action) {
+        use crate::results_panel::{Action, Kind};
+        let Some(r) = self.results.as_mut() else { return };
+        match a {
+            Action::Frame(p) => self.viewport.request(NavRequest::FrameOn { point: p }),
+            Action::Close => self.results = None,
+            Action::ShowPath(on) => r.path_visible = on,
+            Action::Rerun | Action::Mode(_) => {
+                let id = match r.kind {
+                    Kind::Static => "sim.static",
+                    Kind::Modal => "sim.modal",
+                    Kind::Cam => "cam.toolpath",
+                };
+                let mut job = r.job.clone();
+                if let (Action::Mode(k), Some(o)) = (&a, job.as_object_mut()) {
+                    o.insert("shape".into(), json!(k));
+                }
+                self.submit_command(id, job, Then::Show);
+            }
+            Action::ExportGcode => {
+                let job = r.job.clone();
+                self.start_command("cam.export_gcode");
+                if let (Some(form), Some(o)) = (self.form.as_mut(), job.as_object()) {
+                    for (k, v) in o.iter().filter(|(k, _)| k.as_str() != "path") {
+                        match v {
+                            Value::String(t) => form.set(k, t),
+                            Value::Number(_) | Value::Bool(_) => form.set(k, &v.to_string()),
+                            _ => false,
+                        };
+                    }
+                }
+            }
+        }
+    }
+
     fn browser(&mut self, ui: &mut Ui) {
         let doc = self.snapshot.doc.clone();
         let eval = self.scene.as_ref().map(|s| s.eval.clone());
@@ -2963,7 +3036,9 @@ impl App {
         sketches.extend(preview.as_ref());
         sketches.extend(dragged.as_ref());
         sketches.extend(regions.as_ref());
-        sketches.extend(self.toolpath.as_ref());
+        if self.results.as_ref().is_none_or(|r| r.path_visible) {
+            sketches.extend(self.toolpath.as_ref());
+        }
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
 
         if let Some((frame, points)) = &placing {
@@ -3748,7 +3823,7 @@ const STRESS_COLOURS: [(u32, &str); 8] = [
 
 /// A `sim.static` or `sim.modal` result's bands (`[{upto, quads}]`) as one coloured mesh per
 /// band, and the legend ("red: 8.75 to 10 MPa").
-fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<String>) {
+fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<crate::results_panel::Band>) {
     let mut scene = gusset_render::Scene::new();
     let mut bodies = Vec::new();
     let mut legend = Vec::new();
@@ -3756,7 +3831,7 @@ fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInf
     for (i, b) in bands.as_array().map(Vec::as_slice).unwrap_or_default().iter().enumerate() {
         let upto = b["upto"].as_f64().unwrap_or(0.0);
         let (rgb, name) = STRESS_COLOURS.get(i).copied().unwrap_or((0x80_80_80, "grey"));
-        legend.push(format!("{name}: {from} to {upto} {unit}"));
+        legend.push(crate::results_panel::Band { rgb, text: format!("{name}: {from} to {upto} {unit}") });
         from = upto;
         let mut mesh = gusset_kernel::Mesh::default();
         for q in b["quads"].as_array().map(Vec::as_slice).unwrap_or_default() {

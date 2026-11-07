@@ -923,5 +923,5 @@ a holder; F9-5 (flange collisions past 90 deg without `close`), F9-10 not re-che
 | F10-5 | Fixed: the shell element size grows until a large sheet part fits when none is given; unknown faces list the body's faces of that feature. |
 | F10-6 | Open (nit): mesh scatter on the enclosure shell. |
 | F10-7 | Fixed: clipped waterline runs reach the box edge. |
-| F10-8 | Fixed in part: move_face refusals with rules off say what rules would move; the type error for a number where a length string is expected still names no field. |
+| F10-8 | Fixed: move_face refusals with rules off say what rules would move; argument errors name the field (`translate[0]`) and say lengths are strings with units. |
 | F10-9 | Fixed: the G-code header says "Gusset toolpath"; exports reuse the last toolpath for the same job and model; output sizes as before. |

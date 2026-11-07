@@ -217,6 +217,8 @@ pub enum NavRequest {
     /// Look straight at a plane (from its normal's side), `up` pointing up on screen
     /// (sketch editing: the sketch's plane and its Y axis).
     LookAt { normal: Vec3, up: Vec3 },
+    /// Centre the view on a point (a result's peak), keeping the direction.
+    FrameOn { point: Vec3 },
 }
 
 /// A camera move in progress.
@@ -850,6 +852,12 @@ impl Viewport {
         self.request = Some(r);
     }
 
+    /// The camera move asked for and not yet carried out.
+    #[must_use]
+    pub fn pending_request(&self) -> Option<NavRequest> {
+        self.request
+    }
+
     /// Moves the camera to `to`: animated, or at once under "reduce motion".
     fn go_to(&mut self, to: Camera) {
         if self.reduce_motion || to == self.camera {
@@ -890,6 +898,12 @@ impl Viewport {
                 base.set_view(NamedView::Iso);
                 let to = self.fitted(&base, sketches, aspect).unwrap_or(base);
                 self.go_to(to);
+            }
+            NavRequest::FrameOn { point } => {
+                let mut c = self.camera;
+                c.target = point;
+                c.distance = (c.distance * 0.6).max(1.0);
+                self.go_to(c);
             }
             NavRequest::LookAt { normal, up } => {
                 let mut c = self.camera;
