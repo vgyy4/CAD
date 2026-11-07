@@ -98,6 +98,9 @@ pub trait Importer: Send + Sync {
     ) -> Result<Vec<(String, Vec<u8>)>, String>;
 }
 
+/// A CAM job's toolpath, its setup and its warnings.
+pub(crate) type CamRun = (gusset_cam::Toolpath, gusset_cam::Setup, Vec<String>);
+
 pub struct Session {
     pub importer: Option<Arc<dyn Importer>>,
     history: History,
@@ -116,6 +119,9 @@ pub struct Session {
     changes: Vec<Change>,
     /// Hidden-line projections of drawing views (ADR 0032).
     pub(crate) drawing_cache: gusset_drawing::HlrCache,
+    /// The last CAM toolpath, keyed by the document state and the job, so an export right
+    /// after a toolpath query does not compute it again (dogfooding F9-6, F10-9).
+    pub(crate) cam_cache: Option<(String, Arc<CamRun>)>,
     /// Preview mode ([`crate::preview`]): commits are evaluated into this slot instead of
     /// being made. `None` outside preview mode.
     preview: Option<Option<Arc<Evaluation>>>,
@@ -171,6 +177,7 @@ impl Session {
             dirty: false,
             changes: Vec::new(),
             drawing_cache: gusset_drawing::HlrCache::default(),
+            cam_cache: None,
         }
     }
 
@@ -317,6 +324,13 @@ impl Session {
         let e = Arc::new(self.evaluator.evaluate(&doc, rollback, &blobs));
         self.remember_eval(node, rollback, e.clone());
         Ok(e)
+    }
+
+    /// Names the state `actor` sees (branch head and rollback): equal keys mean the same
+    /// model, so derived results can be reused.
+    pub(crate) fn state_key(&self, actor: &Actor) -> Option<String> {
+        let b = self.history.branch(self.current_branch(actor)).ok()?;
+        Some(format!("{:?}/{:?}/{}", b.head, b.rollback, self.kernel().epoch()))
     }
 
     pub fn evaluate(&mut self, actor: &Actor) -> Result<Arc<Evaluation>, CommandError> {

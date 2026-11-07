@@ -123,7 +123,20 @@ impl CamJob {
 
     /// The toolpath, its setup and warnings about the job.
     fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup, Vec<String>), CommandError> {
-        self.resolved(s, ctx)?.run_of(s, ctx)
+        let job = self.resolved(s, ctx)?;
+        // The same job on the same model: the toolpath just computed (an export after a
+        // query costs nothing; 3D jobs take seconds).
+        let key = s.state_key(&ctx.actor).map(|k| format!("{k}|{job:?}"));
+        if let (Some(k), Some((ck, hit))) = (&key, &s.cam_cache)
+            && k == ck
+        {
+            return Ok(hit.as_ref().clone());
+        }
+        let out = job.run_of(s, ctx)?;
+        if let Some(k) = key {
+            s.cam_cache = Some((k, std::sync::Arc::new(out.clone())));
+        }
+        Ok(out)
     }
 
     fn frame_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<gusset_kernel::Frame, CommandError> {
