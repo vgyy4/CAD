@@ -1385,6 +1385,23 @@ fn a_feature_is_added_from_its_statement() {
 }
 
 #[test]
+fn an_edit_says_which_features_still_fail() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let r = run(
+        &mut s,
+        &u,
+        "feature.add",
+        json!({ "statement": "extrude Bad (profile: Sketch1, distance: 0 mm, op: add)" }),
+    );
+    assert_eq!(r["rebuild_ok"], false, "{r}");
+    let r = run(&mut s, &u, "param.set", json!({"name": "width", "expr": "50 mm"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert!(r["still_failing"].to_string().contains("Bad"), "{r}");
+}
+
+#[test]
 fn features_are_edited_in_place() {
     let mut s = session();
     let u = CmdCtx::user(1);
@@ -1518,4 +1535,18 @@ fn parasolid_files_go_through_the_xt_reader() {
     assert_eq!(e.code, "io");
     assert!(e.message.starts_with("Parasolid:"), "{e:?}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn text_and_tool_spellings_point_at_each_other() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let e = execute(&mut s, &u, "feature.extrude", json!({"profile": "Sketch1", "distance": "5 mm"})).unwrap_err();
+    assert!(e.hint.as_deref().is_some_and(|h| h.contains("`sketch`")), "{e:?}");
+    let e = execute(&mut s, &u, "param.set", json!({"name": "width", "expression": "5 mm"})).unwrap_err();
+    assert!(e.hint.as_deref().is_some_and(|h| h.contains("`expr`")), "{e:?}");
+    let e = execute(&mut s, &u, "feature.add", json!({"statement": "extrude E9 (sketch: Sketch1, distance: 5 mm)"}))
+        .unwrap_err();
+    assert!(e.message.contains("profile: Sketch1"), "{e:?}");
 }

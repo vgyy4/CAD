@@ -197,6 +197,22 @@ pub(crate) fn edit_checked(
     {
         m.insert("body_changes".into(), Value::Array(changes.iter().map(BodyChange::to_json).collect()));
     }
+    // Features that failed before and still fail: `rebuild_ok` speaks of this edit only,
+    // so say the model is still broken (dogfooding F8-4).
+    let old: Vec<String> = out
+        .evaluation
+        .errors()
+        .iter()
+        .filter(|e| e.code != gusset_eval::ErrorCode::Cancelled)
+        .map(|e| e.to_string())
+        .filter(|e| !out.new_errors.contains(e))
+        .take(5)
+        .collect();
+    if !old.is_empty()
+        && let Value::Object(m) = &mut v
+    {
+        m.insert("still_failing".into(), json!(old));
+    }
     // Every edit that breaks the rebuild is still committed (it can be fixed in place);
     // say so and how to back out, as fillets did (F2-5, dogfooding F3-3). Commands with
     // a more specific hint override it in `post`.

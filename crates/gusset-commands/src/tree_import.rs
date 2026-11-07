@@ -625,13 +625,12 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     let ev = s.evaluate(&ctx.actor)?;
     let k = s.kernel().clone();
     // Only the bodies the import made (the document may hold others: F7-6).
-    let ours: f64 = ev
-        .bodies
-        .iter()
-        .filter(|b| made.contains(&b.feature))
-        .filter_map(|b| k.mass_properties(&b.shape).ok())
-        .map(|m| m.volume)
-        .sum();
+    let made_bodies: Vec<_> = ev.bodies.iter().filter(|b| made.contains(&b.feature)).collect();
+    let ours: f64 = made_bodies.iter().filter_map(|b| k.mass_properties(&b.shape).ok()).map(|m| m.volume).sum();
+    // A join the source did not apply (or the other way round) changes the count (F9-10).
+    if !tree.bodies.is_empty() && made_bodies.len() != tree.bodies.len() {
+        g.warn(format!("the import made {} bodies; the source lists {}", made_bodies.len(), tree.bodies.len()));
+    }
     let theirs: f64 = tree.bodies.iter().filter_map(|b| b.volume_mm3).sum();
     let mut out = json!({
         "features": made,

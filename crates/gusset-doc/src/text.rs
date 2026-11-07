@@ -914,7 +914,21 @@ fn parse_profile(c: &mut Cursor<'_>) -> Result<ProfileRef, ParseError> {
 }
 
 pub(crate) fn unknown_arg(c: &Cursor<'_>, kw: &str, key: &str, allowed: &str) -> ParseError {
-    c.err_hint(format!("'{kw}' has no argument '{key}'"), format!("allowed: {allowed}"))
+    // Tool fields spelled differently from the text (dogfooding F8-5).
+    const TEXT_NAMES: [(&str, &str, &str); 4] = [
+        ("sketch", "profile", "profile: Sketch1"),
+        ("mitre", "close", "close: mitre"),
+        ("expr", "expression", "expression: 10 mm"),
+        ("tool", "tool_diameter", "tool_diameter: 6 mm"),
+    ];
+    let offered = |k: &str| allowed.split(", ").any(|a| a == k);
+    match TEXT_NAMES.iter().find(|(tool, text, _)| *tool == key && offered(text)) {
+        Some((_, _, example)) => c.err_hint(
+            format!("'{kw}' has no argument '{key}'"),
+            format!("in the text it is written {example}; allowed: {allowed}"),
+        ),
+        None => c.err_hint(format!("'{kw}' has no argument '{key}'"), format!("allowed: {allowed}")),
+    }
 }
 
 pub(crate) fn missing(c: &Cursor<'_>, kw: &str, key: &str) -> ParseError {

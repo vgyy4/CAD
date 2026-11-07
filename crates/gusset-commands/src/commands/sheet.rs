@@ -193,6 +193,12 @@ pub struct FlatPatternQuery {
     pub body: Option<String>,
 }
 
+/// Rebuild errors to report with a flat pattern: features that failed are not in it (F8-4).
+fn failed_report(s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+    let ev = s.evaluate(&ctx.actor)?;
+    Ok(if ev.errors().is_empty() { json!({}) } else { rebuild_report(&ev) })
+}
+
 /// The flat pattern of `body` (default: the latest sheet-metal body).
 fn flat_of(s: &mut Session, ctx: &CmdCtx, body: Option<&str>) -> Result<(String, Arc<FlatPattern>), CommandError> {
     let ev = s.evaluate(&ctx.actor)?;
@@ -266,7 +272,7 @@ impl Command for FlatPatternQuery {
                 }
             })
             .collect();
-        Ok(json!({
+        let out = json!({
             "body": body,
             "thickness_mm": tidy(flat.thickness),
             "size_mm": [tidy(size[0]), tidy(size[1])],
@@ -274,7 +280,8 @@ impl Command for FlatPatternQuery {
             "cutouts": cutouts,
             "changed_by": flat.changed_by,
             "warning": stale(&flat),
-        }))
+        });
+        Ok(merge(out, failed_report(s, ctx)?))
     }
 }
 
@@ -333,7 +340,8 @@ impl Command for ExportFlat {
         // The drawing's point = the pattern's point + offset (a 10 mm margin round the
         // pattern's box), so its coordinates can be traced back (F7-12).
         let offset = scene_offset(&flat).map(tidy);
-        Ok(json!({ "written": p, "bytes": bytes.len(), "body": body, "offset_mm": offset }))
+        let out = json!({ "written": p, "bytes": bytes.len(), "body": body, "offset_mm": offset });
+        Ok(merge(out, failed_report(s, ctx)?))
     }
 }
 

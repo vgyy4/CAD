@@ -357,3 +357,21 @@ fn two_mirrors_named_alike_each_reflect_their_own_copy() {
     assert_eq!(mins.len(), 3, "{mins:?}");
     assert!(mins.contains(&[10.0, 10.0]) && mins.contains(&[-20.0, 10.0]) && mins.contains(&[10.0, -20.0]), "{mins:?}");
 }
+
+#[test]
+fn a_body_count_unlike_the_sources_is_warned() {
+    let mut s = session();
+    let t = tree(
+        json!([]),
+        json!([
+            rect("Sketch1", xy(), 40.0, 20.0),
+            {"type": "extrude", "name": "Extrude1", "sketch": "Sketch1", "profiles": "all",
+             "distance": 10, "operation": "new"}
+        ]),
+        json!([{"name": "Body1", "volume_mm3": 4000.0}, {"name": "Body2", "volume_mm3": 4000.0}]),
+    );
+    let r = import(&mut s, "two.gtree.json", &t).unwrap();
+    assert!(r["warnings_user_text"].to_string().contains("made 1 bodies; the source lists 2"), "{r}");
+    // Volumes agree, so that is the only warning.
+    assert_eq!(r["warnings_user_text"].as_array().unwrap().len(), 1, "{r}");
+}

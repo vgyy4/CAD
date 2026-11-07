@@ -108,6 +108,13 @@ fn run_erased<C: Command>(s: &mut Session, ctx: &CmdCtx, v: Value) -> Result<Val
         };
         if inner.contains("expected a string") {
             err = err.hint("lengths and angles are strings with units, e.g. \"10 mm\" or \"30 deg\"");
+        } else if path == "close" && inner.contains("\"mitre\"") {
+            // The text writes `close: mitre`; the tools take two booleans (F8-5).
+            err = err.hint("pass close: true and mitre: true");
+        } else if inner.contains("unknown field `profile`") {
+            err = err.hint("the tools call the text's `profile` `sketch`");
+        } else if inner.contains("unknown field `expression`") {
+            err = err.hint("the tools call the text's `expression` `expr`");
         }
         err
     })?;
