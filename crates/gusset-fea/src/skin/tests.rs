@@ -82,3 +82,23 @@ fn a_plate_cantilever_from_its_surface_mesh_bends_as_a_beam() {
     let err = (s.max_displacement - exact).abs() / exact;
     assert!(err < 0.05, "{} vs {exact} ({:.1} %)", s.max_displacement, err * 100.0);
 }
+
+#[test]
+fn skin_strip_solver_iteration_count_stays_low() {
+    let m = box_mesh([100.0, 10.0, 1.0]);
+    let mid = mid_surface(&m, 1.0, 2.5).unwrap();
+    let fixed = nodes_on_face(&m, 0, &mid, 1e-6);
+    let tip = nodes_on_face(&m, 1, &mid, 1e-6);
+    let share = 1.0 / tip.len() as f64;
+    let nodes = mid.mesh.nodes.len();
+    let p = ShellProblem {
+        mesh: mid.mesh,
+        thickness: 1.0,
+        material: Material { young: 210_000.0, poisson: 0.3 },
+        fixed,
+        loads: tip.iter().map(|i| (*i, [0.0, 0.0, -share])).collect(),
+    };
+    let s = shell_static(&p).unwrap();
+    // Measured: 297 with threshold incomplete Cholesky (10 902 with plain Jacobi).
+    assert!(s.iterations <= 600, "{} iterations on {nodes} nodes", s.iterations);
+}

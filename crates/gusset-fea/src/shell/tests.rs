@@ -229,3 +229,10 @@ fn rejects_bad_input() {
     let p = problem(big, 1.0, vec![0], vec![]);
     assert!(matches!(shell_static(&p), Err(FeaError::TooLarge(_))));
 }
+
+#[test]
+fn preconditioner_keeps_the_cantilever_iteration_count_low() {
+    // Measured: 5 with threshold incomplete Cholesky (463 with plain Jacobi).
+    let (_, s) = strip(1.0, 20, 2, [0.0, 0.0, -1.0], None);
+    assert!(s.iterations <= 12, "{} iterations", s.iterations);
+}

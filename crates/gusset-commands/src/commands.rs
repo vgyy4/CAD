@@ -1322,7 +1322,7 @@ pub struct SketchAddPolyline {
 impl Command for SketchAddPolyline {
     const ID: &'static str = "sketch.add_polyline";
     const TITLE: &'static str = "Polyline";
-    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm); neighbours share points; closed: true joins the last to the first. spline: true adds one smooth spline through the points instead (ordinary points, so constraints apply). Returns id ranges {first, last, count}.";
+    const DESCRIPTION: &'static str = "Add connected line segments through points [[x, y], ...] (mm); neighbours share points; closed: true joins the last to the first. spline: true makes one smooth spline through them. Returns id ranges.";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -3234,7 +3234,7 @@ pub struct QueryBody {
 impl Command for QueryBody {
     const ID: &'static str = "query.body";
     const TITLE: &'static str = "Measure body";
-    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, face normals are given for planar faces only and edges carry seam: true when they border the same face on both sides.";
+    const DESCRIPTION: &'static str = "Volume, surface area, centroid, bounding box and (optionally) persistent names of all faces and edges of a body. With names: true, planar faces give normals and seam edges seam: true.";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     const SHORTCUT: Option<&'static str> = Some("M");
@@ -3548,7 +3548,7 @@ pub struct ImportFile {
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/XT/SAT/F3D/FCStd/SCAD become exact bodies, .gtree.json editable features, STL/3MF/OBJ reference meshes (display, measuring, mesh export; not solids). Names in the file are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/XT/SAT/F3D/FCStd/SCAD become exact bodies, .gtree.json editable features, STL/3MF/OBJ reference meshes (not solids). Names in the file are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");

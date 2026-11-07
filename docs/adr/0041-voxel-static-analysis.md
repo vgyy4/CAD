@@ -162,5 +162,11 @@ three quads and moves the nodes in by half the thickness. Held and loaded faces 
 whose own point, or its point on either surface, lies on the face (loads shared equally). The
 result says `method: shell`. OCCT tests: a 100 x 10 x 1 strip within 1 % of beam theory, and
 the strip with a 90 degree flange within 10 % (the bend's own give left out). `refine` still
-uses voxels. Jacobi-PCG needs many iterations on thin sheets; a stronger preconditioner is next.
+uses voxels.
 
+Preconditioner (2026-11-07): the CG is preconditioned with a threshold incomplete Cholesky
+factor (drop tolerance 1e-3) of the diagonally scaled stiffness `D^-1/2 K D^-1/2` in reverse
+Cuthill-McKee order; the scaling evens out translation and rotation dofs, and a diagonal
+shift is raised if a pivot fails. On the 4 745-node skin-built strip this takes 297
+iterations instead of 10 902 (and 5 instead of 463 on the 20 x 2 strip); results agree to the
+solver tolerance.

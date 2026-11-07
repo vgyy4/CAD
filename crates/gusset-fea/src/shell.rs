@@ -4,7 +4,7 @@
 //! incompatible modes (condensed out), a Mindlin plate with MITC4 assumed transverse shear
 //! (Bathe-Dvorkin; no shear locking), and a small drilling stiffness tying the in-plane
 //! rotation to the membrane's rotation. Elements are rotated to global axes and assembled
-//! into a 6x6-block CSR matrix, solved by Jacobi-preconditioned CG. Triangles are not
+//! into a 6x6-block CSR matrix, solved by scaled ICT-preconditioned CG. Triangles are not
 //! supported (rejected with an error). Units: mm, N, MPa.
 
 use crate::{FeaError, Material};
@@ -522,6 +522,224 @@ impl Bsr {
     }
 }
 
+/// Reverse Cuthill-McKee order of the nodes of a block matrix: `order[new] = old`.
+fn rcm_order(k: &Bsr) -> Vec<usize> {
+    let n = k.ptr.len().saturating_sub(1);
+    let nbrs = |i: usize| -> &[u32] {
+        let (a, b) = (g_us(&k.ptr, i), g_us(&k.ptr, i + 1));
+        k.cols.get(a..b).unwrap_or(&[])
+    };
+    let deg: Vec<usize> = (0..n).map(|i| nbrs(i).len()).collect();
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    let mut starts: Vec<usize> = (0..n).collect();
+    starts.sort_by_key(|&i| g_us(&deg, i));
+    for s in starts {
+        if g_us_b(&seen, s) {
+            continue;
+        }
+        if let Some(x) = seen.get_mut(s) {
+            *x = true;
+        }
+        let mut head = order.len();
+        order.push(s);
+        while head < order.len() {
+            let v = g_us(&order, head);
+            head += 1;
+            let mut next: Vec<usize> = nbrs(v).iter().map(|&c| c as usize).filter(|&c| !g_us_b(&seen, c)).collect();
+            next.sort_by_key(|&c| g_us(&deg, c));
+            for c in next {
+                if let Some(x) = seen.get_mut(c) {
+                    *x = true;
+                }
+                order.push(c);
+            }
+        }
+    }
+    order.reverse();
+    order
+}
+
+fn g_us_b(a: &[bool], i: usize) -> bool {
+    a.get(i).copied().unwrap_or(false)
+}
+
+/// Threshold incomplete Cholesky (ICT) of the symmetrically scaled stiffness
+/// `D^-1/2 K D^-1/2` on the free dofs, in reverse Cuthill-McKee order (fixed and unused dofs
+/// become identity rows). The scaling removes the unit gap between translations and
+/// rotations; entries below `DROP` are dropped, and a diagonal shift is raised until every
+/// pivot is positive.
+struct Ic {
+    /// `perm[new] = old` dof.
+    perm: Vec<usize>,
+    /// `1 / sqrt(K_dd)` by old dof (1 for non-free dofs).
+    scale: Vec<f64>,
+    /// Lower triangle of `L` by row, columns ascending, diagonal last.
+    ptr: Vec<usize>,
+    cols: Vec<u32>,
+    vals: Vec<f64>,
+}
+
+/// Relative drop tolerance of the factor (scaled entries have a unit diagonal).
+const DROP: f64 = 1e-3;
+
+impl Ic {
+    fn build(k: &Bsr, free: &[bool]) -> Ic {
+        let n = free.len();
+        let is_free = |i: usize| free.get(i).copied().unwrap_or(false);
+        let diag_of = |i: usize| -> f64 {
+            let d = k.block_index(i / 6, (i / 6) as u32).map_or(0.0, |bi| g(&k.vals, bi * 36 + 7 * (i % 6)));
+            if is_free(i) && d > 0.0 { d } else { 1.0 }
+        };
+        let scale: Vec<f64> = (0..n).map(|i| 1.0 / libm::sqrt(diag_of(i))).collect();
+        let perm: Vec<usize> = rcm_order(k).into_iter().flat_map(|nd| (0..6).map(move |c| 6 * nd + c)).collect();
+        let mut inv = vec![0usize; n];
+        for (new, &old) in perm.iter().enumerate() {
+            if let Some(x) = inv.get_mut(old) {
+                *x = new;
+            }
+        }
+        // Strictly lower scaled entries by permuted row.
+        let mut lptr = vec![0usize];
+        let mut lcols: Vec<u32> = Vec::new();
+        let mut lvals: Vec<f64> = Vec::new();
+        for (new, &old) in perm.iter().enumerate() {
+            if is_free(old) {
+                let (bi, ri) = (old / 6, old % 6);
+                let (a, b) = (g_us(&k.ptr, bi), g_us(&k.ptr, bi + 1));
+                for (blk, &bj) in (a..b).zip(k.cols.get(a..b).unwrap_or(&[])) {
+                    for cj in 0..6 {
+                        let j = 6 * bj as usize + cj;
+                        let nj = g_us(&inv, j);
+                        if nj < new && is_free(j) {
+                            lcols.push(nj as u32);
+                            lvals.push(g(&k.vals, blk * 36 + 6 * ri + cj) * g(&scale, old) * g(&scale, j));
+                        }
+                    }
+                }
+            }
+            lptr.push(lcols.len());
+        }
+        let mut shift = 0.0;
+        for _ in 0..40 {
+            if let Some((ptr, cols, vals)) = Self::factor(&lptr, &lcols, &lvals, shift) {
+                return Ic { perm, scale, ptr, cols, vals };
+            }
+            shift = if shift == 0.0 { 1e-3 } else { shift * 4.0 };
+        }
+        // Never factored (NaN entries, say): no fill at all, the scaled diagonal alone.
+        let empty = vec![0usize; lptr.len()];
+        let (ptr, cols, vals) = Self::factor(&empty, &[], &[], 0.0).unwrap_or_default();
+        Ic { perm, scale, ptr, cols, vals }
+    }
+
+    /// Row-wise ICT; `None` on a non-positive pivot.
+    fn factor(lptr: &[usize], lcols: &[u32], lvals: &[f64], shift: f64) -> Option<(Vec<usize>, Vec<u32>, Vec<f64>)> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let n = lptr.len().saturating_sub(1);
+        let mut ptr = vec![0usize];
+        let mut cols: Vec<u32> = Vec::new();
+        let mut vals: Vec<f64> = Vec::new();
+        // Columns of L so far: (row, value) per column.
+        let mut by_col: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
+        let mut diag: Vec<f64> = Vec::with_capacity(n);
+        let mut w = vec![0.0; n];
+        let mut queued = vec![false; n];
+        for i in 0..n {
+            let (a, b) = (g_us(lptr, i), g_us(lptr, i + 1));
+            let mut heap = BinaryHeap::new();
+            for (c, v) in lcols.get(a..b).unwrap_or(&[]).iter().zip(lvals.get(a..b).unwrap_or(&[])) {
+                let cu = *c as usize;
+                if let (Some(x), Some(q)) = (w.get_mut(cu), queued.get_mut(cu)) {
+                    *x += v;
+                    if !*q {
+                        *q = true;
+                        heap.push(Reverse(*c));
+                    }
+                }
+            }
+            let mut sumsq = 0.0;
+            let mut row: Vec<(u32, f64)> = Vec::new();
+            while let Some(Reverse(kc)) = heap.pop() {
+                let ku = kc as usize;
+                let wk = std::mem::take(w.get_mut(ku)?);
+                if let Some(q) = queued.get_mut(ku) {
+                    *q = false;
+                }
+                let lik = wk / diag.get(ku).copied()?;
+                if lik.abs() < DROP {
+                    continue;
+                }
+                sumsq += lik * lik;
+                row.push((kc, lik));
+                for &(j, ljk) in by_col.get(ku)? {
+                    let ju = j as usize;
+                    if let (Some(x), Some(q)) = (w.get_mut(ju), queued.get_mut(ju)) {
+                        *x -= lik * ljk;
+                        if !*q {
+                            *q = true;
+                            heap.push(Reverse(j));
+                        }
+                    }
+                }
+            }
+            let d = 1.0 + shift - sumsq;
+            if d <= 1e-10 {
+                return None;
+            }
+            let d = libm::sqrt(d);
+            for &(c, v) in &row {
+                by_col.get_mut(c as usize)?.push((i as u32, v));
+                cols.push(c);
+                vals.push(v);
+            }
+            cols.push(i as u32);
+            vals.push(d);
+            diag.push(d);
+            ptr.push(cols.len());
+        }
+        Some((ptr, cols, vals))
+    }
+
+    /// `z = S P^T (L L^T)^-1 P S r`.
+    fn apply(&self, r: &[f64], z: &mut [f64]) {
+        let n = z.len();
+        let mut t: Vec<f64> = self.perm.iter().map(|&o| g(r, o) * g(&self.scale, o)).collect();
+        for i in 0..n {
+            let (a, b) = (g_us(&self.ptr, i), g_us(&self.ptr, i + 1));
+            let mut s = g(&t, i);
+            for (c, v) in self.cols.iter().zip(&self.vals).take(b.saturating_sub(1)).skip(a) {
+                s -= v * g(&t, *c as usize);
+            }
+            if let Some(x) = t.get_mut(i) {
+                *x = s / self.vals.get(b.saturating_sub(1)).copied().unwrap_or(1.0);
+            }
+        }
+        for i in (0..n).rev() {
+            let (a, b) = (g_us(&self.ptr, i), g_us(&self.ptr, i + 1));
+            let ti = g(&t, i) / self.vals.get(b.saturating_sub(1)).copied().unwrap_or(1.0);
+            if let Some(x) = t.get_mut(i) {
+                *x = ti;
+            }
+            for (c, v) in self.cols.iter().zip(&self.vals).take(b.saturating_sub(1)).skip(a) {
+                if let Some(x) = t.get_mut(*c as usize) {
+                    *x -= v * ti;
+                }
+            }
+        }
+        for (&o, ti) in self.perm.iter().zip(&t) {
+            if let Some(x) = z.get_mut(o) {
+                *x = ti * g(&self.scale, o);
+            }
+        }
+    }
+}
+
+fn g_us(a: &[usize], i: usize) -> usize {
+    a.get(i).copied().unwrap_or(0)
+}
+
 fn von_mises(sx: f64, sy: f64, txy: f64) -> f64 {
     libm::sqrt((sx * sx - sx * sy + sy * sy + 3.0 * txy * txy).max(0.0))
 }
@@ -623,18 +841,8 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
         elems.push(e);
     }
 
-    // Jacobi-preconditioned CG on the free dofs (fixed and unused dofs stay zero).
-    let mut diag = vec![1.0; 6 * n];
-    for i in 0..n {
-        if let Some(bi) = kmat.block_index(i, i as u32) {
-            for k in 0..6 {
-                let d = g(&kmat.vals, bi * 36 + 7 * k);
-                if let Some(x) = diag.get_mut(6 * i + k) {
-                    *x = if d > 0.0 { d } else { 1.0 };
-                }
-            }
-        }
-    }
+    // scaled ICT-preconditioned CG on the free dofs (fixed and unused dofs stay zero).
+    let pre = Ic::build(&kmat, &free);
     let mask = |v: &mut [f64]| {
         for (x, &f) in v.iter_mut().zip(&free) {
             if !f {
@@ -648,7 +856,8 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
     let mut iterations = 0;
     if bnorm > 0.0 {
         let mut r = b.clone();
-        let mut z: Vec<f64> = r.iter().zip(&diag).map(|(a, d)| a / d).collect();
+        let mut z = vec![0.0; 6 * n];
+        pre.apply(&r, &mut z);
         let mut dir = z.clone();
         let mut rz = dot_n(&r, &z);
         let mut kd = vec![0.0; 6 * n];
@@ -672,9 +881,7 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
                 converged = true;
                 break;
             }
-            for ((zz, rr), d) in z.iter_mut().zip(&r).zip(&diag) {
-                *zz = rr / d;
-            }
+            pre.apply(&r, &mut z);
             let rz_new = dot_n(&r, &z);
             let beta = rz_new / rz;
             rz = rz_new;

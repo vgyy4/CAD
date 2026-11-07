@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket(_adaptive), profile_outside, profile_inside, drill, bore
+    /// pocket(_adaptive, _rest), profile_outside, profile_inside, drill, bore
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -46,6 +46,9 @@ pub struct CamJob {
     pub ramp_deg: Option<f64>,
     #[serde(default)]
     pub peck: Option<f64>,
+    /// pocket_rest: the earlier tool's D.
+    #[serde(default)]
+    pub previous: Option<f64>,
     /// [n, width, height].
     #[serde(default)]
     pub tabs: Option<[f64; 3]>,
@@ -104,6 +107,7 @@ impl CamJob {
             safe: opt(&d.safe, Dim::LENGTH)?,
             ramp_deg: opt(&d.ramp, Dim::ANGLE)?.map(f64::to_degrees),
             peck: opt(&d.peck, Dim::LENGTH)?,
+            previous: opt(&d.previous, Dim::LENGTH)?,
             tabs: match &d.tabs {
                 Some([n, w, h]) => Some([v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
                 None => None,
@@ -142,12 +146,18 @@ impl CamJob {
         let op = match self.operation.as_deref().unwrap_or_default() {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
             "pocket_adaptive" => Some(Operation::PocketAdaptive { stepover: self.stepover.unwrap_or(0.25) }),
+            "pocket_rest" => Some(Operation::PocketRest {
+                stepover: self.stepover.unwrap_or(0.4),
+                previous_diameter: self.previous.ok_or_else(|| {
+                    CommandError::args("pocket_rest needs previous: the diameter of the tool used before")
+                })?,
+            }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
             "drill" | "bore" => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, pocket_adaptive, profile_outside, profile_inside, drill or bore"));
+                    .hint("pocket, pocket_adaptive, pocket_rest, profile_outside, profile_inside, drill or bore"));
             }
         };
         let top = self.top.unwrap_or(0.0);

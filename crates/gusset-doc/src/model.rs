@@ -1695,6 +1695,8 @@ pub enum CamOp {
     Pocket,
     /// A pocket cleared with the radial cut held to the stepover (trochoidal slots).
     PocketAdaptive,
+    /// What a larger tool left in a pocket's corners and narrow parts.
+    PocketRest,
     ProfileOutside,
     ProfileInside,
     Drill,
@@ -1707,6 +1709,7 @@ impl CamOp {
         match self {
             CamOp::Pocket => "pocket",
             CamOp::PocketAdaptive => "pocket_adaptive",
+            CamOp::PocketRest => "pocket_rest",
             CamOp::ProfileOutside => "profile_outside",
             CamOp::ProfileInside => "profile_inside",
             CamOp::Drill => "drill",
@@ -1715,9 +1718,17 @@ impl CamOp {
     }
 
     pub fn from_keyword(s: &str) -> Option<CamOp> {
-        [CamOp::Pocket, CamOp::PocketAdaptive, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill, CamOp::Bore]
-            .into_iter()
-            .find(|o| o.keyword() == s)
+        [
+            CamOp::Pocket,
+            CamOp::PocketAdaptive,
+            CamOp::PocketRest,
+            CamOp::ProfileOutside,
+            CamOp::ProfileInside,
+            CamOp::Drill,
+            CamOp::Bore,
+        ]
+        .into_iter()
+        .find(|o| o.keyword() == s)
     }
 }
 
@@ -1742,6 +1753,8 @@ pub struct CamJobDef {
     pub safe: Option<Expr>,
     pub ramp: Option<Expr>,
     pub peck: Option<Expr>,
+    /// For `pocket_rest`: the diameter of the tool that cleared the pocket before.
+    pub previous: Option<Expr>,
     /// Count, width, height.
     pub tabs: Option<[Expr; 3]>,
     pub conventional: bool,
@@ -1759,6 +1772,7 @@ impl CamJobDef {
             &self.safe,
             &self.ramp,
             &self.peck,
+            &self.previous,
         ];
         [&self.tool_diameter, &self.depth]
             .into_iter()
@@ -1779,6 +1793,7 @@ impl CamJobDef {
             &mut self.safe,
             &mut self.ramp,
             &mut self.peck,
+            &mut self.previous,
         ] {
             out.extend(e.as_mut());
         }

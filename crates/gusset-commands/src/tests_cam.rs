@@ -40,6 +40,18 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     let a = run(&mut s, "cam.toolpath", ad);
     assert_eq!(a["levels_mm"], q["levels_mm"], "{a}");
     assert!(a["cut_mm"].as_f64().unwrap() > q["cut_mm"].as_f64().unwrap(), "{a} vs {q}");
+    // Rest machining after a 10 mm tool: a 3 mm tool clears only the corners (much less
+    // cutting than a full 3 mm pocket); it needs the earlier tool's diameter.
+    let mut rest = job.clone();
+    rest["operation"] = json!("pocket_rest");
+    rest["tool_diameter"] = json!(3.0);
+    assert_eq!(err(&mut s, "cam.toolpath", rest.clone()).code, "invalid_args");
+    rest["previous"] = json!(10.0);
+    let rr = run(&mut s, "cam.toolpath", rest);
+    let mut full = job.clone();
+    full["tool_diameter"] = json!(3.0);
+    let fl = run(&mut s, "cam.toolpath", full);
+    assert!(rr["cut_mm"].as_f64().unwrap() < 0.3 * fl["cut_mm"].as_f64().unwrap(), "{rr} vs {fl}");
     let mut with = job.clone();
     with["path"] = json!(true);
     let p = run(&mut s, "cam.toolpath", with);
@@ -225,7 +237,8 @@ fn a_cam_job_in_the_document_runs_by_name_and_follows_parameters() {
     run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     let text = text.replace("gusset 1\nunits mm\n", "gusset 1\nunits mm\n\nparam d = 4 mm\n")
-        + "\ncam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: d, stepdown: 2 mm)\n";
+        + "\ncam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: d, stepdown: 2 mm)\n"
+        + "\ncam_job Rest (sketch: Sketch1, operation: pocket_rest, tool_diameter: 2 mm, depth: d, previous: 6 mm)\n";
     run(&mut s, "document.set_text", json!({ "text": text }));
     let back = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(back.contains("cam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: d"), "{back}");
@@ -237,6 +250,9 @@ fn a_cam_job_in_the_document_runs_by_name_and_follows_parameters() {
     );
     assert_eq!(by_job, explicit);
     assert_eq!(by_job["levels_mm"], json!([-2.0, -4.0]), "{by_job}");
+    assert!(back.contains("operation: pocket_rest, tool_diameter: 2 mm, depth: d, previous: 6 mm"), "{back}");
+    let rest = run(&mut s, "cam.toolpath", json!({"job": "Rest"}));
+    assert!(rest["cut_mm"].as_f64().unwrap() > 0.0, "{rest}");
     // The job follows its parameters.
     run(&mut s, "param.set", json!({"name": "d", "expr": "6 mm"}));
     let deeper = run(&mut s, "cam.toolpath", json!({"job": "Job1"}));

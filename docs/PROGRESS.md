@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
      clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
      where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
-     Next: rest machining, 3D surfacing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). Next: 3D surfacing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid

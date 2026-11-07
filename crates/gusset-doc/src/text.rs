@@ -474,6 +474,7 @@ fn print_feature(out: &mut String, f: &Feature) {
                 ("safe", &d.safe),
                 ("ramp", &d.ramp),
                 ("peck", &d.peck),
+                ("previous", &d.previous),
             ] {
                 if let Some(e) = v {
                     args.push(format!("{k}: {e}"));
@@ -2539,12 +2540,13 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let name = c.ident()?.to_string();
     let (mut label, mut suppressed, mut group) = (None, false, None);
     let (mut sketch, mut regions, mut operation, mut tool, mut depth) = (None, Vec::new(), None, None, None);
-    let mut opt: [Option<gusset_units::expr::Expr>; 9] = Default::default();
+    let mut opt: [Option<gusset_units::expr::Expr>; 10] = Default::default();
     let mut tabs = None;
     let mut conventional = false;
-    const KEYS: [&str; 9] = ["stepdown", "stepover", "feed", "plunge", "rpm", "top", "safe", "ramp", "peck"];
+    const KEYS: [&str; 10] =
+        ["stepdown", "stepover", "feed", "plunge", "rpm", "top", "safe", "ramp", "peck", "previous"];
     let allowed = "sketch, regions, operation, tool_diameter, depth, stepdown, stepover, feed, plunge, rpm, top, safe, \
-                   ramp, peck, tabs, conventional, label, group, suppressed";
+                   ramp, peck, previous, tabs, conventional, label, group, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -2579,7 +2581,7 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     if !c.at_end() {
         return Err(c.err("unexpected text after ')'"));
     }
-    let [stepdown, stepover, feed, plunge, rpm, top, safe, ramp, peck] = opt;
+    let [stepdown, stepover, feed, plunge, rpm, top, safe, ramp, peck, previous] = opt;
     let def = CamJobDef {
         sketch: sketch.ok_or_else(|| missing(c, kw, "sketch"))?,
         regions,
@@ -2595,6 +2597,7 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         safe,
         ramp,
         peck,
+        previous,
         tabs,
         conventional,
     };

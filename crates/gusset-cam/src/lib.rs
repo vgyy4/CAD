@@ -14,6 +14,7 @@ use gusset_kernel::{Loop2, Region2, Seg2};
 use std::fmt::Write as _;
 
 mod adaptive;
+mod rest;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CamError {
@@ -42,6 +43,10 @@ pub enum Operation {
     /// Like `Pocket`, but the tool's radial engagement never exceeds `stepover` (a fraction
     /// of the diameter) once it is cutting, even in corners: see ADR 0040, "Adaptive clearing".
     PocketAdaptive { stepover: f64 },
+    /// Rest machining: after a pocket was cleared with a tool of `previous_diameter`, clear
+    /// only what that tool could not reach with the setup's (smaller) tool; `stepover` as for
+    /// `Pocket`. Nothing left to cut is `CamError::NothingToCut`. See ADR 0040, "Rest machining".
+    PocketRest { stepover: f64, previous_diameter: f64 },
     /// Cut along the region's boundary: outside it (a part cut free) or inside it (a hole).
     Profile { outside: bool },
 }
@@ -433,6 +438,23 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<(Vec<Polyline<
             slots = s2;
             rings
         }
+        Operation::PocketRest { stepover, previous_diameter } => {
+            if !(stepover > 0.0 && stepover <= 0.5) {
+                return Err(CamError::Invalid("the stepover must be above 0 and at most 0.5 (of the diameter)".into()));
+            }
+            if !(previous_diameter.is_finite() && previous_diameter > s.tool_diameter && previous_diameter <= MAX_SIZE)
+            {
+                return Err(CamError::Invalid("the previous tool must be larger than the rest tool".into()));
+            }
+            let mut all = Vec::new();
+            for reg in regions {
+                if !reg.holes.is_empty() {
+                    return Err(CamError::Invalid("rest machining does not support pockets with islands yet".into()));
+                }
+                all.extend(rest::plan(&polyline(&reg.outer), stepover, previous_diameter, s)?);
+            }
+            all
+        }
         Operation::Pocket { stepover } => {
             // Rings at most a radius apart leave nothing standing between them: wider steps
             // leave ridges in narrow arms and cusps in corners (review 2026-11-04).
@@ -468,6 +490,11 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<(Vec<Polyline<
         if ccw != want_ccw {
             p.invert_direction_mut();
         }
+    }
+    if out.is_empty() && slots.is_empty() && matches!(op, Operation::PocketRest { .. }) {
+        return Err(CamError::NothingToCut(
+            "nothing is left for the rest tool: the previous tool reached everything it can".into(),
+        ));
     }
     if out.is_empty() && slots.is_empty() {
         return Err(CamError::NothingToCut(format!(

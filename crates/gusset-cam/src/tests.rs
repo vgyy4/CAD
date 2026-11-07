@@ -733,3 +733,116 @@ fn adaptive_clearing_holds_for_other_stepovers_ramps_and_conventional_milling() 
     assert!(toolpath(&[polygon_region(&poly)], Operation::PocketAdaptive { stepover: 0.7 }, &s).is_err());
     assert!(toolpath(&[polygon_region(&poly)], Operation::PocketAdaptive { stepover: 0.0 }, &s).is_err());
 }
+
+// ---- Rest machining (ADR 0040, "Rest machining") ----
+
+/// Cells (0.1 mm grid) cut by a tool of radius `r` along the bottom level, the cutting
+/// length and the largest distance the tool's disc strays out of the pocket.
+struct Cut {
+    cut: std::collections::HashSet<(i64, i64)>,
+    length: f64,
+    stray: f64,
+}
+
+const CELL: f64 = 0.1;
+
+fn cut_cells(t: &Toolpath, poly: &[[f64; 2]], r: f64) -> Cut {
+    let bottom = t.levels.last().copied().unwrap_or(0.0);
+    let mut cut = std::collections::HashSet::new();
+    let (mut length, mut stray) = (0.0, 0.0_f64);
+    let reach = (r / CELL).ceil() as i64;
+    for (from, m) in with_starts(t) {
+        if matches!(m, Move::Line { plunge: true, .. }) || (end_z(&m) - bottom).abs() > 1e-9 {
+            continue;
+        }
+        let mut prev = [from[0], from[1]];
+        for (p, _) in along(from, &m, 0.05) {
+            length += libm::hypot(p[0] - prev[0], p[1] - prev[1]);
+            prev = p;
+            let slack = if inside_polygon(p, poly) { boundary_distance(p, poly) } else { -boundary_distance(p, poly) };
+            stray = stray.max(r - slack);
+            let (ci, cj) = ((p[0] / CELL).round() as i64, (p[1] / CELL).round() as i64);
+            for j in cj - reach..=cj + reach {
+                for i in ci - reach..=ci + reach {
+                    if libm::hypot(i as f64 * CELL - p[0], j as f64 * CELL - p[1]) <= r {
+                        cut.insert((i, j));
+                    }
+                }
+            }
+        }
+    }
+    Cut { cut, length, stray }
+}
+
+fn pocket_setup(d: f64) -> Setup {
+    let mut s = setup(d);
+    s.depth = 1.0;
+    s.stepdown = 1.0;
+    s
+}
+
+fn pocket_cut(poly: &[[f64; 2]], d: f64, op: Operation) -> Result<Toolpath, CamError> {
+    toolpath(&[polygon_region(poly)], op, &pocket_setup(d))
+}
+
+#[test]
+fn rest_machining_clears_the_corners_of_a_rectangle() {
+    let poly = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    let big = pocket_cut(&poly, 10.0, Operation::Pocket { stepover: 0.4 }).unwrap();
+    let rest = pocket_cut(&poly, 3.0, Operation::PocketRest { stepover: 0.4, previous_diameter: 10.0 }).unwrap();
+    let full = pocket_cut(&poly, 3.0, Operation::Pocket { stepover: 0.4 }).unwrap();
+    let (cb, cr, cf) = (cut_cells(&big, &poly, 5.0), cut_cells(&rest, &poly, 1.5), cut_cells(&full, &poly, 1.5));
+    assert!(cr.stray < 1e-4, "the rest tool strays {} out of the pocket", cr.stray);
+    eprintln!("rest {:.1} mm of {:.1} mm", cr.length, cf.length);
+    assert!(cr.length < 0.3 * cf.length, "rest {} against a full pocket {}", cr.length, cf.length);
+    // What is left after both: only inside the 3 mm tool's own corner (a box 1.5 mm from the corner).
+    let mut left = 0;
+    for j in 0..=200_i64 {
+        for i in 0..=400_i64 {
+            let (x, y) = (i as f64 * CELL, j as f64 * CELL);
+            // Away from the walls by half a cell: the grid's edge cells are half outside.
+            if x < 0.05 || y < 0.05 || x > 39.95 || y > 19.95 || cb.cut.contains(&(i, j)) || cr.cut.contains(&(i, j)) {
+                continue;
+            }
+            left += 1;
+            let in_corner = !(1.6..=38.4).contains(&x) && !(1.6..=18.4).contains(&y);
+            assert!(in_corner, "uncut stock at ({x:.1}, {y:.1})");
+        }
+    }
+    // The corner of a 3 mm tool leaves (1 - pi/4) r^2 = 0.48 mm^2 per corner.
+    assert!(f64::from(left) * CELL * CELL < 4.0 * 0.48 * 1.5, "{left} cells left");
+    assert!(cr.cut.len() > 100);
+    let g = rest.gcode(&pocket_setup(3.0), "rest");
+    assert!(g.contains("G21 G90 G17") && g.ends_with("M30\n") && g.contains("G1 "));
+}
+
+#[test]
+fn rest_machining_clears_an_arm_the_big_tool_cannot_enter() {
+    let poly = [[0.0, 0.0], [40.0, 0.0], [40.0, 14.0], [6.0, 14.0], [6.0, 40.0], [0.0, 40.0]];
+    let big = pocket_cut(&poly, 10.0, Operation::Pocket { stepover: 0.4 }).unwrap();
+    let rest = pocket_cut(&poly, 3.0, Operation::PocketRest { stepover: 0.4, previous_diameter: 10.0 }).unwrap();
+    let (cb, cr) = (cut_cells(&big, &poly, 5.0), cut_cells(&rest, &poly, 1.5));
+    assert!(cr.stray < 1e-4, "the rest tool strays {} out of the pocket", cr.stray);
+    // The 6 mm wide arm (x 0..6, y 14..40) is cut over its whole width, away from its end.
+    let cell = |x: f64, y: f64| ((x / CELL).round() as i64, (y / CELL).round() as i64);
+    for y in [18.0, 25.0, 32.0, 38.0] {
+        for x in [0.5, 1.5, 3.0, 4.5, 5.5] {
+            assert!(!cb.cut.contains(&cell(x, y)), "the big tool was not meant to reach ({x}, {y})");
+            assert!(cr.cut.contains(&cell(x, y)), "arm not cleared at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn rest_machining_with_nothing_left_is_a_clear_error_and_bad_input_is_refused() {
+    let poly = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    // A circular pocket is reached completely by any tool that fits.
+    let c = Region2 { outer: circle([0.0, 0.0], 15.0), holes: Vec::new() };
+    let e = toolpath(&[c], Operation::PocketRest { stepover: 0.4, previous_diameter: 10.0 }, &pocket_setup(3.0));
+    assert!(matches!(e, Err(CamError::NothingToCut(_))), "{e:?}");
+    let r = |d: f64, st: f64| pocket_cut(&poly, 3.0, Operation::PocketRest { stepover: st, previous_diameter: d });
+    assert!(matches!(r(3.0, 0.4), Err(CamError::Invalid(_))));
+    assert!(matches!(r(2.0, 0.4), Err(CamError::Invalid(_))));
+    assert!(matches!(r(10.0, 0.9), Err(CamError::Invalid(_))));
+    assert!(matches!(r(f64::NAN, 0.4), Err(CamError::Invalid(_))));
+}
