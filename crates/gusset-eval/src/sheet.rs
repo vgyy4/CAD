@@ -1638,7 +1638,14 @@ impl Evaluator {
                 }
             }
         }
-        if kinds.iter().zip(&meets).any(|(k, m)| *k == Kind::New && !(m.0 && m.1)) {
+        // A wall that meets only the back is a blind sliver where the cut ends inside the
+        // sheet's thickness (a hole across a bend and its wall, stopped at the bend's start,
+        // leaves one at the bend's thin edge, F8-7): it is not in the pattern, which is cut
+        // where walls reach both sides.
+        let through = |m: &(bool, bool)| m.0 && m.1;
+        let sliver = |m: &(bool, bool)| !m.0 && m.1;
+        let has_through = kinds.iter().zip(&meets).any(|(k, m)| *k == Kind::New && through(m));
+        if kinds.iter().zip(&meets).any(|(k, m)| *k == Kind::New && !through(m) && !(has_through && sliver(m))) {
             return None;
         }
         // The loops: the edges between new faces and the flats on the sketch side, mapped.

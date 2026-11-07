@@ -163,3 +163,12 @@ pattern), a wall reaches s = (x c - gap/2 |bW - bO|) / (1 - a) past its line's e
 x out from the line; at a square corner that is s = x - gap / sqrt 2. OCCT test at 60 and 120
 degree corners: the flat pattern holds exactly the solid's volume (k 0.5).
 
+
+Amendment (2026-11-07, dogfooding F8-7): cuts straddling a bend and its wall (or a tab and a
+flange bend, or a straight and its bend) unfold as one outline: the loop pieces on each sheet
+face are mapped with that face's FlatMap (the neutral-surface mapping on bends) and chained, the
+mappings agreeing on the bend/flat boundary. A hole stopped at the bend's start leaves a blind
+sliver wall in the bend's thin edge, meeting only the back faces; walls like that are ignored when
+another wall of the cut goes through, so the pattern is cut where the cut reaches both sides.
+A wall meeting only the sketch side still marks the pattern changed. OCCT tests: rectangle over
+straight and bend, round hole over a tab and a flange bend, hole over a bend and its wall.

@@ -682,7 +682,7 @@ several faces at once; trees with `symmetric`, `intersect`, arcs in this run (ru
 | F8-4 | Open: `rebuild_ok` counts new errors only; a feature that kept failing is not repeated. |
 | F8-5 | Open: argument names differ between tools (budget-bound renames). |
 | F8-6 | Open (documented in ADR 0037): flaps are drawn at the neutral layer. |
-| F8-7 | Open: a cut through a bend and its wall at once is not unfolded (`changed_by`). |
+| F8-7 | Fixed: a hole across a bend and its wall (and a cut across a tab and a flange bend, a rectangle over a straight and its bend) unfolds as one outline; blind slivers at the bend's thin edge no longer refuse it. |
 | F8-8 | Fixed: 3D finishing tessellates the model at 0.01 mm. |
 | F8-9 | Fixed: ball operations' G-code says ball end mill. |
 | F8-10 | Fixed: shell modes default to the longest side / 25 elements. |

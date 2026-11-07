@@ -716,6 +716,213 @@ extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)"
     assert!(flat.circles.is_empty());
 }
 
+/// Area of the polygon `o` (shoelace).
+fn poly_area(o: &[[f64; 2]]) -> f64 {
+    let n = o.len();
+    (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+}
+
+/// The `flat_pattern` query and the DXF export of `src`'s sheet.
+fn dxf_of(src: &str) -> (String, serde_json::Value) {
+    use gusset_commands::{CmdCtx, Session, execute};
+    let doc = gusset_doc::Document::from_text(src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+    let dir = std::env::temp_dir().join(format!("gusset-sheet-straddle-{}-{}", std::process::id(), src.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project_dir = Some(dir.clone());
+    let u = CmdCtx::user(1);
+    let q = execute(&mut s, &u, "query.flat_pattern", serde_json::json!({})).unwrap();
+    execute(&mut s, &u, "sheet.export_flat", serde_json::json!({"path": "flat.dxf"})).unwrap();
+    let dxf = std::fs::read_to_string(dir.join("flat.dxf")).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    (dxf, q)
+}
+
+#[test]
+fn a_cut_over_a_straight_and_its_bend_is_unfolded_as_one_outline() {
+    // F8-7: x from 53 to 57 over the l6 straight (to x = 55) and the l6/l7 bend (centre
+    // (55, 5), neutral radius 4), cut straight down. Flat: 2 mm of straight plus the neutral
+    // arc to asin(2 / 4).
+    let src = format!(
+        "{SKETCH}
+contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)
+
+sketch C (plane: XY, next_id: 9) {{
+  p1 = point(53, -22)
+  p2 = point(57, -22)
+  p3 = point(57, -18)
+  p4 = point(53, -18)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    let h = &flat.outlines[1];
+    let (xmin, xmax) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    let x0 = 25.0 + FRAC_PI_2 * 4.0 + 50.0;
+    let arc = 4.0 * libm::asin(0.5);
+    assert!((xmin - (x0 - 2.0)).abs() < 1e-4 && (xmax - (x0 + arc)).abs() < 1e-4, "{xmin}..{xmax} vs {x0}");
+    assert!((poly_area(h) - 4.0 * (2.0 + arc)).abs() < 1e-3, "{}", poly_area(h));
+    let (dxf, q) = dxf_of(&src);
+    assert_eq!(q["cutouts"].as_array().unwrap().len(), 1, "{q}");
+    assert!(dxf.contains("LINE"), "{dxf}");
+}
+
+#[test]
+fn a_cut_straight_down_over_a_bend_and_its_wall_is_unfolded_as_one_outline() {
+    // z from 3 to 8, x from 57 to 61, y 4 wide: it takes the l7 wall from its bend (z = 5) up
+    // to z = 8 and the bend from z = 3 round to its end. On the neutral arc (radius 4, centre
+    // (55, 5)) z = 3 lies at acos(2 / 4) = 60 deg: the outline is the rest of the quarter arc
+    // plus 3 mm of straight.
+    let src = format!(
+        "{SKETCH}
+contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)
+
+plane P (base: XY, offset: 3 mm)
+
+sketch C (plane: P, next_id: 9) {{
+  p1 = point(57, -22)
+  p2 = point(61, -22)
+  p3 = point(61, -18)
+  p4 = point(57, -18)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+extrude Cut (profile: C, distance: 5 mm, op: cut, body: U)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    let h = &flat.outlines[1];
+    let (xmin, xmax) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    let x0 = 25.0 + FRAC_PI_2 * 4.0 + 50.0;
+    // The floor at z = 3 is developed along the cut (z) onto the neutral surface, so its
+    // flat edge is not at the neutral arc's 60 deg: only the wall end is exact.
+    let hi = x0 + FRAC_PI_2 * 4.0 + 3.0;
+    assert!((xmax - hi).abs() < 1e-4 && xmin > x0 + 4.0 && xmin < x0 + 5.0, "{xmin}..{xmax}");
+    let (dxf, q) = dxf_of(&src);
+    assert_eq!(q["cutouts"].as_array().unwrap().len(), 1, "{q}");
+    assert!(dxf.contains("LINE"), "{dxf}");
+}
+
+#[test]
+fn a_hole_through_a_bend_and_its_wall_is_unfolded_as_one_outline() {
+    // F8-7: d5 along x, centred on the bend/wall line z = 5 (z 2.5 .. 7.5); the wall is at
+    // x 58 .. 60, the bend (centre (55, 5)) turns into it.
+    let src = format!(
+        "{SKETCH}
+contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44)
+
+plane P (base: YZ, offset: 56 mm)
+
+sketch C (plane: P, next_id: 3) {{
+  p1 = point(-20, 4)
+  c2 = circle(p1, 2.5)
+}}
+
+extrude Cut (profile: C, distance: 4 mm, op: cut, body: U)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    let h = &flat.outlines[1];
+    let (xmin, xmax) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    // Bend and wall meet at 26 + BA + 52 + BA (BA = pi/2 (2 + 0.44 * 2)); the wall half is 2.5
+    // long; the bend half is the neutral arc (radius 2.88) from z = 1.5 (where the circle
+    // starts) to the bend's end at z = 4.
+    let (rn, ba) = (2.88, FRAC_PI_2 * 2.88);
+    let wall = 26.0 + ba + 52.0 + ba;
+    let arc = rn * (FRAC_PI_2 - libm::acos(2.5 / rn));
+    assert!((xmax - (wall + 2.5)).abs() < 1e-4 && (xmin - (wall - arc)).abs() < 2e-3, "{xmin}..{xmax} vs {wall} {arc}");
+    // Area: the wall's half disc plus the bend half, a chord 2 sqrt(6.25 - w^2) over the arc
+    // length dw / sqrt(1 - w^2 / rn^2) (midpoint rule).
+    let n = 20000;
+    let bend: f64 = (0..n)
+        .map(|i| {
+            let w = (f64::from(i) + 0.5) * 2.5 / f64::from(n);
+            2.0 * libm::sqrt(6.25 - w * w) / libm::sqrt(1.0 - w * w / (rn * rn)) * 2.5 / f64::from(n)
+        })
+        .sum();
+    let want = std::f64::consts::PI * 6.25 / 2.0 + bend;
+    assert!((poly_area(h) - want).abs() < 0.01 * want, "{} vs {want}", poly_area(h));
+    assert!(flat.circles.is_empty());
+    let (dxf, q) = dxf_of(&src);
+    assert_eq!(q["cutouts"].as_array().unwrap().len(), 1, "{q}");
+    assert!(dxf.contains("LINE"), "{dxf}");
+}
+
+#[test]
+fn a_round_hole_over_a_tab_and_a_flange_bend_is_unfolded() {
+    // Centred on the tab's edge x = 60 where the flange's bend starts (outside radius 5,
+    // neutral 4): half a disc on the tab, and on the bend the disc stretched to the neutral arc.
+    let src = format!(
+        "{TAB}
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5)
+
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(60, 20)
+  c2 = circle(p1, 2)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: Plate)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 2);
+    let h = &flat.outlines[1];
+    let (xmin, xmax) = h.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[0]), b.max(p[0])));
+    let arc = 4.0 * libm::asin(0.5);
+    assert!((xmin - 58.0).abs() < 1e-3 && (xmax - (60.0 + arc)).abs() < 1e-3, "{xmin}..{xmax}");
+    // Area: the tab half disc plus the integral of the chord 2 sqrt(4 - u^2) over the arc
+    // length ds = du / sqrt(1 - u^2 / 16) (midpoint rule).
+    let n = 20000;
+    let bend: f64 = (0..n)
+        .map(|i| {
+            let u = (f64::from(i) + 0.5) * 2.0 / f64::from(n);
+            2.0 * libm::sqrt(4.0 - u * u) / libm::sqrt(1.0 - u * u / 16.0) * 2.0 / f64::from(n)
+        })
+        .sum();
+    let want = std::f64::consts::PI * 2.0 + bend;
+    assert!((poly_area(h) - want).abs() < 0.02 * want, "{} vs {want}", poly_area(h));
+    let (dxf, q) = dxf_of(&src);
+    assert_eq!(q["cutouts"].as_array().unwrap().len(), 1, "{q}");
+    assert!(dxf.contains("LINE"), "{dxf}");
+}
+
 #[test]
 fn a_round_hole_stays_a_circle_in_the_flat_pattern_query_and_dxf() {
     use gusset_commands::{CmdCtx, Session, execute};
