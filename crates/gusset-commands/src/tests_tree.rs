@@ -318,16 +318,18 @@ fn a_mirrored_body_and_mirrored_features_import() {
 }
 
 #[test]
-fn a_tilted_mirror_of_features_is_skipped() {
+fn a_tilted_mirror_of_features_sketches_on_tilted_datum_planes() {
+    // Its reflected sketch plane is tilted: XY turned about Y, then offset (OCCT checks the
+    // geometry in modeling_tree_import.rs).
     let mut s = session();
     let mut fs = box_features(10.0, 10.0, 5.0);
     fs.push(json!({"type": "mirror", "name": "T", "features": ["Block"],
                    "plane": {"origin": [0, 0, 0], "normal": [1, 0, 2]}}));
     let r = import(&mut s, "tilt.gtree.json", &tree2(json!(fs))).unwrap();
-    assert!(skipped(&r).iter().any(|(f, _)| f == "T"), "{r}");
-    assert_eq!(r["features"], json!(["Base", "Block"]), "{r}");
+    assert_eq!(skipped(&r), Vec::<(String, String)>::new(), "{r}");
+    assert_eq!(r["features"], json!(["Base", "Block", "Base_T_tilt2", "Base_T", "Block_T"]), "{r}");
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
-    assert!(!text.contains("_T"), "{text}");
+    assert!(text.contains("plane Base_T_tilt2 (base: XY, axis: Y, angle: "), "{text}");
 }
 
 #[test]

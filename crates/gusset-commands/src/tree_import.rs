@@ -275,11 +275,11 @@ const BASES: [(&str, V3, V3); 3] = [
     ("YZ", [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
 ];
 
-/// How a source sketch lands in Gusset: the plane argument, an optional datum plane line to
-/// add first, the frame points are re-projected into, and whether its normal is reversed.
+/// How a source sketch lands in Gusset: the plane argument, datum planes to add first (name,
+/// line), the frame points are re-projected into, and whether its normal is reversed.
 struct Placed {
     plane: String,
-    datum: Option<String>,
+    datums: Vec<(String, String)>,
     origin: V3,
     x: V3,
     y: V3,
@@ -301,15 +301,67 @@ fn place_sketch(name: &str, p: &Plane) -> Option<Placed> {
         }
         let offset = dot(p.origin, bn);
         let origin = bn.map(|c| c * offset);
-        let (plane, datum) = if offset.abs() < 1e-9 {
-            (base.to_string(), None)
+        let (plane, datums) = if offset.abs() < 1e-9 {
+            (base.to_string(), Vec::new())
         } else {
             let dn = format!("{name}_plane");
-            (dn.clone(), Some(format!("plane {dn} (base: {base}, offset: {} mm)", num(offset))))
+            let line = format!("plane {dn} (base: {base}, offset: {} mm)", num(offset));
+            (dn.clone(), vec![(dn, line)])
         };
-        return Some(Placed { plane, datum, origin, x, y, flipped: d < 0.0 });
+        return Some(Placed { plane, datums, origin, x, y, flipped: d < 0.0 });
     }
-    None
+    tilted(name, p.origin, n)
+}
+
+/// A plane at any angle: XY turned about X by a, then about Y by b (so its normal is
+/// (cos a sin b, -sin a, cos a cos b)), then offset along the normal. The frame is worked out
+/// from the angles as written, the way the evaluator turns datum planes.
+fn tilted(name: &str, origin: V3, n: V3) -> Option<Placed> {
+    let a = libm::asin((-n[1]).clamp(-1.0, 1.0)).to_degrees();
+    let b = libm::atan2(n[0], n[2]).to_degrees();
+    let (a_txt, b_txt) = (fine_deg(a), fine_deg(b));
+    let (a, b) = (a_txt.parse::<f64>().ok()?.to_radians(), b_txt.parse::<f64>().ok()?.to_radians());
+    let turn = |v: V3, axis: V3, t: f64| {
+        let (sn, cs) = (libm::sin(t), libm::cos(t));
+        let c = cross(axis, v);
+        let k = dot(axis, v) * (1.0 - cs);
+        [0, 1, 2].map(|i| {
+            let (vi, ci, ai) = (v.get(i), c.get(i), axis.get(i));
+            vi.zip(ci).zip(ai).map_or(0.0, |((vi, ci), ai)| vi * cs + ci * sn + ai * k)
+        })
+    };
+    let (mut x, mut y) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let (mut datums, mut base) = (Vec::new(), "XY".to_string());
+    for (i, (axis, t, txt, v)) in
+        [("X", a, &a_txt, [1.0, 0.0, 0.0]), ("Y", b, &b_txt, [0.0, 1.0, 0.0])].into_iter().enumerate()
+    {
+        if t.abs() < 1e-15 {
+            continue;
+        }
+        x = turn(x, v, t);
+        y = turn(y, v, t);
+        let dn = format!("{name}_tilt{}", i + 1);
+        datums.push((dn.clone(), format!("plane {dn} (base: {base}, axis: {axis}, angle: {txt} deg)")));
+        base = dn;
+    }
+    let normal = cross(x, y);
+    let offset = dot(origin, normal);
+    let o_txt = fine_deg(offset);
+    let offset = o_txt.parse::<f64>().ok()?;
+    if offset.abs() > 1e-9 {
+        let dn = format!("{name}_plane");
+        datums.push((dn.clone(), format!("plane {dn} (base: {base}, offset: {o_txt} mm)")));
+        base = dn;
+    }
+    let flipped = dot(normal, n) < 0.0;
+    Some(Placed { plane: base, datums, origin: normal.map(|c| c * offset), x, y, flipped })
+}
+
+/// 12 decimals: angles and offsets that put a tilted plane where the source has it.
+fn fine_deg(v: f64) -> String {
+    let s = format!("{:.12}", if v.abs() < 5e-13 { 0.0 } else { v });
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s == "-0" { "0".into() } else { s }
 }
 
 /// What the generator learnt about a source sketch.
@@ -666,8 +718,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         finite(*v, "its plane")?;
     }
     let name = g.fresh(&d.name, "Sketch");
-    let placed = place_sketch(&name, &d.plane)
-        .ok_or("its plane is not parallel to XY, XZ or YZ (tilted planes are not imported yet)")?;
+    let placed = place_sketch(&name, &d.plane).ok_or("its plane is degenerate")?;
     let mut map = SketchMap {
         name: name.clone(),
         ids: HashMap::new(),
@@ -783,12 +834,12 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         ));
     }
     let mut text = String::new();
-    if let Some(dl) = &placed.datum {
-        if !g.taken.insert(placed.plane.to_ascii_lowercase()) {
-            return Err(format!("the name '{}' for its plane is taken", placed.plane));
+    for (dn, dl) in &placed.datums {
+        if !g.taken.insert(dn.to_ascii_lowercase()) {
+            return Err(format!("the name '{dn}' for its plane is taken"));
         }
         let _ = writeln!(text, "\n{dl}");
-        g.made.push(placed.plane.clone());
+        g.made.push(dn.clone());
     }
     let _ = write!(text, "\nsketch {name} (plane: {}) {{\n{body}}}\n", placed.plane);
     g.text.push_str(&text);

@@ -95,7 +95,9 @@ suffixed), then the features in order, generated as code-view text so they are p
 validated like any other edit. Sketch planes: a plane that coincides with XY, XZ or YZ uses
 it (points re-projected into Gusset's frame for that plane, so any in-plane rotation or
 origin works); a plane parallel to one of them becomes a datum `plane` with an offset; any
-other plane is reported unsupported, with the features that depend on it. Fillet and
+other plane becomes up to three chained datum planes: XY turned about X by a, then about Y by
+b (normal (cos a sin b, -sin a, cos a cos b)), then offset along the normal, angles and offset
+written to 12 decimals (amendment 2026-11-07; previously reported unsupported). Fillet and
 chamfer edges are resolved after evaluating the features before them. The result reports
 features made, features skipped (with reasons), parameters, and for each source body its
 volume against the imported model's.
@@ -192,8 +194,8 @@ With `features` (extrude, revolve, hole, fillet, chamfer; revolves only of 360 d
 importer builds each feature again with its world geometry reflected across the plane, the
 sketches included, named `<name>_<mirror name>`; a copy's `target` naming another copied feature becomes that
 feature's copy; distances become plain numbers (a driving
-parameter's sign does not carry over). Reflected sketch planes must again be parallel to XY,
-XZ or YZ, so a mirror plane that tilts them skips the feature. Without `features` the whole
+parameter's sign does not carry over). Reflected sketch planes that end up tilted land on
+tilted datum planes as above. Without `features` the whole
 body of `target` is mirrored with Gusset's `mirror` across a base or offset datum plane (the
 plane must be parallel to XY, XZ or YZ); `merge` (default true) unites the copy with the body.
 

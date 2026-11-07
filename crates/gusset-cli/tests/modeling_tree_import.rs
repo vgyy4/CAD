@@ -266,3 +266,71 @@ fn a_mirrored_cut_cuts_the_mirrored_copy() {
         assert_vol(k.mass_properties(&b.shape).unwrap().volume, want);
     }
 }
+
+#[test]
+fn a_sketch_on_a_plane_tilted_two_ways_lands_where_the_source_has_it() {
+    // x = (0.8, 0.6, 0), y = (-0.36, 0.48, 0.8): normal (0.48, -0.64, 0.6), tilted about two axes.
+    let (o, x, y) = ([5.0, -3.0, 7.0], [0.8, 0.6, 0.0], [-0.36, 0.48, 0.8]);
+    let n = [0.48, -0.64, 0.6];
+    let plane = json!({"origin": o, "x_axis": x, "y_axis": y});
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"},
+        "features": [rect("S", plane, 2.0, 3.0, 10.0, 20.0), extrude("E", "S", 5.0, "new")]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0);
+    // The box of the eight corners origin + u x + v y + w n.
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for (u, v, w) in
+        [2.0, 12.0].iter().flat_map(|u| [3.0, 23.0].map(|v| (*u, v))).flat_map(|(u, v)| [0.0, 5.0].map(|w| (u, v, w)))
+    {
+        for i in 0..3 {
+            let p = o[i] + u * x[i] + v * y[i] + w * n[i];
+            lo[i] = lo[i].min(p);
+            hi[i] = hi[i].max(p);
+        }
+    }
+    for i in 0..3 {
+        let (l, h) = (b["bbox_min_mm"][i].as_f64().unwrap(), b["bbox_max_mm"][i].as_f64().unwrap());
+        assert!((l - lo[i]).abs() < 1e-3 && (h - hi[i]).abs() < 1e-3, "{i}: {l}..{h} vs {}..{} ({b})", lo[i], hi[i]);
+    }
+}
+
+#[test]
+fn features_mirrored_across_a_tilted_plane_land_on_their_reflection() {
+    // The block [0, 10] x [0, 10] x [0, 5] reflected across the plane through (30, 0, 0)
+    // with normal (1, 0, 2) / sqrt 5, wholly on one side of it.
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"},
+        "features": [rect("S", plane_at(0.0), 0.0, 0.0, 10.0, 10.0), extrude("E", "S", 5.0, "new"),
+            {"type": "mirror", "name": "T", "features": ["E"], "plane": {"origin": [30, 0, 0], "normal": [1, 0, 2]}}]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let m = execute(&mut s, &CmdCtx::user(1), "query.model", json!({})).unwrap();
+    eprintln!("{m}");
+    let names: Vec<String> =
+        m["bodies"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap().to_string()).collect();
+    let copy = names.iter().find(|n| n.contains("_T")).unwrap_or_else(|| panic!("{m}"));
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": copy})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 500.0);
+    let k = 1.0 / 5.0_f64.sqrt();
+    let n = [k, 0.0, 2.0 * k];
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in
+        [0.0, 10.0].iter().flat_map(|x| [0.0, 10.0].map(|y| (*x, y))).flat_map(|(x, y)| [0.0, 5.0].map(|z| [x, y, z]))
+    {
+        let d = (p[0] - 30.0) * n[0] + p[2] * n[2];
+        for i in 0..3 {
+            let q = p[i] - 2.0 * d * n[i];
+            lo[i] = lo[i].min(q);
+            hi[i] = hi[i].max(q);
+        }
+    }
+    for i in 0..3 {
+        let (l, h) = (b["bbox_min_mm"][i].as_f64().unwrap(), b["bbox_max_mm"][i].as_f64().unwrap());
+        assert!((l - lo[i]).abs() < 1e-3 && (h - hi[i]).abs() < 1e-3, "{i}: {l}..{h} vs {}..{} ({b})", lo[i], hi[i]);
+    }
+}
