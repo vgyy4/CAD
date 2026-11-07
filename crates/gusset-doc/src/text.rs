@@ -486,6 +486,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if d.conventional {
                 args.push("conventional: true".into());
             }
+            if let Some([a, b, c, e]) = &d.holder {
+                args.push(format!("holder: [{a}, {b}, {c}, {e}]"));
+            }
         }
         FeatureKind::Plane(d) => {
             args.push(format!("base: {}", print_plane(&d.base)));
@@ -2562,10 +2565,11 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut opt: [Option<gusset_units::expr::Expr>; 10] = Default::default();
     let mut tabs = None;
     let mut conventional = false;
+    let mut holder = None;
     const KEYS: [&str; 10] =
         ["stepdown", "stepover", "feed", "plunge", "rpm", "top", "safe", "ramp", "peck", "previous"];
     let allowed = "sketch, regions, operation, tool_diameter, depth, stepdown, stepover, feed, plunge, rpm, top, safe, \
-                   ramp, peck, previous, tabs, conventional, label, group, suppressed";
+                   ramp, peck, previous, tabs, conventional, holder, label, group, suppressed";
     parse_args(c, |key, c| {
         match key {
             "label" => label = Some(c.string()?),
@@ -2586,6 +2590,24 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             "depth" => depth = Some(c.expr()?),
             "tabs" => tabs = Some(parse_vec3(c)?),
             "conventional" => conventional = parse_bool(c)?,
+            "holder" => {
+                c.expect('[')?;
+                let mut v = Vec::new();
+                loop {
+                    v.push(c.expr()?);
+                    if c.eat(',') {
+                        continue;
+                    }
+                    c.expect(']')?;
+                    break;
+                }
+                holder = Some(<[gusset_units::expr::Expr; 4]>::try_from(v).map_err(|v| {
+                    c.err_hint(
+                        format!("holder takes 4 values, not {}", v.len()),
+                        "[shank diameter, flute length, holder diameter, stickout]",
+                    )
+                })?);
+            }
             k => match KEYS.iter().position(|x| *x == k) {
                 Some(i) => {
                     if let Some(slot) = opt.get_mut(i) {
@@ -2619,6 +2641,7 @@ fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         previous,
         tabs,
         conventional,
+        holder,
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::CamJob(Box::new(def)) })
 }

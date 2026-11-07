@@ -1378,6 +1378,28 @@ fn a_feature_is_added_from_its_statement() {
     assert_eq!(r["feature"], "Job1", "{r}");
     let t = run(&mut s, &u, "document.get_text", json!({}));
     assert!(t.to_string().contains("cam_job Job1 ("), "{t}");
+    // A job's values can be overridden next to `job`; its holder is stored with it (F11-3).
+    let base = run(&mut s, &u, "cam.toolpath", json!({"job": "Job1"}));
+    let flat = run(&mut s, &u, "cam.toolpath", json!({"job": "Job1", "ramp_deg": 0}));
+    assert_ne!(base["cut_mm"], flat["cut_mm"], "{base} {flat}");
+    run(
+        &mut s,
+        &u,
+        "feature.add",
+        json!({"statement":
+        "cam_job Job3 (sketch: Sketch1, operation: surface_ball, tool_diameter: 6 mm, depth: 2 mm, holder: [6 mm, 10 mm, 20 mm, 12 mm])"}),
+    );
+    let t = run(&mut s, &u, "document.get_text", json!({}));
+    assert!(t.to_string().contains("holder: [6 mm, 10 mm, 20 mm, 12 mm]"), "{t}");
+    let e = execute(
+        &mut s,
+        &u,
+        "feature.add",
+        json!({"statement":
+        "cam_job Job4 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: 2 mm, holder: [6 mm, 10 mm])"}),
+    )
+    .unwrap_err();
+    assert!(e.message.contains("4 values, not 2"), "{e:?}");
     // Taken names, sketches and malformed text are refused.
     for bad in [stmt, "sketch Sketch9(plane: XY) {}", "cam_job Job2(sketch: Sketch1"] {
         assert!(execute(&mut s, &u, "feature.add", json!({ "statement": bad })).is_err(), "{bad}");

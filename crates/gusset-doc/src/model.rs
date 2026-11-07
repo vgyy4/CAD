@@ -1786,6 +1786,9 @@ pub struct CamJobDef {
     /// Count, width, height.
     pub tabs: Option<[Expr; 3]>,
     pub conventional: bool,
+    /// 3D operations: shank diameter, flute length, holder diameter, stickout (tool tip to
+    /// the holder's face); the path is lifted where they would touch.
+    pub holder: Option<[Expr; 4]>,
 }
 
 impl CamJobDef {
@@ -1806,6 +1809,7 @@ impl CamJobDef {
             .into_iter()
             .chain(opt.into_iter().flatten())
             .chain(self.tabs.iter().flatten())
+            .chain(self.holder.iter().flatten())
             .collect()
     }
 
@@ -1827,6 +1831,9 @@ impl CamJobDef {
         }
         if let Some(t) = &mut self.tabs {
             out.extend(t.iter_mut());
+        }
+        if let Some(h) = &mut self.holder {
+            out.extend(h.iter_mut());
         }
         out
     }

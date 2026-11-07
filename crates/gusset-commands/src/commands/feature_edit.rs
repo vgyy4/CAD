@@ -40,11 +40,31 @@ impl Command for FeatureAdd {
                 .hint("import_file, assembly_insert_component, sketch_create"));
         }
         let name = f.name.clone();
-        edit(s, ctx, &format!("Add {name}"), |doc, rb| {
-            let name = feature_name(doc, Some(f.name.clone()), "")?;
-            insert_feature(doc, rb, f);
-            Ok(json!({ "feature": name }))
-        })
+        // Solids that add to or cut a body warn when they changed nothing, as their commands
+        // do (dogfooding F11-9).
+        let combine = match &f.kind {
+            gusset_doc::FeatureKind::Extrude(d) => Some((d.op, d.body.clone())),
+            gusset_doc::FeatureKind::Revolve(d) => Some((d.op, d.body.clone())),
+            _ => None,
+        };
+        let target = std::cell::RefCell::new(None::<String>);
+        edit_post(
+            s,
+            ctx,
+            &format!("Add {name}"),
+            |doc, rb| {
+                let name = feature_name(doc, Some(f.name.clone()), "")?;
+                if let Some((op, explicit)) = &combine {
+                    *target.borrow_mut() = target_body(doc, rb, *op, explicit.clone())?;
+                }
+                insert_feature(doc, rb, f);
+                Ok(json!({ "feature": name }))
+            },
+            |_, out, ch| match &combine {
+                Some((op, _)) => combine_effect_warnings(&name, *op, target.borrow().as_deref(), &out.new_errors, ch),
+                None => Value::Null,
+            },
+        )
     }
 }
 

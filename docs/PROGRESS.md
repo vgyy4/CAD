@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
      clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
      where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
-     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Waterline and steep/shallow done (`waterline_*`, `steep_*`). Pencil finishing done (`pencil_ball`); holder/shank collision check done: `holder: [shank D, flute, holder D, stickout]` on the 3D operations checks the path and lifts the tool where the shank or holder would touch, with a warning that material is left there. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Waterline and steep/shallow done (`waterline_*`, `steep_*`). Pencil finishing done (`pencil_ball`); holder/shank collision check done: `holder: [shank D, flute, holder D, stickout]` on the 3D operations checks the path and lifts the tool where the shank or holder would touch, with a warning that material is left there. A `cam_job` stores a `holder` too; values given next to `job` override the job's (suppressed jobs are refused). Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid

@@ -86,6 +86,10 @@ impl CamJob {
         let Some(FeatureKind::CamJob(d)) = doc.features.iter().find(|f| &f.name == name).map(|f| &f.kind) else {
             return Err(CommandError::not_found(format!("no cam_job '{name}'")));
         };
+        if doc.features.iter().any(|f| &f.name == name && f.suppressed) {
+            return Err(CommandError::args(format!("cam_job '{name}' is suppressed"))
+                .hint("unsuppress it with feature_suppress"));
+        }
         let (d, units) = ((**d).clone(), doc.units);
         let params = s.evaluate(&ctx.actor)?.params.clone();
         let v = |e: &gusset_units::expr::Expr, dim: gusset_units::Dim| {
@@ -101,22 +105,31 @@ impl CamJob {
             operation: Some(d.operation.keyword().to_string()),
             tool_diameter: Some(v(&d.tool_diameter, Dim::LENGTH)?),
             depth: Some(v(&d.depth, Dim::LENGTH)?),
-            stepdown: opt(&d.stepdown, Dim::LENGTH)?,
-            stepover: opt(&d.stepover, Dim::NONE)?,
-            feed: opt(&d.feed, Dim::NONE)?,
-            plunge: opt(&d.plunge, Dim::NONE)?,
-            rpm: opt(&d.rpm, Dim::NONE)?,
-            top: opt(&d.top, Dim::LENGTH)?,
-            safe: opt(&d.safe, Dim::LENGTH)?,
-            ramp_deg: opt(&d.ramp, Dim::ANGLE)?.map(f64::to_degrees),
-            peck: opt(&d.peck, Dim::LENGTH)?,
-            previous: opt(&d.previous, Dim::LENGTH)?,
-            tabs: match &d.tabs {
-                Some([n, w, h]) => Some(vec![v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
-                None => None,
+            // Values given next to `job` override the job's (dogfooding F11-3).
+            stepdown: self.stepdown.map_or_else(|| opt(&d.stepdown, Dim::LENGTH), |x| Ok(Some(x)))?,
+            stepover: self.stepover.map_or_else(|| opt(&d.stepover, Dim::NONE), |x| Ok(Some(x)))?,
+            feed: self.feed.map_or_else(|| opt(&d.feed, Dim::NONE), |x| Ok(Some(x)))?,
+            plunge: self.plunge.map_or_else(|| opt(&d.plunge, Dim::NONE), |x| Ok(Some(x)))?,
+            rpm: self.rpm.map_or_else(|| opt(&d.rpm, Dim::NONE), |x| Ok(Some(x)))?,
+            top: self.top.map_or_else(|| opt(&d.top, Dim::LENGTH), |x| Ok(Some(x)))?,
+            safe: self.safe.map_or_else(|| opt(&d.safe, Dim::LENGTH), |x| Ok(Some(x)))?,
+            ramp_deg: match self.ramp_deg {
+                Some(x) => Some(x),
+                None => opt(&d.ramp, Dim::ANGLE)?.map(f64::to_degrees),
             },
-            conventional: d.conventional,
-            holder: self.holder.clone(),
+            peck: self.peck.map_or_else(|| opt(&d.peck, Dim::LENGTH), |x| Ok(Some(x)))?,
+            previous: self.previous.map_or_else(|| opt(&d.previous, Dim::LENGTH), |x| Ok(Some(x)))?,
+            tabs: match (&self.tabs, &d.tabs) {
+                (Some(t), _) => Some(t.clone()),
+                (None, Some([n, w, h])) => Some(vec![v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
+                (None, None) => None,
+            },
+            conventional: self.conventional || d.conventional,
+            holder: match (&self.holder, &d.holder) {
+                (Some(h), _) => Some(h.clone()),
+                (None, Some(h)) => Some(h.iter().map(|e| v(e, Dim::LENGTH)).collect::<Result<Vec<_>, _>>()?),
+                (None, None) => None,
+            },
         })
     }
 

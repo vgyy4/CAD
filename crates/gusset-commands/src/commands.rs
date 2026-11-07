@@ -528,7 +528,7 @@ fn check_new_body_name(
 
 /// The body an add/cut/intersect combines with, resolved when the feature is created and
 /// stored in the document, so later deletes or reorders can never silently retarget it.
-fn target_body(
+pub(crate) fn target_body(
     doc: &Document,
     rollback: Option<usize>,
     op: BodyOp,
