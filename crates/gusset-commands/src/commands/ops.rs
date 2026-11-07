@@ -137,6 +137,14 @@ pub(crate) fn body_for(
     target_body(doc, rb, BodyOp::Add, explicit)
 }
 
+/// The body holding the first of `faces`, for commands given faces but no body (the latest
+/// body is often another one: dogfooding F7-7).
+fn owner_body(s: &mut Session, ctx: &CmdCtx, faces: &[String]) -> Result<Option<String>, CommandError> {
+    let Some(first) = faces.first().and_then(|f| FaceRef::parse(f).ok()) else { return Ok(None) };
+    let ev = s.evaluate(&ctx.actor)?;
+    Ok(ev.bodies.iter().find(|b| b.names.face_index(&first).is_some()).map(|b| b.feature.clone()))
+}
+
 fn parse_faces(faces: &[String]) -> Result<Vec<FaceRef>, CommandError> {
     faces.iter().map(|f| FaceRef::parse(f).map_err(|e| CommandError::args(format!("face '{f}': {e}")))).collect()
 }
@@ -168,9 +176,10 @@ impl Command for DeleteFace {
         for f in &faces {
             check_face_resolves(s, ctx, f)?;
         }
+        let owner = owner_body(s, ctx, &self.faces)?;
         edit(s, ctx, "Delete face", |doc, rb| {
             let name = feature_name(doc, self.name, "DeleteFace")?;
-            let body = body_for(doc, rb, self.body)?;
+            let body = body_for(doc, rb, self.body.or(owner))?;
             let def = gusset_doc::DeleteFaceDef { body, faces };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::DeleteFace(def)));
             Ok(json!({ "feature": name }))
@@ -208,9 +217,10 @@ impl Command for OffsetFace {
         for f in &faces {
             check_face_resolves(s, ctx, f)?;
         }
+        let owner = owner_body(s, ctx, &self.faces)?;
         edit(s, ctx, "Offset face", |doc, rb| {
             let name = feature_name(doc, self.name, "OffsetFace")?;
-            let body = body_for(doc, rb, self.body)?;
+            let body = body_for(doc, rb, self.body.or(owner))?;
             let def = OffsetFaceDef { body, faces, distance };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
             Ok(json!({ "feature": name }))
@@ -312,13 +322,37 @@ impl Command for MoveFace {
                 }
             }
         }
-        edit(s, ctx, "Move face", |doc, rb| {
-            let name = feature_name(doc, self.name, "MoveFace")?;
-            let body = body_for(doc, rb, self.body)?;
-            let def = MoveFaceDef { body, faces, translate, rotation, onto };
-            insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::MoveFace(def)));
-            Ok(json!({ "feature": name }))
-        })
+        let owner = owner_body(s, ctx, &self.faces)?;
+        let laying = onto.is_some();
+        let added = std::cell::RefCell::new(String::new());
+        edit_checked(
+            s,
+            ctx,
+            "Move face",
+            |doc, rb| {
+                let name = feature_name(doc, self.name, "MoveFace")?;
+                let body = body_for(doc, rb, self.body.or(owner))?;
+                let def = MoveFaceDef { body, faces, translate, rotation, onto };
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::MoveFace(def)));
+                added.replace(name.clone());
+                Ok(json!({ "feature": name }))
+            },
+            |s, doc, _| {
+                // Laying a face onto a plane that crosses the body fails in the kernel: try
+                // it first and refuse, rather than commit a failing feature (F7-8).
+                if !laying {
+                    return Ok(());
+                }
+                let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(doc, None, &());
+                let name = added.borrow();
+                match ev.errors().iter().find(|e| e.feature == *name) {
+                    Some(e) => Err(CommandError::args(e.message.clone())
+                        .hint(e.hint.clone().unwrap_or_else(|| "pick a plane the faces can reach".into()))),
+                    None => Ok(()),
+                }
+            },
+            |_, _, _| Value::Null,
+        )
     }
 }
 
@@ -358,9 +392,10 @@ impl Command for Draft {
             check_face_resolves(s, ctx, f)?;
         }
         let plane = super::datum::parse_plane_arg(s, ctx, &self.plane)?;
+        let owner = owner_body(s, ctx, &self.faces)?;
         edit(s, ctx, "Draft", |doc, rb| {
             let name = feature_name(doc, self.name, "Draft")?;
-            let body = body_for(doc, rb, self.body)?;
+            let body = body_for(doc, rb, self.body.or(owner))?;
             let def = DraftDef { body, faces, plane, angle, flip: self.flip };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Draft(def)));
             Ok(json!({ "feature": name }))
@@ -396,9 +431,10 @@ impl Command for Shell {
         for f in &faces {
             check_face_resolves(s, ctx, f)?;
         }
+        let owner = owner_body(s, ctx, &self.faces)?;
         edit(s, ctx, "Shell", |doc, rb| {
             let name = feature_name(doc, self.name, "Shell")?;
-            let body = body_for(doc, rb, self.body)?;
+            let body = body_for(doc, rb, self.body.or(owner))?;
             insert_feature(
                 doc,
                 rb,

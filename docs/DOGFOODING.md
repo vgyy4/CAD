@@ -542,3 +542,23 @@ pocket; `pocket_adaptive` in a `cam_job` with `regions`; a flange off a contour 
 cut-outs; `contour_flange` holes; hems; `sim.static` on the L bracket and with `field: true`
 or `render_view` of a mode shape; `move_face` with `angle`/`axis` on a tilted target, several
 faces at once, and `onto` on a face of a body that is later moved.
+
+### Run 7 fix status (2026-11-07)
+
+| # | Status |
+|---|---|
+| F7-1 | Fixed: only the cutting feature's own faces are unfolded as a new cut-out (earlier holes were listed again). OCCT test `modeling_sheet_holes.rs`. |
+| F7-2 | Fixed by the same change (an earlier cut across a bend made later cuts look unfoldable). |
+| F7-3 | Fixed: duplicate parameters, unknown constraint types and dimensions naming missing parameters are warned about. |
+| F7-4 | Fixed: each parameter is evaluated on import; one that does not evaluate falls back to its value with a warning. |
+| F7-5 | Fixed: extrude distances are bounded like the other numbers (below 1e12). |
+| F7-6 | Fixed: the volume check counts only the bodies the import made; an empty tree is refused. |
+| F7-7 | Fixed: face commands without `body` take the body holding the first face; missing-face candidates come from the named feature's body. |
+| F7-8 | Fixed: `move_face onto` is tried before committing and refused with the kernel's reason. |
+| F7-9 | Fixed: the description states the adaptive default stepover (0.25). |
+| F7-10 | Open: `cam_job` has no command of its own (the tool-list budget); write it with `document_set_text`. |
+| F7-11 | Fixed: `feature_hole` `at` takes numbers (mm) as well as lengths. |
+| F7-12 | Fixed: `sheet_export_flat` returns `offset_mm` (drawing point = pattern point + offset). |
+| F7-13 | Fixed: the grammar resource summarises the `.gtree.json` format. |
+| F7-14 | Fixed: no extra move before the first drill cycle; "1 of 4 holes is". |
+

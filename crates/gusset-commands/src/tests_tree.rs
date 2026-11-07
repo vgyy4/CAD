@@ -177,3 +177,35 @@ fn a_bad_sketch_or_parameter_is_skipped_without_spoiling_the_rest() {
     assert!(text.contains("param p_mm = w + 1 mm"), "{text}");
     assert!(!text.contains("huge"), "{text}");
 }
+
+#[test]
+fn bad_values_are_reported_not_imported() {
+    // Dogfooding run 7: F7-3 (duplicates, unknown constraints), F7-4 (1/0), F7-5 (a huge
+    // distance), F7-6 (an empty tree).
+    let mut s = session();
+    let mut sk = rect("S", xy(), 10.0, 10.0);
+    sk["constraints"] = json!([{"type": "frobnicate", "entities": ["l1"]}]);
+    let t = tree(
+        json!([
+            {"name": "a", "expression": "1 mm / 0", "value": 3.0, "kind": "length"},
+            {"name": "a", "expression": "2 mm", "value": 2.0, "kind": "length"}
+        ]),
+        json!([
+            sk,
+            {"type": "extrude", "name": "Far", "sketch": "S", "profiles": "all", "distance": 1e13},
+            {"type": "extrude", "name": "E", "sketch": "S", "profiles": "all", "distance": 1}
+        ]),
+        json!([{"name": "B", "volume_mm3": 100.0}]),
+    );
+    let r = import(&mut s, "v.gtree.json", &t).unwrap();
+    let w = r["warnings_user_text"].to_string();
+    assert!(w.contains("appears twice") && w.contains("unknown types"), "{r}");
+    assert!(w.contains("its expression was replaced by its value"), "{r}");
+    assert!(r["skipped_user_text"].to_string().contains("Far"), "{r}");
+    assert_eq!(r["volume_mm3"]["imported"], json!(100.0), "{r}");
+    assert!(!w.contains("differs"), "{r}");
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("param a = 3 mm") && text.contains("param a_2 = 2 mm"), "{text}");
+    let e = import(&mut s, "empty.gtree.json", &tree(json!([]), json!([]), json!([]))).unwrap_err();
+    assert!(e.message.contains("empty"), "{e:?}");
+}

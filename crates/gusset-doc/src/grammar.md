@@ -782,3 +782,18 @@ compute its toolpath and G-code from the current model. Lengths and the ramp ang
 expressions (parameters allowed); `stepover` (a fraction of the diameter), feeds (mm/min),
 `rpm` and the tab count are plain numbers. Defaults as for `cam_toolpath`.
 
+
+## Feature trees (`.gtree.json`, ADR 0042)
+
+`import_file` on a `.gtree.json` appends editable features instead of a body. The file is
+UTF-8 JSON in mm and degrees, world coordinates:
+`{"format": "gusset-feature-tree", "version": 1, "source": {...}, "parameters": [{"name", "expression", "value", "kind": "length|angle|number"}], "features": [...], "bodies": [{"name", "volume_mm3"}]}`.
+Features in order: `sketch` (`plane: {origin, x_axis, y_axis}` parallel to XY/XZ/YZ; `points`
+`{id, x, y}`, `curves` `line {start, end}` / `circle {center, radius}` / `arc {center, start, end}`
+counter-clockwise, optional `constraints` `{type, entities, value, parameter}` with this
+grammar's constraint types), `extrude` (`sketch`, `profiles: "all"` or `[{point: [u, v]}]`,
+`distance` along the sketch normal, `symmetric`, `distance_parameter`, `operation:
+new|join|cut|intersect`, `target`), `revolve` (`axis: {line}` or `{origin, direction}`, `angle`),
+`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`), and
+`unsupported` (`original_type`). The exporter plugins in `plugins/` write these files.
+Anything that cannot be imported is listed in `skipped_user_text` with its reason.

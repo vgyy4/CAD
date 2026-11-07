@@ -816,7 +816,7 @@ impl Toolpath {
                     put(&mut g, &xy);
                     continue;
                 }
-                put(&mut g, &format!("G0 {xy}"));
+                // The cycle's own X Y moves there (a G0 to it first moved twice: F7-14).
                 match d.peck {
                     Some(q) => {
                         put(&mut g, &format!("G98 G83 {xy} Z{} R{} Q{} F{}", n(bottom), n(r), n(q), n(s.plunge)));

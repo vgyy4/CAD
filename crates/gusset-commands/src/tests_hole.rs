@@ -75,7 +75,7 @@ fn preset_values_become_ordinary_parameters() {
         &mut s,
         &u,
         "feature.hole",
-        json!({"face": TOP, "at": [["30 mm", "10 mm"]], "standard": "ISO M8 tapped", "name": "Tap"}),
+        json!({"face": TOP, "at": [[30, "10 mm"]], "standard": "ISO M8 tapped", "name": "Tap"}),
     );
     let t = text(&s);
     for want in [

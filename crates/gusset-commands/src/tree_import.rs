@@ -196,6 +196,9 @@ pub fn parse(bytes: &[u8]) -> Result<Tree, CommandError> {
     if t.features.len() > MAX_FEATURES {
         return Err(CommandError::new("too_large", format!("more than {MAX_FEATURES} features")));
     }
+    if t.features.is_empty() && t.parameters.is_empty() {
+        return Err(CommandError::new("io", "the feature tree is empty"));
+    }
     if t.parameters.len() > MAX_PARAMS {
         return Err(CommandError::new("too_large", format!("more than {MAX_PARAMS} parameters")));
     }
@@ -470,9 +473,20 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         suffix: HashMap::new(),
         evaluations: 0,
     };
-    // Parameters go after the header lines.
+    // Parameters go after the header lines; each is evaluated with those before it, so one
+    // that cannot be (1/0, a unit clash) falls back to its value (dogfooding F7-4).
+    struct Known(HashMap<String, gusset_units::Quantity>);
+    impl gusset_units::expr::Scope for Known {
+        fn lookup(&self, name: &str) -> Option<gusset_units::Quantity> {
+            self.0.get(name).copied()
+        }
+    }
+    let mut known = Known(HashMap::new());
     let mut param_lines = String::new();
     for p in &tree.parameters {
+        if g.params.contains_key(&p.name) {
+            g.warn(format!("parameter {} appears twice: the later one is imported under a new name", p.name));
+        }
         let name = g.fresh(&p.name, "p");
         let unit = match p.kind.as_deref() {
             Some("angle") => "deg",
@@ -489,7 +503,10 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             .and_then(|x| {
                 x.variables().iter().try_fold(x.clone(), |acc, v| g.params.get(v).map(|to| acc.rename_var(v, to)))
             })
-            .map(|x| x.to_string());
+            .map(|x| x.to_string())
+            .filter(|e| {
+                gusset_units::expr::eval_str(e, &known).is_ok_and(|q| q.value.is_finite() && q.value.abs() < 1e12)
+            });
         let expr = match expr {
             Some(e) => e,
             None => {
@@ -503,6 +520,15 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
                 format!("{} {unit}", num(v)).trim().to_string()
             }
         };
+        match gusset_units::expr::eval_str(&expr, &known) {
+            Ok(q) => {
+                known.0.insert(name.clone(), q);
+            }
+            Err(_) => {
+                g.warn(format!("parameter {}: left out (its value does not evaluate)", p.name));
+                continue;
+            }
+        }
         let _ = writeln!(param_lines, "param {name} = {expr}");
         g.params.insert(p.name.clone(), name);
     }
@@ -556,7 +582,14 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     // Compare with the source's bodies.
     let ev = s.evaluate(&ctx.actor)?;
     let k = s.kernel().clone();
-    let ours: f64 = ev.bodies.iter().filter_map(|b| k.mass_properties(&b.shape).ok()).map(|m| m.volume).sum();
+    // Only the bodies the import made (the document may hold others: F7-6).
+    let ours: f64 = ev
+        .bodies
+        .iter()
+        .filter(|b| made.contains(&b.feature))
+        .filter_map(|b| k.mass_properties(&b.shape).ok())
+        .map(|m| m.volume)
+        .sum();
     let theirs: f64 = tree.bodies.iter().filter_map(|b| b.volume_mm3).sum();
     let mut out = json!({
         "features": made,
@@ -669,13 +702,24 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         "fixed",
         "symmetric",
     ];
+    let (mut unknown, mut dangling) = (0usize, 0usize);
     for k in &d.constraints {
         if !KINDS.contains(&k.kind.as_str()) {
+            unknown += 1;
             continue;
         }
         let Some(ents) = k.entities.iter().map(|e| map.ids.get(e).cloned()).collect::<Option<Vec<_>>>() else {
+            dangling += 1;
             continue;
         };
+        if let Some(pn) = &k.parameter
+            && !g.params.contains_key(pn)
+        {
+            g.warn(format!(
+                "sketch {}: a dimension names parameter {pn}, which was not imported; its value is used",
+                d.name
+            ));
+        }
         let mut args = ents.join(", ");
         let dimension = matches!(k.kind.as_str(), "distance" | "angle" | "radius" | "diameter");
         if let Some(v) = k.value.filter(|_| dimension) {
@@ -685,6 +729,12 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         }
         let id = next("k");
         let _ = writeln!(body, "  {id} = {}({args})", k.kind);
+    }
+    if unknown + dangling > 0 {
+        g.warn(format!(
+            "sketch {}: {unknown} constraints of unknown types and {dangling} on unknown entities left out",
+            d.name
+        ));
     }
     let mut text = String::new();
     if let Some(dl) = &placed.datum {
@@ -775,7 +825,8 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
         args.push(format!("axis: {a}"));
         args.push(format!("angle: {} deg", num(angle)));
     } else {
-        let dist = d.distance.filter(|v| v.is_finite() && v.abs() > 1e-9).ok_or("an extrude without a distance")?;
+        let dist = d.distance.filter(|v| v.abs() > 1e-9).ok_or("an extrude without a distance")?;
+        let dist = finite(dist, "the distance")?;
         args.push(format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), flipped)));
         if d.symmetric {
             args.push("symmetric: true".into());

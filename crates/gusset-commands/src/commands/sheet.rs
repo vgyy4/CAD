@@ -330,7 +330,10 @@ impl Command for ExportFlat {
             gusset_drawing::svg::to_svg(&sc).into_bytes()
         };
         crate::paths::write_file(&path, p, &bytes)?;
-        Ok(json!({ "written": p, "bytes": bytes.len(), "body": body }))
+        // The drawing's point = the pattern's point + offset (a 10 mm margin round the
+        // pattern's box), so its coordinates can be traced back (F7-12).
+        let offset = scene_offset(&flat).map(tidy);
+        Ok(json!({ "written": p, "bytes": bytes.len(), "body": body, "offset_mm": offset }))
     }
 }
 
@@ -350,9 +353,11 @@ fn tidy(v: f64) -> f64 {
 
 /// The flat pattern at 1:1 on a sheet with a 10 mm margin: outlines as visible lines,
 /// bend zone edges as centre lines, a note per bend.
-pub(crate) fn scene(flat: &FlatPattern) -> Scene {
-    let size = flat.size();
-    let margin = 10.0;
+/// The margin round a flat pattern on its drawing (mm).
+const FLAT_MARGIN: f64 = 10.0;
+
+/// What [`scene`] adds to a pattern point: the margin less the pattern's lowest corner.
+fn scene_offset(flat: &FlatPattern) -> [f64; 2] {
     let mut lo = [f64::INFINITY; 2];
     for p in flat.outlines.iter().flatten() {
         lo = [lo[0].min(p[0]), lo[1].min(p[1])];
@@ -360,7 +365,14 @@ pub(crate) fn scene(flat: &FlatPattern) -> Scene {
     if !lo[0].is_finite() {
         lo = [0.0, 0.0];
     }
-    let at = |p: [f64; 2]| [p[0] - lo[0] + margin, p[1] - lo[1] + margin];
+    [FLAT_MARGIN - lo[0], FLAT_MARGIN - lo[1]]
+}
+
+pub(crate) fn scene(flat: &FlatPattern) -> Scene {
+    let size = flat.size();
+    let margin = FLAT_MARGIN;
+    let off = scene_offset(flat);
+    let at = |p: [f64; 2]| [p[0] + off[0], p[1] + off[1]];
     let mut sc = Scene { size: [size[0] + 2.0 * margin, size[1] + 2.0 * margin], ..Scene::default() };
     for (i, l) in flat.outlines.iter().enumerate() {
         match flat.circles.iter().find(|c| c.outline == i) {

@@ -263,6 +263,18 @@ fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
         assert!(e.message.contains(why), "{target}: {}", e.message);
     }
     assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n, "nothing committed");
+    // A second, later body: a face of the first moved without `body` stays on the first (F7-7).
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch2", "x": 100, "y": 0, "width": 10, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "10 mm", "op": "new"}));
+    let _ = execute(
+        &mut s,
+        &CmdCtx::user(1),
+        "feature.move_face",
+        json!({"faces": ["Extrude1/cap(end)"], "translate": ["0 mm", "0 mm", "1 mm"]}),
+    );
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("move_face MoveFace1 (body: Extrude1,"), "{text}");
 }
 
 #[test]

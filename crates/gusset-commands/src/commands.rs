@@ -2121,9 +2121,12 @@ fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(),
     }
     // Faces of the same feature first.
     let prefix = r.to_string().split('/').next().unwrap_or_default().to_string();
+    // From the body that feature made, else the latest (dogfooding F7-7).
     let mut names: Vec<(bool, String)> = ev
         .bodies
-        .last()
+        .iter()
+        .find(|b| b.feature == prefix)
+        .or_else(|| ev.bodies.last())
         .map(|b| {
             b.names.faces.iter().map(|f| (f.to_string().starts_with(&format!("{prefix}/")), f.to_string())).collect()
         })

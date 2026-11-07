@@ -554,6 +554,43 @@ extrude Cut2 (profile: D, distance: 20 mm, symmetric: true, op: cut, body: Plate
     let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
     assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
     assert_eq!(flat.outlines.len(), 3, "{:?}", flat.outlines.iter().map(Vec::len).collect::<Vec<_>>());
+    // Each hole is one circle (F7-1: earlier holes were listed again by later cuts).
+    assert_eq!(flat.circles.len(), 2, "{:?}", flat.circles);
+}
+
+#[test]
+fn a_hole_after_a_cut_across_a_bend_still_unfolds() {
+    // Dogfooding F7-2: the cut across the bend's walls were taken for the hole's.
+    let base = "contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 3 mm, k_factor: 0.5)";
+    let (_, r) = eval(&format!(
+        "{base}
+
+sketch C (plane: XY, next_id: 9) {{
+  p1 = point(55.5, -22)
+  p2 = point(57.5, -22)
+  p3 = point(57.5, -18)
+  p4 = point(55.5, -18)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+extrude Cut (profile: C, distance: 8 mm, symmetric: true, op: cut, body: U)
+
+sketch D (plane: XY, next_id: 3) {{
+  p1 = point(30, -20)
+  c2 = circle(p1, 3)
+}}
+
+extrude Hole (profile: D, distance: 8 mm, symmetric: true, op: cut, body: U)"
+    ));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("U").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 3);
+    assert_eq!(flat.circles.len(), 1, "{:?}", flat.circles);
+    assert!((flat.circles[0].radius - 3.0).abs() < 1e-6);
 }
 
 #[test]

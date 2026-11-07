@@ -37,7 +37,7 @@ pub struct Hole {
     #[schemars(extend("x-essential" = true))]
     pub points: Option<String>,
     /// Or sites as [u, v] in the face's own sketch frame, any number: [["10 mm", "5 mm"], ...].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lengths_or_numbers")]
     pub at: Option<Vec<[String; 2]>>,
     /// "ISO M6 clearance normal"
     #[serde(default)]
@@ -488,4 +488,17 @@ impl Command for Hole {
             },
         )
     }
+}
+
+/// `at` sites as strings (`"10 mm"`) or plain numbers in mm, as the sketch commands take
+/// them (dogfooding F7-11).
+fn lengths_or_numbers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<[String; 2]>>, D::Error> {
+    use serde::de::Error;
+    let v: Option<Vec<[Value; 2]>> = serde::Deserialize::deserialize(d)?;
+    let one = |x: &Value| match x {
+        Value::String(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(format!("{n} mm")),
+        _ => Err(D::Error::custom("a site is [u, v] with lengths (\"10 mm\") or numbers in mm")),
+    };
+    v.map(|list| list.iter().map(|[a, b]| Ok([one(a)?, one(b)?])).collect()).transpose()
 }

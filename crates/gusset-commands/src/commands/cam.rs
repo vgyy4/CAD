@@ -201,8 +201,9 @@ impl CamJob {
                     let off = holes.iter().filter(|(_, d)| (d - tool).abs() > 1e-3 * tool.max(1.0)).count();
                     if off > 0 {
                         warnings.push(format!(
-                            "{off} of {} holes are not {} mm across: a drill cuts its own size (use bore to mill them)",
+                            "{off} of {} holes {} not {} mm across: a drill cuts its own size (use bore to mill them)",
                             holes.len(),
+                            if off == 1 { "is" } else { "are" },
                             (tool * 1000.0).round() / 1000.0
                         ));
                     }
@@ -333,7 +334,7 @@ pub struct ToolpathQuery {
 impl Command for ToolpathQuery {
     const ID: &'static str = "cam.toolpath";
     const TITLE: &'static str = "Toolpath";
-    const DESCRIPTION: &'static str = "2.5D pocket/profile/drill toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4, safe top+5): length, time";
+    const DESCRIPTION: &'static str = "2.5D toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4 (adaptive 0.25), safe top+5): length, time";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

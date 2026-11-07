@@ -961,7 +961,7 @@ impl Evaluator {
                     FeatureKind::Extrude(e) => s.solved.get(&e.profile.sketch).map(|sv| sv.frame.normal()),
                     _ => None,
                 };
-                match old.changed_by.is_empty().then(|| self.unfold_cuts(s, &b, old, dir)).flatten() {
+                match old.changed_by.is_empty().then(|| self.unfold_cuts(s, &b, old, dir, &f.name)).flatten() {
                     Some(cuts) => {
                         for c in cuts {
                             if let Some((centre, radius)) = c.circle {

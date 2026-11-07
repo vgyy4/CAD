@@ -1379,6 +1379,7 @@ impl Evaluator {
         b: &Body,
         flat: &FlatPattern,
         dir: Option<gusset_kernel::V3>,
+        feature: &str,
     ) -> Option<Vec<Cut>> {
         use gusset_doc::{CapSide, FaceKey};
         #[derive(Clone, Copy, PartialEq)]
@@ -1441,7 +1442,10 @@ impl Evaluator {
                 _ if n.feature == b.feature || flat.flange_ends.iter().any(|fe| fe.flange == n.feature) => {
                     (Kind::Other, None)
                 }
-                _ => (Kind::New, None),
+                // Only the cutting feature's own faces are new: earlier cuts are in the
+                // pattern already (dogfooding F7-1, F7-2).
+                _ if n.feature == feature => (Kind::New, None),
+                _ => (Kind::Other, None),
             };
             kinds.push(kind);
             maps.push(map);
