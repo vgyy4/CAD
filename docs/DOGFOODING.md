@@ -1014,7 +1014,7 @@ Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, h
 | F11-5 | Fixed: the mid-surface mesher iterated hash maps (random order per map) and sorted equal-length edges without a tie-break; it now uses ordered maps and breaks ties by vertex ids. An OCCT test runs the enclosure five times and gets identical element counts and results. |
 | F11-3 | Fixed: `cam_job` takes `holder: [...]` (4 lengths); values next to `job` override the job's instead of being refused or ignored (sketch, operation, tool and depth stay the job's). |
 | F11-9 | Fixed: `feature_add` of an extrude or revolve that adds to or cuts a body warns when it changed nothing, as `feature_extrude` does. |
-| F11-10 | Partly fixed: a suppressed `cam_job` is refused with a hint; the default `top` is unchanged. |
+| F11-10 | Fixed: a suppressed `cam_job` is refused with a hint; a cut whose height range misses every body (e.g. the default `top` of 0 under a part standing on the sketch plane) warns that it cuts air. |
 | F11-4 | Changed, not re-run on the bracket: only crease points held by two surfaces count toward the reported height (points near the stock bottom that are no crease were counted before), and the hint says how depth is measured instead of tool/region. |
 | F11-7 | Fixed: a holder narrower than its shank is refused; the length error says how many values came and that stickout runs from the tool tip to the holder's face. |
 | F10-3 | Fixed: a ring shorter than the tool's circumference (a helix narrower than the tool) is plunged instead of wound down turn after turn; rings at least that long still ramp. |

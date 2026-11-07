@@ -1382,6 +1382,10 @@ fn a_feature_is_added_from_its_statement() {
     let base = run(&mut s, &u, "cam.toolpath", json!({"job": "Job1"}));
     let flat = run(&mut s, &u, "cam.toolpath", json!({"job": "Job1", "ramp_deg": 0}));
     assert_ne!(base["cut_mm"], flat["cut_mm"], "{base} {flat}");
+    // Without `top` the pocket starts at the sketch plane, the plate's bottom: air (F11-10).
+    assert!(base["warnings"].to_string().contains("cuts air"), "{base}");
+    let on_top = run(&mut s, &u, "cam.toolpath", json!({"job": "Job1", "top": 10}));
+    assert!(on_top.get("warnings").is_none(), "{on_top}");
     run(
         &mut s,
         &u,

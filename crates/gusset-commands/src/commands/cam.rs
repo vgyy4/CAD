@@ -169,6 +169,44 @@ impl CamJob {
         Ok(solved.frame)
     }
 
+    /// A warning when the cut's height range along the sketch normal misses every body
+    /// (dogfooding F11-10: `top` defaults to the sketch plane, under a part standing on it).
+    fn misses_model(
+        &self,
+        s: &mut Session,
+        ctx: &CmdCtx,
+        top: f64,
+        depth: f64,
+    ) -> Result<Option<String>, CommandError> {
+        let frame = self.frame_of(s, ctx)?;
+        let ev = s.evaluate(&ctx.actor)?;
+        let k = s.kernel().clone();
+        let n = frame.normal();
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for b in &ev.bodies {
+            let Ok(bb) = k.bbox(&b.shape) else { continue };
+            for i in 0..8u8 {
+                let c = [bb.min, bb.max];
+                let pick = |axis: u8, m: usize| c.get(usize::from((i >> axis) & 1)).and_then(|v| v.get(m)).copied();
+                let (Some(x), Some(y), Some(z)) = (pick(0, 0), pick(1, 1), pick(2, 2)) else { continue };
+                let d = (x - frame.origin[0]) * n[0] + (y - frame.origin[1]) * n[1] + (z - frame.origin[2]) * n[2];
+                lo = lo.min(d);
+                hi = hi.max(d);
+            }
+        }
+        if !lo.is_finite() || (top - depth < hi - 1e-6 && top > lo + 1e-6) {
+            return Ok(None);
+        }
+        let r = |v: f64| (v * 1000.0).round() / 1000.0;
+        Ok(Some(format!(
+            "the cut runs from {} to {} above the sketch plane but the model spans {} to {}: it cuts air (set top)",
+            r(top),
+            r(top - depth),
+            r(lo),
+            r(hi)
+        )))
+    }
+
     fn run_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup, Vec<String>), CommandError> {
         let mut warnings = Vec::new();
         let sketch = self.sketch.clone().unwrap_or_default();
@@ -195,6 +233,9 @@ impl CamJob {
             }
         };
         let top = self.top.unwrap_or(0.0);
+        if let Some(w) = self.misses_model(s, ctx, top, depth)? {
+            warnings.push(w);
+        }
         let setup = Setup {
             tool_diameter: tool,
             top,
