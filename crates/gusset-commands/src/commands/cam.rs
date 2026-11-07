@@ -589,6 +589,17 @@ impl Command for ExportGcode {
         if self.job.resolved(s, ctx)?.operation.as_deref().is_some_and(|o| o.ends_with("_ball")) {
             g = g.replace("flat end mill", "ball end mill");
         }
+        // Holder lifts leave material: say so where the machinist reads (dogfooding F11-6).
+        if let Some(w) = warnings.iter().find(|w| w.starts_with("holder:")) {
+            let clean: String = w
+                .chars()
+                .filter(|c| c.is_ascii() && !c.is_ascii_control() && *c != '(' && *c != ')')
+                .take(200)
+                .collect();
+            if let Some(at) = g.find('\n') {
+                g.insert_str(at + 1, &format!("({clean})\n"));
+            }
+        }
         crate::paths::write_file(&path, p, g.as_bytes())?;
         let mut out = summary(&t, &setup, &warnings);
         if let Some(o) = out.as_object_mut() {

@@ -91,6 +91,15 @@ fn a_short_stickout_lifts_the_tool_away_from_a_tall_boss() {
     let r = run(&mut s, "cam.toolpath", job(json!([6.0, 8.0, 40.0, 10.0])));
     let w = r["warnings"].to_string();
     assert!(w.contains("holder:") && w.contains("leaving material"), "{r}");
+    // The G-code says so too.
+    let dir = std::env::temp_dir().join(format!("gusset-holder-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project_dir = Some(dir.clone());
+    let mut args = job(json!([6.0, 8.0, 40.0, 10.0]));
+    args["path"] = json!("h.nc");
+    run(&mut s, "cam.export_gcode", args);
+    let g = std::fs::read_to_string(dir.join("h.nc")).unwrap();
+    assert!(g.lines().nth(1).is_some_and(|l| l.starts_with("(holder:")), "{g:.300}");
     // With 40 mm stickout nothing touches.
     let r = run(&mut s, "cam.toolpath", job(json!([6.0, 35.0, 40.0, 40.0])));
     assert!(!r["warnings"].to_string().contains("holder:"), "{r}");

@@ -1018,3 +1018,4 @@ Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, h
 | F11-4 | Changed, not re-run on the bracket: only crease points held by two surfaces count toward the reported height (points near the stock bottom that are no crease were counted before), and the hint says how depth is measured instead of tool/region. |
 | F11-7 | Fixed: a holder narrower than its shank is refused; the length error says how many values came and that stickout runs from the tool tip to the holder's face. |
 | F10-3 | Fixed: a ring shorter than the tool's circumference (a helix narrower than the tool) is plunged instead of wound down turn after turn; rings at least that long still ramp. |
+| F11-6 | Partly fixed: the G-code carries the holder warning (collisions, lift, material left) as a comment under its title; lifted levels and a suggested stickout are not reported yet. |
