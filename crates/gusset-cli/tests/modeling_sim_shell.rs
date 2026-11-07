@@ -131,3 +131,42 @@ edge_flange F1 (body: Plate, line: l6, length: 30 mm, angle: 90 deg, bend_radius
     let (lo, hi) = seen.iter().fold((f64::MAX, 0.0f64), |(a, b), d| (a.min(*d), b.max(*d)));
     assert!(hi - lo < 0.05 * hi, "{seen:?}");
 }
+
+#[test]
+fn a_sheet_analysis_gives_the_same_result_every_time() {
+    // Dogfooding F11-5: element counts and results changed between identical calls.
+    let src = "gusset 1
+units mm
+
+sketch T (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(120, 0)
+  p3 = point(120, 80)
+  p4 = point(0, 80)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+tab Plate (profile: T, thickness: 1.5 mm)
+
+edge_flange F1 (body: Plate, line: l5, length: 25 mm, angle: 90 deg, bend_radius: 1.5 mm, k_factor: 0.44)
+
+edge_flange F2 (body: Plate, line: l6, length: 25 mm, angle: 90 deg, bend_radius: 1.5 mm, k_factor: 0.44, close: true)
+
+edge_flange F3 (body: Plate, line: l7, length: 25 mm, angle: 90 deg, bend_radius: 1.5 mm, k_factor: 0.44, close: true)
+
+edge_flange F4 (body: Plate, line: l8, length: 25 mm, angle: 90 deg, bend_radius: 1.5 mm, k_factor: 0.44, close: true)
+";
+    let mut s = session(src);
+    let args = json!({"fixed": ["F4/flat(l8)"], "loads": [{"face": "F2/flat(l6)", "force": [0, 0, -10]}]});
+    let first = run(&mut s, "sim.static", args.clone());
+    assert_eq!(first["method"], "shell", "{first}");
+    for _ in 0..4 {
+        let again = run(&mut s, "sim.static", args.clone());
+        for k in ["elements", "max_displacement_mm", "max_von_mises_mpa"] {
+            assert_eq!(again[k], first[k], "{k}: {again} vs {first}");
+        }
+    }
+}

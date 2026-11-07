@@ -102,3 +102,15 @@ fn skin_strip_solver_iteration_count_stays_low() {
     // Measured: 297 with threshold incomplete Cholesky (10 902 with plain Jacobi).
     assert!(s.iterations <= 600, "{} iterations on {nodes} nodes", s.iterations);
 }
+
+#[test]
+fn the_mid_surface_is_the_same_every_time() {
+    // Dogfooding F11-5: shell meshes (and so results) changed from run to run.
+    let m = box_mesh([60.0, 40.0, 1.5]);
+    let first = mid_surface(&m, 1.5, 2.5).unwrap();
+    for _ in 0..8 {
+        let again = mid_surface(&m, 1.5, 2.5).unwrap();
+        assert_eq!(again.mesh, first.mesh);
+        assert_eq!(again.skin, first.skin);
+    }
+}

@@ -1011,3 +1011,4 @@ Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, h
 |---|---|
 | F11-1 | Fixed: next to lifted samples each step is sampled at an eighth of the tool radius and the tool climbs before moving across (or moves across before dropping); a unit test samples every move at 0.03 mm against the requirement. |
 | F11-2 | Fixed: the shank and holder get a 0.02 mm contact allowance, so a shank tangent to a wall is not a collision. |
+| F11-5 | Fixed: the mid-surface mesher iterated hash maps (random order per map) and sorted equal-length edges without a tie-break; it now uses ordered maps and breaks ties by vertex ids. An OCCT test runs the enclosure five times and gets identical element counts and results. |

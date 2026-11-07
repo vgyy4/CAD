@@ -7,7 +7,7 @@
 use crate::FeaError;
 use crate::shell::ShellMesh;
 use gusset_kernel::Mesh;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap};
 
 /// Most triangles the refinement makes (three quads each).
 pub const MAX_SKIN_TRIANGLES: usize = 40_000;
@@ -69,7 +69,7 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     // one, found in their grid cell or a neighbouring one (no split at a cell border).
     const WELD: f64 = 1e-4;
     let q = |p: V3| p.map(|c| libm::floor(c / (4.0 * WELD)) as i64);
-    let mut cells: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
+    let mut cells: BTreeMap<[i64; 3], Vec<u32>> = BTreeMap::new();
     let mut pos: Vec<V3> = Vec::new();
     let mut weld: Vec<u32> = Vec::with_capacity(mesh.positions.len());
     for p in &mesh.positions {
@@ -139,7 +139,7 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     // Faces joined across smooth edges, flooded from the largest face.
     let faces = mesh.face_ranges.len();
     let mut area = vec![0.0; faces];
-    let mut edges: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut edges: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
     for (i, t) in tris.iter().enumerate() {
         if let Some(a) = area.get_mut(t.face) {
             *a += t.area;
@@ -197,7 +197,7 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     // Refine: split the longest edge (with both its triangles) until every edge is at most h.
     let p = |pos: &[V3], i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);
     let elen = |pos: &[V3], a: u32, b: u32| norm(sub(p(pos, a), p(pos, b)));
-    let mut on_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    let mut on_edge: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
     let mut heap: BinaryHeap<(u64, u32, u32)> = BinaryHeap::new();
     let key = |a: u32, b: u32| (a.min(b), a.max(b));
     for (i, t) in tri.iter().enumerate() {
@@ -267,7 +267,7 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     // Each triangle as three quads: corner, edge midpoint, centre, edge midpoint.
     let mut nodes = pos.clone();
     let mut nrm = normal.clone();
-    let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut mids: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     let mut quads: Vec<[u32; 4]> = Vec::new();
     let mut midpoint = |nodes: &mut Vec<V3>, nrm: &mut Vec<V3>, a: u32, b: u32| -> u32 {
         *mids.entry(key(a, b)).or_insert_with(|| {
@@ -324,7 +324,7 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
 /// mesh's outline where there is one, and drops the triangles that collapse.
 fn collapse_short(tri: &mut [Option<[u32; 3]>], pos: &[V3], min: f64) {
     let key = |a: u32, b: u32| (a.min(b), a.max(b));
-    let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut uses: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     for v in tri.iter().flatten() {
         for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
             *uses.entry(key(a, b)).or_insert(0) += 1;
@@ -343,7 +343,7 @@ fn collapse_short(tri: &mut [Option<[u32; 3]>], pos: &[V3], min: f64) {
     let at = |i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);
     let mut short: Vec<(f64, u32, u32)> =
         uses.keys().map(|(a, b)| (norm(sub(at(*a), at(*b))), *a, *b)).filter(|(l, _, _)| *l < min).collect();
-    short.sort_by(|x, y| x.0.total_cmp(&y.0));
+    short.sort_by(|x, y| x.0.total_cmp(&y.0).then((x.1, x.2).cmp(&(y.1, y.2))));
     let mut parent: Vec<u32> = (0..pos.len() as u32).collect();
     fn find(parent: &mut [u32], mut i: u32) -> u32 {
         while let Some(&p) = parent.get(i as usize) {
@@ -404,7 +404,7 @@ fn flip_caps(tri: &mut [Option<[u32; 3]>], pos: &[V3], normal: &[V3]) {
     let at = |i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);
     let nrm = |i: u32| normal.get(i as usize).copied().unwrap_or([0.0; 3]);
     for _ in 0..4 {
-        let mut on_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        let mut on_edge: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
         for (i, v) in tri.iter().enumerate() {
             if let Some(v) = v {
                 for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
