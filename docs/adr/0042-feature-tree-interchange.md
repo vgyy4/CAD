@@ -1,0 +1,116 @@
+# ADR 0042: Feature-tree interchange (exporter plugins)
+
+Status: accepted (2026-11-07)
+
+## Context
+
+Proprietary CAD files read natively (tier 2: `.f3d`, `.sldprt`, Parasolid, ACIS) give exact
+bodies but no history. PROMPT.md asks for tier 1 as well: small exporter plugins that run
+inside the user's own copy of the source application (a Fusion Python add-in, a SolidWorks
+macro, an Onshape REST script) and dump the feature tree to an open JSON file that Gusset
+imports as editable features. The plugins cannot be run here (Windows/macOS, licences, GUI),
+so they stay thin dumpers written against the official API documentation, marked
+UNVERIFIED until a person runs their manual test script, and every mapping decision lives
+in the Rust importer, which is tested with hand-written files.
+
+## Decision
+
+### The file
+
+UTF-8 JSON, extension `.gtree.json`. All lengths are millimetres and all angles degrees,
+whatever the source document's units; coordinates are world coordinates of the source
+document (Z up for Fusion and Onshape as exported; SolidWorks' Y-up is converted by the
+plugin to Z-up: x' = x, y' = -z, z' = y).
+
+```json
+{
+  "format": "gusset-feature-tree",
+  "version": 1,
+  "source": { "app": "fusion | solidworks | onshape", "app_version": "...", "exporter": "plugins/fusion 0.1.0", "document": "Bracket" },
+  "parameters": [ { "name": "width", "expression": "40 mm", "value": 40.0, "kind": "length | angle | number" } ],
+  "features": [ { "type": "...", "name": "...", "...": "..." } ],
+  "bodies": [ { "name": "Body1", "volume_mm3": 12345.6, "bbox_mm": [[0, 0, 0], [40, 20, 10]] } ]
+}
+```
+
+- `parameters`: the user parameters. `value` is in mm / degrees / plain; `expression` is
+  the source app's text and is used only when it parses as a Gusset expression over the
+  parameters already defined (else the value is used and a warning names it).
+- `features`: in timeline order. Suppressed features are left out by the plugin.
+- `bodies`: the final bodies' volumes and boxes, for the importer to compare against and
+  report (`mismatches`), never to build from.
+
+### Feature types (version 1)
+
+`sketch`:
+```json
+{ "type": "sketch", "name": "Sketch1",
+  "plane": { "origin": [0,0,0], "x_axis": [1,0,0], "y_axis": [0,1,0] },
+  "points":  [ { "id": "p1", "x": 0, "y": 0, "construction": false } ],
+  "curves":  [ { "id": "l1", "type": "line", "start": "p1", "end": "p2", "construction": false },
+               { "id": "c1", "type": "circle", "center": "p3", "radius": 5 },
+               { "id": "a1", "type": "arc", "center": "p4", "start": "p5", "end": "p6" } ],
+  "constraints": [ { "type": "horizontal", "entities": ["l1"] },
+                   { "type": "distance", "entities": ["p1", "p2"], "value": 40, "parameter": "width" } ] }
+```
+Point coordinates are in the sketch's own frame (`plane`: world origin and unit axes). An
+arc runs counter-clockwise (about the plane normal x × y) from `start` to `end`. Ids are
+the plugin's own (any `[A-Za-z0-9_]{1,32}`); the importer renumbers them. Constraint types
+are Gusset's: `coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel,
+perpendicular, tangent, equal, distance, angle, radius, diameter, fixed, symmetric`
+(`angle`: the directed angle of Gusset's grammar; lengths in mm, angles in degrees).
+`parameter` names the user parameter driving a dimension, when there is one. Plugins may
+leave constraints out; the sketch then imports with its geometry fixed.
+
+`extrude`:
+```json
+{ "type": "extrude", "name": "Extrude1", "sketch": "Sketch1",
+  "profiles": "all" | [ { "point": [u, v] } ],
+  "distance": 10, "symmetric": false, "distance_parameter": "depth",
+  "operation": "new | join | cut | intersect", "target": "Extrude1" }
+```
+`profiles` picks sketch regions by a point inside each (sketch coordinates). `distance` is
+signed along the sketch normal (x × y); `symmetric` extends half each way. `target` is the
+name of the feature whose body a join/cut/intersect changes (default: the latest body).
+
+`revolve`: like `extrude` with `"axis": { "line": "l3" }` (a sketch line) or
+`{ "origin": [x,y,z], "direction": [x,y,z] }` (world) and `"angle": 360`.
+
+`fillet` / `chamfer`:
+```json
+{ "type": "fillet", "name": "Fillet1", "edges": [ { "midpoint": [x, y, z] } ], "radius": 2 }
+{ "type": "chamfer", "name": "Chamfer1", "edges": [ { "midpoint": [x, y, z] } ], "distance": 1 }
+```
+Edges are found by their midpoint (world mm) on the model as built so far: the importer
+picks the nearest edge within 0.01 mm (else the feature is skipped with a warning).
+
+`unsupported`: `{ "type": "unsupported", "name": "Loft3", "original_type": "LoftFeature" }`;
+the plugin writes this for every feature it does not export, so the report can list them.
+
+### The importer
+
+`import_file` reads a `.gtree.json` (the `format` field decides) and appends Gusset features
+to the document instead of an imported body: parameters first (names kept when free, else
+suffixed), then the features in order, generated as code-view text so they are parsed and
+validated like any other edit. Sketch planes: a plane that coincides with XY, XZ or YZ uses
+it (points re-projected into Gusset's frame for that plane, so any in-plane rotation or
+origin works); a plane parallel to one of them becomes a datum `plane` with an offset; any
+other plane is reported unsupported, with the features that depend on it. Fillet and
+chamfer edges are resolved after evaluating the features before them. The result reports
+features made, features skipped (with reasons), parameters, and for each source body its
+volume against the imported model's.
+
+### The plugins
+
+`plugins/fusion` (Python add-in, Fusion API), `plugins/solidworks` (VBA macro, SolidWorks API),
+`plugins/onshape` (Python script, Onshape REST API v6, keys from the environment, never
+committed). Each: README marked UNVERIFIED with the API version targeted, a manual test
+script (install, a test model, expected output) a person can follow in about ten minutes,
+and an exporter that only reads the source model and writes the file. docs/INTEROP.md lists
+them as UNVERIFIED until run against the real application.
+
+## Consequences
+
+Editable history from the three most used proprietary tools, for the common features
+(sketch, extrude, revolve, fillet, chamfer); everything else is reported per feature. The
+format is versioned; later versions add holes, patterns, shells and assemblies.
