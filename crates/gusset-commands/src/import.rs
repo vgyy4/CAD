@@ -50,6 +50,8 @@ enum Kind {
     Sat,
     /// A Fusion 360 archive: its binary ACIS bodies (`.smb`), as SAT (ADR 0039).
     F3d,
+    /// A feature tree written by an exporter plugin (`.gtree.json`, ADR 0042).
+    Tree,
 }
 
 /// Tier note for Parasolid imports.
@@ -96,6 +98,8 @@ pub struct PreparedImport {
     file_name: String,
     tier: &'static str,
     warnings: Vec<String>,
+    /// Set for a `.gtree.json`: features to add instead of bodies.
+    tree: Option<crate::tree_import::Tree>,
 }
 
 fn cancelled() -> CommandError {
@@ -174,11 +178,12 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "sat" | "sab" => Kind::Sat,
         "f3d" | "f3z" => Kind::F3d,
         "scad" => Kind::Scad,
+        "json" => Kind::Tree,
         other => match gusset_meshio::Format::from_extension(other) {
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
@@ -203,6 +208,16 @@ impl ImportJob {
     /// `cancelled`, `io` (parse or worker failures), `invalid_args` (too large).
     pub fn run(self, cancel: &CancelFlag) -> Result<PreparedImport, CommandError> {
         let bytes = read_capped(self.file, MAX_IMPORT_BYTES, cancel)?;
+        if matches!(self.kind, Kind::Tree) {
+            let tree = crate::tree_import::parse(&bytes)?;
+            return Ok(PreparedImport {
+                bodies: Vec::new(),
+                file_name: self.file_name,
+                tier: crate::tree_import::TIER,
+                warnings: Vec::new(),
+                tree: Some(tree),
+            });
+        }
         let (bodies, tier, warnings) = match self.kind {
             Kind::Brep(format) => {
                 let importer = self
@@ -257,6 +272,7 @@ impl ImportJob {
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "Fusion import is not available"))?;
                 f3d(&bytes, importer.as_ref(), cancel)?
             }
+            Kind::Tree => return Err(CommandError::args("a feature tree has no bodies")),
             Kind::FreeCad => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "FreeCAD import is not available"))?;
@@ -287,7 +303,7 @@ impl ImportJob {
         if bodies.is_empty() {
             return Err(CommandError::new("io", "the file contains no bodies"));
         }
-        Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings })
+        Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings, tree: None })
     }
 }
 
@@ -551,6 +567,9 @@ fn freecad(
 
 /// Phase 3 without policy checks: stores the blobs and commits the import features.
 pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<Value, CommandError> {
+    if let Some(tree) = &p.tree {
+        return crate::tree_import::apply(s, ctx, tree, &p.file_name);
+    }
     let stored: Vec<(String, String, ImportFormat)> =
         p.bodies.iter().map(|b| (b.name.clone(), s.put_blob(&b.blob).to_hex(), b.format)).collect();
     let file_name = p.file_name.clone();

@@ -41,3 +41,4 @@ google_accounts.json
 auth.json
 .netrc
 .git-credentials
+__pycache__/

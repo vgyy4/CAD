@@ -1,0 +1,245 @@
+{
+  "format": "gusset-feature-tree",
+  "version": 1,
+  "source": {
+    "app": "onshape",
+    "app_version": "Onshape REST v6",
+    "exporter": "plugins/onshape 0.1.0",
+    "document": "Bracket"
+  },
+  "parameters": [
+    {
+      "name": "width",
+      "expression": "40 mm",
+      "value": 40.0,
+      "kind": "length"
+    }
+  ],
+  "features": [
+    {
+      "type": "sketch",
+      "name": "Sketch 1",
+      "plane": {
+        "origin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "x_axis": [
+          1,
+          0,
+          0
+        ],
+        "y_axis": [
+          0,
+          1,
+          0
+        ]
+      },
+      "points": [
+        {
+          "id": "p1",
+          "x": 0.0,
+          "y": 0.0,
+          "construction": false
+        },
+        {
+          "id": "p2",
+          "x": 40.0,
+          "y": 0.0,
+          "construction": false
+        },
+        {
+          "id": "p3",
+          "x": 40.0,
+          "y": 20.0,
+          "construction": false
+        },
+        {
+          "id": "p4",
+          "x": 0.0,
+          "y": 20.0,
+          "construction": false
+        }
+      ],
+      "curves": [
+        {
+          "id": "c1",
+          "type": "line",
+          "start": "p1",
+          "end": "p2",
+          "construction": false
+        },
+        {
+          "id": "c2",
+          "type": "line",
+          "start": "p2",
+          "end": "p3",
+          "construction": false
+        },
+        {
+          "id": "c3",
+          "type": "line",
+          "start": "p3",
+          "end": "p4",
+          "construction": false
+        },
+        {
+          "id": "c4",
+          "type": "line",
+          "start": "p4",
+          "end": "p1",
+          "construction": false
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "type": "extrude",
+      "name": "Extrude 1",
+      "sketch": "Sketch 1",
+      "profiles": "all",
+      "operation": "new",
+      "distance": 10.0,
+      "symmetric": false
+    },
+    {
+      "type": "fillet",
+      "name": "Fillet 1",
+      "edges": [
+        {
+          "midpoint": [
+            40.0,
+            20.0,
+            5.0
+          ]
+        }
+      ],
+      "radius": 2.0
+    },
+    {
+      "type": "sketch",
+      "name": "Sketch 2",
+      "plane": {
+        "origin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "x_axis": [
+          1,
+          0,
+          0
+        ],
+        "y_axis": [
+          0,
+          0,
+          1
+        ]
+      },
+      "points": [
+        {
+          "id": "p1",
+          "x": 0.0,
+          "y": 0.0,
+          "construction": true
+        },
+        {
+          "id": "p2",
+          "x": 0.0,
+          "y": 20.0,
+          "construction": true
+        },
+        {
+          "id": "p3",
+          "x": 5.0,
+          "y": 0.0,
+          "construction": false
+        },
+        {
+          "id": "p4",
+          "x": 15.0,
+          "y": 0.0,
+          "construction": false
+        },
+        {
+          "id": "p5",
+          "x": 15.0,
+          "y": 5.0,
+          "construction": false
+        },
+        {
+          "id": "p6",
+          "x": 5.0,
+          "y": 5.0,
+          "construction": false
+        }
+      ],
+      "curves": [
+        {
+          "id": "c1",
+          "type": "line",
+          "start": "p1",
+          "end": "p2",
+          "construction": true
+        },
+        {
+          "id": "c2",
+          "type": "line",
+          "start": "p3",
+          "end": "p4",
+          "construction": false
+        },
+        {
+          "id": "c3",
+          "type": "line",
+          "start": "p4",
+          "end": "p5",
+          "construction": false
+        },
+        {
+          "id": "c4",
+          "type": "line",
+          "start": "p5",
+          "end": "p6",
+          "construction": false
+        },
+        {
+          "id": "c5",
+          "type": "line",
+          "start": "p6",
+          "end": "p3",
+          "construction": false
+        }
+      ],
+      "constraints": []
+    },
+    {
+      "type": "revolve",
+      "name": "Revolve 1",
+      "sketch": "Sketch 2",
+      "profiles": "all",
+      "operation": "join",
+      "angle": 360.0,
+      "symmetric": false,
+      "axis": {
+        "line": "c1"
+      }
+    },
+    {
+      "type": "unsupported",
+      "name": "Loft 1",
+      "original_type": "loft"
+    }
+  ],
+  "bodies": [
+    {
+      "name": "Part 1",
+      "volume_mm3": 7991.416
+    },
+    {
+      "name": "Part 2",
+      "volume_mm3": 2356.194
+    }
+  ]
+}

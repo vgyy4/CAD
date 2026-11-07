@@ -15,6 +15,7 @@ pub mod paths;
 pub mod registry;
 pub mod scad_build;
 pub mod session;
+pub mod tree_import;
 
 pub use error::CommandError;
 pub use registry::{Category, Command, CommandSpec, Flags, execute, find, preview, registry};
@@ -46,3 +47,5 @@ mod tests_sheet;
 mod tests_sketch;
 #[cfg(test)]
 mod tests_sweep;
+#[cfg(test)]
+mod tests_tree;

@@ -3534,7 +3534,7 @@ impl Command for ExportMesh {
     }
 }
 
-/// Imports a STEP, IGES, FreeCAD, STL, 3MF or OBJ file from the project folder.
+/// Imports a CAD, mesh or .gtree.json file from the project folder.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImportFile {

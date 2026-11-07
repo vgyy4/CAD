@@ -1,0 +1,58 @@
+{
+  "format": "gusset-feature-tree",
+  "version": 1,
+  "source": { "app": "solidworks", "app_version": "32.1.0", "exporter": "plugins/solidworks 0.1.0", "document": "GussetTest" },
+  "parameters": [
+    { "name": "width", "expression": "40 mm", "value": 40.0, "kind": "length" }
+  ],
+  "features": [
+    { "type": "sketch", "name": "Sketch1",
+      "plane": { "origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0] },
+      "points": [
+        { "id": "p1", "x": 0, "y": 0, "construction": false },
+        { "id": "p2", "x": 40, "y": 0, "construction": false },
+        { "id": "p3", "x": 40, "y": 20, "construction": false },
+        { "id": "p4", "x": 0, "y": 20, "construction": false }
+      ],
+      "curves": [
+        { "id": "l1", "type": "line", "start": "p1", "end": "p2", "construction": false },
+        { "id": "l2", "type": "line", "start": "p2", "end": "p3", "construction": false },
+        { "id": "l3", "type": "line", "start": "p3", "end": "p4", "construction": false },
+        { "id": "l4", "type": "line", "start": "p4", "end": "p1", "construction": false }
+      ],
+      "constraints": [
+        { "type": "horizontal", "entities": ["l1"] },
+        { "type": "vertical", "entities": ["l2"] },
+        { "type": "horizontal", "entities": ["l3"] },
+        { "type": "vertical", "entities": ["l4"] }
+      ] },
+    { "type": "extrude", "name": "Boss-Extrude1", "sketch": "Sketch1", "profiles": "all", "distance": 10, "symmetric": false, "operation": "new" },
+    { "type": "fillet", "name": "Fillet1", "edges": [ { "midpoint": [40, 20, 5] } ], "radius": 2 },
+    { "type": "sketch", "name": "Sketch2",
+      "plane": { "origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1] },
+      "points": [
+        { "id": "p1", "x": 20, "y": 10, "construction": false },
+        { "id": "p2", "x": 25, "y": 10, "construction": false },
+        { "id": "p3", "x": 25, "y": 20, "construction": false },
+        { "id": "p4", "x": 20, "y": 20, "construction": false }
+      ],
+      "curves": [
+        { "id": "l1", "type": "line", "start": "p1", "end": "p2", "construction": false },
+        { "id": "l2", "type": "line", "start": "p2", "end": "p3", "construction": false },
+        { "id": "l3", "type": "line", "start": "p3", "end": "p4", "construction": false },
+        { "id": "l4", "type": "line", "start": "p4", "end": "p1", "construction": false },
+        { "id": "l5", "type": "line", "start": "p1", "end": "p4", "construction": true }
+      ],
+      "constraints": [
+        { "type": "horizontal", "entities": ["l1"] },
+        { "type": "vertical", "entities": ["l2"] },
+        { "type": "horizontal", "entities": ["l3"] },
+        { "type": "vertical", "entities": ["l4"] },
+        { "type": "vertical", "entities": ["l5"] }
+      ] },
+    { "type": "revolve", "name": "Revolve1", "sketch": "Sketch2", "profiles": "all", "axis": { "line": "l5" }, "angle": 360, "symmetric": false, "operation": "join" }
+  ],
+  "bodies": [
+    { "name": "Revolve1", "volume_mm3": 8776.814, "bbox_mm": [[0, -5, 0], [40, 20, 20]] }
+  ]
+}

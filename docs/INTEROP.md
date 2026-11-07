@@ -22,9 +22,15 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 ## Feature-tree exporter plugins
 | Plugin | Status |
 |---|---|
-| `plugins/fusion` | not started; will be marked **UNVERIFIED** until run against real Fusion |
-| `plugins/solidworks` | not started; **UNVERIFIED** until run against real SolidWorks |
-| `plugins/onshape` | not started; testable via REST (needs API keys from the owner) |
+| `plugins/fusion` | written (Python add-in, sample file in `plugins/fusion/sample`); **UNVERIFIED** until run against real Fusion |
+| `plugins/solidworks` | written (VBA macro, SolidWorks 2024 API, manual test + sample); **UNVERIFIED** until run against real SolidWorks |
+| `plugins/onshape` | written (Python, REST API v6; sketch/extrude/revolve/fillet/chamfer); offline-tested against hand-written responses only; **UNVERIFIED** until run against Onshape (needs API keys) |
+
+The importer (`import_file` on a `.gtree.json`, ADR 0042) is tested with hand-written trees
+and with each plugin's `sample/expected.gtree.json`: sketches on any plane parallel to XY/XZ/YZ
+(offset planes become datum planes), extrude/revolve with profile picks, fillet/chamfer edges
+by midpoint, parameters kept as expressions where they parse. Everything else is listed in
+`skipped`, and source body volumes are compared with the imported model's.
 
 ## Reverse-engineering log
 Interoperability-only work from public documentation and our own sample files.

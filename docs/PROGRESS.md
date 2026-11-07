@@ -307,7 +307,12 @@ Phase 3 has started (see Next).
      shell elements for thin sheet bodies. Multigrid preconditioner
      done (both solvers; 13–17× fewer iterations, 2.7× faster). Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
-   - later: plugins.
+   - Feature-tree interchange done (ADR 0042): `import_file` on a `.gtree.json` appends
+     editable sketches, extrudes, revolves, fillets, chamfers and parameters; exporter
+     plugins written for Fusion (Python add-in), SolidWorks (VBA macro) and Onshape (REST
+     script), all **UNVERIFIED** until a person runs their README's manual test; each
+     sample file imports with its stated volume under OCCT. Next (format v2): holes,
+     patterns, shells, sketch planes at any angle.
    Every milestone goes through the reviewer, security reviewer and dogfooding.
 2. Post-MVP leftovers: dm-flakey power-loss tests on a real block device (M14) done:
    `scripts/powerloss.sh` (CI job `powerloss`) saves on ext4 over device-mapper, cuts the disk

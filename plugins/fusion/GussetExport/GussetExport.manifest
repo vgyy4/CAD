@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "7d1f3a52-5c2e-4a0b-9b0e-3f6a2c9d1e84",
+  "author": "Gusset project",
+  "description": {
+    "": "Exports the active design's timeline to a Gusset .gtree.json feature-tree file (UNVERIFIED)."
+  },
+  "version": "0.1.0",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
