@@ -94,6 +94,10 @@ impl Command for StaticQuery {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.loads.is_empty() {
+            // Nothing pushes: the answer would be zero everywhere (F8-13).
+            return Err(CommandError::args("no loads: give at least one {face, force}"));
+        }
         let (body, mesh, voxel, shortest, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
         // Sheet metal: shell elements on its mid-surface (voxels would need tiny cells).
@@ -187,7 +191,7 @@ impl StaticQuery {
         fixed: Vec<usize>,
         face: &FaceIndex,
     ) -> Result<Value, CommandError> {
-        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, &fixed)?;
+        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, &fixed, 40.0)?;
         let tol = SHELL_TOL;
         let mut area = vec![0.0; mid.mesh.nodes.len()];
         for q in &mid.mesh.quads {
@@ -285,12 +289,13 @@ impl StaticQuery {
 const SHELL_TOL: f64 = 0.06;
 
 /// A sheet body's mid-surface shell model (element size `voxel`, default the longest side
-/// / 40 but at least the thickness), its held nodes and the element size.
+/// / `per_side` but at least the thickness), its held nodes and the element size.
 fn shell_model(
     mesh: &gusset_kernel::Mesh,
     thickness: f64,
     voxel: Option<f64>,
     fixed: &[usize],
+    per_side: f64,
 ) -> Result<(gusset_fea::skin::MidSurface, Vec<u32>, f64), CommandError> {
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for p in &mesh.positions {
@@ -300,7 +305,7 @@ fn shell_model(
         }
     }
     let longest = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
-    let h = voxel.unwrap_or((longest / 40.0).max(thickness));
+    let h = voxel.unwrap_or((longest / per_side).max(thickness));
     let mid = gusset_fea::skin::mid_surface(mesh, thickness, h).map_err(fea_err)?;
     let mut held = Vec::new();
     for f in fixed {
@@ -388,7 +393,8 @@ impl ModalQuery {
         thickness: f64,
         fixed: &[usize],
     ) -> Result<Value, CommandError> {
-        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, fixed)?;
+        // Modes need many solves: a coarser default than statics (F8-10).
+        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, fixed, 25.0)?;
         let nodes = mid.mesh.nodes.clone();
         let quads = mid.mesh.quads.clone();
         let p = gusset_fea::ShellModalProblem {

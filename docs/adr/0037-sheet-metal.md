@@ -157,3 +157,9 @@ from the line, rn sin(angle) + u cos(angle), less the half gap. Walls leaning ba
 degrees would have to be trimmed, not extended, and are refused. OCCT test at 60 degrees:
 volume and flat area for close and mitre, up and down.
 
+Amendment (2026-11-07, dogfooding F8-3): tab corners that are not square close the same way.
+With a = bW . bO and c = outW . bO (the walls' directions past the corner in the flat
+pattern), a wall reaches s = (x c - gap/2 |bW - bO|) / (1 - a) past its line's end at a distance
+x out from the line; at a square corner that is s = x - gap / sqrt 2. OCCT test at 60 and 120
+degree corners: the flat pattern holds exactly the solid's volume (k 0.5).
+

@@ -1055,8 +1055,8 @@ impl Evaluator {
                 if (other.angle - me.angle).abs() > 1e-9 || other.down != me.down {
                     continue;
                 }
-                let Some((p, me_start, other_start)) = me.corner_with(&other) else { continue };
-                if (me.angle - std::f64::consts::FRAC_PI_2).abs() > 1e-9 {
+                let Some((p, me_start, other_start, square)) = me.corner_with(&other) else { continue };
+                if !square || (me.angle - std::f64::consts::FRAC_PI_2).abs() > 1e-9 {
                     // Other angles: both walls run to the plane that mirrors one into the
                     // other (equal radii), 0.1 mm short of it for a mitre.
                     if (me.r - other.r).abs() > 1e-9 {
@@ -1080,7 +1080,7 @@ impl Evaluator {
                             BodyOp::Add,
                             (Some(body), None),
                         )?;
-                        let (q1, q2, a1, a2) = w.angled_flap(p, ws, gap);
+                        let (q1, q2, a1, a2) = w.angled_flap(p, ws, o, os, gap);
                         if !splice(&mut nf.outlines, q1, q2, addv(q1, a1), addv(q2, a2)) {
                             return Err(bad(format!("the corner at {line} cannot be closed in the flat pattern")));
                         }
@@ -1172,7 +1172,7 @@ impl Wall {
     /// The shared end `p` of this wall's line and `o`'s, if they meet at an outside corner
     /// (each line leaves `p` against the other's outward direction), and whether `p` is the
     /// start of each line.
-    fn corner_with(&self, o: &Wall) -> Option<(P2, bool, bool)> {
+    fn corner_with(&self, o: &Wall) -> Option<(P2, bool, bool, bool)> {
         let near = |x: P2, y: P2| len(sub(x, y)) < 1e-6;
         for (p, ms) in [(self.a, true), (self.b, false)] {
             for (q, os) in [(o.a, true), (o.b, false)] {
@@ -1183,8 +1183,11 @@ impl Wall {
                 let away_me = unit(sub(if ms { self.b } else { self.a }, p));
                 let away_o = unit(sub(if os { o.b } else { o.a }, p));
                 let dot = |x: P2, y: P2| x[0] * y[0] + x[1] * y[1];
-                if dot(away_o, self.out) < -0.99 && dot(away_me, o.out) < -0.99 {
-                    return Some((p, ms, os));
+                // An outside corner: each line leaves `p` against the other's outward side
+                // (square when that is straight against it).
+                if dot(away_o, self.out) < -1e-6 && dot(away_me, o.out) < -1e-6 {
+                    let square = dot(away_o, self.out) < -0.99 && dot(away_me, o.out) < -0.99;
+                    return Some((p, ms, os, square));
                 }
             }
         }
@@ -1290,7 +1293,9 @@ impl Wall {
         }
         let mut frame = self.frame;
         frame.origin = self.corner_point(at_start);
-        let reach = 2.0 * (r + t + self.len) + 1.0;
+        // Past the end by as much as the wall's far side can need at this corner's angle.
+        let (a, c) = self.corner_ratio(at_start, o, o_start);
+        let reach = 2.0 * (r + t + self.len) * (c / (1.0 - a)).abs().max(1.0) + 1.0;
         let prism = k.extrude(
             &Profile { frame, regions: vec![Region2 { outer: Loop2 { edges }, holes: Vec::new() }] },
             &ExtrudeSpec { distance: self.reach(at_start, reach), symmetric: false },
@@ -1341,15 +1346,33 @@ impl Wall {
     /// In the flat pattern for a corner at another angle: the strip's side edge (from the
     /// bend's end to the flange's end) and how far past the corner the flap reaches at each
     /// end: the neutral layer's offset from the line, less the half gap across the plane.
-    fn angled_flap(&self, p: P2, at_start: bool, gap: f64) -> (P2, P2, P2, P2) {
-        let far = if at_start { self.b } else { self.a };
-        let dir = sub(p, far);
-        let u = mul(dir, 1.0 / len(dir).max(1e-300));
+    fn angled_flap(&self, p: P2, at_start: bool, o: &Wall, o_start: bool, gap: f64) -> (P2, P2, P2, P2) {
+        let u = self.beyond2(at_start);
         let rn = self.ba / self.angle.max(1e-300);
-        let c = gap / std::f64::consts::SQRT_2;
-        let w0 = (rn * libm::sin(self.angle) - c).max(0.0);
-        let w1 = (rn * libm::sin(self.angle) + self.len * libm::cos(self.angle) - c).max(0.0);
+        // Past the end by s where the mirror plane is: s (1 - a) = x c - gap/2 |bW - bO|, x the
+        // neutral layer's distance out from the line.
+        let (a, c) = self.corner_ratio(at_start, o, o_start);
+        let span = len(sub(u, o.beyond2(o_start)));
+        let reach = |x: f64| ((x * c - gap / 2.0 * span) / (1.0 - a).max(1e-9)).max(0.0);
+        let w0 = reach(rn * libm::sin(self.angle));
+        let w1 = reach(rn * libm::sin(self.angle) + self.len * libm::cos(self.angle));
         (addv(p, mul(self.out, self.ba)), addv(p, mul(self.out, self.ba + self.len)), mul(u, w0), mul(u, w1))
+    }
+
+    /// The flat-pattern direction past the line's start or end.
+    fn beyond2(&self, at_start: bool) -> P2 {
+        let far = if at_start { self.b } else { self.a };
+        let near = if at_start { self.a } else { self.b };
+        let d = sub(near, far);
+        mul(d, 1.0 / len(d).max(1e-300))
+    }
+
+    /// For a corner with `o`: how the other wall's direction past the corner splits into
+    /// this one's (a) and its outward side (c), in the flat pattern.
+    fn corner_ratio(&self, at_start: bool, o: &Wall, o_start: bool) -> (f64, f64) {
+        let bo = o.beyond2(o_start);
+        let dot = |x: P2, y: P2| x[0] * y[0] + x[1] * y[1];
+        (dot(self.beyond2(at_start), bo), dot(self.out, bo))
     }
 
     /// The signed extrusion that carries the profile `ext` past the line's start or end.

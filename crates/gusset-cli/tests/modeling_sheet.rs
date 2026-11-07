@@ -563,6 +563,53 @@ fn a_corner_between_60_degree_flanges_closes_on_the_mirror_plane() {
 }
 
 #[test]
+fn corners_that_are_not_square_close_too() {
+    // Dogfooding F8-3: tab corners of 120 and 60 degrees. With k 0.5 the flat pattern holds
+    // exactly the solid's volume (the flaps are the wedges at mid-thickness).
+    let area = |o: &Vec<[f64; 2]>| {
+        let n = o.len();
+        (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+    };
+    for (p3x, label) in [(70.0, "120"), (50.0, "60")] {
+        for close in ["true", "mitre"] {
+            let src = format!(
+                "gusset 1
+units mm
+
+sketch T (plane: XY, next_id: 9) {{
+  p1 = point(0, 0)
+  p2 = point(60, 0)
+  p3 = point({p3x}, 17.320508075688775)
+  p4 = point(0, 17.320508075688775)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}}
+
+tab Plate (profile: T, thickness: 2 mm)
+
+edge_flange F1 (body: Plate, line: l5, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5)
+
+edge_flange F2 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5, close: {close})
+"
+            );
+            let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+            let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+            let mut ev = Evaluator::new(k);
+            let r = ev.evaluate(&doc, None, &());
+            assert!(r.errors().is_empty(), "{label} {close}: {:?}", r.errors());
+            let b = r.body("Plate").unwrap();
+            let m = ev.kernel().mass_properties(&b.shape).unwrap();
+            let flat = b.sheet.as_ref().unwrap();
+            assert_eq!(flat.outlines.len(), 1, "{label} {close}");
+            let f = area(&flat.outlines[0]) * 2.0;
+            assert!((f - m.volume).abs() < 1e-6 * m.volume, "{label} {close}: flat {f} vs {}", m.volume);
+        }
+    }
+}
+
+#[test]
 fn cuts_unfold_with_several_flanges_and_are_listed_once() {
     // Two flanges with a closed corner (their end caps are sheet faces, not the cut's), then
     // two holes in two features: three outlines, the plate and each hole once.

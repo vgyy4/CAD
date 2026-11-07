@@ -322,6 +322,20 @@ impl Command for MoveFace {
                 }
             }
         }
+        // Faces of one body only: a move edits one body (F8-12).
+        {
+            let ev = s.evaluate(&ctx.actor)?;
+            let mut bodies: Vec<&str> = faces
+                .iter()
+                .filter_map(|f| ev.bodies.iter().find(|b| b.names.face_index(f).is_some()).map(|b| b.feature.as_str()))
+                .collect();
+            bodies.sort_unstable();
+            bodies.dedup();
+            if let [a, b, ..] = bodies.as_slice() {
+                return Err(CommandError::args(format!("the faces are on more than one body ({a}, {b})"))
+                    .hint("move the faces of each body in its own move_face"));
+            }
+        }
         let owner = owner_body(s, ctx, &self.faces)?;
         let laying = onto.is_some();
         let added = std::cell::RefCell::new(String::new());

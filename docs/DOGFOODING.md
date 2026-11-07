@@ -671,3 +671,24 @@ other than the sketch's x, `stock_to_leave` (not a field), a non-hemisphere or f
 and the ball cutter against a concave surface; `pocket_rest` with islands or after a
 profile; G-code on a real controller; `move_face` with `angle`/`axis` on a tilted target,
 several faces at once; trees with `symmetric`, `intersect`, arcs in this run (run 7 did them).
+
+### Run 8 fix status (2026-11-07)
+
+| # | Status |
+|---|---|
+| F8-1 | Fixed: nodes move along the mesh's exact normals, short edges collapse, flat caps are flipped and a folded quad is left out; a bent tab and contour flanges solve at every size tried (OCCT test). |
+| F8-2 | Fixed: world revolve axes map onto the sketch's own x/y axis; the grammar says Gusset's X/Y are sketch axes. A part turn about the reversed axis is skipped with its reason. |
+| F8-3 | Fixed: closed and mitred corners at tab corners that are not square (mirror plane; OCCT test at 60 and 120 degrees). |
+| F8-4 | Open: `rebuild_ok` counts new errors only; a feature that kept failing is not repeated. |
+| F8-5 | Open: argument names differ between tools (budget-bound renames). |
+| F8-6 | Open (documented in ADR 0037): flaps are drawn at the neutral layer. |
+| F8-7 | Open: a cut through a bend and its wall at once is not unfolded (`changed_by`). |
+| F8-8 | Fixed: 3D finishing tessellates the model at 0.01 mm. |
+| F8-9 | Fixed: ball operations' G-code says ball end mill. |
+| F8-10 | Fixed: shell modes default to the longest side / 25 elements. |
+| F8-11 | Open: field and shape outputs are large (paged). |
+| F8-12 | Fixed: `move_face` with faces on two bodies is refused up front. |
+| F8-13 | Fixed: `sim_static` with no loads is refused. |
+| F8-14 | Open (nits). |
+| F8-15 | Fixed: 3D finishing without `top` is refused with what to give. |
+

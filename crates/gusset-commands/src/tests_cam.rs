@@ -144,7 +144,15 @@ fn a_bar_is_analysed_by_its_face_names() {
     assert!((bands[7]["upto"].as_f64().unwrap() - 10.0).abs() < 1e-3);
     assert_eq!(bands[7]["quads"][0].as_array().unwrap().len(), 12);
     assert_eq!(err(&mut s, "sim.static", json!({"fixed": [], "loads": []})).code, "invalid_args");
-    assert_eq!(err(&mut s, "sim.static", json!({"fixed": ["Nope/cap(end)"], "loads": []})).code, "not_found");
+    assert_eq!(
+        err(
+            &mut s,
+            "sim.static",
+            json!({"fixed": ["Nope/cap(end)"], "loads": [{"face": "Extrude1/cap(end)", "force": [0, 0, 1]}]})
+        )
+        .code,
+        "not_found"
+    );
 }
 
 #[test]
@@ -291,6 +299,13 @@ fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
     );
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("move_face MoveFace1 (body: Extrude1,"), "{text}");
+    // Faces of two bodies in one move are refused (F8-12).
+    let e = err(
+        &mut s,
+        "feature.move_face",
+        json!({"faces": ["Extrude1/cap(end)", "Extrude2/cap(end)"], "translate": ["0 mm", "0 mm", "1 mm"]}),
+    );
+    assert!(e.message.contains("more than one body"), "{e:?}");
 }
 
 #[test]

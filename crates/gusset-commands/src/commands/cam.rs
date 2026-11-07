@@ -192,6 +192,12 @@ impl CamJob {
                 gusset_cam::toolpath(&regions, op, &setup)
             }
             None if matches!(self.operation.as_deref(), Some("surface_ball" | "surface_flat")) => {
+                if self.top.is_none() {
+                    return Err(CommandError::args(
+                        "3D finishing needs top: the stock's top along the sketch's normal",
+                    )
+                    .hint("e.g. top: the model's highest point, depth: down to the lowest to finish"));
+                }
                 // 3D finishing over the model's surface, seen down the sketch's normal, inside
                 // the box of the sketch regions; lines along the sketch's x.
                 let regions = gusset_eval::sketch_regions(&sketch, &def, &params, units, &self.regions)
@@ -239,9 +245,10 @@ impl CamJob {
                 let n = frame.normal();
                 let (mut positions, mut indices) = (Vec::new(), Vec::new());
                 for b in &ev.bodies {
-                    let m = k
-                        .tessellate(&b.shape, &gusset_kernel::TessellationParams::default())
-                        .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                    // Finer than for display: the path rides on these facets (F8-8).
+                    let fine = gusset_kernel::TessellationParams { linear_deflection: 0.01, angular_deflection: 0.1 };
+                    let m =
+                        k.tessellate(&b.shape, &fine).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                     let base = positions.len() as u32;
                     positions.extend(m.positions.iter().map(|p| {
                         let d = gusset_kernel::sub(p.map(f64::from), frame.origin);
@@ -481,7 +488,10 @@ impl Command for ExportGcode {
             format!("{} {}", self.job.sketch.as_deref().unwrap_or(""), self.job.operation.as_deref().unwrap_or(""))
         });
         let title = format!("{what} {p}");
-        let g = t.gcode(&setup, &title);
+        let mut g = t.gcode(&setup, &title);
+        if self.job.resolved(s, ctx)?.operation.as_deref() == Some("surface_ball") {
+            g = g.replace("flat end mill", "ball end mill");
+        }
         crate::paths::write_file(&path, p, g.as_bytes())?;
         let mut out = summary(&t, &setup, &warnings);
         if let Some(o) = out.as_object_mut() {
