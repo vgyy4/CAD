@@ -650,6 +650,24 @@ edge_flange F2 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius
 }
 
 #[test]
+fn flanges_past_a_right_angle_meeting_at_a_corner_must_be_closed() {
+    // Dogfooding F9-5: left open, two 120 degree walls run into each other over the corner.
+    let src = |close: &str| {
+        format!(
+            "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 120 deg, bend_radius: 3 mm, k_factor: 0.5)\n\n\
+             edge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 120 deg, bend_radius: 3 mm, k_factor: 0.5{close})\n"
+        )
+    };
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let open = gusset_doc::Document::from_text(&src("")).unwrap();
+    let r = Evaluator::new(k.clone()).evaluate(&open, None, &());
+    assert!(r.errors().iter().any(|e| e.to_string().contains("run into each other")), "{:?}", r.errors());
+    let closed = gusset_doc::Document::from_text(&src(", close: true")).unwrap();
+    let r = Evaluator::new(k).evaluate(&closed, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+}
+
+#[test]
 fn cuts_unfold_with_several_flanges_and_are_listed_once() {
     // Two flanges with a closed corner (their end caps are sheet faces, not the cut's), then
     // two holes in two features: three outlines, the plate and each hole once.

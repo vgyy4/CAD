@@ -1015,6 +1015,51 @@ impl Evaluator {
         });
         let at = [line.to_string()];
         self.combine(s, name, &OpContext::Sheet { feature: name, at: &at }, res, BodyOp::Add, (Some(body), None))?;
+        // Walls bent past a right angle lean over a corner they share with a neighbouring
+        // flange and run into it; left open, the solid would lose the overlap while the flat
+        // pattern still draws both (dogfooding F9-5): refused, pointing at `close`.
+        if !e.close && flat.base.is_some() && end.is_none() {
+            let me = Wall {
+                frame: site.frame,
+                along: site.along,
+                a,
+                b,
+                out: out2,
+                r: e.r,
+                len: e.length,
+                down: e.down,
+                ba,
+                angle: e.angle,
+                name: String::new(),
+            };
+            let right = std::f64::consts::FRAC_PI_2 + 1e-9;
+            for fe in flat.flange_ends.iter().filter(|fe| fe.bend.on_tab) {
+                let fb = &fe.bend;
+                let other = Wall {
+                    frame: fb.frame,
+                    along: fb.along,
+                    a: fb.a,
+                    b: fb.b,
+                    out: fb.out,
+                    r: fb.radius - t,
+                    len: fb.length,
+                    down: fb.turn < 0.0,
+                    ba: fb.allowance,
+                    angle: fb.turn.abs(),
+                    name: String::new(),
+                };
+                if other.down == me.down
+                    && (me.angle > right || other.angle > right)
+                    && me.corner_with(&other).is_some()
+                {
+                    return Err(bad(format!(
+                        "{line}'s flange and {}'s lean over the corner they share and run into each other",
+                        fe.flange
+                    ))
+                    .with_hint("close the corner (close: true or close: mitre), or bend 90 deg or less"));
+                }
+            }
+        }
         if e.close {
             let me = Wall {
                 frame: site.frame,
