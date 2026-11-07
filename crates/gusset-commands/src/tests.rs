@@ -1404,6 +1404,8 @@ fn a_feature_is_added_from_its_statement() {
     )
     .unwrap_err();
     assert!(e.message.contains("4 values, not 2"), "{e:?}");
+    let e = execute(&mut s, &u, "feature.add", json!({"statement": "param w2 = 5 mm"})).unwrap_err();
+    assert!(e.hint.as_deref().is_some_and(|h| h.contains("param_set")), "{e:?}");
     // Taken names, sketches and malformed text are refused.
     for bad in [stmt, "sketch Sketch9(plane: XY) {}", "cam_job Job2(sketch: Sketch1"] {
         assert!(execute(&mut s, &u, "feature.add", json!({ "statement": bad })).is_err(), "{bad}");

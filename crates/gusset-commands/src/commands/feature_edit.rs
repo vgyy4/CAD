@@ -28,6 +28,10 @@ impl Command for FeatureAdd {
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let text = self.statement.trim();
+        if text.starts_with("param ") {
+            return Err(CommandError::args("feature_add adds features; a parameter is not one")
+                .hint("use param_set (or param_set_many)"));
+        }
         let f = parse_feature_object(text).map_err(|e| CommandError::args(e.to_string()))?;
         // Imports, components and sketches have their own commands (checked contents, ids).
         if matches!(

@@ -1019,3 +1019,4 @@ Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, h
 | F11-7 | Fixed: a holder narrower than its shank is refused; the length error says how many values came and that stickout runs from the tool tip to the holder's face. |
 | F10-3 | Fixed: a ring shorter than the tool's circumference (a helix narrower than the tool) is plunged instead of wound down turn after turn; rings at least that long still ramp. |
 | F11-6 | Partly fixed: the G-code carries the holder warning (collisions, lift, material left) as a comment under its title; lifted levels and a suggested stickout are not reported yet. |
+| F11-8 | Partly fixed: a `param` statement in `feature_add` points at `param_set`; line numbers, quoting and `cam_job` value checks remain. |
