@@ -1016,3 +1016,4 @@ Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, h
 | F11-9 | Fixed: `feature_add` of an extrude or revolve that adds to or cuts a body warns when it changed nothing, as `feature_extrude` does. |
 | F11-10 | Partly fixed: a suppressed `cam_job` is refused with a hint; the default `top` is unchanged. |
 | F11-4 | Changed, not re-run on the bracket: only crease points held by two surfaces count toward the reported height (points near the stock bottom that are no crease were counted before), and the hint says how depth is measured instead of tool/region. |
+| F11-7 | Fixed: a holder narrower than its shank is refused; the length error says how many values came and that stickout runs from the tool tip to the holder's face. |

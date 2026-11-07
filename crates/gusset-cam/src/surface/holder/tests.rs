@@ -172,3 +172,12 @@ fn a_shank_tangent_to_a_wall_is_not_a_collision() {
     let r = check_holder(&s, Cutter::Ball, &setup(2.0), &holder(2.2, 40.0), &path).unwrap();
     assert!(r.total_collisions > 0);
 }
+
+#[test]
+fn a_holder_narrower_than_its_shank_is_refused() {
+    let (p, i) = slot();
+    let s = Surface3d { positions: &p, indices: &i };
+    let bad = Holder { shank_diameter: 8.0, holder_diameter: 6.0, ..holder(8.0, 12.0) };
+    let e = check_holder(&s, Cutter::Ball, &setup(2.0), &bad, &pass()).unwrap_err();
+    assert!(matches!(&e, CamError::Invalid(m) if m.contains("less than the shank")), "{e:?}");
+}

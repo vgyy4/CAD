@@ -336,9 +336,11 @@ impl CamJob {
                     _ => gusset_cam::raster_finish(&surface, cutter, &spec, &setup),
                 };
                 match (t, self.holder.as_deref()) {
-                    (_, Some(h)) if h.len() != 4 => Err(gusset_cam::CamError::Invalid(
-                        "holder takes [shank D, flute length, holder D, stickout]".into(),
-                    )),
+                    (_, Some(h)) if h.len() != 4 => Err(gusset_cam::CamError::Invalid(format!(
+                        "holder takes 4 values, not {}: [shank D, flute length, holder D, stickout (tool tip to the \
+                         holder's face)]",
+                        h.len()
+                    ))),
                     (Ok(t), Some(&[shank, flute, holder_d, stickout])) => {
                         let h = gusset_cam::Holder {
                             shank_diameter: shank,

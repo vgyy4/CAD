@@ -195,7 +195,7 @@ importer builds each feature again with its world geometry reflected across the 
 sketches included, named `<name>_<mirror name>`; a copy's `target` naming another copied feature becomes that
 feature's copy; distances become plain numbers (a driving
 parameter's sign does not carry over). Reflected sketch planes that end up tilted land on
-tilted datum planes as above. Without `features` the whole
+tilted datum planes as above. Whole-body mirrors across a tilted plane mirror across such a datum plane too. Without `features` the whole
 body of `target` is mirrored with Gusset's `mirror` across a base or offset datum plane (the
 plane must be parallel to XY, XZ or YZ); `merge` (default true) unites the copy with the body.
 

@@ -283,7 +283,8 @@ fn bad_version_2_features_are_skipped_with_reasons_and_rolled_back() {
         assert!(sk.iter().any(|(f, _)| f == n), "{n} should be skipped: {r}");
     }
     assert!(sk.iter().any(|(f, why)| f == "H3" && why.contains("tapped")), "{r}");
-    assert!(sk.iter().any(|(f, why)| f == "M2" && why.contains("parallel")), "{r}");
+    // M2 (a tilted whole-body mirror) is tried now; the mock kernel cannot unite the touching
+    // copy (modeling_tree_import.rs checks tilted mirrors with OCCT).
     // Everything good before and after survived, and none of the bad text stayed.
     assert_eq!(r["features"], json!(["Base", "Block", "After"]), "{r}");
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();

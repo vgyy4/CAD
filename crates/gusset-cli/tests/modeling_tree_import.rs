@@ -334,3 +334,40 @@ fn features_mirrored_across_a_tilted_plane_land_on_their_reflection() {
         assert!((l - lo[i]).abs() < 1e-3 && (h - hi[i]).abs() < 1e-3, "{i}: {l}..{h} vs {}..{} ({b})", lo[i], hi[i]);
     }
 }
+
+#[test]
+fn a_body_mirrored_across_a_tilted_plane_lands_on_its_reflection() {
+    // The block [0, 10] x [0, 10] x [0, 5] reflected across the plane through (30, 0, 0)
+    // with normal (1, 0, 2) / sqrt 5, wholly on one side of it.
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"},
+        "features": [rect("S", plane_at(0.0), 0.0, 0.0, 10.0, 10.0), extrude("E", "S", 5.0, "new"),
+            {"type": "mirror", "name": "T", "target": "E", "merge": false, "plane": {"origin": [30, 0, 0], "normal": [1, 0, 2]}}]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let m = execute(&mut s, &CmdCtx::user(1), "query.model", json!({})).unwrap();
+    eprintln!("{m}");
+    let names: Vec<String> =
+        m["bodies"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap().to_string()).collect();
+    let copy = names.iter().find(|n| *n != "E").unwrap_or_else(|| panic!("{m}"));
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": copy})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 500.0);
+    let k = 1.0 / 5.0_f64.sqrt();
+    let n = [k, 0.0, 2.0 * k];
+    let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+    for p in
+        [0.0, 10.0].iter().flat_map(|x| [0.0, 10.0].map(|y| (*x, y))).flat_map(|(x, y)| [0.0, 5.0].map(|z| [x, y, z]))
+    {
+        let d = (p[0] - 30.0) * n[0] + p[2] * n[2];
+        for i in 0..3 {
+            let q = p[i] - 2.0 * d * n[i];
+            lo[i] = lo[i].min(q);
+            hi[i] = hi[i].max(q);
+        }
+    }
+    for i in 0..3 {
+        let (l, h) = (b["bbox_min_mm"][i].as_f64().unwrap(), b["bbox_max_mm"][i].as_f64().unwrap());
+        assert!((l - lo[i]).abs() < 1e-3 && (h - hi[i]).abs() < 1e-3, "{i}: {l}..{h} vs {}..{} ({b})", lo[i], hi[i]);
+    }
+}

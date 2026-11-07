@@ -598,16 +598,28 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
             break;
         }
     }
-    let (base, offset) =
-        found.ok_or("its plane is not parallel to XY, XZ or YZ (tilted planes are not imported yet)")?;
     let name = g.fresh(&d.name, "Mirror");
-    let plane = if offset.abs() < 1e-9 {
-        base.to_string()
-    } else {
-        let pn = g.fresh(&format!("{name}_plane"), "Plane");
-        let _ = writeln!(g.text, "\nplane {pn} (base: {base}, offset: {} mm)", num(offset));
-        g.made.push(pn.clone());
-        pn
+    let plane = match found {
+        Some((base, offset)) if offset.abs() < 1e-9 => base.to_string(),
+        Some((base, offset)) => {
+            let pn = g.fresh(&format!("{name}_plane"), "Plane");
+            let _ = writeln!(g.text, "\nplane {pn} (base: {base}, offset: {} mm)", num(offset));
+            g.made.push(pn.clone());
+            pn
+        }
+        // A tilted plane: chained datum planes, as for tilted sketches.
+        None => {
+            let prefix = g.fresh(&format!("{name}_m"), "Plane");
+            let placed = super::tilted(&prefix, o, n).ok_or("its plane is degenerate")?;
+            for (dn, dl) in &placed.datums {
+                if !g.taken.insert(dn.to_ascii_lowercase()) {
+                    return Err(format!("the name '{dn}' for its plane is taken"));
+                }
+                let _ = writeln!(g.text, "\n{dl}");
+                g.made.push(dn.clone());
+            }
+            placed.plane
+        }
     };
     let mut args = vec![format!("plane: {plane}")];
     if let Some(t) = &d.target {

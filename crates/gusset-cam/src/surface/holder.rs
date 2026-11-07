@@ -90,6 +90,12 @@ fn validate(setup: &Setup, h: &Holder) -> Result<(), CamError> {
             "holder: diameters and flute length must be positive, stickout at least the flute length".into(),
         ));
     }
+    if h.holder_diameter < h.shank_diameter {
+        return Err(CamError::Invalid(format!(
+            "holder: its diameter {} is less than the shank's {} (the order is [shank D, flute length, holder D, stickout])",
+            h.holder_diameter, h.shank_diameter
+        )));
+    }
     Ok(())
 }
 
