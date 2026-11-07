@@ -62,3 +62,143 @@ fn a_revolve_about_a_world_axis_lands_on_the_sketch_axis() {
     let v = &r["volume_mm3"];
     assert!((v["imported"].as_f64().unwrap() - 2356.194490).abs() < 1e-3, "{r}");
 }
+
+// ---- Version 2 (ADR 0042 amendment): holes, patterns, mirrors, shells ----
+
+fn rect(name: &str, plane: Value, x0: f64, y0: f64, w: f64, h: f64) -> Value {
+    json!({
+        "type": "sketch", "name": name, "plane": plane,
+        "points": [
+            {"id": "p1", "x": x0, "y": y0}, {"id": "p2", "x": x0 + w, "y": y0},
+            {"id": "p3", "x": x0 + w, "y": y0 + h}, {"id": "p4", "x": x0, "y": y0 + h}
+        ],
+        "curves": [
+            {"id": "l1", "type": "line", "start": "p1", "end": "p2"},
+            {"id": "l2", "type": "line", "start": "p2", "end": "p3"},
+            {"id": "l3", "type": "line", "start": "p3", "end": "p4"},
+            {"id": "l4", "type": "line", "start": "p4", "end": "p1"}
+        ]
+    })
+}
+
+fn disc(name: &str, plane: Value, x: f64, y: f64, r: f64) -> Value {
+    json!({
+        "type": "sketch", "name": name, "plane": plane,
+        "points": [{"id": "c", "x": x, "y": y}],
+        "curves": [{"id": "k", "type": "circle", "center": "c", "radius": r}]
+    })
+}
+
+fn plane_at(z: f64) -> Value {
+    json!({"origin": [0, 0, z], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]})
+}
+
+fn extrude(name: &str, sketch: &str, d: f64, op: &str) -> Value {
+    json!({"type": "extrude", "name": name, "sketch": sketch, "profiles": "all", "distance": d, "operation": op})
+}
+
+/// Imports a version 2 tree and returns the report and the one body's volume.
+fn import_v2(features: Vec<Value>) -> (Value, f64) {
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": features});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    (r, b["volume_mm3"].as_f64().unwrap())
+}
+
+fn assert_vol(got: f64, want: f64) {
+    assert!((got - want).abs() < 1e-2, "volume {got}, expected {want}");
+}
+
+#[test]
+fn a_plate_with_a_through_hole_and_a_counterbore() {
+    let pi = std::f64::consts::PI;
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 10.0, "new"),
+        json!({"type": "hole", "name": "Hole1", "face": {"point": [20, 10, 10], "normal": [0, 0, 1]},
+               "positions": [[10, 10, 10]], "diameter": 6, "through": true}),
+        json!({"type": "hole", "name": "Hole2", "face": {"point": [20, 10, 10]}, "variant": "counterbore",
+               "positions": [[30, 10, 10]], "diameter": 4, "cbore_diameter": 8, "cbore_depth": 3, "through": true}),
+    ]);
+    // 6 mm through (9 pi 10), 4 mm through (4 pi 10) and the 8 mm step 3 deep ((16 - 4) pi 3).
+    assert_vol(v, 8000.0 - pi * (90.0 + 40.0 + 36.0));
+}
+
+#[test]
+fn a_blind_hole_in_a_side_face() {
+    // A hole on the +X face of a block: the face frame is not the XY one.
+    let (r, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 20.0, 20.0),
+        extrude("Block", "Sketch1", 20.0, "new"),
+        json!({"type": "hole", "name": "Side", "face": {"point": [20, 10, 10], "normal": [1, 0, 0]},
+               "positions": [[20, 5, 15]], "diameter": 4, "depth": 10, "point_angle": 180}),
+    ]);
+    assert_vol(v, 8000.0 - std::f64::consts::PI * 4.0 * 10.0);
+    assert!(r["features"].as_array().unwrap().iter().any(|f| f == "Side"), "{r}");
+}
+
+#[test]
+fn a_linear_pattern_of_three_bosses() {
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 60.0, 20.0),
+        extrude("Plate", "Sketch1", 5.0, "new"),
+        disc("Sketch2", plane_at(5.0), 10.0, 10.0, 2.0),
+        extrude("Boss", "Sketch2", 4.0, "join"),
+        json!({"type": "pattern_linear", "name": "Row", "features": ["Boss"], "direction": [1, 0, 0],
+               "count": 3, "spacing": 20}),
+    ]);
+    assert_vol(v, 6000.0 + 3.0 * std::f64::consts::PI * 4.0 * 4.0);
+}
+
+#[test]
+fn a_circular_pattern_of_holes() {
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), -20.0, -20.0, 40.0, 40.0),
+        extrude("Plate", "Sketch1", 5.0, "new"),
+        json!({"type": "hole", "name": "H", "face": {"point": [0, 0, 5]}, "positions": [[10, 0, 5]],
+               "diameter": 2, "through": true}),
+        json!({"type": "pattern_circular", "name": "Ring", "features": ["H"], "count": 4,
+               "axis": {"origin": [0, 0, 0], "direction": [0, 0, 1]}, "angle": 360}),
+    ]);
+    assert_vol(v, 8000.0 - 4.0 * std::f64::consts::PI * 1.0 * 5.0);
+}
+
+#[test]
+fn a_mirrored_boss() {
+    // A boss at x = 10 on a plate spanning x = -20..20, mirrored across the YZ plane.
+    let (r, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), -20.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "Sketch1", 5.0, "new"),
+        disc("Sketch2", plane_at(5.0), 10.0, 10.0, 3.0),
+        extrude("Boss", "Sketch2", 4.0, "join"),
+        json!({"type": "mirror", "name": "Mirror1", "features": ["Boss"],
+               "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}}),
+    ]);
+    assert_vol(v, 4000.0 + 2.0 * std::f64::consts::PI * 9.0 * 4.0);
+    assert!(r["features"].as_array().unwrap().iter().any(|f| f == "Boss_Mirror1"), "{r}");
+}
+
+#[test]
+fn a_mirrored_body_merges_across_an_offset_plane() {
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+        extrude("Half", "Sketch1", 5.0, "new"),
+        json!({"type": "mirror", "name": "Both", "target": "Half", "merge": true,
+               "plane": {"origin": [10, 0, 0], "normal": [1, 0, 0]}}),
+    ]);
+    assert_vol(v, 1000.0);
+}
+
+#[test]
+fn a_shelled_box_with_the_top_face_removed() {
+    let (_, v) = import_v2(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 30.0, 20.0),
+        extrude("Box", "Sketch1", 10.0, "new"),
+        json!({"type": "shell", "name": "Shell1", "faces": [{"point": [15, 10, 10], "normal": [0, 0, 1]}],
+               "thickness": 2, "side": "inside"}),
+    ]);
+    assert_vol(v, 30.0 * 20.0 * 10.0 - 26.0 * 16.0 * 8.0);
+}

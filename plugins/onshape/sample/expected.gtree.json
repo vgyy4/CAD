@@ -1,6 +1,6 @@
 {
   "format": "gusset-feature-tree",
-  "version": 1,
+  "version": 2,
   "source": {
     "app": "onshape",
     "app_version": "Onshape REST v6",
@@ -227,6 +227,77 @@
       }
     },
     {
+      "type": "sketch",
+      "name": "Sketch 3",
+      "plane": {
+        "origin": [
+          0.0,
+          0.0,
+          10.0
+        ],
+        "x_axis": [
+          1,
+          0,
+          0
+        ],
+        "y_axis": [
+          0,
+          1,
+          0
+        ]
+      },
+      "points": [
+        {
+          "id": "p1",
+          "x": 10.0,
+          "y": 10.0,
+          "construction": false
+        }
+      ],
+      "curves": [],
+      "constraints": []
+    },
+    {
+      "type": "hole",
+      "name": "Hole 1",
+      "variant": "simple",
+      "face": {
+        "point": [
+          10.0,
+          10.0,
+          10.0
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ]
+      },
+      "positions": [
+        [
+          10.0,
+          10.0,
+          10.0
+        ]
+      ],
+      "diameter": 4.0,
+      "through": true
+    },
+    {
+      "type": "pattern_linear",
+      "name": "Linear pattern 1",
+      "features": [
+        "Hole 1"
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "count": 2,
+      "spacing": 10.0
+    },
+    {
       "type": "unsupported",
       "name": "Loft 1",
       "original_type": "loft"
@@ -235,7 +306,7 @@
   "bodies": [
     {
       "name": "Part 1",
-      "volume_mm3": 7991.416
+      "volume_mm3": 7740.0886
     },
     {
       "name": "Part 2",

@@ -127,3 +127,83 @@ curves end on points only. Parameter expressions are re-printed from their parse
 variables renamed to the imported names; unit and built-in names get a prefix. The report's
 untrusted strings are in `skipped_user_text` and `warnings_user_text`, truncated to 200
 characters and 50 entries; a `source` block larger than 2 KB is dropped.
+
+## Amendment (2026-11-07): format version 2 (holes, patterns, mirrors, shells)
+
+`"version": 2` adds five feature types. The importer accepts versions 1 and 2; a version 1
+file that holds a version 2 type has that feature skipped ("is in version 2 files"). All
+lengths mm, angles degrees, world coordinates, as before. The security properties of the
+amendment above hold unchanged: the same caps (256 picks per feature, 400 builds), finite
+numbers below 1e12, each feature built where it stands and taken back out if it fails, and
+untrusted text only in the `_user_text` report fields.
+
+Faces are found like edges: by a point on them, on the model as built so far. The importer
+evaluates the features before the one in hand and takes the planar face whose plane holds the
+point within 0.01 mm (when a `normal` is given, its outward normal must also agree within
+about 2.5 degrees), or the cylindrical face whose radius from its axis matches; of several
+faces on one surface the one whose centre is nearest wins. A point that no face holds skips
+the feature. Face picks are `{ "point": [x, y, z], "normal": [nx, ny, nz] }`, `normal`
+optional (outward).
+
+`hole`:
+```json
+{ "type": "hole", "name": "Hole1",
+  "face": { "point": [20, 10, 10], "normal": [0, 0, 1] },
+  "positions": [ [10, 10, 10], [30, 10, 10] ],
+  "diameter": 6, "through": true, "depth": 12,
+  "variant": "simple | counterbore | countersink",
+  "cbore_diameter": 10, "cbore_depth": 4,
+  "csink_diameter": 12, "csink_angle": 90, "point_angle": 118 }
+```
+`positions` are world points on the face (within 0.01 mm of its plane; at most 256), each
+becoming one hole. `depth` is from the face to the end of the full-diameter part (a blind
+hole adds a drill point of `point_angle`, default 118, 180 is flat); `through: true` replaces
+it. `counterbore` needs `cbore_diameter` (wider than `diameter`) and `cbore_depth`;
+`countersink` needs `csink_diameter` and `csink_angle` (full cone angle, default 90).
+Threaded and slotted holes are exported by the plugins as `simple` at the tap-drill diameter
+or as `unsupported`. The face must be planar. The importer converts positions into Gusset's
+`at: [e1: [u, v], ...]` in the face's own frame.
+
+`pattern_linear` / `pattern_circular`:
+```json
+{ "type": "pattern_linear", "name": "Pattern1", "features": ["Boss1"], "target": "Extrude1",
+  "direction": [1, 0, 0], "count": 3, "spacing": 20 }
+{ "type": "pattern_circular", "name": "Pattern2", "features": ["Hole1"],
+  "axis": { "origin": [0, 0, 0], "direction": [0, 0, 1] }, "count": 6, "angle": 360 }
+```
+`features` names earlier features (extrude/revolve joins and cuts, holes, fillets...) whose
+effect on their body is repeated (Gusset's `features:` pattern, ADR 0034); without it the body
+named by `target` (default the latest) is repeated as a whole. `count` includes the original
+(2 to 500). Linear: `spacing` mm between neighbours along `direction` (any length, it is
+normalised). Circular: `angle` is the total turn, as in Gusset: 360 spreads the copies evenly
+around the circle, a smaller angle spans first to last copy. The listed features must have
+been imported, and must add to or cut from one body.
+
+`mirror`:
+```json
+{ "type": "mirror", "name": "Mirror1", "features": ["Boss1"],
+  "plane": { "origin": [0, 0, 0], "normal": [1, 0, 0] } }
+{ "type": "mirror", "name": "Mirror2", "target": "Extrude1", "merge": true,
+  "plane": { "origin": [20, 0, 0], "normal": [1, 0, 0] } }
+```
+With `features` (extrude, revolve, hole, fillet, chamfer; revolves only of 360 degrees) the
+importer builds each feature again with its world geometry reflected across the plane, the
+sketches included, named `<name>_<mirror name>`; distances become plain numbers (a driving
+parameter's sign does not carry over). Reflected sketch planes must again be parallel to XY,
+XZ or YZ, so a mirror plane that tilts them skips the feature. Without `features` the whole
+body of `target` is mirrored with Gusset's `mirror` across a base or offset datum plane (the
+plane must be parallel to XY, XZ or YZ); `merge` (default true) unites the copy with the body.
+
+`shell`:
+```json
+{ "type": "shell", "name": "Shell1", "faces": [ { "point": [15, 10, 10], "normal": [0, 0, 1] } ],
+  "thickness": 2, "side": "inside | outside" }
+```
+`faces` are the faces to remove (planar or cylindrical, all on one body); `thickness` is the
+wall, positive; `side` (default `inside`) says which way the wall grows from the original
+surface.
+
+Everything else about a feature that the importer cannot express (variable-radius patterns,
+pattern seed bodies, tilted mirror planes, tapped holes with helical geometry) is skipped
+with its reason. The plugins export what the source API gives directly and write `unsupported`
+for the rest.

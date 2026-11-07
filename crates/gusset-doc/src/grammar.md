@@ -794,7 +794,7 @@ expressions (parameters allowed); `stepover` (a fraction of the diameter), feeds
 
 `import_file` on a `.gtree.json` appends editable features instead of a body. The file is
 UTF-8 JSON in mm and degrees, world coordinates:
-`{"format": "gusset-feature-tree", "version": 1, "source": {...}, "parameters": [{"name", "expression", "value", "kind": "length|angle|number"}], "features": [...], "bodies": [{"name", "volume_mm3"}]}`.
+`{"format": "gusset-feature-tree", "version": 1 | 2, "source": {...}, "parameters": [{"name", "expression", "value", "kind": "length|angle|number"}], "features": [...], "bodies": [{"name", "volume_mm3"}]}`.
 Features in order: `sketch` (`plane: {origin, x_axis, y_axis}` parallel to XY/XZ/YZ; `points`
 `{id, x, y}`, `curves` `line {start, end}` / `circle {center, radius}` / `arc {center, start, end}`
 counter-clockwise, optional `constraints` `{type, entities, value, parameter}` with this
@@ -802,5 +802,12 @@ grammar's constraint types), `extrude` (`sketch`, `profiles: "all"` or `[{point:
 `distance` along the sketch normal, `symmetric`, `distance_parameter`, `operation:
 new|join|cut|intersect`, `target`), `revolve` (`axis: {line}` or `{origin, direction}`, `angle`),
 `fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`), and
-`unsupported` (`original_type`). The exporter plugins in `plugins/` write these files.
+`unsupported` (`original_type`). Version 2 adds (faces are found by a point on them, like edges
+by midpoint): `hole` (`face: {point, normal}`, world `positions: [[x, y, z]]`, `diameter`,
+`through` or `depth`, `variant: simple|counterbore|countersink`, `cbore_diameter`, `cbore_depth`,
+`csink_diameter`, `csink_angle`, `point_angle`), `pattern_linear` (`features` or `target`,
+`direction`, `count`, `spacing`), `pattern_circular` (`features` or `target`, `axis: {origin,
+direction}`, `count`, `angle`), `mirror` (`plane: {origin, normal}`, `features` rebuilt reflected,
+or `target` + `merge` for a whole body) and `shell` (`faces: [{point, normal}]`, `thickness`,
+`side: inside|outside`). The exporter plugins in `plugins/` write these files.
 Anything that cannot be imported is listed in `skipped_user_text` with its reason.

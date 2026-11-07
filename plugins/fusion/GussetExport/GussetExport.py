@@ -1,7 +1,7 @@
 """GussetExport: Fusion (Autodesk Fusion 360) add-in, exports the timeline to .gtree.json.
 
 UNVERIFIED: written against the published Fusion API documentation, never run against
-Fusion. Format: docs/adr/0042-feature-tree-interchange.md, version 1.
+Fusion. Format: docs/adr/0042-feature-tree-interchange.md, version 2.
 
 Thin dumper: it only READS the design. Unit conversion (Fusion API lengths are cm ->
 mm, angles are radians -> degrees) and world coordinates are the only processing; every
@@ -421,6 +421,131 @@ def _edge_sets(f, ftype):
     return out
 
 
+def _face_pick(face):
+    """BRepFace -> {"point", "normal"} (a point on the face, mm; its outward normal)."""
+    p = face.pointOnFace
+    ok, n = face.evaluator.getNormalAtPoint(p)
+    if not ok:
+        raise ValueError("no face normal")
+    return {"point": _pt(p), "normal": _vec(n)}
+
+
+def _feature_names(entities):
+    """Names of the features in an ObjectCollection (bodies and faces are not features)."""
+    names = []
+    for i in range(entities.count):
+        e = entities.item(i)
+        if "Feature" not in _kind(e):
+            raise ValueError("pattern/mirror of %s (only features are exported)" % _kind(e))
+        names.append(e.name)
+    return names
+
+
+def _plane_of(entity):
+    """Planar BRepFace or ConstructionPlane -> {"origin", "normal"} (mm, world)."""
+    g = entity.geometry
+    if _kind(g) != "Plane":
+        raise ValueError("mirror plane is not planar")
+    return {"origin": _pt(g.origin), "normal": _vec(g.normal)}
+
+
+def _axis_line(entity):
+    """ConstructionAxis / linear BRepEdge / SketchLine -> (origin mm, unit direction)."""
+    g = entity.geometry
+    if _kind(entity) == "ConstructionAxis":
+        return _pt(g.origin), _vec(g.direction)
+    if _kind(g) != "Line3D":
+        raise ValueError("axis %s is not a line" % _kind(entity))
+    d = g.startPoint.vectorTo(g.endPoint)
+    d.normalize()
+    return _pt(g.startPoint), _vec(d)
+
+
+_HOLE_VARIANTS = (("SimpleHoleType", "simple"), ("CounterboreHoleType", "counterbore"),
+                  ("CountersinkHoleType", "countersink"))
+
+
+def _export_hole(f):
+    variant = None
+    for n, v in _HOLE_VARIANTS:
+        if getattr(adsk.fusion.HoleTypes, n, None) == f.holeType:
+            variant = v
+    if variant is None:
+        raise ValueError("hole type %s" % f.holeType)
+    pos = f.holePositionDefinition
+    if _kind(pos) != "SketchPointHolePositionDefinition":
+        raise ValueError("hole position %s" % _kind(pos))
+    face = pos.planarEntity
+    if _kind(face) != "BRepFace":
+        raise ValueError("hole placed on a construction plane")
+    pts = [_pt(pos.sketchPoints.item(i).worldGeometry) for i in range(pos.sketchPoints.count)]
+    entry = {"type": "hole", "name": f.name, "face": _face_pick(face), "positions": pts,
+             "variant": variant, "diameter": _mm(f.holeDiameter.value)}
+    if getattr(f, "tipAngle", None) is not None:
+        entry["point_angle"] = _deg(f.tipAngle.value)
+    if variant == "counterbore":
+        entry["cbore_diameter"] = _mm(f.counterboreDiameter.value)
+        entry["cbore_depth"] = _mm(f.counterboreDepth.value)
+    if variant == "countersink":
+        entry["csink_diameter"] = _mm(f.countersinkDiameter.value)
+        entry["csink_angle"] = _deg(f.countersinkAngle.value)
+    et = f.extentType
+    if et == adsk.fusion.HoleExtentTypes.AllHoleExtentType:
+        entry["through"] = True
+    elif et == adsk.fusion.HoleExtentTypes.DistanceHoleExtentType:
+        entry["depth"] = _mm(f.extentDefinition.distance.value)
+    else:
+        raise ValueError("hole extent %s" % et)
+    return entry
+
+
+def _features_only(f):
+    if f.patternEntityType != adsk.fusion.PatternEntityTypes.FeaturesPatternEntityType:
+        raise ValueError("pattern/mirror of bodies or faces")
+
+
+def _export_rect_pattern(f):
+    _features_only(f)
+    if getattr(f, "directionTwoEntity", None) is not None:
+        raise ValueError("two-direction pattern")
+    if getattr(f, "isSymmetricInDirectionOne", False):
+        raise ValueError("symmetric pattern")
+    _o, d = _axis_line(f.directionOneEntity)
+    count = int(f.quantityOne.value)
+    dist = _mm(f.distanceOne.value)
+    if f.patternDistanceType == adsk.fusion.PatternDistanceType.ExtentPatternDistanceType:
+        dist = dist / (count - 1)  # total extent -> spacing between neighbours
+    return {"type": "pattern_linear", "name": f.name, "features": _feature_names(f.inputEntities),
+            "direction": d, "count": count, "spacing": dist}
+
+
+def _export_circ_pattern(f):
+    _features_only(f)
+    if getattr(f, "isSymmetric", False):
+        raise ValueError("symmetric pattern")
+    o, d = _axis_line(f.axis)
+    return {"type": "pattern_circular", "name": f.name, "features": _feature_names(f.inputEntities),
+            "axis": {"origin": o, "direction": d}, "count": int(f.quantity.value),
+            "angle": _deg(f.totalAngle.value)}
+
+
+def _export_mirror(f):
+    _features_only(f)
+    return {"type": "mirror", "name": f.name, "features": _feature_names(f.inputEntities),
+            "plane": _plane_of(f.mirrorPlane)}
+
+
+def _export_shell(f):
+    faces = [_face_pick(f.inputEntities.item(i)) for i in range(f.inputEntities.count)]
+    inside = f.insideThickness.value if f.insideThickness is not None else 0.0
+    outside = f.outsideThickness.value if f.outsideThickness is not None else 0.0
+    if inside > 0 and outside > 0:
+        raise ValueError("shell with thickness on both sides")
+    return {"type": "shell", "name": f.name, "faces": faces,
+            "thickness": _mm(inside if inside > 0 else outside),
+            "side": "inside" if inside > 0 else "outside"}
+
+
 def _export_bodies(design):
     out = []
     bodies = design.rootComponent.bRepBodies
@@ -472,6 +597,16 @@ def build_tree(app, design):
                 features.extend(_edge_sets(ent, "fillet"))
             elif ot == "ChamferFeature":
                 features.extend(_edge_sets(ent, "chamfer"))
+            elif ot == "HoleFeature":
+                features.append(_export_hole(ent))
+            elif ot == "RectangularPatternFeature":
+                features.append(_export_rect_pattern(ent))
+            elif ot == "CircularPatternFeature":
+                features.append(_export_circ_pattern(ent))
+            elif ot == "MirrorFeature":
+                features.append(_export_mirror(ent))
+            elif ot == "ShellFeature":
+                features.append(_export_shell(ent))
             else:
                 features.append(_unsupported(name, ot))
         except Exception as e:
@@ -480,7 +615,7 @@ def build_tree(app, design):
 
     doc = app.activeDocument
     tree = {
-        "format": "gusset-feature-tree", "version": 1,
+        "format": "gusset-feature-tree", "version": 2,
         "source": {"app": "fusion", "app_version": app.version, "exporter": EXPORTER,
                    "document": doc.name if doc else design.rootComponent.name},
         "parameters": _user_parameters(design),

@@ -19,7 +19,10 @@ sketch lines) into world coordinates. It never modifies the document.
 Mapping: `newSketch` (lines, circles, arcs; plane from the sketch transform; no
 constraints yet), `extrude` (blind/symmetric; NEW/ADD/REMOVE/INTERSECT -> new/join/cut/
 intersect), `revolve` (full or one-direction), `fillet`, `chamfer` (equal distance),
-`assignVariable` -> `parameters`. Anything else becomes `unsupported` with the feature
+`assignVariable` -> `parameters`, `hole` (simple, counterbore, countersink, located by sketch
+points; the sketch plane is the face), `linearPattern` / `circularPattern` (of features),
+`mirror` (of features, planar face) and `shell` (faces and plane/axis/direction resolved with the
+FeatureScript evaluator, like fillet edges). Anything else becomes `unsupported` with the feature
 type; a feature that fails to convert also becomes `unsupported` with a note. Lengths in
 mm and angles in degrees (literal expressions with units are trusted, else the SI
 `value` is converted). Suppressed features are left out.

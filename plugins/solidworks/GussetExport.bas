@@ -4,7 +4,7 @@ Attribute VB_Name = "GussetExport"
 '
 ' UNVERIFIED - not yet run against SolidWorks. Written against the SolidWorks
 ' 2024 API help (help.solidworks.com/2024/english/api). Read-only: it never
-' changes the model. Writes <part>.gtree.json next to the part (ADR 0042, v1).
+' changes the model. Writes <part>.gtree.json next to the part (ADR 0042, v2).
 '
 ' Late bound on purpose (all API objects are "Object"), so no type-library
 ' reference is needed. Enum values are written as numeric constants below;
@@ -83,7 +83,7 @@ Sub main()
     Dim doc As String
     doc = "{" & vbCrLf & _
         "  ""format"": ""gusset-feature-tree""," & vbCrLf & _
-        "  ""version"": 1," & vbCrLf & _
+        "  ""version"": 2," & vbCrLf & _
         "  ""source"": { ""app"": ""solidworks"", ""app_version"": " & J(CStr(swApp.RevisionNumber)) & _
         ", ""exporter"": " & J(EXPORTER) & ", ""document"": " & J(DocName()) & " }," & vbCrLf & _
         "  ""parameters"": [" & params & "]," & vbCrLf & _
@@ -121,6 +121,17 @@ Private Sub ExportFeature(ByVal feat As Object)
             AddOrUnsupported feat, ExportFillet(feat), t
         Case "Chamfer"
             AddOrUnsupported feat, ExportChamfer(feat), t
+        Case "HoleWzd"
+            ExportSubSketches feat
+            AddOrUnsupported feat, ExportHole(feat), t
+        Case "LPattern"
+            AddOrUnsupported feat, ExportLinearPattern(feat), t
+        Case "CirPattern"
+            AddOrUnsupported feat, ExportCircularPattern(feat), t
+        Case "MirrorPattern"
+            AddOrUnsupported feat, ExportMirror(feat), t
+        Case "Shell"
+            AddOrUnsupported feat, ExportShell(feat), t
         Case "OriginProfileFeature", "MaterialFolder", "CommentsFolder", "FavoriteFolder", _
              "SelectionSetFolder", "SensorFolder", "DocsFolder", "HistoryFolder", "EnvFolder", _
              "DetailCabinet", "SurfaceBodyFolder", "SolidBodyFolder", "EqnFolder", _
@@ -502,6 +513,199 @@ Private Function EdgeList(ByVal items As Variant) As String
 Fail:
     gWarn = gWarn & "  edge midpoint failed (" & Err.Description & ")" & vbCrLf
     EdgeList = ""
+End Function
+
+'------------------------------------------------------------------ version 2: holes, patterns, mirror, shell
+' All of this is UNVERIFIED and from API help only: member names are checked on the first real run.
+' "{ point: [x,y,z], normal: [x,y,z] }" of a face (mm, Z-up; a point on it and its outward normal).
+Private Function FaceJson(ByVal face As Object) As String
+    On Error GoTo Fail
+    Dim ub As Variant, p As Variant, nm As Variant
+    ub = face.GetUVBounds                          ' [umin, umax, vmin, vmax]
+    p = face.Evaluate((ub(0) + ub(1)) / 2#, (ub(2) + ub(3)) / 2#, 0, 0)   ' first three: point (m, Y-up)
+    nm = face.Normal                               ' outward normal (Y-up)
+    FaceJson = "{ ""point"": " & JPt(Conv(p(0), p(1), p(2), True)) & ", ""normal"": " & JPt(Conv(nm(0), nm(1), nm(2), False)) & " }"
+    Exit Function
+Fail:
+    gWarn = gWarn & "  face point failed (" & Err.Description & ")" & vbCrLf
+    FaceJson = ""
+End Function
+
+' "[ ""name"", ... ]" of the features in an array; "" when one is not a feature
+Private Function FeatNamesJson(ByVal arr As Variant) As String
+    On Error GoTo Fail
+    If Not IsArray(arr) Then Exit Function
+    Dim i As Long, out As String
+    For i = LBound(arr) To UBound(arr)
+        out = out & IIf(Len(out) > 0, ", ", "") & J(arr(i).Name)
+    Next i
+    FeatNamesJson = "[" & out & "]"
+    Exit Function
+Fail:
+    FeatNamesJson = ""
+End Function
+
+' unit direction (Z-up) and a point (mm) of a straight edge or axis
+Private Function LineOf(ByVal ent As Object, ByRef origin As String, ByRef dir As String) As Boolean
+    On Error GoTo Fail
+    Dim lp As Variant
+    lp = ent.GetCurve.LineParams                   ' [root xyz, direction xyz] (m, Y-up)
+    origin = JPt(Conv(lp(0), lp(1), lp(2), True))
+    dir = JPt(Conv(lp(3), lp(4), lp(5), False))
+    LineOf = True
+    Exit Function
+Fail:
+    LineOf = False
+End Function
+
+Private Function PlaneJson(ByVal ent As Object) As String
+    On Error GoTo Fail
+    Dim pp As Variant
+    pp = ent.GetSurface.PlaneParams                ' [normal xyz, root point xyz] (m, Y-up)
+    PlaneJson = "{ ""origin"": " & JPt(Conv(pp(3), pp(4), pp(5), True)) & ", ""normal"": " & JPt(Conv(pp(0), pp(1), pp(2), False)) & " }"
+    Exit Function
+Fail:
+    PlaneJson = ""
+End Function
+
+Private Function ExportHole(ByVal feat As Object) As String
+    On Error GoTo Fail
+    Dim fd As Object, variant As String, js As String, sk As Object, sub1 As Object
+    Set fd = feat.GetDefinition
+    Select Case fd.Type                            ' swWzdGeneralHoleTypes_e: 0 counterbore, 1 countersink, 2 hole
+        Case 0: variant = "counterbore"
+        Case 1: variant = "countersink"
+        Case 2: variant = "simple"
+        Case Else: GoTo Fail
+    End Select
+    ' the placement sketch is the second sub-feature; its plane is the hole's face plane
+    Set sub1 = feat.GetFirstSubFeature
+    Do While Not sub1 Is Nothing
+        If sub1.GetTypeName2 = "ProfileFeature" Then Set sk = sub1.GetSpecificFeature2
+        Set sub1 = sub1.GetNextSubFeature
+    Loop
+    If sk Is Nothing Then GoTo Fail
+    Dim inv As Object, o As Variant, nrm As Variant, pts As Variant, i As Long, pos As String, w As Variant
+    Set inv = sk.ModelToSketchTransform.Inverse
+    o = XfPoint(inv, 0, 0, 0)
+    nrm = XfVec(inv, 0, 0, 1)
+    pts = sk.GetSketchPoints2
+    If Not IsArray(pts) Then GoTo Fail
+    For i = LBound(pts) To UBound(pts)
+        w = XfPoint(inv, pts(i).X, pts(i).Y, 0)
+        pos = pos & IIf(Len(pos) > 0, ", ", "") & JPt(W3(w, True))
+    Next i
+    js = "    { ""type"": ""hole"", ""name"": " & J(feat.Name) & ", ""variant"": " & J(variant) & _
+         ", ""face"": { ""point"": " & JPt(W3(o, True)) & ", ""normal"": " & JPt(W3(nrm, False)) & " }" & _
+         ", ""positions"": [" & pos & "], ""diameter"": " & N(fd.HoleDiameter * 1000#)
+    If variant = "counterbore" Then js = js & ", ""cbore_diameter"": " & N(fd.CounterBoreDiameter * 1000#) & ", ""cbore_depth"": " & N(fd.CounterBoreDepth * 1000#)
+    If variant = "countersink" Then js = js & ", ""csink_diameter"": " & N(fd.CounterSinkDiameter * 1000#) & ", ""csink_angle"": " & N(fd.CounterSinkAngle * 180# / PI)
+    If fd.EndCondition = 1 Then                    ' swEndConditions_e swEndCondThroughAll (VERIFY)
+        js = js & ", ""through"": true"
+    ElseIf fd.EndCondition = SW_END_BLIND Then
+        js = js & ", ""depth"": " & N(fd.Depth * 1000#)
+    Else
+        GoTo Fail
+    End If
+    ExportHole = js & " }"
+    Exit Function
+Fail:
+    If Err.Number <> 0 Then gWarn = gWarn & "  " & feat.Name & ": hole not exported (" & Err.Description & ")" & vbCrLf
+    ExportHole = ""
+End Function
+
+Private Function ExportLinearPattern(ByVal feat As Object) As String
+    On Error GoTo Fail
+    Dim fd As Object, accessed As Boolean, names As String, o As String, d As String
+    Set fd = feat.GetDefinition
+    If fd.D2TotalInstances > 1 Then GoTo Fail                ' two-direction patterns are not exported
+    If fd.GeometryPattern Then GoTo Fail                     ' pattern of faces, not features
+    fd.AccessSelections swModel, Nothing
+    accessed = True
+    names = FeatNamesJson(fd.GetPatternFeatureArray)
+    If Len(names) = 0 Then GoTo Fail
+    If Not LineOf(fd.D1Axis, o, d) Then GoTo Fail            ' direction reference: an edge
+    ExportLinearPattern = "    { ""type"": ""pattern_linear"", ""name"": " & J(feat.Name) & ", ""features"": " & names & _
+        ", ""direction"": " & d & ", ""count"": " & CLng(fd.D1TotalInstances) & ", ""spacing"": " & N(fd.D1Spacing * 1000#) & " }"
+    fd.ReleaseSelectionAccess: accessed = False
+    Exit Function
+Fail:
+    If Err.Number <> 0 Then gWarn = gWarn & "  " & feat.Name & ": linear pattern not exported (" & Err.Description & ")" & vbCrLf
+    On Error Resume Next
+    If accessed Then fd.ReleaseSelectionAccess
+    ExportLinearPattern = ""
+End Function
+
+Private Function ExportCircularPattern(ByVal feat As Object) As String
+    On Error GoTo Fail
+    Dim fd As Object, accessed As Boolean, names As String, o As String, d As String, ang As Double
+    Set fd = feat.GetDefinition
+    If fd.GeometryPattern Then GoTo Fail
+    fd.AccessSelections swModel, Nothing
+    accessed = True
+    names = FeatNamesJson(fd.GetPatternFeatureArray)
+    If Len(names) = 0 Then GoTo Fail
+    If Not LineOf(fd.Axis, o, d) Then GoTo Fail              ' axis: an axis, a cylindrical face's edge ...
+    If fd.EqualSpacing Then
+        ang = fd.Spacing * 180# / PI                         ' total angle (360 = evenly round)
+    Else
+        ang = fd.Spacing * 180# / PI * (fd.TotalInstances - 1)
+        If ang >= 360# - 0.000001 Then GoTo Fail
+    End If
+    ExportCircularPattern = "    { ""type"": ""pattern_circular"", ""name"": " & J(feat.Name) & ", ""features"": " & names & _
+        ", ""axis"": { ""origin"": " & o & ", ""direction"": " & d & " }, ""count"": " & CLng(fd.TotalInstances) & _
+        ", ""angle"": " & N(ang) & " }"
+    fd.ReleaseSelectionAccess: accessed = False
+    Exit Function
+Fail:
+    If Err.Number <> 0 Then gWarn = gWarn & "  " & feat.Name & ": circular pattern not exported (" & Err.Description & ")" & vbCrLf
+    On Error Resume Next
+    If accessed Then fd.ReleaseSelectionAccess
+    ExportCircularPattern = ""
+End Function
+
+Private Function ExportMirror(ByVal feat As Object) As String
+    On Error GoTo Fail
+    Dim fd As Object, accessed As Boolean, names As String, pl As String
+    Set fd = feat.GetDefinition
+    If fd.GeometryPattern Then GoTo Fail
+    fd.AccessSelections swModel, Nothing
+    accessed = True
+    names = FeatNamesJson(fd.GetPatternFeatureArray)
+    pl = PlaneJson(fd.MirrorPlane)                           ' a planar face (a reference plane: not handled)
+    If Len(names) = 0 Or Len(pl) = 0 Then GoTo Fail
+    ExportMirror = "    { ""type"": ""mirror"", ""name"": " & J(feat.Name) & ", ""features"": " & names & ", ""plane"": " & pl & " }"
+    fd.ReleaseSelectionAccess: accessed = False
+    Exit Function
+Fail:
+    If Err.Number <> 0 Then gWarn = gWarn & "  " & feat.Name & ": mirror not exported (" & Err.Description & ")" & vbCrLf
+    On Error Resume Next
+    If accessed Then fd.ReleaseSelectionAccess
+    ExportMirror = ""
+End Function
+
+Private Function ExportShell(ByVal feat As Object) As String
+    On Error GoTo Fail
+    Dim fd As Object, accessed As Boolean, faces As Variant, i As Long, out As String, fj As String
+    Set fd = feat.GetDefinition
+    fd.AccessSelections swModel, Nothing
+    accessed = True
+    faces = fd.GetFaces                                      ' UNVERIFIED member: the faces to remove
+    If Not IsArray(faces) Then GoTo Fail
+    For i = LBound(faces) To UBound(faces)
+        fj = FaceJson(faces(i))
+        If Len(fj) = 0 Then GoTo Fail
+        out = out & IIf(Len(out) > 0, ", ", "") & fj
+    Next i
+    ExportShell = "    { ""type"": ""shell"", ""name"": " & J(feat.Name) & ", ""faces"": [" & out & "], ""thickness"": " & _
+        N(fd.Thickness * 1000#) & ", ""side"": " & IIf(fd.Outward, """outside""", """inside""") & " }"
+    fd.ReleaseSelectionAccess: accessed = False
+    Exit Function
+Fail:
+    If Err.Number <> 0 Then gWarn = gWarn & "  " & feat.Name & ": shell not exported (" & Err.Description & ")" & vbCrLf
+    On Error Resume Next
+    If accessed Then fd.ReleaseSelectionAccess
+    ExportShell = ""
 End Function
 
 '------------------------------------------------------------------ parameters (global variables)

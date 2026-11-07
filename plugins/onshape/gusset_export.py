@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export an Onshape Part Studio's feature list to a Gusset `.gtree.json` (ADR 0042, v1).
+"""Export an Onshape Part Studio's feature list to a Gusset `.gtree.json` (ADR 0042, v2).
 
 UNVERIFIED - not yet run against Onshape. Read-only: only GET requests plus one POST to
 the FeatureScript evaluator (which does not modify the document).
@@ -220,6 +220,8 @@ def convert_sketch(name, info):
             c = _mm([g["xCenter"], g["yCenter"], g["zCenter"]])
             curves.append({"id": cid, "type": "circle", "center": pt.add(c, cons),
                            "radius": g["radius"] * 1000.0, "construction": cons})
+        elif kind == "point":  # free sketch point (hole locations)
+            pt.add(_mm(e.get("point") or e.get("startPoint")), cons)
         elif kind == "arc":
             c = _mm([g["xCenter"], g["yCenter"], g["zCenter"]])
             s, t = e["startPoint"], e["endPoint"]
@@ -228,7 +230,7 @@ def convert_sketch(name, info):
             curves.append({"id": cid, "type": "arc", "center": pt.add(c, cons), "start": pt.add(_mm(s), cons),
                            "end": pt.add(_mm(t), cons), "construction": cons})
     skipped = [str(e.get("entityType")) for e in info.get("geomEntities", [])
-               if e.get("entityType") not in ("line", "circle", "arc")]
+               if e.get("entityType") not in ("line", "circle", "arc", "point")]
     sk = {"type": "sketch", "name": name,
           "plane": {"origin": [round(c, 6) for c in origin], "x_axis": xa, "y_axis": ya},
           "points": pt.points, "curves": curves, "constraints": []}
@@ -277,6 +279,29 @@ def resolve_edges(client, ref, ids):
     body = {"script": FS_SCRIPT, "queries": [{"key": "ents", "value": [{"deterministicIds": ids}]}]}
     res = client.post(ps_path(ref, "featurescript"), body)
     return parse_fs_edges(_unwrap_fs(res))
+
+
+FS_FACE_SCRIPT = """function(context is Context, queries is map)
+{
+    var out = "";
+    for (var f in evaluateQuery(context, qEntityFilter(queries.ents, EntityType.FACE)))
+    {
+        var pl = evFaceTangentPlane(context, { "face" : f, "parameter" : vector(0.5, 0.5) });
+        out = out ~ toString(pl.origin[0] / meter) ~ "," ~ toString(pl.origin[1] / meter) ~ "," ~ toString(pl.origin[2] / meter)
+            ~ "," ~ toString(pl.normal[0]) ~ "," ~ toString(pl.normal[1]) ~ "," ~ toString(pl.normal[2]) ~ ";";
+    }
+    return out;
+}
+"""
+
+
+def resolve_faces(client, ref, ids):
+    """Faces by deterministic id -> list of (point_mm, outward normal); a point on each face."""
+    if not ids or client is None:
+        return []
+    body = {"script": FS_FACE_SCRIPT, "queries": [{"key": "ents", "value": [{"deterministicIds": ids}]}]}
+    res = client.post(ps_path(ref, "featurescript"), body)
+    return parse_fs_edges(_unwrap_fs(res))  # same "x,y,z,dx,dy,dz;" records
 
 
 # ---------------------------------------------------------------- features
@@ -354,6 +379,102 @@ def convert_edge_feature(kind, name, pr, client, ref):
     return f
 
 
+def _count(pr, key):
+    q = pr.get(key)
+    if q is None:
+        return None
+    v = q.get("value")
+    return int(round(float(v))) if v is not None else None
+
+
+def _feature_list(pr, key, names):
+    """Names of the features a pattern/mirror query list refers to, or None."""
+    fids = query_feature_ids(pr.get(key))
+    out = [names[f] for f in fids if f in names]
+    return out if out and len(out) == len(fids) else None
+
+
+def convert_hole(name, pr, sketch_info):
+    style = pr.get("style", {}).get("value", "SIMPLE")
+    variant = {"SIMPLE": "simple", "C_BORE": "counterbore", "C_SINK": "countersink"}.get(style)
+    if variant is None:
+        return unsupported(name, "hole", "hole style " + str(style))
+    fid = next(iter(query_feature_ids(pr.get("locations"))), None)
+    info = sketch_info.get(fid)
+    if info is None:
+        return unsupported(name, "hole", "hole locations are not from a sketch of this studio")
+    _origin, xa, ya = plane_from_info(info)
+    normal = [xa[1] * ya[2] - xa[2] * ya[1], xa[2] * ya[0] - xa[0] * ya[2], xa[0] * ya[1] - xa[1] * ya[0]]
+    positions = []
+    for e in info.get("geomEntities", []):
+        if e.get("entityType") == "point":
+            positions.append([round(c, 6) for c in _mm(e.get("point") or e.get("startPoint"))])
+    if not positions:
+        return unsupported(name, "hole", "no sketch points")
+    f = {"type": "hole", "name": name, "variant": variant,
+         "face": {"point": positions[0], "normal": normal},
+         "positions": positions, "diameter": quantity_to(pr.get("holeDiameter"), "length")}
+    end = pr.get("endStyle", {}).get("value", "BLIND")
+    if end == "THROUGH":
+        f["through"] = True
+    elif end == "BLIND":
+        f["depth"] = quantity_to(pr.get("holeDepth"), "length")
+    else:
+        return unsupported(name, "hole", "end style " + str(end))
+    if variant == "counterbore":
+        f["cbore_diameter"] = quantity_to(pr.get("cBoreDiameter"), "length")
+        f["cbore_depth"] = quantity_to(pr.get("cBoreDepth"), "length")
+    if variant == "countersink":
+        f["csink_diameter"] = quantity_to(pr.get("cSinkDiameter"), "length")
+        f["csink_angle"] = quantity_to(pr.get("cSinkAngle"), "angle")
+    if any(v is None for v in f.values()):
+        return unsupported(name, "hole", "missing dimension")
+    return f
+
+
+def convert_pattern(kind, name, pr, names, client, ref):
+    if pr.get("patternType", {}).get("value", "FEATURE") != "FEATURE":
+        return unsupported(name, kind, "pattern of parts or faces")
+    feats = _feature_list(pr, "entities", names)
+    count = _count(pr, "instanceCount")
+    if not feats or count is None:
+        return unsupported(name, kind, "pattern features or count")
+    if kind == "linearPattern":
+        edges = resolve_edges(client, ref, query_ids(pr.get("directionQuery")))
+        dist = quantity_to(pr.get("distance"), "length")
+        if len(edges) != 1 or dist is None:
+            return unsupported(name, kind, "direction or distance")
+        return {"type": "pattern_linear", "name": name, "features": feats, "direction": edges[0][1],
+                "count": count, "spacing": dist}
+    edges = resolve_edges(client, ref, query_ids(pr.get("axis")))
+    ang = quantity_to(pr.get("angle"), "angle") if pr.get("angle") else 360.0
+    if len(edges) != 1 or ang is None:
+        return unsupported(name, kind, "axis or angle")
+    return {"type": "pattern_circular", "name": name, "features": feats,
+            "axis": {"origin": edges[0][0], "direction": edges[0][1]}, "count": count, "angle": ang}
+
+
+def convert_mirror(name, pr, names, client, ref):
+    feats = _feature_list(pr, "entities", names)
+    planes = resolve_faces(client, ref, query_ids(pr.get("mirrorPlane")))
+    if not feats or len(planes) != 1:
+        return unsupported(name, "mirror", "mirrored features or plane (a planar face is needed)")
+    (origin, normal) = planes[0]
+    return {"type": "mirror", "name": name, "features": feats,
+            "plane": {"origin": [round(c, 6) for c in origin], "normal": normal}}
+
+
+def convert_shell(name, pr, client, ref):
+    faces = resolve_faces(client, ref, query_ids(pr.get("entities")))
+    t = quantity_to(pr.get("thickness"), "length")
+    if not faces or t is None:
+        return unsupported(name, "shell", "faces or thickness")
+    side = "outside" if pr.get("oppositeDirection", {}).get("value") else "inside"
+    return {"type": "shell", "name": name,
+            "faces": [{"point": [round(c, 6) for c in p], "normal": n} for p, n in faces],
+            "thickness": t, "side": side}
+
+
 def convert_variable(msg):
     pr = params_of(msg)
     nm = pr.get("name", {}).get("value")
@@ -378,10 +499,15 @@ def convert(features_json, sketch_infos, client=None, ref=None, document="",
             app_version="Onshape REST " + API_VERSION, bodies=None):
     """Conversion of API responses to the tree (client is only used for edge/axis resolution)."""
     sketch_info = {s.get("featureId"): s for s in sketch_infos.get("sketches", [])}
-    out = {"format": "gusset-feature-tree", "version": 1,
+    out = {"format": "gusset-feature-tree", "version": 2,
            "source": {"app": "onshape", "app_version": app_version, "exporter": EXPORTER, "document": document},
            "parameters": [], "features": [], "bodies": bodies or []}
     sketch_names, lines_by_sketch = {}, {}
+    names = {}  # featureId -> name, for patterns and mirrors
+    for feat in features_json.get("features", []):
+        m = feat.get("message", {})
+        if m.get("featureId"):
+            names[m["featureId"]] = m.get("name", "?")
     for feat in features_json.get("features", []):
         msg = feat.get("message", {})
         ftype, name = msg.get("featureType", feat.get("typeName", "?")), msg.get("name", "?")
@@ -407,6 +533,14 @@ def convert(features_json, sketch_infos, client=None, ref=None, document="",
                     convert_extrude_like(ftype, name, pr, sketch_names, lines_by_sketch, client, ref))
             elif ftype in ("fillet", "chamfer"):
                 out["features"].append(convert_edge_feature(ftype, name, pr, client, ref))
+            elif ftype == "hole":
+                out["features"].append(convert_hole(name, pr, sketch_info))
+            elif ftype in ("linearPattern", "circularPattern"):
+                out["features"].append(convert_pattern(ftype, name, pr, names, client, ref))
+            elif ftype == "mirror":
+                out["features"].append(convert_mirror(name, pr, names, client, ref))
+            elif ftype == "shell":
+                out["features"].append(convert_shell(name, pr, client, ref))
             else:
                 out["features"].append(unsupported(name, ftype))
         except Exception as e:  # per-feature isolation

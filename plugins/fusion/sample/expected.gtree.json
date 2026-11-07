@@ -1,6 +1,6 @@
 {
   "format": "gusset-feature-tree",
-  "version": 1,
+  "version": 2,
   "source": { "app": "fusion", "app_version": "2.0.0", "exporter": "plugins/fusion 0.1.0", "document": "GussetTest" },
   "parameters": [
     { "name": "width", "expression": "40 mm", "value": 40.0, "kind": "length" }
@@ -39,6 +39,15 @@
       "edges": [ { "midpoint": [40, 20, 5] } ], "radius": 2
     },
     {
+      "type": "hole", "name": "Hole1",
+      "face": { "point": [20, 10, 10], "normal": [0, 0, 1] },
+      "positions": [ [10, 10, 10] ], "variant": "simple", "diameter": 4, "point_angle": 118, "through": true
+    },
+    {
+      "type": "pattern_linear", "name": "Pattern1", "features": ["Hole1"],
+      "direction": [1, 0, 0], "count": 2, "spacing": 10
+    },
+    {
       "type": "sketch", "name": "Sketch2",
       "plane": { "origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1] },
       "points": [
@@ -64,7 +73,7 @@
     }
   ],
   "bodies": [
-    { "name": "Body1", "volume_mm3": 7991.416, "bbox_mm": [[0, 0, 0], [40, 20, 10]] },
+    { "name": "Body1", "volume_mm3": 7740.0886, "bbox_mm": [[0, 0, 0], [40, 20, 10]] },
     { "name": "Body2", "volume_mm3": 2356.194, "bbox_mm": [[60, -10, 0], [80, 10, 10]] }
   ]
 }

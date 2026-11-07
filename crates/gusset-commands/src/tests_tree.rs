@@ -209,3 +209,123 @@ fn bad_values_are_reported_not_imported() {
     let e = import(&mut s, "empty.gtree.json", &tree(json!([]), json!([]), json!([]))).unwrap_err();
     assert!(e.message.contains("empty"), "{e:?}");
 }
+
+fn tree2(features: Value) -> Value {
+    let mut t = tree(json!([]), features, json!([]));
+    t["version"] = json!(2);
+    t
+}
+
+fn box_features(w: f64, h: f64, d: f64) -> Vec<Value> {
+    vec![
+        rect("Base", xy(), w, h),
+        json!({"type": "extrude", "name": "Block", "sketch": "Base", "profiles": "all", "distance": d, "operation": "new"}),
+    ]
+}
+
+fn skipped(r: &Value) -> Vec<(String, String)> {
+    r["skipped_user_text"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v["feature"].as_str().unwrap().to_string(), v["reason"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+#[test]
+fn version_2_types_need_a_version_2_file_and_version_1_files_still_import() {
+    let mut s = session();
+    let mut t = tree2(json!([]));
+    t["version"] = json!(1);
+    let mut fs = box_features(10.0, 10.0, 5.0);
+    fs.push(json!({"type": "shell", "name": "Sh", "faces": [{"point": [5, 5, 5]}], "thickness": 1}));
+    t["features"] = json!(fs);
+    let r = import(&mut s, "v1.gtree.json", &t).unwrap();
+    assert_eq!(r["features"], json!(["Base", "Block"]), "{r}");
+    let sk = skipped(&r);
+    assert_eq!(sk.len(), 1, "{r}");
+    assert!(sk[0].1.contains("version 2"), "{r}");
+    let mut t3 = tree2(json!([]));
+    t3["version"] = json!(3);
+    let e = import(&mut s, "v3.gtree.json", &t3).unwrap_err();
+    assert_eq!(e.code, "io", "{e:?}");
+}
+
+#[test]
+fn bad_version_2_features_are_skipped_with_reasons_and_rolled_back() {
+    let mut s = session();
+    let mut fs = box_features(10.0, 10.0, 5.0);
+    fs.extend([
+        // A face nothing lies on.
+        json!({"type": "hole", "name": "H1", "face": {"point": [5, 5, 99]}, "positions": [[5, 5, 99]], "diameter": 2, "through": true}),
+        // Nonsense numbers and variants.
+        json!({"type": "hole", "name": "H2", "face": {"point": [5, 5, 5]}, "positions": [[5, 5, 5]], "diameter": -2, "through": true}),
+        json!({"type": "hole", "name": "H3", "face": {"point": [5, 5, 5]}, "positions": [[5, 5, 5]], "diameter": 2, "variant": "tapped", "through": true}),
+        json!({"type": "hole", "name": "H4", "face": {"point": [5, 5, 5]}, "positions": [[5, 5, 5]], "diameter": 4, "variant": "counterbore", "cbore_diameter": 3, "cbore_depth": 1, "through": true}),
+        json!({"type": "hole", "name": "H5", "face": {"point": [5, 5, 5]}, "positions": [[5, 5, 1e300]], "diameter": 2, "through": true}),
+        json!({"type": "pattern_linear", "name": "P1", "features": ["Nope"], "direction": [1, 0, 0], "count": 3, "spacing": 5}),
+        json!({"type": "pattern_linear", "name": "P2", "features": ["Block"], "direction": [1, 0, 0], "count": 1, "spacing": 5}),
+        json!({"type": "pattern_linear", "name": "P3", "features": ["Block"], "direction": [0, 0, 0], "count": 3, "spacing": 5}),
+        json!({"type": "pattern_circular", "name": "P4", "features": ["Block"], "count": 3}),
+        json!({"type": "mirror", "name": "M1", "features": ["Nope"], "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}}),
+        json!({"type": "mirror", "name": "M2", "plane": {"origin": [0, 0, 0], "normal": [1, 1, 0]}}),
+        json!({"type": "mirror", "name": "M3", "plane": {"origin": [0, 0, 0], "normal": [0, 0, 0]}}),
+        json!({"type": "shell", "name": "S1", "faces": [], "thickness": 1}),
+        json!({"type": "shell", "name": "S2", "faces": [{"point": [5, 5, 99]}], "thickness": 1}),
+        json!({"type": "shell", "name": "S3", "faces": [{"point": [5, 5, 5]}], "thickness": 1, "side": "sideways"}),
+        json!({"type": "shell", "name": "S4", "faces": [{"point": [5, 5, 5]}], "thickness": 0}),
+        json!({"type": "hole", "name": "H6"}),
+        rect("After", xy(), 3.0, 3.0),
+    ]);
+    let r = import(&mut s, "bad2.gtree.json", &tree2(json!(fs))).unwrap();
+    let sk = skipped(&r);
+    for n in ["H1", "H2", "H3", "H4", "H5", "P1", "P2", "P3", "P4", "M1", "M2", "M3", "S1", "S2", "S3", "S4", "H6"] {
+        assert!(sk.iter().any(|(f, _)| f == n), "{n} should be skipped: {r}");
+    }
+    assert!(sk.iter().any(|(f, why)| f == "H3" && why.contains("tapped")), "{r}");
+    assert!(sk.iter().any(|(f, why)| f == "M2" && why.contains("parallel")), "{r}");
+    // Everything good before and after survived, and none of the bad text stayed.
+    assert_eq!(r["features"], json!(["Base", "Block", "After"]), "{r}");
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    for kw in ["hole ", "pattern_", "mirror ", "shell "] {
+        assert!(!text.contains(kw), "{kw} left in the text: {text}");
+    }
+}
+
+#[test]
+fn a_mirrored_body_and_mirrored_features_import() {
+    let mut s = session();
+    let mut fs = box_features(10.0, 10.0, 5.0);
+    // The whole body across x = 20 (an offset datum plane), kept as its own body.
+    fs.push(json!({"type": "mirror", "name": "M", "target": "Block", "merge": false,
+                   "plane": {"origin": [20, 0, 0], "normal": [1, 0, 0]}}));
+    // The extrude mirrored across x = 0 (its sketch is mirrored with it).
+    fs.push(json!({"type": "mirror", "name": "MF", "features": ["Block"],
+                   "plane": {"origin": [0, 0, 0], "normal": [-1, 0, 0]}}));
+    let r = import(&mut s, "mir.gtree.json", &tree2(json!(fs))).unwrap();
+    assert_eq!(skipped(&r), vec![], "{r}");
+    let features = r["features"].as_array().unwrap();
+    assert!(features.contains(&json!("M_plane")) && features.contains(&json!("M")), "{r}");
+    assert!(features.contains(&json!("Base_MF")) && features.contains(&json!("Block_MF")), "{r}");
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("plane M_plane (base: YZ, offset: 20 mm)"), "{text}");
+    assert!(text.contains("mirror M (body: Block, plane: M_plane)"), "{text}");
+    // The reflected sketch lies on x in [-10, 0] and extrudes the same way (+z): its frame
+    // is mirrored, so the distance flips.
+    let b = run(&mut s, "query.body", json!({"body": "Block_MF"}));
+    assert_eq!(b["bbox_min_mm"], json!([-10.0, 0.0, 0.0]), "{b}");
+    assert_eq!(b["bbox_max_mm"], json!([0.0, 10.0, 5.0]), "{b}");
+}
+
+#[test]
+fn a_tilted_mirror_of_features_is_skipped() {
+    let mut s = session();
+    let mut fs = box_features(10.0, 10.0, 5.0);
+    fs.push(json!({"type": "mirror", "name": "T", "features": ["Block"],
+                   "plane": {"origin": [0, 0, 0], "normal": [1, 0, 2]}}));
+    let r = import(&mut s, "tilt.gtree.json", &tree2(json!(fs))).unwrap();
+    assert!(skipped(&r).iter().any(|(f, _)| f == "T"), "{r}");
+    assert_eq!(r["features"], json!(["Base", "Block"]), "{r}");
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(!text.contains("_T"), "{text}");
+}

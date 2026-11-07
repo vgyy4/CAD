@@ -1,6 +1,6 @@
 {
   "format": "gusset-feature-tree",
-  "version": 1,
+  "version": 2,
   "source": { "app": "solidworks", "app_version": "32.1.0", "exporter": "plugins/solidworks 0.1.0", "document": "GussetTest" },
   "parameters": [
     { "name": "width", "expression": "40 mm", "value": 40.0, "kind": "length" }
@@ -50,9 +50,11 @@
         { "type": "vertical", "entities": ["l4"] },
         { "type": "vertical", "entities": ["l5"] }
       ] },
-    { "type": "revolve", "name": "Revolve1", "sketch": "Sketch2", "profiles": "all", "axis": { "line": "l5" }, "angle": 360, "symmetric": false, "operation": "join" }
+    { "type": "revolve", "name": "Revolve1", "sketch": "Sketch2", "profiles": "all", "axis": { "line": "l5" }, "angle": 360, "symmetric": false, "operation": "join" },
+    { "type": "hole", "name": "CBORE Hole1", "variant": "counterbore", "face": { "point": [32, 10, 10], "normal": [0, 0, 1] },
+      "positions": [ [32, 10, 10] ], "diameter": 4, "cbore_diameter": 8, "cbore_depth": 3, "through": true }
   ],
   "bodies": [
-    { "name": "Revolve1", "volume_mm3": 8776.814, "bbox_mm": [[0, -5, 0], [40, 20, 20]] }
+    { "name": "Revolve1", "volume_mm3": 8538.053, "bbox_mm": [[0, -5, 0], [40, 20, 20]] }
   ]
 }

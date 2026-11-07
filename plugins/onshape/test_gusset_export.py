@@ -60,11 +60,25 @@ FEATURES = {"features": [
         enum("operationType", "ADD"), enum("revolveType", "FULL"),
         qlist("entities", featureId="FS2", deterministicIds=["JIR"]),
         qlist("axis", featureId="FS2", deterministicIds=["AX1"])]),
+    feature("newSketch", "FS3", "Sketch 3", []),
+    feature("hole", "FH1", "Hole 1", [
+        enum("style", "SIMPLE"), enum("endStyle", "THROUGH"),
+        qlist("locations", featureId="FS3", deterministicIds=["PT1"]),
+        quantity("holeDiameter", 0.004, "4 mm", "meter")]),
+    feature("linearPattern", "FP1", "Linear pattern 1", [
+        enum("patternType", "FEATURE"),
+        qlist("entities", featureId="FH1"), qlist("directionQuery", deterministicIds=["DIR"]),
+        quantity("distance", 0.01, "10 mm", "meter"), quantity("instanceCount", 2, "2")]),
     feature("loft", "FL1", "Loft 1", []),
     feature("chamfer", "FC1", "Suppressed chamfer", [], suppressed=True),
 ]}
 
+# sketch on the plane z = 10 mm holding one point at (10, 10)
+TOP = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0.01, 0, 0, 0, 1]
+
 SKETCHES = {"sketches": [
+    {"featureId": "FS3", "transform": {"matrix": TOP}, "geomEntities": [
+        {"entityId": "PT1", "entityType": "point", "isConstruction": False, "point": [0.01, 0.01, 0.01]}]},
     {"featureId": "FS1", "transform": {"matrix": IDENTITY}, "geomEntities": [
         line("L1", [0, 0, 0], [0.04, 0, 0]), line("L2", [0.04, 0, 0], [0.04, 0.02, 0]),
         line("L3", [0.04, 0.02, 0], [0, 0.02, 0]), line("L4", [0, 0.02, 0], [0, 0, 0])]},
@@ -81,11 +95,18 @@ class FakeClient:
 
     def post(self, path, body, query=""):
         self.posts.append((path, body))
+        ids = body["queries"][0]["value"][0]["deterministicIds"]
+        if ids == ["DIR"]:
+            return {"result": {"message": {"value": "0.0,0.0,0.01,1,0,0;"}}}
+        if ids == ["TOP"]:  # a face: point, outward normal
+            return {"result": {"message": {"value": "0.02,0.01,0.01,0,0,1;"}}}
+        if ids == ["YZ"]:
+            return {"result": {"message": {"value": "0,0.01,0.005,1,0,0;"}}}
         return {"result": {"typeName": "BTFSValueString", "message": {"value": "0.04,0.02,0.005,0,0,1;"}}}
 
 
 REF = {"did": "d1", "wvm": "w", "wvmid": "w1", "eid": "e1"}
-BODIES = [{"name": "Part 1", "volume_mm3": 7991.416}, {"name": "Part 2", "volume_mm3": 2356.194}]
+BODIES = [{"name": "Part 1", "volume_mm3": 7740.0886}, {"name": "Part 2", "volume_mm3": 2356.194}]
 
 
 class SigningTest(unittest.TestCase):
@@ -162,7 +183,40 @@ class ConvertTest(unittest.TestCase):
     def test_unsupported_and_suppressed(self):
         last = self.tree["features"][-1]
         self.assertEqual(last, {"type": "unsupported", "name": "Loft 1", "original_type": "loft"})
-        self.assertEqual(len(self.tree["features"]), 6)  # suppressed chamfer left out
+        self.assertEqual(len(self.tree["features"]), 9)  # suppressed chamfer left out
+
+    def test_hole_and_pattern(self):
+        names = {f["name"]: f for f in self.tree["features"]}
+        self.assertEqual(self.tree["version"], 2)
+        h = names["Hole 1"]
+        self.assertEqual((h["type"], h["variant"], h["through"], h["diameter"]), ("hole", "simple", True, 4.0))
+        self.assertEqual(h["face"], {"point": [10.0, 10.0, 10.0], "normal": [0, 0, 1]})
+        self.assertEqual(h["positions"], [[10.0, 10.0, 10.0]])
+        p = names["Linear pattern 1"]
+        self.assertEqual((p["type"], p["features"], p["count"], p["spacing"]), ("pattern_linear", ["Hole 1"], 2, 10.0))
+        self.assertEqual(p["direction"], [1.0, 0.0, 0.0])
+
+    def test_mirror_shell_and_circular_pattern(self):
+        feats = {"features": [
+            feature("extrude", "FE1", "Extrude 1", []),
+            feature("mirror", "FM1", "Mirror 1", [
+                qlist("entities", featureId="FE1"), qlist("mirrorPlane", deterministicIds=["YZ"])]),
+            feature("shell", "FSH", "Shell 1", [
+                qlist("entities", deterministicIds=["TOP"]), quantity("thickness", 0.002, "2 mm", "meter")]),
+            feature("circularPattern", "FCP", "Circular pattern 1", [
+                enum("patternType", "FEATURE"), qlist("entities", featureId="FE1"),
+                qlist("axis", deterministicIds=["DIR"]), quantity("instanceCount", 4, "4")]),
+            feature("mirror", "FM2", "Mirror of parts", [enum("patternType", "PART")]),
+        ]}
+        t = ge.convert(feats, {"sketches": []}, FakeClient(), REF)
+        m, sh, cp = t["features"][1], t["features"][2], t["features"][3]
+        self.assertEqual(m, {"type": "mirror", "name": "Mirror 1", "features": ["Extrude 1"],
+                             "plane": {"origin": [0.0, 10.0, 5.0], "normal": [1, 0, 0]}})
+        self.assertEqual(sh, {"type": "shell", "name": "Shell 1", "side": "inside", "thickness": 2.0,
+                              "faces": [{"point": [20.0, 10.0, 10.0], "normal": [0, 0, 1]}]})
+        self.assertEqual((cp["type"], cp["count"], cp["angle"], cp["features"]),
+                         ("pattern_circular", 4, 360.0, ["Extrude 1"]))
+        self.assertEqual(t["features"][4]["type"], "unsupported")  # mirror without features
 
     def test_symmetric_cut_and_opposite(self):
         feats = {"features": [FEATURES["features"][1], feature("extrude", "FX", "Cut", [

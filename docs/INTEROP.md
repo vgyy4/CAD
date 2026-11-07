@@ -29,7 +29,8 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 The importer (`import_file` on a `.gtree.json`, ADR 0042) is tested with hand-written trees
 and with each plugin's `sample/expected.gtree.json`: sketches on any plane parallel to XY/XZ/YZ
 (offset planes become datum planes), extrude/revolve with profile picks, fillet/chamfer edges
-by midpoint, parameters kept as expressions where they parse. Everything else is listed in
+by midpoint, parameters kept as expressions where they parse; format version 2 adds holes,
+linear/circular patterns, mirrors and shells (faces found by a point on them). Everything else is listed in
 `skipped`, and source body volumes are compared with the imported model's.
 
 ## Reverse-engineering log

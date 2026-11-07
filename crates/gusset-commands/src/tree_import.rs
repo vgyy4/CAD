@@ -1,7 +1,10 @@
 //! Feature-tree import (ADR 0042): a `.gtree.json` written by an exporter plugin inside
 //! Fusion, SolidWorks or Onshape becomes editable Gusset features: parameters, sketches,
-//! extrudes, revolves, fillets and chamfers, generated as code-view text and validated like
-//! any edit. Anything else is reported per feature.
+//! extrudes, revolves, fillets and chamfers (version 1), holes, patterns, mirrors and shells
+//! (version 2), generated as code-view text and validated like any edit. Anything else is
+//! reported per feature.
+
+mod v2;
 
 use crate::{CmdCtx, CommandError, Session};
 use gusset_kernel::{Region2, Seg2};
@@ -179,7 +182,7 @@ pub const TIER: &str = "editable features from the source application's feature 
 /// Parses and checks a tree file.
 ///
 /// # Errors
-/// `io` when it is not a version 1 `gusset-feature-tree` or holds too much.
+/// `io` when it is not a version 1 or 2 `gusset-feature-tree` or holds too much.
 pub fn parse(bytes: &[u8]) -> Result<Tree, CommandError> {
     if bytes.len() > MAX_TREE_BYTES {
         return Err(CommandError::new("too_large", format!("a feature tree is at most {} MiB", MAX_TREE_BYTES >> 20)));
@@ -190,8 +193,11 @@ pub fn parse(bytes: &[u8]) -> Result<Tree, CommandError> {
         return Err(CommandError::new("io", "this JSON file is not a Gusset feature tree")
             .hint("feature trees come from the exporter plugins (plugins/fusion, solidworks, onshape)"));
     }
-    if t.version != 1 {
-        return Err(CommandError::new("io", format!("feature tree version {} is not supported (1 is)", t.version)));
+    if !(1..=2).contains(&t.version) {
+        return Err(CommandError::new(
+            "io",
+            format!("feature tree version {} is not supported (1 and 2 are)", t.version),
+        ));
     }
     if t.features.len() > MAX_FEATURES {
         return Err(CommandError::new("too_large", format!("more than {MAX_FEATURES} features")));
@@ -398,6 +404,8 @@ struct Gen {
     /// The next suffix to try per base name (no quadratic retries).
     suffix: HashMap<String, usize>,
     evaluations: usize,
+    /// Source feature name -> its index in the tree (the features a mirror can copy).
+    index: HashMap<String, usize>,
 }
 
 impl Gen {
@@ -472,6 +480,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         warnings: Vec::new(),
         suffix: HashMap::new(),
         evaluations: 0,
+        index: HashMap::new(),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
     // that cannot be (1/0, a unit clash) falls back to its value (dogfooding F7-4).
@@ -538,7 +547,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         let at = at.or_else(|| g.text.find('\n').map(|i| i + 1)).unwrap_or(g.text.len());
         g.text.insert_str(at, &param_lines);
     }
-    for f in &tree.features {
+    for (fi, f) in tree.features.iter().enumerate() {
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
         let src_name = f.get("name").and_then(Value::as_str).unwrap_or("Feature").to_string();
         // Whatever a feature added is taken back out if it fails.
@@ -553,16 +562,38 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "fillet" | "chamfer" => serde_json::from_value::<EdgeF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
+            "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" if tree.version < 2 => {
+                Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
+            }
+            "hole" => serde_json::from_value::<v2::HoleF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::hole(&mut g, s, &d)),
+            "pattern_linear" | "pattern_circular" => serde_json::from_value::<v2::PatternF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::pattern(&mut g, s, &d, kind == "pattern_circular")),
+            "mirror" => serde_json::from_value::<v2::MirrorF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::mirror(&mut g, s, &d, &tree.features)),
+            "shell" => serde_json::from_value::<v2::ShellF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::shell(&mut g, s, &d)),
             "unsupported" => {
                 let what = f.get("original_type").and_then(Value::as_str).unwrap_or("?");
                 Err(format!("not exported by the plugin ({what})"))
             }
-            other => Err(format!("feature type '{other}' is not in version 1")),
+            other => Err(format!("feature type '{}' is not known", short(other))),
         };
-        if let Err(why) = r {
-            g.text.truncate(text_len);
-            g.made.truncate(made_len);
-            g.skip(&src_name, why);
+        match r {
+            Ok(()) => {
+                if matches!(kind, "sketch" | "extrude" | "revolve" | "hole" | "fillet" | "chamfer") {
+                    g.index.insert(src_name.clone(), fi);
+                }
+            }
+            Err(why) => {
+                g.text.truncate(text_len);
+                g.made.truncate(made_len);
+                g.skip(&src_name, why);
+            }
         }
     }
     // Commit the whole as one edit, validated like document_set_text.

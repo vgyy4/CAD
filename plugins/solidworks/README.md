@@ -3,7 +3,7 @@
 **UNVERIFIED — not yet run against SolidWorks.** Written from the official API help only.
 
 - Target API: **SolidWorks 2024 API** (help.solidworks.com/2024/english/api; `ISldWorks.RevisionNumber` 32.x).
-- Output: `<part>.gtree.json`, format `gusset-feature-tree` version 1 (ADR 0042).
+- Output: `<part>.gtree.json`, format `gusset-feature-tree` version 2 (ADR 0042).
 - Read-only: the macro never edits the model. Parts only (not assemblies).
 - The macro is late bound (no type-library references). Enum values are numeric constants at the top
   of `GussetExport.bas`; several were written from memory and are marked `VERIFY`/`UNVERIFIED`.
@@ -22,7 +22,8 @@
 sketch (lines, arcs, circles, points; horizontal/vertical/tangent/parallel/perpendicular relations),
 extrude (blind, mid-plane, symmetric both-directions; boss and cut), revolve (one-direction or
 mid-plane, axis = a sketch line), simple constant-radius fillet and equal-distance chamfer on edges
-(by edge midpoint), user parameters (global variables), final bodies (volume, bounding box).
+(by edge midpoint), Hole Wizard holes (simple, counterbore, countersink), linear and circular
+patterns and mirrors of features, shell (UNVERIFIED member names; check on the first run), user parameters (global variables), final bodies (volume, bounding box).
 Everything else is written as `"type": "unsupported"` with the SolidWorks type name; suppressed
 features are skipped. Profiles are always `"all"`; dimensions are not exported as constraints (their
 values are in the geometry); extrude depth links to a global variable only when an equation
@@ -45,7 +46,10 @@ point and direction. Sketch plane: origin and axes come from the inverse of `Ske
      sketch: `y_axis` is `[0, 0, 1]`.
    - Extrude `distance` 10 (positive); fillet midpoint `[40, 20, 5]` (SolidWorks: `(40, 5, -20)` mm),
      radius 2; revolve angle 360, axis `{ "line": <the construction line> }`.
-   - Parameter `width`: 40 mm. One body, volume about 8776.8 mm3, bbox `[[0, -5, 0], [40, 20, 20]]`.
+   - If you add a Hole Wizard counterbore (4 mm hole, 8 mm x 3 mm counterbore, through all) at (32, 10)
+     on the top face after Revolve1, it appears as a `hole` with `variant` `counterbore` and
+     `positions` `[[32, 10, 10]]` (the sample has it).
+   - Parameter `width`: 40 mm. One body, volume about 8538.1 mm3 (with that hole), bbox `[[0, -5, 0], [40, 20, 20]]`.
    - Allowed differences: ids and the order of points, curves and constraints (SolidWorks decides the
      line order of a rectangle), feature names (localised), `app_version`.
 8. Tell the Gusset session what differs; each difference points at an API member to fix.
