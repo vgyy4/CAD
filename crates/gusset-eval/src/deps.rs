@@ -46,9 +46,11 @@ fn target(body: Option<&String>) -> Access {
 
 fn access(kind: &FeatureKind) -> Access {
     match kind {
-        FeatureKind::Sketch(_) | FeatureKind::Plane(_) | FeatureKind::Import(_) | FeatureKind::Component(_) => {
-            Access { bodies: Vec::new(), dynamic: false }
-        }
+        FeatureKind::Sketch(_)
+        | FeatureKind::Plane(_)
+        | FeatureKind::Import(_)
+        | FeatureKind::Component(_)
+        | FeatureKind::CamJob(_) => Access { bodies: Vec::new(), dynamic: false },
         FeatureKind::Extrude(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Revolve(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Sweep(d) => modifies(d.op, d.body.as_ref()),

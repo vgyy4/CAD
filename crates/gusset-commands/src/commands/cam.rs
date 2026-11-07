@@ -9,16 +9,23 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 }
 
 /// The operation, tool and cutting values shared by both commands (mm, mm/min, rev/min).
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CamJob {
-    pub sketch: String,
+    /// A cam_job.
+    #[serde(default)]
+    pub job: Option<String>,
+    #[serde(default)]
+    pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
     /// pocket, profile_outside, profile_inside, drill.
-    pub operation: String,
-    pub tool_diameter: f64,
-    pub depth: f64,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub tool_diameter: Option<f64>,
+    #[serde(default)]
+    pub depth: Option<f64>,
     #[serde(default)]
     pub stepdown: Option<f64>,
     /// x diameter.
@@ -48,22 +55,89 @@ pub struct CamJob {
 }
 
 impl CamJob {
+    /// The job with every field given: a stored `cam_job` feature's values (its
+    /// expressions evaluated with the document's parameters), or the fields themselves.
+    fn resolved(&self, s: &mut Session, ctx: &CmdCtx) -> Result<CamJob, CommandError> {
+        let Some(name) = &self.job else {
+            for (f, ok) in [
+                ("sketch", self.sketch.is_some()),
+                ("operation", self.operation.is_some()),
+                ("tool_diameter", self.tool_diameter.is_some()),
+                ("depth", self.depth.is_some()),
+            ] {
+                if !ok {
+                    return Err(
+                        CommandError::args(format!("{f} is missing")).hint("give the job's fields, or job: <cam_job>")
+                    );
+                }
+            }
+            return Ok(self.clone());
+        };
+        if self.sketch.is_some() || self.operation.is_some() || self.tool_diameter.is_some() || self.depth.is_some() {
+            return Err(CommandError::args("job takes its fields from the cam_job feature: give job or the fields"));
+        }
+        let doc = s.document(&ctx.actor)?;
+        let Some(FeatureKind::CamJob(d)) = doc.features.iter().find(|f| &f.name == name).map(|f| &f.kind) else {
+            return Err(CommandError::not_found(format!("no cam_job '{name}'")));
+        };
+        let (d, units) = ((**d).clone(), doc.units);
+        let params = s.evaluate(&ctx.actor)?.params.clone();
+        let v = |e: &gusset_units::expr::Expr, dim: gusset_units::Dim| {
+            gusset_eval::expr_value(name, e, dim, &params, units)
+                .map_err(|e| CommandError::new("evaluation", e.to_string()))
+        };
+        let opt = |e: &Option<gusset_units::expr::Expr>, dim| e.as_ref().map(|e| v(e, dim)).transpose();
+        use gusset_units::Dim;
+        Ok(CamJob {
+            job: None,
+            sketch: Some(d.sketch.clone()),
+            regions: d.regions.clone(),
+            operation: Some(d.operation.keyword().to_string()),
+            tool_diameter: Some(v(&d.tool_diameter, Dim::LENGTH)?),
+            depth: Some(v(&d.depth, Dim::LENGTH)?),
+            stepdown: opt(&d.stepdown, Dim::LENGTH)?,
+            stepover: opt(&d.stepover, Dim::NONE)?,
+            feed: opt(&d.feed, Dim::NONE)?,
+            plunge: opt(&d.plunge, Dim::NONE)?,
+            rpm: opt(&d.rpm, Dim::NONE)?,
+            top: opt(&d.top, Dim::LENGTH)?,
+            safe: opt(&d.safe, Dim::LENGTH)?,
+            ramp_deg: opt(&d.ramp, Dim::ANGLE)?.map(f64::to_degrees),
+            peck: opt(&d.peck, Dim::LENGTH)?,
+            tabs: match &d.tabs {
+                Some([n, w, h]) => Some([v(n, Dim::NONE)?, v(w, Dim::LENGTH)?, v(h, Dim::LENGTH)?]),
+                None => None,
+            },
+            conventional: d.conventional,
+        })
+    }
+
     /// The sketch plane's placement.
     fn frame(&self, s: &mut Session, ctx: &CmdCtx) -> Result<gusset_kernel::Frame, CommandError> {
+        self.resolved(s, ctx)?.frame_of(s, ctx)
+    }
+
+    fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
+        self.resolved(s, ctx)?.run_of(s, ctx)
+    }
+
+    fn frame_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<gusset_kernel::Frame, CommandError> {
+        let sketch = self.sketch.clone().unwrap_or_default();
         let doc = s.document(&ctx.actor)?;
-        let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)
-        else {
-            return Err(CommandError::not_found(format!("no sketch '{}'", self.sketch)));
+        let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == sketch).map(|f| &f.kind) else {
+            return Err(CommandError::not_found(format!("no sketch '{sketch}'")));
         };
         let (def, units) = (def.clone(), doc.units);
         let params = s.evaluate(&ctx.actor)?.params.clone();
-        let solved = gusset_eval::solve_sketch_def(&self.sketch, &def, &params, units)
+        let solved = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)
             .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
         Ok(solved.frame)
     }
 
-    fn run(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
-        let op = match self.operation.as_str() {
+    fn run_of(&self, s: &mut Session, ctx: &CmdCtx) -> Result<(Toolpath, Setup), CommandError> {
+        let sketch = self.sketch.clone().unwrap_or_default();
+        let (tool, depth) = (self.tool_diameter.unwrap_or(0.0), self.depth.unwrap_or(0.0));
+        let op = match self.operation.as_deref().unwrap_or_default() {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
@@ -75,10 +149,10 @@ impl CamJob {
         };
         let top = self.top.unwrap_or(0.0);
         let setup = Setup {
-            tool_diameter: self.tool_diameter,
+            tool_diameter: tool,
             top,
-            depth: self.depth,
-            stepdown: self.stepdown.unwrap_or(self.tool_diameter / 2.0),
+            depth,
+            stepdown: self.stepdown.unwrap_or(tool / 2.0),
             safe: self.safe.unwrap_or(top + 5.0),
             feed: self.feed.unwrap_or(600.0),
             plunge: self.plunge.unwrap_or(200.0),
@@ -92,21 +166,20 @@ impl CamJob {
             climb: !self.conventional,
         };
         let doc = s.document(&ctx.actor)?;
-        let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == self.sketch).map(|f| &f.kind)
-        else {
-            return Err(CommandError::not_found(format!("no sketch '{}'", self.sketch)));
+        let Some(FeatureKind::Sketch(def)) = doc.features.iter().find(|f| f.name == sketch).map(|f| &f.kind) else {
+            return Err(CommandError::not_found(format!("no sketch '{sketch}'")));
         };
         let def = def.clone();
         let units = doc.units;
         let params = s.evaluate(&ctx.actor)?.params.clone();
         let t = match op {
             Some(op) => {
-                let regions = gusset_eval::sketch_regions(&self.sketch, &def, &params, units, &self.regions)
+                let regions = gusset_eval::sketch_regions(&sketch, &def, &params, units, &self.regions)
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                 gusset_cam::toolpath(&regions, op, &setup)
             }
             None => {
-                let solved = gusset_eval::solve_sketch_def(&self.sketch, &def, &params, units)
+                let solved = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                 let pts: Vec<[f64; 2]> = solved
                     .circles
@@ -286,7 +359,10 @@ impl Command for ExportGcode {
             }
         }
         let (t, setup) = self.job.run(s, ctx)?;
-        let title = format!("{} {} {}", self.job.sketch, self.job.operation, p);
+        let what = self.job.job.clone().unwrap_or_else(|| {
+            format!("{} {}", self.job.sketch.as_deref().unwrap_or(""), self.job.operation.as_deref().unwrap_or(""))
+        });
+        let title = format!("{what} {p}");
         let g = t.gcode(&setup, &title);
         crate::paths::write_file(&path, p, g.as_bytes())?;
         let mut out = summary(&t, &setup);

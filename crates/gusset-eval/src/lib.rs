@@ -1115,6 +1115,20 @@ impl Evaluator {
             FeatureKind::PatternLinear(d) => self.run_pattern_linear(s, name, d, units, params),
             FeatureKind::PatternCircular(d) => self.run_pattern_circular(s, name, d, units, params),
             FeatureKind::Plane(d) => self.run_plane(s, name, d, units, params),
+            FeatureKind::CamJob(d) => {
+                // No body: the toolpath is computed on demand. Check what it names.
+                if s.solved.get(&d.sketch).is_none() {
+                    return Err(EvalError::new(
+                        name,
+                        ErrorCode::MissingReference,
+                        format!("sketch '{}' is not evaluated", d.sketch),
+                    )
+                    .with_hint("fix the sketch the job cuts"));
+                }
+                eval_expr(name, &d.tool_diameter, Dim::LENGTH, params, units)?;
+                eval_expr(name, &d.depth, Dim::LENGTH, params, units)?;
+                Ok(())
+            }
             FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
             FeatureKind::Joint(d) => self.run_joint(s, name, d, units, params),
             FeatureKind::Component(d) => self.run_component(s, name, d, params, blobs),
@@ -1304,6 +1318,18 @@ fn step_key(prev: &[u8; 32], f: &Feature, params: &ParamValues) -> [u8; 32] {
         }
     }
     *h.finalize().as_bytes()
+}
+
+/// An expression's value in `dim`'s base unit (mm, radians), with the document's parameters
+/// (for commands that read features' expressions, such as CAM jobs).
+pub fn expr_value(
+    feature: &str,
+    e: &gusset_units::expr::Expr,
+    dim: Dim,
+    params: &ParamValues,
+    units: LengthUnit,
+) -> Result<f64, EvalError> {
+    eval_expr(feature, e, dim, params, units)
 }
 
 fn eval_expr(

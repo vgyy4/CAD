@@ -256,3 +256,70 @@ fn climb_milling_runs_clockwise_round_a_part_and_conventional_the_other_way() {
     let pocket = toolpath(&[rect(40.0, 20.0)], Operation::Profile { outside: false }, &s).unwrap();
     assert!(turn(&pocket) > 0.0);
 }
+
+type BoreArc = ([f64; 3], [f64; 3], [f64; 2], bool);
+
+fn bore_arcs(t: &Toolpath) -> Vec<BoreArc> {
+    let mut at = None;
+    let mut out = Vec::new();
+    for m in &t.moves {
+        match *m {
+            Move::Rapid(p) | Move::Line { to: p, .. } => at = Some(p),
+            Move::Arc { to, center, ccw } => {
+                out.push((at.unwrap(), to, center, ccw));
+                at = Some(to);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_helical_bore_circles_at_the_radius_and_sinks_by_the_stepdown() {
+    let s = setup(6.0);
+    let t = helical_bore(&[([10.0, 20.0], 10.0)], &s).unwrap();
+    let arcs = bore_arcs(&t);
+    assert!(!arcs.is_empty());
+    let mut lowest = f64::INFINITY;
+    for (a, b, c, ccw) in &arcs {
+        assert_eq!(*c, [10.0, 20.0]);
+        assert!(*ccw);
+        for p in [a, b] {
+            assert!((libm::hypot(p[0] - c[0], p[1] - c[1]) - 2.0).abs() < 1e-9);
+            lowest = lowest.min(p[2]);
+        }
+        // Half a turn: at most half the stepdown.
+        assert!(a[2] - b[2] <= s.stepdown / 2.0 + 1e-9 && a[2] >= b[2]);
+        assert!(libm::hypot(a[0] - b[0], a[1] - b[1]) > 3.9);
+    }
+    assert!((lowest + 5.0).abs() < 1e-9);
+    assert_eq!(t.rings, 1);
+    assert_eq!(t.levels, vec![-5.0]);
+    let g = t.gcode(&s, "bore");
+    assert!(g.contains("G3 ") && !g.contains("G2 "));
+    assert!(!g.contains("I0 J0"));
+    let s2 = Setup { climb: false, ..s };
+    let g2 = helical_bore(&[([10.0, 20.0], 10.0)], &s2).unwrap().gcode(&s2, "bore");
+    assert!(g2.contains("G2 ") && !g2.contains("G3 "));
+}
+
+#[test]
+fn a_helical_bore_refuses_holes_the_tool_cannot_make() {
+    let s = setup(6.0);
+    assert!(matches!(helical_bore(&[([0.0, 0.0], 5.0)], &s), Err(CamError::NothingToCut(_))));
+    assert!(matches!(helical_bore(&[([0.0, 0.0], 20.0)], &s), Err(CamError::Invalid(_))));
+    let drilled = helical_bore(&[([0.0, 0.0], 6.0)], &s).unwrap();
+    assert!(bore_arcs(&drilled).is_empty());
+}
+
+#[test]
+fn a_helical_bore_cuts_the_helix_length_plus_the_floor_circle() {
+    let s = setup(6.0);
+    let t = helical_bore(&[([0.0, 0.0], 10.0)], &s).unwrap();
+    let r = 2.0;
+    let turns = 3.0; // 5 mm in steps of at most 2
+    let drop: f64 = 5.0 / turns;
+    let want = turns * libm::sqrt((std::f64::consts::TAU * r).powi(2) + drop * drop) + std::f64::consts::TAU * r;
+    let got = t.stats(&s).cut;
+    assert!(((got - want) / want).abs() < 0.01, "{got} vs {want}");
+}

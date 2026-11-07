@@ -64,6 +64,8 @@ pub enum FeatureKind {
     /// Faces removed and the gap closed by their neighbours (ADR 0038, direct edit).
     DeleteFace(DeleteFaceDef),
     MoveFace(MoveFaceDef),
+    /// A machining job on a sketch (ADR 0040): no body; its toolpath is computed on demand.
+    CamJob(Box<CamJobDef>),
     Text(Box<TextDef>),
     Mirror(MirrorDef),
     PatternLinear(PatternLinearDef),
@@ -103,6 +105,7 @@ impl FeatureKind {
             FeatureKind::PatternLinear(_) => "pattern_linear",
             FeatureKind::PatternCircular(_) => "pattern_circular",
             FeatureKind::Plane(_) => "plane",
+            FeatureKind::CamJob(_) => "cam_job",
             FeatureKind::Move(_) => "move",
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
@@ -221,6 +224,7 @@ impl FeatureKind {
                 add_body(&mut add, &d.body);
                 d.features.iter().for_each(|f| add(f));
             }
+            FeatureKind::CamJob(d) => add(&d.sketch),
             FeatureKind::Plane(d) => {
                 d.base.features(&mut add);
                 if let PlaneKind::Angle { axis: PlaneAxis::Edge(e), .. } = &d.kind {
@@ -334,6 +338,7 @@ impl FeatureKind {
                 PlaneKind::Offset(e) => take(e),
                 PlaneKind::Angle { angle, .. } => take(angle),
             },
+            FeatureKind::CamJob(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Move(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::MoveFace(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::Combine(_) => {}
@@ -434,6 +439,7 @@ impl FeatureKind {
                 PlaneKind::Offset(e) => out.push(e),
                 PlaneKind::Angle { angle, .. } => out.push(angle),
             },
+            FeatureKind::CamJob(d) => out.extend(d.exprs_mut()),
             FeatureKind::Move(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::MoveFace(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::Combine(_) => {}
@@ -1675,5 +1681,101 @@ impl HoleDef {
             v.extend(t.depth.iter_mut());
         }
         v
+    }
+}
+
+// ------------------------------------------------------------------ CAM jobs
+
+/// What a CAM job cuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CamOp {
+    Pocket,
+    ProfileOutside,
+    ProfileInside,
+    Drill,
+}
+
+impl CamOp {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            CamOp::Pocket => "pocket",
+            CamOp::ProfileOutside => "profile_outside",
+            CamOp::ProfileInside => "profile_inside",
+            CamOp::Drill => "drill",
+        }
+    }
+
+    pub fn from_keyword(s: &str) -> Option<CamOp> {
+        [CamOp::Pocket, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill]
+            .into_iter()
+            .find(|o| o.keyword() == s)
+    }
+}
+
+/// A 2.5D machining job (ADR 0040): sketch regions (or, drilling, its circles) cut with a
+/// flat end mill. Lengths and angles are expressions; feeds (mm/min) and the spindle speed
+/// (rev/min) are plain numbers. `None` takes the job's default.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CamJobDef {
+    pub sketch: String,
+    /// Region (or circle) ids; empty = all.
+    pub regions: Vec<String>,
+    pub operation: CamOp,
+    pub tool_diameter: Expr,
+    pub depth: Expr,
+    pub stepdown: Option<Expr>,
+    /// A fraction of the diameter.
+    pub stepover: Option<Expr>,
+    pub feed: Option<Expr>,
+    pub plunge: Option<Expr>,
+    pub rpm: Option<Expr>,
+    pub top: Option<Expr>,
+    pub safe: Option<Expr>,
+    pub ramp: Option<Expr>,
+    pub peck: Option<Expr>,
+    /// Count, width, height.
+    pub tabs: Option<[Expr; 3]>,
+    pub conventional: bool,
+}
+
+impl CamJobDef {
+    pub fn exprs(&self) -> Vec<&Expr> {
+        let opt = [
+            &self.stepdown,
+            &self.stepover,
+            &self.feed,
+            &self.plunge,
+            &self.rpm,
+            &self.top,
+            &self.safe,
+            &self.ramp,
+            &self.peck,
+        ];
+        [&self.tool_diameter, &self.depth]
+            .into_iter()
+            .chain(opt.into_iter().flatten())
+            .chain(self.tabs.iter().flatten())
+            .collect()
+    }
+
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out: Vec<&mut Expr> = vec![&mut self.tool_diameter, &mut self.depth];
+        for e in [
+            &mut self.stepdown,
+            &mut self.stepover,
+            &mut self.feed,
+            &mut self.plunge,
+            &mut self.rpm,
+            &mut self.top,
+            &mut self.safe,
+            &mut self.ramp,
+            &mut self.peck,
+        ] {
+            out.extend(e.as_mut());
+        }
+        if let Some(t) = &mut self.tabs {
+            out.extend(t.iter_mut());
+        }
+        out
     }
 }

@@ -182,3 +182,32 @@ fn fusion_components_are_placed_by_their_occurrences() {
         assert!((0.0..=66.0).contains(&t[0]) && (0.0..=57.0).contains(&t[1]), "{}: {t:?}", p.occurrence);
     }
 }
+
+#[test]
+fn a_cam_job_in_the_document_runs_by_name_and_follows_parameters() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    let text = text.replace("gusset 1\nunits mm\n", "gusset 1\nunits mm\n\nparam d = 4 mm\n")
+        + "\ncam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: d, stepdown: 2 mm)\n";
+    run(&mut s, "document.set_text", json!({ "text": text }));
+    let back = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(back.contains("cam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: d"), "{back}");
+    let by_job = run(&mut s, "cam.toolpath", json!({"job": "Job1"}));
+    let explicit = run(
+        &mut s,
+        "cam.toolpath",
+        json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": 4.0, "stepdown": 2.0}),
+    );
+    assert_eq!(by_job, explicit);
+    assert_eq!(by_job["levels_mm"], json!([-2.0, -4.0]), "{by_job}");
+    // The job follows its parameters.
+    run(&mut s, "param.set", json!({"name": "d", "expr": "6 mm"}));
+    let deeper = run(&mut s, "cam.toolpath", json!({"job": "Job1"}));
+    assert_eq!(deeper["levels_mm"], json!([-2.0, -4.0, -6.0]), "{deeper}");
+    // job and the fields together, or neither, are refused; an unknown job is not found.
+    assert_eq!(err(&mut s, "cam.toolpath", json!({"job": "Job1", "depth": 3.0})).code, "invalid_args");
+    assert_eq!(err(&mut s, "cam.toolpath", json!({"sketch": "Sketch1"})).code, "invalid_args");
+    assert_eq!(err(&mut s, "cam.toolpath", json!({"job": "Nope"})).code, "not_found");
+}

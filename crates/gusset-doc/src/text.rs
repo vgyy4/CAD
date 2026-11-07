@@ -456,6 +456,36 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("angle: {}", d.angle));
             push_features(&mut args, &d.features);
         }
+        FeatureKind::CamJob(d) => {
+            args.push(format!("sketch: {}", d.sketch));
+            if !d.regions.is_empty() {
+                args.push(format!("regions: [{}]", d.regions.join(", ")));
+            }
+            args.push(format!("operation: {}", d.operation.keyword()));
+            args.push(format!("tool_diameter: {}", d.tool_diameter));
+            args.push(format!("depth: {}", d.depth));
+            for (k, v) in [
+                ("stepdown", &d.stepdown),
+                ("stepover", &d.stepover),
+                ("feed", &d.feed),
+                ("plunge", &d.plunge),
+                ("rpm", &d.rpm),
+                ("top", &d.top),
+                ("safe", &d.safe),
+                ("ramp", &d.ramp),
+                ("peck", &d.peck),
+            ] {
+                if let Some(e) = v {
+                    args.push(format!("{k}: {e}"));
+                }
+            }
+            if let Some([n, w, h]) = &d.tabs {
+                args.push(format!("tabs: [{n}, {w}, {h}]"));
+            }
+            if d.conventional {
+                args.push("conventional: true".into());
+            }
+        }
         FeatureKind::Plane(d) => {
             args.push(format!("base: {}", print_plane(&d.base)));
             match &d.kind {
@@ -736,7 +766,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "pattern_linear"
             | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint" | "component"
-            | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange" => {
+            | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange"
+            | "cam_job" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -771,6 +802,8 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     parse_sheet(kw, &mut c)?
                 } else if kw == "text" {
                     parse_text(&mut c)?
+                } else if kw == "cam_job" {
+                    parse_cam_job(&mut c)?
                 } else {
                     parse_feature(kw, &mut c)?
                 };
@@ -2490,4 +2523,68 @@ fn parse_surface(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         },
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::Surface(SurfaceDef { op, body_name }) })
+}
+
+fn parse_cam_job(c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
+    let kw = "cam_job";
+    let name = c.ident()?.to_string();
+    let (mut label, mut suppressed, mut group) = (None, false, None);
+    let (mut sketch, mut regions, mut operation, mut tool, mut depth) = (None, Vec::new(), None, None, None);
+    let mut opt: [Option<gusset_units::expr::Expr>; 9] = Default::default();
+    let mut tabs = None;
+    let mut conventional = false;
+    const KEYS: [&str; 9] = ["stepdown", "stepover", "feed", "plunge", "rpm", "top", "safe", "ramp", "peck"];
+    let allowed = "sketch, regions, operation, tool_diameter, depth, stepdown, stepover, feed, plunge, rpm, top, safe, \
+                   ramp, peck, tabs, conventional, label, group, suppressed";
+    parse_args(c, |key, c| {
+        match key {
+            "label" => label = Some(c.string()?),
+            "group" => group = Some(c.string()?),
+            "suppressed" => suppressed = parse_bool(c)?,
+            "sketch" => sketch = Some(c.ident()?.to_string()),
+            "regions" => regions = parse_ident_list(c, "regions")?,
+            "operation" => {
+                let w = c.ident()?;
+                operation = Some(CamOp::from_keyword(w).ok_or_else(|| {
+                    c.err_hint(format!("unknown operation '{w}'"), "pocket, profile_outside, profile_inside or drill")
+                })?);
+            }
+            "tool_diameter" => tool = Some(c.expr()?),
+            "depth" => depth = Some(c.expr()?),
+            "tabs" => tabs = Some(parse_vec3(c)?),
+            "conventional" => conventional = parse_bool(c)?,
+            k => match KEYS.iter().position(|x| *x == k) {
+                Some(i) => {
+                    if let Some(slot) = opt.get_mut(i) {
+                        *slot = Some(c.expr()?);
+                    }
+                }
+                None => return Err(unknown_arg(c, kw, k, allowed)),
+            },
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    let [stepdown, stepover, feed, plunge, rpm, top, safe, ramp, peck] = opt;
+    let def = CamJobDef {
+        sketch: sketch.ok_or_else(|| missing(c, kw, "sketch"))?,
+        regions,
+        operation: operation.ok_or_else(|| missing(c, kw, "operation"))?,
+        tool_diameter: tool.ok_or_else(|| missing(c, kw, "tool_diameter"))?,
+        depth: depth.ok_or_else(|| missing(c, kw, "depth"))?,
+        stepdown,
+        stepover,
+        feed,
+        plunge,
+        rpm,
+        top,
+        safe,
+        ramp,
+        peck,
+        tabs,
+        conventional,
+    };
+    Ok(Feature { name, label, note: None, group, suppressed, kind: FeatureKind::CamJob(Box::new(def)) })
 }

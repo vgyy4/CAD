@@ -377,7 +377,7 @@ listed bodies are consumed. Sheet bodies report `kind: sheet` in `query.body`.
 ```
 contour_flange U (curves: S.curves(l5, l6, l7), width: 40 mm, thickness: 2 mm, bend_radius: 2 mm, k_factor: 0.44, [symmetric: true], [flip: true])
 tab Plate (profile: S2.regions(l4), thickness: 2 mm, [flip: true])
-edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true])
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44, [flip: true], [close: true])
 ```
 
 `contour_flange` bends an open chain of sketch lines at every corner (inside radius
@@ -391,7 +391,13 @@ pattern. `edge_flange` bends a flange off one outline line of a tab (up along th
 normal, `flip`: down): `length` of straight sheet after the bend (`angle: 180 deg` with a radius is a hem, folded
 back over the tab); its faces are
 `<flange>/flat|flat_back|bend_in|bend_out|end(<line>)`, and the tab's flat pattern grows by the
-bend allowance plus the length beyond that line. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
+bend allowance plus the length beyond that line. `line` may also be a contour flange's side,
+`l6_start` / `l6_end` (the low / high end of the width along the sketch normal), or an earlier
+edge flange's far edge, `F1_end` (up = towards that flange's inner face). `close: true`
+(90 deg flanges off a tab's outline) butts this flange's wall against flanges already on the
+neighbouring lines at outside corners, leaving a square relief at the bend. A later cut through
+flat regions or bends (an extrude cut, a hole) appears in the flat pattern as a cut-out; a cut
+that notches an edge or adds material marks the pattern `changed_by` instead. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
 `|angle| (r + k t)`) and `sheet.export_flat` (DXF or SVG, 1:1).
 
 ## Datum planes, bodies and patterns
@@ -438,7 +444,9 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   normals (direct edit, ADR 0030): positive adds material, negative removes it; the
   neighbouring faces stretch to follow and every face keeps its name. A cylindrical hole's
   wall moved by `distance` changes its radius by that much (outward from the material).
-- `move_face (faces: [<face>], translate: [x, y, z], axis: <dir>, angle: <angle>, through: [x, y, z])`
+- `move_face (faces: [<face>], translate: [x, y, z], axis: <dir>, angle: <angle>, through: [x, y, z])`,
+  or `move_face (faces: [<face>], onto: <face>)`: planar faces slide along their normal onto the
+  plane of a parallel planar face of any body (re-read on rebuild); a tilted target is refused.
   moves faces rigidly (direct edit, ADR 0031): a turn about `axis` through `through` (default
   the origin), then the translation, as in `move`; give either or both. The faces around keep
   their surfaces and stretch to follow, so they must contain the moved edges: a hole or boss
@@ -759,3 +767,15 @@ drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
 - `body:` names the feature that created the body (`Extrude1`); `body_name:` names the
   body a new extrude or revolve creates.
 - `drawing` blocks come after every feature; a view's `of` names a view of the same drawing.
+
+## CAM jobs (ADR 0040)
+
+```
+cam_job Job1 (sketch: S, operation: pocket|profile_outside|profile_inside|drill, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
+```
+
+A machining job on a sketch: no body; `cam_toolpath` and `cam_export_gcode` with `job: Job1`
+compute its toolpath and G-code from the current model. Lengths and the ramp angle are
+expressions (parameters allowed); `stepover` (a fraction of the diameter), feeds (mm/min),
+`rpm` and the tab count are plain numbers. Defaults as for `cam_toolpath`.
+

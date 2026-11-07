@@ -256,6 +256,20 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::PatternCircular(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
+            FeatureKind::CamJob(d) => {
+                match seen.get(d.sketch.as_str()) {
+                    Some(f) if !matches!(f.kind, FeatureKind::Sketch(_)) => {
+                        out.push(issue(n, format!("'{}' is not a sketch", d.sketch)));
+                    }
+                    None => {
+                        out.push(issue_h(n, format!("unknown sketch '{}'", d.sketch), "a job cuts an earlier sketch"))
+                    }
+                    _ => {}
+                }
+                for r in &d.regions {
+                    check_sketch_entity(n, &d.sketch, region_entity(r), None, &seen, &mut out);
+                }
+            }
             FeatureKind::Plane(d) => {
                 if matches!(n, "XY" | "XZ" | "YZ") {
                     out.push(issue_h(n, "this name is a base plane", "choose another name for the datum plane"));

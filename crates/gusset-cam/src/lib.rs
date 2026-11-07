@@ -167,6 +167,93 @@ pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Too
     Ok(Toolpath { moves, rings: 0, levels: vec![bottom], drill: Some(Drill { points: order, peck }) })
 }
 
+/// Most helix turns one bore may have.
+const MAX_TURNS: usize = 1000;
+
+/// Bores holes `(centre, diameter)` by helical interpolation: the tool circles inside each hole
+/// on a radius of half the difference of hole and tool, sinking by at most the stepdown (or the
+/// ramp angle's pitch, if smaller) per turn, then cuts one flat circle at the bottom. Holes
+/// narrower than the tool are refused; holes up to the tool's size are plunged; holes wider
+/// than twice the tool need a pocket. The holes are visited nearest first from the origin.
+pub fn helical_bore(holes: &[([f64; 2], f64)], s: &Setup) -> Result<Toolpath, CamError> {
+    check(s)?;
+    if s.tabs.is_some() {
+        return Err(CamError::Invalid("tabs are for profiles only".into()));
+    }
+    if holes.is_empty() {
+        return Err(CamError::NothingToCut("no holes to bore (the sketch has no circles)".into()));
+    }
+    if holes.len() > MAX_HOLES {
+        return Err(CamError::TooLarge("more than 20000 holes".into()));
+    }
+    let tool = s.tool_diameter;
+    for (c, d) in holes {
+        if !(c[0].is_finite() && c[1].is_finite() && d.is_finite()) {
+            return Err(CamError::Invalid("a hole position or diameter is not a number".into()));
+        }
+        if *d < tool {
+            return Err(CamError::NothingToCut(format!(
+                "the hole at ({}, {}) of diameter {d} mm is narrower than the {tool} mm tool",
+                c[0], c[1]
+            )));
+        }
+        if *d > 2.0 * tool {
+            return Err(CamError::Invalid("use a pocket for holes wider than twice the tool".into()));
+        }
+    }
+    let mut left: Vec<([f64; 2], f64)> = holes.to_vec();
+    let mut order = Vec::with_capacity(left.len());
+    let mut at = [0.0, 0.0];
+    while !left.is_empty() {
+        let (i, _) = left.iter().enumerate().fold((0, f64::INFINITY), |best, (i, h)| {
+            let d = libm::hypot(h.0[0] - at[0], h.0[1] - at[1]);
+            if d < best.1 { (i, d) } else { best }
+        });
+        let h = left.swap_remove(i);
+        at = h.0;
+        order.push(h);
+    }
+    let bottom = s.top - s.depth;
+    let mut moves = Vec::new();
+    for (c, d) in &order {
+        let r = (d - tool) / 2.0;
+        moves.push(Move::Rapid([c[0] + r, c[1], s.safe]));
+        if *d <= tool * 1.0001 {
+            moves.push(Move::Line { to: [c[0] + r, c[1], bottom], plunge: true });
+            moves.push(Move::Rapid([c[0] + r, c[1], s.safe]));
+            continue;
+        }
+        moves.push(Move::Line { to: [c[0] + r, c[1], s.top], plunge: true });
+        let mut pitch = s.stepdown;
+        if s.ramp_deg > 0.0 {
+            pitch = pitch.min(std::f64::consts::TAU * r * libm::tan(s.ramp_deg.to_radians()));
+        }
+        let turns = (s.depth / pitch).ceil();
+        if !(turns.is_finite() && turns <= MAX_TURNS as f64) {
+            return Err(CamError::TooLarge("more than 1000 helix turns: use a larger stepdown or ramp angle".into()));
+        }
+        let turns = (turns as usize).max(1);
+        let half_drop = s.depth / (2 * turns) as f64;
+        let ccw = s.climb;
+        let mut x = r; // current offset from the centre along x: +r or -r
+        let mut half = |z: f64, x: &mut f64| {
+            *x = -*x;
+            moves.push(Move::Arc { to: [c[0] + *x, c[1], z], center: *c, ccw });
+        };
+        for k in 1..=(2 * turns) {
+            let z = if k == 2 * turns { bottom } else { s.top - half_drop * k as f64 };
+            half(z, &mut x);
+        }
+        half(bottom, &mut x);
+        half(bottom, &mut x);
+        moves.push(Move::Rapid([c[0] + x, c[1], s.safe]));
+        if moves.len() > MAX_MOVES {
+            return Err(CamError::TooLarge("the toolpath has more than 5M moves".into()));
+        }
+    }
+    Ok(Toolpath { moves, rings: holes.len(), levels: vec![bottom], drill: None })
+}
+
 /// Lengths (mm) and an estimated time (min) of a toolpath.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Stats {
