@@ -399,6 +399,8 @@ impl CamJob {
             gusset_cam::CamError::NothingToCut(m) => {
                 let hint = if m.contains("grow the region") {
                     "grow the region by the tool radius on every side (it limits the tool centre)"
+                } else if m.contains("creases lie below") {
+                    "depth is measured down from top: top - depth must be at or below the crease"
                 } else {
                     "use a smaller tool or a larger region"
                 };

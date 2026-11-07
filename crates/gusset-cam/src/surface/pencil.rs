@@ -270,15 +270,22 @@ impl Accepted {
         if x < self.bmin[0] || x > self.bmax[0] || y < self.bmin[1] || y > self.bmax[1] {
             return Ok(());
         }
+        if z >= self.bottom
+            && self
+                .dedup
+                .near(p)
+                .any(|q| self.pts.get(q).is_some_and(|o| libm::hypot(o[0] - x, o[1] - y) < self.h / 2.0))
+        {
+            return Ok(());
+        }
+        // Only real creases (held by two surfaces) count, below the bottom too: the
+        // reported height must be one a deeper cut reaches (dogfooding F11-4).
+        if !supported(d, topo, [x, y, z + self.r], self.r, self.ang) {
+            return Ok(());
+        }
         if z < self.bottom {
             self.below += 1;
             self.below_top = self.below_top.max(z);
-            return Ok(());
-        }
-        if self.dedup.near(p).any(|q| self.pts.get(q).is_some_and(|o| libm::hypot(o[0] - x, o[1] - y) < self.h / 2.0)) {
-            return Ok(());
-        }
-        if !supported(d, topo, [x, y, z + self.r], self.r, self.ang) {
             return Ok(());
         }
         self.dedup.insert(p, self.pts.len());
@@ -294,7 +301,7 @@ fn no_crease_below_depth(bottom: f64, highest: f64) -> String {
     let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
     format!(
         "the creases lie below the depth: the stock bottom is at z {} and no crease is higher than z {}; \
-         increase the depth",
+         increase the depth to reach it",
         r3(bottom),
         r3(highest)
     )

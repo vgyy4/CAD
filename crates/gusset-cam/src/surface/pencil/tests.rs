@@ -104,3 +104,16 @@ fn errors_and_caps() {
 
 mod rim;
 mod walls;
+
+#[test]
+fn a_crease_below_the_depth_is_reported_at_its_own_height() {
+    // Dogfooding F11-4: the height in the message must be the crease's (tip r (sqrt 2 - 1)),
+    // not that of points near the stock bottom that are no crease at all.
+    let (p, i) = field(-10.0, 10.0, 40, |x, _| x.abs());
+    let r = 3.0;
+    let st = Setup { depth: 15.0, ..setup(2.0 * r) };
+    let e = pencil_finish(&Surface3d { positions: &p, indices: &i }, Cutter::Ball, &spec(), &st).unwrap_err();
+    let CamError::NothingToCut(m) = e else { panic!("{e:?}") };
+    let zc = (r * (std::f64::consts::SQRT_2 - 1.0) * 1000.0).round() / 1000.0;
+    assert!(m.contains(&format!("no crease is higher than z {zc};")), "{m}");
+}
