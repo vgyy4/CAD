@@ -63,6 +63,9 @@ pub struct SafeRaster {
     pub lifted_samples: usize,
 }
 
+/// Radial allowance (mm) before the shank or holder counts as touching the surface.
+const CONTACT: f64 = 0.02;
+
 struct Checker {
     shank: Dropper,
     holder: Dropper,
@@ -95,7 +98,9 @@ impl Checker {
         validate(setup, h)?;
         let (lo, hi) = mesh_bounds(surface.positions)
             .ok_or_else(|| CamError::Invalid("the surface has no valid vertices".into()))?;
-        let flat = |d: f64| Profile { r: d / 2.0, c: 0.0 };
+        // Touching is not hitting: a shank as wide as the ball beside a wall the ball runs
+        // along is tangent to it (dogfooding F11-2).
+        let flat = |d: f64| Profile { r: (d / 2.0 - CONTACT).max(d / 4.0), c: 0.0 };
         Ok(Checker {
             shank: Dropper::new(surface, flat(h.shank_diameter), lo, hi)?,
             holder: Dropper::new(surface, flat(h.holder_diameter), lo, hi)?,
@@ -233,6 +238,8 @@ pub fn lift_for_holder(
     let mut out: Vec<Move> = Vec::with_capacity(path.moves.len());
     let mut orig: Option<[f64; 3]> = None;
     let (mut max_lift, mut lifted, mut samples) = (0.0f64, 0usize, 0usize);
+    // Whether the last point written was raised: the next move then starts off the path.
+    let mut after_lift = false;
     for mv in &path.moves {
         let end = end_of(mv);
         let Some(from) = orig.filter(|_| !matches!(mv, Move::Rapid(_))) else {
@@ -269,14 +276,43 @@ pub fn lift_for_holder(
                 r[2] = (last[2] + 1.0).min(setup.safe);
             }
         }
-        if any {
+        if any || after_lift {
+            // Between samples the requirement can step (a wall's edge): sample each step
+            // finely and climb before moving across, or move across before dropping, so no
+            // straight move dips under it (dogfooding F11-1).
             let n = raised.len();
+            let mut prev = out.last().map_or(from, end_of);
             for (k, q) in raised.into_iter().enumerate() {
-                out.push(Move::Line { to: q, plunge: plunge && k + 1 == n });
+                let len = libm::hypot(q[0] - prev[0], q[1] - prev[1]);
+                let m = libm::ceil(len / (step / 8.0)).clamp(1.0, 16.0) as usize;
+                samples += m;
+                if samples > MAX_SAMPLES {
+                    return Err(CamError::TooLarge("too many holder samples".into()));
+                }
+                for i in 1..=m {
+                    let t = i as f64 / m as f64;
+                    let mut f = [prev[0] + (q[0] - prev[0]) * t, prev[1] + (q[1] - prev[1]) * t, 0.0];
+                    let lin = prev[2] + (q[2] - prev[2]) * t;
+                    f[2] = if i == m { q[2] } else { lin.max(ck.required_tip(f[0], f[1])) };
+                    if f[2] > setup.safe {
+                        return Err(CamError::Invalid(
+                            "the holder cannot clear the surface below the safe height".into(),
+                        ));
+                    }
+                    let last = i == m && k + 1 == n;
+                    if f[2] > prev[2] + 1e-9 {
+                        out.push(Move::Line { to: [prev[0], prev[1], f[2]], plunge: false });
+                    } else if f[2] < prev[2] - 1e-9 {
+                        out.push(Move::Line { to: [f[0], f[1], prev[2]], plunge: false });
+                    }
+                    out.push(Move::Line { to: f, plunge: plunge && last });
+                    prev = f;
+                }
             }
         } else {
             out.push(*mv);
         }
+        after_lift = out.last().is_some_and(|m| end_of(m).get(2).zip(end.get(2)).is_some_and(|(a, b)| a > &(b + 1e-9)));
         if out.len() > MAX_MOVES {
             return Err(CamError::TooLarge("too many moves".into()));
         }

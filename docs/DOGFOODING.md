@@ -1004,3 +1004,10 @@ Run 10 open items, re-checked:
 
 Not tested: holders on `bull` ops (none exist here), `holder` through the GUI, holder with `regions`/`tabs`,
 `cam_job` G-code run on a controller, `sim_modal` of the enclosure, mitre/close at 120 and 150 deg.
+
+### Run 11 fix status (2026-11-07)
+
+| # | Status |
+|---|---|
+| F11-1 | Fixed: next to lifted samples each step is sampled at an eighth of the tool radius and the tool climbs before moving across (or moves across before dropping); a unit test samples every move at 0.03 mm against the requirement. |
+| F11-2 | Fixed: the shank and holder get a 0.02 mm contact allowance, so a shank tangent to a wall is not a collision. |

@@ -117,3 +117,58 @@ fn safe_raster_lifts_until_clear() {
     assert_eq!(clear.max_lift, 0.0);
     assert_eq!(clear.toolpath, raster_finish(&s, Cutter::Ball, &sp, &st).unwrap());
 }
+
+#[test]
+fn moves_between_lifted_and_unlifted_samples_never_dip_under_the_requirement() {
+    // Dogfooding F11-1: across the slot at y = 10 with a 4 mm shank (flute 5): beyond
+    // |x| = 2 the shank overlaps a wall and the tip must be at 25; inside it may cut at 0.
+    // Samples 1 mm apart from -3.3 straddle the edge (-2.3 lifted, -1.3 not).
+    let (p, i) = slot();
+    let s = Surface3d { positions: &p, indices: &i };
+    let st = setup(2.0);
+    let h = holder(4.0, 40.0);
+    let path = Toolpath {
+        moves: vec![
+            Move::Rapid([-3.3, 10.0, 50.0]),
+            Move::Line { to: [-3.3, 10.0, 0.0], plunge: true },
+            Move::Line { to: [3.3, 10.0, 0.0], plunge: false },
+        ],
+        ..Toolpath::default()
+    };
+    let (out, rise, _) = lift_for_holder(&s, &st, &h, &path).unwrap();
+    assert!((rise - 25.0).abs() < 1e-9, "{rise}");
+    let mut ck = Checker::new(&s, &st, &h).unwrap();
+    let mut at = [0.0; 3];
+    for mv in &out.moves {
+        let to = end_of(mv);
+        if !matches!(mv, Move::Rapid(_)) {
+            for k in 0..=200 {
+                let t = f64::from(k) / 200.0;
+                let q = [at[0] + (to[0] - at[0]) * t, at[1] + (to[1] - at[1]) * t, at[2] + (to[2] - at[2]) * t];
+                assert!(q[2] >= ck.required_tip(q[0], q[1]) - 1e-6, "{q:?} under {}", ck.required_tip(q[0], q[1]));
+            }
+        }
+        at = to;
+    }
+    // And it still cuts the middle at the floor.
+    assert!(out.moves.iter().any(|m| matches!(m, Move::Line { to, .. } if to[2] == 0.0 && to[0].abs() < 1.5)));
+}
+
+#[test]
+fn a_shank_tangent_to_a_wall_is_not_a_collision() {
+    // Dogfooding F11-2: a 2 mm ball 1 mm from the wall at x = 4 with a 2 mm shank touches it.
+    let (p, i) = slot();
+    let s = Surface3d { positions: &p, indices: &i };
+    let path = Toolpath {
+        moves: vec![
+            Move::Rapid([3.0, 2.0, 50.0]),
+            Move::Line { to: [3.0, 2.0, 0.0], plunge: true },
+            Move::Line { to: [3.0, 18.0, 0.0], plunge: false },
+        ],
+        ..Toolpath::default()
+    };
+    let r = check_holder(&s, Cutter::Ball, &setup(2.0), &holder(2.0, 40.0), &path).unwrap();
+    assert_eq!(r.total_collisions, 0, "{:?}", r.collisions.first());
+    let r = check_holder(&s, Cutter::Ball, &setup(2.0), &holder(2.2, 40.0), &path).unwrap();
+    assert!(r.total_collisions > 0);
+}
