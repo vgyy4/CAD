@@ -1011,3 +1011,33 @@ extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: Plate)
     assert_eq!(dxf.matches("CIRCLE").count(), 1, "{dxf}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_mitre_on_a_bend_radius_below_the_half_gap_keeps_its_diagonal() {
+    // Review R7: with r = 0.05 the wedge under the diagonal y = x - c starts where it
+    // meets y = 0 (x = c), a triangle of legs r + t - c; the walls still stay 0.1 apart.
+    let r0 = 0.05;
+    let src = format!(
+        "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: {r0} mm, k_factor: 0.5)\n\n\
+         edge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 90 deg, bend_radius: {r0} mm, k_factor: 0.5, close: mitre)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut ev = Evaluator::new(k);
+    let r = ev.evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let b = r.body("Plate").unwrap();
+    let t = 2.0;
+    let flange = |len: f64, l: f64| l * (FRAC_PI_2 * t * (r0 + t / 2.0) + len * t);
+    let c = 0.1 / std::f64::consts::SQRT_2;
+    let leg = r0 + t - c;
+    let volume = 60.0 * 40.0 * t + flange(15.0, 40.0) + flange(15.0, 60.0) + 2.0 * 15.0 * leg * leg / 2.0;
+    let m = ev.kernel().mass_properties(&b.shape).unwrap();
+    assert!(near(m.volume, volume), "{} vs {volume}", m.volume);
+    let diag = b.topology.faces.iter().filter(|fc| {
+        let n = fc.normal;
+        (n[0].abs() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6
+            && (n[1].abs() - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6
+    });
+    assert_eq!(diag.count(), 2, "the mitre's two faces");
+}

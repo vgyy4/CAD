@@ -10,7 +10,7 @@ Read-only review of the day's commits by a subagent; fixes by the main session.
 | R4 | No cap on the skin before refinement | Fixed: refused past `MAX_SKIN_TRIANGLES`. |
 | R5 | Vertex weld could split points across a rounding cell border | Fixed: neighbouring cells searched within 1e-4 mm. |
 | R6 | Rest machining: a tool too large for the region reads as "nothing left" | Fixed: the message names both causes. |
-| R7 | Mitre angle off for bend radii below the half gap | Open (minor; near-zero radii only). |
+| R7 | Mitre angle off for bend radii below the half gap | Fixed: the wedge starts where the diagonal meets the flat (a triangle); OCCT test at r = 0.05. |
 | R8 | `move_face onto` runs a full trial evaluation before committing | Accepted (cost of refusing failures up front). |
 | R9 | Tree import rebuilds the document from its text | Accepted: the text form is the document's canonical form (round-trip tests in gusset-doc). |
 | R10 | A mitre without `close` printed nothing | Fixed: printed as `close: mitre`. |

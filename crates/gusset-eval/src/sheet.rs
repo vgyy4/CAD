@@ -1357,7 +1357,10 @@ impl Wall {
         let beyond = scale(self.frame.normal(), self.reach(at_start, 1.0).signum());
         let frame = Frame { origin: add3(base, scale(self.frame.y, h0)), x: self.frame.x, y: beyond };
         let tag = |p: SheetPart| sheet_tag(p, 0);
-        let pts = [[r, 0.0], [r + t, 0.0], [r + t, r + t + d], [r, (r + d).max(0.0)]];
+        // Under the diagonal y = x + d; where it meets y = 0 past the inner face (radii
+        // below the half gap) the profile is a triangle, not a clamped quad (review R7).
+        let x0 = r.max(-d);
+        let pts = [[x0, 0.0], [r + t, 0.0], [r + t, r + t + d], [x0, x0 + d]];
         let tags = [SheetPart::Start, SheetPart::Flat, SheetPart::End, SheetPart::FlatBack];
         let mut edges: Vec<ProfileEdge> = pts
             .iter()
