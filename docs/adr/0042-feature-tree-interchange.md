@@ -141,7 +141,9 @@ Faces are found like edges: by a point on them, on the model as built so far. Th
 evaluates the features before the one in hand and takes the planar face whose plane holds the
 point within 0.01 mm (when a `normal` is given, its outward normal must also agree within
 about 2.5 degrees), or the cylindrical face whose radius from its axis matches; of several
-faces on one surface the one whose centre is nearest wins. A point that no face holds skips
+faces on one surface the one whose region (by the body's tessellation, within 0.01 mm) contains the point
+wins, then the one whose centre is nearest; when no face region contains it the nearest centre is
+taken with a warning. A point that no face's surface holds skips
 the feature. Face picks are `{ "point": [x, y, z], "normal": [nx, ny, nz] }`, `normal`
 optional (outward).
 
@@ -188,7 +190,8 @@ been imported, and must add to or cut from one body.
 ```
 With `features` (extrude, revolve, hole, fillet, chamfer; revolves only of 360 degrees) the
 importer builds each feature again with its world geometry reflected across the plane, the
-sketches included, named `<name>_<mirror name>`; distances become plain numbers (a driving
+sketches included, named `<name>_<mirror name>`; a copy's `target` naming another copied feature becomes that
+feature's copy; distances become plain numbers (a driving
 parameter's sign does not carry over). Reflected sketch planes must again be parallel to XY,
 XZ or YZ, so a mirror plane that tilts them skips the feature. Without `features` the whole
 body of `target` is mirrored with Gusset's `mirror` across a base or offset datum plane (the

@@ -202,3 +202,67 @@ fn a_shelled_box_with_the_top_face_removed() {
     ]);
     assert_vol(v, 30.0 * 20.0 * 10.0 - 26.0 * 16.0 * 8.0);
 }
+
+/// Like `import_v2` but keeps the session, for tests that look into the model.
+fn import_v2_session(features: Vec<Value>) -> (Session, Value) {
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": features});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    (s, r)
+}
+
+#[test]
+fn a_hole_picked_on_one_of_two_coplanar_tops_lands_on_that_one() {
+    // Two bars on a plate with tops in the plane z = 9. A point on the second (short) bar is
+    // nearer the first bar's centre than its own: the point-in-face test picks the second.
+    let pi = std::f64::consts::PI;
+    let (mut s, r) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 0.0, 0.0, 100.0, 20.0),
+        extrude("Plate", "Sketch1", 5.0, "new"),
+        rect("Sketch2", plane_at(5.0), 0.0, 0.0, 100.0, 10.0),
+        extrude("BarA", "Sketch2", 4.0, "join"),
+        rect("Sketch3", plane_at(5.0), 0.0, 14.0, 60.0, 4.0),
+        extrude("BarB", "Sketch3", 4.0, "join"),
+        json!({"type": "hole", "name": "Hole1", "face": {"point": [58, 16, 9], "normal": [0, 0, 1]},
+               "positions": [[58, 16, 9]], "diameter": 4, "through": true}),
+    ]);
+    assert!(r["warnings_user_text"].as_array().unwrap().is_empty(), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 10000.0 + 4000.0 + 960.0 - 36.0 * pi);
+    let text = execute(&mut s, &CmdCtx::user(1), "document.get_text", json!({})).unwrap();
+    let text = text["text_user_text"].as_str().unwrap().to_string();
+    let face = text.split("hole Hole1 (face: ").nth(1).and_then(|t| t.split(',').next()).unwrap().to_string();
+    // The face is named on the model before the hole.
+    let doc = gusset_doc::Document::from_text(text.split("\nhole Hole1").next().unwrap()).unwrap();
+    let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &());
+    let body = ev.bodies.last().unwrap();
+    // The hole's face is a bar top, the one centred at (30, 16).
+    let i = body.names.faces.iter().position(|n| n.to_string() == face).unwrap();
+    let c = body.topology.faces[i].centroid;
+    assert!((c[0] - 30.0).abs() < 1e-3 && (c[1] - 16.0).abs() < 1e-3 && (c[2] - 9.0).abs() < 1e-3, "{face} {c:?}");
+}
+
+#[test]
+fn a_mirrored_cut_cuts_the_mirrored_copy() {
+    // [Base, a cut of it] mirrored across x = 0: the copy's cut targets the copy.
+    let pi = std::f64::consts::PI;
+    let (mut s, _) = import_v2_session(vec![
+        rect("Sketch1", plane_at(0.0), 10.0, 0.0, 20.0, 10.0),
+        extrude("Base", "Sketch1", 5.0, "new"),
+        disc("Sketch2", plane_at(5.0), 20.0, 5.0, 2.0),
+        json!({"type": "extrude", "name": "Cut1", "sketch": "Sketch2", "profiles": "all", "distance": -5,
+               "operation": "cut", "target": "Base"}),
+        json!({"type": "mirror", "name": "Mirror1", "features": ["Base", "Cut1"],
+               "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}}),
+    ]);
+    let want = 1000.0 - pi * 4.0 * 5.0;
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    assert!(ev.errors().is_empty(), "{:?}", ev.errors());
+    assert_eq!(ev.bodies.len(), 2);
+    let k = s.kernel().clone();
+    for b in &ev.bodies {
+        assert_vol(k.mass_properties(&b.shape).unwrap().volume, want);
+    }
+}

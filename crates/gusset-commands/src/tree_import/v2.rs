@@ -108,19 +108,108 @@ struct FaceHit {
     planar: bool,
     normal: V3,
     centroid: V3,
+    /// No face on the surface contains the point: this is the nearest centre instead.
+    fallback: bool,
+}
+
+/// The tessellation of each body of an evaluation, made once per pick round and only for
+/// bodies that have a face on the picked surface.
+type Meshes = Vec<Option<gusset_kernel::Mesh>>;
+
+fn v3f(p: Option<&[f32; 3]>) -> V3 {
+    p.map_or([0.0; 3], |p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])])
+}
+
+/// The closest point of triangle abc to `p` (Ericson, Real-Time Collision Detection).
+fn closest_on_triangle(p: V3, a: V3, b: V3, c: V3) -> V3 {
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let at = |o: V3, k: V3, s: f64| [o[0] + k[0] * s, o[1] + k[1] * s, o[2] + k[2] * s];
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 && d1 - d3 > 0.0 {
+        return at(a, ab, d1 / (d1 - d3));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 && d2 - d6 > 0.0 {
+        return at(a, ac, d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 && (d4 - d3) + (d5 - d6) > 0.0 {
+        return at(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let sum = va + vb + vc;
+    if sum.abs() < 1e-300 {
+        return a;
+    }
+    let (v, w) = (vb / sum, vc / sum);
+    [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w]
+}
+
+/// Whether `point` lies on the mesh face `face` within `tol` mm (a bbox test first).
+fn mesh_face_holds(mesh: &gusset_kernel::Mesh, face: usize, point: V3, tol: f64) -> bool {
+    let Some(range) = mesh.face_ranges.get(face) else { return false };
+    for t in range.start..range.end {
+        let i = t as usize * 3;
+        let Some(idx) = mesh.indices.get(i..i + 3) else { continue };
+        let v = |k: usize| v3f(idx.get(k).and_then(|j| mesh.positions.get(*j as usize)));
+        let (a, b, c) = (v(0), v(1), v(2));
+        let outside = (0..3).any(|k| {
+            let (lo, hi) = (
+                a.get(k)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .min(b.get(k).copied().unwrap_or(0.0))
+                    .min(c.get(k).copied().unwrap_or(0.0)),
+                a.get(k)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(b.get(k).copied().unwrap_or(0.0))
+                    .max(c.get(k).copied().unwrap_or(0.0)),
+            );
+            let pk = point.get(k).copied().unwrap_or(0.0);
+            pk < lo - tol || pk > hi + tol
+        });
+        if !outside && norm(sub(point, closest_on_triangle(point, a, b, c))) <= tol {
+            return true;
+        }
+    }
+    false
 }
 
 /// The face whose surface holds `point` within 0.01 mm (and, when given, whose outward normal
-/// is within about 2.5 degrees of `normal`). Planes and cylinders are told apart this way; of
-/// several faces on one surface the one with the nearest centre wins.
-fn find_face(ev: &gusset_eval::Evaluation, point: V3, normal: Option<V3>) -> Result<FaceHit, String> {
+/// is within about 2.5 degrees of `normal`) and whose bounded region, by the body's
+/// tessellation, contains it. Planes and cylinders are told apart this way; of several faces
+/// holding the point the one with the nearest centre wins. When no face region holds it (the
+/// tessellation is coarse, or the point is off the face) the nearest centre among the
+/// surface matches is taken and `fallback` is set.
+fn find_face(
+    kernel: &dyn gusset_kernel::Kernel,
+    ev: &gusset_eval::Evaluation,
+    meshes: &mut Meshes,
+    point: V3,
+    normal: Option<V3>,
+) -> Result<FaceHit, String> {
     use gusset_kernel::SurfaceKind;
     let want = match normal {
         Some(n) => Some(unit(finite3(n, "a face normal")?).ok_or("a face normal has no direction")?),
         None => None,
     };
-    let mut best: Option<(f64, FaceHit)> = None;
-    for b in &ev.bodies {
+    meshes.resize_with(ev.bodies.len(), || None);
+    let mut best: Option<(bool, f64, FaceHit)> = None;
+    for (bi, b) in ev.bodies.iter().enumerate() {
         // A cylinder's radius from its circular edges, in one pass over the edges.
         let mut radius_of: HashMap<u32, f64> = HashMap::new();
         for e in &b.topology.edges {
@@ -133,21 +222,36 @@ fn find_face(ev: &gusset_eval::Evaluation, point: V3, normal: Option<V3>) -> Res
         for (i, f) in b.topology.faces.iter().enumerate() {
             let Some(name) = b.names.faces.get(i) else { continue };
             let fnorm = unit(f.normal);
+            let mut tol: f64 = 0.01;
             let hit = match f.kind {
                 SurfaceKind::Plane => fnorm.is_some_and(|n| {
                     dot(sub(point, f.centroid), n).abs() <= 0.01 && want.is_none_or(|w| dot(n, w) > 0.999)
                 }),
                 SurfaceKind::Cylinder => f.axis.is_some_and(|a| {
                     let radius = u32::try_from(i).ok().and_then(|i| radius_of.get(&i).copied());
+                    // Chords sag below the arc: allow for the tessellation.
+                    tol = tol.max(0.05 * radius.unwrap_or(0.0));
                     radius
                         .zip(unit(a.dir))
                         .is_some_and(|(r, d)| (norm(cross(sub(point, a.origin), d)) - r).abs() <= 0.01)
                 }),
                 _ => false,
             };
+            if !hit {
+                continue;
+            }
+            if meshes.get(bi).is_some_and(Option::is_none) {
+                let m = kernel.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).ok();
+                if let Some(slot) = meshes.get_mut(bi) {
+                    *slot = m;
+                }
+            }
+            let inside = meshes.get(bi).and_then(Option::as_ref).is_some_and(|m| mesh_face_holds(m, i, point, tol));
             let score = norm(sub(point, f.centroid));
-            if hit && best.as_ref().is_none_or(|x| score < x.0) {
+            let better = best.as_ref().is_none_or(|x| (inside && !x.0) || (inside == x.0 && score < x.1));
+            if better {
                 best = Some((
+                    inside,
                     score,
                     FaceHit {
                         body: b.feature.clone(),
@@ -155,12 +259,19 @@ fn find_face(ev: &gusset_eval::Evaluation, point: V3, normal: Option<V3>) -> Res
                         planar: f.kind == SurfaceKind::Plane,
                         normal: fnorm.unwrap_or([0.0, 0.0, 1.0]),
                         centroid: f.centroid,
+                        fallback: !inside,
                     },
                 ));
             }
         }
     }
-    best.map(|x| x.1).ok_or_else(|| format!("no planar or cylindrical face of the model holds the point {point:?}"))
+    best.map(|x| x.2).ok_or_else(|| format!("no planar or cylindrical face of the model holds the point {point:?}"))
+}
+
+fn warn_fallback(g: &mut Gen, f: &FaceHit, point: V3) {
+    if f.fallback {
+        g.warn(format!("no face contains the point {point:?}: the face {} with the nearest centre was taken", f.name));
+    }
 }
 
 /// The feature must build here, else the error is reported (the caller takes the text out).
@@ -231,7 +342,9 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
         args.push(format!("point_angle: {} deg", num(pa)));
     }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
-    let face = find_face(&ev, finite3(d.face.point, "the face point")?, d.face.normal)?;
+    let fp = finite3(d.face.point, "the face point")?;
+    let face = find_face(s.kernel().as_ref(), &ev, &mut Vec::new(), fp, d.face.normal)?;
+    warn_fallback(g, &face, fp);
     if !face.planar {
         return Err("a hole goes into a planar face".into());
     }
@@ -335,8 +448,11 @@ pub(super) fn shell(g: &mut Gen, s: &Session, d: &ShellF) -> Result<(), String> 
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let mut body: Option<String> = None;
     let mut names = Vec::new();
+    let mut meshes: Meshes = Vec::new();
     for pick in &d.faces {
-        let f = find_face(&ev, finite3(pick.point, "a face point")?, pick.normal)?;
+        let fp = finite3(pick.point, "a face point")?;
+        let f = find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, pick.normal)?;
+        warn_fallback(g, &f, fp);
         if body.as_ref().is_some_and(|b| *b != f.body) {
             return Err("its faces are on several bodies".into());
         }
@@ -530,7 +646,13 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
                 sketch(g, &sd)?;
             }
         }
-        let rf = reflect_feature(f, o, n, &rename)?;
+        let mut rf = reflect_feature(f, o, n, &rename)?;
+        // A copy's target is the copy of the target when that is copied too.
+        if let Some(tg) = f.get("target").and_then(Value::as_str)
+            && d.features.iter().any(|x| x == tg)
+        {
+            set(&mut rf, "target", json!(rename(tg)));
+        }
         match kind {
             "extrude" | "revolve" => {
                 let sd = serde_json::from_value::<SolidF>(rf).map_err(|e| e.to_string())?;

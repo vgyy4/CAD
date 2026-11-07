@@ -12,4 +12,4 @@ limits hold. Findings and status:
 | S4 | Pattern directions printed with 6 decimals moved far copies | Fixed: 12 decimals for directions and axes. |
 | S5 | Evaluations are not cumulative; many near-budget rebuilds | Mitigated: an import-wide time limit (300 s) on top of the 400-build cap. |
 | S6 | Lengths up to 1e12 mm reach OCCT | Fixed: v2 lengths below 1e7 mm, and spacing x count bounded. |
-| S7 | Faces matched by infinite plane/cylinder; mirrored features keep their `target` | Open (documented): a point-in-face test and target remapping are follow-ups. |
+| S7 | Faces matched by infinite plane/cylinder; mirrored features keep their `target` | Fixed: `find_face` requires the point inside the face's tessellated region (nearest centre with a warning otherwise); a mirror remaps a copied feature's `target` to the copy. |
