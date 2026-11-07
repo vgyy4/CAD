@@ -694,6 +694,8 @@ move_face MoveFace1 (body: Extrude1, faces: [Extrude1/side(Sketch1/l5)], transla
 
 move_face MoveFace2 (faces: [Extrude1/side(Sketch1/l6), Extrude1/side(Sketch1/l7)], axis: Z, angle: 15 deg, through: [5 mm, 5 mm, 0 mm])
 
+move_face MoveFace3 (faces: [Extrude1/side(Sketch1/l5)], translate: [1 mm, 0 mm, 0 mm], rules: true)
+
 text Text1 (text: "No. 7 \\ \"x\"", plane: Extrude1/cap(end), at: [2 mm, pitch / 2], height: 3 mm, distance: -0.4 mm, font: mono, align: center, angle: 15 deg, op: cut, body: Extrude1)
 
 text Text2 (text: "Gusset", plane: XY, at: [0 mm, 0 mm], height: 5 mm, distance: 1 mm, op: new, body_name: Label)

@@ -459,6 +459,9 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   their surfaces and stretch to follow, so they must contain the moved edges: a hole or boss
   slides or turns along the face it sits on, a side face moves along its normal. Moves that
   would need the neighbouring faces to tilt or bend are refused; faces keep their names.
+  `rules: true` (live rules, re-evaluated on rebuild; absent = off) also moves the body's
+  other planar faces in the same plane as a moved planar face (same direction and offset)
+  and the cylinders or cones on the axis of a moved one (a counterbore's two walls).
 - `text` embosses or engraves one line (at most 200 characters) on a plane: `at` is the start
   (or centre / end, with `align`) of the baseline in the plane's coordinates, `height` the
   height of capital letters, `angle` turns it about `at`; `distance` and `op` work as for
@@ -778,7 +781,7 @@ drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
 ## CAM jobs (ADR 0040)
 
 ```
-cam_job Job1 (sketch: S, operation: pocket|pocket_adaptive|pocket_rest|profile_outside|profile_inside|drill|bore|surface_ball|surface_flat|waterline_ball|waterline_flat|steep_ball|steep_flat, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [previous: 10 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
+cam_job Job1 (sketch: S, operation: pocket|pocket_adaptive|pocket_rest|profile_outside|profile_inside|drill|bore|surface_ball|surface_flat|waterline_ball|waterline_flat|steep_ball|steep_flat|pencil_ball, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [previous: 10 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
 ```
 
 A machining job on a sketch: no body; `cam_toolpath` and `cam_export_gcode` with `job: Job1`
@@ -788,7 +791,8 @@ tool of diameter `previous` left (corners, narrow parts) with this smaller tool.
 along the sketch's x, `stepover` of the diameter apart, default 0.1) inside the box of the
 regions, the tool coming down the sketch's normal; give `top` (the stock's top) and `depth`.
 `waterline_*` cuts constant-height contours `stepdown` apart; `steep_*` cuts contours where the
-surface is steeper than 45 deg and raster lines on the rest. Lengths and the ramp angle are
+surface is steeper than 45 deg and raster lines on the rest; `pencil_ball` traces the concave
+creases where the ball touches two surfaces at once. Lengths and the ramp angle are
 expressions (parameters allowed); `stepover` (a fraction of the diameter), feeds (mm/min),
 `rpm` and the tab count are plain numbers. Defaults as for `cam_toolpath`.
 

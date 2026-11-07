@@ -1,0 +1,45 @@
+# The SolidCore adapter (ADR 0023, docs/research/solidcore-2026-11.md) is its own workspace,
+# like fuzz/: SolidCore is a ~740k-line git dependency (its ops, record and tess crates are
+# not on crates.io), so keeping it out of the main workspace keeps it out of the main
+# Cargo.lock, cargo-deny and every ordinary build. Build and test it here:
+#   cargo test --features solidcore      (pinned SolidCore, ~18 min release build)
+#   cargo test                           (the stub that reports the kernel unavailable)
+[workspace]
+
+[package]
+name = "gusset-kernel-solidcore"
+description = "Kernel trait implementation on SolidCore (safe-Rust SMLib port), for per-operation routing (ADR 0023)"
+version = "0.1.0-mvp"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+# Without this feature the crate builds a stub whose `SolidcoreKernel::new` reports the
+# kernel unavailable, as gusset-kernel-occt does without GUSSET_OCCT_DIR.
+solidcore = ["dep:solidcore", "dep:solidcore-ops", "dep:solidcore-record", "dep:solidcore-tess"]
+
+[dependencies]
+gusset-kernel = { path = "../../crates/gusset-kernel", version = "0.1.0-mvp" }
+libm = "0.2.16"
+# SolidCore (Apache-2.0, github.com/tangency-labs/solidcore), pinned to one commit.
+solidcore = { git = "https://github.com/tangency-labs/solidcore", rev = "f4f70127afee1640c43d9f61e035baddd6dc271b", optional = true }
+solidcore-ops = { git = "https://github.com/tangency-labs/solidcore", rev = "f4f70127afee1640c43d9f61e035baddd6dc271b", optional = true }
+solidcore-record = { git = "https://github.com/tangency-labs/solidcore", rev = "f4f70127afee1640c43d9f61e035baddd6dc271b", optional = true }
+solidcore-tess = { git = "https://github.com/tangency-labs/solidcore", rev = "f4f70127afee1640c43d9f61e035baddd6dc271b", optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+float_cmp = "warn"
+indexing_slicing = "warn"
+mem_forget = "deny"

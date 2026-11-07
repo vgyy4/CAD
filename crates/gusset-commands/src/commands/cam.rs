@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface/waterline/steep_ball/_flat
+    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface/waterline/steep/pencil_ball, ..._flat
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -283,6 +283,13 @@ impl CamJob {
                     "waterline_ball" | "waterline_flat" => {
                         gusset_cam::waterline_finish(&surface, cutter, &water, &setup)
                     }
+                    // Concave creases a ball touches on two sides at once.
+                    "pencil_ball" => gusset_cam::pencil_finish(
+                        &surface,
+                        cutter,
+                        &gusset_cam::PencilSpec { bitangency_angle_deg: 20.0, tolerance: 0.01, bounds: Some((lo, hi)) },
+                        &setup,
+                    ),
                     "steep_ball" | "steep_flat" => gusset_cam::steep_shallow_finish(
                         &surface,
                         cutter,
@@ -336,8 +343,8 @@ impl CamJob {
 
 /// The 3D finishing operations: raster (`surface_*`), constant-Z contours (`waterline_*`) and
 /// contours on steep parts with raster on shallow ones (`steep_*`), ball or flat end mill.
-const SURFACE_OPS: [&str; 6] =
-    ["surface_ball", "surface_flat", "waterline_ball", "waterline_flat", "steep_ball", "steep_flat"];
+const SURFACE_OPS: [&str; 7] =
+    ["surface_ball", "surface_flat", "waterline_ball", "waterline_flat", "steep_ball", "steep_flat", "pencil_ball"];
 
 /// Most points a preview path holds.
 const MAX_PATH_POINTS: usize = 200_000;

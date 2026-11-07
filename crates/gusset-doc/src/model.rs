@@ -1299,6 +1299,9 @@ pub struct MoveFaceDef {
     /// Instead of a motion: move the (planar) faces onto this planar face's plane
     /// (replace face; the motion follows the face when it moves).
     pub onto: Option<FaceRef>,
+    /// Live rules (ADR 0031): faces coplanar with a moved planar face, and cylinders or
+    /// cones sharing a moved one's axis, move along. Absent in older documents = off.
+    pub rules: bool,
 }
 
 /// Moves a body: first turns it about an axis, then translates it (world axes). With
@@ -1711,6 +1714,8 @@ pub enum CamOp {
     /// Contours on steep parts, raster on shallow ones.
     SteepBall,
     SteepFlat,
+    /// Concave creases traced with a ball end mill.
+    PencilBall,
 }
 
 impl CamOp {
@@ -1729,6 +1734,7 @@ impl CamOp {
             CamOp::WaterlineFlat => "waterline_flat",
             CamOp::SteepBall => "steep_ball",
             CamOp::SteepFlat => "steep_flat",
+            CamOp::PencilBall => "pencil_ball",
         }
     }
 
@@ -1747,6 +1753,7 @@ impl CamOp {
             CamOp::WaterlineFlat,
             CamOp::SteepBall,
             CamOp::SteepFlat,
+            CamOp::PencilBall,
         ]
         .into_iter()
         .find(|o| o.keyword() == s)

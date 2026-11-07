@@ -485,6 +485,12 @@ fn raster_impl(
 
 mod waterline;
 pub use waterline::{DEFAULT_STEEP_DEG, SteepShallowSpec, WaterlineSpec, steep_shallow_finish, waterline_finish};
+mod holder;
+mod pencil;
+pub use holder::{
+    Holder, HolderCollision, HolderPart, HolderReport, SafeRaster, check_holder, lift_for_holder, raster_finish_safe,
+};
+pub use pencil::{PencilSpec, pencil_finish};
 
 #[cfg(test)]
 mod tests;

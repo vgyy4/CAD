@@ -34,6 +34,7 @@ pub use budget::{
 };
 pub use error::{ErrorCode, EvalError};
 pub use hole::{DEFAULT_POINT_ANGLE, Dims as HoleDims, HoleInfo, ThreadInfo};
+pub use ops::rule_faces;
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
 
 use gusset_doc::text::print_feature_object;

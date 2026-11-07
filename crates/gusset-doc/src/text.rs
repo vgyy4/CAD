@@ -513,6 +513,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(f) = &d.onto {
                 args.push(format!("onto: {f}"));
             }
+            if d.rules {
+                args.push("rules: true".into());
+            }
         }
         FeatureKind::Move(d) => {
             push_body(&mut args, &d.body);
@@ -1593,11 +1596,12 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut tools: Option<Vec<String>> = None;
     let mut faces = None;
     let mut onto = None;
+    let mut rules = false;
     let mut op = None;
     let allowed = match kw {
         "plane" => "base, offset, axis, angle, label, group, suppressed",
         "move" => "body, translate, axis, angle, through, copy, label, group, suppressed",
-        "move_face" => "body, faces, translate, axis, angle, through, onto, label, group, suppressed",
+        "move_face" => "body, faces, translate, axis, angle, through, onto, rules, label, group, suppressed",
         _ => "body, tools, op, label, group, suppressed",
     };
     parse_args(c, |key, c| {
@@ -1626,6 +1630,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             ("move" | "move_face", "through") => through = Some(parse_vec3(c)?),
             ("move_face", "faces") => faces = Some(parse_face_list(c)?),
             ("move_face", "onto") => onto = Some(parse_face(c)?),
+            ("move_face", "rules") => rules = parse_bool(c)?,
             ("move", "copy") => copy = parse_bool(c)?,
             ("combine", "tools") => {
                 c.expect('[')?;
@@ -1700,7 +1705,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 FeatureKind::Move(MoveDef { body, translate, rotation, copy })
             } else {
                 let faces = faces.ok_or_else(|| missing(c, kw, "faces"))?;
-                FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation, onto })
+                FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation, onto, rules })
             }
         }
         _ => FeatureKind::Combine(CombineDef {

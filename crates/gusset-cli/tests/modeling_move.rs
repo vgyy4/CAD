@@ -280,3 +280,99 @@ move_face Lay (body: Extrude1, faces: [Extrude1/cap(end)], onto: Ref/cap(end))"
         assert!(near(got, want), "{hx} {deg}: {got} vs {want}");
     }
 }
+
+/// A slot across the top of the box (x 10..20, 4 mm deep): the top is two coplanar faces.
+const SLOT: &str = "
+sketch S5 (plane: Extrude1/cap(end), next_id: 9) {
+  p1 = point(10, 0)
+  p2 = point(20, 0)
+  p3 = point(20, 20)
+  p4 = point(10, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+extrude Slot (profile: S5, distance: -4 mm, op: cut, body: Extrude1)
+";
+
+/// Name of the face of `body` that is planar with normal +Z and whose centroid x is in `lo..hi`.
+fn top_face(r: &Evaluation, body: &str, lo: f64, hi: f64) -> String {
+    let b = r.body(body).unwrap();
+    let i = b
+        .topology
+        .faces
+        .iter()
+        .position(|f| {
+            matches!(f.kind, gusset_kernel::SurfaceKind::Plane)
+                && f.normal[2] > 0.99
+                && f.centroid[2] > 9.9
+                && f.centroid[0] > lo
+                && f.centroid[0] < hi
+        })
+        .unwrap_or_else(|| panic!("no top face in {lo}..{hi}"));
+    b.names.faces[i].to_string()
+}
+
+#[test]
+fn live_rules_move_coplanar_faces_with_the_moved_one() {
+    let (_, slotted) = eval(BOX, SLOT);
+    assert!(slotted.errors().is_empty(), "{:?}", slotted.errors());
+    let left = top_face(&slotted, "Extrude1", 0.0, 10.0);
+    let right = top_face(&slotted, "Extrude1", 20.0, 40.0);
+    let mv = |rules: &str| format!("move_face MoveFace1 (faces: [{left}], translate: [0 mm, 0 mm, 2 mm]{rules})");
+    let base = 8000.0 - 4.0 * 10.0 * 20.0;
+    // Without rules only the left top rises (the walls stretch).
+    let (ev, r) = eval(BOX, &format!("{SLOT}\n{}", mv("")));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(near(volume(&ev, &r, "Extrude1"), base + 10.0 * 20.0 * 2.0));
+    // With rules the right top (same plane) rises too.
+    let (ev, r) = eval(BOX, &format!("{SLOT}\n{}", mv(", rules: true")));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(near(volume(&ev, &r, "Extrude1"), base + (10.0 + 20.0) * 20.0 * 2.0), "{}", volume(&ev, &r, "Extrude1"));
+    // Listing the right top too gives the same result.
+    let both = format!("move_face MoveFace1 (faces: [{left}, {right}], translate: [0 mm, 0 mm, 2 mm])");
+    let (ev2, r2) = eval(BOX, &format!("{SLOT}\n{both}"));
+    assert!(near(volume(&ev2, &r2, "Extrude1"), volume(&ev, &r, "Extrude1")));
+}
+
+const COUNTERBORE: &str = "
+sketch S6 (plane: Extrude1/cap(end), next_id: 3) {
+  p1 = point(20, 10)
+  c2 = circle(p1, 5)
+}
+
+extrude Bore (profile: S6, distance: -3 mm, op: cut, body: Extrude1)
+";
+
+#[test]
+fn live_rules_move_both_walls_of_a_counterbore() {
+    let vol = 8000.0 - std::f64::consts::PI * (9.0 * 7.0 + 25.0 * 3.0);
+    let mv = |rules: &str| {
+        format!("move_face MoveFace1 (faces: [Extrude2/side(S2/c2)], translate: [-10 mm, 0 mm, 0 mm]{rules})")
+    };
+    let (ev, r) = eval(BOX, &format!("{HOLE}\n{COUNTERBORE}\n{}", mv(", rules: true")));
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(near(volume(&ev, &r, "Extrude1"), vol), "{}", volume(&ev, &r, "Extrude1"));
+    // Both walls (and so the whole bore) now sit at x = 10.
+    let b = r.body("Extrude1").unwrap();
+    let xs: Vec<f64> = b
+        .topology
+        .faces
+        .iter()
+        .filter(|f| matches!(f.kind, gusset_kernel::SurfaceKind::Cylinder))
+        .map(|f| f.axis.unwrap().origin[0])
+        .collect();
+    assert_eq!(xs.len(), 2, "{xs:?}");
+    assert!(xs.iter().all(|x| (x - 10.0).abs() < 1e-6), "{xs:?}");
+}
+
+#[test]
+fn documents_without_rules_keep_their_behaviour() {
+    let mv = "move_face MoveFace1 (faces: [Extrude2/side(S2/c2)], translate: [-10 mm, 0 mm, 0 mm])";
+    let doc = gusset_doc::Document::from_text(&format!("{BOX}\n{HOLE}\n{mv}\n")).unwrap();
+    assert!(!doc.to_text().contains("rules"));
+    let (ev, r) = eval(BOX, &format!("{HOLE}\n{mv}"));
+    assert!(near(volume(&ev, &r, "Extrude1"), 8000.0 - std::f64::consts::PI * 90.0));
+}

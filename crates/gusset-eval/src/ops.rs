@@ -132,12 +132,16 @@ impl Evaluator {
         let k = self.kernel.as_ref();
         let mut steps = motion_steps(name, d.translate.as_ref(), d.rotation.as_ref(), params, units)?;
         let (bi, body) = target_body(s, name, d.body.as_deref())?;
-        let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
+        let mut faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
         if let Some(target) = &d.onto {
             steps = onto_steps(name, s, &body, &faces, target)?;
             if let [Transform::Rotate { origin, axis, angle }] = steps.as_slice() {
                 return self.tilt_faces(s, name, (bi, &body), &faces, (*origin, *axis, *angle));
             }
+        }
+        if d.rules {
+            let extra = rule_faces(&body.topology, &faces);
+            faces.extend(extra);
         }
         // A zero move (a parameter at 0) leaves the body as it is.
         steps.retain(|t| match t {
@@ -953,4 +957,38 @@ fn resolve_faces(name: &str, body: &Body, refs: &[gusset_doc::FaceRef], hint: &s
         }
     }
     Ok(faces)
+}
+
+/// Faces that move along with `faces` under the live rules of `move_face` (ADR 0031
+/// amendment): planar faces in the same plane (same direction and offset) as a moved
+/// planar one, and cylinders or cones on the same axis as a moved cylinder or cone.
+/// Returns only the extra faces, in face order.
+pub fn rule_faces(topo: &gusset_kernel::Topology, faces: &[u32]) -> Vec<u32> {
+    use gusset_kernel::{SurfaceKind as K, cross, dot, norm, sub};
+    const TOL: f64 = 1e-6;
+    let info = |i: u32| topo.faces.get(i as usize);
+    let revolved = |k: K| matches!(k, K::Cylinder | K::Cone);
+    let mut out = Vec::new();
+    for (j, g) in (0u32..).zip(&topo.faces) {
+        if faces.contains(&j) {
+            continue;
+        }
+        let hit = faces.iter().filter_map(|i| info(*i)).any(|f| match (f.kind, g.kind) {
+            (K::Plane, K::Plane) => {
+                norm(sub(f.normal, g.normal)) < TOL
+                    && (dot(f.centroid, f.normal) - dot(g.centroid, g.normal)).abs() < TOL
+            }
+            (a, b) if revolved(a) && revolved(b) => match (f.axis, g.axis) {
+                (Some(x), Some(y)) => {
+                    norm(cross(x.dir, y.dir)) < TOL && norm(cross(sub(y.origin, x.origin), x.dir)) < TOL
+                }
+                _ => false,
+            },
+            _ => false,
+        });
+        if hit {
+            out.push(j);
+        }
+    }
+    out
 }

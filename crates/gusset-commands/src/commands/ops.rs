@@ -165,7 +165,7 @@ impl Command for DeleteFace {
     const ID: &'static str = "feature.delete_face";
     const TITLE: &'static str = "Delete face";
     const DESCRIPTION: &'static str =
-        "Remove faces (holes, fillets, bosses) and heal: the faces around grow to close the gap. Needs OCCT.";
+        "Remove faces (holes, fillets, bosses); the faces around grow to close the gap. Needs OCCT.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -204,8 +204,7 @@ pub struct OffsetFace {
 impl Command for OffsetFace {
     const ID: &'static str = "feature.offset_face";
     const TITLE: &'static str = "Offset face";
-    const DESCRIPTION: &'static str =
-        "Push or pull faces along their normals (direct edit); neighbouring faces follow. Needs OCCT.";
+    const DESCRIPTION: &'static str = "Push or pull faces along their normals; neighbours follow. Needs OCCT.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -245,6 +244,9 @@ pub struct MoveFace {
     pub through: Option<[String; 3]>,
     #[serde(default)]
     pub onto: Option<String>,
+    /// Also move coplanar and coaxial faces (default true).
+    #[serde(default)]
+    pub rules: Option<bool>,
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
@@ -337,6 +339,24 @@ impl Command for MoveFace {
             }
         }
         let owner = owner_body(s, ctx, &self.faces)?;
+        let rules = self.rules.unwrap_or(true);
+        // Faces the rules add (reported; the evaluator re-derives them on every rebuild).
+        let also_moved: Vec<String> = if rules {
+            let ev = s.evaluate(&ctx.actor)?;
+            let hit = ev.bodies.iter().find_map(|b| {
+                let idx: Vec<u32> = faces.iter().filter_map(|f| b.names.face_index(f)).collect();
+                (!idx.is_empty()).then_some((b, idx))
+            });
+            hit.map(|(b, idx)| {
+                gusset_eval::rule_faces(&b.topology, &idx)
+                    .iter()
+                    .filter_map(|i| b.names.faces.get(*i as usize).map(ToString::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let laying = onto.is_some();
         let added = std::cell::RefCell::new(String::new());
         edit_checked(
@@ -346,10 +366,14 @@ impl Command for MoveFace {
             |doc, rb| {
                 let name = feature_name(doc, self.name, "MoveFace")?;
                 let body = body_for(doc, rb, self.body.or(owner))?;
-                let def = MoveFaceDef { body, faces, translate, rotation, onto };
+                let def = MoveFaceDef { body, faces, translate, rotation, onto, rules };
                 insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::MoveFace(def)));
                 added.replace(name.clone());
-                Ok(json!({ "feature": name }))
+                Ok(if rules {
+                    json!({ "feature": name, "also_moved": also_moved })
+                } else {
+                    json!({ "feature": name })
+                })
             },
             |s, doc, _| {
                 // Laying a face onto a plane that crosses the body fails in the kernel: try
@@ -393,7 +417,7 @@ pub struct Draft {
 impl Command for Draft {
     const ID: &'static str = "feature.draft";
     const TITLE: &'static str = "Draft";
-    const DESCRIPTION: &'static str = "Taper faces by an angle about a neutral plane so a molded or cast part releases. Needs the OCCT kernel. Faces keep their names. Returns body_changes.";
+    const DESCRIPTION: &'static str = "Taper faces by an angle about a neutral plane so a molded or cast part releases. Needs the OCCT kernel. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -436,7 +460,7 @@ pub struct Shell {
 impl Command for Shell {
     const ID: &'static str = "feature.shell";
     const TITLE: &'static str = "Shell";
-    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint when the walls are too thick for the part. Returns body_changes.";
+    const DESCRIPTION: &'static str = "Hollow a body to a wall thickness, removing the selected faces (e.g. the top to make an open box). Needs the OCCT kernel. Fails with a hint if the walls are too thick. Returns body_changes.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -479,7 +503,7 @@ pub struct Mirror {
 impl Command for Mirror {
     const ID: &'static str = "feature.mirror";
     const TITLE: &'static str = "Mirror";
-    const DESCRIPTION: &'static str = "Mirror a body across XY/XZ/YZ, a planar face or a datum plane, as a new body or united with the source. Uniting needs the OCCT kernel.";
+    const DESCRIPTION: &'static str = "Mirror a body across XY/XZ/YZ, a planar face or datum plane, as a new body or united with it. Uniting needs OCCT.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -528,7 +552,7 @@ pub struct PatternLinear {
 impl Command for PatternLinear {
     const ID: &'static str = "feature.pattern_linear";
     const TITLE: &'static str = "Linear pattern";
-    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it, along a direction (count, spacing). Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it, along a direction (count, spacing). Uniting needs OCCT unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -581,7 +605,7 @@ pub struct PatternCircular {
 impl Command for PatternCircular {
     const ID: &'static str = "feature.pattern_circular";
     const TITLE: &'static str = "Circular pattern";
-    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle). Uniting needs the OCCT kernel unless the copies stay apart.";
+    const DESCRIPTION: &'static str = "Repeat a body, or only some features of it (a bolt circle of holes), around an axis (count, total angle). Uniting needs OCCT unless the copies stay apart.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {

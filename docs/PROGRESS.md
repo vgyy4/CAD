@@ -288,7 +288,7 @@ Phase 3 has started (see Next).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Replace face done
      (`move_face ... onto:` a parallel face); tilting onto a tilted plane done (turned about the
-     planes' common line through the kernel's draft). Next: live rules.
+     planes' common line through the kernel's draft). Live rules done (`rules`, default on in the command: coplanar and coaxial faces follow the moved ones).
    - CAM phase 1 done (ADR 0040, `gusset-cam` on `cavalier_contours`): 2.5D pocket (islands
      kept clear) and outside/inside profiles of sketch regions with a flat end mill in depth
      passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,
@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
      clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
      where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
-     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Waterline and steep/shallow done (`waterline_*`, `steep_*`). Next: holder collision, pencil/rest finishing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Waterline and steep/shallow done (`waterline_*`, `steep_*`). Pencil finishing done (`pencil_ball`); holder/shank collision check and lifting in gusset-cam (`check_holder`, `raster_finish_safe`; not yet a command option). Next: wire the holder into the CAM commands. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
@@ -327,6 +327,10 @@ Phase 3 has started (see Next).
    macOS arm64, SBOMs, OCCT source, SHA256SUMS, update manifest. Releases can be
    started by tag name through workflow_dispatch (ADR 0013 amendment). Unsigned
    (ADR 0015); no update signing key yet, so the in-app updater refuses the manifest.
+
+- SolidCore tracking (ADR 0023, monthly): 2026-11-07 second look (docs/research/solidcore-2026-11.md):
+  correct end to end but 2-57x slower than OCCT, no face history, platform sin/cos; nothing
+  routed. Adapter in `kernels/solidcore` (opt-in, own workspace). Next look: 2026-12.
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
 - Feature-level patterns: done (2026-11-03). `pattern_linear` / `pattern_circular` take

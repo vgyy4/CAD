@@ -82,3 +82,23 @@ and branches, agent visibility, and expressions everywhere.
 - A second backend becomes possible without touching the evaluator, MCP or GUI.
 - Third-party UI code carries attribution; `scripts/check-secrets.sh` and cargo-deny are
   unaffected (no new dependency for adapted code).
+
+## Amendment 2026-11-07: SolidCore re-measured, adapter added, nothing routed
+- SolidCore (now `tangency-labs/solidcore`, pinned at `f4f70127afee`) qualifies under §2: its
+  operation layer has primitives, extrude/revolve/sweep/loft, booleans, fillets/chamfers,
+  shell/offset and a mesher, and every case we tried gives the analytic volume and a valid
+  body. Its C++ difftest was replaced on 2026-11-06 by self-recorded goldens, since it now
+  departs from SMLib on purpose.
+- `gusset-kernel-solidcore` exists in `kernels/solidcore`, its own workspace (like `fuzz/`)
+  so the git dependency stays out of the main Cargo.lock, cargo-deny and ordinary builds,
+  behind the crate feature `solidcore` (SolidCore is ~740k lines and a 200 MB git
+  dependency). It serves extrude, revolve,
+  booleans, fillet, chamfer, shell, transform, topology, measures and tessellation, and
+  passes 12 conformance tests from our OCCT goldens. SolidCore returns no face history, so
+  the adapter recovers face origins geometrically.
+- Measured against OCCT on the same cases, SolidCore is slower on every case but one
+  (median 9x, up to 57x; 36-46x on hole grids), and its ops layer serialises all calls in a
+  process. **Decision: no operation is routed to SolidCore.** The adapter stays a
+  conformance and benchmark target, re-measured monthly. The candidate routes are a
+  fallback when OCCT refuses a fillet, chamfer or shell (needs B-rep exchange first) and the
+  kernel of a future wasm build. Details: docs/research/solidcore-2026-11.md.

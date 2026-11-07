@@ -58,3 +58,24 @@ change shape, so it is a draft: the pull lies in the faces, across that line, an
 plane holds the line. The draft's sign is chosen by checking the turned face's normal.
 Tested with OCCT for hinges on the face's edge, inside it and beyond it (exact volumes).
 
+
+## Amendment (2026-11-07): live rules
+
+`move_face (..., rules: true)` moves, besides the listed faces, the faces related to them by
+a rule, so design intent survives a move:
+
+- coplanar: other planar faces of the body in the same plane (same outward direction, same
+  offset, 1e-6 mm) as a moved planar face;
+- coaxial: cylindrical and conical faces whose axis is the line of a moved cylinder or cone
+  (a counterbore's two walls, the halves of a split cylinder).
+
+The evaluator derives the extra faces from the body's topology each time it resolves the
+faces (`gusset_eval::rule_faces`), so they follow the model on rebuild; they are not stored.
+Symmetric and equal-radius rules are not implemented. With `onto` tilting (a draft) the rules
+do not apply.
+
+Default: the document field is `rules: bool`, printed only when true, and absence means false,
+so documents written before keep their behaviour. The `feature.move_face` command defaults
+`rules` to true (design intent is what a direct edit is for) and reports the faces it added as
+`also_moved`. Without rules, a slotted block whose one top face is lifted fails or only that
+face moves, as before (the kernel decides). `offset_face` has no rules yet.

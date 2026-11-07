@@ -52,7 +52,7 @@ pub struct JointCommand {
 impl Command for JointCommand {
     const ID: &'static str = "feature.joint";
     const TITLE: &'static str = "Joint";
-    const DESCRIPTION: &'static str = "Place a body: frame `at` on it onto frame `to`. Values: revolute angle; slider distance; cylindrical/pin_slot both; planar x, y, angle; ball angles. flip: face to face. On a placed body it closes a loop, solving `free` values.";
+    const DESCRIPTION: &'static str = "Place a body: frame `at` on it onto frame `to`. Revolute angle; slider distance; cylindrical/pin_slot both; planar x, y, angle; ball angles. flip: face to face. On a placed body it closes a loop (solves `free`).";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
