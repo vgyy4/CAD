@@ -32,7 +32,7 @@ fn the_plugin_samples_import_with_their_stated_volumes() {
         eprintln!("{sample}: {r}");
         let t: Value = serde_json::from_slice(&bytes).unwrap();
         let unsupported = t["features"].as_array().unwrap().iter().filter(|f| f["type"] == "unsupported").count();
-        assert_eq!(r["skipped"].as_array().unwrap().len(), unsupported, "{sample}: {r}");
+        assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), unsupported, "{sample}: {r}");
         let v = &r["volume_mm3"];
         let (src, ours) = (v["source"].as_f64().unwrap(), v["imported"].as_f64().unwrap());
         assert!((src - ours).abs() < 1e-3 * src, "{sample}: {r}");

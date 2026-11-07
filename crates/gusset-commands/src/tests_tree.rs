@@ -79,7 +79,8 @@ fn a_tree_imports_as_parametric_features_and_reports_what_it_skipped() {
     );
     let r = import(&mut s, "plate.gtree.json", &t).unwrap();
     assert_eq!(r["features"], json!(["Sketch1", "Extrude1"]), "{r}");
-    let skipped: Vec<&str> = r["skipped"].as_array().unwrap().iter().map(|v| v["feature"].as_str().unwrap()).collect();
+    let skipped: Vec<&str> =
+        r["skipped_user_text"].as_array().unwrap().iter().map(|v| v["feature"].as_str().unwrap()).collect();
     assert_eq!(skipped, ["Loft3", "Shell1"], "{r}");
     assert!((volume(&mut s) - 8000.0).abs() < 1e-6);
     assert!((r["volume_mm3"]["source"].as_f64().unwrap() - 8000.0).abs() < 1e-9, "{r}");
@@ -139,4 +140,40 @@ fn the_plugin_samples_import() {
         eprintln!("{sample}: {r}");
         assert!(!r["features"].as_array().unwrap().is_empty(), "{sample}: {r}");
     }
+}
+
+#[test]
+fn a_bad_sketch_or_parameter_is_skipped_without_spoiling_the_rest() {
+    let mut s = session();
+    let mut bad = rect("Bad", xy(), 5.0, 5.0);
+    // A one-entity coincident, a value on a horizontal and a line ending on a curve id.
+    bad["constraints"] = json!([{"type": "coincident", "entities": ["p1"]}]);
+    let mut worse = rect("Worse", xy(), 5.0, 5.0);
+    worse["curves"][0]["end"] = json!("l2");
+    let t = tree(
+        json!([
+            {"name": "w", "expression": "40 mm", "value": 40.0, "kind": "length"},
+            {"name": "W", "expression": "2 * w", "value": 80.0, "kind": "length"},
+            {"name": "mm", "expression": "w +\n1 mm", "value": 41.0, "kind": "length"},
+            {"name": "huge", "value": 1e300, "kind": "length"}
+        ]),
+        json!([
+            bad,
+            worse,
+            rect("Good", xy(), 10.0, 10.0),
+            {"type": "extrude", "name": "E", "sketch": "Good", "profiles": "all", "distance": 2}
+        ]),
+        json!([]),
+    );
+    let r = import(&mut s, "bad.gtree.json", &t).unwrap();
+    assert_eq!(r["features"], json!(["Good", "E"]), "{r}");
+    let skipped = r["skipped_user_text"].to_string();
+    assert!(skipped.contains("Bad") && skipped.contains("Worse"), "{r}");
+    assert!((volume(&mut s) - 200.0).abs() < 1e-6);
+    let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    // W collides with w (names are case-insensitive) and still refers to it; "mm" is a unit;
+    // the expression is printed on one line.
+    assert!(text.contains("param w = 40 mm") && text.contains("param W_2 = 2 * w"), "{text}");
+    assert!(text.contains("param p_mm = w + 1 mm"), "{text}");
+    assert!(!text.contains("huge"), "{text}");
 }

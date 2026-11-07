@@ -13,6 +13,18 @@ use std::fmt::Write as _;
 /// Most features one tree may hold, and sketch entities per sketch.
 const MAX_FEATURES: usize = 2000;
 const MAX_ENTITIES: usize = 20_000;
+/// Most parameters, sketch entities in all, and profile or edge picks per feature.
+const MAX_PARAMS: usize = 5000;
+const MAX_TOTAL_ENTITIES: usize = 200_000;
+const MAX_PICKS: usize = 256;
+/// Most model evaluations an import may run (each solid, fillet and chamfer is built to
+/// check it); later features that need one are skipped.
+const MAX_EVALUATIONS: usize = 400;
+/// Largest tree file (bytes).
+pub const MAX_TREE_BYTES: usize = 32 << 20;
+/// Longest untrusted string kept in the report, and most report entries.
+const MAX_REPORT_CHARS: usize = 200;
+const MAX_REPORT_ENTRIES: usize = 50;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Tree {
@@ -169,6 +181,9 @@ pub const TIER: &str = "editable features from the source application's feature 
 /// # Errors
 /// `io` when it is not a version 1 `gusset-feature-tree` or holds too much.
 pub fn parse(bytes: &[u8]) -> Result<Tree, CommandError> {
+    if bytes.len() > MAX_TREE_BYTES {
+        return Err(CommandError::new("too_large", format!("a feature tree is at most {} MiB", MAX_TREE_BYTES >> 20)));
+    }
     let t: Tree = serde_json::from_slice(bytes)
         .map_err(|e| CommandError::new("io", format!("the feature tree cannot be read: {e}")))?;
     if t.format != "gusset-feature-tree" {
@@ -180,6 +195,22 @@ pub fn parse(bytes: &[u8]) -> Result<Tree, CommandError> {
     }
     if t.features.len() > MAX_FEATURES {
         return Err(CommandError::new("too_large", format!("more than {MAX_FEATURES} features")));
+    }
+    if t.parameters.len() > MAX_PARAMS {
+        return Err(CommandError::new("too_large", format!("more than {MAX_PARAMS} parameters")));
+    }
+    let entities: usize = t
+        .features
+        .iter()
+        .map(|f| {
+            ["points", "curves", "constraints"]
+                .iter()
+                .map(|k| f.get(k).and_then(Value::as_array).map_or(0, Vec::len))
+                .sum::<usize>()
+        })
+        .sum();
+    if entities > MAX_TOTAL_ENTITIES {
+        return Err(CommandError::new("too_large", format!("more than {MAX_TOTAL_ENTITIES} sketch entities in all")));
     }
     Ok(t)
 }
@@ -197,6 +228,16 @@ fn cross(a: V3, b: V3) -> V3 {
 }
 fn norm(a: V3) -> f64 {
     libm::sqrt(dot(a, a))
+}
+
+/// A finite number, else an error naming it.
+fn finite(v: f64, what: &str) -> Result<f64, String> {
+    if v.is_finite() && v.abs() < 1e12 { Ok(v) } else { Err(format!("{what} is not a usable number")) }
+}
+
+/// Truncates untrusted text for the report.
+fn short(s: &str) -> String {
+    s.chars().take(MAX_REPORT_CHARS).collect()
 }
 
 /// A number for the text: up to 6 decimals, no trailing zeros.
@@ -351,23 +392,38 @@ struct Gen {
     made: Vec<String>,
     skipped: Vec<Value>,
     warnings: Vec<String>,
+    /// The next suffix to try per base name (no quadratic retries).
+    suffix: HashMap<String, usize>,
+    evaluations: usize,
 }
 
 impl Gen {
     fn fresh(&mut self, wanted: &str, fallback: &str) -> String {
-        let base = ident(wanted, fallback);
+        let mut base = ident(wanted, fallback);
+        // Unit and built-in names (mm, pi, sin) cannot name anything.
+        if gusset_units::params::validate_name(&base).is_err() {
+            base = format!("{fallback}_{base}");
+        }
         let mut name = base.clone();
-        let mut i = 2;
+        let i = self.suffix.entry(base.clone()).or_insert(2);
         while self.taken.contains(&name.to_ascii_lowercase()) {
             name = format!("{base}_{i}");
-            i += 1;
+            *i += 1;
         }
         self.taken.insert(name.to_ascii_lowercase());
         name
     }
 
     fn skip(&mut self, name: &str, why: impl Into<String>) {
-        self.skipped.push(json!({"feature": name, "reason": why.into()}));
+        if self.skipped.len() < MAX_REPORT_ENTRIES {
+            self.skipped.push(json!({"feature": short(name), "reason": short(&why.into())}));
+        }
+    }
+
+    fn warn(&mut self, w: String) {
+        if self.warnings.len() < MAX_REPORT_ENTRIES {
+            self.warnings.push(short(&w));
+        }
     }
 
     /// A length or angle: the parameter it is driven by when known, else the number.
@@ -380,7 +436,11 @@ impl Gen {
     }
 
     /// The document as text so far, evaluated (for regions and edges).
-    fn evaluate(&self, s: &Session) -> Result<gusset_eval::Evaluation, CommandError> {
+    fn evaluate(&mut self, s: &Session) -> Result<gusset_eval::Evaluation, CommandError> {
+        self.evaluations += 1;
+        if self.evaluations > MAX_EVALUATIONS {
+            return Err(CommandError::new("too_large", "the import has built the model too many times"));
+        }
         let doc = gusset_doc::text::parse(&self.text)
             .map_err(|e| CommandError::new("evaluation", format!("generated text: {e}")))?;
         Ok(gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &()))
@@ -407,6 +467,8 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         made: Vec::new(),
         skipped: Vec::new(),
         warnings: Vec::new(),
+        suffix: HashMap::new(),
+        evaluations: 0,
     };
     // Parameters go after the header lines.
     let mut param_lines = String::new();
@@ -417,20 +479,28 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             Some("number") => "",
             _ => "mm",
         };
-        let known: HashSet<&String> = g.params.values().collect();
+        // The expression, its variables renamed to the parameters made so far, printed
+        // canonically (one line); else the value.
         let expr = p
             .expression
             .as_deref()
-            .and_then(|e| gusset_units::expr::parse(e).ok().map(|x| (e, x)))
-            .filter(|(_, x)| x.variables().iter().all(|v| known.contains(v)))
-            .map(|(e, _)| e.to_string());
+            .filter(|e| e.len() <= 1000)
+            .and_then(|e| gusset_units::expr::parse(e).ok())
+            .and_then(|x| {
+                x.variables().iter().try_fold(x.clone(), |acc, v| g.params.get(v).map(|to| acc.rename_var(v, to)))
+            })
+            .map(|x| x.to_string());
         let expr = match expr {
             Some(e) => e,
             None => {
                 if p.expression.is_some() {
-                    g.warnings.push(format!("parameter {}: its expression was replaced by its value", p.name));
+                    g.warn(format!("parameter {}: its expression was replaced by its value", p.name));
                 }
-                format!("{} {unit}", num(p.value)).trim().to_string()
+                let Ok(v) = finite(p.value, "the value") else {
+                    g.warn(format!("parameter {}: no usable value, left out", p.name));
+                    continue;
+                };
+                format!("{} {unit}", num(v)).trim().to_string()
             }
         };
         let _ = writeln!(param_lines, "param {name} = {expr}");
@@ -445,6 +515,8 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     for f in &tree.features {
         let kind = f.get("type").and_then(Value::as_str).unwrap_or("");
         let src_name = f.get("name").and_then(Value::as_str).unwrap_or("Feature").to_string();
+        // Whatever a feature added is taken back out if it fails.
+        let (text_len, made_len) = (g.text.len(), g.made.len());
         let r = match kind {
             "sketch" => {
                 serde_json::from_value::<SketchF>(f.clone()).map_err(|e| e.to_string()).and_then(|d| sketch(&mut g, &d))
@@ -462,6 +534,8 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             other => Err(format!("feature type '{other}' is not in version 1")),
         };
         if let Err(why) = r {
+            g.text.truncate(text_len);
+            g.made.truncate(made_len);
             g.skip(&src_name, why);
         }
     }
@@ -469,7 +543,12 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     let new = gusset_doc::text::parse(&g.text)
         .map_err(|e| CommandError::new("invalid_document", format!("the generated features do not parse: {e}")))?;
     let made = g.made.clone();
-    let source = tree.source.clone();
+    // The source block, unless it is large (untrusted, echoed back).
+    let source = if serde_json::to_string(&tree.source).map_or(usize::MAX, |t| t.len()) <= 2000 {
+        tree.source.clone()
+    } else {
+        Value::Null
+    };
     crate::commands::edit(s, ctx, &format!("Import {file_name}"), |doc, _| {
         *doc = new;
         Ok(Value::Null)
@@ -481,7 +560,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     let theirs: f64 = tree.bodies.iter().filter_map(|b| b.volume_mm3).sum();
     let mut out = json!({
         "features": made,
-        "skipped": g.skipped,
+        "skipped_user_text": g.skipped,
         "parameters": g.params.values().collect::<Vec<_>>(),
         "source_user_text": source,
         "tier": TIER,
@@ -491,7 +570,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
     {
         o.insert("volume_mm3".into(), json!({"source": theirs, "imported": ours}));
         if (ours - theirs).abs() > 1e-3 * theirs {
-            g.warnings.push(format!("the model's volume {ours:.3} mm3 differs from the source's {theirs:.3} mm3"));
+            g.warn(format!("the model's volume {ours:.3} mm3 differs from the source's {theirs:.3} mm3"));
         }
     }
     if let Some(o) = out.as_object_mut() {
@@ -503,6 +582,9 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
 fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     if d.points.len() + d.curves.len() + d.constraints.len() > MAX_ENTITIES {
         return Err("too many sketch entities".into());
+    }
+    for v in d.plane.origin.iter().chain(&d.plane.x_axis).chain(&d.plane.y_axis) {
+        finite(*v, "its plane")?;
     }
     let name = g.fresh(&d.name, "Sketch");
     let placed = place_sketch(&name, &d.plane)
@@ -522,16 +604,24 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
         format!("{prefix}{n}")
     };
     let mut body = String::new();
+    let mut points: HashSet<String> = HashSet::new();
     for p in &d.points {
         let id = next("p");
-        let [u, v] = map.map(p.x, p.y);
+        let [u, v] = map.map(finite(p.x, "a point")?, finite(p.y, "a point")?);
+        let (u, v) = (finite(u, "a point")?, finite(v, "a point")?);
         let c = if p.construction { " construction" } else { "" };
         let _ = writeln!(body, "  {id} = point({}, {}){c}", num(u), num(v));
         map.ids.insert(p.id.clone(), id);
+        points.insert(p.id.clone());
     }
+    // Curves end on points only (a curve id is not a point).
     let pid = |map: &SketchMap, s: &Option<String>| -> Result<String, String> {
         let k = s.as_ref().ok_or("a curve lacks a point")?;
-        map.ids.get(k).cloned().ok_or_else(|| format!("unknown sketch point '{k}'"))
+        points
+            .contains(k)
+            .then(|| map.ids.get(k).cloned())
+            .flatten()
+            .ok_or_else(|| format!("unknown sketch point '{}'", short(k)))
     };
     for c in &d.curves {
         let line = match c.kind.as_str() {
@@ -542,7 +632,8 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
             }
             "circle" => {
                 let id = next("c");
-                let r = c.radius.filter(|r| r.is_finite() && *r > 0.0).ok_or("a circle without a radius")?;
+                let r =
+                    c.radius.filter(|r| r.is_finite() && *r > 0.0 && *r < 1e12).ok_or("a circle without a radius")?;
                 let s = format!("  {id} = circle({}, {})", pid(&map, &c.center)?, num(r));
                 (id, s)
             }
@@ -554,7 +645,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                 let s = format!("  {id} = arc({}, {}, {})", pid(&map, &c.center)?, pid(&map, s0)?, pid(&map, s1)?);
                 (id, s)
             }
-            other => return Err(format!("sketch curve type '{other}' is not imported")),
+            other => return Err(format!("sketch curve type '{}' is not imported", short(other))),
         };
         let cons = if c.construction { " construction" } else { "" };
         let _ = writeln!(body, "{}{cons}", line.1);
@@ -586,7 +677,9 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
             continue;
         };
         let mut args = ents.join(", ");
-        if let Some(v) = k.value {
+        let dimension = matches!(k.kind.as_str(), "distance" | "angle" | "radius" | "diameter");
+        if let Some(v) = k.value.filter(|_| dimension) {
+            let v = finite(v, "a dimension")?;
             let (unit, negate) = if k.kind == "angle" { ("deg", map.flipped) } else { ("mm", false) };
             let _ = write!(args, ", {}", g.value(v, unit, k.parameter.as_ref(), negate));
         }
@@ -603,18 +696,23 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     }
     let _ = write!(text, "\nsketch {name} (plane: {}) {{\n{body}}}\n", placed.plane);
     g.text.push_str(&text);
+    // A constraint of the wrong arity (or the like) must not spoil the rest: the sketch
+    // is kept only if the text still parses (the caller takes it back out).
+    gusset_doc::text::parse(&g.text).map_err(|e| format!("it does not read back: {}", short(&e.to_string())))?;
     g.made.push(name.clone());
     g.sketches.insert(d.name.clone(), map);
     Ok(())
 }
 
 fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), String> {
-    let sm = g.sketches.get(&d.sketch).ok_or_else(|| format!("its sketch '{}' was not imported", d.sketch))?.clone();
+    let sm =
+        g.sketches.get(&d.sketch).ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?.clone();
     let (sk_name, flipped) = (sm.name.clone(), sm.flipped);
     let profile = match &d.profiles {
         None => sk_name.clone(),
         Some(Profiles::All(a)) if a == "all" => sk_name.clone(),
-        Some(Profiles::All(other)) => return Err(format!("profiles '{other}' is not \"all\" or a list")),
+        Some(Profiles::All(_)) => return Err("profiles is not \"all\" or a list".into()),
+        Some(Profiles::Picks(picks)) if picks.len() > MAX_PICKS => return Err("too many profile picks".into()),
         Some(Profiles::Picks(picks)) => {
             let ev = g.evaluate(s).map_err(|e| e.message)?;
             let sr = ev.sketches.get(&sk_name).ok_or("its sketch did not solve")?;
@@ -636,6 +734,7 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
                     None => return Err(format!("no region of its sketch holds the profile point {:?}", pk.point)),
                 }
             }
+            ids.sort();
             ids.dedup();
             format!("{sk_name}.regions({})", ids.join(", "))
         }
@@ -645,29 +744,36 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
         "join" => "add",
         "cut" => "cut",
         "intersect" => "intersect",
-        other => return Err(format!("operation '{other}' is not new, join, cut or intersect")),
+        other => return Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
     };
     let name = g.fresh(&d.name, if revolve { "Revolve" } else { "Extrude" });
     let mut args = vec![format!("profile: {profile}")];
     if revolve {
         let axis = d.axis.as_ref().ok_or("a revolve without an axis")?;
+        let mut angle = finite(d.angle.unwrap_or(360.0), "the angle")?;
         let a = match (&axis.line, axis.origin, axis.direction) {
             (Some(l), _, _) => {
-                format!("{sk_name}.{}", sm.ids.get(l).ok_or_else(|| format!("unknown axis line '{l}'"))?)
+                let line = sm.ids.get(l).filter(|id| id.starts_with('l'));
+                format!("{sk_name}.{}", line.ok_or_else(|| format!("unknown axis line '{}'", short(l)))?)
             }
-            (None, Some(o), Some(dir)) if norm(o) < 1e-9 => {
-                let dl = norm(dir).max(1e-300);
-                match dir.map(|c| c / dl) {
-                    [x, _, _] if (x.abs() - 1.0).abs() < 1e-9 => "X".into(),
-                    [_, y, _] if (y.abs() - 1.0).abs() < 1e-9 => "Y".into(),
-                    [_, _, z] if (z.abs() - 1.0).abs() < 1e-9 => "Z".into(),
+            (None, Some(o), Some(dir)) if norm(o) < 1e-9 && norm(dir).is_finite() && norm(dir) > 1e-9 => {
+                let dl = norm(dir);
+                // A negative axis turns the other way about the positive one.
+                let (name, sign) = match dir.map(|c| c / dl) {
+                    [x, _, _] if (x.abs() - 1.0).abs() < 1e-9 => ("X", x),
+                    [_, y, _] if (y.abs() - 1.0).abs() < 1e-9 => ("Y", y),
+                    [_, _, z] if (z.abs() - 1.0).abs() < 1e-9 => ("Z", z),
                     _ => return Err("a revolve axis not along X, Y or Z is not imported yet".into()),
+                };
+                if sign < 0.0 {
+                    angle = -angle;
                 }
+                name.to_string()
             }
             _ => return Err("a revolve axis off the origin and not a sketch line is not imported yet".into()),
         };
         args.push(format!("axis: {a}"));
-        args.push(format!("angle: {} deg", num(d.angle.unwrap_or(360.0))));
+        args.push(format!("angle: {} deg", num(angle)));
     } else {
         let dist = d.distance.filter(|v| v.is_finite() && v.abs() > 1e-9).ok_or("an extrude without a distance")?;
         args.push(format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), flipped)));
@@ -679,7 +785,7 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     if op != "new"
         && let Some(t) = &d.target
     {
-        let tn = g.features.get(t).ok_or_else(|| format!("its target '{t}' was not imported"))?;
+        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
         args.push(format!("body: {tn}"));
     }
     let kw = if revolve { "revolve" } else { "extrude" };
@@ -687,10 +793,6 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     // The new feature must build: a failure is reported and the line taken back out.
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
-        let line = format!("\n{kw} {name} ({})\n", args.join(", "));
-        if let Some(i) = g.text.rfind(&line) {
-            g.text.replace_range(i..i + line.len(), "\n");
-        }
         return Err(format!("it does not build here: {}", e.message));
     }
     g.made.push(name.clone());
@@ -700,7 +802,10 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
 
 fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String> {
     let size = if fillet { d.radius } else { d.distance };
-    let size = size.filter(|v| v.is_finite() && *v > 0.0).ok_or("no positive size")?;
+    let size = size.filter(|v| v.is_finite() && *v > 0.0 && *v < 1e12).ok_or("no positive size")?;
+    if d.edges.len() > MAX_PICKS {
+        return Err("too many edges".into());
+    }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     // Each edge: the nearest one of the model as built so far, within 0.01 mm.
     let mut by_body: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -732,9 +837,6 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     g.text.push_str(&line);
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
-        if let Some(i) = g.text.rfind(&line) {
-            g.text.replace_range(i..i + line.len(), "\n");
-        }
         return Err(format!("it does not build here: {}", e.message));
     }
     g.made.push(name.clone());

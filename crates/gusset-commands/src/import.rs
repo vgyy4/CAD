@@ -207,7 +207,9 @@ impl ImportJob {
     /// # Errors
     /// `cancelled`, `io` (parse or worker failures), `invalid_args` (too large).
     pub fn run(self, cancel: &CancelFlag) -> Result<PreparedImport, CommandError> {
-        let bytes = read_capped(self.file, MAX_IMPORT_BYTES, cancel)?;
+        let cap =
+            if matches!(self.kind, Kind::Tree) { crate::tree_import::MAX_TREE_BYTES as u64 } else { MAX_IMPORT_BYTES };
+        let bytes = read_capped(self.file, cap, cancel)?;
         if matches!(self.kind, Kind::Tree) {
             let tree = crate::tree_import::parse(&bytes)?;
             return Ok(PreparedImport {

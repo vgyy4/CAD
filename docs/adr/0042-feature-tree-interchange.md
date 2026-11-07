@@ -114,3 +114,16 @@ them as UNVERIFIED until run against the real application.
 Editable history from the three most used proprietary tools, for the common features
 (sketch, extrude, revolve, fillet, chamfer); everything else is reported per feature. The
 format is versioned; later versions add holes, patterns, shells and assemblies.
+
+## Amendment (2026-11-07): limits after the security review
+
+The file is untrusted. A tree is at most 32 MiB, 2000 features, 5000 parameters, 200 000
+sketch entities in all (20 000 per sketch) and 256 profile or edge picks per feature, and an
+import builds the model at most 400 times; past that, features that need a build are
+skipped. Every feature's text is taken back out when it fails, and a sketch is kept only if
+the text still parses, so one bad feature never spoils the rest. Numbers must be finite
+(below 1e12), dimension values go only on `distance`, `angle`, `radius` and `diameter`, and
+curves end on points only. Parameter expressions are re-printed from their parse with their
+variables renamed to the imported names; unit and built-in names get a prefix. The report's
+untrusted strings are in `skipped_user_text` and `warnings_user_text`, truncated to 200
+characters and 50 entries; a `source` block larger than 2 KB is dropped.
