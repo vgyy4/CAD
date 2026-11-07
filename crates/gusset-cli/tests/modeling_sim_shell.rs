@@ -94,3 +94,40 @@ fn a_sheet_strip_rings_at_its_beam_frequency() {
     assert!(sc["largest_at_mm"][0].as_f64().unwrap() > 95.0, "{sc}");
     assert!(sc["direction"][2].as_f64().unwrap().abs() > 0.9, "{sc}");
 }
+
+#[test]
+fn a_bent_tab_solves_at_several_element_sizes() {
+    // Dogfooding F8-1: thin facets where the bend meets the flats made folded elements at
+    // most sizes. A 100 x 20 x 2 tab with a 30 mm flange, held at its far end, pushed at the
+    // flange's top: every size solves and they agree.
+    let src = "gusset 1
+units mm
+
+sketch T (plane: XY, next_id: 9) {
+  p1 = point(0, 0)
+  p2 = point(100, 0)
+  p3 = point(100, 20)
+  p4 = point(0, 20)
+  l5 = line(p1, p2)
+  l6 = line(p2, p3)
+  l7 = line(p3, p4)
+  l8 = line(p4, p1)
+}
+
+tab Plate (profile: T, thickness: 2 mm)
+
+edge_flange F1 (body: Plate, line: l6, length: 30 mm, angle: 90 deg, bend_radius: 2 mm, k_factor: 0.44)
+";
+    let mut s = session(src);
+    let mut seen = Vec::new();
+    for h in [2.5, 3.0, 5.0] {
+        let r = run(
+            &mut s,
+            "sim.static",
+            json!({"fixed": ["Plate/side(T/l8)"], "loads": [{"face": "F1/end(l6)", "force": [-1, 0, 0]}], "voxel": h}),
+        );
+        seen.push(r["max_displacement_mm"].as_f64().unwrap());
+    }
+    let (lo, hi) = seen.iter().fold((f64::MAX, 0.0f64), |(a, b), d| (a.min(*d), b.max(*d)));
+    assert!(hi - lo < 0.05 * hi, "{seen:?}");
+}

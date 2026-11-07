@@ -220,7 +220,8 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   `intersect` combine with the body created by the feature named in `body:` (default:
   the latest body). A sketch on a face extrudes along the face's outward normal, so a
   `cut` into the material needs a negative distance.
-- A revolve axis `X`, `Y`, `Z` is a world axis; `Sketch1.l5` is a line of a sketch.
+- A revolve axis `X` or `Y` is the sketch's own x or y axis through its origin (`Z`, its normal,
+  is refused); `Sketch1.l5` is a line of a sketch.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
   `names: true`; never guess them).
 

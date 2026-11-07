@@ -38,3 +38,27 @@ fn the_plugin_samples_import_with_their_stated_volumes() {
         assert!((src - ours).abs() < 1e-3 * src, "{sample}: {r}");
     }
 }
+
+#[test]
+fn a_revolve_about_a_world_axis_lands_on_the_sketch_axis() {
+    // Dogfooding F8-2: on an XZ sketch, world Z is the sketch's y axis. A 5..10 x 0..10
+    // rectangle turned about it is a ring of pi (10^2 - 5^2) 10.
+    let tree = json!({
+        "format": "gusset-feature-tree", "version": 1, "source": {"app": "test"},
+        "features": [
+            {"type": "sketch", "name": "S", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]},
+             "points": [{"id": "a", "x": 5, "y": 0}, {"id": "b", "x": 10, "y": 0}, {"id": "c", "x": 10, "y": 10}, {"id": "d", "x": 5, "y": 10}],
+             "curves": [{"id": "l1", "type": "line", "start": "a", "end": "b"}, {"id": "l2", "type": "line", "start": "b", "end": "c"},
+                        {"id": "l3", "type": "line", "start": "c", "end": "d"}, {"id": "l4", "type": "line", "start": "d", "end": "a"}]},
+            {"type": "revolve", "name": "R", "sketch": "S", "profiles": "all",
+             "axis": {"origin": [0, 0, 0], "direction": [0, 0, -1]}, "angle": 360, "operation": "new"}
+        ],
+        "bodies": [{"name": "R", "volume_mm3": 2356.194490}]
+    });
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("r.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "r.gtree.json"})).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let v = &r["volume_mm3"];
+    assert!((v["imported"].as_f64().unwrap() - 2356.194490).abs() < 1e-3, "{r}");
+}

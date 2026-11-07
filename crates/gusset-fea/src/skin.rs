@@ -102,6 +102,8 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
         face: usize,
         n: V3,
         area: f64,
+        /// The mesh's own (exact surface) normals at the corners.
+        vn: [V3; 3],
     }
     let mut tris: Vec<Tri> = Vec::new();
     for (face, r) in mesh.face_ranges.iter().enumerate() {
@@ -124,7 +126,11 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
                 n = scale(n, -1.0);
             }
             let w = |i: u32| weld.get(i as usize).copied().unwrap_or(0);
-            tris.push(Tri { v: [w(a), w(b), w(c)], face, n, area });
+            let vn = [a, b, c].map(|i| match mesh.normals.get(i as usize).map(|m| unit(wide(*m))) {
+                Some(m) if norm(m) > 0.5 => m,
+                _ => n,
+            });
+            tris.push(Tri { v: [w(a), w(b), w(c)], face, n, area, vn });
         }
     }
     if tris.is_empty() {
@@ -173,10 +179,12 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     // The skin's triangles and per-vertex outward normals (area weighted).
     let mut normal = vec![[0.0; 3]; pos.len()];
     let mut tri: Vec<Option<[u32; 3]>> = Vec::new();
+    // The surface's exact normals (OCCT's vertex normals): on a bend every node then moves
+    // along its own radius and no thin facet can fold (dogfooding F8-1).
     for t in tris.iter().filter(|t| skin.get(t.face).copied().unwrap_or(false)) {
-        for v in t.v {
-            if let Some(n) = normal.get_mut(v as usize) {
-                *n = add(*n, scale(t.n, t.area));
+        for (v, vn) in t.v.iter().zip(t.vn) {
+            if let Some(n) = normal.get_mut(*v as usize) {
+                *n = add(*n, vn);
             }
         }
         tri.push(Some(t.v));
@@ -250,6 +258,12 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
             }
         }
     }
+    // Slivers (OCCT leaves very thin triangles where a bend meets a flat) would make folded
+    // quads: collapse edges shorter than a fifth of the size, keeping the outline's vertices.
+    collapse_short(&mut tri, &pos, h / 5.0);
+    // Flat "caps" (a vertex on the opposite edge) give quads with a node twice: flip their
+    // long edge with the neighbour across it; a cap on the outline goes.
+    flip_caps(&mut tri, &pos, &normal);
     // Each triangle as three quads: corner, edge midpoint, centre, edge midpoint.
     let mut nodes = pos.clone();
     let mut nrm = normal.clone();
@@ -284,22 +298,176 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
         quads.push([b, mbc, gi, mab]);
         quads.push([c, mca, gi, mbc]);
     }
-    // Keep the nodes the quads use, moved in by half the thickness.
+    // Every node moved in by half the thickness; a quad that comes out folded or flat there
+    // (rare, where facets are thin) is left out rather than fail the whole model.
+    let unit_n: Vec<V3> = nrm.iter().map(|n| unit(*n)).collect();
+    let moved: Vec<V3> = nodes.iter().zip(&unit_n).map(|(x, n)| sub(*x, scale(*n, thickness / 2.0))).collect();
+    quads.retain(|q| convex(q.map(|i| p(&moved, i))));
+    // Keep the nodes the quads use.
     let mut used = vec![u32::MAX; nodes.len()];
     let (mut out, mut normals) = (Vec::new(), Vec::new());
     for q in &mut quads {
         for v in q.iter_mut() {
             let Some(slot) = used.get_mut(*v as usize) else { continue };
             if *slot == u32::MAX {
-                let n = unit(nrm.get(*v as usize).copied().unwrap_or([0.0; 3]));
-                out.push(sub(p(&nodes, *v), scale(n, thickness / 2.0)));
-                normals.push(n);
+                out.push(p(&moved, *v));
+                normals.push(unit_n.get(*v as usize).copied().unwrap_or([0.0; 3]));
                 *slot = (out.len() - 1) as u32;
             }
             *v = *slot;
         }
     }
     Ok(MidSurface { mesh: ShellMesh { nodes: out, quads, tris: Vec::new() }, normals, skin, thickness })
+}
+
+/// Merges the ends of edges shorter than `min` (shortest first), keeping a vertex on the
+/// mesh's outline where there is one, and drops the triangles that collapse.
+fn collapse_short(tri: &mut [Option<[u32; 3]>], pos: &[V3], min: f64) {
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+    for v in tri.iter().flatten() {
+        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            *uses.entry(key(a, b)).or_insert(0) += 1;
+        }
+    }
+    let mut outline = vec![false; pos.len()];
+    for ((a, b), n) in &uses {
+        if *n == 1 {
+            for v in [a, b] {
+                if let Some(o) = outline.get_mut(*v as usize) {
+                    *o = true;
+                }
+            }
+        }
+    }
+    let at = |i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let mut short: Vec<(f64, u32, u32)> =
+        uses.keys().map(|(a, b)| (norm(sub(at(*a), at(*b))), *a, *b)).filter(|(l, _, _)| *l < min).collect();
+    short.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut parent: Vec<u32> = (0..pos.len() as u32).collect();
+    fn find(parent: &mut [u32], mut i: u32) -> u32 {
+        while let Some(&p) = parent.get(i as usize) {
+            if p == i {
+                break;
+            }
+            let gp = parent.get(p as usize).copied().unwrap_or(p);
+            if let Some(slot) = parent.get_mut(i as usize) {
+                *slot = gp;
+            }
+            i = p;
+        }
+        i
+    }
+    for (_, a, b) in short {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra == rb || norm(sub(at(ra), at(rb))) >= min {
+            continue;
+        }
+        let keep_b =
+            outline.get(rb as usize).copied().unwrap_or(false) && !outline.get(ra as usize).copied().unwrap_or(false);
+        let (from, to) = if keep_b { (ra, rb) } else { (rb, ra) };
+        if let Some(slot) = parent.get_mut(from as usize) {
+            *slot = to;
+        }
+    }
+    for t in tri.iter_mut() {
+        if let Some(v) = t {
+            let w = v.map(|i| find(&mut parent, i));
+            *t = (w[0] != w[1] && w[1] != w[2] && w[0] != w[2]).then_some(w);
+        }
+    }
+}
+
+/// Whether a quad is convex and not flat, seen along its own normal.
+fn convex(p: [V3; 4]) -> bool {
+    let n = cross(sub(p[2], p[0]), sub(p[3], p[1]));
+    let nn = norm(n);
+    if nn < 1e-12 {
+        return false;
+    }
+    let corners = [(p[0], p[1], p[3]), (p[1], p[2], p[0]), (p[2], p[3], p[1]), (p[3], p[0], p[2])];
+    corners.iter().all(|(c, next, prev)| dot(cross(sub(*next, *c), sub(*prev, *c)), n) > 1e-6 * nn * nn)
+}
+
+/// Quality of a triangle: 1 equilateral, 0 flat (4 sqrt3 area / sum of squared edges).
+fn quality(a: V3, b: V3, c: V3) -> f64 {
+    let area = norm(cross(sub(b, a), sub(c, a))) / 2.0;
+    let s = dot(sub(b, a), sub(b, a)) + dot(sub(c, b), sub(c, b)) + dot(sub(a, c), sub(a, c));
+    if s > 0.0 { 4.0 * libm::sqrt(3.0) * area / s } else { 0.0 }
+}
+
+/// Flips the longest edge of each nearly flat triangle with its neighbour when that makes
+/// both better, and drops flat triangles that cannot be flipped (on the outline).
+fn flip_caps(tri: &mut [Option<[u32; 3]>], pos: &[V3], normal: &[V3]) {
+    const FLAT: f64 = 0.02;
+    let key = |a: u32, b: u32| (a.min(b), a.max(b));
+    let at = |i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);
+    let nrm = |i: u32| normal.get(i as usize).copied().unwrap_or([0.0; 3]);
+    for _ in 0..4 {
+        let mut on_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (i, v) in tri.iter().enumerate() {
+            if let Some(v) = v {
+                for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+                    on_edge.entry(key(a, b)).or_default().push(i);
+                }
+            }
+        }
+        let mut changed = false;
+        for i in 0..tri.len() {
+            let Some(Some(v)) = tri.get(i).copied() else { continue };
+            if quality(at(v[0]), at(v[1]), at(v[2])) >= FLAT {
+                continue;
+            }
+            // The longest edge (u -> w in winding order) and the vertex opposite.
+            let turns = [(v[0], v[1], v[2]), (v[1], v[2], v[0]), (v[2], v[0], v[1])];
+            let Some((u, w, o)) =
+                turns.into_iter().max_by(|x, y| norm(sub(at(x.0), at(x.1))).total_cmp(&norm(sub(at(y.0), at(y.1)))))
+            else {
+                continue;
+            };
+            let other = on_edge.get(&key(u, w)).and_then(|l| l.iter().copied().find(|j| *j != i));
+            let Some(j) = other else {
+                // On the outline: nothing to flip with, and it holds no area.
+                if let Some(t) = tri.get_mut(i) {
+                    *t = None;
+                }
+                changed = true;
+                continue;
+            };
+            let Some(Some(vj)) = tri.get(j).copied() else { continue };
+            let Some(p) = vj.into_iter().find(|x| *x != u && *x != w) else { continue };
+            let (t1, t2) = ([o, u, p], [p, w, o]);
+            // Both new triangles must face the way the surface does and be better.
+            let faces = |t: [u32; 3]| {
+                let n = cross(sub(at(t[1]), at(t[0])), sub(at(t[2]), at(t[0])));
+                let m = add(add(nrm(t[0]), nrm(t[1])), nrm(t[2]));
+                dot(n, m) > 0.0
+            };
+            let q = |t: [u32; 3]| quality(at(t[0]), at(t[1]), at(t[2]));
+            if faces(t1) && faces(t2) && q(t1).min(q(t2)) > q(v).min(q(vj)) {
+                if let Some(t) = tri.get_mut(i) {
+                    *t = Some(t1);
+                }
+                if let Some(t) = tri.get_mut(j) {
+                    *t = Some(t2);
+                }
+                changed = true;
+                // The edge map is stale for these two: finish this round.
+                break;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Whatever stays flat holds no area worth an element.
+    for t in tri.iter_mut() {
+        if let Some(v) = t
+            && quality(at(v[0]), at(v[1]), at(v[2])) < 1e-6
+        {
+            *t = None;
+        }
+    }
 }
 
 /// The shell nodes on a face of the surface mesh: the node itself (on a thickness strip)

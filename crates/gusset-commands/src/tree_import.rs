@@ -800,27 +800,38 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     let mut args = vec![format!("profile: {profile}")];
     if revolve {
         let axis = d.axis.as_ref().ok_or("a revolve without an axis")?;
-        let mut angle = finite(d.angle.unwrap_or(360.0), "the angle")?;
+        let angle = finite(d.angle.unwrap_or(360.0), "the angle")?;
         let a = match (&axis.line, axis.origin, axis.direction) {
             (Some(l), _, _) => {
                 let line = sm.ids.get(l).filter(|id| id.starts_with('l'));
                 format!("{sk_name}.{}", line.ok_or_else(|| format!("unknown axis line '{}'", short(l)))?)
             }
-            (None, Some(o), Some(dir)) if norm(o) < 1e-9 && norm(dir).is_finite() && norm(dir) > 1e-9 => {
-                let dl = norm(dir);
-                // A negative axis turns the other way about the positive one.
-                let (name, sign) = match dir.map(|c| c / dl) {
-                    [x, _, _] if (x.abs() - 1.0).abs() < 1e-9 => ("X", x),
-                    [_, y, _] if (y.abs() - 1.0).abs() < 1e-9 => ("Y", y),
-                    [_, _, z] if (z.abs() - 1.0).abs() < 1e-9 => ("Z", z),
-                    _ => return Err("a revolve axis not along X, Y or Z is not imported yet".into()),
+            (None, Some(o), Some(dir))
+                if norm(dir).is_finite() && norm(dir) > 1e-9 && o.iter().all(|c| c.is_finite()) =>
+            {
+                // Gusset's X and Y are the sketch's own axes through its origin (dogfooding
+                // F8-2): the world axis must be one of them; pointing the other way turns
+                // the other way.
+                let d = dir.map(|c| c / norm(dir));
+                if norm(cross(sub(o, sm.origin), d)) > 1e-6 {
+                    return Err(
+                        "a revolve axis off the sketch's origin and not a sketch line is not imported yet".into()
+                    );
+                }
+                let (name, sign) = if (dot(d, sm.x).abs() - 1.0).abs() < 1e-9 {
+                    ("X", dot(d, sm.x))
+                } else if (dot(d, sm.y).abs() - 1.0).abs() < 1e-9 {
+                    ("Y", dot(d, sm.y))
+                } else {
+                    return Err("a revolve axis not along the sketch's x or y axis is not imported yet".into());
                 };
-                if sign < 0.0 {
-                    angle = -angle;
+                if sign < 0.0 && angle.abs() < 360.0 - 1e-9 {
+                    // Gusset turns one way only: a part turn the other way has no form yet.
+                    return Err("a part revolve about the reversed sketch axis is not imported yet".into());
                 }
                 name.to_string()
             }
-            _ => return Err("a revolve axis off the origin and not a sketch line is not imported yet".into()),
+            _ => return Err("a revolve needs an axis line or an origin and direction".into()),
         };
         args.push(format!("axis: {a}"));
         args.push(format!("angle: {} deg", num(angle)));

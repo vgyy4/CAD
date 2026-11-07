@@ -562,3 +562,112 @@ faces at once, and `onto` on a face of a body that is later moved.
 | F7-13 | Fixed: the grammar resource summarises the `.gtree.json` format. |
 | F7-14 | Fixed: no extra move before the first drill cycle; "1 of 4 holes is". |
 
+
+## Run 8 — shells on sheet metal, rest and 3D CAM, angled corners (2026-11-07)
+
+Setup: debug `gusset` with real OCCT and workers (`CARGO_INCREMENTAL=0`, built in 14 s from a
+warm cache), `gusset mcp --no-attach` over stdio behind run 7's stdlib Python client (daemon per
+project plus a unix-socket caller); about 370 tool calls (94 `sim_static`, 72 `document_set_text`,
+60 `run`), files in the session's scratch directory (`dogfood8/`, projects and exports in
+`dogfood8/proj/`). Learned from `tools/list` (31 tools, 18.9 kB), `commands` (12.4 kB; a `name`
+for the schema), the grammar resource and error messages. Flat patterns were checked by parsing
+the exported DXF (polygon area, vertices), CAM paths by sweeping the tool over a 0.1 mm grid and
+against the analytic dome, simulation against beam theory. Everything ran on a debug build, so
+the timings are upper bounds.
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | Sheet metal: tab 100x60x2 with two 20 mm flanges (r2, k 0.44), no corner treatment / `close` / `close: mitre`, at 90 and at 60 deg flange angle; plan corners of 60 and 120 deg | closed and mitred corners exact at 90 and 60 deg flange angle; plan corners that are not 90 deg are refused (F8-3) | 62 | DXF area, size and bends checked. |
+| 2 | Holes one after another (tab d10, wall d6, tab d8), a cut across a bend, a cut straddling bend and wall | each hole once in the pattern and the DXF (F7-1/F7-2 stay fixed); the straddling cut is not unfolded (F8-7) | 24 | |
+| 3 | Simulation on shells: 100x20x2 strip (static tip load, in-plane, axial, `field`), 100x10x2 bracket with a 30 mm flange (loads on the flange end face, support on the flange end face), `sim_modal` on the strip and the bracket | `method: shell`; strip within 2 % of beam theory; most brackets fail to mesh (F8-1) | 120 | Timings in F8-10. |
+| 4 | CAM: `pocket_rest` after a 10 mm tool in a 40x30 rectangle; `surface_ball`/`surface_flat` over a 30 mm hemisphere; G-code; four `cam_job`s in the document | heights match the analytic dome to 0.02 mm (F8-8 for the rim); rest leaves only the tool's corner radius | 36 | |
+| 5 | `move_face onto` a tilted plane, face commands without `body` in a 3-body model, a face list over two bodies | exact; one misleading late failure (F8-12) | 14 | |
+| 6 | `.gtree.json` of my own design: 3 parameters (one an expression), constrained sketch (parallel, perpendicular, fixed, distance via parameters, circle with `diameter` via parameter), extrude, 4-edge fillet, chamfer, offset-plane sketch + cut, revolve about a world axis | exact, then `W` 80 -> 100 and `HD` 12 -> 8 rebuild exactly; the world-axis revolve is wrong (F8-2) | 18 | |
+
+Hand checks:
+
+| Check | Hand | Gusset |
+|---|---|---|
+| Two 90 deg flanges, `close: true`: tab 12000 + bends `pi/4 (16-4) x (60+100)` + F1 wall 64 x 2 x 20 + F2 wall 102 x 2 x 20 | 20147.965 mm3 | 20147.964474 (F2 wall 0..102 inside, 0..104 outside, F1 wall 0..64, as the grammar says) |
+| Flat pattern of that part: 124.5239 x 84.5239; polygon `6000 + 4.5239 x 160 + 62 x 20 + 104 x 20` | 10043.823 mm2 | size 124.523893 x 84.523893; DXF polygon (14 vertices) area 10043.8229 |
+| Same with `mitre`: 0.1 mm gap on the diagonal, `0.1 x 2 sqrt 2 x 20` | -5.6569 mm3 | 20142.307619, delta -5.656854 |
+| One flange at 60 deg: `12000 + pi/3 (16-4)/2 x 60 + 20 x 2 x 60`, allowance `pi/3 (2 + 0.88)`, bbox x `103.464 + 10`, z `3 + 20 sin 60` | 14776.991 / 3.015929 / 113.464 / 20.3205 | 14776.991118 / 3.015929 / 113.464102 / 20.320508 |
+| Two 60 deg flanges, `close: true`: walls end on the mirror plane `x - 100 = y - 60`, bends stay 60 and 100 wide: `12000 + 6.2832 x 160 + 40 (60 + 7.598) + 40 (100 + 7.598)` | 20013.15 mm3 | 20013.155746; with `mitre` 20007.498892 (-5.6569, as at 90 deg) |
+| Flat pattern of the 60 deg pair: trapezoid walls at the k-factor surface (`2.88 cos 30` = 2.494): `6000 + 3.0159 x 160 + 20 x 67.494 + 20 x 107.494` | 9982.31 mm2 | DXF polygon 9982.3148 (wall edges 62.494..72.494 and 102.494..112.494) |
+| Hole d10 (30,30), d6 in the wall (z 14), d8 (60,15) | circles at (30,30), (114.5239,30), (60,15) once each | `cutouts` with the three circles; DXF has three `CIRCLE`s; volume steps 157.080 / 56.549 / 100.531 |
+| Vertical cut d1.8 at x = 101 (bend only) | x 100.100..102.0749, area 2.7713 | bbox 100.100019..102.074895, area 2.7608 (polyline, -0.4 %) |
+| Cut d5 straddling bend and wall (axis x, depth 4, at y 45, z 4): volume `19.635 + 22.923` | 42.558 mm3 | 42.556941; but `changed_by` (F8-7), hand flat area would be 21.03 mm2 |
+| Strip 100x20x2, 10 N at the tip, `PL^3/(3EI)` (+0.0004 shear) | 1.1905 mm | 1.16989 / 1.17028 / 1.17039 / 1.17042 at element 5 / 2.5 (default) / 1.25 / 1 mm (-1.7 %, converged) |
+| Root stress `M c / I` | 75 MPa | 76.4 / 78.0 / 78.7 / 79.0 (+4 %, at x = 0.33) |
+| 100 N across the width: `PL^3/(3 E I_y)` 0.1190 + shear 0.0037 | 0.1228 mm | 0.123585 |
+| 1000 N axial, `PL/(EA)` | 0.011905 mm | 0.012293 (+3.3 %; stress 36.6 against 25 nominal at the clamped corners) |
+| `sim_modal` strip: `1.8751^2/(2 pi L^2) sqrt(EI/(rho A))`, 2nd and 3rd bending, torsion, in-plane | 167.10 / 1047.2 / 2932.3 Hz; torsion 1595, in-plane 1671 | 168.93 / 1055.6 / 2951.8 (+1.1 / +0.8 / +0.7 %); two modes at 1625.21 and 1625.63 (I did not tell which is which); element 5 mm: 168.96 / 1055.63 / 1624.1 / 1627.2 / 2951.6 |
+| Bracket (tab 100x10x2, r2, flange 30), 10 N down on the flange end face, fixed tab end: tab beam to the wall mid `P (103^3 - 3^3)/(3EI)` = 2.602 plus the wall turning `theta = P 5300/EI` = 0.0379 rad, x motion `theta x flange length` | 3 / 10 / 30 / 60 mm flange: 2.604 / 2.629 / 2.839 / 3.456 mm | 2.593 / 2.629 / 2.867 / 3.508 (max displacement is the magnitude, at the flange top) |
+| Same bracket, 10 N along -x at the flange top (`h` = 33): `sqrt(across^2 + up^2)` = 1.461 | 1.461 mm | 1.5198 (+4 %) |
+| `pocket_rest`: corners left by a 10 mm tool in 40x30, `4 (1 - pi/4) 25`; left by the 4 mm rest tool, `4 (1 - pi/4) 4` | 21.46 / 3.43 mm2 | swept uncut area 21.40 / 3.36; floor z = 5.0; rest tool centre within x 2..38, y 2..28 |
+| Dome R30 (revolve about the sketch's own axis): volume `2/3 pi R^3`, area `3 pi R^2`, centroid z `3R/8` | 56548.668 / 8482.300 / 11.25 | 56548.667765 / 8482.300165 / 11.25 |
+| `surface_ball` D6 tip z `sqrt(33^2 - rho^2) - 3`: apex, rho 10.2, 19.8, 27 | 30.0 / 28.384 / 23.400 / 15.974 | 30.0 / 28.384 / 23.383 / 15.948 |
+| `surface_flat` D6 tip z `sqrt(900 - (rho - 3)^2)`: rho 3 (first sample), 10.2, 20.4, 27 | 30.0 / 29.123 / 24.438 / 18.0 | 30.0 / 29.116 / 24.427 / 17.977 |
+| `cam_job` x4 (`Rough`, `Rest`, `FinishBall`, `FinishFlat`) against the direct calls | same numbers | identical (548.33 / 624.47 / 4067.2 / 4117.23 mm cut); G-code identical apart from the comment line |
+| Box top (z 20) onto the wedge's plane `z = 15 + x/4` at x 60..100: volume `40 x 30 x 35`, area `1200 + 2800 + 2100 + 1200 sqrt(17/16)`, zmax, centroid x | 42000 / 7336.93 / 40 / 80.952 | 42000 / 7336.931688 / 40 / 80.952381 |
+| `.gtree.json` base: 80x50x10 - hole `pi 36 x 10` - four fillets `4 (1 - pi/4) 25 x 10` - slot 400 - chamfer 1.5 along the whole top loop `1.125 (220 + 4 (pi/2) 4.5)` | 37975.12 mm3 | 37975.116182 |
+| Same after `W` = 100 (so `D` = 62.5, loop 285 + arcs), then `HD` = 8 | 60401.991 / +628.319 | 60401.991182 / +628.318531 |
+| Ring about world Z (`pi (110^2 - 100^2) 15`) | 98960.169 mm3 | 98960.168588 with text `axis: Y` on the XZ sketch; the tree importer cannot make it (F8-2) |
+
+Observed behaviour worth knowing. `close: true` at 90 deg: F1's wall is 64 long outside and
+62 inside, F2's wall 104 outside / 102 inside, with a square relief where the bends stop at 60
+and 100 mm; the flat pattern has the matching 14-vertex outline with a 2 mm notch. With `mitre`
+the notch moves to the diagonal. The flat pattern places an obliquely cut wall edge at the
+k-factor surface (0.88 mm in from the inside), which is why a mitred wall measures 62.809
+against 62.929 at mid-thickness (F8-6). Holes: `feature_hole` takes numbers for `at`, and
+refuses a hole centred on a face edge with the `fit inside face` hint. `sheet_export_flat`
+returns `offset_mm` [10, 10] every time. The shell solver reports `element_mm` (2.5 for the 100x20 strip's default)
+and refuses a too fine size with `too_large` (more than 40000 triangles at 0.5 mm, says to give a
+larger element size). `cam_job`s: `job` plus an extra field is refused
+(the overwrite of an existing file asks for approval, `approval_denied` when declined).
+
+| ID | Sev | Item | Expected |
+|---|---|---|---|
+| F8-1 | major | `sim_static`/`sim_modal` on a sheet body with a bend fail with `shell element N is degenerate, inverted or too warped` (code `invalid_args`, no hint) for most width/element-size combinations, including the default. Tab 100x20x2 + 36 mm flange (r2): fails at element 1, 1.5, 2, 2.5, 3, 4, 5 and the default, works only at 8; flange 10 or 20, r 1/3/4, width 30 or tab 60 fail at 2 and 4 mm and the default; 100x10x2 + 30 flange: default (2.6), 3.3 and 5 work, 1, 1.25, 2, 2.5 fail; contour flange 100+30 x width 10: default fails, 3 and 5 work; width 20: default, 3 and 5 all fail. Plain strips did not fail at any size tried. The same bracket works with other element sizes, so the failure is in meshing the bend, not the part. | Mesh the bend robustly, or retry with a slightly different size, or at least say "try voxel: N" and name the face/place; the bracket is the main use of this feature. |
+| F8-2 | major | `.gtree.json` `revolve` with `axis: {origin, direction}` passes the world axis into Gusset's X/Y/Z, which are the sketch's own axes (text `axis: Y` on an XZ sketch revolves about world Z; `Z` is the sketch normal, error `the Z axis is normal to the sketch`), although the grammar says "X, Y, Z is a world axis". On an XZ sketch a tree axis of world Z is skipped (`it does not build here: the Z axis is normal to the sketch`) and a tree axis of world Y (impossible in the source) silently builds a ring about world Z. Only `{"line": ...}` and sketches on XY are safe. | Convert the world axis into the sketch frame (refuse when it is normal to the sketch), and fix the grammar sentence. |
+| F8-3 | minor | `close: true` and `close: mitre` on a corner whose plan angle is not 90 deg (tab with a 60 or 120 deg corner, both flanges 90 deg, same direction) fail with `no 90 deg flange meets l6 at an outside corner to close (flange the neighbouring line first (same direction, 90 deg), then close)` although exactly that flange exists. Without `close` they build (volume 16741.42 for the 60 deg quad). The grammar does not say the plan corner must be 90 deg. | Say "corner is 60 deg, closing needs 90" (or support it) and state it in the grammar. |
+| F8-4 | minor | After a failed rebuild a later `document_set_text` that still contains the failing feature reports `rebuild_ok: true`, `new_errors: []` (the error is old), while `query_model.errors` lists it. Body and pattern disagree meanwhile: `query_body` kept the volume of the unclosed variant (16741.42) while `query_flat_pattern` and `sheet_export_flat` listed only F1's bend and wrote a pattern without F2, no warning. | `rebuild_ok` false while any feature fails; export and pattern refuse or warn on a failed feature. |
+| F8-5 | minor | The corner option is spelled three ways: text `close: true|mitre` (grammar; the edit-flange tool call writes `mitre: true` out as `close: mitre`), tool/`run` fields `close` (boolean) and `mitre` (boolean), so `close: "mitre"` from the tool is refused (`invalid type: string "mitre", expected a boolean`) and text `mitre: true` is `has no argument 'mitre' (allowed: ... close ...)`. Similar: `feature_extrude` takes `sketch` where the text has `profile`; `param_set` takes `expr` where trees use `expression`; the tool schema says nothing of either. | One spelling; the error could name the other. |
+| F8-6 | nit | A mitred or non-90 closed corner is drawn in the flat pattern at the k-factor surface of the wall edge: 62.809 / 102.809 for the 90 deg mitre (mid-thickness 62.929 / 102.929), 62.494 for the 60 deg pair (mid 62.598). The flat area then differs from the solid's by 4.8 mm2 (0.05 %) for the mitre; closed 90 deg is exact. Not stated anywhere. | State the convention in the grammar. |
+| F8-7 | minor | A cut that straddles the bend line and the wall (hole d5 centred on the bend/wall line, `extrude cut` from the wall face, depth 4) leaves the pattern marked `changed_by: ["Xb"]` with a warning, and `sheet_export_flat` refuses without `allow_changed`; a hole wholly in the bend (x = 101) or wholly in the wall unfolds. `feature_hole` cannot make it (face edge). | Unfold it (pattern x 101.50..107.02, area 21.03 by hand) or list it in the pattern as a polygon. |
+| F8-8 | minor | 3D finishing is exact against the surface mesh but the mesh sag is not told or settable: against the analytic dome the path points are 0.01-0.08 mm below the surface on the flank (mean -0.02, ball and flat), and up to 0.33 mm (ball) / 1.0 mm (flat) below within 3 mm of the dome's foot (rho > 32.5) where the wall is steep; linear interpolation between the 0.6 mm samples is up to 0.5 / 1.3 mm lower. The tool does not go below `top - depth` (z min 0.0). | Report the mesh tolerance in the result (or `tolerance`/`sag` field), and say so in the description. |
+| F8-9 | nit | G-code of `surface_ball` (and of rest jobs) says `(Gusset 2.5D toolpath: flat end mill D6 mm)` and `(T1 D6 flat end mill)` for every operation; nothing says ball. | Name the tool by operation. |
+| F8-10 | minor | Timings (debug build): `sim_static` strip, 5760 elements 0.8 s (1 s with `field`); bracket, supported at the flange end, 2094 elements 87 s (263 iterations); `sim_modal` strip 5 modes 38 s at the default (5760 elements), 5.7 s at 5 mm; bracket at 5 mm 62 s and at the default (about 6000 elements) `deadline_exceeded` after 300 s with no partial result. The default element size is the finest that works for static, the same for modal. | A modal default coarser than static, or a size/time estimate in the `too_large`/warning. |
+| F8-11 | nit | Output cost: `sim_static field: true` 405 kB and `sim_modal shape` 450 kB of bands (paged by `get_text`, 4096 characters per page: 100 calls to read one); `cam_toolpath path: true` for the dome 64 kB (16 pages), the same for the 40x30 pocket 13.8 kB inline; `query_body names: true` 8-10 kB for a bracket with 2 flanges (40 edges, 18 faces). | Bigger pages, min/max per band, or a summary form. |
+| F8-12 | minor | `feature_move_face` with faces of two bodies (`BoxB/cap(end)`, `BoxC/cap(end)`) is committed with `committed_with_errors` and `face BoxC/cap(end) no longer exists (re-select the face to move)`; the face exists. `onto` refusals (invalid solid, perpendicular) come before committing as in run 7; missing `onto` faces list candidates of the right body. | Refuse before committing: "faces belong to different bodies". |
+| F8-13 | nit | `sim_static` with `loads: []` runs and returns 0 displacement, 0 stress, no warning (0 iterations). | A warning for no load. |
+| F8-14 | nit | `.gtree.json`: a circle with `center` as coordinates (the grammar says `{center, radius}`) is reported `invalid type: sequence, expected a string` without the field or feature (the sketch is skipped with its extrude, fillet and cut following); the center is a point id. A chamfer of one edge midpoint chamfers the whole tangent chain (the top loop, 279.3 mm3 as by hand) with no note on how many edges were taken. The skipped revolve's volume warning compares with the source and does not name which body is missing. | Field path in the error; list the edges a fillet/chamfer expanded to. |
+| F8-15 | nit | `surface_*` without `top` fails with `the safe height is below the surface` (default top 0, dome up to 30) while `depth` missing says `depth is missing`; the result of a surface job reuses `rings` (51 = raster lines) and `levels_mm [0.0]`. | `top` hint in the error ("give the stock's top"). |
+
+Run 7 fixes seen holding: F7-1 and F7-2 (three holes one after another, each once; the wall hole
+after a tab hole is unfolded), F7-7 (face commands without `body` take the face's body in a
+3-body model; missing-face candidates come from the right body), F7-8 (`onto` that would give an
+invalid solid is refused with the kernel's reason before committing), F7-9 (the tool description
+now says adaptive default 0.25), F7-11 (`feature_hole at` numbers), F7-12 (`offset_mm`), F7-13
+(grammar summary: it was enough to write a tree that imported, apart from the circle `center`
+and the revolve axis above).
+
+What worked well: closed and mitred corners are exact at 90 and 60 deg flange angles (volume
+and DXF area to 6 digits), including the 0.1 mm mitre gap; the flat pattern's trapezoid walls
+for the 60 deg corner; holes across a bend; the shell solver on straight strips (within 2 % of
+beam theory for displacement, 1 % for modal frequencies, `method: shell` reported, the max
+displacement reported at the flange top for a bracket) and `too_large` with a clear cause;
+`pocket_rest` leaves exactly the tool's own corner radius and refuses a missing or smaller
+`previous` with a message; 3D finishing heights match the sphere to 0.02 mm and the cutter
+never goes under `top - depth`; `cam_job`s equal the direct calls; the gtree import keeps
+parameters and sketch constraints live (`W` and `HD` edits rebuild to the hand volume) and
+every skip has a reason; unknown-id errors in `document_set_text` list the allowed prefixes.
+
+Not tested: `close` on three or more flanges (a box), hems and `angle` over 90 deg with `close`,
+`close` with flanges off a contour flange, `contour_flange` holes and `field` stress bands read
+out; sheet simulation of a U channel hand-checked (only runs: the width-10 channel works at
+element 3 and 5); `sim_modal` shapes of the bracket; `surface_*` with `regions`, `angle`
+other than the sketch's x, `stock_to_leave` (not a field), a non-hemisphere or filleted block,
+and the ball cutter against a concave surface; `pocket_rest` with islands or after a
+profile; G-code on a real controller; `move_face` with `angle`/`axis` on a tilted target,
+several faces at once; trees with `symmetric`, `intersect`, arcs in this run (run 7 did them).
