@@ -81,3 +81,15 @@ fn gcode_header_does_not_claim_2_5d() {
     let g = t.gcode(&setup(), "job");
     assert!(g.contains("(Gusset toolpath:") && !g.contains("2.5D"), "{g}");
 }
+
+#[test]
+fn a_ring_shorter_than_the_tools_circumference_is_plunged_not_wound_down() {
+    // Dogfooding F10-3 (run 11): a 10 mm square pocket with an 8 mm tool is one 2 x 2 ring;
+    // a 3 degree helix on it took 6 / (8 tan 3) = 14 turns.
+    let t = toolpath(&[square(10.0)], Operation::Pocket { stepover: 0.4 }, &setup()).unwrap();
+    assert!(ramp_length(&t) < 1e-9, "{}", ramp_length(&t));
+    assert!(t.moves.iter().any(|m| matches!(m, Move::Line { plunge: true, .. })));
+    // A ring as long as the circumference or more still ramps: 40 mm square, rings 32 and up.
+    let t = toolpath(&[square(40.0)], Operation::Pocket { stepover: 0.4 }, &setup()).unwrap();
+    assert!(ramp_length(&t) > 1.0);
+}

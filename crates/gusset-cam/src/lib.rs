@@ -583,7 +583,10 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             let mut entry = *z;
             if linked {
                 // Already at the depth, in the cleared ring.
-            } else if slope > 0.0 && perimeter > 1e-9 && floor < above - 1e-9 {
+            } else if slope > 0.0 && perimeter >= std::f64::consts::PI * s.tool_diameter && floor < above - 1e-9 {
+                // (A ring shorter than the tool's own circumference is a helix narrower than
+                // the tool: it only wiggles on the way down, turn after turn, so it is plunged
+                // like `ramp_deg: 0`; dogfooding F10-3.)
                 // A helix along the ring, as many turns as the angle needs, then one
                 // full ring at the depth.
                 moves.push(Move::Line { to: [first.x, first.y, above], plunge: true });
