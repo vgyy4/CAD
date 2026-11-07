@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket, profile_outside, profile_inside, drill, bore
+    /// pocket(_adaptive), profile_outside, profile_inside, drill, bore
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -141,12 +141,13 @@ impl CamJob {
         let (tool, depth) = (self.tool_diameter.unwrap_or(0.0), self.depth.unwrap_or(0.0));
         let op = match self.operation.as_deref().unwrap_or_default() {
             "pocket" => Some(Operation::Pocket { stepover: self.stepover.unwrap_or(0.4) }),
+            "pocket_adaptive" => Some(Operation::PocketAdaptive { stepover: self.stepover.unwrap_or(0.25) }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
             "drill" | "bore" => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, profile_outside, profile_inside, drill or bore"));
+                    .hint("pocket, pocket_adaptive, profile_outside, profile_inside, drill or bore"));
             }
         };
         let top = self.top.unwrap_or(0.0);

@@ -13,6 +13,8 @@ use cavalier_contours::shape_algorithms::{Shape, ShapeOffsetOptions};
 use gusset_kernel::{Loop2, Region2, Seg2};
 use std::fmt::Write as _;
 
+mod adaptive;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CamError {
     /// A parameter out of range (named in the message).
@@ -37,6 +39,9 @@ impl std::error::Error for CamError {}
 pub enum Operation {
     /// Clear the region down to the depth; `stepover` is a fraction of the tool diameter.
     Pocket { stepover: f64 },
+    /// Like `Pocket`, but the tool's radial engagement never exceeds `stepover` (a fraction
+    /// of the diameter) once it is cutting, even in corners: see ADR 0040, "Adaptive clearing".
+    PocketAdaptive { stepover: f64 },
     /// Cut along the region's boundary: outside it (a part cut free) or inside it (a hole).
     Profile { outside: bool },
 }
@@ -408,7 +413,8 @@ fn levels(s: &Setup) -> Vec<f64> {
 }
 
 /// The rings to cut (at every level), in cutting order.
-fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f64>>, CamError> {
+fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<(Vec<Polyline<f64>>, Vec<adaptive::Slot>), CamError> {
+    let mut slots = Vec::new();
     let opts = ShapeOffsetOptions::default();
     let base = shape(regions);
     let r = s.tool_diameter / 2.0;
@@ -419,6 +425,14 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
             grown.ccw_plines.iter().map(|p| p.polyline.clone()).collect()
         }
         Operation::Profile { outside: false } => plines_of(&base.parallel_offset(r, &opts)),
+        Operation::PocketAdaptive { stepover } => {
+            if !(stepover > 0.0 && stepover <= 0.5) {
+                return Err(CamError::Invalid("the stepover must be above 0 and at most 0.5 (of the diameter)".into()));
+            }
+            let (rings, s2) = adaptive::plan(&base, stepover, s)?;
+            slots = s2;
+            rings
+        }
         Operation::Pocket { stepover } => {
             // Rings at most a radius apart leave nothing standing between them: wider steps
             // leave ridges in narrow arms and cusps in corners (review 2026-11-04).
@@ -455,13 +469,13 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<Vec<Polyline<f
             p.invert_direction_mut();
         }
     }
-    if out.is_empty() {
+    if out.is_empty() && slots.is_empty() {
         return Err(CamError::NothingToCut(format!(
             "a {} mm tool does not fit the region",
             (s.tool_diameter * 1000.0).round() / 1000.0
         )));
     }
-    Ok(out)
+    Ok((out, slots))
 }
 
 /// Computes the toolpath of `op` on `regions`.
@@ -470,7 +484,7 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
     if s.tabs.is_some() && !matches!(op, Operation::Profile { .. }) {
         return Err(CamError::Invalid("tabs are for profiles only".into()));
     }
-    let rings = rings(regions, op, s)?;
+    let (rings, slots) = rings(regions, op, s)?;
     let levels = levels(s);
     let mut moves = Vec::new();
     let slope = libm::tan(s.ramp_deg.to_radians());
@@ -478,6 +492,9 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
     for (li, z) in levels.iter().enumerate() {
         // Each ring is entered from the level above (the stock top for the first).
         let above = if li == 0 { s.top } else { levels.get(li - 1).copied().unwrap_or(s.top) };
+        for slot in &slots {
+            slot.moves(above, *z, slope, s, &mut moves)?;
+        }
         for p in &rings {
             let Some(first) = p.get(0) else { continue };
             let n = p.vertex_count();
@@ -538,7 +555,7 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             }
         }
     }
-    Ok(Toolpath { moves, rings: rings.len(), levels, drill: None })
+    Ok(Toolpath { moves, rings: rings.len() + slots.len(), levels, drill: None })
 }
 
 /// The part of the segment from `a` to `b` between length fractions `t0` and `t1`: its start

@@ -1690,6 +1690,8 @@ impl HoleDef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CamOp {
     Pocket,
+    /// A pocket cleared with the radial cut held to the stepover (trochoidal slots).
+    PocketAdaptive,
     ProfileOutside,
     ProfileInside,
     Drill,
@@ -1701,6 +1703,7 @@ impl CamOp {
     pub fn keyword(self) -> &'static str {
         match self {
             CamOp::Pocket => "pocket",
+            CamOp::PocketAdaptive => "pocket_adaptive",
             CamOp::ProfileOutside => "profile_outside",
             CamOp::ProfileInside => "profile_inside",
             CamOp::Drill => "drill",
@@ -1709,7 +1712,7 @@ impl CamOp {
     }
 
     pub fn from_keyword(s: &str) -> Option<CamOp> {
-        [CamOp::Pocket, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill, CamOp::Bore]
+        [CamOp::Pocket, CamOp::PocketAdaptive, CamOp::ProfileOutside, CamOp::ProfileInside, CamOp::Drill, CamOp::Bore]
             .into_iter()
             .find(|o| o.keyword() == s)
     }

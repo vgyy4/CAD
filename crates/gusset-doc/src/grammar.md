@@ -773,7 +773,7 @@ drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
 ## CAM jobs (ADR 0040)
 
 ```
-cam_job Job1 (sketch: S, operation: pocket|profile_outside|profile_inside|drill|bore, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
+cam_job Job1 (sketch: S, operation: pocket|pocket_adaptive|profile_outside|profile_inside|drill|bore, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
 ```
 
 A machining job on a sketch: no body; `cam_toolpath` and `cam_export_gcode` with `job: Job1`

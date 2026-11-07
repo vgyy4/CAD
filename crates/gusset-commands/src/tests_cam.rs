@@ -34,6 +34,12 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     assert_eq!(q["levels_mm"], json!([-1.67, -3.33, -5.0]), "{q}");
     assert!(q["rings"].as_u64().unwrap() >= 3 && q["minutes"].as_f64().unwrap() > 0.0, "{q}");
     assert!(q.get("path").is_none(), "the path only on request");
+    // Adaptive clearing: same pocket, the radial cut held to the stepover (more moves).
+    let mut ad = job.clone();
+    ad["operation"] = json!("pocket_adaptive");
+    let a = run(&mut s, "cam.toolpath", ad);
+    assert_eq!(a["levels_mm"], q["levels_mm"], "{a}");
+    assert!(a["cut_mm"].as_f64().unwrap() > q["cut_mm"].as_f64().unwrap(), "{a} vs {q}");
     let mut with = job.clone();
     with["path"] = json!(true);
     let p = run(&mut s, "cam.toolpath", with);

@@ -376,7 +376,7 @@ fn samples(from: f64, to: f64, step: f64) -> Vec<f64> {
 /// each tabbed level's depth.
 fn check_tabs(t: &Toolpath, s: &Setup, region: &Region2) {
     let tabs = s.tabs.unwrap();
-    let ring = rings(std::slice::from_ref(region), Operation::Profile { outside: true }, s).unwrap();
+    let ring = rings(std::slice::from_ref(region), Operation::Profile { outside: true }, s).unwrap().0;
     let w = Walk::new(&ring[0]);
     let spans = tab_spans(w.total, &tabs, s.tool_diameter);
     let tab_top = s.top - s.depth + tabs.height;
@@ -500,4 +500,236 @@ fn gcode_never_repeats_a_line_or_a_position_and_names_the_tool() {
     let g = t.gcode(&setup(6.0), "r");
     assert_eq!(g.matches("G0 X1 Y2").count(), 1, "{g}");
     assert_eq!(g.matches("G0 Z5").count(), 2, "the header's and the end's: {g}");
+}
+
+// ---- Adaptive clearing (ADR 0040, "Adaptive clearing") ----
+
+fn polygon_region(p: &[[f64; 2]]) -> Region2 {
+    let edges =
+        (0..p.len()).map(|i| ProfileEdge { seg: Seg2::Line { a: p[i], b: p[(i + 1) % p.len()] }, tag: 0 }).collect();
+    Region2 { outer: Loop2 { edges }, holes: Vec::new() }
+}
+
+fn inside_polygon(pt: [f64; 2], poly: &[[f64; 2]]) -> bool {
+    let mut inside = false;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        if (a[1] > pt[1]) != (b[1] > pt[1]) && pt[0] < a[0] + (pt[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn boundary_distance(pt: [f64; 2], poly: &[[f64; 2]]) -> f64 {
+    (0..poly.len())
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let u = (((pt[0] - a[0]) * dx + (pt[1] - a[1]) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            libm::hypot(a[0] + u * dx - pt[0], a[1] + u * dy - pt[1])
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Points along a move (seen from above) about `step` apart, with the direction of travel at
+/// each, not including the start.
+fn along(from: [f64; 3], m: &Move, step: f64) -> Vec<([f64; 2], [f64; 2])> {
+    match *m {
+        Move::Rapid(_) => Vec::new(),
+        Move::Line { to, .. } => {
+            let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+            let l = libm::hypot(dx, dy);
+            let n = (l / step).ceil().max(1.0) as usize;
+            let dir = if l > 1e-12 { [dx / l, dy / l] } else { [1.0, 0.0] };
+            (1..=n)
+                .map(|i| {
+                    let t = i as f64 / n as f64;
+                    ([from[0] + dx * t, from[1] + dy * t], dir)
+                })
+                .collect()
+        }
+        Move::Arc { to, center, ccw } => {
+            let r = libm::hypot(from[0] - center[0], from[1] - center[1]);
+            let a0 = libm::atan2(from[1] - center[1], from[0] - center[0]);
+            let a1 = libm::atan2(to[1] - center[1], to[0] - center[0]);
+            let dir = if ccw { 1.0 } else { -1.0 };
+            let mut sweep = (dir * (a1 - a0)).rem_euclid(std::f64::consts::TAU);
+            if sweep < 1e-9 && libm::hypot(to[0] - from[0], to[1] - from[1]) < 1e-9 {
+                sweep = std::f64::consts::TAU;
+            }
+            let n = (r * sweep / step).ceil().max(1.0) as usize;
+            (1..=n)
+                .map(|i| {
+                    let a = a0 + dir * sweep * i as f64 / n as f64;
+                    (
+                        [center[0] + r * libm::cos(a), center[1] + r * libm::sin(a)],
+                        [-dir * libm::sin(a), dir * libm::cos(a)],
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+/// Stock cut this recently (travel in mm) counts as part of the cut being made.
+const LAG: f64 = 6.0;
+
+struct Sim {
+    max_width: f64,
+    outside: f64,
+    uncleared: usize,
+    needed: usize,
+}
+
+/// Walks the toolpath at its last depth level over a grid of stock, recording for every step
+/// the radial depth of the cut implied by the arc of the tool's rim that bites into stock not
+/// cut a short way back (a straight cut `w` wide bites an arc of `acos(1 - w / r)`); the first
+/// stretch after each plunge, where the tool leaves its own hole, is not measured.
+fn simulate(t: &Toolpath, poly: &[[f64; 2]], r: f64) -> Sim {
+    let h = 0.1;
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in poly {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let (nx, ny) = (((hi[0] - lo[0]) / h) as i64 + 3, ((hi[1] - lo[1]) / h) as i64 + 3);
+    let centre = |i: i64, j: i64| [lo[0] + (i - 1) as f64 * h, lo[1] + (j - 1) as f64 * h];
+    let cell = |p: [f64; 2]| (((p[0] - lo[0]) / h).round() as i64 + 1, ((p[1] - lo[1]) / h).round() as i64 + 1);
+    let at = |i: i64, j: i64| (i >= 0 && j >= 0 && i < nx && j < ny).then(|| (j * nx + i) as usize);
+    let mut first = vec![f64::INFINITY; (nx * ny) as usize];
+    let reach = (r / h).ceil() as i64 + 1;
+    let (mut max_width, mut outside) = (0.0_f64, 0.0_f64);
+    let (mut s, mut plunge_at) = (0.0, [f64::NAN; 2]);
+    let bottom = t.levels.last().copied().unwrap_or(0.0);
+    for (from, m) in with_starts(t) {
+        let plunging = matches!(m, Move::Line { plunge: true, .. });
+        if (end_z(&m) - bottom).abs() > 1e-9 || (from[2] - bottom).abs() > 1e-9 && !plunging {
+            continue;
+        }
+        for (p, dir) in along(from, &m, 0.04) {
+            if !plunging {
+                s += 0.04;
+            }
+            let stamp = if plunging { -1e9 } else { s };
+            let (ci, cj) = cell(p);
+            for j in cj - reach..=cj + reach {
+                for i in ci - reach..=ci + reach {
+                    let (c, Some(k)) = (centre(i, j), at(i, j)) else { continue };
+                    if libm::hypot(c[0] - p[0], c[1] - p[1]) <= r
+                        && first.get(k).is_some_and(|f| f.is_infinite())
+                        && let Some(f) = first.get_mut(k)
+                    {
+                        *f = stamp;
+                    }
+                }
+            }
+            // The tool stays where it can be: its whole disc inside the pocket.
+            let slack = if inside_polygon(p, poly) { boundary_distance(p, poly) } else { -boundary_distance(p, poly) };
+            outside = outside.max(r - slack);
+            if plunging {
+                plunge_at = p;
+                continue;
+            }
+            if libm::hypot(p[0] - plunge_at[0], p[1] - plunge_at[1]) <= 0.8 * r + 0.2 {
+                continue;
+            }
+            // Radial depth: from each rim point biting into stock not cut during the last
+            // `LAG` of travel, inward along the radius to stock cut before that.
+            for k in 0..72 {
+                let a = f64::from(k) * 5.0_f64.to_radians();
+                if libm::cos(a) * dir[0] + libm::sin(a) * dir[1] <= 0.0 {
+                    continue;
+                }
+                let uncut_at = |d: f64| {
+                    let q = [p[0] + (r - d) * libm::cos(a), p[1] + (r - d) * libm::sin(a)];
+                    let (qi, qj) = cell(q);
+                    at(qi, qj).and_then(|k| first.get(k)).is_some_and(|f| *f >= s - LAG)
+                };
+                if !uncut_at(h) {
+                    continue;
+                }
+                let mut d = h;
+                while d < 2.0 * r && uncut_at(d) {
+                    d += h / 2.0;
+                }
+                max_width = max_width.max(d - h);
+            }
+        }
+    }
+    // Everything the tool can reach (within r of a place its centre may be) is cut, to 2 cells.
+    let mut needed = vec![false; first.len()];
+    for j in 0..ny {
+        for i in 0..nx {
+            let c = centre(i, j);
+            if inside_polygon(c, poly) && boundary_distance(c, poly) >= r {
+                for dj in -reach..=reach {
+                    for di in -reach..=reach {
+                        let q = centre(i + di, j + dj);
+                        if libm::hypot(q[0] - c[0], q[1] - c[1]) <= r - 2.0 * h
+                            && let Some(n) = at(i + di, j + dj).and_then(|k| needed.get_mut(k))
+                        {
+                            *n = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let uncleared = needed.iter().zip(&first).filter(|(n, f)| **n && f.is_infinite()).count();
+    Sim { max_width, outside, uncleared, needed: needed.iter().filter(|n| **n).count() }
+}
+
+fn check_adaptive(poly: &[[f64; 2]], stepover: f64) {
+    let mut s = setup(3.0);
+    s.depth = 1.5;
+    let t = toolpath(&[polygon_region(poly)], Operation::PocketAdaptive { stepover }, &s).unwrap();
+    assert_eq!(t.levels.len(), 1);
+    let sim = simulate(&t, poly, 1.5);
+    let want = stepover * 3.0;
+    eprintln!("{:.3} of {want:.3}; rings {}; uncleared {}/{}", sim.max_width, t.rings, sim.uncleared, sim.needed);
+    assert!(sim.max_width <= want * 1.15, "engagement {} against a stepover of {want}", sim.max_width);
+    assert!(sim.uncleared == 0, "{} of {} cells left uncut", sim.uncleared, sim.needed);
+    assert!(sim.outside < 1e-4, "the tool strays {} past the pocket's offset", sim.outside);
+    let g = t.gcode(&s, "adaptive");
+    assert!(g.starts_with("(adaptive)\n") && g.contains("G21 G90 G17") && g.ends_with("M30\n"));
+    assert!(g.contains("G2 ") || g.contains("G3 "));
+    let lines: Vec<&str> = g.lines().collect();
+    for w in lines.windows(2) {
+        assert_ne!(w[0], w[1], "a repeated line");
+    }
+    assert!(!g.contains("NaN") && !g.contains("inf"));
+}
+
+#[test]
+fn adaptive_clearing_keeps_the_engagement_down_in_a_rectangle() {
+    check_adaptive(&[[0.0, 0.0], [16.0, 0.0], [16.0, 10.0], [0.0, 10.0]], 0.25);
+}
+
+#[test]
+fn adaptive_clearing_keeps_the_engagement_down_in_an_l_shape() {
+    check_adaptive(&[[0.0, 0.0], [18.0, 0.0], [18.0, 8.0], [8.0, 8.0], [8.0, 16.0], [0.0, 16.0]], 0.25);
+}
+
+#[test]
+fn adaptive_clearing_holds_for_other_stepovers_ramps_and_conventional_milling() {
+    check_adaptive(&[[0.0, 0.0], [16.0, 0.0], [16.0, 10.0], [0.0, 10.0]], 0.4);
+    check_adaptive(&[[0.0, 0.0], [18.0, 0.0], [18.0, 8.0], [8.0, 8.0], [8.0, 16.0], [0.0, 16.0]], 0.15);
+    let poly = [[0.0, 0.0], [16.0, 0.0], [16.0, 10.0], [0.0, 10.0]];
+    let mut s = setup(3.0);
+    s.ramp_deg = 4.0;
+    s.climb = false;
+    let t = toolpath(&[polygon_region(&poly)], Operation::PocketAdaptive { stepover: 0.3 }, &s).unwrap();
+    assert_eq!(t.levels.len(), 3);
+    // Never below the level above under a plunge when ramping: every plunge ends at the level above.
+    for (from, m) in with_starts(&t) {
+        if let Move::Line { to, plunge: true } = m {
+            assert!(to[2] >= from[2] - 1e-9 || from[2] >= s.safe - 1e-9, "{from:?} {m:?}");
+        }
+    }
+    let g = t.gcode(&s, "adaptive");
+    assert!(g.contains("G2 ") && !g.contains("G3 "), "conventional milling loops run clockwise");
+    // The default pocket is untouched by the new option, and bad stepovers are refused.
+    assert!(toolpath(&[polygon_region(&poly)], Operation::PocketAdaptive { stepover: 0.7 }, &s).is_err());
+    assert!(toolpath(&[polygon_region(&poly)], Operation::PocketAdaptive { stepover: 0.0 }, &s).is_err());
 }

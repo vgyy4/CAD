@@ -294,8 +294,10 @@ Phase 3 has started (see Next).
      passes; `cam.toolpath` (rings, levels, length, time) and `cam.export_gcode` (metric G-code,
      G2/G3 arcs), ramp entry along the ring (default 3 deg), drilling (G81/G83 at circle centres), holding tabs on profiles. Viewport preview done (`cam.toolpath` with `path: true`
      returns the cut as world polylines; the app draws the last toolpath until the model
-     changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Next:
-     adaptive clearing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
+     clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
+     where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
+     Next: rest machining, 3D surfacing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
