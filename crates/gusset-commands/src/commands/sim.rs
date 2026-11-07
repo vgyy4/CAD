@@ -189,6 +189,18 @@ impl StaticQuery {
     ) -> Result<Value, CommandError> {
         let (mid, held, h) = shell_model(mesh, thickness, self.voxel, &fixed)?;
         let tol = SHELL_TOL;
+        let mut area = vec![0.0; mid.mesh.nodes.len()];
+        for q in &mid.mesh.quads {
+            let p = |i: usize| q.get(i).and_then(|n| mid.mesh.nodes.get(*n as usize)).copied().unwrap_or([0.0; 3]);
+            let (d1, d2) = (sub3(p(2), p(0)), sub3(p(3), p(1)));
+            let c = [d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0]];
+            let a = libm::sqrt(c.iter().map(|x| x * x).sum()) / 2.0;
+            for n in q {
+                if let Some(x) = area.get_mut(*n as usize) {
+                    *x += a / 4.0;
+                }
+            }
+        }
         let mut loads: Vec<(u32, [f64; 3])> = Vec::new();
         let mut loaded = 0;
         for l in &self.loads {
@@ -196,9 +208,14 @@ impl StaticQuery {
             if on.is_empty() {
                 return Err(CommandError::args(format!("the load on {} touches no node of the shell model", l.face)));
             }
-            let share = 1.0 / on.len() as f64;
+            // Shared by the area each node stands for (a quarter of each quad around it).
+            let total: f64 = on.iter().map(|n| area.get(*n as usize).copied().unwrap_or(0.0)).sum();
             loaded += on.len();
-            loads.extend(on.into_iter().map(|n| (n, l.force.map(|c| c * share))));
+            let even = 1.0 / on.len() as f64;
+            loads.extend(on.into_iter().map(|n| {
+                let share = if total > 1e-12 { area.get(n as usize).copied().unwrap_or(0.0) / total } else { even };
+                (n, l.force.map(|c| c * share))
+            }));
         }
         let nodes = mid.mesh.nodes.clone();
         let quads = mid.mesh.quads.clone();
@@ -295,6 +312,10 @@ fn shell_model(
         return Err(CommandError::args("the held faces touch no node of the shell model"));
     }
     Ok((mid, held, h))
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 fn fea_err(e: gusset_fea::FeaError) -> CommandError {

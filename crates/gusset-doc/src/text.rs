@@ -372,7 +372,7 @@ fn print_feature(out: &mut String, f: &Feature) {
                     args.push(format!("angle: {angle}"));
                     args.push(format!("bend_radius: {bend_radius}"));
                     args.push(format!("k_factor: {k_factor}"));
-                    if *close {
+                    if *close || *mitre {
                         args.push(if *mitre { "close: mitre" } else { "close: true" }.into());
                     }
                 }

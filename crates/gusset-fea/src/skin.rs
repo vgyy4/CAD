@@ -12,8 +12,10 @@ use std::collections::{BinaryHeap, HashMap};
 /// Most triangles the refinement makes (three quads each).
 pub const MAX_SKIN_TRIANGLES: usize = 40_000;
 
-/// Cosine of the largest angle between faces across an edge that still counts as smooth.
-const SMOOTH: f64 = 0.985;
+/// Cosine of the largest angle between facets across an edge that still counts as smooth
+/// (37 degrees: a coarsely facetted small bend still joins, while thickness strips and hole
+/// walls meet the sheet at 90).
+const SMOOTH: f64 = 0.8;
 
 type V3 = [f64; 3];
 
@@ -63,16 +65,34 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
     if !(thickness.is_finite() && thickness > 0.0 && h.is_finite() && h > 0.0) {
         return Err(FeaError::Invalid("the thickness and element size must be positive".into()));
     }
-    // Weld vertices across faces (each face has its own copies).
-    let q = |p: V3| p.map(|c| libm::round(c * 1e4) as i64);
-    let mut ids: HashMap<[i64; 3], u32> = HashMap::new();
+    // Weld vertices across faces (each face has its own copies): points within 1e-4 mm are
+    // one, found in their grid cell or a neighbouring one (no split at a cell border).
+    const WELD: f64 = 1e-4;
+    let q = |p: V3| p.map(|c| libm::floor(c / (4.0 * WELD)) as i64);
+    let mut cells: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
     let mut pos: Vec<V3> = Vec::new();
     let mut weld: Vec<u32> = Vec::with_capacity(mesh.positions.len());
     for p in &mesh.positions {
         let p = wide(*p);
-        let id = *ids.entry(q(p)).or_insert_with(|| {
+        let c = q(p);
+        let mut found = None;
+        'search: for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    for &i in cells.get(&[c[0] + dx, c[1] + dy, c[2] + dz]).into_iter().flatten() {
+                        if pos.get(i as usize).is_some_and(|o| norm(sub(*o, p)) <= WELD) {
+                            found = Some(i);
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        let id = found.unwrap_or_else(|| {
             pos.push(p);
-            (pos.len() - 1) as u32
+            let i = (pos.len() - 1) as u32;
+            cells.entry(c).or_default().push(i);
+            i
         });
         weld.push(id);
     }
@@ -160,6 +180,11 @@ pub fn mid_surface(mesh: &Mesh, thickness: f64, h: f64) -> Result<MidSurface, Fe
             }
         }
         tri.push(Some(t.v));
+    }
+    if tri.len() > MAX_SKIN_TRIANGLES {
+        return Err(FeaError::TooLarge(format!(
+            "the body's surface mesh has more than {MAX_SKIN_TRIANGLES} triangles on one side of the sheet"
+        )));
     }
     // Refine: split the longest edge (with both its triangles) until every edge is at most h.
     let p = |pos: &[V3], i: u32| pos.get(i as usize).copied().unwrap_or([0.0; 3]);

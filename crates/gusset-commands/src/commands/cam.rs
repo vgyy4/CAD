@@ -200,11 +200,28 @@ impl CamJob {
                 for e in regions.iter().flat_map(|r| r.outer.edges.iter()) {
                     let pts = match e.seg {
                         gusset_kernel::Seg2::Line { a, b } => vec![a, b],
-                        gusset_kernel::Seg2::Arc { center, start, .. } => {
+                        gusset_kernel::Seg2::Arc { center, start, end, ccw } => {
+                            // Points along the arc's own sweep (a full circle when it closes).
+                            let tau = std::f64::consts::TAU;
                             let rad = libm::hypot(start[0] - center[0], start[1] - center[1]);
-                            vec![[center[0] - rad, center[1] - rad], [center[0] + rad, center[1] + rad]]
+                            let a0 = libm::atan2(start[1] - center[1], start[0] - center[0]);
+                            let a1 = libm::atan2(end[1] - center[1], end[0] - center[0]);
+                            let mut sweep = if ccw { (a1 - a0).rem_euclid(tau) } else { -(a0 - a1).rem_euclid(tau) };
+                            if sweep.abs() < 1e-9 {
+                                sweep = tau;
+                            }
+                            (0..=64)
+                                .map(|i| {
+                                    let t = a0 + sweep * f64::from(i) / 64.0;
+                                    [center[0] + rad * libm::cos(t), center[1] + rad * libm::sin(t)]
+                                })
+                                .collect()
                         }
-                        _ => Vec::new(),
+                        _ => {
+                            return Err(CommandError::args(
+                                "3D finishing bounds its passes by lines and arcs only; draw the region with those",
+                            ));
+                        }
                     };
                     for p in pts {
                         lo = [lo[0].min(p[0]), lo[1].min(p[1])];
