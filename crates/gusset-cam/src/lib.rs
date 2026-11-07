@@ -496,7 +496,9 @@ fn rings(regions: &[Region2], op: Operation, s: &Setup) -> Result<(Vec<Polyline<
     }
     if out.is_empty() && slots.is_empty() && matches!(op, Operation::PocketRest { .. }) {
         return Err(CamError::NothingToCut(
-            "nothing is left for the rest tool: the previous tool reached everything it can".into(),
+            "nothing is left for the rest tool: the previous tool reached everything this one can reach, \
+             or this one does not fit the region"
+                .into(),
         ));
     }
     if out.is_empty() && slots.is_empty() {
