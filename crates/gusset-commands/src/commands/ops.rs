@@ -273,6 +273,40 @@ impl Command for MoveFace {
         for f in &faces {
             check_face_resolves(s, ctx, f)?;
         }
+        if let Some(target) = &onto {
+            // A target the move cannot reach is refused here, not committed as a failing
+            // feature: planar, parallel, and not the face's own plane.
+            let ev = s.evaluate(&ctx.actor)?;
+            let plane = |r: &FaceRef| {
+                ev.bodies.iter().find_map(|b| {
+                    let f = b.topology.faces.get(b.names.face_index(r)? as usize)?;
+                    matches!(f.kind, gusset_kernel::SurfaceKind::Plane).then_some((f.centroid, f.normal))
+                })
+            };
+            let not_planar = |r: &FaceRef| {
+                CommandError::args(format!("{r} is not a planar face"))
+                    .hint("onto lays planar faces onto a parallel planar face")
+            };
+            let (c2, n2) = plane(target).ok_or_else(|| not_planar(target))?;
+            for f in &faces {
+                let (c1, n1) = plane(f).ok_or_else(|| not_planar(f))?;
+                if gusset_kernel::norm(gusset_kernel::cross(n1, n2)) > 1e-9 {
+                    return Err(CommandError::args(format!("{target} is not parallel to {f}"))
+                        .hint("onto slides faces along their normal; to tilt a face use draft"));
+                }
+                if gusset_kernel::dot(gusset_kernel::sub(c2, c1), n2).abs() < 1e-9 {
+                    return Err(CommandError::args(format!("{f} already lies in the plane of {target}")));
+                }
+                let same_body =
+                    ev.bodies.iter().any(|b| b.names.face_index(f).is_some() && b.names.face_index(target).is_some());
+                if same_body && gusset_kernel::dot(n1, n2) < 0.0 {
+                    return Err(CommandError::args(format!(
+                        "{target} faces {f} across the body: laying one onto the other leaves no material"
+                    ))
+                    .hint("lay a face onto a face that points the same way, or offset_face it"));
+                }
+            }
+        }
         edit(s, ctx, "Move face", |doc, rb| {
             let name = feature_name(doc, self.name, "MoveFace")?;
             let body = body_for(doc, rb, self.body)?;

@@ -184,8 +184,63 @@ impl McpServer {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let running = self.handler().serve((read, write)).await.map_err(|e| McpError::Protocol(e.to_string()))?;
-        running.waiting().await.map_err(|e| McpError::Protocol(e.to_string()))?;
+        // A line that is not JSON (`NaN`, `1e999`, a typo) would be dropped without an
+        // answer and the client would wait forever (dogfooding F6-9): answer it here with a
+        // JSON-RPC parse error, and pass only well-formed lines to the server. The server's
+        // output is copied line by line so the error lines never land inside a message.
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (to_server, server_in) = tokio::io::duplex(1 << 20);
+        let (server_out, from_server) = tokio::io::duplex(1 << 20);
+        let (errs_tx, mut errs_rx) = tokio::sync::mpsc::channel::<String>(16);
+        let reader = tokio::spawn(async move {
+            let mut to_server = to_server;
+            let mut lines = tokio::io::BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if serde_json::from_str::<serde_json::Value>(&line).is_ok() {
+                    if to_server.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                        break;
+                    }
+                } else {
+                    let e = serde_json::json!({"jsonrpc": "2.0", "id": null,
+                        "error": {"code": -32700, "message": "parse error: the line is not valid JSON (NaN and infinite numbers are not JSON)"}});
+                    if errs_tx.send(e.to_string()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        let writer = tokio::spawn(async move {
+            let mut write = write;
+            let mut out = tokio::io::BufReader::new(from_server).lines();
+            let mut errs_open = true;
+            loop {
+                tokio::select! {
+                    line = out.next_line() => match line {
+                        Ok(Some(l)) => {
+                            if write.write_all(format!("{l}\n").as_bytes()).await.is_err() { break; }
+                            let _ = write.flush().await;
+                        }
+                        _ => break,
+                    },
+                    e = errs_rx.recv(), if errs_open => match e {
+                        Some(e) => {
+                            if write.write_all(format!("{e}\n").as_bytes()).await.is_err() { break; }
+                            let _ = write.flush().await;
+                        }
+                        None => errs_open = false,
+                    },
+                }
+            }
+        });
+        let running =
+            self.handler().serve((server_in, server_out)).await.map_err(|e| McpError::Protocol(e.to_string()))?;
+        let done = running.waiting().await.map_err(|e| McpError::Protocol(e.to_string()));
+        reader.abort();
+        let _ = writer.await;
+        done?;
         Ok(())
     }
 

@@ -1312,7 +1312,11 @@ impl Evaluator {
                 FaceKey::Cap { side: CapSide::End, .. } if n.feature == b.feature && flat.base.is_some() => {
                     (Kind::Back, None)
                 }
-                _ if n.feature == b.feature => (Kind::Other, None),
+                // Any other face of the sheet's own features (a flange's end caps, the
+                // tab's sides): part of the sheet, not of the cut.
+                _ if n.feature == b.feature || flat.flange_ends.iter().any(|fe| fe.flange == n.feature) => {
+                    (Kind::Other, None)
+                }
                 _ => (Kind::New, None),
             };
             kinds.push(kind);
@@ -1366,7 +1370,30 @@ impl Evaluator {
         if pieces.is_empty() {
             return None;
         }
-        let loops = chain_loops(pieces, tol * 10.0)?;
+        let mut loops = chain_loops(pieces, tol * 10.0)?;
+        // An earlier cut's outlines are found again (its faces are not the sheet's): keep
+        // only those not already in the pattern.
+        let key = |o: &[[f64; 2]]| {
+            let n = o.len().max(1) as f64;
+            let c = o.iter().fold([0.0, 0.0], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
+            let area = (0..o.len())
+                .map(|i| {
+                    let (p, q) =
+                        (o.get(i).copied().unwrap_or_default(), o.get((i + 1) % o.len()).copied().unwrap_or_default());
+                    p[0] * q[1] - q[0] * p[1]
+                })
+                .sum::<f64>()
+                .abs()
+                / 2.0;
+            (c, area)
+        };
+        loops.retain(|l| {
+            let (c, a) = key(l);
+            !flat.outlines.iter().skip(1).any(|o| {
+                let (c2, a2) = key(o);
+                len(sub(c, c2)) < tol * 10.0 && (a - a2).abs() <= 1e-3 * a.max(a2).max(1e-9)
+            })
+        });
         // Each cut-out lies inside the pattern.
         if loops
             .iter()

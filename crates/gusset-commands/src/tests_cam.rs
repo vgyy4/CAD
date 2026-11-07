@@ -73,7 +73,7 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     );
     assert_eq!(d["written"], "holes.nc", "{d}");
     let g = std::fs::read_to_string(s.project_dir.clone().unwrap().join("holes.nc")).unwrap();
-    assert!(g.contains("G98 G83 X10 Y10 Z-6 R0 Q2") && g.contains("\nX30 Y10\n"), "{g}");
+    assert!(g.contains("G98 G83 X10 Y10 Z-6 R1 Q2") && g.contains("\nX30 Y10\n"), "{g}");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
 
@@ -129,6 +129,22 @@ fn a_cantilever_rod_has_its_natural_frequencies() {
     run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "100 mm"}));
     let r = run(&mut s, "sim.modal", json!({"fixed": ["Extrude1/cap(start)"], "modes": 2, "voxel": 2.5}));
     let f = r["frequencies_hz"].as_array().unwrap();
+    // The default voxel: four across the 10 mm side (2.5 mm), so no caveat about it; at
+    // 5 mm (two across) the result says it is too stiff.
+    let st = run(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [100, 0, 0]}]}),
+    );
+    assert_eq!(st["voxel_mm"], 2.5, "{st}");
+    let notes = st["caveats"].as_array().cloned().unwrap_or_default();
+    assert!(notes.iter().all(|n| !n.as_str().unwrap().contains("fewer than 3")), "{st}");
+    let coarse = run(
+        &mut s,
+        "sim.static",
+        json!({"fixed": ["Extrude1/cap(start)"], "loads": [{"face": "Extrude1/cap(end)", "force": [100, 0, 0]}], "voxel": 5.0}),
+    );
+    assert!(coarse["caveats"].to_string().contains("fewer than 3"), "{coarse}");
     // Beam theory: 835.5 Hz, twice; stiff bricks read a little high.
     let f1 = f[0].as_f64().unwrap();
     assert!(f.len() == 2 && f1 > 800.0 && f1 < 1000.0, "{r}");
@@ -210,4 +226,22 @@ fn a_cam_job_in_the_document_runs_by_name_and_follows_parameters() {
     assert_eq!(err(&mut s, "cam.toolpath", json!({"job": "Job1", "depth": 3.0})).code, "invalid_args");
     assert_eq!(err(&mut s, "cam.toolpath", json!({"sketch": "Sketch1"})).code, "invalid_args");
     assert_eq!(err(&mut s, "cam.toolpath", json!({"job": "Nope"})).code, "not_found");
+}
+
+#[test]
+fn move_face_onto_refuses_targets_it_cannot_reach_before_committing() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "10 mm"}));
+    let n = s.document(&gusset_history::Actor::User).unwrap().features.len();
+    for (target, why) in [
+        ("Extrude1/side(Sketch1/l5)", "not parallel"),
+        ("Extrude1/cap(end)", "already lies"),
+        ("Extrude1/cap(start)", "no material"),
+    ] {
+        let e = err(&mut s, "feature.move_face", json!({"faces": ["Extrude1/cap(end)"], "onto": target}));
+        assert!(e.message.contains(why), "{target}: {}", e.message);
+    }
+    assert_eq!(s.document(&gusset_history::Actor::User).unwrap().features.len(), n, "nothing committed");
 }

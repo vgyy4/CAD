@@ -142,12 +142,12 @@ fn holes_are_drilled_nearest_first_with_canned_cycles() {
     let d = t.drill.as_ref().unwrap();
     assert_eq!(d.points, vec![[10.0, 0.0], [20.0, 0.0], [30.0, 0.0]]);
     let g = t.gcode(&setup(5.0), "holes");
-    assert!(g.contains("G98 G83 X10 Y0 Z-5 R0 Q2 F200") && g.contains("\nX20 Y0\n") && g.contains("G80\n"), "{g}");
+    assert!(g.contains("G98 G83 X10 Y0 Z-5 R1 Q2 F200") && g.contains("\nX20 Y0\n") && g.contains("G80\n"), "{g}");
     // Pecks of 2, 2 and 1 per hole, each from the top: 2 + 4 + 5 mm of plunging per hole.
     let st = t.stats(&setup(5.0));
     assert!(st.plunge > 3.0 * 5.0 - 1e-9, "{st:?}");
     let g = drilling(&pts, None, &setup(5.0)).unwrap().gcode(&setup(5.0), "holes");
-    assert!(g.contains("G98 G81 X10 Y0 Z-5 R0 F200"), "{g}");
+    assert!(g.contains("G98 G81 X10 Y0 Z-5 R1 F200"), "{g}");
     assert!(drilling(&[], None, &setup(5.0)).is_err());
     assert!(drilling(&pts, Some(0.0), &setup(5.0)).is_err());
 }
@@ -175,17 +175,12 @@ fn tabs_lift_the_last_profile_passes_over_bridges() {
 
 #[test]
 fn review_fixes_hold() {
-    // A ramp on a tabbed profile stops at the tabs' top and plunges the rest at the ring's
-    // start, so it never cuts through a tab.
+    // A ramp on a tabbed profile never cuts below the tabs inside a tab.
     let mut s = setup(6.0);
     s.ramp_deg = 3.0;
     s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.5 });
     let t = toolpath(&[rect(100.0, 60.0)], Operation::Profile { outside: true }, &s).unwrap();
-    for m in &t.moves {
-        if let Move::Line { to, plunge: false } | Move::Arc { to, .. } = m {
-            assert!(!(to[2] < -3.5 - 1e-9 && to[2] > -5.0 + 1e-9), "a ramp below the tabs: {to:?}");
-        }
-    }
+    check_tabs(&t, &s, &rect(100.0, 60.0));
     // Tabs: at least one, lower than the depth, and only on profiles; the spindle must turn.
     for (count, height) in [(0, 1.0), (4, 5.0)] {
         s.tabs = Some(Tabs { count, width: 3.0, height });
@@ -322,4 +317,187 @@ fn a_helical_bore_cuts_the_helix_length_plus_the_floor_circle() {
     let want = turns * libm::sqrt((std::f64::consts::TAU * r).powi(2) + drop * drop) + std::f64::consts::TAU * r;
     let got = t.stats(&s).cut;
     assert!(((got - want) / want).abs() < 0.01, "{got} vs {want}");
+}
+
+/// Whether `pt` lies on the move `m` that starts at `from` (seen from above).
+fn on_move(from: [f64; 3], m: &Move, pt: [f64; 2]) -> bool {
+    let tol = 1e-5;
+    match *m {
+        Move::Rapid(_) => false,
+        Move::Line { to, .. } => {
+            let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+            let l2 = dx * dx + dy * dy;
+            let u =
+                if l2 < 1e-18 { 0.0 } else { (((pt[0] - from[0]) * dx + (pt[1] - from[1]) * dy) / l2).clamp(0.0, 1.0) };
+            libm::hypot(from[0] + u * dx - pt[0], from[1] + u * dy - pt[1]) < tol
+        }
+        Move::Arc { to, center, ccw } => {
+            let r = libm::hypot(from[0] - center[0], from[1] - center[1]);
+            if (libm::hypot(pt[0] - center[0], pt[1] - center[1]) - r).abs() > tol {
+                return false;
+            }
+            let ang = |p: [f64; 2]| libm::atan2(p[1] - center[1], p[0] - center[0]);
+            let dir = if ccw { 1.0 } else { -1.0 };
+            let rel = |a: f64| (dir * (a - ang([from[0], from[1]]))).rem_euclid(std::f64::consts::TAU);
+            rel(ang(pt)) <= rel(ang([to[0], to[1]])) + tol / r.max(1e-9)
+        }
+    }
+}
+
+fn end_z(m: &Move) -> f64 {
+    match m {
+        Move::Rapid(p) => p[2],
+        Move::Line { to, .. } | Move::Arc { to, .. } => to[2],
+    }
+}
+
+/// Moves with the point each starts from.
+fn with_starts(t: &Toolpath) -> Vec<([f64; 3], Move)> {
+    let mut at = [0.0; 3];
+    t.moves
+        .iter()
+        .map(|m| {
+            let from = at;
+            at = match *m {
+                Move::Rapid(p) | Move::Line { to: p, .. } | Move::Arc { to: p, .. } => p,
+            };
+            (from, *m)
+        })
+        .collect()
+}
+
+fn samples(from: f64, to: f64, step: f64) -> Vec<f64> {
+    let n = ((to - from) / step) as usize;
+    (0..=n).map(|i| from + step * i as f64).collect()
+}
+
+/// The tabs' guarantees on the only ring of an outside profile of `region`: nothing below the
+/// tabs' top cuts inside a tab span, and every point of the ring outside the spans is cut at
+/// each tabbed level's depth.
+fn check_tabs(t: &Toolpath, s: &Setup, region: &Region2) {
+    let tabs = s.tabs.unwrap();
+    let ring = rings(std::slice::from_ref(region), Operation::Profile { outside: true }, s).unwrap();
+    let w = Walk::new(&ring[0]);
+    let spans = tab_spans(w.total, &tabs, s.tool_diameter);
+    let tab_top = s.top - s.depth + tabs.height;
+    let moves = with_starts(t);
+    for (a, b) in &spans {
+        for sm in samples(a + 0.01, b - 0.01, 0.2) {
+            let pt = w.xy(sm);
+            for (from, m) in &moves {
+                if matches!(m, Move::Rapid(_)) || from[2].min(end_z(m)) >= tab_top - 1e-9 {
+                    continue;
+                }
+                assert!(!on_move(*from, m, pt), "cuts below the tab at {pt:?}: {m:?} from {from:?}");
+            }
+        }
+    }
+    for z in t.levels.iter().filter(|z| **z < tab_top - 1e-9) {
+        for sm in samples(0.0, w.total, 0.37) {
+            if spans.iter().any(|(a, b)| sm > a - 1e-6 && sm < b + 1e-6) {
+                continue;
+            }
+            let pt = w.xy(sm);
+            let hit = moves.iter().any(|(from, m)| {
+                matches!(m, Move::Line { plunge: false, .. } | Move::Arc { .. })
+                    && (from[2] - z).abs() < 1e-9
+                    && (end_z(m) - z).abs() < 1e-9
+                    && on_move(*from, m, pt)
+            });
+            assert!(hit, "the ring at s = {sm} {pt:?} is never cut at {z}");
+        }
+    }
+}
+
+#[test]
+fn tabbed_levels_ramp_down_along_the_ring_instead_of_plunging() {
+    let region = rect(100.0, 60.0);
+    let tab_top = -3.5;
+    for (stepdown, ramp) in [(2.0, 3.0), (1.0, 3.0), (2.0, 10.0), (2.0, 0.0)] {
+        let mut s = setup(6.0);
+        s.stepdown = stepdown;
+        s.ramp_deg = ramp;
+        s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.5 });
+        let t = toolpath(std::slice::from_ref(&region), Operation::Profile { outside: true }, &s).unwrap();
+        check_tabs(&t, &s, &region);
+        let moves = with_starts(&t);
+        // A straight plunge that ends below the tabs' top, in a level whose ring is already open
+        // at the level above (the vertical drop after a tab or at the start).
+        let drops = moves
+            .iter()
+            .filter(
+                |(f, m)| matches!(m, Move::Line { to, plunge: true } if to[2] < tab_top - 1e-9 && f[2] < s.safe - 1e-9),
+            )
+            .count();
+        if ramp > 0.0 {
+            assert_eq!(drops, 0, "stepdown {stepdown} ramp {ramp}: a vertical plunge below the tabs");
+            // The descent is a ramp: cutting moves that go down below the tabs' top.
+            assert!(
+                moves.iter().any(
+                    |(f, m)| matches!(m, Move::Line { to, plunge: false } if to[2] < f[2] - 1e-6 && to[2] < tab_top)
+                )
+            );
+        } else {
+            // No ramp: coming down after a tab is the vertical plunge.
+            assert!(drops >= 4, "{drops}");
+        }
+    }
+}
+
+#[test]
+fn drilling_retracts_to_a_plane_just_above_the_top() {
+    let pts = [[10.0, 0.0]];
+    let mut s = setup(5.0);
+    let t = drilling(&pts, Some(2.0), &s).unwrap();
+    assert!(t.gcode(&s, "h").contains("R1 Q2"));
+    // Pecks return to R, not to the top.
+    let rapids: Vec<f64> =
+        t.moves.iter().filter_map(|m| if let Move::Rapid(p) = m { Some(p[2]) } else { None }).collect();
+    assert!(
+        rapids.iter().filter(|z| (**z - 1.0).abs() < 1e-12).count() == 3 && !rapids.iter().any(|z| z.abs() < 1e-12),
+        "{rapids:?}"
+    );
+    // Still below the safe height when that is close to the top.
+    s.safe = 1.0;
+    let t = drilling(&pts, None, &s).unwrap();
+    assert!(t.gcode(&s, "h").contains("R0.5 F"));
+    s.top = 3.0;
+    s.safe = 10.0;
+    assert!(drilling(&pts, None, &s).unwrap().gcode(&s, "h").contains("Z-2 R4 F"));
+}
+
+#[test]
+fn gcode_never_repeats_a_line_or_a_position_and_names_the_tool() {
+    let mut s = setup(6.0);
+    s.tabs = Some(Tabs { count: 4, width: 3.0, height: 1.5 });
+    s.ramp_deg = 3.0;
+    let t = toolpath(&[rect(100.0, 60.0)], Operation::Profile { outside: true }, &s).unwrap();
+    let pocket = toolpath(&[rect(40.0, 20.0)], Operation::Pocket { stepover: 0.5 }, &setup(6.0)).unwrap();
+    for (t, s) in [(t, s), (pocket, setup(6.0))] {
+        let g = t.gcode(&s, "tidy");
+        let lines: Vec<&str> = g.lines().collect();
+        let mut xy = String::new();
+        for w in lines.windows(2) {
+            assert_ne!(w[0], w[1], "a repeated line");
+        }
+        for l in &lines {
+            let pos: Vec<&str> = l.split(' ').filter(|w| w.starts_with('X') || w.starts_with('Y')).collect();
+            if l.starts_with("G0 X") {
+                assert_ne!(pos.join(" "), xy, "a rapid to where the tool is: {l}");
+            }
+            if pos.len() == 2 {
+                xy = pos.join(" ");
+            }
+        }
+        assert_eq!(lines.get(2), Some(&"(T1 D6 flat end mill)"), "{g}");
+        assert!(!g.contains("M6"));
+    }
+    // Rapids to where the tool already is are dropped.
+    let t = Toolpath {
+        moves: vec![Move::Rapid([1.0, 2.0, 5.0]), Move::Rapid([1.0, 2.0, 5.0]), Move::Rapid([1.0, 2.0, 5.0])],
+        ..Toolpath::default()
+    };
+    let g = t.gcode(&setup(6.0), "r");
+    assert_eq!(g.matches("G0 X1 Y2").count(), 1, "{g}");
+    assert_eq!(g.matches("G0 Z5").count(), 2, "the header's and the end's: {g}");
 }

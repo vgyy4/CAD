@@ -94,7 +94,7 @@ impl Command for StaticQuery {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (body, mesh, voxel, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
+        let (body, mesh, voxel, shortest, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
         let mut loads = Vec::new();
         for l in &self.loads {
@@ -145,6 +145,12 @@ impl Command for StaticQuery {
                 }),
             );
         }
+        let notes = caveats(voxel, shortest, sol.peak_at_fixed);
+        if !notes.is_empty()
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert("caveats".into(), json!(notes));
+        }
         if sol.held_load > 1e-9
             && let Some(o) = out.as_object_mut()
         {
@@ -181,7 +187,7 @@ fn setup(
     ctx: &CmdCtx,
     body: Option<&str>,
     voxel: Option<f64>,
-) -> Result<(std::sync::Arc<gusset_eval::Body>, gusset_kernel::Mesh, f64, FaceIndex), CommandError> {
+) -> Result<(std::sync::Arc<gusset_eval::Body>, gusset_kernel::Mesh, f64, f64, FaceIndex), CommandError> {
     let ev = s.evaluate(&ctx.actor)?;
     let body = match body {
         Some(n) => ev.body(n).cloned().ok_or_else(|| CommandError::not_found(format!("no body '{n}'")))?,
@@ -192,8 +198,13 @@ fn setup(
         .tessellate(&body.shape, &gusset_kernel::TessellationParams::default())
         .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
     let bb = k.bbox(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
-    let longest = bb.size().into_iter().fold(0.0f64, f64::max);
-    let voxel = voxel.unwrap_or(longest / 30.0);
+    let size = bb.size();
+    let longest = size.into_iter().fold(0.0f64, f64::max);
+    let shortest = size.into_iter().fold(f64::INFINITY, f64::min);
+    // At least four voxels across the thinnest side (one through a plate is far too stiff),
+    // as long as the grid stays within its cell limit.
+    let floor = libm::cbrt(size.iter().product::<f64>() / (gusset_fea::MAX_ELEMENTS as f64 * 7.0));
+    let voxel = voxel.unwrap_or_else(|| (longest / 30.0).min(shortest / 4.0).max(floor));
     let b = body.clone();
     let face: FaceIndex = Box::new(move |f: &str| {
         let r = FaceRef::parse(f).map_err(|e| CommandError::args(format!("face {f}: {}", e.message)))?;
@@ -202,7 +213,22 @@ fn setup(
             .map(|i| i as usize)
             .ok_or_else(|| CommandError::not_found(format!("face {f} is not on '{}'", b.name)))
     });
-    Ok((body, mesh, voxel, face))
+    Ok((body, mesh, voxel, shortest, face))
+}
+
+/// Notes on how far to trust a result: too few voxels through the thinnest side, a peak at
+/// a held edge.
+fn caveats(voxel: f64, shortest: f64, peak_at_fixed: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if shortest / voxel < 3.0 {
+        out.push("fewer than 3 voxels across the thinnest side: the model is too stiff; give a smaller voxel");
+    }
+    if peak_at_fixed {
+        out.push(
+            "the peak stress is at a held face: a sharp held edge has no finite stress; read the stress away from it",
+        );
+    }
+    out
 }
 
 /// The lowest natural frequencies of a body.
@@ -237,7 +263,7 @@ impl Command for ModalQuery {
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let (body, mesh, voxel, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
+        let (body, mesh, voxel, shortest, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
         let p = gusset_fea::ModalProblem {
             mesh: &mesh,
@@ -265,6 +291,12 @@ impl Command for ModalQuery {
             "iterations": m.iterations,
             "frequencies_hz": m.frequencies.iter().map(|f| r(*f)).collect::<Vec<_>>(),
         });
+        let notes = caveats(voxel, shortest, false);
+        if !notes.is_empty()
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert("caveats".into(), json!(notes));
+        }
         if !m.shape.is_empty()
             && let Some(o) = out.as_object_mut()
         {

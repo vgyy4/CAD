@@ -67,6 +67,9 @@ pub struct Solution {
     pub loaded_nodes: usize,
     /// The share of the load (by size) that fell on held nodes and so does nothing.
     pub held_load: f64,
+    /// The peak stress is in a voxel touching a held face: there the stress of a sharp
+    /// held edge has no finite limit, and the value grows with refinement.
+    pub peak_at_fixed: bool,
     /// The voxel model's outer faces with the von Mises stress (MPa) of their voxel, for
     /// a stress picture.
     pub surface: Vec<SurfaceQuad>,
@@ -564,7 +567,7 @@ fn build(
     if loose > 0 {
         return Err(FeaError::Invalid(format!(
             "{loose} voxels are not held: they touch the held part only at edges or corners, or not at all \
-             (use a smaller voxel, or fix a face of each part)"
+             (join the parts by faces, or fix a face of each part)"
         )));
     }
     let (ke, b0) = element(h, &m);
@@ -844,8 +847,11 @@ fn solve_in(p: &Problem<'_>, sub: Option<&Sub<'_>>) -> Result<(Solution, Model, 
     }
     let dm = dmat(&m);
     let mut max_s = (0.0, [0.0; 3]);
+    let mut peak_held = false;
+    let mut free_max = 0.0f64;
     let mut vms = Vec::with_capacity(conn.len());
     for (c, [i, j, k]) in conn.iter().zip(elems) {
+        let ce = *c;
         let mut ue = [0.0; 24];
         for (a, id) in c.iter().enumerate() {
             for d in 0..3 {
@@ -866,8 +872,13 @@ fn solve_in(p: &Problem<'_>, sub: Option<&Sub<'_>>) -> Result<(Solution, Model, 
         // In a submodel the layer along the cut faces is left out: it carries the coarse
         // solution's error.
         let near_cut = sub.is_some_and(|sb| c.iter().zip(sb.lo).zip(sb.hi).any(|((v, l), hh)| v - l < h || hh - v < h));
+        let held_voxel = ce.iter().any(|id| fixed.get(3 * id).copied().unwrap_or(false));
+        if !held_voxel && !near_cut {
+            free_max = free_max.max(vm);
+        }
         if vm > max_s.0 && !near_cut {
             max_s = (vm, c);
+            peak_held = held_voxel;
         }
         vms.push(vm);
     }
@@ -895,6 +906,9 @@ fn solve_in(p: &Problem<'_>, sub: Option<&Sub<'_>>) -> Result<(Solution, Model, 
         fixed_nodes,
         loaded_nodes,
         held_load: if asked > 0.0 { held / asked } else { 0.0 },
+        // Only a peak clearly above everything away from the held faces (not a uniform
+        // stress that merely ties there).
+        peak_at_fixed: peak_held && max_s.0 > 1.2 * free_max,
         surface,
     };
     Ok((sol, md, u))

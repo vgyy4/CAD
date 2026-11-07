@@ -405,3 +405,34 @@ plate 0.06 s, scad 0.25 s, fc 0.16 s). Renders are in `img/` (`p1_sheet0..5.png`
 | F5-12 | **Fixed**: `--read-only` on a project another window or server holds reads its last save, unlocked; the lock message says who holds it once |
 | F5-13 | **Fixed**: SPLINE (fit points, or samples of the rational B-spline) and ELLIPSE (64 samples per turn) import as sketch splines through those points (close, not exact); a DXF without `$INSUNITS` gives a warning |
 | F5-14 | **Fixed**: drawings take `units: mm | in`, `decimals: 0..6` and `dual: true` (the other unit in brackets) |
+
+## Run 6 — sheet metal, CAM, simulation, direct modelling, F3D/SAT import (2026-11-07)
+
+Setup: debug `gusset` with real OCCT and workers, `gusset mcp --no-attach` over stdio, run 5's
+stdlib Python client; 309 calls, files in the session's scratch directory (`dogfood6/`). Learned
+from `tools/list`, `commands`, schemas, resources and errors.
+
+| # | Part | Result | Calls | Notes |
+|---|---|---|---|---|
+| 1 | Sheet metal: tab + flanges (`close`), `F1_end`, U + `l6_start`, holes | modelling exact; cut-outs failed with several flanges (F6-1) | 142 | Volumes, allowances and flat sizes match hand. |
+| 2 | CAM: pocket, profile with tabs and ramp, drilling | works, G-code issues | 44 | Climb direction, I/J, tabs, G83 checked. |
+| 3 | Simulation: cantilever static and modal | right at fine voxels, wrong by default (F6-5) | 43 | 1 mm voxel: 0.754 vs 0.762 mm; modal within 1 %. |
+| 4 | Direct modelling: `onto` | works; bad targets committed (F6-7) | 33 | |
+| 5 | Import: .f3d, .f3z, .sat | placed correctly; bodies and names poor (F6-8) | 35 | Bounding boxes match the STEP twin. |
+
+| ID | Sev | Item | Status |
+|---|---|---|---|
+| F6-1 | major | Cuts not unfolded with two flanges or a side flange | Fixed: faces of the sheet's own features (flange end caps) are sheet faces, not the cut's (OCCT test). |
+| F6-2 | major | A second cut wrote the first cut's outline again | Fixed: outlines already in the pattern are not added again (OCCT test). |
+| F6-3 | major | Export hint named a missing feature; no cut-outs in `query_flat_pattern` | Fixed: hint says what unfolds; `cutouts: [{bbox_mm, area_mm2}]`. |
+| F6-4 | minor | Bend cut-outs mapped from the sketch-side face, circles as polylines | Open (ADR 0037 notes the approximation). |
+| F6-5 | major | Default voxel gave one voxel through a 10 mm bar, 118 % off, no warning | Fixed: default is the smaller of longest/30 and shortest/4 (within the cell cap); `caveats` when fewer than 3 voxels span the thinnest side or the peak sits at a held face. |
+| F6-6 | minor | Loose-part refusal advised a smaller voxel | Fixed: advises joining the parts by faces or fixing each. |
+| F6-7 | minor | `onto` a tilted, coplanar or opposite face committed a failing feature | Fixed: refused before committing (test). |
+| F6-8 | major | F3D import: construction sheets as bodies, generic names | Open. |
+| F6-9 | major | A line with `NaN`/`1e999` was dropped silently, the client hung | Fixed: answered with a JSON-RPC parse error (−32700, id null); the session goes on (test). |
+| F6-10 | minor | Ramp stopped at the tab top then plunged | Fixed: ramps down along stretches outside the tabs, re-cut at depth (tests). |
+| F6-11 | minor | G83 `R` at the stock top | Fixed: R = top + min(1 mm, (safe - top) / 2). Tool ≠ hole warning open. |
+| F6-12 | minor | Duplicate G-code lines, no tool line, one operation per file | Duplicates and `(T1 D.. flat end mill)` fixed; several jobs in the document now (`cam_job`), one program per job. |
+| F6-13 | minor | Reconnecting starts on Main with an empty undo stack | Open. |
+| F6-14 | minor | Grammar resource lacked the new syntax; modal shape has no scale | Grammar updated (sheet sides/ends, `close`, cut-outs, `onto`, `cam_job`); shape scale open. |

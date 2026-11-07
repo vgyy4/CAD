@@ -1137,3 +1137,30 @@ async fn an_agent_key_keeps_the_agent_and_its_branch_across_connections() {
     server.shutdown();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_that_is_not_json_gets_a_parse_error_and_the_session_goes_on() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let server = McpServer::new(host());
+    let (a, b) = tokio::io::duplex(1 << 20);
+    tokio::spawn(async move {
+        let (r, w) = tokio::io::split(a);
+        let _ = server.serve_io(r, w).await;
+    });
+    let (r, mut w) = tokio::io::split(b);
+    let mut lines = tokio::io::BufReader::new(r).lines();
+    w.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"x\":NaN}}\n").await.unwrap();
+    let e: Value = serde_json::from_str(&next_line(&mut lines).await).unwrap();
+    assert_eq!(e["error"]["code"], -32700, "{e}");
+    assert!(e["id"].is_null());
+    let init = json!({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}});
+    w.write_all(format!("{init}\n").as_bytes()).await.unwrap();
+    let r: Value = serde_json::from_str(&next_line(&mut lines).await).unwrap();
+    assert_eq!(r["id"], 2, "{r}");
+    assert!(r.get("result").is_some(), "{r}");
+}
+
+async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(l: &mut tokio::io::Lines<R>) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(10), l.next_line()).await.unwrap().unwrap().unwrap()
+}

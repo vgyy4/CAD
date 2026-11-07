@@ -490,3 +490,37 @@ fn a_closed_corner_butts_the_walls_and_keeps_a_relief() {
     let r = Evaluator::new(k).evaluate(&doc, None, &());
     assert!(r.errors().iter().any(|e| e.to_string().contains("outside corner")), "{:?}", r.errors());
 }
+
+#[test]
+fn cuts_unfold_with_several_flanges_and_are_listed_once() {
+    // Two flanges with a closed corner (their end caps are sheet faces, not the cut's), then
+    // two holes in two features: three outlines, the plate and each hole once.
+    let src = format!(
+        "{TAB}
+edge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5)
+
+edge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 90 deg, bend_radius: 3 mm, k_factor: 0.5, close: true)
+
+sketch C (plane: XY, next_id: 3) {{
+  p1 = point(20, 20)
+  c2 = circle(p1, 4)
+}}
+
+extrude Cut (profile: C, distance: 20 mm, symmetric: true, op: cut, body: Plate)
+
+sketch D (plane: XY, next_id: 3) {{
+  p1 = point(40, 25)
+  c2 = circle(p1, 3)
+}}
+
+extrude Cut2 (profile: D, distance: 20 mm, symmetric: true, op: cut, body: Plate)
+"
+    );
+    let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let r = Evaluator::new(k).evaluate(&doc, None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let flat = r.body("Plate").unwrap().sheet.clone().unwrap();
+    assert!(flat.changed_by.is_empty(), "{:?}", flat.changed_by);
+    assert_eq!(flat.outlines.len(), 3, "{:?}", flat.outlines.iter().map(Vec::len).collect::<Vec<_>>());
+}

@@ -230,11 +230,36 @@ impl Command for FlatPatternQuery {
                 })
             })
             .collect();
+        // The holes in the pattern (cuts unfolded from later features): box and area.
+        let cutouts: Vec<Value> = flat
+            .outlines
+            .iter()
+            .skip(1)
+            .map(|o| {
+                let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+                for p in o {
+                    lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                    hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+                }
+                let n = o.len();
+                let area = (0..n)
+                    .map(|i| {
+                        let (p, q) =
+                            (o.get(i).copied().unwrap_or_default(), o.get((i + 1) % n).copied().unwrap_or_default());
+                        p[0] * q[1] - q[0] * p[1]
+                    })
+                    .sum::<f64>()
+                    .abs()
+                    / 2.0;
+                json!({"bbox_mm": [lo.map(tidy), hi.map(tidy)], "area_mm2": tidy(area)})
+            })
+            .collect();
         Ok(json!({
             "body": body,
             "thickness_mm": tidy(flat.thickness),
             "size_mm": [tidy(size[0]), tidy(size[1])],
             "bends": bends,
+            "cutouts": cutouts,
             "changed_by": flat.changed_by,
             "warning": stale(&flat),
         }))
@@ -281,8 +306,10 @@ impl Command for ExportFlat {
         if let Some(w) = stale(&flat)
             && !self.allow_changed
         {
-            return Err(CommandError::args(format!("'{body}' was {w}"))
-                .hint("pass allow_changed: true to export it anyway, or make the cuts as sheet-metal features"));
+            return Err(CommandError::args(format!("'{body}' was {w}")).hint(
+                "cuts through flats and bends are unfolded; notches across an edge, cuts through edge-flange ends or \
+                 added material are not: pass allow_changed: true to export anyway",
+            ));
         }
         let sc = scene(&flat);
         let bytes = if dxf {

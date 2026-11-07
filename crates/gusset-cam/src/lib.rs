@@ -145,6 +145,7 @@ pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Too
         order.push(p);
     }
     let bottom = s.top - s.depth;
+    let retract = retract_plane(s);
     let mut moves = Vec::new();
     for p in &order {
         moves.push(Move::Rapid([p[0], p[1], s.safe]));
@@ -154,7 +155,7 @@ pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Too
                 while z > bottom + 1e-9 {
                     z = (z - q).max(bottom);
                     moves.push(Move::Line { to: [p[0], p[1], z], plunge: true });
-                    moves.push(Move::Rapid([p[0], p[1], s.top]));
+                    moves.push(Move::Rapid([p[0], p[1], retract]));
                 }
             }
             None => moves.push(Move::Line { to: [p[0], p[1], bottom], plunge: true }),
@@ -165,6 +166,12 @@ pub fn drilling(points: &[[f64; 2]], peck: Option<f64>, s: &Setup) -> Result<Too
         }
     }
     Ok(Toolpath { moves, rings: 0, levels: vec![bottom], drill: Some(Drill { points: order, peck }) })
+}
+
+/// The canned cycles' retract plane R: a little above the stock top (at most 1 mm, at most
+/// half way to the safe height), so the tool clears the top between pecks.
+fn retract_plane(s: &Setup) -> f64 {
+    s.top + 1.0_f64.min((s.safe - s.top) / 2.0)
 }
 
 /// Most helix turns one bore may have.
@@ -477,12 +484,14 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
             moves.push(Move::Rapid([first.x, first.y, s.safe]));
             let perimeter = p.path_length();
             // A helix never runs below the tabs' top (it would cut through them): on the
-            // tabbed levels it stops there and the rest is plunged at the ring's start,
-            // which is never on a tab.
+            // tabbed levels it stops there and the rest of the descent is a ramp along the
+            // ring's first stretch, which is never on a tab (see `tabbed_ring`).
+            let tabbed = matches!(op, Operation::Profile { .. }) && tab_top.is_some_and(|t| *z < t - 1e-9);
             let floor = match tab_top {
-                Some(t) if matches!(op, Operation::Profile { .. }) => z.max(t),
+                Some(t) if tabbed => t,
                 _ => *z,
             };
+            let mut entry = *z;
             if slope > 0.0 && perimeter > 1e-9 && floor < above - 1e-9 {
                 // A helix along the ring, as many turns as the angle needs, then one
                 // full ring at the depth.
@@ -503,15 +512,18 @@ pub fn toolpath(regions: &[Region2], op: Operation, s: &Setup) -> Result<Toolpat
                         moves.push(segment(a, b, above - (above - floor) * (run / total).min(1.0)));
                     }
                 }
-                if floor > *z + 1e-9 {
-                    moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
-                }
+                entry = floor;
+            } else if tabbed && slope > 0.0 && perimeter > 1e-9 {
+                // Already below the tabs' top: the ring is open at the level above.
+                moves.push(Move::Line { to: [first.x, first.y, above], plunge: true });
+                entry = above;
             } else {
                 moves.push(Move::Line { to: [first.x, first.y, *z], plunge: true });
             }
             match (s.tabs, tab_top) {
-                (Some(t), Some(top)) if matches!(op, Operation::Profile { .. }) && *z < top - 1e-9 => {
-                    tabbed_ring(p, *z, top, &t, s.tool_diameter, &mut moves)?;
+                (Some(t), Some(top)) if tabbed => {
+                    let tool = s.tool_diameter;
+                    tabbed_ring(p, Heights { entry, z: *z, tab_top: top, slope }, &t, tool, &mut moves)?;
                 }
                 _ => {
                     for i in 0..n {
@@ -548,70 +560,142 @@ fn piece(a: PlineVertex<f64>, b: PlineVertex<f64>, t0: f64, t1: f64, z: f64) -> 
     (at(t0), Move::Arc { to: [e[0], e[1], z], center, ccw })
 }
 
-/// One ring at depth `z` that rises to `tab_top` over each tab (tool radius added on both
-/// sides, so the stock left is the tab's width).
-fn tabbed_ring(
-    p: &Polyline<f64>,
+/// The heights a tabbed ring is cut at.
+#[derive(Debug, Clone, Copy)]
+struct Heights {
+    /// Height at the ring's start when `tabbed_ring` begins.
+    entry: f64,
+    /// The depth of the level.
     z: f64,
+    /// Top of the tabs.
     tab_top: f64,
-    t: &Tabs,
-    tool: f64,
-    moves: &mut Vec<Move>,
-) -> Result<(), CamError> {
-    let n = p.vertex_count();
-    let total = p.path_length();
+    /// Tangent of the ramp angle (0: plunge).
+    slope: f64,
+}
+
+/// The tabs' spans along a ring of length `total`: evenly spaced, `width` plus the tool's
+/// diameter long (the tool radius added on both sides leaves the stock `width` wide). They never
+/// touch the ring's start or end.
+fn tab_spans(total: f64, t: &Tabs, tool: f64) -> Vec<(f64, f64)> {
     let span = t.width + tool;
-    if t.count == 0 || total <= 0.0 {
-        return Ok(());
-    }
-    if span * t.count as f64 >= total * 0.9 {
-        return Err(CamError::Invalid("the tabs do not fit on the profile: fewer or narrower tabs".into()));
-    }
-    let tabs: Vec<(f64, f64)> = (0..t.count)
+    (0..t.count)
         .map(|k| {
             let c = total * (k as f64 + 0.5) / t.count as f64;
             (c - span / 2.0, c + span / 2.0)
         })
-        .collect();
-    let in_tab = |s: f64| tabs.iter().any(|(a, b)| s > *a && s < *b);
-    let mut run = 0.0;
-    let mut cur_z = z;
-    for i in 0..n {
-        let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
-        let len = seg_len(a, b);
-        if len <= 0.0 {
-            continue;
+        .collect()
+}
+
+/// One segment of a closed polyline: its ends and where it starts and how long it is along the ring.
+type RingSeg = (PlineVertex<f64>, PlineVertex<f64>, f64, f64);
+
+/// A closed polyline's segments with their start lengths along it.
+struct Walk {
+    segs: Vec<RingSeg>,
+    total: f64,
+}
+
+impl Walk {
+    fn new(p: &Polyline<f64>) -> Walk {
+        let n = p.vertex_count();
+        let mut segs = Vec::new();
+        let mut run = 0.0;
+        for i in 0..n {
+            let (Some(a), Some(b)) = (p.get(i), p.get((i + 1) % n)) else { continue };
+            let len = seg_len(a, b);
+            if len > 0.0 {
+                segs.push((a, b, run, len));
+                run += len;
+            }
         }
-        // Break the segment at every tab edge inside it.
-        let mut cuts: Vec<f64> = vec![0.0, 1.0];
-        for (s0, s1) in &tabs {
-            for e in [*s0, *s1] {
-                let f = (e - run) / len;
-                if f > 1e-9 && f < 1.0 - 1e-9 {
-                    cuts.push(f);
+        Walk { segs, total: run }
+    }
+
+    /// The point `s` along the ring.
+    fn xy(&self, s: f64) -> [f64; 2] {
+        let hit = self.segs.iter().find(|(_, _, run, len)| s <= run + len).or(self.segs.last());
+        hit.map_or([0.0, 0.0], |(a, b, run, len)| {
+            let f = ((s - run) / len).clamp(0.0, 1.0);
+            piece(*a, *b, f, f, 0.0).0
+        })
+    }
+
+    /// Cuts from length `from` to `to` along the ring (backwards if `to < from`), the height
+    /// changing evenly from `z_from` to `z_to`.
+    fn cut(&self, from: f64, to: f64, z_from: f64, z_to: f64, moves: &mut Vec<Move>) {
+        let span = (to - from).abs();
+        if span < 1e-9 {
+            return;
+        }
+        let z_at = |s: f64| z_from + (z_to - z_from) * ((s - from).abs() / span);
+        if to > from {
+            for (a, b, run, len) in &self.segs {
+                let (lo, hi) = (from.max(*run), to.min(run + len));
+                if hi - lo > 1e-9 {
+                    moves.push(piece(*a, *b, (lo - run) / len, (hi - run) / len, z_at(hi)).1);
+                }
+            }
+        } else {
+            for (a, b, run, len) in self.segs.iter().rev() {
+                let (lo, hi) = (to.max(*run), from.min(run + len));
+                if hi - lo > 1e-9 {
+                    // The segment walked backwards: from `b` to `a`, the bulge reversed.
+                    let back = PlineVertex::new(b.x, b.y, -a.bulge);
+                    moves.push(piece(back, *a, 1.0 - (hi - run) / len, 1.0 - (lo - run) / len, z_at(lo)).1);
                 }
             }
         }
-        cuts.sort_by(f64::total_cmp);
-        for w in cuts.windows(2) {
-            let [f0, f1] = [w.first().copied().unwrap_or(0.0), w.get(1).copied().unwrap_or(1.0)];
-            let mid = run + len * (f0 + f1) / 2.0;
-            let zz = if in_tab(mid) { tab_top } else { z };
-            let (start, mv) = piece(a, b, f0, f1, zz);
-            if (zz - cur_z).abs() > 1e-12 {
-                // Up onto the tab, or back down after it.
-                moves.push(Move::Line { to: [start[0], start[1], zz], plunge: zz < cur_z });
-                cur_z = zz;
-            }
-            moves.push(mv);
+    }
+}
+
+/// One ring at depth `h.z` that rises to the tabs' top over each tab (tool radius added on
+/// both sides, so the stock left is the tab's width). The tool is at `h.entry` at the ring's
+/// start and ends at the start at depth `h.z`.
+///
+/// Going down (from the entry height, and after every tab) is a ramp at the ramp angle along
+/// the stretch before the next tab (steeper if that is shorter), never over a tab; that stretch
+/// is then cut again at depth, back and forth, so the whole ring outside the tabs is cut at
+/// depth. Without a ramp the tool plunges.
+fn tabbed_ring(p: &Polyline<f64>, h: Heights, t: &Tabs, tool: f64, moves: &mut Vec<Move>) -> Result<(), CamError> {
+    let w = Walk::new(p);
+    let total = w.total;
+    if t.count == 0 || total <= 0.0 {
+        return Ok(());
+    }
+    if (t.width + tool) * t.count as f64 >= total * 0.9 {
+        return Err(CamError::Invalid("the tabs do not fit on the profile: fewer or narrower tabs".into()));
+    }
+    let tabs = tab_spans(total, t, tool);
+    let at = |s: f64, z: f64| {
+        let xy = w.xy(s);
+        [xy[0], xy[1], z]
+    };
+    // Down from `from_z` at length `s0` to the depth; returns the length the tool is at, at depth.
+    let descend = |s0: f64, from_z: f64, limit: f64, moves: &mut Vec<Move>| -> f64 {
+        if from_z <= h.z + 1e-9 {
+            return s0;
         }
-        run += len;
+        if h.slope <= 0.0 {
+            moves.push(Move::Line { to: at(s0, h.z), plunge: true });
+            return s0;
+        }
+        let end = (s0 + (from_z - h.z) / h.slope).min(limit);
+        w.cut(s0, end, from_z, h.z, moves);
+        w.cut(end, s0, h.z, h.z, moves);
+        w.cut(s0, end, h.z, h.z, moves);
+        end
+    };
+    let first_tab = tabs.first().map_or(total, |t| t.0);
+    let mut pos = descend(0.0, h.entry, first_tab, moves);
+    for (k, (a, b)) in tabs.iter().enumerate() {
+        w.cut(pos, *a, h.z, h.z, moves);
+        // Up onto the tab, along it, then down after it.
+        moves.push(Move::Line { to: at(*a, h.tab_top), plunge: false });
+        w.cut(*a, *b, h.tab_top, h.tab_top, moves);
+        let next = tabs.get(k + 1).map_or(total, |t| t.0);
+        pos = descend(*b, h.tab_top, next, moves);
     }
-    if (cur_z - z).abs() > 1e-12
-        && let Some(f) = p.get(0)
-    {
-        moves.push(Move::Line { to: [f.x, f.y, z], plunge: true });
-    }
+    w.cut(pos, total, h.z, h.z, moves);
     Ok(())
 }
 
@@ -701,85 +785,116 @@ impl Toolpath {
         let mut g = String::new();
         let _ = writeln!(g, "({clean})");
         let _ = writeln!(g, "(Gusset 2.5D toolpath: flat end mill D{} mm)", n(s.tool_diameter));
+        let _ = writeln!(g, "(T1 D{} flat end mill)", n(s.tool_diameter));
         g.push_str("G21 G90 G17 G94\nG40 G49 G80 G54\n");
-        let _ = writeln!(g, "G0 Z{}", n(s.safe));
-        let _ = writeln!(g, "S{} M3", n(s.rpm));
+        put(&mut g, &format!("G0 Z{}", n(s.safe)));
+        put(&mut g, &format!("S{} M3", n(s.rpm)));
         if let Some(d) = &self.drill {
-            // Canned cycles: G81 drill, or G83 peck drill; R the retract plane (the top).
+            // Canned cycles: G81 drill, or G83 peck drill; R the retract plane, just above the top.
             let bottom = s.top - s.depth;
+            let r = retract_plane(s);
             for (i, p) in d.points.iter().enumerate() {
                 let xy = format!("X{} Y{}", n(p[0]), n(p[1]));
                 if i > 0 {
-                    let _ = writeln!(g, "{xy}");
+                    put(&mut g, &xy);
                     continue;
                 }
-                let _ = writeln!(g, "G0 {xy}");
+                put(&mut g, &format!("G0 {xy}"));
                 match d.peck {
                     Some(q) => {
-                        let _ = writeln!(g, "G98 G83 {xy} Z{} R{} Q{} F{}", n(bottom), n(s.top), n(q), n(s.plunge));
+                        put(&mut g, &format!("G98 G83 {xy} Z{} R{} Q{} F{}", n(bottom), n(r), n(q), n(s.plunge)));
                     }
                     None => {
-                        let _ = writeln!(g, "G98 G81 {xy} Z{} R{} F{}", n(bottom), n(s.top), n(s.plunge));
+                        put(&mut g, &format!("G98 G81 {xy} Z{} R{} F{}", n(bottom), n(r), n(s.plunge)));
                     }
                 }
             }
             g.push_str("G80\n");
-            let _ = writeln!(g, "G0 Z{}", n(s.safe));
+            put(&mut g, &format!("G0 Z{}", n(s.safe)));
             g.push_str("M5\nM30\n");
             return g;
         }
+        // Where the tool is, as far as the G-code says (the header lifted it to the safe height).
         let mut at: Option<[f64; 3]> = None;
+        let mut z_now = Some(s.safe);
+        let mut xy_now: Option<[f64; 2]> = None;
         for m in &self.moves {
             match *m {
                 Move::Rapid(to) => {
-                    // Up first, then across: never a diagonal rapid through the stock.
-                    if at.is_some_and(|a| a[2] < to[2]) {
-                        let _ = writeln!(g, "G0 Z{}", n(to[2]));
-                        let _ = writeln!(g, "G0 X{} Y{}", n(to[0]), n(to[1]));
+                    // Up first, then across: never a diagonal rapid through the stock. A
+                    // coordinate the tool is already at is not written again.
+                    let up = z_now.is_some_and(|z| z < to[2]);
+                    let across = |g: &mut String, xy_now: &mut Option<[f64; 2]>| {
+                        if !xy_now.is_some_and(|p| n(p[0]) == n(to[0]) && n(p[1]) == n(to[1])) {
+                            put(g, &format!("G0 X{} Y{}", n(to[0]), n(to[1])));
+                        }
+                        *xy_now = Some([to[0], to[1]]);
+                    };
+                    if up {
+                        put(&mut g, &format!("G0 Z{}", n(to[2])));
+                        across(&mut g, &mut xy_now);
                     } else {
-                        let _ = writeln!(g, "G0 X{} Y{}", n(to[0]), n(to[1]));
-                        let _ = writeln!(g, "G0 Z{}", n(to[2]));
+                        across(&mut g, &mut xy_now);
+                        if z_now != Some(to[2]) {
+                            put(&mut g, &format!("G0 Z{}", n(to[2])));
+                        }
                     }
+                    z_now = Some(to[2]);
                     at = Some(to);
                 }
                 Move::Line { to, plunge } => {
                     let f = if plunge { s.plunge } else { s.feed };
                     if plunge {
-                        let _ = writeln!(g, "G1 Z{} F{}", n(to[2]), n(f));
+                        put(&mut g, &format!("G1 Z{} F{}", n(to[2]), n(f)));
                     } else {
-                        let _ = writeln!(g, "G1 X{} Y{} Z{} F{}", n(to[0]), n(to[1]), n(to[2]), n(f));
+                        put(&mut g, &format!("G1 X{} Y{} Z{} F{}", n(to[0]), n(to[1]), n(to[2]), n(f)));
                     }
                     at = Some(to);
+                    z_now = Some(to[2]);
+                    xy_now = Some([to[0], to[1]]);
                 }
                 Move::Arc { to, center, ccw } => {
                     let a = at.unwrap_or(to);
+                    z_now = Some(to[2]);
+                    xy_now = Some([to[0], to[1]]);
                     // An arc too short to state after rounding (the same end as its start, or
                     // a centre on it) is written as the straight cut it then is.
                     let same = n(to[0]) == n(a[0]) && n(to[1]) == n(a[1]);
                     if same || libm::hypot(center[0] - a[0], center[1] - a[1]) < 1e-3 {
-                        let _ = writeln!(g, "G1 X{} Y{} Z{} F{}", n(to[0]), n(to[1]), n(to[2]), n(s.feed));
+                        put(&mut g, &format!("G1 X{} Y{} Z{} F{}", n(to[0]), n(to[1]), n(to[2]), n(s.feed)));
                         at = Some(to);
                         continue;
                     }
-                    let _ = writeln!(
-                        g,
-                        "{} X{} Y{} Z{} I{} J{} F{}",
-                        if ccw { "G3" } else { "G2" },
-                        n(to[0]),
-                        n(to[1]),
-                        n(to[2]),
-                        n(center[0] - a[0]),
-                        n(center[1] - a[1]),
-                        n(s.feed)
+                    put(
+                        &mut g,
+                        &format!(
+                            "{} X{} Y{} Z{} I{} J{} F{}",
+                            if ccw { "G3" } else { "G2" },
+                            n(to[0]),
+                            n(to[1]),
+                            n(to[2]),
+                            n(center[0] - a[0]),
+                            n(center[1] - a[1]),
+                            n(s.feed)
+                        ),
                     );
                     at = Some(to);
                 }
             }
         }
-        let _ = writeln!(g, "G0 Z{}", n(s.safe));
+        put(&mut g, &format!("G0 Z{}", n(s.safe)));
         g.push_str("M5\nM30\n");
         g
     }
+}
+
+/// Appends a line unless it repeats the one before.
+fn put(g: &mut String, line: &str) {
+    if g.strip_suffix('\n').and_then(|h| h.rsplit('\n').next()) == Some(line) {
+        return;
+    }
+    g.push_str(line);
+    g.push('\n');
 }
 
 #[cfg(test)]
