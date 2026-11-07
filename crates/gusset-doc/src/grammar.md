@@ -395,10 +395,11 @@ back over the tab); its faces are
 bend allowance plus the length beyond that line. `line` may also be a contour flange's side,
 `l6_start` / `l6_end` (the low / high end of the width along the sketch normal), or an earlier
 edge flange's far edge, `F1_end` (up = towards that flange's inner face). `close: true`
-(flanges off a tab's outline bent the same way, up to 90 deg) butts this flange's wall against
+(flanges off a tab's outline bent the same way, up to 150 deg) butts this flange's wall against
 flanges already on the neighbouring lines at outside corners, leaving a square relief at the
 bend (below 90 deg, or at a tab corner that is not square, both walls run to the plane that
-mirrors one into the other; equal radii); `close: mitre`
+mirrors one into the other, equal radii; past 90 deg the walls lean over the tab and each is cut off
+at that plane instead); `close: mitre`
 cuts both walls on the corner's diagonal instead, 0.1 mm apart. A later cut through
 flat regions or bends (an extrude cut, a hole) appears in the flat pattern as a cut-out; a cut
 that notches an edge or adds material marks the pattern `changed_by` instead. Flat patterns: `query.flat_pattern` (size, bends with angle, radius, `k_factor` and allowance
@@ -777,7 +778,7 @@ drawing Plate_dwg (size: A3, projection: first, scale: 2, title: "Plate") {
 ## CAM jobs (ADR 0040)
 
 ```
-cam_job Job1 (sketch: S, operation: pocket|pocket_adaptive|pocket_rest|profile_outside|profile_inside|drill|bore|surface_ball|surface_flat, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [previous: 10 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
+cam_job Job1 (sketch: S, operation: pocket|pocket_adaptive|pocket_rest|profile_outside|profile_inside|drill|bore|surface_ball|surface_flat|waterline_ball|waterline_flat|steep_ball|steep_flat, tool_diameter: 6 mm, depth: 5 mm, [regions: [l5_r1]], [stepdown: 2 mm], [stepover: 0.4], [feed: 600], [plunge: 200], [rpm: 10000], [top: 0 mm], [safe: 5 mm], [ramp: 3 deg], [peck: 2 mm], [previous: 10 mm], [tabs: [4, 3 mm, 1.5 mm]], [conventional: true])
 ```
 
 A machining job on a sketch: no body; `cam_toolpath` and `cam_export_gcode` with `job: Job1`
@@ -785,7 +786,9 @@ compute its toolpath and G-code from the current model. `pocket_rest` clears onl
 tool of diameter `previous` left (corners, narrow parts) with this smaller tool.
 `surface_ball` / `surface_flat` finish the model's surface in 3D (drop-cutter raster lines
 along the sketch's x, `stepover` of the diameter apart, default 0.1) inside the box of the
-regions, the tool coming down the sketch's normal; give `top` (the stock's top) and `depth`. Lengths and the ramp angle are
+regions, the tool coming down the sketch's normal; give `top` (the stock's top) and `depth`.
+`waterline_*` cuts constant-height contours `stepdown` apart; `steep_*` cuts contours where the
+surface is steeper than 45 deg and raster lines on the rest. Lengths and the ramp angle are
 expressions (parameters allowed); `stepover` (a fraction of the diameter), feeds (mm/min),
 `rpm` and the tab count are plain numbers. Defaults as for `cam_toolpath`.
 

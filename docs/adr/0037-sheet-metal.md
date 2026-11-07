@@ -172,3 +172,17 @@ sliver wall in the bend's thin edge, meeting only the back faces; walls like tha
 another wall of the cut goes through, so the pattern is cut where the cut reaches both sides.
 A wall meeting only the sketch side still marks the pattern changed. OCCT tests: rectangle over
 straight and bend, round hole over a tab and a flange bend, hole over a bend and its wall.
+
+Amendment (2026-11-07): closed corners of flanges bent past 90 degrees (up to 150, equal radii).
+The walls lean over the tab and cross above the corner, so each must end at the mirror plane
+by being trimmed. Built as: cut from the body, for each wall, its flat part along the line
+beyond the plane, less the other wall's flat part on its own side of the plane (so the crossing
+region stays with the wall it belongs to; cutting it with the other wall's material and putting
+that back failed in OCCT for flanges bent down); then add the usual extension past the line's
+end up to the plane (0.05 mm short of it for a mitre). The bends are untouched (they stay on
+their own side of the plane). In the flat pattern the flap's reach is no longer clamped at zero:
+it goes negative where the wall ends short of the line's end, and the strip's corner point is
+dropped when the end cut runs into the strip's end edge. Volume: the wedge formula of the
+60 degree case with its sign, t len ((r + t/2) sin(angle) + len/2 cos(angle)), negative when
+the wall is trimmed. OCCT test at 120 degrees (close and mitre, up and down): solid volume
+hand-calculated, flat area times thickness equal to it (k 0.5).

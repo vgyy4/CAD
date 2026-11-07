@@ -1705,6 +1705,12 @@ pub enum CamOp {
     /// 3D finishing over the model's surface with a ball or flat end mill.
     SurfaceBall,
     SurfaceFlat,
+    /// Constant-Z contours over the model.
+    WaterlineBall,
+    WaterlineFlat,
+    /// Contours on steep parts, raster on shallow ones.
+    SteepBall,
+    SteepFlat,
 }
 
 impl CamOp {
@@ -1719,6 +1725,10 @@ impl CamOp {
             CamOp::Bore => "bore",
             CamOp::SurfaceBall => "surface_ball",
             CamOp::SurfaceFlat => "surface_flat",
+            CamOp::WaterlineBall => "waterline_ball",
+            CamOp::WaterlineFlat => "waterline_flat",
+            CamOp::SteepBall => "steep_ball",
+            CamOp::SteepFlat => "steep_flat",
         }
     }
 
@@ -1733,6 +1743,10 @@ impl CamOp {
             CamOp::Bore,
             CamOp::SurfaceBall,
             CamOp::SurfaceFlat,
+            CamOp::WaterlineBall,
+            CamOp::WaterlineFlat,
+            CamOp::SteepBall,
+            CamOp::SteepFlat,
         ]
         .into_iter()
         .find(|o| o.keyword() == s)

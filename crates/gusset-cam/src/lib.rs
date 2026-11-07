@@ -17,7 +17,10 @@ mod adaptive;
 mod rest;
 mod surface;
 
-pub use surface::{Cutter, RasterSpec, Surface3d, raster_finish};
+pub use surface::{
+    Cutter, DEFAULT_STEEP_DEG, RasterSpec, SteepShallowSpec, Surface3d, WaterlineSpec, raster_finish,
+    steep_shallow_finish, waterline_finish,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CamError {

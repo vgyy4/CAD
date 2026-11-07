@@ -563,6 +563,46 @@ fn a_corner_between_60_degree_flanges_closes_on_the_mirror_plane() {
 }
 
 #[test]
+fn a_corner_between_120_degree_flanges_is_trimmed_on_the_mirror_plane() {
+    // Flanges leaning back over the tab (r 3, t 2, length 15, k 0.5): the walls cross above the
+    // corner, so each is cut off at the mirror plane. The solid holds the tab, both flanges
+    // and, per wall, the signed wedge t len ((r + t/2) sin 120 + len/2 cos 120) (negative: the
+    // wall is trimmed), a mitre taking c t len off (c = 0.1 / sqrt 2).
+    let area = |o: &Vec<[f64; 2]>| {
+        let n = o.len();
+        (0..n).map(|i| o[i][0] * o[(i + 1) % n][1] - o[(i + 1) % n][0] * o[i][1]).sum::<f64>().abs() / 2.0
+    };
+    let (t, r, len) = (2.0, 3.0, 15.0);
+    let th = 120f64.to_radians();
+    let flange = |l: f64| l * (th * t * (r + t / 2.0) + len * t);
+    let wedge = t * len * ((r + t / 2.0) * libm::sin(th) + len / 2.0 * libm::cos(th));
+    for (close, cut) in [("true", 0.0), ("mitre", 0.1 / std::f64::consts::SQRT_2)] {
+        for f in ["", ", flip: true"] {
+            let src = format!(
+                "{TAB}\nedge_flange F1 (body: Plate, line: l6, length: 15 mm, angle: 120 deg, bend_radius: 3 mm, k_factor: 0.5{f})\n\n\
+                 edge_flange F2 (body: Plate, line: l5, length: 15 mm, angle: 120 deg, bend_radius: 3 mm, k_factor: 0.5, close: {close}{f})\n"
+            );
+            let doc = gusset_doc::Document::from_text(&src).unwrap_or_else(|e| panic!("{e}"));
+            let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+            let mut ev = Evaluator::new(k);
+            let r0 = ev.evaluate(&doc, None, &());
+            assert!(r0.errors().is_empty(), "{close}{f}: {:?}", r0.errors());
+            let b = r0.body("Plate").unwrap();
+            let volume = 60.0 * 40.0 * t + flange(40.0) + flange(60.0) + 2.0 * (wedge - cut * t * len);
+            let m = ev.kernel().mass_properties(&b.shape).unwrap();
+            assert!(near(m.volume, volume), "{close}{f}: {} vs {volume}", m.volume);
+            let flat = b.sheet.as_ref().unwrap();
+            assert_eq!(flat.outlines.len(), 1);
+            assert!(
+                near(area(&flat.outlines[0]) * t, volume),
+                "{close}{f}: flat {} vs {volume}",
+                area(&flat.outlines[0]) * t
+            );
+        }
+    }
+}
+
+#[test]
 fn corners_that_are_not_square_close_too() {
     // Dogfooding F8-3: tab corners of 120 and 60 degrees. With k 0.5 the flat pattern holds
     // exactly the solid's volume (the flaps are the wedges at mid-thickness).

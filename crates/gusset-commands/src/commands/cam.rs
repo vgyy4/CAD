@@ -12,14 +12,14 @@ pub(super) fn specs() -> Vec<CommandSpec> {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CamJob {
-    /// A cam_job.
+    /// cam_job.
     #[serde(default)]
     pub job: Option<String>,
     #[serde(default)]
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface_ball/_flat
+    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface/waterline/steep_ball/_flat
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct CamJob {
     pub ramp_deg: Option<f64>,
     #[serde(default)]
     pub peck: Option<f64>,
-    /// pocket_rest: earlier tool D.
+    /// pocket_rest: earlier D.
     #[serde(default)]
     pub previous: Option<f64>,
     /// [n, width, height].
@@ -154,10 +154,11 @@ impl CamJob {
             }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
-            "drill" | "bore" | "surface_ball" | "surface_flat" => None,
+            "drill" | "bore" => None,
+            o if SURFACE_OPS.contains(&o) => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, pocket_adaptive, pocket_rest, profile_outside, profile_inside, drill, bore, surface_ball or surface_flat"));
+                    .hint("pocket, pocket_adaptive, pocket_rest, profile_outside, profile_inside, drill, bore, surface_/waterline_/steep_ + ball or flat"));
             }
         };
         let top = self.top.unwrap_or(0.0);
@@ -191,7 +192,7 @@ impl CamJob {
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                 gusset_cam::toolpath(&regions, op, &setup)
             }
-            None if matches!(self.operation.as_deref(), Some("surface_ball" | "surface_flat")) => {
+            None if self.operation.as_deref().is_some_and(|o| SURFACE_OPS.contains(&o)) => {
                 if self.top.is_none() {
                     return Err(CommandError::args(
                         "3D finishing needs top: the stock's top along the sketch's normal",
@@ -260,11 +261,8 @@ impl CamJob {
                     }));
                     indices.extend(m.indices.iter().map(|i| i + base));
                 }
-                let cutter = if self.operation.as_deref() == Some("surface_ball") {
-                    gusset_cam::Cutter::Ball
-                } else {
-                    gusset_cam::Cutter::Flat
-                };
+                let op = self.operation.as_deref().unwrap_or_default();
+                let cutter = if op.ends_with("_ball") { gusset_cam::Cutter::Ball } else { gusset_cam::Cutter::Flat };
                 let spec = gusset_cam::RasterSpec {
                     angle_deg: 0.0,
                     stepover: self.stepover.unwrap_or(0.1) * tool,
@@ -273,12 +271,26 @@ impl CamJob {
                     stock_to_leave: 0.0,
                     tolerance: 0.005,
                 };
-                gusset_cam::raster_finish(
-                    &gusset_cam::Surface3d { positions: &positions, indices: &indices },
-                    cutter,
-                    &spec,
-                    &setup,
-                )
+                let surface = gusset_cam::Surface3d { positions: &positions, indices: &indices };
+                // Constant-Z contours take the job's stepdown between levels.
+                let water = gusset_cam::WaterlineSpec {
+                    stepdown: setup.stepdown,
+                    tolerance: 0.01,
+                    bounds: Some((lo, hi)),
+                    stock_to_leave: 0.0,
+                };
+                match op {
+                    "waterline_ball" | "waterline_flat" => {
+                        gusset_cam::waterline_finish(&surface, cutter, &water, &setup)
+                    }
+                    "steep_ball" | "steep_flat" => gusset_cam::steep_shallow_finish(
+                        &surface,
+                        cutter,
+                        &gusset_cam::SteepShallowSpec::new(water, spec),
+                        &setup,
+                    ),
+                    _ => gusset_cam::raster_finish(&surface, cutter, &spec, &setup),
+                }
             }
             None => {
                 let solved = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)
@@ -321,6 +333,11 @@ impl CamJob {
         Ok((t, setup, warnings))
     }
 }
+
+/// The 3D finishing operations: raster (`surface_*`), constant-Z contours (`waterline_*`) and
+/// contours on steep parts with raster on shallow ones (`steep_*`), ball or flat end mill.
+const SURFACE_OPS: [&str; 6] =
+    ["surface_ball", "surface_flat", "waterline_ball", "waterline_flat", "steep_ball", "steep_flat"];
 
 /// Most points a preview path holds.
 const MAX_PATH_POINTS: usize = 200_000;
@@ -433,7 +450,7 @@ pub struct ToolpathQuery {
 impl Command for ToolpathQuery {
     const ID: &'static str = "cam.toolpath";
     const TITLE: &'static str = "Toolpath";
-    const DESCRIPTION: &'static str = "2.5D toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4 (adaptive 0.25), safe top+5): length, time";
+    const DESCRIPTION: &'static str = "Toolpath (mm; feed 600, plunge 200, rpm 10000, ramp 3°, stepdown D/2, stepover 0.4, adaptive 0.25, safe top+5): length, time";
     const CATEGORY: Category = Category::Inspect;
     const FLAGS: Flags = READ;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -468,7 +485,7 @@ pub struct ExportGcode {
 impl Command for ExportGcode {
     const ID: &'static str = "cam.export_gcode";
     const TITLE: &'static str = "Export G-code";
-    const DESCRIPTION: &'static str = "Write cam_toolpath's toolpath as metric G-code; check it before running.";
+    const DESCRIPTION: &'static str = "Write the toolpath as metric G-code; check it before running.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = WRITE_FILE;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -489,7 +506,7 @@ impl Command for ExportGcode {
         });
         let title = format!("{what} {p}");
         let mut g = t.gcode(&setup, &title);
-        if self.job.resolved(s, ctx)?.operation.as_deref() == Some("surface_ball") {
+        if self.job.resolved(s, ctx)?.operation.as_deref().is_some_and(|o| o.ends_with("_ball")) {
             g = g.replace("flat end mill", "ball end mill");
         }
         crate::paths::write_file(&path, p, g.as_bytes())?;

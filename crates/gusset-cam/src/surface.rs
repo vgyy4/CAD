@@ -195,7 +195,9 @@ fn tri_drop(t: &[[f64; 3]; 3], x: f64, y: f64, prof: Profile) -> Option<f64> {
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
     let nl = libm::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    if nl > 0.0 && n[2].abs() > 1e-12 * nl {
+    // Slivers (a pole of a sphere mesh) have no usable facet plane, and the point-in-triangle
+    // tolerance would accept any point for them.
+    if nl > 1e-9 && n[2].abs() > 1e-12 * nl {
         let (ga, gb) = (-n[0] / n[2], -n[1] / n[2]);
         let m = libm::hypot(ga, gb);
         let (rho, px, py) = if m < 1e-12 {
@@ -323,6 +325,18 @@ fn mesh_bounds(positions: &[[f32; 3]]) -> Option<([f64; 2], [f64; 2])> {
 /// at each sample by drop-cutter against the mesh, never below the stock bottom
 /// (`top - depth`), lines linked in a zig-zag at the safe height.
 pub fn raster_finish(surface: &Surface3d, cutter: Cutter, spec: &RasterSpec, s: &Setup) -> Result<Toolpath, CamError> {
+    raster_impl(surface, cutter, spec, s, None)
+}
+
+/// Raster with an optional shallow-only filter: with `Some(deg)` only runs of samples whose
+/// slope is below `deg` are cut, and nothing cut is not an error.
+fn raster_impl(
+    surface: &Surface3d,
+    cutter: Cutter,
+    spec: &RasterSpec,
+    s: &Setup,
+    shallow: Option<f64>,
+) -> Result<Toolpath, CamError> {
     let fin = |v: f64| v.is_finite();
     if !(fin(s.tool_diameter) && s.tool_diameter > 0.0) {
         return Err(CamError::Invalid("tool diameter must be positive".into()));
@@ -411,28 +425,56 @@ pub fn raster_finish(surface: &Surface3d, cutter: Cutter, spec: &RasterSpec, s: 
             max_z = max_z.max(z);
             pts.push((u, z));
         }
-        let mut pts = simplify(&pts, spec.tolerance);
+        let mut runs: Vec<Vec<(f64, f64)>> = match shallow {
+            None => vec![pts],
+            Some(deg) => {
+                let mut runs = Vec::new();
+                let mut cur: Vec<(f64, f64)> = Vec::new();
+                for &(u, z) in &pts {
+                    let (x, y) = (q[0] + d[0] * u, q[1] + d[1] * u);
+                    let sl = waterline::slope_deg(&mut dropper, [x, y], prof.r / 4.0, bottom, spec.stock_to_leave);
+                    if sl < deg {
+                        cur.push((u, z));
+                    } else if !cur.is_empty() {
+                        runs.push(std::mem::take(&mut cur));
+                    }
+                }
+                runs.push(cur);
+                runs.retain(|r| r.len() >= 2);
+                runs
+            }
+        };
         if lines % 2 == 1 {
-            pts.reverse();
+            runs.reverse();
         }
-        let xyz = |&(u, z): &(f64, f64)| [q[0] + d[0] * u, q[1] + d[1] * u, z];
-        let Some(first) = pts.first().map(xyz) else { continue };
-        // Link: up and across at the safe height, then down to just above the first point.
-        if let Some(Move::Line { to, .. }) = moves.last() {
-            moves.push(Move::Rapid([to[0], to[1], s.safe]));
+        let mut emitted = false;
+        for run in runs {
+            let mut pts = simplify(&run, spec.tolerance);
+            if lines % 2 == 1 {
+                pts.reverse();
+            }
+            let xyz = |&(u, z): &(f64, f64)| [q[0] + d[0] * u, q[1] + d[1] * u, z];
+            let Some(first) = pts.first().map(xyz) else { continue };
+            // Link: up and across at the safe height, then down to just above the first point.
+            if let Some(Move::Line { to, .. }) = moves.last() {
+                moves.push(Move::Rapid([to[0], to[1], s.safe]));
+            }
+            moves.push(Move::Rapid([first[0], first[1], s.safe]));
+            moves.push(Move::Rapid([first[0], first[1], s.safe.min(first[2] + 1.0)]));
+            moves.push(Move::Line { to: first, plunge: true });
+            for p in pts.iter().skip(1) {
+                moves.push(Move::Line { to: xyz(p), plunge: false });
+            }
+            emitted = true;
         }
-        moves.push(Move::Rapid([first[0], first[1], s.safe]));
-        moves.push(Move::Rapid([first[0], first[1], s.safe.min(first[2] + 1.0)]));
-        moves.push(Move::Line { to: first, plunge: true });
-        for p in pts.iter().skip(1) {
-            moves.push(Move::Line { to: xyz(p), plunge: false });
+        if emitted {
+            lines += 1;
         }
-        lines += 1;
         if moves.len() > MAX_MOVES {
             return Err(CamError::TooLarge("too many moves".into()));
         }
     }
-    if moves.is_empty() {
+    if moves.is_empty() && shallow.is_none() {
         return Err(CamError::NothingToCut("no raster line crosses the bounds".into()));
     }
     if max_z > s.safe {
@@ -440,6 +482,9 @@ pub fn raster_finish(surface: &Surface3d, cutter: Cutter, spec: &RasterSpec, s: 
     }
     Ok(Toolpath { moves, rings: lines, levels: vec![bottom], drill: None })
 }
+
+mod waterline;
+pub use waterline::{DEFAULT_STEEP_DEG, SteepShallowSpec, WaterlineSpec, steep_shallow_finish, waterline_finish};
 
 #[cfg(test)]
 mod tests;

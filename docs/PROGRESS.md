@@ -284,7 +284,7 @@ Phase 3 has started (see Next).
      Cuts across contour bends
      done. Cuts across edge-flange bends done too.
      Closed corners done (`close: true`,
-     90 degree flanges at outside tab corners, square relief). Mitred corners done (`close: mitre`, walls cut on the diagonal 0.1 mm apart). Closed corners at other angles done (up to 90 deg, walls meeting on the mirror plane). Next: corners of flanges leaning back past 90 deg. Hems done (`angle: 180 deg`).
+     90 degree flanges at outside tab corners, square relief). Mitred corners done (`close: mitre`, walls cut on the diagonal 0.1 mm apart). Closed corners at other angles done (up to 90 deg, walls meeting on the mirror plane). Corners of flanges leaning back past 90 deg (up to 150) done. Hems done (`angle: 180 deg`).
    - Direct modeling: push/pull (`offset_face`), `move_face`, `draft`, and `delete_face` (ADR
      0038: remove holes, fillets, bosses and heal with OCCT defeaturing; OCCT test). Replace face done
      (`move_face ... onto:` a parallel face); tilting onto a tilted plane done (turned about the
@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
      clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
      where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
-     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Next: waterline and steep/shallow strategies, holder collision. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Waterline and steep/shallow done (`waterline_*`, `steep_*`). Next: holder collision, pencil/rest finishing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
