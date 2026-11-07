@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      changes). Review fixes done (ramps spare tabs, bounded inputs, no centre ridge). Adaptive
      clearing done (`pocket_adaptive`: rings spaced for the sharpest corner, trochoidal slots
      where a ring has nothing inside; radial cut within the stepover, ADR 0040 amendment).
-     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). Next: 3D surfacing. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
+     Rest machining done (`pocket_rest` with `previous`, the earlier tool's diameter). 3D finishing done (`surface_ball`/`surface_flat`: drop-cutter raster over the model's mesh). Next: waterline and steep/shallow strategies, holder collision. Jobs in the document done (`cam_job`, `job: Job1`); helical bores in
      gusset-cam. Climb milling done (the default;
      `conventional: true`).
    - Simulation phase 1 done (ADR 0041, `gusset-fea`): linear static analysis on a voxel grid
@@ -308,7 +308,7 @@ Phase 3 has started (see Next).
      mass, LOBPCG with a Jacobi preconditioner; a cantilever reads 1.5 % above beam theory).
      Mode shapes in the viewport done (`shape: k`). Refinement at the stress peak done (`refine: true`, a submodel four times finer). Next:
      shell elements for thin sheet bodies done (sheet bodies in `sim.static` run on MITC4 flat shells
-     over their mid-surface; next: a stronger shell preconditioner, modal on shells). Multigrid preconditioner
+     over their mid-surface; ICT preconditioner and modes on shells done too). Multigrid preconditioner
      done (both solvers; 13–17× fewer iterations, 2.7× faster). Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
    - Feature-tree interchange done (ADR 0042): `import_file` on a `.gtree.json` appends

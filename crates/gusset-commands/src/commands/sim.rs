@@ -187,27 +187,8 @@ impl StaticQuery {
         fixed: Vec<usize>,
         face: &FaceIndex,
     ) -> Result<Value, CommandError> {
-        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-        for p in &mesh.positions {
-            for ((l, h), c) in lo.iter_mut().zip(hi.iter_mut()).zip(p) {
-                *l = l.min(f64::from(*c));
-                *h = h.max(f64::from(*c));
-            }
-        }
-        let longest = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
-        let h = self.voxel.unwrap_or((longest / 40.0).max(thickness));
-        let mid = gusset_fea::skin::mid_surface(mesh, thickness, h).map_err(fea_err)?;
-        // Faces are matched within the tessellation's own tolerance.
-        let tol = 0.06;
-        let mut held = Vec::new();
-        for f in &fixed {
-            held.extend(gusset_fea::skin::nodes_on_face(mesh, *f, &mid, tol));
-        }
-        held.sort_unstable();
-        held.dedup();
-        if held.is_empty() {
-            return Err(CommandError::args("the held faces touch no node of the shell model"));
-        }
+        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, &fixed)?;
+        let tol = SHELL_TOL;
         let mut loads: Vec<(u32, [f64; 3])> = Vec::new();
         let mut loaded = 0;
         for l in &self.loads {
@@ -283,6 +264,39 @@ impl StaticQuery {
     }
 }
 
+/// Faces are matched to shell nodes within the tessellation's own tolerance (mm).
+const SHELL_TOL: f64 = 0.06;
+
+/// A sheet body's mid-surface shell model (element size `voxel`, default the longest side
+/// / 40 but at least the thickness), its held nodes and the element size.
+fn shell_model(
+    mesh: &gusset_kernel::Mesh,
+    thickness: f64,
+    voxel: Option<f64>,
+    fixed: &[usize],
+) -> Result<(gusset_fea::skin::MidSurface, Vec<u32>, f64), CommandError> {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in &mesh.positions {
+        for ((l, h), c) in lo.iter_mut().zip(hi.iter_mut()).zip(p) {
+            *l = l.min(f64::from(*c));
+            *h = h.max(f64::from(*c));
+        }
+    }
+    let longest = lo.iter().zip(&hi).map(|(l, h)| h - l).fold(0.0f64, f64::max);
+    let h = voxel.unwrap_or((longest / 40.0).max(thickness));
+    let mid = gusset_fea::skin::mid_surface(mesh, thickness, h).map_err(fea_err)?;
+    let mut held = Vec::new();
+    for f in fixed {
+        held.extend(gusset_fea::skin::nodes_on_face(mesh, *f, &mid, SHELL_TOL));
+    }
+    held.sort_unstable();
+    held.dedup();
+    if held.is_empty() {
+        return Err(CommandError::args("the held faces touch no node of the shell model"));
+    }
+    Ok((mid, held, h))
+}
+
 fn fea_err(e: gusset_fea::FeaError) -> CommandError {
     match e {
         gusset_fea::FeaError::Invalid(m) => CommandError::args(m),
@@ -344,6 +358,85 @@ fn caveats(voxel: f64, shortest: f64, peak_at_fixed: bool) -> Vec<&'static str> 
     out
 }
 
+impl ModalQuery {
+    /// The modes of a sheet-metal body on its mid-surface shell model.
+    fn shell(
+        &self,
+        body: &gusset_eval::Body,
+        mesh: &gusset_kernel::Mesh,
+        thickness: f64,
+        fixed: &[usize],
+    ) -> Result<Value, CommandError> {
+        let (mid, held, h) = shell_model(mesh, thickness, self.voxel, fixed)?;
+        let nodes = mid.mesh.nodes.clone();
+        let quads = mid.mesh.quads.clone();
+        let p = gusset_fea::ShellModalProblem {
+            mesh: mid.mesh,
+            thickness,
+            material: gusset_fea::Material {
+                young: self.young.unwrap_or(210_000.0),
+                poisson: self.poisson.unwrap_or(0.3),
+            },
+            density: self.density.unwrap_or(7850.0) * 1e-12,
+            fixed: held,
+            modes: self.modes.unwrap_or(3),
+        };
+        let m = gusset_fea::shell_modes(&p).map_err(fea_err)?;
+        let r = sig;
+        let mut out = json!({
+            "body": body.name,
+            "method": "shell",
+            "element_mm": r(h),
+            "thickness_mm": r(thickness),
+            "elements": quads.len(),
+            "iterations": m.iterations,
+            "frequencies_hz": m.frequencies.iter().map(|f| r(*f)).collect::<Vec<_>>(),
+        });
+        if let Some(shape) = self.shape.and_then(|k| m.shapes.get(k.wrapping_sub(1)))
+            && let Some(o) = out.as_object_mut()
+        {
+            // Drawn moved by a tenth of the body's longest side at the largest motion.
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for c in &nodes {
+                for ((l, hh), v) in lo.iter_mut().zip(hi.iter_mut()).zip(c) {
+                    *l = l.min(*v);
+                    *hh = hh.max(*v);
+                }
+            }
+            let amp = 0.1 * lo.iter().zip(&hi).map(|(l, hh)| hh - l).fold(0.0f64, f64::max);
+            let len = |v: &[f64; 3]| libm::sqrt(v.iter().map(|x| x * x).sum());
+            let at = |i: u32| {
+                let (p, d) = (
+                    nodes.get(i as usize).copied().unwrap_or([0.0; 3]),
+                    shape.get(i as usize).copied().unwrap_or([0.0; 3]),
+                );
+                ([p[0] + amp * d[0], p[1] + amp * d[1], p[2] + amp * d[2]], len(&d))
+            };
+            let field: Vec<([f64; 12], f64)> = quads
+                .iter()
+                .map(|q| {
+                    let c = q.map(at);
+                    (flat(c.map(|x| x.0)), c.iter().map(|x| x.1).sum::<f64>() / 4.0)
+                })
+                .collect();
+            o.insert("shape_bands".into(), bands(&field));
+            let (i, d) =
+                shape.iter().enumerate().fold((0, [0.0; 3]), |b, (i, d)| if len(d) > len(&b.1) { (i, *d) } else { b });
+            let l = len(&d).max(1e-300);
+            o.insert(
+                "shape_scale".into(),
+                json!({
+                    "drawn_mm": r(amp * l),
+                    "note": "relative shape: the largest motion is drawn at a tenth of the body's longest side",
+                    "largest_at_mm": nodes.get(i).copied().unwrap_or([0.0; 3]).map(r),
+                    "direction": d.map(|x| r(x / l)),
+                }),
+            );
+        }
+        Ok(out)
+    }
+}
+
 /// The lowest natural frequencies of a body.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -378,6 +471,13 @@ impl Command for ModalQuery {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let (body, mesh, voxel, shortest, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
         let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
+        if self.shape.is_some_and(|k| k == 0 || k > self.modes.unwrap_or(3)) {
+            return Err(CommandError::args("shape names a mode from 1 to modes"));
+        }
+        // Sheet metal: modes of the mid-surface shell model.
+        if let Some(sheet) = &body.sheet {
+            return self.shell(&body, &mesh, sheet.thickness, &fixed);
+        }
         let p = gusset_fea::ModalProblem {
             mesh: &mesh,
             voxel,

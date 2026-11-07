@@ -15,6 +15,9 @@ use std::fmt::Write as _;
 
 mod adaptive;
 mod rest;
+mod surface;
+
+pub use surface::{Cutter, RasterSpec, Surface3d, raster_finish};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CamError {

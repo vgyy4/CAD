@@ -19,7 +19,7 @@ pub struct CamJob {
     pub sketch: Option<String>,
     #[serde(default)]
     pub regions: Vec<String>,
-    /// pocket(_adaptive, _rest), profile_outside, profile_inside, drill, bore
+    /// pocket(_adaptive/_rest), profile_outside/_inside, drill, bore, surface_ball/_flat
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct CamJob {
     pub ramp_deg: Option<f64>,
     #[serde(default)]
     pub peck: Option<f64>,
-    /// pocket_rest: the earlier tool's D.
+    /// pocket_rest: earlier tool D.
     #[serde(default)]
     pub previous: Option<f64>,
     /// [n, width, height].
@@ -154,10 +154,10 @@ impl CamJob {
             }),
             "profile_outside" => Some(Operation::Profile { outside: true }),
             "profile_inside" => Some(Operation::Profile { outside: false }),
-            "drill" | "bore" => None,
+            "drill" | "bore" | "surface_ball" | "surface_flat" => None,
             other => {
                 return Err(CommandError::args(format!("unknown operation '{other}'"))
-                    .hint("pocket, pocket_adaptive, pocket_rest, profile_outside, profile_inside, drill or bore"));
+                    .hint("pocket, pocket_adaptive, pocket_rest, profile_outside, profile_inside, drill, bore, surface_ball or surface_flat"));
             }
         };
         let top = self.top.unwrap_or(0.0);
@@ -190,6 +190,71 @@ impl CamJob {
                 let regions = gusset_eval::sketch_regions(&sketch, &def, &params, units, &self.regions)
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                 gusset_cam::toolpath(&regions, op, &setup)
+            }
+            None if matches!(self.operation.as_deref(), Some("surface_ball" | "surface_flat")) => {
+                // 3D finishing over the model's surface, seen down the sketch's normal, inside
+                // the box of the sketch regions; lines along the sketch's x.
+                let regions = gusset_eval::sketch_regions(&sketch, &def, &params, units, &self.regions)
+                    .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+                for e in regions.iter().flat_map(|r| r.outer.edges.iter()) {
+                    let pts = match e.seg {
+                        gusset_kernel::Seg2::Line { a, b } => vec![a, b],
+                        gusset_kernel::Seg2::Arc { center, start, .. } => {
+                            let rad = libm::hypot(start[0] - center[0], start[1] - center[1]);
+                            vec![[center[0] - rad, center[1] - rad], [center[0] + rad, center[1] + rad]]
+                        }
+                        _ => Vec::new(),
+                    };
+                    for p in pts {
+                        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+                    }
+                }
+                if !lo[0].is_finite() {
+                    return Err(CommandError::new("evaluation", "the sketch has no regions to bound the surface"));
+                }
+                let frame = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)
+                    .map_err(|e| CommandError::new("evaluation", e.to_string()))?
+                    .frame;
+                let ev = s.evaluate(&ctx.actor)?;
+                let k = s.kernel().clone();
+                let n = frame.normal();
+                let (mut positions, mut indices) = (Vec::new(), Vec::new());
+                for b in &ev.bodies {
+                    let m = k
+                        .tessellate(&b.shape, &gusset_kernel::TessellationParams::default())
+                        .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
+                    let base = positions.len() as u32;
+                    positions.extend(m.positions.iter().map(|p| {
+                        let d = gusset_kernel::sub(p.map(f64::from), frame.origin);
+                        [
+                            gusset_kernel::dot(d, frame.x) as f32,
+                            gusset_kernel::dot(d, frame.y) as f32,
+                            gusset_kernel::dot(d, n) as f32,
+                        ]
+                    }));
+                    indices.extend(m.indices.iter().map(|i| i + base));
+                }
+                let cutter = if self.operation.as_deref() == Some("surface_ball") {
+                    gusset_cam::Cutter::Ball
+                } else {
+                    gusset_cam::Cutter::Flat
+                };
+                let spec = gusset_cam::RasterSpec {
+                    angle_deg: 0.0,
+                    stepover: self.stepover.unwrap_or(0.1) * tool,
+                    step: (tool / 10.0).max(0.05),
+                    bounds: Some((lo, hi)),
+                    stock_to_leave: 0.0,
+                    tolerance: 0.005,
+                };
+                gusset_cam::raster_finish(
+                    &gusset_cam::Surface3d { positions: &positions, indices: &indices },
+                    cutter,
+                    &spec,
+                    &setup,
+                )
             }
             None => {
                 let solved = gusset_eval::solve_sketch_def(&sketch, &def, &params, units)

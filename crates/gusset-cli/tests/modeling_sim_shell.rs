@@ -78,3 +78,19 @@ fn a_bent_strip_is_one_shell_through_its_bend() {
     let at = &r["max_displacement_at_mm"];
     assert!(at[2].as_f64().unwrap() > 30.0, "at the flange's top: {at}");
 }
+
+#[test]
+fn a_sheet_strip_rings_at_its_beam_frequency() {
+    let mut s = session(STRIP);
+    let r = run(&mut s, "sim.modal", json!({"fixed": ["Plate/side(T/l8)"], "modes": 2, "voxel": 5, "shape": 1}));
+    assert_eq!(r["method"], "shell", "{r}");
+    // Cantilever, first bending: 1.8751^2 / (2 pi L^2) sqrt(E I / (rho A)).
+    let (e, i, rho, a, l) = (210_000.0f64, 10.0f64 / 12.0, 7.85e-9f64, 10.0f64, 100.0f64);
+    let exact = 1.8751f64.powi(2) / (2.0 * std::f64::consts::PI * l * l) * (e * i / (rho * a)).sqrt();
+    let f1 = r["frequencies_hz"][0].as_f64().unwrap();
+    assert!((f1 - exact).abs() < 0.03 * exact, "{f1} vs {exact}: {r}");
+    // The free end swings across the sheet.
+    let sc = &r["shape_scale"];
+    assert!(sc["largest_at_mm"][0].as_f64().unwrap() > 95.0, "{sc}");
+    assert!(sc["direction"][2].as_f64().unwrap().abs() > 0.9, "{sc}");
+}

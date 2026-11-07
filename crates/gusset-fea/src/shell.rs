@@ -748,9 +748,8 @@ fn dot_n(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// Solve a flat-shell problem. Triangles are rejected.
-pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
-    let mesh = &p.mesh;
+/// Validate a shell mesh, thickness and material; returns which nodes belong to an element.
+fn check(mesh: &ShellMesh, thickness: f64, material: &Material) -> Result<Vec<bool>, FeaError> {
     let n = mesh.nodes.len();
     if !mesh.tris.is_empty() {
         return Err(FeaError::Invalid("shell triangles are not supported yet: use quads".into()));
@@ -763,11 +762,11 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
             "{n} shell nodes; the limit is {MAX_SHELL_NODES}. Use a coarser mesh."
         )));
     }
-    if !(p.thickness.is_finite() && p.thickness > 0.0) {
+    if !(thickness.is_finite() && thickness > 0.0) {
         return Err(FeaError::Invalid("the shell thickness must be positive".into()));
     }
-    let nu = p.material.poisson;
-    if !(p.material.young > 0.0 && nu > -1.0 && nu < 0.5) {
+    let nu = material.poisson;
+    if !(material.young > 0.0 && nu > -1.0 && nu < 0.5) {
         return Err(FeaError::Invalid("the material needs E > 0 and -1 < nu < 0.5".into()));
     }
     if mesh.nodes.iter().any(|q| q.iter().any(|c| !c.is_finite())) {
@@ -782,6 +781,48 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
             }
         }
     }
+    Ok(used)
+}
+
+/// Assemble the global block stiffness (and keep the local elements).
+fn assemble(mesh: &ShellMesh, material: &Material, t: f64) -> Result<(Bsr, Vec<Elem>), FeaError> {
+    let n = mesh.nodes.len();
+    let mut kmat = Bsr::pattern(n, &mesh.quads);
+    let mut elems = Vec::with_capacity(mesh.quads.len());
+    for (qi, q) in mesh.quads.iter().enumerate() {
+        let pos = |k: usize| -> V3 { q.get(k).and_then(|&i| mesh.nodes.get(i as usize)).copied().unwrap_or([0.0; 3]) };
+        let pts = [pos(0), pos(1), pos(2), pos(3)];
+        let e = element(&pts, material, t)
+            .ok_or_else(|| FeaError::Invalid(format!("shell element {qi} is degenerate, inverted or too warped")))?;
+        for (a, &na) in q.iter().enumerate() {
+            for (c, &nc) in q.iter().enumerate() {
+                // Node block (a, c): four 3x3 parts (translation/rotation), rotated to global.
+                let mut rot = Vec::with_capacity(4);
+                for pi in 0..4 {
+                    let (r0, c0) = (6 * a + 3 * (pi / 2), 6 * c + 3 * (pi % 2));
+                    let mut part = [0.0; 9];
+                    for r in 0..3 {
+                        for cc in 0..3 {
+                            ad(&mut part, 3 * r + cc, e.k.at(r0 + r, c0 + cc));
+                        }
+                    }
+                    rot.push(rotate(&e.frame, &part));
+                }
+                kmat.add_block(na as usize, nc, |r, cc| {
+                    rot.get(2 * (r / 3) + cc / 3).map_or(0.0, |m| g(m, 3 * (r % 3) + cc % 3))
+                });
+            }
+        }
+        elems.push(e);
+    }
+    Ok((kmat, elems))
+}
+
+/// Solve a flat-shell problem. Triangles are rejected.
+pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
+    let mesh = &p.mesh;
+    let n = mesh.nodes.len();
+    let used = check(mesh, p.thickness, &p.material)?;
     let mut free = vec![true; 6 * n];
     for (i, u) in used.iter().enumerate() {
         if !u {
@@ -811,35 +852,7 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
         }
     }
 
-    // Assembly.
-    let mut kmat = Bsr::pattern(n, &mesh.quads);
-    let mut elems = Vec::with_capacity(mesh.quads.len());
-    for (qi, q) in mesh.quads.iter().enumerate() {
-        let pos = |k: usize| -> V3 { q.get(k).and_then(|&i| mesh.nodes.get(i as usize)).copied().unwrap_or([0.0; 3]) };
-        let pts = [pos(0), pos(1), pos(2), pos(3)];
-        let e = element(&pts, &p.material, p.thickness)
-            .ok_or_else(|| FeaError::Invalid(format!("shell element {qi} is degenerate, inverted or too warped")))?;
-        for (a, &na) in q.iter().enumerate() {
-            for (c, &nc) in q.iter().enumerate() {
-                // Node block (a, c): four 3x3 parts (translation/rotation), rotated to global.
-                let mut rot = Vec::with_capacity(4);
-                for pi in 0..4 {
-                    let (r0, c0) = (6 * a + 3 * (pi / 2), 6 * c + 3 * (pi % 2));
-                    let mut part = [0.0; 9];
-                    for r in 0..3 {
-                        for cc in 0..3 {
-                            ad(&mut part, 3 * r + cc, e.k.at(r0 + r, c0 + cc));
-                        }
-                    }
-                    rot.push(rotate(&e.frame, &part));
-                }
-                kmat.add_block(na as usize, nc, |r, cc| {
-                    rot.get(2 * (r / 3) + cc / 3).map_or(0.0, |m| g(m, 3 * (r % 3) + cc % 3))
-                });
-            }
-        }
-        elems.push(e);
-    }
+    let (kmat, elems) = assemble(mesh, &p.material, p.thickness)?;
 
     // scaled ICT-preconditioned CG on the free dofs (fixed and unused dofs stay zero).
     let pre = Ic::build(&kmat, &free);
@@ -958,6 +971,9 @@ pub fn shell_static(p: &ShellProblem) -> Result<ShellSolution, FeaError> {
         iterations,
     })
 }
+
+mod modal;
+pub use modal::{ShellModalProblem, ShellModes, shell_modes};
 
 #[cfg(test)]
 mod tests;

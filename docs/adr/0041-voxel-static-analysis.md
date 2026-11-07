@@ -170,3 +170,29 @@ Cuthill-McKee order; the scaling evens out translation and rotation dofs, and a 
 shift is raised if a pivot fails. On the 4 745-node skin-built strip this takes 297
 iterations instead of 10 902 (and 5 instead of 463 on the 20 x 2 strip); results agree to the
 solver tolerance.
+
+## Amendment (2026-11-07): Modes on shells
+
+`gusset_fea::shell_modes(&ShellModalProblem)` gives the lowest natural frequencies (Hz,
+ascending, 1 to 10 like the voxel `modes`) and per-mode node translations (largest node
+translation scaled to length 1) of the flat-shell model, reusing the shell's element
+stiffness, block CSR assembly and ICT preconditioner (`shell_static` itself is unchanged; its
+assembly and input checks became private helpers). Units mm, N, t/mm^3: `f = sqrt(lambda) /
+(2 pi)`.
+
+- Mass: lumped. Each element gives every corner `rho t A / 4` on the three translations and
+  `rho t^3 A / 48` on all three rotations (bending rotary inertia; the drilling rotation gets
+  the same value, since it is a penalty dof with no inertia of its own and only needs `M`
+  positive definite; its spurious modes lie far above the structural ones). Fixed dofs are
+  eliminated.
+- Eigen solver: inverse subspace iteration with Rayleigh-Ritz, not LOBPCG (the voxel LOBPCG is
+  tied to its multigrid operator). Block of `modes + max(modes, 4)` vectors; each pass solves
+  `K Y = M X` with the ICT-preconditioned CG (tolerance 1e-10), M-orthonormalises `Y`, and
+  rotates by the eigenvectors of `Yᵀ K Y` (Jacobi). Stops when the wanted eigenvalues change
+  by less than 1e-9 relative (5 passes on the 20 x 2 strip). Deterministic start block.
+- Nothing fixed is an error ("a free shell has rigid-body modes at 0 Hz"), as in the static
+  solver; a singular stiffness is reported as not converged.
+- Tests (`shell/modal/tests.rs`), against closed form: cantilever strip 100 x 10 x 1 on 20 x 2:
+  first bending 0.65 % off Euler-Bernoulli, second 0.58 %, first in-plane bending 0.60 %
+  (identified by its shape); clamped square plate on 16 x 16 vs lambda^2 = 35.99, 0.11 %;
+  strip built by `skin::mid_surface` (element size 5) 0.64 % on the first frequency.

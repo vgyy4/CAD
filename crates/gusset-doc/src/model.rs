@@ -1702,6 +1702,9 @@ pub enum CamOp {
     Drill,
     /// Circles milled to their size on a helix.
     Bore,
+    /// 3D finishing over the model's surface with a ball or flat end mill.
+    SurfaceBall,
+    SurfaceFlat,
 }
 
 impl CamOp {
@@ -1714,6 +1717,8 @@ impl CamOp {
             CamOp::ProfileInside => "profile_inside",
             CamOp::Drill => "drill",
             CamOp::Bore => "bore",
+            CamOp::SurfaceBall => "surface_ball",
+            CamOp::SurfaceFlat => "surface_flat",
         }
     }
 
@@ -1726,6 +1731,8 @@ impl CamOp {
             CamOp::ProfileInside,
             CamOp::Drill,
             CamOp::Bore,
+            CamOp::SurfaceBall,
+            CamOp::SurfaceFlat,
         ]
         .into_iter()
         .find(|o| o.keyword() == s)

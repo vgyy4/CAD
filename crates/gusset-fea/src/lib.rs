@@ -10,7 +10,7 @@ use gusset_kernel::Mesh;
 mod mg;
 pub mod shell;
 pub mod skin;
-pub use shell::{ShellMesh, ShellProblem, ShellSolution, shell_static};
+pub use shell::{ShellMesh, ShellModalProblem, ShellModes, ShellProblem, ShellSolution, shell_modes, shell_static};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FeaError {
