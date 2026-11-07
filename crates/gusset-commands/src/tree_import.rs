@@ -23,6 +23,9 @@ const MAX_PICKS: usize = 256;
 /// Most model evaluations an import may run (each solid, fillet and chamfer is built to
 /// check it); later features that need one are skipped.
 const MAX_EVALUATIONS: usize = 400;
+/// Longest an import may spend building the model before features that need a build are
+/// skipped.
+const MAX_IMPORT_TIME: std::time::Duration = std::time::Duration::from_secs(300);
 /// Largest tree file (bytes).
 pub const MAX_TREE_BYTES: usize = 32 << 20;
 /// Longest untrusted string kept in the report, and most report entries.
@@ -406,6 +409,9 @@ struct Gen {
     evaluations: usize,
     /// Source feature name -> its index in the tree (the features a mirror can copy).
     index: HashMap<String, usize>,
+    /// Sketch entities generated so far (mirrors copy sketches: review of v2).
+    entities: usize,
+    started: std::time::Instant,
 }
 
 impl Gen {
@@ -452,6 +458,9 @@ impl Gen {
         if self.evaluations > MAX_EVALUATIONS {
             return Err(CommandError::new("too_large", "the import has built the model too many times"));
         }
+        if self.started.elapsed() > MAX_IMPORT_TIME {
+            return Err(CommandError::new("too_large", "the import has taken too long"));
+        }
         let doc = gusset_doc::text::parse(&self.text)
             .map_err(|e| CommandError::new("evaluation", format!("generated text: {e}")))?;
         Ok(gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &()))
@@ -481,6 +490,8 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         suffix: HashMap::new(),
         evaluations: 0,
         index: HashMap::new(),
+        entities: 0,
+        started: std::time::Instant::now(),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
     // that cannot be (1/0, a unit clash) falls back to its value (dogfooding F7-4).
@@ -644,8 +655,13 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
 }
 
 fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
-    if d.points.len() + d.curves.len() + d.constraints.len() > MAX_ENTITIES {
+    let count = d.points.len() + d.curves.len() + d.constraints.len();
+    if count > MAX_ENTITIES {
         return Err("too many sketch entities".into());
+    }
+    g.entities += count;
+    if g.entities > MAX_TOTAL_ENTITIES {
+        return Err(format!("more than {MAX_TOTAL_ENTITIES} sketch entities generated in all"));
     }
     for v in d.plane.origin.iter().chain(&d.plane.x_axis).chain(&d.plane.y_axis) {
         finite(*v, "its plane")?;

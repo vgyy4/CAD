@@ -329,3 +329,31 @@ fn a_tilted_mirror_of_features_is_skipped() {
     let text = run(&mut s, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(!text.contains("_T"), "{text}");
 }
+
+#[test]
+fn two_mirrors_named_alike_each_reflect_their_own_copy() {
+    // Review of v2: copies were named after the mirror's name, so a second mirror called
+    // "M" reused the first one's sketch, reflected across the wrong plane.
+    let mut s = session();
+    let t = tree2(json!([
+        rect("S", json!({"origin": [10, 10, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]}), 10.0, 10.0),
+        {"type": "extrude", "name": "E", "sketch": "S", "profiles": "all", "distance": 5},
+        {"type": "mirror", "name": "M", "features": ["E"], "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}},
+        {"type": "mirror", "name": "M", "features": ["E"], "plane": {"origin": [0, 0, 0], "normal": [0, 1, 0]}}
+    ]));
+    let r = import(&mut s, "m.gtree.json", &t).unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    // Three blocks: the original at x, y 10..20, one at x -20..-10 and one at y -20..-10.
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    let k = s.kernel().clone();
+    let mins: Vec<[f64; 2]> = ev
+        .bodies
+        .iter()
+        .map(|b| {
+            let bb = k.bbox(&b.shape).unwrap();
+            [(bb.min[0] * 1e6).round() / 1e6, (bb.min[1] * 1e6).round() / 1e6]
+        })
+        .collect();
+    assert_eq!(mins.len(), 3, "{mins:?}");
+    assert!(mins.contains(&[10.0, 10.0]) && mins.contains(&[-20.0, 10.0]) && mins.contains(&[10.0, -20.0]), "{mins:?}");
+}

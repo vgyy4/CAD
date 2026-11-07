@@ -2,13 +2,13 @@
 //! patterns, mirrors and shells. Faces are found by a point on them, like edges by midpoint.
 
 use super::{
-    Axis, BASES, EdgeF, Gen, MAX_PICKS, SketchF, SolidF, V3, cross, dot, edges, finite, ident, norm, num, short,
-    sketch, solid, sub,
+    Axis, BASES, EdgeF, Gen, MAX_PICKS, SketchF, SolidF, V3, cross, dot, edges, finite, norm, num, short, sketch,
+    solid, sub,
 };
 use crate::Session;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// A face picked by a point on it (world mm) and optionally its outward normal.
@@ -121,6 +121,15 @@ fn find_face(ev: &gusset_eval::Evaluation, point: V3, normal: Option<V3>) -> Res
     };
     let mut best: Option<(f64, FaceHit)> = None;
     for b in &ev.bodies {
+        // A cylinder's radius from its circular edges, in one pass over the edges.
+        let mut radius_of: HashMap<u32, f64> = HashMap::new();
+        for e in &b.topology.edges {
+            if let Some(c) = e.circle {
+                for f in &e.faces {
+                    radius_of.entry(*f).or_insert(c.radius);
+                }
+            }
+        }
         for (i, f) in b.topology.faces.iter().enumerate() {
             let Some(name) = b.names.faces.get(i) else { continue };
             let fnorm = unit(f.normal);
@@ -129,12 +138,7 @@ fn find_face(ev: &gusset_eval::Evaluation, point: V3, normal: Option<V3>) -> Res
                     dot(sub(point, f.centroid), n).abs() <= 0.01 && want.is_none_or(|w| dot(n, w) > 0.999)
                 }),
                 SurfaceKind::Cylinder => f.axis.is_some_and(|a| {
-                    let radius = b
-                        .topology
-                        .edges
-                        .iter()
-                        .find(|e| u32::try_from(i).is_ok_and(|i| e.faces.contains(&i)))
-                        .and_then(|e| e.circle.map(|c| c.radius));
+                    let radius = u32::try_from(i).ok().and_then(|i| radius_of.get(&i).copied());
                     radius
                         .zip(unit(a.dir))
                         .is_some_and(|(r, d)| (norm(cross(sub(point, a.origin), d)) - r).abs() <= 0.01)
@@ -168,8 +172,18 @@ fn builds(g: &mut Gen, s: &Session, name: &str) -> Result<(), String> {
     }
 }
 
+/// Longest length a v2 feature may give (mm): OCCT is not made for larger models.
+const MAX_LENGTH: f64 = 1e7;
+
+/// A unit vector's component with 12 decimals (6 would move far pattern copies: review).
+fn fine(v: f64) -> String {
+    let s = format!("{:.12}", if v.abs() < 5e-13 { 0.0 } else { v });
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s == "-0" { "0".into() } else { s }
+}
+
 fn positive(v: Option<f64>, what: &str) -> Result<f64, String> {
-    v.filter(|v| v.is_finite() && *v > 0.0 && *v < 1e12).ok_or_else(|| format!("{what} is not a positive number"))
+    v.filter(|v| v.is_finite() && *v > 0.0 && *v < MAX_LENGTH).ok_or_else(|| format!("{what} is not a positive number"))
 }
 
 pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
@@ -266,7 +280,7 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
         if angle.abs() < 1e-9 {
             return Err("the pattern angle is zero".into());
         }
-        args.push(format!("axis: [{}, {}, {}]", num(dir[0]), num(dir[1]), num(dir[2])));
+        args.push(format!("axis: [{}, {}, {}]", fine(dir[0]), fine(dir[1]), fine(dir[2])));
         args.push(format!("through: [{} mm, {} mm, {} mm]", num(o[0]), num(o[1]), num(o[2])));
         args.push(format!("count: {}", d.count));
         args.push(format!("angle: {} deg", num(angle)));
@@ -277,7 +291,10 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
         if spacing.abs() < 1e-9 {
             return Err("the pattern spacing is zero".into());
         }
-        args.push(format!("direction: [{}, {}, {}]", num(dir[0]), num(dir[1]), num(dir[2])));
+        args.push(format!("direction: [{}, {}, {}]", fine(dir[0]), fine(dir[1]), fine(dir[2])));
+        if (spacing * f64::from(d.count)).abs() > MAX_LENGTH {
+            return Err("the pattern reaches too far".into());
+        }
         args.push(format!("count: {}", d.count));
         args.push(format!("spacing: {} mm", num(spacing)));
     }
@@ -492,8 +509,11 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
 }
 
 fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3, n: V3) -> Result<(), String> {
-    let tag = ident(&d.name, "Mirror");
-    let rename = |nm: &str| format!("{nm}_{tag}");
+    // A tag of its own per mirror (two mirrors named alike must not share copies), joined
+    // with a character no source name has in practice.
+    let tag = g.fresh(&d.name, "Mirror");
+    let rename = |nm: &str| format!("{nm}\u{1}{tag}");
+    let mut mirrored: HashSet<String> = HashSet::new();
     let mut last = None;
     for fname in &d.features {
         let idx = *g.index.get(fname).ok_or_else(|| format!("its feature '{}' was not imported", short(fname)))?;
@@ -502,7 +522,7 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
         if matches!(kind, "extrude" | "revolve") {
             // The sketch is mirrored once per mirror feature.
             let sk = f.get("sketch").and_then(Value::as_str).ok_or("a solid without a sketch")?;
-            if !g.sketches.contains_key(&rename(sk)) {
+            if mirrored.insert(sk.to_string()) {
                 let sidx = *g.index.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?;
                 let src = feats.get(sidx).ok_or("its sketch is missing")?;
                 let rf = reflect_feature(src, o, n, &rename)?;
