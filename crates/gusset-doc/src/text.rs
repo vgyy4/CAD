@@ -79,6 +79,12 @@ pub fn appearance_line(a: &Appearance) -> String {
             .collect();
         let _ = write!(line, ", faces: {{{}}}", groups.join(", "));
     }
+    if let Some(t) = a.texture {
+        let _ = write!(line, ", texture: {}", t.kind.keyword());
+        if t.size_um != t.kind.default_size_um() {
+            let _ = write!(line, ", texture_size: {} mm", f64::from(t.size_um) / 1000.0);
+        }
+    }
     line
 }
 
@@ -92,9 +98,27 @@ pub fn parse_color(text: &str) -> Option<u32> {
 fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
     let body = c.ident()?.to_string();
     let (mut color, mut finish, mut faces) = (None, None, Vec::new());
+    let (mut texture, mut texture_size) = (None, None);
     parse_args(c, |key, c| {
         match key {
             "faces" => faces = parse_face_colors(c)?,
+            "texture" => {
+                let k = c.ident()?;
+                texture = Some(TextureKind::from_keyword(k).ok_or_else(|| {
+                    c.err_hint(format!("unknown texture '{k}'"), "use wood, brushed, carbon or speckle")
+                })?);
+            }
+            "texture_size" => {
+                let v = c.number()?;
+                if !c.eat_kw("mm") {
+                    return Err(c.err_hint("texture_size needs a unit", "write it in mm, like 8 mm"));
+                }
+                let um = (v * 1000.0).round();
+                if !(f64::from(*TEXTURE_SIZE_UM.start())..=f64::from(*TEXTURE_SIZE_UM.end())).contains(&um) {
+                    return Err(c.err("texture_size must be 0.01 mm to 10000 mm"));
+                }
+                texture_size = Some(um as u32);
+            }
             "color" => {
                 let text = c.string()?;
                 color = Some(parse_color(&text).ok_or_else(|| {
@@ -107,7 +131,7 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
                     c.err_hint(format!("unknown finish '{k}'"), "use plastic, metal, glass or rubber")
                 })?);
             }
-            key => return Err(unknown_arg(c, "appearance", key, "color, finish, faces")),
+            key => return Err(unknown_arg(c, "appearance", key, "color, finish, faces, texture, texture_size")),
         }
         Ok(())
     })?;
@@ -119,6 +143,13 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
         color: color.ok_or_else(|| missing(c, "appearance", "color"))?,
         finish: finish.unwrap_or_default(),
         faces,
+        texture: match (texture, texture_size) {
+            (Some(kind), size) => Some(Texture { kind, size_um: size.unwrap_or_else(|| kind.default_size_um()) }),
+            (None, Some(_)) => {
+                return Err(c.err_hint("texture_size without a texture", "add texture: wood (or another)"));
+            }
+            (None, None) => None,
+        },
     })
 }
 

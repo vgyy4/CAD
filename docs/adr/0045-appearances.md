@@ -84,4 +84,18 @@ anywhere in the document.
   The Render tab's Photo preview path-traces the viewport in place at half resolution, in
   passes of 1, 4, 16 and 64 samples while the view stays still; a camera, model or size change
   starts over, and nothing runs once the last pass is in.
-
+* Textures (amendment, 2026-11-08): `texture: wood|brushed|carbon|speckle` with an optional
+  `texture_size` (mm) on an appearance, and the same two fields on `body.appearance`
+  (`texture: none` takes it off). Procedural, not images: a pattern computed from the hit
+  point in the body's own coordinates (millimetres), so it needs no UV maps (tessellations
+  carry none), moves with the body, costs no file references in the document, and is the same
+  on every run. Wood: growth rings around an axis along the body's X, wobbled by value noise,
+  with grain streaks; brushed: noise stretched along X; carbon: a 2x2 twill on the plane facing
+  the normal's largest axis; speckle: balls jittered in a third of the lattice cells, so any
+  cut through the body shows discs. Each multiplies the colour (a neutral mean, so the colour
+  still reads as chosen). The path tracer (photo renders, `render_view`, `export.image`, the
+  Render tab's Photo preview), the CPU viewport renderer and the viewport shader compute the
+  same patterns: one 32-bit integer hash for the noise lattice, so WGSL (no 64-bit integers
+  on WebGL2) and Rust agree; the GPU and CPU viewports match within the screenshot tolerance.
+  Faces in colours of their own and highlighted faces are drawn untextured.
+  Imports and exports carry no textures (STEP, 3MF and glTF colours stay plain).

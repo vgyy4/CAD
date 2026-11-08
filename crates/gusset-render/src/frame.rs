@@ -89,6 +89,18 @@ pub(crate) struct MeshDraw {
     pub finish: u32,
     /// Draw the mesh's coarse copy (`SceneMesh::lod`); `tri_runs` then index it.
     pub lod: bool,
+    /// The material's texture, drawn on runs in the material's own colour (`base`).
+    pub texture: Option<crate::Texture>,
+    /// The material's linear colour.
+    pub base: [f32; 3],
+}
+
+impl MeshDraw {
+    /// The texture for a run of colour `c`: only runs in the material's own colour (not face
+    /// colours or highlights) are textured.
+    pub(crate) fn texture_for(&self, c: [f32; 3]) -> Option<crate::Texture> {
+        self.texture.filter(|_| c.map(f32::to_bits) == self.base.map(f32::to_bits))
+    }
 }
 
 /// Everything needed to draw one frame.
@@ -202,6 +214,8 @@ impl FramePlan {
                 edge_runs,
                 closed: data.closed && !lod,
                 lod,
+                texture: m.material().texture,
+                base,
                 finish: match m.material().finish {
                     crate::Finish::Plastic => 0,
                     crate::Finish::Metal => 1,

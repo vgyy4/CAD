@@ -25,6 +25,12 @@ pub struct SetAppearance {
     /// Only these faces: color colours them, clear drops their colour.
     #[serde(default)]
     pub faces: Option<Vec<String>>,
+    /// wood, brushed, carbon, speckle or none.
+    #[serde(default)]
+    pub texture: Option<String>,
+    /// Texture scale in mm.
+    #[serde(default)]
+    pub texture_size: Option<f64>,
 }
 
 impl Command for SetAppearance {
@@ -50,11 +56,12 @@ impl Command for SetAppearance {
             })?),
             None => None,
         };
-        if self.clear && (color.is_some() || finish.is_some()) {
-            return Err(CommandError::args("clear takes no colour or finish"));
+        let texture = self.texture_choice()?;
+        if self.clear && (color.is_some() || finish.is_some() || texture.is_some()) {
+            return Err(CommandError::args("clear takes no colour, finish or texture"));
         }
-        if !self.clear && color.is_none() && finish.is_none() {
-            return Err(CommandError::args("give a color, a finish, or clear: true"));
+        if !self.clear && color.is_none() && finish.is_none() && texture.is_none() {
+            return Err(CommandError::args("give a color, a finish, a texture, or clear: true"));
         }
         let ev = s.evaluate(&ctx.actor)?;
         // Bodies and reference meshes (an imported STL/3MF/OBJ keeps its colour too); an
@@ -66,7 +73,7 @@ impl Command for SetAppearance {
                 .hint(format!("bodies: {}", names.join(", "))));
         }
         if let Some(names) = &self.faces {
-            return set_face_colors(s, ctx, &ev, &self.body, names, color, finish.is_some());
+            return set_face_colors(s, ctx, &ev, &self.body, names, color, finish.is_some() || texture.is_some());
         }
         let body = self.body.clone();
         edit(s, ctx, &format!("Appearance of {body}"), |doc, _| {
@@ -85,9 +92,19 @@ impl Command for SetAppearance {
                 color: color.or(base.as_ref().map(|b| b.color)).unwrap_or(DEFAULT_COLOR),
                 finish: finish.or(base.as_ref().map(|b| b.finish)).unwrap_or_default(),
                 // A file's face colours stay; `clear` drops them with the rest.
-                faces: base.map(|b| b.faces).unwrap_or_default(),
+                faces: base.as_ref().map(|b| b.faces.clone()).unwrap_or_default(),
+                texture: match texture {
+                    Some(t) => t,
+                    None => base.and_then(|b| b.texture),
+                },
             };
-            let shown = json!({ "color": format!("#{:06x}", a.color), "finish": a.finish.keyword() });
+            let mut shown = json!({ "color": format!("#{:06x}", a.color), "finish": a.finish.keyword() });
+            if let Some(t) = a.texture
+                && let Some(o) = shown.as_object_mut()
+            {
+                o.insert("texture".into(), json!(t.kind.keyword()));
+                o.insert("texture_size_mm".into(), json!(f64::from(t.size_um) / 1000.0));
+            }
             let full = doc.appearances.len() >= gusset_doc::text::MAX_LIST_ITEMS;
             match old.and_then(|i| doc.appearances.get_mut(i)) {
                 Some(slot) => *slot = a,
@@ -99,6 +116,43 @@ impl Command for SetAppearance {
             }
             Ok(json!({ "body": body, "appearance": shown }))
         })
+    }
+}
+
+impl SetAppearance {
+    /// The texture asked for: `Some(None)` takes it off (`none`), `None` leaves it as is.
+    fn texture_choice(&self) -> Result<Option<Option<gusset_doc::Texture>>, CommandError> {
+        let size = match self.texture_size {
+            Some(mm) => {
+                let um = (mm * 1000.0).round();
+                let range = gusset_doc::TEXTURE_SIZE_UM;
+                if !mm.is_finite() || !(f64::from(*range.start())..=f64::from(*range.end())).contains(&um) {
+                    return Err(CommandError::args("texture_size must be 0.01 to 10000 mm"));
+                }
+                Some(um as u32)
+            }
+            None => None,
+        };
+        let Some(name) = &self.texture else {
+            return match size {
+                Some(_) => {
+                    Err(CommandError::args("texture_size needs a texture").hint("add texture: wood (or another)"))
+                }
+                None => Ok(None),
+            };
+        };
+        let name = name.trim().to_ascii_lowercase();
+        if name == "none" {
+            return match size {
+                Some(_) => Err(CommandError::args("texture none takes no size")),
+                None => Ok(Some(None)),
+            };
+        }
+        let kind = gusset_doc::TextureKind::from_keyword(&name).ok_or_else(|| {
+            CommandError::args(format!("unknown texture '{}'", crate::paths::display_name(&name)))
+                .hint("texture is wood, brushed, carbon, speckle or none")
+        })?;
+        Ok(Some(Some(gusset_doc::Texture { kind, size_um: size.unwrap_or_else(|| kind.default_size_um()) })))
     }
 }
 
@@ -117,7 +171,8 @@ fn set_face_colors(
     finish: bool,
 ) -> Result<Value, CommandError> {
     if finish {
-        return Err(CommandError::args("faces take a colour, not a finish").hint("set the finish on the whole body"));
+        return Err(CommandError::args("faces take a colour, not a finish or texture")
+            .hint("set the finish and texture on the whole body"));
     }
     let b = ev.body(body).ok_or_else(|| {
         CommandError::not_found(format!("no body '{}'", crate::paths::display_name(body)))
@@ -174,6 +229,7 @@ fn set_face_colors(
                     color: DEFAULT_COLOR,
                     finish: Finish::default(),
                     faces: Vec::new(),
+                    texture: None,
                 });
                 doc.appearances.len() - 1
             }

@@ -33,6 +33,63 @@ pub struct Appearance {
     /// Faces in other colours than the body's (a STEP file's face colours), one group per
     /// colour. Faces the body no longer has are ignored.
     pub faces: Vec<FaceColor>,
+    /// A procedural pattern over the colour, in the body's own coordinates.
+    pub texture: Option<Texture>,
+}
+
+/// A procedural texture: `texture: wood, texture_size: 8 mm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Texture {
+    pub kind: TextureKind,
+    /// Size of the pattern's feature (ring spacing, weave cell, grain) in micrometres.
+    pub size_um: u32,
+}
+
+/// Smallest and largest texture size, micrometres (0.01 mm to 10 m).
+pub const TEXTURE_SIZE_UM: std::ops::RangeInclusive<u32> = 10..=10_000_000;
+
+/// What the pattern looks like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureKind {
+    /// Growth rings and grain along the body's X axis.
+    Wood,
+    /// Fine streaks along the body's X axis.
+    Brushed,
+    /// A 2x2 twill weave.
+    Carbon,
+    /// Small light and dark specks (cast or textured plastic, stone).
+    Speckle,
+}
+
+impl TextureKind {
+    pub const ALL: [TextureKind; 4] =
+        [TextureKind::Wood, TextureKind::Brushed, TextureKind::Carbon, TextureKind::Speckle];
+
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
+        match self {
+            TextureKind::Wood => "wood",
+            TextureKind::Brushed => "brushed",
+            TextureKind::Carbon => "carbon",
+            TextureKind::Speckle => "speckle",
+        }
+    }
+
+    #[must_use]
+    pub fn from_keyword(s: &str) -> Option<TextureKind> {
+        TextureKind::ALL.into_iter().find(|f| f.keyword() == s)
+    }
+
+    /// The size used when none is given, micrometres.
+    #[must_use]
+    pub fn default_size_um(self) -> u32 {
+        match self {
+            TextureKind::Wood => 6000,
+            TextureKind::Brushed => 2000,
+            TextureKind::Carbon => 3000,
+            TextureKind::Speckle => 1500,
+        }
+    }
 }
 
 /// One colour and the faces drawn in it.

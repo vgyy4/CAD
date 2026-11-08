@@ -324,11 +324,7 @@ fn render_png(
         id += 1;
         scene.insert_mesh(gusset_render::MeshId(id), &m).map_err(|e| format!("{name}: {e}"))?;
         if let Some(a) = looks.iter().find(|a| a.body == *name) {
-            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
-            scene.set_material(
-                gusset_render::MeshId(id),
-                gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
-            );
+            scene.set_material(gusset_render::MeshId(id), gusset_mcp::render_material(a));
             let names = face_names.get(i).map(Vec::as_slice).unwrap_or_default();
             for (f, c) in gusset_commands::commands::face_color_indices(a, names) {
                 scene.set_face_color(gusset_render::MeshId(id), f, Some(gusset_render::Srgb(c)));
@@ -339,11 +335,7 @@ fn render_png(
         id += 1;
         scene.insert_mesh(gusset_render::MeshId(id), m).map_err(|e| format!("{name}: {e}"))?;
         if let Some(a) = looks.iter().find(|a| a.body == *name) {
-            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
-            scene.set_material(
-                gusset_render::MeshId(id),
-                gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
-            );
+            scene.set_material(gusset_render::MeshId(id), gusset_mcp::render_material(a));
         }
     }
     let mut camera = gusset_render::Camera::default();

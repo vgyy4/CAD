@@ -138,9 +138,8 @@ impl World<'_> {
                 let w = mat_vec(m.transform(), [f64::from(q[0]), f64::from(q[1]), f64::from(q[2]), 0.0]);
                 [w[0], w[1], w[2]]
             };
-            let smooth = (den.abs() > 1e-30).then(|| {
-                let v = (d11 * d20 - d01 * d21) / den;
-                let w = (d00 * d21 - d01 * d20) / den;
+            let den_ok = (den.abs() > 1e-30).then(|| ((d11 * d20 - d01 * d21) / den, (d00 * d21 - d01 * d20) / den));
+            let smooth = den_ok.map(|(v, w)| {
                 let [na, nb, nc] = ids.map(normal_of);
                 add(add(scale(na, 1.0 - v - w), scale(nb, v)), scale(nc, w))
             });
@@ -159,7 +158,23 @@ impl World<'_> {
                 Some(crate::Highlight::Preselect) => crate::Theme::Light.colors().preselect,
                 _ => face.map_or(m.material().color, |f| m.face_color(f as u32)),
             };
-            let [r, g, bl] = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
+            let base = m.material().color;
+            let mut albedo = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
+            // A texture, in the body's own coordinates at the hit (not on highlighted faces).
+            if let (Some(t), Some(den)) = (m.material().texture.filter(|_| color == base), den_ok) {
+                let model = |k: u32| {
+                    let p = d.positions.get(k as usize).copied().unwrap_or([0.0; 3]);
+                    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
+                };
+                let [ma, mb, mc] = ids.map(model);
+                let (v, w) = den;
+                let p = add(add(scale(ma, 1.0 - v - w), scale(mb, v)), scale(mc, w));
+                let mn = normalize_or(cross(sub(mb, ma), sub(mc, ma)), [0.0, 0.0, 1.0]);
+                for (a, f) in albedo.iter_mut().zip(t.factor(p, mn)) {
+                    *a = (*a * f).min(0.98);
+                }
+            }
+            let [r, g, bl] = albedo;
             Some((
                 h.distance,
                 Hit {
@@ -453,7 +468,7 @@ mod tests {
         let set = TraceSettings { samples: 8, bounces: 4 };
         let shot = |finish: Finish| {
             let (mut s, c) = scene();
-            s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish });
+            s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish, texture: None });
             render_traced(&s, &c, [48, 36], set).unwrap()
         };
         let all = Finish::ALL_FOR_TESTS.map(shot);
@@ -473,7 +488,7 @@ mod tests {
         if let Ok(dir) = std::env::var("GUSSET_TRACE_OUT_DIR") {
             for (f, name) in Finish::ALL_FOR_TESTS.into_iter().zip(["plastic", "metal", "glass", "rubber"]) {
                 let (mut s, c) = scene();
-                s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish: f });
+                s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish: f, texture: None });
                 let big = render_traced(&s, &c, [320, 240], TraceSettings { samples: 64, bounces: 5 }).unwrap();
                 std::fs::write(format!("{dir}/{name}.png"), big.to_png().unwrap()).unwrap();
             }

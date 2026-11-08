@@ -19,11 +19,13 @@ pub struct Material {
     pub color: Srgb,
     /// How the path tracer treats the surface (the viewport shades every finish alike).
     pub finish: Finish,
+    /// A procedural pattern over the colour (viewport and path tracer).
+    pub texture: Option<crate::Texture>,
 }
 
 impl Default for Material {
     fn default() -> Self {
-        Material { color: DEFAULT_PART_COLOR, finish: Finish::Plastic }
+        Material { color: DEFAULT_PART_COLOR, finish: Finish::Plastic, texture: None }
     }
 }
 
@@ -438,7 +440,7 @@ mod tests {
     fn geometry_moves_to_a_new_scene_unbuilt() {
         let mut a = Scene::new();
         a.insert_mesh(MeshId(1), &demo::box_mesh([1.0; 3])).expect("ok");
-        a.set_material(MeshId(1), Material { color: Srgb(0x11_22_33), finish: Finish::Metal });
+        a.set_material(MeshId(1), Material { color: Srgb(0x11_22_33), finish: Finish::Metal, texture: None });
         let mut b = Scene::new();
         b.insert_geometry(MeshId(7), a.geometry(MeshId(1)).expect("geometry"));
         let (ma, mb) = (a.mesh(MeshId(1)).expect("a"), b.mesh(MeshId(7)).expect("b"));

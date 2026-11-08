@@ -165,6 +165,27 @@ fn section_matches_software() {
     assert!(report.passed, "section differs between GPU and CPU: {report}");
 }
 
+/// A textured body: the pattern shows in the CPU viewport, and the GPU draws the same one.
+#[test]
+fn textures_show_and_match_software() {
+    let _g = serial();
+    let mut s = scene();
+    let plain = SoftwareRenderer::new().render_rgba(&s, &camera(&s), SIZE).expect("software render");
+    for (id, kind) in [(1, gusset_render::TextureKind::Carbon), (2, gusset_render::TextureKind::Wood)] {
+        let m = s.mesh(MeshId(id)).map(gusset_render::SceneMesh::material).unwrap_or_default();
+        let texture = Some(gusset_render::Texture { kind, size_um: 4000 });
+        s.set_material(MeshId(id), gusset_render::Material { texture, ..m });
+    }
+    let cam = camera(&s);
+    let sw = SoftwareRenderer::new().render_rgba(&s, &cam, SIZE).expect("software render");
+    assert!(!diff(&plain, &sw, DiffTolerance { per_channel: 20, max_differing_ratio: 0.02 }).passed);
+    let Some(mut r) = gpu(AdapterPreference::Auto) else { return };
+    let (hw, _) = r.render_rgba(&s, &cam, SIZE).expect("render");
+    let report = diff(&hw, &sw, DiffTolerance { per_channel: 40, max_differing_ratio: 0.06 });
+    eprintln!("textures gpu vs software: {report}");
+    assert!(report.passed, "textures differ between GPU and CPU: {report}");
+}
+
 /// The GPU cut face is at the cut plane's depth too: a red box inside the cut body, behind
 /// the plane, stays hidden.
 #[test]

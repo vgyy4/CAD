@@ -92,8 +92,7 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
             }
         }
         if let Some(a) = &body.look {
-            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
-            out.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
+            out.set_material(id, render_material(a));
             // A file's face colours, on the faces the body still has.
             for (i, c) in gusset_commands::commands::face_color_indices(a, &body.face_names) {
                 out.set_face_color(id, i, Some(gusset_render::Srgb(c)));
@@ -249,6 +248,21 @@ impl ViewRenderer for SceneRenderer {
         if let Ok(request) = serde_json::from_value::<RenderRequest>(serde_json::json!({"width": 16, "height": 16})) {
             let _ = self.render_png(&request, &one);
         }
+    }
+}
+
+/// The render material of a document appearance: colour, finish and texture (ADR 0045).
+#[must_use]
+pub fn render_material(a: &gusset_doc::Appearance) -> gusset_render::Material {
+    gusset_render::Material {
+        color: gusset_render::Srgb(a.color),
+        finish: gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default(),
+        texture: a.texture.and_then(|t| {
+            Some(gusset_render::Texture {
+                kind: gusset_render::TextureKind::from_keyword(t.kind.keyword())?,
+                size_um: t.size_um,
+            })
+        }),
     }
 }
 

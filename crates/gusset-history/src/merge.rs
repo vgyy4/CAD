@@ -45,7 +45,7 @@ fn pick<T: PartialEq + Clone>(base: Option<&T>, ours: Option<&T>, theirs: Option
     }
 }
 
-/// An appearance both sides changed, merged in two parts (colour and finish; face colours),
+/// An appearance both sides changed, merged in two parts (colour, finish and texture; face colours),
 /// each three-way. `None` when either part conflicts or a side removed it.
 fn merge_look(
     base: Option<&gusset_doc::Appearance>,
@@ -53,14 +53,14 @@ fn merge_look(
     theirs: Option<&gusset_doc::Appearance>,
 ) -> Option<gusset_doc::Appearance> {
     let (o, t) = (ours?, theirs?);
-    let look = |a: &gusset_doc::Appearance| (a.color, a.finish);
-    let (color, finish) = pick(base.map(look).as_ref(), Some(&look(o)), Some(&look(t))).ok()??;
+    let look = |a: &gusset_doc::Appearance| (a.color, a.finish, a.texture);
+    let (color, finish, texture) = pick(base.map(look).as_ref(), Some(&look(o)), Some(&look(t))).ok()??;
     let faces = match pick(base.map(|a| &a.faces), Some(&o.faces), Some(&t.faces)) {
         Ok(f) => f?,
         // Both changed face colours: merged face by face (dogfooding F15-3).
         Err(()) => merge_face_colors(base.map(|a| a.faces.as_slice()).unwrap_or_default(), &o.faces, &t.faces)?,
     };
-    Some(gusset_doc::Appearance { body: o.body.clone(), color, finish, faces })
+    Some(gusset_doc::Appearance { body: o.body.clone(), color, finish, faces, texture })
 }
 
 /// Face colours merged three-way per face; `None` when one face changed differently on both

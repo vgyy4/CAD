@@ -27,6 +27,9 @@ struct ClipVert {
     clip: [f32; 4],
     view: [f32; 3],
     normal: [f32; 3],
+    /// Model-space position and normal, for textures.
+    model: [f32; 3],
+    model_normal: [f32; 3],
 }
 
 impl ClipVert {
@@ -36,6 +39,8 @@ impl ClipVert {
             clip: zip_with(a.clip, b.clip, l),
             view: zip_with(a.view, b.view, l),
             normal: zip_with(a.normal, b.normal, l),
+            model: zip_with(a.model, b.model, l),
+            model_normal: zip_with(a.model_normal, b.model_normal, l),
         }
     }
 }
@@ -132,6 +137,8 @@ impl SoftwareRenderer {
                         clip: math::transform4(proj, vp).map(|c| c as f32),
                         view: vp.map(|c| c as f32),
                         normal: vn.map(|c| c as f32),
+                        model: *p,
+                        model_normal: un.map(|c| c as f32),
                     }
                 })
                 .collect();
@@ -147,7 +154,13 @@ impl SoftwareRenderer {
                         }
                         for k in 1..poly.len().saturating_sub(1) {
                             if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
-                                raster_triangle(&mut t, [p0, p1, p2], *base, &plan, d.closed, d.finish);
+                                raster_triangle(
+                                    &mut t,
+                                    [p0, p1, p2],
+                                    *base,
+                                    &plan,
+                                    (d.closed, d.finish, d.texture_for(*base)),
+                                );
                             }
                         }
                     }
@@ -262,7 +275,15 @@ fn to_screen(c: [f32; 4], w: usize, h: usize) -> Option<[f32; 4]> {
     Some([(c[0] * iw * 0.5 + 0.5) * w as f32, (0.5 - c[1] * iw * 0.5) * h as f32, c[2] * iw, iw])
 }
 
-fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &FramePlan, closed: bool, finish: u32) {
+/// `how`: closed mesh, finish code, texture.
+fn raster_triangle(
+    t: &mut Target,
+    v: [&ClipVert; 3],
+    base: [f32; 3],
+    plan: &FramePlan,
+    how: (bool, u32, Option<crate::Texture>),
+) {
+    let (closed, finish, texture) = how;
     let (Some(s0), Some(s1), Some(s2)) =
         (to_screen(v[0].clip, t.w, t.h), to_screen(v[1].clip, t.w, t.h), to_screen(v[2].clip, t.w, t.h))
     else {
@@ -318,7 +339,17 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
             // Through a section, back faces are the inside: draw them as the flat cut face.
             let (n, base, finish) = match cap {
                 Some(pl) => ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX), 0),
-                _ => (n.map(|c| c / nl * sign), base, finish),
+                _ => {
+                    let base = match texture {
+                        Some(tex) => {
+                            let p = attr(&|cv| cv.model).map(f64::from);
+                            let mn = attr(&|cv| cv.model_normal).map(f64::from);
+                            zip_with(base, tex.factor(p, mn).map(|f| f as f32), |b, f| (b * f).min(0.98))
+                        }
+                        None => base,
+                    };
+                    (n.map(|c| c / nl * sign), base, finish)
+                }
             };
             let vdir = if plan.ortho {
                 [0.0, 0.0, 1.0]
@@ -517,9 +548,27 @@ mod tests {
     #[test]
     fn near_clipping_keeps_inside_part() {
         let poly = [
-            ClipVert { clip: [0.0, 0.0, -1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
-            ClipVert { clip: [1.0, 0.0, 1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
-            ClipVert { clip: [0.0, 1.0, 1.0, 1.0], view: [0.0; 3], normal: [0.0; 3] },
+            ClipVert {
+                clip: [0.0, 0.0, -1.0, 1.0],
+                view: [0.0; 3],
+                normal: [0.0; 3],
+                model: [0.0; 3],
+                model_normal: [0.0; 3],
+            },
+            ClipVert {
+                clip: [1.0, 0.0, 1.0, 1.0],
+                view: [0.0; 3],
+                normal: [0.0; 3],
+                model: [0.0; 3],
+                model_normal: [0.0; 3],
+            },
+            ClipVert {
+                clip: [0.0, 1.0, 1.0, 1.0],
+                view: [0.0; 3],
+                normal: [0.0; 3],
+                model: [0.0; 3],
+                model_normal: [0.0; 3],
+            },
         ];
         let out = clip_poly(&poly, |v| v.clip[2]);
         assert_eq!(out.len(), 4);

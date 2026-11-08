@@ -16,7 +16,7 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Size of the `Globals` uniform (see `shader.wgsl`).
 const GLOBALS_SIZE: u64 = 64 + 16 * 9;
 /// Size of the `Draw` uniform.
-const DRAW_SIZE: u64 = 64 + 16 * 4;
+const DRAW_SIZE: u64 = 64 + 16 * 5;
 /// Vertex stride: position `f32x3` + normal `snorm16x4`.
 const VERTEX_STRIDE: u64 = 20;
 /// Edge buffer stride: one point (`f32x3`).
@@ -662,7 +662,8 @@ impl Renderer {
                        n: &[math::Vec3; 3],
                        color: [f32; 3],
                        closed: bool,
-                       finish: u32|
+                       finish: u32,
+                       texture: Option<crate::Texture>|
          -> u32 {
             let off = slot * stride;
             let mut e = Vec::with_capacity(DRAW_SIZE as usize);
@@ -671,6 +672,7 @@ impl Renderer {
                 push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
             }
             push_vec4(&mut e, [color[0], color[1], color[2], f32::from(u8::from(closed)) + 2.0 * finish as f32]);
+            push_vec4(&mut e, crate::Texture::shader_word(texture));
             if let Some(dst) = bytes.get_mut(off..off + e.len()) {
                 dst.copy_from_slice(&e);
             }
@@ -682,12 +684,12 @@ impl Renderer {
             let tri = d
                 .tri_runs
                 .iter()
-                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, d.finish))
+                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, d.finish, d.texture_for(*c)))
                 .collect();
             let edge = d
                 .edge_runs
                 .iter()
-                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, 0))
+                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, 0, None))
                 .collect();
             offsets.push((tri, edge));
         }

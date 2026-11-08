@@ -3954,9 +3954,8 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
     if let Some(d) = &doc {
         for (i, b) in bodies.iter().enumerate() {
             if let Some(a) = d.appearance(&b.name) {
-                let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
                 let id = gusset_render::MeshId(i as u64);
-                render.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
+                render.set_material(id, gusset_mcp::render_material(a));
                 apply_face_colors(&mut render, id, &b.face_names, a);
             }
         }

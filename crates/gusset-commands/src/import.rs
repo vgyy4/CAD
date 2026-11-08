@@ -1096,6 +1096,7 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
                 });
             }
             names.push(name);
+                    texture: None,
         }
         let warnings: Vec<String> = warnings.iter().take(20).cloned().collect();
         Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings }))

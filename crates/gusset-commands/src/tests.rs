@@ -1692,6 +1692,49 @@ fn appearances_are_set_kept_renamed_merged_and_cleared() {
 }
 
 #[test]
+fn textures_are_set_written_kept_and_taken_off() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "color": "#a0703c", "texture": "Wood"}));
+    assert_eq!(r["appearance"]["texture"], "wood", "{r}");
+    assert_eq!(r["appearance"]["texture_size_mm"], 6.0, "{r}");
+    let text = || "appearance Extrude1 (color: \"#a0703c\", finish: plastic, texture: wood)";
+    let doc = |s: &mut Session| {
+        run(s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap_or_default().to_string()
+    };
+    assert!(doc(&mut s).contains(text()), "{}", doc(&mut s));
+    // A colour alone keeps the texture; a size is written when not the default.
+    run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "color": "#202020"}));
+    run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "carbon", "texture_size": 2.5}));
+    let t = doc(&mut s);
+    assert!(t.contains("color: \"#202020\", finish: plastic, texture: carbon, texture_size: 2.5 mm)"), "{t}");
+    // The text round-trips through the document parser.
+    let parsed = gusset_doc::text::parse(&t).unwrap();
+    let a = parsed.appearance("Extrude1").unwrap();
+    assert_eq!(a.texture, Some(gusset_doc::Texture { kind: gusset_doc::TextureKind::Carbon, size_um: 2500 }));
+    for bad in
+        ["texture: oak", "texture: wood, texture_size: 3", "texture_size: 3 mm", "texture: wood, texture_size: 0 mm"]
+    {
+        let line = format!("appearance Extrude1 (color: \"#202020\", {bad})");
+        let ours = t.lines().find(|l| l.starts_with("appearance Extrude1")).unwrap_or_default();
+        assert!(gusset_doc::text::parse(&t.replace(ours, &line)).is_err(), "{bad}");
+    }
+    for bad in [
+        json!({"body": "Extrude1", "texture": "marble"}),
+        json!({"body": "Extrude1", "texture_size": 3.0}),
+        json!({"body": "Extrude1", "texture": "wood", "texture_size": 0.0}),
+        json!({"body": "Extrude1", "texture": "none", "texture_size": 3.0}),
+        json!({"body": "Extrude1", "clear": true, "texture": "wood"}),
+    ] {
+        assert!(execute(&mut s, &u, "body.appearance", bad.clone()).is_err(), "{bad}");
+    }
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "none"}));
+    assert!(r["appearance"].get("texture").is_none(), "{r}");
+    assert!(!doc(&mut s).contains("texture"));
+}
+
+#[test]
 fn single_faces_take_their_own_colours() {
     let mut s = session();
     let u = CmdCtx::user(1);

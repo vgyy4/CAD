@@ -15,7 +15,7 @@ param <name> = <expr>, min: <expr>, max: <expr>, step: <expr>   # with a range (
 configuration <Name> (set: [<param> = <expr>, ...])            # a named parameter preset
 sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
-appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: {"#rrggbb": [<face>, ...], ...})   # ADR 0045
+appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: {"#rrggbb": [<face>, ...], ...}, texture: wood|brushed|carbon|speckle, texture_size: <n> mm)   # ADR 0045
 ```
 
 - `appearance` sets how a body looks in the viewport and in path-traced renders; it changes
@@ -23,6 +23,10 @@ appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: 
   A body that no longer exists leaves its appearance unused (not an error). Set it with
   `body.appearance`; renaming the feature carries it along. `faces` (optional) colours single
   faces differently, as STEP imports do; faces the body no longer has are ignored.
+  `texture` (optional) lays a procedural pattern over the colour (viewport and renders), in the
+  body's own coordinates; `texture_size` (0.01 to 10000 mm, a literal in mm) scales it and is
+  printed only when it differs from the texture's default (wood 6, brushed 2, carbon 3,
+  speckle 1.5 mm).
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
   statement becomes that statement's note, a trailing `# text` on a `param` its comment.

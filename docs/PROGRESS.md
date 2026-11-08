@@ -377,8 +377,10 @@ Phase 3 has started (see Next).
   by hand (`body.appearance` with `faces`; the app's Appearance on picked faces); merges take
   them apart from colour and finish; reviewed (docs/reviews/2026-11-08-face-colours-review.md).
   A top-level BVH speeds picking and photo renders of many bodies (PERFORMANCE.md). A RENDER
-  tab (Appearance, Render image) and the `export.image` command. Next:
-  textures, Fusion body/component appearances without a face attribute. 3MF per-triangle colours are read (run 15).
+  tab (Appearance, Render image) and the `export.image` command, and Photo preview in the
+  viewport. Procedural textures (wood, brushed, carbon, speckle; ADR 0045 amendment) in the viewport
+  and photo renders. Next: Fusion body/component appearances without
+  a face attribute. 3MF per-triangle colours are read (run 15).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
   single-record read (bounded) and T3 (one `LocalBodies` stream).
 
