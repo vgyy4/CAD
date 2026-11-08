@@ -96,9 +96,9 @@ reconciled with the spec's MVP scope:
 | **later** | sheet metal, surfacing, CAM, FEA, generative design, rendering, real-time collaboration, native f3d/sldprt beyond XT, history-free mode | big domains; done after the core is robust |
 
 Status of the later tier (2026-11-08): sheet metal (ADR 0037), surfacing (0036), CAM (0040),
-FEA (0041), native `.f3d`/`.f3z` (0039) and `.sldprt` (0043) are in; generative design
+FEA (0041), native `.f3d`/`.f3z` (0039), `.sldprt` and `.sldasm` (0043) are in; generative design
 (topology optimisation, ADR 0041 amendment), rendering (path-traced stills, ADR 0009
-amendment), history-free mode (`feature.bake`, ADR 0038 amendment) and collaboration
+amendment; appearances, face colours, procedural textures and a Render workspace, ADR 0045), history-free mode (`feature.bake`, ADR 0038 amendment) and collaboration
 (history bundles, ADR 0044; a live relay is phase 2) have their first phase.
 
 ## 5. Full branch merge: feasibility
