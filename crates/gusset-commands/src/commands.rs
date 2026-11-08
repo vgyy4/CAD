@@ -925,9 +925,30 @@ impl Command for SetText {
         if ctx.is_agent() && s.config.approvals_required && !ctx.approved && changed > s.config.bulk_threshold {
             return Err(CommandError::approval(&format!("changing {changed} features or parameters at once")));
         }
+        // Face colours naming a feature the document lacks do nothing: say so (F15-5).
+        let unknown: Vec<String> = new
+            .appearances
+            .iter()
+            .flat_map(|a| a.faces.iter().flat_map(|g| &g.faces))
+            .filter(|f| new.feature(&f.feature).is_none())
+            .map(ToString::to_string)
+            .take(10)
+            .collect();
         edit(s, ctx, "Edit code", |doc, _| {
             *doc = new;
-            Ok(json!({ "features_changed": changed }))
+            let mut out = json!({ "features_changed": changed });
+            if !unknown.is_empty()
+                && let Some(o) = out.as_object_mut()
+            {
+                o.insert(
+                    "note".into(),
+                    json!(format!(
+                        "face colours of faces no feature makes are kept but unused: {}",
+                        unknown.join(", ")
+                    )),
+                );
+            }
+            Ok(out)
         })
     }
 }

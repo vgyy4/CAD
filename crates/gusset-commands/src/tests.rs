@@ -1725,6 +1725,13 @@ fn single_faces_take_their_own_colours() {
     let extra =
         format!("{text}appearance Other (color: \"#808080\", finish: plastic, faces: {{\"#00aa00\": [{b}]}})\n");
     run(&mut s, &u, "document.set_text", json!({"text": extra}));
+    // A face colour naming no feature of the document is noted (F15-5).
+    let ghost = format!(
+        "{extra}appearance Ghost (color: \"#808080\", finish: plastic, faces: {{\"#00aa00\": [Nope/face(1)]}})\n"
+    );
+    let r = run(&mut s, &u, "document.set_text", json!({"text": ghost}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("Nope/face(1)")), "{r}");
+    run(&mut s, &u, "document.set_text", json!({"text": extra}));
     run(&mut s, &u, "feature.delete", json!({"name": "Extrude1"}));
     let doc = s.document(&gusset_history::Actor::User).unwrap();
     assert!(doc.appearance("Extrude1").is_none());

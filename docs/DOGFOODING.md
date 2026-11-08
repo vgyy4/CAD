@@ -1277,7 +1277,7 @@ correctly and STEP brings them back; the colours of three imports (SolidWorks bo
 | F15-2 | Fixed: 3MF triangles coloured one by one come in grouped by colour, one face per colour; the mesh is stored as 3MF then, and the viewport and `render_view` draw the colours. |
 | F15-3 | Fixed: merges take face colours face by face (different faces on the two branches combine; one face changed differently on both conflicts). `branch_compare` still lists the appearance as a whole. |
 | F15-4 | Fixed: more than 10 000 faces says `at most 10000 faces at once (n given)`. |
-| F15-5 | Fixed in part: an empty colour list is refused. Face refs that name no existing face stay allowed (a merge can bring them; they do nothing); the tool refuses them. |
+| F15-5 | Fixed: an empty colour list is refused; face colours naming a feature the document lacks are kept (a merge can bring them) but `document_set_text` notes them; the tool refuses unknown faces. A face of another body is still not caught in text. |
 | F15-6 | Fixed: the face name is echoed whole; a name containing `), ` gets the hint `one face per list entry`. |
 | F15-7 | Fixed: clearing faces without a colour says so; the count is `faces_coloured_in_body`; a face set to the body's colour gets no entry, with a note. |
 | F15-8 | Fixed: STEP export notes that finishes are not stored; 3MF writes values within 1e-9 of zero as 0. |
