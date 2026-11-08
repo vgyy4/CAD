@@ -29,7 +29,7 @@ fn a_cantilever_keeps_its_share_and_gets_much_stiffer_than_a_uniform_one() {
     let (first, last) = (r.compliance[0], *r.compliance.last().unwrap());
     // The uniform start is soft (density 0.4 to the third); the layout carries the load.
     assert!(last < 0.3 * first, "{:?}", r.compliance);
-    assert!((0.3..=0.55).contains(&r.kept_share), "{}", r.kept_share);
+    assert!((r.kept_share - 0.4).abs() < 0.02, "{}", r.kept_share);
     assert!((r.kept_volume - r.kept_share * 12_000.0).abs() < 1e-6);
     assert!(!r.faces.is_empty());
     // Material goes to the top and bottom fibres near the support, where bending peaks: the
@@ -37,6 +37,32 @@ fn a_cantilever_keeps_its_share_and_gets_much_stiffer_than_a_uniform_one() {
     let near = |z: f64| r.faces.iter().filter(|f| f.iter().all(|p| p[0] < 15.0 && (p[2] - z).abs() < 2.6)).count();
     let (fibres, middle) = (near(0.0) + near(20.0), near(10.0));
     assert!(fibres > middle, "fibres {fibres}, middle {middle}");
+}
+
+#[test]
+fn the_kept_share_is_the_asked_one_even_before_convergence() {
+    for (keep, its) in [(0.2, 30), (0.95, 5), (0.4, 3)] {
+        let r = cantilever(keep, its).unwrap();
+        assert!((r.kept_share - keep).abs() < 0.03, "keep {keep}: {}", r.kept_share);
+    }
+}
+
+#[test]
+fn loads_that_push_nothing_are_refused() {
+    let m = box_mesh([60.0, 10.0, 20.0]);
+    let p = |fixed: Vec<usize>, force: [f64; 3]| TopoProblem {
+        mesh: &m,
+        voxel: 2.5,
+        fixed,
+        loads: vec![Load { face: 1, force }],
+        material: steel(),
+        keep: 0.4,
+        iterations: 5,
+        symmetry: [false; 3],
+        min_member: None,
+    };
+    assert!(matches!(optimise(&p(vec![0], [0.0; 3])), Err(FeaError::Invalid(_))));
+    assert!(matches!(optimise(&p(vec![0, 1], [0.0, 0.0, -100.0])), Err(FeaError::Invalid(_))));
 }
 
 #[test]

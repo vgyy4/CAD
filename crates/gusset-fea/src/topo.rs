@@ -102,6 +102,11 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
             *x = 0.0;
         }
     }
+    // A zero force, or loads only on held faces, would leave nothing to optimise for
+    // (dogfooding F12-3).
+    if f.iter().all(|v| *v == 0.0) {
+        return bad("the loads push nothing: give a non-zero force on a face that is not fixed");
+    }
     // Voxels touching a held or loaded node stay solid (the supports and the load path).
     let frozen: Vec<bool> = conn
         .iter()
@@ -286,8 +291,19 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
         change = next.iter().zip(&rho).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         rho = next;
     }
-    // The kept voxels' outer faces.
-    let kept: Vec<bool> = rho.iter().map(|r| *r >= 0.5).collect();
+    // The kept voxels: the densest ones up to the asked share (dogfooding F12-4: a 0.5 cut
+    // missed it on designs still grey), held and loaded voxels always, ties (mirror images)
+    // together.
+    let want = (libm::round(target) as usize).clamp(1, ne.max(1));
+    let mut order: Vec<f64> = rho.iter().zip(&frozen).filter(|(_, fz)| !**fz).map(|(r, _)| *r).collect();
+    let free_want = want.saturating_sub(frozen.iter().filter(|fz| **fz).count());
+    order.sort_by(|a, b| b.total_cmp(a));
+    let cut = if free_want == 0 {
+        f64::INFINITY
+    } else {
+        order.get(free_want.min(order.len()).saturating_sub(1)).copied().unwrap_or(f64::INFINITY)
+    };
+    let kept: Vec<bool> = rho.iter().zip(&frozen).map(|(r, fz)| *fz || *r >= cut).collect();
     let is_kept = |q: [i64; 3]| {
         if q.iter().zip(n).any(|(v, nn)| *v < 0 || *v >= nn as i64) {
             return false;

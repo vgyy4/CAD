@@ -742,7 +742,22 @@ impl Command for OptimizeQuery {
             "kept_volume_mm3": sig(r.kept_volume),
             "compliance_nmm": {"first": sig(first), "last": sig(last)},
             "faces": r.faces.len(),
+            "kept_share_of": "the voxel body",
         });
+        let mut warnings: Vec<String> = Vec::new();
+        // The filter cannot be finer than two voxels (dogfooding F12-5).
+        if let Some(m) = self.min_member
+            && m < 2.0 * voxel
+        {
+            warnings.push(format!(
+                "min_member below two voxels acts as {} mm; use a smaller voxel for finer members",
+                sig(2.0 * voxel)
+            ));
+        }
+        // The kept voxels no longer carry the load to the supports (dogfooding F12-3).
+        if first > 0.0 && last > 100.0 * first {
+            warnings.push("the compliance grew more than 100 times: the kept material is likely no longer connected from the loads to the supports; keep more or run more iterations".into());
+        }
         // The kept shape's outer voxel faces (12 coordinates each), thinned evenly past the cap.
         let cap = field_cap(ctx);
         let step = r.faces.len().div_ceil(cap.max(1)).max(1);
@@ -757,6 +772,10 @@ impl Command for OptimizeQuery {
             o.insert("shape_quads".into(), json!(quads));
             if step > 1 {
                 o.insert("shape_thinned".into(), json!(true));
+                warnings.push("shape_quads shows every few faces only; path writes the whole shape as STL".into());
+            }
+            if !warnings.is_empty() {
+                o.insert("warnings".into(), json!(warnings));
             }
         }
         if let Some((path, shown)) = target {
