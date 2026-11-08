@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (373)
+- MIT License (375)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5702,6 +5702,7 @@ Used by:
 - [gusset-sat 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-scad 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sketch 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-sldprt 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-store 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-text 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-units 0.1.0-mvp](https://github.com/vgyy4/CAD)
@@ -6135,6 +6136,7 @@ Used by:
 - [serde_derive 1.0.229](https://github.com/serde-rs/serde)
 - [serde_derive_internals 0.30.0](https://github.com/serde-rs/serde)
 - [serde_json 1.0.151](https://github.com/serde-rs/json)
+- [serde_path_to_error 0.1.20](https://github.com/dtolnay/path-to-error)
 - [serde_repr 0.1.21](https://github.com/dtolnay/serde-repr)
 - [smol_str 0.2.2](https://github.com/rust-analyzer/smol_str)
 - [static_aabb2d_index 2.1.0](https://github.com/jbuckmccready/static_aabb2d_index)
