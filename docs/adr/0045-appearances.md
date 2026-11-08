@@ -39,7 +39,8 @@ anywhere in the document.
   OLED board reads lavender, its holes' colour, over its blue top). STEP/3MF colours could
   map onto appearances later. 3MF export writes the colours as one `basematerials` group
   (`displaycolor`), which slicers show, and reads them back (`pid`/`pindex` of an object) as
-  appearances of the imported reference meshes; glTF/GLB writes one material per colour.
+  appearances of the imported reference meshes; glTF/GLB writes one material per colour and
+  reads a mesh's first material colour back.
   Reference meshes take appearances like bodies.
 * STEP (amendment, same day): the worker reads STEP through XDE (`STEPCAFControl_Reader`)
   and keeps the same root shapes, except that an assembly root (a compound of several

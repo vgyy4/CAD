@@ -372,7 +372,24 @@ pub(crate) fn import(
                     format!("{base} {}", out.len() + 1)
                 }
             });
-        out.push(finish(name, soup, UNITS_NOTE, opts, warnings));
+        // The first primitive's material colour (ADR 0045): glTF factors are linear.
+        let color = mesh
+            .get("primitives")
+            .and_then(Value::as_array)
+            .and_then(|p| p.iter().find_map(|q| q.get("material").and_then(Value::as_u64)))
+            .and_then(|i| doc.json.get("materials").and_then(|m| m.get(i as usize)))
+            .and_then(|m| m.get("pbrMetallicRoughness")?.get("baseColorFactor")?.as_array().cloned())
+            .and_then(|f| {
+                let srgb = |x: &Value| {
+                    let v = x.as_f64()?.clamp(0.0, 1.0);
+                    let s = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * libm::pow(v, 1.0 / 2.4) - 0.055 };
+                    Some((s * 255.0).round() as u32)
+                };
+                Some((srgb(f.first()?)? << 16) | (srgb(f.get(1)?)? << 8) | srgb(f.get(2)?)?)
+            });
+        let mut m = finish(name, soup, UNITS_NOTE, opts, warnings);
+        m.color = color;
+        out.push(m);
     }
     Ok(out)
 }
@@ -509,7 +526,11 @@ mod tests {
         assert_eq!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"], json!([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(doc["meshes"][1]["primitives"][0]["material"], 0);
         assert!(doc["meshes"][2]["primitives"][0].get("material").is_none());
-        assert_eq!(import_bytes(&bytes, None, &ImportOptions::default()).unwrap().meshes.len(), 3);
+        let back = import_bytes(&bytes, None, &ImportOptions::default()).unwrap();
+        assert_eq!(
+            back.meshes.iter().map(|m| m.color).collect::<Vec<_>>(),
+            [Some(0x00ff_0000), Some(0x00ff_0000), None]
+        );
     }
 
     #[test]
