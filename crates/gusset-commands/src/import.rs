@@ -514,6 +514,8 @@ fn sldprt_bodies(
 
 /// Most component instances (counting sub-assembly contents) one assembly import places.
 const MAX_SLDASM_INSTANCES: usize = 2000;
+/// Most components one assembly import looks at, through all its sub-assemblies (S1).
+const MAX_SLDASM_WALK: usize = 100_000;
 /// Deepest chain of sub-assembly files followed.
 const MAX_SLDASM_DEPTH: usize = 4;
 /// Most bytes of part files read from the assembly's folder.
@@ -562,15 +564,24 @@ fn rigid(m: &[[f64; 4]; 4]) -> Option<gusset_xt::Xf> {
 /// one into the other) and opened without following links.
 struct Folder<'a> {
     dir: &'a Path,
-    listing: Option<Vec<String>>,
+    /// The folder's names by exact name, by lower case and by lower case with spaces as
+    /// underscores (first in sorted order wins), built once (security review S7).
+    listing: Option<FolderIndex>,
     read: u64,
     cancel: &'a CancelFlag,
+}
+
+#[derive(Default)]
+struct FolderIndex {
+    exact: std::collections::HashSet<String>,
+    lower: std::collections::HashMap<String, String>,
+    loose: std::collections::HashMap<String, String>,
 }
 
 impl Folder<'_> {
     fn find(&mut self, name: &str) -> Option<String> {
         let dir = self.dir;
-        let listing = self.listing.get_or_insert_with(|| {
+        let index = self.listing.get_or_insert_with(|| {
             let mut v: Vec<String> = std::fs::read_dir(dir)
                 .map(|rd| {
                     rd.filter_map(Result::ok)
@@ -580,14 +591,21 @@ impl Folder<'_> {
                 })
                 .unwrap_or_default();
             v.sort();
-            v
+            let mut ix = FolderIndex::default();
+            for n in v {
+                ix.lower.entry(n.to_ascii_lowercase()).or_insert_with(|| n.clone());
+                ix.loose.entry(n.to_lowercase().replace(' ', "_")).or_insert_with(|| n.clone());
+                ix.exact.insert(n);
+            }
+            ix
         });
-        let norm = |s: &str| s.to_lowercase().replace(' ', "_");
-        listing
-            .iter()
-            .find(|n| n.as_str() == name)
-            .or_else(|| listing.iter().find(|n| n.eq_ignore_ascii_case(name)))
-            .or_else(|| listing.iter().find(|n| norm(n) == norm(name)))
+        if index.exact.contains(name) {
+            return Some(name.to_string());
+        }
+        index
+            .lower
+            .get(&name.to_ascii_lowercase())
+            .or_else(|| index.loose.get(&name.to_lowercase().replace(' ', "_")))
             .cloned()
     }
 
@@ -597,6 +615,12 @@ impl Folder<'_> {
         let shown: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
         if !plain {
             return Err(CommandError::args(format!("'{shown}' is not a plain file name")));
+        }
+        // Only SolidWorks files: a component cannot make the import probe or read other files
+        // next to the assembly (security review S8).
+        let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+        if !matches!(ext.as_str(), "sldprt" | "sldasm") {
+            return Err(CommandError::args(format!("'{shown}' is not a SolidWorks part or assembly file")));
         }
         let actual =
             self.find(name).ok_or_else(|| CommandError::not_found(format!("'{shown}' is not in the folder")))?;
@@ -631,14 +655,27 @@ fn sldasm(
     // Each assembly with the placement of the one that holds it, depth first.
     let identity: gusset_xt::Xf = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]);
     // (assembly, holder's placement, depth, name prefix, the assembly file's bytes)
-    type Pending = (gusset_sldprt::Assembly, gusset_xt::Xf, usize, String, Arc<Vec<u8>>);
-    let mut work: Vec<Pending> = vec![(top, identity, 0, String::new(), Arc::new(bytes.to_vec()))];
-    // Part files read once each.
+    type Pending = (Arc<gusset_sldprt::Assembly>, gusset_xt::Xf, usize, String, Arc<Vec<u8>>);
+    let mut work: Vec<Pending> = vec![(Arc::new(top), identity, 0, String::new(), Arc::new(bytes.to_vec()))];
+    // Part files read once each, sub-assemblies parsed once each, and a part that failed to
+    // convert is not tried again for its other instances (security review S1, S4).
     let mut parts: std::collections::HashMap<String, Option<Arc<Vec<u8>>>> = std::collections::HashMap::new();
+    let mut subs: std::collections::HashMap<String, Option<Arc<gusset_sldprt::Assembly>>> =
+        std::collections::HashMap::new();
+    let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut embedded_cache: std::collections::HashMap<String, Arc<Vec<u8>>> = std::collections::HashMap::new();
+    // Every component looked at counts, suppressed and hidden ones too: nesting cannot
+    // multiply the walk past this (S1).
+    let mut walked = 0usize;
     while let Some((asm, parent, depth, prefix, asm_bytes)) = work.pop() {
         for c in &asm.components {
             if cancel.load(Ordering::Relaxed) {
                 return Err(cancelled());
+            }
+            walked += 1;
+            if walked > MAX_SLDASM_WALK {
+                truncated = true;
+                break;
             }
             let name = format!("{prefix}{}", c.name);
             if c.suppressed {
@@ -661,7 +698,19 @@ fn sldasm(
             }
             // A virtual component's part is a stream of this assembly file.
             let embedded: Option<Arc<Vec<u8>>> = if c.kind == ComponentKind::Virtual {
-                match c.embedded.as_deref().map(|st| gusset_sldprt::embedded_part(&asm_bytes, &limits, st)) {
+                // Inflated once per stream of each assembly file (S4).
+                let stream_key =
+                    format!("{:p}\u{0}{}", Arc::as_ptr(&asm_bytes), c.embedded.as_deref().unwrap_or_default());
+                let got = match embedded_cache.get(&stream_key) {
+                    Some(b) => Some(Ok(Some(b.to_vec()))),
+                    None => c.embedded.as_deref().map(|st| gusset_sldprt::embedded_part(&asm_bytes, &limits, st)),
+                };
+                if let Some(Ok(Some(b))) = &got
+                    && !embedded_cache.contains_key(&stream_key)
+                {
+                    embedded_cache.insert(stream_key, Arc::new(b.clone()));
+                }
+                match got {
                     Some(Ok(Some(b))) => Some(Arc::new(b)),
                     other => {
                         let why = match other {
@@ -704,10 +753,27 @@ fn sldasm(
                     ));
                     continue;
                 }
-                match gusset_sldprt::read_assembly(file, &limits) {
-                    Ok(sub) => work.push((sub, world, depth + 1, format!("{name}/"), Arc::clone(file))),
-                    Err(e) => warnings.push(format!("sub-assembly '{name}': {e}")),
+                let sub = subs
+                    .entry(c.file.clone())
+                    .or_insert_with(|| match gusset_sldprt::read_assembly(file, &limits) {
+                        Ok(sub) => Some(Arc::new(sub)),
+                        Err(e) => {
+                            warnings.push(format!("sub-assembly '{name}': {e}"));
+                            None
+                        }
+                    })
+                    .clone();
+                if let Some(sub) = sub {
+                    work.push((sub, world, depth + 1, format!("{name}/"), Arc::clone(file)));
                 }
+                continue;
+            }
+            // The same part (or embedded stream) that failed once fails again.
+            let key = match &c.embedded {
+                Some(st) if c.kind == ComponentKind::Virtual => format!("{}\u{0}{st}", c.file),
+                _ => c.file.clone(),
+            };
+            if failed.contains(&key) {
                 continue;
             }
             match sldprt_bodies(file, &name, importer, cancel, Some(&world)) {
@@ -722,7 +788,10 @@ fn sldasm(
                     warnings.extend(w.into_iter().take(room).map(|m| format!("component '{name}': {m}")));
                 }
                 Err(e) if cancel.load(Ordering::Relaxed) || e.code == "cancelled" => return Err(cancelled()),
-                Err(e) => warnings.push(format!("component '{name}' not imported: {}", e.message)),
+                Err(e) => {
+                    warnings.push(format!("component '{name}' not imported: {}", e.message));
+                    failed.insert(key);
+                }
             }
             if kept_bytes > MAX_F3D_OUTPUT_BYTES {
                 return Err(CommandError::new(
@@ -751,10 +820,10 @@ fn sldasm(
     notes.append(&mut warnings);
     notes.truncate(50);
     if out.is_empty() {
-        return Err(CommandError::new(
-            "io",
-            format!("no component of the assembly could be imported: {}", notes.join("; ")),
-        ));
+        // The reasons quote names from the file: data, in a `_user_text` field (S5).
+        let mut e = CommandError::new("io", "no component of the assembly could be imported");
+        e.details = Some(serde_json::json!({ "warnings_user_text": notes }));
+        return Err(e);
     }
     Ok((out, TIER_XT, notes))
 }
@@ -800,7 +869,18 @@ fn scad(
         // The object as features (ADR 0033 amendment) when they rebuild to the exact build's
         // volume; else it stays this exact body.
         let volume = k.mass_properties(&shape).map(|m| m.volume).unwrap_or(f64::NAN);
-        let as_features = match crate::scad_text::check(c, kernel.clone(), volume, k.bbox(&shape).ok()) {
+        // Each check rebuilds the object's features: past a few hundred objects the rest come
+        // in as exact bodies (security review S3).
+        let checked = if i >= MAX_SCAD_FEATURE_OBJECTS {
+            if i == MAX_SCAD_FEATURE_OBJECTS {
+                notes.push(format!("objects after the first {MAX_SCAD_FEATURE_OBJECTS} come in as exact bodies"));
+            }
+            Err(String::new())
+        } else {
+            crate::scad_text::check(c, kernel.clone(), volume, k.bbox(&shape).ok())
+        };
+        let as_features = match checked {
+            Err(why) if why.is_empty() => None,
             Ok(()) => Some((c.clone(), volume)),
             Err(why) => {
                 notes.push(format!("Object {}: imported as one exact body ({why})", i + 1));
@@ -825,6 +905,9 @@ fn scad(
     let warnings = model.warnings.into_iter().chain(notes).take(50).collect();
     Ok((out, TIER_SCAD, warnings))
 }
+
+/// Most OpenSCAD objects written as features in one import (security review S3).
+const MAX_SCAD_FEATURE_OBJECTS: usize = 500;
 
 /// Most bytes of parsed shapes one FreeCAD import keeps (review X4).
 const MAX_FREECAD_BYTES: usize = 2 << 30;
@@ -1408,9 +1491,10 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         let mut taken: std::collections::HashSet<String> =
             doc.features.iter().map(|f| f.name.to_ascii_lowercase()).collect();
         taken.extend(doc.params.iter().map(|p| p.name.to_ascii_lowercase()));
+        let mut names = crate::scad_text::Names::new(taken);
         for (i, b) in p.bodies.iter().enumerate() {
             let Some((tree, volume)) = &b.scad else { continue };
-            match crate::scad_text::object_text(tree, &mut taken) {
+            match crate::scad_text::object_text(tree, &mut names) {
                 Ok((text, body)) => written.push((i, text, body, *volume)),
                 Err(why) => warnings.push(format!("{}: imported as one exact body ({why})", b.name)),
             }
@@ -1668,6 +1752,10 @@ mod sldasm_tests {
         for n in ["sub/other.SLDPRT", r"sub\other.SLDPRT", "../x.SLDPRT", "C:x.SLDPRT", "..", ".", "", "other.SLDPRT"] {
             assert!(f.load(n).is_err(), "{n}");
         }
+        // Only SolidWorks files are read (S8), and the same name found again is the same file.
+        std::fs::write(dir.join("notes.txt"), b"secret").unwrap();
+        assert!(f.load("notes.txt").is_err());
+        assert!(f.load("My_Part.SLDPRT").is_ok());
         let _ = std::fs::remove_dir_all(dir);
     }
 

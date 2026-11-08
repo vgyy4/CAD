@@ -50,3 +50,17 @@ reproduced the finding. The sources are in the reviewer's scratch directory
 - **`export.image`**: size 1..4096, samples 1..1024, width x height x samples at most 2^26 paths; view from a fixed list; `.png` required; the target goes through `export_target` (agents: confinement, hidden names, device names, extension list; the `png` extension is passed explicitly), refuses to write through a symlink, asks for approval to overwrite when an agent has approvals on, and is written with `durable_write` (random temp name, rename). Rendering stops with the session's cancel flag (checked per row) and the scene has a top-level BVH, so review S10 (work per ray linear in meshes) no longer applies. Meshes are cloned for the renderer (twice the memory of the scene), which is within the usual model limits.
 - **`body.appearance` textures**: `texture` must be one of four keywords or `none`; `texture_size` is finite and 0.01..10000 mm, converted with a range check; error messages echo the value with control characters removed and cut to 40; the document text parser checks the same range. The renderer divides by `size_um.max(1)`.
 - **Fusion**: `component_parts` and `component_groups` are bounded (256 components, run gap 700, 4096 repeats, indexes via `partition_point` and `get`); no panic paths (`groups.len() - 1` is guarded by the non-empty check). `helix_surface` refuses non-finite ranges, tapered helices, and `helix_fit` limits turns to 500; `MAX_SURFACE_CANDIDATES` bounds the retry loop; STEP output is capped at 256 MiB.
+
+## Fix status (2026-11-08)
+
+| # | Status |
+|---|---|
+| S1 | Fixed: sub-assemblies are parsed once per file and shared (`Arc`), and the walk counts every component it looks at, suppressed and hidden ones too, up to 100 000 per import. |
+| S2 | Fixed: the loose (2025-layout) scans of one design stream share a budget of 500 scans' worth of bytes; past it the reader falls back to the reference matrices. |
+| S3 | Fixed: feature names come from a counter per base name (linear), and only the first 500 objects of a file are checked and written as features; the rest come in as exact bodies with one note. |
+| S4 | Fixed: a part or embedded stream that failed to convert is not tried again for its other instances, and embedded parts are inflated once per stream of each assembly file. Converting a part once per instance stays (each instance is placed in its own conversion); the 2000-instance cap bounds it. |
+| S5 | Fixed: the "no component could be imported" error carries the reasons in `details.warnings_user_text`, not in `message`. |
+| S6 | Fixed: an entity's `;` is looked for in the next 11 bytes only. |
+| S7 | Fixed: the folder listing is indexed once (exact, lower case, spaces as underscores). |
+| S8 | Fixed: only `.sldprt` and `.sldasm` names are read from the assembly's folder. |
+| S9-S11 | Accepted (info): bounded by the existing caps; noted. |

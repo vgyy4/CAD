@@ -457,9 +457,21 @@ fn nested_loose(b: &[u8], after: usize, x: &Placement) -> Option<Placement> {
 }
 
 /// The placement the design stores for a reference whose matrix `x` ends at `after`.
-fn nested_for(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Option<Placement> {
-    nested_after(b, repeats, after, x).or_else(|| nested_loose(b, after, x))
+/// `budget`: bytes the loose scan may still look at in this stream; each scan spends what
+/// it reads, so many references cannot make the walk quadratic (security review S2).
+fn nested_for(b: &[u8], repeats: &[usize], after: usize, x: &Placement, budget: &mut usize) -> Option<Placement> {
+    nested_after(b, repeats, after, x).or_else(|| {
+        if *budget < REPEAT_REACH {
+            return None;
+        }
+        *budget -= REPEAT_REACH;
+        nested_loose(b, after, x)
+    })
 }
+
+/// Bytes all loose scans of one design stream may read together: 500 scans' worth (a few
+/// seconds at worst; the samples need a handful).
+const LOOSE_SCAN_BUDGET: usize = 500 * REPEAT_REACH;
 
 /// Most components of one referenced design read from the placements a design stores for them.
 const MAX_PARTS: usize = 256;
@@ -541,6 +553,7 @@ fn moved_after_bare(b: &[u8], repeats: &[usize], after: usize) -> Option<Placeme
 }
 
 fn transforms(b: &[u8]) -> Transforms {
+    let mut loose_budget = LOOSE_SCAN_BUDGET;
     let repeats = class_records(b, CLASS_TRANSFORM_ALSO);
     let mut by_number: std::collections::HashMap<u64, Vec<Placement>> = std::collections::HashMap::new();
     for at in class_records(b, CLASS_TRANSFORM_OF) {
@@ -563,7 +576,13 @@ fn transforms(b: &[u8]) -> Transforms {
                 .into_iter()
                 .rfind(|s| at.saturating_sub(s.1) <= 60 && s.1 <= at);
             if let Some((_, _, id, _)) = near {
-                nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
+                nested.entry(id.clone()).or_default().push(vec![nested_for(
+                    b,
+                    &repeats,
+                    mp + 128,
+                    &m,
+                    &mut loose_budget,
+                )]);
                 let found = component_parts(b, &repeats, mp + 128);
                 if !found.is_empty() {
                     parts.entry(id.clone()).or_insert(found);
@@ -575,7 +594,13 @@ fn transforms(b: &[u8]) -> Transforms {
             if let Some((_, _, id, _)) =
                 uuid_strings(b, end, end + 24 + 72, 1).into_iter().next().filter(|s| s.0 <= end + 24)
             {
-                nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
+                nested.entry(id.clone()).or_default().push(vec![nested_for(
+                    b,
+                    &repeats,
+                    mp + 128,
+                    &m,
+                    &mut loose_budget,
+                )]);
                 let found = component_parts(b, &repeats, mp + 128);
                 if !found.is_empty() {
                     parts.entry(id.clone()).or_insert(found);
@@ -598,14 +623,14 @@ fn transforms(b: &[u8]) -> Transforms {
             }
             continue;
         };
-        let mut over = vec![nested_for(b, &repeats, pos + 128, &m)];
+        let mut over = vec![nested_for(b, &repeats, pos + 128, &m, &mut loose_budget)];
         let mut list = vec![m];
         while list.len() < MAX_INSTANCES {
             pos += 128;
             let next = (pos..=pos + INSTANCE_GAP).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
             let Some((p, m)) = next else { break };
             pos = p;
-            over.push(nested_for(b, &repeats, pos + 128, &m));
+            over.push(nested_for(b, &repeats, pos + 128, &m, &mut loose_budget));
             list.push(m);
         }
         nested.entry(id.clone()).or_default().push(over);

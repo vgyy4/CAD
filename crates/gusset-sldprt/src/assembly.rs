@@ -82,7 +82,9 @@ fn unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(rest.get(..i).unwrap_or_default());
         let tail = rest.get(i..).unwrap_or_default();
-        let Some(j) = tail.find(';').filter(|j| *j <= 10) else {
+        // Entities are short: look for the ';' in the next few bytes only, so a text full of
+        // '&' stays linear (security review S6).
+        let Some(j) = tail.bytes().take(11).position(|b| b == b';') else {
             out.push('&');
             rest = tail.get(1..).unwrap_or_default();
             continue;

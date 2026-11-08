@@ -28,8 +28,8 @@ pub(crate) fn check(
     volume: f64,
     bbox: Option<gusset_kernel::BBox>,
 ) -> Result<(), String> {
-    let mut taken = HashSet::new();
-    let (text, body) = object_text(c, &mut taken)?;
+    let mut names = Names::new(HashSet::new());
+    let (text, body) = object_text(c, &mut names)?;
     let doc = gusset_doc::text::parse(&format!("gusset 1\nunits mm\n\n{text}"))
         .map_err(|e| format!("the features do not parse ({e})"))?;
     let k = kernel.clone();
@@ -57,20 +57,45 @@ pub(crate) fn check(
     Ok(())
 }
 
+/// Feature names in use (lower case) and, per base name, where to look for the next free one,
+/// so naming many objects stays linear (security review S3).
+pub(crate) struct Names {
+    taken: HashSet<String>,
+    next: std::collections::HashMap<String, usize>,
+}
+
+impl Names {
+    pub(crate) fn new(taken: HashSet<String>) -> Names {
+        Names { taken, next: std::collections::HashMap::new() }
+    }
+
+    fn fresh(&mut self, base: &str) -> String {
+        let start = self.next.get(base).copied().unwrap_or(1);
+        for i in start.. {
+            let name = format!("{base}{i}");
+            if self.taken.insert(name.to_ascii_lowercase()) {
+                self.next.insert(base.to_string(), i + 1);
+                return name;
+            }
+        }
+        unreachable!("an unbounded counter always finds a free name")
+    }
+}
+
 /// Writes one object's features, naming them so they clash with nothing in `taken` (lower
 /// case), which grows with the names used. Returns the statements and the feature that made
 /// the object's body.
 ///
 /// # Errors
 /// Why the object cannot be written as features (the exact import takes it then).
-pub(crate) fn object_text(c: &Csg, taken: &mut HashSet<String>) -> Result<(String, String), String> {
-    let mut g = Gen { taken, out: String::new(), curves: 0, features: 0 };
+pub(crate) fn object_text(c: &Csg, names: &mut Names) -> Result<(String, String), String> {
+    let mut g = Gen { names, out: String::new(), curves: 0, features: 0 };
     let body = g.csg(c)?;
     Ok((g.out, body))
 }
 
 struct Gen<'a> {
-    taken: &'a mut HashSet<String>,
+    names: &'a mut Names,
     out: String,
     curves: usize,
     features: usize,
@@ -156,13 +181,7 @@ fn place(m: &M4) -> Result<Place, String> {
 
 impl Gen<'_> {
     fn fresh(&mut self, base: &str) -> String {
-        for i in 1.. {
-            let name = format!("{base}{i}");
-            if self.taken.insert(name.to_ascii_lowercase()) {
-                return name;
-            }
-        }
-        unreachable!("an unbounded counter always finds a free name")
+        self.names.fresh(base)
     }
 
     fn count(&mut self, curves: usize) -> Result<(), String> {
@@ -436,7 +455,7 @@ mod tests {
                    linear_extrude(4) difference() { square(10); translate([5,5]) circle(2); } \
                    rotate_extrude(angle=90) translate([5,0]) square([1,2]);";
         let model = gusset_scad::read(src).unwrap();
-        let mut taken: HashSet<String> = ["sketch1".to_string()].into_iter().collect();
+        let mut taken = Names::new(["sketch1".to_string()].into_iter().collect());
         let mut text = String::from("gusset 1\nunits mm\n\n");
         for o in &model.objects {
             let (t, body) = object_text(o, &mut taken).unwrap();
@@ -453,7 +472,7 @@ mod tests {
     #[test]
     fn what_features_cannot_say_is_refused() {
         let model = gusset_scad::read("mirror([1,0,0]) cube(2); scale([1,2,1]) cube(2);").unwrap();
-        let mut taken = HashSet::new();
+        let mut taken = Names::new(HashSet::new());
         for o in &model.objects {
             assert!(object_text(o, &mut taken).is_err());
         }
