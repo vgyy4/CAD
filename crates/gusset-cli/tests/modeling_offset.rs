@@ -157,5 +157,9 @@ fn offset_face_with_rules_off_moves_only_the_face_or_refuses() {
         "feature.offset_face",
         json!({"faces": ["Extrude1/side(Sketch1/l6)"], "distance": "2 mm", "rules": false}),
     );
-    assert!(r.as_ref().map_or(true, |v| v["rebuild_ok"] == false), "{r:?}");
+    // Refused, nothing committed (dogfooding F14-4).
+    let e = r.unwrap_err();
+    assert!(e.message.contains("cannot move alone"), "{e:?}");
+    let text = execute(&mut s, &u, "document.get_text", json!({})).unwrap();
+    assert!(!text["text_user_text"].as_str().unwrap().contains("offset_face"), "{text}");
 }

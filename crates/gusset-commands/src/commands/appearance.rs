@@ -40,10 +40,11 @@ impl Command for SetAppearance {
             None => None,
         };
         let finish = match &self.finish {
-            Some(f) => Some(
-                Finish::from_keyword(f.trim())
-                    .ok_or_else(|| CommandError::args("finish is plastic, metal, glass or rubber"))?,
-            ),
+            // Any case (dogfooding F14-3); the document writes it in lower case.
+            Some(f) => Some(Finish::from_keyword(&f.trim().to_ascii_lowercase()).ok_or_else(|| {
+                CommandError::args(format!("unknown finish '{}'", crate::paths::display_name(f)))
+                    .hint("finish is plastic, metal, glass or rubber")
+            })?),
             None => None,
         };
         if self.clear && (color.is_some() || finish.is_some()) {
@@ -62,9 +63,11 @@ impl Command for SetAppearance {
         edit(s, ctx, &format!("Appearance of {body}"), |doc, _| {
             let old = doc.appearances.iter().position(|a| a.body == body);
             if self.clear {
-                if let Some(i) = old {
-                    doc.appearances.remove(i);
-                }
+                // Clearing what is not set says so (dogfooding F14-9).
+                let Some(i) = old else {
+                    return Err(CommandError::args(format!("{body} has no appearance to clear")));
+                };
+                doc.appearances.remove(i);
                 return Ok(json!({ "body": body, "appearance": null }));
             }
             let base = old.and_then(|i| doc.appearances.get(i).cloned());

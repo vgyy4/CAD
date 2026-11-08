@@ -1657,7 +1657,12 @@ fn appearances_are_set_kept_renamed_merged_and_cleared() {
     ] {
         assert!(execute(&mut s, &u, "body.appearance", bad.clone()).is_err(), "{bad}");
     }
+    // Any case for the finish (F14-3).
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Plate", "finish": "Metal"}));
+    assert_eq!(r["appearance"]["finish"], "metal", "{r}");
     run(&mut s, &u, "body.appearance", json!({"body": "Plate", "clear": true}));
+    // Clearing again says there is nothing to clear (F14-9).
+    assert!(execute(&mut s, &u, "body.appearance", json!({"body": "Plate", "clear": true})).is_err());
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(!text.contains("appearance "), "{text}");
     // Undo brings it back; the history stores it.

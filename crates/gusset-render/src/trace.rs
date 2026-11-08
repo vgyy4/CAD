@@ -37,9 +37,8 @@ const SUN: Vec3 = [0.408_248_29, 0.408_248_29, 0.816_496_58];
 const SUN_POWER: f64 = 2.2;
 const SUN_SPREAD: f64 = 0.05;
 const GROUND_ALBEDO: f64 = 0.7;
-/// Clear coat: reflectance at normal incidence (a lacquer's 4 %) and roughness.
+/// Clear coat: reflectance at normal incidence (a lacquer's 4 %).
 const COAT_F0: f64 = 0.04;
-const COAT_ROUGH: f64 = 0.08;
 /// Metal roughness and glass's index of refraction.
 const METAL_ROUGH: f64 = 0.12;
 const GLASS_IOR: f64 = 1.5;
@@ -270,19 +269,25 @@ impl World<'_> {
                     continue;
                 }
                 Finish::Plastic => {
-                    // A thin clear coat: a Fresnel share of the paths reflects off it,
-                    // slightly rough; the rest goes into the diffuse base.
+                    // A thin clear coat, added rather than sampled (dogfooding F14-8: random
+                    // coat bounces left grain): its Fresnel share of the sky seen along the
+                    // mirror direction, unless the model is in the way; the base below gets
+                    // the rest.
                     let fresnel = COAT_F0 + (1.0 - COAT_F0) * (1.0 - cos_i).powi(5);
-                    if rng.next() < fresnel {
-                        if depth == bounces {
-                            break;
-                        }
-                        ray = Ray {
-                            origin: off(h.point, h.normal, self.eps),
-                            dir: glossy(ray.dir, h.normal, COAT_ROUGH, rng),
+                    let mirror = sub(ray.dir, scale(h.normal, 2.0 * dot(ray.dir, h.normal)));
+                    let probe = Ray { origin: off(h.point, h.normal, self.eps), dir: mirror };
+                    if self.scene.pick(&probe).is_none() {
+                        let disc = if dot(mirror, SUN) > SUN_DISC.cos() {
+                            SUN_POWER / (std::f64::consts::PI * SUN_DISC * SUN_DISC)
+                        } else {
+                            0.0
                         };
-                        specular = true;
-                        continue;
+                        for ((o, t), s) in out.iter_mut().zip(through).zip(sky(mirror)) {
+                            *o += t * fresnel * (s + disc);
+                        }
+                    }
+                    for t in &mut through {
+                        *t *= 1.0 - fresnel;
                     }
                 }
                 Finish::Rubber => {}

@@ -1211,3 +1211,17 @@ map that works for a direct edit.
 | F14-7 | nit | CAM lengths take unit strings but `cam_toolpath`'s schema (`commands`) still types `depth`, `tool_diameter`, `stepdown`, `top`, `safe`, `peck`, `previous` as `number`; a strict client rejects `"3 mm"` before it reaches the server. `feed`, `plunge` and `holder` (`["3 mm", 10, ...]`) give the serde error `invalid type: string "3 mm", expected f64`. | `cam_toolpath {sketch, operation: pocket, depth: "3 mm", holder: ["3 mm", 10, "6 mm", 20]}` | Declare the lengths as `number or string` in the schema and accept strings in `holder`; say `feed is in mm/min` in its description. |
 | F14-8 | nit | Photo renders of plain diffuse bodies and the floor are grainy at 16 and 32 samples (480x300, 11 s and 18 s in debug), more than the metal and glass; at 8 samples (640x400, 63 s) the bonnet's floor shadow is noisy. | `render_view {style: photo, samples: 16}` of a plastic body on a plastic floor | Say in the `samples` description that diffuse surfaces need 64+; denoise in the last pass, or default `samples` by size. |
 | F14-9 | nit | A rename shows in `body_changes` as one `created` and one `removed` body (`Block` created, `Box` removed, same bbox and volume 12000). `branch_merge` with `prefer: ours` on a conflict returns `merged: false` plus the `conflicts` list and `reason: nothing to take: your branch has every change`, which reads like a failure. `body_appearance clear` on a body that has none succeeds silently. | `feature_rename {from, to}`; `branch_merge {from, prefer: "ours"}` | A `renamed: {from, to}` change kind; `merged: true, taken: []` for `prefer: ours`; `note: no appearance to clear`. |
+
+### Status of the run 14 findings
+
+| ID | Status |
+|---|---|
+| F14-1 | Fixed: `branch_compare` lists `appearances` (and its three-way view counts them as `appearance <body>`). |
+| F14-2 | Fixed: parts are mapped before assemblies and an assembly's name stays with it; the LoRa bonnet's bodies are `Board`, `SOT23`, `RFMHCW_SMT`, ... (OCCT round-trip test of names and colours). |
+| F14-3 | Fixed: the finish is taken in any case; an unknown one is echoed with the four names as a hint. |
+| F14-4 | Fixed: `rules: false` that cannot be built is refused before commit ("these faces cannot move alone: a neighbour tangent to them ... would have to change shape", hint: leave rules out). |
+| F14-5 | Fixed: an old face name in a baked model gets a hint about `<body>/face(i)` and the bake's `face_names` map. |
+| F14-6 | Accepted (ADR 0045 limit): colours by face count; generic SolidWorks body names are the file's own. |
+| F14-7 | Accepted: the schemas stay `number` (the tool list is size-budgeted); strings work for lengths only, as feeds and speeds are not lengths. |
+| F14-8 | Fixed in part: the plastic coat is added, not sampled, so plastic and the floor are much less grainy; scenes of many bodies still take time in a debug build. |
+| F14-9 | Fixed in part: clearing an appearance that is not set says so. A rename's created/removed pair and the `prefer: ours` wording are open. |

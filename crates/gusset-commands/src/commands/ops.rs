@@ -221,6 +221,37 @@ impl Command for OffsetFace {
         }
         let owner = owner_body(s, ctx, &self.faces)?;
         let refs = faces.clone();
+        // rules: false that the kernel cannot build (a tangent neighbour would have to change
+        // shape) is tried first and refused, not committed broken (dogfooding F14-4).
+        if self.rules == Some(false) {
+            let added = std::cell::RefCell::new(String::new());
+            return edit_checked(
+                s,
+                ctx,
+                "Offset face",
+                |doc, rb| {
+                    let name = feature_name(doc, self.name, "OffsetFace")?;
+                    let body = body_for(doc, rb, self.body.or(owner))?;
+                    let def = OffsetFaceDef { body, faces, distance, rules: false };
+                    insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
+                    added.replace(name.clone());
+                    Ok(json!({ "feature": name, "also_moved": [] }))
+                },
+                |s, doc, _| {
+                    let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(doc, None, &());
+                    let name = added.borrow();
+                    match ev.errors().iter().find(|e| e.feature == *name && e.code != gusset_eval::ErrorCode::Unsupported) {
+                        Some(e) => Err(CommandError::args(
+                            "these faces cannot move alone: a neighbour tangent to them (a rounded corner) would have to change shape",
+                        )
+                        .hint("leave rules out to carry tangent faces along")
+                        .details(json!({"kernel_message_user_text": e.message}))),
+                        None => Ok(()),
+                    }
+                },
+                |_, _, _| Value::Null,
+            );
+        }
         let before = face_places(s, ctx, &refs);
         let mut r = edit(s, ctx, "Offset face", |doc, rb| {
             let name = feature_name(doc, self.name, "OffsetFace")?;

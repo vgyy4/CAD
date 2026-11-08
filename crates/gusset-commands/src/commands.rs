@@ -2172,11 +2172,22 @@ fn check_face_resolves(s: &mut Session, ctx: &CmdCtx, r: &FaceRef) -> Result<(),
         .unwrap_or_default();
     names.sort_by_key(|(near, n)| (!*near, n.clone()));
     let candidates: Vec<String> = names.into_iter().take(MAX_CANDIDATES).map(|(_, n)| n).collect();
-    let hint = if candidates.is_empty() {
+    let mut hint = if candidates.is_empty() {
         "create a body first, or sketch on XY, XZ or YZ".to_string()
     } else {
         format!("candidates: {}", candidates.join("; "))
     };
+    // A name from before a bake (dogfooding F14-5): its feature is gone and the model holds
+    // baked bodies, whose faces go by index.
+    let baked = s.document(&ctx.actor).is_ok_and(|d| {
+        d.feature(&prefix).is_none()
+            && d.features.iter().any(|f| matches!(&f.kind, FeatureKind::Import(i) if i.file_name == "baked"))
+    });
+    if baked {
+        hint = format!(
+            "the model was baked: its faces are named <body>/face(i), and feature_bake's face_names maps the old names; {hint}"
+        );
+    }
     Err(CommandError::not_found(format!("face {r} does not exist in the model"))
         .hint(hint)
         .details(json!({ "candidates": candidates })))
@@ -2858,6 +2869,7 @@ impl Command for BranchCompare {
                 "configurations": d.configurations.iter().map(item).collect::<Vec<_>>(),
                 "features": d.features.iter().map(item).collect::<Vec<_>>(),
                 "drawings": d.drawings.iter().map(item).collect::<Vec<_>>(),
+                "appearances": d.appearances.iter().map(item).collect::<Vec<_>>(),
             })
         };
         let mut out = diff_json(&d);
@@ -2876,6 +2888,8 @@ impl Command for BranchCompare {
                 .chain(&d.features)
                 .chain(&d.drawings)
                 .map(|c| c.name.clone())
+                // A body's appearance is named apart from the feature of the same name.
+                .chain(d.appearances.iter().map(|c| format!("appearance {}", c.name)))
                 .collect()
         };
         let both: Vec<String> = names(&da).intersection(&names(&db)).cloned().collect();
