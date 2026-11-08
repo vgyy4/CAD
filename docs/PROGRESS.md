@@ -359,8 +359,11 @@ Phase 3 has started (see Next).
   as one body per solid, named after its own part; STEP export writes the colours back. The
   viewport shades the finishes (metal mirrors sky and ground; glass lightened; rubber matte), the
   form has a colour picker, and the photo render's clear coat is added rather than sampled (no
-  grain). Dogfooding run 14 is fixed but its open nits. Next: per-face colours, textures, a
-  top-level BVH for scenes of many bodies, Fusion colours (in its design stream).
+  grain). Dogfooding run 14 is fixed but its open nits. 3MF and glTF carry colours both ways
+  (base materials, materials); reference meshes take appearances. The code review of the day's
+  work (docs/reviews/2026-11-08-appearances-review.md) is fixed but R11-R14 (minor). Next:
+  per-face colours, textures, a top-level BVH for scenes of many bodies, Fusion colours (in its
+  design stream).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
   single-record read (bounded) and T3 (one `LocalBodies` stream).
 
