@@ -85,6 +85,41 @@ const EN: &[(&str, &str)] = &[
     ("menu.help", "Help"),
     ("menu.diagnostics", "Diagnostics"),
     ("workspace.switcher", "Workspace"),
+    ("notice.no_data_save", "No data folder: cannot save"),
+    ("notice.no_data", "No data folder"),
+    ("notice.saving", "Saving…"),
+    ("settings.reduce_motion", "Reduce motion"),
+    ("view.fit", "Fit view"),
+    ("toolbar.open_project", "Open project"),
+    ("toolbar.agents_panel", "Agents panel"),
+    ("doc.untitled", "Untitled"),
+    ("notice.no_project", "No project"),
+    ("notice.no_project_file", "The project has no file"),
+    ("dialog.enter_path", "Enter a file path"),
+    ("recover.too_many", "Too many recovered copies next to the project"),
+    ("browser.origin_point", "Origin point"),
+    ("browser.plane_xy", "XY plane"),
+    ("browser.plane_xz", "XZ plane"),
+    ("browser.plane_yz", "YZ plane"),
+    ("palette.dark_theme", "Dark theme"),
+    ("palette.light_theme", "Light theme"),
+    ("palette.full_screen", "Full-screen viewport (F11)"),
+    ("palette.wireframe", "Wireframe view"),
+    ("palette.section", "Section view"),
+    ("palette.code_view", "Code view"),
+    ("palette.command_line", "Command line"),
+    ("palette.param_table", "Parameters table"),
+    ("palette.mouse_nav", "Mouse navigation"),
+    ("section.label", "Section"),
+    ("section.cut_across", "Cut across"),
+    ("section.flip", "Flip"),
+    ("section.flip_hint", "Keep the other half"),
+    ("section.at_hint", "Where the plane cuts the model"),
+    ("agents.kind_parameter", "Parameter"),
+    ("agents.kind_configuration", "Configuration"),
+    ("agents.kind_feature", "Feature"),
+    ("agents.units_changed", "Units changed"),
+    ("form.group_default", "Group"),
     ("workspace.design", "Design"),
     ("workspace.assemble", "Assemble"),
     ("workspace.render", "Render"),
@@ -340,5 +375,53 @@ mod tests {
         assert_eq!(n, keys.len(), "duplicate i18n keys");
         assert_eq!(tr("menu.file"), "File");
         assert_eq!(tr("no.such.key"), "no.such.key");
+    }
+    /// UI text goes through `tr` (spec: all user-facing strings externalized): no widget
+    /// call takes an English literal directly. Tests are left out of the scan.
+    #[test]
+    fn widgets_take_no_english_literals() {
+        let sources = [
+            ("agents.rs", include_str!("agents.rs")),
+            ("app.rs", include_str!("app.rs")),
+            ("browser.rs", include_str!("browser.rs")),
+            ("cmdline.rs", include_str!("cmdline.rs")),
+            ("forms.rs", include_str!("forms.rs")),
+            ("palette.rs", include_str!("palette.rs")),
+            ("photo_preview.rs", include_str!("photo_preview.rs")),
+            ("results_panel.rs", include_str!("results_panel.rs")),
+            ("ribbon.rs", include_str!("ribbon.rs")),
+            ("sheet.rs", include_str!("sheet.rs")),
+            ("sketch_constrain.rs", include_str!("sketch_constrain.rs")),
+            ("sketch_place.rs", include_str!("sketch_place.rs")),
+            ("sketch_regions.rs", include_str!("sketch_regions.rs")),
+            ("timeline.rs", include_str!("timeline.rs")),
+            ("value_entry.rs", include_str!("value_entry.rs")),
+            ("viewport.rs", include_str!("viewport.rs")),
+            ("viewport_nav.rs", include_str!("viewport_nav.rs")),
+        ];
+        let calls = [
+            "ui.label(\"",
+            "ui.button(\"",
+            "ui.heading(\"",
+            ".on_hover_text(\"",
+            "Notice { text: \"",
+            "ui.checkbox(&mut self.reduce_motion, \"",
+        ];
+        let mut found = Vec::new();
+        for (name, src) in sources {
+            let code = src.split("#[cfg(test)]").next().unwrap_or_default();
+            for (i, line) in code.lines().enumerate() {
+                for c in calls {
+                    if let Some(at) = line.find(c) {
+                        // A literal that starts with a capital letter reads as English text.
+                        let rest = line.get(at + c.len()..).unwrap_or_default();
+                        if rest.chars().next().is_some_and(char::is_uppercase) {
+                            found.push(format!("{name}:{}: {}", i + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "English literals outside i18n:\n{}", found.join("\n"));
     }
 }

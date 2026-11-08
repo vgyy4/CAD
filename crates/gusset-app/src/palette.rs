@@ -4,6 +4,7 @@
 //! presets) and the recent project files. Every word typed must appear in an entry's label
 //! or detail; commands whose title has them all come first.
 
+use crate::i18n::tr;
 use crate::theme::ThemeKind;
 use crate::viewport::NavPreset;
 
@@ -37,16 +38,16 @@ pub struct Entry {
 
 fn settings() -> Vec<(String, Setting)> {
     let mut v = vec![
-        ("Dark theme".to_string(), Setting::Theme(ThemeKind::Dark)),
-        ("Light theme".to_string(), Setting::Theme(ThemeKind::Light)),
-        ("Full-screen viewport (F11)".to_string(), Setting::FullScreen),
-        ("Wireframe view".to_string(), Setting::Wireframe),
-        ("Section view".to_string(), Setting::Section),
-        ("Code view".to_string(), Setting::CodeView),
-        ("Command line".to_string(), Setting::CommandLine),
-        ("Parameters table".to_string(), Setting::ParamTable),
+        (tr("palette.dark_theme").to_string(), Setting::Theme(ThemeKind::Dark)),
+        (tr("palette.light_theme").to_string(), Setting::Theme(ThemeKind::Light)),
+        (tr("palette.full_screen").to_string(), Setting::FullScreen),
+        (tr("palette.wireframe").to_string(), Setting::Wireframe),
+        (tr("palette.section").to_string(), Setting::Section),
+        (tr("palette.code_view").to_string(), Setting::CodeView),
+        (tr("palette.command_line").to_string(), Setting::CommandLine),
+        (tr("palette.param_table").to_string(), Setting::ParamTable),
     ];
-    v.extend(NavPreset::ALL.iter().map(|p| (format!("Mouse navigation: {}", p.name()), Setting::Nav(*p))));
+    v.extend(NavPreset::ALL.iter().map(|p| (format!("{}: {}", tr("palette.mouse_nav"), p.name()), Setting::Nav(*p))));
     v
 }
 

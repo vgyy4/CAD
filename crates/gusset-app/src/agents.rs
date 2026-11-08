@@ -439,7 +439,11 @@ fn clock(t: u64) -> String {
 /// Plain-text lines of a `branch.compare` result.
 fn compare_lines(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    for (key, title) in [("parameters", "Parameter"), ("configurations", "Configuration"), ("features", "Feature")] {
+    for (key, title) in [
+        ("parameters", tr("agents.kind_parameter")),
+        ("configurations", tr("agents.kind_configuration")),
+        ("features", tr("agents.kind_feature")),
+    ] {
         for c in v.get(key).and_then(Value::as_array).into_iter().flatten() {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("?");
             let change = c.get("change").and_then(Value::as_str).unwrap_or("?");
@@ -453,7 +457,7 @@ fn compare_lines(v: &Value) -> Vec<String> {
         }
     }
     if v.get("units_changed").and_then(Value::as_bool) == Some(true) {
-        out.push("Units changed".into());
+        out.push(tr("agents.units_changed").into());
     }
     if out.is_empty() {
         out.push(tr("agents.no_diff").into());

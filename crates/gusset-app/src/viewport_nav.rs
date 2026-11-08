@@ -10,6 +10,7 @@
 //! faces, edges and corners, and the navigation bar at the bottom centre (orbit, pan,
 //! zoom, fit, home, projection, edges).
 
+use crate::i18n::tr;
 use crate::icons::{self, Ink, Tool};
 use crate::theme::{self, Palette};
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo, WidgetType};
@@ -418,22 +419,26 @@ pub fn section_bar(ui: &mut egui::Ui, viewport: Rect, s: &mut crate::viewport::S
                 .inner_margin(BAR_PAD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Section");
+                        ui.label(tr("section.label"));
                         for (k, name) in ["X", "Y", "Z"].into_iter().enumerate() {
                             if ui
                                 .selectable_label(s.axis == k, name)
-                                .on_hover_text(format!("Cut across {name}"))
+                                .on_hover_text(format!("{} {name}", tr("section.cut_across")))
                                 .clicked()
                             {
                                 s.axis = k;
                             }
                         }
-                        if ui.selectable_label(s.flip, "Flip").on_hover_text("Keep the other half").clicked() {
+                        if ui
+                            .selectable_label(s.flip, tr("section.flip"))
+                            .on_hover_text(tr("section.flip_hint"))
+                            .clicked()
+                        {
                             s.flip = !s.flip;
                         }
                         ui.spacing_mut().slider_width = 140.0;
                         ui.add(egui::Slider::new(&mut s.at, 0.0..=1.0).show_value(false).trailing_fill(true))
-                            .on_hover_text("Where the plane cuts the model");
+                            .on_hover_text(tr("section.at_hint"));
                     });
                 });
         });

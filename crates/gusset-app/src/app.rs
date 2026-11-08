@@ -1448,7 +1448,7 @@ impl App {
                 let group = self.snapshot.doc.feature(name).and_then(|f| f.group.clone());
                 if let Some(form) = self.form.as_mut() {
                     form.set("features", name);
-                    form.set("group", group.as_deref().unwrap_or("Group"));
+                    form.set("group", group.as_deref().unwrap_or(tr("form.group_default")));
                 }
             }
             C::Ungroup => self.submit_command("feature.group", json!({ "features": [name] }), Then::Notice),
@@ -1597,20 +1597,20 @@ impl App {
 
     fn save_then(&mut self, then: AfterSave) -> bool {
         if !self.has_project {
-            self.notice = Some(Notice { text: "No data folder: cannot save".into(), hint: None, error: true });
+            self.notice = Some(Notice { text: tr("notice.no_data_save").into(), hint: None, error: true });
             return false;
         }
         if self.project_path.is_none() {
             self.dialog = Some(Dialog::Path { purpose: PathPurpose::SaveAs, text: "part.gus".into(), error: None });
             return false;
         }
-        self.notice = Some(Notice { text: "Saving…".into(), hint: None, error: false });
+        self.notice = Some(Notice { text: tr("notice.saving").into(), hint: None, error: false });
         let mark = self.save.mark();
         // Only the encoding runs on the model thread; the durable write runs on its own
         // thread, so edits are not held up (post-MVP item M3, saves).
         self.submit(
             |s, p| {
-                let p = p.ok_or("No data folder: cannot save")?;
+                let p = p.ok_or(tr("notice.no_data_save"))?;
                 let w = p.prepare_save(s.history()).map_err(|e| e.to_string())?;
                 // Edits from now on mark it dirty again; a failed write restores it.
                 s.dirty = false;
@@ -1654,14 +1654,14 @@ impl App {
     /// Starts "Save As" to `path`; a failure re-opens the path dialog with the error.
     pub fn save_as(&mut self, path: PathBuf) {
         if !self.has_project {
-            self.notice = Some(Notice { text: "No data folder: cannot save".into(), hint: None, error: true });
+            self.notice = Some(Notice { text: tr("notice.no_data_save").into(), hint: None, error: true });
             return;
         }
         let text = path.to_string_lossy().into_owned();
         let p2 = path.clone();
         self.submit(
             move |s, p| {
-                let p = p.ok_or("No data folder: cannot save")?;
+                let p = p.ok_or(tr("notice.no_data_save"))?;
                 p.save_as(&p2, s.history()).map_err(|e| e.to_string())?;
                 s.project_dir = p2.parent().map(PathBuf::from);
                 s.dirty = false;
@@ -1734,7 +1734,7 @@ impl App {
     /// tests; the File menu uses [`App::request`] with [`Pending::Open`]). The current
     /// project's unsaved changes are kept in its recovery file.
     pub fn open(&mut self, path: PathBuf) -> Result<(), String> {
-        let dirs = self.dirs.clone().ok_or("No data folder")?;
+        let dirs = self.dirs.clone().ok_or(tr("notice.no_data"))?;
         let (project, session, report) = Self::load(&path, dirs, self.kernel.clone())?;
         self.finish_open(path, project, session, report, false);
         Ok(())
@@ -1743,7 +1743,7 @@ impl App {
     /// Reads `path` on a background thread; the window switches to it when it is loaded.
     fn open_in_background(&mut self, path: PathBuf, discard: bool) {
         let Some(dirs) = self.dirs.clone() else {
-            self.notice = Some(Notice { text: "No data folder".into(), hint: None, error: true });
+            self.notice = Some(Notice { text: tr("notice.no_data").into(), hint: None, error: true });
             return;
         };
         let kernel = self.kernel.clone();
@@ -2254,7 +2254,7 @@ impl App {
                 if ui.radio(self.theme == ThemeKind::Light, tr("menu.theme_light")).clicked() {
                     self.theme = ThemeKind::Light;
                 }
-                if ui.checkbox(&mut self.reduce_motion, "Reduce motion").changed() {
+                if ui.checkbox(&mut self.reduce_motion, tr("settings.reduce_motion")).changed() {
                     self.theme_applied = None;
                 }
                 ui.menu_button(tr("menu.ui_scale"), |ui| {
@@ -2277,7 +2277,7 @@ impl App {
                 if ui.button(tr("menu.code")).clicked() {
                     self.toggle_code();
                 }
-                if ui.button("Fit view").clicked() {
+                if ui.button(tr("view.fit")).clicked() {
                     self.viewport.request(NavRequest::Fit);
                 }
                 ui.checkbox(&mut self.full_screen, tr("menu.full_screen"));
@@ -2324,7 +2324,7 @@ impl App {
                 }
             });
             ui.separator();
-            if ribbon::icon_button(ui, &pal, icons::Tool::Open, "Open project").clicked() {
+            if ribbon::icon_button(ui, &pal, icons::Tool::Open, tr("toolbar.open_project")).clicked() {
                 self.dialog = Some(Dialog::Path { purpose: PathPurpose::Open, text: String::new(), error: None });
             }
             if ribbon::icon_button(ui, &pal, icons::Tool::Save, "Save project (Ctrl+S)").clicked() {
@@ -2356,7 +2356,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
                 let shown = self.agents.show_panel;
-                let agents = ribbon::icon_button_with(ui, &pal, "Agents panel", Some(shown), |p, r| {
+                let agents = ribbon::icon_button_with(ui, &pal, tr("toolbar.agents_panel"), Some(shown), |p, r| {
                     icons::paint(p, r.shrink(6.0), Icon::Diamond, pal.agent);
                 });
                 if agents.clicked() {
@@ -3528,7 +3528,7 @@ impl App {
                     });
                     ui.label(tr("close.body"));
                     let name = self.project_path.as_ref().map_or_else(
-                        || "Untitled".to_string(),
+                        || tr("doc.untitled").to_string(),
                         |p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     );
                     ui.set_min_width(400.0);
@@ -3718,9 +3718,9 @@ impl App {
                         let dirs = self.dirs.clone();
                         self.submit(
                             move |_, p| -> Result<PathBuf, String> {
-                                let p = p.ok_or("No project")?;
-                                let dirs = dirs.ok_or("No data folder")?;
-                                let original = p.path().ok_or("The project has no file")?.to_path_buf();
+                                let p = p.ok_or(tr("notice.no_project"))?;
+                                let dirs = dirs.ok_or(tr("notice.no_data"))?;
+                                let original = p.path().ok_or(tr("notice.no_project_file"))?.to_path_buf();
                                 let path = keep_both(&original, &recovered, &dirs)?;
                                 p.discard_recovery();
                                 Ok(path)
@@ -3784,7 +3784,7 @@ impl App {
     pub(crate) fn path_action(&mut self, purpose: PathPurpose, text: &str) -> Result<(), String> {
         let path = PathBuf::from(text.trim());
         if path.as_os_str().is_empty() {
-            return Err("Enter a file path".into());
+            return Err(tr("dialog.enter_path").into());
         }
         let abs = if path.is_absolute() {
             path
@@ -4123,7 +4123,7 @@ pub fn keep_both(original: &std::path::Path, recovered: &History, dirs: &DataDir
             Err(e) => return Err(e.to_string()),
         }
     }
-    let path = path.ok_or("Too many recovered copies next to the project")?;
+    let path = path.ok_or(tr("recover.too_many"))?;
     let fs = gusset_store::fs::RealFs::default();
     if let Err(e) = gusset_store::durable::save_project(&fs, &path, &fs, None, &bytes) {
         let _ = std::fs::remove_file(&path);

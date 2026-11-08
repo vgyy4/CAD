@@ -192,9 +192,13 @@ pub fn count(v: &View<'_>, c: Category) -> usize {
     }
 }
 
-/// The fixed origin entries: (label, icon).
-const ORIGIN: [(&str, Tool); 4] =
-    [("Origin point", Tool::Origin), ("XY plane", Tool::Plane), ("XZ plane", Tool::Plane), ("YZ plane", Tool::Plane)];
+/// The fixed origin entries: (label key, icon).
+const ORIGIN: [(&str, Tool); 4] = [
+    ("browser.origin_point", Tool::Origin),
+    ("browser.plane_xy", Tool::Plane),
+    ("browser.plane_xz", Tool::Plane),
+    ("browser.plane_yz", Tool::Plane),
+];
 
 /// Draws the whole tree and returns what was chosen.
 pub fn show(ui: &mut Ui, state: &mut State, v: &View<'_>) -> Vec<Action> {
@@ -325,11 +329,12 @@ fn document(ui: &mut Ui, v: &View<'_>) {
 }
 
 fn origin(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
-    for (label, tool) in ORIGIN {
-        let mut r = Row::new(tool, label);
-        match label.strip_suffix(" plane") {
+    for (key, tool) in ORIGIN {
+        let mut r = Row::new(tool, tr(key));
+        // The plane's name (XY, XZ, YZ) comes from the key, not the translated label.
+        match key.strip_prefix("browser.plane_").map(str::to_ascii_uppercase) {
             Some(plane) => {
-                plane_row(ui, v, plane, r, out);
+                plane_row(ui, v, &plane, r, out);
             }
             None => {
                 r.indent = INDENT;
