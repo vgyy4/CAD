@@ -20,7 +20,7 @@ Read, not run. Findings and what was done:
 | R11 | low | `also_moved` can list stretched blends; the bake's face map is capped at 200 silently. | Fixed in part: the bake reports `face_names_more`; `also_moved` stays a superset (informational). |
 | R12 | low | The plastic coat reflects only the sky and drops its share when blocked; the disc radiance convention. | Accepted (a 4 % coat; noted). |
 | R13 | low | Shadow tint per glass surface differs from the camera path's tint per pass. | Fixed: a fourth root per surface, so a pass through a solid matches. |
-| R14 | nit | Duplicated STEP colour naming in CLI and commands; dropped partition error with LocalBodies; whole-document clones to read appearances. | Fixed in part: one `step_names` helper; the rest open. |
+| R14 | nit | Duplicated STEP colour naming in CLI and commands; dropped partition error with LocalBodies; whole-document clones to read appearances. | Fixed: one `step_names` helper; a failed final partition is reported as a warning when LocalBodies still import. Accepted: the document reads (one per command or rebuild, which the scene build needs for sketches anyway; `body.appearance` reads it only to clear). |
 
 The review found the text round trip, merge/diff, shader/Rust shading agreement, `color.w`
 packing, the pick cache and the 3MF output correct.

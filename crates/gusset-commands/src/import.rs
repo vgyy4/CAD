@@ -346,6 +346,11 @@ impl ImportJob {
                         "the part's {} bodies come from its imported feature; feature_combine unites them, feature_group folds them in the timeline",
                         locals.len()
                     ));
+                    // The final partition failed to read: say why, the bodies above still come in
+                    // (review R14).
+                    if let Some(f) = &failure {
+                        warnings.push(format!("the part's final body was not read: {}", f.message));
+                    }
                     // One body at a time, its STEP text dropped before the next, under one byte
                     // budget for all of them (security review T1).
                     let mut step_bytes = 0usize;
