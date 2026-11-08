@@ -250,6 +250,10 @@ pub struct Xref {
     /// board of an electronics design, [`Design::context`]) in its own coordinates, when it
     /// moved it away from where that design has it.
     pub nested: Vec<Option<Placement>>,
+    /// Where this design put each component of the referenced design (its own world
+    /// placement, mm), in the order the referenced design lists them; see
+    /// [`component_parts`]. Empty when none were read.
+    pub parts: Vec<Placement>,
 }
 
 /// Class identifiers: each record of the newer layout starts with its class as a
@@ -406,6 +410,8 @@ struct Transforms {
     /// The same shape as `by_id`: the placement stored after each matrix, see
     /// [`CLASS_TRANSFORM_ALSO`].
     nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>>,
+    /// Component placements per reference key, see [`component_parts`].
+    parts: std::collections::HashMap<String, Vec<Placement>>,
     /// Keys of records that name a reference but carry no matrix (a reference left at the
     /// origin).
     /// References named without a matrix (at the origin), with where the design moved their
@@ -455,6 +461,73 @@ fn nested_for(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Optio
     nested_after(b, repeats, after, x).or_else(|| nested_loose(b, after, x))
 }
 
+/// Most components of one referenced design read from the placements a design stores for them.
+const MAX_PARTS: usize = 256;
+/// Largest gap (bytes) between two records of a run of component placements.
+const PART_GAP: usize = 700;
+
+/// The placements a design stores for the components of a referenced design (the Pico case): a
+/// run of class [`CLASS_TRANSFORM_ALSO`] records starting within [`REPEAT_REACH`] bytes after the
+/// reference. A record of the run holds two matrices, the second 8 to 24 bytes after the first
+/// (a joint's origin, then the component's world placement). The run repeats the last
+/// component's pair many times and has empty records between: the distinct second matrices in
+/// order of first appearance are the components', in the order the referenced design lists them.
+fn component_parts(b: &[u8], repeats: &[usize], after: usize) -> Vec<Placement> {
+    let k = repeats.partition_point(|a| *a < after);
+    let mut out: Vec<Placement> = Vec::new();
+    let mut prev = match repeats.get(k) {
+        Some(a) if *a < after.saturating_add(REPEAT_REACH) => *a,
+        _ => return out,
+    };
+    for a in repeats.iter().skip(k).take(MAX_INSTANCES) {
+        if a.saturating_sub(prev) > PART_GAP {
+            break;
+        }
+        prev = *a;
+        let Some(p) = (*a + 40..*a + 110).find(|p| rigid_at(b, *p).is_some()) else { continue };
+        let Some(m) = (p + 128 + 8..=p + 128 + 24).find_map(|q| rigid_at(b, q)) else { continue };
+        if !out.iter().any(|o| same_placement(o, &m)) {
+            out.push(m);
+            if out.len() >= MAX_PARTS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// A component name of the 2025 layouts: the design's names carry a version, `PicoW v1`.
+fn versioned_name(s: &str) -> bool {
+    let Some((head, tail)) = s.rsplit_once(" v") else { return false };
+    !head.is_empty() && s.len() <= 100 && !tail.is_empty() && tail.bytes().all(|c| c.is_ascii_digit())
+}
+
+/// The bodies of each component of a design that has no occurrence records (the Pico W v2
+/// case, stream version 310). The components are the version-suffixed names after the design's
+/// own (the first); a body blob right after a component's name is that component's, any other
+/// blob belongs to the last component (its record is written after the bodies it took over).
+/// Verified against one sample (three components, all within 0.001 mm).
+fn component_groups(runs: &[(usize, String)], refs: &[(usize, String)]) -> Vec<(String, Vec<String>)> {
+    let names: Vec<&(usize, String)> = runs.iter().filter(|(_, s)| versioned_name(s)).collect();
+    let Some((_, comps)) = names.split_first() else { return Vec::new() };
+    if comps.is_empty() || comps.len() > MAX_PARTS {
+        return Vec::new();
+    }
+    let mut groups: Vec<(String, Vec<String>)> = comps.iter().map(|(_, s)| (s.clone(), Vec::new())).collect();
+    let mut prev = 0usize;
+    for (at, id) in refs {
+        // The last component name between the previous blob and this one.
+        let k = comps.partition_point(|(o, _)| o < at);
+        let named = k.checked_sub(1).filter(|k| comps.get(*k).is_some_and(|(o, _)| *o >= prev));
+        let g = named.unwrap_or(groups.len() - 1);
+        if let Some((_, v)) = groups.get_mut(g) {
+            v.push(id.clone());
+        }
+        prev = *at;
+    }
+    groups
+}
+
 /// For a reference at the origin: the first record of class [`CLASS_TRANSFORM_ALSO`] within
 /// [`REPEAT_REACH`] after `after` whose first matrix is not the identity holds the moved
 /// context component's placement itself (the Buck case: no repeat of the reference's matrix
@@ -482,6 +555,7 @@ fn transforms(b: &[u8]) -> Transforms {
     let mut by_id: std::collections::HashMap<String, Vec<Vec<Placement>>> = std::collections::HashMap::new();
     let mut nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>> = std::collections::HashMap::new();
     let mut bare: std::collections::HashMap<String, Option<Placement>> = std::collections::HashMap::new();
+    let mut parts: std::collections::HashMap<String, Vec<Placement>> = std::collections::HashMap::new();
     for at in class_records(b, CLASS_TRANSFORM) {
         // (a) The owner's id ends shortly before the record, the matrix is in it.
         if let Some((mp, m)) = matrix_in(b, at) {
@@ -490,6 +564,10 @@ fn transforms(b: &[u8]) -> Transforms {
                 .rfind(|s| at.saturating_sub(s.1) <= 60 && s.1 <= at);
             if let Some((_, _, id, _)) = near {
                 nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
+                let found = component_parts(b, &repeats, mp + 128);
+                if !found.is_empty() {
+                    parts.entry(id.clone()).or_insert(found);
+                }
                 by_id.entry(id).or_default().push(vec![m]);
             }
             // (a') or the id just after the matrix (a reference used once).
@@ -498,6 +576,10 @@ fn transforms(b: &[u8]) -> Transforms {
                 uuid_strings(b, end, end + 24 + 72, 1).into_iter().next().filter(|s| s.0 <= end + 24)
             {
                 nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
+                let found = component_parts(b, &repeats, mp + 128);
+                if !found.is_empty() {
+                    parts.entry(id.clone()).or_insert(found);
+                }
                 by_id.entry(id).or_default().push(vec![m]);
             }
             continue;
@@ -529,7 +611,7 @@ fn transforms(b: &[u8]) -> Transforms {
         nested.entry(id.clone()).or_default().push(over);
         by_id.entry(id).or_default().push(list);
     }
-    Transforms { by_number, by_id, nested, bare }
+    Transforms { by_number, by_id, nested, parts, bare }
 }
 
 /// What a design stream says about placements.
@@ -549,6 +631,9 @@ pub struct Design {
     /// Body blob id (`BREP.<id>.smb`) to the colour of each of its bodies, from the
     /// `BASEFEAT_PM_BODY_REF` records of its feature, see [`body_ref_colours`].
     pub body_colours: std::collections::HashMap<String, Vec<Option<u32>>>,
+    /// In a design without occurrence records: each component's name and body blob ids, in the
+    /// order the stream lists the components (see [`component_groups`]).
+    pub groups: Vec<(String, Vec<String>)>,
 }
 
 /// Components, occurrences and references of a design stream.
@@ -710,7 +795,8 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
         });
         if let Some((list, over)) = best {
             let nested = (0..list.len()).map(|i| over.and_then(|o| o.get(i)).copied().flatten()).collect();
-            out.xrefs.push(Xref { role: key.clone(), instances: list.clone(), nested });
+            let parts = tf.parts.get(key).cloned().unwrap_or_default();
+            out.xrefs.push(Xref { role: key.clone(), instances: list.clone(), nested, parts });
         }
     }
     // A reference named without a matrix sits at the origin.
@@ -718,7 +804,15 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
         tf.bare.iter().filter(|(k, _)| !tf.by_id.contains_key(*k) && !by_own.contains_key(k.as_str())).collect();
     bare.sort_by(|a, b| a.0.cmp(b.0));
     for (key, over) in bare.into_iter().take(MAX_RECORDS) {
-        out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![*over] });
+        out.xrefs.push(Xref {
+            role: key.clone(),
+            instances: vec![Placement::IDENTITY],
+            nested: vec![*over],
+            parts: Vec::new(),
+        });
+    }
+    if occs.is_empty() {
+        out.groups = component_groups(&runs, &brep_refs_in(&runs));
     }
     out.history = history_pairs(&runs);
     let by_history = body_ref_colours(bulk, &runs);
@@ -1375,6 +1469,105 @@ mod tests {
         }
         many.extend(uuid16(7, false));
         let _ = read_design(&many);
+    }
+
+    #[test]
+    fn a_run_of_component_placements_after_a_reference_is_read_in_order_without_repeats() {
+        // The Pico case: records of two matrices (a joint origin, the component's world
+        // placement 14 bytes after it), the last pair repeated, empty records between.
+        let pair = |j: [f64; 3], w: [f64; 3]| {
+            let mut v = class(CLASS_TRANSFORM_ALSO);
+            v.extend([0u8; 34]);
+            v.extend(matrix(j, false));
+            v.extend([1u8; 14]);
+            v.extend(matrix(w, false));
+            v.extend([5u8; 40]);
+            v
+        };
+        let empty = || {
+            let mut v = class(CLASS_TRANSFORM_ALSO);
+            v.extend([2u8; 20]);
+            v
+        };
+        let mut b = Vec::new();
+        b.extend(class(CLASS_TRANSFORM));
+        b.extend([0u8; 2]);
+        b.extend(matrix([0.0, -2.5, 0.7], true));
+        b.extend([0u8; 8]);
+        b.extend(uuid16(7, false));
+        b.extend([5u8; 200]);
+        b.extend(pair([0.355, -1.51, 0.86], [0.3551, -1.5595, 0.4593]));
+        b.extend(pair([0.0, -2.5, 0.7], [0.0, -2.55, 0.3]));
+        for _ in 0..5 {
+            b.extend(pair([1.05, 2.6, 0.86], [1.0501, 2.5505, 0.4593]));
+            b.extend(empty());
+        }
+        let d = read_design(&b);
+        let x = d.xrefs.iter().find(|x| x.role == id(7)).unwrap();
+        let ts: Vec<[f64; 3]> = x.parts.iter().map(|p| p.t).collect();
+        assert_eq!(ts.len(), 3, "{ts:?}");
+        assert!(
+            near(ts[0], [3.551, -15.595, 4.593])
+                && near(ts[1], [0.0, -25.5, 3.0])
+                && near(ts[2], [10.501, 25.505, 4.593])
+        );
+        // A run that starts too far from the reference is not its own.
+        let mut far = b.clone();
+        for _ in 0..REPEAT_REACH {
+            far.insert(128 + 40 + 2 + 8 + 72 + 20, 9);
+        }
+        let d = read_design(&far);
+        assert!(d.xrefs.iter().find(|x| x.role == id(7)).unwrap().parts.is_empty());
+    }
+
+    #[test]
+    fn bodies_follow_the_component_names_of_a_design_without_occurrence_records() {
+        let name = |s: &str| {
+            let mut v = vec![7u8; 5];
+            v.extend(u16s(s));
+            v
+        };
+        let blob = |n: &str| {
+            let mut v = vec![7u8; 5];
+            v.extend(u16s(&format!("BREP.{n}.smb")));
+            v
+        };
+        let mut b = Vec::new();
+        for part in [
+            name("Board v2"),
+            name("Button v3"),
+            blob("aa11"),
+            name("Logo v15"),
+            blob("bb22"),
+            name("PART_A"),
+            blob("cc33"),
+            blob("dd44"),
+            name("Main v1"),
+        ] {
+            b.extend(part);
+        }
+        let d = read_design(&b);
+        assert_eq!(
+            d.groups,
+            vec![
+                ("Button v3".to_string(), vec!["aa11".to_string()]),
+                ("Logo v15".to_string(), vec!["bb22".to_string()]),
+                ("Main v1".to_string(), vec!["cc33".to_string(), "dd44".to_string()]),
+            ]
+        );
+        // Names without bodies, names alone and noise stay total.
+        let mut many = Vec::new();
+        for k in 0..2000 {
+            many.extend(name(&format!("N{k} v{k}")));
+        }
+        // More components than a reference can place are not read.
+        assert!(read_design(&many).groups.is_empty());
+        assert!((1..MAX_PARTS).contains(&read_design(&many[..many.len() / 10]).groups.len()));
+        assert!(read_design(&name("Only v1")).groups.is_empty());
+        for n in [1usize, 77, 4001] {
+            let noise: Vec<u8> = (0..n).map(|i| (i * 31 % 241) as u8).collect();
+            let _ = read_design(&noise);
+        }
     }
 
     #[test]

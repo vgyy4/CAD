@@ -596,7 +596,7 @@ fn xref_files(description: &Value) -> std::collections::HashMap<String, String> 
 
 /// One use of a design inside the root design: where its origin sits, and where the root put
 /// the design's own context component (an electronics board) when it moved it.
-type Use = (gusset_sat::fusion::Placement, Option<gusset_sat::fusion::Placement>);
+type Use = (gusset_sat::fusion::Placement, Option<gusset_sat::fusion::Placement>, Vec<gusset_sat::fusion::Placement>);
 
 /// Where each design of an `.f3z` stands in the root design: one [`Use`] per use of the design
 /// (references to references composed). `None` for a design that cannot be reached from the
@@ -610,7 +610,7 @@ fn design_instances(
     use gusset_sat::fusion::Placement;
     let mut out: Vec<Option<Vec<Use>>> = vec![None; designs.len()];
     if let Some(slot) = out.get_mut(root) {
-        *slot = Some(vec![(Placement::IDENTITY, None)]);
+        *slot = Some(vec![(Placement::IDENTITY, None, Vec::new())]);
     }
     let mut frontier = vec![root];
     for _ in 0..MAX_F3D_XREF_DEPTH {
@@ -629,7 +629,8 @@ fn design_instances(
                     for (i, inst) in x.instances.iter().enumerate() {
                         if placed.len() < MAX_F3D_BODIES {
                             let over = x.nested.get(i).copied().flatten().map(|o| q.0.then(&o));
-                            placed.push((q.0.then(inst), over));
+                            let parts = x.parts.iter().map(|o| q.0.then(o)).collect();
+                            placed.push((q.0.then(inst), over, parts));
                         }
                     }
                 }
@@ -725,6 +726,7 @@ fn f3d(
             info.bodies.extend(d.bodies);
             info.xrefs.extend(d.xrefs);
             info.context = info.context.or(d.context);
+            info.groups.extend(d.groups);
             info.history.extend(d.history);
             info.body_colours.extend(d.body_colours);
         }
@@ -819,7 +821,7 @@ fn f3d(
     let instances: Vec<Option<Vec<Use>>> = if designs.len() > 1 {
         design_instances(&designs, root, &files, &mut warnings)
     } else {
-        vec![Some(vec![(Placement::IDENTITY, None)]); designs.len()]
+        vec![Some(vec![(Placement::IDENTITY, None, Vec::new())]); designs.len()]
     };
     // Solid bodies only, when there are any: Fusion keeps construction and decal surfaces
     // (a board's printed canvas) as sheet bodies beside the solids (dogfooding F6-8). A file
@@ -831,7 +833,7 @@ fn f3d(
         let mut i = 0;
         let mut kept_bytes = 0usize;
         for (design, insts) in designs.iter().zip(&instances) {
-            let default = [(Placement::IDENTITY, None)];
+            let default = [(Placement::IDENTITY, None, Vec::new())];
             let insts: &[Use] = insts.as_deref().unwrap_or(&default);
             // The root design's own bodies stay where they are; those of a referenced design
             // follow the reference.
@@ -849,6 +851,15 @@ fn f3d(
                     let id = n.rsplit("BREP.").next()?.split('.').next()?;
                     Some((id, b.as_slice()))
                 })
+                .collect();
+            // The component each body blob belongs to, when the design lists components that
+            // the referencing design placed one by one (the Pico case, ADR 0039).
+            let group_of: std::collections::HashMap<&str, usize> = design
+                .info
+                .groups
+                .iter()
+                .enumerate()
+                .flat_map(|(k, (_, v))| v.iter().map(move |id| (id.as_str(), k)))
                 .collect();
             for (entry, data) in design.entries.iter().filter(|(n, _)| is_brep(n)) {
                 i += 1;
@@ -872,14 +883,20 @@ fn f3d(
                     None => history,
                 };
                 for p in own {
-                    for &(origin, moved) in insts {
+                    for (origin, moved, parts) in insts {
+                        let (origin, moved) = (*origin, *moved);
                         // Design coordinates to the root's: the reference's matrix, or the root's
                         // own placement of the design's context component taken as the design's.
                         // A design without a context component (the HDMI connector) was moved as
                         // a whole: the placement the root stored for it is the design's own.
-                        let inst = match (moved, design.info.context) {
-                            (Some(o), Some(ctx)) => o.then(&ctx.inverse()),
-                            (Some(o), None) => o,
+                        let part = match group_of.get(id) {
+                            Some(k) if parts.len() == design.info.groups.len() => parts.get(*k).copied(),
+                            _ => None,
+                        };
+                        let inst = match (part, moved, design.info.context) {
+                            (Some(w), _, _) => w,
+                            (None, Some(o), Some(ctx)) => o.then(&ctx.inverse()),
+                            (None, Some(o), None) => o,
                             _ => origin,
                         };
                         if cancel.load(Ordering::Relaxed) {

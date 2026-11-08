@@ -190,13 +190,32 @@ Trinkey 0 to 63 of 65; QT Py 0 to 138 of 142; USB-C HDMI 0 of 54; BQ25185 Buck 0
 0 of 216; Crickit HAT 20 to 48 of 85 (35 of the author's solids have no body of that size in our
 import at all; of the other 50, 48 are placed).
 
-Pico case, 2026-11-08: the referenced `RaspberryPi Pico W v2` design (stream version 310) holds
-none of the record classes above, and its components' placements (`BOOTSEL`, `PicoW`, the board
-logo: the author's STEP puts them at, for example, -3.551, -9.405, -2.407 mm) appear nowhere in
-it as doubles in cm, mm or m; only the root's matrix for the reference itself is stored (and
-read: the board lands rotated and moved correctly, its components at their own origins). Their
-places most likely come from joints, which are not solved on import. Per-body comparison
-(`scripts/f3d_compare.py`): the bodies are off by exactly those component offsets.
+Pico case, 2026-11-08 (first reading): the referenced `RaspberryPi Pico W v2` design (stream
+version 310) holds none of the record classes above. It was thought to be placed by joints.
+Re-investigated 2026-11-08 (joints): **not joints.** The root design stores a placement per
+component of the referenced design, and the components are listed in the referenced design.
+
+- Root stream (`Pi Pico Case SLA`): the reference's class `E03784ED` record (role `5c6b9519-...`,
+  matrix (0, -25, 7) mm, a half turn about Z) is followed, 1465 bytes later, by a run of class
+  `CE2913AA` records: three of 407 bytes with two matrices each, the second 14 bytes after the
+  first (128 + 14), then the last pair repeated 76 times with 60-byte empty records between. The
+  first matrix of a pair is a joint origin (not needed). The second is the component's world
+  placement in the root: (3.551, -15.595, 4.593) for `BOOTSEL v3`, (0, -25.5, 3.0) for
+  `RaspBerryPi Pico_CircuitBoard_logo v15`, (10.501, 25.505, 4.593) for `PicoW v1`, each exactly
+  the author's STEP placement. The distinct second matrices in order of first appearance are the
+  components', in the order the referenced design lists them (`fusion::component_parts`).
+  (The few `DcJointOriginFeatureMetaType` records of the root hold joint origins for the case
+  halves; no joint geometry was needed.)
+- Referenced stream: no component or occurrence records. Component names carry a version
+  (`BOOTSEL v3`, `PicoW v1`; the design's own name, `RaspberryPi Pico W v2 v2`, comes first).
+  A body blob right after a name is that component's (BOOTSEL: 7 bodies; the logo: 101); any
+  other blob belongs to the last component, whose record is written after the bodies it took
+  over (`PicoW v1`: 74 blobs, 106 bodies). Bodies carry no owner id (checked: no id repeats).
+  This grouping rests on one sample (`fusion::component_groups`) and is used only when the
+  referenced design has exactly as many groups as the root stored placements.
+- A body of a component takes the stored placement as its whole placement (the body blob is
+  in the component's own coordinates). 0 to 213 of 216 solids placed; the three left are not
+  explained.
 
 Buck case, 2026-11-08: a reference named without a matrix (at the origin) whose board the root
 moved has no repeat of the reference's matrix: the first `CE2913AA` record after it holds the
@@ -230,7 +249,9 @@ extra matrix exists for them in either design stream (the strings `Pattern`, `Re
 Result: 0 to 53 of 54 (the one solid left is 24.65 mm from any body of ours; not investigated). The reader fix also lifted: BQ25185 Buck
 65 to 71 of 90, Crickit HAT 48 to 54 of 85, MacroPad 167 to 168 of 185, Pixel Trinkey 63 to 64
 of 65, QT Py 138 to 139 of 142; LoRa 82, CyberDeck 20, NeoKey 12, Keyplate 1 and Pico 0 are
-unchanged. True pattern instances (parameters only) were not found in any sample; if a design
+unchanged. (The remaining solid: the author's 'Panel Body' is 25.8 x 39.5 x 31 mm, ours
+25.8 x 4 x 31 mm: the stored blob is an earlier state of the body, with sheets beside it that
+later features thickened; a geometry difference, not a placement one.) True pattern instances (parameters only) were not found in any sample; if a design
 turns up that stores them that way, nothing reads them.
 
 Fusion colours (2026-11-08, implemented): the findings below are read by `gusset-sat` and
