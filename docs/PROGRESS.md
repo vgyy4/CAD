@@ -279,7 +279,10 @@ Phase 3 has started (see Next).
      `exact_spl_sur` layout the SAT reader refused, and a moved-design placement of the 2025 layout);
      the same reader fix lifted Buck 65 -> 71, Crickit 48 -> 54, MacroPad 167 -> 168, Trinkey
      63 -> 64, QT Py 138 -> 139. Next: helical
-     sweep surfaces (threads), true pattern instances (none found in any sample), joints (the Pico board's components are placed by joints, not matrices). Fusion colours
+     sweep surfaces (threads), true pattern instances (none found in any sample). Pico case
+     2026-11-08 (0 -> 213/216): not joints; the root stores each referenced component's world placement
+     in a run of `CE2913AA` records, the referenced design lists its components by versioned name
+     (ADR 0039 "Pico case"; grouping rests on one sample). Fusion colours
      done (ADR 0039 amendment: `.smb` attribute -> design stream -> `.protein` package -> STEP
      styles); the history blob (`.smbh`) before a body gives the face materials its `.smb` lost
      (matched by face tag, ADR 0039); the `BASEFEAT_PM_BODY_REF` records colour the imported
@@ -381,7 +384,10 @@ Phase 3 has started (see Next).
   them apart from colour and finish; reviewed (docs/reviews/2026-11-08-face-colours-review.md).
   A top-level BVH speeds picking and photo renders of many bodies (PERFORMANCE.md). A RENDER
   tab (Appearance, Render image) and the `export.image` command, and Photo preview in the
-  viewport. Procedural textures (wood, brushed, carbon, speckle; ADR 0045 amendment) in the viewport
+  viewport. The workspace switcher names the workspace and switches between Design, Assemble
+  (an Assembly tab of component, joint and assembly-study tools), Render, Manufacture and
+  Drawing (spec layout). The render-workspace review is fixed
+  (docs/reviews/2026-11-08-render-workspace-review.md). Procedural textures (wood, brushed, carbon, speckle; ADR 0045 amendment) in the viewport
   and photo renders. Next: Fusion body/component appearances without
   a face attribute. 3MF per-triangle colours are read (run 15).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
