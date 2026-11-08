@@ -106,17 +106,23 @@ fn split_look(raw: &str) -> (String, Option<u32>, Vec<(u32, u32)>) {
     let color = parts.next().and_then(gusset_doc::text::parse_color);
     // `<face>=<rrggbb>,...` after a second separator, only with a body colour; at most
     // the document's list limit.
-    let faces = match (color, parts.next()) {
-        (Some(_), Some(list)) => list
-            .split(',')
-            .filter_map(|e| {
-                let (i, c) = e.split_once('=')?;
-                Some((i.parse().ok()?, gusset_doc::text::parse_color(&format!("#{c}"))?))
-            })
-            .take(gusset_doc::text::MAX_LIST_ITEMS)
-            .collect(),
-        _ => Vec::new(),
-    };
+    // One colour per face (the first; the list is the file's text) (face colours review #7).
+    let mut faces: Vec<(u32, u32)> = Vec::new();
+    if let (Some(_), Some(list)) = (color, parts.next()) {
+        let mut seen = std::collections::HashSet::new();
+        for e in list.split(',') {
+            if faces.len() >= gusset_doc::text::MAX_LIST_ITEMS {
+                break;
+            }
+            let Some((i, c)) = e.split_once('=') else { continue };
+            let (Ok(i), Some(c)) = (i.parse::<u32>(), gusset_doc::text::parse_color(&format!("#{c}"))) else {
+                continue;
+            };
+            if seen.insert(i) {
+                faces.push((i, c));
+            }
+        }
+    }
     let name: String = name
         .chars()
         .filter(|c| {
@@ -994,6 +1000,10 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
                 && doc.appearances.len() < gusset_doc::text::MAX_LIST_ITEMS
             {
                 doc.appearances.retain(|a| a.body != name);
+                // Face colours within the document's total (face colours review #4); past it
+                // the body keeps its one colour.
+                let used: usize = doc.appearances.iter().flat_map(|a| &a.faces).map(|g| g.faces.len()).sum();
+                let faces = if used + faces.len() <= gusset_doc::text::MAX_LIST_ITEMS { faces } else { &[][..] };
                 doc.appearances.push(gusset_doc::Appearance {
                     body: name.clone(),
                     color: *c,
@@ -1011,11 +1021,15 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
 /// Face colours as the appearance's groups, one per colour in first-seen order.
 fn face_groups(feature: &str, faces: &[(u32, u32)]) -> Vec<gusset_doc::FaceColor> {
     let mut groups: Vec<gusset_doc::FaceColor> = Vec::new();
+    let mut by_colour: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for &(i, c) in faces {
         let face = gusset_doc::FaceRef::new(feature, gusset_doc::FaceKey::Imported(i));
-        match groups.iter_mut().find(|g| g.color == c) {
-            Some(g) => g.faces.push(face),
-            None => groups.push(gusset_doc::FaceColor { color: c, faces: vec![face] }),
+        let k = *by_colour.entry(c).or_insert_with(|| {
+            groups.push(gusset_doc::FaceColor { color: c, faces: Vec::new() });
+            groups.len() - 1
+        });
+        if let Some(g) = groups.get_mut(k) {
+            g.faces.push(face);
         }
     }
     groups

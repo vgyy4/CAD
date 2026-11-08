@@ -241,6 +241,18 @@ fn step_face_colours_round_trip() {
 }
 
 #[test]
+fn one_coloured_face_on_an_uncoloured_body_stays_one_face() {
+    // Face colours review #1: the body does not take its only coloured face's colour.
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let step = k().export_step(&[(&a.shape, "Plate\u{1f}-\u{1f}1=d02020")]).unwrap();
+    let back = k().import_step(&step).unwrap();
+    let mut parts = back[0].1.split('\u{1f}');
+    assert_eq!(parts.next(), Some("Plate"));
+    assert_eq!(parts.next(), Some("#b4bcc8"), "{:?}", back[0].1);
+    assert_eq!(parts.next().map(|f| f.split(',').count()), Some(1), "{:?}", back[0].1);
+}
+
+#[test]
 fn exchange_roundtrips() {
     let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
     let step = k().export_step(&[(&a.shape, "Plate")]).unwrap();

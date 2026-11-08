@@ -803,11 +803,14 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
     let _ = writeln!(s, r#"<model unit="millimeter" xml:lang="en-US" xmlns="{NS_CORE}">"#);
     s.push_str(" <metadata name=\"Application\">Gusset</metadata>\n <resources>\n");
     // Colours as one base-material group (ADR 0045), id 1; objects follow.
+    // In first-seen order, with an index by colour (face colours review #6).
     let mut colours: Vec<u32> = Vec::new();
+    let mut index: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for c in bodies.iter().flat_map(|b| b.color.into_iter().chain(b.face_colors.iter().map(|f| f.1))) {
-        if !colours.contains(&(c & 0xff_ffff)) {
+        index.entry(c & 0xff_ffff).or_insert_with(|| {
             colours.push(c & 0xff_ffff);
-        }
+            colours.len() - 1
+        });
     }
     if !colours.is_empty() {
         s.push_str("  <basematerials id=\"1\">\n");
@@ -829,7 +832,7 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
             tri_colour = vec![None; tris.len()];
             for &(f, c) in b.face_colors {
                 let Some(r) = b.mesh.face_ranges.get(f as usize) else { continue };
-                let i = colours.iter().position(|x| *x == c & 0xff_ffff);
+                let i = index.get(&(c & 0xff_ffff)).copied();
                 for t in tri_colour.get_mut(r.start as usize..(r.end as usize).min(tris.len())).unwrap_or_default() {
                     *t = i;
                 }
@@ -858,7 +861,7 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         let _ = write!(s, "  <object id=\"{id}\" name=\"");
         xml_escape(b.name, &mut s);
         s.push_str("\" type=\"model\"");
-        let own = b.color.and_then(|c| colours.iter().position(|x| *x == c & 0xff_ffff));
+        let own = b.color.and_then(|c| index.get(&(c & 0xff_ffff)).copied());
         if let Some(i) = own {
             let _ = write!(s, " pid=\"1\" pindex=\"{i}\"");
         }

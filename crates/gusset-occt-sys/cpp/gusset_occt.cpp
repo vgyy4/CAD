@@ -2442,11 +2442,19 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
   auto colour_of = [&](const TopoDS_Shape& s) -> long {
     auto it = colours.find(s.TShape().get());
     if (it != colours.end()) return it->second;
-    // The colour most of its faces have.
+    // The colour most of its faces have, uncoloured faces counted too (key -1): when most
+    // faces have no colour but some do, the body takes the viewport's default colour and the
+    // coloured faces are listed on their own (face colours review #1).
     std::map<long, int> count;
+    bool any = false;
     for (TopExp_Explorer e(s, TopAbs_FACE); e.More(); e.Next()) {
       auto f = colours.find(e.Current().TShape().get());
-      if (f != colours.end()) ++count[f->second];
+      if (f != colours.end()) {
+        ++count[f->second];
+        any = true;
+      } else {
+        ++count[-1];
+      }
     }
     long best = -1;
     int most = 0;
@@ -2455,6 +2463,7 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
         most = nface;
         best = k;
       }
+    if (best < 0 && any) best = 0xb4bcc8;
     return best;
   };
   auto emit = [&](const TopoDS_Shape& s) {

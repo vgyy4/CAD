@@ -3566,7 +3566,8 @@ pub struct ExportMesh {
 }
 
 /// An appearance's face colours as (face index, `0xRRGGBB`), by the body's face names in
-/// kernel order; faces the body no longer has are left out, sorted, one per face.
+/// kernel order; faces the body no longer has are left out, sorted, one per face (the first
+/// colour of a face listed twice).
 #[must_use]
 pub fn face_color_indices(a: &gusset_doc::Appearance, face_names: &[String]) -> Vec<(u32, u32)> {
     if a.faces.is_empty() {
@@ -3574,15 +3575,16 @@ pub fn face_color_indices(a: &gusset_doc::Appearance, face_names: &[String]) -> 
     }
     let index: std::collections::HashMap<&str, u32> =
         face_names.iter().zip(0u32..).map(|(f, i)| (f.as_str(), i)).collect();
-    let mut faces: Vec<(u32, u32)> = a
-        .faces
-        .iter()
-        .flat_map(|g| g.faces.iter().map(move |f| (f, g.color)))
-        .filter_map(|(f, c)| index.get(f.to_string().as_str()).map(|&i| (i, c & 0xff_ffff)))
-        .collect();
-    faces.sort_unstable();
-    faces.dedup_by_key(|(i, _)| *i);
-    faces
+    // A face listed twice keeps its first colour, everywhere (face colours review #3).
+    let mut faces: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for g in &a.faces {
+        for f in &g.faces {
+            if let Some(&i) = index.get(f.to_string().as_str()) {
+                faces.entry(i).or_insert(g.color & 0xff_ffff);
+            }
+        }
+    }
+    faces.into_iter().collect()
 }
 
 /// Body names for a STEP export, each with its appearance colour after U+001F

@@ -89,16 +89,8 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
             let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
             out.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
             // A file's face colours, on the faces the body still has.
-            if !a.faces.is_empty() {
-                let index: std::collections::HashMap<&str, u32> =
-                    body.face_names.iter().zip(0u32..).map(|(n, i)| (n.as_str(), i)).collect();
-                for g in &a.faces {
-                    for f in &g.faces {
-                        if let Some(&i) = index.get(f.to_string().as_str()) {
-                            out.set_face_color(id, i, Some(gusset_render::Srgb(g.color)));
-                        }
-                    }
-                }
+            for (i, c) in gusset_commands::commands::face_color_indices(a, &body.face_names) {
+                out.set_face_color(id, i, Some(gusset_render::Srgb(c)));
             }
         }
         for (h, hit) in request.highlight.iter().zip(matched.iter_mut()) {

@@ -3958,17 +3958,8 @@ pub(crate) fn apply_face_colors(
     face_names: &[String],
     a: &gusset_doc::Appearance,
 ) {
-    if a.faces.is_empty() {
-        return;
-    }
-    let index: std::collections::HashMap<&str, u32> =
-        face_names.iter().zip(0u32..).map(|(n, i)| (n.as_str(), i)).collect();
-    for g in &a.faces {
-        for f in &g.faces {
-            if let Some(&i) = index.get(f.to_string().as_str()) {
-                scene.set_face_color(id, i, Some(gusset_render::Srgb(g.color)));
-            }
-        }
+    for (i, c) in gusset_commands::commands::face_color_indices(a, face_names) {
+        scene.set_face_color(id, i, Some(gusset_render::Srgb(c)));
     }
 }
 

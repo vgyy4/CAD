@@ -154,16 +154,27 @@ impl FramePlan {
                 vec![(0..n, base)]
             } else if opts.faces && !m.face_colors.is_empty() {
                 // Face by face, neighbours of one colour in one run.
+                // Triangles outside every face range keep the base colour (face colours
+                // review #9).
                 let mut runs: Vec<(Range<u32>, [f32; 3])> = Vec::new();
-                for (f, r) in (0u32..).zip(&data.face_ranges) {
-                    let c = hl(m.face_highlight(f), m.face_color(f).linear());
-                    match runs.last_mut() {
-                        Some((last, lc)) if lc.map(f32::to_bits) == c.map(f32::to_bits) && last.end == r.start => {
-                            last.end = r.end
-                        }
-                        _ if r.end > r.start => runs.push((r.clone(), c)),
-                        _ => {}
+                let mut push = |r: Range<u32>, c: [f32; 3]| match runs.last_mut() {
+                    Some((last, lc)) if lc.map(f32::to_bits) == c.map(f32::to_bits) && last.end == r.start => {
+                        last.end = r.end;
                     }
+                    _ if r.end > r.start => runs.push((r, c)),
+                    _ => {}
+                };
+                let mut cursor = 0;
+                for (f, r) in (0u32..).zip(&data.face_ranges) {
+                    if r.start > cursor {
+                        push(cursor..r.start, base);
+                    }
+                    push(r.clone(), hl(m.face_highlight(f), m.face_color(f).linear()));
+                    cursor = cursor.max(r.end);
+                }
+                let n = data.triangle_count() as u32;
+                if n > cursor {
+                    push(cursor..n, base);
                 }
                 runs
             } else if opts.faces {

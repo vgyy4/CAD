@@ -128,6 +128,7 @@ fn set_face_colors(
     }
     let own: std::collections::HashSet<String> = b.names.faces.iter().map(ToString::to_string).collect();
     let mut faces = Vec::with_capacity(names.len());
+    let mut seen = std::collections::HashSet::new();
     for n in names {
         let f = gusset_doc::text::parse_face_ref(n.trim()).ok().filter(|f| own.contains(&f.to_string())).ok_or_else(
             || {
@@ -135,7 +136,9 @@ fn set_face_colors(
                     .hint("query_body lists its faces")
             },
         )?;
-        faces.push(f);
+        if seen.insert(f.to_string()) {
+            faces.push(f);
+        }
     }
     let body = body.to_string();
     edit(s, ctx, &format!("Face colours of {body}"), |doc, _| {
@@ -163,8 +166,10 @@ fn set_face_colors(
             }
         };
         let Some(a) = doc.appearances.get_mut(i) else { return Err(CommandError::args("the appearance went missing")) };
+        // By name in a set: linear in the faces listed (face colours review #5).
+        let named: std::collections::HashSet<String> = faces.iter().map(ToString::to_string).collect();
         for g in &mut a.faces {
-            g.faces.retain(|f| !faces.contains(f));
+            g.faces.retain(|f| !named.contains(&f.to_string()));
         }
         if let Some(c) = color {
             match a.faces.iter_mut().find(|g| g.color == c) {

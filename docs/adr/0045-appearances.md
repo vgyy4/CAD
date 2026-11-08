@@ -70,3 +70,6 @@ anywhere in the document.
   STEP's own body colour then wins over the converter's look (its face colours are relative to
   it). Adafruit's OLED part now shows its blue board, white silkscreen and dark screen instead
   of one lavender body. 3MF face colours are not read yet.
+  A merge treats an appearance as one unit (a finish changed on one side and face colours on
+  the other conflict), and face colours of a deleted feature's faces stay in the text, unused
+  (docs/reviews/2026-11-08-face-colours-review.md).

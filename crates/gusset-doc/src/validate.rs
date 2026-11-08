@@ -117,6 +117,31 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         if !bodies.insert(a.body.as_str()) {
             out.push(issue_h(&a.body, "has two appearances", "keep one appearance per body"));
         }
+        // Face colours: one group per colour, each face in one group.
+        let mut colours = BTreeSet::new();
+        let mut faces = BTreeSet::new();
+        for g in &a.faces {
+            if !colours.insert(g.color) {
+                out.push(issue_h(
+                    &a.body,
+                    format!("lists colour #{:06x} twice in faces", g.color),
+                    "merge the two lists",
+                ));
+            }
+            for f in &g.faces {
+                if !faces.insert(f.to_string()) {
+                    out.push(issue_h(&a.body, format!("colours face {f} twice"), "keep the face in one colour's list"));
+                }
+            }
+        }
+    }
+    let total: usize = doc.appearances.iter().flat_map(|a| &a.faces).map(|g| g.faces.len()).sum();
+    if total > crate::text::MAX_LIST_ITEMS {
+        out.push(issue_h(
+            "appearances",
+            format!("colour {total} single faces, more than {}", crate::text::MAX_LIST_ITEMS),
+            "colour whole bodies instead",
+        ));
     }
 
     // Configurations: unique names, setting existing parameters.

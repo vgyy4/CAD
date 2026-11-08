@@ -118,7 +118,7 @@ impl Field {
                 t.parse::<i64>().map(Value::from).map_err(|_| format!("{} must be a whole number", f.label))?
             }
             FieldKind::StringList => Value::Array(
-                t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::String(s.into())).collect(),
+                split_list(t).into_iter().filter(|s| !s.is_empty()).map(|s| Value::String(s.into())).collect(),
             ),
             FieldKind::NumberList => Value::Array(
                 t.trim_start_matches('[')
@@ -372,5 +372,39 @@ mod tests {
         assert_eq!(args["regions"], serde_json::json!(["L1", "L2"]));
         assert_eq!(args["symmetric"], true);
         assert!(args.get("name").is_none());
+    }
+}
+
+/// A comma-separated list whose items may contain commas inside brackets or quotes: face and
+/// edge names such as `Fillet1/blend(edge(A/top, A/side))` stay whole (review of face colours).
+fn split_list(t: &str) -> Vec<&str> {
+    let (mut out, mut depth, mut quote, mut start) = (Vec::new(), 0i32, false, 0usize);
+    for (i, c) in t.char_indices() {
+        match c {
+            '"' => quote = !quote,
+            '(' | '[' | '{' if !quote => depth += 1,
+            ')' | ']' | '}' if !quote => depth -= 1,
+            ',' if !quote && depth <= 0 => {
+                out.push(t.get(start..i).unwrap_or_default().trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(t.get(start..).unwrap_or_default().trim());
+    out
+}
+
+#[cfg(test)]
+mod split_tests {
+    #[test]
+    fn list_items_keep_their_inner_commas() {
+        assert_eq!(super::split_list("a, b,c"), ["a", "b", "c"]);
+        assert_eq!(
+            super::split_list("Fillet1/blend(edge(A/top, A/side)), Extrude1/cap(start, r)"),
+            ["Fillet1/blend(edge(A/top, A/side))", "Extrude1/cap(start, r)"]
+        );
+        assert_eq!(super::split_list("\"x, y\", z"), ["\"x, y\"", "z"]);
+        assert_eq!(super::split_list(""), [""]);
     }
 }

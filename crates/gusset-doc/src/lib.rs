@@ -669,6 +669,13 @@ mod object_tests {
         let printed = text::print_params_object(&[], &[], &p.appearances);
         assert!(printed.contains(line), "{printed}");
         assert!(text::parse_params_object("appearance A (color: \"#000000\", faces: {\"red\": []})\n").is_err());
+        // A face in two colours, or one colour listed twice, is refused (review #3).
+        let doc = |faces: &str| {
+            Document::from_text(&format!("gusset 1\nunits mm\n\nappearance A (color: \"#000000\", faces: {faces})\n"))
+        };
+        assert!(doc("{\"#d02020\": [A/face(1)], \"#2020d0\": [A/face(2)]}").is_ok());
+        assert!(doc("{\"#d02020\": [A/face(1)], \"#2020d0\": [A/face(1)]}").is_err());
+        assert!(doc("{\"#d02020\": [A/face(1)], \"#d02020\": [A/face(2)]}").is_err());
     }
 }
 
