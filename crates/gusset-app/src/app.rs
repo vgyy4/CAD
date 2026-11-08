@@ -1692,6 +1692,8 @@ impl App {
     fn replace_host(&mut self, make: impl FnOnce(Option<(Session, Option<Project>)>) -> (Session, Option<Project>)) {
         // Agents are disconnected first; they reconnect to the new project (new token).
         self.agents.detach();
+        // The automatic folder sync belonged to the old project (code review R3).
+        (self.sync_args, self.auto_sync, self.last_sync) = (None, false, None);
         let old = self.host.shutdown();
         // Results of the old host's jobs are all delivered by now; apply them first.
         while let Ok(done) = self.done_rx.try_recv() {

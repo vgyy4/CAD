@@ -701,20 +701,25 @@ fn sldasm(
                 // Inflated once per stream of each assembly file (S4).
                 let stream_key =
                     format!("{:p}\u{0}{}", Arc::as_ptr(&asm_bytes), c.embedded.as_deref().unwrap_or_default());
-                let got = match embedded_cache.get(&stream_key) {
-                    Some(b) => Some(Ok(Some(b.to_vec()))),
-                    None => c.embedded.as_deref().map(|st| gusset_sldprt::embedded_part(&asm_bytes, &limits, st)),
+                // Shared, not copied, on a cache hit (code review R4).
+                let got: Option<Result<Arc<Vec<u8>>, String>> = match embedded_cache.get(&stream_key) {
+                    Some(b) => Some(Ok(Arc::clone(b))),
+                    None => match c.embedded.as_deref().map(|st| gusset_sldprt::embedded_part(&asm_bytes, &limits, st))
+                    {
+                        Some(Ok(Some(b))) => {
+                            let b = Arc::new(b);
+                            embedded_cache.insert(stream_key, Arc::clone(&b));
+                            Some(Ok(b))
+                        }
+                        Some(Err(e)) => Some(Err(e.to_string())),
+                        _ => None,
+                    },
                 };
-                if let Some(Ok(Some(b))) = &got
-                    && !embedded_cache.contains_key(&stream_key)
-                {
-                    embedded_cache.insert(stream_key, Arc::new(b.clone()));
-                }
                 match got {
-                    Some(Ok(Some(b))) => Some(Arc::new(b)),
+                    Some(Ok(b)) => Some(b),
                     other => {
                         let why = match other {
-                            Some(Err(e)) => e.to_string(),
+                            Some(Err(e)) => e,
                             _ => "its part is not stored in the assembly".to_string(),
                         };
                         warnings.push(format!("virtual component '{name}' not imported: {why}"));
@@ -1498,6 +1503,29 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
                 Ok((text, body)) => written.push((i, text, body, *volume)),
                 Err(why) => warnings.push(format!("{}: imported as one exact body ({why})", b.name)),
             }
+        }
+    }
+    // The features must also stand in the whole document: its limits (validation) and the
+    // evaluator's document-wide budgets apply to them together with what is there (code
+    // review R1, R2). Checked on a candidate before anything is committed; if they do not,
+    // every object comes in as an exact body.
+    if !written.is_empty() {
+        let doc = s.document(&ctx.actor)?;
+        let text: String = written.iter().map(|w| w.1.as_str()).collect();
+        let candidate = gusset_doc::Document::from_text(&format!("{}\n{text}", doc.to_text()));
+        let why = match candidate {
+            Err(e) => Some(format!("the features would not fit the document ({e})")),
+            Ok(cand) => {
+                let before = s.evaluate(&ctx.actor)?.errors().len();
+                let ev = s.evaluate_doc(&cand, None);
+                let bodies_ok = written.iter().all(|w| ev.bodies.iter().any(|b| b.feature == w.2));
+                (ev.errors().len() > before || !bodies_ok)
+                    .then(|| "the features would not rebuild in this document".to_string())
+            }
+        };
+        if let Some(why) = why {
+            warnings.push(format!("the OpenSCAD objects came in as exact bodies: {why}"));
+            written.clear();
         }
     }
     let feature_text: String = written.iter().map(|w| w.1.as_str()).collect();

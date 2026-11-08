@@ -121,3 +121,27 @@ fn bad_openscad_is_reported_with_its_line() {
     assert!(e.message.contains("could be built") && e.details.unwrap().to_string().contains("evenly"), "{}", e.message);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A union of more children than one combine may take (code review R1): the features split
+/// it over several combines, and the import goes through.
+#[test]
+fn a_large_union_takes_several_combines() {
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let dir = std::env::temp_dir().join(format!("gusset-scad-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("big.scad"), "union() { for (i = [0 : 501]) translate([i * 2, 0, 0]) cube(1); }\n")
+        .unwrap();
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let mut s = Session::new(&doc, k.clone(), &CmdCtx::user(0));
+    s.project_dir = Some(dir.clone());
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "big.scad"})).unwrap();
+    assert_eq!(r["scad_features"].as_array().unwrap().len(), 1, "{r}");
+    let text = s.document(&Actor::User).unwrap().to_text();
+    assert_eq!(text.matches("combine Combine").count(), 2, "two combines for 501 tools");
+    let ev = s.evaluate(&Actor::User).unwrap();
+    assert!(ev.errors().is_empty(), "{:?}", ev.errors());
+    let v = k.mass_properties(&ev.bodies[0].shape).unwrap().volume;
+    assert!((v - 502.0).abs() < 1e-6, "{v}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

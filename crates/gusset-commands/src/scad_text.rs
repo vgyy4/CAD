@@ -210,9 +210,14 @@ impl Gen<'_> {
                     Op::Difference => "cut",
                     Op::Intersection => "intersect",
                 };
-                self.count(0)?;
-                let name = self.fresh("Combine");
-                let _ = writeln!(self.out, "combine {name} (body: {first}, tools: [{}], op: {op})", rest.join(", "));
+                // At most the document's limit of tools per combine (code review R1): more
+                // tools take several combines into the same body, which is the same result.
+                for chunk in rest.chunks(gusset_doc::validate::MAX_COMBINE_TOOLS) {
+                    self.count(0)?;
+                    let name = self.fresh("Combine");
+                    let _ =
+                        writeln!(self.out, "combine {name} (body: {first}, tools: [{}], op: {op})", chunk.join(", "));
+                }
                 Ok(first.clone())
             }
         }
