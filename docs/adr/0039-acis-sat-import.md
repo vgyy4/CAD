@@ -343,3 +343,29 @@ Not covered, and why (the author's STEP of the LoRa bonnet is the ground truth):
 - Pin headers, fiducials and solder jumpers (the 17,635-byte blobs): the STEP is of a later
   design version that replaced them by an other part, so there is no ground truth here.
 
+
+Threads and two reader fixes, 2026-11-08. Helical surfaces occur in one sample only, an
+Autodesk SMT file (`a.smt`, ASM 224, a threaded cap and two parts): two faces on a
+`spline-surface { helix_spl_line ... }` with no stored approximation (`nullbs nullbs`), which
+used to be left out (a body with open shells). Record, after the name: `[version] F u0 F u1
+F t0 F t1 F t0 F t1 centre major minor pitch taper direction null_surface null_surface nullbs
+nullbs ...`, then the surface's own parameter box. The point at `(u, t)` is the helix of
+`helix_int_cur` (`centre + major cos t + minor sin t + pitch t / 2pi`) plus `u` times the
+direction (0 0 -1): a land of the thread, 0.198 wide, along the axis. Checked: the corner
+vertices of both faces (radii 11.882 and 10.165, pitch 3) lie on it at `u = 0` and the face
+t-ranges. `step::helix_surface` writes it as a degree 1 by cubic B-spline over the helix's range
+(16 segments per turn, as the helix curves; chord error under 0.001 mm), bounded by the helix
+turn cap; a taper, a missing range or a non-finite number is refused. The part now converts
+with all its faces (58 to 60 faces, no open shells); the orientation is healed by the importer
+(flipping the surface gave identical bodies). No helical sweep appears in any Fusion sample
+(searched all 255 blobs), so Fusion threads are untested.
+
+Procedural surfaces: the stored approximation is the first `nubs`/`nurbs` that reads as a
+surface (up to 8 tried): a sweep's or blend's path curve (`nubs <degree> <closure> <count>`,
+no second count) can come before it and made four Fusion blobs fail (`v knot count`).
+With the 2025-layout rational fix above: MacroPad Assembly 168 to 173 of 185, BQ25185 Buck 71 to
+86 of 90; all other samples unchanged (LoRa 82, CyberDeck 20, NeoKey 12, Keyplate 1, Trinkey
+64, QT Py 139, HDMI 53, Pico 213, Crickit 54). The three Pico solids still missed (a 42 x 56 x
+10 mm case part we have as 26 x 56 x 10, a 26 x 56 x 4.2 one as 1.6 thick, a 8 x 6 x 3.5 one as
+6.9 x 4.2 x 2) differ in shape, like the HDMI panel: the stored blob is an earlier state of the
+body; they are not placement errors.

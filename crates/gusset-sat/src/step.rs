@@ -103,6 +103,9 @@ struct Bs3 {
     weights: Option<Vec<f64>>,
 }
 
+/// Most `nubs` candidates tried in a procedural surface for its own approximation.
+const MAX_SURFACE_CANDIDATES: usize = 8;
+
 /// Highest B-spline degree read.
 const MAX_DEGREE: usize = 25;
 
@@ -212,6 +215,12 @@ fn helix(r: &Rec, from: usize) -> Result<Bs3, SatError> {
     if r.num(k + 12).is_some_and(|t| t.abs() > 1e-12) {
         return Err(SatError::Unsupported("tapered helices are not read yet".into()));
     }
+    helix_fit(c, m, n, p, ends)
+}
+
+/// The helix `c + m cos t + n sin t + p t / 2π` over `ends` as a cubic B-spline.
+fn helix_fit(c: V3, m: V3, n: V3, p: V3, ends: [f64; 2]) -> Result<Bs3, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("helix: {m}"));
     let [t0, t1] = ends;
     let turns = (t1 - t0).abs() / std::f64::consts::TAU;
     if t1 <= t0 || t1.is_nan() || t0.is_nan() || turns > MAX_HELIX_TURNS {
@@ -243,6 +252,51 @@ fn helix(r: &Rec, from: usize) -> Result<Bs3, SatError> {
         mults.push(if i + 1 == segs { 4 } else { 3 });
     }
     Ok(Bs3 { degree: 3, knots, mults, points, weights: None })
+}
+
+/// A helical ruled surface (`spline-surface ... { helix_spl_line [version] F u0 F u1 F t0 F t1
+/// F t0 F t1 centre major minor pitch taper direction ...`, a thread's flank or land): the point
+/// at `(u, t)` is the helix of [`helix`] at `t` plus `u` times the direction (checked against the
+/// vertices of two faces of a threaded part: the points of the helix's own edges at `u = 0`).
+/// Written as degree 1 across and the helix's cubic fit along, over the helix's full range.
+fn helix_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
+    let bad = |m: &str| SatError::Malformed(format!("helix surface: {m}"));
+    let mut k = from;
+    if r.word(k).is_some_and(|w| w.parse::<i64>().is_ok()) && matches!(r.word(k + 1), Some("F" | "I" | "T")) {
+        k += 1;
+    }
+    let mut ends = [[0.0f64; 2]; 3];
+    for pair in &mut ends {
+        for e in pair.iter_mut() {
+            if !matches!(r.word(k), Some("F" | "T")) {
+                return Err(SatError::Unsupported("helical surfaces without a finite range are not read yet".into()));
+            }
+            *e = r.num(k + 1).filter(|v| v.is_finite()).ok_or_else(|| bad("range"))?;
+            k += 2;
+        }
+    }
+    let c = r.vec3(k).ok_or_else(|| bad("centre"))?;
+    let m = r.vec3(k + 3).ok_or_else(|| bad("major axis"))?;
+    let n = r.vec3(k + 6).ok_or_else(|| bad("minor axis"))?;
+    let p = r.vec3(k + 9).ok_or_else(|| bad("pitch"))?;
+    if r.num(k + 12).is_some_and(|t| t.abs() > 1e-12) {
+        return Err(SatError::Unsupported("tapered helical surfaces are not read yet".into()));
+    }
+    let d = r.vec3(k + 13).ok_or_else(|| bad("direction"))?;
+    let [u0, u1] = ends[0];
+    if u1.partial_cmp(&u0) != Some(std::cmp::Ordering::Greater) {
+        return Err(bad("range"));
+    }
+    let curve = helix_fit(c, m, n, p, ends[1])?;
+    let at = |q: V3, u: f64| [q[0] + d[0] * u, q[1] + d[1] * u, q[2] + d[2] * u];
+    let points = [u0, u1].iter().map(|u| curve.points.iter().map(|q| at(*q, *u)).collect()).collect();
+    Ok(Bs3Surface {
+        degree: [1, 3],
+        knots: [vec![u0, u1], curve.knots],
+        mults: [vec![2, 2], curve.mults],
+        points,
+        weights: None,
+    })
 }
 
 /// A B-spline surface (`exactsur`): `[full] nubs|nurbs <du> <dv> <words> <nu> <nv>`, the u
@@ -758,22 +812,42 @@ impl<'a> Writer<'a> {
                 let name = def.word(at + 1).unwrap_or("").to_string();
                 let b = if name == "exactsur" || name == "exact_spl_sur" {
                     bs3_surface(def, at + 2)?
+                } else if name == "helix_spl_line" {
+                    let note =
+                        "'helix_spl_line' surfaces (threads) are fitted as B-splines within 0.001 mm".to_string();
+                    if !self.warnings.contains(&note) {
+                        self.warn(note);
+                    }
+                    helix_surface(def, at + 2)?
                 } else {
                     // Procedural surfaces (sweeps, blends, offsets...) carry a B-spline
                     // approximation: `nubs|nurbs <du> <dv>` after their own data.
                     let is_int = |i: usize| def.num(i).is_some_and(|v| v.fract() == 0.0 && v >= 1.0);
-                    let start = (at + 2..def.f.len())
-                        .find(|i| matches!(def.word(*i), Some("nubs" | "nurbs")) && is_int(i + 1) && is_int(i + 2))
-                        .ok_or_else(|| {
-                            SatError::Unsupported(format!(
-                                "ACIS spline surfaces of kind '{name}' without a B-spline approximation are not read"
-                            ))
-                        })?;
+                    // The first `nubs` that reads as a surface: a sweep's path curve or a
+                    // blend's spine can come before it (their counts have no second value).
+                    let mut starts = (at + 2..def.f.len())
+                        .filter(|i| matches!(def.word(*i), Some("nubs" | "nurbs")) && is_int(i + 1) && is_int(i + 2));
+                    let mut found: Option<Result<Bs3Surface, SatError>> = None;
+                    for start in starts.by_ref().take(MAX_SURFACE_CANDIDATES) {
+                        let r = bs3_surface(def, start);
+                        let done = r.is_ok();
+                        if done || found.is_none() {
+                            found = Some(r);
+                        }
+                        if done {
+                            break;
+                        }
+                    }
+                    let b = found.ok_or_else(|| {
+                        SatError::Unsupported(format!(
+                            "ACIS spline surfaces of kind '{name}' without a B-spline approximation are not read"
+                        ))
+                    })??;
                     let note = format!("'{name}' surfaces are read as their stored B-spline approximation");
                     if !self.warnings.contains(&note) {
                         self.warn(note);
                     }
-                    bs3_surface(def, start)?
+                    b
                 };
                 let rows: Vec<String> = b
                     .points
@@ -1182,6 +1256,48 @@ mod surface_layout_tests {
         // Without descriptors at all, the counts come right after the degrees.
         let bare = rec(&format!("nubs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
         assert_eq!(bs3_surface(&bare, 0).unwrap().points, a.points);
+    }
+
+    #[test]
+    fn a_helical_ruled_surface_is_the_helix_swept_along_its_direction() {
+        // Two turns, pitch -3 along z, radius 10, a 0.2 wide land along (0, 0, -1).
+        let two_turns = 4.0 * std::f64::consts::PI;
+        let head = "22310 F 0 F 0.2 F 0 F 12.566370614359172 F 0 F 12.566370614359172";
+        let tail = "0 0 3 0 -10 0 -10 0 0 0 0 -3 0 0 0 -1 null_surface null_surface nullbs nullbs";
+        let r = |h: &str| rec(&format!("{h} {tail}"));
+        let sf = helix_surface(&r(head), 0).unwrap();
+        assert_eq!(sf.degree, [1, 3]);
+        assert_eq!(sf.points.len(), 2);
+        let (row0, row1) = (&sf.points[0], &sf.points[1]);
+        assert_eq!(row0.len(), row1.len());
+        let near = |a: V3, b: V3| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
+        assert!(near(row0[0], [0.0, -10.0, 3.0]));
+        assert!(near(row1[0], [0.0, -10.0, 2.8]));
+        // Two turns later the helix is back at the start, six lower.
+        assert!(near(*row0.last().unwrap(), [0.0, -10.0, -3.0]));
+        assert_eq!(sf.knots[1].last().copied(), Some(two_turns));
+        assert_eq!(sf.mults[1].iter().sum::<usize>(), row0.len() + 4);
+        // Hostile: a million turns, a tapered helix, a missing range, non-numbers.
+        let many = head.replace("12.566370614359172", "6283185.3").replace("12.566370614359172", "6283185.3");
+        assert!(helix_surface(&r(&many), 0).is_err());
+        assert!(helix_surface(&rec(&format!("{head} 0 0 3 0 -10 0 -10 0 0 0 0 -3 0.5 0 0 -1")), 0).is_err());
+        assert!(helix_surface(&rec("22310 F 0 F 0.2"), 0).is_err());
+        assert!(helix_surface(&rec("22310 F 0 F nan F 0 F 1 F 0 F 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"), 0).is_err());
+        assert!(helix_surface(&rec("22310 F 0 F 0 F 0 F 1 F 0 F 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1"), 0).is_err());
+    }
+
+    #[test]
+    fn a_curves_nubs_is_not_read_as_a_surface_and_the_next_candidate_is() {
+        // A procedural surface can hold a path curve (`nubs <degree> <closure> <count> ...`)
+        // before its own approximation: the curve fails as a surface, cleanly.
+        let curve = rec("nubs 5 2 3 0.0 5 0.5 1 1.0 5 0 0 0 1 1 1");
+        assert!(bs3_surface(&curve, 0).is_err());
+        let pts = "0 0 0 1 0 0 0 1 0 1 1 1";
+        let both = format!("{} nubs 1 1 open open none none 2 2 0 1 1 1 0 1 1 1 {pts}", "nubs 5 2 3 0.0 5 0.5 1 1.0 5");
+        let r = rec(&both);
+        let start =
+            (0..r.f.len()).filter(|i| r.word(*i) == Some("nubs")).map(|i| bs3_surface(&r, i)).find(Result::is_ok);
+        assert!(start.is_some());
     }
 
     #[test]

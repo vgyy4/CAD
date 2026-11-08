@@ -278,8 +278,9 @@ Phase 3 has started (see Next).
      2026-11-08 (0 -> 53/54): its pins are real bodies, not pattern instances (a rational
      `exact_spl_sur` layout the SAT reader refused, and a moved-design placement of the 2025 layout);
      the same reader fix lifted Buck 65 -> 71, Crickit 48 -> 54, MacroPad 167 -> 168, Trinkey
-     63 -> 64, QT Py 138 -> 139. Next: helical
-     sweep surfaces (threads), true pattern instances (none found in any sample). Pico case
+     63 -> 64, QT Py 138 -> 139. Helical land surfaces (`helix_spl_line`,
+     one SMT sample) and the first-surface-`nubs` rule done 2026-11-08 (MacroPad 173/185, Buck 86/90).
+     Next: true pattern instances (none found in any sample). Pico case
      2026-11-08 (0 -> 213/216): not joints; the root stores each referenced component's world placement
      in a run of `CE2913AA` records, the referenced design lists its components by versioned name
      (ADR 0039 "Pico case"; grouping rests on one sample). Fusion colours
