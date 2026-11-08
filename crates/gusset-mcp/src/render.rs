@@ -85,9 +85,12 @@ pub struct RenderRequest {
     /// Image height in pixels (1..=2048, default 600).
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Shaded or wireframe.
+    /// shaded, wireframe or photo (path traced, slow).
     #[serde(default)]
     pub style: RenderStyle,
+    /// Photo: paths a pixel, 1..=256 (default 16).
+    #[serde(default)]
+    pub samples: Option<u32>,
     /// Face or edge names to highlight (from query_body with names: true).
     #[serde(default)]
     pub highlight: Vec<String>,
@@ -112,6 +115,9 @@ impl RenderRequest {
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=MAX_RENDER_SIZE).contains(&self.width) || !(1..=MAX_RENDER_SIZE).contains(&self.height) {
             return Err(format!("width and height must be between 1 and {MAX_RENDER_SIZE} pixels"));
+        }
+        if self.samples.is_some_and(|n| !(1..=256).contains(&n)) {
+            return Err("samples must be 1 to 256".into());
         }
         if self.highlight.len() > 1000 || self.highlight.iter().any(|h| h.len() > 512) {
             return Err("too many or too long highlight references".into());
@@ -251,6 +257,7 @@ mod tests {
             width: default_size(),
             height: default_height(),
             style: RenderStyle::default(),
+            samples: None,
             highlight: Vec::new(),
             drawing: None,
         };

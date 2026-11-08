@@ -139,7 +139,14 @@ impl World<'_> {
             if dot(geo, ray.dir) > 0.0 {
                 n = scale(n, -1.0);
             }
-            let [r, g, bl] = m.material().color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
+            // Highlighted faces in the viewport's selection colours (dogfooding F12-10).
+            let face = d.face_ranges.iter().position(|r| r.contains(&h.triangle));
+            let color = match face.map(|f| m.face_highlight(f as u32)) {
+                Some(crate::Highlight::Select) => crate::Theme::Light.colors().select,
+                Some(crate::Highlight::Preselect) => crate::Theme::Light.colors().preselect,
+                _ => m.material().color,
+            };
+            let [r, g, bl] = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
             Some((h.distance, Hit { point: h.point, normal: n, albedo: [r, g, bl], coat: true }))
         });
         // The ground plane under the parts.
@@ -233,7 +240,7 @@ pub fn render_traced(
         return Err(RenderError::InvalidSize { size, max: TRACE_MAX_SIDE });
     }
     if !(1..=1024).contains(&settings.samples) || settings.bounces > 6 {
-        return Err(RenderError::Gpu("samples must be 1..=1024 and bounces 0..=6".into()));
+        return Err(RenderError::Settings("samples must be 1..=1024 and bounces 0..=6".into()));
     }
     if u64::from(w) * u64::from(h) * u64::from(settings.samples) > MAX_PATHS {
         return Err(RenderError::Gpu("too much work: fewer samples or a smaller image".into()));

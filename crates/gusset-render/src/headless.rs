@@ -35,6 +35,8 @@ pub enum RenderError {
     },
     /// Reading the image back failed.
     Readback(String),
+    /// Render settings out of range (path tracing's samples or bounces).
+    Settings(String),
     /// PNG encoding failed.
     Image(ImageError),
 }
@@ -48,6 +50,7 @@ impl fmt::Display for RenderError {
                 write!(f, "image size {}x{} is invalid (each side must be 1..={max})", size[0], size[1])
             }
             Self::Readback(s) => write!(f, "image readback failed: {s}"),
+            Self::Settings(s) => write!(f, "{s}"),
             Self::Image(e) => write!(f, "{e}"),
         }
     }

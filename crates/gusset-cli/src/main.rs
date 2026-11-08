@@ -58,6 +58,11 @@ fn main() -> ExitCode {
             }
         }
     }
+    // `gusset <command> --help` (dogfooding F12-10).
+    if args.len() > 1 && args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     let r = match args.first().map(String::as_str) {
         Some("--version" | "-V" | "version") => {
             println!("gusset {}", env!("CARGO_PKG_VERSION"));
@@ -96,6 +101,8 @@ struct Opts {
     /// `.png` exports: paths a pixel and image size.
     samples: u32,
     size: [u32; 2],
+    /// `--samples` or `--size` given (they only apply to `.png`).
+    samples_set: bool,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -108,6 +115,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         output: None,
         samples: 64,
         size: [1600, 1200],
+        samples_set: false,
     };
     let mut it = args.iter();
     let mut have_file = false;
@@ -120,12 +128,14 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "-o" | "--output" => o.output = Some(PathBuf::from(val("-o")?)),
             "--samples" => {
                 o.samples = val("--samples")?.parse().map_err(|_| "--samples needs a whole number".to_string())?;
+                o.samples_set = true;
             }
             "--size" => {
                 let v = val("--size")?;
                 let (w, h) = v.split_once('x').ok_or("--size is WIDTHxHEIGHT, e.g. 1600x1200")?;
                 let n = |t: &str| t.parse::<u32>().map_err(|_| "--size is WIDTHxHEIGHT, e.g. 1600x1200".to_string());
                 o.size = [n(w)?, n(h)?];
+                o.samples_set = true;
             }
             "--tolerance" => {
                 o.tolerance =
@@ -186,6 +196,9 @@ fn importer() -> Option<Arc<dyn gusset_commands::session::Importer>> {
 
 fn build(args: &[String]) -> Result<ExitCode, String> {
     let o = parse_opts(args)?;
+    if o.samples_set && !o.exports.iter().any(|e| e.extension().is_some_and(|x| x.eq_ignore_ascii_case("png"))) {
+        eprintln!("note: --samples and --size apply to .png exports only");
+    }
     let h = load(&o.file)?;
     let b = pick_branch(&h, o.branch.as_deref())?;
     let (k, _) = kernel()?;

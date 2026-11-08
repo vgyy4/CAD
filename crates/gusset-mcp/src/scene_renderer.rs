@@ -163,7 +163,7 @@ impl ViewRenderer for SceneRenderer {
         let camera = build_camera(request, &s)?;
         if request.style == RenderStyle::Photo {
             // CPU path tracing: 16 paths a pixel keep an 800 x 600 view to a few seconds.
-            let set = gusset_render::TraceSettings { samples: 16, bounces: 2 };
+            let set = gusset_render::TraceSettings { samples: request.samples.unwrap_or(16), bounces: 2 };
             return gusset_render::render_traced(&s, &camera, [request.width, request.height], set)
                 .map_err(|e| format!("rendering failed: {e}"))
                 .and_then(|img| img.to_png().map_err(|e| format!("rendering failed: {e}")));
@@ -285,6 +285,24 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
         assert_eq!((img.width, img.height), (48, 36));
         // Deterministic.
         assert_eq!(png, r.render_png(&req, &plate_scene()).unwrap());
+    }
+
+    #[test]
+    fn photo_takes_samples_and_draws_highlights() {
+        let r = SceneRenderer::with_backend(RenderBackend::Software);
+        let scene = plate_scene();
+        let photo = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({"width": 40, "height": 30, "style": "photo", "samples": 2});
+            if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            let req: RenderRequest = serde_json::from_value(v).unwrap();
+            r.render_png(&req, &scene)
+        };
+        let plain = photo(serde_json::json!({})).unwrap();
+        let faces = scene.bodies[0].face_names.clone();
+        assert_ne!(plain, photo(serde_json::json!({"highlight": faces})).unwrap());
+        assert!(photo(serde_json::json!({"samples": 0})).unwrap_err().contains("samples"));
     }
 
     #[test]
