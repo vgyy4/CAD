@@ -183,10 +183,13 @@ impl SoftwareRenderer {
                 }
             }
         }
+        // A table instead of a `powf` per channel and pixel (3 M per 1280 x 800 frame).
+        let lut = srgb_lut();
         let mut data = Vec::with_capacity(w * h * 4);
         for c in &t.color {
             for k in c {
-                data.push((linear_to_srgb(*k) * 255.0).round() as u8);
+                let i = (k.clamp(0.0, 1.0) * (SRGB_LUT_SIZE - 1) as f32).round() as usize;
+                data.push(lut.get(i).copied().unwrap_or(255));
             }
             data.push(255);
         }
@@ -200,6 +203,18 @@ impl SoftwareRenderer {
     pub fn render_png(&self, scene: &Scene, camera: &Camera, size: [u32; 2]) -> Result<Vec<u8>, RenderError> {
         Ok(self.render_rgba(scene, camera, size)?.to_png()?)
     }
+}
+
+const SRGB_LUT_SIZE: usize = 16_384;
+
+/// Linear [0, 1] in `SRGB_LUT_SIZE` steps to 8-bit sRGB (the dark end within one step).
+fn srgb_lut() -> &'static [u8] {
+    static LUT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        (0..SRGB_LUT_SIZE)
+            .map(|i| (linear_to_srgb(i as f32 / (SRGB_LUT_SIZE - 1) as f32) * 255.0).round() as u8)
+            .collect()
+    })
 }
 
 /// Edge vertex in view space, pulled towards the eye like `pull()` in the shader.

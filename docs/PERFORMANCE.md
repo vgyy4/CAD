@@ -10,9 +10,9 @@ under the software renderer for frame times.
 | Cold start to interactive window | < 1.5 s | not yet measured | `gusset --bench-startup` |
 | Idle RAM, empty document | < 250 MB (incl. GPU memory on iGPU) | not yet measured | |
 | Idle CPU | ~0 % (no continuous redraw) | not yet measured | automated idle test (no frames requested over 5 s) |
-| Orbit frame time, typical part | 60 fps (16.7 ms) | not yet measured | scripted scenario |
-| Large assembly | ≥ 30 fps | not yet measured | |
-| Software renderer | ≥ 15 fps | not yet measured | CI (llvmpipe) |
+| Orbit frame time, typical part | 60 fps (16.7 ms) | 11.5 ms (87 fps) on llvmpipe (no GPU in the container), 1280 x 800, incl. readback | `gusset-render` test `perf` (`--ignored`) |
+| Large assembly | ≥ 30 fps | 400 bodies / 1.6 M triangles: 208 ms (4.8 fps) on llvmpipe, a CPU rasterizer; needs a real iGPU measurement | `gusset-render` test `perf` |
+| Software renderer | ≥ 15 fps | typical part 52 ms (19 fps) at 1280 x 800 (was 80 ms before an sRGB table); 400 bodies 318 ms | `gusset-render` test `perf` |
 | Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | 0.12 s incremental, 3.0 s full (OCCT, plate + 49 bosses, dev build) | `gusset-cli` test `rebuild_100_budget` (OCCT CI job) |
 | Binary size (app + OCCT libs, compressed) | < 60 MB | 26–41 MB per package (v0.1.0-mvp: MSI 26–28, zip 31–32, dmg 35, AppImage 36–38, tar.gz 39–41, deb 26–30) | release workflow |
 | History overhead | ≤ 450 bytes per single-parameter edit, independent of model size (revised from "≤ 15 % of the parametric size per 100 edits", see below) | ~370 bytes per edit (29 % of a 1,000-feature model per 100 edits; was ~7.5 KB per edit with 200 features) | `gusset-project` test `history_overhead_budget` |
@@ -193,3 +193,11 @@ parametric size per 100 edits") cannot hold for small models: 100 edits of a 25 
 model add ~37 KB whatever the format, as long as nodes are kept. The budget is
 therefore stated per edit (≤ 450 bytes); for a 1,000-feature part it amounts to
 ~30 % per 100 edits. History pruning (ADR 0006) bounds the total.
+
+### 2026-11-08: frame times (`cargo test --release -p gusset-render --test perf -- --ignored --nocapture`)
+Development container, 4 vCPU, no GPU: wgpu picks llvmpipe, so the "GPU" figures are a CPU
+rasterizer and say little about an iGPU. The software renderer spent a third of a typical
+frame converting colours to sRGB (`powf` three times per pixel); a 16384-entry table brought
+1280 x 800 from 80 ms to 52 ms. The 400-body scene is dominated by rasterizing 1.6 M triangles;
+level of detail for large assemblies (spec) is not done yet, and a real iGPU measurement is
+owed.
