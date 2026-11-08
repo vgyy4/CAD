@@ -273,6 +273,8 @@ pub struct App {
     pub sheet_tab: bool,
     /// The Manufacture tab is chosen (ADR 0040).
     pub cam_tab: bool,
+    /// The Render tab is chosen.
+    pub render_tab: bool,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -422,6 +424,7 @@ impl App {
             surface_tab: false,
             sheet_tab: false,
             cam_tab: false,
+            render_tab: false,
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -2371,6 +2374,7 @@ impl App {
                 surface: self.surface_tab,
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
+                render: self.render_tab,
             },
         );
         if let Some(a) = action {
@@ -2396,6 +2400,7 @@ impl App {
                 surface: self.surface_tab,
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
+                render: self.render_tab,
             },
         );
         if let Some(a) = action {
@@ -2406,6 +2411,10 @@ impl App {
     /// Carries out what the tabs or the ribbon reported.
     pub fn ribbon_action(&mut self, action: Action) {
         match action {
+            // "Render image" in the app renders the current view (`render_to`), not a named view.
+            Action::Run("export.image") => {
+                self.dialog = Some(Dialog::Path { purpose: PathPurpose::Render, text: "part.png".into(), error: None });
+            }
             Action::Run(id) => self.start_command(id),
             Action::Search => self.palette = Some(String::new()),
             Action::SelectFilter(f) => self.viewport.select_filter = f,
@@ -2415,21 +2424,27 @@ impl App {
                 self.surface_tab = false;
                 self.sheet_tab = false;
                 self.cam_tab = false;
+                self.render_tab = false;
                 self.finish_sketch();
             }
             Action::SurfaceTab => {
                 self.active_drawing = None;
-                (self.surface_tab, self.sheet_tab, self.cam_tab) = (true, false, false);
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (true, false, false, false);
                 self.finish_sketch();
             }
             Action::SheetTab => {
                 self.active_drawing = None;
-                (self.surface_tab, self.sheet_tab, self.cam_tab) = (false, true, false);
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, true, false, false);
+                self.finish_sketch();
+            }
+            Action::RenderTab => {
+                self.active_drawing = None;
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, true);
                 self.finish_sketch();
             }
             Action::CamTab => {
                 self.active_drawing = None;
-                (self.surface_tab, self.sheet_tab, self.cam_tab) = (false, false, true);
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, true, false);
                 self.finish_sketch();
             }
             Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {

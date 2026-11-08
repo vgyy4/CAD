@@ -87,6 +87,8 @@ fn main() -> eframe::Result {
     // Agents reach the open project over localhost MCP (ADR 0012). `render_view` uses the
     // GPU when an adapter exists (created lazily) and the CPU rasterizer otherwise.
     app.set_renderer(Some(std::sync::Arc::new(gusset_mcp::SceneRenderer::new())));
+    // `export.image` (the Render workspace) path-traces through the same scene builder.
+    gusset_commands::commands::set_photo_renderer(std::sync::Arc::new(gusset_mcp::SceneRenderer::new()));
     app.start_agents(gusset_mcp::HttpOptions::default());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

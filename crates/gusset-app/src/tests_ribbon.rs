@@ -780,6 +780,32 @@ fn the_manufacture_tab_shows_the_cam_tools() {
 }
 
 #[test]
+fn the_render_tab_offers_appearance_and_a_rendered_image_of_the_view() {
+    let mut h = harness(app());
+    h.run();
+    assert!(h.query_by_label("Render image").is_none());
+    h.get_by_label("RENDER").click();
+    h.run();
+    assert!(h.state().render_tab && !h.state().cam_tab);
+    // "Render image" renders the current view: it asks where to save the picture.
+    h.get_by_label("Render image").click();
+    h.run();
+    assert!(
+        matches!(h.state().dialog, Some(crate::app::Dialog::Path { purpose: crate::app::PathPurpose::Render, .. })),
+        "{:?}",
+        h.state().dialog.is_some()
+    );
+    h.state_mut().dialog = None;
+    h.get_by_label("Appearance").click();
+    h.run();
+    assert_eq!(h.state().form.as_ref().map(|f| f.command), Some("body.appearance"));
+    h.state_mut().form = None;
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert!(!h.state().render_tab);
+}
+
+#[test]
 fn a_toolpath_is_previewed_over_the_model_until_the_model_changes() {
     let mut a = app();
     a.run("sketch.create", json!({"plane": "XY"})).unwrap();

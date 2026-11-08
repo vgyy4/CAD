@@ -26,6 +26,8 @@ pub enum Action {
     SheetTab,
     /// The Manufacture tab (ADR 0040): toolpaths and G-code.
     CamTab,
+    /// The Render tab: appearances and path-traced pictures.
+    RenderTab,
     /// The Sketch tab: edits the latest sketch (or starts a new one).
     SketchTab,
     /// "Finish sketch".
@@ -136,6 +138,11 @@ const CAM: &[Group] = &[
     Group { key: "ribbon.create", large: 1, tools: &[d("sketch.create", "Sketch")] },
     Group { key: "ribbon.inspect", large: 1, tools: &[d("cam.toolpath", "Toolpath")] },
     Group { key: "ribbon.export", large: 1, tools: &[d("cam.export_gcode", "G-code")] },
+];
+
+const RENDER: &[Group] = &[
+    Group { key: "ribbon.appearance", large: 1, tools: &[d("body.appearance", "Appearance")] },
+    Group { key: "ribbon.export", large: 1, tools: &[d("export.image", "Render image")] },
 ];
 
 const SHEET: &[Group] = &[
@@ -278,6 +285,8 @@ pub struct Ribbon<'a> {
     pub sheet: bool,
     /// The Manufacture tab is chosen.
     pub cam: bool,
+    /// The Render tab is chosen.
+    pub render: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -367,10 +376,15 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         let sketching = r.sketch.is_some() && r.drawing.is_none();
         let drawing = r.drawing.is_some();
         for (label, active, act) in [
-            (tr("tab.solid"), !sketching && !drawing && !r.surface && !r.sheet && !r.cam, Action::SolidTab),
+            (
+                tr("tab.solid"),
+                !sketching && !drawing && !r.surface && !r.sheet && !r.cam && !r.render,
+                Action::SolidTab,
+            ),
             (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
             (tr("tab.sheet"), !sketching && !drawing && r.sheet, Action::SheetTab),
             (tr("tab.cam"), !sketching && !drawing && r.cam, Action::CamTab),
+            (tr("tab.render"), !sketching && !drawing && r.render, Action::RenderTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
         ] {
@@ -474,6 +488,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         SHEET
     } else if r.cam {
         CAM
+    } else if r.render {
+        RENDER
     } else {
         SOLID
     };

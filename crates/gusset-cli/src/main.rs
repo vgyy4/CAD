@@ -38,6 +38,8 @@ fn main() -> ExitCode {
     if let Some(e) = gusset_hw::codeload::harden() {
         eprintln!("warning: {e}");
     }
+    // `export.image` path-traces through the MCP server's scene builder.
+    gusset_commands::commands::set_photo_renderer(std::sync::Arc::new(gusset_mcp::SceneRenderer::new()));
     // IGES input copies left by an import that a crash cut short (no import runs a day).
     gusset_worker::sweep_stale_import_dirs(std::time::Duration::from_secs(24 * 3600));
     let mut args: Vec<String> = std::env::args().skip(1).collect();

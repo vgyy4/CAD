@@ -1818,3 +1818,35 @@ fn an_unchanged_body_is_not_tessellated_again() {
     let again = s.evaluate(&u.actor).unwrap().bodies[0].shape.clone();
     assert!(std::sync::Arc::ptr_eq(&first, &s.tessellate_cached(&again, &tp).unwrap()));
 }
+
+#[test]
+fn render_image_writes_a_png_through_the_registered_renderer() {
+    struct Stub;
+    impl crate::commands::PhotoRenderer for Stub {
+        fn photo(&self, r: &crate::commands::PhotoRequest) -> Result<Vec<u8>, String> {
+            assert!(!r.bodies.is_empty() && r.view == "top", "{} bodies, view {}", r.bodies.len(), r.view);
+            Ok(b"\x89PNG\r\n\x1a\nstub".to_vec())
+        }
+    }
+    crate::commands::set_photo_renderer(std::sync::Arc::new(Stub));
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let d = std::env::temp_dir().join(format!("gusset-image-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    build_plate(&mut s, &u);
+    let r = run(&mut s, &u, "export.image", json!({"path": "p.png", "view": "Top", "samples": 4}));
+    assert_eq!(r["written"], "p.png", "{r}");
+    assert!(std::fs::read(d.join("p.png")).unwrap().starts_with(b"\x89PNG"));
+    for bad in [
+        json!({"path": "p.png", "overwrite": true, "view": "sideways"}),
+        json!({"path": "p.png", "overwrite": true, "samples": 0}),
+        json!({"path": "p.png", "overwrite": true, "width": 5000}),
+        json!({"path": "p.jpg"}),
+        json!({"path": "p.png"}),
+    ] {
+        assert!(execute(&mut s, &u, "export.image", bad.clone()).is_err(), "{bad}");
+    }
+    let _ = std::fs::remove_dir_all(d);
+}

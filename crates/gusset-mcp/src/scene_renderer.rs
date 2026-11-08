@@ -10,7 +10,7 @@
 //! The GPU device is created lazily on the first `render_view` call: a headless MCP
 //! session that never renders never touches the GPU stack.
 
-use crate::render::{Camera, NamedView, RenderRequest, RenderScene, RenderStyle, ViewRenderer};
+use crate::render::{Camera, NamedView, RenderBody, RenderRequest, RenderScene, RenderStyle, ViewRenderer};
 use gusset_render::{
     AdapterPreference, Highlight, MeshId, Projection, Scene, SoftwareRenderer, ViewRenderer as RenderPath, math,
 };
@@ -170,6 +170,45 @@ pub fn build_camera(request: &RenderRequest, scene: &Scene) -> Result<gusset_ren
     Ok(cam)
 }
 
+/// The Render workspace's `export.image` (gusset-commands): the same scene as `render_view`,
+/// path traced at any size up to the command's limits.
+impl gusset_commands::commands::PhotoRenderer for SceneRenderer {
+    fn photo(&self, r: &gusset_commands::commands::PhotoRequest) -> Result<Vec<u8>, String> {
+        let view: NamedView =
+            serde_json::from_value(serde_json::Value::String(r.view.clone())).map_err(|e| format!("view: {e}"))?;
+        let request = RenderRequest {
+            view,
+            camera: None,
+            width: r.width,
+            height: r.height,
+            style: RenderStyle::Photo,
+            samples: Some(r.samples),
+            highlight: Vec::new(),
+            drawing: None,
+        };
+        let scene = RenderScene {
+            bodies: r
+                .bodies
+                .iter()
+                .map(|b| RenderBody {
+                    name: b.name.clone(),
+                    mesh: (*b.mesh).clone(),
+                    face_names: b.face_names.clone(),
+                    edge_names: Vec::new(),
+                    look: b.look.clone(),
+                    face_colors: b.face_colors.clone(),
+                })
+                .collect(),
+        };
+        let s = build_scene(&request, &scene)?;
+        let camera = build_camera(&request, &s)?;
+        let set = gusset_render::TraceSettings { samples: r.samples, ..Default::default() };
+        gusset_render::render_traced(&s, &camera, [r.width, r.height], set)
+            .map_err(|e| format!("rendering failed: {e}"))
+            .and_then(|img| img.to_png().map_err(|e| format!("rendering failed: {e}")))
+    }
+}
+
 impl ViewRenderer for SceneRenderer {
     fn render_png(&self, request: &RenderRequest, scene: &RenderScene) -> Result<Vec<u8>, String> {
         request.validate()?;
@@ -216,7 +255,7 @@ impl ViewRenderer for SceneRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{RenderBody, is_png};
+    use crate::render::is_png;
     use gusset_eval::Evaluator;
     use gusset_kernel::Kernel;
     use gusset_kernel::mock::MockKernel;
@@ -356,5 +395,27 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
         .unwrap();
         let r = SceneRenderer::with_backend(RenderBackend::Software);
         assert!(r.render_png(&req, &plate_scene()).unwrap_err().contains("different points"));
+    }
+
+    #[test]
+    fn export_image_path_traces_the_scene() {
+        use gusset_commands::commands::{PhotoBody, PhotoRenderer, PhotoRequest};
+        let r = SceneRenderer::with_backend(RenderBackend::Software);
+        let request = PhotoRequest {
+            bodies: vec![PhotoBody {
+                name: "B".into(),
+                mesh: std::sync::Arc::new(gusset_render::demo::box_mesh([10.0, 10.0, 10.0])),
+                face_names: Vec::new(),
+                look: None,
+                face_colors: Vec::new(),
+            }],
+            width: 64,
+            height: 40,
+            samples: 2,
+            view: "iso".into(),
+        };
+        let png = r.photo(&request).expect("photo");
+        assert!(is_png(&png));
+        assert!(r.photo(&PhotoRequest { view: "sideways".into(), ..request }).is_err());
     }
 }

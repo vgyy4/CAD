@@ -75,3 +75,10 @@ anywhere in the document.
   A merge takes colour and finish apart from face colours (one side's finish and the other's
   face colours combine); deleting a feature drops the colours of the faces it made
   (docs/reviews/2026-11-08-face-colours-review.md).
+* Render workspace (amendment, 2026-11-08): a RENDER tab (spec: Design / Render / Manufacture
+  workspaces) holds Appearance and Render image. `export.image` (path, width, height, samples,
+  view; at most 4096 px a side and 1024 samples) path-traces the model with its appearances to a
+  PNG in the project folder for agents and the CLI; in the app the tool renders the current view.
+  The commands crate does not depend on the renderer: hosts register one
+  (`set_photo_renderer`; gusset-mcp's scene builder, the same scene as `render_view`).
+

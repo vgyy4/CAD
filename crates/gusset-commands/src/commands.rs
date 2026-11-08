@@ -17,6 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod appearance;
+mod image;
+pub use image::{PhotoBody, PhotoRenderer, PhotoRequest, set_photo_renderer};
 mod assembly;
 mod bake;
 mod bundle;
@@ -89,6 +91,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(component::specs());
     v.extend(drawing::specs());
     v.extend(appearance::specs());
+    v.extend(image::specs());
     v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
     v
