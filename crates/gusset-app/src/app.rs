@@ -2099,6 +2099,18 @@ impl App {
                         }
                     }
                 });
+                // Collaboration (ADR 0044): bundles and a shared folder.
+                ui.menu_button(tr("menu.share"), |ui| {
+                    for (label, id) in [
+                        ("menu.share_export", "history.export_bundle"),
+                        ("menu.share_import", "history.import_bundle"),
+                        ("menu.share_sync", "history.sync"),
+                    ] {
+                        if ui.button(tr(label)).clicked() {
+                            self.start_command(id);
+                        }
+                    }
+                });
                 ui.separator();
                 if ui.button(tr("menu.quit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

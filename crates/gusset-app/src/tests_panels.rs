@@ -917,3 +917,14 @@ fn the_view_is_rendered_to_a_png_off_the_ui_thread() {
     assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_share_menu_opens_the_sync_form() {
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().start_command("history.sync");
+    h.run();
+    let f = h.state().form.as_ref().map(|f| f.command);
+    assert_eq!(f, Some("history.sync"));
+    assert!(h.state().form.as_ref().unwrap().fields.iter().any(|f| f.name == "who"));
+}
