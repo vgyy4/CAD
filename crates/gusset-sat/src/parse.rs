@@ -39,6 +39,41 @@ impl Sat {
     }
 }
 
+/// The attribute type that names an entity's Fusion material.
+const MATERIAL_ATTRIB: &str = "NEUTRON_Material_attrib_def";
+
+/// A lowercase hyphenated UUID (36 characters).
+pub(crate) fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(&c),
+        })
+}
+
+impl Sat {
+    /// The Fusion material id (a UUID) of every entity (by record number) that carries a
+    /// `NEUTRON_Material_attrib_def` `ATTRIB_CUSTOM` attribute. An attribute record reads
+    /// `$-1 $link $owner name fields...`; the chain links are not followed (Fusion writes
+    /// them in no order that was needed), the owner field names the entity.
+    pub fn materials(&self) -> std::collections::HashMap<i64, &str> {
+        let mut out = std::collections::HashMap::new();
+        for r in &self.recs {
+            if r.word(3) == Some(MATERIAL_ATTRIB)
+                && r.ty.ends_with("ATTRIB_CUSTOM-attrib")
+                && let Some(owner) = r.ptr(2)
+                && let Some(id) = r.f.iter().skip(4).find_map(|t| match t {
+                    Tok::Word(w) if is_uuid(w) => Some(w.as_str()),
+                    _ => None,
+                })
+            {
+                out.entry(owner).or_insert(id);
+            }
+        }
+        out
+    }
+}
+
 impl Rec {
     /// Pointer field `i`; `None` for `$-1`, a word or a missing field.
     pub fn ptr(&self, i: usize) -> Option<i64> {

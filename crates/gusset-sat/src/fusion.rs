@@ -700,6 +700,115 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
     Some(out)
 }
 
+/// Colours (ADR 0039 amendment "Fusion colours"). A body's faces carry a material id (a
+/// `NEUTRON_Material_attrib_def` attribute, [`crate::Sat::material`]); the design stream
+/// names each material id as UTF-16LE text with the id of its appearance asset a little
+/// after it ([`material_assets`]); the asset's protein package holds `InstanceProperties.bin`
+/// whose record for the asset has its sRGB colour as four doubles ([`instance_colours`]).
+/// Most material or asset ids read from one stream or package.
+const MAX_COLOUR_IDS: usize = 100_000;
+/// How far (bytes) after a material id its asset id is looked for.
+const ASSET_REACH: usize = 300;
+/// Offset from the start of an asset's id in `InstanceProperties.bin` to its colour doubles.
+const COLOUR_OFFSET: usize = 203;
+/// Length of a UUID's text.
+const UUID_LEN: usize = 36;
+
+fn is_upper_uuid(b: &[u8]) -> bool {
+    b.len() == UUID_LEN
+        && b.iter().enumerate().all(|(i, &c)| match i {
+            8 | 13 | 18 | 23 => c == b'-',
+            _ => c.is_ascii_digit() || (b'A'..=b'F').contains(&c),
+        })
+}
+
+/// The material id (lowercase UUID) to appearance asset id (uppercase UUID, without its
+/// trailing `$`) pairs a design stream holds: an asset id is taken for the material id
+/// before it when it follows within [`ASSET_REACH`] bytes; the first one found wins.
+pub fn material_assets(bulk: &[u8]) -> std::collections::HashMap<String, String> {
+    let mut mats: Vec<(usize, &str)> = Vec::new();
+    let mut assets: Vec<(usize, &str)> = Vec::new();
+    let runs = utf16_runs(bulk);
+    for (off, run) in &runs {
+        let off = *off;
+        let b = run.as_bytes();
+        for i in 0..b.len().saturating_sub(UUID_LEN - 1) {
+            if b.get(i + 8) != Some(&b'-') {
+                continue;
+            }
+            let Some(w) = run.get(i..i + UUID_LEN) else { continue };
+            if crate::parse::is_uuid(w) {
+                mats.push((off + 2 * i, w));
+            } else if b.get(i + UUID_LEN) == Some(&b'$') && is_upper_uuid(w.as_bytes()) {
+                assets.push((off + 2 * i, w));
+            }
+        }
+        if mats.len() + assets.len() > MAX_COLOUR_IDS {
+            break;
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    let mut from = 0usize;
+    for (at, id) in mats {
+        // Both lists ascend: the first asset after this material only moves forward.
+        while assets.get(from).is_some_and(|(a, _)| *a <= at) {
+            from += 1;
+        }
+        if let Some((a, asset)) = assets.get(from)
+            && a - at <= UUID_LEN * 2 + ASSET_REACH
+            && out.len() < MAX_COLOUR_IDS
+        {
+            out.entry(id.to_string()).or_insert_with(|| (*asset).to_string());
+        }
+    }
+    out
+}
+
+/// The sRGB colour (`0xRRGGBB`) of every asset record in a protein package's
+/// `InstanceProperties.bin`. A record starts with its asset id in ASCII (an uppercase UUID
+/// not followed by `_` or a letter or digit: `<id>_Post2015` is another record); four
+/// little-endian doubles (r, g, b in [0, 1], then alpha 1.0) lie [`COLOUR_OFFSET`] bytes
+/// after it, else the first such quadruple before the next record is taken.
+pub fn instance_colours(bin: &[u8]) -> std::collections::HashMap<String, u32> {
+    let mut starts: Vec<usize> = Vec::new();
+    for i in 0..bin.len().saturating_sub(UUID_LEN - 1) {
+        if bin.get(i + 8) != Some(&b'-') {
+            continue;
+        }
+        let Some(w) = bin.get(i..i + UUID_LEN) else { continue };
+        let next = bin.get(i + UUID_LEN).copied();
+        if is_upper_uuid(w) && !next.is_some_and(|c| c == b'_' || c.is_ascii_alphanumeric()) {
+            starts.push(i);
+            if starts.len() >= MAX_COLOUR_IDS {
+                break;
+            }
+        }
+    }
+    let colour_at = |at: usize| -> Option<u32> {
+        let mut c = [0f64; 4];
+        for (k, v) in c.iter_mut().enumerate() {
+            *v = f64_at(bin, at + 8 * k)?;
+        }
+        let ok = c.iter().take(3).all(|v| (0.0..=1.0).contains(v)) && c[3].to_bits() == 1.0f64.to_bits();
+        // Nearest of 256 steps: `v` is in [0, 1].
+        ok.then(|| c.iter().take(3).fold(0u32, |acc, v| (acc << 8) | (v * 255.0).round() as u32))
+    };
+    let mut out = std::collections::HashMap::new();
+    for (k, &st) in starts.iter().enumerate() {
+        let Some(id) = bin.get(st..st + UUID_LEN).and_then(|b| std::str::from_utf8(b).ok()) else { continue };
+        if out.contains_key(id) {
+            continue;
+        }
+        let end = starts.get(k + 1).copied().unwrap_or(bin.len());
+        let found =
+            colour_at(st + COLOUR_OFFSET).or_else(|| (st + UUID_LEN..end.saturating_sub(31)).find_map(colour_at));
+        if let Some(c) = found {
+            out.insert(id.to_string(), c);
+        }
+    }
+    out
+}
+
 /// Every `BREP.<id>.smb` in the text runs with its offset.
 fn brep_refs_in(runs: &[(usize, String)]) -> Vec<(usize, String)> {
     runs.iter()
@@ -1019,6 +1128,69 @@ mod tests {
             let _ = read_design(&cut[..n]);
         }
         let _ = read_design(&cut);
+    }
+
+    fn utf16(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn a_material_id_maps_to_the_asset_id_after_it() {
+        let mat = "617919e9-cd5c-4110-97a6-83c6bd6b90e3";
+        let other = "0bf2cf32-4921-49f1-b71a-f1fd22dcd453";
+        let asset = "D95E1000-A6FE-E3FA-3088-CB94EF89F5FE";
+        let mut b = vec![1u8, 2, 3, 0xff];
+        b.extend(utf16(mat));
+        b.extend([0x10, 0x20, 0, 0x81]);
+        b.extend(utf16(&format!("{asset}$")));
+        b.extend(vec![0xee; 40]);
+        // Too far from its asset: no pair.
+        b.extend(utf16(other));
+        b.extend(vec![0x81; 400]);
+        b.extend(utf16(&format!("{asset}$")));
+        let m = material_assets(&b);
+        assert_eq!(m.get(mat).map(String::as_str), Some(asset));
+        assert!(!m.contains_key(other), "{m:?}");
+        for n in [0usize, 1, 5, 77, 400] {
+            let noise: Vec<u8> = (0..n).map(|i| (i * 37 % 251) as u8).collect();
+            let _ = material_assets(&noise);
+            let _ = instance_colours(&noise);
+        }
+        for n in (0..b.len()).step_by(13) {
+            let _ = material_assets(&b[..n]);
+        }
+    }
+
+    fn record(id: &str, at: usize, c: [f64; 4]) -> Vec<u8> {
+        let mut r = id.as_bytes().to_vec();
+        r.resize(at, 0xff);
+        for v in c {
+            r.extend(v.to_le_bytes());
+        }
+        r.extend([0x7f; 9]);
+        r
+    }
+
+    #[test]
+    fn instance_properties_give_each_assets_srgb_colour() {
+        let a = "D95E1000-A6FE-E3FA-3088-CB94EF89F5FE";
+        let b = "11111111-A6FE-E3FA-3088-CB94EF89F5FE";
+        let c = "22222222-A6FE-E3FA-3088-CB94EF89F5FE";
+        let mut bin = vec![9u8; 5];
+        // `<id>_Post2015` is another record, not a start.
+        bin.extend(record(&format!("{a}_Post2015"), 203, [0.0, 0.0, 0.0, 1.0]));
+        bin.extend(record(a, 203, [212.0 / 255.0, 171.0 / 255.0, 33.0 / 255.0, 1.0]));
+        // Not at the usual offset: found by scanning on within the record.
+        bin.extend(record(b, 211, [1.0, 1.0, 1.0, 1.0]));
+        // Alpha not 1: no colour.
+        bin.extend(record(c, 203, [0.5, 0.5, 0.5, 0.5]));
+        let m = instance_colours(&bin);
+        assert_eq!(m.get(a), Some(&0x00d4_ab21), "{m:?}");
+        assert_eq!(m.get(b), Some(&0x00ff_ffff));
+        assert!(!m.contains_key(c));
+        for n in (0..bin.len()).step_by(11) {
+            let _ = instance_colours(&bin[..n]);
+        }
     }
 
     fn id32(n: u32) -> String {

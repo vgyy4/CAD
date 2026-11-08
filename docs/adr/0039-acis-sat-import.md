@@ -207,13 +207,38 @@ whose matrix is not the identity): 0 to 65 of 90 solids placed; the other sample
 USB-C HDMI cable, 2026-11-08: 50 of the author's 54 solids are pin copies made by Fusion patterns
 (8 distinct sizes in all), which are not read; the four parts are within 0.5 mm.
 
-Fusion colours, findings so far (2026-11-08; not read yet): bodies and faces in the `.smb` carry
-an `ATTRIB_CUSTOM` of type `NEUTRON_Material_attrib_def` holding an appearance id (a lowercase
-UUID); the design stream (`Design1/BulkStream.dat`) has that id in UTF-16 next to an asset id
-(`D95E1000-...$`), a schema id and a schema name (`PrismOpaque`, `PrismMaterial-018`), and names
-the `ProteinAsset.<uuid>.protein` file it lives in. A `.protein` is an Autodesk design package (a
-plain ZIP): `Schemas/*.xml` give the parameters with their defaults (`opaque_albedo`,
-`generic_diffuse`, `surface_albedo`), `AssetData/AssetTableOfContents.bin` lists the assets and
-their schemas, and the values themselves are in the binary `AssetData/InstanceProperties.bin`,
-whose layout is the next thing to read.
+Fusion colours (2026-11-08, implemented): the findings below are read by `gusset-sat` and
+`gusset-commands` and the colours reach the app through the STEP face-colour path (ADR 0045
+amendment). Three links:
+
+1. Body blob to material id: `Sat::materials` collects every `ATTRIB_CUSTOM-attrib` whose
+   name is `NEUTRON_Material_attrib_def` (record `$-1 $link $owner name 1 <uuid>`), by owner
+   record number. The attribute chains are not followed: Fusion's links are not in an order
+   that reaches all of them, the owner field is reliable. A face's own material wins, else its
+   body's.
+2. Material id to asset id: `fusion::material_assets` pairs each lowercase UUID in the
+   design stream's UTF-16 text with the first uppercase `<UUID>$` within 300 bytes after it.
+3. Asset id to colour: each `ProteinAssets.BlobParts/ProteinAsset.*.protein` is a ZIP whose
+   `AssetData/InstanceProperties.bin` has a record per asset, starting with its id in ASCII
+   (not followed by `_` or a letter or digit: `<id>_Post2015` is another record). Four
+   little-endian doubles r, g, b, a (sRGB in [0, 1], a exactly 1.0) sit 203 bytes after the
+   id's start; if they are not valid there, the first valid quadruple before the next record is
+   taken (`fusion::instance_colours`); with none the asset has no colour.
+
+`gusset_sat::to_step_coloured` takes the material-to-`0xRRGGBB` map and writes, per distinct
+colour, `COLOUR_RGB` ... `PRESENTATION_STYLE_ASSIGNMENT`, a `STYLED_ITEM('color', ...)` per
+coloured face and one `MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION`, as
+`gusset-xt` does; the OCCT reader's majority rule gives the body its colour. The importer
+(`import.rs`, `f3d`) reads the `.protein` entries of every design (also those inside an
+`.f3z`), the material pairs of the same `[Active]` streams as the placements, and builds the
+map once for the file. Bounds: 4096 packages, 32 MiB per `InstanceProperties.bin` (all within
+the file's decompression budget), 200,000 asset colours and 200,000 material colours, 100,000
+ids per stream or package; a damaged package only loses its colours. The readers are linear
+and never panic on noise (unit tests).
+
+Checked on Adafruit's LoRa bonnet: all faces that carry a material get a colour (gold, black
+header, ...). Not covered: bodies whose blob has no material attribute (12 of the 19 blobs of
+the LoRa design's first part) and faces without one in a body that has none: Fusion keeps
+their appearance elsewhere in the design stream (a body or component appearance), which is
+not read yet, so they come in with the default colour.
 

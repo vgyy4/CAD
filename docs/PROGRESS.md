@@ -276,8 +276,9 @@ Phase 3 has started (see Next).
      authors' STEP: LoRa 82/83, MacroPad 167/185, Trinkey 63/65, QT Py 138/142). Buck case placed
      2026-11-08 (0 -> 65/90: a reference at the origin whose board the root moved). Next: helical
      sweep surfaces (threads), Fusion patterns (50 of the HDMI cable's 54 solids are pattern
-     copies), joints (the Pico board's components are placed by joints, not matrices), Fusion
-     colours (ADR 0039 has the map: `.smb` attribute -> design stream -> `.protein` package).
+     copies), joints (the Pico board's components are placed by joints, not matrices). Fusion colours
+     done (ADR 0039 amendment: `.smb` attribute -> design stream -> `.protein` package -> STEP
+     styles); next there: body/component appearances that have no attribute in the `.smb`.
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
@@ -371,7 +372,7 @@ Phase 3 has started (see Next).
   by hand (`body.appearance` with `faces`; the app's Appearance on picked faces); merges take
   them apart from colour and finish; reviewed (docs/reviews/2026-11-08-face-colours-review.md).
   A top-level BVH speeds picking and photo renders of many bodies (PERFORMANCE.md). Next:
-  textures, Fusion colours (in its design stream). 3MF per-triangle colours are read (run 15).
+  textures, Fusion body/component appearances without a face attribute. 3MF per-triangle colours are read (run 15).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
   single-record read (bounded) and T3 (one `LocalBodies` stream).
 

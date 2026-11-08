@@ -125,3 +125,27 @@ fn sheets_are_left_out_when_not_asked_for() {
     assert_eq!((without.bodies, without.skipped_sheets), (0, 1));
     assert!(without.step.is_empty());
 }
+
+#[test]
+fn faces_with_a_known_material_are_styled_with_its_colour() {
+    let id = "617919e9-cd5c-4110-97a6-83c6bd6b90e3";
+    let plain = box_sat(600, [10.0, 20.0, 30.0]);
+    let n = parse(plain.as_bytes(), &Limits::default()).unwrap().recs.len();
+    // The first face (record 3) and the second (record 4) carry a material; the body none.
+    let mut text = plain.replacen("face $-1", &format!("face ${n}"), 1);
+    text = text.replacen("face $-1", &format!("face ${}", n + 1), 1);
+    let attr = |owner: usize| format!("ATTRIB_CUSTOM-attrib $-1 $-1 ${owner} NEUTRON_Material_attrib_def 1 {id} #\n");
+    text = text.replace("End-of-ACIS-data", &format!("{}{}End-of-ACIS-data", attr(3), attr(4)));
+    let sat = parse(text.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(sat.materials().get(&3), Some(&id));
+    assert_eq!(sat.materials().len(), 2);
+    let mut colours = Colours::new();
+    colours.insert(id.to_string(), 0x00d4_ab21);
+    let c = to_step_coloured(text.as_bytes(), "box", &Limits::default(), None, true, &colours).unwrap();
+    assert_eq!(c.step.matches("STYLED_ITEM('color'").count(), 2, "{}", c.step);
+    assert_eq!(c.step.matches("COLOUR_RGB").count(), 1);
+    assert!(c.step.contains("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION"));
+    // Without a colour for it, nothing is styled.
+    let none = to_step_coloured(text.as_bytes(), "box", &Limits::default(), None, true, &Colours::new()).unwrap();
+    assert!(!none.step.contains("STYLED_ITEM"));
+}

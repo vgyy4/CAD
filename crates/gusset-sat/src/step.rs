@@ -427,6 +427,13 @@ struct Writer<'a> {
     defs: BTreeMap<(usize, usize), usize>,
     /// The output passed [`MAX_OUTPUT`].
     full: bool,
+    /// Material colours, the colour of the body being written, and the faces written with
+    /// theirs.
+    colours: &'a crate::Colours,
+    body_colour: Option<u32>,
+    /// Material id per entity (record number).
+    materials: std::collections::HashMap<i64, &'a str>,
+    styled: Vec<(usize, u32)>,
     warnings: Vec<String>,
 }
 
@@ -845,7 +852,41 @@ impl<'a> Writer<'a> {
             bounds.push(self.add(&format!("FACE_BOUND('',#{lp},.T.)")));
         }
         let same = reversed(r.word(6)) == flipped;
-        Ok(self.add(&format!("ADVANCED_FACE('',{},#{sid},{})", list(&bounds), if same { ".T." } else { ".F." })))
+        let id = self.add(&format!("ADVANCED_FACE('',{},#{sid},{})", list(&bounds), if same { ".T." } else { ".F." }));
+        if !self.colours.is_empty() {
+            let own = self.materials.get(&f).and_then(|m| self.colours.get(*m)).copied();
+            if let Some(c) = own.or(self.body_colour) {
+                self.styled.push((id, c));
+            }
+        }
+        Ok(id)
+    }
+
+    /// The coloured faces as AP214 styled items, one style per colour.
+    fn face_colours(&mut self, ctx: usize) {
+        let mut styles: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut items = Vec::new();
+        for (face, rgb) in std::mem::take(&mut self.styled) {
+            let style = match styles.get(&rgb) {
+                Some(&st) => st,
+                None => {
+                    let [r, g, b] = [16, 8, 0].map(|sh| real(f64::from((rgb >> sh) & 0xff) / 255.0));
+                    let c = self.add(&format!("COLOUR_RGB('',{r},{g},{b})"));
+                    let fc = self.add(&format!("FILL_AREA_STYLE_COLOUR('',#{c})"));
+                    let fa = self.add(&format!("FILL_AREA_STYLE('',(#{fc}))"));
+                    let sf = self.add(&format!("SURFACE_STYLE_FILL_AREA(#{fa})"));
+                    let side = self.add(&format!("SURFACE_SIDE_STYLE('',(#{sf}))"));
+                    let usage = self.add(&format!("SURFACE_STYLE_USAGE(.BOTH.,#{side})"));
+                    let st = self.add(&format!("PRESENTATION_STYLE_ASSIGNMENT((#{usage}))"));
+                    styles.insert(rgb, st);
+                    st
+                }
+            };
+            items.push(self.add(&format!("STYLED_ITEM('color',(#{style}),#{face})")));
+        }
+        if !items.is_empty() {
+            self.add(&format!("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',{},#{ctx})", list(&items)));
+        }
     }
 
     /// Faces of a shell and its subshells (nested at most 64 deep).
@@ -901,6 +942,7 @@ pub(crate) fn write(
     name: &str,
     place: Option<&crate::fusion::Placement>,
     keep_sheets: bool,
+    colours: &crate::Colours,
 ) -> Result<(String, usize, usize, Vec<String>), SatError> {
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
@@ -921,6 +963,10 @@ pub(crate) fn write(
         failed: BTreeMap::new(),
         defs: BTreeMap::new(),
         full: false,
+        colours,
+        body_colour: None,
+        materials: if colours.is_empty() { std::collections::HashMap::new() } else { sat.materials() },
+        styled: Vec::new(),
         warnings: Vec::new(),
     };
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
@@ -958,6 +1004,7 @@ pub(crate) fn write(
         w.surfaces.clear();
         w.defs.clear();
         w.seen.clear();
+        w.body_colour = w.materials.get(b).and_then(|m| colours.get(*m)).copied();
         let mut solids = Vec::new();
         let mut sheets = Vec::new();
         for lump in w.chain(br.ptr(1), 1)? {
@@ -1037,6 +1084,7 @@ pub(crate) fn write(
         let rep = w.add(&format!("ADVANCED_BREP_SHAPE_REPRESENTATION('',{},#{ctx})", list(&solids)));
         w.add(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
     }
+    w.face_colours(ctx);
     w.check_full()?;
     if written == 0 {
         if skipped > 0 {

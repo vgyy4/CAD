@@ -74,8 +74,25 @@ pub fn to_step_placed(
     place: Option<&fusion::Placement>,
     keep_sheets: bool,
 ) -> Result<Converted, SatError> {
+    to_step_coloured(bytes, name, limits, place, keep_sheets, &Colours::new())
+}
+
+/// Fusion material ids (lowercase UUIDs) to sRGB colours (`0xRRGGBB`).
+pub type Colours = std::collections::HashMap<String, u32>;
+
+/// As [`to_step_placed`], with each face that carries (or whose body carries) a
+/// `NEUTRON_Material_attrib_def` material found in `colours` styled with that colour (AP214
+/// `STYLED_ITEM`s, as the Parasolid converter writes them).
+pub fn to_step_coloured(
+    bytes: &[u8],
+    name: &str,
+    limits: &Limits,
+    place: Option<&fusion::Placement>,
+    keep_sheets: bool,
+    colours: &Colours,
+) -> Result<Converted, SatError> {
     let sat = parse(bytes, limits)?;
-    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets)?;
+    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets, colours)?;
     Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 

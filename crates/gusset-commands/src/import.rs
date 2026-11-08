@@ -541,6 +541,12 @@ const MAX_SLDPRT_STEP_BYTES: usize = 1 << 30;
 const MAX_F3D_STREAMS: usize = 256;
 const MAX_F3D_PLACEMENTS: usize = 200_000;
 
+/// Most appearance packages (`ProteinAsset.*.protein`) read from one Fusion file, the largest
+/// `InstanceProperties.bin` read from one, and most asset colours and material colours kept.
+const MAX_F3D_PROTEINS: usize = 4096;
+const MAX_F3D_PROTEIN_BYTES: u64 = 32 << 20;
+const MAX_F3D_COLOURS: usize = 200_000;
+
 /// Most bytes of imported shapes one Fusion import keeps (review S4).
 const MAX_F3D_OUTPUT_BYTES: usize = 1 << 30;
 
@@ -678,13 +684,19 @@ fn f3d(
     let mut budget = limits.max_decompressed_bytes;
     let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
     let is_stream = |n: &str| n.ends_with("/BulkStream.dat");
-    let wanted = |n: &str| is_brep(n) || is_stream(n);
+    let is_protein = |n: &str| n.contains("ProteinAssets.BlobParts/") && n.ends_with(".protein");
+    let wanted = |n: &str| is_brep(n) || is_stream(n) || is_protein(n);
     let read = |data: &[u8], budget: &mut u64| {
         gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget).map_err(bad)
     };
     // The streams that describe the design itself: an asset named `[Active]` when there is one
     // (the others, `Animation`, hold other states of the same parts).
     let (mut streams_read, mut placements_kept) = (0usize, 0usize);
+    // Fusion colours (ADR 0039): material id to asset id from the streams, asset id to colour
+    // from the appearance packages.
+    let mut materials: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut asset_colours: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut proteins_read = 0usize;
     let mut design_info = |entries: &[(String, Vec<u8>)]| -> Result<gusset_sat::fusion::Design, CommandError> {
         let streams: Vec<&(String, Vec<u8>)> = entries.iter().filter(|(n, _)| is_stream(n)).collect();
         let active: Vec<&(String, Vec<u8>)> = streams.iter().filter(|(n, _)| n.contains("[Active]")).copied().collect();
@@ -703,6 +715,11 @@ fn f3d(
                 &mut placements_kept,
                 d.bodies.len() + d.xrefs.iter().map(|x| x.instances.len()).sum::<usize>(),
             )?;
+            for (m, a) in gusset_sat::fusion::material_assets(b) {
+                if materials.len() < MAX_F3D_COLOURS {
+                    materials.entry(m).or_insert(a);
+                }
+            }
             info.bodies.extend(d.bodies);
             info.xrefs.extend(d.xrefs);
             info.context = info.context.or(d.context);
@@ -711,7 +728,35 @@ fn f3d(
     };
     // The designs: the file itself, or for an `.f3z` the `.f3d` designs it holds (one level
     // deep, sharing the decompression budget).
-    let first = read(bytes, &mut budget)?;
+    let mut first = read(bytes, &mut budget)?;
+    let mut take_proteins = |entries: &mut Vec<(String, Vec<u8>)>, budget: &mut u64| {
+        let (proteins, rest): (Vec<_>, Vec<_>) = std::mem::take(entries).into_iter().partition(|(n, _)| is_protein(n));
+        *entries = rest;
+        for (_, p) in proteins {
+            proteins_read += 1;
+            if proteins_read > MAX_F3D_PROTEINS {
+                break;
+            }
+            // A damaged package only loses its colours.
+            let Ok(bins) = gusset_meshio::archive::read_entries_within(
+                &p,
+                &limits,
+                &|n| n.ends_with("/AssetData/InstanceProperties.bin"),
+                MAX_F3D_PROTEIN_BYTES,
+                budget,
+            ) else {
+                continue;
+            };
+            for (_, bin) in bins {
+                for (id, c) in gusset_sat::fusion::instance_colours(&bin) {
+                    if asset_colours.len() < MAX_F3D_COLOURS {
+                        asset_colours.entry(id).or_insert(c);
+                    }
+                }
+            }
+        }
+    };
+    take_proteins(&mut first, &mut budget);
     let mut designs: Vec<F3dDesign> = Vec::new();
     let mut root = 0usize;
     let mut files = std::collections::HashMap::new();
@@ -729,7 +774,8 @@ fn f3d(
         )
         .map_err(bad)?;
         for (name, d) in inner.iter().take(MAX_F3D_PARTS) {
-            let entries = read(d, &mut budget)?;
+            let mut entries = read(d, &mut budget)?;
+            take_proteins(&mut entries, &mut budget);
             let info = design_info(&entries)?;
             designs.push(F3dDesign { file: name.clone(), entries, info });
         }
@@ -752,6 +798,11 @@ fn f3d(
         }
         files = parse("DesignDescription.json").map(|d| xref_files(&d)).unwrap_or_default();
     }
+    let colours: gusset_sat::Colours = materials
+        .into_iter()
+        .filter_map(|(m, a)| asset_colours.get(&a).map(|c| (m, *c)))
+        .take(MAX_F3D_COLOURS)
+        .collect();
     let count = designs.iter().flat_map(|d| &d.entries).filter(|(n, _)| is_brep(n)).count();
     if count == 0 {
         return Err(CommandError::new("io", "the Fusion file holds no B-rep bodies (Breps.BlobParts/*.smb)"));
@@ -819,12 +870,13 @@ fn f3d(
                             (None, true) => Some(inst),
                             (None, false) => None,
                         };
-                        let c = match gusset_sat::to_step_placed(
+                        let c = match gusset_sat::to_step_coloured(
                             data,
                             &stem,
                             &gusset_sat::Limits::default(),
                             place.as_ref(),
                             keep_sheets,
+                            &colours,
                         ) {
                             Ok(c) => c,
                             Err(e) => {
