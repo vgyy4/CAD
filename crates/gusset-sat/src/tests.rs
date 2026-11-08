@@ -220,3 +220,55 @@ fn a_history_without_materials_or_with_conflicting_ones_gives_nothing() {
         let _ = History::read(&text.as_bytes()[..n], &Limits::default());
     }
 }
+
+/// Two boxes as two bodies, each with a transform (as Fusion writes imported features: the
+/// first body is the feature's helper, the next ones are the bodies its references colour).
+fn two_boxes() -> String {
+    let a = box_sat(700, [10.0, 20.0, 30.0]);
+    let b = box_sat(700, [1.0, 2.0, 3.0]);
+    let recs = |s: &str| -> Vec<String> {
+        s.lines().skip(3).take_while(|l| *l != "End-of-ACIS-data").map(String::from).collect()
+    };
+    let (ra, rb) = (recs(&a), recs(&b));
+    let shift = ra.len();
+    let moved = |l: &str| -> String {
+        l.split(' ')
+            .map(|t| match t.strip_prefix('$').and_then(|n| n.parse::<i64>().ok()) {
+                Some(n) if n >= 0 => format!("${}", n + shift as i64),
+                _ => t.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let n = ra.len() + rb.len();
+    let mut all: Vec<String> = ra;
+    all.extend(rb.iter().map(|l| moved(l)));
+    all[0] = all[0].replacen("$-1 $-1 #", &format!("$-1 ${n} #"), 1);
+    let second = shift;
+    all[second] = all[second].replacen("$-1 $-1 #", &format!("$-1 ${} #", n + 1), 1);
+    for _ in 0..2 {
+        all.push("transform $-1 -1 $-1 1 0 0 0 1 0 0 0 1 0 0 0 1 no_rotate no_reflect no_shear #".into());
+    }
+    let head: Vec<&str> = a.lines().take(3).collect();
+    format!("{}\n{}\nEnd-of-ACIS-data\n", head.join("\n"), all.join("\n"))
+}
+
+#[test]
+fn bodies_without_a_material_take_the_colour_their_features_reference_gives() {
+    let sat = two_boxes();
+    let parsed = parse(sat.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(parsed.recs.iter().filter(|r| r.ty == "body").count(), 2);
+    let styled = |h: &History| {
+        let c = to_step_coloured_history(sat.as_bytes(), "b", &Limits::default(), None, true, &Colours::new(), Some(h))
+            .unwrap();
+        (c.step.matches("STYLED_ITEM('color'").count(), c.step.contains("COLOUR_RGB('',1."))
+    };
+    // The first body is the helper; the colour goes to the second body's six faces.
+    let h = History::default().with_body_colours(vec![Some(0x00ff_0000)]);
+    assert_eq!(styled(&h), (6, true));
+    // A body the reference has no colour for stays plain; a count that does not fit is not
+    // a pairing.
+    assert_eq!(styled(&History::default().with_body_colours(vec![None])).0, 0);
+    assert_eq!(styled(&History::default().with_body_colours(vec![Some(1), Some(2)])).0, 0);
+    assert!(History::default().is_empty() && !History::default().with_body_colours(vec![None]).is_empty());
+}

@@ -431,6 +431,10 @@ struct Writer<'a> {
     /// theirs.
     colours: &'a crate::Colours,
     body_colour: Option<u32>,
+    /// Colour of each body (by record) from its feature's body references, and of the body
+    /// being written: the colour of its faces that have no material.
+    body_defaults: std::collections::HashMap<i64, u32>,
+    body_default: Option<u32>,
     /// Material id per entity (record number).
     materials: std::collections::HashMap<i64, &'a str>,
     styled: Vec<(usize, u32)>,
@@ -853,9 +857,9 @@ impl<'a> Writer<'a> {
         }
         let same = reversed(r.word(6)) == flipped;
         let id = self.add(&format!("ADVANCED_FACE('',{},#{sid},{})", list(&bounds), if same { ".T." } else { ".F." }));
-        if !self.colours.is_empty() {
+        if !self.colours.is_empty() || !self.body_defaults.is_empty() {
             let own = self.materials.get(&f).and_then(|m| self.colours.get(*m)).copied();
-            if let Some(c) = own.or(self.body_colour) {
+            if let Some(c) = own.or(self.body_colour).or(self.body_default) {
                 self.styled.push((id, c));
             }
         }
@@ -987,11 +991,13 @@ pub(crate) fn write(
         full: false,
         colours,
         body_colour: None,
+        body_defaults: std::collections::HashMap::new(),
+        body_default: None,
         materials: if colours.is_empty() { std::collections::HashMap::new() } else { sat.materials() },
         styled: Vec::new(),
         warnings: Vec::new(),
     };
-    if let Some(h) = history.filter(|_| !colours.is_empty()) {
+    if let Some(h) = history.filter(|h| !colours.is_empty() && !h.by_tag.is_empty()) {
         w.inherit_history(h);
     }
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
@@ -1014,6 +1020,21 @@ pub(crate) fn write(
         .filter_map(|(i, _)| i64::try_from(i).ok())
         .collect();
     let many = bodies.len() > 1;
+    // The bodies of a feature's blob that its body references colour: those with a transform
+    // after the first, only when the counts agree (else the pairing is not known).
+    if let Some(h) = history.filter(|h| !h.bodies.is_empty()) {
+        let indexed: Vec<i64> = bodies
+            .iter()
+            .copied()
+            .filter(|&b| {
+                sat.rec(b).and_then(|r| r.ptr(3)).and_then(|t| sat.rec(t)).is_some_and(|t| t.ty == "transform")
+            })
+            .skip(1)
+            .collect();
+        if indexed.len() == h.bodies.len() {
+            w.body_defaults = indexed.into_iter().zip(&h.bodies).filter_map(|(b, c)| Some((b, (*c)?))).collect();
+        }
+    }
     let mut written = 0;
     let mut skipped = 0;
     for (n, b) in bodies.iter().enumerate() {
@@ -1030,6 +1051,7 @@ pub(crate) fn write(
         w.defs.clear();
         w.seen.clear();
         w.body_colour = w.materials.get(b).and_then(|m| colours.get(*m)).copied();
+        w.body_default = w.body_defaults.get(b).copied();
         let mut solids = Vec::new();
         let mut sheets = Vec::new();
         for lump in w.chain(br.ptr(1), 1)? {

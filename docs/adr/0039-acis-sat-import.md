@@ -256,18 +256,43 @@ exactly one face of the body, so a wrong pair does nothing. `.smbh` entries are 
 (14 to 15; the 151 are the board's small hole bodies, not its main plate), about one body per
 design in the other samples (the board or the bodies painted before later features).
 
+Body references (2026-11-08, third pass, implemented). The imported electronics bodies (RFM69,
+OLED, the 6 mm switch: 41, 4 and 8 sub-bodies) have no material in their blob or its history; their
+colours are in the `BASEFEAT_PM_BODY_REF` / `PassiveRefMetaType` records of the design stream
+(60 in the LoRa bonnet). Record layout: `14 00 00 00 BASEFEAT_PM_BODY_REF`, `12 00 00 00
+PassiveRefMetaType`, `01` and the record number (u32), the class id `D3937028-C20C-...` (36 ASCII
+characters), `00 00 02 00 00 00` and the body's 1-based index (u32), later the colour property id
+`702b9cd2-537c-429e-8cc4-22beeeb98c37`, six zero bytes and the colour as three little-endian `f32`
+(sRGB, 0 to 1) and `1.0`. A feature writes its records consecutively with the indices 1, 2, ..., n;
+its record is a feature record that points to each by `01` + record number a little before it names
+`BREP.<h>.smbh` and then `BREP.<b>.smb`. The mapping, found by comparing face counts:
+- A group of n references belongs to the history blob `h` its feature names (all n pointers must
+  lead to the same `.smbh` name within 4 KiB, else the group is dropped) and so to the body blob
+  `b` paired with it (`history_pairs`).
+- Index k colours the k-th body of `b` that has a transform, counting from the second: the first
+  such body is a 6-face helper, and `b` has two more bodies of one face without a transform, which
+  the history blob lacks. The history blob has n + 1 bodies: LoRa's RFM69 blob has 43 bodies in the
+  `.smb` (41 with a transform) and 41 in the `.smbh`, 40 references; the OLED 6, 4 and 3; the
+  switch 10, 8 and 7. The face counts agree with the colours (RFM69: the 70-face board `48A768`,
+  16 bodies of 9 faces `F3CB7C`, then 6-face bodies `4D4D4D`/`E8AD23`, one 18-face `F5F5F6`; the
+  switch: 16 faces `F5F5F6`, 3 faces `191919`, ... 22 faces `191919`). The pairing is used only when
+  n equals the number of those bodies exactly.
+- The colour is the body's default: a face's own material or its history tag's wins
+  (`gusset_sat::History::with_body_colours`, `Design::body_colours`).
+- A record that stands alone (the next record has index 1 again; one per feature of 2-body blobs
+  that already have materials) is not read: its colour parses as black in every case and names no
+  body, so a group needs at least two records. A feature's first record (the helper body) is not
+  coloured; the STEP has no colour for it either.
+Effect on the LoRa bonnet (render `fusion_colours3.png`): 50 more sub-bodies coloured (RFM69 green
+`48A768` with gold pins, OLED black with a blue `6CC4DA` glass, the switch white and black);
+placements unchanged (LoRa 82, Crickit 48). Other designs have `BASEFEAT_PM_BODY_REF` records in a
+layout without the class id and index (no colour read, nothing changes).
+
 Not covered, and why (the author's STEP of the LoRa bonnet is the ground truth):
 - The main plate of the board (10 faces, `786E46` in the STEP) is painted with a material
   named `Board` after the component's name (a UUID record with the name and the colour,
   `a1bfa42f-...`, in the design stream); no blob or record found carries that UUID, only the
   name matches. Not read: a name match is a guess.
-- The imported electronics bodies (RFM69, OLED, the 6 mm switch: 41, 4 and 8 sub-bodies,
-  each with an `ATF_ExternalShell` attribute and nothing else) have no material in the blob or
-  its history. Their colours (5, 3 and 2 per part in the STEP) are in the stream as 60
-  `BASEFEAT_PM_BODY_REF` / `PassiveRefMetaType` records (each: two ids, an asset reference and
-  the colour as four little-endian `f32`, e.g. `F3CB7C` 16 times, `4D4D4D` and `E8AD23` 11 times
-  each, which matches 9, 6 and 6 faces per body in the STEP), but the link from such a record
-  to a sub-body of the blob (the first id? the record number?) is not found.
 - Pin headers, fiducials and solder jumpers (the 17,635-byte blobs): the STEP is of a later
   design version that replaced them by an other part, so there is no ground truth here.
 

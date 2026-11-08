@@ -100,6 +100,9 @@ pub fn to_step_coloured(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct History {
     by_tag: std::collections::HashMap<String, String>,
+    /// The colour of each body of the blob after the first, from the feature's body references
+    /// ([`fusion::Design::body_colours`]).
+    bodies: Vec<Option<u32>>,
 }
 
 impl History {
@@ -122,7 +125,7 @@ impl History {
             }
         }
         by_tag.retain(|t, _| !clashing.contains(t));
-        (!by_tag.is_empty()).then_some(History { by_tag })
+        (!by_tag.is_empty()).then_some(History { by_tag, bodies: Vec::new() })
     }
 
     /// Number of tagged materials.
@@ -131,7 +134,16 @@ impl History {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.by_tag.is_empty()
+        self.by_tag.is_empty() && self.bodies.is_empty()
+    }
+
+    /// Adds the colours of a body blob's bodies, one per body that has a transform, not
+    /// counting the first (the feature's own helper body). They colour the faces a body has no
+    /// material for, when the blob has exactly that many bodies.
+    #[must_use]
+    pub fn with_body_colours(mut self, colours: Vec<Option<u32>>) -> History {
+        self.bodies = colours;
+        self
     }
 }
 

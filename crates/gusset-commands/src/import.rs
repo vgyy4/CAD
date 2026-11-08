@@ -726,6 +726,7 @@ fn f3d(
             info.xrefs.extend(d.xrefs);
             info.context = info.context.or(d.context);
             info.history.extend(d.history);
+            info.body_colours.extend(d.body_colours);
         }
         Ok(info)
     };
@@ -865,6 +866,11 @@ fn f3d(
                     .filter(|_| !colours.is_empty())
                     .and_then(|h| hist_blobs.get(h.as_str()))
                     .and_then(|b| gusset_sat::History::read(b, &gusset_sat::Limits::default()));
+                // The colours of an imported feature's bodies, from its body references.
+                let history = match design.info.body_colours.get(id) {
+                    Some(c) => Some(history.unwrap_or_default().with_body_colours(c.clone())),
+                    None => history,
+                };
                 for p in own {
                     for &(origin, moved) in insts {
                         // Design coordinates to the root's: the reference's matrix, or the root's

@@ -529,6 +529,9 @@ pub struct Design {
     /// Body blob id (`BREP.<id>.smb`) to the id of the history blob (`BREP.<id>.smbh`) written
     /// just before it, see [`history_pairs`].
     pub history: std::collections::HashMap<String, String>,
+    /// Body blob id (`BREP.<id>.smb`) to the colour of each of its bodies, from the
+    /// `BASEFEAT_PM_BODY_REF` records of its feature, see [`body_ref_colours`].
+    pub body_colours: std::collections::HashMap<String, Vec<Option<u32>>>,
 }
 
 /// Components, occurrences and references of a design stream.
@@ -701,6 +704,12 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
         out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![*over] });
     }
     out.history = history_pairs(&runs);
+    let by_history = body_ref_colours(bulk, &runs);
+    for (body, history) in &out.history {
+        if let Some(c) = by_history.get(history) {
+            out.body_colours.insert(body.clone(), c.clone());
+        }
+    }
     Some(out)
 }
 
@@ -809,6 +818,169 @@ pub fn instance_colours(bin: &[u8]) -> std::collections::HashMap<String, u32> {
         if let Some(c) = found {
             out.insert(id.to_string(), c);
         }
+    }
+    out
+}
+
+/// Body colours of imported bodies (ADR 0039 amendment "Fusion colours, third pass"). A feature
+/// that holds many bodies without material attributes (an imported electronics model) lists
+/// them in `BASEFEAT_PM_BODY_REF` records of the design stream, one per body after the first:
+/// `14 00 00 00 BASEFEAT_PM_BODY_REF`, `12 00 00 00 PassiveRefMetaType`, `01` and the record
+/// number, a class id (`D3937028-...`, 36 ASCII characters), `00 00 02 00 00 00` and the
+/// body's 1-based index within the feature, and later the colour property id
+/// (`702b9cd2-...`), six zero bytes and the colour as three little-endian `f32` and `1.0`.
+const BODY_REF_NAME: &[u8] = b"BASEFEAT_PM_BODY_REF";
+const PASSIVE_REF: &[u8] = b"\x12\0\0\0PassiveRefMetaType";
+const REF_CLASS: &[u8] = b"D3937028-C20C-4E65-B010-94AD418A5C20";
+const COLOUR_PROPERTY: &[u8] = b"702b9cd2-537c-429e-8cc4-22beeeb98c37";
+/// How much of the stream after a record's name is searched for its fields.
+const REF_WINDOW: usize = 4096;
+/// How far (bytes) before a history blob's name the feature's pointers to a record stand.
+const REF_REACH: usize = 4096;
+/// Most body references read from a stream.
+const MAX_BODY_REFS: usize = 100_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BodyRef {
+    at: usize,
+    recno: Option<u32>,
+    index: u32,
+    colour: Option<u32>,
+}
+
+fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(at..at.checked_add(4)?)?.try_into().ok()?))
+}
+
+fn find_in(b: &[u8], pat: &[u8]) -> Option<usize> {
+    let first = *pat.first()?;
+    let mut from = 0;
+    while let Some(i) = b.get(from..)?.iter().position(|&c| c == first) {
+        let at = from + i;
+        if b.get(at..at + pat.len()) == Some(pat) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// The record whose name starts at `at`; `end` is where the next one starts.
+fn body_ref_at(b: &[u8], at: usize, end: usize) -> BodyRef {
+    let win = b.get(at..end.min(at + REF_WINDOW)).unwrap_or_default();
+    let name_end = BODY_REF_NAME.len();
+    let recno = win
+        .get(name_end..name_end + PASSIVE_REF.len() + 1 + 4)
+        .filter(|w| w.starts_with(PASSIVE_REF) && w.get(PASSIVE_REF.len()) == Some(&1))
+        .and_then(|w| u32_at(w, PASSIVE_REF.len() + 1));
+    let index = find_in(win, REF_CLASS)
+        .map(|c| c + REF_CLASS.len())
+        .filter(|&c| win.get(c..c + 6) == Some(&[0, 0, 2, 0, 0, 0]))
+        .and_then(|c| u32_at(win, c + 6))
+        .unwrap_or(0);
+    let colour = find_in(win, COLOUR_PROPERTY).and_then(|c| {
+        let at = c + COLOUR_PROPERTY.len();
+        if win.get(at..at + 6)? != [0u8; 6] {
+            return None;
+        }
+        let f = |k: usize| u32_at(win, at + 6 + 4 * k).map(f32::from_bits);
+        let [r, g, bl, a] = [f(0)?, f(1)?, f(2)?, f(3)?];
+        let ok = |v: f32| (0.0..=1.0).contains(&v);
+        if a.to_bits() != 1.0f32.to_bits() || !ok(r) || !ok(g) || !ok(bl) {
+            return None;
+        }
+        let byte = |v: f32| (v * 255.0).round() as u32;
+        Some(byte(r) << 16 | byte(g) << 8 | byte(bl))
+    });
+    BodyRef { at, recno, index, colour }
+}
+
+/// Runs of consecutive references with the indices 1, 2, ..., n. A feature's first record
+/// (the one with a second index 1 right after it) stands alone and is not a group: its colour
+/// reads black in every sample and it names no body, so groups of one are left out too.
+fn ref_groups(refs: &[BodyRef]) -> Vec<&[BodyRef]> {
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    for i in 0..=refs.len() {
+        let next = refs.get(i);
+        if let (Some(s), Some(r)) = (start, next)
+            && usize::try_from(r.index).is_ok_and(|x| x == i - s + 1)
+        {
+            continue;
+        }
+        if let Some(g) = start.take().and_then(|s| refs.get(s..i)).filter(|g| g.len() >= 2) {
+            out.push(g);
+        }
+        if next.is_some_and(|r| r.index == 1) {
+            start = Some(i);
+        }
+    }
+    out
+}
+
+/// Colours of the bodies of each history blob (`BREP.<id>.smbh` id) whose feature lists
+/// `BASEFEAT_PM_BODY_REF` records. A feature record points to each reference by record number
+/// (`01` and four bytes) a little before it names its history blob; every reference of a group
+/// must lead to the same blob, else the group is left out.
+fn body_ref_colours(bulk: &[u8], runs: &[(usize, String)]) -> std::collections::HashMap<String, Vec<Option<u32>>> {
+    let mut starts = Vec::new();
+    let mut from = 0;
+    while starts.len() < MAX_BODY_REFS
+        && let Some(i) = find_in(bulk.get(from..).unwrap_or_default(), BODY_REF_NAME)
+    {
+        starts.push(from + i);
+        from += i + BODY_REF_NAME.len();
+    }
+    let refs: Vec<BodyRef> = starts
+        .iter()
+        .enumerate()
+        .map(|(k, &at)| body_ref_at(bulk, at, starts.get(k + 1).copied().unwrap_or(bulk.len())))
+        .collect();
+    let groups = ref_groups(&refs);
+    if groups.is_empty() {
+        return Default::default();
+    }
+    // Every BREP name with its offset; true for a history blob.
+    let mut names: Vec<(usize, String, bool)> = Vec::new();
+    for (o, s) in runs {
+        for (i, _) in s.match_indices("BREP.") {
+            let Some(t) = s.get(i..) else { continue };
+            let at = o + 2 * i;
+            if let Some(h) = history_id(t) {
+                names.push((at, h, true));
+            } else if let Some(b) = brep_id(t) {
+                names.push((at, b, false));
+            }
+        }
+    }
+    names.sort_by_key(|n| n.0);
+    // Per wanted record number, the nearest name after a pointer to it (before the records).
+    let first = refs.iter().map(|r| r.at).min().unwrap_or(0);
+    let mut want: std::collections::HashMap<u32, Option<(usize, usize)>> =
+        groups.iter().flat_map(|g| g.iter()).filter_map(|r| r.recno).map(|n| (n, None)).collect();
+    for (i, &c) in bulk.iter().enumerate().take(first) {
+        if c != 1 {
+            continue;
+        }
+        let Some(slot) = u32_at(bulk, i + 1).and_then(|n| want.get_mut(&n)) else { continue };
+        let k = names.partition_point(|n| n.0 <= i);
+        if let Some(n) = names.get(k).filter(|n| n.0 - i <= REF_REACH)
+            && slot.is_none_or(|(d, _)| n.0 - i < d)
+        {
+            *slot = Some((n.0 - i, k));
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for g in groups {
+        let mut blob: Option<usize> = None;
+        let linked = g.iter().all(|r| {
+            let k = r.recno.and_then(|n| want.get(&n).copied().flatten()).map(|(_, k)| k);
+            let same = k.is_some() && blob.is_none_or(|b| Some(b) == k);
+            blob = blob.or(k);
+            same
+        });
+        let Some((_, id, true)) = blob.filter(|_| linked).and_then(|k| names.get(k)) else { continue };
+        out.entry(id.clone()).or_insert_with(|| g.iter().map(|r| r.colour).collect());
     }
     out
 }
@@ -1350,5 +1522,144 @@ mod tests {
         for n in (0..b.len()).step_by(97) {
             let _ = read_design(&b[..n]);
         }
+    }
+
+    /// One synthetic `BASEFEAT_PM_BODY_REF` record: name, type, record number, class id, index
+    /// and (when given) the colour property with its colour.
+    fn body_ref(recno: u32, index: u32, rgb: Option<[f32; 3]>) -> Vec<u8> {
+        let mut r = b"BASEFEAT_PM_BODY_REF".to_vec();
+        r.extend(b"\x12\0\0\0PassiveRefMetaType\x01");
+        r.extend(recno.to_le_bytes());
+        r.extend([0; 7]);
+        r.extend(REF_CLASS);
+        r.extend([0, 0, 2, 0, 0, 0]);
+        r.extend(index.to_le_bytes());
+        r.extend([7; 30]);
+        if let Some([a, b, c]) = rgb {
+            r.extend(COLOUR_PROPERTY);
+            r.extend([0; 6]);
+            for v in [a, b, c, 1.0] {
+                r.extend(v.to_le_bytes());
+            }
+        }
+        r.extend([9; 20]);
+        r
+    }
+
+    /// A feature record that points to the given records and names a history blob and its body.
+    fn feature(recnos: &[u32], history: &str, body: &str) -> Vec<u8> {
+        let mut b = vec![0x55u8; 6];
+        for n in recnos {
+            b.push(1);
+            b.extend(n.to_le_bytes());
+            b.extend([0; 3]);
+        }
+        b.extend(u16s(&format!("BREP.{history}.smbh")));
+        b.extend([0x81; 40]);
+        b.extend(u16s(&format!("BREP.{body}.smb")));
+        b
+    }
+
+    #[test]
+    fn body_references_colour_the_bodies_of_the_blob_their_feature_names() {
+        let (red, green) = ([1.0, 0.0, 0.0], [0.0, 0.5, 0.0]);
+        // A feature with a record of its own (index 1 twice: not a group), then one with a
+        // group of three and one whose references point to a blob the next feature names.
+        let mut b = feature(&[100], "aaaa0001", "bbbb0001");
+        b.extend(feature(&[200, 201, 202], "aaaa0002", "bbbb0002"));
+        b.extend(feature(&[300, 301], "aaaa0003", "bbbb0003"));
+        b.extend([0x42; 50]);
+        for r in [
+            body_ref(100, 1, Some([0.0; 3])),
+            body_ref(200, 1, Some(red)),
+            body_ref(201, 2, Some(green)),
+            body_ref(202, 3, None),
+            body_ref(300, 1, Some(red)),
+            body_ref(301, 2, Some(red)),
+        ] {
+            b.extend(r);
+        }
+        let d = read_design(&b);
+        assert_eq!(
+            d.body_colours.get("bbbb0002"),
+            Some(&vec![Some(0x00ff_0000), Some(0x0000_8000), None]),
+            "{:?}",
+            d.body_colours
+        );
+        assert_eq!(d.body_colours.get("bbbb0003"), Some(&vec![Some(0x00ff_0000); 2]));
+        assert!(!d.body_colours.contains_key("bbbb0001"), "a single record is not a group");
+    }
+
+    #[test]
+    fn a_group_must_agree_on_its_blob_and_run_from_index_one() {
+        let red = Some([1.0, 0.0, 0.0]);
+        // The second reference is pointed to by a feature that names another blob.
+        let mut b = feature(&[10], "aaaa0001", "bbbb0001");
+        b.extend(feature(&[11], "aaaa0002", "bbbb0002"));
+        for r in [body_ref(10, 1, red), body_ref(11, 2, red)] {
+            b.extend(r);
+        }
+        assert!(read_design(&b).body_colours.is_empty());
+        // A gap in the indices ends a group; one that does not start at 1 is not one.
+        let refs: Vec<BodyRef> =
+            [1, 2, 4, 5, 1, 2, 3, 7].iter().map(|&index| BodyRef { at: 0, recno: None, index, colour: None }).collect();
+        let sizes: Vec<usize> = ref_groups(&refs).iter().map(|g| g.len()).collect();
+        assert_eq!(sizes, vec![2, 3]);
+        // A pointer too far before the blob's name does not link.
+        let mut far = vec![1u8];
+        far.extend(10u32.to_le_bytes());
+        far.extend(vec![0x81; REF_REACH + 10]);
+        far.extend(u16s("BREP.aaaa0001.smbh"));
+        far.extend(u16s("BREP.bbbb0001.smb"));
+        for r in [body_ref(10, 1, red), body_ref(11, 2, red)] {
+            far.extend(r);
+        }
+        assert!(read_design(&far).body_colours.is_empty());
+    }
+
+    #[test]
+    fn a_colour_needs_its_property_zero_padding_and_unit_alpha_in_range() {
+        let at = |mut r: Vec<u8>, f: &dyn Fn(&mut Vec<u8>)| {
+            f(&mut r);
+            body_ref_at(&r, 0, r.len()).colour
+        };
+        let ok = body_ref(1, 1, Some([0.5, 0.25, 1.0]));
+        assert_eq!(body_ref_at(&ok, 0, ok.len()).colour, Some(0x0080_40ff));
+        assert_eq!(body_ref_at(&ok, 0, ok.len()).index, 1);
+        assert_eq!(body_ref_at(&ok, 0, ok.len()).recno, Some(1));
+        let p = find_in(&ok, COLOUR_PROPERTY).unwrap() + COLOUR_PROPERTY.len();
+        assert_eq!(at(ok.clone(), &|r| r[p] = 1), None, "padding");
+        assert_eq!(
+            at(ok.clone(), &|r| r[p + 6 + 12..p + 6 + 16].copy_from_slice(&0.5f32.to_le_bytes())),
+            None,
+            "alpha"
+        );
+        assert_eq!(at(ok.clone(), &|r| r[p + 6..p + 10].copy_from_slice(&2.0f32.to_le_bytes())), None, "range");
+        assert_eq!(at(ok.clone(), &|r| r[p + 6..p + 10].copy_from_slice(&f32::NAN.to_le_bytes())), None, "nan");
+        assert_eq!(at(ok, &|r| r.truncate(p + 8)), None, "cut");
+    }
+
+    #[test]
+    fn body_reference_noise_and_cut_streams_are_harmless() {
+        let mut b = feature(&[200, 201], "aaaa0002", "bbbb0002");
+        for r in [body_ref(200, 1, Some([1.0, 0.0, 0.0])), body_ref(201, 2, Some([0.0, 1.0, 0.0]))] {
+            b.extend(r);
+        }
+        for n in 0..b.len() {
+            let _ = read_design(&b[..n]);
+        }
+        let mut x = 12345u32;
+        for _ in 0..50 {
+            let noise: Vec<u8> = (0..400)
+                .map(|_| {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (x >> 24) as u8
+                })
+                .collect();
+            assert!(read_design(&noise).body_colours.is_empty());
+        }
+        // Many references with no feature at all: bounded and empty.
+        let many: Vec<u8> = (0..2000u32).flat_map(|i| body_ref(i, i % 7 + 1, None)).collect();
+        assert!(read_design(&many).body_colours.is_empty());
     }
 }
