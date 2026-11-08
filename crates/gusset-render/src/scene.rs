@@ -82,9 +82,18 @@ pub struct SceneMesh {
     pub(crate) visible: bool,
     pub(crate) face_highlights: BTreeMap<u32, Highlight>,
     pub(crate) edge_highlights: BTreeMap<u32, Highlight>,
+    /// The inverse transform and the world bounds, kept with the transform so a ray test
+    /// against many meshes rejects most of them cheaply.
+    pub(crate) inverse: Option<Mat4>,
+    pub(crate) world: Aabb,
 }
 
 impl SceneMesh {
+    fn refresh(&mut self) {
+        self.inverse = math::invert(&self.transform);
+        self.world = self.data.bounds.transformed(&self.transform);
+    }
+
     /// The compact mesh data.
     #[must_use]
     pub fn data(&self) -> &MeshData {
@@ -204,20 +213,22 @@ impl Scene {
                 m.geometry_rev = rev;
                 m.face_highlights.clear();
                 m.edge_highlights.clear();
+                m.refresh();
             }
             None => {
-                self.meshes.insert(
-                    id,
-                    SceneMesh {
-                        data,
-                        geometry_rev: rev,
-                        transform: math::IDENTITY,
-                        material: Material::default(),
-                        visible: true,
-                        face_highlights: BTreeMap::new(),
-                        edge_highlights: BTreeMap::new(),
-                    },
-                );
+                let mut m = SceneMesh {
+                    data,
+                    geometry_rev: rev,
+                    transform: math::IDENTITY,
+                    material: Material::default(),
+                    visible: true,
+                    face_highlights: BTreeMap::new(),
+                    edge_highlights: BTreeMap::new(),
+                    inverse: None,
+                    world: Aabb::EMPTY,
+                };
+                m.refresh();
+                self.meshes.insert(id, m);
             }
         }
         Ok(())
@@ -258,7 +269,13 @@ impl Scene {
 
     /// Set a mesh's object → world transform. Returns whether the mesh exists.
     pub fn set_transform(&mut self, id: MeshId, transform: Mat4) -> bool {
-        self.meshes.get_mut(&id).map(|m| m.transform = transform).is_some()
+        self.meshes
+            .get_mut(&id)
+            .map(|m| {
+                m.transform = transform;
+                m.refresh();
+            })
+            .is_some()
     }
 
     /// Set a mesh's material. Returns whether the mesh exists.

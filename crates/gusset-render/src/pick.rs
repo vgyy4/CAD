@@ -84,7 +84,12 @@ impl Scene {
             if !m.visible() {
                 continue;
             }
-            let Some(inv) = math::invert(m.transform()) else { continue };
+            let limit_world = best.map_or(t1, |(b, _)| b.distance * 1.0001);
+            if !ray_meets_box(start, ray.dir, &m.world, limit_world - t0) {
+                continue;
+            }
+            let Some(inv) = m.inverse.as_ref() else { continue };
+            let inv = *inv;
             let o = math::transform_point(&inv, start).map(|c| c as f32);
             let d = math::transform_dir(&inv, ray.dir).map(|c| c as f32);
             let limit = best.map_or((t1 - t0) as f32, |(b, _)| (b.distance - t0) as f32 * 1.0001);
@@ -206,6 +211,32 @@ fn point_segment_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64) {
     let s = if l2 > 1e-18 { ((ap[0] * ab[0] + ap[1] * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
     let q = [a[0] + ab[0] * s - p[0], a[1] + ab[1] * s - p[1]];
     ((q[0] * q[0] + q[1] * q[1]).sqrt(), s)
+}
+
+/// Whether the ray from `o` along `d` meets `b` within `t_max` (slab test, padded a little).
+fn ray_meets_box(o: Vec3, d: Vec3, b: &math::Aabb, t_max: f64) -> bool {
+    if b.min[0] > b.max[0] {
+        return false;
+    }
+    let pad = 1e-6 * (1.0 + b.max.iter().chain(&b.min).fold(0.0f64, |m, v| m.max(v.abs())));
+    let (mut lo, mut hi) = (0.0f64, t_max);
+    for (((oi, di), bmin), bmax) in o.into_iter().zip(d).zip(b.min).zip(b.max) {
+        let (bmin, bmax) = (bmin - pad, bmax + pad);
+        if di.abs() < 1e-300 {
+            if oi < bmin || oi > bmax {
+                return false;
+            }
+            continue;
+        }
+        let (a, c) = ((bmin - oi) / di, (bmax - oi) / di);
+        let (near, far) = if a < c { (a, c) } else { (c, a) };
+        lo = lo.max(near);
+        hi = hi.min(far);
+        if lo > hi {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
