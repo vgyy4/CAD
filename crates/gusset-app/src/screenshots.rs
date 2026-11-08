@@ -181,6 +181,16 @@ fn generate_gallery() {
             }
             h.run_steps(3);
         });
+        // A body's appearance: copper metal, its swatch in the browser (ADR 0045).
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.run("body.appearance", json!({"body": "Body", "color": "#b87333", "finish": "metal"})).ok();
+        shoot(&dir, &format!("18-appearance-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+        });
         // The marking menu (a right click in the viewport).
         let mut a = app(theme);
         bracket(&mut a);

@@ -451,8 +451,18 @@ fn plane_row(ui: &mut Ui, v: &View<'_>, name: &str, mut r: Row, out: &mut Vec<Ac
 fn bodies(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
     for b in v.eval.iter().flat_map(|e| e.bodies.iter()) {
         let shown = (v.body_visible)(&b.name);
-        let mut r = Row::new(Tool::Body, &b.name);
+        // The feature's label (an imported body's name in its file) and the appearance.
+        let mut text = b.name.clone();
+        if let Some(l) = v.doc.feature(&b.name).and_then(|f| f.label.as_deref()) {
+            text.push_str(&format!(" - {}", plain(l, 40)));
+        }
+        let look = v.doc.appearance(&b.name);
+        let mut r = Row::new(Tool::Body, text);
+        r.access = b.name.clone();
         r.dimmed = !shown;
+        if let Some(a) = look {
+            r.suffix = a.finish.keyword().to_string();
+        }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(theme::SPACE[1]);
@@ -462,6 +472,15 @@ fn bodies(ui: &mut Ui, v: &View<'_>, out: &mut Vec<Action>) {
                 .clicked()
             {
                 out.push(Action::SetBodyVisible(b.name.clone(), !shown));
+            }
+            // A swatch of the body's colour; a click opens its appearance (ADR 0045).
+            let [_, rr, gg, bb] = look.map_or(0x00b4_bcc8_u32, |a| a.color).to_be_bytes();
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+            let inner = rect.shrink(2.0);
+            ui.painter().rect_filled(inner, 2.0, Color32::from_rgb(rr, gg, bb));
+            ui.painter().rect_stroke(inner, 2.0, egui::Stroke::new(1.0, v.pal.text_muted), egui::StrokeKind::Inside);
+            if resp.on_hover_text(tr("menu.feature.appearance")).clicked() {
+                out.push(Action::FeatureMenu(b.name.clone(), FeatureChoice::Appearance));
             }
             r.indent = 0.0;
             row(ui, v.pal, &r);
