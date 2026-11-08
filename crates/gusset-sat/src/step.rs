@@ -862,6 +862,27 @@ impl<'a> Writer<'a> {
         Ok(id)
     }
 
+    /// Gives the faces without a material of their own the one the history blob has for their
+    /// tag (see [`crate::History`]).
+    fn inherit_history(&mut self, h: &'a crate::History) {
+        let mut faces: std::collections::HashMap<&str, Vec<i64>> = std::collections::HashMap::new();
+        let tags = self.sat.face_tags();
+        for (face, tag) in &tags {
+            if let Some((t, _)) = h.by_tag.get_key_value(tag.as_str()) {
+                faces.entry(t.as_str()).or_default().push(*face);
+            }
+        }
+        let unique = faces.values().filter(|v| v.len() == 1).count();
+        if unique * 2 < h.by_tag.len() {
+            return;
+        }
+        for (tag, list) in faces {
+            if let ([face], Some(m)) = (list.as_slice(), h.by_tag.get(tag)) {
+                self.materials.entry(*face).or_insert(m.as_str());
+            }
+        }
+    }
+
     /// The coloured faces as AP214 styled items, one style per colour.
     fn face_colours(&mut self, ctx: usize) {
         let mut styles: BTreeMap<u32, usize> = BTreeMap::new();
@@ -943,6 +964,7 @@ pub(crate) fn write(
     place: Option<&crate::fusion::Placement>,
     keep_sheets: bool,
     colours: &crate::Colours,
+    history: Option<&crate::History>,
 ) -> Result<(String, usize, usize, Vec<String>), SatError> {
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
@@ -969,6 +991,9 @@ pub(crate) fn write(
         styled: Vec::new(),
         warnings: Vec::new(),
     };
+    if let Some(h) = history.filter(|_| !colours.is_empty()) {
+        w.inherit_history(h);
+    }
     let app = w.add("APPLICATION_CONTEXT('automotive design')");
     w.add(&format!("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})"));
     let pc = w.add(&format!("PRODUCT_CONTEXT('',#{app},'mechanical')"));

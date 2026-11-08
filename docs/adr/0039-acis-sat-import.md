@@ -237,8 +237,37 @@ ids per stream or package; a damaged package only loses its colours. The readers
 and never panic on noise (unit tests).
 
 Checked on Adafruit's LoRa bonnet: all faces that carry a material get a colour (gold, black
-header, ...). Not covered: bodies whose blob has no material attribute (12 of the 19 blobs of
-the LoRa design's first part) and faces without one in a body that has none: Fusion keeps
-their appearance elsewhere in the design stream (a body or component appearance), which is
-not read yet, so they come in with the default colour.
+header, ...).
+
+History blobs (2026-11-08, second pass). Some body blobs have lost their material attributes
+although their faces were painted: the LoRa board (`BREP.ac1167de...smb`, 1526 faces) has none,
+but the history blob Fusion writes just before it in the design stream
+(`BREP.dca3d57e...smbh`, same ACIS layout, parsed by the same reader) has 151 faces with
+`e852ce83-...`, the material whose asset is the author's STEP colour `FBD4A9` on exactly 151
+faces of the board. The faces keep their `generic_tag_attrib_def` tag (record `... 1 3 <id> 0 1
+<feature> 0`) across the two blobs: all 151 tags of the history name exactly one face of the
+body blob. So `fusion::history_pairs` pairs each `.smb` name in the stream with the nearest
+`.smbh` name before it (within 16 KiB, no other body name between), `gusset_sat::History::read`
+collects tag to material id from the history blob (a tag with two materials is dropped), and
+`to_step_coloured_history` gives faces without a material of their own the one of their tag, a
+face's own material winning. The history is used only when at least half of its tags name
+exactly one face of the body, so a wrong pair does nothing. `.smbh` entries are read like
+`.smb` ones (same budgets). Effect: 1 more of the 37 STEP files of the LoRa bonnet coloured
+(14 to 15; the 151 are the board's small hole bodies, not its main plate), about one body per
+design in the other samples (the board or the bodies painted before later features).
+
+Not covered, and why (the author's STEP of the LoRa bonnet is the ground truth):
+- The main plate of the board (10 faces, `786E46` in the STEP) is painted with a material
+  named `Board` after the component's name (a UUID record with the name and the colour,
+  `a1bfa42f-...`, in the design stream); no blob or record found carries that UUID, only the
+  name matches. Not read: a name match is a guess.
+- The imported electronics bodies (RFM69, OLED, the 6 mm switch: 41, 4 and 8 sub-bodies,
+  each with an `ATF_ExternalShell` attribute and nothing else) have no material in the blob or
+  its history. Their colours (5, 3 and 2 per part in the STEP) are in the stream as 60
+  `BASEFEAT_PM_BODY_REF` / `PassiveRefMetaType` records (each: two ids, an asset reference and
+  the colour as four little-endian `f32`, e.g. `F3CB7C` 16 times, `4D4D4D` and `E8AD23` 11 times
+  each, which matches 9, 6 and 6 faces per body in the STEP), but the link from such a record
+  to a sub-body of the blob (the first id? the record number?) is not found.
+- Pin headers, fiducials and solder jumpers (the 17,635-byte blobs): the STEP is of a later
+  design version that replaced them by an other part, so there is no ground truth here.
 

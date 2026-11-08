@@ -526,6 +526,9 @@ pub struct Design {
     /// In a design that lists instances (an electronics board), the placement of the component
     /// they are relative to, as this design has it.
     pub context: Option<Placement>,
+    /// Body blob id (`BREP.<id>.smb`) to the id of the history blob (`BREP.<id>.smbh`) written
+    /// just before it, see [`history_pairs`].
+    pub history: std::collections::HashMap<String, String>,
 }
 
 /// Components, occurrences and references of a design stream.
@@ -697,6 +700,7 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
     for (key, over) in bare.into_iter().take(MAX_RECORDS) {
         out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![*over] });
     }
+    out.history = history_pairs(&runs);
     Some(out)
 }
 
@@ -804,6 +808,45 @@ pub fn instance_colours(bin: &[u8]) -> std::collections::HashMap<String, u32> {
             colour_at(st + COLOUR_OFFSET).or_else(|| (st + UUID_LEN..end.saturating_sub(31)).find_map(colour_at));
         if let Some(c) = found {
             out.insert(id.to_string(), c);
+        }
+    }
+    out
+}
+
+/// The id in `BREP.<id>.smbh`: the history blob of a body.
+fn history_id(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("BREP.")?;
+    let (id, tail) = rest.split_once('.')?;
+    (tail.starts_with("smbh")
+        && !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+    .then(|| id.to_string())
+}
+
+/// How far (bytes) before a body's name its history blob's name may stand.
+const HISTORY_REACH: usize = 16 * 1024;
+
+/// Which history blob (`BREP.<id>.smbh`) belongs to which body blob (`BREP.<id>.smb`). Fusion
+/// writes a body's record as the name of its history blob and, a few KB later, the name of the
+/// body itself; a body is paired with the nearest history name before it when no other body
+/// name stands between, at most [`HISTORY_REACH`] bytes away. Bodies with none are left out.
+fn history_pairs(runs: &[(usize, String)]) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let mut last: Option<(usize, String)> = None;
+    for (o, s) in runs {
+        for (i, _) in s.match_indices("BREP.") {
+            let Some(t) = s.get(i..) else { continue };
+            let at = o + 2 * i;
+            if let Some(h) = history_id(t) {
+                last = Some((at, h));
+            } else if let Some(b) = brep_id(t)
+                && let Some((hat, h)) = last.take()
+                && at - hat <= HISTORY_REACH
+                && out.len() < MAX_RECORDS
+            {
+                out.entry(b).or_insert(h);
+            }
         }
     }
     out
@@ -1274,5 +1317,38 @@ mod tests {
         let b = big_stream(100, 0);
         assert!(read_design_cancellable(&b, &AtomicBool::new(true)).is_none());
         assert!(read_design_cancellable(&b, &AtomicBool::new(false)).is_some());
+    }
+    #[test]
+    fn a_body_is_paired_with_the_history_blob_written_just_before_it() {
+        let mut b = vec![0u8; 8];
+        b.extend(u16s("BREP.aaaa0001.smbh"));
+        b.extend(vec![0x81; 1800]);
+        b.extend(u16s("BREP.bbbb0001.smb"));
+        // A body with no history before it, and one whose history is too far away.
+        b.extend(vec![0x81; 100]);
+        b.extend(u16s("BREP.bbbb0002.smb"));
+        b.extend([0x81; 20]);
+        b.extend(u16s("BREP.aaaa0003.smbh"));
+        b.extend(vec![0x81; HISTORY_REACH + 10]);
+        b.extend(u16s("BREP.bbbb0003.smb"));
+        // Two bodies after one history name: only the first is its.
+        b.extend(u16s("BREP.aaaa0004.smbh"));
+        b.extend([0x81; 20]);
+        b.extend(u16s("BREP.bbbb0004.smb"));
+        b.extend([0x81; 20]);
+        b.extend(u16s("BREP.bbbb0005.smb"));
+        let d = read_design(&b);
+        let h = &d.history;
+        assert_eq!(h.get("bbbb0001").map(String::as_str), Some("aaaa0001"), "{h:?}");
+        assert_eq!(h.get("bbbb0004").map(String::as_str), Some("aaaa0004"));
+        assert!(!h.contains_key("bbbb0002") && !h.contains_key("bbbb0003") && !h.contains_key("bbbb0005"), "{h:?}");
+        // Noise and cut streams are harmless.
+        for n in [0usize, 1, 5, 77, 400] {
+            let noise: Vec<u8> = (0..n).map(|i| (i * 37 % 251) as u8).collect();
+            assert!(read_design(&noise).history.is_empty());
+        }
+        for n in (0..b.len()).step_by(97) {
+            let _ = read_design(&b[..n]);
+        }
     }
 }

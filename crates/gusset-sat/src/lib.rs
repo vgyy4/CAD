@@ -91,8 +91,65 @@ pub fn to_step_coloured(
     keep_sheets: bool,
     colours: &Colours,
 ) -> Result<Converted, SatError> {
+    to_step_coloured_history(bytes, name, limits, place, keep_sheets, colours, None)
+}
+
+/// The face materials of a Fusion body's history blob (`BREP.<id>.smbh`), by face tag. The
+/// body blob written after it lost its material attributes in some files (a board whose
+/// faces were painted before later features), but its faces keep their tags.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History {
+    by_tag: std::collections::HashMap<String, String>,
+}
+
+impl History {
+    /// Reads the history blob: `None` when it does not parse or holds no face material.
+    /// A tag that two faces give different materials is dropped.
+    pub fn read(bytes: &[u8], limits: &Limits) -> Option<History> {
+        let sat = parse(bytes, limits).ok()?;
+        let materials = sat.materials();
+        if materials.is_empty() {
+            return None;
+        }
+        let mut by_tag: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut clashing = std::collections::HashSet::new();
+        for (face, tag) in sat.face_tags() {
+            let Some(&m) = materials.get(&face) else { continue };
+            if by_tag.get(&tag).is_some_and(|old| old != m) {
+                clashing.insert(tag);
+            } else {
+                by_tag.entry(tag).or_insert_with(|| m.to_string());
+            }
+        }
+        by_tag.retain(|t, _| !clashing.contains(t));
+        (!by_tag.is_empty()).then_some(History { by_tag })
+    }
+
+    /// Number of tagged materials.
+    pub fn len(&self) -> usize {
+        self.by_tag.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_tag.is_empty()
+    }
+}
+
+/// As [`to_step_coloured`], with the materials of a body's [`History`] given to its faces
+/// that have none of their own, matched by face tag. The history is used only when at least
+/// half of its tags name exactly one face of this body (else it is another body's); a tag
+/// that names several faces is skipped.
+pub fn to_step_coloured_history(
+    bytes: &[u8],
+    name: &str,
+    limits: &Limits,
+    place: Option<&fusion::Placement>,
+    keep_sheets: bool,
+    colours: &Colours,
+    history: Option<&History>,
+) -> Result<Converted, SatError> {
     let sat = parse(bytes, limits)?;
-    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets, colours)?;
+    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets, colours, history)?;
     Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 

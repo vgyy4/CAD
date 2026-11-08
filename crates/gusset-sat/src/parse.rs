@@ -74,6 +74,40 @@ impl Sat {
     }
 }
 
+/// The attribute type Fusion gives faces to follow them through its feature history.
+const TAG_ATTRIB: &str = "generic_tag_attrib_def";
+
+impl Sat {
+    /// The tag of every face that carries a `generic_tag_attrib_def` attribute: `(face record,
+    /// tag)`, the tag being the attribute's words after its definition name joined by commas
+    /// (kind, tag id, owning feature and the like). The same face has the same tag in the body
+    /// blob and in the history blob written before it.
+    pub fn face_tags(&self) -> Vec<(i64, String)> {
+        let mut out = Vec::new();
+        for r in &self.recs {
+            if r.word(3) != Some(TAG_ATTRIB) || !r.ty.ends_with("ATTRIB_CUSTOM-attrib") {
+                continue;
+            }
+            let Some(owner) = r.ptr(2) else { continue };
+            if self.rec(owner).is_none_or(|o| o.ty != "face") {
+                continue;
+            }
+            let words: Vec<&str> =
+                r.f.iter()
+                    .skip(8)
+                    .filter_map(|t| match t {
+                        Tok::Word(w) => Some(w.as_str()),
+                        Tok::Ptr(_) => None,
+                    })
+                    .collect();
+            if words.len() >= 3 {
+                out.push((owner, words.join(",")));
+            }
+        }
+        out
+    }
+}
+
 impl Rec {
     /// Pointer field `i`; `None` for `$-1`, a word or a missing field.
     pub fn ptr(&self, i: usize) -> Option<i64> {

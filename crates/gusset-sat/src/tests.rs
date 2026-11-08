@@ -149,3 +149,74 @@ fn faces_with_a_known_material_are_styled_with_its_colour() {
     let none = to_step_coloured(text.as_bytes(), "box", &Limits::default(), None, true, &Colours::new()).unwrap();
     assert!(!none.step.contains("STYLED_ITEM"));
 }
+
+/// A box whose first two faces carry `material` (when given) and a tag each, as Fusion writes
+/// them (`generic_tag_attrib_def` with the attribute's own definition name repeated).
+fn tagged_box(material: Option<&str>, tags: [&str; 2]) -> String {
+    let plain = box_sat(600, [10.0, 20.0, 30.0]);
+    let n = parse(plain.as_bytes(), &Limits::default()).unwrap().recs.len();
+    let mut text = plain.replacen("face $-1", &format!("face ${n}"), 1);
+    text = text.replacen("face $-1", &format!("face ${}", n + 1), 1);
+    let mut attrs = String::new();
+    for (k, owner) in [3usize, 4].into_iter().enumerate() {
+        if let Some(m) = material {
+            attrs += &format!("ATTRIB_CUSTOM-attrib $-1 $-1 ${owner} NEUTRON_Material_attrib_def 1 {m} #\n");
+        }
+        let t = tags[k];
+        attrs += &format!(
+            "ATTRIB_CUSTOM-attrib $-1 $-1 ${owner} generic_tag_attrib_def 3 3 -1 generic_tag_attrib_def 1 3 {t} 0 1 484 0 #\n"
+        );
+    }
+    text.replace("End-of-ACIS-data", &format!("{attrs}End-of-ACIS-data"))
+}
+
+#[test]
+fn faces_without_a_material_take_the_one_their_history_blob_has_for_their_tag() {
+    let id = "e852ce83-33d8-425f-8ebe-98d1ae611cf2";
+    let history = tagged_box(Some(id), ["152", "150"]);
+    let body = tagged_box(None, ["152", "150"]);
+    let h = History::read(history.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(h.len(), 2);
+    let mut colours = Colours::new();
+    colours.insert(id.to_string(), 0x00fb_d4a9);
+    let styled = |text: &str, h: Option<&History>, colours: &Colours| {
+        let c = to_step_coloured_history(text.as_bytes(), "b", &Limits::default(), None, true, colours, h).unwrap();
+        c.step.matches("STYLED_ITEM('color'").count()
+    };
+    assert_eq!(styled(&body, Some(&h), &colours), 2);
+    // Without the history, or without a colour for the material, nothing is styled.
+    assert_eq!(styled(&body, None, &colours), 0);
+    assert_eq!(styled(&body, Some(&h), &Colours::new()), 0);
+    // A face's own material wins over the history's.
+    let own = "617919e9-cd5c-4110-97a6-83c6bd6b90e3";
+    let mut both = colours.clone();
+    both.insert(own.to_string(), 0x0040_4040);
+    let mixed = tagged_box(Some(own), ["152", "150"]);
+    let c = to_step_coloured_history(mixed.as_bytes(), "b", &Limits::default(), None, true, &both, Some(&h)).unwrap();
+    assert_eq!(c.step.matches("COLOUR_RGB").count(), 1, "the history's colour must not override the face's own");
+    assert!(c.step.contains("COLOUR_RGB('',0.25"), "{}", c.step);
+    // Tags that name other faces are not matched: the history is another body's.
+    let other = tagged_box(None, ["7", "8"]);
+    assert_eq!(styled(&other, Some(&h), &colours), 0);
+    // Half of the tags matching is enough; a tag two faces share is skipped.
+    let twin = tagged_box(None, ["152", "152"]);
+    assert_eq!(styled(&twin, Some(&h), &colours), 0);
+}
+
+#[test]
+fn a_history_without_materials_or_with_conflicting_ones_gives_nothing() {
+    assert!(History::read(tagged_box(None, ["1", "2"]).as_bytes(), &Limits::default()).is_none());
+    // The same tag on two faces with different materials is dropped.
+    let a = "617919e9-cd5c-4110-97a6-83c6bd6b90e3";
+    let plain = tagged_box(Some(a), ["5", "5"]).replacen(a, "0bf2cf32-4921-49f1-b71a-f1fd22dcd453", 1);
+    let h = History::read(plain.as_bytes(), &Limits::default());
+    assert!(h.is_none_or(|h| h.len() <= 1));
+    for n in [0usize, 1, 7, 100] {
+        let noise: Vec<u8> = (0..n).map(|i| (i * 37 % 251) as u8).collect();
+        assert!(History::read(&noise, &Limits::default()).is_none());
+    }
+    let text = tagged_box(Some(a), ["1", "2"]);
+    for n in (0..text.len()).step_by(41) {
+        let _ = History::read(&text.as_bytes()[..n], &Limits::default());
+    }
+}

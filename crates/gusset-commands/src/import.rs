@@ -685,7 +685,9 @@ fn f3d(
     let is_brep = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smb");
     let is_stream = |n: &str| n.ends_with("/BulkStream.dat");
     let is_protein = |n: &str| n.contains("ProteinAssets.BlobParts/") && n.ends_with(".protein");
-    let wanted = |n: &str| is_brep(n) || is_stream(n) || is_protein(n);
+    // The history blobs (`BREP.<id>.smbh`) keep the face materials some body blobs lost.
+    let is_hist = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh");
+    let wanted = |n: &str| is_brep(n) || is_hist(n) || is_stream(n) || is_protein(n);
     let read = |data: &[u8], budget: &mut u64| {
         gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget).map_err(bad)
     };
@@ -723,6 +725,7 @@ fn f3d(
             info.bodies.extend(d.bodies);
             info.xrefs.extend(d.xrefs);
             info.context = info.context.or(d.context);
+            info.history.extend(d.history);
         }
         Ok(info)
     };
@@ -837,6 +840,15 @@ fn f3d(
             for p in &design.info.bodies {
                 places.entry(p.brep.as_str()).or_default().push(p);
             }
+            let hist_blobs: std::collections::HashMap<&str, &[u8]> = design
+                .entries
+                .iter()
+                .filter(|(n, _)| is_hist(n))
+                .filter_map(|(n, b)| {
+                    let id = n.rsplit("BREP.").next()?.split('.').next()?;
+                    Some((id, b.as_slice()))
+                })
+                .collect();
             for (entry, data) in design.entries.iter().filter(|(n, _)| is_brep(n)) {
                 i += 1;
                 let id = entry.rsplit("BREP.").next().and_then(|t| t.split('.').next()).unwrap_or_default();
@@ -845,6 +857,14 @@ fn f3d(
                     Some(v) => v.iter().copied().map(Some).collect(),
                     None => vec![None],
                 };
+                // The face materials of the body's history blob, for faces the body lost them on.
+                let history = design
+                    .info
+                    .history
+                    .get(id)
+                    .filter(|_| !colours.is_empty())
+                    .and_then(|h| hist_blobs.get(h.as_str()))
+                    .and_then(|b| gusset_sat::History::read(b, &gusset_sat::Limits::default()));
                 for p in own {
                     for &(origin, moved) in insts {
                         // Design coordinates to the root's: the reference's matrix, or the root's
@@ -870,13 +890,14 @@ fn f3d(
                             (None, true) => Some(inst),
                             (None, false) => None,
                         };
-                        let c = match gusset_sat::to_step_coloured(
+                        let c = match gusset_sat::to_step_coloured_history(
                             data,
                             &stem,
                             &gusset_sat::Limits::default(),
                             place.as_ref(),
                             keep_sheets,
                             &colours,
+                            history.as_ref(),
                         ) {
                             Ok(c) => c,
                             Err(e) => {
