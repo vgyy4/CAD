@@ -9,12 +9,14 @@
 
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+pub mod bundle;
 pub mod diff;
 pub mod history;
 pub mod merge;
 pub mod objects;
 pub mod persist;
 
+pub use bundle::{BundleLimits, BundleReport};
 pub use diff::{Change, DocDiff, ItemChange};
 pub use history::*;
 pub use merge::{Conflict, Merged, Side, merge_documents};

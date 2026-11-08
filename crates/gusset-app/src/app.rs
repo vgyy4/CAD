@@ -968,6 +968,15 @@ impl App {
                             "sim.modal" => Some(("shape_bands", "of the largest motion")),
                             _ => None,
                         };
+                        // Draft analysis: faces by class, red (negative), yellow, green.
+                        if id == "query.draft_analysis"
+                            && let Some(o) = v.as_object_mut()
+                            && let Some(bands) = o.remove("draft_bands")
+                        {
+                            let (scene, bodies, _) = bands_scene(&bands, "", &DRAFT_COLOURS);
+                            self.viewport.show_preview(scene, bodies);
+                            self.stress_view = true;
+                        }
                         // An optimised shape: its kept voxel faces, drawn in place of the model.
                         if id == "sim.optimize"
                             && let Some(o) = v.as_object_mut()
@@ -3898,13 +3907,25 @@ const STRESS_COLOURS: [(u32, &str); 8] = [
 /// A `sim.static` or `sim.modal` result's bands (`[{upto, quads}]`) as one coloured mesh per
 /// band, and the legend ("red: 8.75 to 10 MPa").
 fn stress_scene(bands: &Value, unit: &str) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<crate::results_panel::Band>) {
+    bands_scene(bands, unit, &STRESS_COLOURS)
+}
+
+/// Draft analysis: negative, insufficient, positive.
+const DRAFT_COLOURS: [(u32, &str); 3] = [(0xd6_3a_2c, "red"), (0xe8_c2_2a, "yellow"), (0x3c_b0_4a, "green")];
+
+/// Coloured quads in bands (`[{upto?, quads}]`), one colour per band from `colours`.
+fn bands_scene(
+    bands: &Value,
+    unit: &str,
+    colours: &[(u32, &str)],
+) -> (gusset_render::Scene, Vec<BodyInfo>, Vec<crate::results_panel::Band>) {
     let mut scene = gusset_render::Scene::new();
     let mut bodies = Vec::new();
     let mut legend = Vec::new();
     let mut from = 0.0;
     for (i, b) in bands.as_array().map(Vec::as_slice).unwrap_or_default().iter().enumerate() {
         let upto = b["upto"].as_f64().unwrap_or(0.0);
-        let (rgb, name) = STRESS_COLOURS.get(i).copied().unwrap_or((0x80_80_80, "grey"));
+        let (rgb, name) = colours.get(i).copied().unwrap_or((0x80_80_80, "grey"));
         legend.push(crate::results_panel::Band { rgb, text: format!("{name}: {from} to {upto} {unit}") });
         from = upto;
         let mut mesh = gusset_kernel::Mesh::default();

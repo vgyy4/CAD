@@ -33,3 +33,11 @@ plane's normal and can be reversed. OCCT provides it as `BRepOffsetAPI_DraftAngl
   errors, a shell after a draft, and the command (crates/gusset-cli/tests/modeling_draft.rs).
 - Not yet: parting-line draft, step draft, draft analysis (colouring faces by their angle
   to the pull direction); they can build on the same kernel call.
+
+## Amendment (2026-11-08): draft analysis
+`query.draft_analysis {direction, angle?, field?}` gives each face's draft against a pull
+direction, asin(n · pull) over its tessellation triangles (planes exactly, curved faces as a
+range): positive (at least `angle`, default 1 deg, along the pull), negative (as much against
+it), insufficient (in between: it would drag), mixed (a face spanning classes). It reports
+the counts, up to 200 faces with their ranges and areas, and with `field` the triangles in
+three bands that the app paints red, yellow and green in place of the model.

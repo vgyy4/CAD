@@ -18,10 +18,12 @@ use serde_json::{Value, json};
 
 mod assembly;
 mod bake;
+mod bundle;
 mod cam;
 mod component;
 mod configuration;
 mod datum;
+mod draft_check;
 mod drawing;
 mod feature_edit;
 mod generate;
@@ -37,10 +39,12 @@ mod surface;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use bake::Bake;
+pub use bundle::{HistoryExportBundle, HistoryImportBundle};
 pub use cam::{CamJob, ExportGcode, ToolpathQuery};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
 pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};
 pub use datum::{Combine, DatumPlane, MoveBody};
+pub use draft_check::DraftAnalysis;
 pub use drawing::{
     DrawingAddBalloon, DrawingAddDatum, DrawingAddDimension, DrawingAddGdt, DrawingAddNote, DrawingAddPartsList,
     DrawingAddView, DrawingCreate, DrawingDeleteItem, DrawingEdit, DrawingEditDimension, DrawingEditView,
@@ -72,6 +76,8 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(cam::specs());
     v.extend(sim::specs());
     v.extend(bake::specs());
+    v.extend(draft_check::specs());
+    v.extend(bundle::specs());
     v.extend(measure::specs());
     v.extend(feature_edit::specs());
     v.extend(lettering::specs());

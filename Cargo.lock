@@ -1703,6 +1703,7 @@ dependencies = [
  "blake3",
  "gusset-doc",
  "gusset-units",
+ "zstd",
 ]
 
 [[package]]

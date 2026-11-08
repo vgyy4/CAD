@@ -229,6 +229,8 @@ pub enum HistoryError {
     /// The project reached a size limit that keeps it savable and openable (security
     /// review #5). Compacting history may make room.
     LimitReached(String),
+    /// A history bundle (ADR 0044) was refused. The text never repeats bundle content.
+    Bundle(String),
 }
 
 impl fmt::Display for HistoryError {
@@ -249,6 +251,7 @@ impl fmt::Display for HistoryError {
             HistoryError::Object(e) => write!(f, "{e}"),
             HistoryError::InvalidDocument(m) => write!(f, "{m}"),
             HistoryError::LimitReached(m) => write!(f, "the project reached a size limit: {m}"),
+            HistoryError::Bundle(m) => write!(f, "history bundle refused: {m}"),
         }
     }
 }
@@ -337,13 +340,13 @@ pub struct RecordSizes {
 
 /// What a mutation is about to add (see `History::room`).
 #[derive(Debug, Clone, Copy, Default)]
-struct Need {
-    nodes: usize,
-    branches: usize,
-    events: usize,
-    new_nodes: usize,
-    new_branches: usize,
-    new_objects: usize,
+pub(crate) struct Need {
+    pub(crate) nodes: usize,
+    pub(crate) branches: usize,
+    pub(crate) events: usize,
+    pub(crate) new_nodes: usize,
+    pub(crate) new_branches: usize,
+    pub(crate) new_objects: usize,
 }
 
 /// The project history. See the crate docs and ADR 0006.
@@ -369,7 +372,7 @@ pub struct History {
 
 pub const MAX_NAME_LEN: usize = 120;
 
-fn check_branch_name(name: &str) -> HResult<()> {
+pub(crate) fn check_branch_name(name: &str) -> HResult<()> {
     let t = name.trim();
     if t.is_empty() {
         return Err(HistoryError::InvalidName("a branch name cannot be empty".into()));
@@ -582,7 +585,7 @@ impl History {
     /// Makes sure a mutation needing `need` keeps the history savable. Compacts the
     /// history (see [`History::compact_to_limits`]) if that makes room; otherwise
     /// returns [`HistoryError::LimitReached`] and nothing changes.
-    fn room(&mut self, now: u64, need: Need, use_reserve: bool) -> HResult<()> {
+    pub(crate) fn room(&mut self, now: u64, need: Need, use_reserve: bool) -> HResult<()> {
         if self.fits(&need, use_reserve).is_ok() {
             return Ok(());
         }
@@ -594,7 +597,7 @@ impl History {
         })
     }
 
-    fn event_need(ctx: &Ctx, event: Event) -> usize {
+    pub(crate) fn event_need(ctx: &Ctx, event: Event) -> usize {
         event_line(&EventRecord { time: ctx.time, actor: ctx.actor.clone(), event }).len()
     }
 
@@ -647,7 +650,7 @@ impl History {
         Ok(b)
     }
 
-    fn record(&mut self, ctx: &Ctx, event: Event) -> usize {
+    pub(crate) fn record(&mut self, ctx: &Ctx, event: Event) -> usize {
         let undoable = !matches!(event, Event::Undo { .. } | Event::Redo { .. } | Event::AgentAction { .. });
         self.push_event(EventRecord { time: ctx.time, actor: ctx.actor.clone(), event });
         let idx = self.events.len() - 1;

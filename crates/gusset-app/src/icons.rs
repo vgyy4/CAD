@@ -351,6 +351,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "query.body" => Tool::Body,
         "query.model" | "query.sketch" | "query.interference" | "query.bom" | "query.gear_pair" | "sim.static"
         | "sim.modal" | "sim.optimize" | "feature.add" => Tool::Info,
+        "query.draft_analysis" => Tool::Draft,
         "feature.bake" => Tool::Body,
         "query.joints" => Tool::Joint,
         "import.file" => Tool::Import,

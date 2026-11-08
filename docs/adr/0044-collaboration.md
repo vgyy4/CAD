@@ -34,6 +34,17 @@ own branches, and changes meet by merge, as agents' branches do.
 - Any file transport works (mail, a shared folder, git). This is useful on its own and is the
   wire format of phase 2.
 
+**Implemented (2026-11-08)**: `History::export_bundle` / `import_bundle` (`gusset-history`
+`bundle.rs`), commands `history.export_bundle {branch?, path, overwrite?}` and
+`history.import_bundle {path}`. File: `GUSB`, version 1, BLAKE3 of the payload, zstd payload
+(branch name, nodes root first, objects). Import limits (`BundleLimits`): file 512 MiB, decompressed
+1 GiB, 100 000 nodes, 1 000 000 objects, 256 MiB per object (16 MiB for non-blob objects); every
+object is re-hashed, each snapshot must read back and be complete, objects no node uses are refused,
+parents must precede children and only the first node may be a root. A root with no local twin
+becomes a second root (no common base, so no merge). The existing branch `from/<name>` at the same
+head is reused (a re-import changes nothing); other clashes get a numeric suffix. The `.gus`
+format is unchanged; the source project id is not carried (not needed to import).
+
 ### Phase 2: live relay (later)
 A relay (`gusset serve`, opt-in, TLS, per-project tokens) forwards bundles of new nodes as
 they are made; clients mirror each other's branches read-only as `from/<user>/<branch>`

@@ -145,3 +145,30 @@ fn draft_command_drives_the_real_kernel() {
     let b = execute(&mut s, &u, "query.body", json!({})).unwrap();
     assert!(near(b["volume_mm3"].as_f64().unwrap(), frustum(5.0, true)), "{b}");
 }
+
+#[test]
+fn draft_analysis_classes_walls_before_and_after_a_draft() {
+    use gusset_commands::{CmdCtx, Session, execute};
+    use serde_json::json;
+    let doc = gusset_doc::Document::from_text(BOX).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let u = CmdCtx::user(1);
+    let q = json!({"direction": [0, 0, 1], "angle": "1 deg", "field": true});
+    // A plain box: four vertical walls drag; the top leaves upwards, the bottom downwards.
+    let r = execute(&mut s, &u, "query.draft_analysis", q.clone()).unwrap();
+    assert_eq!(
+        (r["insufficient"].as_u64(), r["positive"].as_u64(), r["negative"].as_u64()),
+        (Some(4), Some(1), Some(1)),
+        "{r}"
+    );
+    let top = r["faces"].as_array().unwrap().iter().find(|f| f["face"] == "Extrude1/cap(end)").unwrap();
+    assert_eq!(top["draft_deg"], json!([90.0, 90.0]), "{r}");
+    // Tapered 3 deg about the base: the walls now release upwards at 3 deg.
+    let faces: Vec<&str> = SIDES.split(", ").collect();
+    execute(&mut s, &u, "feature.draft", json!({"faces": faces, "plane": "XY", "angle": "3 deg"})).unwrap();
+    let r = execute(&mut s, &u, "query.draft_analysis", q).unwrap();
+    assert_eq!((r["positive"].as_u64(), r["insufficient"].as_u64()), (Some(5), Some(0)), "{r}");
+    let wall = r["faces"].as_array().unwrap().iter().find(|f| f["face"] == faces[0]).unwrap();
+    assert!((wall["draft_deg"][0].as_f64().unwrap() - 3.0).abs() < 0.01, "{wall}");
+    assert!(!r["draft_bands"][2]["quads"].as_array().unwrap().is_empty());
+}

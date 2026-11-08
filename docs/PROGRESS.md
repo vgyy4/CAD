@@ -341,6 +341,10 @@ Phase 3 has started (see Next).
 
 - History-free mode done 2026-11-08: `feature.bake` (ADR 0038 amendment) turns the bodies into
   exact imports for direct editing; one undo restores the history.
+- Collaboration phase 1 done 2026-11-08 (ADR 0044): `history.export_bundle` / `history.import_bundle`
+  move a branch (nodes + reachable objects, zstd, BLAKE3) between project copies as `.gusb`;
+  the import re-hashes everything, reuses nodes it already has and adds `from/<name>`.
+  Live relay (phase 2) is later.
 - Rendering (later tier) started 2026-11-08: path-traced stills (`render_traced`, ADR 0009
   amendment; `gusset build -e out.png`).
 
