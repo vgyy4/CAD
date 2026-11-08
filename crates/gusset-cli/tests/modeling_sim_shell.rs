@@ -50,6 +50,8 @@ fn a_sheet_strip_bends_as_a_beam_on_shell_elements() {
     // Root stress M c / I = 10 * 100 * 0.5 / (10/12) = 600 MPa (element centres read lower).
     let vm = r["max_von_mises_mpa"].as_f64().unwrap();
     assert!(vm > 450.0 && vm < 650.0, "{vm}");
+    // The root of a cantilever is where it peaks: said to be the clamp's (F9-9).
+    assert!(r["note"].to_string().contains("fixed edge"), "{r}");
 }
 
 #[test]

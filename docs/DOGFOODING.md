@@ -826,7 +826,7 @@ of a revolve, 256 or more positions in one hole.
 | F9-5 | Open: flanges bent past 90 deg without `close` collide in the corner silently. |
 | F9-7 | Partly: agent fields are capped at 2000 quads; paths stay as computed. |
 | F9-8 | Fixed: sim_static says sheet metal runs on shells. |
-| F9-9 | Open (nit): element-size scatter on bent sheets within 3 %. |
+| F9-9 | Fixed (note): when the peak stress is on an element touching the clamp, `sim_static` says it does not settle with element size; displacements scatter within 3 %. |
 | F9-10 | Fixed: the import warns when it makes a different number of bodies than the source lists. |
 
 ## Run 10 — run 9 fixes and three end-to-end parts (2026-11-07)

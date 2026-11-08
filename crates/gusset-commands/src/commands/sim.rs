@@ -274,6 +274,18 @@ impl StaticQuery {
             "fixed_nodes": held.len(),
             "loaded_nodes": loaded,
         });
+        // A peak on an element that touches the clamp is the clamp's idealisation, not a
+        // number that settles as elements shrink (dogfooding F9-9).
+        let peak = vm.iter().zip(&quads).fold((0.0, None), |b, (v, q)| if *v > b.0 { (*v, Some(q)) } else { b }).1;
+        if let Some(q) = peak
+            && q.iter().any(|i| held.contains(i))
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert(
+                "note".into(),
+                json!("the peak stress is at a fixed edge, where a clamp's stress does not settle with element size; read stresses a few elements away from it"),
+            );
+        }
         if self.field
             && let Some(o) = out.as_object_mut()
         {
