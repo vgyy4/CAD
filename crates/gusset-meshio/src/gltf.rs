@@ -381,6 +381,9 @@ pub(crate) fn import(
 pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<ExportReport> {
     let mut bin: Vec<u8> = Vec::new();
     let (mut views, mut accessors, mut meshes, mut nodes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // One material per distinct body colour (ADR 0045); glTF wants linear factors.
+    let mut colours: Vec<u32> = Vec::new();
+    let mut materials = Vec::new();
     let mut triangles = 0u64;
     for (k, b) in bodies.iter().enumerate() {
         let pts: Vec<[f32; 3]> =
@@ -409,8 +412,28 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "target": 34963}));
         accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5125,
             "count": b.mesh.indices.len(), "type": "SCALAR"}));
-        meshes.push(json!({"name": b.name, "primitives": [{"attributes": {"POSITION": accessors.len() - 2},
-            "indices": accessors.len() - 1, "mode": 4}]}));
+        let mut prim = json!({"attributes": {"POSITION": accessors.len() - 2},
+            "indices": accessors.len() - 1, "mode": 4});
+        if let Some(c) = b.color.map(|c| c & 0xff_ffff) {
+            let i = match colours.iter().position(|x| *x == c) {
+                Some(i) => i,
+                None => {
+                    let lin = |v: u32| {
+                        let x = f64::from(v & 255) / 255.0;
+                        if x <= 0.04045 { x / 12.92 } else { libm::pow((x + 0.055) / 1.055, 2.4) }
+                    };
+                    colours.push(c);
+                    materials.push(json!({"name": format!("#{c:06x}"), "pbrMetallicRoughness": {
+                        "baseColorFactor": [lin(c >> 16), lin(c >> 8), lin(c), 1.0],
+                        "metallicFactor": 0.0, "roughnessFactor": 0.5}}));
+                    colours.len() - 1
+                }
+            };
+            if let Some(o) = prim.as_object_mut() {
+                o.insert("material".into(), json!(i));
+            }
+        }
+        meshes.push(json!({"name": b.name, "primitives": [prim]}));
         nodes.push(json!({"name": b.name, "mesh": meshes.len() - 1}));
         triangles += (b.mesh.indices.len() / 3) as u64;
         let _ = k;
@@ -425,6 +448,12 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         "bufferViews": views,
         "buffers": [{"byteLength": bin.len()}],
     });
+    let mut doc = doc;
+    if !materials.is_empty()
+        && let Some(o) = doc.as_object_mut()
+    {
+        o.insert("materials".into(), json!(materials));
+    }
     let mut json_bytes =
         serde_json::to_vec(&doc).map_err(|e| MeshIoError::Unsupported { format: F, detail: e.to_string() })?;
     while !json_bytes.len().is_multiple_of(4) {
@@ -460,6 +489,27 @@ mod tests {
             indices: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn body_colours_become_materials() {
+        let t = tetra();
+        let (bytes, _) = export_to_vec(
+            &[
+                ExportBody { name: "a", mesh: &t, color: Some(0x00ff_0000) },
+                ExportBody { name: "b", mesh: &t, color: Some(0x00ff_0000) },
+                ExportBody { name: "c", mesh: &t, color: None },
+            ],
+            ExportFormat::Glb,
+        )
+        .unwrap();
+        let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&bytes[20..20 + len]).unwrap();
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 1, "{doc}");
+        assert_eq!(doc["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"], json!([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(doc["meshes"][1]["primitives"][0]["material"], 0);
+        assert!(doc["meshes"][2]["primitives"][0].get("material").is_none());
+        assert_eq!(import_bytes(&bytes, None, &ImportOptions::default()).unwrap().meshes.len(), 3);
     }
 
     #[test]
