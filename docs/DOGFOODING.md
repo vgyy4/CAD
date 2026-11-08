@@ -1106,3 +1106,4 @@ assemblies and files from other versions.
 |---|---|
 | F12-2b | Fixed: curved faces take their draft from the tessellation's vertex normals (the surface's own normals), classes allow 0.001 deg for single-precision normals; a peg drafted 3 deg reads [3.0, 3.0], positive (OCCT test). |
 | F12-1 | Fixed: an offset of planar faces is now made as moves along their outward normals (one per distinct normal, origins composed back), which keep the faces' own planes; BRepOffset's result left a shape the defeaturing could not delete faces from. Curved faces still use BRepOffset. OCCT test: a hole deleted after the top was offset. |
+| F12-7 | Fixed: an import reuses a branch of that name (or a numbered copy) already at the bundle's head, and moves forward a branch an earlier import of the same source made (marked in its notes) when the bundle continues it; a user's own branches are never moved. |

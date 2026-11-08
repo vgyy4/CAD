@@ -389,11 +389,6 @@ impl History {
             map.push(id);
         }
         let Some(head) = map.last().copied() else { return refuse("the bundle has no iterations") };
-        let existing = self
-            .branches
-            .values()
-            .find(|b| b.deleted_at.is_none() && b.head == head && b.name == name)
-            .map(|b| (b.id, b.name.clone()));
         let nodes_reused = bnodes.len() - fresh.len();
         let nodes_added = fresh.len();
         for (h, kind, data) in staged.iter() {
@@ -405,8 +400,36 @@ impl History {
             self.nodes.insert(n.id, n);
         }
         self.next_node = next;
+        // The branch: one already at this head under this name (or a numbered copy of it)
+        // is reused; `from/<name>` whose head the bundle continues is moved forward (a
+        // collaborator's newer bundle, dogfooding F12-7); otherwise a new branch.
+        let same = |n: &str| {
+            n == name
+                || n.strip_prefix(name.as_str())
+                    .and_then(|r| r.strip_prefix(' '))
+                    .is_some_and(|d| d.parse::<u32>().is_ok())
+        };
+        let lineage = self.lineage(head);
+        // Only branches an import made for this source move forward, never one of the user's.
+        let note = format!("imported from a bundle of {}", clean(&src_name, MAX_NAME_LEN));
+        let existing = self
+            .branches
+            .values()
+            .find(|b| b.deleted_at.is_none() && b.head == head && same(&b.name))
+            .map(|b| (b.id, b.name.clone(), false))
+            .or_else(|| {
+                self.branches
+                    .values()
+                    .find(|b| b.deleted_at.is_none() && b.notes == note && lineage.contains(&b.head))
+                    .map(|b| (b.id, b.name.clone(), true))
+            });
         let (branch, branch_name, branch_created) = match existing {
-            Some((id, name)) => (id, name, false),
+            Some((id, name, forward)) => {
+                if forward {
+                    self.move_head(ctx, id, head)?;
+                }
+                (id, name, false)
+            }
             None => {
                 let name = self.free_branch_name(&name);
                 let id = BranchId(self.next_branch);
@@ -415,7 +438,7 @@ impl History {
                     name: name.clone(),
                     head,
                     color: None,
-                    notes: String::new(),
+                    notes: note.clone(),
                     pinned: false,
                     created_by: ctx.actor.clone(),
                     created_at: ctx.time,
@@ -569,6 +592,14 @@ mod tests {
         assert_eq!(r2.branch_name, "from/Main 2");
         let r3 = local.import_bundle(&ctx, &src.export_bundle(src.main()).unwrap(), &lim).unwrap();
         assert!(r3.branch_name.starts_with("from/Main"));
+        // A newer bundle of the same branch moves it forward instead of adding another
+        // (dogfooding F12-7); importing it again changes nothing.
+        chain(&mut other, &["8 mm"]);
+        let r4 = local.import_bundle(&ctx, &other.export_bundle(other.main()).unwrap(), &lim).unwrap();
+        assert_eq!((r4.branch, r4.branch_created), (r2.branch, false));
+        assert_eq!(local.head(r2.branch).unwrap(), r4.head);
+        let r5 = local.import_bundle(&ctx, &other.export_bundle(other.main()).unwrap(), &lim).unwrap();
+        assert_eq!((r5.branch, r5.branch_created, r5.nodes_added), (r2.branch, false, 0));
     }
 
     fn refused(h: &mut History, bytes: &[u8], lim: &BundleLimits) -> bool {
