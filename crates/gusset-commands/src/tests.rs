@@ -1404,6 +1404,15 @@ fn a_feature_is_added_from_its_statement() {
     )
     .unwrap_err();
     assert!(e.message.contains("4 values, not 2"), "{e:?}");
+    let r = run(
+        &mut s,
+        &u,
+        "feature.add",
+        json!({"statement":
+        "cam_job Neg (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: -3 mm)"}),
+    );
+    assert!(r["new_errors"].to_string().contains("depth must be positive"), "{r}");
+    run(&mut s, &u, "history.undo", json!({}));
     let e = execute(&mut s, &u, "feature.add", json!({"statement": "param w2 = 5 mm"})).unwrap_err();
     assert!(e.hint.as_deref().is_some_and(|h| h.contains("param_set")), "{e:?}");
     // Taken names, sketches and malformed text are refused.

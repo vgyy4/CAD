@@ -1137,8 +1137,14 @@ impl Evaluator {
                     )
                     .with_hint("fix the sketch the job cuts"));
                 }
-                eval_expr(name, &d.tool_diameter, Dim::LENGTH, params, units)?;
-                eval_expr(name, &d.depth, Dim::LENGTH, params, units)?;
+                // A job that can never cut is an error now, not at toolpath time (F11-8).
+                for (what, e) in [("tool_diameter", &d.tool_diameter), ("depth", &d.depth)] {
+                    let v = eval_expr(name, e, Dim::LENGTH, params, units)?;
+                    if !(v.is_finite() && v > 0.0) {
+                        return Err(EvalError::new(name, ErrorCode::Expression, format!("{what} must be positive"))
+                            .with_hint("depth is measured down from top"));
+                    }
+                }
                 Ok(())
             }
             FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
