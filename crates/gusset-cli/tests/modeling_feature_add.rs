@@ -55,3 +55,25 @@ fn a_baked_part_keeps_its_volume_and_takes_direct_edits() {
     let v = run(&mut s, "query.body", json!({}))["volume_mm3"].as_f64().unwrap();
     assert!((v - 40.0 * 20.0 * 15.0).abs() < 1e-6, "{v}");
 }
+
+#[test]
+fn a_hole_is_deleted_after_another_face_was_offset() {
+    // Dogfooding F12-1: delete_face failed after any offset_face on the body.
+    let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
+    let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
+    let mut s = Session::new(&doc, k, &CmdCtx::user(0));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 40, "height": 20}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "10 mm"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_circle", json!({"sketch": "Sketch2", "cx": 20, "cy": 10, "radius": 3}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch2", "distance": "10 mm", "op": "cut"}));
+    let r = run(&mut s, "feature.offset_face", json!({"faces": ["Extrude1/cap(end)"], "distance": "2 mm"}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let b = run(&mut s, "query.body", json!({"names": true}));
+    let wall = b["face_names"].as_array().unwrap().iter().find(|f| f["kind"] == "Cylinder").unwrap()["name"].clone();
+    let r = run(&mut s, "feature.delete_face", json!({"faces": [wall]}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let v = run(&mut s, "query.body", json!({}))["volume_mm3"].as_f64().unwrap();
+    assert!((v - 40.0 * 20.0 * 12.0).abs() < 1e-3, "{v}");
+}

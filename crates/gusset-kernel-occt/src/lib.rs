@@ -120,6 +120,50 @@ mod imp {
         Ok(&s.downcast::<OcctShape>()?.0)
     }
 
+    /// Offsets planar faces by moving them along their outward normals, one move per
+    /// distinct normal, composing the face origins back to the input's faces.
+    fn offset_planes(shape: &Shape, faces: &[u32], normals: &[V3], distance: f64) -> KResult<OpResult> {
+        // Faces grouped by normal (coplanar-parallel faces move together).
+        let mut groups: Vec<(V3, Vec<u32>)> = Vec::new();
+        for (&f, n) in faces.iter().zip(normals) {
+            match groups.iter_mut().find(|(m, _)| {
+                (0..3).all(|i| (m.get(i).copied().unwrap_or(0.0) - n.get(i).copied().unwrap_or(0.0)).abs() < 1e-9)
+            }) {
+                Some((_, l)) => l.push(f),
+                None => groups.push((*n, vec![f])),
+            }
+        }
+        let mut current = shape.clone();
+        // For each face of `current`, the input face it comes from.
+        let n0 = shape.downcast::<OcctShape>()?.topology()?.faces.len();
+        let mut origin: Vec<Option<u32>> = (0..n0 as u32).map(Some).collect();
+        for (n, group) in groups {
+            let here: Vec<u32> =
+                group.iter().filter_map(|g| origin.iter().position(|o| *o == Some(*g)).map(|i| i as u32)).collect();
+            if here.len() != group.len() {
+                return Err(KernelError::new(KernelErrorKind::OperationFailed, "an offset face was lost on the way"));
+            }
+            let step = [xf(&Transform::Translate([n[0] * distance, n[1] * distance, n[2] * distance]))];
+            let r = op_result(ffi::move_faces(raw(&current)?, &here, &step)?)?;
+            origin = r
+                .face_origins
+                .iter()
+                .map(|os| {
+                    os.iter().find_map(|o| match o {
+                        FaceOrigin::Input { face, .. } => origin.get(*face as usize).copied().flatten(),
+                        _ => None,
+                    })
+                })
+                .collect();
+            current = r.shape;
+        }
+        let face_origins = origin
+            .iter()
+            .map(|o| o.map(|f| vec![FaceOrigin::Input { input: 0, face: f }]).unwrap_or_default())
+            .collect();
+        Ok(OpResult { shape: current, face_origins })
+    }
+
     /// The shim's transform kind and parameters.
     fn xf(t: &Transform) -> (i32, [f64; 7]) {
         match *t {
@@ -434,6 +478,23 @@ mod imp {
         }
 
         fn offset_faces(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+            // Planar faces: an offset is a move along each face's outward normal. Moves keep
+            // the faces' own planes, where BRepOffset's result left a shape that
+            // BRepAlgoAPI_Defeaturing cannot delete faces from (dogfooding F12-1).
+            if faces.is_empty() {
+                return Err(KernelError::new(KernelErrorKind::InvalidInput, "no faces to offset"));
+            }
+            if !distance.is_finite() || distance.abs() < 1e-9 {
+                return Err(KernelError::new(KernelErrorKind::InvalidInput, "the offset distance must be non-zero"));
+            }
+            let topo = shape.downcast::<OcctShape>()?.topology()?;
+            let planar: Option<Vec<V3>> = faces
+                .iter()
+                .map(|&f| topo.faces.get(f as usize).filter(|i| i.kind == SurfaceKind::Plane).map(|i| i.normal))
+                .collect();
+            if let Some(normals) = planar {
+                return offset_planes(shape, faces, &normals, distance);
+            }
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }
 

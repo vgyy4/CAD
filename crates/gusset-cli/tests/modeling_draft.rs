@@ -181,8 +181,13 @@ fn draft_analysis_reads_a_cone_at_its_exact_draft() {
     let doc = gusset_doc::Document::from_text(PEG).unwrap();
     let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
     let u = CmdCtx::user(1);
-    execute(&mut s, &u, "feature.draft", json!({"faces": ["Extrude1/side(Sketch1/c2)"], "plane": "XY", "angle": "3 deg"}))
-        .unwrap();
+    execute(
+        &mut s,
+        &u,
+        "feature.draft",
+        json!({"faces": ["Extrude1/side(Sketch1/c2)"], "plane": "XY", "angle": "3 deg"}),
+    )
+    .unwrap();
     let r = execute(&mut s, &u, "query.draft_analysis", json!({"direction": [0, 0, 1], "angle": "3 deg"})).unwrap();
     let wall = r["faces"].as_array().unwrap().iter().find(|f| f["face"] == "Extrude1/side(Sketch1/c2)").unwrap();
     let (lo, hi) = (wall["draft_deg"][0].as_f64().unwrap(), wall["draft_deg"][1].as_f64().unwrap());
