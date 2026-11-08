@@ -15,6 +15,8 @@ pub enum FieldKind {
     Bool,
     /// Comma-separated list of strings.
     StringList,
+    /// Comma-separated list of numbers (a CAM holder, tabs).
+    NumberList,
     /// Anything else, edited as JSON.
     Json,
 }
@@ -86,6 +88,7 @@ fn kind_of(prop: &Value) -> FieldKind {
         ["integer"] => FieldKind::Integer,
         ["boolean"] => FieldKind::Bool,
         ["array"] if prop.get("items").map(type_names).is_some_and(|t| t == ["string"]) => FieldKind::StringList,
+        ["array"] if prop.get("items").map(type_names).is_some_and(|t| t == ["number"]) => FieldKind::NumberList,
         _ => FieldKind::Json,
     }
 }
@@ -115,6 +118,21 @@ impl Field {
             }
             FieldKind::StringList => Value::Array(
                 t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| Value::String(s.into())).collect(),
+            ),
+            FieldKind::NumberList => Value::Array(
+                t.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        s.parse::<f64>()
+                            .ok()
+                            .and_then(serde_json::Number::from_f64)
+                            .map(Value::Number)
+                            .ok_or_else(|| format!("{}: '{s}' is not a number", f.label))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
             ),
             FieldKind::Json => serde_json::from_str(t).map_err(|e| format!("{}: {e}", f.label))?,
         })
@@ -293,6 +311,20 @@ mod tests {
         assert!(ops.contains(&"waterline_ball") && ops.contains(&"pocket_rest") && ops.contains(&"steep_flat"));
         assert_eq!(ops, suggestions("cam.export_gcode", "operation"));
         assert!(suggestions("cam.toolpath", "sketch").is_empty());
+    }
+
+    #[test]
+    fn the_cam_holder_is_typed_as_numbers_separated_by_commas() {
+        let spec = gusset_commands::find("cam.toolpath").unwrap();
+        let mut form = Form::new(spec);
+        let h = form.fields.iter_mut().find(|f| f.name == "holder").unwrap();
+        assert_eq!(h.kind, FieldKind::NumberList);
+        h.value = "6, 10, 20, 12".into();
+        assert_eq!(h.to_value().unwrap(), serde_json::json!([6.0, 10.0, 20.0, 12.0]));
+        h.value = "[6,10]".into();
+        assert_eq!(h.to_value().unwrap(), serde_json::json!([6.0, 10.0]));
+        h.value = "6, ten".into();
+        assert!(h.to_value().unwrap_err().contains("'ten' is not a number"));
     }
 
     #[test]
