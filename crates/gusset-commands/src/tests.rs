@@ -1611,6 +1611,14 @@ fn baking_keeps_the_bodies_and_free_sketches_and_undoes_in_one_step() {
     assert_eq!(r["kept_features"], json!(["Sketch1", "Job1"]), "{r}");
     assert_eq!(r["removed_features"], json!(["Extrude1"]), "{r}");
     assert_eq!(r["removed_count"], 1, "{r}");
+    // Old face names map to the baked ones.
+    let names = r["face_names"].as_array().unwrap();
+    assert!(
+        names
+            .iter()
+            .any(|m| m["old"] == "Extrude1/cap(end)" && m["new"].as_str().unwrap().starts_with("Extrude1/face(")),
+        "{r}"
+    );
     // A second bake has nothing to bake (dogfooding F12-6).
     let e = execute(&mut s, &u, "feature.bake", json!({"confirm": true})).unwrap_err();
     assert!(e.message.contains("nothing to bake"), "{e:?}");

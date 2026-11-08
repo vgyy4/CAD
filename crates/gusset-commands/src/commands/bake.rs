@@ -78,6 +78,10 @@ impl Command for Bake {
             let bytes = k.write_native(&b.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
             blobs.push((b.name.clone(), s.put_blob(&bytes).to_hex()));
         }
+        // The faces' names before, in face order: a baked face is named by its index
+        // (`<body>/face(i)`), and the reply maps old names to new (dogfooding F12-6).
+        let old_faces: Vec<Vec<String>> =
+            ev.bodies.iter().map(|b| b.names.faces.iter().map(ToString::to_string).collect()).collect();
         edit(s, ctx, "Bake history", |doc, rb| {
             if rb.is_some() {
                 return Err(CommandError::args("the timeline is rolled back: move the marker to the end first")
@@ -99,7 +103,8 @@ impl Command for Bake {
             }
             doc.features = out;
             let mut made = Vec::new();
-            for (body, blob) in &blobs {
+            let mut renamed = Vec::new();
+            for ((body, blob), old) in blobs.iter().zip(&old_faces) {
                 // The import keeps the body's name where it is free (ids, not user text).
                 let name = if doc.feature(body).is_none() && validate_feature_name(body).is_ok() {
                     body.clone()
@@ -116,6 +121,11 @@ impl Command for Bake {
                 );
                 f.label = Some(format!("baked {body}").chars().take(200).collect());
                 doc.features.push(f);
+                for (i, o) in old.iter().enumerate() {
+                    if renamed.len() < MAX_LISTED {
+                        renamed.push(json!({"old": o, "new": format!("{name}/face({i})")}));
+                    }
+                }
                 made.push(name);
             }
             let removed_count = dropped.len();
@@ -125,6 +135,7 @@ impl Command for Bake {
                 "removed_count": removed_count,
                 "removed_features": dropped,
                 "kept_features": keep,
+                "face_names": renamed,
             });
             if !lost_jobs.is_empty()
                 && let Some(o) = out.as_object_mut()

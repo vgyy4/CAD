@@ -50,6 +50,9 @@ fn a_baked_part_keeps_its_volume_and_takes_direct_edits() {
         .find(|f| f["normal"].as_array().is_some_and(|n| n[2].as_f64().unwrap() > 0.99))
         .unwrap_or_else(|| panic!("{b}"));
     let name = top["name"].as_str().unwrap();
+    // The bake's map names the same face: the old top cap became this index (F12-6).
+    let mapped = r["face_names"].as_array().unwrap().iter().find(|m| m["old"] == "Extrude1/cap(end)").unwrap();
+    assert_eq!(mapped["new"], name, "{r}");
     let r = run(&mut s, "feature.offset_face", json!({"faces": [name], "distance": "5 mm"}));
     assert_eq!(r["rebuild_ok"], true, "{r}");
     let v = run(&mut s, "query.body", json!({}))["volume_mm3"].as_f64().unwrap();
