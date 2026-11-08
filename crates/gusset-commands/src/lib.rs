@@ -14,6 +14,7 @@ pub mod import;
 pub mod paths;
 pub mod registry;
 pub mod scad_build;
+mod scad_text;
 pub mod session;
 pub mod tree_import;
 

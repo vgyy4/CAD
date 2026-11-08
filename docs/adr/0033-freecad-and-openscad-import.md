@@ -58,3 +58,23 @@ formats, the licences of existing readers (FreeCAD LGPL-2.1+, OpenSCAD GPL-2.0+,
   their parameters until tier 1.
 - Deferred: FreeCAD tier 1, assemblies (`App::Link`), colours; OpenSCAD tier 1, `hull`,
   `minkowski`, `offset`, text.
+
+## Amendment (2026-11-08): OpenSCAD objects as editable features
+The spec asks for `.scad` to be translated to the code view (tier 1). Each top-level object is
+now written as features when they can say it: every primitive is drawn at the origin (a
+sketch and an extrude for cubes, cylinders and `linear_extrude` shapes; an XZ-plane profile
+revolved about Z for cones, spheres and `rotate_extrude`), turned and moved to its place by
+one `move` (the placement split into an even scale, which scales the primitive's sizes, a
+turn about one axis and a shift), and joined by `combine` as the file's `union`,
+`difference` and `intersection` join it (`gusset-commands/src/scad_text.rs`).
+
+Before anything is committed, the import rebuilds each object's features in a scratch
+document with the kernel and keeps them only if they rebuild without errors into one body
+whose volume (within a millionth) and box (within a millionth of its size) match the exact
+build. Anything else - a mirror, an uneven scale or skew, a check that fails, more than 5000
+curves - comes in as the exact body, with a warning naming the object and why. The features
+go in with the exact bodies in one edit (one undo); with the timeline rolled back every object
+comes in as an exact body. Not translated yet: `hull`, `minkowski` and text, which the reader
+already refuses or evaluates elsewhere; loops and modules are unrolled, so a `for` gives
+repeated features, not a pattern.
+

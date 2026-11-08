@@ -250,7 +250,8 @@ Phase 3 has started (see Next).
      along their normals, holes change radius; OCCT tests in `modeling_offset.rs`). `move_face`
      done (ADR 0031: translate/turn faces rigidly, the faces around keep their surfaces and
      stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). FreeCAD and OpenSCAD
-     import done (`gusset-scad`, FCStd in the import worker). PLY and glTF 2.0 done (`gusset-meshio`:
+     import done (`gusset-scad`, FCStd in the import worker); OpenSCAD objects come in as editable
+     features checked against the exact build (ADR 0033 amendment, 2026-11-08). PLY and glTF 2.0 done (`gusset-meshio`:
      PLY ASCII/binary import and binary export; glTF `.glb` export and `.glb`/`.gltf` import with
      node transforms, metres/Y-up converted to mm/Z-up, only embedded buffers read; fuzz targets
      `mesh_ply`, `mesh_gltf`; File > Export lists OBJ, PLY and glTF). Parasolid XT done (ADR 0035, `gusset-xt`: clean-room

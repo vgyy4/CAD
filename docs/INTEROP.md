@@ -16,7 +16,7 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 | SolidWorks .sldprt | import | 2 | done (ADR 0043: the Parasolid partition of both containers, SW2007–2025; names and colours; no feature history) | 100 % (23/23) | 100 % (23/23; the 12 controlled parts match SolidWorks' own STEP exactly; one part's bodies come from its imported feature) | 23 |
 | SolidWorks .sldasm | import | 2 | done (ADR 0043 amendment: component tree and placements, parts read from the assembly's folder; one public sample, NIST's Nanocalorimeter; no mates, virtual components or OLE2-era assemblies yet) | 1/1 | 1/1 | 1 |
 | FreeCAD .FCStd | import | 2 | done (ADR 0033: the stored shapes through the import worker) | – | – | 0 |
-| OpenSCAD .scad | import | 2 | done (ADR 0033, `gusset-scad`: the CSG tree evaluated and built as exact B-rep; not yet translated to editable features) | – | – | 0 |
+| OpenSCAD .scad | import | 1 | done (ADR 0033 and amendment: each object as editable features - sketches, extrudes, revolves, moves, combines - checked against the exact build; mirrors and uneven scales come in as exact bodies) | – | – | 0 |
 | Gusset feature tree .gtree.json | import | 1 | done (ADR 0042: exporter plugins for Fusion, SolidWorks and Onshape, unverified until run in the real apps) | – | – | 0 |
 | Solid Edge .par/.asm, Inventor .ipt/.iam | import | 2 | not started: no public sample files found (a clean-room reader needs samples; Solid Edge embeds Parasolid, Inventor ShapeManager, so the XT and ACIS readers would carry most of it) | – | – | 0 |
 

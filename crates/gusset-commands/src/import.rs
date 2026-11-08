@@ -101,6 +101,9 @@ struct PreparedBody {
     color: Option<u32>,
     /// Faces in other colours (face index, `0xRRGGBB`), from a STEP file's face colours.
     faces: Vec<(u32, u32)>,
+    /// An OpenSCAD object's tree and its exact volume: written as features when it can be
+    /// (ADR 0033 amendment), else imported as this body.
+    scad: Option<(gusset_scad::Csg, f64)>,
 }
 
 /// A worker body name `name\u{1f}#rrggbb` as the name and its colour (ADR 0045); the name
@@ -144,7 +147,7 @@ fn split_look(raw: &str) -> (String, Option<u32>, Vec<(u32, u32)>) {
 /// A worker body as a prepared body: its name, colour and face colours split off.
 fn prepared(raw: &str, blob: Vec<u8>, format: ImportFormat) -> PreparedBody {
     let (name, color, faces) = split_look(raw);
-    PreparedBody { name, blob, format, color, faces }
+    PreparedBody { name, blob, format, color, faces, scad: None }
 }
 
 /// The worker's bodies of one STEP text, with the names and colours the Parasolid file
@@ -165,6 +168,7 @@ fn with_looks(bodies: Vec<(String, Vec<u8>)>, looks: &[(Option<String>, Option<u
                 // converters write face colours as styled items).
                 color: own_color.or(look.and_then(|l| l.1)),
                 faces,
+                scad: None,
             }
         })
         .collect()
@@ -315,7 +319,7 @@ impl ImportJob {
                 let bodies = bodies.into_iter().map(|(name, blob)| prepared(&name, blob, format));
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
             }
-            Kind::Scad => scad(&bytes, self.kernel.as_ref(), cancel)?,
+            Kind::Scad => scad(&bytes, &self.kernel, cancel)?,
             Kind::Xt => {
                 let importer = self
                     .importer
@@ -409,7 +413,14 @@ impl ImportJob {
                     };
                     let (blob, _) = gusset_meshio::export_to_vec(&[body], store)
                         .map_err(|e| CommandError::new("io", format!("storing the mesh failed: {e}")))?;
-                    out.push(PreparedBody { name: m.name.clone(), blob, format, color: m.color, faces: Vec::new() });
+                    out.push(PreparedBody {
+                        name: m.name.clone(),
+                        blob,
+                        format,
+                        color: m.color,
+                        faces: Vec::new(),
+                        scad: None,
+                    });
                 }
                 (out, TIER_MESH, imported.report.warnings)
             }
@@ -751,9 +762,10 @@ fn sldasm(
 /// An OpenSCAD program: one exact body per top-level statement.
 fn scad(
     bytes: &[u8],
-    k: &dyn gusset_kernel::Kernel,
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
     cancel: &CancelFlag,
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let k = kernel.as_ref();
     let src = std::str::from_utf8(bytes).map_err(|_| CommandError::new("io", "the .scad file is not UTF-8 text"))?;
     let model = gusset_scad::read_cancellable(src, &gusset_scad::Limits::default(), Some(cancel)).map_err(|e| {
         if cancel.load(Ordering::Relaxed) {
@@ -769,6 +781,7 @@ fn scad(
         return Err(CommandError::new("io", "the OpenSCAD file makes no solid object"));
     }
     let mut out = Vec::new();
+    let mut notes = Vec::new();
     for (i, c) in model.objects.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
@@ -777,15 +790,26 @@ fn scad(
             if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", format!("OpenSCAD: {e}")) }
         })?;
         let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
+        // The object as features (ADR 0033 amendment) when they rebuild to the exact build's
+        // volume; else it stays this exact body.
+        let volume = k.mass_properties(&shape).map(|m| m.volume).unwrap_or(f64::NAN);
+        let as_features = match crate::scad_text::check(c, kernel.clone(), volume, k.bbox(&shape).ok()) {
+            Ok(()) => Some((c.clone(), volume)),
+            Err(why) => {
+                notes.push(format!("Object {}: imported as one exact body ({why})", i + 1));
+                None
+            }
+        };
         out.push(PreparedBody {
             name: format!("Object {}", i + 1),
             blob,
             format: ImportFormat::Scad,
             color: None,
             faces: Vec::new(),
+            scad: as_features,
         });
     }
-    let warnings = model.warnings.into_iter().take(50).collect();
+    let warnings = model.warnings.into_iter().chain(notes).take(50).collect();
     Ok((out, TIER_SCAD, warnings))
 }
 
@@ -1332,6 +1356,7 @@ fn freecad(
                         format: ImportFormat::FreeCad,
                         color: None,
                         faces: Vec::new(),
+                        scad: None,
                     });
                 }
             }
@@ -1361,10 +1386,35 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         .map(|b| (b.name.clone(), s.put_blob(&b.blob).to_hex(), b.format, b.color, b.faces.as_slice()))
         .collect();
     let file_name = p.file_name.clone();
-    let (tier, warnings) = (p.tier, p.warnings);
-    edit(s, ctx, &format!("Import {file_name}"), |doc, rb| {
+    let (tier, mut warnings) = (p.tier, p.warnings);
+    // OpenSCAD objects as features (ADR 0033 amendment): names that clash with nothing in
+    // the document; an object the features cannot say stays an exact body.
+    let mut written: Vec<(usize, String, String, f64)> = Vec::new();
+    if p.bodies.iter().any(|b| b.scad.is_some()) {
+        let doc = s.document(&ctx.actor)?;
+        let mut taken: std::collections::HashSet<String> =
+            doc.features.iter().map(|f| f.name.to_ascii_lowercase()).collect();
+        taken.extend(doc.params.iter().map(|p| p.name.to_ascii_lowercase()));
+        for (i, b) in p.bodies.iter().enumerate() {
+            let Some((tree, volume)) = &b.scad else { continue };
+            match crate::scad_text::object_text(tree, &mut taken) {
+                Ok((text, body)) => written.push((i, text, body, *volume)),
+                Err(why) => warnings.push(format!("{}: imported as one exact body ({why})", b.name)),
+            }
+        }
+    }
+    let feature_text: String = written.iter().map(|w| w.1.as_str()).collect();
+    let as_features: std::collections::HashSet<usize> = written.iter().map(|w| w.0).collect();
+    let warnings_now = warnings.clone();
+    let mut out = edit(s, ctx, &format!("Import {file_name}"), |doc, rb| {
+        // Features go at the end; with the timeline rolled back they would land after the
+        // marker, so the objects come in as exact bodies then.
+        let features_ok = rb.is_none() && !feature_text.is_empty();
         let mut names = Vec::new();
         for (i, (body_name, blob, format, color, faces)) in stored.iter().enumerate() {
+            if features_ok && as_features.contains(&i) {
+                continue;
+            }
             let name = doc.unique_feature_name("Import");
             let mut f = Feature::new(
                 name.clone(),
@@ -1393,9 +1443,55 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
             }
             names.push(name);
         }
-        let warnings: Vec<String> = warnings.iter().take(20).cloned().collect();
-        Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings }))
-    })
+        let mut made = Vec::new();
+        if features_ok {
+            let text = format!("{}\n{feature_text}", doc.to_text());
+            *doc = gusset_doc::text::parse(&text).map_err(|e| {
+                CommandError::new(
+                    "invalid_document",
+                    format!("the features written for the OpenSCAD file do not parse: {e}"),
+                )
+            })?;
+            made = written.iter().map(|w| w.2.clone()).collect();
+            names.extend(made.iter().cloned());
+        }
+        let warnings: Vec<String> = warnings_now.iter().take(20).cloned().collect();
+        let tier = if made.is_empty() { tier } else { "tier 1: OpenSCAD objects as editable features" };
+        Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings, "scad_features": made }))
+    })?;
+    // Each object written as features against its exact build.
+    let made: Vec<String> = out
+        .get("scad_features")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(String::from)
+        .collect();
+    if !made.is_empty() {
+        let ev = s.evaluate(&ctx.actor)?;
+        let k = s.kernel().clone();
+        let mut notes = Vec::new();
+        for (_, _, body, want) in &written {
+            let got = ev
+                .bodies
+                .iter()
+                .find(|b| &b.feature == body)
+                .and_then(|b| k.mass_properties(&b.shape).ok())
+                .map(|m| m.volume);
+            match got {
+                Some(v) if want.is_finite() && (v - want).abs() > 1e-6 * want.abs().max(1.0) => {
+                    notes.push(format!("{body}: volume {v:.4} mm3, the exact build's {want:.4} mm3"));
+                }
+                None => notes.push(format!("{body}: the features made no body")),
+                _ => {}
+            }
+        }
+        if let Some(w) = out.get_mut("warnings_user_text").and_then(Value::as_array_mut) {
+            w.extend(notes.into_iter().map(Value::from));
+        }
+    }
+    Ok(out)
 }
 
 /// Face colours as the appearance's groups, one per colour in first-seen order.

@@ -1,6 +1,7 @@
-//! OpenSCAD import with the real OCCT kernel (ADR 0033): each top-level object becomes an
-//! exact body whose volume matches the analytic value (true spheres, cones and tori, not
-//! facets), with transforms, mirrors and booleans.
+//! OpenSCAD import with the real OCCT kernel (ADR 0033): each top-level object becomes
+//! editable features, or an exact body where features cannot say it, whose volume matches
+//! the analytic value (true spheres, cones and tori, not facets), with transforms, mirrors
+//! and booleans.
 
 #![cfg(gusset_occt)]
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp, clippy::disallowed_methods)]
@@ -24,6 +25,8 @@ module wedge() { linear_extrude(height = 2, center = true) polygon([[0, 0], [6, 
 translate([100, 0, 0]) mirror([1, 0, 0]) rotate([90, 0, 0]) scale(2) wedge();
 intersection() { cube(10, center = true); sphere(r = 6); }
 for (i = [0 : 2]) translate([i * 10, -30, 0]) cube([2, 2, i + 1]);
+translate([0, -60, 0]) rotate([20, 30, 40]) cube([5, 8, 3]);
+rotate([180, 0, 0]) cylinder(h = 4, r = 1);
 "#;
 
 #[test]
@@ -37,10 +40,29 @@ fn an_openscad_file_becomes_exact_bodies() {
     let mut s = Session::new(&doc, k.clone(), &CmdCtx::user(0));
     s.project_dir = Some(dir.clone());
     let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "parts.scad"})).unwrap();
-    assert_eq!(r["features"].as_array().unwrap().len(), 7, "{r}");
+    assert_eq!(r["features"].as_array().unwrap().len(), 9, "{r}");
+    // Six objects become editable features (ADR 0033 amendment); the mirrored wedge, which
+    // a move cannot say, stays an exact body.
+    // The last two are turned (any axis, and half a turn): their boxes match the exact
+    // build's, or they would have stayed exact bodies.
+    assert_eq!(
+        r["scad_features"],
+        json!(["Cube1", "Sphere1", "Cone1", "Revolve1", "Cube2", "Cube3", "Cube6", "Cylinder2"]),
+        "{r}"
+    );
+    assert_eq!(r["warnings_user_text"].as_array().unwrap().len(), 1, "{r}");
+    assert!(r["warnings_user_text"][0].as_str().unwrap().contains("Object 5"), "{r}");
     let ev = s.evaluate(&Actor::User).unwrap();
     assert!(ev.errors().is_empty(), "{:?}", ev.errors());
-    let vols: Vec<f64> = ev.bodies.iter().map(|b| k.mass_properties(&b.shape).unwrap().volume).collect();
+    let text = s.document(&Actor::User).unwrap().to_text();
+    assert!(
+        text.contains("combine Combine") && text.contains("move Place") && text.contains("revolve Sphere1"),
+        "{text}"
+    );
+    // In the file's order: plate, sphere, cone, torus, wedge, rounded cube, steps.
+    let order = ["Cube1", "Sphere1", "Cone1", "Revolve1", "Import1", "Cube2", "Cube3"];
+    let body = |i: usize| ev.bodies.iter().find(|b| b.feature == order[i]).unwrap();
+    let vols: Vec<f64> = (0..order.len()).map(|i| k.mass_properties(&body(i).shape).unwrap().volume).collect();
     let near = |i: usize, want: f64, tol: f64| {
         assert!((vols[i] - want).abs() < tol * want, "body {i}: {} vs {want}", vols[i]);
     };
@@ -56,9 +78,9 @@ fn an_openscad_file_becomes_exact_bodies() {
     near(5, 4.0 / 3.0 * PI * 216.0 - 6.0 * cap, 1e-6);
     near(6, 4.0 * (1.0 + 2.0 + 3.0), 1e-9);
     // Placement: the mirrored wedge lies at x <= 100, the sphere is centred at x = 60.
-    let b = k.bbox(&ev.bodies[4].shape).unwrap();
+    let b = k.bbox(&body(4).shape).unwrap();
     assert!(b.max[0] <= 100.0 + 1e-6 && b.min[0] >= 100.0 - 12.0 - 1e-6, "{b:?}");
-    let b = k.bbox(&ev.bodies[1].shape).unwrap();
+    let b = k.bbox(&body(1).shape).unwrap();
     assert!((b.min[0] + b.max[0] - 120.0).abs() < 1e-6, "{b:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
