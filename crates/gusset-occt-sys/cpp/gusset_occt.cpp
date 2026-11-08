@@ -2255,14 +2255,33 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
   occ::handle<TDocStd_Document> doc;
   app->NewDocument("MDTV-XCAF", doc);
   occ::handle<XCAFDoc_ShapeTool> st = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  occ::handle<XCAFDoc_ColorTool> ct = XCAFDoc_DocumentTool::ColorTool(doc->Main());
   for (size_t i = 0; i < n; ++i) {
     TDF_Label l = st->AddShape(shapes[i]->s, false);
-    if (names && names[i]) TDataStd_Name::Set(l, TCollection_ExtendedString(names[i], true));
+    if (!names || !names[i]) continue;
+    // "name\x1f#rrggbb": the body's colour rides on its name (ADR 0045).
+    std::string full(names[i]);
+    std::string name = full, colour;
+    size_t sep = full.find('\x1f');
+    if (sep != std::string::npos) {
+      name = full.substr(0, sep);
+      colour = full.substr(sep + 1);
+    }
+    TDataStd_Name::Set(l, TCollection_ExtendedString(name.c_str(), true));
+    if (colour.size() == 7 && colour[0] == '#') {
+      char* end = nullptr;
+      unsigned long v = std::strtoul(colour.c_str() + 1, &end, 16);
+      if (end && *end == '\0') {
+        Quantity_Color c(((v >> 16) & 255) / 255.0, ((v >> 8) & 255) / 255.0, (v & 255) / 255.0, Quantity_TOC_sRGB);
+        ct->SetColor(l, c, XCAFDoc_ColorSurf);
+      }
+    }
   }
   Interface_Static::SetCVal("write.step.unit", "MM");
   Interface_Static::SetCVal("write.step.product.name", "Gusset");
   STEPCAFControl_Writer w;
   w.SetNameMode(true);
+  w.SetColorMode(true);
   if (!w.Transfer(doc, STEPControl_AsIs)) {
     app->Close(doc);
     return fail("STEP export could not translate the model");
@@ -2364,8 +2383,14 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
   {
     NCollection_Sequence<TDF_Label> all;
     st->GetShapes(all);
+    // Parts first, assemblies last, and an assembly's name and colour only for itself: a
+    // solid takes its own part's name, never the name of an assembly holding it (dogfooding
+    // F14-2).
+    for (int pass = 0; pass < 2; ++pass)
     for (int i = 1; i <= all.Length(); ++i) {
       const TDF_Label& l = all.Value(i);
+      bool assembly = XCAFDoc_ShapeTool::IsAssembly(l);
+      if (assembly != (pass == 1)) continue;
       TopoDS_Shape sh = XCAFDoc_ShapeTool::GetShape(l);
       if (sh.IsNull()) continue;
       std::string n = name_of(l);
@@ -2375,7 +2400,8 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
         if (c >= 0) colours.emplace(x.TShape().get(), c);
       };
       note(sh);
-      for (TopExp_Explorer e(sh, TopAbs_SOLID); e.More(); e.Next()) note(e.Current());
+      if (!assembly)
+        for (TopExp_Explorer e(sh, TopAbs_SOLID); e.More(); e.Next()) note(e.Current());
       NCollection_Sequence<TDF_Label> subs;
       XCAFDoc_ShapeTool::GetSubShapes(l, subs);
       for (int j = 1; j <= subs.Length(); ++j) {

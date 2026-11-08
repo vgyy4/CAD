@@ -272,7 +272,19 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         let meshes: Vec<(&gusset_kernel::Mesh, &str)> = r.meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
         let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         let bytes = match ext.as_str() {
-            "step" | "stp" => k.export_step(&bodies).map_err(|e| e.to_string())?,
+            "step" | "stp" => {
+                // Colours ride on the names (ADR 0045).
+                let names: Vec<String> = bodies
+                    .iter()
+                    .map(|(_, n)| match doc.appearances.iter().find(|a| a.body == *n) {
+                        Some(a) => format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff),
+                        None => (*n).to_string(),
+                    })
+                    .collect();
+                let styled: Vec<(&gusset_kernel::Shape, &str)> =
+                    bodies.iter().zip(&names).map(|((s, _), n)| (*s, n.as_str())).collect();
+                k.export_step(&styled).map_err(|e| e.to_string())?
+            }
             "iges" | "igs" => k.export_iges(&bodies).map_err(|e| e.to_string())?,
             "png" => render_png(k.as_ref(), &bodies, &meshes, &doc.appearances, &o)?,
             other => {

@@ -3458,8 +3458,17 @@ impl Command for ExportStep {
             };
             return Err(nothing_to_export(&ev, if iges { " as IGES" } else { " as STEP" }, hint));
         }
+        // STEP carries each body's colour on its name (`name\u{1f}#rrggbb`, ADR 0045).
+        let looks = if iges { Vec::new() } else { s.document(&ctx.actor)?.appearances };
+        let names: Vec<String> = sel_bodies
+            .iter()
+            .map(|b| match looks.iter().find(|a| a.body == b.name) {
+                Some(a) => format!("{}\u{1f}#{:06x}", b.name, a.color & 0xff_ffff),
+                None => b.name.clone(),
+            })
+            .collect();
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
-            sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
+            sel_bodies.iter().zip(&names).map(|(b, n)| (&b.shape, n.as_str())).collect();
         let bytes = if iges { s.kernel().export_iges(&bodies) } else { s.kernel().export_step(&bodies) }
             .map_err(|e| CommandError::new("io", e.to_string()))?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
