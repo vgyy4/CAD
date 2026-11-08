@@ -103,7 +103,7 @@ impl Command for Bake {
             }
             doc.features = out;
             let mut made = Vec::new();
-            let mut renamed = Vec::new();
+            let (mut renamed, mut renamed_more) = (Vec::new(), 0usize);
             for ((body, blob), old) in blobs.iter().zip(&old_faces) {
                 // The import keeps the body's name where it is free (ids, not user text).
                 let name = if doc.feature(body).is_none() && validate_feature_name(body).is_ok() {
@@ -124,6 +124,8 @@ impl Command for Bake {
                 for (i, o) in old.iter().enumerate() {
                     if renamed.len() < MAX_LISTED {
                         renamed.push(json!({"old": o, "new": format!("{name}/face({i})")}));
+                    } else {
+                        renamed_more += 1;
                     }
                 }
                 made.push(name);
@@ -137,6 +139,12 @@ impl Command for Bake {
                 "kept_features": keep,
                 "face_names": renamed,
             });
+            // The map is capped; say how many it leaves out (review R11).
+            if renamed_more > 0
+                && let Some(o) = out.as_object_mut()
+            {
+                o.insert("face_names_more".into(), json!(renamed_more));
+            }
             if !lost_jobs.is_empty()
                 && let Some(o) = out.as_object_mut()
             {

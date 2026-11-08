@@ -204,3 +204,11 @@ clustering (cells a twentieth of the body's diagonal; only for meshes of 2000+ t
 it halves them). The 400-body scene went from 219 to 89 ms (llvmpipe) and 311 to 87 ms
 (software). A real iGPU measurement is owed. (The first figures for the 400-body scene, 208 and
 316 ms, came from a test scene whose edges were left at the origin.)
+
+### 2026-11-08: tessellation cache
+Bodies the evaluator did not change keep their shape object across rebuilds, so the session
+caches meshes by shape identity and deflection (`Session::tessellate_cached`): the app's scene,
+`render_view`, draft analysis and simulation tessellate only the bodies an edit changed (an
+83-body STEP import paid 83 worker round trips per rebuild before). Not yet reused: the app
+still builds a new render scene per rebuild, so each mesh's BVH, coarse copy and GPU buffers are
+rebuilt too; keeping the previous scene's entries for unchanged meshes is the next step.

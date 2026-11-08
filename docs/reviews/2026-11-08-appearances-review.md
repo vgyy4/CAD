@@ -17,7 +17,7 @@ Read, not run. Findings and what was done:
 | R8 | medium/low | Any failure of the planar offset fell back to BRepOffset. | Fixed: only the "would have to change shape" case does. |
 | R9 | low | The in-process STEP import gave different bodies from the worker. | Fixed: it uses the same XDE reader and naming. |
 | R10 | low | A hostile name containing U+001F lost its colour; an all-invisible name gave an empty label. | Fixed: control characters go before the colour is appended; empty names fall back to "Body". |
-| R11 | low | `also_moved` can list stretched blends; the bake's face map is capped at 200 silently. | Open (informational). |
+| R11 | low | `also_moved` can list stretched blends; the bake's face map is capped at 200 silently. | Fixed in part: the bake reports `face_names_more`; `also_moved` stays a superset (informational). |
 | R12 | low | The plastic coat reflects only the sky and drops its share when blocked; the disc radiance convention. | Accepted (a 4 % coat; noted). |
 | R13 | low | Shadow tint per glass surface differs from the camera path's tint per pass. | Fixed: a fourth root per surface, so a pass through a solid matches. |
 | R14 | nit | Duplicated STEP colour naming in CLI and commands; dropped partition error with LocalBodies; whole-document clones to read appearances. | Fixed in part: one `step_names` helper; the rest open. |
