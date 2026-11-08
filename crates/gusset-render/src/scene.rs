@@ -86,6 +86,8 @@ pub struct SceneMesh {
     /// against many meshes rejects most of them cheaply.
     pub(crate) inverse: Option<Mat4>,
     pub(crate) world: Aabb,
+    /// A coarse copy for when the body is drawn small (lod.rs).
+    pub(crate) lod: Option<MeshData>,
 }
 
 impl SceneMesh {
@@ -206,10 +208,12 @@ impl Scene {
     /// The mesh is invalid (see [`MeshError`]); the scene is unchanged.
     pub fn insert_mesh(&mut self, id: MeshId, mesh: &gusset_kernel::Mesh) -> Result<(), MeshError> {
         let data = MeshData::from_mesh(mesh)?;
+        let lod = crate::lod::coarse(mesh).and_then(|c| MeshData::from_mesh(&c).ok());
         let rev = next_geometry_rev();
         match self.meshes.get_mut(&id) {
             Some(m) => {
                 m.data = data;
+                m.lod = lod;
                 m.geometry_rev = rev;
                 m.face_highlights.clear();
                 m.edge_highlights.clear();
@@ -226,6 +230,7 @@ impl Scene {
                     edge_highlights: BTreeMap::new(),
                     inverse: None,
                     world: Aabb::EMPTY,
+                    lod,
                 };
                 m.refresh();
                 self.meshes.insert(id, m);

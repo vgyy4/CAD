@@ -87,6 +87,8 @@ pub(crate) struct MeshDraw {
     pub closed: bool,
     /// Finish code for shading (0 plastic, 1 metal, 2 glass, 3 rubber).
     pub finish: u32,
+    /// Draw the mesh's coarse copy (`SceneMesh::lod`); `tri_runs` then index it.
+    pub lod: bool,
 }
 
 /// Everything needed to draw one frame.
@@ -137,10 +139,16 @@ impl FramePlan {
                 continue;
             }
             let edges_too = px >= EDGES_PX;
+            // The coarse copy below `LOD_PX`, unless something on it is highlighted or a
+            // section is on (the cut face needs the exact closed mesh).
+            let lod = px < LOD_PX && m.lod.is_some() && m.face_highlights.is_empty() && opts.section.is_none();
             let data = m.data();
             let model_view = math::mul(&cm.view, m.transform());
             let base = m.material().color.linear();
-            let tri_runs = if opts.faces {
+            let tri_runs = if opts.faces && lod {
+                let n = m.lod.as_ref().map_or(0, |l| l.triangle_count() as u32);
+                vec![(0..n, base)]
+            } else if opts.faces {
                 SceneMesh::runs(&data.face_ranges, &m.face_highlights, data.triangle_count() as u32)
                     .into_iter()
                     .map(|(r, h)| (r, hl(h, base)))
@@ -163,7 +171,8 @@ impl FramePlan {
                 model_view,
                 tri_runs,
                 edge_runs,
-                closed: data.closed,
+                closed: data.closed && !lod,
+                lod,
                 finish: match m.material().finish {
                     crate::Finish::Plastic => 0,
                     crate::Finish::Metal => 1,
@@ -203,6 +212,8 @@ fn view_plane(view: &Mat4, sec: &Section) -> Option<[f32; 4]> {
 /// Below this many pixels across a body is not drawn; below `EDGES_PX` its edges are not.
 const TINY_PX: f64 = 1.5;
 const EDGES_PX: f64 = 6.0;
+/// Below this many pixels across a body with a coarse copy is drawn with it.
+const LOD_PX: f64 = 80.0;
 
 /// The larger side, in pixels, of the screen box of `m`'s bounds; infinite when the box
 /// reaches behind the eye.

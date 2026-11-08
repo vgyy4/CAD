@@ -115,10 +115,12 @@ impl SoftwareRenderer {
         for d in order {
             let Some(m) = scene.mesh(d.id) else { continue };
             let data = m.data();
-            let verts: Vec<ClipVert> = data
+            // Faces from the coarse copy when the plan asks (frame.rs), edges always exact.
+            let faces = if d.lod { m.lod.as_ref().unwrap_or(data) } else { data };
+            let verts: Vec<ClipVert> = faces
                 .positions
                 .iter()
-                .zip(&data.normals)
+                .zip(&faces.normals)
                 .map(|(p, n)| {
                     let vp = math::transform_point(&d.model_view, p.map(f64::from));
                     let un = unpack_normal(*n).map(f64::from);
@@ -136,7 +138,7 @@ impl SoftwareRenderer {
             for (run, base) in &d.tri_runs {
                 for tri in run.clone() {
                     let i = tri as usize * 3;
-                    let Some(idx) = data.indices.get(i..i + 3) else { continue };
+                    let Some(idx) = faces.indices.get(i..i + 3) else { continue };
                     let vs: Vec<ClipVert> = idx.iter().filter_map(|&k| verts.get(k as usize).copied()).collect();
                     if let [a, b, c] = vs.as_slice() {
                         let mut poly = clip_poly(&[*a, *b, *c], |v| v.clip[2]);

@@ -137,6 +137,8 @@ pub struct Renderer {
     pipelines: Vec<(u32, Pipelines)>,
     blit: Blit,
     meshes: HashMap<MeshId, GpuMesh>,
+    /// Coarse copies of the meshes drawn small (`MeshDraw::lod`).
+    lod_meshes: HashMap<MeshId, GpuMesh>,
     targets: Option<Targets>,
 }
 
@@ -218,6 +220,7 @@ impl Renderer {
             pipelines: Vec::new(),
             blit,
             meshes: HashMap::new(),
+            lod_meshes: HashMap::new(),
             targets: None,
         }
     }
@@ -509,12 +512,20 @@ impl Renderer {
         self.pipelines.len() - 1
     }
 
-    fn sync_mesh(&mut self, scene: &Scene, id: MeshId, rev: u64) {
-        if self.meshes.get(&id).is_some_and(|m| m.rev == rev) {
+    fn sync_mesh(&mut self, scene: &Scene, id: MeshId, rev: u64, lod: bool) {
+        let cache = if lod { &self.lod_meshes } else { &self.meshes };
+        if cache.get(&id).is_some_and(|m| m.rev == rev) {
             return;
         }
         let Some(m) = scene.mesh(id) else { return };
-        let data = m.data();
+        let data = if lod {
+            match m.lod.as_ref() {
+                Some(l) => l,
+                None => return,
+            }
+        } else {
+            m.data()
+        };
         let mut vbytes = Vec::with_capacity(data.positions.len() * VERTEX_STRIDE as usize);
         for (p, n) in data.positions.iter().zip(&data.normals) {
             for c in p {
@@ -537,7 +548,12 @@ impl Renderer {
             let e: Vec<u8> = data.edge_points.iter().flatten().flat_map(|c| c.to_le_bytes()).collect();
             init("gusset-render edges", &e, wgpu::BufferUsages::VERTEX)
         });
-        self.meshes.insert(id, GpuMesh { rev, vertices, indices, edges });
+        let g = GpuMesh { rev, vertices, indices, edges };
+        if lod {
+            self.lod_meshes.insert(id, g);
+        } else {
+            self.meshes.insert(id, g);
+        }
     }
 
     fn ensure_targets(&mut self, size: [u32; 2], samples: u32, scaled: bool) {
@@ -612,8 +628,13 @@ impl Renderer {
 
         // GPU mesh cache: drop meshes that left the scene, upload new revisions.
         self.meshes.retain(|id, g| scene.mesh(*id).is_some_and(|m| m.geometry_rev == g.rev));
+        self.lod_meshes.retain(|id, g| scene.mesh(*id).is_some_and(|m| m.geometry_rev == g.rev && m.lod.is_some()));
         for d in &plan.draws {
-            self.sync_mesh(scene, d.id, d.geometry_rev);
+            // Edges always come from the exact mesh; faces from the coarse copy when asked.
+            self.sync_mesh(scene, d.id, d.geometry_rev, false);
+            if d.lod {
+                self.sync_mesh(scene, d.id, d.geometry_rev, true);
+            }
         }
 
         // Uniforms.
@@ -711,7 +732,9 @@ impl Renderer {
 
             pass.set_pipeline(&pipes.mesh);
             for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish != GLASS) {
-                let Some(g) = self.meshes.get(&d.id) else { continue };
+                let Some(g) = (if d.lod { self.lod_meshes.get(&d.id) } else { self.meshes.get(&d.id) }) else {
+                    continue;
+                };
                 stats.meshes += 1;
                 pass.set_vertex_buffer(0, g.vertices.slice(..));
                 pass.set_index_buffer(g.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -739,7 +762,9 @@ impl Renderer {
             // Glass last, over the opaque model, without hiding what is behind it.
             pass.set_pipeline(&pipes.mesh_glass);
             for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish == GLASS) {
-                let Some(g) = self.meshes.get(&d.id) else { continue };
+                let Some(g) = (if d.lod { self.lod_meshes.get(&d.id) } else { self.meshes.get(&d.id) }) else {
+                    continue;
+                };
                 stats.meshes += 1;
                 pass.set_vertex_buffer(0, g.vertices.slice(..));
                 pass.set_index_buffer(g.indices.slice(..), wgpu::IndexFormat::Uint32);

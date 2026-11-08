@@ -21,7 +21,7 @@ fn assembly() -> Scene {
     for i in 0..400u64 {
         let mut m = demo::cylinder_mesh(3.0, 8.0, 1000);
         let (x, y) = ((i % 20) as f32 * 10.0, (i / 20) as f32 * 10.0);
-        for p in &mut m.positions {
+        for p in m.positions.iter_mut().chain(m.edges.iter_mut().flatten()) {
             p[0] += x;
             p[1] += y;
         }
@@ -58,6 +58,14 @@ fn frame_times() {
             sw.render_rgba(&scene, &c, size).unwrap();
         });
         println!("{name}: {tris} triangles; software {soft:.1} ms/frame ({:.1} fps)", 1000.0 / soft);
+        // A look at a frame on request.
+        if let Ok(dir) = std::env::var("GUSSET_PERF_OUT") {
+            let mut c = Camera::default();
+            c.set_view(NamedView::Iso);
+            c.fit(&scene.bounds(), 1.6);
+            let png = sw.render_png(&scene, &c, size).unwrap();
+            std::fs::write(format!("{dir}/{}.png", name.split(' ').next().unwrap_or("x")), png).unwrap();
+        }
         match HeadlessRenderer::new() {
             Ok(mut gpu) => {
                 let ms = orbit(30, |c| {

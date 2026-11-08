@@ -37,6 +37,7 @@ mod frame;
 mod gpu;
 mod headless;
 pub mod image;
+mod lod;
 pub mod math;
 mod mesh;
 mod pick;
