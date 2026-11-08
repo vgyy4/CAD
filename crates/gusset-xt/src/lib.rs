@@ -86,18 +86,17 @@ pub fn to_step(bytes: &[u8], name: &str, limits: &Limits) -> Result<Converted, X
                 let byte = |x: f64| (x * 255.0).round().clamp(0.0, 255.0) as u32;
                 (byte(r) << 16) | (byte(g) << 8) | byte(b)
             };
-            let mut count: Vec<(u32, usize)> = Vec::new();
+            // A map, so a file with a colour per face stays linear (security review T4); ties
+            // go to the lowest colour value, the same on every run.
+            let mut count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
             for f in b.shells.iter().flat_map(|s| &s.faces) {
                 if let Some(c) = colours.get(&f.node).copied().map(rgb) {
-                    match count.iter_mut().find(|(k, _)| *k == c) {
-                        Some((_, n)) => *n += 1,
-                        None => count.push((c, 1)),
-                    }
+                    *count.entry(c).or_default() += 1;
                 }
             }
             let rgb = count
                 .into_iter()
-                .max_by_key(|(_, n)| *n)
+                .max_by_key(|(c, n)| (*n, std::cmp::Reverse(*c)))
                 .map(|(c, _)| c)
                 .or_else(|| colours.get(&b.node).copied().map(rgb));
             (names.get(&b.node).cloned(), rgb)

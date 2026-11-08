@@ -370,13 +370,13 @@ fn an_imported_feature_keeps_its_bodies_in_local_bodies() {
         record(KEY, "Contents/Config-0-Partition", &[0u8; 8], None),
         record(KEY, "Config-0-FeatureBodies/LocalBodies", &local, None),
     ]);
-    let bodies = local_bodies(&f, &Limits::default()).unwrap();
+    let bodies = local_bodies(&f, &Limits::default(), &Default::default()).unwrap();
     assert_eq!(bodies, (0..3).map(|i| xt(&format!("body {i}"), 50 + i)).collect::<Vec<_>>());
     // None in an ordinary part; damaged streams never panic.
     let plain = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &partition_stream(5), None)]);
-    assert!(local_bodies(&plain, &Limits::default()).unwrap().is_empty());
+    assert!(local_bodies(&plain, &Limits::default(), &Default::default()).unwrap().is_empty());
     for cut in [5, 40, 90, local.len() - 3] {
         let f = chunk_file(&[record(KEY, "Config-0-FeatureBodies/LocalBodies", &local[..cut], None)]);
-        let _ = local_bodies(&f, &Limits::default());
+        let _ = local_bodies(&f, &Limits::default(), &Default::default());
     }
 }

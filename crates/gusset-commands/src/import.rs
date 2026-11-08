@@ -290,7 +290,7 @@ impl ImportJob {
                 // The final partition; a part made by an imported feature keeps its bodies
                 // in that feature's `LocalBodies` instead (one transmit each).
                 // `failure`: why the final partition gave no body, reported if nothing else does.
-                let (mut transmits, mut warnings, failure) = match gusset_sldprt::extract_xt(&bytes, &limits) {
+                let (transmits, mut warnings, failure) = match gusset_sldprt::extract_xt(&bytes, &limits) {
                     Ok(part) => match gusset_xt::to_step(&part.xt, &stem, &gusset_xt::Limits::default()) {
                         Ok(c) if c.bodies > 0 => {
                             let mut w = part.warnings;
@@ -303,8 +303,16 @@ impl ImportJob {
                     Err(e @ gusset_sldprt::SldprtError::NoGeometry(_)) => (Vec::new(), Vec::new(), Some(sw(e))),
                     Err(e) => return Err(sw(e)),
                 };
+                let mut out = Vec::new();
+                for (step, looks) in &transmits {
+                    let bodies = importer.import("step", step.as_bytes(), cancel).map_err(|e| {
+                        if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                    })?;
+                    out.extend(with_looks(bodies, looks));
+                }
                 if transmits.is_empty() {
-                    let locals = gusset_sldprt::local_bodies(&bytes, &limits).map_err(sw)?;
+                    let locals = gusset_sldprt::local_bodies(&bytes, &limits, cancel)
+                        .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { sw(e) })?;
                     if locals.is_empty() {
                         return Err(failure.unwrap_or_else(|| {
                             sw(gusset_sldprt::SldprtError::NoGeometry("no configuration has a solid body".into()))
@@ -314,22 +322,29 @@ impl ImportJob {
                         "the part's {} bodies come from its imported feature; feature_combine unites them, feature_group folds them in the timeline",
                         locals.len()
                     ));
+                    // One body at a time, its STEP text dropped before the next, under one byte
+                    // budget for all of them (security review T1).
+                    let mut step_bytes = 0usize;
                     for (i, xt) in locals.iter().enumerate() {
                         if cancel.load(Ordering::Relaxed) {
                             return Err(cancelled());
                         }
                         let c = gusset_xt::to_step(xt, &format!("{stem}_{}", i + 1), &gusset_xt::Limits::default())
                             .map_err(xt_err)?;
-                        warnings.extend(c.warnings);
-                        transmits.push((c.step, c.looks));
+                        step_bytes = step_bytes.saturating_add(c.step.len());
+                        if step_bytes > MAX_SLDPRT_STEP_BYTES {
+                            return Err(CommandError::new(
+                                "invalid_args",
+                                format!("the part's bodies exceed {} MiB of geometry", MAX_SLDPRT_STEP_BYTES >> 20),
+                            ));
+                        }
+                        let room = 50usize.saturating_sub(warnings.len());
+                        warnings.extend(c.warnings.into_iter().take(room));
+                        let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                        })?;
+                        out.extend(with_looks(bodies, &c.looks));
                     }
-                }
-                let mut out = Vec::new();
-                for (step, looks) in &transmits {
-                    let bodies = importer.import("step", step.as_bytes(), cancel).map_err(|e| {
-                        if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                    })?;
-                    out.extend(with_looks(bodies, looks));
                 }
                 warnings.truncate(50);
                 (out, TIER_XT, warnings)
@@ -449,6 +464,9 @@ const MAX_F3D_JSON_BYTES: u64 = 4 << 20;
 /// Most bodies one Fusion import creates (parts times the instances of their components and
 /// of the designs that reference them).
 const MAX_F3D_BODIES: usize = 4096;
+
+/// Most STEP text the bodies of one SolidWorks part's imported feature make together.
+const MAX_SLDPRT_STEP_BYTES: usize = 1 << 30;
 
 /// Most design streams read from one Fusion file, and most placements kept over all of them
 /// (the file is refused past either: review S2).
@@ -912,7 +930,11 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
             f.label = Some(body_name.chars().take(200).collect());
             insert_feature(doc, rb.map(|r| r + i), f);
             // The file's colour, as the body's appearance (ADR 0045).
-            if let Some(c) = color {
+            // Within the document's appearance limit (security review T6): past it the
+            // body keeps the default look.
+            if let Some(c) = color
+                && doc.appearances.len() < gusset_doc::text::MAX_LIST_ITEMS
+            {
                 doc.appearances.retain(|a| a.body != name);
                 doc.appearances.push(gusset_doc::Appearance {
                     body: name.clone(),

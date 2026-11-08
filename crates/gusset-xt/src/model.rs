@@ -437,8 +437,14 @@ pub(crate) fn names(g: &Graph) -> BTreeMap<u32, String> {
         else {
             continue;
         };
-        let s: String = g.string(value, "values").chars().filter(|c| !c.is_control()).take(200).collect();
-        let s = decode_step_text(s.trim());
+        // Decoded first, then cleaned: `\X2\` escapes can spell control, bidi or zero-width
+        // characters (security review T5).
+        let s: String = decode_step_text(&g.string(value, "values"))
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(*c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'))
+            .take(200)
+            .collect();
+        let s = s.trim().to_string();
         if !s.is_empty() {
             out.insert(owner, s);
         }

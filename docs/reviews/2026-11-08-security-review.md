@@ -77,3 +77,24 @@ reproduced the finding. Nothing was fixed in this review.
 | S13 | Fixed: crash reports replace the user name (USER/USERNAME/LOGNAME) as well as the home folder. |
 | S14 | Fixed: THREAT_MODEL.md lists the in-app parsers (sldprt, XT, SAT/Fusion, zstd, bundles, the shared folder). Fuzz target `bundle_import` added (and `sldprt_read` now runs in CI); one for `read_design` remains. |
 | S15 | Accepted: the socket is root-owned and local. |
+
+## Follow-up review (later on 2026-11-08, commits after 8dd5109)
+
+Scope: the SolidWorks `LocalBodies` reader, the end-of-file checks, Parasolid names and
+colours, the `appearance` statement, worker request 34 (`OffsetFacesOnly`), glass in the path
+tracer, unit strings in CAM lengths and the larger `get_text` pages. Read, not run.
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| T1 | medium | Up to 4096 `LocalBodies` transmits were all converted to STEP and held before any was imported; warnings were cut only at the end; cancel was not seen inside the block reader. | Fixed: one body at a time, its STEP dropped before the next, 1 GiB of STEP for all of them; warnings capped as added; cancel checked per block. |
+| T2 | low | The 4096 cap counted only `PS` blocks; the chunk reader inflates every `LocalBodies` record before the first is used. | Fixed in part: every block counts. Reading only the chosen record is open (bounded by the 512 MiB budget). |
+| T3 | info | Only one feature's `LocalBodies` is read, chosen differently per container. | Accepted (correctness, not security); noted in ADR 0043. |
+| T4 | medium | The colour count per body was quadratic in distinct colours. | Fixed: a map; ties go to the lowest colour value. |
+| T5 | low | `\X2\` escapes decoded after the control filter could put control, bidi or zero-width characters into labels. | Fixed: decoded first, then such characters removed and the name cut to 200. |
+| T6 | medium | Imports and `body.appearance` could add more appearances than the parser accepts, so a saved document would not read back. | Fixed: both stop at `MAX_LIST_ITEMS`. |
+| T7 | info | Appearance parsing, duplicates, compare and merge are bounded. | No change. |
+| T8 | low | The glass shadow loop is bounded (16); NaN paths clamp to a speck. | No change. |
+| T9 | low | `opt_mm` lets no NaN or infinity through; the CAM checks bound the rest. | No change. |
+| T10 | info | `has_end_record` and `cut_short` are cheap and advisory. | No change. |
+| T11 | info | Request 34 reuses the bounded readers. | No change. |
+| T12 | info | 64k `get_text` pages stay clamped and wrapped as untrusted. | No change. |

@@ -74,8 +74,13 @@ impl Command for SetAppearance {
                 finish: finish.or(base.as_ref().map(|b| b.finish)).unwrap_or_default(),
             };
             let shown = json!({ "color": format!("#{:06x}", a.color), "finish": a.finish.keyword() });
+            let full = doc.appearances.len() >= gusset_doc::text::MAX_LIST_ITEMS;
             match old.and_then(|i| doc.appearances.get_mut(i)) {
                 Some(slot) => *slot = a,
+                None if full => {
+                    return Err(CommandError::args("the document has as many appearances as it can hold")
+                        .hint("clear the appearances of bodies that no longer need one"));
+                }
                 None => doc.appearances.push(a),
             }
             Ok(json!({ "body": body, "appearance": shown }))

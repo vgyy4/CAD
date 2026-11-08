@@ -91,7 +91,11 @@ pub const MAX_LOCAL_BODIES: usize = 4096;
 ///
 /// # Errors
 /// [`SldprtError`] for unknown containers and damaged or over-limit files.
-pub fn local_bodies(bytes: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, SldprtError> {
+pub fn local_bodies(
+    bytes: &[u8],
+    limits: &Limits,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<Vec<u8>>, SldprtError> {
     let is_local = |n: &str| n.ends_with("LocalBodies") && (n == "LocalBodies" || n.contains("-FeatureBodies/"));
     let stream = match detect(bytes).ok_or(SldprtError::NotSldprt)? {
         Container::Ole2 => {
@@ -110,11 +114,15 @@ pub fn local_bodies(bytes: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, Sldpr
             }
         }
     };
-    local_blocks(&stream, limits)
+    local_blocks(&stream, limits, cancel)
 }
 
 /// The Parasolid transmits of a `LocalBodies` stream.
-fn local_blocks(stream: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, SldprtError> {
+fn local_blocks(
+    stream: &[u8],
+    limits: &Limits,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<Vec<u8>>, SldprtError> {
     let u32_at = |off: usize| -> Option<usize> {
         usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
     };
@@ -129,8 +137,15 @@ fn local_blocks(stream: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, SldprtEr
     let Some(tag) = stream.get(first + 4..first + 20) else { return Ok(Vec::new()) };
     let mut out = Vec::new();
     let (mut at, mut spent) = (first, 0usize);
+    let mut blocks = 0usize;
     while let Some((end, plain, deflated)) = block(at) {
-        if out.len() >= MAX_LOCAL_BODIES {
+        // Every block counts, not only the bodies (security review T2), and a stop is
+        // honoured between blocks (T1).
+        blocks += 1;
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(SldprtError::TooLarge("cancelled".into()));
+        }
+        if blocks > MAX_LOCAL_BODIES {
             return Err(SldprtError::TooLarge(format!("more than {MAX_LOCAL_BODIES} bodies")));
         }
         spent = spent.saturating_add(plain);
