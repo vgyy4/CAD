@@ -13,6 +13,8 @@ pub enum Kind {
     Static,
     Modal,
     Cam,
+    /// Topology optimisation (`sim.optimize`).
+    Optimize,
 }
 
 impl Kind {
@@ -22,6 +24,7 @@ impl Kind {
             "sim.static" => Some(Kind::Static),
             "sim.modal" => Some(Kind::Modal),
             "cam.toolpath" => Some(Kind::Cam),
+            "sim.optimize" => Some(Kind::Optimize),
             _ => None,
         }
     }
@@ -96,6 +99,27 @@ pub fn rows(r: &Results) -> Vec<(String, String)> {
             }
             if let Some(n) = d.get("elements").and_then(Value::as_u64) {
                 add(tr("results.elements"), n.to_string());
+            }
+        }
+        Kind::Optimize => {
+            if let Some(k) = num(d, "kept_share") {
+                add(tr("results.kept"), format!("{} %", fmt(k * 100.0)));
+            }
+            if let Some(v) = num(d, "kept_volume_mm3") {
+                add(tr("results.kept_volume"), format!("{} mm³", fmt(v)));
+            }
+            let c = d.get("compliance_nmm");
+            if let (Some(a), Some(b)) = (c.and_then(|c| num(c, "first")), c.and_then(|c| num(c, "last")))
+                && b > 0.0
+            {
+                add(tr("results.stiffer"), format!("{} ×", fmt(a / b)));
+            }
+            if let Some(n) = d.get("iterations").and_then(Value::as_u64) {
+                let done = d.get("converged") == Some(&Value::Bool(true));
+                add(tr("results.iterations"), format!("{n}{}", if done { "" } else { tr("results.not_converged") }));
+            }
+            if let Some(h) = num(d, "voxel_mm") {
+                add(tr("results.element"), format!("{} mm", fmt(h)));
             }
         }
         Kind::Cam => {
@@ -225,4 +249,28 @@ pub fn show(ui: &mut Ui, r: &Results, pal: &Palette) -> Vec<Action> {
         }
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_optimised_layout_reads_as_share_volume_and_stiffness_gain() {
+        let r = Results {
+            kind: Kind::Optimize,
+            title: "Optimise shape".into(),
+            job: Value::Null,
+            data: serde_json::json!({"kept_share": 0.3125, "kept_volume_mm3": 3750.0,
+                "compliance_nmm": {"first": 7.5, "last": 2.5}, "iterations": 25, "converged": false, "voxel_mm": 2.5}),
+            legend: Vec::new(),
+            stale: false,
+            path_visible: false,
+        };
+        let rows = rows(&r);
+        let get = |k: &str| rows.iter().find(|(a, _)| a == tr(k)).map(|(_, v)| v.clone());
+        assert_eq!(get("results.kept").as_deref(), Some("31.25 %"));
+        assert_eq!(get("results.stiffer").as_deref(), Some("3 ×"));
+        assert!(get("results.iterations").unwrap().contains("not converged"));
+    }
 }

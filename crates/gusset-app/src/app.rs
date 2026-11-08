@@ -2607,8 +2607,15 @@ impl App {
                     Kind::Static => "sim.static",
                     Kind::Modal => "sim.modal",
                     Kind::Cam => "cam.toolpath",
+                    Kind::Optimize => "sim.optimize",
                 };
                 let mut job = r.job.clone();
+                // A re-run shows the result again; it does not write the STL a second time.
+                if let Some(o) = job.as_object_mut()
+                    && r.kind == Kind::Optimize
+                {
+                    o.remove("path");
+                }
                 if let (Action::Mode(k), Some(o)) = (&a, job.as_object_mut()) {
                     o.insert("shape".into(), json!(k));
                 }
