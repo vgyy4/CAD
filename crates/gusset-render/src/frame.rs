@@ -87,7 +87,7 @@ pub(crate) struct MeshDraw {
     pub closed: bool,
     /// Finish code for shading (0 plastic, 1 metal, 2 glass, 3 rubber).
     pub finish: u32,
-    /// Draw the mesh's coarse copy (`SceneMesh::lod`); `tri_runs` then index it.
+    /// Draw the mesh's coarse copy (`SceneMesh::lod`); `tri_runs` and `edge_runs` then index it.
     pub lod: bool,
     /// The material's texture, drawn on runs in the material's own colour (`base`).
     pub texture: Option<crate::Texture>,
@@ -142,6 +142,8 @@ impl FramePlan {
             Highlight::Select => sel,
         };
         let mut draws = Vec::new();
+        // View-space depth of each body's box centre (nearer is larger), for the draw order.
+        let mut depth: Vec<f64> = Vec::new();
         for (id, m) in scene.meshes() {
             if !m.visible() || culled(&viewproj, m) {
                 continue;
@@ -158,6 +160,7 @@ impl FramePlan {
             let lod = px < LOD_PX
                 && m.lod.is_some()
                 && m.face_highlights.is_empty()
+                && m.edge_highlights.is_empty()
                 && m.face_colors.is_empty()
                 && opts.section.is_none();
             let data = m.data();
@@ -199,7 +202,11 @@ impl FramePlan {
             } else {
                 Vec::new()
             };
-            let edge_runs = if opts.edges && edges_too {
+            let edge_runs = if opts.edges && edges_too && lod {
+                // The coarse copy's thinned edges (nothing on them is highlighted).
+                let n = m.lod.as_ref().map_or(0, |l| (l.edge_points.len() / 2) as u32);
+                vec![(0..n, edge)]
+            } else if opts.edges && edges_too {
                 SceneMesh::runs(&data.edge_ranges, &m.edge_highlights, (data.edge_points.len() / 2) as u32)
                     .into_iter()
                     .map(|(r, h)| (r, hl(h, edge)))
@@ -207,6 +214,7 @@ impl FramePlan {
             } else {
                 Vec::new()
             };
+            depth.push(math::transform_point(&cm.view, m.world_bounds().center())[2]);
             draws.push(MeshDraw {
                 id,
                 geometry_rev: m.geometry_rev,
@@ -227,6 +235,16 @@ impl FramePlan {
                 },
             });
         }
+        // Nearest first, so the depth test rejects hidden pixels before they are shaded
+        // (opaque bodies); renderers draw glass in the reverse order, farthest first, for
+        // blending. Ties keep the scene's (id) order, so frames are deterministic.
+        let mut order: Vec<usize> = (0..draws.len()).collect();
+        order.sort_by(|a, b| {
+            let (da, db) = (depth.get(*a).copied().unwrap_or(0.0), depth.get(*b).copied().unwrap_or(0.0));
+            db.total_cmp(&da).then(a.cmp(b))
+        });
+        let mut slots: Vec<Option<MeshDraw>> = draws.into_iter().map(Some).collect();
+        let draws: Vec<MeshDraw> = order.into_iter().filter_map(|i| slots.get_mut(i).and_then(Option::take)).collect();
         FramePlan {
             proj: cm.proj,
             ortho: camera.projection == Projection::Orthographic,

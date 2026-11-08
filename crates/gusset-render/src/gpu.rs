@@ -632,11 +632,8 @@ impl Renderer {
         self.meshes.retain(|rev, _| live.contains(rev));
         self.lod_meshes.retain(|rev, _| live.contains(rev));
         for d in &plan.draws {
-            // Edges always come from the exact mesh; faces from the coarse copy when asked.
-            self.sync_mesh(scene, d.id, d.geometry_rev, false);
-            if d.lod {
-                self.sync_mesh(scene, d.id, d.geometry_rev, true);
-            }
+            // Faces and edges from the coarse copy when asked; the exact mesh otherwise.
+            self.sync_mesh(scene, d.id, d.geometry_rev, d.lod);
         }
 
         // Uniforms.
@@ -779,7 +776,8 @@ impl Renderer {
             }
             // Glass last, over the opaque model, without hiding what is behind it.
             pass.set_pipeline(&pipes.mesh_glass);
-            for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish == GLASS) {
+            // Farthest first (the plan is nearest first).
+            for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).rev().filter(|(d, _)| d.finish == GLASS) {
                 let Some(g) =
                     (if d.lod { self.lod_meshes.get(&d.geometry_rev) } else { self.meshes.get(&d.geometry_rev) })
                 else {
@@ -797,7 +795,8 @@ impl Renderer {
             }
             pass.set_pipeline(if quad_edges { &pipes.edge_quad } else { &pipes.edge_line });
             for (d, (_, edge_offs)) in plan.draws.iter().zip(&offsets) {
-                let Some(eb) = self.meshes.get(&d.geometry_rev).and_then(|g| g.edges.as_ref()) else { continue };
+                let cache = if d.lod { &self.lod_meshes } else { &self.meshes };
+                let Some(eb) = cache.get(&d.geometry_rev).and_then(|g| g.edges.as_ref()) else { continue };
                 for ((r, _), off) in d.edge_runs.iter().zip(edge_offs) {
                     if r.end <= r.start {
                         continue;

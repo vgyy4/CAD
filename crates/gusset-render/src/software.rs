@@ -116,11 +116,13 @@ impl SoftwareRenderer {
         }
         let proj = &plan.proj;
         // Glass after everything opaque (as gpu.rs draws it).
-        let order = plan.draws.iter().filter(|d| d.finish != 2).chain(plan.draws.iter().filter(|d| d.finish == 2));
+        // Opaque nearest first (as planned), glass farthest first.
+        let order =
+            plan.draws.iter().filter(|d| d.finish != 2).chain(plan.draws.iter().rev().filter(|d| d.finish == 2));
         for d in order {
             let Some(m) = scene.mesh(d.id) else { continue };
             let data = m.data();
-            // Faces from the coarse copy when the plan asks (frame.rs), edges always exact.
+            // Faces and edges from the coarse copy when the plan asks (frame.rs).
             let faces = if d.lod { m.lod.as_deref().unwrap_or(data) } else { data };
             let verts: Vec<ClipVert> = faces
                 .positions
@@ -169,7 +171,7 @@ impl SoftwareRenderer {
             for (run, color) in &d.edge_runs {
                 for seg in run.clone() {
                     let i = seg as usize * 2;
-                    let (Some(a), Some(b)) = (data.edge_points.get(i), data.edge_points.get(i + 1)) else { continue };
+                    let (Some(a), Some(b)) = (faces.edge_points.get(i), faces.edge_points.get(i + 1)) else { continue };
                     let (mut a, mut b) = (*a, *b);
                     if let Some(pl) = plan.clip {
                         let va = math::transform_point(&d.model_view, a.map(f64::from)).map(|c| c as f32);

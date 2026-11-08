@@ -85,7 +85,29 @@ pub(crate) fn coarse(m: &Mesh) -> Option<Mesh> {
         *n = if l > 1e-20 { n.map(|x| x / l) } else { [0.0, 0.0, 1.0] };
     }
     let count = (indices.len() / 3) as u32;
-    Some(Mesh { positions, normals, indices, face_ranges: std::iter::once(0..count).collect(), edges: Vec::new() })
+    // Edges too: a body drawn small does not need a thousand segments per circle (they cost
+    // more than its faces on a software GPU). Each polyline keeps its ends and the points at
+    // least half a cell from the last one kept.
+    let edges = m
+        .edges
+        .iter()
+        .map(|line| {
+            let mut out: Vec<[f32; 3]> = Vec::new();
+            for (i, p) in line.iter().enumerate() {
+                let last = i + 1 == line.len();
+                let far = out.last().is_none_or(|q| {
+                    let d2: f64 = q.iter().zip(p).map(|(a, b)| f64::from(a - b) * f64::from(a - b)).sum();
+                    d2 >= (cell * 0.5) * (cell * 0.5)
+                });
+                if far || last {
+                    out.push(*p);
+                }
+            }
+            out
+        })
+        .filter(|l| l.len() >= 2)
+        .collect();
+    Some(Mesh { positions, normals, indices, face_ranges: std::iter::once(0..count).collect(), edges })
 }
 
 #[cfg(test)]
@@ -99,5 +121,12 @@ mod tests {
         let c = coarse(&fine).expect("coarse copy");
         assert!(c.indices.len() * 4 < fine.indices.len(), "{} vs {}", c.indices.len(), fine.indices.len());
         assert!(coarse(&demo::box_mesh([1.0; 3])).is_none());
+        // Edges are thinned too, keeping every polyline's ends.
+        let (n_fine, n_coarse) =
+            (fine.edges.iter().map(Vec::len).sum::<usize>(), c.edges.iter().map(Vec::len).sum::<usize>());
+        assert!(!c.edges.is_empty() && n_coarse * 10 < n_fine, "{n_coarse} vs {n_fine}");
+        for (f, k) in fine.edges.iter().zip(&c.edges) {
+            assert_eq!((f.first(), f.last()), (k.first(), k.last()));
+        }
     }
 }

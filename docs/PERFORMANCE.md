@@ -11,8 +11,8 @@ under the software renderer for frame times.
 | Idle RAM, empty document | < 250 MB (incl. GPU memory on iGPU) | 39 MB resident after the first frames (test process, no window or GPU) | `gusset-app` test `startup_time` |
 | Idle CPU | ~0 % (no continuous redraw) | no immediate repaint once idle (only delayed wake-ups for timers such as a notice fading) | `gusset-app` test `an_idle_window_asks_for_no_frames` (CI) |
 | Orbit frame time, typical part | 60 fps (16.7 ms) | 11.5 ms (87 fps) on llvmpipe (no GPU in the container), 1280 x 800, incl. readback | `gusset-render` test `perf` (`--ignored`) |
-| Large assembly | ≥ 30 fps | 400 bodies / 1.6 M triangles: 89 ms (11 fps) on llvmpipe, a CPU rasterizer, with level of detail (219 ms without); needs a real iGPU measurement | `gusset-render` test `perf` |
-| Software renderer | ≥ 15 fps | typical part 45-60 ms (17-22 fps) at 1280 x 800 (was 80 ms before an sRGB table); 400 bodies 87 ms with level of detail (311 ms without) | `gusset-render` test `perf` |
+| Large assembly | ≥ 30 fps | 400 bodies / 1.6 M triangles: 47 ms (21 fps) on llvmpipe, a CPU rasterizer, with level of detail and thinned edges (89 ms with full edges, 219 ms without level of detail); needs a real iGPU measurement | `gusset-render` test `perf` |
+| Software renderer | ≥ 15 fps | typical part 45-60 ms (17-22 fps) at 1280 x 800 (was 80 ms before an sRGB table); 400 bodies 49 ms (20 fps) with level of detail, thinned edges and front-to-back order (87 ms before them, 311 ms without level of detail) | `gusset-render` test `perf` |
 | Rebuild, 100-feature part | < 1 s for a one-feature parameter change (incremental); < 5 s full | 0.12 s incremental, 3.0 s full (OCCT, plate + 49 bosses, dev build) | `gusset-cli` test `rebuild_100_budget` (OCCT CI job) |
 | Binary size (app + OCCT libs, compressed) | < 60 MB | 26–41 MB per package (v0.1.0-mvp: MSI 26–28, zip 31–32, dmg 35, AppImage 36–38, tar.gz 39–41, deb 26–30) | release workflow |
 | History overhead | ≤ 450 bytes per single-parameter edit, independent of model size (revised from "≤ 15 % of the parametric size per 100 edits", see below) | ~370 bytes per edit (29 % of a 1,000-feature model per 100 edits; was ~7.5 KB per edit with 200 features) | `gusset-project` test `history_overhead_budget` |
@@ -228,3 +228,11 @@ leaf), built on the first ray after a body is added, removed, moved, shown or hi
 scene 20.7 -> 6.2 us, through 10 000 boxes 256 -> 23 us; a 240 x 160, 4-sample photo render
 of the 400-body scene 1067 -> 208 ms (a single part: about 50 ms either way).
 
+## Edges of small bodies and draw order (2026-11-08)
+The 400-body scene drew its coarse faces (64 k triangles) but every body's exact edges: 800 k
+segments a frame, more than half of the frame on llvmpipe (33 ms without edges, 84-104 ms with).
+The coarse copy now thins its edge polylines too (each keeps its ends and the points at least
+half a clustering cell apart: 50 k segments), and opaque bodies are drawn nearest first so the
+depth test rejects hidden pixels before they are shaded (glass farthest first). llvmpipe
+91 -> 47 ms, software 102 -> 49 ms (release, 1280 x 800, `perf` test). Highlighted edges keep
+the exact mesh.
