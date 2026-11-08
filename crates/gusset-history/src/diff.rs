@@ -35,6 +35,8 @@ pub struct DocDiff {
     pub features: Vec<ItemChange>,
     /// Drawings (ADR 0032), whole: `old`/`new` are their texts.
     pub drawings: Vec<ItemChange>,
+    /// Body appearances (ADR 0045), by body.
+    pub appearances: Vec<ItemChange>,
 }
 
 impl DocDiff {
@@ -44,6 +46,7 @@ impl DocDiff {
             && self.configurations.is_empty()
             && self.features.is_empty()
             && self.drawings.is_empty()
+            && self.appearances.is_empty()
     }
 }
 
@@ -88,6 +91,28 @@ pub fn diff_documents(a: &Document, b: &Document) -> DocDiff {
     for c in &a.configurations {
         if !cb.contains_key(c.name.as_str()) {
             d.configurations.push(ItemChange { name: c.name.clone(), change: Change::Removed });
+        }
+    }
+    let (aa, ab): (HashMap<_, _>, HashMap<_, _>) = (
+        a.appearances.iter().map(|x| (x.body.as_str(), x)).collect(),
+        b.appearances.iter().map(|x| (x.body.as_str(), x)).collect(),
+    );
+    for x in &b.appearances {
+        match aa.get(x.body.as_str()).copied() {
+            None => d.appearances.push(ItemChange { name: x.body.clone(), change: Change::Added }),
+            Some(old) if old != x => d.appearances.push(ItemChange {
+                name: x.body.clone(),
+                change: Change::Modified {
+                    old: gusset_doc::text::appearance_line(old),
+                    new: gusset_doc::text::appearance_line(x),
+                },
+            }),
+            Some(_) => {}
+        }
+    }
+    for x in &a.appearances {
+        if !ab.contains_key(x.body.as_str()) {
+            d.appearances.push(ItemChange { name: x.body.clone(), change: Change::Removed });
         }
     }
     let (da, db): (HashMap<_, _>, HashMap<_, _>) = (

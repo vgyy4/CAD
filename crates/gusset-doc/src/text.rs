@@ -47,11 +47,71 @@ pub fn print(doc: &Document) -> String {
         out.push('\n');
         print_feature(&mut out, f);
     }
+    if !doc.appearances.is_empty() {
+        out.push('\n');
+        for a in &doc.appearances {
+            print_appearance(&mut out, a);
+        }
+    }
     for d in &doc.drawings {
         out.push('\n');
         crate::drawing::print_drawing(&mut out, d);
     }
     out
+}
+
+fn print_appearance(out: &mut String, a: &Appearance) {
+    let _ = writeln!(
+        out,
+        "appearance {} (color: \"#{:06x}\", finish: {})",
+        a.body,
+        a.color & 0xff_ffff,
+        a.finish.keyword()
+    );
+}
+
+/// An appearance's settings on one line: `color: "#8a9bb0", finish: metal` (compare view).
+#[must_use]
+pub fn appearance_line(a: &Appearance) -> String {
+    format!("color: \"#{:06x}\", finish: {}", a.color & 0xff_ffff, a.finish.keyword())
+}
+
+/// `#rrggbb` as `0xRRGGBB`.
+#[must_use]
+pub fn parse_color(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    (hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u32::from_str_radix(hex, 16).ok()).flatten()
+}
+
+fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
+    let body = c.ident()?.to_string();
+    let (mut color, mut finish) = (None, None);
+    parse_args(c, |key, c| {
+        match key {
+            "color" => {
+                let text = c.string()?;
+                color = Some(parse_color(&text).ok_or_else(|| {
+                    c.err_hint(format!("'{text}' is not a colour"), "write \"#\" and six hex digits, like \"#8a9bb0\"")
+                })?);
+            }
+            "finish" => {
+                let k = c.ident()?;
+                finish = Some(Finish::from_keyword(k).ok_or_else(|| {
+                    c.err_hint(format!("unknown finish '{k}'"), "use plastic, metal, glass or rubber")
+                })?);
+            }
+            key => return Err(unknown_arg(c, "appearance", key, "color, finish")),
+        }
+        Ok(())
+    })?;
+    if !c.at_end() {
+        return Err(c.err("unexpected text after ')'"));
+    }
+    Ok(Appearance {
+        body,
+        color: color.ok_or_else(|| missing(c, "appearance", "color"))?,
+        finish: finish.unwrap_or_default(),
+    })
 }
 
 fn print_comment_lines(out: &mut String, text: &str) {
@@ -729,6 +789,17 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                     return Err(c.err("unexpected text after units"));
                 }
                 seen_units = true;
+                pending_note.clear();
+            }
+            "appearance" => {
+                if doc.appearances.len() >= MAX_LIST_ITEMS {
+                    return Err(c.err("too many appearances"));
+                }
+                let a = parse_appearance(&mut c)?;
+                if doc.appearances.iter().any(|x| x.body == a.body) {
+                    return Err(c.err(format!("body '{}' has two appearances", a.body)));
+                }
+                doc.appearances.push(a);
                 pending_note.clear();
             }
             "configuration" => {
@@ -2372,8 +2443,18 @@ pub fn parse_feature_object(s: &str) -> Result<Feature, ParseError> {
     }
 }
 
-/// Canonical text of a parameter table with the configurations (a history object).
-pub fn print_params_object(params: &[Param], configurations: &[Configuration]) -> String {
+/// What a parameter-table history object holds besides the parameters.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ParamsObject {
+    pub params: Vec<Param>,
+    pub configurations: Vec<Configuration>,
+    /// Body appearances (ADR 0045).
+    pub appearances: Vec<Appearance>,
+}
+
+/// Canonical text of a parameter table with the configurations and appearances (a history
+/// object).
+pub fn print_params_object(params: &[Param], configurations: &[Configuration], appearances: &[Appearance]) -> String {
     let mut s = String::new();
     for p in params {
         print_param(&mut s, p);
@@ -2381,16 +2462,19 @@ pub fn print_params_object(params: &[Param], configurations: &[Configuration]) -
     for c in configurations {
         print_configuration(&mut s, c);
     }
+    for a in appearances {
+        print_appearance(&mut s, a);
+    }
     s
 }
 
-/// Parses a parameter-table history object: the parameters and the configurations.
-pub fn parse_params_object(s: &str) -> Result<(Vec<Param>, Vec<Configuration>), ParseError> {
+/// Parses a parameter-table history object.
+pub fn parse_params_object(s: &str) -> Result<ParamsObject, ParseError> {
     let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;
     if !doc.features.is_empty() {
         return Err(perr(1, "a parameter object must not contain features"));
     }
-    Ok((doc.params, doc.configurations))
+    Ok(ParamsObject { params: doc.params, configurations: doc.configurations, appearances: doc.appearances })
 }
 
 /// Sheet-metal statements (ADR 0037).

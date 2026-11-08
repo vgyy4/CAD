@@ -16,6 +16,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod appearance;
 mod assembly;
 mod bake;
 mod bundle;
@@ -37,6 +38,7 @@ mod sim;
 mod sketch_ops;
 mod surface;
 mod sweep;
+pub use appearance::SetAppearance;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use bake::Bake;
 pub use bundle::{HistoryExportBundle, HistoryImportBundle, HistorySync};
@@ -86,6 +88,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(assembly::specs());
     v.extend(component::specs());
     v.extend(drawing::specs());
+    v.extend(appearance::specs());
     v.extend(configuration::specs());
     v.extend(sketch_ops::specs());
     v
@@ -2383,6 +2386,12 @@ pub struct FeatureRename {
 }
 
 fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
+    // A body's appearance follows its feature (ADR 0045).
+    for a in &mut doc.appearances {
+        if a.body == from {
+            a.body = to.to_string();
+        }
+    }
     for f in &mut doc.features {
         if f.name == from {
             f.name = to.to_string();

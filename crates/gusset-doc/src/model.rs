@@ -18,6 +18,59 @@ pub struct Document {
     pub features: Vec<Feature>,
     /// 2D drawings (ADR 0032), after the features; they change no body.
     pub drawings: Vec<crate::drawing::Drawing>,
+    /// How bodies look (ADR 0045); they change no geometry.
+    pub appearances: Vec<Appearance>,
+}
+
+/// A body's look: `appearance Extrude1 (color: "#8a9bb0", finish: metal)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Appearance {
+    /// The body: the name of the feature that made it.
+    pub body: String,
+    /// sRGB `0xRRGGBB`.
+    pub color: u32,
+    pub finish: Finish,
+}
+
+/// Surface finish for rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Finish {
+    /// Diffuse with a clear coat (the default look).
+    #[default]
+    Plastic,
+    /// Reflects in its own colour, slightly blurred.
+    Metal,
+    /// Clear: refracts and reflects, tinted by the colour.
+    Glass,
+    /// Diffuse only.
+    Rubber,
+}
+
+impl Finish {
+    pub const ALL: [Finish; 4] = [Finish::Plastic, Finish::Metal, Finish::Glass, Finish::Rubber];
+
+    #[must_use]
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Finish::Plastic => "plastic",
+            Finish::Metal => "metal",
+            Finish::Glass => "glass",
+            Finish::Rubber => "rubber",
+        }
+    }
+
+    #[must_use]
+    pub fn from_keyword(s: &str) -> Option<Finish> {
+        Finish::ALL.into_iter().find(|f| f.keyword() == s)
+    }
+}
+
+impl Document {
+    /// The appearance of `body`, if one is set.
+    #[must_use]
+    pub fn appearance(&self, body: &str) -> Option<&Appearance> {
+        self.appearances.iter().find(|a| a.body == body)
+    }
 }
 
 /// A named set of parameter values: `configuration Small (set: [w = 20 mm])`.

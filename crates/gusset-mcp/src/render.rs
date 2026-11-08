@@ -170,6 +170,8 @@ pub struct RenderBody {
     pub face_names: Vec<String>,
     /// Persistent edge names.
     pub edge_names: Vec<String>,
+    /// Colour and finish from the document (ADR 0045).
+    pub look: Option<gusset_doc::Appearance>,
 }
 
 /// What to draw: the evaluated bodies of the agent's current branch.

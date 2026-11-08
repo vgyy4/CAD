@@ -443,7 +443,7 @@ mod tests {
         s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
         s.insert_mesh(MeshId(2), &demo::box_mesh([2.0; 3])).expect("ok");
         s.set_transform(MeshId(2), math::translation([0.0, 3.0, 0.0]));
-        s.set_material(MeshId(2), crate::Material { color: crate::Srgb(0xFF0000) });
+        s.set_material(MeshId(2), crate::Material { color: crate::Srgb(0xFF0000), ..Default::default() });
         assert!(s.mesh(MeshId(1)).expect("m").data().closed);
         let mut cam = Camera::default();
         cam.set_view(crate::NamedView::Front);

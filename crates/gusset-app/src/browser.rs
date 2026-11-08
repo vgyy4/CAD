@@ -355,6 +355,8 @@ pub enum FeatureChoice {
     Group,
     /// Take the feature out of its timeline group.
     Ungroup,
+    /// The colour and finish of the body the feature makes (ADR 0045).
+    Appearance,
 }
 
 /// The suggested replacement of a failed feature's broken reference: (reference, suggestion).
@@ -389,6 +391,7 @@ pub fn feature_menu(
                 FeatureChoice::Suppress(!suppressed),
             ),
             ("menu.feature.roll_here", FeatureChoice::RollHere),
+            ("menu.feature.appearance", FeatureChoice::Appearance),
             if grouped {
                 ("menu.feature.ungroup", FeatureChoice::Ungroup)
             } else {

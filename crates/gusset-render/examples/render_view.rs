@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     scene.set_transform(MeshId(1), translation([-14.0, 0.0, 10.0]));
     scene.insert_mesh(MeshId(2), &demo::cylinder_mesh(9.0, 24.0, 96))?;
     scene.set_transform(MeshId(2), translation([14.0, 0.0, 0.0]));
-    scene.set_material(MeshId(2), Material { color: Srgb(0xC9B79C) });
+    scene.set_material(MeshId(2), Material { color: Srgb(0xC9B79C), ..Default::default() });
     scene.set_face_highlight(MeshId(1), 1, Highlight::Select);
     scene.set_face_highlight(MeshId(2), 0, Highlight::Preselect);
 

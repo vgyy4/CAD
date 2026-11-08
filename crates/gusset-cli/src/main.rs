@@ -221,8 +221,11 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         );
     }
     let t0 = std::time::Instant::now();
-    let r = host
-        .exec(|s, _| s.evaluate(&gusset_history::Actor::User))
+    let (r, doc) = host
+        .exec(|s, _| {
+            let ev = s.evaluate(&gusset_history::Actor::User)?;
+            Ok::<_, gusset_commands::CommandError>((ev, s.document(&gusset_history::Actor::User)?))
+        })
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     let _ = host.shutdown();
@@ -271,7 +274,7 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         let bytes = match ext.as_str() {
             "step" | "stp" => k.export_step(&bodies).map_err(|e| e.to_string())?,
             "iges" | "igs" => k.export_iges(&bodies).map_err(|e| e.to_string())?,
-            "png" => render_png(k.as_ref(), &bodies, &meshes, &o)?,
+            "png" => render_png(k.as_ref(), &bodies, &meshes, &doc.appearances, &o)?,
             other => {
                 let f = mesh_format(other)
                     .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj, png)"))?;
@@ -289,6 +292,7 @@ fn render_png(
     k: &dyn gusset_kernel::Kernel,
     bodies: &[(&gusset_kernel::Shape, &str)],
     meshes: &[(&gusset_kernel::Mesh, &str)],
+    looks: &[gusset_doc::Appearance],
     o: &Opts,
 ) -> Result<Vec<u8>, String> {
     let tolerance = o.tolerance;
@@ -299,6 +303,13 @@ fn render_png(
         let m = k.tessellate(shape, &params).map_err(|e| format!("{name}: {e}"))?;
         id += 1;
         scene.insert_mesh(gusset_render::MeshId(id), &m).map_err(|e| format!("{name}: {e}"))?;
+        if let Some(a) = looks.iter().find(|a| a.body == *name) {
+            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
+            scene.set_material(
+                gusset_render::MeshId(id),
+                gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
+            );
+        }
     }
     for (m, name) in meshes {
         id += 1;

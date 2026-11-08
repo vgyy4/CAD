@@ -140,6 +140,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.feature.unsuppress", "Unsuppress"),
     ("menu.feature.roll_here", "Roll back to here"),
     ("menu.feature.group", "Group…"),
+    ("menu.feature.appearance", "Appearance…"),
     ("menu.feature.ungroup", "Ungroup"),
     ("timeline.group", "Group"),
     ("menu.feature.delete", "Delete"),

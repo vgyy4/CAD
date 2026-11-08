@@ -44,7 +44,7 @@ fn scene() -> Scene {
     s.set_transform(MeshId(1), translation([-14.0, 0.0, 10.0]));
     s.insert_mesh(MeshId(2), &demo::cylinder_mesh(9.0, 24.0, 48)).expect("cylinder");
     s.set_transform(MeshId(2), translation([14.0, 0.0, 0.0]));
-    s.set_material(MeshId(2), Material { color: Srgb(0xC9B79C) });
+    s.set_material(MeshId(2), Material { color: Srgb(0xC9B79C), ..Default::default() });
     s
 }
 
@@ -174,7 +174,7 @@ fn gpu_cut_face_hides_what_lies_behind_the_cut() {
     s.insert_mesh(MeshId(1), &gusset_render::demo::box_mesh([10.0; 3])).expect("ok");
     s.insert_mesh(MeshId(2), &gusset_render::demo::box_mesh([2.0; 3])).expect("ok");
     s.set_transform(MeshId(2), translation([0.0, 3.0, 0.0]));
-    s.set_material(MeshId(2), gusset_render::Material { color: gusset_render::Srgb(0xFF0000) });
+    s.set_material(MeshId(2), gusset_render::Material { color: gusset_render::Srgb(0xFF0000), ..Default::default() });
     let mut cam = Camera::default();
     cam.set_view(gusset_render::NamedView::Front);
     cam.fit(&s.bounds(), 1.0);

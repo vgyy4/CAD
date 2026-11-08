@@ -107,6 +107,18 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         }
     }
 
+    // Appearances (ADR 0045): one per body, on a body name. A body that is gone leaves its
+    // appearance unused, not an error (the feature may come back on undo or merge).
+    let mut bodies = BTreeSet::new();
+    for a in &doc.appearances {
+        if let Err(e) = validate_feature_name(&a.body) {
+            out.push(issue(&a.body, e));
+        }
+        if !bodies.insert(a.body.as_str()) {
+            out.push(issue_h(&a.body, "has two appearances", "keep one appearance per body"));
+        }
+    }
+
     // Configurations: unique names, setting existing parameters.
     let mut cnames = BTreeSet::new();
     for c in &doc.configurations {

@@ -452,6 +452,25 @@ mod tests {
     }
 
     #[test]
+    fn appearances_are_stored_compared_and_merged() {
+        // ADR 0045: per body, like configurations.
+        let t = |extra: &str| Document::from_text(&format!("gusset 1\nunits mm\n\nparam w = 4 mm\n{extra}")).unwrap();
+        let look = |c: &str, f: &str| format!("appearance Body (color: \"#{c}\", finish: {f})\n");
+        let base = t(&look("112233", "plastic"));
+        let mut store = ObjectStore::default();
+        let h = store.put_document(&base);
+        assert_eq!(store.document(h).unwrap(), base);
+        let (ours, theirs) = (t(&look("445566", "plastic")), t(&look("112233", "metal")));
+        let d = diff::diff_documents(&base, &theirs);
+        assert_eq!(d.appearances.len(), 1, "{d:?}");
+        assert!(diff::diff_documents(&base, &t("")).appearances[0].change == Change::Removed);
+        // Both sides changed it: a conflict; one side only: taken.
+        assert_eq!(merge_documents(&base, &ours, &theirs, None).conflicts.len(), 1);
+        let m = merge_documents(&base, &base, &theirs, None);
+        assert!(m.conflicts.is_empty() && m.doc.appearances == theirs.appearances, "{m:?}");
+    }
+
+    #[test]
     fn compare_and_cherry_pick() {
         let u = Ctx::user(0);
         let base = with_feature(doc(&[("a", "1 mm")]), "S1");

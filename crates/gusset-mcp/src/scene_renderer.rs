@@ -85,6 +85,10 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
         };
         // Body names are user text: refer to the body by position only.
         inserted.map_err(|e| format!("body #{} could not be prepared for rendering: {e}", i + 1))?;
+        if let Some(a) = &body.look {
+            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
+            out.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
+        }
         for (h, hit) in request.highlight.iter().zip(matched.iter_mut()) {
             if let Some(f) = body.face_names.iter().position(|n| n == h) {
                 *hit = true;
@@ -189,6 +193,7 @@ impl ViewRenderer for SceneRenderer {
                 },
                 face_names: Vec::new(),
                 edge_names: Vec::new(),
+                look: None,
             }],
         };
         if let Ok(request) = serde_json::from_value::<RenderRequest>(serde_json::json!({"width": 16, "height": 16})) {
@@ -238,6 +243,7 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
                 mesh: k.tessellate(&b.shape, &gusset_kernel::TessellationParams::default()).unwrap(),
                 face_names: b.names.faces.iter().map(ToString::to_string).collect(),
                 edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
+                look: None,
             })
             .collect::<Vec<_>>();
         assert_eq!(bodies.len(), 1);

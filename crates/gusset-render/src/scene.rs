@@ -16,12 +16,47 @@ pub struct MeshId(pub u64);
 pub struct Material {
     /// Base color (sRGB).
     pub color: Srgb,
+    /// How the path tracer treats the surface (the viewport shades every finish alike).
+    pub finish: Finish,
 }
 
 impl Default for Material {
     fn default() -> Self {
-        Material { color: DEFAULT_PART_COLOR }
+        Material { color: DEFAULT_PART_COLOR, finish: Finish::Plastic }
     }
+}
+
+/// Surface finish (ADR 0045).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Finish {
+    /// Diffuse under a thin clear coat.
+    #[default]
+    Plastic,
+    /// Reflects in its own colour, slightly rough.
+    Metal,
+    /// Clear, refracting; tinted by the colour.
+    Glass,
+    /// Diffuse only.
+    Rubber,
+}
+
+impl Finish {
+    /// From the document's keyword (`plastic`, `metal`, `glass`, `rubber`).
+    #[must_use]
+    pub fn from_keyword(k: &str) -> Option<Finish> {
+        match k {
+            "plastic" => Some(Finish::Plastic),
+            "metal" => Some(Finish::Metal),
+            "glass" => Some(Finish::Glass),
+            "rubber" => Some(Finish::Rubber),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Finish {
+    pub(crate) const ALL_FOR_TESTS: [Finish; 4] = [Finish::Plastic, Finish::Metal, Finish::Glass, Finish::Rubber];
 }
 
 /// Highlight state of a face or edge.

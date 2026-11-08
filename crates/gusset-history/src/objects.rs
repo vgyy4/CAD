@@ -321,7 +321,7 @@ impl ObjectStore {
         let params = stage(
             ObjectKind::Params,
             &|| "the parameter table".into(),
-            print_params_object(&doc.params, &doc.configurations),
+            print_params_object(&doc.params, &doc.configurations, &doc.appearances),
         )?;
         let mut features = Vec::with_capacity(doc.features.len());
         for f in &doc.features {
@@ -425,8 +425,9 @@ impl ObjectStore {
     /// Materializes the document of a snapshot.
     pub fn document(&self, snapshot: Hash) -> Result<Document, ObjectError> {
         let snap = self.snapshot(snapshot)?;
-        let (params, configurations) = parse_params_object(self.text(snap.params)?)
-            .map_err(|e| ObjectError::Corrupt { hash: snap.params, reason: e.to_string() })?;
+        let gusset_doc::text::ParamsObject { params, configurations, appearances } =
+            parse_params_object(self.text(snap.params)?)
+                .map_err(|e| ObjectError::Corrupt { hash: snap.params, reason: e.to_string() })?;
         let features = snap.features.iter().map(|h| self.feature(*h)).collect::<Result<Vec<_>, _>>()?;
         let drawings = snap
             .drawings
@@ -436,7 +437,7 @@ impl ObjectStore {
                     .map_err(|e| ObjectError::Corrupt { hash: *h, reason: e.to_string() })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Document { units: snap.units, params, configurations, features, drawings })
+        Ok(Document { units: snap.units, params, configurations, features, drawings, appearances })
     }
 
     /// Hashes of every object a snapshot references (including itself). Returns false

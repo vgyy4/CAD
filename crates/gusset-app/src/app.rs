@@ -1443,6 +1443,16 @@ impl App {
                 }
             }
             C::Ungroup => self.submit_command("feature.group", json!({ "features": [name] }), Then::Notice),
+            C::Appearance => {
+                let look = self.snapshot.doc.appearance(name).cloned();
+                self.start_command("body.appearance");
+                if let Some(form) = self.form.as_mut() {
+                    form.set("body", name);
+                    let color = look.as_ref().map_or(0x00b4_bcc8, |a| a.color);
+                    form.set("color", &format!("#{color:06x}"));
+                    form.set("finish", look.as_ref().map_or("plastic", |a| a.finish.keyword()));
+                }
+            }
             C::AcceptSuggestion => {
                 let status = self.scene.as_ref().and_then(|s| s.eval.status(name).cloned());
                 if let Some((from, to)) = browser::suggestion(status.as_ref()) {
@@ -3848,7 +3858,7 @@ fn build_preview(
     let (mut render, bodies, _) = tessellated(s, &eval)?;
     let ids: Vec<gusset_render::MeshId> = render.meshes().map(|(m, _)| m).collect();
     for m in ids {
-        render.set_material(m, gusset_render::Material { color: PREVIEW_TINT });
+        render.set_material(m, gusset_render::Material { color: PREVIEW_TINT, ..Default::default() });
     }
     Ok((render, bodies))
 }
@@ -3860,8 +3870,20 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
         (br.head, br.rollback)
     };
     let eval = s.evaluate(&Actor::User)?;
-    let (render, bodies, mesh_errors) = tessellated(s, &eval)?;
+    let (mut render, bodies, mesh_errors) = tessellated(s, &eval)?;
     let doc = s.document(&Actor::User).ok();
+    // Body colours and finishes from the document (ADR 0045); the ids are body positions.
+    if let Some(d) = &doc {
+        for (i, b) in bodies.iter().enumerate() {
+            if let Some(a) = d.appearance(&b.name) {
+                let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
+                render.set_material(
+                    gusset_render::MeshId(i as u64),
+                    gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
+                );
+            }
+        }
+    }
     let def = |name: &str| {
         doc.as_ref()?.features.iter().find(|f| f.name == name).and_then(|f| match &f.kind {
             gusset_doc::FeatureKind::Sketch(d) => Some(d),
@@ -4063,7 +4085,7 @@ fn bands_scene(
         mesh.face_ranges = std::iter::once(0..(mesh.indices.len() / 3) as u32).collect();
         let id = gusset_render::MeshId(bodies.len() as u64);
         if scene.insert_mesh(id, &mesh).is_ok() {
-            scene.set_material(id, gusset_render::Material { color: gusset_render::Srgb(rgb) });
+            scene.set_material(id, gusset_render::Material { color: gusset_render::Srgb(rgb), ..Default::default() });
             bodies.push(BodyInfo {
                 name: format!("up to {upto} {unit}"),
                 face_names: vec![name.to_string()],

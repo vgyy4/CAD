@@ -10,7 +10,7 @@ use crate::camera::{Camera, Ray};
 use crate::headless::RenderError;
 use crate::image::RgbaImage;
 use crate::math::{Vec3, add, cross, dot, mat_vec, normalize_or, scale, sub};
-use crate::scene::Scene;
+use crate::scene::{Finish, Scene};
 use crate::theme::{linear_to_srgb, srgb_to_linear};
 
 /// How long to trace.
@@ -40,6 +40,15 @@ const GROUND_ALBEDO: f64 = 0.7;
 /// Clear coat: reflectance at normal incidence (a lacquer's 4 %) and roughness.
 const COAT_F0: f64 = 0.04;
 const COAT_ROUGH: f64 = 0.08;
+/// Metal roughness and glass's index of refraction.
+const METAL_ROUGH: f64 = 0.12;
+const GLASS_IOR: f64 = 1.5;
+/// The sun's disc as specular paths see it: within this angle of [`SUN`], with the radiance
+/// that gives [`SUN_POWER`] over the disc.
+const SUN_DISC: f64 = 0.028;
+/// Most radiance one path adds to its pixel (removes fireflies, darkens the sun's mirror
+/// image a little).
+const MAX_PATH_RADIANCE: f64 = 12.0;
 
 /// A little xorshift generator, seeded per pixel and sample.
 struct Rng(u64);
@@ -92,7 +101,9 @@ struct Hit {
     normal: Vec3,
     albedo: [f64; 3],
     /// Parts have a clear coat; the ground does not.
-    coat: bool,
+    finish: Finish,
+    /// The ray met the outside of the surface (the mesh's outward side).
+    front: bool,
 }
 
 struct World<'a> {
@@ -136,7 +147,8 @@ impl World<'_> {
             if dot(n, geo) < 0.0 {
                 n = scale(n, -1.0);
             }
-            if dot(geo, ray.dir) > 0.0 {
+            let front = dot(geo, ray.dir) <= 0.0;
+            if !front {
                 n = scale(n, -1.0);
             }
             // Highlighted faces in the viewport's selection colours (dogfooding F12-10).
@@ -147,7 +159,10 @@ impl World<'_> {
                 _ => m.material().color,
             };
             let [r, g, bl] = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
-            Some((h.distance, Hit { point: h.point, normal: n, albedo: [r, g, bl], coat: true }))
+            Some((
+                h.distance,
+                Hit { point: h.point, normal: n, albedo: [r, g, bl], finish: m.material().finish, front },
+            ))
         });
         // The ground plane under the parts.
         let ground = (ray.dir[2] < -1e-9).then(|| (self.ground - ray.origin[2]) / ray.dir[2]).filter(|t| *t > self.eps);
@@ -158,14 +173,17 @@ impl World<'_> {
                 point: add(ray.origin, scale(ray.dir, g)),
                 normal: [0.0, 0.0, 1.0],
                 albedo: [GROUND_ALBEDO; 3],
-                coat: false,
+                finish: Finish::Rubber,
+                front: true,
             }),
             (None, None) => None,
         }
     }
 
     /// Whether the sun is seen from `p` (a direction jittered over the sun's disc).
-    fn sun_seen(&self, p: Vec3, n: Vec3, rng: &mut Rng) -> Option<f64> {
+    /// The sun's light reaching `p`: `cos` times what glass on the way lets through (a
+    /// simplification: glass dims and tints the light but does not bend it).
+    fn sun_seen(&self, p: Vec3, n: Vec3, rng: &mut Rng) -> Option<[f64; 3]> {
         let (t, b) = basis(SUN);
         let (u, v) = (rng.next() - 0.5, rng.next() - 0.5);
         let l = normalize_or(add(SUN, add(scale(t, u * SUN_SPREAD), scale(b, v * SUN_SPREAD))), SUN);
@@ -173,56 +191,127 @@ impl World<'_> {
         if cos <= 0.0 {
             return None;
         }
-        let shadow = Ray { origin: add(p, scale(n, self.eps)), dir: l };
-        self.scene.pick(&shadow).is_none().then_some(cos)
+        let mut light = [cos; 3];
+        let mut origin = add(p, scale(n, self.eps));
+        for _ in 0..16 {
+            let Some(h) = self.scene.pick(&Ray { origin, dir: l }) else { return Some(light) };
+            let m = self.scene.mesh(h.mesh)?.material();
+            if m.finish != Finish::Glass {
+                return None;
+            }
+            for (x, c) in light.iter_mut().zip(m.color.bytes()) {
+                *x *= f64::from(srgb_to_linear(f32::from(c) / 255.0)).sqrt() * 0.92;
+            }
+            origin = add(origin, scale(l, h.distance + self.eps));
+        }
+        None
     }
 
     fn radiance(&self, mut ray: Ray, bounces: u32, rng: &mut Rng) -> [f64; 3] {
         let mut out = [0.0; 3];
         let mut through = [1.0; 3];
+        // The camera ray and mirror-like bounces see the sun's disc; diffuse bounces get the
+        // sun from `sun_seen` instead, so it is not counted twice.
+        let mut specular = true;
         for depth in 0..=bounces {
             let Some(h) = self.trace(&ray) else {
+                let disc = if specular && dot(ray.dir, SUN) > SUN_DISC.cos() {
+                    SUN_POWER / (std::f64::consts::PI * SUN_DISC * SUN_DISC)
+                } else {
+                    0.0
+                };
                 for ((o, t), s) in out.iter_mut().zip(through).zip(sky(ray.dir)) {
-                    *o += t * s;
+                    *o += t * (s + disc);
                 }
                 break;
             };
-            // A thin clear coat (parts only): a Fresnel share of the paths reflects off it,
-            // slightly rough; the rest goes into the diffuse base.
-            if h.coat {
-                let cos_i = (-dot(ray.dir, h.normal)).clamp(0.0, 1.0);
-                let fresnel = COAT_F0 + (1.0 - COAT_F0) * (1.0 - cos_i).powi(5);
-                if rng.next() < fresnel {
+            let cos_i = (-dot(ray.dir, h.normal)).clamp(0.0, 1.0);
+            let off = |p: Vec3, n: Vec3, d: f64| add(p, scale(n, d));
+            match h.finish {
+                Finish::Metal => {
+                    // Schlick's Fresnel with the colour as reflectance at normal incidence.
+                    let k = (1.0 - cos_i).powi(5);
+                    for (t, a) in through.iter_mut().zip(h.albedo) {
+                        *t *= a + (1.0 - a) * k;
+                    }
+                    if depth == bounces || through.iter().all(|t| *t < 1e-3) {
+                        break;
+                    }
+                    ray = Ray {
+                        origin: off(h.point, h.normal, self.eps),
+                        dir: glossy(ray.dir, h.normal, METAL_ROUGH, rng),
+                    };
+                    specular = true;
+                    continue;
+                }
+                Finish::Glass => {
                     if depth == bounces {
                         break;
                     }
+                    let eta = if h.front { 1.0 / GLASS_IOR } else { GLASS_IOR };
+                    let f0 = ((1.0 - GLASS_IOR) / (1.0 + GLASS_IOR)).powi(2);
+                    let fresnel = f0 + (1.0 - f0) * (1.0 - cos_i).powi(5);
+                    let sin2 = eta * eta * (1.0 - cos_i * cos_i);
                     let mirror = sub(ray.dir, scale(h.normal, 2.0 * dot(ray.dir, h.normal)));
-                    let (t, b) = basis(mirror);
-                    let (u, v) = (rng.next() - 0.5, rng.next() - 0.5);
-                    let mut dir =
-                        normalize_or(add(mirror, add(scale(t, u * COAT_ROUGH), scale(b, v * COAT_ROUGH))), mirror);
-                    if dot(dir, h.normal) <= 0.0 {
-                        dir = mirror;
-                    }
-                    ray = Ray { origin: add(h.point, scale(h.normal, self.eps)), dir };
+                    ray = if sin2 > 1.0 || rng.next() < fresnel {
+                        Ray { origin: off(h.point, h.normal, self.eps), dir: mirror }
+                    } else {
+                        // Refracted: through the surface, tinted by the colour once per pass.
+                        let cos_t = (1.0 - sin2).max(0.0).sqrt();
+                        let dir = normalize_or(add(scale(ray.dir, eta), scale(h.normal, eta * cos_i - cos_t)), ray.dir);
+                        if h.front {
+                            for (t, a) in through.iter_mut().zip(h.albedo) {
+                                *t *= a.sqrt();
+                            }
+                        }
+                        Ray { origin: off(h.point, h.normal, -self.eps), dir }
+                    };
+                    specular = true;
                     continue;
                 }
+                Finish::Plastic => {
+                    // A thin clear coat: a Fresnel share of the paths reflects off it,
+                    // slightly rough; the rest goes into the diffuse base.
+                    let fresnel = COAT_F0 + (1.0 - COAT_F0) * (1.0 - cos_i).powi(5);
+                    if rng.next() < fresnel {
+                        if depth == bounces {
+                            break;
+                        }
+                        ray = Ray {
+                            origin: off(h.point, h.normal, self.eps),
+                            dir: glossy(ray.dir, h.normal, COAT_ROUGH, rng),
+                        };
+                        specular = true;
+                        continue;
+                    }
+                }
+                Finish::Rubber => {}
             }
             for (t, a) in through.iter_mut().zip(h.albedo) {
                 *t *= a;
             }
-            if let Some(cos) = self.sun_seen(h.point, h.normal, rng) {
-                for (o, t) in out.iter_mut().zip(through) {
-                    *o += t * SUN_POWER * cos;
+            if let Some(light) = self.sun_seen(h.point, h.normal, rng) {
+                for ((o, t), l) in out.iter_mut().zip(through).zip(light) {
+                    *o += t * SUN_POWER * l;
                 }
             }
             if depth == bounces || through.iter().all(|t| *t < 1e-3) {
                 break;
             }
-            ray = Ray { origin: add(h.point, scale(h.normal, self.eps)), dir: cosine_dir(h.normal, rng) };
+            ray = Ray { origin: off(h.point, h.normal, self.eps), dir: cosine_dir(h.normal, rng) };
+            specular = false;
         }
         out
     }
+}
+
+/// The mirror direction of `dir` about `n`, jittered by `rough`, kept above the surface.
+fn glossy(dir: Vec3, n: Vec3, rough: f64, rng: &mut Rng) -> Vec3 {
+    let mirror = sub(dir, scale(n, 2.0 * dot(dir, n)));
+    let (t, b) = basis(mirror);
+    let (u, v) = (rng.next() - 0.5, rng.next() - 0.5);
+    let d = normalize_or(add(mirror, add(scale(t, u * rough), scale(b, v * rough))), mirror);
+    if dot(d, n) <= 0.0 { mirror } else { d }
 }
 
 /// Traces `scene` seen by `camera` into an image of `size` pixels.
@@ -266,8 +355,10 @@ pub fn render_traced(
                             let mut rng = Rng::new(seed);
                             let p = [x as f64 + rng.next(), f64::from(y) + rng.next()];
                             let l = world.radiance(camera.ray(p, viewport), settings.bounces, &mut rng);
+                            // A rare path that finds the sun through a mirror or glass would
+                            // leave a bright speck: each path counts at most MAX_PATH_RADIANCE.
                             for (a, v) in sum.iter_mut().zip(l) {
-                                *a += v;
+                                *a += v.min(MAX_PATH_RADIANCE);
                             }
                         }
                         for (c, v) in sum.iter().enumerate() {
@@ -320,6 +411,38 @@ mod tests {
         if let Ok(out) = std::env::var("GUSSET_TRACE_OUT") {
             let big = render_traced(&s, &c, [480, 360], TraceSettings { samples: 64, bounces: 3 }).unwrap();
             std::fs::write(out, big.to_png().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn finishes_change_the_picture_and_glass_shows_what_is_behind() {
+        let set = TraceSettings { samples: 8, bounces: 4 };
+        let shot = |finish: Finish| {
+            let (mut s, c) = scene();
+            s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish });
+            render_traced(&s, &c, [48, 36], set).unwrap()
+        };
+        let all = Finish::ALL_FOR_TESTS.map(shot);
+        for (i, a) in all.iter().enumerate() {
+            for b in all.get(i + 1..).unwrap() {
+                assert_ne!(a, b, "two finishes render alike");
+            }
+        }
+        // Through the glass box the light ground shows: its centre is brighter and less red
+        // than the rubber box's.
+        let centre = |img: &RgbaImage| {
+            let i = 4 * (18 * 48 + 24) as usize;
+            [img.data[i], img.data[i + 1], img.data[i + 2]].map(i32::from)
+        };
+        let (rubber, glass) = (centre(&all[3]), centre(&all[2]));
+        assert!(glass[1] > rubber[1], "glass {glass:?} rubber {rubber:?}");
+        if let Ok(dir) = std::env::var("GUSSET_TRACE_OUT_DIR") {
+            for (f, name) in Finish::ALL_FOR_TESTS.into_iter().zip(["plastic", "metal", "glass", "rubber"]) {
+                let (mut s, c) = scene();
+                s.set_material(MeshId(1), crate::Material { color: crate::Srgb(0xC0_40_30), finish: f });
+                let big = render_traced(&s, &c, [320, 240], TraceSettings { samples: 64, bounces: 5 }).unwrap();
+                std::fs::write(format!("{dir}/{name}.png"), big.to_png().unwrap()).unwrap();
+            }
         }
     }
 

@@ -1624,3 +1624,36 @@ fn baking_keeps_the_bodies_and_free_sketches_and_undoes_in_one_step() {
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("extrude Extrude1"), "{text}");
 }
+
+#[test]
+fn appearances_are_set_kept_renamed_merged_and_cleared() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "color": "#C0ffee", "finish": "metal"}));
+    assert_eq!(r["appearance"], json!({"color": "#c0ffee", "finish": "metal"}), "{r}");
+    // A finish alone keeps the colour.
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "finish": "glass"}));
+    assert_eq!(r["appearance"], json!({"color": "#c0ffee", "finish": "glass"}), "{r}");
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("appearance Extrude1 (color: \"#c0ffee\", finish: glass)"), "{text}");
+    run(&mut s, &u, "feature.rename", json!({"from": "Extrude1", "to": "Plate"}));
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("appearance Plate ("), "{text}");
+    for bad in [
+        json!({"body": "Plate", "color": "red"}),
+        json!({"body": "Plate", "finish": "chrome"}),
+        json!({"body": "Plate"}),
+        json!({"body": "Plate", "clear": true, "finish": "metal"}),
+        json!({"body": "Nope", "finish": "metal"}),
+    ] {
+        assert!(execute(&mut s, &u, "body.appearance", bad.clone()).is_err(), "{bad}");
+    }
+    run(&mut s, &u, "body.appearance", json!({"body": "Plate", "clear": true}));
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(!text.contains("appearance "), "{text}");
+    // Undo brings it back; the history stores it.
+    run(&mut s, &u, "history.undo", json!({}));
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("appearance Plate ("), "{text}");
+}

@@ -974,6 +974,7 @@ impl GussetMcp {
         let limit = self.shared.request_deadline();
         let job = self.shared.host.exec_async_stoppable(move |s, _| -> Result<RenderScene, CommandError> {
             let ev = s.evaluate(&actor)?;
+            let looks = s.document(&actor)?.appearances;
             let k = s.kernel().clone();
             let mut bodies = Vec::new();
             for b in &ev.bodies {
@@ -985,6 +986,7 @@ impl GussetMcp {
                     mesh,
                     face_names: b.names.faces.iter().map(ToString::to_string).collect(),
                     edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
+                    look: looks.iter().find(|a| a.body == b.name).cloned(),
                 });
             }
             // Reference meshes (imported STL/3MF/OBJ) are drawn too; they have no
@@ -995,6 +997,7 @@ impl GussetMcp {
                     mesh: m.mesh.clone(),
                     face_names: Vec::new(),
                     edge_names: Vec::new(),
+                    look: None,
                 });
             }
             Ok(RenderScene { bodies })

@@ -55,7 +55,7 @@ pub use headless::{
 pub use image::{DiffReport, DiffTolerance, RgbaImage};
 pub use mesh::{Bvh, LocalHit, MeshData, MeshError, pack_normal, unpack_normal};
 pub use pick::{EdgeHit, PickHit};
-pub use scene::{Highlight, Material, MeshId, Scene, SceneMesh};
+pub use scene::{Finish, Highlight, Material, MeshId, Scene, SceneMesh};
 pub use software::{SOFTWARE_MAX_SIDE, SoftwareRenderer};
 pub use theme::{DEFAULT_PART_COLOR, Lighting, Srgb, Theme, ViewportColors, linear_to_srgb, srgb_to_linear};
 pub use trace::{TRACE_MAX_SIDE, TraceSettings, render_traced};

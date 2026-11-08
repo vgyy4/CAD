@@ -113,6 +113,28 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         configurations.extend(r);
     }
 
+    // Appearances (ADR 0045): per body, like configurations.
+    let anames =
+        names(ours.appearances.iter().map(|a| a.body.as_str()), theirs.appearances.iter().map(|a| a.body.as_str()));
+    let maps: [HashMap<&str, &gusset_doc::Appearance>; 3] =
+        [base, ours, theirs].map(|d| d.appearances.iter().map(|a| (a.body.as_str(), a)).collect());
+    let [ab, ao, at] = &maps;
+    let look = |m: &HashMap<&str, &gusset_doc::Appearance>, n: &str| m.get(n).map(|a| (*a).clone());
+    let show_a = |a: &Option<gusset_doc::Appearance>| a.as_ref().map(gusset_doc::text::appearance_line);
+    let mut appearances = Vec::new();
+    for n in &anames {
+        let (b, o, t) = (look(ab, n), look(ao, n), look(at, n));
+        let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
+            Ok(r) => r,
+            Err(()) if resolve("appearance", n, show_a(&o), show_a(&t)) => t.clone(),
+            Err(()) => o.clone(),
+        };
+        if r != o {
+            from_theirs.push(format!("appearance {n}"));
+        }
+        appearances.extend(r);
+    }
+
     // Features: merged one by one, placed in ours' order; those only theirs added go right
     // after the feature that precedes them on their side.
     let (fb, fo, ft) = (feature_map(base), feature_map(ours), feature_map(theirs));
@@ -216,7 +238,7 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         }
         drawings.extend(r);
     }
-    Merged { doc: Document { units, params, configurations, features, drawings }, conflicts, from_theirs }
+    Merged { doc: Document { units, params, configurations, features, drawings, appearances }, conflicts, from_theirs }
 }
 
 fn param_map(d: &Document) -> HashMap<&str, &Param> {
