@@ -997,7 +997,7 @@ impl GussetMcp {
                     mesh: m.mesh.clone(),
                     face_names: Vec::new(),
                     edge_names: Vec::new(),
-                    look: None,
+                    look: looks.iter().find(|a| a.body == m.name).cloned(),
                 });
             }
             Ok(RenderScene { bodies })

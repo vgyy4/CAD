@@ -3538,7 +3538,7 @@ pub fn mesh_export_bytes_styled(
         .map_err(|e| CommandError::new("io", e.to_string()))?;
     let mut eb: Vec<gusset_meshio::ExportBody<'_>> =
         tess.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n) }).collect();
-    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: None }));
+    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n) }));
     gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
 }
 

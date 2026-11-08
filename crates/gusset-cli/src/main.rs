@@ -327,6 +327,13 @@ fn render_png(
     for (m, name) in meshes {
         id += 1;
         scene.insert_mesh(gusset_render::MeshId(id), m).map_err(|e| format!("{name}: {e}"))?;
+        if let Some(a) = looks.iter().find(|a| a.body == *name) {
+            let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
+            scene.set_material(
+                gusset_render::MeshId(id),
+                gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
+            );
+        }
     }
     let mut camera = gusset_render::Camera::default();
     camera.set_view(gusset_render::NamedView::Iso);

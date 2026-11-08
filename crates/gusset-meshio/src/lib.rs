@@ -170,6 +170,8 @@ pub struct ImportedMesh {
     pub units_note: String,
     /// Topology check of the imported mesh (watertight, manifold, orientation).
     pub validation: MeshValidation,
+    /// Its colour in the file (`0xRRGGBB`), when the format and file have one (ADR 0045).
+    pub color: Option<u32>,
 }
 
 /// Non-fatal findings while importing (repairs, ignored content, topology problems).
@@ -322,6 +324,7 @@ pub(crate) fn finish(
         mesh: Mesh { positions: p, normals: n, indices: i, face_ranges: ranges, edges: Vec::new() },
         units_note: units_note.to_string(),
         validation,
+        color: None,
     }
 }
 

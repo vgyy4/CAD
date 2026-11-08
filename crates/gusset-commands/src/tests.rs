@@ -1670,3 +1670,41 @@ fn appearances_are_set_kept_renamed_merged_and_cleared() {
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("appearance Plate ("), "{text}");
 }
+
+#[test]
+fn a_coloured_3mf_import_keeps_its_colours_as_appearances() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-3mf-colour-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let cube = gusset_kernel::Mesh {
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [10.0, 0.0, 10.0],
+            [10.0, 10.0, 10.0],
+            [0.0, 10.0, 10.0],
+        ],
+        indices: vec![
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7,
+        ],
+        ..Default::default()
+    };
+    let (bytes, _) = gusset_meshio::export_to_vec(
+        &[gusset_meshio::ExportBody { name: "red", mesh: &cube, color: Some(0x00c0_3020) }],
+        gusset_meshio::ExportFormat::ThreeMf,
+    )
+    .unwrap();
+    std::fs::write(d.join("c.3mf"), bytes).unwrap();
+    s.project_dir = Some(d.clone());
+    let r = run(&mut s, &u, "import.file", json!({"path": "c.3mf"}));
+    let name = r["features"][0].as_str().unwrap().to_string();
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains(&format!("appearance {name} (color: \"#c03020\"")), "{text}");
+    // Reference meshes take appearances like bodies.
+    run(&mut s, &u, "body.appearance", json!({"body": name, "finish": "rubber"}));
+    let _ = std::fs::remove_dir_all(d);
+}

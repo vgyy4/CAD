@@ -111,6 +111,9 @@ struct Component {
 struct Object {
     name: Option<String>,
     kind: Option<String>,
+    /// The object's material: a base-material group and its entry (`pid`, `pindex`).
+    pid: Option<u32>,
+    pindex: Option<u32>,
     vertices: Vec<[f64; 3]>,
     tris: Vec<Tri>,
     components: Vec<Component>,
@@ -128,6 +131,8 @@ struct Model {
     unit: String,
     scale: f64,
     objects: HashMap<u32, Object>,
+    /// Base-material groups by id: each entry's `displaycolor` as `0xRRGGBB`.
+    materials: HashMap<u32, Vec<u32>>,
     items: Vec<Item>,
     /// Namespaces of required extensions.
     required: Vec<String>,
@@ -143,6 +148,7 @@ enum Ctx {
     Triangles,
     Components,
     Build,
+    Materials,
     Other,
 }
 
@@ -199,6 +205,7 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
     let mut stack: Vec<Ctx> = Vec::new();
     let mut model = Model { unit: "millimeter".into(), scale: 1.0, ..Default::default() };
     let mut cur: Option<(u32, Object)> = None;
+    let mut cur_materials: Option<u32> = None;
     let mut saw_model = false;
     let mut events = 0usize;
     let mut xmlns: Vec<(String, String)> = Vec::new();
@@ -270,6 +277,8 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
                         "id" => id = Some(parse_u32(v, &at, "object id")?),
                         "name" => obj.name = Some(clean_name(v, lim.max_name_bytes)),
                         "type" => obj.kind = Some(v.to_string()),
+                        "pid" => obj.pid = Some(parse_u32(v, &at, "object pid")?),
+                        "pindex" => obj.pindex = Some(parse_u32(v, &at, "object pindex")?),
                         _ => {}
                     }
                     Ok(())
@@ -372,6 +381,37 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
                     return Err(malformed(F, at(), "component without objectid"));
                 }
                 obj.components.push(c);
+                Ctx::Other
+            }
+            // Colours (ADR 0045): `<basematerials id><base displaycolor="#RRGGBB(AA)"/>`.
+            (Some(Ctx::Resources), "basematerials") => {
+                let mut id = None;
+                for_each_attr(&e, lim, &at, |_, key, v| {
+                    if key == "id" {
+                        id = Some(parse_u32(v, &at, "basematerials id")?);
+                    }
+                    Ok(())
+                })?;
+                cur_materials = id;
+                Ctx::Materials
+            }
+            (Some(Ctx::Materials), "base") => {
+                let mut colour = 0x00b4_bcc8;
+                for_each_attr(&e, lim, &at, |_, key, v| {
+                    if key == "displaycolor" {
+                        let hex = v.trim().strip_prefix('#').unwrap_or("");
+                        if let Some(c) = hex.get(..6).and_then(|h| u32::from_str_radix(h, 16).ok()) {
+                            colour = c;
+                        }
+                    }
+                    Ok(())
+                })?;
+                if let Some(id) = cur_materials {
+                    let list = model.materials.entry(id).or_default();
+                    if list.len() < 65_536 {
+                        list.push(colour);
+                    }
+                }
                 Ctx::Other
             }
             (Some(Ctx::Build), "item") => {
@@ -707,7 +747,13 @@ pub(crate) fn import(
         let count = seen_names.entry(base.clone()).or_insert(0);
         *count += 1;
         let name = if *count > 1 { format!("{base} ({count})") } else { base };
-        out.push(finish(name, soup, &units_note, opts, warnings));
+        let color = obj.and_then(|o| {
+            let group = ld.parts.get(&part.to_ascii_lowercase())?.materials.get(&o.pid?)?;
+            group.get(o.pindex? as usize).copied()
+        });
+        let mut m = finish(name, soup, &units_note, opts, warnings);
+        m.color = color;
+        out.push(m);
     }
     for k in odd_types {
         warnings.push(format!("3MF build contains objects of type {k:?}; imported as ordinary meshes"));

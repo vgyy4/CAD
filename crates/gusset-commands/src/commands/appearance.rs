@@ -54,7 +54,8 @@ impl Command for SetAppearance {
             return Err(CommandError::args("give a color, a finish, or clear: true"));
         }
         let ev = s.evaluate(&ctx.actor)?;
-        if ev.body(&self.body).is_none() {
+        // Bodies and reference meshes (an imported STL/3MF/OBJ keeps its colour too).
+        if ev.body(&self.body).is_none() && !ev.meshes.iter().any(|m| m.name == self.body) {
             let names: Vec<&str> = ev.bodies.iter().take(20).map(|b| b.name.as_str()).collect();
             return Err(CommandError::not_found(format!("no body '{}'", crate::paths::display_name(&self.body)))
                 .hint(format!("bodies: {}", names.join(", "))));

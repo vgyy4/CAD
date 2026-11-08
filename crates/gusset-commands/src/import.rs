@@ -419,7 +419,7 @@ impl ImportJob {
                     let body = gusset_meshio::ExportBody { name: &m.name, mesh: &m.mesh, color: None };
                     let (blob, _) = gusset_meshio::export_to_vec(&[body], gusset_meshio::ExportFormat::StlBinary)
                         .map_err(|e| CommandError::new("io", format!("storing the mesh failed: {e}")))?;
-                    out.push(PreparedBody { name: m.name.clone(), blob, format: ImportFormat::Stl, color: None });
+                    out.push(PreparedBody { name: m.name.clone(), blob, format: ImportFormat::Stl, color: m.color });
                 }
                 (out, TIER_MESH, imported.report.warnings)
             }

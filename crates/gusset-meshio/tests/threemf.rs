@@ -281,5 +281,5 @@ fn colours_are_written_as_base_materials_and_read_back() {
     assert!(model.contains(r##"<base name="#C03020" displaycolor="#C03020"/>"##), "{model}");
     assert!(model.contains(r#"name="red" type="model" pid="1" pindex="0""#), "{model}");
     let back = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
-    assert_eq!(back.meshes.len(), 2);
+    assert_eq!(back.meshes.iter().map(|m| m.color).collect::<Vec<_>>(), [Some(0x00c0_3020), None]);
 }
