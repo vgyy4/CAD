@@ -405,6 +405,22 @@ Phase 3 has started (see Next).
   spline's tangential touch cuts both curves); a trimmed spline is refitted (close to, not exactly, the old curve); constraining or trimming a pattern copy, or patterning a pattern copy (grids are a linear pattern's second direction, `count2/dx2/dy2`), explodes the
   inner pattern into ordinary entities, so its count is no longer parametric.
 
+## Waiting on the owner (2026-11-08)
+Work that cannot go further without something only the owner can give:
+- **Sample files.** Solid Edge `.par`/`.asm` and Inventor `.ipt`/`.iam` (no public samples
+  found), FreeCAD `.FCStd` with PartDesign history (FreeCAD's examples are on GitHub, not
+  reachable here), a SolidWorks assembly with a non-symmetric rotation (to confirm the
+  placement convention, ADR 0043 amendment 2), and the ARIG `cad-projects` repository
+  (access was declined in this environment).
+- **Standards.** DIN 974-1 / ISO 4762 / ISO 10642 tables to check the hole presets (paywalled).
+- **Network listener.** The live collaboration relay (ADR 0044 phase 2) opens a port: the
+  owner's say-so (folder sync, now also automatic, covers sharing until then).
+- **Hardware.** A real integrated-GPU measurement of the large-assembly frame time
+  (PERFORMANCE.md), and a SpaceMouse on Windows/macOS to test a HID reader against.
+- **Signing.** An update-signing key (the updater refuses unsigned manifests) and code signing.
+- **Manual tests.** The feature-tree exporter plugins (Fusion, SolidWorks, Onshape) need a person
+  to run their README's test in the real apps.
+
 ## Decisions made without the owner (easy to reverse)
 - **cargo-audit ignores three "unmaintained" notices** (2026-11-03): RUSTSEC-2026-0370/0371/0372
   (zvariant, zbus_names, zvariant_derive), reached only through egui's Linux accessibility

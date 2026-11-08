@@ -823,7 +823,7 @@ of a revolve, 256 or more positions in one hole.
 | F9-3 | Fixed: crease points must be held by two surfaces, contacts on the mesh's free boundary do not count, so the line stops at the end of the part (tip never below the crease); chains shorter than 4 grid steps are dropped. The faceted-fillet case now costs seconds (see F9-6). |
 | F9-6 | Fixed in part: ball-edge contact in closed form and a bounding-box skip make the drop-cutter about 40x faster (dome R30, D6, stepdown 0.4: `steep_shallow` 328 s -> 8.5 s, `waterline` 225 s -> 5.7 s, release; the whole `gusset-cam` test suite 67 s -> 2.6 s release, 14.6 s debug); shallow raster runs are ordered nearest first (rapid 42.4 -> 38.9 m on the dome). Open: lower retract heights, reuse of the last path for `cam_export_gcode`, a progress/time estimate. |
 | F9-4 | Fixed: every move_face is tried before committing; one the kernel cannot build is refused (OCCT test). The command defaults `rules` to true; in the text an absent `rules` means false (old documents). |
-| F9-5 | Open: flanges bent past 90 deg without `close` collide in the corner silently. |
+| F9-5 | Fixed later: flanges past 90 deg that would run into each other at an open corner are refused, with a hint to close the corner or bend 90 deg or less. |
 | F9-7 | Partly: agent fields are capped at 2000 quads; paths stay as computed. |
 | F9-8 | Fixed: sim_static says sheet metal runs on shells. |
 | F9-9 | Fixed (note): when the peak stress is on an element touching the clamp, `sim_static` says it does not settle with element size; displacements scatter within 3 %. |
