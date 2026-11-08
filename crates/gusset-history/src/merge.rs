@@ -45,6 +45,20 @@ fn pick<T: PartialEq + Clone>(base: Option<&T>, ours: Option<&T>, theirs: Option
     }
 }
 
+/// An appearance both sides changed, merged in two parts (colour and finish; face colours),
+/// each three-way. `None` when either part conflicts or a side removed it.
+fn merge_look(
+    base: Option<&gusset_doc::Appearance>,
+    ours: Option<&gusset_doc::Appearance>,
+    theirs: Option<&gusset_doc::Appearance>,
+) -> Option<gusset_doc::Appearance> {
+    let (o, t) = (ours?, theirs?);
+    let look = |a: &gusset_doc::Appearance| (a.color, a.finish);
+    let (color, finish) = pick(base.map(look).as_ref(), Some(&look(o)), Some(&look(t))).ok()??;
+    let faces = pick(base.map(|a| &a.faces), Some(&o.faces), Some(&t.faces)).ok()??;
+    Some(gusset_doc::Appearance { body: o.body.clone(), color, finish, faces })
+}
+
 /// Merges `theirs` into `ours`, both descendants of `base`.
 pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, prefer: Option<Side>) -> Merged {
     let mut conflicts = Vec::new();
@@ -126,8 +140,13 @@ pub fn merge_documents(base: &Document, ours: &Document, theirs: &Document, pref
         let (b, o, t) = (look(ab, n), look(ao, n), look(at, n));
         let r = match pick(b.as_ref(), o.as_ref(), t.as_ref()) {
             Ok(r) => r,
-            Err(()) if resolve("appearance", n, show_a(&o), show_a(&t)) => t.clone(),
-            Err(()) => o.clone(),
+            // Both changed it: the look (colour, finish) and the face colours merge on their
+            // own, so a finish on one side and face colours on the other combine.
+            Err(()) => match merge_look(b.as_ref(), o.as_ref(), t.as_ref()) {
+                Some(m) => Some(m),
+                None if resolve("appearance", n, show_a(&o), show_a(&t)) => t.clone(),
+                None => o.clone(),
+            },
         };
         if r != o {
             from_theirs.push(format!("appearance {n}"));

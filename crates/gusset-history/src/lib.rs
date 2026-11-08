@@ -468,6 +468,16 @@ mod tests {
         assert_eq!(merge_documents(&base, &ours, &theirs, None).conflicts.len(), 1);
         let m = merge_documents(&base, &base, &theirs, None);
         assert!(m.conflicts.is_empty() && m.doc.appearances == theirs.appearances, "{m:?}");
+
+        // A finish on one side and face colours on the other combine (face colours review #8).
+        let faces = "appearance Body (color: \"#112233\", finish: plastic, faces: {\"#d02020\": [Body/face(1)]})\n";
+        let m = merge_documents(&base, &t(faces), &theirs, None);
+        assert!(m.conflicts.is_empty(), "{m:?}");
+        let a = m.doc.appearances.first().unwrap();
+        assert_eq!((a.color, a.finish.keyword(), a.faces.len()), (0x11_22_33, "metal", 1));
+        // Face colours changed differently on both sides still conflict.
+        let other = "appearance Body (color: \"#112233\", finish: plastic, faces: {\"#2020d0\": [Body/face(1)]})\n";
+        assert_eq!(merge_documents(&base, &t(faces), &t(other), None).conflicts.len(), 1);
     }
 
     #[test]
