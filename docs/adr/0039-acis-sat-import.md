@@ -204,3 +204,16 @@ board's placement as its first matrix. That record is now read (the first one wi
 whose matrix is not the identity): 0 to 65 of 90 solids placed; the other samples unchanged
 (LoRa 82, CyberDeck 20, NeoKey 12, MacroPad 167, Keyplate 1, Trinkey 63, QT Py 138, Crickit 48).
 
+USB-C HDMI cable, 2026-11-08: 50 of the author's 54 solids are pin copies made by Fusion patterns
+(8 distinct sizes in all), which are not read; the four parts are within 0.5 mm.
+
+Fusion colours, findings so far (2026-11-08; not read yet): bodies and faces in the `.smb` carry
+an `ATTRIB_CUSTOM` of type `NEUTRON_Material_attrib_def` holding an appearance id (a lowercase
+UUID); the design stream (`Design1/BulkStream.dat`) has that id in UTF-16 next to an asset id
+(`D95E1000-...$`), a schema id and a schema name (`PrismOpaque`, `PrismMaterial-018`), and names
+the `ProteinAsset.<uuid>.protein` file it lives in. A `.protein` is an Autodesk design package (a
+plain ZIP): `Schemas/*.xml` give the parameters with their defaults (`opaque_albedo`,
+`generic_diffuse`, `surface_albedo`), `AssetData/AssetTableOfContents.bin` lists the assets and
+their schemas, and the values themselves are in the binary `AssetData/InstanceProperties.bin`,
+whose layout is the next thing to read.
+
