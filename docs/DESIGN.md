@@ -49,7 +49,8 @@ never feels slowed down. We get there through progressive disclosure, not modes.
 15. **Stable layouts:** no surprise reshuffles. Panels are dockable and collapsible and
     remember their layout. One key (F11 by default) toggles a clean full-screen viewport.
 16. **Navigation presets** (Gusset, Fusion, SolidWorks, FreeCAD, Onshape) are chosen at
-    first launch and can be changed in Settings. SpaceMouse support.
+    first launch and can be changed in Settings. SpaceMouse support (Linux/BSD through the
+    free spacenavd daemon: rotation orbits, x/y pans, z zooms; Windows/macOS later).
 17. **Dialogs show essentials first.** Advanced options sit in a collapsed "More"
     section, and every command works with zero settings changed.
 18. **Tab/Enter flow** through every dialog without the mouse. Enter confirms, Esc

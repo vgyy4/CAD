@@ -228,6 +228,8 @@ impl std::fmt::Debug for App {
 pub struct App {
     /// A path-traced picture being made off the UI thread: where to, and its outcome.
     render_job: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    /// A 3D mouse through spacenavd, when one is there.
+    spacemouse: Option<crate::spacemouse::SpaceMouse>,
     /// Size and paths a pixel of a rendered image.
     pub render_quality: ([u32; 2], u32),
     host: HostHandle,
@@ -389,6 +391,7 @@ impl App {
         let prefs = dirs.as_ref().map(|d| crate::prefs::load(&crate::prefs::path(d.data_dir()))).unwrap_or_default();
         let mut app = App {
             render_job: None,
+            spacemouse: crate::spacemouse::SpaceMouse::connect(None, Some(waker.clone())),
             render_quality: ([1600, 1200], 64),
             host,
             kernel,
@@ -1832,6 +1835,17 @@ impl App {
         self.apply_scale(&ctx);
         self.poll(Some(&ctx));
         self.poll_render(&ctx);
+        if let Some(sm) = &self.spacemouse {
+            match sm.drain() {
+                Some((Some((t, r)), _)) => {
+                    let h = f64::from(ctx.content_rect().height());
+                    crate::spacemouse::apply(&mut self.viewport.camera, t, r, h);
+                    ctx.request_repaint();
+                }
+                Some(_) => {}
+                None => self.spacemouse = None,
+            }
+        }
         if let Some(p) = self.after_save.take() {
             // Saved; check again (an agent may have edited since) before continuing.
             self.request(p);
