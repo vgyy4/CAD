@@ -34,7 +34,7 @@ pub struct TopoResult {
     pub iterations: usize,
     /// Compliance (N mm: the work the loads do) of each iteration; it should fall.
     pub compliance: Vec<f64>,
-    /// Share of the design space kept (density at least one half).
+    /// Share of the design space kept (the densest voxels up to `keep`).
     pub kept_share: f64,
     /// Kept voxels: their volume (mm³).
     pub kept_volume: f64,
@@ -42,6 +42,8 @@ pub struct TopoResult {
     pub change: f64,
     /// Outer faces of the kept voxels (corners counter-clockwise seen from outside).
     pub faces: Vec<[[f64; 3]; 4]>,
+    /// Asked symmetry axes whose supports or loads (or the body) are not mirror images.
+    pub asymmetric: [bool; 3],
 }
 
 /// SIMP penalty, lowest density (keeps the stiffness positive), filter radius (voxels), move
@@ -130,6 +132,38 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
     let per = (2 * reach + 1).pow(3) as u64;
     if per.saturating_mul(conn.len() as u64) > 60_000_000 {
         return bad("min_member is too large for this many voxels: use a larger voxel or a smaller min_member");
+    }
+    // Asked mirror axes the supports and loads do not follow (dogfooding F12-5): voxels
+    // touching a held node, and those touching a loaded one, must map onto their kind.
+    let touches = |held: bool| -> Vec<bool> {
+        conn.iter()
+            .map(|c| {
+                c.iter().any(|id| {
+                    if held {
+                        fixed.get(3 * id).copied().unwrap_or(false)
+                    } else {
+                        loaded.get(*id).copied().unwrap_or(false)
+                    }
+                })
+            })
+            .collect()
+    };
+    let (held_v, load_v) = (touches(true), touches(false));
+    let mut asymmetric = [false; 3];
+    for (a, flag) in asymmetric.iter_mut().enumerate() {
+        if !p.symmetry.get(a).copied().unwrap_or(false) {
+            continue;
+        }
+        *flag = elems.iter().enumerate().any(|(e, c)| {
+            let mut q = *c;
+            if let (Some(v), Some(nv)) = (q.get_mut(a), n.get(a)) {
+                *v = nv - 1 - *v;
+            }
+            match index.binary_search(&lin(q)) {
+                Ok(m) => held_v.get(e) != held_v.get(m) || load_v.get(e) != load_v.get(m),
+                Err(_) => true,
+            }
+        });
     }
     let mut neigh: Vec<Vec<(usize, f64)>> = Vec::with_capacity(ne);
     for c in elems {
@@ -342,6 +376,7 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
         kept_volume: count as f64 * h * h * h,
         change,
         faces,
+        asymmetric,
     })
 }
 

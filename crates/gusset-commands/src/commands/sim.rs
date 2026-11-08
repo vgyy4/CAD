@@ -745,6 +745,13 @@ impl Command for OptimizeQuery {
             "kept_share_of": "the voxel body",
         });
         let mut warnings: Vec<String> = Vec::new();
+        let axes: Vec<&str> = ["x", "y", "z"].iter().zip(r.asymmetric).filter(|(_, b)| *b).map(|(a, _)| *a).collect();
+        if !axes.is_empty() {
+            warnings.push(format!(
+                "symmetry {}: the supports and loads are not mirror images there, so the mirrored design carries a different load case",
+                axes.join(", ")
+            ));
+        }
         // The filter cannot be finer than two voxels (dogfooding F12-5).
         if let Some(m) = self.min_member
             && m < 2.0 * voxel

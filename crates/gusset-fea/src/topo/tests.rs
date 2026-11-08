@@ -48,6 +48,25 @@ fn the_kept_share_is_the_asked_one_even_before_convergence() {
 }
 
 #[test]
+fn a_mirror_the_load_case_does_not_follow_is_flagged() {
+    let m = box_mesh([60.0, 10.0, 20.0]);
+    let r = optimise(&TopoProblem {
+        mesh: &m,
+        voxel: 2.5,
+        fixed: vec![0],
+        loads: vec![Load { face: 1, force: [0.0, 0.0, -100.0] }],
+        material: steel(),
+        keep: 0.4,
+        iterations: 2,
+        symmetry: [true, true, false],
+        min_member: None,
+    })
+    .unwrap();
+    // Held at x = 0, pushed at x = 60: not mirrored in x; both ends span the whole y.
+    assert_eq!(r.asymmetric, [true, false, false]);
+}
+
+#[test]
 fn loads_that_push_nothing_are_refused() {
     let m = box_mesh([60.0, 10.0, 20.0]);
     let p = |fixed: Vec<usize>, force: [f64; 3]| TopoProblem {
