@@ -130,6 +130,13 @@ impl FramePlan {
             if !m.visible() || culled(&viewproj, m) {
                 continue;
             }
+            // Level of detail by screen size (spec: large assemblies): a body smaller than
+            // a pixel or two is not drawn, and one under a few pixels without its edges.
+            let px = screen_px(&viewproj, m, size);
+            if px < TINY_PX {
+                continue;
+            }
+            let edges_too = px >= EDGES_PX;
             let data = m.data();
             let model_view = math::mul(&cm.view, m.transform());
             let base = m.material().color.linear();
@@ -141,7 +148,7 @@ impl FramePlan {
             } else {
                 Vec::new()
             };
-            let edge_runs = if opts.edges {
+            let edge_runs = if opts.edges && edges_too {
                 SceneMesh::runs(&data.edge_ranges, &m.edge_highlights, (data.edge_points.len() / 2) as u32)
                     .into_iter()
                     .map(|(r, h)| (r, hl(h, edge)))
@@ -193,6 +200,32 @@ fn view_plane(view: &Mat4, sec: &Section) -> Option<[f32; 4]> {
 }
 
 /// Whether a mesh's world box is entirely outside one clip plane.
+/// Below this many pixels across a body is not drawn; below `EDGES_PX` its edges are not.
+const TINY_PX: f64 = 1.5;
+const EDGES_PX: f64 = 6.0;
+
+/// The larger side, in pixels, of the screen box of `m`'s bounds; infinite when the box
+/// reaches behind the eye.
+fn screen_px(viewproj: &Mat4, m: &SceneMesh, size: [u32; 2]) -> f64 {
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for c in m.world.corners() {
+        let p = math::transform4(viewproj, c);
+        if p[3] <= 1e-9 {
+            return f64::INFINITY;
+        }
+        for k in 0..2 {
+            let v = p.get(k).copied().unwrap_or(0.0) / p[3];
+            if let (Some(l), Some(h)) = (lo.get_mut(k), hi.get_mut(k)) {
+                *l = l.min(v);
+                *h = h.max(v);
+            }
+        }
+    }
+    let w = (hi[0] - lo[0]) * 0.5 * f64::from(size[0]);
+    let h = (hi[1] - lo[1]) * 0.5 * f64::from(size[1]);
+    w.max(h)
+}
+
 fn culled(viewproj: &Mat4, m: &SceneMesh) -> bool {
     let b = m.world_bounds();
     if b.is_empty() {
@@ -212,6 +245,20 @@ fn culled(viewproj: &Mat4, m: &SceneMesh) -> bool {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn bodies_of_a_pixel_are_skipped_and_small_ones_lose_their_edges() {
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([100.0; 3])).expect("ok");
+        s.insert_mesh(MeshId(2), &demo::box_mesh([0.05; 3])).expect("ok"); // well under a pixel
+        s.insert_mesh(MeshId(3), &demo::box_mesh([0.8; 3])).expect("ok"); // a few pixels
+        let mut cam = Camera::default();
+        cam.fit(&s.bounds(), 1.0);
+        let plan = FramePlan::build(&s, &cam, [400, 400], &ViewOptions::default());
+        let ids: Vec<u64> = plan.draws.iter().map(|d| d.id.0).collect();
+        assert_eq!(ids, [1, 3], "{ids:?}");
+        assert!(plan.draws[1].edge_runs.is_empty() && !plan.draws[0].edge_runs.is_empty());
+    }
 
     #[test]
     fn culls_offscreen_meshes_and_splits_highlights() {
