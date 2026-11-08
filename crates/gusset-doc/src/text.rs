@@ -2360,7 +2360,11 @@ fn split_top_level(s: &str) -> Vec<&str> {
 
 /// Parses a single-feature history object.
 pub fn parse_feature_object(s: &str) -> Result<Feature, ParseError> {
-    let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}"))?;
+    // Positions count from the object's own first line, not the header put before it.
+    let doc = parse(&format!("gusset {SCHEMA_VERSION}\n{s}")).map_err(|mut e| {
+        e.line = e.line.saturating_sub(1).max(1);
+        e
+    })?;
     let mut it = doc.features.into_iter();
     match (it.next(), it.next(), doc.params.is_empty()) {
         (Some(f), None, true) => Ok(f),

@@ -1413,6 +1413,10 @@ fn a_feature_is_added_from_its_statement() {
     );
     assert!(r["new_errors"].to_string().contains("depth must be positive"), "{r}");
     run(&mut s, &u, "history.undo", json!({}));
+    // Positions are the statement's own (line 1), not the parsed document's (F11-8).
+    let e = execute(&mut s, &u, "feature.add", json!({"statement": "extrude E5 (profile: Sketch1, distance: ?)"}))
+        .unwrap_err();
+    assert!(e.message.contains("line 1"), "{e:?}");
     let e = execute(&mut s, &u, "feature.add", json!({"statement": "param w2 = 5 mm"})).unwrap_err();
     assert!(e.hint.as_deref().is_some_and(|h| h.contains("param_set")), "{e:?}");
     // Taken names, sketches and malformed text are refused.
