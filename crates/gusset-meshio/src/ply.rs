@@ -394,7 +394,8 @@ mod tests {
     #[test]
     fn binary_round_trip_keeps_the_solid_and_its_name() {
         let t = tetra();
-        let (bytes, r) = export_to_vec(&[ExportBody { name: "tetra", mesh: &t }], ExportFormat::Ply).unwrap();
+        let (bytes, r) =
+            export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Ply).unwrap();
         assert_eq!(r.triangles, 4);
         let m = import_bytes(&bytes, None, &ImportOptions::default()).unwrap();
         assert_eq!(m.format, Format::Ply);
@@ -403,7 +404,10 @@ mod tests {
         assert!(mesh.validation.can_become_solid(), "{:?}", mesh.validation);
         assert!((mesh.validation.signed_volume - 1000.0 / 6.0).abs() < 1e-3);
         // Deterministic bytes.
-        assert_eq!(export_to_vec(&[ExportBody { name: "tetra", mesh: &t }], ExportFormat::Ply).unwrap().0, bytes);
+        assert_eq!(
+            export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Ply).unwrap().0,
+            bytes
+        );
     }
 
     #[test]

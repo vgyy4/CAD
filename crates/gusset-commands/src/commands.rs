@@ -3517,6 +3517,19 @@ pub fn mesh_export_bytes_with(
     format: gusset_meshio::ExportFormat,
     tolerance: f64,
 ) -> Result<Vec<u8>, CommandError> {
+    mesh_export_bytes_styled(kernel, bodies, meshes, format, tolerance, &[])
+}
+
+/// [`mesh_export_bytes_with`] with the bodies' appearances (3MF keeps their colours).
+pub fn mesh_export_bytes_styled(
+    kernel: &dyn gusset_kernel::Kernel,
+    bodies: &[(&gusset_kernel::Shape, &str)],
+    meshes: &[(&gusset_kernel::Mesh, &str)],
+    format: gusset_meshio::ExportFormat,
+    tolerance: f64,
+    looks: &[gusset_doc::Appearance],
+) -> Result<Vec<u8>, CommandError> {
+    let color = |n: &str| looks.iter().find(|a| a.body == n).map(|a| a.color);
     let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, angular_deflection: 0.25 };
     let tess = bodies
         .iter()
@@ -3524,8 +3537,8 @@ pub fn mesh_export_bytes_with(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CommandError::new("io", e.to_string()))?;
     let mut eb: Vec<gusset_meshio::ExportBody<'_>> =
-        tess.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }).collect();
-    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m }));
+        tess.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n) }).collect();
+    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: None }));
     gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
 }
 
@@ -3596,7 +3609,8 @@ impl Command for ExportMesh {
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let refs: Vec<(&gusset_kernel::Mesh, &str)> = sel_meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
-        let bytes = mesh_export_bytes_with(s.kernel().as_ref(), &bodies, &refs, format, tol)?;
+        let looks = s.document(&ctx.actor)?.appearances;
+        let bytes = mesh_export_bytes_styled(s.kernel().as_ref(), &bodies, &refs, format, tol, &looks)?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
     }

@@ -11,7 +11,7 @@
 //! Global: --force-dispatch <scalar|sse42|avx2|avx512|neon|...>
 //! ```
 
-use gusset_commands::commands::{mesh_export_bytes, mesh_export_bytes_with, mesh_format};
+use gusset_commands::commands::{mesh_export_bytes, mesh_export_bytes_styled, mesh_format};
 use gusset_doc::Document;
 use gusset_eval::{Evaluator, FeatureStatus};
 use gusset_history::History;
@@ -290,7 +290,8 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
             other => {
                 let f = mesh_format(other)
                     .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj, png)"))?;
-                mesh_export_bytes_with(k.as_ref(), &bodies, &meshes, f, o.tolerance).map_err(|e| e.to_string())?
+                mesh_export_bytes_styled(k.as_ref(), &bodies, &meshes, f, o.tolerance, &doc.appearances)
+                    .map_err(|e| e.to_string())?
             }
         };
         write_atomic(out, &bytes)?;

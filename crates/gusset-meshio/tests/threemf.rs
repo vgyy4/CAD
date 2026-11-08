@@ -265,3 +265,21 @@ fn corrupt_containers() {
     let e = import_bytes(&pkg, None, &o).unwrap_err().to_string();
     assert!(e.contains("ZIP entry count 3"), "{e}");
 }
+
+#[test]
+fn colours_are_written_as_base_materials_and_read_back() {
+    use gusset_meshio::{ExportBody, ExportFormat, export_to_vec};
+    let c = common::cube(10.0);
+    let bodies = [
+        ExportBody { name: "red", mesh: &c, color: Some(0x00c0_3020) },
+        ExportBody { name: "plain", mesh: &c, color: None },
+    ];
+    let (bytes, _) = export_to_vec(&bodies, ExportFormat::ThreeMf).unwrap();
+    let entries =
+        gusset_meshio::archive::read_entries(&bytes, &Limits::default(), &|n: &str| n.ends_with(".model")).unwrap();
+    let model = String::from_utf8(entries.into_iter().next().unwrap().1).unwrap();
+    assert!(model.contains(r##"<base name="#C03020" displaycolor="#C03020"/>"##), "{model}");
+    assert!(model.contains(r#"name="red" type="model" pid="1" pindex="0""#), "{model}");
+    let back = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
+    assert_eq!(back.meshes.len(), 2);
+}

@@ -756,6 +756,21 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
     s.push('\n');
     let _ = writeln!(s, r#"<model unit="millimeter" xml:lang="en-US" xmlns="{NS_CORE}">"#);
     s.push_str(" <metadata name=\"Application\">Gusset</metadata>\n <resources>\n");
+    // Colours as one base-material group (ADR 0045), id 1; objects follow.
+    let mut colours: Vec<u32> = Vec::new();
+    for c in bodies.iter().filter_map(|b| b.color) {
+        if !colours.contains(&(c & 0xff_ffff)) {
+            colours.push(c & 0xff_ffff);
+        }
+    }
+    if !colours.is_empty() {
+        s.push_str("  <basematerials id=\"1\">\n");
+        for c in &colours {
+            let _ = writeln!(s, "   <base name=\"#{c:06X}\" displaycolor=\"#{c:06X}\"/>");
+        }
+        s.push_str("  </basematerials>\n");
+    }
+    let first_id = if colours.is_empty() { 1 } else { 2 };
     let mut ids = Vec::new();
     for (k, b) in bodies.iter().enumerate() {
         let (positions, remap) = utils::weld_exact(&b.mesh.positions);
@@ -773,11 +788,15 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
             continue;
         }
         let positions = utils::compact(&positions, &mut tris);
-        let id = k + 1;
+        let id = k + first_id;
         ids.push(id);
         let _ = write!(s, "  <object id=\"{id}\" name=\"");
         xml_escape(b.name, &mut s);
-        s.push_str("\" type=\"model\">\n   <mesh>\n    <vertices>\n");
+        s.push_str("\" type=\"model\"");
+        if let Some(i) = b.color.and_then(|c| colours.iter().position(|x| *x == c & 0xff_ffff)) {
+            let _ = write!(s, " pid=\"1\" pindex=\"{i}\"");
+        }
+        s.push_str(">\n   <mesh>\n    <vertices>\n");
         for p in &positions {
             let _ = writeln!(s, "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", p[0], p[1], p[2]);
         }

@@ -466,7 +466,7 @@ mod tests {
     fn glb_round_trip_keeps_size_orientation_and_names() {
         let t = tetra();
         let (bytes, r) = export_to_vec(
-            &[ExportBody { name: "tetra", mesh: &t }, ExportBody { name: "two", mesh: &t }],
+            &[ExportBody { name: "tetra", mesh: &t, color: None }, ExportBody { name: "two", mesh: &t, color: None }],
             ExportFormat::Glb,
         )
         .unwrap();
@@ -481,10 +481,14 @@ mod tests {
         // Z up survives the trip: the apex is still at z = 10.
         let top = m.meshes[0].mesh.positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
         assert!((top - 10.0).abs() < 1e-4, "{top}");
-        assert_eq!(export_to_vec(&[ExportBody { name: "tetra", mesh: &t }], ExportFormat::Glb).unwrap().0.len(), {
-            let (b, _) = export_to_vec(&[ExportBody { name: "tetra", mesh: &t }], ExportFormat::Glb).unwrap();
-            b.len()
-        });
+        assert_eq!(
+            export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Glb).unwrap().0.len(),
+            {
+                let (b, _) =
+                    export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Glb).unwrap();
+                b.len()
+            }
+        );
     }
 
     #[test]

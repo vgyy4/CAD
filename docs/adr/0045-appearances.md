@@ -37,7 +37,8 @@ anywhere in the document.
   (`SDL/TYSA_COLOUR`) as a plastic appearance: the colour most of its faces have, else the
   body's own. Counting faces rather than area can pick the colour of many small faces (the
   OLED board reads lavender, its holes' colour, over its blue top). STEP/3MF colours could
-  map onto appearances later.
+  map onto appearances later. 3MF export writes the colours as one `basematerials` group
+  (`displaycolor`), which slicers show.
 * STEP (amendment, same day): the worker reads STEP through XDE (`STEPCAFControl_Reader`)
   and keeps the same root shapes, except that an assembly root (a compound of several
   solids whose every face belongs to a solid, at most 4096) comes in as its solids. Each

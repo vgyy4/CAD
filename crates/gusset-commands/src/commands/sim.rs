@@ -803,7 +803,7 @@ impl Command for OptimizeQuery {
             }
             m.normals = vec![[0.0; 3]; m.positions.len()];
             let (bytes, _) = gusset_meshio::export_to_vec(
-                &[gusset_meshio::ExportBody { name: "optimised", mesh: &m }],
+                &[gusset_meshio::ExportBody { name: "optimised", mesh: &m, color: None }],
                 gusset_meshio::ExportFormat::StlBinary,
             )
             .map_err(|e| CommandError::new("io", e.to_string()))?;

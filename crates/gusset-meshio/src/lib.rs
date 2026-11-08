@@ -18,7 +18,7 @@
 //!     indices: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
 //!     ..Default::default()
 //! };
-//! let (bytes, _) = export_to_vec(&[ExportBody { name: "tetra", mesh: &tetra }], ExportFormat::ThreeMf).unwrap();
+//! let (bytes, _) = export_to_vec(&[ExportBody { name: "tetra", mesh: &tetra, color: None }], ExportFormat::ThreeMf).unwrap();
 //! let imported = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
 //! assert_eq!(imported.meshes[0].name, "tetra");
 //! assert!(imported.meshes[0].validation.can_become_solid());
@@ -191,6 +191,8 @@ pub struct Imported {
 pub struct ExportBody<'a> {
     pub name: &'a str,
     pub mesh: &'a Mesh,
+    /// sRGB `0xRRGGBB` (ADR 0045); 3MF writes it as a base material, the others ignore it.
+    pub color: Option<u32>,
 }
 
 /// Export target format.

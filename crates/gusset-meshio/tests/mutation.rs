@@ -33,7 +33,7 @@ impl Rng {
 /// reach the XML parser instead of failing the ZIP CRC check.
 fn seeds() -> Vec<(bool, Vec<u8>)> {
     let c = cube(3.0);
-    let b = [ExportBody { name: "c", mesh: &c }];
+    let b = [ExportBody { name: "c", mesh: &c, color: None }];
     let mut v: Vec<(bool, Vec<u8>)> =
         [ExportFormat::StlBinary, ExportFormat::StlAscii, ExportFormat::ThreeMf, ExportFormat::Obj { normals: true }]
             .iter()
@@ -131,7 +131,7 @@ fn random_mutations_never_panic() {
         // deterministic export and re-import in every format.
         let Ok(imp) = import_bytes(&d, None, &opts) else { continue };
         let bodies: Vec<ExportBody<'_>> =
-            imp.meshes.iter().map(|m| ExportBody { name: &m.name, mesh: &m.mesh }).collect();
+            imp.meshes.iter().map(|m| ExportBody { name: &m.name, mesh: &m.mesh, color: None }).collect();
         for f in [
             ExportFormat::StlBinary,
             ExportFormat::StlAscii,
