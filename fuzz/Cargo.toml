@@ -14,6 +14,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 gusset-units = { path = "../crates/gusset-units" }
 gusset-doc = { path = "../crates/gusset-doc" }
+gusset-history = { path = "../crates/gusset-history" }
 gusset-store = { path = "../crates/gusset-store" }
 gusset-project = { path = "../crates/gusset-project" }
 gusset-kernel = { path = "../crates/gusset-kernel" }
@@ -29,8 +30,6 @@ gusset-sldprt = { path = "../crates/gusset-sldprt" }
 gusset-worker = { path = "../crates/gusset-worker" }
 
 [dev-dependencies]
-# Only for examples/make_seeds.rs.
-gusset-history = { path = "../crates/gusset-history" }
 
 # Standalone: listed in the root workspace's `exclude` (nightly-only tooling, never part
 # of the normal build).
@@ -169,6 +168,13 @@ bench = false
 [[bin]]
 name = "sldprt_read"
 path = "fuzz_targets/sldprt_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_import"
+path = "fuzz_targets/bundle_import.rs"
 test = false
 doc = false
 bench = false

@@ -73,5 +73,5 @@ reproduced the finding. Nothing was fixed in this review.
 | S11 | Accepted and documented (THREAT_MODEL.md): sync names are not authenticated; merging stays explicit. |
 | S12 | Fixed: an import that does not fit is refused without compacting history. |
 | S13 | Fixed: crash reports replace the user name (USER/USERNAME/LOGNAME) as well as the home folder. |
-| S14 | Fixed: THREAT_MODEL.md lists the in-app parsers (sldprt, XT, SAT/Fusion, zstd, bundles, the shared folder). Fuzz targets for `read_design` and bundles remain to add. |
+| S14 | Fixed: THREAT_MODEL.md lists the in-app parsers (sldprt, XT, SAT/Fusion, zstd, bundles, the shared folder). Fuzz target `bundle_import` added (and `sldprt_read` now runs in CI); one for `read_design` remains. |
 | S15 | Accepted: the socket is root-owned and local. |
