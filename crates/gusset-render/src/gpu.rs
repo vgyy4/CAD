@@ -611,28 +611,40 @@ impl Renderer {
         let stride = self.draw_stride as usize;
         let mut draw_bytes = vec![0_u8; n_draws as usize * stride];
         let mut slot = 1_usize; // slot 0: background (unused contents)
-        // `color.w`: 1 for a closed mesh (its back faces seen through a section are the cut).
-        let mut put =
-            |bytes: &mut Vec<u8>, mv: &math::Mat4, n: &[math::Vec3; 3], color: [f32; 3], closed: bool| -> u32 {
-                let off = slot * stride;
-                let mut e = Vec::with_capacity(DRAW_SIZE as usize);
-                push_mat(&mut e, mv);
-                for c in n {
-                    push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
-                }
-                push_vec4(&mut e, [color[0], color[1], color[2], if closed { 1.0 } else { 0.0 }]);
-                if let Some(dst) = bytes.get_mut(off..off + e.len()) {
-                    dst.copy_from_slice(&e);
-                }
-                slot += 1;
-                off as u32
-            };
+        // `color.w`: 1 for a closed mesh (its back faces seen through a section are the cut)
+        // plus twice the finish code.
+        let mut put = |bytes: &mut Vec<u8>,
+                       mv: &math::Mat4,
+                       n: &[math::Vec3; 3],
+                       color: [f32; 3],
+                       closed: bool,
+                       finish: u32|
+         -> u32 {
+            let off = slot * stride;
+            let mut e = Vec::with_capacity(DRAW_SIZE as usize);
+            push_mat(&mut e, mv);
+            for c in n {
+                push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
+            }
+            push_vec4(&mut e, [color[0], color[1], color[2], f32::from(u8::from(closed)) + 2.0 * finish as f32]);
+            if let Some(dst) = bytes.get_mut(off..off + e.len()) {
+                dst.copy_from_slice(&e);
+            }
+            slot += 1;
+            off as u32
+        };
         let mut offsets: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(plan.draws.len());
         for d in &plan.draws {
-            let tri =
-                d.tri_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed)).collect();
-            let edge =
-                d.edge_runs.iter().map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed)).collect();
+            let tri = d
+                .tri_runs
+                .iter()
+                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, d.finish))
+                .collect();
+            let edge = d
+                .edge_runs
+                .iter()
+                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, 0))
+                .collect();
             offsets.push((tri, edge));
         }
         self.queue.write_buffer(&self.draw_buf, 0, &draw_bytes);

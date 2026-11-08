@@ -146,6 +146,21 @@ impl Lighting {
     /// towards the eye `v`. Mirrors `shade()` in `shader.wgsl`.
     #[must_use]
     pub fn shade(&self, base: [f32; 3], n: [f32; 3], v: [f32; 3]) -> [f32; 3] {
+        self.shade_finish(base, n, v, 0)
+    }
+
+    /// [`Lighting::shade`] for a finish code (0 plastic, 1 metal, 2 glass, 3 rubber; ADR
+    /// 0045), as `shade()` in shader.wgsl: metal darkens the diffuse and tints a sharper
+    /// highlight, glass lightens the colour under a strong highlight, rubber has none.
+    #[must_use]
+    pub fn shade_finish(&self, base: [f32; 3], n: [f32; 3], v: [f32; 3], finish: u32) -> [f32; 3] {
+        let (dscale, sscale, sharp, lighten, rscale, tint) = match finish {
+            1 => (0.45, 2.2, 3.0, 0.0, 1.0, true),
+            2 => (0.7, 2.0, 4.0, 0.35, 2.0, false),
+            3 => (1.0, 0.0, 1.0, 0.0, 0.3, false),
+            _ => (1.0, 1.0, 1.0, 0.0, 1.0, false),
+        };
+        let base = base.map(|b| b + (1.0 - b) * lighten);
         let d = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let hemi = 0.5 + 0.5 * n[1];
         let ambient = self.ground + (self.sky - self.ground) * hemi;
@@ -154,10 +169,19 @@ impl Lighting {
         let h = [self.key_dir[0] + v[0], self.key_dir[1] + v[1], self.key_dir[2] + v[2]];
         let hl = d(h, h).sqrt().max(1e-6);
         let h = [h[0] / hl, h[1] / hl, h[2] / hl];
-        let spec = d(n, h).max(0.0).powf(self.shininess) * self.specular;
-        let rim = (1.0 - d(n, v).max(0.0)).powi(3) * self.rim;
-        let diffuse = ambient + key + fill;
-        base.map(|b| b * diffuse + spec + rim)
+        let spec = d(n, h).max(0.0).powf(self.shininess * sharp) * self.specular * sscale;
+        let rim = (1.0 - d(n, v).max(0.0)).powi(3) * self.rim * rscale;
+        let diffuse = (ambient + key + fill) * dscale;
+        // Metal mirrors the sky above and the ground below (the reflected view direction).
+        let env = if tint {
+            let nv = d(n, v);
+            let ry = 2.0 * nv * n[1] - v[1];
+            let t = (0.5 + 0.5 * ry).clamp(0.0, 1.0);
+            (self.ground + (self.sky * 1.4 - self.ground) * t) * 0.9
+        } else {
+            0.0
+        };
+        base.map(|b| b * (diffuse + env) + (spec + rim) * if tint { b } else { 1.0 })
     }
 }
 

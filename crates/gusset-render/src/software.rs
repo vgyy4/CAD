@@ -133,7 +133,7 @@ impl SoftwareRenderer {
                         }
                         for k in 1..poly.len().saturating_sub(1) {
                             if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
-                                raster_triangle(&mut t, [p0, p1, p2], *base, &plan, d.closed);
+                                raster_triangle(&mut t, [p0, p1, p2], *base, &plan, d.closed, d.finish);
                             }
                         }
                     }
@@ -233,7 +233,7 @@ fn to_screen(c: [f32; 4], w: usize, h: usize) -> Option<[f32; 4]> {
     Some([(c[0] * iw * 0.5 + 0.5) * w as f32, (0.5 - c[1] * iw * 0.5) * h as f32, c[2] * iw, iw])
 }
 
-fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &FramePlan, closed: bool) {
+fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &FramePlan, closed: bool, finish: u32) {
     let (Some(s0), Some(s1), Some(s2)) =
         (to_screen(v[0].clip, t.w, t.h), to_screen(v[1].clip, t.w, t.h), to_screen(v[2].clip, t.w, t.h))
     else {
@@ -287,9 +287,9 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
             let sign = if front { 1.0 } else { -1.0 };
             // Through a section, back faces are the inside: draw them as the flat cut face.
-            let (n, base) = match cap {
-                Some(pl) => ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX)),
-                _ => (n.map(|c| c / nl * sign), base),
+            let (n, base, finish) = match cap {
+                Some(pl) => ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX), 0),
+                _ => (n.map(|c| c / nl * sign), base, finish),
             };
             let vdir = if plan.ortho {
                 [0.0, 0.0, 1.0]
@@ -298,7 +298,7 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
                 let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
                 p.map(|c| -c / l)
             };
-            t.plot(i, z, light.shade(base, n, vdir), false);
+            t.plot(i, z, light.shade_finish(base, n, vdir, finish), false);
         }
     }
 }

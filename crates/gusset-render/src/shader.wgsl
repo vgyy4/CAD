@@ -1,6 +1,6 @@
 // Gusset viewport shaders. Downlevel-safe: no storage buffers, no compute, no
 // `@interpolate(linear)`, only uniform buffers and vertex attributes (WebGL2 limits).
-// The lighting in `shade()` mirrors `Lighting::shade` in theme.rs.
+// The lighting in `shade()` mirrors `Lighting::shade_finish` in theme.rs.
 
 struct Globals {
     proj: mat4x4<f32>,
@@ -91,15 +91,47 @@ fn vs_mesh(@location(0) position: vec3<f32>, @location(1) normal: vec4<f32>) -> 
     return o;
 }
 
-fn shade(base: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+// `d.color.w` = closed (1) + 2 * finish (0 plastic, 1 metal, 2 glass, 3 rubber).
+fn closed_mesh() -> bool {
+    return (u32(d.color.w + 0.5) & 1u) == 1u;
+}
+
+fn finish_code() -> u32 {
+    return u32(d.color.w + 0.5) >> 1u;
+}
+
+// Mirrors `Lighting::shade_finish` in theme.rs.
+fn shade(base_in: vec3<f32>, n: vec3<f32>, v: vec3<f32>, finish: u32) -> vec3<f32> {
+    var dscale = 1.0;
+    var sscale = 1.0;
+    var sharp = 1.0;
+    var lighten = 0.0;
+    var rscale = 1.0;
+    var tint = false;
+    if (finish == 1u) {
+        dscale = 0.45; sscale = 2.2; sharp = 3.0; tint = true;
+    } else if (finish == 2u) {
+        dscale = 0.7; sscale = 2.0; sharp = 4.0; lighten = 0.35; rscale = 2.0;
+    } else if (finish == 3u) {
+        sscale = 0.0; rscale = 0.3;
+    }
+    let base = base_in + (vec3<f32>(1.0) - base_in) * lighten;
     let hemi = 0.5 + 0.5 * n.y;
     let ambient = mix(g.light.y, g.light.x, hemi);
     let key = max(dot(n, g.key_dir.xyz), 0.0) * g.key_dir.w;
     let fill = max(dot(n, g.fill_dir.xyz), 0.0) * g.fill_dir.w;
     let h = normalize(g.key_dir.xyz + v);
-    let spec = pow(max(dot(n, h), 0.0), g.light.w) * g.light.z;
-    let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * g.misc.x;
-    return base * (ambient + key + fill) + vec3<f32>(spec + rim);
+    let spec = pow(max(dot(n, h), 0.0), g.light.w * sharp) * g.light.z * sscale;
+    let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * g.misc.x * rscale;
+    var extra = vec3<f32>(spec + rim);
+    var env = 0.0;
+    if (tint) {
+        extra = base * (spec + rim);
+        // Metal mirrors the sky above and the ground below (the reflected view direction).
+        let ry = 2.0 * dot(n, v) * n.y - v.y;
+        env = mix(g.light.y, g.light.x * 1.4, clamp(0.5 + 0.5 * ry, 0.0, 1.0)) * 0.9;
+    }
+    return base * ((ambient + key + fill) * dscale + env) + extra;
 }
 
 @fragment
@@ -108,14 +140,14 @@ fn fs_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
         discard;
     }
     // Through a section, a closed body's back faces are its cut: the cap pass draws them.
-    if (!front && sectioned() && d.color.w > 0.5) {
+    if (!front && sectioned() && closed_mesh()) {
         discard;
     }
     var n = normalize(in.view_normal);
     if (!front) {
         n = -n;
     }
-    return encode(shade(d.color.rgb, n, view_dir(in.view_pos)));
+    return encode(shade(d.color.rgb, n, view_dir(in.view_pos), finish_code()));
 }
 
 fn view_dir(view_pos: vec3<f32>) -> vec3<f32> {
@@ -153,11 +185,11 @@ fn on_section(view_pos: vec3<f32>) -> vec4<f32> {
 // stays hidden). Mirrors `raster_triangle`'s cap branch in software.rs.
 @fragment
 fn fs_cap(in: MeshOut, @builtin(front_facing) front: bool) -> CapFrag {
-    if (front || !sectioned() || d.color.w < 0.5 || removed(in.view_pos)) {
+    if (front || !sectioned() || !closed_mesh() || removed(in.view_pos)) {
         discard;
     }
     var o: CapFrag;
-    o.color = encode(shade(mix(d.color.rgb, g.cap.rgb, CAP_MIX), -g.clip.xyz, view_dir(in.view_pos)));
+    o.color = encode(shade(mix(d.color.rgb, g.cap.rgb, CAP_MIX), -g.clip.xyz, view_dir(in.view_pos), 0u));
     o.depth = in.pos.z;
     let p = on_section(in.view_pos);
     if (p.w > 0.5) {

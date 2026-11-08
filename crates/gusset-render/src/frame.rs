@@ -85,6 +85,8 @@ pub(crate) struct MeshDraw {
     pub edge_runs: Vec<(Range<u32>, [f32; 3])>,
     /// The mesh is watertight: its back faces seen through a section are the cut face.
     pub closed: bool,
+    /// Finish code for shading (0 plastic, 1 metal, 2 glass, 3 rubber).
+    pub finish: u32,
 }
 
 /// Everything needed to draw one frame.
@@ -155,6 +157,12 @@ impl FramePlan {
                 tri_runs,
                 edge_runs,
                 closed: data.closed,
+                finish: match m.material().finish {
+                    crate::Finish::Plastic => 0,
+                    crate::Finish::Metal => 1,
+                    crate::Finish::Glass => 2,
+                    crate::Finish::Rubber => 3,
+                },
             });
         }
         FramePlan {
