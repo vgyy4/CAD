@@ -205,6 +205,35 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // Face colours (ADR 0045 amendment): a grey bracket with three faces in their own colours.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.run("body.appearance", json!({"body": "Body", "color": "#9aa3ad"})).ok();
+        // Faces turned towards the iso view (+X, -Y, +Z), largest first.
+        let mut faces: Vec<(f64, String)> = a
+            .run("query.body", json!({"body": "Body", "names": true}))
+            .ok()
+            .and_then(|v| v["face_names"].as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|f| {
+                let n: Vec<f64> = f["normal"].as_array()?.iter().filter_map(serde_json::Value::as_f64).collect();
+                let [x, y, z] = n.as_slice() else { return None };
+                (x - y + z > 0.5)
+                    .then(|| (f["area_mm2"].as_f64().unwrap_or(0.0), f["name"].as_str().unwrap_or("").to_string()))
+            })
+            .collect();
+        faces.sort_by(|p, q| q.0.total_cmp(&p.0));
+        let faces: Vec<String> = faces.into_iter().map(|(_, n)| n).collect();
+        for (f, c) in faces.iter().zip(["#d04020", "#2f7fd0", "#e0b020"]) {
+            a.run("body.appearance", json!({"body": "Body", "faces": [f], "color": c})).ok();
+        }
+        shoot(&dir, &format!("21-face-colours-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+        });
         // The appearance form: colour text with its picker, the finishes offered.
         let mut a = app(theme);
         bracket(&mut a);
