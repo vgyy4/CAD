@@ -16,8 +16,9 @@ anywhere in the document.
   `plastic` (diffuse under a 4 % clear coat; the old look), `metal` (reflects in its own
   colour, Schlick Fresnel, roughness 0.12), `glass` (index 1.5, Fresnel reflection or
   refraction, tinted once per pass; sun shadows pass through it tinted, not bent),
-  `rubber` (diffuse only). The viewport draws the colour; the finish matters in the path
-  tracer only.
+  `rubber` (diffuse only). The viewport draws the colour and shades the finish cheaply
+  (metal: tinted sharp highlight and a sky/ground reflection; glass: lightened with a strong
+  highlight, not transparent; rubber: no highlight); the path tracer does it properly.
 * Specular paths (camera, metal, glass, coat) see the sun's disc; diffuse paths take the
   sun by next-event estimation only, so nothing is counted twice. Each path adds at most
   12 to its pixel, which removes fireflies from the small disc.
