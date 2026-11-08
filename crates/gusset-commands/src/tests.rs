@@ -1714,3 +1714,17 @@ fn a_coloured_3mf_import_keeps_its_colours_as_appearances() {
     run(&mut s, &u, "body.appearance", json!({"body": name, "finish": "rubber"}));
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn an_unchanged_body_is_not_tessellated_again() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let tp = gusset_kernel::TessellationParams::default();
+    let shape = s.evaluate(&u.actor).unwrap().bodies[0].shape.clone();
+    let first = s.tessellate_cached(&shape, &tp).unwrap();
+    // An edit elsewhere (a new sketch) leaves the body's shape, so its mesh is reused.
+    run(&mut s, &u, "sketch.create", json!({"plane": "XZ"}));
+    let again = s.evaluate(&u.actor).unwrap().bodies[0].shape.clone();
+    assert!(std::sync::Arc::ptr_eq(&first, &s.tessellate_cached(&again, &tp).unwrap()));
+}

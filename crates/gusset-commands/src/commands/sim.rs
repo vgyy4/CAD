@@ -378,8 +378,9 @@ fn setup(
         None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies"))?,
     };
     let k = s.kernel().clone();
-    let mesh = k
-        .tessellate(&body.shape, &gusset_kernel::TessellationParams::default())
+    let mesh = s
+        .tessellate_cached(&body.shape, &gusset_kernel::TessellationParams::default())
+        .map(|m| (*m).clone())
         .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
     let bb = k.bbox(&body.shape).map_err(|e| CommandError::new("evaluation", e.to_string()))?;
     let size = bb.size();

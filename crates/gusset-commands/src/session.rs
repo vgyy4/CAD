@@ -101,8 +101,17 @@ pub trait Importer: Send + Sync {
 /// A CAM job's toolpath, its setup and its warnings.
 pub(crate) type CamRun = (gusset_cam::Toolpath, gusset_cam::Setup, Vec<String>);
 
+/// Tessellated meshes by (shape pointer, deflection bits); the shape is kept so its pointer
+/// cannot be reused while the entry lives.
+#[derive(Default)]
+struct TessCache(std::collections::HashMap<(usize, u64, u64), (gusset_kernel::Shape, Arc<gusset_kernel::Mesh>)>);
+
 pub struct Session {
     pub importer: Option<Arc<dyn Importer>>,
+    /// Meshes of body shapes by shape identity and tessellation settings (spec: cache
+    /// tessellation per body). Unchanged bodies keep their shape across rebuilds, so only
+    /// what changed is tessellated again; entries no one else holds are dropped.
+    tess_cache: std::sync::Mutex<TessCache>,
     history: History,
     evaluator: Evaluator,
     current: BTreeMap<Actor, BranchId>,
@@ -165,6 +174,7 @@ impl Session {
             .collect();
         Session {
             importer: None,
+            tess_cache: std::sync::Mutex::new(TessCache::default()),
             history,
             evaluator: Evaluator::new(kernel),
             current: BTreeMap::new(),
@@ -192,6 +202,36 @@ impl Session {
 
     pub fn kernel(&self) -> &Arc<dyn Kernel> {
         self.evaluator.kernel()
+    }
+
+    /// [`Kernel::tessellate`] through the session's cache (see `tess_cache`).
+    ///
+    /// # Errors
+    /// The kernel's tessellation error.
+    pub fn tessellate_cached(
+        &self,
+        shape: &gusset_kernel::Shape,
+        params: &gusset_kernel::TessellationParams,
+    ) -> gusset_kernel::KResult<Arc<gusset_kernel::Mesh>> {
+        let key = (
+            Arc::as_ptr(&shape.0).cast::<()>() as usize,
+            params.linear_deflection.to_bits(),
+            params.angular_deflection.to_bits(),
+        );
+        if let Ok(c) = self.tess_cache.lock()
+            && let Some((_, m)) = c.0.get(&key)
+        {
+            return Ok(m.clone());
+        }
+        let m = Arc::new(self.kernel().tessellate(shape, params)?);
+        if let Ok(mut c) = self.tess_cache.lock() {
+            // Shapes only the cache still holds belong to bodies that are gone.
+            c.0.retain(|_, (s, _)| Arc::strong_count(&s.0) > 1);
+            if c.0.len() < 65_536 {
+                c.0.insert(key, (shape.clone(), m.clone()));
+            }
+        }
+        Ok(m)
     }
 
     pub fn audit_log(&self) -> &[AuditEntry] {

@@ -95,8 +95,7 @@ impl Command for DraftAnalysis {
             None => ev.bodies.last().cloned().ok_or_else(|| CommandError::not_found("the model has no bodies"))?,
         };
         let mesh = s
-            .kernel()
-            .tessellate(&body.shape, &gusset_kernel::TessellationParams::default())
+            .tessellate_cached(&body.shape, &gusset_kernel::TessellationParams::default())
             .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
         let at = |i: u32| mesh.positions.get(i as usize).map(|p| p.map(f64::from)).unwrap_or([0.0; 3]);
         let mut faces = Vec::new();

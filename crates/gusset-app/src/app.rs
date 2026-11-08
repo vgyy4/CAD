@@ -3933,12 +3933,12 @@ fn tessellated(
     s: &Session,
     eval: &Evaluation,
 ) -> Result<(gusset_render::Scene, Vec<BodyInfo>, Vec<String>), CommandError> {
-    let kernel = s.kernel().clone();
     let tp = TessellationParams::default();
     let mut meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = Vec::with_capacity(eval.bodies.len());
     for body in &eval.bodies {
-        let mesh = match kernel.tessellate(&body.shape, &tp) {
-            Ok(m) => m,
+        // Through the session's cache: unchanged bodies are not tessellated again.
+        let mesh = match s.tessellate_cached(&body.shape, &tp) {
+            Ok(m) => (*m).clone(),
             // The kernel worker crashed or was stopped: the other bodies' shapes went with
             // it. Keep the scene on screen and say why (review H3).
             Err(e) if matches!(e.kind, KernelErrorKind::Crashed | KernelErrorKind::Cancelled) => {

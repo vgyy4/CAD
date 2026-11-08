@@ -975,11 +975,11 @@ impl GussetMcp {
         let job = self.shared.host.exec_async_stoppable(move |s, _| -> Result<RenderScene, CommandError> {
             let ev = s.evaluate(&actor)?;
             let looks = s.document(&actor)?.appearances;
-            let k = s.kernel().clone();
             let mut bodies = Vec::new();
             for b in &ev.bodies {
-                let mesh = k
-                    .tessellate(&b.shape, &gusset_kernel::TessellationParams::default())
+                let mesh = s
+                    .tessellate_cached(&b.shape, &gusset_kernel::TessellationParams::default())
+                    .map(|m| (*m).clone())
                     .map_err(|e| CommandError::new("evaluation", e.to_string()))?;
                 bodies.push(RenderBody {
                     name: b.name.clone(),
