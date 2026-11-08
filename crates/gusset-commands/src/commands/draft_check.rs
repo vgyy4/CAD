@@ -39,9 +39,10 @@ enum Class {
 
 impl Class {
     fn of(draft_deg: f64, min: f64) -> Class {
-        if draft_deg >= min - 1e-9 {
+        // 0.001 deg: the tessellation keeps normals in single precision.
+        if draft_deg >= min - 1e-3 {
             Class::Positive
-        } else if draft_deg <= -min + 1e-9 {
+        } else if draft_deg <= -min + 1e-3 {
             Class::Negative
         } else {
             Class::Insufficient
@@ -117,10 +118,29 @@ impl Command for DraftAnalysis {
                 }
                 // Draft: the angle between the face and the pull direction, positive when
                 // the face looks along the pull (it leaves the mould half moving that way).
-                let d = libm::asin((n.iter().zip(pull).map(|(x, p)| x * p).sum::<f64>() / nl).clamp(-1.0, 1.0))
-                    .to_degrees();
-                lo = lo.min(d);
-                hi = hi.max(d);
+                let facet = n.map(|x| x / nl);
+                let draft_of = |v: [f64; 3]| {
+                    libm::asin(v.iter().zip(pull).map(|(x, p)| x * p).sum::<f64>().clamp(-1.0, 1.0)).to_degrees()
+                };
+                // Curved faces: the surface's own normals at the corners (the tessellation's
+                // vertex normals), not the facet's chord normal (dogfooding F12-2b); turned to
+                // the facet's side.
+                let mut d_sum = 0.0;
+                let mut samples = 0.0;
+                for k in [a, b, c] {
+                    let vn = mesh.normals.get(k as usize).map(|q| q.map(f64::from)).unwrap_or([0.0; 3]);
+                    let vl = libm::sqrt(vn.iter().map(|x| x * x).sum());
+                    let mut v = if vl > 1e-6 { vn.map(|x| x / vl) } else { facet };
+                    if v.iter().zip(facet).map(|(x, y)| x * y).sum::<f64>() < 0.0 {
+                        v = v.map(|x| -x);
+                    }
+                    let dv = draft_of(v);
+                    lo = lo.min(dv);
+                    hi = hi.max(dv);
+                    d_sum += dv;
+                    samples += 1.0;
+                }
+                let d = d_sum / samples;
                 area += nl / 2.0;
                 if self.field && picture.iter().map(Vec::len).sum::<usize>() < MAX_PICTURE {
                     let k = match Class::of(d, min) {

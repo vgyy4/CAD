@@ -1099,3 +1099,9 @@ cantilever result is z-symmetric anyway, so it proves nothing), 3MF/OBJ re-impor
 branches with drawings, assemblies or configurations, F11-4 (the pencil message) on the bracket, F11-5
 (shell `sim_static` reproducibility, an OCCT test covers it), `render_view` photo with a GPU, SolidWorks
 assemblies and files from other versions.
+
+### Run 12 fix status (2026-11-08)
+
+| # | Status |
+|---|---|
+| F12-2b | Fixed: curved faces take their draft from the tessellation's vertex normals (the surface's own normals), classes allow 0.001 deg for single-precision normals; a peg drafted 3 deg reads [3.0, 3.0], positive (OCCT test). |

@@ -172,3 +172,20 @@ fn draft_analysis_classes_walls_before_and_after_a_draft() {
     assert!((wall["draft_deg"][0].as_f64().unwrap() - 3.0).abs() < 0.01, "{wall}");
     assert!(!r["draft_bands"][2]["quads"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn draft_analysis_reads_a_cone_at_its_exact_draft() {
+    // Dogfooding F12-2b: a peg tapered 3 deg must read 3 deg all round, not the facets' range.
+    use gusset_commands::{CmdCtx, Session, execute};
+    use serde_json::json;
+    let doc = gusset_doc::Document::from_text(PEG).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let u = CmdCtx::user(1);
+    execute(&mut s, &u, "feature.draft", json!({"faces": ["Extrude1/side(Sketch1/c2)"], "plane": "XY", "angle": "3 deg"}))
+        .unwrap();
+    let r = execute(&mut s, &u, "query.draft_analysis", json!({"direction": [0, 0, 1], "angle": "3 deg"})).unwrap();
+    let wall = r["faces"].as_array().unwrap().iter().find(|f| f["face"] == "Extrude1/side(Sketch1/c2)").unwrap();
+    let (lo, hi) = (wall["draft_deg"][0].as_f64().unwrap(), wall["draft_deg"][1].as_f64().unwrap());
+    assert!((lo - 3.0).abs() < 0.01 && (hi - 3.0).abs() < 0.01, "{wall}");
+    assert_eq!(wall["class"], "positive", "{wall}");
+}
