@@ -62,6 +62,8 @@ struct Writer<'a> {
     /// The placement of the body being written, and its length scale.
     xf: Option<crate::model::Xf>,
     scale: f64,
+    /// Every face written: its STEP id and its XT node (for face colours).
+    faces: Vec<(usize, u32)>,
 }
 
 impl Writer<'_> {
@@ -423,7 +425,40 @@ impl Writer<'_> {
             bounds.push(self.add(&format!("FACE_BOUND('',#{lp},{})", flag(!flip))));
         }
         let same = f.same_sense != flipped;
-        Some(self.add(&format!("ADVANCED_FACE('',{},#{surf},{})", list(&bounds), flag(same != flip))))
+        let id = self.add(&format!("ADVANCED_FACE('',{},#{surf},{})", list(&bounds), flag(same != flip)));
+        self.faces.push((id, f.node));
+        Some(id)
+    }
+
+    /// The faces' `SDL/TYSA_COLOUR` attributes as AP214 styled items (one style per colour),
+    /// so a STEP reader sees the face colours (ADR 0045 amendment).
+    fn face_colours(&mut self, ctx: usize) {
+        let colours = crate::model::colours(self.g);
+        let mut styles: BTreeMap<[u64; 3], usize> = BTreeMap::new();
+        let mut items = Vec::new();
+        for (face, node) in std::mem::take(&mut self.faces) {
+            let Some(rgb) = colours.get(&node).copied() else { continue };
+            let key = rgb.map(f64::to_bits);
+            let style = match styles.get(&key) {
+                Some(&st) => st,
+                None => {
+                    let [r, g, b] = rgb.map(real);
+                    let c = self.add(&format!("COLOUR_RGB('',{r},{g},{b})"));
+                    let fc = self.add(&format!("FILL_AREA_STYLE_COLOUR('',#{c})"));
+                    let fa = self.add(&format!("FILL_AREA_STYLE('',(#{fc}))"));
+                    let sf = self.add(&format!("SURFACE_STYLE_FILL_AREA(#{fa})"));
+                    let side = self.add(&format!("SURFACE_SIDE_STYLE('',(#{sf}))"));
+                    let usage = self.add(&format!("SURFACE_STYLE_USAGE(.BOTH.,#{side})"));
+                    let st = self.add(&format!("PRESENTATION_STYLE_ASSIGNMENT((#{usage}))"));
+                    styles.insert(key, st);
+                    st
+                }
+            };
+            items.push(self.add(&format!("STYLED_ITEM('color',(#{style}),#{face})")));
+        }
+        if !items.is_empty() {
+            self.add(&format!("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',{},#{ctx})", list(&items)));
+        }
     }
 
     fn shell(&mut self, m: &Model, s: &Shell, closed: bool, flip: bool) -> Option<usize> {
@@ -481,6 +516,7 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         hints: BTreeMap::new(),
         xf: None,
         scale: 1.0,
+        faces: Vec::new(),
     };
     for f in m.bodies.iter().flat_map(|b| &b.shells).flat_map(|s| &s.faces) {
         let pts = w.hints.entry(f.surface).or_default();
@@ -585,6 +621,7 @@ pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
         let rep = w.add(&format!("{rep_kind}('',{},#{ctx})", list(&items)));
         w.add(&format!("SHAPE_DEFINITION_REPRESENTATION(#{pds},#{rep})"));
     }
+    w.face_colours(ctx);
     let mut text =
         String::from("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Parasolid XT converted by Gusset'),'2;1');\n");
     let _ = writeln!(text, "FILE_NAME({},'',(''),(''),'gusset-xt','','');", string(name));

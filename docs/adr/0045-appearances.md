@@ -63,4 +63,8 @@ anywhere in the document.
   export writes them back as face colours, `body.appearance` keeps them when it changes the
   body's colour or finish, `clear` drops them, and renaming a feature renames them.
   3MF export writes them on the faces' triangles (`p1` over the object's `pindex`, only when
-  the body has a colour). Parasolid, SolidWorks and 3MF face colours are not read yet.
+  the body has a colour). Parasolid and SolidWorks face colours (`SDL/TYSA_COLOUR` on faces)
+  are written by gusset-xt as AP214 styled items, so they reach the app the same way; the
+  STEP's own body colour then wins over the converter's look (its face colours are relative to
+  it). Adafruit's OLED part now shows its blue board, white silkscreen and dark screen instead
+  of one lavender body. 3MF face colours are not read yet.

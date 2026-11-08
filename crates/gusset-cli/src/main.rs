@@ -284,7 +284,11 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
                 k.export_step(&styled).map_err(|e| e.to_string())?
             }
             "iges" | "igs" => k.export_iges(&bodies).map_err(|e| e.to_string())?,
-            "png" => render_png(k.as_ref(), &bodies, &meshes, &doc.appearances, &o)?,
+            "png" => {
+                let face_names: Vec<Vec<String>> =
+                    r.bodies.iter().map(|b| b.names.faces.iter().map(ToString::to_string).collect()).collect();
+                render_png(k.as_ref(), &bodies, &meshes, &doc.appearances, &face_names, &o)?
+            }
             other => {
                 let f = mesh_format(other)
                     .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj, png)"))?;
@@ -306,13 +310,14 @@ fn render_png(
     bodies: &[(&gusset_kernel::Shape, &str)],
     meshes: &[(&gusset_kernel::Mesh, &str)],
     looks: &[gusset_doc::Appearance],
+    face_names: &[Vec<String>],
     o: &Opts,
 ) -> Result<Vec<u8>, String> {
     let tolerance = o.tolerance;
     let mut scene = gusset_render::Scene::new();
     let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, ..Default::default() };
     let mut id = 0u64;
-    for (shape, name) in bodies {
+    for (i, (shape, name)) in bodies.iter().enumerate() {
         let m = k.tessellate(shape, &params).map_err(|e| format!("{name}: {e}"))?;
         id += 1;
         scene.insert_mesh(gusset_render::MeshId(id), &m).map_err(|e| format!("{name}: {e}"))?;
@@ -322,6 +327,10 @@ fn render_png(
                 gusset_render::MeshId(id),
                 gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
             );
+            let names = face_names.get(i).map(Vec::as_slice).unwrap_or_default();
+            for (f, c) in gusset_commands::commands::face_color_indices(a, names) {
+                scene.set_face_color(gusset_render::MeshId(id), f, Some(gusset_render::Srgb(c)));
+            }
         }
     }
     for (m, name) in meshes {

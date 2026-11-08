@@ -150,7 +150,9 @@ fn with_looks(bodies: Vec<(String, Vec<u8>)>, looks: &[(Option<String>, Option<u
                 name: look.and_then(|l| l.0.clone()).unwrap_or(own),
                 blob,
                 format: ImportFormat::Step,
-                color: look.and_then(|l| l.1).or(own_color),
+                // The STEP's own colour first: its face colours are relative to it (the
+                // converters write face colours as styled items).
+                color: own_color.or(look.and_then(|l| l.1)),
                 faces,
             }
         })
