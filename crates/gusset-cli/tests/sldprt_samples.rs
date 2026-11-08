@@ -28,6 +28,10 @@ fn import(path: &Path) -> Result<Imported, String> {
         Arc::new(gusset_kernel_occt::OcctKernel::with_worker(Some(worker.clone())).unwrap());
     let mut s = Session::new(&doc, k, &CmdCtx::user(0));
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    // Parallel tests can read the same clock value (Windows): a sequence number keeps their
+    // folders apart.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = format!("{n}-{}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let p = std::env::temp_dir().join(format!("gusset-sldprt-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&p).unwrap();
     let file = path.file_name().unwrap().to_string_lossy().into_owned();

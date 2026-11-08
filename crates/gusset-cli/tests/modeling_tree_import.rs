@@ -13,6 +13,10 @@ fn session() -> Session {
     let k: Arc<dyn gusset_kernel::Kernel> = Arc::new(gusset_kernel_occt::OcctKernel::new().unwrap());
     let mut s = Session::new(&doc, k, &CmdCtx::user(0));
     let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    // Parallel tests can read the same clock value (Windows): a sequence number keeps their
+    // folders apart.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = format!("{n}-{}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     let dir = std::env::temp_dir().join(format!("gusset-tree-occt-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     s.project_dir = Some(dir);
