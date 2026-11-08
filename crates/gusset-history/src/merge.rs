@@ -55,8 +55,41 @@ fn merge_look(
     let (o, t) = (ours?, theirs?);
     let look = |a: &gusset_doc::Appearance| (a.color, a.finish);
     let (color, finish) = pick(base.map(look).as_ref(), Some(&look(o)), Some(&look(t))).ok()??;
-    let faces = pick(base.map(|a| &a.faces), Some(&o.faces), Some(&t.faces)).ok()??;
+    let faces = match pick(base.map(|a| &a.faces), Some(&o.faces), Some(&t.faces)) {
+        Ok(f) => f?,
+        // Both changed face colours: merged face by face (dogfooding F15-3).
+        Err(()) => merge_face_colors(base.map(|a| a.faces.as_slice()).unwrap_or_default(), &o.faces, &t.faces)?,
+    };
     Some(gusset_doc::Appearance { body: o.body.clone(), color, finish, faces })
+}
+
+/// Face colours merged three-way per face; `None` when one face changed differently on both
+/// sides. Groups by colour, ours' order first.
+fn merge_face_colors(
+    base: &[gusset_doc::FaceColor],
+    ours: &[gusset_doc::FaceColor],
+    theirs: &[gusset_doc::FaceColor],
+) -> Option<Vec<gusset_doc::FaceColor>> {
+    let map = |gs: &[gusset_doc::FaceColor]| -> HashMap<String, (u32, gusset_doc::FaceRef)> {
+        gs.iter().flat_map(|g| g.faces.iter().map(move |f| (f.to_string(), (g.color, f.clone())))).collect()
+    };
+    let (b, o, t) = (map(base), map(ours), map(theirs));
+    let order = ours.iter().chain(theirs).flat_map(|g| g.faces.iter().map(ToString::to_string));
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<gusset_doc::FaceColor> = Vec::new();
+    for key in order {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let colour = |m: &HashMap<String, (u32, gusset_doc::FaceRef)>| m.get(&key).map(|x| x.0);
+        let Some(c) = pick(colour(&b).as_ref(), colour(&o).as_ref(), colour(&t).as_ref()).ok()? else { continue };
+        let Some((_, face)) = o.get(&key).or_else(|| t.get(&key)) else { continue };
+        match out.iter_mut().find(|g| g.color == c) {
+            Some(g) => g.faces.push(face.clone()),
+            None => out.push(gusset_doc::FaceColor { color: c, faces: vec![face.clone()] }),
+        }
+    }
+    Some(out)
 }
 
 /// Merges `theirs` into `ours`, both descendants of `base`.

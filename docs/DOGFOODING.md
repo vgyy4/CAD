@@ -1275,7 +1275,7 @@ correctly and STEP brings them back; the colours of three imports (SolidWorks bo
 |---|---|
 | F15-1 | Fixed: a placed body (a located shape) is written with its name and colours on the part too, and a wrapper holding one solid is read as that solid; OCCT test `a_placed_body_keeps_its_name_and_colours_through_step`. |
 | F15-2 | Open |
-| F15-3 | Open |
+| F15-3 | Fixed: merges take face colours face by face (different faces on the two branches combine; one face changed differently on both conflicts). `branch_compare` still lists the appearance as a whole. |
 | F15-4 | Fixed: more than 10 000 faces says `at most 10000 faces at once (n given)`. |
 | F15-5 | Fixed in part: an empty colour list is refused. Face refs that name no existing face stay allowed (a merge can bring them; they do nothing); the tool refuses them. |
 | F15-6 | Fixed: the face name is echoed whole; a name containing `), ` gets the hint `one face per list entry`. |
