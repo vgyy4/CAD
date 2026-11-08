@@ -113,3 +113,23 @@ fn a_larger_minimum_member_gives_fewer_holes() {
         Err(FeaError::Invalid(_))
     ));
 }
+
+#[test]
+fn smoothing_rounds_a_voxel_staircase_without_shrinking_it() {
+    let r = cantilever(0.4, 15).unwrap();
+    let mut faces = r.faces.clone();
+    smooth_faces(&mut faces, 10);
+    assert_eq!(faces.len(), r.faces.len());
+    // Bounding boxes stay close (Taubin does not shrink), but corners moved.
+    let bbox = |f: &[[[f64; 3]; 4]]| {
+        f.iter().flatten().fold(([f64::MAX; 3], [f64::MIN; 3]), |(lo, hi), p| {
+            ([lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])], [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])])
+        })
+    };
+    let (a, b) = (bbox(&r.faces), bbox(&faces));
+    for i in 0..3 {
+        assert!((a.0[i] - b.0[i]).abs() < 2.5 && (a.1[i] - b.1[i]).abs() < 2.5, "{a:?} {b:?}");
+    }
+    assert!(faces.iter().zip(&r.faces).any(|(x, y)| x != y));
+    assert!(faces.iter().flatten().flatten().all(|v| v.is_finite()));
+}

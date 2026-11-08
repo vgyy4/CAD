@@ -324,5 +324,63 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
     })
 }
 
+/// Smooths the kept shape's outer faces in place: corners shared by faces are welded by
+/// position, then moved by Taubin's two-step Laplacian (lambda 0.5, mu -0.53), which rounds
+/// the voxel steps without shrinking the shape. `iterations` pairs of steps, at most 50.
+pub fn smooth_faces(faces: &mut [[[f64; 3]; 4]], iterations: usize) {
+    use std::collections::BTreeMap;
+    let key = |p: [f64; 3]| p.map(|v| (v * 1e4).round() as i64);
+    let mut ids: BTreeMap<[i64; 3], usize> = BTreeMap::new();
+    let mut pos: Vec<[f64; 3]> = Vec::new();
+    let mut quads: Vec<[usize; 4]> = Vec::with_capacity(faces.len());
+    for f in faces.iter() {
+        quads.push(f.map(|p| {
+            *ids.entry(key(p)).or_insert_with(|| {
+                pos.push(p);
+                pos.len() - 1
+            })
+        }));
+    }
+    // Neighbours: the corners next to each other around a face.
+    let mut neigh: Vec<Vec<usize>> = vec![Vec::new(); pos.len()];
+    for q in &quads {
+        for k in 0..4 {
+            let (a, b) = (q.get(k).copied().unwrap_or(0), q.get((k + 1) % 4).copied().unwrap_or(0));
+            for (x, y) in [(a, b), (b, a)] {
+                if let Some(l) = neigh.get_mut(x)
+                    && !l.contains(&y)
+                {
+                    l.push(y);
+                }
+            }
+        }
+    }
+    let step = |pos: &mut Vec<[f64; 3]>, f: f64| {
+        let old = pos.clone();
+        for (p, l) in pos.iter_mut().zip(&neigh) {
+            if l.is_empty() {
+                continue;
+            }
+            let mut c = [0.0; 3];
+            for j in l {
+                let q = old.get(*j).copied().unwrap_or(*p);
+                for (cv, qv) in c.iter_mut().zip(q) {
+                    *cv += qv / l.len() as f64;
+                }
+            }
+            for (pv, cv) in p.iter_mut().zip(c) {
+                *pv += f * (cv - *pv);
+            }
+        }
+    };
+    for _ in 0..iterations.min(50) {
+        step(&mut pos, 0.5);
+        step(&mut pos, -0.53);
+    }
+    for (f, q) in faces.iter_mut().zip(&quads) {
+        *f = q.map(|i| pos.get(i).copied().unwrap_or([0.0; 3]));
+    }
+}
+
 #[cfg(test)]
 mod tests;

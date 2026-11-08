@@ -216,3 +216,5 @@ smoothed surface or a B-rep of the result, sheet bodies. Symmetry (2026-11-08): 
 those axes (each density and its mirror images share their mean after every update).
 `min_member` (mm) sets the filter's diameter (default 3 voxels, at most 16): thicker members,
 fewer small holes.
+`smooth` (0..50 passes) rounds the voxel steps of the kept faces with Taubin's shrink-free
+Laplacian (lambda 0.5, mu -0.53) on the welded corners, for the picture and the STL.

@@ -366,6 +366,13 @@ fn a_cantilever_is_optimised_to_a_share_of_its_volume_and_written_as_stl() {
     let tris = u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize;
     assert_eq!(tris, 2 * r["faces"].as_u64().unwrap() as usize);
     assert_eq!(stl.len(), 84 + 50 * tris);
+    // Smoothed: the same faces, moved off the voxel grid.
+    let mut sm = args.clone();
+    sm["smooth"] = json!(5);
+    sm.as_object_mut().unwrap().remove("path");
+    let r2 = run(&mut s, "sim.optimize", sm);
+    assert_eq!(r2["faces"], r["faces"], "{r2}");
+    assert_ne!(r2["shape_quads"], r["shape_quads"]);
     // Not over an existing file without overwrite.
     assert_eq!(err(&mut s, "sim.optimize", args).code, "confirmation_required");
     let _ = std::fs::remove_dir_all(dir);

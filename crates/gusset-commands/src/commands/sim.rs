@@ -658,6 +658,9 @@ pub struct OptimizeQuery {
     /// Smallest member, mm.
     #[serde(default)]
     pub min_member: Option<f64>,
+    /// Smoothing passes (0-50).
+    #[serde(default)]
+    pub smooth: Option<usize>,
 }
 
 impl Command for OptimizeQuery {
@@ -714,6 +717,13 @@ impl Command for OptimizeQuery {
             min_member: self.min_member,
         })
         .map_err(fea_err)?;
+        let mut r = r;
+        if let Some(n) = self.smooth.filter(|n| *n > 0) {
+            if n > 50 {
+                return Err(CommandError::args("smooth is 0 to 50 passes"));
+            }
+            gusset_fea::topo::smooth_faces(&mut r.faces, n);
+        }
         let first = r.compliance.first().copied().unwrap_or(0.0);
         let last = r.compliance.last().copied().unwrap_or(0.0);
         let mut out = json!({
