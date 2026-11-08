@@ -334,6 +334,24 @@ mod tests {
     }
 
     #[test]
+    fn a_texture_merges_with_the_look_it_belongs_to() {
+        let wood = Some(gusset_doc::Texture { kind: gusset_doc::TextureKind::Wood, size_um: 6000 });
+        let look = |color: u32, texture| gusset_doc::Appearance {
+            body: "B".into(),
+            color,
+            finish: gusset_doc::Finish::Plastic,
+            faces: Vec::new(),
+            texture,
+        };
+        let base = look(0x11_1111, None);
+        // One side adds a texture, the other changes nothing: the texture arrives.
+        let m = merge_look(Some(&base), Some(&look(0x11_1111, wood)), Some(&base)).unwrap();
+        assert_eq!(m.texture, wood);
+        // Colour on one side and texture on the other: one look, so a conflict (review R7).
+        assert!(merge_look(Some(&base), Some(&look(0x22_2222, None)), Some(&look(0x11_1111, wood))).is_none());
+    }
+
+    #[test]
     fn independent_changes_both_arrive() {
         let base = doc(&format!("param a = 1 mm\nparam b = 2 mm\n\n{}{}", sk("S1"), sk("S2")));
         let ours = doc(&format!("param a = 5 mm\nparam b = 2 mm\n\n{}{}{}", sk("S1"), sk("S2"), sk("Mine")));

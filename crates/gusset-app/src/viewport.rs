@@ -541,6 +541,12 @@ impl Viewport {
         self.scene.clone()
     }
 
+    /// Changes whenever the model is re-tessellated (not on highlight changes).
+    #[must_use]
+    pub fn scene_generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The camera is moving (orbit, pan, zoom or a view animation).
     pub fn is_interacting(&self) -> bool {
         self.interacting

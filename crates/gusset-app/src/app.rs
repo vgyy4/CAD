@@ -2534,6 +2534,9 @@ impl App {
 
     /// Starts editing an existing sketch: the Sketch tab and its tools become active.
     pub fn edit_sketch(&mut self, name: &str) {
+        // Sketch tools replace the Render tab; the photo preview would hide the sketch (R1).
+        self.render_tab = false;
+        self.photo.set(false);
         // An earlier sketch is edited with the model rolled back to just after it, and the
         // rest ghosted (DESIGN.md §1.5); Finish sketch puts the marker back.
         let active = self.snapshot.rollback.unwrap_or(self.snapshot.doc.features.len());
@@ -3239,9 +3242,11 @@ impl App {
         }
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
         // The Render tab's photo preview, painted over the viewport.
-        if self.render_tab && self.photo.on {
+        // Not over a sketch being edited (review R1).
+        if self.render_tab && self.photo.on && self.editing_sketch().is_none() {
             let moving = self.viewport.is_interacting();
-            self.photo.frame(ui, self.viewport.scene_arc(), self.viewport.camera, self.viewport.rect(), moving);
+            let (scene, generation) = (self.viewport.scene_arc(), self.viewport.scene_generation());
+            self.photo.frame(ui, scene, generation, self.viewport.camera, self.viewport.rect(), moving);
         }
 
         if let Some((frame, points)) = &placing {
@@ -3844,7 +3849,14 @@ impl App {
     /// Path-traces the current view (`render_quality`) on a worker thread and
     /// writes it as PNG; [`Self::poll_render`] reports the outcome.
     fn render_to(&mut self, path: &std::path::Path) {
-        let scene = self.viewport.scene().clone();
+        // One render at a time: a second would leave the first's result unreported (R5).
+        if self.render_job.is_some() {
+            self.notice = Some(Notice { text: tr("render.running").into(), hint: None, error: true });
+            return;
+        }
+        // The scene is shared, not copied, on the UI thread; the worker copies it to drop the
+        // hover and selection colours.
+        let scene = self.viewport.scene_arc();
         let camera = self.viewport.camera;
         let path = path.to_path_buf();
         let (size, samples) = self.render_quality;
@@ -3852,6 +3864,9 @@ impl App {
         self.render_job = Some(rx);
         self.notice = Some(Notice { text: tr("render.running").into(), hint: None, error: false });
         std::thread::spawn(move || {
+            let mut scene = gusset_render::Scene::clone(&scene);
+            scene.clear_highlights(gusset_render::Highlight::Preselect);
+            scene.clear_highlights(gusset_render::Highlight::Select);
             let out = gusset_render::render_traced(
                 &scene,
                 &camera,

@@ -3574,15 +3574,23 @@ impl Command for ExportStep {
             .map_err(|e| CommandError::new("io", e.to_string()))?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
         let mut out = json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() });
-        // STEP keeps colours, not finishes (dogfooding F15-8).
+        // STEP keeps colours, not finishes or textures (dogfooding F15-8, review R8).
+        let exported = |a: &&gusset_doc::Appearance| plain.iter().any(|(n, _)| *n == a.body);
+        let finishes = looks.iter().filter(exported).any(|a| a.finish != gusset_doc::Finish::Plastic);
+        let textures = looks.iter().filter(exported).any(|a| a.texture.is_some());
+        let note = match (finishes, textures) {
+            (true, true) => Some(
+                "STEP stores colours but not finishes or textures: metal, glass and rubber come back as plain plastic",
+            ),
+            (true, false) => Some("STEP stores colours but not finishes: metal, glass and rubber come back as plastic"),
+            (false, true) => Some("STEP stores colours but not textures: textured bodies come back plain"),
+            (false, false) => None,
+        };
         if !iges
-            && looks.iter().any(|a| a.finish != gusset_doc::Finish::Plastic && plain.iter().any(|(n, _)| *n == a.body))
+            && let Some(note) = note
             && let Some(o) = out.as_object_mut()
         {
-            o.insert(
-                "note".into(),
-                json!("STEP stores colours but not finishes: metal, glass and rubber come back as plastic"),
-            );
+            o.insert("note".into(), json!(note));
         }
         Ok(merge(out, rebuild_report(&ev)))
     }

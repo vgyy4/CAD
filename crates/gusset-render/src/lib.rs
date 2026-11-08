@@ -62,7 +62,7 @@ pub use scene::{Finish, Geometry, Highlight, Material, MeshId, Scene, SceneMesh}
 pub use software::{SOFTWARE_MAX_SIDE, SoftwareRenderer};
 pub use texture::{Texture, TextureKind};
 pub use theme::{DEFAULT_PART_COLOR, Lighting, Srgb, Theme, ViewportColors, linear_to_srgb, srgb_to_linear};
-pub use trace::{TRACE_MAX_SIDE, TraceSettings, render_traced};
+pub use trace::{TRACE_MAX_SIDE, TraceSettings, render_traced, render_traced_until};
 pub use view::ViewRenderer;
 /// Re-exported so callers use the same wgpu version.
 pub use wgpu;

@@ -1722,14 +1722,24 @@ fn textures_are_set_written_kept_and_taken_off() {
     }
     for bad in [
         json!({"body": "Extrude1", "texture": "marble"}),
-        json!({"body": "Extrude1", "texture_size": 3.0}),
         json!({"body": "Extrude1", "texture": "wood", "texture_size": 0.0}),
         json!({"body": "Extrude1", "texture": "none", "texture_size": 3.0}),
         json!({"body": "Extrude1", "clear": true, "texture": "wood"}),
     ] {
         assert!(execute(&mut s, &u, "body.appearance", bad.clone()).is_err(), "{bad}");
     }
+    // A size alone resizes the texture; naming the same kind keeps the size (review R6).
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture_size": 4.0}));
+    assert_eq!(
+        (&r["appearance"]["texture"], &r["appearance"]["texture_size_mm"]),
+        (&json!("carbon"), &json!(4.0)),
+        "{r}"
+    );
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "carbon"}));
+    assert_eq!(r["appearance"]["texture_size_mm"], 4.0, "{r}");
     let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "none"}));
+    // With no texture, a size alone is refused.
+    assert!(execute(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture_size": 3.0})).is_err());
     assert!(r["appearance"].get("texture").is_none(), "{r}");
     assert!(!doc(&mut s).contains("texture"));
 }
@@ -1866,7 +1876,11 @@ fn an_unchanged_body_is_not_tessellated_again() {
 fn render_image_writes_a_png_through_the_registered_renderer() {
     struct Stub;
     impl crate::commands::PhotoRenderer for Stub {
-        fn photo(&self, r: &crate::commands::PhotoRequest) -> Result<Vec<u8>, String> {
+        fn photo(
+            &self,
+            r: &crate::commands::PhotoRequest,
+            _: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<u8>, String> {
             assert!(!r.bodies.is_empty() && r.view == "top", "{} bodies, view {}", r.bodies.len(), r.view);
             Ok(b"\x89PNG\r\n\x1a\nstub".to_vec())
         }
@@ -1891,5 +1905,11 @@ fn render_image_writes_a_png_through_the_registered_renderer() {
     ] {
         assert!(execute(&mut s, &u, "export.image", bad.clone()).is_err(), "{bad}");
     }
+    // An agent writes inside the project folder only (review R9).
+    let a = CmdCtx::agent("claude-1", 2);
+    for outside in ["../out.png", "/tmp/out.png", "sub/../../out.png"] {
+        assert!(execute(&mut s, &a, "export.image", json!({"path": outside})).is_err(), "{outside}");
+    }
+    assert!(!d.parent().unwrap().join("out.png").exists());
     let _ = std::fs::remove_dir_all(d);
 }

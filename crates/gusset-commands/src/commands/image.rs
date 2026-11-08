@@ -35,9 +35,12 @@ pub struct PhotoRequest {
 /// Path-traces a [`PhotoRequest`] to PNG bytes. Implemented by the hosts (gusset-mcp's
 /// scene renderer).
 pub trait PhotoRenderer: Send + Sync {
+    /// Renders the picture; should stop soon after `stop` is set (Stop, an agent's deadline)
+    /// and return an error then.
+    ///
     /// # Errors
     /// A message for the user.
-    fn photo(&self, request: &PhotoRequest) -> Result<Vec<u8>, String>;
+    fn photo(&self, request: &PhotoRequest, stop: &std::sync::atomic::AtomicBool) -> Result<Vec<u8>, String>;
 }
 
 static RENDERER: OnceLock<Arc<dyn PhotoRenderer>> = OnceLock::new();
@@ -144,7 +147,15 @@ impl Command for ExportImage {
         }
         let request = PhotoRequest { bodies, width, height, samples, view };
         let t0 = std::time::Instant::now();
-        let png = renderer.photo(&request).map_err(|e| CommandError::new("io", e))?;
+        // Long renders stop with the Stop button and agents' deadlines (review R3).
+        let stop = s.rebuild_cancel_flag();
+        let png = renderer.photo(&request, &stop).map_err(|e| {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                CommandError::new("cancelled", "the render was stopped")
+            } else {
+                CommandError::new("io", e)
+            }
+        })?;
         crate::paths::write_file(&path, &self.path, &png)?;
         Ok(merge(
             json!({ "written": self.path, "bytes": png.len(), "width": width, "height": height, "samples": samples, "seconds": (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0 }),

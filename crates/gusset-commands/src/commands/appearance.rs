@@ -56,7 +56,8 @@ impl Command for SetAppearance {
             })?),
             None => None,
         };
-        let texture = self.texture_choice()?;
+        let current = s.document(&ctx.actor)?.appearance(&self.body).and_then(|a| a.texture);
+        let texture = self.texture_choice(current)?;
         if self.clear && (color.is_some() || finish.is_some() || texture.is_some()) {
             return Err(CommandError::args("clear takes no colour, finish or texture"));
         }
@@ -121,7 +122,12 @@ impl Command for SetAppearance {
 
 impl SetAppearance {
     /// The texture asked for: `Some(None)` takes it off (`none`), `None` leaves it as is.
-    fn texture_choice(&self) -> Result<Option<Option<gusset_doc::Texture>>, CommandError> {
+    /// `current`: the body's texture now; a size alone resizes it, and naming the same kind
+    /// again keeps its size (review R6).
+    fn texture_choice(
+        &self,
+        current: Option<gusset_doc::Texture>,
+    ) -> Result<Option<Option<gusset_doc::Texture>>, CommandError> {
         let size = match self.texture_size {
             Some(mm) => {
                 let um = (mm * 1000.0).round();
@@ -134,11 +140,12 @@ impl SetAppearance {
             None => None,
         };
         let Some(name) = &self.texture else {
-            return match size {
-                Some(_) => {
+            return match (size, current) {
+                (Some(size_um), Some(t)) => Ok(Some(Some(gusset_doc::Texture { size_um, ..t }))),
+                (Some(_), None) => {
                     Err(CommandError::args("texture_size needs a texture").hint("add texture: wood (or another)"))
                 }
-                None => Ok(None),
+                (None, _) => Ok(None),
             };
         };
         let name = name.trim().to_ascii_lowercase();
@@ -152,7 +159,8 @@ impl SetAppearance {
             CommandError::args(format!("unknown texture '{}'", crate::paths::display_name(&name)))
                 .hint("texture is wood, brushed, carbon, speckle or none")
         })?;
-        Ok(Some(Some(gusset_doc::Texture { kind, size_um: size.unwrap_or_else(|| kind.default_size_um()) })))
+        let keep = current.filter(|t| t.kind == kind).map(|t| t.size_um);
+        Ok(Some(Some(gusset_doc::Texture { kind, size_um: size.or(keep).unwrap_or_else(|| kind.default_size_um()) })))
     }
 }
 

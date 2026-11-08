@@ -172,7 +172,11 @@ pub fn build_camera(request: &RenderRequest, scene: &Scene) -> Result<gusset_ren
 /// The Render workspace's `export.image` (gusset-commands): the same scene as `render_view`,
 /// path traced at any size up to the command's limits.
 impl gusset_commands::commands::PhotoRenderer for SceneRenderer {
-    fn photo(&self, r: &gusset_commands::commands::PhotoRequest) -> Result<Vec<u8>, String> {
+    fn photo(
+        &self,
+        r: &gusset_commands::commands::PhotoRequest,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<Vec<u8>, String> {
         let view: NamedView =
             serde_json::from_value(serde_json::Value::String(r.view.clone())).map_err(|e| format!("view: {e}"))?;
         let request = RenderRequest {
@@ -202,7 +206,8 @@ impl gusset_commands::commands::PhotoRenderer for SceneRenderer {
         let s = build_scene(&request, &scene)?;
         let camera = build_camera(&request, &s)?;
         let set = gusset_render::TraceSettings { samples: r.samples, ..Default::default() };
-        gusset_render::render_traced(&s, &camera, [r.width, r.height], set)
+        let stopped = || stop.load(std::sync::atomic::Ordering::Relaxed);
+        gusset_render::render_traced_until(&s, &camera, [r.width, r.height], set, &stopped)
             .map_err(|e| format!("rendering failed: {e}"))
             .and_then(|img| img.to_png().map_err(|e| format!("rendering failed: {e}")))
     }
@@ -428,8 +433,11 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
             samples: 2,
             view: "iso".into(),
         };
-        let png = r.photo(&request).expect("photo");
+        let go = std::sync::atomic::AtomicBool::new(false);
+        let png = r.photo(&request, &go).expect("photo");
         assert!(is_png(&png));
-        assert!(r.photo(&PhotoRequest { view: "sideways".into(), ..request }).is_err());
+        assert!(r.photo(&PhotoRequest { view: "sideways".into(), ..request.clone() }, &go).is_err());
+        // A set stop flag ends the render with an error (review R3).
+        assert!(r.photo(&request, &std::sync::atomic::AtomicBool::new(true)).is_err());
     }
 }

@@ -39,6 +39,8 @@ pub enum RenderError {
     Settings(String),
     /// PNG encoding failed.
     Image(ImageError),
+    /// The caller stopped the render (`render_traced_until`).
+    Cancelled,
 }
 
 impl fmt::Display for RenderError {
@@ -52,6 +54,7 @@ impl fmt::Display for RenderError {
             Self::Readback(s) => write!(f, "image readback failed: {s}"),
             Self::Settings(s) => write!(f, "{s}"),
             Self::Image(e) => write!(f, "{e}"),
+            Self::Cancelled => write!(f, "the render was stopped"),
         }
     }
 }

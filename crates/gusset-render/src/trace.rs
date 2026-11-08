@@ -373,6 +373,21 @@ pub fn render_traced(
     size: [u32; 2],
     settings: TraceSettings,
 ) -> Result<RgbaImage, RenderError> {
+    render_traced_until(scene, camera, size, settings, &|| false)
+}
+
+/// As [`render_traced`], checking `stop` before each row: once it returns true the render
+/// ends with [`RenderError::Cancelled`].
+///
+/// # Errors
+/// As [`render_traced`], or [`RenderError::Cancelled`].
+pub fn render_traced_until(
+    scene: &Scene,
+    camera: &Camera,
+    size: [u32; 2],
+    settings: TraceSettings,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<RgbaImage, RenderError> {
     let [w, h] = size;
     if w == 0 || h == 0 || w > TRACE_MAX_SIDE || h > TRACE_MAX_SIDE {
         return Err(RenderError::InvalidSize { size, max: TRACE_MAX_SIDE });
@@ -391,11 +406,16 @@ pub fn render_traced(
     let mut img = RgbaImage::new(w, h, [0, 0, 0, 255]);
     let row = 4 * w as usize;
     let rows_per = (h as usize).div_ceil(threads).max(1);
+    let stopped = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|sc| {
         for (chunk_no, chunk) in img.data.chunks_mut(row * rows_per).enumerate() {
-            let world = &world;
+            let (world, stopped) = (&world, &stopped);
             sc.spawn(move || {
                 for (r, line) in chunk.chunks_mut(row).enumerate() {
+                    if stopped.load(std::sync::atomic::Ordering::Relaxed) || stop() {
+                        stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
                     let y = (chunk_no * rows_per + r) as u32;
                     for (x, px) in line.chunks_exact_mut(4).enumerate() {
                         let mut sum = [0.0; 3];
@@ -423,6 +443,9 @@ pub fn render_traced(
             });
         }
     });
+    if stopped.into_inner() {
+        return Err(RenderError::Cancelled);
+    }
     Ok(img)
 }
 
@@ -493,6 +516,13 @@ mod tests {
                 std::fs::write(format!("{dir}/{name}.png"), big.to_png().unwrap()).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn a_stopped_render_ends_cancelled() {
+        let (s, cam) = scene();
+        let r = render_traced_until(&s, &cam, [32, 24], TraceSettings { samples: 4, bounces: 1 }, &|| true);
+        assert!(matches!(r, Err(RenderError::Cancelled)));
     }
 
     #[test]
