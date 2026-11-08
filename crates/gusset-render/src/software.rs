@@ -116,7 +116,7 @@ impl SoftwareRenderer {
             let Some(m) = scene.mesh(d.id) else { continue };
             let data = m.data();
             // Faces from the coarse copy when the plan asks (frame.rs), edges always exact.
-            let faces = if d.lod { m.lod.as_ref().unwrap_or(data) } else { data };
+            let faces = if d.lod { m.lod.as_deref().unwrap_or(data) } else { data };
             let verts: Vec<ClipVert> = faces
                 .positions
                 .iter()

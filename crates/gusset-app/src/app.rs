@@ -3934,11 +3934,12 @@ fn tessellated(
     eval: &Evaluation,
 ) -> Result<(gusset_render::Scene, Vec<BodyInfo>, Vec<String>), CommandError> {
     let tp = TessellationParams::default();
-    let mut meshes: Vec<(BodyInfo, gusset_kernel::Mesh)> = Vec::with_capacity(eval.bodies.len());
+    let mut meshes: Vec<(BodyInfo, Arc<gusset_kernel::Mesh>)> = Vec::with_capacity(eval.bodies.len());
     for body in &eval.bodies {
-        // Through the session's cache: unchanged bodies are not tessellated again.
+        // Through the session's cache: unchanged bodies are not tessellated again, and
+        // keep their display geometry (`GEOMETRY`).
         let mesh = match s.tessellate_cached(&body.shape, &tp) {
-            Ok(m) => (*m).clone(),
+            Ok(m) => m,
             // The kernel worker crashed or was stopped: the other bodies' shapes went with
             // it. Keep the scene on screen and say why (review H3).
             Err(e) if matches!(e.kind, KernelErrorKind::Crashed | KernelErrorKind::Cancelled) => {
@@ -3963,10 +3964,14 @@ fn tessellated(
         }
         let info =
             BodyInfo { name: m.name.clone(), face_names: vec![format!("{}.mesh", m.name)], edge_names: Vec::new() };
-        meshes.push((info, mesh));
+        meshes.push((info, Arc::new(mesh)));
     }
-    Ok(crate::viewport::build_scene(&meshes))
+    Ok(crate::viewport::build_scene_cached(&meshes, &GEOMETRY))
 }
+
+/// Display geometry of the bodies on screen, reused across rebuilds (PERFORMANCE.md).
+static GEOMETRY: std::sync::LazyLock<crate::viewport::GeometryCache> =
+    std::sync::LazyLock::new(crate::viewport::GeometryCache::default);
 
 /// A placed sketch command to open again after its result (see `App::place_click`).
 #[derive(Debug, Clone)]

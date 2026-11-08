@@ -1356,6 +1356,44 @@ pub fn build_scene(meshes: &[(BodyInfo, gusset_kernel::Mesh)]) -> (Scene, Vec<Bo
     (scene, bodies, errors)
 }
 
+/// Display geometry of meshes shared through an `Arc` (the session's tessellation cache),
+/// by the mesh's address: a rebuilt scene reuses an unchanged body's validation, BVH,
+/// coarse copy and GPU buffers. Entries go once nothing else holds the mesh.
+#[derive(Debug, Default)]
+pub struct GeometryCache(
+    std::sync::Mutex<std::collections::HashMap<usize, (Arc<gusset_kernel::Mesh>, gusset_render::Geometry)>>,
+);
+
+/// [`build_scene`] for meshes behind an `Arc`, through `cache`.
+pub fn build_scene_cached(
+    meshes: &[(BodyInfo, Arc<gusset_kernel::Mesh>)],
+    cache: &GeometryCache,
+) -> (Scene, Vec<BodyInfo>, Vec<String>) {
+    let mut scene = Scene::new();
+    let mut bodies = Vec::with_capacity(meshes.len());
+    let mut errors = Vec::new();
+    let mut map = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (info, mesh) in meshes {
+        let key = Arc::as_ptr(mesh) as usize;
+        let geometry = match map.get(&key) {
+            Some((_, g)) => Ok(g.clone()),
+            None => gusset_render::Geometry::from_mesh(mesh).inspect(|g| {
+                map.insert(key, (mesh.clone(), g.clone()));
+            }),
+        };
+        match geometry {
+            Ok(g) => {
+                scene.insert_geometry(MeshId(bodies.len() as u64), g);
+                bodies.push(info.clone());
+            }
+            Err(e) => errors.push(format!("{}: {e}", info.name)),
+        }
+    }
+    // Meshes only the cache still holds belong to bodies that are gone.
+    map.retain(|_, (m, _)| Arc::strong_count(m) > 1);
+    (scene, bodies, errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1370,6 +1408,21 @@ mod tests {
             edges: vec![vec![[-10.0, -10.0, 0.0], [10.0, -10.0, 0.0]]],
         };
         (BodyInfo { name: "B".into(), face_names: vec!["top".into()], edge_names: vec!["e0".into()] }, mesh)
+    }
+
+    #[test]
+    fn a_rebuilt_scene_reuses_unchanged_geometry() {
+        let cache = GeometryCache::default();
+        let (info, mesh) = quad();
+        let (kept, gone) = (Arc::new(mesh.clone()), Arc::new(mesh));
+        let (first, ..) = build_scene_cached(&[(info.clone(), kept.clone()), (info.clone(), gone.clone())], &cache);
+        drop(gone);
+        let (second, bodies, errors) = build_scene_cached(&[(info, kept)], &cache);
+        assert!(errors.is_empty() && bodies.len() == 1);
+        let data = |s: &Scene| s.mesh(MeshId(0)).map(|m| m.data() as *const _);
+        assert_eq!(data(&first), data(&second), "the unchanged mesh was not rebuilt");
+        // The mesh nothing holds any more left the cache.
+        assert_eq!(cache.0.lock().map(|m| m.len()).ok(), Some(1));
     }
 
     #[test]

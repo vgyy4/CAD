@@ -2,6 +2,7 @@
 //! per-face / per-edge highlights. Pure CPU data; renderers sync from it on demand.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::math::{self, Aabb, Mat4};
 use crate::mesh::{MeshData, MeshError};
@@ -74,7 +75,7 @@ pub enum Highlight {
 /// One mesh in the scene.
 #[derive(Debug, Clone)]
 pub struct SceneMesh {
-    pub(crate) data: MeshData,
+    pub(crate) data: Arc<MeshData>,
     /// Unique per geometry upload; renderers cache GPU buffers by it.
     pub(crate) geometry_rev: u64,
     pub(crate) transform: Mat4,
@@ -87,7 +88,36 @@ pub struct SceneMesh {
     pub(crate) inverse: Option<Mat4>,
     pub(crate) world: Aabb,
     /// A coarse copy for when the body is drawn small (lod.rs).
-    pub(crate) lod: Option<MeshData>,
+    pub(crate) lod: Option<Arc<MeshData>>,
+}
+
+/// One mesh's display geometry (data, BVH and coarse copy), built once and shareable:
+/// a caller that rebuilds its scene puts the geometry of unchanged meshes back with
+/// [`Scene::insert_geometry`], which skips the build and lets GPU renderers keep their
+/// buffers (they cache by the geometry's revision).
+#[derive(Debug, Clone)]
+pub struct Geometry {
+    data: Arc<MeshData>,
+    lod: Option<Arc<MeshData>>,
+    rev: u64,
+}
+
+impl Geometry {
+    /// Validates and builds the display geometry of a mesh.
+    ///
+    /// # Errors
+    /// The mesh is invalid (see [`MeshError`]).
+    pub fn from_mesh(mesh: &gusset_kernel::Mesh) -> Result<Geometry, MeshError> {
+        let data = Arc::new(MeshData::from_mesh(mesh)?);
+        let lod = crate::lod::coarse(mesh).and_then(|c| MeshData::from_mesh(&c).ok()).map(Arc::new);
+        Ok(Geometry { data, lod, rev: next_geometry_rev() })
+    }
+
+    /// The display data.
+    #[must_use]
+    pub fn data(&self) -> &MeshData {
+        &self.data
+    }
 }
 
 impl SceneMesh {
@@ -207,9 +237,19 @@ impl Scene {
     /// # Errors
     /// The mesh is invalid (see [`MeshError`]); the scene is unchanged.
     pub fn insert_mesh(&mut self, id: MeshId, mesh: &gusset_kernel::Mesh) -> Result<(), MeshError> {
-        let data = MeshData::from_mesh(mesh)?;
-        let lod = crate::lod::coarse(mesh).and_then(|c| MeshData::from_mesh(&c).ok());
-        let rev = next_geometry_rev();
+        self.insert_geometry(id, Geometry::from_mesh(mesh)?);
+        Ok(())
+    }
+
+    /// The shareable geometry of a mesh, for [`Scene::insert_geometry`] into a later scene.
+    #[must_use]
+    pub fn geometry(&self, id: MeshId) -> Option<Geometry> {
+        self.meshes.get(&id).map(|m| Geometry { data: m.data.clone(), lod: m.lod.clone(), rev: m.geometry_rev })
+    }
+
+    /// [`Scene::insert_mesh`] with geometry built before (no validation or BVH build).
+    pub fn insert_geometry(&mut self, id: MeshId, geometry: Geometry) {
+        let Geometry { data, lod, rev } = geometry;
         match self.meshes.get_mut(&id) {
             Some(m) => {
                 m.data = data;
@@ -236,7 +276,6 @@ impl Scene {
                 self.meshes.insert(id, m);
             }
         }
-        Ok(())
     }
 
     /// Remove a mesh. Returns whether it existed.
@@ -351,6 +390,21 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn geometry_moves_to_a_new_scene_unbuilt() {
+        let mut a = Scene::new();
+        a.insert_mesh(MeshId(1), &demo::box_mesh([1.0; 3])).expect("ok");
+        a.set_material(MeshId(1), Material { color: Srgb(0x11_22_33), finish: Finish::Metal });
+        let mut b = Scene::new();
+        b.insert_geometry(MeshId(7), a.geometry(MeshId(1)).expect("geometry"));
+        let (ma, mb) = (a.mesh(MeshId(1)).expect("a"), b.mesh(MeshId(7)).expect("b"));
+        // Same data (not rebuilt), same revision (GPU buffers kept); scene state is the new scene's.
+        assert!(std::ptr::eq(ma.data(), mb.data()));
+        assert_eq!(ma.geometry_rev, mb.geometry_rev);
+        assert_eq!(mb.material(), Material::default());
+        assert!(a.geometry(MeshId(2)).is_none());
+    }
 
     #[test]
     fn revisions_are_unique_across_scenes() {

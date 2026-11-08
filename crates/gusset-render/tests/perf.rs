@@ -19,16 +19,24 @@ fn part() -> Scene {
 /// A large assembly: 400 bodies, 1.6 M triangles.
 fn assembly() -> Scene {
     let mut s = Scene::new();
-    for i in 0..400u64 {
-        let mut m = demo::cylinder_mesh(3.0, 8.0, 1000);
-        let (x, y) = ((i % 20) as f32 * 10.0, (i / 20) as f32 * 10.0);
-        for p in m.positions.iter_mut().chain(m.edges.iter_mut().flatten()) {
-            p[0] += x;
-            p[1] += y;
-        }
-        s.insert_mesh(MeshId(i), &m).unwrap();
+    for (i, m) in assembly_meshes().iter().enumerate() {
+        s.insert_mesh(MeshId(i as u64), m).unwrap();
     }
     s
+}
+
+fn assembly_meshes() -> Vec<gusset_kernel::Mesh> {
+    (0..400u64)
+        .map(|i| {
+            let mut m = demo::cylinder_mesh(3.0, 8.0, 1000);
+            let (x, y) = ((i % 20) as f32 * 10.0, (i / 20) as f32 * 10.0);
+            for p in m.positions.iter_mut().chain(m.edges.iter_mut().flatten()) {
+                p[0] += x;
+                p[1] += y;
+            }
+            m
+        })
+        .collect()
 }
 
 /// Mean milliseconds per frame over an orbit of `n` frames.
@@ -89,4 +97,25 @@ fn frame_times() {
             Err(e) => println!("{name}: no GPU adapter ({e})"),
         }
     }
+}
+
+#[test]
+#[ignore = "measurement, run on demand"]
+fn scene_rebuild() {
+    // An edit rebuilds the app's scene; unchanged meshes bring their geometry along.
+    let (before, meshes) = (assembly(), assembly_meshes());
+    let t = Instant::now();
+    let mut rebuilt = Scene::new();
+    for (i, m) in meshes.iter().enumerate() {
+        rebuilt.insert_mesh(MeshId(i as u64), m).unwrap();
+    }
+    let fresh = t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let mut reused = Scene::new();
+    for (id, _) in before.meshes() {
+        reused.insert_geometry(id, before.geometry(id).unwrap());
+    }
+    let kept = t.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(reused.len(), rebuilt.len());
+    println!("scene rebuild, 400 bodies: {fresh:.1} ms from meshes, {kept:.2} ms reusing geometry");
 }

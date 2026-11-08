@@ -96,7 +96,6 @@ struct Pipelines {
 }
 
 struct GpuMesh {
-    rev: u64,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     edges: Option<wgpu::Buffer>,
@@ -136,9 +135,11 @@ pub struct Renderer {
     draw_stride: u64,
     pipelines: Vec<(u32, Pipelines)>,
     blit: Blit,
-    meshes: HashMap<MeshId, GpuMesh>,
+    /// Uploaded meshes by geometry revision: a rebuilt scene that puts an unchanged mesh's
+    /// geometry back (`Scene::insert_geometry`) keeps its buffers, whatever its id.
+    meshes: HashMap<u64, GpuMesh>,
     /// Coarse copies of the meshes drawn small (`MeshDraw::lod`).
-    lod_meshes: HashMap<MeshId, GpuMesh>,
+    lod_meshes: HashMap<u64, GpuMesh>,
     targets: Option<Targets>,
 }
 
@@ -514,7 +515,7 @@ impl Renderer {
 
     fn sync_mesh(&mut self, scene: &Scene, id: MeshId, rev: u64, lod: bool) {
         let cache = if lod { &self.lod_meshes } else { &self.meshes };
-        if cache.get(&id).is_some_and(|m| m.rev == rev) {
+        if cache.contains_key(&rev) {
             return;
         }
         let Some(m) = scene.mesh(id) else { return };
@@ -548,11 +549,11 @@ impl Renderer {
             let e: Vec<u8> = data.edge_points.iter().flatten().flat_map(|c| c.to_le_bytes()).collect();
             init("gusset-render edges", &e, wgpu::BufferUsages::VERTEX)
         });
-        let g = GpuMesh { rev, vertices, indices, edges };
+        let g = GpuMesh { vertices, indices, edges };
         if lod {
-            self.lod_meshes.insert(id, g);
+            self.lod_meshes.insert(rev, g);
         } else {
-            self.meshes.insert(id, g);
+            self.meshes.insert(rev, g);
         }
     }
 
@@ -627,8 +628,9 @@ impl Renderer {
         let plan = FramePlan::build(scene, camera, internal, &self.options);
 
         // GPU mesh cache: drop meshes that left the scene, upload new revisions.
-        self.meshes.retain(|id, g| scene.mesh(*id).is_some_and(|m| m.geometry_rev == g.rev));
-        self.lod_meshes.retain(|id, g| scene.mesh(*id).is_some_and(|m| m.geometry_rev == g.rev && m.lod.is_some()));
+        let live: std::collections::HashSet<u64> = scene.meshes().map(|(_, m)| m.geometry_rev).collect();
+        self.meshes.retain(|rev, _| live.contains(rev));
+        self.lod_meshes.retain(|rev, _| live.contains(rev));
         for d in &plan.draws {
             // Edges always come from the exact mesh; faces from the coarse copy when asked.
             self.sync_mesh(scene, d.id, d.geometry_rev, false);
@@ -732,7 +734,9 @@ impl Renderer {
 
             pass.set_pipeline(&pipes.mesh);
             for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish != GLASS) {
-                let Some(g) = (if d.lod { self.lod_meshes.get(&d.id) } else { self.meshes.get(&d.id) }) else {
+                let Some(g) =
+                    (if d.lod { self.lod_meshes.get(&d.geometry_rev) } else { self.meshes.get(&d.geometry_rev) })
+                else {
                     continue;
                 };
                 stats.meshes += 1;
@@ -749,7 +753,7 @@ impl Renderer {
                 // The cut faces of closed bodies, at the cut plane's depth.
                 pass.set_pipeline(&pipes.mesh_cap);
                 for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.closed) {
-                    let Some(g) = self.meshes.get(&d.id) else { continue };
+                    let Some(g) = self.meshes.get(&d.geometry_rev) else { continue };
                     pass.set_vertex_buffer(0, g.vertices.slice(..));
                     pass.set_index_buffer(g.indices.slice(..), wgpu::IndexFormat::Uint32);
                     for ((r, _), off) in d.tri_runs.iter().zip(tri_offs) {
@@ -762,7 +766,9 @@ impl Renderer {
             // Glass last, over the opaque model, without hiding what is behind it.
             pass.set_pipeline(&pipes.mesh_glass);
             for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish == GLASS) {
-                let Some(g) = (if d.lod { self.lod_meshes.get(&d.id) } else { self.meshes.get(&d.id) }) else {
+                let Some(g) =
+                    (if d.lod { self.lod_meshes.get(&d.geometry_rev) } else { self.meshes.get(&d.geometry_rev) })
+                else {
                     continue;
                 };
                 stats.meshes += 1;
@@ -777,7 +783,7 @@ impl Renderer {
             }
             pass.set_pipeline(if quad_edges { &pipes.edge_quad } else { &pipes.edge_line });
             for (d, (_, edge_offs)) in plan.draws.iter().zip(&offsets) {
-                let Some(eb) = self.meshes.get(&d.id).and_then(|g| g.edges.as_ref()) else { continue };
+                let Some(eb) = self.meshes.get(&d.geometry_rev).and_then(|g| g.edges.as_ref()) else { continue };
                 for ((r, _), off) in d.edge_runs.iter().zip(edge_offs) {
                     if r.end <= r.start {
                         continue;
