@@ -268,10 +268,20 @@ impl<'a> Archive<'a> {
                 }
                 out
             }
+            93 => {
+                // Zstandard (newer Fusion designs): never more than the declared size.
+                let out = zstd::bulk::decompress(raw, want).map_err(|_| {
+                    ctx("corrupt Zstandard stream, or it unpacks to more than its declared size".into())
+                })?;
+                if out.len() != want {
+                    return Err(ctx(format!("unpacked to {} bytes but declares {want}", out.len())));
+                }
+                out
+            }
             m => {
                 return Err(MeshIoError::Unsupported {
                     format: FORMAT,
-                    detail: format!("compression method {m} in entry {:?} (only stored and deflate)", e.name),
+                    detail: format!("compression method {m} in entry {:?} (only stored, deflate and zstd)", e.name),
                 });
             }
         };
@@ -380,6 +390,37 @@ mod tests {
         let e = ar.find("DIR/B.BIN").unwrap().clone();
         assert_eq!(ar.read(&e, &mut budget, &lim).unwrap(), big);
         assert_eq!(budget, lim.max_decompressed_bytes - 10_000);
+    }
+
+    #[test]
+    fn zstd_entries_unpack_within_their_declared_size() {
+        // A stored entry holding Zstandard data, then relabelled as method 93 (newer Fusion
+        // designs use it) with the original's size and CRC.
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 7) as u8).collect();
+        let packed = zstd::bulk::compress(&data, 3).unwrap();
+        let mut buf = Vec::new();
+        write_zip(&[("Design/BulkStream.dat", &packed)], &mut buf).unwrap();
+        assert_eq!(u16_at(&buf, 8), Some(0), "stored");
+        let cd = buf.windows(4).position(|w| w == SIG_CENTRAL.to_le_bytes()).unwrap();
+        let (crc, n) = (crc32(&data).to_le_bytes(), (data.len() as u32).to_le_bytes());
+        for (method, c, u) in [(8, 14, 22), (cd + 10, cd + 16, cd + 24)] {
+            buf[method..method + 2].copy_from_slice(&93u16.to_le_bytes());
+            buf[c..c + 4].copy_from_slice(&crc);
+            buf[u..u + 4].copy_from_slice(&n);
+        }
+        let lim = Limits::default();
+        let ar = Archive::parse(&buf, &lim).unwrap();
+        let e = ar.entries()[0].clone();
+        let mut budget = lim.max_decompressed_bytes;
+        assert_eq!(ar.read(&e, &mut budget, &lim).unwrap(), data);
+        // Declaring fewer bytes than it unpacks to is refused.
+        let small = (data.len() as u32 - 1).to_le_bytes();
+        for u in [22, cd + 24] {
+            buf[u..u + 4].copy_from_slice(&small);
+        }
+        let ar = Archive::parse(&buf, &lim).unwrap();
+        let e = ar.entries()[0].clone();
+        assert!(ar.read(&e, &mut budget, &lim).is_err());
     }
 
     #[test]
