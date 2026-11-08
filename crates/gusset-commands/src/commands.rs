@@ -39,7 +39,7 @@ mod surface;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
 pub use bake::Bake;
-pub use bundle::{HistoryExportBundle, HistoryImportBundle};
+pub use bundle::{HistoryExportBundle, HistoryImportBundle, HistorySync};
 pub use cam::{CamJob, ExportGcode, ToolpathQuery};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
 pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};

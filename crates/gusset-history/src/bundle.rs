@@ -150,6 +150,13 @@ impl History {
     /// Writes `branch`'s chain (root to head) and everything it reaches as a `.gusb`
     /// bundle. The history is not changed.
     pub fn export_bundle(&self, branch: BranchId) -> HResult<Vec<u8>> {
+        let name = self.branch(branch)?.name.clone();
+        self.export_bundle_as(branch, &name)
+    }
+
+    /// As [`History::export_bundle`], with `name` written as the source branch name (a
+    /// folder sync writes `<who>/<branch>`, so the receiver gets `from/<who>/<branch>`).
+    pub fn export_bundle_as(&self, branch: BranchId, name: &str) -> HResult<Vec<u8>> {
         let b = self.branch(branch)?;
         let mut chain = self.lineage(b.head);
         chain.reverse();
@@ -160,7 +167,7 @@ impl History {
             }
         }
         let mut p = Vec::new();
-        put_str(&mut p, &b.name);
+        put_str(&mut p, name);
         p.extend_from_slice(&(chain.len() as u32).to_le_bytes());
         p.extend_from_slice(&(want.len() as u32).to_le_bytes());
         for id in &chain {

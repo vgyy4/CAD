@@ -45,6 +45,13 @@ becomes a second root (no common base, so no merge). The existing branch `from/<
 head is reused (a re-import changes nothing); other clashes get a numeric suffix. The `.gus`
 format is unchanged; the source project id is not carried (not needed to import).
 
+**Folder sync (2026-11-08)**: `history.sync {folder, who}` (the user only) writes each of
+your branches not received from others to a shared folder (a synced drive, a NAS) as
+`<who>__<branch>.gusb`, naming them `<who>/<branch>` inside, and imports everyone else's
+bundles there as `from/<who>/<branch>`; unchanged files are not rewritten, a re-import adds
+nothing, a damaged file is reported and skipped, at most 256 files a sync. Run it now and
+then (or from a timer) for near-live sharing without any network code.
+
 ### Phase 2: live relay (later)
 A relay (`gusset serve`, opt-in, TLS, per-project tokens) forwards bundles of new nodes as
 they are made; clients mirror each other's branches read-only as `from/<user>/<branch>`

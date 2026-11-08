@@ -78,3 +78,39 @@ fn a_branch_travels_between_sessions_and_merges() {
     assert!(execute(&mut bob, &a, "history.import_bundle", json!({"path": "../alice.gusb"})).is_err());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn two_people_sync_through_a_shared_folder() {
+    let d = std::env::temp_dir().join(format!("gusset-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let folder = d.to_string_lossy().to_string();
+    let u = CmdCtx::user(1);
+    let (mut alice, mut bob) = (session(), session());
+    run(&mut alice, &u, "param.set", json!({"name": "width", "expr": "40 mm"}));
+    run(&mut bob, &u, "param.set", json!({"name": "depth", "expr": "12 mm"}));
+    // Alice writes hers; nobody else's is there yet.
+    let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
+    assert_eq!(r["written_user_text"], json!(["alice__Main.gusb"]), "{r}");
+    assert_eq!(r["imported"], json!([]), "{r}");
+    // Bob writes his and gets Alice's as from/alice/Main.
+    let r = run(&mut bob, &u, "history.sync", json!({"folder": folder, "who": "bob"}));
+    assert_eq!(r["imported"][0]["branch_user_text"], "from/alice/Main", "{r}");
+    // Alice gets Bob's; syncing again writes and adds nothing.
+    let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
+    assert_eq!(r["imported"][0]["branch_user_text"], "from/bob/Main", "{r}");
+    let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
+    assert_eq!(r["written_user_text"], json!([]), "{r}");
+    assert_eq!(r["imported"][0]["iterations_added"], 0, "{r}");
+    // Agents and odd names are refused; a junk bundle is reported, not fatal.
+    let a = CmdCtx::agent("peer", 5);
+    assert_eq!(
+        execute(&mut alice, &a, "history.sync", json!({"folder": folder, "who": "x"})).unwrap_err().code,
+        "not_allowed"
+    );
+    assert!(execute(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "a b"})).is_err());
+    std::fs::write(d.join("eve__junk.gusb"), b"not a bundle").unwrap();
+    let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
+    assert_eq!(r["failed"][0]["file_user_text"], "eve__junk.gusb", "{r}");
+    let _ = std::fs::remove_dir_all(d);
+}
