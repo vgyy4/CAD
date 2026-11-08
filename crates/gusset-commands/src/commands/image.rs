@@ -53,6 +53,9 @@ pub fn set_photo_renderer(r: Arc<dyn PhotoRenderer>) {
 /// The largest picture side and the most samples a pixel.
 const MAX_SIDE: u32 = 4096;
 const MAX_SAMPLES: u32 = 1024;
+/// Most paths one picture may trace (width x height x samples): about a minute on four
+/// cores in a release build (dogfooding F16-6). 1280 x 800 at 64 samples fits.
+const MAX_PATHS: u64 = 1 << 26;
 const VIEWS: [&str; 8] = ["iso", "iso_back", "front", "back", "top", "bottom", "left", "right"];
 
 /// Path-traces the model to a PNG in the project folder.
@@ -91,6 +94,12 @@ impl Command for ExportImage {
         }
         if !(1..=MAX_SAMPLES).contains(&samples) {
             return Err(CommandError::args(format!("samples is 1 to {MAX_SAMPLES}")));
+        }
+        if u64::from(width) * u64::from(height) * u64::from(samples) > MAX_PATHS {
+            return Err(CommandError::args(format!(
+                "{width} x {height} at {samples} samples is too much work (at most {MAX_PATHS} paths)"
+            ))
+            .hint("use fewer samples or a smaller picture"));
         }
         let view = self.view.as_deref().unwrap_or("iso").trim().to_ascii_lowercase();
         if !VIEWS.contains(&view.as_str()) {

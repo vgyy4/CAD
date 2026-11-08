@@ -111,7 +111,12 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
             "texture_size" => {
                 let v = c.number()?;
                 if !c.eat_kw("mm") {
-                    return Err(c.err_hint("texture_size needs a unit", "write it in mm, like 8 mm"));
+                    // F16-3: another unit is named as such, not as a missing one.
+                    let msg = match c.ident() {
+                        Ok(u) => format!("texture_size is written in mm, not {u}"),
+                        Err(_) => "texture_size needs its unit".to_string(),
+                    };
+                    return Err(c.err_hint(msg, "write it in mm, like 8 mm"));
                 }
                 let um = (v * 1000.0).round();
                 if !(f64::from(*TEXTURE_SIZE_UM.start())..=f64::from(*TEXTURE_SIZE_UM.end())).contains(&um) {

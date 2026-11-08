@@ -45,7 +45,7 @@ fn pick<T: PartialEq + Clone>(base: Option<&T>, ours: Option<&T>, theirs: Option
     }
 }
 
-/// An appearance both sides changed, merged in two parts (colour, finish and texture; face colours),
+/// An appearance both sides changed, merged field by field (colour, finish, texture; face colours),
 /// each three-way. `None` when either part conflicts or a side removed it.
 fn merge_look(
     base: Option<&gusset_doc::Appearance>,
@@ -53,8 +53,11 @@ fn merge_look(
     theirs: Option<&gusset_doc::Appearance>,
 ) -> Option<gusset_doc::Appearance> {
     let (o, t) = (ours?, theirs?);
-    let look = |a: &gusset_doc::Appearance| (a.color, a.finish, a.texture);
-    let (color, finish, texture) = pick(base.map(look).as_ref(), Some(&look(o)), Some(&look(t))).ok()??;
+    // Colour, finish and texture each three-way: one side's colour and the other's texture
+    // combine (dogfooding F16-2).
+    let color = pick(base.map(|a| &a.color), Some(&o.color), Some(&t.color)).ok()??;
+    let finish = pick(base.map(|a| &a.finish), Some(&o.finish), Some(&t.finish)).ok()??;
+    let texture = pick(base.map(|a| &a.texture), Some(&o.texture), Some(&t.texture)).ok()??;
     let faces = match pick(base.map(|a| &a.faces), Some(&o.faces), Some(&t.faces)) {
         Ok(f) => f?,
         // Both changed face colours: merged face by face (dogfooding F15-3).
@@ -347,8 +350,11 @@ mod tests {
         // One side adds a texture, the other changes nothing: the texture arrives.
         let m = merge_look(Some(&base), Some(&look(0x11_1111, wood)), Some(&base)).unwrap();
         assert_eq!(m.texture, wood);
-        // Colour on one side and texture on the other: one look, so a conflict (review R7).
-        assert!(merge_look(Some(&base), Some(&look(0x22_2222, None)), Some(&look(0x11_1111, wood))).is_none());
+        // Colour on one side and texture on the other combine (F16-2); the same field changed
+        // differently on both sides conflicts.
+        let m = merge_look(Some(&base), Some(&look(0x22_2222, None)), Some(&look(0x11_1111, wood))).unwrap();
+        assert_eq!((m.color, m.texture), (0x22_2222, wood));
+        assert!(merge_look(Some(&base), Some(&look(0x22_2222, None)), Some(&look(0x33_3333, None))).is_none());
     }
 
     #[test]

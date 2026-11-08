@@ -1322,4 +1322,9 @@ project, asks before overwriting, and reports its own `seconds`; the viewport sh
 
 | ID | Status |
 |---|---|
-| F16-1..F16-6 | Open. |
+| F16-1 | Fixed: blank or odd values are shown as given (`(blank)` when empty), not as a file name. |
+| F16-2 | Fixed: colour, finish and texture merge each on their own; only the same field changed differently on both sides conflicts. |
+| F16-3 | Fixed in part: another unit is named (`texture_size is written in mm, not in`). Accepted: the tool takes a number of mm (the schema says so; the tool list is size-budgeted) and sizes are kept to the micrometre. |
+| F16-4 | Fixed: mesh exports note that finishes and textures are not written. |
+| F16-5 | Fixed in part: `texture: none` on an untextured body notes it. Accepted: the tool accepts any case (F14-3) while the document text stays lower case; the reply names the unit (`texture_size_mm`). |
+| F16-6 | Fixed: `export.image` refuses more than 2^26 paths (1280 x 800 at 64 samples fits) and stops with Stop and agents' deadlines (review R3). |

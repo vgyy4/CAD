@@ -1737,7 +1737,12 @@ fn textures_are_set_written_kept_and_taken_off() {
     );
     let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "carbon"}));
     assert_eq!(r["appearance"]["texture_size_mm"], 4.0, "{r}");
+    run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "none"}));
+    // Blank values are named as such, not as a file (F16-1); none on no texture is noted (F16-5).
+    let e = execute(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": " "})).unwrap_err();
+    assert!(e.message.contains("(blank)"), "{}", e.message);
     let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture": "none"}));
+    assert!(r["appearance"]["note"].as_str().is_some_and(|n| n.contains("no texture")), "{r}");
     // With no texture, a size alone is refused.
     assert!(execute(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "texture_size": 3.0})).is_err());
     assert!(r["appearance"].get("texture").is_none(), "{r}");
@@ -1905,6 +1910,11 @@ fn render_image_writes_a_png_through_the_registered_renderer() {
     ] {
         assert!(execute(&mut s, &u, "export.image", bad.clone()).is_err(), "{bad}");
     }
+    // The total work is capped too (F16-6).
+    let e =
+        execute(&mut s, &u, "export.image", json!({"path": "big.png", "width": 4096, "height": 4096, "samples": 8}))
+            .unwrap_err();
+    assert!(e.message.contains("too much work"), "{}", e.message);
     // An agent writes inside the project folder only (review R9).
     let a = CmdCtx::agent("claude-1", 2);
     for outside in ["../out.png", "/tmp/out.png", "sub/../../out.png"] {

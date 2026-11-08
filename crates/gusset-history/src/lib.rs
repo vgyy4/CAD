@@ -464,8 +464,13 @@ mod tests {
         let d = diff::diff_documents(&base, &theirs);
         assert_eq!(d.appearances.len(), 1, "{d:?}");
         assert!(diff::diff_documents(&base, &t("")).appearances[0].change == Change::Removed);
-        // Both sides changed it: a conflict; one side only: taken.
-        assert_eq!(merge_documents(&base, &ours, &theirs, None).conflicts.len(), 1);
+        // Colour on one side and finish on the other combine (dogfooding F16-2); the same field
+        // changed differently on both sides conflicts; one side only: taken.
+        let m = merge_documents(&base, &ours, &theirs, None);
+        assert!(m.conflicts.is_empty(), "{m:?}");
+        let a = m.doc.appearances.first().unwrap();
+        assert_eq!((a.color, a.finish.keyword()), (0x44_55_66, "metal"));
+        assert_eq!(merge_documents(&base, &ours, &t(&look("778899", "plastic")), None).conflicts.len(), 1);
         let m = merge_documents(&base, &base, &theirs, None);
         assert!(m.conflicts.is_empty() && m.doc.appearances == theirs.appearances, "{m:?}");
 

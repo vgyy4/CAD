@@ -72,7 +72,8 @@ anywhere in the document.
   it). Adafruit's OLED part now shows its blue board, white silkscreen and dark screen instead
   of one lavender body. 3MF triangle colours are read too: an imported mesh's triangles are grouped by colour,
   one face per colour, kept in the stored copy (3MF instead of STL then) and drawn.
-  A merge takes colour and finish apart from face colours (one side's finish and the other's
+  A merge takes colour, finish and texture each on its own (dogfooding F16-2), and apart from
+  face colours (one side's finish and the other's
   face colours combine); deleting a feature drops the colours of the faces it made
   (docs/reviews/2026-11-08-face-colours-review.md).
 * Render workspace (amendment, 2026-11-08): a RENDER tab (spec: Design / Render / Manufacture

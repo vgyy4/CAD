@@ -43,7 +43,7 @@ impl Command for SetAppearance {
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let color = match &self.color {
             Some(c) => Some(gusset_doc::text::parse_color(c.trim()).ok_or_else(|| {
-                CommandError::args(format!("'{}' is not a colour", crate::paths::display_name(c)))
+                CommandError::args(format!("'{}' is not a colour", shown(c)))
                     .hint("write \"#\" and six hex digits, like \"#8a9bb0\"")
             })?),
             None => None,
@@ -51,7 +51,7 @@ impl Command for SetAppearance {
         let finish = match &self.finish {
             // Any case (dogfooding F14-3); the document writes it in lower case.
             Some(f) => Some(Finish::from_keyword(&f.trim().to_ascii_lowercase()).ok_or_else(|| {
-                CommandError::args(format!("unknown finish '{}'", crate::paths::display_name(f)))
+                CommandError::args(format!("unknown finish '{}'", shown(f)))
                     .hint("finish is plastic, metal, glass or rubber")
             })?),
             None => None,
@@ -88,6 +88,7 @@ impl Command for SetAppearance {
                 return Ok(json!({ "body": body, "appearance": null }));
             }
             let base = old.and_then(|i| doc.appearances.get(i).cloned());
+            let base_texture = base.as_ref().and_then(|b| b.texture);
             let a = Appearance {
                 body: body.clone(),
                 color: color.or(base.as_ref().map(|b| b.color)).unwrap_or(DEFAULT_COLOR),
@@ -105,6 +106,12 @@ impl Command for SetAppearance {
             {
                 o.insert("texture".into(), json!(t.kind.keyword()));
                 o.insert("texture_size_mm".into(), json!(f64::from(t.size_um) / 1000.0));
+            }
+            if texture == Some(None)
+                && base_texture.is_none()
+                && let Some(o) = shown.as_object_mut()
+            {
+                o.insert("note".into(), json!(format!("{body} had no texture")));
             }
             let full = doc.appearances.len() >= gusset_doc::text::MAX_LIST_ITEMS;
             match old.and_then(|i| doc.appearances.get_mut(i)) {
@@ -156,12 +163,19 @@ impl SetAppearance {
             };
         }
         let kind = gusset_doc::TextureKind::from_keyword(&name).ok_or_else(|| {
-            CommandError::args(format!("unknown texture '{}'", crate::paths::display_name(&name)))
+            CommandError::args(format!("unknown texture '{}'", shown(&name)))
                 .hint("texture is wood, brushed, carbon, speckle or none")
         })?;
         let keep = current.filter(|t| t.kind == kind).map(|t| t.size_um);
         Ok(Some(Some(gusset_doc::Texture { kind, size_um: size.or(keep).unwrap_or_else(|| kind.default_size_um()) })))
     }
+}
+
+/// A value as given, for messages: control characters out, cut to 40, and blank shown as such
+/// (not as a file name, dogfooding F16-1).
+fn shown(v: &str) -> String {
+    let t: String = v.chars().filter(|c| !c.is_control()).take(40).collect();
+    if t.trim().is_empty() { "(blank)".into() } else { t }
 }
 
 /// The viewport's default part colour, for a finish set without a colour.

@@ -3787,7 +3787,18 @@ impl Command for ExportMesh {
         };
         let bytes = mesh_export_bytes_styled(s.kernel().as_ref(), &bodies, &refs, format, tol, &looks, &face_names)?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
-        Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
+        let mut out = json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() });
+        // Mesh files carry colours at most (dogfooding F16-4).
+        let exported = |a: &&gusset_doc::Appearance| bodies.iter().any(|(_, n)| *n == a.body);
+        let styled =
+            looks.iter().filter(exported).any(|a| a.finish != gusset_doc::Finish::Plastic || a.texture.is_some());
+        if styled && let Some(o) = out.as_object_mut() {
+            o.insert(
+                "note".into(),
+                json!("mesh files keep colours at most (STL none): finishes and textures are not written"),
+            );
+        }
+        Ok(merge(out, rebuild_report(&ev)))
     }
 }
 
