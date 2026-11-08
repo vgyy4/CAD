@@ -24,6 +24,8 @@
 //!
 //! All reading is bounded and total: noise gives no placements, never a panic.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// A rigid placement in millimetres: `p' = R p + t` (column vectors), `r` by rows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
@@ -508,10 +510,26 @@ pub struct Design {
 
 /// Components, occurrences and references of a design stream.
 pub fn read_design(bulk: &[u8]) -> Design {
+    read_design_cancellable(bulk, &AtomicBool::new(false)).unwrap_or_default()
+}
+
+/// [`read_design`] that stops (`None`) once `cancel` is set. The work is linear in the stream:
+/// every lookup per body or occurrence goes through an index built once.
+pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Design> {
+    let stop = || cancel.load(Ordering::Relaxed);
     let runs = utf16_runs(bulk);
+    if stop() {
+        return None;
+    }
     let comps = component_records(bulk);
     let occs = occurrence_records(bulk);
+    if stop() {
+        return None;
+    }
     let tf = transforms(bulk);
+    if stop() {
+        return None;
+    }
     // One entry per occurrence id: the parent from any of its records, the transform from the
     // first record that has one.
     #[derive(Default)]
@@ -567,6 +585,8 @@ pub fn read_design(bulk: &[u8]) -> Design {
     };
     let (mut blocks, context) = block_placements(bulk, &runs);
     let mut out = Design::default();
+    let listed: std::collections::HashSet<String> =
+        blocks.iter().filter(|(_, k)| *k == BlockKind::Listed).map(|(p, _)| p.brep.clone()).collect();
     // A matrix after `CreateComponent` places a component only where listed instances follow
     // (an electronics board: its matrix is where the board sits and the parts are relative to
     // it); elsewhere it can be any move in the design's history.
@@ -582,6 +602,12 @@ pub fn read_design(bulk: &[u8]) -> Design {
         let refs = brep_refs_in(&runs);
         // Instance numbers per component, in the order the stream lists the occurrences.
         let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut owners: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+        for own in &order {
+            if let Some(e) = by_own.get(*own) {
+                owners.entry(e.comp.as_str()).or_default().push(own);
+            }
+        }
         let ordinal: std::collections::HashMap<&str, usize> = order
             .iter()
             .filter_map(|own| {
@@ -591,16 +617,20 @@ pub fn read_design(bulk: &[u8]) -> Design {
                 Some((*own, *n))
             })
             .collect();
-        for (at, id) in &refs {
+        for (n, (at, id)) in refs.iter().enumerate() {
+            if out.bodies.len() >= MAX_OCCURRENCES {
+                break;
+            }
+            if n % 256 == 0 && stop() {
+                return None;
+            }
             let k = comps.partition_point(|c| c.at < *at);
             let Some(comp) = k.checked_sub(1).and_then(|k| comps.get(k)) else { continue };
             // Listed instances are relative to a component the occurrence records do not name.
-            if blocks.iter().any(|(p, kind)| p.brep == *id && *kind == BlockKind::Listed)
-                || !explicit.contains(comp.id.as_str())
-            {
+            if listed.contains(id) || !explicit.contains(comp.id.as_str()) {
                 continue;
             }
-            for own in order.iter().filter(|own| by_own.get(**own).is_some_and(|e| e.comp == comp.id)) {
+            for own in owners.get(comp.id.as_str()).into_iter().flatten() {
                 if out.bodies.len() >= MAX_OCCURRENCES {
                     break;
                 }
@@ -615,11 +645,11 @@ pub fn read_design(bulk: &[u8]) -> Design {
     }
     // The block rules: listed instances replace what the records said about their body; the
     // others only place bodies the records left alone.
-    let listed: std::collections::HashSet<String> =
-        blocks.iter().filter(|(_, k)| *k == BlockKind::Listed).map(|(p, _)| p.brep.clone()).collect();
     out.bodies.retain(|q| !listed.contains(&q.brep));
+    let mut have: std::collections::HashSet<String> = out.bodies.iter().map(|q| q.brep.clone()).collect();
     for (p, kind) in blocks {
-        if kind == BlockKind::Listed || !out.bodies.iter().any(|q| q.brep == p.brep) {
+        if kind == BlockKind::Listed || !have.contains(&p.brep) {
+            have.insert(p.brep.clone());
             out.bodies.push(p);
         }
     }
@@ -647,7 +677,7 @@ pub fn read_design(bulk: &[u8]) -> Design {
     for key in bare.into_iter().take(MAX_RECORDS) {
         out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![None] });
     }
-    out
+    Some(out)
 }
 
 /// Every `BREP.<id>.smb` in the text runs with its offset.
@@ -950,5 +980,88 @@ mod tests {
             let _ = read_design(&cut[..n]);
         }
         let _ = read_design(&cut);
+    }
+
+    fn id32(n: u32) -> String {
+        format!("{n:08x}-0000-4000-8000-000000000000")
+    }
+
+    /// `units` components, each with one body, one occurrence in the root and its transform,
+    /// padded to `pad` bytes of noise between units.
+    fn big_stream(units: u32, pad: usize) -> Vec<u8> {
+        let mut b = vec![9u8; 16];
+        for n in 0..units {
+            let mut c = class(CLASS_COMPONENT);
+            c.extend(u16s(&id32(n * 4)));
+            c.extend([0u8; 12]);
+            c.extend(u16s("Part"));
+            c.extend([0u8; 30]);
+            b.extend(c);
+            b.extend(u16s(&format!("BREP.{n:08x}.smb")));
+            b.extend([0u8; 40]);
+            let mut o = class(CLASS_OCCURRENCE);
+            o.extend([0u8; 9]);
+            o.extend([3, 0, 0, 0]);
+            o.extend(b"416");
+            o.extend((u64::from(n) * 10 + 10).to_le_bytes());
+            o.extend([0u8; 6]);
+            o.extend(u16s(&format!("{}$", id32(n * 4 + 1))));
+            o.extend(u16s(&format!("{}$", id32(n * 4 + 2))));
+            o.extend(u16s(&id32(n * 4)));
+            o.extend([0u8; 20]);
+            b.extend(o);
+            b.extend(transform_of(u64::from(n) * 10 + 9, [0.0, 0.0, 0.1], false));
+            b.extend(vec![0xA5u8; pad]);
+        }
+        b
+    }
+
+    #[test]
+    fn read_design_is_linear_in_the_stream_size() {
+        let (small, large) = (big_stream(2500, 0), big_stream(10_000, 0));
+        let t = std::time::Instant::now();
+        let a = read_design(&small);
+        let t_small = t.elapsed();
+        let t = std::time::Instant::now();
+        let d = read_design(&large);
+        let t_large = t.elapsed();
+        assert_eq!(a.bodies.len(), 2500);
+        assert_eq!(d.bodies.len(), 10_000);
+        // Four times the stream: about four times the time (a quadratic read gives sixteen).
+        assert!(t_large < t_small * 12 + std::time::Duration::from_millis(50), "{t_small:?} -> {t_large:?}");
+        assert!(t_large < std::time::Duration::from_secs(5), "{t_large:?}");
+    }
+
+    #[test]
+    fn a_large_padded_stream_reads_in_bounded_time() {
+        let big = big_stream(10_000, 700);
+        assert!(big.len() > 8 << 20, "{}", big.len());
+        let t = std::time::Instant::now();
+        let d = read_design(&big);
+        assert_eq!(d.bodies.len(), 10_000);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn many_bodies_of_one_component_and_one_occurrence_list_stay_capped() {
+        let mut b = comp(1, "Part");
+        for n in 0..30_000u32 {
+            b.extend(u16s(&format!("BREP.{n:08x}.smb")));
+        }
+        for n in 0..300u64 {
+            b.extend(occurrence(100 + n * 10, None, 0x40, 1));
+            b.extend(transform_of(99 + n * 10, [0.0, 0.0, 0.1], false));
+        }
+        let t = std::time::Instant::now();
+        let d = read_design(&b);
+        assert!(d.bodies.len() <= MAX_OCCURRENCES);
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_set_cancel_flag_stops_the_read() {
+        let b = big_stream(100, 0);
+        assert!(read_design_cancellable(&b, &AtomicBool::new(true)).is_none());
+        assert!(read_design_cancellable(&b, &AtomicBool::new(false)).is_some());
     }
 }

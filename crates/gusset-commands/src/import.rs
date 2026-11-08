@@ -391,6 +391,14 @@ const MAX_F3D_JSON_BYTES: u64 = 4 << 20;
 /// of the designs that reference them).
 const MAX_F3D_BODIES: usize = 4096;
 
+/// Most design streams read from one Fusion file, and most placements kept over all of them
+/// (the file is refused past either: review S2).
+const MAX_F3D_STREAMS: usize = 256;
+const MAX_F3D_PLACEMENTS: usize = 200_000;
+
+/// Most bytes of imported shapes one Fusion import keeps (review S4).
+const MAX_F3D_OUTPUT_BYTES: usize = 1 << 30;
+
 /// Deepest chain of designs referencing designs followed.
 const MAX_F3D_XREF_DEPTH: usize = 8;
 
@@ -493,6 +501,18 @@ fn design_instances(
     out
 }
 
+/// Counts `add` more placements against [`MAX_F3D_PLACEMENTS`] (all streams of one file).
+fn charge_placements(kept: &mut usize, add: usize) -> Result<(), CommandError> {
+    *kept = kept.saturating_add(add);
+    if *kept > MAX_F3D_PLACEMENTS {
+        return Err(CommandError::new(
+            "invalid_args",
+            format!("the Fusion file places more than {MAX_F3D_PLACEMENTS} bodies and references"),
+        ));
+    }
+    Ok(())
+}
+
 /// A Fusion 360 `.f3d` archive: every `Breps.BlobParts/*.smb` (binary ACIS of the design's
 /// bodies; `.smbh` holds their history and is skipped), converted to STEP and imported.
 /// Each body is placed by the occurrences of its component, nested components composed, read
@@ -519,18 +539,30 @@ fn f3d(
     };
     // The streams that describe the design itself: an asset named `[Active]` when there is one
     // (the others, `Animation`, hold other states of the same parts).
-    let design_info = |entries: &[(String, Vec<u8>)]| {
+    let (mut streams_read, mut placements_kept) = (0usize, 0usize);
+    let mut design_info = |entries: &[(String, Vec<u8>)]| -> Result<gusset_sat::fusion::Design, CommandError> {
         let streams: Vec<&(String, Vec<u8>)> = entries.iter().filter(|(n, _)| is_stream(n)).collect();
         let active: Vec<&(String, Vec<u8>)> = streams.iter().filter(|(n, _)| n.contains("[Active]")).copied().collect();
         let chosen = if active.is_empty() { streams } else { active };
         let mut info = gusset_sat::fusion::Design::default();
         for (_, b) in chosen {
-            let d = gusset_sat::fusion::read_design(b);
+            streams_read += 1;
+            if streams_read > MAX_F3D_STREAMS {
+                return Err(CommandError::new(
+                    "invalid_args",
+                    format!("the Fusion file has more than {MAX_F3D_STREAMS} design streams"),
+                ));
+            }
+            let Some(d) = gusset_sat::fusion::read_design_cancellable(b, cancel) else { return Err(cancelled()) };
+            charge_placements(
+                &mut placements_kept,
+                d.bodies.len() + d.xrefs.iter().map(|x| x.instances.len()).sum::<usize>(),
+            )?;
             info.bodies.extend(d.bodies);
             info.xrefs.extend(d.xrefs);
             info.context = info.context.or(d.context);
         }
-        info
+        Ok(info)
     };
     // The designs: the file itself, or for an `.f3z` the `.f3d` designs it holds (one level
     // deep, sharing the decompression budget).
@@ -540,7 +572,7 @@ fn f3d(
     let mut files = std::collections::HashMap::new();
     let mut warnings = Vec::new();
     if first.iter().any(|(n, _)| is_brep(n)) {
-        let info = design_info(&first);
+        let info = design_info(&first)?;
         designs.push(F3dDesign { file: String::new(), entries: first, info });
     } else {
         let inner = gusset_meshio::archive::read_entries_within(
@@ -553,7 +585,7 @@ fn f3d(
         .map_err(bad)?;
         for (name, d) in inner.iter().take(MAX_F3D_PARTS) {
             let entries = read(d, &mut budget)?;
-            let info = design_info(&entries);
+            let info = design_info(&entries)?;
             designs.push(F3dDesign { file: name.clone(), entries, info });
         }
         // `Manifest.json` names the root design, `DesignDescription.json` the references.
@@ -597,6 +629,7 @@ fn f3d(
     for keep_sheets in [false, true] {
         (out, part_warnings, placed, skipped, truncated) = (Vec::new(), Vec::new(), 0, 0, false);
         let mut i = 0;
+        let mut kept_bytes = 0usize;
         for (design, insts) in designs.iter().zip(&instances) {
             let default = [(Placement::IDENTITY, None)];
             let insts: &[Use] = insts.as_deref().unwrap_or(&default);
@@ -663,6 +696,16 @@ fn f3d(
                         let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
                             if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
                         })?;
+                        kept_bytes += bodies.iter().map(|(_, blob)| blob.len()).sum::<usize>();
+                        if kept_bytes > MAX_F3D_OUTPUT_BYTES {
+                            return Err(CommandError::new(
+                                "invalid_args",
+                                format!(
+                                    "the Fusion file's bodies and their instances exceed {} MiB of shapes",
+                                    MAX_F3D_OUTPUT_BYTES >> 20
+                                ),
+                            ));
+                        }
                         out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
                             name,
                             blob,
@@ -847,4 +890,36 @@ pub fn complete_import(
     let r = prepared.and_then(|p| registry::check_policy(s, ctx, spec, false).and_then(|()| commit_import(s, ctx, p)));
     registry::audit(s, ctx, spec, "", r.as_ref().map(|_| ()));
     r
+}
+
+#[cfg(test)]
+mod f3d_tests {
+    use super::*;
+
+    struct Never;
+    impl Importer for Never {
+        fn import(&self, _: &str, _: &[u8], _: &AtomicBool) -> Result<Vec<(String, Vec<u8>)>, String> {
+            Err("not expected".into())
+        }
+    }
+
+    #[test]
+    fn placements_are_capped_over_all_streams() {
+        let mut kept = 0;
+        assert!(charge_placements(&mut kept, MAX_F3D_PLACEMENTS).is_ok());
+        let e = charge_placements(&mut kept, 1).unwrap_err();
+        assert!(e.message.contains("places more than"), "{e:?}");
+        assert!(charge_placements(&mut 0, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn a_file_with_too_many_design_streams_is_refused() {
+        let mut names: Vec<String> = (0..=MAX_F3D_STREAMS).map(|n| format!("D{n}/BulkStream.dat")).collect();
+        names.push("Breps.BlobParts/BREP.aa.smb".into());
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"noise"[..])).collect();
+        let zip = gusset_meshio::archive::write(&entries).unwrap();
+        let cancel: CancelFlag = Arc::new(AtomicBool::new(false));
+        let e = f3d(&zip, &Never, &cancel).unwrap_err();
+        assert!(e.message.contains("design streams"), "{e:?}");
+    }
 }

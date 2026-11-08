@@ -63,7 +63,9 @@ reproduced the finding. Nothing was fixed in this review.
 | # | Status |
 |---|---|
 | S1 | Fixed: configurations are listed without reading, deduplicated, read lowest first until a partition is found, against one byte budget for the whole file (streams and inflated blocks). Test: 40 configurations exceed a 16 KiB budget; the first found without reading the rest. |
-| S2–S4 | In progress (Fusion import). |
+| S2 | Fixed: at most 256 design streams and 200 000 placements per import, refused past either. |
+| S3 | Fixed: `read_design` is linear (indexes built once), stops at its cap, and takes the cancel flag (`read_design_cancellable`). An 8 MiB stream reads in well under 5 s. |
+| S4 | Partly fixed: at most 1 GiB of imported shapes per import. Each instance is still converted and imported separately; converting a part once and placing copies remains open. |
 | S5 | Fixed: `history.sync` reads its own old file only through `open_regular` + `read_capped` (no links, pipes or devices, bounded); anything else is replaced by write + rename. Test: a planted link to /dev/zero is replaced. |
 | S6 | Fixed: each snapshot is checked once, however many iterations share it. |
 | S7 | Fixed: bundle defaults 128 MiB file / 256 MiB unpacked; one sync reads at most 256 MiB of bundles (the rest are skipped and reported). |
