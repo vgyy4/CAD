@@ -93,3 +93,31 @@ fn offset_face_command_drives_the_real_kernel() {
     let b = execute(&mut s, &u, "query.body", json!({})).unwrap();
     assert!(near(b["volume_mm3"].as_f64().unwrap(), 4800.0), "{b}");
 }
+
+#[test]
+fn offset_face_reports_the_faces_that_went_along() {
+    use gusset_commands::{CmdCtx, Session, execute};
+    use serde_json::json;
+    // Rounded vertical corners: the fillets are tangent to the sides, so pushing one side
+    // takes them (and the sides beyond) along (dogfooding F12-2).
+    let text = format!(
+        "{BOX}\nfillet Fillet1 (edges: [edge(Extrude1/side(Sketch1/l5), Extrude1/side(Sketch1/l6)), \
+         edge(Extrude1/side(Sketch1/l6), Extrude1/side(Sketch1/l7))], radius: 3 mm)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&text).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let u = CmdCtx::user(1);
+    let r =
+        execute(&mut s, &u, "feature.offset_face", json!({"faces": ["Extrude1/side(Sketch1/l6)"], "distance": "2 mm"}))
+            .unwrap();
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    let moved = r["also_moved"].as_array().unwrap();
+    assert!(!moved.is_empty(), "{r}");
+    assert!(moved.iter().all(|m| m.as_str().is_some_and(|m| !m.contains("cap("))), "{r}");
+    // A plain cap moves alone.
+    let doc = gusset_doc::Document::from_text(BOX).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let r = execute(&mut s, &u, "feature.offset_face", json!({"faces": ["Extrude1/cap(end)"], "distance": "1 mm"}))
+        .unwrap();
+    assert_eq!(r["also_moved"], json!([]), "{r}");
+}

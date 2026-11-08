@@ -492,8 +492,12 @@ mod imp {
                 .iter()
                 .map(|&f| topo.faces.get(f as usize).filter(|i| i.kind == SurfaceKind::Plane).map(|i| i.normal))
                 .collect();
-            if let Some(normals) = planar {
-                return offset_planes(shape, faces, &normals, distance);
+            // A move that would reshape tangent neighbours (a side between rounded corners)
+            // is left to BRepOffset, which carries the tangent faces along.
+            if let Some(normals) = planar
+                && let Ok(r) = offset_planes(shape, faces, &normals, distance)
+            {
+                return Ok(r);
             }
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }

@@ -217,14 +217,67 @@ impl Command for OffsetFace {
             check_face_resolves(s, ctx, f)?;
         }
         let owner = owner_body(s, ctx, &self.faces)?;
-        edit(s, ctx, "Offset face", |doc, rb| {
+        let refs = faces.clone();
+        let before = face_places(s, ctx, &refs);
+        let mut r = edit(s, ctx, "Offset face", |doc, rb| {
             let name = feature_name(doc, self.name, "OffsetFace")?;
             let body = body_for(doc, rb, self.body.or(owner))?;
             let def = OffsetFaceDef { body, faces, distance };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
             Ok(json!({ "feature": name }))
-        })
+        })?;
+        // Faces that went along (tangent fillets and their neighbours; dogfooding F12-2): those
+        // whose plane or axis moved, by name.
+        if r.get("rebuild_ok") == Some(&json!(true)) {
+            let after = face_places(s, ctx, &refs);
+            let moved: Vec<&String> = before
+                .iter()
+                .filter(|(n, p)| after.get(*n).is_some_and(|q| !same_place(p, q)))
+                .map(|(n, _)| n)
+                .collect();
+            if let Some(o) = r.as_object_mut() {
+                o.insert("also_moved".into(), json!(moved));
+            }
+        }
+        Ok(r)
     }
+}
+
+/// Where each face of the body holding `faces` lies, but `faces` themselves: a planar
+/// face's normal and offset, a revolved face's axis; other faces are left out.
+fn face_places(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    faces: &[FaceRef],
+) -> std::collections::BTreeMap<String, (gusset_kernel::V3, gusset_kernel::V3)> {
+    use gusset_kernel::SurfaceKind as K;
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(ev) = s.evaluate(&ctx.actor) else { return out };
+    let Some(b) = ev.bodies.iter().find(|b| faces.iter().any(|f| b.names.face_index(f).is_some())) else {
+        return out;
+    };
+    let chosen: Vec<u32> = faces.iter().filter_map(|f| b.names.face_index(f)).collect();
+    for ((i, n), f) in (0u32..).zip(&b.names.faces).zip(&b.topology.faces) {
+        if chosen.contains(&i) {
+            continue;
+        }
+        let place = match (f.kind, f.axis) {
+            (K::Plane, _) => (f.normal, [gusset_kernel::dot(f.normal, f.centroid), 0.0, 0.0]),
+            (K::Cylinder | K::Cone | K::Torus, Some(a)) => {
+                // The axis line: its direction and the point on it nearest the origin.
+                let t = gusset_kernel::dot(a.origin, a.dir);
+                (a.dir, gusset_kernel::sub(a.origin, gusset_kernel::scale(a.dir, t)))
+            }
+            _ => continue,
+        };
+        out.insert(n.to_string(), place);
+    }
+    out
+}
+
+fn same_place(a: &(gusset_kernel::V3, gusset_kernel::V3), b: &(gusset_kernel::V3, gusset_kernel::V3)) -> bool {
+    let close = |p: gusset_kernel::V3, q: gusset_kernel::V3| gusset_kernel::norm(gusset_kernel::sub(p, q)) < 1e-6;
+    close(a.0, b.0) && close(a.1, b.1)
 }
 
 /// Moves faces rigidly (ADR 0031).
