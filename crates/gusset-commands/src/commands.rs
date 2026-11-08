@@ -3517,13 +3517,8 @@ impl Command for ExportStep {
         }
         // STEP carries each body's colour on its name (`name\u{1f}#rrggbb`, ADR 0045).
         let looks = if iges { Vec::new() } else { s.document(&ctx.actor)?.appearances };
-        let names: Vec<String> = sel_bodies
-            .iter()
-            .map(|b| match looks.iter().find(|a| a.body == b.name) {
-                Some(a) => format!("{}\u{1f}#{:06x}", b.name, a.color & 0xff_ffff),
-                None => b.name.clone(),
-            })
-            .collect();
+        let plain: Vec<&str> = sel_bodies.iter().map(|b| b.name.as_str()).collect();
+        let names = step_names(&plain, &looks);
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             sel_bodies.iter().zip(&names).map(|(b, n)| (&b.shape, n.as_str())).collect();
         let bytes = if iges { s.kernel().export_iges(&bodies) } else { s.kernel().export_step(&bodies) }
@@ -3550,6 +3545,19 @@ pub struct ExportMesh {
     /// Bodies to export (names from query_model); default: all bodies and reference meshes.
     #[serde(default)]
     pub bodies: Vec<String>,
+}
+
+/// Body names for a STEP export, each with its appearance colour after U+001F
+/// (`name\u{1f}#rrggbb`), which the kernel's STEP writer turns into an XDE colour (ADR 0045).
+#[must_use]
+pub fn step_names(names: &[&str], looks: &[gusset_doc::Appearance]) -> Vec<String> {
+    names
+        .iter()
+        .map(|n| match looks.iter().find(|a| a.body == *n) {
+            Some(a) => format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff),
+            None => (*n).to_string(),
+        })
+        .collect()
 }
 
 /// Tessellates every body and encodes it, plus the reference meshes, as a mesh file.

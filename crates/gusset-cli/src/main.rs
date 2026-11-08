@@ -274,13 +274,8 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         let bytes = match ext.as_str() {
             "step" | "stp" => {
                 // Colours ride on the names (ADR 0045).
-                let names: Vec<String> = bodies
-                    .iter()
-                    .map(|(_, n)| match doc.appearances.iter().find(|a| a.body == *n) {
-                        Some(a) => format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff),
-                        None => (*n).to_string(),
-                    })
-                    .collect();
+                let plain: Vec<&str> = bodies.iter().map(|(_, n)| *n).collect();
+                let names = gusset_commands::commands::step_names(&plain, &doc.appearances);
                 let styled: Vec<(&gusset_kernel::Shape, &str)> =
                     bodies.iter().zip(&names).map(|((s, _), n)| (*s, n.as_str())).collect();
                 k.export_step(&styled).map_err(|e| e.to_string())?

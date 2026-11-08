@@ -209,7 +209,9 @@ impl World<'_> {
                 return None;
             }
             for (x, c) in light.iter_mut().zip(m.color.bytes()) {
-                *x *= f64::from(srgb_to_linear(f32::from(c) / 255.0)).sqrt() * 0.92;
+                // A fourth root per surface: a pass through a solid (two surfaces) tints by the
+                // square root, as camera paths do (review R13); 4 % reflected at each.
+                *x *= f64::from(srgb_to_linear(f32::from(c) / 255.0)).sqrt().sqrt() * 0.96;
             }
             origin = add(origin, scale(l, h.distance + self.eps));
         }
