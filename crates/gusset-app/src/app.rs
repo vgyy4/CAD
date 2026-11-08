@@ -648,7 +648,7 @@ impl App {
     fn report(&mut self, id: &str, r: &Result<Value, CommandError>) {
         match r {
             Ok(v) => {
-                let title = gusset_commands::find(id).map_or(id, |s| s.title);
+                let title = gusset_commands::find(id).map_or(id, |s| crate::i18n::command_title(s));
                 self.notice = Some(Notice { text: done_text(title, v), hint: None, error: false });
             }
             Err(e) => self.notice = Some(Notice { text: e.message.clone(), hint: e.hint.clone(), error: true }),
@@ -964,7 +964,7 @@ impl App {
                 Err(_) => self.report(id, &result),
             },
             Then::Show => {
-                let title = gusset_commands::find(id).map_or(id, |s| s.title);
+                let title = gusset_commands::find(id).map_or(id, |s| crate::i18n::command_title(s));
                 if id == "cam.toolpath" && result.is_err() {
                     self.toolpath = None; // an old toolpath is not this job's
                 }

@@ -362,6 +362,13 @@ pub fn tr(key: &str) -> &str {
     EN.iter().find(|(k, _)| *k == key).map_or(key, |(_, v)| v)
 }
 
+/// A command's title as the UI shows it: the table's `cmd.<id>` entry when a translation
+/// gives one, else the registry's own (English) title.
+#[must_use]
+pub fn command_title(spec: &gusset_commands::CommandSpec) -> &'static str {
+    EN.iter().find(|(k, _)| k.strip_prefix("cmd.") == Some(spec.id)).map_or(spec.title, |(_, v)| v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +382,12 @@ mod tests {
         assert_eq!(n, keys.len(), "duplicate i18n keys");
         assert_eq!(tr("menu.file"), "File");
         assert_eq!(tr("no.such.key"), "no.such.key");
+    }
+
+    #[test]
+    fn command_titles_fall_back_to_the_registry() {
+        let spec = gusset_commands::find("feature.extrude").unwrap();
+        assert_eq!(command_title(spec), spec.title);
     }
     /// UI text goes through `tr` (spec: all user-facing strings externalized): no widget
     /// call takes an English literal directly. Tests are left out of the scan.

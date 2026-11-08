@@ -61,7 +61,9 @@ pub fn tools(sketching: bool, last: Option<&'static str>, custom: &[&'static str
 
 fn label(t: Tool) -> String {
     match t {
-        Tool::Command(id) => gusset_commands::find(id).map_or_else(|| id.to_string(), |s| s.title.to_string()),
+        Tool::Command(id) => {
+            gusset_commands::find(id).map_or_else(|| id.to_string(), |s| crate::i18n::command_title(s).to_string())
+        }
         Tool::FinishSketch => tr("ribbon.finish_sketch").to_string(),
         Tool::Search => format!("{}…", tr("quick.search")),
     }

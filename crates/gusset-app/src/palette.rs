@@ -62,7 +62,11 @@ pub fn entries(query: &str, doc: &gusset_doc::Document, recent: &[String]) -> Ve
     };
     let mut out: Vec<Entry> = crate::app::search(query)
         .into_iter()
-        .map(|s| Entry { label: s.title.to_string(), detail: s.id.to_string(), target: Target::Command(s.id) })
+        .map(|s| Entry {
+            label: crate::i18n::command_title(s).to_string(),
+            detail: s.id.to_string(),
+            target: Target::Command(s.id),
+        })
         .collect();
     if words.is_empty() {
         // An empty search: the commands, then the recent files.

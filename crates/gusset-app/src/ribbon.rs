@@ -323,8 +323,8 @@ pub struct Ribbon<'a> {
 /// A tool's tooltip heading: the command title and its shortcut.
 pub fn tooltip_title(s: &CommandSpec) -> String {
     match s.shortcut {
-        Some(k) => format!("{} ({k})", s.title),
-        None => s.title.to_string(),
+        Some(k) => format!("{} ({k})", crate::i18n::command_title(s)),
+        None => crate::i18n::command_title(s).to_string(),
     }
 }
 
@@ -641,7 +641,7 @@ fn group_separator(ui: &mut Ui, pal: &Palette) {
 /// A large icon button with its short label below.
 fn large_button(ui: &mut Ui, def: &Def, s: &CommandSpec, pal: &Palette) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(BTN_W, BTN_H), Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, s.title));
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, crate::i18n::command_title(s)));
     let painter = ui.painter();
     if resp.hovered() || resp.has_focus() {
         painter.rect(
@@ -726,7 +726,7 @@ fn quick_menu(resp: &egui::Response, id: &'static str, quick: &[&'static str]) -
 /// One command in a dropdown: icon, title, shortcut.
 fn menu_row(ui: &mut Ui, s: &CommandSpec, pal: &Palette) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, s.title));
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, crate::i18n::command_title(s)));
     let painter = ui.painter();
     if resp.hovered() {
         painter.rect_filled(rect, theme::RADIUS_SM, pal.bg_hover);
@@ -742,7 +742,7 @@ fn menu_row(ui: &mut Ui, s: &CommandSpec, pal: &Palette) -> egui::Response {
     painter.text(
         Pos2::new(rect.left() + 34.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        s.title,
+        crate::i18n::command_title(s),
         egui::FontId::proportional(theme::FONT_BODY),
         pal.text,
     );

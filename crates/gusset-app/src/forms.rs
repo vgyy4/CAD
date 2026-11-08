@@ -174,7 +174,7 @@ impl Form {
         fields.sort_by_key(|f| !f.required);
         Form {
             command: spec.id,
-            title: spec.title,
+            title: crate::i18n::command_title(spec),
             description: spec.description,
             fields,
             show_more: false,
