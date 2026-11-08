@@ -1750,6 +1750,17 @@ fn textures_are_set_written_kept_and_taken_off() {
 }
 
 #[test]
+fn setting_the_same_text_adds_no_history_step() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    let r = run(&mut s, &u, "document.set_text", json!({"text": text}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("nothing changed")), "{r}");
+    assert!(r.get("node").is_none(), "{r}");
+}
+
+#[test]
 fn single_faces_take_their_own_colours() {
     let mut s = session();
     let u = CmdCtx::user(1);

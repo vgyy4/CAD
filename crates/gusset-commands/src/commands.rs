@@ -937,6 +937,12 @@ impl Command for SetText {
             .map(ToString::to_string)
             .take(10)
             .collect();
+        // The same document again changes nothing: no history step (dogfooding F17-8).
+        if s.document(&ctx.actor)? == new {
+            return Ok(
+                json!({ "features_changed": 0, "note": "the text describes the document as it is; nothing changed" }),
+            );
+        }
         edit(s, ctx, "Edit code", |doc, _| {
             *doc = new;
             let mut out = json!({ "features_changed": changed });

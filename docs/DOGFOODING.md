@@ -1381,13 +1381,13 @@ clash with existing features; one undo per import.
 
 | ID | Status |
 |---|---|
-| F17-1 | Open |
-| F17-2 | Open |
-| F17-3 | Open |
-| F17-4 | Open |
-| F17-5 | Open |
-| F17-6 | Open |
-| F17-7 | Open |
-| F17-8 | Open |
-| F17-9 | Open |
-| F17-10 | Open |
+| F17-1 | Fixed: `%` drops its object; a top-level `!` keeps only the objects so marked (assignments stay). |
+| F17-2 | Fixed: an object that cannot be built is skipped with its line and reason; the file fails only when nothing can be built (then the reasons are listed). |
+| F17-3 | Accepted: skipped constructs are listed as warnings with their lines; a count adds little. |
+| F17-4 | Fixed: every generated sketch is fully constrained (rectangles: a corner, sides, width and height; circles: centre and radius; outlines: their corners), checked in the OCCT test (0 DOF). |
+| F17-5 | Fixed: a rolled-back import says why the objects came in as exact bodies. |
+| F17-6 | Fixed: the `import_file` description names .sldprt/.sldasm and SCAD as features. |
+| F17-7 | Accepted: loops are unrolled (no pattern from a `for`); turns are written as axis and angle with nine decimals, which round-trip exactly. |
+| F17-8 | Fixed in part: `document_set_text` with the document's own text adds no history step and says so. The null rollback reply stays. |
+| F17-9 | Accepted: assembly bodies are `ImportN` features labelled with their component names, like every import; a second import of the same file is a second copy, as for other formats. |
+| F17-10 | Fixed in part: unbuildable objects are skipped (F17-2). The other messages stay. |
