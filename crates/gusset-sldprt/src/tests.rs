@@ -495,3 +495,42 @@ fn the_nist_assembly_sample() {
     let die = real.iter().find(|c| c.name.contains("die layer")).unwrap();
     assert!((die.placement[0][3] + 0.068_197_763_517_917_76).abs() < 1e-15);
 }
+
+#[test]
+fn virtual_components_keep_a_part_inside_the_assembly() {
+    let inner = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &partition_stream(60), None)]);
+    let body = format!(
+        r#"<swReference swName="Part1^Top" swReferenceNumber="1" swIsVirtualComponent="YES" swModelRef="5" swTransform="{IDENT}"/>
+<swReference swName="Part9^Top" swReferenceNumber="1" swIsVirtualComponent="YES" swModelRef="5" swTransform="{IDENT}"/>
+<swReference swName="^x" swReferenceNumber="1" swIsVirtualComponent="YES" swModelRef="5" swTransform="{IDENT}"/>
+<swReference swName="Bracket one" swReferenceNumber="1" swModelRef="5" swTransform="{IDENT}"/>"#
+    );
+    let xml = tree_xml(&body);
+    let f = chunk_file(&[record(KEY, TREE, xml.as_bytes(), None), record(KEY, "VirtualComp/Part1", &inner, None)]);
+    let a = read_assembly(&f, &Limits::default()).unwrap();
+    let names: Vec<_> = a.components.iter().map(|c| c.embedded.as_deref()).collect();
+    assert_eq!(names, [Some("VirtualComp/Part1"), Some("VirtualComp/Part9"), None, None]);
+    // The embedded stream is a part the ordinary reader reads.
+    let got = embedded_part(&f, &Limits::default(), "VirtualComp/Part1").unwrap().unwrap();
+    assert_eq!(got, inner);
+    assert_eq!(extract_xt(&got, &Limits::default()).unwrap().xt, xt("partition", 60));
+    // A stream that is not there, one outside the prefix, and the wrong containers.
+    assert_eq!(embedded_part(&f, &Limits::default(), "VirtualComp/Part9").unwrap(), None);
+    assert_eq!(embedded_part(&f, &Limits::default(), "Preview").unwrap(), None);
+    assert!(embedded_part(b"junk", &Limits::default(), "VirtualComp/Part1").is_err());
+    let o = ole(&[("Config-0-Partition", &partition_stream(30))]);
+    assert_eq!(embedded_part(&o, &Limits::default(), "VirtualComp/Part1").unwrap(), None);
+    // A stream over the limit is refused; a garbage or cut inner file is an error of its own.
+    let tight = Limits { max_stream_bytes: 100, ..Limits::default() };
+    assert_eq!(embedded_part(&f, &tight, "VirtualComp/Part1").unwrap(), None);
+    let junk =
+        chunk_file(&[record(KEY, TREE, xml.as_bytes(), None), record(KEY, "VirtualComp/Part1", &[0xa5; 300], None)]);
+    let g = embedded_part(&junk, &Limits::default(), "VirtualComp/Part1").unwrap().unwrap();
+    assert!(extract_xt(&g, &Limits::default()).is_err());
+    for cut in [10, 40, inner.len() / 2, inner.len() - 5] {
+        let part = chunk_file(&[record(KEY, "VirtualComp/Part1", inner.get(..cut).unwrap_or_default(), None)]);
+        if let Ok(Some(b)) = embedded_part(&part, &Limits::default(), "VirtualComp/Part1") {
+            let _ = extract_xt(&b, &Limits::default());
+        }
+    }
+}

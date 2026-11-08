@@ -600,8 +600,8 @@ impl Folder<'_> {
 
 /// A SolidWorks assembly: the components listed in the file, each part file read from the same
 /// folder and imported at its instance placement (a part used n times gives n sets of bodies,
-/// named after the component). Missing, unreadable, suppressed, hidden and in-assembly
-/// ("virtual") components are warnings, not errors.
+/// named after the component; a virtual component's part is read from the assembly file itself).
+/// Missing, unreadable, suppressed and hidden components are warnings, not errors.
 fn sldasm(
     bytes: &[u8],
     dir: &Path,
@@ -615,15 +615,16 @@ fn sldasm(
     let mut folder = Folder { dir, listing: None, read: 0, cancel };
     let mut warnings = top.warnings.clone();
     let (mut out, mut kept_bytes, mut instances) = (Vec::<PreparedBody>::new(), 0usize, 0usize);
-    let (mut suppressed, mut hidden, mut virtuals, mut mirrored) = (0usize, 0usize, 0usize, 0usize);
+    let (mut suppressed, mut hidden, mut mirrored) = (0usize, 0usize, 0usize);
     let mut truncated = false;
     // Each assembly with the placement of the one that holds it, depth first.
     let identity: gusset_xt::Xf = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]);
-    let mut work: Vec<(gusset_sldprt::Assembly, gusset_xt::Xf, usize, String)> =
-        vec![(top, identity, 0, String::new())];
+    // (assembly, holder's placement, depth, name prefix, the assembly file's bytes)
+    type Pending = (gusset_sldprt::Assembly, gusset_xt::Xf, usize, String, Arc<Vec<u8>>);
+    let mut work: Vec<Pending> = vec![(top, identity, 0, String::new(), Arc::new(bytes.to_vec()))];
     // Part files read once each.
-    let mut parts: std::collections::HashMap<String, Option<Vec<u8>>> = std::collections::HashMap::new();
-    while let Some((asm, parent, depth, prefix)) = work.pop() {
+    let mut parts: std::collections::HashMap<String, Option<Arc<Vec<u8>>>> = std::collections::HashMap::new();
+    while let Some((asm, parent, depth, prefix, asm_bytes)) = work.pop() {
         for c in &asm.components {
             if cancel.load(Ordering::Relaxed) {
                 return Err(cancelled());
@@ -637,10 +638,6 @@ fn sldasm(
                 hidden += 1;
                 continue;
             }
-            if c.kind == ComponentKind::Virtual {
-                virtuals += 1;
-                continue;
-            }
             let Some(local) = rigid(&c.placement) else {
                 mirrored += 1;
                 continue;
@@ -651,9 +648,25 @@ fn sldasm(
                 truncated = true;
                 break;
             }
-            if !parts.contains_key(&c.file) {
+            // A virtual component's part is a stream of this assembly file.
+            let embedded: Option<Arc<Vec<u8>>> = if c.kind == ComponentKind::Virtual {
+                match c.embedded.as_deref().map(|st| gusset_sldprt::embedded_part(&asm_bytes, &limits, st)) {
+                    Some(Ok(Some(b))) => Some(Arc::new(b)),
+                    other => {
+                        let why = match other {
+                            Some(Err(e)) => e.to_string(),
+                            _ => "its part is not stored in the assembly".to_string(),
+                        };
+                        warnings.push(format!("virtual component '{name}' not imported: {why}"));
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            if embedded.is_none() && !parts.contains_key(&c.file) {
                 let loaded = match folder.load(&c.file) {
-                    Ok(b) => Some(b),
+                    Ok(b) => Some(Arc::new(b)),
                     Err(e) if e.code == "cancelled" => return Err(e),
                     Err(e) => {
                         warnings.push(format!(
@@ -666,7 +679,13 @@ fn sldasm(
                 };
                 parts.insert(c.file.clone(), loaded);
             }
-            let Some(Some(file)) = parts.get(&c.file) else { continue };
+            let file = match &embedded {
+                Some(b) => b,
+                None => match parts.get(&c.file) {
+                    Some(Some(b)) => b,
+                    _ => continue,
+                },
+            };
             if c.kind == ComponentKind::Assembly {
                 if depth + 1 > MAX_SLDASM_DEPTH {
                     warnings.push(format!(
@@ -675,7 +694,7 @@ fn sldasm(
                     continue;
                 }
                 match gusset_sldprt::read_assembly(file, &limits) {
-                    Ok(sub) => work.push((sub, world, depth + 1, format!("{name}/"))),
+                    Ok(sub) => work.push((sub, world, depth + 1, format!("{name}/"), Arc::clone(file))),
                     Err(e) => warnings.push(format!("sub-assembly '{name}': {e}")),
                 }
                 continue;
@@ -711,9 +730,6 @@ fn sldasm(
     }
     if hidden > 0 {
         notes.push(format!("{hidden} hidden components left out"));
-    }
-    if virtuals > 0 {
-        notes.push(format!("{virtuals} components made inside the assembly (virtual) are not read"));
     }
     if mirrored > 0 {
         notes.push(format!("{mirrored} components with a mirrored or scaled placement are not imported"));

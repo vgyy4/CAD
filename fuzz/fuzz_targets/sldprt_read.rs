@@ -21,4 +21,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = gusset_sldprt::extract_xt(&chunks, &limits);
     let _ = gusset_sldprt::read_assembly(data, &limits);
     let _ = gusset_sldprt::read_assembly(&chunks, &limits);
+    let _ = gusset_sldprt::embedded_part(data, &limits, "VirtualComp/Part1");
+    let _ = gusset_sldprt::embedded_part(&chunks, &limits, "VirtualComp/Part1");
 });

@@ -47,6 +47,9 @@ pub struct Component {
     /// Bounding box of the referenced model in its own space (min xyz, max xyz; metres), when
     /// the file stores one.
     pub bbox: Option<[f64; 6]>,
+    /// For a [`ComponentKind::Virtual`] component: the stream of the assembly file that holds
+    /// its part (`VirtualComp/Part1`), itself a complete part file; see [`embedded_part`].
+    pub embedded: Option<String>,
 }
 
 /// The components of an assembly's top level.
@@ -330,6 +333,12 @@ fn parse(xml: &str) -> Result<Assembly, SldprtError> {
                 [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
             }
         };
+        // `Part1^<assembly>` lives in the stream `VirtualComp/Part1` (2 of 2 in the sample).
+        let embedded = (kind == ComponentKind::Virtual)
+            .then(|| r.tag.get("swName").and_then(|n| n.split('^').next()))
+            .flatten()
+            .filter(|n| !n.is_empty() && n.len() <= 200 && !n.chars().any(char::is_control))
+            .map(|n| format!("VirtualComp/{n}"));
         components.push(Component {
             name,
             file: file_name,
@@ -339,6 +348,7 @@ fn parse(xml: &str) -> Result<Assembly, SldprtError> {
             suppressed: flag(&r.tag, "swSuppressed"),
             hidden: flag(&r.tag, "swHidden"),
             bbox: model.bbox,
+            embedded,
         });
     }
     Ok(Assembly { components, warnings })
@@ -363,4 +373,23 @@ pub fn read_assembly(bytes: &[u8], limits: &Limits) -> Result<Assembly, SldprtEr
     };
     let xml = String::from_utf8_lossy(&st.data);
     parse(&xml)
+}
+
+/// The part file a virtual component keeps inside the assembly: the stream `stream` (a
+/// [`Component::embedded`] name, which must start with `VirtualComp/`). The bytes are a
+/// complete part container, readable with [`crate::extract_xt`] and [`crate::local_bodies`].
+/// `None` when the assembly has no such stream.
+///
+/// # Errors
+/// [`SldprtError`] for other containers and over-limit files.
+pub fn embedded_part(bytes: &[u8], limits: &Limits, stream: &str) -> Result<Option<Vec<u8>>, SldprtError> {
+    if !stream.starts_with("VirtualComp/") {
+        return Ok(None);
+    }
+    match crate::detect(bytes) {
+        Some(crate::Container::Chunks) => {}
+        Some(crate::Container::Ole2) => return Ok(None),
+        None => return Err(SldprtError::NotSldprt),
+    }
+    Ok(chunks::streams(bytes, limits, |n| n == stream)?.pop().map(|s| s.data))
 }

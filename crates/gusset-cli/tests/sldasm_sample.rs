@@ -68,7 +68,9 @@ fn the_nist_layers_stack() {
     assert_eq!(bodies.len(), 3, "{bodies:?} {r}");
     let by = |k: &str| bodies.iter().find(|b| b.0.contains(k)).unwrap_or_else(|| panic!("{k} in {bodies:?}")).clone();
     let (die, nitride, metal) = (by("die layer"), by("silicon nitride"), by("top metal"));
-    println!("{bodies:?}\n{}", r["warnings_user_text"]);
+    // The two virtual components are read from the assembly file; their parts hold no solid.
+    let w = r["warnings_user_text"].to_string();
+    assert!(w.contains("Part1^") && w.contains("Part2^") && !w.contains("not stored"), "{w}");
     // The die is 0.5 mm thick; the two thin layers lie on its underside (z of its minimum),
     // inside its outline.
     assert!((die.2[2] - die.1[2] - 0.5).abs() < 1e-3, "{die:?}");

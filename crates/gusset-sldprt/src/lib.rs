@@ -16,7 +16,7 @@ mod cfb;
 mod chunks;
 mod crc;
 
-pub use assembly::{Assembly, Component, ComponentKind, MAX_COMPONENTS, read_assembly};
+pub use assembly::{Assembly, Component, ComponentKind, MAX_COMPONENTS, embedded_part, read_assembly};
 
 /// Why a file cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq)]

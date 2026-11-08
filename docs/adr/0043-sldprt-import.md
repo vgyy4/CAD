@@ -115,8 +115,8 @@ three parts. Derived from the bytes only, with `python3 -I` scripts, as above.
   `swIsVirtualComponent`, and `swTransform`, sixteen numbers.
 * `swTransform` is a row-vector 4x4: `1 0 0 0 / 0 1 0 0 / 0 0 1 0 / tx ty tz 1`, translation in the last
   row, `p' = p M`. **Lengths are metres** (bounding boxes of 0.014 for a 14 mm die).
-* A component made inside the assembly (`swIsVirtualComponent="YES"`, name `Part1^<assembly>`) has its
-  geometry in the opaque stream `VirtualComp/Part1`; the stored path is a temp folder. Not read.
+* A component made inside the assembly (`swIsVirtualComponent="YES"`, name `Part1^<assembly>`) keeps
+  its part in the stream `VirtualComp/Part1` (see the second amendment); the stored path is a temp folder.
 * The file names in `swPath` are the author's; our sample files were downloaded with spaces turned
   into `_`, so the importer matches a name exactly, then ignoring case, then treating space and
   `_` alike.
@@ -138,7 +138,7 @@ a separator, drive or dot name, matched against that folder's listing, opened wi
 imports it as a part and moves it through `gusset_xt::to_step_placed` by the instance placement
 (composed through sub-assemblies, which are read from their `.sldasm` files next to it, four levels deep).
 A part used n times gives n bodies named after the component (`Name-2`; `Name-2 1`... for a multi-body part).
-Missing or unreadable parts, suppressed and hidden components, virtual components and mirrored or scaled
+Missing or unreadable parts, suppressed and hidden components, mirrored or scaled
 placements are warnings, not errors; an assembly with no importable component is an error.
 
 ### Limits
@@ -147,10 +147,33 @@ placements are warnings, not errors; an assembly with no importable component is
   asymmetric assembly should be checked.
 * Sub-assembly nesting inside one file is untested (the sample has none); it is handled by reading the
   referenced `.sldasm` file, whose own component list is complete. Structure inside the file is not used.
-* Mates, configurations other than the one a component names, exploded views, in-assembly features and
-  virtual components are not read. A component's configuration is not selected (the part's lowest
+* Mates, configurations other than the one a component names, exploded views and in-assembly features are
+  not read. A component's configuration is not selected (the part's lowest
   configuration with a partition is imported). Compound-file (OLE2) assemblies, from before about 2015,
   are refused: no sample.
 * Bounds: 20000 components, 2000 placed instances, 4 sub-assembly levels, 2 GiB of part files, 1 GiB of
   shapes; the XML scanner expands no entities beyond the predefined and numeric ones. `sldprt_read`
   fuzzes `read_assembly` too.
+
+## Amendment 2 (2026-11-08): virtual components, rotation convention
+
+**Virtual components.** `VirtualComp/Part1` and `VirtualComp/Part2` of the NIST assembly are not opaque:
+each is a complete chunk container (the same 8-byte start, records with a CRC-32, 36 streams such as
+`Contents/Config-0-Partition`, `swXmlContents/Features`, `docProps/*`), i.e. a part file embedded in the
+assembly. `gusset_sldprt::extract_xt` reads them as they are (a 292-byte partition: schema, no body, because
+both parts are empty: their `Features` list no feature). The stream of a component is `VirtualComp/` plus the
+text of its `swName` before `^` (2 of 2; `Component::embedded`); `embedded_part(bytes, limits, stream)` returns
+the bytes and `import.file` imports them like a part file, placed by the instance, with the assembly's name
+for the body. The sample cannot show a body from a virtual component (both are empty, so each gives the
+warning "not imported: no solid"); the path to a body is the ordinary `.sldprt` one, covered by the
+`.sldprt` tests plus unit tests of the stream lookup with missing, over-limit, garbage and cut streams.
+Limit: the name-to-stream rule has two data points; a missing stream is a warning.
+
+**Rotation convention: not determinable from this sample, left as is.** Both rotated instances have
+symmetric rotation matrices (silicon nitride: `[[-1,0,0],[0,0,-1],[0,-1,0]]`, top metal: `diag(-1,1,-1)`),
+so `R` and `R^T` give identical placed boxes; the assembly box, the part boxes and the stack all agree under
+either reading. The tiny residues (`-5.55e-17` at row 0 col 1, `-1.97e-31` at row 0 col 2) are asymmetric, but
+the same 12 numbers appear verbatim, in the same order, in `Contents/Config-0`, `Config-0-MatesList` and
+`DisplayLists` (and the translation in `Config-0-LWDATA` as a box), so those streams carry the same
+representation and no independent orientation to compare. The row-vector reading rests on the translation
+being the last row. An assembly with an asymmetric rotation (any 90-degree turn about one axis) settles it.
