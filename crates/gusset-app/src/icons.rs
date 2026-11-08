@@ -227,6 +227,10 @@ pub enum Tool {
     Wireframe,
     /// Section view: a box cut open.
     Section,
+    /// Colour and finish: a paint drop.
+    Appearance,
+    /// Render an image: a camera.
+    RenderImage,
     Search,
     Params,
     /// A solid body (the browser's Bodies).
@@ -302,6 +306,8 @@ impl Tool {
         Tool::Edges,
         Tool::Wireframe,
         Tool::Section,
+        Tool::Appearance,
+        Tool::RenderImage,
         Tool::Search,
         Tool::Params,
         Tool::Body,
@@ -356,6 +362,8 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "query.joints" => Tool::Joint,
         "import.file" => Tool::Import,
         "export.step" | "export.mesh" => Tool::Export,
+        "export.image" => Tool::RenderImage,
+        "body.appearance" => Tool::Appearance,
         "history.undo" => Tool::Undo,
         "history.redo" => Tool::Redo,
         "sketch.add_line" => Tool::Line,
@@ -925,6 +933,30 @@ pub fn paint_tool(painter: &egui::Painter, rect: Rect, tool: Tool, c: Ink) {
             pen.poly(&[(4.0, 7.5), (12.0, 3.0), (16.0, 5.25), (8.0, 9.75)], pen.fill, ink);
             pen.poly(&[(4.0, 7.5), (8.0, 9.75), (8.0, 18.75), (4.0, 16.5)], pen.fill.gamma_multiply(0.7), ink);
             pen.poly(&[(8.0, 9.75), (16.0, 5.25), (16.0, 14.25), (8.0, 18.75)], a.gamma_multiply(0.6), a);
+        }
+        Tool::Appearance => {
+            // A drop of paint over a swatch.
+            pen.poly(&[(3.0, 15.0), (21.0, 15.0), (21.0, 21.0), (3.0, 21.0)], pen.fill, ink);
+            pen.poly(&[(12.0, 2.0), (16.5, 9.0), (12.0, 13.5), (7.5, 9.0)], a.gamma_multiply(0.6), a);
+            pen.circle(12.0, 9.5, 4.0, a.gamma_multiply(0.6), a);
+        }
+        Tool::RenderImage => {
+            // A camera body, lens and viewfinder bump.
+            pen.poly(
+                &[
+                    (3.0, 8.0),
+                    (8.0, 8.0),
+                    (10.0, 5.0),
+                    (14.0, 5.0),
+                    (16.0, 8.0),
+                    (21.0, 8.0),
+                    (21.0, 19.0),
+                    (3.0, 19.0),
+                ],
+                pen.fill,
+                ink,
+            );
+            pen.circle(12.0, 13.5, 4.0, pen.hole, a);
         }
     }
 }

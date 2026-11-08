@@ -234,6 +234,24 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // The Render tab with the photo preview of a copper bracket.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.run("body.appearance", json!({"body": "Body", "color": "#b87333", "finish": "metal"})).ok();
+        a.render_tab = true;
+        a.photo.set(true);
+        shoot(&dir, &format!("22-render-preview-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+            let t0 = std::time::Instant::now();
+            while h.state().photo.samples < 16 && t0.elapsed() < std::time::Duration::from_secs(120) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                h.run_steps(1);
+            }
+            h.run_steps(2);
+        });
         // The appearance form: colour text with its picker, the finishes offered.
         let mut a = app(theme);
         bracket(&mut a);
