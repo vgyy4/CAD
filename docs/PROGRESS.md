@@ -408,6 +408,10 @@ Phase 3 has started (see Next).
   `directories` crate layout.
 
 ## Deviations from spec
+- Benchmarks in CI (spec: a regression of more than 10 % fails the build): the CI `perf` job
+  enforces absolute frame-time budgets (`gusset-render` test `perf`, about 1.5 x the spec's
+  software-renderer target) instead of a relative 10 % gate, because shared GitHub runners vary
+  by more than 10 % between runs. A relative gate needs a dedicated runner (the owner's call).
 - Right-to-left text rendering is a known egui gap (ADR 0009). Strings are
   externalized; RTL rendering waits on upstream.
 - Mesh import (STL/3MF/OBJ, tier 3) produces **reference mesh bodies**, not solids: the

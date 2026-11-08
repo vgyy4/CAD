@@ -76,6 +76,21 @@ jobs:
           GUSSET_REQUIRE_GPU: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --workspace --locked
 
+  perf:
+    name: performance budgets (frame times)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Absolute budgets (docs/PERFORMANCE.md): shared runners vary too much for a
+      # relative 10 % gate (PROGRESS.md, deviations).
+      - run: cargo test --release --locked -p gusset-render --test perf -- --ignored --nocapture
+        env:
+          GUSSET_PERF_BUDGET: "1"
+
   powerloss:
     # Saves on ext4 over dm-flakey, with the disk cut off mid-save (ADR 0007, review M14).
     name: power loss on a real block device (dm-flakey)
