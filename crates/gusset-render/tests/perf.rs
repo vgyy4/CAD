@@ -53,7 +53,7 @@ fn frame_times() {
         fit.fit(&scene.bounds(), 1.6);
         let sw = SoftwareRenderer::new();
         let soft = orbit(10, |c| {
-            let mut c = c.clone();
+            let mut c = *c;
             c.fit(&scene.bounds(), 1.6);
             sw.render_rgba(&scene, &c, size).unwrap();
         });
@@ -61,7 +61,7 @@ fn frame_times() {
         match HeadlessRenderer::new() {
             Ok(mut gpu) => {
                 let ms = orbit(30, |c| {
-                    let mut c = c.clone();
+                    let mut c = *c;
                     c.fit(&scene.bounds(), 1.6);
                     gpu.render_rgba(&scene, &c, size).unwrap();
                 });
