@@ -352,6 +352,14 @@ Phase 3 has started (see Next).
   Live relay (phase 2) is later.
 - Rendering (later tier) started 2026-11-08: path-traced stills (`render_traced`, ADR 0009
   amendment; `gusset build -e out.png`).
+  Appearances done 2026-11-08 (ADR 0045): `appearance <Body> (color, finish)` in the document
+  (plastic, metal, glass, rubber), `body.appearance`, a swatch in the browser; the viewport,
+  `render_view` and PNG export use them. Imports keep the file's names and colours: Parasolid
+  and SolidWorks (`SDL/TYSA_*` attributes), and STEP through XDE, whose assemblies now come in
+  as one body per solid. Next: per-face colours, textures, a top-level BVH for scenes of many
+  bodies, Fusion colours (in its design stream).
+- Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
+  single-record read (bounded) and T3 (one `LocalBodies` stream).
 
 ## Known gaps (not MVP scope per the spec; planned for later phases)
 - Feature-level patterns: done (2026-11-03). `pattern_linear` / `pattern_circular` take
