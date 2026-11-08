@@ -279,8 +279,9 @@ Phase 3 has started (see Next).
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
-     target `sldprt_read`; OCCT test `sldprt_samples.rs`). Not yet: feature history, `.sldasm`,
-     parts that keep their geometry only in feature-local bodies.
+     target `sldprt_read`; OCCT test `sldprt_samples.rs`). Parts whose bodies come from an
+     imported feature (`LocalBodies`) done (ADR 0043 amendment; all 23 samples import); a file that
+     ends early warns. Not yet: feature history, `.sldasm`.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
