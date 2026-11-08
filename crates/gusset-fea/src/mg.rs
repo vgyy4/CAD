@@ -150,13 +150,29 @@ impl Hierarchy {
         h: f64,
         m: Material,
     ) -> Hierarchy {
+        Hierarchy::new_scaled(cells, n, node_ids, conn, fixed, h, m, &[])
+    }
+
+    /// As [`Hierarchy::new`], with element `e`'s stiffness scaled by `scale[e]` (1 where
+    /// missing): a density-weighted model (topology optimisation).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_scaled(
+        cells: &[[usize; 3]],
+        n: [usize; 3],
+        node_ids: &[Option<usize>],
+        conn: &[[usize; 8]],
+        fixed: &[bool],
+        h: f64,
+        m: Material,
+        scale: &[f64],
+    ) -> Hierarchy {
         let (ke, _) = element(h, &m);
-        let ones = vec![1.0; conn.len()];
+        let fine: Vec<f64> = (0..conn.len()).map(|e| scale.get(e).copied().unwrap_or(1.0)).collect();
         let mut levels = vec![Level {
             conn: conn.to_vec(),
             fixed: fixed.to_vec(),
-            smooth: smoother(conn, &ones, &ke, fixed),
-            scale: ones,
+            smooth: smoother(conn, &fine, &ke, fixed),
+            scale: fine,
             ke,
             prolong: Vec::new(),
         }];

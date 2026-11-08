@@ -54,7 +54,7 @@ pub use lettering::Text;
 pub use measure::QueryMeasure;
 pub use ops::{DeleteFace, Draft, Mirror, MoveFace, OffsetFace, PatternCircular, PatternLinear, Shell};
 pub use sheet::{ContourFlange, EdgeFlange, ExportFlat, FlatPatternQuery, Tab};
-pub use sim::{FaceLoad, ModalQuery, StaticQuery};
+pub use sim::{FaceLoad, ModalQuery, OptimizeQuery, StaticQuery};
 pub use sketch_ops::{SketchExplodePattern, SketchPattern, SketchTrim};
 pub use surface::{Patch, Stitch, SurfaceExtrude, Thicken};
 pub use sweep::{Loft, Sweep};

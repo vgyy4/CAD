@@ -4,7 +4,7 @@ use super::*;
 
 /// A box mesh from the origin to `s`, faces: 0 x=0, 1 x=s, 2 y=0, 3 y=s, 4 z=0, 5 z=s
 /// (two outward-wound triangles each).
-fn box_mesh(s: [f32; 3]) -> Mesh {
+pub(crate) fn box_mesh(s: [f32; 3]) -> Mesh {
     let c = |i: usize| {
         [if i & 1 > 0 { s[0] } else { 0.0 }, if i & 2 > 0 { s[1] } else { 0.0 }, if i & 4 > 0 { s[2] } else { 0.0 }]
     };

@@ -196,3 +196,19 @@ assembly and input checks became private helpers). Units mm, N, t/mm^3: `f = sqr
   first bending 0.65 % off Euler-Bernoulli, second 0.58 %, first in-plane bending 0.60 %
   (identified by its shape); clamped square plate on 16 x 16 vs lambda^2 = 35.99, 0.11 %;
   strip built by `skin::mid_surface` (element size 5) 0.64 % on the first frequency.
+
+## Amendment (2026-11-08): topology optimisation (generative design, phase 1)
+
+`sim.optimize` finds the stiffest layout that keeps a share (`keep`, 0.05..0.95) of a solid
+body: SIMP densities per voxel of the static model (penalty 3, lowest density 1e-3), minimum
+compliance under the given supports and loads, optimality-criteria updates (move limit 0.2,
+bisection on the volume multiplier) with a sensitivity filter of radius 1.5 voxels (Sigmund's
+99-line method in 3D on our hexahedra). Voxels touching a held or loaded node stay solid. Each
+iteration is one solve: the multigrid preconditioner takes the densities as element scales,
+and the CG starts from the last displacement. The whole run may do eight analyses' work.
+The result is the kept voxels (density >= 0.5): their share and volume, the compliance of
+the first and last iteration, and their outer faces (`shape_quads`, shown in place of the
+model in the app); `path` writes them as a binary STL. Steel is assumed (stiffness alone sets
+the layout; the material only scales compliance). Not yet: manufacturing constraints
+(symmetry, draw direction, minimum member size beyond the filter), stress constraints, a
+smoothed surface or a B-rep of the result, sheet bodies.

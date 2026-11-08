@@ -308,7 +308,8 @@ Phase 3 has started (see Next).
      mass, LOBPCG with a Jacobi preconditioner; a cantilever reads 1.5 % above beam theory).
      Mode shapes in the viewport done (`shape: k`). Refinement at the stress peak done (`refine: true`, a submodel four times finer). Next:
      shell elements for thin sheet bodies done (sheet bodies in `sim.static` run on MITC4 flat shells
-     over their mid-surface; ICT preconditioner and modes on shells done too). Multigrid preconditioner
+     over their mid-surface; ICT preconditioner and modes on shells done too). Topology optimisation done (`sim.optimize`, SIMP on the voxel model,
+     ADR 0041 amendment; generative design phase 1). Multigrid preconditioner
      done (both solvers; 13–17× fewer iterations, 2.7× faster). Note: the MCP tool list is at
      its 600-byte average budget; new fields need trimming elsewhere.
    - Feature-tree interchange done (ADR 0042): `import_file` on a `.gtree.json` appends

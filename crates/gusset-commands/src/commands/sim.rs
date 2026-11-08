@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn specs() -> Vec<CommandSpec> {
-    vec![spec::<StaticQuery>(), spec::<ModalQuery>()]
+    vec![spec::<StaticQuery>(), spec::<ModalQuery>(), spec::<OptimizeQuery>()]
 }
 
 /// A force on a face.
@@ -626,6 +626,120 @@ impl Command for ModalQuery {
                         "direction": v.map(|x| r(x / len)),
                     }),
                 );
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Topology optimisation: the stiffest layout using a share of the body.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizeQuery {
+    #[serde(default)]
+    pub body: Option<String>,
+    pub fixed: Vec<String>,
+    pub loads: Vec<FaceLoad>,
+    /// Share to keep, 0.05..0.95.
+    pub keep: f64,
+    /// Default 30.
+    #[serde(default)]
+    pub iterations: Option<usize>,
+    #[serde(default)]
+    pub voxel: Option<f64>,
+    /// Write the shape as .stl.
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+impl Command for OptimizeQuery {
+    const ID: &'static str = "sim.optimize";
+    const TITLE: &'static str = "Optimise shape";
+    const DESCRIPTION: &'static str =
+        "Generative design: stiffest voxel layout keeping a share of the body (steel); returns its faces.";
+    const CATEGORY: Category = Category::Inspect;
+    const FLAGS: Flags = WRITE_FILE;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        if self.loads.is_empty() {
+            return Err(CommandError::args("no loads: give at least one {face, force}"));
+        }
+        let target = match &self.path {
+            Some(p) => {
+                let path = crate::paths::export_target(s.project_dir.as_deref(), p, &ctx.actor, &["stl"])?;
+                if path.exists() && !self.overwrite {
+                    return Err(CommandError::new("confirmation_required", format!("'{p}' already exists"))
+                        .hint("pass overwrite: true to replace it"));
+                }
+                Some((path, p.clone()))
+            }
+            None => None,
+        };
+        let (body, mesh, voxel, _, face) = setup(s, ctx, self.body.as_deref(), self.voxel)?;
+        if body.sheet.is_some() {
+            return Err(CommandError::args("sheet-metal bodies are not optimised (shells have no voxels)"));
+        }
+        let fixed = self.fixed.iter().map(|f| face(f)).collect::<Result<Vec<_>, _>>()?;
+        let mut loads = Vec::new();
+        for l in &self.loads {
+            loads.push(gusset_fea::Load { face: face(&l.face)?, force: l.force });
+        }
+        let r = gusset_fea::topo::optimise(&gusset_fea::topo::TopoProblem {
+            mesh: &mesh,
+            voxel,
+            fixed,
+            loads,
+            material: gusset_fea::Material { young: 210_000.0, poisson: 0.3 },
+            keep: self.keep,
+            iterations: self.iterations.unwrap_or(30),
+        })
+        .map_err(fea_err)?;
+        let first = r.compliance.first().copied().unwrap_or(0.0);
+        let last = r.compliance.last().copied().unwrap_or(0.0);
+        let mut out = json!({
+            "body": body.name,
+            "voxel_mm": sig(voxel),
+            "elements": r.elements,
+            "iterations": r.iterations,
+            "converged": r.change <= 0.01,
+            "kept_share": sig(r.kept_share),
+            "kept_volume_mm3": sig(r.kept_volume),
+            "compliance_nmm": {"first": sig(first), "last": sig(last)},
+            "faces": r.faces.len(),
+        });
+        // The kept shape's outer voxel faces (12 coordinates each), thinned evenly past the cap.
+        let cap = field_cap(ctx);
+        let step = r.faces.len().div_ceil(cap.max(1)).max(1);
+        let scale = if cap < MAX_FIELD_QUADS { 100.0 } else { 1000.0 };
+        let quads: Vec<Vec<f64>> = r
+            .faces
+            .iter()
+            .step_by(step)
+            .map(|f| flat(*f).iter().map(|x| (x * scale).round() / scale).collect())
+            .collect();
+        if let Some(o) = out.as_object_mut() {
+            o.insert("shape_quads".into(), json!(quads));
+            if step > 1 {
+                o.insert("shape_thinned".into(), json!(true));
+            }
+        }
+        if let Some((path, shown)) = target {
+            let mut m = gusset_kernel::Mesh::default();
+            for f in &r.faces {
+                let b = m.positions.len() as u32;
+                m.positions.extend(f.iter().map(|p| p.map(|v| v as f32)));
+                m.indices.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+            }
+            m.normals = vec![[0.0; 3]; m.positions.len()];
+            let (bytes, _) = gusset_meshio::export_to_vec(
+                &[gusset_meshio::ExportBody { name: "optimised", mesh: &m }],
+                gusset_meshio::ExportFormat::StlBinary,
+            )
+            .map_err(|e| CommandError::new("io", e.to_string()))?;
+            crate::paths::write_file(&path, &shown, &bytes)?;
+            if let Some(o) = out.as_object_mut() {
+                o.insert("written".into(), json!(shown));
             }
         }
         Ok(out)

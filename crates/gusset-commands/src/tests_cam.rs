@@ -344,3 +344,29 @@ fn circles_are_bored_to_their_size_on_a_helix() {
     assert_eq!(err(&mut s, "cam.toolpath", too_wide).code, "invalid_args");
     let _ = std::fs::remove_dir_all(s.project_dir.clone().unwrap());
 }
+
+#[test]
+fn a_cantilever_is_optimised_to_a_share_of_its_volume_and_written_as_stl() {
+    let mut s = session();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 60, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "20 mm"}));
+    let dir = std::env::temp_dir().join(format!("gusset-topo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project_dir = Some(dir.clone());
+    let args = json!({"fixed": ["Extrude1/side(Sketch1/l8)"], "loads": [{"face": "Extrude1/side(Sketch1/l6)", "force": [0, 0, -100]}],
+        "keep": 0.4, "voxel": 2.5, "iterations": 25, "path": "topo.stl"});
+    let r = run(&mut s, "sim.optimize", args.clone());
+    assert!((0.3..=0.55).contains(&r["kept_share"].as_f64().unwrap()), "{r}");
+    let c = &r["compliance_nmm"];
+    assert!(c["last"].as_f64().unwrap() < 0.4 * c["first"].as_f64().unwrap(), "{r}");
+    assert_eq!(r["shape_quads"].as_array().unwrap().len(), r["faces"].as_u64().unwrap() as usize);
+    let stl = std::fs::read(dir.join("topo.stl")).unwrap();
+    // Binary STL: 80-byte header, count, 50 bytes per triangle; two per face.
+    let tris = u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize;
+    assert_eq!(tris, 2 * r["faces"].as_u64().unwrap() as usize);
+    assert_eq!(stl.len(), 84 + 50 * tris);
+    // Not over an existing file without overwrite.
+    assert_eq!(err(&mut s, "sim.optimize", args).code, "confirmation_required");
+    let _ = std::fs::remove_dir_all(dir);
+}

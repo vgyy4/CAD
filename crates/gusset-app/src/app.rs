@@ -960,6 +960,15 @@ impl App {
                             "sim.modal" => Some(("shape_bands", "of the largest motion")),
                             _ => None,
                         };
+                        // An optimised shape: its kept voxel faces, drawn in place of the model.
+                        if id == "sim.optimize"
+                            && let Some(o) = v.as_object_mut()
+                            && let Some(quads) = o.remove("shape_quads")
+                        {
+                            let (scene, bodies, _) = stress_scene(&json!([{"upto": 1.0, "quads": quads}]), "");
+                            self.viewport.show_preview(scene, bodies);
+                            self.stress_view = true;
+                        }
                         if let Some((key, unit)) = picture
                             && let Some(o) = v.as_object_mut()
                             && let Some(bands) = o.remove(key)
