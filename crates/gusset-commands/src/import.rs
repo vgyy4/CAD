@@ -291,7 +291,10 @@ impl ImportJob {
                             sw(gusset_sldprt::SldprtError::NoGeometry("no configuration has a solid body".into()))
                         }));
                     }
-                    warnings.push(format!("the part's {} bodies come from its imported feature", locals.len()));
+                    warnings.push(format!(
+                        "the part's {} bodies come from its imported feature; feature_combine unites them, feature_group folds them in the timeline",
+                        locals.len()
+                    ));
                     for (i, xt) in locals.iter().enumerate() {
                         if cancel.load(Ordering::Relaxed) {
                             return Err(cancelled());

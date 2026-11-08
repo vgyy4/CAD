@@ -779,7 +779,16 @@ impl Command for OptimizeQuery {
             o.insert("shape_quads".into(), json!(quads));
             if step > 1 {
                 o.insert("shape_thinned".into(), json!(true));
-                warnings.push("shape_quads shows every few faces only; path writes the whole shape as STL".into());
+                // With `path` the whole shape is written already (dogfooding F13-3).
+                if self.path.is_none() {
+                    warnings.push("shape_quads shows every few faces only; path writes the whole shape as STL".into());
+                }
+            }
+            if r.kept_share > self.keep + 0.01 {
+                warnings.push(format!(
+                    "kept_share {} is above keep: the voxels at the supports and loads are always kept",
+                    sig(r.kept_share)
+                ));
             }
             if !warnings.is_empty() {
                 o.insert("warnings".into(), json!(warnings));

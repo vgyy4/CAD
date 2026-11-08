@@ -112,7 +112,8 @@ fn offset_face_reports_the_faces_that_went_along() {
             .unwrap();
     assert_eq!(r["rebuild_ok"], true, "{r}");
     let moved = r["also_moved"].as_array().unwrap();
-    assert!(!moved.is_empty(), "{r}");
+    // The two fillets and the sides beyond them (dogfooding F13-2: the blends too).
+    assert!(moved.iter().filter(|m| m.as_str().is_some_and(|m| m.contains("Fillet1"))).count() == 2, "{r}");
     assert!(moved.iter().all(|m| m.as_str().is_some_and(|m| !m.contains("cap("))), "{r}");
     // A plain cap moves alone.
     let doc = gusset_doc::Document::from_text(BOX).unwrap();

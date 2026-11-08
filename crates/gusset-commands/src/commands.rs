@@ -207,7 +207,16 @@ pub(crate) fn edit_checked(
     if !changes.is_empty()
         && let Value::Object(m) = &mut v
     {
-        m.insert("body_changes".into(), Value::Array(changes.iter().map(BodyChange::to_json).collect()));
+        // Many bodies at once (a multi-body import): the largest first, the rest counted
+        // (dogfooding F13-4).
+        let mut listed: Vec<&BodyChange> = changes.iter().collect();
+        if listed.len() > MAX_BODY_CHANGES {
+            let size = |c: &BodyChange| c.after.as_ref().or(c.before.as_ref()).map_or(0.0, |(v, _)| v.abs());
+            listed.sort_by(|a, b| size(b).total_cmp(&size(a)));
+            m.insert("body_changes_more".into(), json!(listed.len() - MAX_BODY_CHANGES));
+            listed.truncate(MAX_BODY_CHANGES);
+        }
+        m.insert("body_changes".into(), Value::Array(listed.iter().map(|c| c.to_json()).collect()));
     }
     // Features that failed before and still fail: `rebuild_ok` speaks of this edit only,
     // so say the model is still broken (dogfooding F8-4).
@@ -247,6 +256,9 @@ pub(crate) fn edit_checked(
 }
 
 type Metrics = (f64, [[f64; 3]; 2]);
+
+/// Most bodies listed one by one in an edit's `body_changes`.
+const MAX_BODY_CHANGES: usize = 20;
 
 /// How one body differs between the model before and after an edit (volume in mm3,
 /// bounding boxes as [min, max] in mm).
@@ -890,6 +902,7 @@ pub struct ParamSet {
     /// Parameter name (letters, digits, `_`).
     pub name: String,
     /// Unit-aware expression, e.g. `40 mm` or `width / 2 + 0.5 in`.
+    #[serde(alias = "expression")]
     pub expr: String,
     /// Optional comment (user text).
     #[serde(default)]

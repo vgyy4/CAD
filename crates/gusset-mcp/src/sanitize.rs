@@ -283,6 +283,7 @@ impl TextStore {
                    "hint": "call the original tool again to get a fresh reference"})
         })?;
         let total = e.text.chars().count();
+        let asked = limit;
         let limit = limit.clamp(1, MAX_GET_TEXT_CHARS);
         let chunk = take_chars(skip_chars(&e.text, offset), limit).to_string();
         let end = offset.saturating_add(chunk.chars().count());
@@ -298,14 +299,21 @@ impl TextStore {
                 None => json!({"text": chunk}),
             }
         };
-        Ok(json!({
+        let mut out = json!({
             "ref": reference,
             "path": path,
             "offset": offset,
             "next_offset": next,
             "total_chars": total,
             "chunk": body,
-        }))
+        });
+        // A limit outside 1..=MAX is clamped; say so (dogfooding F13-6).
+        if asked != limit
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert("limit_applied".into(), json!(limit));
+        }
+        Ok(out)
     }
 }
 

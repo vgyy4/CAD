@@ -34,6 +34,11 @@ fn a_pocket_is_summarised_and_exported_as_gcode() {
     assert_eq!(q["levels_mm"], json!([-1.67, -3.33, -5.0]), "{q}");
     assert!(q["rings"].as_u64().unwrap() >= 3 && q["minutes"].as_f64().unwrap() > 0.0, "{q}");
     assert!(q.get("path").is_none(), "the path only on request");
+    // Lengths as unit strings, like the other commands (dogfooding F13-5).
+    let units = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": "6 mm", "depth": "0.5 cm", "stepdown": "2"});
+    assert_eq!(run(&mut s, "cam.toolpath", units)["levels_mm"], q["levels_mm"]);
+    let bad = json!({"sketch": "Sketch1", "operation": "pocket", "tool_diameter": 6.0, "depth": "5 deg"});
+    assert!(err(&mut s, "cam.toolpath", bad).message.contains("a length is"));
     // Adaptive clearing: same pocket, the radial cut held to the stepover (more moves).
     let mut ad = job.clone();
     ad["operation"] = json!("pocket_adaptive");

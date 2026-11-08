@@ -1585,8 +1585,8 @@ fn text_and_tool_spellings_point_at_each_other() {
     build_plate(&mut s, &u);
     let e = execute(&mut s, &u, "feature.extrude", json!({"profile": "Sketch1", "distance": "5 mm"})).unwrap_err();
     assert!(e.hint.as_deref().is_some_and(|h| h.contains("`sketch`")), "{e:?}");
-    let e = execute(&mut s, &u, "param.set", json!({"name": "width", "expression": "5 mm"})).unwrap_err();
-    assert!(e.hint.as_deref().is_some_and(|h| h.contains("`expr`")), "{e:?}");
+    // `expression` is taken as `expr` (dogfooding F13-6).
+    run(&mut s, &u, "param.set", json!({"name": "width", "expression": "5 mm"}));
     let e = execute(&mut s, &u, "feature.add", json!({"statement": "extrude E9 (sketch: Sketch1, distance: 5 mm)"}))
         .unwrap_err();
     assert!(e.message.contains("profile: Sketch1"), "{e:?}");

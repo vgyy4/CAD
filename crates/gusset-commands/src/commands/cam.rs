@@ -22,11 +22,11 @@ pub struct CamJob {
     /// pocket(_adaptive/_rest), profile_outside/_inside, drill/bore, surface/waterline/steep/pencil_ball, ..._flat
     #[serde(default)]
     pub operation: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub tool_diameter: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub depth: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub stepdown: Option<f64>,
     /// xD
     #[serde(default)]
@@ -37,17 +37,17 @@ pub struct CamJob {
     pub plunge: Option<f64>,
     #[serde(default)]
     pub rpm: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub top: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub safe: Option<f64>,
     /// 0 plunges.
     #[serde(default)]
     pub ramp_deg: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub peck: Option<f64>,
     /// pocket_rest: earlier D.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_mm")]
     pub previous: Option<f64>,
     /// [n, w, h]
     #[serde(default)]
@@ -217,6 +217,7 @@ impl CamJob {
         // A shank thinner than the cutter is a necked tool, or a typo (dogfooding F12-8).
         if let Some(&[shank, ..]) = self.holder.as_deref()
             && shank < tool - 1e-9
+            && self.operation.as_deref().is_some_and(|o| SURFACE_OPS.contains(&o))
         {
             warnings.push(format!(
                 "holder: the shank ({shank} mm) is thinner than the tool ({tool} mm); checked as a necked tool"
@@ -698,5 +699,23 @@ impl Command for ExportGcode {
             o.insert("bytes".into(), json!(g.len()));
         }
         Ok(out)
+    }
+}
+
+/// A length given as a number of mm or as a string with a unit (`"3 mm"`, `"0.25 in"`), as
+/// the other commands take them (dogfooding F13-5).
+fn opt_mm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    use serde::de::Error;
+    let bad = || D::Error::custom("a length is a number in mm or a string such as \"3 mm\"");
+    match <Option<Value> as Deserialize>::deserialize(d)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n.as_f64().map(Some).ok_or_else(bad),
+        Some(Value::String(t)) => {
+            let e = gusset_units::expr::parse(t.trim()).map_err(|_| bad())?;
+            gusset_eval::expr_value("length", &e, gusset_units::Dim::LENGTH, &Default::default(), Default::default())
+                .map(Some)
+                .map_err(|_| bad())
+        }
+        Some(_) => Err(bad()),
     }
 }

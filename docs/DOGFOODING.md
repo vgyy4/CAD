@@ -1160,3 +1160,14 @@ Not tested: fixed faces on curved faces with a mesh-quality check of the stress 
 true z-asymmetric load, bundles with drawings or configurations, `render_view` photo on a GPU, multi-body
 SolidWorks files other than the OLED part, SolidWorks assemblies, jobs on face sketches kept across `feature_bake`
 (open in F12-6).
+
+### Status of the run 13 findings
+
+| ID | Status |
+|---|---|
+| F13-1 | Fixed: the thin-shank note is given only for the 3D finishing operations that check a holder. |
+| F13-2 | Fixed: `also_moved` also lists faces whose surface kind changed, revolved faces whose radius changed about the same axis (the corner blends an offset grows) and other surfaces whose place or area changed. `rules: false` is still open. |
+| F13-3 | Fixed: `kept_share` above `keep` gives a warning that the voxels at the supports and loads are always kept; the thinned-`shape_quads` warning is left out when `path` was given. |
+| F13-4 | Fixed in part: `body_changes` lists the 20 largest bodies and counts the rest (`body_changes_more`); the multi-body warning names `feature_combine` and `feature_group`. Body names and colours from the file are open. |
+| F13-5 | Fixed: CAM lengths (`tool_diameter`, `depth`, `stepdown`, `top`, `safe`, `peck`, `previous`) take numbers in mm or unit strings (`"3 mm"`, `"0.5 cm"`). |
+| F13-6 | Fixed: `get_text` reports `limit_applied` when it clamps; `param_set` takes `expression` as `expr`. |

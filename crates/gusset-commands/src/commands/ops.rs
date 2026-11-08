@@ -245,11 +245,7 @@ impl Command for OffsetFace {
 
 /// Where each face of the body holding `faces` lies, but `faces` themselves: a planar
 /// face's normal and offset, a revolved face's axis; other faces are left out.
-fn face_places(
-    s: &mut Session,
-    ctx: &CmdCtx,
-    faces: &[FaceRef],
-) -> std::collections::BTreeMap<String, (gusset_kernel::V3, gusset_kernel::V3)> {
+fn face_places(s: &mut Session, ctx: &CmdCtx, faces: &[FaceRef]) -> std::collections::BTreeMap<String, Place> {
     use gusset_kernel::SurfaceKind as K;
     let mut out = std::collections::BTreeMap::new();
     let Ok(ev) = s.evaluate(&ctx.actor) else { return out };
@@ -262,22 +258,33 @@ fn face_places(
             continue;
         }
         let place = match (f.kind, f.axis) {
-            (K::Plane, _) => (f.normal, [gusset_kernel::dot(f.normal, f.centroid), 0.0, 0.0]),
+            (K::Plane, _) => (f.normal, [gusset_kernel::dot(f.normal, f.centroid), 0.0, 0.0], 0.0),
             (K::Cylinder | K::Cone | K::Torus, Some(a)) => {
-                // The axis line: its direction and the point on it nearest the origin.
+                // The axis line (its direction and the point on it nearest the origin) and how
+                // far the face's centroid sits from it, which grows with the radius (a blend
+                // that an offset makes larger keeps its axis).
                 let t = gusset_kernel::dot(a.origin, a.dir);
-                (a.dir, gusset_kernel::sub(a.origin, gusset_kernel::scale(a.dir, t)))
+                let foot = gusset_kernel::sub(a.origin, gusset_kernel::scale(a.dir, t));
+                let rel = gusset_kernel::sub(f.centroid, a.origin);
+                let off = gusset_kernel::sub(rel, gusset_kernel::scale(a.dir, gusset_kernel::dot(rel, a.dir)));
+                (a.dir, foot, gusset_kernel::norm(off))
             }
-            _ => continue,
+            // Other surfaces (blends, offset surfaces): where they sit and how large they are.
+            _ => (f.centroid, [0.0; 3], f.area),
         };
-        out.insert(n.to_string(), place);
+        out.insert(n.to_string(), (format!("{:?}", f.kind), place.0, place.1, place.2));
     }
     out
 }
 
-fn same_place(a: &(gusset_kernel::V3, gusset_kernel::V3), b: &(gusset_kernel::V3, gusset_kernel::V3)) -> bool {
+/// A face's surface kind and where it lies (see [`face_places`]).
+type Place = (String, gusset_kernel::V3, gusset_kernel::V3, f64);
+
+/// Same kind and place: a face whose kind changed (a cylinder became an offset surface)
+/// moved too (dogfooding F13-2).
+fn same_place(a: &Place, b: &Place) -> bool {
     let close = |p: gusset_kernel::V3, q: gusset_kernel::V3| gusset_kernel::norm(gusset_kernel::sub(p, q)) < 1e-6;
-    close(a.0, b.0) && close(a.1, b.1)
+    a.0 == b.0 && close(a.1, b.1) && close(a.2, b.2) && (a.3 - b.3).abs() < 1e-6
 }
 
 /// Moves faces rigidly (ADR 0031).
