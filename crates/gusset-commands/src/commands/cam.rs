@@ -80,7 +80,10 @@ impl CamJob {
             return Ok(self.clone());
         };
         if self.sketch.is_some() || self.operation.is_some() || self.tool_diameter.is_some() || self.depth.is_some() {
-            return Err(CommandError::args("job takes its fields from the cam_job feature: give job or the fields"));
+            return Err(CommandError::args(
+                "job fixes sketch, operation, tool_diameter and depth: give job or those fields",
+            )
+            .hint("edit the cam_job to change them; other options (holder, ramp, stepover, ...) override the job"));
         }
         let doc = s.document(&ctx.actor)?;
         let Some(FeatureKind::CamJob(d)) = doc.features.iter().find(|f| &f.name == name).map(|f| &f.kind) else {
@@ -211,6 +214,14 @@ impl CamJob {
         let mut warnings = Vec::new();
         let sketch = self.sketch.clone().unwrap_or_default();
         let (tool, depth) = (self.tool_diameter.unwrap_or(0.0), self.depth.unwrap_or(0.0));
+        // A shank thinner than the cutter is a necked tool, or a typo (dogfooding F12-8).
+        if let Some(&[shank, ..]) = self.holder.as_deref()
+            && shank < tool - 1e-9
+        {
+            warnings.push(format!(
+                "holder: the shank ({shank} mm) is thinner than the tool ({tool} mm); checked as a necked tool"
+            ));
+        }
         if self.holder.is_some() && !self.operation.as_deref().is_some_and(|o| SURFACE_OPS.contains(&o)) {
             warnings.push("holder is checked only for 3D finishing; ignored".to_string());
         }
