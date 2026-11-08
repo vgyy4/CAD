@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod assembly;
+mod bake;
 mod cam;
 mod component;
 mod configuration;
@@ -35,6 +36,7 @@ mod sketch_ops;
 mod surface;
 mod sweep;
 pub use assembly::{QueryBom, QueryInterference, StudyMotion};
+pub use bake::Bake;
 pub use cam::{CamJob, ExportGcode, ToolpathQuery};
 pub use component::{ConfigureComponent, InsertComponent, QueryComponents, UpdateComponent};
 pub use configuration::{ApplyConfiguration, DeleteConfiguration, QueryConfigurations, SaveConfiguration};
@@ -69,6 +71,7 @@ pub(crate) fn all() -> Vec<CommandSpec> {
     v.extend(sheet::specs());
     v.extend(cam::specs());
     v.extend(sim::specs());
+    v.extend(bake::specs());
     v.extend(measure::specs());
     v.extend(feature_edit::specs());
     v.extend(lettering::specs());

@@ -1591,3 +1591,31 @@ fn text_and_tool_spellings_point_at_each_other() {
         .unwrap_err();
     assert!(e.message.contains("profile: Sketch1"), "{e:?}");
 }
+
+#[test]
+fn baking_keeps_the_bodies_and_free_sketches_and_undoes_in_one_step() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    run(
+        &mut s,
+        &u,
+        "feature.add",
+        json!({"statement": "cam_job Job1 (sketch: Sketch1, operation: pocket, tool_diameter: 6 mm, depth: 2 mm)"}),
+    );
+    let before = run(&mut s, &u, "query.body", json!({}))["volume_mm3"].as_f64().unwrap();
+    assert!(execute(&mut s, &u, "feature.bake", json!({"confirm": false})).is_err());
+    let r = run(&mut s, &u, "feature.bake", json!({"confirm": true}));
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert_eq!(r["bodies"], json!(["Extrude1"]), "{r}");
+    assert_eq!(r["kept_features"], json!(["Sketch1", "Job1"]), "{r}");
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("import Extrude1") && !text.contains("extrude Extrude1"), "{text}");
+    assert!(text.contains("param width"), "{text}");
+    let after = run(&mut s, &u, "query.body", json!({}))["volume_mm3"].as_f64().unwrap();
+    assert!((after - before).abs() < 1e-9 * before.max(1.0), "{before} vs {after}");
+    // The baked body takes direct edits; one undo brings the history back.
+    run(&mut s, &u, "history.undo", json!({}));
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("extrude Extrude1"), "{text}");
+}

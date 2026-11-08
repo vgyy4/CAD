@@ -339,6 +339,8 @@ Phase 3 has started (see Next).
   correct end to end but 2-57x slower than OCCT, no face history, platform sin/cos; nothing
   routed. Adapter in `kernels/solidcore` (opt-in, own workspace). Next look: 2026-12.
 
+- History-free mode done 2026-11-08: `feature.bake` (ADR 0038 amendment) turns the bodies into
+  exact imports for direct editing; one undo restores the history.
 - Rendering (later tier) started 2026-11-08: path-traced stills (`render_traced`, ADR 0009
   amendment; `gusset build -e out.png`).
 

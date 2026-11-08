@@ -31,3 +31,14 @@ every requested face is gone and otherwise fails with "the faces cannot be remov
   feature; on imported bodies it is the only way. Not here: replacing a face by another
   surface ("replace face") and live rules (keeping faces coplanar or concentric during a
   move); those may follow.
+
+## Amendment (2026-11-08): history-free modelling (`feature.bake`)
+
+`feature.bake {confirm: true}` turns a part into dumb solids, the "history-free mode" of
+the later tier: each body, as evaluated now, is written in the kernel's native B-rep form
+(trusted: this process wrote it) and becomes an `import` feature named after the body; the
+features that made the bodies go. Sketches and datum planes standing on XY/XZ/YZ or on such
+datum planes stay (they do not depend on bodies), and so do the CAM jobs on kept sketches;
+parameters stay. What follows is direct editing (`move_face`, `offset_face`, `delete_face`,
+fillets, cuts on the imports). Refused while the model has rebuild errors or the timeline is
+rolled back. One edit: `history_undo` brings the history back, and other branches keep it.
