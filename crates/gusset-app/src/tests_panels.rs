@@ -943,3 +943,26 @@ fn draft_analysis_paints_the_model() {
     assert!(h.state().results.as_ref().is_some_and(|r| r.kind == crate::results_panel::Kind::Draft));
     assert!(h.state().stress_view);
 }
+
+#[test]
+fn settings_travel_between_installs_without_recent_files() {
+    let dir = std::env::temp_dir().join(format!("gusset-settings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("s.json");
+    let mut a = app();
+    a.theme = crate::theme::ThemeKind::Light;
+    a.viewport.nav_preset = crate::viewport::NavPreset::SolidWorks;
+    a.recent = vec!["/home/someone/secret.gus".into()];
+    a.export(crate::app::PathPurpose::ExportSettings, &file, false);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("secret"), "{text}");
+    let mut b = app();
+    b.recent = vec!["/mine.gus".into()];
+    let s = &mut b;
+    let r = s.path_action(crate::app::PathPurpose::ImportSettings, &file.to_string_lossy());
+    assert!(r.is_ok(), "{r:?}");
+    assert_eq!(s.theme, crate::theme::ThemeKind::Light);
+    assert_eq!(s.viewport.nav_preset, crate::viewport::NavPreset::SolidWorks);
+    assert_eq!(s.recent, vec!["/mine.gus".to_string()]);
+    let _ = std::fs::remove_dir_all(dir);
+}

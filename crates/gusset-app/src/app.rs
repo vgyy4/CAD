@@ -94,6 +94,9 @@ pub enum PathPurpose {
     ExportMesh(&'static str),
     /// A path-traced picture of the current view (PNG).
     Render,
+    /// The settings (layout, tools, navigation; no recent files) as a JSON file.
+    ExportSettings,
+    ImportSettings,
 }
 
 /// Status-bar message.
@@ -471,18 +474,23 @@ impl App {
             notice_since: None,
             agents,
         };
-        app.theme = prefs.theme;
-        app.reduce_motion = prefs.reduce_motion;
-        app.ui_scale = prefs.ui_scale;
-        let ids = |v: &[String]| v.iter().filter_map(|id| gusset_commands::find(id)).map(|s| s.id).collect();
-        app.quick_tools = [ids(&prefs.quick_solid), ids(&prefs.quick_sketch)];
-        app.browser_collapsed = prefs.browser_collapsed;
-        app.timeline_collapsed = prefs.timeline_collapsed;
-        app.docks_swapped = prefs.docks_swapped;
-        app.viewport.nav_preset = prefs.nav;
-        app.recent = prefs.recent;
-        app.panel_widths = (prefs.browser_width, prefs.properties_width);
+        app.recent = prefs.recent.clone();
+        app.apply_prefs(prefs);
         app
+    }
+
+    /// Takes over the look, layout, tools and navigation of `prefs` (not the recent files).
+    pub fn apply_prefs(&mut self, prefs: crate::prefs::Prefs) {
+        self.theme = prefs.theme;
+        self.reduce_motion = prefs.reduce_motion;
+        self.ui_scale = prefs.ui_scale;
+        let ids = |v: &[String]| v.iter().filter_map(|id| gusset_commands::find(id)).map(|s| s.id).collect();
+        self.quick_tools = [ids(&prefs.quick_solid), ids(&prefs.quick_sketch)];
+        self.browser_collapsed = prefs.browser_collapsed;
+        self.timeline_collapsed = prefs.timeline_collapsed;
+        self.docks_swapped = prefs.docks_swapped;
+        self.viewport.nav_preset = prefs.nav;
+        self.panel_widths = (prefs.browser_width, prefs.properties_width);
     }
 
     /// The model thread this window talks to (shared with the MCP server).
@@ -2113,6 +2121,22 @@ impl App {
                         }
                     }
                 });
+                ui.menu_button(tr("menu.settings_file"), |ui| {
+                    if ui.button(tr("menu.settings_export")).clicked() {
+                        self.dialog = Some(Dialog::Path {
+                            purpose: PathPurpose::ExportSettings,
+                            text: "gusset-settings.json".into(),
+                            error: None,
+                        });
+                    }
+                    if ui.button(tr("menu.settings_import")).clicked() {
+                        self.dialog = Some(Dialog::Path {
+                            purpose: PathPurpose::ImportSettings,
+                            text: "gusset-settings.json".into(),
+                            error: None,
+                        });
+                    }
+                });
                 // Collaboration (ADR 0044): bundles and a shared folder.
                 ui.menu_button(tr("menu.share"), |ui| {
                     for (label, id) in [
@@ -3617,7 +3641,7 @@ impl App {
 
     /// Runs a path dialog's action. Quick failures come back as `Err` (the dialog stays
     /// open); slower ones (saving, exporting) re-open the dialog with the error later.
-    fn path_action(&mut self, purpose: PathPurpose, text: &str) -> Result<(), String> {
+    pub(crate) fn path_action(&mut self, purpose: PathPurpose, text: &str) -> Result<(), String> {
         let path = PathBuf::from(text.trim());
         if path.as_os_str().is_empty() {
             return Err("Enter a file path".into());
@@ -3633,6 +3657,16 @@ impl App {
                 self.save_as(abs);
                 Ok(())
             }
+            PathPurpose::ImportSettings => {
+                if !abs.is_file() {
+                    return Err(format!("{} {}", tr("open.not_found"), abs.to_string_lossy()));
+                }
+                let p = crate::prefs::load(&abs);
+                self.apply_prefs(p);
+                self.save_prefs();
+                self.notice = Some(Notice { text: tr("settings.imported").into(), hint: None, error: false });
+                Ok(())
+            }
             PathPurpose::Open => {
                 if !abs.is_file() {
                     return Err(format!("{} {}", tr("open.not_found"), abs.to_string_lossy()));
@@ -3644,7 +3678,8 @@ impl App {
             | PathPurpose::ExportStl
             | PathPurpose::Export3mf
             | PathPurpose::ExportMesh(_)
-            | PathPurpose::Render => {
+            | PathPurpose::Render
+            | PathPurpose::ExportSettings => {
                 if abs.exists() {
                     // Never replace a file without asking (review L7).
                     self.dialog = Some(Dialog::Overwrite { purpose, path: abs });
@@ -3660,6 +3695,19 @@ impl App {
     pub(crate) fn export(&mut self, purpose: PathPurpose, path: &std::path::Path, overwrite: bool) {
         if purpose == PathPurpose::Render {
             self.render_to(path);
+            return;
+        }
+        if purpose == PathPurpose::ExportSettings {
+            let mut p = self.prefs();
+            p.recent.clear(); // paths stay private
+            self.notice = Some(match crate::prefs::save(path, &p) {
+                Ok(()) => Notice {
+                    text: format!("{} {}", tr("settings.exported"), path.to_string_lossy()),
+                    hint: None,
+                    error: false,
+                },
+                Err(e) => Notice { text: e, hint: None, error: true },
+            });
             return;
         }
         let (id, extra) = match purpose {
