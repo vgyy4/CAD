@@ -275,6 +275,8 @@ pub struct App {
     pub cam_tab: bool,
     /// The Render tab is chosen.
     pub render_tab: bool,
+    /// The Render tab's photo preview of the viewport.
+    pub photo: crate::photo_preview::PhotoPreview,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
     pub viewport: Viewport,
     pub selection: Vec<Hit>,
@@ -425,6 +427,7 @@ impl App {
             sheet_tab: false,
             cam_tab: false,
             render_tab: false,
+            photo: crate::photo_preview::PhotoPreview::default(),
             theme_applied: None,
             viewport: Viewport::default(),
             selection: Vec::new(),
@@ -2375,6 +2378,7 @@ impl App {
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
                 render: self.render_tab,
+                photo_preview: self.photo.on,
             },
         );
         if let Some(a) = action {
@@ -2401,6 +2405,7 @@ impl App {
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
                 render: self.render_tab,
+                photo_preview: self.photo.on,
             },
         );
         if let Some(a) = action {
@@ -2425,18 +2430,22 @@ impl App {
                 self.sheet_tab = false;
                 self.cam_tab = false;
                 self.render_tab = false;
+                self.photo.set(false);
                 self.finish_sketch();
             }
             Action::SurfaceTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (true, false, false, false);
+                self.photo.set(false);
                 self.finish_sketch();
             }
             Action::SheetTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, true, false, false);
+                self.photo.set(false);
                 self.finish_sketch();
             }
+            Action::PhotoPreview(on) => self.photo.set(on),
             Action::RenderTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, true);
@@ -2445,6 +2454,7 @@ impl App {
             Action::CamTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, true, false);
+                self.photo.set(false);
                 self.finish_sketch();
             }
             Action::DrawingTab => match self.snapshot.doc.drawings.last().map(|d| d.name.clone()) {
@@ -3228,6 +3238,11 @@ impl App {
             sketches.extend(self.toolpath.as_ref());
         }
         let out = self.viewport.show(ui, &pal, self.theme, &sketches, &self.selection);
+        // The Render tab's photo preview, painted over the viewport.
+        if self.render_tab && self.photo.on {
+            let moving = self.viewport.is_interacting();
+            self.photo.frame(ui, self.viewport.scene_arc(), self.viewport.camera, self.viewport.rect(), moving);
+        }
 
         if let Some((frame, points)) = &placing {
             // Placing sketch geometry: clicks are points on the sketch plane, not picks.

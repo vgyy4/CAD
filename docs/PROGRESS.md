@@ -279,9 +279,11 @@ Phase 3 has started (see Next).
      copies), joints (the Pico board's components are placed by joints, not matrices). Fusion colours
      done (ADR 0039 amendment: `.smb` attribute -> design stream -> `.protein` package -> STEP
      styles); the history blob (`.smbh`) before a body gives the face materials its `.smb` lost
-     (matched by face tag, ADR 0039); next there: the `BASEFEAT_PM_BODY_REF` records give the
-     imported sub-bodies' colours but their link to the blob's bodies is open, and the board's
-     plate takes the component-named `Board` material (no id link found).
+     (matched by face tag, ADR 0039); the `BASEFEAT_PM_BODY_REF` records colour the imported
+     sub-bodies (RFM69, OLED, switch: record index k -> k-th transform-carrying body after the
+     helper, only when the counts agree, ADR 0039 "Body references"); next there: the board's
+     plate takes the component-named `Board` material (no id link found), single-record
+     features' colours (parse as black, unread).
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz

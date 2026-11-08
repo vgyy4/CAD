@@ -90,6 +90,8 @@ const EN: &[(&str, &str)] = &[
     ("tab.sheet", "Sheet Metal"),
     ("tab.cam", "Manufacture"),
     ("tab.render", "Render"),
+    ("render.preview", "Photo preview"),
+    ("render.preview_hint", "Path-trace the view in place; it sharpens while the view stays still"),
     ("tab.sketch", "Sketch"),
     ("tab.drawing", "Drawing"),
     ("ribbon.create", "Create"),

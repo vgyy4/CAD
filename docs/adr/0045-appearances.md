@@ -81,4 +81,7 @@ anywhere in the document.
   PNG in the project folder for agents and the CLI; in the app the tool renders the current view.
   The commands crate does not depend on the renderer: hosts register one
   (`set_photo_renderer`; gusset-mcp's scene builder, the same scene as `render_view`).
+  The Render tab's Photo preview path-traces the viewport in place at half resolution, in
+  passes of 1, 4, 16 and 64 samples while the view stays still; a camera, model or size change
+  starts over, and nothing runs once the last pass is in.
 

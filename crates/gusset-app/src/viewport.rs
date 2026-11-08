@@ -536,6 +536,16 @@ impl Viewport {
         self.hover_for = None;
     }
 
+    /// The scene, shared (cheap to clone into a worker thread).
+    pub fn scene_arc(&self) -> Arc<Scene> {
+        self.scene.clone()
+    }
+
+    /// The camera is moving (orbit, pan, zoom or a view animation).
+    pub fn is_interacting(&self) -> bool {
+        self.interacting
+    }
+
     pub fn scene(&self) -> &Scene {
         &self.scene
     }

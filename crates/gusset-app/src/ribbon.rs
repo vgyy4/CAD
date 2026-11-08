@@ -28,6 +28,8 @@ pub enum Action {
     CamTab,
     /// The Render tab: appearances and path-traced pictures.
     RenderTab,
+    /// The Render tab's "Photo preview": the viewport path-traced in place (on/off).
+    PhotoPreview(bool),
     /// The Sketch tab: edits the latest sketch (or starts a new one).
     SketchTab,
     /// "Finish sketch".
@@ -287,6 +289,8 @@ pub struct Ribbon<'a> {
     pub cam: bool,
     /// The Render tab is chosen.
     pub render: bool,
+    /// The viewport shows the path-traced preview.
+    pub photo_preview: bool,
 }
 
 /// A tool's tooltip heading: the command title and its shortcut.
@@ -539,6 +543,16 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         }
         if sketching && finish_button(ui, pal).clicked() {
             action = Some(Action::FinishSketch);
+        }
+        if r.render && !sketching && r.drawing.is_none() {
+            ui.vertical(|ui| {
+                ui.add_space(theme::SPACE[2]);
+                let mut on = r.photo_preview;
+                if ui.toggle_value(&mut on, tr("render.preview")).on_hover_text(tr("render.preview_hint")).clicked() {
+                    action = Some(Action::PhotoPreview(on));
+                }
+            });
+            group_separator(ui, pal);
         }
         if !sketching && r.drawing.is_none() {
             ui.vertical(|ui| {

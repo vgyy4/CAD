@@ -806,6 +806,34 @@ fn the_render_tab_offers_appearance_and_a_rendered_image_of_the_view() {
 }
 
 #[test]
+fn the_photo_preview_traces_the_view_and_stops_with_the_tab() {
+    let mut a = app();
+    a.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 20, "height": 10})).unwrap();
+    a.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm"})).unwrap();
+    let mut h = harness(a);
+    for _ in 0..4 {
+        h.run_steps(5);
+        h.state_mut().wait_idle();
+    }
+    h.get_by_label("RENDER").click();
+    h.run();
+    h.get_by_label("Photo preview").click();
+    h.run();
+    assert!(h.state().photo.on);
+    // Passes arrive from a worker thread: the first within a few seconds.
+    let t = std::time::Instant::now();
+    while h.state().photo.samples == 0 && t.elapsed() < std::time::Duration::from_secs(60) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.run_steps(1);
+    }
+    assert!(h.state().photo.samples >= 1, "no preview pass arrived");
+    h.get_by_label("SOLID").click();
+    h.run();
+    assert!(!h.state().photo.on && h.state().photo.samples == 0);
+}
+
+#[test]
 fn a_toolpath_is_previewed_over_the_model_until_the_model_changes() {
     let mut a = app();
     a.run("sketch.create", json!({"plane": "XY"})).unwrap();
