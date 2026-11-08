@@ -64,6 +64,8 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
   Owner rule: Codex/Gemini get only simple, mechanical tasks (they are weaker models);
   anything complex is done directly or by a Sonnet subagent.
 - Branch: this session pushes only to `claude/new-session-nedlj5`, which plays "main".
+- Owner rule (repeated 2026-11-08): always continue to the next thing without being told; while
+  agents run, work on something independent; never end a turn just to report.
 - Owner rule: never stop to check in or ask whether to continue. Finish a step, push,
   and start the next item in docs/PROGRESS.md "Next" without waiting; ask only for decisions that are genuinely the owner's.
 - Owner rule (OCCT translation, ADR 0025, 2026-11-02): no bulk translation. Translate an
