@@ -97,6 +97,12 @@
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPCAFControl_Writer.hxx>
+#include <algorithm>
+#include <map>
+#include <unordered_map>
+#include <Quantity_Color.hxx>
+#include <XCAFDoc_ColorTool.hxx>
+#include <STEPCAFControl_Reader.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -2289,6 +2295,150 @@ int gs_step_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t*
   if (!data || !out_shapes || !n) return fail("null argument");
   STEPControl_Reader r;
   std::vector<GsShape*> v = read_with(r, data, len, "import.step");
+  return shapes_out(v, out_shapes, n);
+  GS_GUARD_END
+}
+
+/* Names and colours of the shapes a STEP file holds (ADR 0045): the same root shapes as
+ * gs_step_read, read through XDE. `meta` gets one line per shape, "name\t#rrggbb\n", with
+ * "-" for a missing colour; tabs and line breaks in names become spaces. A root without a
+ * colour of its own takes the colour most of its first faces have. */
+int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t* n, GsBuf* meta) {
+  GS_GUARD_BEGIN
+  if (!data || !out_shapes || !n || !meta) return fail("null argument");
+  occ::handle<XCAFApp_Application> app = XCAFApp_Application::GetApplication();
+  occ::handle<TDocStd_Document> doc;
+  app->NewDocument("MDTV-XCAF", doc);
+  STEPCAFControl_Reader r;
+  r.SetColorMode(true);
+  r.SetNameMode(true);
+  std::string buf(reinterpret_cast<const char*>(data), len);
+  std::istringstream is(buf);
+  if (r.ReadStream("import.step", is) != IFSelect_RetDone) {
+    app->Close(doc);
+    throw Standard_Failure("the file could not be parsed");
+  }
+  if (!r.Transfer(doc)) {
+    app->Close(doc);
+    throw Standard_Failure("the file could not be translated");
+  }
+  occ::handle<XCAFDoc_ShapeTool> st = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  occ::handle<XCAFDoc_ColorTool> ct = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+  STEPControl_Reader& sr = r.ChangeReader();
+  std::vector<GsShape*> v;
+  std::string lines;
+  auto rgb = [](const Quantity_Color& c) {
+    double cr, cg, cb;
+    c.Values(cr, cg, cb, Quantity_TOC_sRGB);
+    auto byte = [](double x) { return static_cast<unsigned>(std::lround(std::clamp(x, 0.0, 1.0) * 255.0)); };
+    return (byte(cr) << 16) | (byte(cg) << 8) | byte(cb);
+  };
+  // A label's name, or the name of the shape it refers to (an assembly component).
+  auto name_of = [&](const TDF_Label& lab) {
+    std::string name;
+    occ::handle<TDataStd_Name> nm;
+    TDF_Label l = lab;
+    for (int k = 0; k < 2 && name.empty(); ++k) {
+      if (l.FindAttribute(TDataStd_Name::GetID(), nm)) {
+        TCollection_AsciiString a(nm->Get(), '?');
+        name = a.ToCString();
+      }
+      TDF_Label ref;
+      if (!XCAFDoc_ShapeTool::GetReferredShape(l, ref)) break;
+      l = ref;
+    }
+    for (char& ch : name)
+      if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
+    return name;
+  };
+  // One pass over the document: names and colours by the shape they belong to (its
+  // TShape, shared by every placed copy), so each lookup below is constant time.
+  std::unordered_map<const TopoDS_TShape*, std::string> names;
+  std::unordered_map<const TopoDS_TShape*, long> colours;
+  auto label_colour = [&](const TDF_Label& l) -> long {
+    Quantity_Color c;
+    if (XCAFDoc_ColorTool::GetColor(l, XCAFDoc_ColorSurf, c) || XCAFDoc_ColorTool::GetColor(l, XCAFDoc_ColorGen, c))
+      return rgb(c);
+    return -1;
+  };
+  {
+    NCollection_Sequence<TDF_Label> all;
+    st->GetShapes(all);
+    for (int i = 1; i <= all.Length(); ++i) {
+      const TDF_Label& l = all.Value(i);
+      TopoDS_Shape sh = XCAFDoc_ShapeTool::GetShape(l);
+      if (sh.IsNull()) continue;
+      std::string n = name_of(l);
+      long c = label_colour(l);
+      auto note = [&](const TopoDS_Shape& x) {
+        if (!n.empty()) names.emplace(x.TShape().get(), n);
+        if (c >= 0) colours.emplace(x.TShape().get(), c);
+      };
+      note(sh);
+      for (TopExp_Explorer e(sh, TopAbs_SOLID); e.More(); e.Next()) note(e.Current());
+      NCollection_Sequence<TDF_Label> subs;
+      XCAFDoc_ShapeTool::GetSubShapes(l, subs);
+      for (int j = 1; j <= subs.Length(); ++j) {
+        long sc = label_colour(subs.Value(j));
+        TopoDS_Shape x = XCAFDoc_ShapeTool::GetShape(subs.Value(j));
+        if (sc >= 0 && !x.IsNull()) {
+          colours[x.TShape().get()] = sc;
+          for (TopExp_Explorer e(x, TopAbs_FACE); e.More(); e.Next()) colours.emplace(e.Current().TShape().get(), sc);
+        }
+      }
+    }
+  }
+  auto colour_of = [&](const TopoDS_Shape& s) -> long {
+    auto it = colours.find(s.TShape().get());
+    if (it != colours.end()) return it->second;
+    // The colour most of its faces have.
+    std::map<long, int> count;
+    for (TopExp_Explorer e(s, TopAbs_FACE); e.More(); e.Next()) {
+      auto f = colours.find(e.Current().TShape().get());
+      if (f != colours.end()) ++count[f->second];
+    }
+    long best = -1;
+    int most = 0;
+    for (const auto& [k, nface] : count)
+      if (nface > most) {
+        most = nface;
+        best = k;
+      }
+    return best;
+  };
+  auto emit = [&](const TopoDS_Shape& s) {
+    auto it = names.find(s.TShape().get());
+    std::string name = it != names.end() ? it->second : std::string();
+    long colour = colour_of(s);
+    char hex[16];
+    if (colour >= 0)
+      std::snprintf(hex, sizeof hex, "#%06lx", colour);
+    else
+      std::snprintf(hex, sizeof hex, "-");
+    lines += name + "\t" + hex + "\n";
+    v.push_back(new GsShape{s});
+  };
+  for (int i = 1; i <= sr.NbShapes(); ++i) {
+    TopoDS_Shape s = sr.Shape(i);
+    if (s.IsNull()) continue;
+    // An assembly (a compound of several solids) comes in as its solids, each with its
+    // component's name and colour, when every face belongs to a solid and there are at
+    // most 4096 of them; anything else stays one shape.
+    std::vector<TopoDS_Shape> solids;
+    ShapeMap in_solids, all_faces;
+    TopExp::MapShapes(s, TopAbs_FACE, all_faces);
+    for (TopExp_Explorer e(s, TopAbs_SOLID); e.More() && solids.size() <= 4096; e.Next()) {
+      solids.push_back(e.Current());
+      TopExp::MapShapes(e.Current(), TopAbs_FACE, in_solids);
+    }
+    if (solids.size() > 1 && solids.size() <= 4096 && in_solids.Extent() == all_faces.Extent()) {
+      for (const auto& so : solids) emit(so);
+    } else {
+      emit(s);
+    }
+  }
+  app->Close(doc);
+  bytes_to_buf(lines, meta);
   return shapes_out(v, out_shapes, n);
   GS_GUARD_END
 }

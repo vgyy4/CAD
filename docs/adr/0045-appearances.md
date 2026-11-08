@@ -37,3 +37,11 @@ anywhere in the document.
   body's own. Counting faces rather than area can pick the colour of many small faces (the
   OLED board reads lavender, its holes' colour, over its blue top). STEP/3MF colours could
   map onto appearances later.
+* STEP (amendment, same day): the worker reads STEP through XDE (`STEPCAFControl_Reader`)
+  and keeps the same root shapes, except that an assembly root (a compound of several
+  solids whose every face belongs to a solid, at most 4096) comes in as its solids. Each
+  body takes its product or component name and its colour (its own, its label's, else the
+  colour most of its faces have); names lose control, bidi and zero-width characters and are
+  cut to 200. The colour travels from the worker on the body name after U+001F, so the
+  importer interface did not change. Adafruit's LoRa bonnet: 1 grey body before, 83 named
+  and coloured bodies now; reading took 2.5 s either way.

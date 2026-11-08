@@ -96,6 +96,24 @@ struct PreparedBody {
     color: Option<u32>,
 }
 
+/// A worker body name `name\u{1f}#rrggbb` as the name and its colour (ADR 0045); the name
+/// is the file's text, so control, bidi and zero-width characters go and it is cut to 200.
+fn split_look(raw: &str) -> (String, Option<u32>) {
+    let (name, color) = match raw.split_once('\u{1f}') {
+        Some((n, c)) => (n, gusset_doc::text::parse_color(c)),
+        None => (raw, None),
+    };
+    let name: String = name
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+        })
+        .take(200)
+        .collect();
+    (name.trim().to_string(), color)
+}
+
 /// The worker's bodies of one STEP text, with the names and colours the Parasolid file
 /// gave them when the counts agree (the STEP keeps the file's body order).
 fn with_looks(bodies: Vec<(String, Vec<u8>)>, looks: &[(Option<String>, Option<u32>)]) -> Vec<PreparedBody> {
@@ -105,11 +123,12 @@ fn with_looks(bodies: Vec<(String, Vec<u8>)>, looks: &[(Option<String>, Option<u
         .enumerate()
         .map(|(i, (name, blob))| {
             let look = if same { looks.get(i) } else { None };
+            let (own, own_color) = split_look(&name);
             PreparedBody {
-                name: look.and_then(|l| l.0.clone()).unwrap_or(name),
+                name: look.and_then(|l| l.0.clone()).unwrap_or(own),
                 blob,
                 format: ImportFormat::Step,
-                color: look.and_then(|l| l.1),
+                color: look.and_then(|l| l.1).or(own_color),
             }
         })
         .collect()
@@ -255,7 +274,10 @@ impl ImportJob {
                 let bodies = importer.import(format.keyword(), &bytes, cancel).map_err(|e| {
                     if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
                 })?;
-                let bodies = bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format, color: None });
+                let bodies = bodies.into_iter().map(|(name, blob)| {
+                    let (name, color) = split_look(&name);
+                    PreparedBody { name, blob, format, color }
+                });
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
             }
             Kind::Scad => scad(&bytes, self.kernel.as_ref(), cancel)?,
@@ -361,11 +383,9 @@ impl ImportJob {
                 let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
                     if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
                 })?;
-                let bodies = bodies.into_iter().map(|(name, blob)| PreparedBody {
-                    name,
-                    blob,
-                    format: ImportFormat::Step,
-                    color: None,
+                let bodies = bodies.into_iter().map(|(name, blob)| {
+                    let (name, color) = split_look(&name);
+                    PreparedBody { name, blob, format: ImportFormat::Step, color }
                 });
                 let mut warnings = c.warnings;
                 warnings.truncate(50);
@@ -783,11 +803,9 @@ fn f3d(
                                 ),
                             ));
                         }
-                        out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
-                            name,
-                            blob,
-                            format: ImportFormat::Step,
-                            color: None,
+                        out.extend(bodies.into_iter().map(|(name, blob)| {
+                            let (name, color) = split_look(&name);
+                            PreparedBody { name, blob, format: ImportFormat::Step, color }
                         }));
                     }
                 }

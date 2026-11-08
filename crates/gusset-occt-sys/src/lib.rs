@@ -303,6 +303,13 @@ mod raw {
             out_shapes: *mut *mut *mut GsShape,
             n: *mut usize,
         ) -> i32;
+        pub(crate) fn gs_step_read_meta(
+            data: *const u8,
+            len: usize,
+            out_shapes: *mut *mut *mut GsShape,
+            n: *mut usize,
+            meta: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_iges_read_file(
             path: *const core::ffi::c_char,
             out_shapes: *mut *mut *mut GsShape,

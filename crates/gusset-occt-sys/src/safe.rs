@@ -570,6 +570,29 @@ pub fn read_shapes(data: &[u8]) -> ShimResult<Vec<RawShape>> {
     Ok(collect_shapes(arr, n))
 }
 
+/// [`read_shapes`] with each shape's name and colour (`0xRRGGBB`) from the STEP file's
+/// XDE data, when it has them (ADR 0045). Names are as the file wrote them: untrusted.
+pub fn read_shapes_meta(data: &[u8]) -> ShimResult<Vec<(RawShape, String, Option<u32>)>> {
+    let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut arr: *mut *mut GsShape = std::ptr::null_mut();
+    let mut n = 0usize;
+    let mut meta = GsBuf::default();
+    // SAFETY: `data` alive for the call; out-params valid.
+    let rc = unsafe { sys::gs_step_read_meta(data.as_ptr(), data.len(), &mut arr, &mut n, &mut meta) };
+    check(rc)?;
+    let shapes = collect_shapes(arr, n);
+    let text = String::from_utf8_lossy(&take(meta)).into_owned();
+    let mut lines = text.lines();
+    Ok(shapes
+        .into_iter()
+        .map(|s| {
+            let (name, colour) = lines.next().and_then(|l| l.split_once('\t')).unwrap_or(("", "-"));
+            let colour = colour.strip_prefix('#').and_then(|h| u32::from_str_radix(h, 16).ok());
+            (s, name.to_string(), colour)
+        })
+        .collect())
+}
+
 /// Reads every root shape of the IGES file at `path`. OCCT's IGES reader cannot read from
 /// memory, so the caller provides a file (the sandboxed worker is allowed exactly that
 /// one file, read-only).

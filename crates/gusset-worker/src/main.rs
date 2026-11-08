@@ -57,11 +57,17 @@ fn run(format: Format, data: &[u8], file: Option<&Path>, granted: Option<&Path>)
     let err = |e: safe::ShimError| format!("geometry kernel error: {e}");
     match format {
         Format::Step | Format::Iges => {
-            let shapes = if format == Format::Iges {
+            // STEP through XDE: names and colours come along (ADR 0045). A colour rides on
+            // the name after U+001F (`name\u{1f}#rrggbb`), which the app splits off.
+            let shapes: Vec<(safe::RawShape, String, Option<u32>)> = if format == Format::Iges {
                 // Only with a sandbox-confined file; never unsandboxed.
-                safe::read_iges_file(iges_input(file, granted)?).map_err(err)?
+                safe::read_iges_file(iges_input(file, granted)?)
+                    .map_err(err)?
+                    .into_iter()
+                    .map(|s| (s, String::new(), None))
+                    .collect()
             } else {
-                safe::read_shapes(data).map_err(err)?
+                safe::read_shapes_meta(data).map_err(err)?
             };
             if shapes.is_empty() {
                 return Err("the file contains no shapes".into());
@@ -69,7 +75,14 @@ fn run(format: Format, data: &[u8], file: Option<&Path>, granted: Option<&Path>)
             shapes
                 .iter()
                 .enumerate()
-                .map(|(i, s)| Ok(Body { name: format!("Body {}", i + 1), brep: safe::brep_write(s).map_err(err)? }))
+                .map(|(i, (s, name, colour))| {
+                    let mut name =
+                        if name.trim().is_empty() { format!("Body {}", i + 1) } else { name.trim().to_string() };
+                    if let Some(c) = colour {
+                        name.push_str(&format!("\u{1f}#{c:06x}"));
+                    }
+                    Ok(Body { name, brep: safe::brep_write(s).map_err(err)? })
+                })
                 .collect()
         }
         Format::BrepText => {
