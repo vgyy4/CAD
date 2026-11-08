@@ -350,7 +350,8 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "query.measure" => Tool::Measure,
         "query.body" => Tool::Body,
         "query.model" | "query.sketch" | "query.interference" | "query.bom" | "query.gear_pair" | "sim.static"
-        | "sim.modal" => Tool::Info,
+        | "sim.modal" | "sim.optimize" | "feature.add" => Tool::Info,
+        "feature.bake" => Tool::Body,
         "query.joints" => Tool::Joint,
         "import.file" => Tool::Import,
         "export.step" | "export.mesh" => Tool::Export,

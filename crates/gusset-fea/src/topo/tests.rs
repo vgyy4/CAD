@@ -19,6 +19,7 @@ fn cantilever(keep: f64, iterations: usize) -> Result<TopoResult, FeaError> {
         keep,
         iterations,
         symmetry: [false; 3],
+        min_member: None,
     })
 }
 
@@ -59,6 +60,7 @@ fn a_symmetric_layout_is_its_own_mirror_image() {
         keep: 0.4,
         iterations: 20,
         symmetry: [true, false, false],
+        min_member: None,
     })
     .unwrap();
     let key = |f: &[[f64; 3]; 4], mirror: bool| {
@@ -71,4 +73,43 @@ fn a_symmetric_layout_is_its_own_mirror_image() {
     };
     let all: std::collections::HashSet<Vec<[i64; 3]>> = r.faces.iter().map(|f| key(f, false)).collect();
     assert!(r.faces.iter().all(|f| all.contains(&key(f, true))), "not symmetric");
+}
+
+#[test]
+fn a_larger_minimum_member_gives_fewer_holes() {
+    // Thicker members: fewer separate voids, so fewer outer faces for the same share.
+    let m = box_mesh([60.0, 10.0, 20.0]);
+    let run = |min_member| {
+        optimise(&TopoProblem {
+            mesh: &m,
+            voxel: 2.5,
+            fixed: vec![0],
+            loads: vec![Load { face: 1, force: [0.0, 0.0, -100.0] }],
+            material: steel(),
+            keep: 0.4,
+            iterations: 25,
+            symmetry: [false; 3],
+            min_member,
+        })
+        .unwrap()
+    };
+    let (fine, coarse) = (run(None), run(Some(12.5)));
+    assert!(coarse.faces.len() < fine.faces.len(), "{} vs {}", coarse.faces.len(), fine.faces.len());
+    assert!(matches!(
+        optimise(&TopoProblem {
+            min_member: Some(-1.0),
+            ..TopoProblem {
+                mesh: &m,
+                voxel: 2.5,
+                fixed: vec![0],
+                loads: vec![Load { face: 1, force: [0.0, 0.0, -1.0] }],
+                material: steel(),
+                keep: 0.4,
+                iterations: 1,
+                symmetry: [false; 3],
+                min_member: None
+            }
+        }),
+        Err(FeaError::Invalid(_))
+    ));
 }

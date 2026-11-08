@@ -23,6 +23,8 @@ pub struct TopoProblem<'a> {
     /// Mirror symmetry about the voxel grid's middle across X, Y and Z (the layout is the
     /// same on both sides; supports and loads should be symmetric too).
     pub symmetry: [bool; 3],
+    /// Smallest member (mm): the sensitivity filter's diameter; `None` = 3 voxels.
+    pub min_member: Option<f64>,
 }
 
 /// The optimised layout.
@@ -110,14 +112,22 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
     // Filter neighbours: voxels whose centres are within the radius, by grid index.
     let lin = |[i, j, k]: [usize; 3]| i + n[0] * (j + n[1] * k);
     let index: Vec<usize> = elems.iter().map(|c| lin(*c)).collect();
-    let reach = libm::floor(FILTER_RADIUS) as i64;
+    let radius = match p.min_member {
+        Some(m) if m.is_finite() && m > 0.0 => (m / h / 2.0).max(1.0),
+        Some(_) => return bad("min_member must be a positive length"),
+        None => FILTER_RADIUS,
+    };
+    if radius > 8.0 {
+        return bad("min_member is more than 16 voxels: use a larger voxel");
+    }
+    let reach = libm::floor(radius) as i64;
     let mut neigh: Vec<Vec<(usize, f64)>> = Vec::with_capacity(ne);
     for c in elems {
         let mut list = Vec::new();
         for dk in -reach..=reach {
             for dj in -reach..=reach {
                 for di in -reach..=reach {
-                    let w = FILTER_RADIUS - libm::sqrt((di * di + dj * dj + dk * dk) as f64);
+                    let w = radius - libm::sqrt((di * di + dj * dj + dk * dk) as f64);
                     if w <= 0.0 {
                         continue;
                     }

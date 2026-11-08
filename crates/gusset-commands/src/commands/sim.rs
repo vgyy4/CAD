@@ -655,6 +655,9 @@ pub struct OptimizeQuery {
     /// Mirror axes: x, y, z.
     #[serde(default)]
     pub symmetry: Vec<String>,
+    /// Smallest member, mm.
+    #[serde(default)]
+    pub min_member: Option<f64>,
 }
 
 impl Command for OptimizeQuery {
@@ -708,6 +711,7 @@ impl Command for OptimizeQuery {
             keep: self.keep,
             iterations: self.iterations.unwrap_or(30),
             symmetry,
+            min_member: self.min_member,
         })
         .map_err(fea_err)?;
         let first = r.compliance.first().copied().unwrap_or(0.0);
