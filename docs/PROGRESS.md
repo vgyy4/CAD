@@ -259,7 +259,7 @@ Phase 3 has started (see Next).
      by the sandboxed worker; `.x_t`/`.x_b`/`.xmt_txt` in `import.file`; fuzz target `xt_read`;
      OCCT golden test against NIST's samples). Blends and SP-curves are sampled and fitted, body names
      come from attributes, assemblies keep their placements, the B-surface pole order is
-     chosen by the faces' vertices. Not yet: colours (the STEP path keeps no styles); V12
+     chosen by the faces' vertices. Colours done (face and body colours as STEP styles, ADR 0045). Not yet: V12
      attribute definitions, deltas and binary are unverified without sample files.
    - v0.4: 2D drawings, DXF/SVG; FreeCAD/OpenSCAD import, Parasolid XT.
    - ACIS SAT import done (ADR 0039, `gusset-sat`: clean-room reader of versions 4 to 7 from

@@ -38,6 +38,7 @@ pub struct Field {
 pub fn suggestions(command: &str, field: &str) -> &'static [&'static str] {
     match (command, field) {
         ("body.appearance", "finish") => &["plastic", "metal", "glass", "rubber"],
+        ("body.appearance", "texture") => &["wood", "brushed", "carbon", "speckle", "none"],
         ("cam.toolpath" | "cam.export_gcode", "operation") => &[
             "pocket",
             "pocket_adaptive",
