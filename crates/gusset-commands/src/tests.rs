@@ -808,7 +808,8 @@ fn edit_results_report_body_volume_changes() {
 fn a_cut_that_changes_nothing_warns() {
     use crate::commands::{BodyChange, no_effect_warning};
     use gusset_doc::BodyOp;
-    let changed = BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None, solids: None };
+    let changed =
+        BodyChange { body: "Extrude1".into(), change: "changed", before: None, after: None, solids: None, from: None };
     let w = no_effect_warning("Extrude2", BodyOp::Cut, Some("Extrude1"), &[], &[]);
     let msg = w["warnings"][0].as_str().unwrap();
     assert!(msg.contains("did not change body 'Extrude1'") && msg.contains("negative distance"), "{w}");
@@ -828,6 +829,7 @@ fn an_add_that_does_not_touch_the_body_warns() {
         before: None,
         after: None,
         solids: Some(solids),
+        from: None,
     };
     let w = disjoint_add_warning("Extrude2", BodyOp::Add, Some("Extrude1"), &[], &[ch((1, 2))]);
     let msg = w["warnings"][0].as_str().unwrap();
@@ -1645,7 +1647,11 @@ fn appearances_are_set_kept_renamed_merged_and_cleared() {
     assert_eq!(r["appearance"], json!({"color": "#c0ffee", "finish": "glass"}), "{r}");
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("appearance Extrude1 (color: \"#c0ffee\", finish: glass)"), "{text}");
-    run(&mut s, &u, "feature.rename", json!({"from": "Extrude1", "to": "Plate"}));
+    let r = run(&mut s, &u, "feature.rename", json!({"from": "Extrude1", "to": "Plate"}));
+    // One "renamed" entry, not a removal and a creation (dogfooding F14-9).
+    let changes = r["body_changes"].as_array().cloned().unwrap_or_default();
+    assert!(changes.iter().all(|c| c["change"] == "renamed") && !changes.is_empty(), "{r}");
+    assert_eq!(changes[0]["from"], "Extrude1", "{r}");
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("appearance Plate ("), "{text}");
     for bad in [

@@ -271,6 +271,8 @@ pub(crate) struct BodyChange {
     pub after: Option<Metrics>,
     /// Number of separate solids in the body before and after (for `changed`).
     pub solids: Option<(u32, u32)>,
+    /// For `renamed`: the body's old name.
+    pub from: Option<String>,
 }
 
 impl BodyChange {
@@ -285,6 +287,9 @@ impl BodyChange {
             && let Value::Object(o) = &mut v
         {
             o.insert("volume_delta_mm3".into(), json!(b - a));
+        }
+        if let (Some(f), Value::Object(o)) = (&self.from, &mut v) {
+            o.insert("from".into(), json!(f));
         }
         v
     }
@@ -306,13 +311,16 @@ fn body_changes(
     let mut out = Vec::new();
     for b in &after.bodies {
         match before.body(&b.name) {
-            None => out.push(BodyChange {
-                body: b.name.clone(),
-                change: "created",
-                before: None,
-                after: body_metrics(k, b),
-                solids: None,
-            }),
+            None => {
+                out.push(BodyChange {
+                    body: b.name.clone(),
+                    change: "created",
+                    before: None,
+                    after: body_metrics(k, b),
+                    solids: None,
+                    from: None,
+                });
+            }
             Some(o) if std::ptr::addr_eq(std::sync::Arc::as_ptr(&o.shape.0), std::sync::Arc::as_ptr(&b.shape.0)) => {}
             Some(o) => {
                 let (ma, mb) = (body_metrics(k, o), body_metrics(k, b));
@@ -331,6 +339,7 @@ fn body_changes(
                         before: ma,
                         after: mb,
                         solids: Some((o.topology.solids, b.topology.solids)),
+                        from: None,
                     });
                 }
             }
@@ -344,8 +353,37 @@ fn body_changes(
                 before: body_metrics(k, o),
                 after: None,
                 solids: None,
+                from: None,
             });
         }
+    }
+    // A body gone under one name and created under another with the same volume and box
+    // was renamed (dogfooding F14-9): one entry, not a removal and a creation.
+    let same = |a: &Option<Metrics>, b: &Option<Metrics>| match (a, b) {
+        (Some((va, ba)), Some((vb, bb))) => {
+            (va - vb).abs() <= 1e-9 * va.abs().max(1.0)
+                && ba.iter().flatten().zip(bb.iter().flatten()).all(|(x, y)| (x - y).abs() <= 1e-9)
+        }
+        _ => false,
+    };
+    let mut i = 0;
+    while i < out.len() {
+        let pair = out.get(i).filter(|c| c.change == "created").and_then(|c| {
+            out.iter().position(|r| r.change == "removed" && same(&r.before, &c.after))
+        });
+        if let Some(j) = pair {
+            let from = out.get(j).map(|r| r.body.clone());
+            if let Some(c) = out.get_mut(i) {
+                c.change = "renamed";
+                c.from = from;
+                c.after = None;
+            }
+            out.remove(j);
+            if j < i {
+                i -= 1;
+            }
+        }
+        i += 1;
     }
     out
 }
