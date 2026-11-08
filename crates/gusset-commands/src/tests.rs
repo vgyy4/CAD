@@ -1716,6 +1716,17 @@ fn single_faces_take_their_own_colours() {
     assert_eq!(r["coloured_faces"], 1, "{r}");
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains(&format!("color: \"#808080\", finish: plastic, faces: {{\"#2020d0\": [{b}]}}")), "{text}");
+    // Deleting a feature drops the colours of the faces it made on other bodies (review #8):
+    // a second body whose appearance colours a face named after Extrude1.
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    let extra =
+        format!("{text}appearance Other (color: \"#808080\", finish: plastic, faces: {{\"#00aa00\": [{b}]}})\n");
+    run(&mut s, &u, "document.set_text", json!({"text": extra}));
+    run(&mut s, &u, "feature.delete", json!({"name": "Extrude1"}));
+    let doc = s.document(&gusset_history::Actor::User).unwrap();
+    assert!(doc.appearance("Extrude1").is_none());
+    assert_eq!(doc.appearance("Other").map(|x| x.faces.len()), Some(0), "{:?}", doc.appearances);
+    run(&mut s, &u, "history.undo", json!({}));
     for bad in [
         json!({"body": "Extrude1", "faces": ["Nope/face(9)"], "color": "#000000"}),
         json!({"body": "Extrude1", "faces": [], "color": "#000000"}),

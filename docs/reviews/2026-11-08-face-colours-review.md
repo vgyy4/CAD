@@ -14,5 +14,5 @@ writer, tessellation and naming) was found consistent.
 | 5 | low-medium | `body.appearance` with many faces compared lists pairwise. | Fixed: sets. |
 | 6 | low | 3MF export looked colours up linearly. | Fixed: a map. |
 | 7 | low | Import grouping was linear per colour; repeated face indices were kept. | Fixed: a map; the first colour of a repeated index. |
-| 8 | low | Merges treat an appearance as one unit (finish on one side, face colours on the other conflict); face colours of deleted features stay in the text (unused). | Merge fixed: colour and finish merge apart from face colours, so the two combine. Stale face colours of deleted features: accepted (noted in ADR 0045). |
+| 8 | low | Merges treat an appearance as one unit (finish on one side, face colours on the other conflict); face colours of deleted features stay in the text (unused). | Merge fixed: colour and finish merge apart from face colours, so the two combine. Deleting a feature drops the colours of the faces it made. |
 | 9 | low | Triangles outside every face range lost their colour once a face was coloured. | Fixed: they keep the base colour. |

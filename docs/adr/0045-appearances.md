@@ -72,5 +72,5 @@ anywhere in the document.
   it). Adafruit's OLED part now shows its blue board, white silkscreen and dark screen instead
   of one lavender body. 3MF face colours are not read yet.
   A merge takes colour and finish apart from face colours (one side's finish and the other's
-  face colours combine); face colours of a deleted feature's faces stay in the text, unused
+  face colours combine); deleting a feature drops the colours of the faces it made
   (docs/reviews/2026-11-08-face-colours-review.md).

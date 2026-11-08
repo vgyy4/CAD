@@ -2435,6 +2435,13 @@ impl Command for FeatureDelete {
             doc.features.remove(i);
             // Its body's appearance goes with it (review R2); undo brings both back.
             doc.appearances.retain(|a| a.body != self.name);
+            // So do the colours of the faces it made on other bodies (face colours review #8).
+            for a in &mut doc.appearances {
+                for g in &mut a.faces {
+                    g.faces.retain(|f| f.feature != self.name);
+                }
+                a.faces.retain(|g| !g.faces.is_empty());
+            }
             Ok(json!({}))
         })?;
         let new: Vec<String> = drawing::dangling_dims(s, &ctx.actor).difference(&before).cloned().collect();
