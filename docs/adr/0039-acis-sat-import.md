@@ -174,8 +174,7 @@ little-endian doubles, row-major, centimetres.
   (Trinkey, QTPy); the design is then placed so that its board lands there.
 - Not read: patterns (instances 2 to 4 of a rectangular pattern, the pins of a header, exist
   only as pattern parameters and world matrices after the pattern record); designs whose
-  components keep only stale matrices (the Pico: `BOOTSEL` and `PicoW` sit 1.6 to 2.4 mm off
-  because the matrix found is an earlier state); a moved board reference that names its role
+  components keep only stale matrices; a moved board reference that names its role
   without a matrix (the Buck case); the 2025 layout's reference matrices (HDMI: the matrices
   found are earlier states); joints.
 
@@ -190,3 +189,12 @@ NeoKey Breakout 11 to 12 of 15; MacroPad Assembly 0 to 167 of 185; Keyplate 1 to
 Trinkey 0 to 63 of 65; QT Py 0 to 138 of 142; USB-C HDMI 0 of 54; BQ25185 Buck 0 of 90; Pico
 0 of 216; Crickit HAT 20 to 48 of 85 (35 of the author's solids have no body of that size in our
 import at all; of the other 50, 48 are placed).
+
+Pico case, 2026-11-08: the referenced `RaspberryPi Pico W v2` design (stream version 310) holds
+none of the record classes above, and its components' placements (`BOOTSEL`, `PicoW`, the board
+logo: the author's STEP puts them at, for example, -3.551, -9.405, -2.407 mm) appear nowhere in
+it as doubles in cm, mm or m; only the root's matrix for the reference itself is stored (and
+read: the board lands rotated and moved correctly, its components at their own origins). Their
+places most likely come from joints, which are not solved on import. Per-body comparison
+(`scripts/f3d_compare.py`): the bodies are off by exactly those component offsets.
+
