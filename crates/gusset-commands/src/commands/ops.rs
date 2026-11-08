@@ -238,14 +238,16 @@ impl Command for OffsetFace {
                     Ok(json!({ "feature": name, "also_moved": [] }))
                 },
                 |s, doc, _| {
-                    let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(doc, None, &());
+                    let ev = s.evaluate_doc(doc, None);
                     let name = added.borrow();
                     match ev.errors().iter().find(|e| e.feature == *name && e.code != gusset_eval::ErrorCode::Unsupported) {
-                        Some(e) => Err(CommandError::args(
+                        // Review R1: the tangent case has its own words, anything else its own.
+                        Some(e) if e.message.contains("would have to change shape") => Err(CommandError::args(
                             "these faces cannot move alone: a neighbour tangent to them (a rounded corner) would have to change shape",
                         )
-                        .hint("leave rules out to carry tangent faces along")
-                        .details(json!({"kernel_message_user_text": e.message}))),
+                        .hint("leave rules out to carry tangent faces along")),
+                        Some(e) => Err(CommandError::args(e.message.clone())
+                            .hint(e.hint.clone().unwrap_or_else(|| "move the faces less far".into()))),
                         None => Ok(()),
                     }
                 },
@@ -472,7 +474,7 @@ impl Command for MoveFace {
                 // A move the kernel cannot build (onto a plane across the body, faces whose
                 // neighbours would have to change shape) is tried first and refused, rather
                 // than committed as a failing feature (F7-8, F9-4).
-                let ev = gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(doc, None, &());
+                let ev = s.evaluate_doc(doc, None);
                 let name = added.borrow();
                 // A kernel without face moves (the mock) commits as before.
                 let unsupported = |e: &&gusset_eval::EvalError| {

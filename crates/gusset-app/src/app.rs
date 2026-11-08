@@ -1444,6 +1444,29 @@ impl App {
             }
             C::Ungroup => self.submit_command("feature.group", json!({ "features": [name] }), Then::Notice),
             C::Appearance => {
+                // The body this feature makes, or the one it changes (review R4): a fillet
+                // or hole colours its target body; a sketch has none.
+                let body = self.scene.as_ref().and_then(|sc| {
+                    let ev = &sc.eval;
+                    ev.bodies
+                        .iter()
+                        .find(|b| b.name == name || b.feature == name)
+                        .map(|b| b.name.clone())
+                        .or_else(|| ev.meshes.iter().find(|m| m.name == name).map(|m| m.name.clone()))
+                        .or_else(|| {
+                            let f = self.snapshot.doc.feature(name)?;
+                            f.kind.dependencies().into_iter().find(|d| ev.body(d).is_some())
+                        })
+                });
+                let Some(body) = body else {
+                    self.notice = Some(Notice {
+                        text: format!("{name} makes no body to colour"),
+                        hint: Some("choose Appearance on a body or on the feature that makes it".into()),
+                        error: true,
+                    });
+                    return;
+                };
+                let name = body.as_str();
                 let look = self.snapshot.doc.appearance(name).cloned();
                 self.start_command("body.appearance");
                 if let Some(form) = self.form.as_mut() {

@@ -368,9 +368,10 @@ fn body_changes(
     };
     let mut i = 0;
     while i < out.len() {
-        let pair = out.get(i).filter(|c| c.change == "created").and_then(|c| {
-            out.iter().position(|r| r.change == "removed" && same(&r.before, &c.after))
-        });
+        let pair = out
+            .get(i)
+            .filter(|c| c.change == "created")
+            .and_then(|c| out.iter().position(|r| r.change == "removed" && same(&r.before, &c.after)));
         if let Some(j) = pair {
             let from = out.get(j).map(|r| r.body.clone());
             if let Some(c) = out.get_mut(i) {
@@ -2432,6 +2433,8 @@ impl Command for FeatureDelete {
                 }
             }
             doc.features.remove(i);
+            // Its body's appearance goes with it (review R2); undo brings both back.
+            doc.appearances.retain(|a| a.body != self.name);
             Ok(json!({}))
         })?;
         let new: Vec<String> = drawing::dangling_dims(s, &ctx.actor).difference(&before).cloned().collect();
@@ -2448,7 +2451,9 @@ pub struct FeatureRename {
 }
 
 fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
-    // A body's appearance follows its feature (ADR 0045).
+    // A body's appearance follows its feature (ADR 0045); one left at the new name by a body
+    // that is gone is dropped first (review R3).
+    doc.appearances.retain(|a| a.body != to);
     for a in &mut doc.appearances {
         if a.body == from {
             a.body = to.to_string();

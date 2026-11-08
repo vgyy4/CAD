@@ -54,8 +54,10 @@ impl Command for SetAppearance {
             return Err(CommandError::args("give a color, a finish, or clear: true"));
         }
         let ev = s.evaluate(&ctx.actor)?;
-        // Bodies and reference meshes (an imported STL/3MF/OBJ keeps its colour too).
-        if ev.body(&self.body).is_none() && !ev.meshes.iter().any(|m| m.name == self.body) {
+        // Bodies and reference meshes (an imported STL/3MF/OBJ keeps its colour too); an
+        // appearance left behind by a body that is gone can still be cleared (review R2).
+        let stale = self.clear && s.document(&ctx.actor)?.appearance(&self.body).is_some();
+        if !stale && ev.body(&self.body).is_none() && !ev.meshes.iter().any(|m| m.name == self.body) {
             let names: Vec<&str> = ev.bodies.iter().take(20).map(|b| b.name.as_str()).collect();
             return Err(CommandError::not_found(format!("no body '{}'", crate::paths::display_name(&self.body)))
                 .hint(format!("bodies: {}", names.join(", "))));

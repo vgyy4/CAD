@@ -103,6 +103,8 @@ struct Hit {
     finish: Finish,
     /// The ray met the outside of the surface (the mesh's outward side).
     front: bool,
+    /// The mesh is open (a sheet): glass on it is a thin pane, not a solid that bends light.
+    thin: bool,
 }
 
 struct World<'a> {
@@ -160,7 +162,14 @@ impl World<'_> {
             let [r, g, bl] = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
             Some((
                 h.distance,
-                Hit { point: h.point, normal: n, albedo: [r, g, bl], finish: m.material().finish, front },
+                Hit {
+                    point: h.point,
+                    normal: n,
+                    albedo: [r, g, bl],
+                    finish: m.material().finish,
+                    front,
+                    thin: !d.closed,
+                },
             ))
         });
         // The ground plane under the parts.
@@ -174,6 +183,7 @@ impl World<'_> {
                 albedo: [GROUND_ALBEDO; 3],
                 finish: Finish::Rubber,
                 front: true,
+                thin: false,
             }),
             (None, None) => None,
         }
@@ -212,7 +222,12 @@ impl World<'_> {
         // The camera ray and mirror-like bounces see the sun's disc; diffuse bounces get the
         // sun from `sun_seen` instead, so it is not counted twice.
         let mut specular = true;
-        for depth in 0..=bounces {
+        // Passes through glass do not use up bounces (review R5), up to this many.
+        let mut glass_free = 12u32;
+        let mut level = 0u32;
+        while level <= bounces {
+            let depth = level;
+            level += 1;
             let Some(h) = self.trace(&ray) else {
                 let disc = if specular && dot(ray.dir, SUN) > SUN_DISC.cos() {
                     SUN_POWER / (std::f64::consts::PI * SUN_DISC * SUN_DISC)
@@ -244,19 +259,31 @@ impl World<'_> {
                     continue;
                 }
                 Finish::Glass => {
-                    if depth == bounces {
+                    if glass_free > 0 {
+                        glass_free -= 1;
+                        level -= 1;
+                    } else if depth == bounces {
                         break;
                     }
-                    let eta = if h.front { 1.0 / GLASS_IOR } else { GLASS_IOR };
+                    let eta = if h.front && !h.thin { 1.0 / GLASS_IOR } else { GLASS_IOR };
                     let f0 = ((1.0 - GLASS_IOR) / (1.0 + GLASS_IOR)).powi(2);
-                    let fresnel = f0 + (1.0 - f0) * (1.0 - cos_i).powi(5);
                     let sin2 = eta * eta * (1.0 - cos_i * cos_i);
+                    let cos_t = (1.0 - sin2).max(0.0).sqrt();
+                    // Schlick with the angle on the thinner side: the transmitted one when
+                    // leaving the glass (review R6).
+                    let c = if h.front || h.thin { cos_i } else { cos_t };
+                    let fresnel = f0 + (1.0 - f0) * (1.0 - c).powi(5);
                     let mirror = sub(ray.dir, scale(h.normal, 2.0 * dot(ray.dir, h.normal)));
-                    ray = if sin2 > 1.0 || rng.next() < fresnel {
+                    ray = if (!h.thin && sin2 > 1.0) || rng.next() < fresnel {
                         Ray { origin: off(h.point, h.normal, self.eps), dir: mirror }
+                    } else if h.thin {
+                        // A pane: straight through, tinted once.
+                        for (t, a) in through.iter_mut().zip(h.albedo) {
+                            *t *= a.sqrt();
+                        }
+                        Ray { origin: off(h.point, h.normal, -self.eps), dir: ray.dir }
                     } else {
                         // Refracted: through the surface, tinted by the colour once per pass.
-                        let cos_t = (1.0 - sin2).max(0.0).sqrt();
                         let dir = normalize_or(add(scale(ray.dir, eta), scale(h.normal, eta * cos_i - cos_t)), ray.dir);
                         if h.front {
                             for (t, a) in through.iter_mut().zip(h.albedo) {

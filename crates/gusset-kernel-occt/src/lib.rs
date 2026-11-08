@@ -494,10 +494,14 @@ mod imp {
                 .collect();
             // A move that would reshape tangent neighbours (a side between rounded corners)
             // is left to BRepOffset, which carries the tangent faces along.
-            if let Some(normals) = planar
-                && let Ok(r) = offset_planes(shape, faces, &normals, distance)
-            {
-                return Ok(r);
+            // Only that case falls back; any other failure of the planar move is reported
+            // (review R8).
+            if let Some(normals) = planar {
+                match offset_planes(shape, faces, &normals, distance) {
+                    Ok(r) => return Ok(r),
+                    Err(e) if e.message.contains("would have to change shape") => {}
+                    Err(e) => return Err(e),
+                }
             }
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }
@@ -635,10 +639,20 @@ mod imp {
         }
 
         fn import_step(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
-            Ok(ffi::read_shapes(data)?
+            // As the import worker does (review R9): assemblies split into solids, each named
+            // after its part, its colour on the name after U+001F.
+            Ok(ffi::read_shapes_meta(data)?
                 .into_iter()
                 .enumerate()
-                .map(|(i, s)| (Shape::new(OcctShape::new(s)), format!("Body {}", i + 1)))
+                .map(|(i, (s, name, colour))| {
+                    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
+                    let mut name =
+                        if clean.trim().is_empty() { format!("Body {}", i + 1) } else { clean.trim().to_string() };
+                    if let Some(c) = colour {
+                        name.push_str(&format!("\u{1f}#{c:06x}"));
+                    }
+                    (Shape::new(OcctShape::new(s)), name)
+                })
                 .collect())
         }
 

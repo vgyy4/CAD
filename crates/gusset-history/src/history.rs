@@ -1234,6 +1234,11 @@ impl History {
                     _ => doc.features.push(f),
                 }
             }
+            // A picked feature's body keeps its look (review R7).
+            if let Some(a) = src.appearance(name).cloned() {
+                doc.appearances.retain(|x| x.body != a.body);
+                doc.appearances.push(a);
+            }
         }
         let issues = gusset_doc::validate::validate(&doc);
         if !issues.is_empty() {

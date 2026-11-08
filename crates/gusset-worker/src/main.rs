@@ -76,8 +76,11 @@ fn run(format: Format, data: &[u8], file: Option<&Path>, granted: Option<&Path>)
                 .iter()
                 .enumerate()
                 .map(|(i, (s, name, colour))| {
+                    // Control characters out first, so U+001F only ever marks the colour
+                    // (review R10).
+                    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
                     let mut name =
-                        if name.trim().is_empty() { format!("Body {}", i + 1) } else { name.trim().to_string() };
+                        if clean.trim().is_empty() { format!("Body {}", i + 1) } else { clean.trim().to_string() };
                     if let Some(c) = colour {
                         name.push_str(&format!("\u{1f}#{c:06x}"));
                     }

@@ -111,7 +111,9 @@ fn split_look(raw: &str) -> (String, Option<u32>) {
         })
         .take(200)
         .collect();
-    (name.trim().to_string(), color)
+    // A name of only invisible characters keeps a readable fallback (review R10).
+    let name = name.trim();
+    (if name.is_empty() { "Body".to_string() } else { name.to_string() }, color)
 }
 
 /// The worker's bodies of one STEP text, with the names and colours the Parasolid file

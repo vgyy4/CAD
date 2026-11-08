@@ -151,8 +151,8 @@ pub(crate) fn iges_write(shapes: &[&RawShape]) -> KResult<Vec<u8>> {
     safe::iges_write(shapes).map_err(err(KernelErrorKind::Io))
 }
 
-pub(crate) fn read_shapes(data: &[u8]) -> KResult<Vec<RawShape>> {
-    safe::read_shapes(data).map_err(err(KernelErrorKind::Io))
+pub(crate) fn read_shapes_meta(data: &[u8]) -> KResult<Vec<(RawShape, String, Option<u32>)>> {
+    safe::read_shapes_meta(data).map_err(err(KernelErrorKind::Io))
 }
 
 pub(crate) fn read_iges_file(path: &std::path::Path) -> KResult<Vec<RawShape>> {

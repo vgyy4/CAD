@@ -313,7 +313,8 @@ pub trait Kernel: Send + Sync + Debug {
         let _ = bodies;
         unsupported("STEP export", self.name())
     }
-    /// Reads STEP. Must only be called inside the sandboxed import worker (ADR 0008).
+    /// Reads STEP. Must only be called inside the sandboxed import worker (ADR 0008). A name
+    /// may end with U+001F and `#rrggbb`, the body's colour (ADR 0045).
     fn import_step(&self, data: &[u8]) -> KResult<Vec<(Shape, String)>> {
         let _ = data;
         unsupported("STEP import", self.name())
