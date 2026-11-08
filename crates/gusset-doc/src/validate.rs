@@ -121,6 +121,13 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
         let mut colours = BTreeSet::new();
         let mut faces = BTreeSet::new();
         for g in &a.faces {
+            if g.faces.is_empty() {
+                out.push(issue_h(
+                    &a.body,
+                    format!("lists colour #{:06x} for no faces", g.color),
+                    "remove the empty list",
+                ));
+            }
             if !colours.insert(g.color) {
                 out.push(issue_h(
                     &a.body,

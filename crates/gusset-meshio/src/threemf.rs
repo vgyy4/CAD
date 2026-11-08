@@ -867,7 +867,9 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         }
         s.push_str(">\n   <mesh>\n    <vertices>\n");
         for p in &positions {
-            let _ = writeln!(s, "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", p[0], p[1], p[2]);
+            // Rounding noise around zero (`-8.9e-16`) written as 0 (dogfooding F15-8).
+            let c = |v: f32| if v.abs() < 1e-9 { 0.0 } else { v };
+            let _ = writeln!(s, "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", c(p[0]), c(p[1]), c(p[2]));
         }
         s.push_str("    </vertices>\n    <triangles>\n");
         for (k, t) in tris.iter().enumerate() {

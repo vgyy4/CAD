@@ -123,17 +123,30 @@ fn set_face_colors(
         CommandError::not_found(format!("no body '{}'", crate::paths::display_name(body)))
             .hint("faces of reference meshes cannot be coloured one by one")
     })?;
-    if names.is_empty() || names.len() > gusset_doc::text::MAX_LIST_ITEMS {
+    if names.is_empty() {
         return Err(CommandError::args("give one or more faces"));
     }
+    if names.len() > gusset_doc::text::MAX_LIST_ITEMS {
+        return Err(CommandError::args(format!(
+            "at most {} faces at once ({} given)",
+            gusset_doc::text::MAX_LIST_ITEMS,
+            names.len()
+        )));
+    }
+    // A face name as given, for messages: control characters out, cut to 200 (F15-6).
+    let shown = |n: &str| n.chars().filter(|c| !c.is_control()).take(200).collect::<String>();
     let own: std::collections::HashSet<String> = b.names.faces.iter().map(ToString::to_string).collect();
     let mut faces = Vec::with_capacity(names.len());
     let mut seen = std::collections::HashSet::new();
     for n in names {
         let f = gusset_doc::text::parse_face_ref(n.trim()).ok().filter(|f| own.contains(&f.to_string())).ok_or_else(
             || {
-                CommandError::not_found(format!("{body} has no face '{}'", crate::paths::display_name(n)))
-                    .hint("query_body lists its faces")
+                let hint = if n.contains("), ") {
+                    "one face per list entry; query_body lists its faces"
+                } else {
+                    "query_body lists its faces"
+                };
+                CommandError::not_found(format!("{body} has no face '{}'", shown(n))).hint(hint)
             },
         )?;
         if seen.insert(f.to_string()) {
@@ -166,19 +179,33 @@ fn set_face_colors(
             }
         };
         let Some(a) = doc.appearances.get_mut(i) else { return Err(CommandError::args("the appearance went missing")) };
+        let before: usize = a.faces.iter().map(|g| g.faces.len()).sum();
         // By name in a set: linear in the faces listed (face colours review #5).
         let named: std::collections::HashSet<String> = faces.iter().map(ToString::to_string).collect();
         for g in &mut a.faces {
             g.faces.retain(|f| !named.contains(&f.to_string()));
         }
-        if let Some(c) = color {
+        // A face in the body's own colour needs no entry (F15-7).
+        let own = color.is_some_and(|c| c == a.color);
+        if let Some(c) = color.filter(|_| !own) {
             match a.faces.iter_mut().find(|g| g.color == c) {
                 Some(g) => g.faces.extend(faces.iter().cloned()),
                 None => a.faces.push(gusset_doc::FaceColor { color: c, faces: faces.clone() }),
             }
         }
         a.faces.retain(|g| !g.faces.is_empty());
-        let shown: usize = a.faces.iter().map(|g| g.faces.len()).sum();
-        Ok(json!({ "body": body, "faces": faces.len(), "coloured_faces": shown }))
+        let total: usize = a.faces.iter().map(|g| g.faces.len()).sum();
+        let mut out = json!({ "body": body, "faces": faces.len(), "faces_coloured_in_body": total });
+        let note = if color.is_none() && total == before {
+            Some("none of these faces had a colour of its own")
+        } else if own {
+            Some("that is the body's colour: the faces now show it without a colour of their own")
+        } else {
+            None
+        };
+        if let (Some(n), Some(o)) = (note, out.as_object_mut()) {
+            o.insert("note".into(), json!(n));
+        }
+        Ok(out)
     })
 }

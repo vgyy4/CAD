@@ -3549,7 +3549,18 @@ impl Command for ExportStep {
         let bytes = if iges { s.kernel().export_iges(&bodies) } else { s.kernel().export_step(&bodies) }
             .map_err(|e| CommandError::new("io", e.to_string()))?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
-        Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
+        let mut out = json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() });
+        // STEP keeps colours, not finishes (dogfooding F15-8).
+        if !iges
+            && looks.iter().any(|a| a.finish != gusset_doc::Finish::Plastic && plain.iter().any(|(n, _)| *n == a.body))
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert(
+                "note".into(),
+                json!("STEP stores colours but not finishes: metal, glass and rubber come back as plastic"),
+            );
+        }
+        Ok(merge(out, rebuild_report(&ev)))
     }
 }
 

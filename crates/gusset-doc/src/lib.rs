@@ -676,6 +676,7 @@ mod object_tests {
         assert!(doc("{\"#d02020\": [A/face(1)], \"#2020d0\": [A/face(2)]}").is_ok());
         assert!(doc("{\"#d02020\": [A/face(1)], \"#2020d0\": [A/face(1)]}").is_err());
         assert!(doc("{\"#d02020\": [A/face(1)], \"#d02020\": [A/face(2)]}").is_err());
+        assert!(doc("{\"#d02020\": []}").is_err());
     }
 }
 

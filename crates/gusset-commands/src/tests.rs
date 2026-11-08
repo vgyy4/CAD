@@ -1705,7 +1705,7 @@ fn single_faces_take_their_own_colours() {
     let (a, b) = (faces[0].clone(), faces[1].clone());
     // No appearance yet: the body takes the default colour, the faces theirs.
     let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [a, b], "color": "#d02020"}));
-    assert_eq!(r["coloured_faces"], 2, "{r}");
+    assert_eq!(r["faces_coloured_in_body"], 2, "{r}");
     // One face moves to another colour.
     run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [b], "color": "#2020d0"}));
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
@@ -1713,7 +1713,10 @@ fn single_faces_take_their_own_colours() {
     // A body colour change keeps them; clearing a face drops only its colour.
     run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "color": "#808080"}));
     let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [a], "clear": true}));
-    assert_eq!(r["coloured_faces"], 1, "{r}");
+    assert_eq!(r["faces_coloured_in_body"], 1, "{r}");
+    // Clearing it again says so (F15-7).
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [a], "clear": true}));
+    assert!(r["note"].as_str().is_some_and(|n| n.contains("none of these faces")), "{r}");
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains(&format!("color: \"#808080\", finish: plastic, faces: {{\"#2020d0\": [{b}]}}")), "{text}");
     // Deleting a feature drops the colours of the faces it made on other bodies (review #8):
