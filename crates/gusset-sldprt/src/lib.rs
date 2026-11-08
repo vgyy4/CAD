@@ -106,9 +106,11 @@ pub fn local_bodies(
             }
         }
         Container::Chunks => {
-            let mut found = chunks::streams(bytes, limits, is_local)?;
-            found.sort_by(|a, b| a.name.cmp(&b.name));
-            match found.into_iter().next() {
+            // The name first (no inflating), then only that record (security review T2).
+            let Some(chosen) = chunks::names(bytes, limits, is_local).into_iter().min() else {
+                return Ok(Vec::new());
+            };
+            match chunks::streams(bytes, limits, |n| n == chosen)?.pop() {
                 Some(st) => st.data,
                 None => return Ok(Vec::new()),
             }

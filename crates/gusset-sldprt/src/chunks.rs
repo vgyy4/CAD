@@ -56,6 +56,34 @@ pub(crate) struct Stream {
     pub data: Vec<u8>,
 }
 
+/// The names of the records `wanted` accepts whose data lies in the file, without inflating
+/// anything (so one record can be chosen before any is read; security review T2).
+pub(crate) fn names(bytes: &[u8], limits: &Limits, wanted: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut at = 0usize;
+    let mut candidates = 0usize;
+    while let Some(p) = find(bytes, at, usize::MAX) {
+        at = p + 1;
+        candidates += 1;
+        if candidates > limits.max_streams.saturating_mul(16) || out.len() >= limits.max_streams {
+            break;
+        }
+        let (Some(csize), Some(nlen)) = (u32_at(bytes, p + 14), u32_at(bytes, p + 22)) else { continue };
+        if nlen == 0 || nlen > MAX_NAME {
+            continue;
+        }
+        let Some(raw_name) = bytes.get(p + HEADER..p + HEADER + nlen) else { continue };
+        if bytes.get(p + HEADER + nlen..).and_then(|d| d.get(..csize)).is_none() {
+            continue;
+        }
+        let name = decode_name(raw_name);
+        if wanted(&name) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 /// Walks the records of `bytes`. `wanted` decides from the name whether a record's data is
 /// inflated (inflating is the expensive step); only wanted records that validate are
 /// returned, in file order.

@@ -87,7 +87,7 @@ tracer, unit strings in CAM lengths and the larger `get_text` pages. Read, not r
 | ID | Sev | Finding | Status |
 |---|---|---|---|
 | T1 | medium | Up to 4096 `LocalBodies` transmits were all converted to STEP and held before any was imported; warnings were cut only at the end; cancel was not seen inside the block reader. | Fixed: one body at a time, its STEP dropped before the next, 1 GiB of STEP for all of them; warnings capped as added; cancel checked per block. |
-| T2 | low | The 4096 cap counted only `PS` blocks; the chunk reader inflates every `LocalBodies` record before the first is used. | Fixed in part: every block counts. Reading only the chosen record is open (bounded by the 512 MiB budget). |
+| T2 | low | The 4096 cap counted only `PS` blocks; the chunk reader inflates every `LocalBodies` record before the first is used. | Fixed: every block counts; the record is chosen by name before anything is inflated. |
 | T3 | info | Only one feature's `LocalBodies` is read, chosen differently per container. | Accepted (correctness, not security); noted in ADR 0043. |
 | T4 | medium | The colour count per body was quadratic in distinct colours. | Fixed: a map; ties go to the lowest colour value. |
 | T5 | low | `\X2\` escapes decoded after the control filter could put control, bidi or zero-width characters into labels. | Fixed: decoded first, then such characters removed and the name cut to 200. |
