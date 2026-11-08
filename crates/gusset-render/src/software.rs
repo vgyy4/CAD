@@ -1,7 +1,7 @@
 //! Last-resort CPU rasterizer: used only when no wgpu adapter at all can be created, so
 //! `render_view` always returns an image. Same frame plan, colors and lighting as the
 //! GPU path (per-pixel shading, z-buffer, near-plane clipping, edges as lines), without
-//! anti-aliasing. Single-threaded and simple by design.
+//! anti-aliasing. Horizontal stripes of the image are drawn on separate threads.
 
 use crate::camera::Camera;
 use crate::frame::{FramePlan, ViewOptions};
@@ -45,16 +45,21 @@ impl ClipVert {
     }
 }
 
-struct Target {
+/// One horizontal stripe of the image (rows `y0..y1` of `h`), drawn by one thread.
+struct Target<'a> {
     w: usize,
+    /// The whole image's height (screen mapping).
     h: usize,
-    color: Vec<[f32; 3]>,
-    depth: Vec<f32>,
+    y0: usize,
+    y1: usize,
+    color: &'a mut [[f32; 3]],
+    depth: &'a mut [f32],
 }
 
-impl Target {
+impl Target<'_> {
     fn idx(&self, x: i64, y: i64) -> Option<usize> {
-        (x >= 0 && y >= 0 && (x as usize) < self.w && (y as usize) < self.h).then(|| y as usize * self.w + x as usize)
+        (x >= 0 && y >= self.y0 as i64 && (x as usize) < self.w && (y as usize) < self.y1)
+            .then(|| (y as usize - self.y0) * self.w + x as usize)
     }
 
     /// Depth-tested write; `less_equal` for edges.
@@ -107,109 +112,41 @@ impl SoftwareRenderer {
         }
         let plan = FramePlan::build(scene, camera, size, &self.options);
         let (w, h) = (size[0] as usize, size[1] as usize);
-        let mut t = Target { w, h, color: Vec::with_capacity(w * h), depth: vec![1.0; w * h] };
-        for y in 0..h {
-            // Match the GPU: the gradient parameter at the pixel center.
-            let s = (y as f32 + 0.5) / h as f32;
-            let c = zip_with(plan.bg_top, plan.bg_bottom, |t, b| t + (b - t) * s);
-            t.color.extend(std::iter::repeat_n(c, w));
-        }
-        let proj = &plan.proj;
-        // Glass after everything opaque (as gpu.rs draws it).
-        // Opaque nearest first (as planned), glass farthest first.
-        let order =
-            plan.draws.iter().filter(|d| d.finish != 2).chain(plan.draws.iter().rev().filter(|d| d.finish == 2));
-        for d in order {
-            let Some(m) = scene.mesh(d.id) else { continue };
-            let data = m.data();
-            // Faces and edges from the coarse copy when the plan asks (frame.rs).
-            let faces = if d.lod { m.lod.as_deref().unwrap_or(data) } else { data };
-            let verts: Vec<ClipVert> = faces
-                .positions
-                .iter()
-                .zip(&faces.normals)
-                .map(|(p, n)| {
-                    let vp = math::transform_point(&d.model_view, p.map(f64::from));
-                    let un = unpack_normal(*n).map(f64::from);
-                    let vn = math::add(
-                        math::add(math::scale(d.normal[0], un[0]), math::scale(d.normal[1], un[1])),
-                        math::scale(d.normal[2], un[2]),
-                    );
-                    ClipVert {
-                        clip: math::transform4(proj, vp).map(|c| c as f32),
-                        view: vp.map(|c| c as f32),
-                        normal: vn.map(|c| c as f32),
-                        model: *p,
-                        model_normal: un.map(|c| c as f32),
-                    }
-                })
-                .collect();
-            for (run, base) in &d.tri_runs {
-                for tri in run.clone() {
-                    let i = tri as usize * 3;
-                    let Some(idx) = faces.indices.get(i..i + 3) else { continue };
-                    let vs: Vec<ClipVert> = idx.iter().filter_map(|&k| verts.get(k as usize).copied()).collect();
-                    if let [a, b, c] = vs.as_slice() {
-                        let mut poly = clip_poly(&[*a, *b, *c], |v| v.clip[2]);
-                        if let Some(pl) = plan.clip {
-                            poly = clip_poly(&poly, |v| plane_dist(pl, v.view));
-                        }
-                        for k in 1..poly.len().saturating_sub(1) {
-                            if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
-                                raster_triangle(
-                                    &mut t,
-                                    [p0, p1, p2],
-                                    *base,
-                                    &plan,
-                                    (d.closed, d.finish, d.texture_for(*base).map(|x| (x, d.grain_axis))),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            for (run, color) in &d.edge_runs {
-                for seg in run.clone() {
-                    let i = seg as usize * 2;
-                    let (Some(a), Some(b)) = (faces.edge_points.get(i), faces.edge_points.get(i + 1)) else { continue };
-                    let (mut a, mut b) = (*a, *b);
-                    if let Some(pl) = plan.clip {
-                        let va = math::transform_point(&d.model_view, a.map(f64::from)).map(|c| c as f32);
-                        let vb = math::transform_point(&d.model_view, b.map(f64::from)).map(|c| c as f32);
-                        let (da, db) = (plane_dist(pl, va), plane_dist(pl, vb));
-                        if da < 0.0 && db < 0.0 {
-                            continue;
-                        }
-                        // Cut in object space (the model-view map is affine).
-                        let cut = |p: [f32; 3], q: [f32; 3], t: f32| zip_with(p, q, |x, y| x + (y - x) * t);
-                        if da < 0.0 {
-                            a = cut(a, b, da / (da - db));
-                        } else if db < 0.0 {
-                            b = cut(a, b, da / (da - db));
-                        }
-                    }
-                    let pa = pulled(&d.model_view, a, &plan);
-                    let pb = pulled(&d.model_view, b, &plan);
-                    raster_line(
-                        &mut t,
-                        math::transform4(proj, pa),
-                        math::transform4(proj, pb),
-                        *color,
-                        plan.edge_width_px,
-                    );
-                }
-            }
-        }
-        // A table instead of a `powf` per channel and pixel (3 M per 1280 x 800 frame).
+        let mut color = vec![[0.0f32; 3]; w * h];
+        let mut depth = vec![1.0f32; w * h];
+        let mut data = vec![255u8; w * h * 4];
+        // Horizontal stripes on the cores: each pixel is drawn by one thread, by the same
+        // draws in the same order, so the image does not depend on the thread count. Each
+        // thread also fills its stripe's background and converts it to sRGB.
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).clamp(1, 16).min(h);
+        let rows = h.div_ceil(threads).max(1);
+        let rows_of = |d: &crate::frame::MeshDraw| screen_rows(scene, d, &plan, h);
+        let spans: Vec<Option<(usize, usize)>> = plan.draws.iter().map(rows_of).collect();
         let lut = srgb_lut();
-        let mut data = Vec::with_capacity(w * h * 4);
-        for c in &t.color {
-            for k in c {
-                let i = (k.clamp(0.0, 1.0) * (SRGB_LUT_SIZE - 1) as f32).round() as usize;
-                data.push(lut.get(i).copied().unwrap_or(255));
+        std::thread::scope(|sc| {
+            let stripes = color.chunks_mut(rows * w).zip(depth.chunks_mut(rows * w)).zip(data.chunks_mut(rows * w * 4));
+            for (n, ((c, z), out)) in stripes.enumerate() {
+                let (plan, spans) = (&plan, &spans);
+                sc.spawn(move || {
+                    let y0 = n * rows;
+                    let y1 = (y0 + rows).min(h);
+                    for (r, line) in c.chunks_mut(w).enumerate() {
+                        // Match the GPU: the gradient parameter at the pixel center.
+                        let s = ((y0 + r) as f32 + 0.5) / h as f32;
+                        line.fill(zip_with(plan.bg_top, plan.bg_bottom, |t, b| t + (b - t) * s));
+                    }
+                    let mut t = Target { w, h, y0, y1, color: c, depth: z };
+                    draw_stripe(&mut t, scene, plan, spans);
+                    // A table instead of a `powf` per channel and pixel.
+                    for (px, o) in t.color.iter().zip(out.chunks_exact_mut(4)) {
+                        for (k, v) in px.iter().zip(o.iter_mut()) {
+                            let i = (k.clamp(0.0, 1.0) * (SRGB_LUT_SIZE - 1) as f32).round() as usize;
+                            *v = lut.get(i).copied().unwrap_or(255);
+                        }
+                    }
+                });
             }
-            data.push(255);
-        }
+        });
         Ok(RgbaImage { width: size[0], height: size[1], data })
     }
 
@@ -219,6 +156,120 @@ impl SoftwareRenderer {
     /// See [`SoftwareRenderer::render_rgba`].
     pub fn render_png(&self, scene: &Scene, camera: &Camera, size: [u32; 2]) -> Result<Vec<u8>, RenderError> {
         Ok(self.render_rgba(scene, camera, size)?.to_png()?)
+    }
+}
+
+/// The image rows (`y0..y1`) a draw can touch: its box's corners on screen; `None` when it is
+/// entirely off screen vertically. Corners behind the camera give the whole height.
+fn screen_rows(scene: &Scene, d: &crate::frame::MeshDraw, plan: &FramePlan, h: usize) -> Option<(usize, usize)> {
+    let m = scene.mesh(d.id)?;
+    let b = m.data().bounds;
+    let mvp = math::mul(&plan.proj, &d.model_view);
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for k in 0..8 {
+        let pick = |axis: usize| {
+            let (l, u) = (b.min.get(axis).copied().unwrap_or(0.0), b.max.get(axis).copied().unwrap_or(0.0));
+            if k >> axis & 1 == 0 { l } else { u }
+        };
+        let c = math::transform4(&mvp, [pick(0), pick(1), pick(2)]);
+        if c[3].is_nan() || c[3] <= 1e-9 || !c[1].is_finite() {
+            return Some((0, h));
+        }
+        // NDC y up, screen rows down.
+        let y = (1.0 - c[1] / c[3]) * 0.5 * h as f64;
+        lo = lo.min(y);
+        hi = hi.max(y);
+    }
+    // Wide edges reach a few pixels past the box.
+    let pad = f64::from(plan.edge_width_px) + 2.0;
+    let (y0, y1) = ((lo - pad).floor().max(0.0), (hi + pad).ceil().min(h as f64));
+    (y1 > y0).then_some((y0 as usize, y1 as usize))
+}
+
+/// Draws every planned mesh into one stripe (opaque nearest first, glass farthest first).
+fn draw_stripe(t: &mut Target<'_>, scene: &Scene, plan: &FramePlan, spans: &[Option<(usize, usize)>]) {
+    let proj = &plan.proj;
+    // Glass after everything opaque (as gpu.rs draws it).
+    // Opaque nearest first (as planned), glass farthest first.
+    let all = plan.draws.iter().zip(spans);
+    let order = all.clone().filter(|(d, _)| d.finish != 2).chain(all.rev().filter(|(d, _)| d.finish == 2));
+    for (d, span) in order {
+        if !span.is_some_and(|(a, b)| a < t.y1 && b > t.y0) {
+            continue;
+        }
+        let Some(m) = scene.mesh(d.id) else { continue };
+        let data = m.data();
+        // Faces and edges from the coarse copy when the plan asks (frame.rs).
+        let faces = if d.lod { m.lod.as_deref().unwrap_or(data) } else { data };
+        let verts: Vec<ClipVert> = faces
+            .positions
+            .iter()
+            .zip(&faces.normals)
+            .map(|(p, n)| {
+                let vp = math::transform_point(&d.model_view, p.map(f64::from));
+                let un = unpack_normal(*n).map(f64::from);
+                let vn = math::add(
+                    math::add(math::scale(d.normal[0], un[0]), math::scale(d.normal[1], un[1])),
+                    math::scale(d.normal[2], un[2]),
+                );
+                ClipVert {
+                    clip: math::transform4(proj, vp).map(|c| c as f32),
+                    view: vp.map(|c| c as f32),
+                    normal: vn.map(|c| c as f32),
+                    model: *p,
+                    model_normal: un.map(|c| c as f32),
+                }
+            })
+            .collect();
+        for (run, base) in &d.tri_runs {
+            for tri in run.clone() {
+                let i = tri as usize * 3;
+                let Some(idx) = faces.indices.get(i..i + 3) else { continue };
+                let vs: Vec<ClipVert> = idx.iter().filter_map(|&k| verts.get(k as usize).copied()).collect();
+                if let [a, b, c] = vs.as_slice() {
+                    let mut poly = clip_poly(&[*a, *b, *c], |v| v.clip[2]);
+                    if let Some(pl) = plan.clip {
+                        poly = clip_poly(&poly, |v| plane_dist(pl, v.view));
+                    }
+                    for k in 1..poly.len().saturating_sub(1) {
+                        if let (Some(p0), Some(p1), Some(p2)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
+                            raster_triangle(
+                                t,
+                                [p0, p1, p2],
+                                *base,
+                                plan,
+                                (d.closed, d.finish, d.texture_for(*base).map(|x| (x, d.grain_axis))),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for (run, color) in &d.edge_runs {
+            for seg in run.clone() {
+                let i = seg as usize * 2;
+                let (Some(a), Some(b)) = (faces.edge_points.get(i), faces.edge_points.get(i + 1)) else { continue };
+                let (mut a, mut b) = (*a, *b);
+                if let Some(pl) = plan.clip {
+                    let va = math::transform_point(&d.model_view, a.map(f64::from)).map(|c| c as f32);
+                    let vb = math::transform_point(&d.model_view, b.map(f64::from)).map(|c| c as f32);
+                    let (da, db) = (plane_dist(pl, va), plane_dist(pl, vb));
+                    if da < 0.0 && db < 0.0 {
+                        continue;
+                    }
+                    // Cut in object space (the model-view map is affine).
+                    let cut = |p: [f32; 3], q: [f32; 3], t: f32| zip_with(p, q, |x, y| x + (y - x) * t);
+                    if da < 0.0 {
+                        a = cut(a, b, da / (da - db));
+                    } else if db < 0.0 {
+                        b = cut(a, b, da / (da - db));
+                    }
+                }
+                let pa = pulled(&d.model_view, a, plan);
+                let pb = pulled(&d.model_view, b, plan);
+                raster_line(t, math::transform4(proj, pa), math::transform4(proj, pb), *color, plan.edge_width_px);
+            }
+        }
     }
 }
 
@@ -300,8 +351,8 @@ fn raster_triangle(
     let front = area < 0.0;
     let minx = s.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
     let maxx = s.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max).ceil().min(t.w as f32) as i64;
-    let miny = s.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
-    let maxy = s.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max).ceil().min(t.h as f32) as i64;
+    let miny = s.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min).floor().max(t.y0 as f32) as i64;
+    let maxy = s.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max).ceil().min(t.y1 as f32) as i64;
     let edge = |a: [f32; 4], b: [f32; 4], x: f32, y: f32| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
     let light = &plan.lighting;
     for y in miny..maxy {
@@ -320,22 +371,18 @@ fn raster_triangle(
             if qs.abs() < 1e-30 {
                 continue;
             }
-            let attr = |f: &dyn Fn(&ClipVert) -> [f32; 3]| {
-                let (a, b, c) = (f(v[0]), f(v[1]), f(v[2]));
-                zip_with(zip_with(a, b, |x, y| x * q[0] + y * q[1]), c, |xy, z| (xy + z * q[2]) / qs)
-            };
             // A closed body's back faces seen through a section are its cut face: at the cut
             // plane's depth, not the far wall's, so what lies behind stays hidden (as
             // `fs_cap` in the shader).
             let cap = plan.clip.filter(|_| closed && !front);
-            let z = match cap.and_then(|pl| cap_depth(pl, attr(&|cv| cv.view), plan)) {
+            let z = match cap.and_then(|pl| cap_depth(pl, interp(v, q, qs, |cv: &ClipVert| cv.view), plan)) {
                 Some(zc) => zc,
                 None => w0 * s0[2] + w1 * s1[2] + w2 * s2[2],
             };
             if t.depth.get(i).is_none_or(|d| z >= *d) {
                 continue;
             }
-            let n = attr(&|cv| cv.normal);
+            let n = interp(v, q, qs, |cv: &ClipVert| cv.normal);
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
             let sign = if front { 1.0 } else { -1.0 };
             // Through a section, back faces are the inside: draw them as the flat cut face.
@@ -344,8 +391,8 @@ fn raster_triangle(
                 _ => {
                     let base = match texture {
                         Some((tex, axis)) => {
-                            let p = attr(&|cv| cv.model).map(f64::from);
-                            let mn = attr(&|cv| cv.model_normal).map(f64::from);
+                            let p = interp(v, q, qs, |cv: &ClipVert| cv.model).map(f64::from);
+                            let mn = interp(v, q, qs, |cv: &ClipVert| cv.model_normal).map(f64::from);
                             zip_with(base, tex.factor_along(axis, p, mn).map(|f| f as f32), |b, f| (b * f).min(0.98))
                         }
                         None => base,
@@ -356,7 +403,7 @@ fn raster_triangle(
             let vdir = if plan.ortho {
                 [0.0, 0.0, 1.0]
             } else {
-                let p = attr(&|cv| cv.view);
+                let p = interp(v, q, qs, |cv: &ClipVert| cv.view);
                 let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
                 p.map(|c| -c / l)
             };
@@ -368,6 +415,14 @@ fn raster_triangle(
             }
         }
     }
+}
+
+/// A vertex attribute at a pixel, perspective-correct (`q`: barycentric weights over w,
+/// `qs` their sum). Generic so the per-pixel calls inline.
+#[inline]
+fn interp(v: [&ClipVert; 3], q: [f32; 3], qs: f32, f: impl Fn(&ClipVert) -> [f32; 3]) -> [f32; 3] {
+    let (a, b, c) = (f(v[0]), f(v[1]), f(v[2]));
+    zip_with(zip_with(a, b, |x, y| x * q[0] + y * q[1]), c, |xy, z| (xy + z * q[2]) / qs)
 }
 
 /// Depth (NDC z) of the point where the view ray through `view` meets the section plane.
