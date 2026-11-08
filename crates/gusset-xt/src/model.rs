@@ -363,6 +363,57 @@ fn edge(g: &Graph, e: u32, m: &mut Model) {
     m.edges.insert(e, Edge { curve, ends, same_sense });
 }
 
+/// Names written with STEP's `\X2\hhhh\X0\` escapes (SolidWorks does) as plain text.
+pub(crate) fn decode_step_text(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("\\X2\\") {
+        out.push_str(rest.get(..i).unwrap_or(""));
+        let after = rest.get(i + 4..).unwrap_or("");
+        let Some(j) = after.find("\\X0\\") else {
+            out.push_str(rest.get(i..).unwrap_or(""));
+            return out;
+        };
+        let hex = after.get(..j).unwrap_or("");
+        let units: Vec<u16> = hex
+            .as_bytes()
+            .chunks(4)
+            .filter_map(|c| std::str::from_utf8(c).ok().and_then(|h| u16::from_str_radix(h, 16).ok()))
+            .collect();
+        out.extend(char::decode_utf16(units).map(|c| c.unwrap_or('?')));
+        rest = after.get(j + 4..).unwrap_or("");
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `SDL/TYSA_COLOUR` attributes (red, green, blue from 0 to 1), by owner node.
+pub(crate) fn colours(g: &Graph) -> BTreeMap<u32, [f64; 3]> {
+    let mut out = BTreeMap::new();
+    for (idx, n) in &g.nodes {
+        if g.layouts.get(&n.ty).map(|l| l.name.as_str()) != Some("ATTRIBUTE") {
+            continue;
+        }
+        let def = g.ptr(*idx, "definition");
+        if g.string(g.ptr(def, "identifier"), "string") != "SDL/TYSA_COLOUR" {
+            continue;
+        }
+        let reals: Vec<f64> = g
+            .list(*idx, "fields")
+            .iter()
+            .filter_map(|v| if let crate::reader::Val::Ptr(p) = v { Some(*p) } else { None })
+            .flat_map(|p| g.list(p, "values").iter())
+            .filter_map(|v| if let crate::reader::Val::Real(r) = v { Some(*r) } else { None })
+            .collect();
+        if let [r, gr, b] = reals.as_slice()
+            && [r, gr, b].iter().all(|x| x.is_finite() && (0.0..=1.0).contains(*x))
+        {
+            out.entry(g.ptr(*idx, "owner")).or_insert([*r, *gr, *b]);
+        }
+    }
+    out
+}
+
 /// The `SDL/TYSA_NAME` attributes of the file (names the application gave), by owner node;
 /// the first non-empty name of each owner wins.
 pub(crate) fn names(g: &Graph) -> BTreeMap<u32, String> {
@@ -387,7 +438,7 @@ pub(crate) fn names(g: &Graph) -> BTreeMap<u32, String> {
             continue;
         };
         let s: String = g.string(value, "values").chars().filter(|c| !c.is_control()).take(200).collect();
-        let s = s.trim().to_string();
+        let s = decode_step_text(s.trim());
         if !s.is_empty() {
             out.insert(owner, s);
         }

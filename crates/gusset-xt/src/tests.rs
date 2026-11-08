@@ -437,3 +437,10 @@ fn the_pole_order_that_fits_the_vertices_is_found() {
     let wrong = crate::eval::nurbs_distance(&crate::eval::transposed_poles(&s), corner).unwrap();
     assert!(right < 1e-9 && wrong > 0.01, "{right} {wrong}");
 }
+
+#[test]
+fn step_escaped_names_are_decoded() {
+    assert_eq!(crate::model::decode_step_text("Corps de pi\\X2\\00E8\\X0\\ce.27"), "Corps de pièce.27");
+    assert_eq!(crate::model::decode_step_text("plain"), "plain");
+    assert_eq!(crate::model::decode_step_text("open \\X2\\00E8"), "open \\X2\\00E8");
+}

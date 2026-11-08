@@ -59,6 +59,9 @@ impl Default for Limits {
 pub struct Converted {
     pub step: String,
     pub bodies: usize,
+    /// Per body, in the STEP file's order: its name and colour (`0xRRGGBB`) from the
+    /// file's attributes, when it has them.
+    pub looks: Vec<(Option<String>, Option<u32>)>,
     pub schema: u32,
     pub warnings: Vec<String>,
 }
@@ -72,7 +75,35 @@ pub fn to_step(bytes: &[u8], name: &str, limits: &Limits) -> Result<Converted, X
     let g = decode(bytes, limits)?;
     let m = model::build(&g)?;
     let (step, warnings) = step::write(&g, &m, name);
-    Ok(Converted { step, bodies: m.bodies.len(), schema: g.schema_number, warnings })
+    let (names, colours) = (model::names(&g), model::colours(&g));
+    let looks = m
+        .bodies
+        .iter()
+        .map(|b| {
+            // The colour most of its faces have (face colours override the body's), else the
+            // body's own.
+            let rgb = |[r, g, b]: [f64; 3]| {
+                let byte = |x: f64| (x * 255.0).round().clamp(0.0, 255.0) as u32;
+                (byte(r) << 16) | (byte(g) << 8) | byte(b)
+            };
+            let mut count: Vec<(u32, usize)> = Vec::new();
+            for f in b.shells.iter().flat_map(|s| &s.faces) {
+                if let Some(c) = colours.get(&f.node).copied().map(rgb) {
+                    match count.iter_mut().find(|(k, _)| *k == c) {
+                        Some((_, n)) => *n += 1,
+                        None => count.push((c, 1)),
+                    }
+                }
+            }
+            let rgb = count
+                .into_iter()
+                .max_by_key(|(_, n)| *n)
+                .map(|(c, _)| c)
+                .or_else(|| colours.get(&b.node).copied().map(rgb));
+            (names.get(&b.node).cloned(), rgb)
+        })
+        .collect();
+    Ok(Converted { step, bodies: m.bodies.len(), looks, schema: g.schema_number, warnings })
 }
 
 #[cfg(test)]

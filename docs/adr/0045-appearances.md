@@ -31,5 +31,9 @@ anywhere in the document.
 ## Consequences
 * Old readers refuse documents with appearances (unknown statement); documents without
   them are unchanged byte for byte.
-* No textures, no per-face colours, no imported colours yet (STEP/3MF colours could map
-  onto appearances later).
+* No textures and no per-face colours. Parasolid (`.x_t`/`.x_b`) and SolidWorks imports
+  keep each body's name (STEP's `\X2\` escapes decoded) as its label and its colour
+  (`SDL/TYSA_COLOUR`) as a plastic appearance: the colour most of its faces have, else the
+  body's own. Counting faces rather than area can pick the colour of many small faces (the
+  OLED board reads lavender, its holes' colour, over its blue top). STEP/3MF colours could
+  map onto appearances later.
