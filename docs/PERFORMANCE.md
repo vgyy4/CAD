@@ -219,3 +219,12 @@ rather than by mesh id. An unchanged body costs nothing to rebuild and keeps its
 when the bodies before it changed. Measured (`--test perf scene_rebuild`, release, this
 container): the 400-body, 1.6 M-triangle scene takes 728 ms to build from meshes and 0.3 ms
 from the previous scene's geometry.
+
+### 2026-11-08: a top-level BVH for picking and the path tracer
+Every ray (a pick, and each path-traced bounce and shadow ray) tested every body's world box.
+The scene now keeps a BVH over the visible bodies' boxes (`top.rs`; median splits, four per
+leaf), built on the first ray after a body is added, removed, moved, shown or hidden. Measured
+(`--test perf pick_times trace_times`, release, this container): a pick through the 400-body
+scene 20.7 -> 6.2 us, through 10 000 boxes 256 -> 23 us; a 240 x 160, 4-sample photo render
+of the 400-body scene 1067 -> 208 ms (a single part: about 50 ms either way).
+

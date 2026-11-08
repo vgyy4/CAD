@@ -80,24 +80,34 @@ impl Scene {
         };
         let start = add(ray.origin, scale(ray.dir, t0));
         let mut best: Option<(PickHit, bool)> = None;
-        for (id, m) in self.meshes() {
+        // The meshes whose world boxes the ray meets, through the scene's top-level BVH;
+        // each returns the distance (from `start`) still worth looking within.
+        let far = if t1.is_finite() { t1 - t0 } else { f64::MAX };
+        self.top().visit(start, ray.dir, far, |id| {
+            self.pick_mesh(id, ray, start, (t0, t1), &mut best);
+            best.map_or(far, |(b, _)| (b.distance - t0) * 1.0001)
+        });
+        best
+    }
+
+    /// Casts the ray against one mesh, keeping the closest hit in `best` (ties go to the
+    /// lower mesh id, as when meshes were tested in id order).
+    fn pick_mesh(&self, id: MeshId, ray: &Ray, start: Vec3, (t0, t1): (f64, f64), best: &mut Option<(PickHit, bool)>) {
+        {
+            let Some(m) = self.mesh(id) else { return };
             if !m.visible() {
-                continue;
+                return;
             }
-            let limit_world = best.map_or(t1, |(b, _)| b.distance * 1.0001);
-            if !ray_meets_box(start, ray.dir, &m.world, limit_world - t0) {
-                continue;
-            }
-            let Some(inv) = m.inverse.as_ref() else { continue };
+            let Some(inv) = m.inverse.as_ref() else { return };
             let inv = *inv;
             let o = math::transform_point(&inv, start).map(|c| c as f32);
             let d = math::transform_dir(&inv, ray.dir).map(|c| c as f32);
             let limit = best.map_or((t1 - t0) as f32, |(b, _)| (b.distance - t0) as f32 * 1.0001);
             let data = m.data();
-            let Some(hit) = data.bvh.raycast(data, o, d, limit) else { continue };
+            let Some(hit) = data.bvh.raycast(data, o, d, limit) else { return };
             // Affine maps preserve the ray parameter; `ray.dir` is unit length.
             let t = t0 + f64::from(hit.t);
-            if t <= t1 && best.is_none_or(|(b, _)| t < b.distance) {
+            if t <= t1 && best.is_none_or(|(b, _)| t.total_cmp(&b.distance).then(id.cmp(&b.mesh)).is_lt()) {
                 let face = data.face_of_triangle(hit.triangle).unwrap_or(0);
                 let hit = PickHit {
                     mesh: id,
@@ -107,10 +117,9 @@ impl Scene {
                     point: add(ray.origin, scale(ray.dir, t)),
                 };
                 // Only a closed body has an inside: an open mesh's back faces are ordinary.
-                best = Some((hit, data.closed && back_facing(data, hit.triangle, d)));
+                *best = Some((hit, data.closed && back_facing(data, hit.triangle, d)));
             }
         }
-        best
     }
 
     /// The edge closest to `pixel` (top-left origin, same units as `viewport`) within
@@ -214,7 +223,7 @@ fn point_segment_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64) {
 }
 
 /// Whether the ray from `o` along `d` meets `b` within `t_max` (slab test, padded a little).
-fn ray_meets_box(o: Vec3, d: Vec3, b: &math::Aabb, t_max: f64) -> bool {
+pub(crate) fn ray_meets_box(o: Vec3, d: Vec3, b: &math::Aabb, t_max: f64) -> bool {
     if b.min[0] > b.max[0] {
         return false;
     }
@@ -346,5 +355,38 @@ mod tests {
         let mid = s.mesh(MeshId(1)).expect("mesh").data();
         let seg = e.segment as usize * 2;
         assert!((mid.edge_points[seg][1] + 5.0).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod top_tests {
+    use super::*;
+    use crate::demo;
+
+    #[test]
+    fn the_cached_hierarchy_follows_moves_hides_and_removals() {
+        // 50 boxes in a row along X; a ray down -Z over each must hit that box.
+        let mut s = Scene::new();
+        for i in 0..50u64 {
+            s.insert_mesh(MeshId(i), &demo::box_mesh([1.0; 3])).expect("box");
+            s.set_transform(MeshId(i), math::translation([i as f64 * 2.0, 0.0, 0.0]));
+        }
+        let down = |x: f64| Ray { origin: [x, 0.0, 10.0], dir: [0.0, 0.0, -1.0] };
+        for i in 0..50u64 {
+            assert_eq!(s.pick(&down(i as f64 * 2.0)).map(|h| h.mesh), Some(MeshId(i)));
+        }
+        // Moved far away: the old place is empty, the new one hits.
+        s.set_transform(MeshId(7), math::translation([500.0, 0.0, 0.0]));
+        assert_eq!(s.pick(&down(14.0)).map(|h| h.mesh), None);
+        assert_eq!(s.pick(&down(500.0)).map(|h| h.mesh), Some(MeshId(7)));
+        // Hidden and removed meshes are not hit.
+        s.set_visible(MeshId(3), false);
+        assert_eq!(s.pick(&down(6.0)).map(|h| h.mesh), None);
+        s.remove_mesh(MeshId(4));
+        assert_eq!(s.pick(&down(8.0)).map(|h| h.mesh), None);
+        // Two boxes at one place: the lower id wins, as before the hierarchy.
+        s.insert_mesh(MeshId(99), &demo::box_mesh([1.0; 3])).expect("box");
+        s.set_transform(MeshId(99), math::translation([10.0, 0.0, 0.0]));
+        assert_eq!(s.pick(&down(10.0)).map(|h| h.mesh), Some(MeshId(5)));
     }
 }

@@ -44,6 +44,7 @@ mod pick;
 mod scene;
 mod software;
 mod theme;
+mod top;
 mod trace;
 mod view;
 

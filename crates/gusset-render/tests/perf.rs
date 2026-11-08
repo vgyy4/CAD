@@ -119,3 +119,49 @@ fn scene_rebuild() {
     assert_eq!(reused.len(), rebuilt.len());
     println!("scene rebuild, 400 bodies: {fresh:.1} ms from meshes, {kept:.2} ms reusing geometry");
 }
+
+#[test]
+#[ignore = "measurement, run on demand"]
+fn pick_times() {
+    // Picking casts one ray against every body's box, then the hit bodies' BVHs.
+    let mut big = Scene::new();
+    let cube = demo::box_mesh([4.0; 3]);
+    for i in 0..10_000u64 {
+        let mut m = cube.clone();
+        let (x, y) = ((i % 100) as f32 * 5.0, (i / 100) as f32 * 5.0);
+        for p in m.positions.iter_mut().chain(m.edges.iter_mut().flatten()) {
+            p[0] += x;
+            p[1] += y;
+        }
+        big.insert_mesh(MeshId(i), &m).unwrap();
+    }
+    for (name, scene) in [("400 bodies", assembly()), ("10000 boxes", big)] {
+        let mut cam = Camera::default();
+        cam.set_view(NamedView::Iso);
+        cam.fit(&scene.bounds(), 1.6);
+        let n = 200u32;
+        let t = Instant::now();
+        let mut hits = 0;
+        for k in 0..n {
+            let u = f64::from(k) / f64::from(n);
+            let ray = cam.ray([u * 1600.0, 450.0], [1600.0, 1000.0]);
+            hits += usize::from(scene.pick(&ray).is_some());
+        }
+        let us = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+        println!("pick, {name}: {us:.1} us per ray ({hits}/{n} hit)");
+    }
+}
+
+#[test]
+#[ignore = "measurement, run on demand"]
+fn trace_times() {
+    for (name, scene) in [("typical part", part()), ("400 bodies", assembly())] {
+        let mut cam = Camera::default();
+        cam.set_view(NamedView::Iso);
+        cam.fit(&scene.bounds(), 1.5);
+        let t = Instant::now();
+        let settings = gusset_render::TraceSettings { samples: 4, ..Default::default() };
+        gusset_render::render_traced(&scene, &cam, [240, 160], settings).unwrap();
+        println!("trace, {name}: {:.0} ms for 240 x 160 at 4 samples", t.elapsed().as_secs_f64() * 1000.0);
+    }
+}

@@ -365,8 +365,7 @@ Phase 3 has started (see Next).
   face colours done (ADR 0045 amendment): stored per face name in the appearance, drawn by the
   viewport, `render_view` and the path tracer, written back by STEP export. Display geometry of
   unchanged bodies is reused across rebuilds (PERFORMANCE.md). Next: face colours from
-  Parasolid/SolidWorks/3MF and in 3MF export, textures, a top-level BVH for scenes of many
-  bodies, Fusion colours (in its design stream).
+  Parasolid/SolidWorks/3MF and in 3MF export, textures, Fusion colours (in its design stream).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
   single-record read (bounded) and T3 (one `LocalBodies` stream).
 

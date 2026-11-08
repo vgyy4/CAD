@@ -220,6 +220,9 @@ impl SceneMesh {
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     meshes: BTreeMap<MeshId, SceneMesh>,
+    /// Top-level BVH over the visible meshes' world boxes, built on the first ray after a
+    /// change that moves, shows, hides, adds or removes a mesh.
+    top: std::sync::OnceLock<crate::top::TopBvh>,
 }
 
 /// Geometry revisions are unique in the process, not per scene: GPU renderers cache
@@ -257,6 +260,7 @@ impl Scene {
 
     /// [`Scene::insert_mesh`] with geometry built before (no validation or BVH build).
     pub fn insert_geometry(&mut self, id: MeshId, geometry: Geometry) {
+        self.top = std::sync::OnceLock::new();
         let Geometry { data, lod, rev } = geometry;
         match self.meshes.get_mut(&id) {
             Some(m) => {
@@ -290,12 +294,23 @@ impl Scene {
 
     /// Remove a mesh. Returns whether it existed.
     pub fn remove_mesh(&mut self, id: MeshId) -> bool {
+        self.top = std::sync::OnceLock::new();
         self.meshes.remove(&id).is_some()
     }
 
     /// Remove everything.
     pub fn clear(&mut self) {
+        self.top = std::sync::OnceLock::new();
         self.meshes.clear();
+    }
+
+    /// The top-level BVH (built on first use after a change).
+    pub(crate) fn top(&self) -> &crate::top::TopBvh {
+        self.top.get_or_init(|| {
+            crate::top::TopBvh::build(
+                self.meshes.iter().filter(|(_, m)| m.visible).map(|(id, m)| (*id, m.world)).collect(),
+            )
+        })
     }
 
     /// A mesh by id.
@@ -323,6 +338,7 @@ impl Scene {
 
     /// Set a mesh's object → world transform. Returns whether the mesh exists.
     pub fn set_transform(&mut self, id: MeshId, transform: Mat4) -> bool {
+        self.top = std::sync::OnceLock::new();
         self.meshes
             .get_mut(&id)
             .map(|m| {
@@ -339,6 +355,7 @@ impl Scene {
 
     /// Show or hide a mesh. Returns whether the mesh exists.
     pub fn set_visible(&mut self, id: MeshId, visible: bool) -> bool {
+        self.top = std::sync::OnceLock::new();
         self.meshes.get_mut(&id).map(|m| m.visible = visible).is_some()
     }
 
