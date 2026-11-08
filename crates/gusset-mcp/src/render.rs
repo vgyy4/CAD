@@ -48,6 +48,8 @@ pub enum RenderStyle {
     Shaded,
     /// Edges only.
     Wireframe,
+    /// Path traced (slower).
+    Photo,
 }
 
 /// Named views.

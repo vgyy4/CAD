@@ -75,7 +75,7 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
     for (i, body) in scene.bodies.iter().enumerate() {
         let id = MeshId(i as u64);
         let inserted = match request.style {
-            RenderStyle::Shaded => out.insert_mesh(id, &body.mesh),
+            RenderStyle::Shaded | RenderStyle::Photo => out.insert_mesh(id, &body.mesh),
             RenderStyle::Wireframe => {
                 let mut m = body.mesh.clone();
                 m.indices.clear();
@@ -88,7 +88,7 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
         for (h, hit) in request.highlight.iter().zip(matched.iter_mut()) {
             if let Some(f) = body.face_names.iter().position(|n| n == h) {
                 *hit = true;
-                if request.style == RenderStyle::Shaded {
+                if request.style != RenderStyle::Wireframe {
                     out.set_face_highlight(id, u32::try_from(f).unwrap_or(u32::MAX), Highlight::Select);
                 }
             }
@@ -161,6 +161,13 @@ impl ViewRenderer for SceneRenderer {
         request.validate()?;
         let s = build_scene(request, scene)?;
         let camera = build_camera(request, &s)?;
+        if request.style == RenderStyle::Photo {
+            // CPU path tracing: 16 paths a pixel keep an 800 x 600 view to a few seconds.
+            let set = gusset_render::TraceSettings { samples: 16, bounces: 2 };
+            return gusset_render::render_traced(&s, &camera, [request.width, request.height], set)
+                .map_err(|e| format!("rendering failed: {e}"))
+                .and_then(|img| img.to_png().map_err(|e| format!("rendering failed: {e}")));
+        }
         let mut guard = self.path.lock().unwrap_or_else(PoisonError::into_inner);
         let path = self.init(&mut guard);
         path.render_png(&s, &camera, [request.width, request.height]).map_err(|e| format!("rendering failed: {e}"))
@@ -266,6 +273,18 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
         let bad: RenderRequest =
             serde_json::from_value(serde_json::json!({"width": 8, "height": 8, "highlight": ["nope"]})).unwrap();
         assert!(renderer.render_png(&bad, &scene).unwrap_err().contains("matched no face"));
+    }
+
+    #[test]
+    fn photo_style_is_path_traced_at_the_asked_size() {
+        let r = SceneRenderer::with_backend(RenderBackend::Software);
+        let req: RenderRequest =
+            serde_json::from_value(serde_json::json!({"width": 48, "height": 36, "style": "photo"})).unwrap();
+        let png = r.render_png(&req, &plate_scene()).unwrap();
+        let img = RgbaImage::from_png(&png).unwrap();
+        assert_eq!((img.width, img.height), (48, 36));
+        // Deterministic.
+        assert_eq!(png, r.render_png(&req, &plate_scene()).unwrap());
     }
 
     #[test]

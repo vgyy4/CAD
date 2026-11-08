@@ -65,6 +65,7 @@ noise is seeded by pixel and sample: the same scene gives the same image. Rows a
 over the processor's threads (`std::thread::scope`). Limits: 4096 px a side, 1..=1024 samples,
 0..=6 bounces, 4e8 paths an image. `gusset build model.gus -e out.png [--samples N]
 [--size WxH]` writes one from the iso view. Not yet: materials beyond colour (metal,
-glass), depth of field, a denoiser, an MCP entry. The app renders
+glass), depth of field, a denoiser. Agents get it as `render_view` with `style: "photo"` (16
+paths a pixel, 2 bounces). The app renders
 the current view off the UI thread (File › Export › Rendered image (PNG), 1600 x 1200, 64
 paths a pixel).
