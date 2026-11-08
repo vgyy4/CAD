@@ -396,9 +396,34 @@ impl CamJob {
                         } else {
                             let (lifted, rise, n) = gusset_cam::lift_for_holder(&surface, &setup, &h, &t)
                                 .map_err(|e| CommandError::args(e.to_string()))?;
+                            // What would avoid the lift (F11-6): more stickout for the holder; the
+                            // shank needs a longer flute or a thinner shank.
+                            let deepest = |part| {
+                                report
+                                    .collisions
+                                    .iter()
+                                    .filter(|c| c.part == part)
+                                    .map(|c| c.depth)
+                                    .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |m| m.max(d))))
+                            };
+                            let mut fix = Vec::new();
+                            if let Some(d) = deepest(gusset_cam::HolderPart::Holder) {
+                                fix.push(format!(
+                                    "a stickout of {:.1} mm or more clears the holder",
+                                    libm::ceil((stickout + d) * 10.0) / 10.0
+                                ));
+                            }
+                            if let Some(d) = deepest(gusset_cam::HolderPart::Shank) {
+                                fix.push(format!(
+                                    "the shank needs {:.1} mm more flute length (or a thinner shank)",
+                                    libm::ceil(d * 10.0) / 10.0
+                                ));
+                            }
                             warnings.push(format!(
-                                "holder: {} collisions (deepest {:.3} mm); {n} positions lifted by up to {rise:.3} mm, leaving material there",
-                                report.total_collisions, -report.min_clearance
+                                "holder: {} collisions (deepest {:.3} mm); {n} positions lifted by up to {rise:.3} mm, leaving material there; {}",
+                                report.total_collisions,
+                                -report.min_clearance,
+                                fix.join("; ")
                             ));
                             Ok(lifted)
                         }

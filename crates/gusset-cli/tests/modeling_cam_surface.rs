@@ -91,6 +91,11 @@ fn a_short_stickout_lifts_the_tool_away_from_a_tall_boss() {
     let r = run(&mut s, "cam.toolpath", job(json!([6.0, 8.0, 40.0, 10.0])));
     let w = r["warnings"].to_string();
     assert!(w.contains("holder:") && w.contains("leaving material"), "{r}");
+    // Boss top 30 above the tip at the plate (z 5): a 10 mm stickout is 15 short of 25 at least.
+    assert!(w.contains("clears the holder"), "{r}");
+    let need: f64 = w.split("a stickout of ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    let r2 = run(&mut s, "cam.toolpath", job(json!([6.0, 8.0, 40.0, need])));
+    assert!(!r2["warnings"].to_string().contains("holder:"), "stickout {need}: {r2}");
     // The G-code says so too.
     let dir = std::env::temp_dir().join(format!("gusset-holder-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
