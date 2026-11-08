@@ -1221,7 +1221,7 @@ map that works for a direct edit.
 | F14-3 | Fixed: the finish is taken in any case; an unknown one is echoed with the four names as a hint. |
 | F14-4 | Fixed: `rules: false` that cannot be built is refused before commit ("these faces cannot move alone: a neighbour tangent to them ... would have to change shape", hint: leave rules out). |
 | F14-5 | Fixed: an old face name in a baked model gets a hint about `<body>/face(i)` and the bake's `face_names` map. |
-| F14-6 | Accepted (ADR 0045 limit): colours by face count; generic SolidWorks body names are the file's own. |
+| F14-6 | Colours fixed (2026-11-08): face colours come through, the OLED board is blue with white silkscreen. Accepted: generic SolidWorks body names are the file's own. |
 | F14-7 | Accepted: the schemas stay `number` (the tool list is size-budgeted); strings work for lengths only, as feeds and speeds are not lengths. |
 | F14-8 | Fixed in part: the plastic coat is added, not sampled, so plastic and the floor are much less grainy; scenes of many bodies still take time in a debug build. |
 | F14-9 | Fixed: clearing an appearance that is not set says so; `body_changes` reports a rename as `renamed` with `from`; `prefer: "ours"` that settles conflicts returns `merged: true, taken: []` with a note. |
