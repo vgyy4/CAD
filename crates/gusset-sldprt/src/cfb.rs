@@ -118,6 +118,12 @@ impl<'a> Cfb<'a> {
         Ok(me)
     }
 
+    /// True when the sector table uses sectors past the end of the file (a cut copy).
+    pub(crate) fn cut_short(&self) -> bool {
+        let have = (self.bytes.len() / self.sector).saturating_sub(1);
+        self.fat.iter().skip(have).any(|e| *e <= MAX_REGULAR || *e == END)
+    }
+
     fn raw(bytes: &[u8], sector: usize, n: u32) -> Option<&[u8]> {
         let off = usize::try_from(n).ok()?.checked_add(1)?.checked_mul(sector)?;
         bytes.get(off..off.checked_add(sector)?)

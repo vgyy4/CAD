@@ -98,6 +98,9 @@ fn partition_config(name: &str) -> Option<u32> {
     rest.strip_suffix("-Partition")?.parse().ok()
 }
 
+/// The warning for a file that ends early (dogfooding F12-9).
+const CUT_SHORT: &str = "the file ends early (an incomplete download or copy?): the geometry found may be incomplete";
+
 const PARTITION_TAG: &[u8] = b": TRANSMIT FILE (partition)";
 
 /// Splits a partition stream into its blocks and returns the first Parasolid partition.
@@ -147,6 +150,9 @@ pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtErro
     let found = match container {
         Container::Ole2 => {
             let f = cfb::Cfb::open(bytes, limits)?;
+            if f.cut_short() {
+                warnings.push(CUT_SHORT.to_string());
+            }
             let mut list: Vec<(u32, usize)> =
                 f.streams.iter().enumerate().filter_map(|(i, e)| partition_config(&e.name).map(|n| (n, i))).collect();
             list.sort_unstable();
@@ -172,6 +178,9 @@ pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtErro
             found
         }
         Container::Chunks => {
+            if !chunks::has_end_record(bytes) {
+                warnings.push(CUT_SHORT.to_string());
+            }
             let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
             for st in chunks::streams(bytes, limits, |n| partition_config(n).is_some())? {
                 if let Some(n) = partition_config(&st.name) {

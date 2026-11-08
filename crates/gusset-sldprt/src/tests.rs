@@ -59,7 +59,33 @@ fn chunk_file(records: &[Vec<u8>]) -> Vec<u8> {
         f.extend(r);
         f.extend([9u8; 3]);
     }
+    // The end record: signature, two zero disk numbers, the count twice, size, offset, a
+    // zero comment length, then trailing bytes.
+    let n = records.len() as u16;
+    f.extend([0x5a, 0x5b, 0x5c, 0x5d, 0, 0, 0, 0]);
+    f.extend(n.to_le_bytes());
+    f.extend(n.to_le_bytes());
+    f.extend([7u8, 1, 0, 0, 9, 2, 0, 0, 0, 0]);
+    f.extend([0xa5u8; 20]);
     f
+}
+
+#[test]
+fn a_cut_file_warns() {
+    let mut f = chunk_file(&[
+        record(KEY, "Contents/Config-0-Partition", &partition_stream(30), None),
+        record(KEY, "Preview", &[7u8; 4000], None),
+    ]);
+    assert!(extract_xt(&f, &Limits::default()).unwrap().warnings.is_empty());
+    f.truncate(f.len() - 40);
+    let e = extract_xt(&f, &Limits::default()).unwrap();
+    assert!(e.warnings.iter().any(|w| w.contains("ends early")), "{:?}", e.warnings);
+    let o = ole(&[("Config-0-Partition", &partition_stream(30)), ("Preview", &[7u8; 9000])]);
+    assert!(extract_xt(&o, &Limits::default()).unwrap().warnings.is_empty());
+    let cut = &o[..o.len() - 4096];
+    if let Ok(e) = extract_xt(cut, &Limits::default()) {
+        assert!(e.warnings.iter().any(|w| w.contains("ends early")), "{:?}", e.warnings);
+    }
 }
 
 const KEY: [u8; 4] = [0xdf, 0xff, 0xee, 0x7d];

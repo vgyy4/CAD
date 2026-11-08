@@ -18,6 +18,21 @@ pub(crate) fn looks_like(bytes: &[u8]) -> bool {
     bytes.get(4..8) == Some(&[0, 0, 0, 4][..]) && find(bytes, 8, 32).is_some()
 }
 
+/// False when the file lacks the end record that closes a whole chunk file (dogfooding
+/// F12-9: a cut download otherwise imports without a word). The record lies in the last
+/// bytes: two zero disk numbers, the entry count twice, the directory's size and offset and
+/// a zero comment length.
+pub(crate) fn has_end_record(bytes: &[u8]) -> bool {
+    let u16_at = |i: usize| bytes.get(i..i + 2).and_then(|b| b.try_into().ok()).map(u16::from_le_bytes);
+    let n = bytes.len();
+    (n.saturating_sub(300)..n.saturating_sub(18)).rev().any(|i| {
+        matches!(
+            (u16_at(i), u16_at(i + 2), u16_at(i + 4), u16_at(i + 6), u16_at(i + 16)),
+            (Some(0), Some(0), Some(a), Some(b), Some(0)) if a == b && a > 0
+        )
+    })
+}
+
 /// Position of the next marker at or after `from`, searching no further than `until`.
 fn find(bytes: &[u8], from: usize, until: usize) -> Option<usize> {
     let end = bytes.len().min(until.saturating_add(MARKER.len()));
