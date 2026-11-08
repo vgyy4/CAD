@@ -135,7 +135,11 @@ fn moves_between_lifted_and_unlifted_samples_never_dip_under_the_requirement() {
         ],
         ..Toolpath::default()
     };
-    let (out, rise, _) = lift_for_holder(&s, &st, &h, &path).unwrap();
+    let lift = lift_for_holder(&s, &st, &h, &path).unwrap();
+    let (out, rise) = (lift.toolpath, lift.max_lift);
+    // Raised on both sides of the slot's middle, at the floor.
+    let a = lift.area.unwrap();
+    assert!(a.min[0] < -2.0 && a.max[0] > 2.0 && a.z == [0.0, 0.0], "{a:?}");
     assert!((rise - 25.0).abs() < 1e-9, "{rise}");
     let mut ck = Checker::new(&s, &st, &h).unwrap();
     let mut at = [0.0; 3];

@@ -394,8 +394,22 @@ impl CamJob {
                         if report.total_collisions == 0 {
                             Ok(t)
                         } else {
-                            let (lifted, rise, n) = gusset_cam::lift_for_holder(&surface, &setup, &h, &t)
+                            let lift = gusset_cam::lift_for_holder(&surface, &setup, &h, &t)
                                 .map_err(|e| CommandError::args(e.to_string()))?;
+                            let (lifted, rise, n) = (lift.toolpath, lift.max_lift, lift.lifted);
+                            // Where material is left (F11-6), in the sketch's coordinates.
+                            let r1 = |v: f64| (v * 10.0).round() / 10.0;
+                            let place = lift.area.map_or(String::new(), |a| {
+                                format!(
+                                    " (x {}..{}, y {}..{}, at z {}..{})",
+                                    r1(a.min[0]),
+                                    r1(a.max[0]),
+                                    r1(a.min[1]),
+                                    r1(a.max[1]),
+                                    r1(a.z[0]),
+                                    r1(a.z[1])
+                                )
+                            });
                             // What would avoid the lift (F11-6): more stickout for the holder; the
                             // shank needs a longer flute or a thinner shank.
                             let deepest = |part| {
@@ -420,7 +434,7 @@ impl CamJob {
                                 ));
                             }
                             warnings.push(format!(
-                                "holder: {} collisions (deepest {:.3} mm); {n} positions lifted by up to {rise:.3} mm, leaving material there; {}",
+                                "holder: {} collisions (deepest {:.3} mm); {n} positions lifted by up to {rise:.3} mm{place}, leaving material there; {}",
                                 report.total_collisions,
                                 -report.min_clearance,
                                 fix.join("; ")

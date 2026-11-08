@@ -93,6 +93,8 @@ fn a_short_stickout_lifts_the_tool_away_from_a_tall_boss() {
     assert!(w.contains("holder:") && w.contains("leaving material"), "{r}");
     // Boss top 30 above the tip at the plate (z 5): a 10 mm stickout is 15 short of 25 at least.
     assert!(w.contains("clears the holder"), "{r}");
+    // And where: round the boss (x, y 25..35 widened by the holder), at the plate (z 5).
+    assert!(w.contains(" (x ") && w.contains("at z 5..5)"), "{r}");
     let need: f64 = w.split("a stickout of ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
     let r2 = run(&mut s, "cam.toolpath", job(json!([6.0, 8.0, 40.0, need])));
     assert!(!r2["warnings"].to_string().contains("holder:"), "stickout {need}: {r2}");

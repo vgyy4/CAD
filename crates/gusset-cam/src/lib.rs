@@ -19,9 +19,9 @@ mod rest;
 mod surface;
 
 pub use surface::{
-    Cutter, DEFAULT_STEEP_DEG, Holder, HolderCollision, HolderPart, HolderReport, PencilSpec, RasterSpec, SafeRaster,
-    SteepShallowSpec, Surface3d, WaterlineSpec, check_holder, lift_for_holder, pencil_finish, raster_finish,
-    raster_finish_safe, steep_shallow_finish, waterline_finish,
+    Cutter, DEFAULT_STEEP_DEG, Holder, HolderCollision, HolderPart, HolderReport, Lift, LiftedArea, PencilSpec,
+    RasterSpec, SafeRaster, SteepShallowSpec, Surface3d, WaterlineSpec, check_holder, lift_for_holder, pencil_finish,
+    raster_finish, raster_finish_safe, steep_shallow_finish, waterline_finish,
 };
 
 #[derive(Debug, Clone, PartialEq)]

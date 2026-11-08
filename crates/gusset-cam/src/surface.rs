@@ -682,7 +682,8 @@ pub use waterline::{DEFAULT_STEEP_DEG, SteepShallowSpec, WaterlineSpec, steep_sh
 mod holder;
 mod pencil;
 pub use holder::{
-    Holder, HolderCollision, HolderPart, HolderReport, SafeRaster, check_holder, lift_for_holder, raster_finish_safe,
+    Holder, HolderCollision, HolderPart, HolderReport, Lift, LiftedArea, SafeRaster, check_holder, lift_for_holder,
+    raster_finish_safe,
 };
 pub use pencil::{PencilSpec, pencil_finish};
 

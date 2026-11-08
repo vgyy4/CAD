@@ -49,6 +49,27 @@ pub struct HolderReport {
     pub min_clearance: f64,
 }
 
+/// Where [`lift_for_holder`] raised the tool: the box of the raised positions in XY and the
+/// heights the path had there (what is left uncut lies about there).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiftedArea {
+    pub min: [f64; 2],
+    pub max: [f64; 2],
+    /// Lowest and highest tip Z, before lifting, of the raised positions.
+    pub z: [f64; 2],
+}
+
+/// Result of [`lift_for_holder`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lift {
+    pub toolpath: Toolpath,
+    /// Largest rise of the tool tip.
+    pub max_lift: f64,
+    /// Raised positions.
+    pub lifted: usize,
+    pub area: Option<LiftedArea>,
+}
+
 /// Result of [`raster_finish_safe`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SafeRaster {
@@ -233,12 +254,7 @@ pub fn check_holder(
 /// Raises the tool along every cutting move so neither shank nor holder touches the surface.
 /// Returns the new path, the largest rise and the number of raised samples. Arcs become lines.
 /// Material is left wherever the tool is raised.
-pub fn lift_for_holder(
-    surface: &Surface3d,
-    setup: &Setup,
-    holder: &Holder,
-    path: &Toolpath,
-) -> Result<(Toolpath, f64, usize), CamError> {
+pub fn lift_for_holder(surface: &Surface3d, setup: &Setup, holder: &Holder, path: &Toolpath) -> Result<Lift, CamError> {
     let mut ck = Checker::new(surface, setup, holder)?;
     let step = setup.tool_diameter / 2.0;
     let mut out: Vec<Move> = Vec::with_capacity(path.moves.len());
@@ -246,6 +262,7 @@ pub fn lift_for_holder(
     let (mut max_lift, mut lifted, mut samples) = (0.0f64, 0usize, 0usize);
     // Whether the last point written was raised: the next move then starts off the path.
     let mut after_lift = false;
+    let mut area: Option<LiftedArea> = None;
     for mv in &path.moves {
         let end = end_of(mv);
         let Some(from) = orig.filter(|_| !matches!(mv, Move::Rapid(_))) else {
@@ -267,6 +284,10 @@ pub fn lift_for_holder(
                 any = true;
                 lifted += 1;
                 max_lift = max_lift.max(z - q[2]);
+                let a = area.get_or_insert(LiftedArea { min: [q[0], q[1]], max: [q[0], q[1]], z: [q[2], q[2]] });
+                a.min = [a.min[0].min(q[0]), a.min[1].min(q[1])];
+                a.max = [a.max[0].max(q[0]), a.max[1].max(q[1])];
+                a.z = [a.z[0].min(q[2]), a.z[1].max(q[2])];
             }
             if z > setup.safe {
                 return Err(CamError::Invalid("the holder cannot clear the surface below the safe height".into()));
@@ -325,7 +346,7 @@ pub fn lift_for_holder(
         orig = Some(end);
     }
     let tp = Toolpath { moves: out, rings: path.rings, levels: path.levels.clone(), drill: path.drill.clone() };
-    Ok((tp, max_lift, lifted))
+    Ok(Lift { toolpath: tp, max_lift, lifted, area })
 }
 
 /// [`raster_finish`] followed by the holder check and a lift of every sample where the shank or
@@ -343,7 +364,7 @@ pub fn raster_finish_safe(
     if report.total_collisions == 0 {
         return Ok(SafeRaster { toolpath: path, report, max_lift: 0.0, lifted_samples: 0 });
     }
-    let (toolpath, max_lift, lifted_samples) = lift_for_holder(surface, setup, holder, &path)?;
+    let Lift { toolpath, max_lift, lifted: lifted_samples, .. } = lift_for_holder(surface, setup, holder, &path)?;
     Ok(SafeRaster { toolpath, report, max_lift, lifted_samples })
 }
 
