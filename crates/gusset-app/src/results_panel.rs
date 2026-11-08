@@ -15,6 +15,8 @@ pub enum Kind {
     Cam,
     /// Topology optimisation (`sim.optimize`).
     Optimize,
+    /// Draft analysis (`query.draft_analysis`).
+    Draft,
 }
 
 impl Kind {
@@ -25,6 +27,7 @@ impl Kind {
             "sim.modal" => Some(Kind::Modal),
             "cam.toolpath" => Some(Kind::Cam),
             "sim.optimize" => Some(Kind::Optimize),
+            "query.draft_analysis" => Some(Kind::Draft),
             _ => None,
         }
     }
@@ -120,6 +123,21 @@ pub fn rows(r: &Results) -> Vec<(String, String)> {
             }
             if let Some(h) = num(d, "voxel_mm") {
                 add(tr("results.element"), format!("{} mm", fmt(h)));
+            }
+        }
+        Kind::Draft => {
+            if let Some(m) = num(d, "min_draft_deg") {
+                add(tr("results.min_draft"), format!("{} deg", fmt(m)));
+            }
+            for (key, label) in [
+                ("positive", "results.draft_positive"),
+                ("negative", "results.draft_negative"),
+                ("insufficient", "results.draft_insufficient"),
+                ("mixed", "results.draft_mixed"),
+            ] {
+                if let Some(n) = d.get(key).and_then(Value::as_u64) {
+                    add(tr(label), n.to_string());
+                }
             }
         }
         Kind::Cam => {

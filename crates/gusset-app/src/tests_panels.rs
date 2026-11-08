@@ -928,3 +928,18 @@ fn the_share_menu_opens_the_sync_form() {
     assert_eq!(f, Some("history.sync"));
     assert!(h.state().form.as_ref().unwrap().fields.iter().any(|f| f.name == "who"));
 }
+
+#[test]
+fn draft_analysis_paints_the_model() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    h.state_mut().submit_command(
+        "query.draft_analysis",
+        json!({"direction": [0, 0, 1], "field": true}),
+        crate::app::Then::Show,
+    );
+    settle(&mut h);
+    // The result is a panel, and the model is painted by class in its place.
+    assert!(h.state().results.as_ref().is_some_and(|r| r.kind == crate::results_panel::Kind::Draft));
+    assert!(h.state().stress_view);
+}

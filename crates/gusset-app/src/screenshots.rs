@@ -162,6 +162,25 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // Draft analysis: faces red (negative), yellow (would drag), green (release upwards).
+        let mut a = app(theme);
+        bracket(&mut a);
+        shoot(&dir, &format!("17-draft-analysis-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+            h.state_mut().submit_command(
+                "query.draft_analysis",
+                serde_json::json!({"direction": [0, 0, 1], "field": true}),
+                crate::app::Then::Show,
+            );
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+            h.run_steps(3);
+        });
         // The marking menu (a right click in the viewport).
         let mut a = app(theme);
         bracket(&mut a);

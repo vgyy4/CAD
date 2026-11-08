@@ -2608,6 +2608,7 @@ impl App {
                     Kind::Modal => "sim.modal",
                     Kind::Cam => "cam.toolpath",
                     Kind::Optimize => "sim.optimize",
+                    Kind::Draft => "query.draft_analysis",
                 };
                 let mut job = r.job.clone();
                 // A re-run shows the result again; it does not write the STL a second time.
