@@ -110,8 +110,8 @@ root component's bodies have none and stay put). It accepts only orthonormal mat
 determinant +1 and translations under 100 km, reads at most 10000 occurrences, and searches
 at most 600 bytes back from each name; it is in the `sat_read` fuzz target. The import
 names each placed body after its occurrence and composes the placement after the body's
-own ACIS transform. Not read yet: nested components (their matrices are relative to the
-parent) and the placement of `.f3z` designs relative to each other (warned).
+own ACIS transform. (Nested components and the placement of `.f3z` designs relative to each
+other, not read at first, are in the amendment of 2026-11-08.)
 
 Binary B-spline surfaces (2026-11-05): a survey of all 42 bodies of the Fusion samples found
 one part lost. Its binary `spline-surface` wrote the four closure/singularity words as
@@ -120,3 +120,73 @@ for a count. The reader now tries that layout first when four small integers fol
 degrees, then falls back to counts right after them. Binary files also name exact B-spline
 surfaces `exact_spl_sur` (text: `exactsur`): read as exact, not as an approximation.
 
+## Amendment (2026-11-08): nested components, `.f3z` references, newer streams
+
+Layout facts read from the Adafruit samples and checked body by body against the authors' own
+STEP exports (`crates/gusset-cli/tests/fusion_samples.rs` writes the STEP of every imported
+body, `scripts/f3d_compare.py` puts the author's solids at their places in the assembly tree
+and matches them by the box of their vertices). Nothing here comes from other projects'
+readers.
+
+Two layouts of `Design1/BulkStream.dat` occur (2025 files call it
+`FusionDesignSegmentType1/BulkStream.dat`, Zstandard inside the ZIP, same record layout; its
+sibling `FusionACTSegmentType1` is a table of property names, not read). Ids are UUIDs written
+as UTF-16LE text (some end in `$`) and, in files since about 2023, also as class tags in front
+of records (`24 00 00 00` and the 36 ASCII characters). Matrices are the same in both: 16
+little-endian doubles, row-major, centimetres.
+
+- Older layout, per component a block. Two ids and the name, the body (`BREP.<id>.smb`), then
+  either the component's listed instances (for each: matrix, the 4-byte length of the text, the
+  UTF-16 name `<component>:<instance>`; the gap is exactly 4 bytes in all 12 designs checked) or
+  `CreateComponent` and 1 to 2.5 KB later one matrix. Listed matrices are relative to the
+  component they were created in (an electronics board, `PCB Component`); the matrix after
+  `CreateComponent` is that component's placement in design coordinates (`Board`, inside
+  `PCB Component`, repeats its matrix, and so does every component placed identically inside
+  it). So no parent link is needed: world = last such matrix before the list x listed matrix.
+  That matrix is trusted only in a design that also lists instances; elsewhere it is whatever
+  move the design history ended with (in `QTPy`'s root it is the reference's placement, in
+  `Top Cover Slotted` a move that was undone).
+- Newer layout, occurrence records. Class `FF415D89-A1DB-44AC-B824-E9A772B86ED4`: UTF-16 ids
+  `parent$ own$ design$ component` (without `parent$` for an occurrence in the root), and a
+  record number after a 3-digit text. The same occurrence appears in the history parts of the
+  stream, with and without parent; the parent from any record and the first matrix found are
+  used. Class `F9CB8717-EB86-47F2-AAA7-39E142C57A09` starts a component (its id, then its
+  name); a body belongs to the last component record before it, and every occurrence of that
+  component gets a copy (Crickit: six standoffs, twelve screws), the world placement being the
+  chain of parents composed, outermost first. An occurrence's matrix is in class
+  `2E3AC990-483D-4A55-8662-C064B976A957` (`01` and the owner's record number as u64 just before
+  the class tag, matrix 43 bytes after it; the owner's occurrence record has number + 1) or in
+  class `E03784ED-5E19-4E14-B9F2-3B07017018CD` after or around the occurrence's own id. No matrix
+  means the origin.
+- References (xrefs) of an `.f3z`. `Manifest.json` names the root design,
+  `DesignDescription.json` lists the designs (`designObjects[].relativePath`) and, on the
+  design that references others, `references[].relationships[]`: an object `id` and
+  `metadata.neutronRole`, a UUID. In the root stream the role appears in class `E03784ED-...`
+  records, with the placement matrix after the role, before it, or before an owner id and the
+  role after the matrix (three variants); a reference used several times lists the other
+  instances' matrices right after the first (at most 160 bytes apart; the MacroPad's twelve
+  switches). The stream keeps earlier states: the record with the most matrices wins, ties go
+  to the last. A record naming a role with no matrix is a reference at the origin. A referenced
+  design is placed by its reference's matrix, composed with its own component placements. When
+  the root moved a component inside the referenced design (the board of an electronics
+  design), a record of class `CE2913AA-CFE0-4F04-9102-24424ED3BCFA` repeats the reference's
+  matrix and stores the component's placement in the root's coordinates 8 to 24 bytes after it
+  (Trinkey, QTPy); the design is then placed so that its board lands there.
+- Not read: patterns (instances 2 to 4 of a rectangular pattern, the pins of a header, exist
+  only as pattern parameters and world matrices after the pattern record); designs whose
+  components keep only stale matrices (the Pico: `BOOTSEL` and `PicoW` sit 1.6 to 2.4 mm off
+  because the matrix found is an earlier state); a moved board reference that names its role
+  without a matrix (the Buck case); the 2025 layout's reference matrices (HDMI: the matrices
+  found are earlier states); joints.
+
+Bounds: 200000 records per class, 4096 instances per reference, 32 levels of nesting, 8 levels
+of designs referencing designs, 4096 bodies and 256 B-rep parts per import, 4 MiB of JSON.
+`read_design` (and `placements`, which calls it) is in the `sat_read` fuzz target and has a
+noise test.
+
+Measured on the samples (solids of the author's STEP with one of our bodies within 0.05 mm
+by vertex box, before to after): LoRa Radio Bonnet 0 to 82 of 83; CyberDeck 11 to 20 of 62;
+NeoKey Breakout 11 to 12 of 15; MacroPad Assembly 0 to 167 of 185; Keyplate 1 to 1 of 1; Pixel
+Trinkey 0 to 63 of 65; QT Py 0 to 138 of 142; USB-C HDMI 0 of 54; BQ25185 Buck 0 of 90; Pico
+0 of 216; Crickit HAT 20 to 48 of 85 (35 of the author's solids have no body of that size in our
+import at all; of the other 50, 48 are placed).

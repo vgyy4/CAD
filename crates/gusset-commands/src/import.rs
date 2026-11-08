@@ -375,10 +375,8 @@ fn scad(
 /// Most bytes of parsed shapes one FreeCAD import keeps (review X4).
 const MAX_FREECAD_BYTES: usize = 2 << 30;
 
-/// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape
-/// the worker refuses is reported as a warning; none at all is an error.
 /// Most B-rep parts one Fusion archive may hold.
-const MAX_F3D_PARTS: usize = 64;
+const MAX_F3D_PARTS: usize = 256;
 
 /// Largest inflated entry of a Fusion archive (a part, or a design inside an `.f3z`).
 const MAX_F3D_PART_BYTES: u64 = 256 << 20;
@@ -386,15 +384,127 @@ const MAX_F3D_PART_BYTES: u64 = 256 << 20;
 /// Largest design stream read for component placements.
 const MAX_F3D_STREAM_BYTES: u64 = 256 << 20;
 
+/// Largest `Manifest.json` / `DesignDescription.json` of an `.f3z`.
+const MAX_F3D_JSON_BYTES: u64 = 4 << 20;
+
+/// Most bodies one Fusion import creates (parts times the instances of their components and
+/// of the designs that reference them).
+const MAX_F3D_BODIES: usize = 4096;
+
+/// Deepest chain of designs referencing designs followed.
+const MAX_F3D_XREF_DEPTH: usize = 8;
+
+/// One design of a Fusion file: its entries (B-rep parts and design streams) and what the
+/// streams say about placements.
+struct F3dDesign {
+    /// The design's file name inside an `.f3z` (empty for a single `.f3d`).
+    file: String,
+    entries: Vec<(String, Vec<u8>)>,
+    info: gusset_sat::fusion::Design,
+}
+
+/// The file each external-reference key of an `.f3z` names: `DesignDescription.json` lists the
+/// designs (`designObjects`, each with a `relativePath`) and for each the references it holds
+/// (`references[].relationships[]`: a design object id and a `neutronRole` key).
+fn xref_files(description: &Value) -> std::collections::HashMap<String, String> {
+    let mut path_of = std::collections::HashMap::new();
+    let graphs = description.pointer("/designDescription/designGraphs").and_then(Value::as_array);
+    for g in graphs.into_iter().flatten().take(16) {
+        for o in g.get("designObjects").and_then(Value::as_array).into_iter().flatten().take(4096) {
+            if let (Some(id), Some(p)) =
+                (o.get("id").and_then(Value::as_i64), o.get("relativePath").and_then(Value::as_str))
+            {
+                path_of.insert(id, p.to_string());
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for g in graphs.into_iter().flatten().take(16) {
+        for o in g.get("designObjects").and_then(Value::as_array).into_iter().flatten().take(4096) {
+            for r in o.get("references").and_then(Value::as_array).into_iter().flatten().take(64) {
+                for rel in r.get("relationships").and_then(Value::as_array).into_iter().flatten().take(4096) {
+                    let role = rel.pointer("/metadata/neutronRole").and_then(Value::as_str);
+                    let file = rel.get("id").and_then(Value::as_i64).and_then(|id| path_of.get(&id));
+                    if let (Some(role), Some(file)) = (role, file) {
+                        out.insert(role.to_ascii_lowercase(), file.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One use of a design inside the root design: where its origin sits, and where the root put
+/// the design's own context component (an electronics board) when it moved it.
+type Use = (gusset_sat::fusion::Placement, Option<gusset_sat::fusion::Placement>);
+
+/// Where each design of an `.f3z` stands in the root design: one [`Use`] per use of the design
+/// (references to references composed). `None` for a design that cannot be reached from the
+/// root.
+fn design_instances(
+    designs: &[F3dDesign],
+    root: usize,
+    files: &std::collections::HashMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> Vec<Option<Vec<Use>>> {
+    use gusset_sat::fusion::Placement;
+    let mut out: Vec<Option<Vec<Use>>> = vec![None; designs.len()];
+    if let Some(slot) = out.get_mut(root) {
+        *slot = Some(vec![(Placement::IDENTITY, None)]);
+    }
+    let mut frontier = vec![root];
+    for _ in 0..MAX_F3D_XREF_DEPTH {
+        let mut next = Vec::new();
+        for &p in &frontier {
+            let Some(parent) = designs.get(p) else { continue };
+            let Some(Some(ps)) = out.get(p).cloned() else { continue };
+            for x in &parent.info.xrefs {
+                let Some(file) = files.get(&x.role) else { continue };
+                let Some(c) = designs.iter().position(|d| &d.file == file) else { continue };
+                if c == p || out.get(c).is_some_and(Option::is_some) {
+                    continue;
+                }
+                let mut placed = Vec::new();
+                for q in &ps {
+                    for (i, inst) in x.instances.iter().enumerate() {
+                        if placed.len() < MAX_F3D_BODIES {
+                            let over = x.nested.get(i).copied().flatten().map(|o| q.0.then(&o));
+                            placed.push((q.0.then(inst), over));
+                        }
+                    }
+                }
+                if let Some(slot) = out.get_mut(c) {
+                    *slot = Some(placed);
+                }
+                next.push(c);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    for (d, o) in designs.iter().zip(&out) {
+        if o.is_none() {
+            warnings.push(format!("the design {} is not placed in the archive's root design", d.file));
+        }
+    }
+    out
+}
+
 /// A Fusion 360 `.f3d` archive: every `Breps.BlobParts/*.smb` (binary ACIS of the design's
 /// bodies; `.smbh` holds their history and is skipped), converted to STEP and imported.
-/// Each body is placed by its component's occurrence, read from the design stream
-/// (`Design1/BulkStream.dat`, gusset_sat::fusion); bodies of the root component stay put.
+/// Each body is placed by the occurrences of its component, nested components composed, read
+/// from the design stream (`Design1/BulkStream.dat`, gusset_sat::fusion); a component used
+/// several times gives the body several times; bodies of the root component stay put. An
+/// `.f3z` holds several designs: the others are placed where the root design references them.
 fn f3d(
     bytes: &[u8],
     importer: &dyn Importer,
     cancel: &CancelFlag,
 ) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    use gusset_sat::fusion::Placement;
     let limits = gusset_meshio::Limits::default();
     let bad = |e: gusset_meshio::MeshIoError| {
         let e = e.to_string().replace("3MF ZIP container", "Fusion file (ZIP)");
@@ -407,11 +517,32 @@ fn f3d(
     let read = |data: &[u8], budget: &mut u64| {
         gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget).map_err(bad)
     };
-    // The designs: the file itself, or for an `.f3z` the `.f3d` designs it holds (one
-    // level deep, sharing the decompression budget).
-    let mut designs = vec![read(bytes, &mut budget)?];
-    if !designs.iter().flatten().any(|(n, _)| is_brep(n)) {
-        designs.clear();
+    // The streams that describe the design itself: an asset named `[Active]` when there is one
+    // (the others, `Animation`, hold other states of the same parts).
+    let design_info = |entries: &[(String, Vec<u8>)]| {
+        let streams: Vec<&(String, Vec<u8>)> = entries.iter().filter(|(n, _)| is_stream(n)).collect();
+        let active: Vec<&(String, Vec<u8>)> = streams.iter().filter(|(n, _)| n.contains("[Active]")).copied().collect();
+        let chosen = if active.is_empty() { streams } else { active };
+        let mut info = gusset_sat::fusion::Design::default();
+        for (_, b) in chosen {
+            let d = gusset_sat::fusion::read_design(b);
+            info.bodies.extend(d.bodies);
+            info.xrefs.extend(d.xrefs);
+            info.context = info.context.or(d.context);
+        }
+        info
+    };
+    // The designs: the file itself, or for an `.f3z` the `.f3d` designs it holds (one level
+    // deep, sharing the decompression budget).
+    let first = read(bytes, &mut budget)?;
+    let mut designs: Vec<F3dDesign> = Vec::new();
+    let mut root = 0usize;
+    let mut files = std::collections::HashMap::new();
+    let mut warnings = Vec::new();
+    if first.iter().any(|(n, _)| is_brep(n)) {
+        let info = design_info(&first);
+        designs.push(F3dDesign { file: String::new(), entries: first, info });
+    } else {
         let inner = gusset_meshio::archive::read_entries_within(
             bytes,
             &limits,
@@ -420,76 +551,132 @@ fn f3d(
             &mut budget,
         )
         .map_err(bad)?;
-        for (_, d) in inner.iter().take(MAX_F3D_PARTS) {
-            designs.push(read(d, &mut budget)?);
+        for (name, d) in inner.iter().take(MAX_F3D_PARTS) {
+            let entries = read(d, &mut budget)?;
+            let info = design_info(&entries);
+            designs.push(F3dDesign { file: name.clone(), entries, info });
         }
+        // `Manifest.json` names the root design, `DesignDescription.json` the references.
+        let json = gusset_meshio::archive::read_entries_within(
+            bytes,
+            &limits,
+            &|n| n == "Manifest.json" || n == "DesignDescription.json",
+            MAX_F3D_JSON_BYTES,
+            &mut budget,
+        )
+        .map_err(bad)?;
+        let parse = |name: &str| {
+            json.iter().find(|(n, _)| n == name).and_then(|(_, b)| serde_json::from_slice::<Value>(b).ok())
+        };
+        if let Some(r) = parse("Manifest.json").as_ref().and_then(|m| m.get("root")).and_then(Value::as_str)
+            && let Some(i) = designs.iter().position(|d| d.file == r)
+        {
+            root = i;
+        }
+        files = parse("DesignDescription.json").map(|d| xref_files(&d)).unwrap_or_default();
     }
-    let count = designs.iter().flatten().filter(|(n, _)| is_brep(n)).count();
+    let count = designs.iter().flat_map(|d| &d.entries).filter(|(n, _)| is_brep(n)).count();
     if count == 0 {
         return Err(CommandError::new("io", "the Fusion file holds no B-rep bodies (Breps.BlobParts/*.smb)"));
     }
     if count > MAX_F3D_PARTS {
         return Err(CommandError::new("io", format!("the Fusion file has more than {MAX_F3D_PARTS} B-rep parts")));
     }
+    // Where each design stands: a single design is at the origin; the designs of an archive are
+    // placed by the references of the root design.
+    let instances: Vec<Option<Vec<Use>>> = if designs.len() > 1 {
+        design_instances(&designs, root, &files, &mut warnings)
+    } else {
+        vec![Some(vec![(Placement::IDENTITY, None)]); designs.len()]
+    };
     // Solid bodies only, when there are any: Fusion keeps construction and decal surfaces
     // (a board's printed canvas) as sheet bodies beside the solids (dogfooding F6-8). A file
     // of surfaces only is read again with its sheets.
-    let (mut out, mut warnings, mut placed, mut skipped) = (Vec::new(), Vec::new(), 0, 0);
+    let (mut out, mut placed, mut skipped, mut truncated) = (Vec::new(), 0, 0, false);
+    let mut part_warnings = Vec::new();
     for keep_sheets in [false, true] {
-        (out, warnings, placed, skipped) = (Vec::new(), Vec::new(), 0, 0);
+        (out, part_warnings, placed, skipped, truncated) = (Vec::new(), Vec::new(), 0, 0, false);
         let mut i = 0;
-        for entries in &designs {
-            let places: std::collections::HashMap<String, gusset_sat::fusion::Placed> = entries
-                .iter()
-                .filter(|(n, _)| is_stream(n))
-                .flat_map(|(_, b)| gusset_sat::fusion::placements(b))
-                .map(|p| (p.brep.clone(), p))
-                .collect();
-            for (entry, data) in entries.iter().filter(|(n, _)| is_brep(n)) {
-                if cancel.load(Ordering::Relaxed) {
-                    return Err(cancelled());
-                }
+        for (design, insts) in designs.iter().zip(&instances) {
+            let default = [(Placement::IDENTITY, None)];
+            let insts: &[Use] = insts.as_deref().unwrap_or(&default);
+            // The root design's own bodies stay where they are; those of a referenced design
+            // follow the reference.
+            let referenced = designs.len() > 1 && design.file != designs.get(root).map_or("", |r| r.file.as_str());
+            let mut places: std::collections::HashMap<&str, Vec<&gusset_sat::fusion::Placed>> =
+                std::collections::HashMap::new();
+            for p in &design.info.bodies {
+                places.entry(p.brep.as_str()).or_default().push(p);
+            }
+            for (entry, data) in design.entries.iter().filter(|(n, _)| is_brep(n)) {
                 i += 1;
                 let id = entry.rsplit("BREP.").next().and_then(|t| t.split('.').next()).unwrap_or_default();
-                let place = places.get(id);
-                let stem = match place {
-                    Some(p) => p.occurrence.clone(),
-                    None if count > 1 => format!("Fusion {i}"),
-                    None => "Fusion".to_string(),
+                // The placements of this body inside its design, or its absence from them.
+                let own: Vec<Option<&gusset_sat::fusion::Placed>> = match places.get(id) {
+                    Some(v) => v.iter().copied().map(Some).collect(),
+                    None => vec![None],
                 };
-                let c = match gusset_sat::to_step_placed(
-                    data,
-                    &stem,
-                    &gusset_sat::Limits::default(),
-                    place.map(|p| &p.placement),
-                    keep_sheets,
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        warnings.push(format!("B-rep part {i}: {e}"));
-                        continue;
+                for p in own {
+                    for &(origin, moved) in insts {
+                        // Design coordinates to the root's: the reference's matrix, or the root's
+                        // own placement of the design's context component taken as the design's.
+                        let inst = match (moved, design.info.context) {
+                            (Some(o), Some(ctx)) => o.then(&ctx.inverse()),
+                            _ => origin,
+                        };
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(cancelled());
+                        }
+                        if out.len() >= MAX_F3D_BODIES {
+                            truncated = true;
+                            break;
+                        }
+                        let stem = match p {
+                            Some(p) => p.occurrence.clone(),
+                            None if count > 1 => format!("Fusion {i}"),
+                            None => "Fusion".to_string(),
+                        };
+                        let place = match (p, referenced) {
+                            (Some(p), _) => Some(inst.then(&p.placement)),
+                            (None, true) => Some(inst),
+                            (None, false) => None,
+                        };
+                        let c = match gusset_sat::to_step_placed(
+                            data,
+                            &stem,
+                            &gusset_sat::Limits::default(),
+                            place.as_ref(),
+                            keep_sheets,
+                        ) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                part_warnings.push(format!("B-rep part {i}: {e}"));
+                                break;
+                            }
+                        };
+                        placed += usize::from(place.is_some());
+                        skipped += c.skipped_sheets;
+                        part_warnings.extend(c.warnings);
+                        if c.bodies == 0 {
+                            break;
+                        }
+                        let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                        })?;
+                        out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
+                            name,
+                            blob,
+                            format: ImportFormat::Step,
+                        }));
                     }
-                };
-                placed += usize::from(place.is_some());
-                skipped += c.skipped_sheets;
-                warnings.extend(c.warnings);
-                if c.bodies == 0 {
-                    continue;
                 }
-                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
-                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                })?;
-                out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
-                    name,
-                    blob,
-                    format: ImportFormat::Step,
-                }));
             }
         }
         if !out.is_empty() || skipped == 0 {
             break;
         }
     }
+    warnings.extend(part_warnings);
     if skipped > 0 {
         warnings.insert(0, format!("{skipped} sheet (surface) bodies left out; the solids are imported"));
     }
@@ -499,16 +686,18 @@ fn f3d(
             format!("no body of the Fusion file could be read: {}", warnings.join("; ")),
         ));
     }
-    if designs.len() > 1 {
-        warnings.push("the designs of a Fusion archive (.f3z) are not placed relative to each other".into());
+    if truncated {
+        warnings.push(format!("only the first {MAX_F3D_BODIES} bodies are imported"));
     }
     if placed > 0 {
-        warnings.insert(0, format!("{placed} of {count} B-rep parts placed by their component occurrence"));
+        warnings.insert(0, format!("{placed} bodies placed by their component occurrences (count includes repeats)"));
     }
     warnings.truncate(50);
     Ok((out, TIER_SAT, warnings))
 }
 
+/// The visible shapes of a FreeCAD document, each parsed by the sandboxed worker. A shape
+/// the worker refuses is reported as a warning; none at all is an error.
 fn freecad(
     bytes: &[u8],
     importer: &dyn Importer,

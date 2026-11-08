@@ -270,8 +270,12 @@ Phase 3 has started (see Next).
      and versions 2 and 3, periodic B-splines done too. Binary ACIS (`.sab`) and Fusion 360
      `.f3d`/`.f3z` archives done (their `.smb` bodies), helices too. Fusion component placements
      done (rigid occurrence matrices read from `Design1/BulkStream.dat`, gusset_sat::fusion;
-     36 of the Crickit HAT's parts land on its board). Next: helical sweep surfaces (threads),
-     nested component placements, `.f3z` designs placed relative to each other.
+     36 of the Crickit HAT's parts land on its board). Nested components (occurrence records,
+     parents composed, a component used n times gives n bodies) and `.f3z` designs placed by
+     the root's references done (ADR 0039 amendment 2026-11-08; per-body check against the
+     authors' STEP: LoRa 82/83, MacroPad 167/185, Trinkey 63/65, QT Py 138/142). Next: helical
+     sweep surfaces (threads), Fusion patterns and the 2025 layout's reference matrices (HDMI,
+     Pico, Buck stay unplaced).
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz

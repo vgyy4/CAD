@@ -1,15 +1,28 @@
-//! Component placements in a Fusion 360 design stream (`Design1/BulkStream.dat`), read
-//! clean-room from sample files (ADR 0039 amendment).
+//! Component placements in a Fusion 360 design stream (`Design1/BulkStream.dat`, newer
+//! files `FusionDesignSegmentType1/`), read clean-room from sample files (ADR 0039
+//! amendments of 2026-11-04 and 2026-11-08).
 //!
-//! What the samples show: names are UTF-16LE strings. Each component lists its bodies as
+//! What the samples show. Names are UTF-16LE strings; ids are UUIDs, written as UTF-16LE text
+//! (a trailing `$` marks some) and, in the newer layout, as class tags in front of records
+//! (`24 00 00 00` and 36 ASCII characters). Matrices are rigid 4×4 (16 little-endian doubles,
+//! row-major, last row 0 0 0 1, centimetres). Each component lists its bodies as
 //! `BREP.<guid>.smb` (the `Breps.BlobParts` entry holding the body, in the component's own
-//! coordinates). The component's occurrence follows: a rigid 4×4 matrix (16 little-endian
-//! doubles, row-major, last row 0 0 0 1, centimetres), then its name `<component>:<instance>`
-//! and the string `CreateComponent`. Bodies with no occurrence after them, before the next
-//! body, belong to the root component and stay where they are.
+//! coordinates).
 //!
-//! Only flat assemblies are read: a component placed inside another gets its transform
-//! relative to its parent, as stored.
+//! * Older layout, per component a *block*: the name, the body, then either its listed
+//!   instances (matrix, 4-byte length, `<component>:<instance>`) or `CreateComponent` and,
+//!   about 1 to 2.5 KB later, one matrix: the component's placement in design coordinates.
+//!   Listed matrices are relative to the last block placed that way (an electronics board);
+//!   a `CreateComponent` matrix is trusted only in designs that list instances. Bodies with
+//!   neither stay put (the root component's).
+//! * Newer layout, per use of a component an *occurrence record* naming its parent
+//!   occurrence, its own id and its component; the matrix is in a transform record that names
+//!   its owner by record number or by id. A body is placed once per occurrence of its
+//!   component, the parents' placements composed outermost first.
+//! * References to other designs (`.f3z`) show as transform records keyed by the reference's
+//!   `neutronRole` UUID, with one matrix per instance ([`Design::xrefs`]).
+//!
+//! All reading is bounded and total: noise gives no placements, never a panic.
 
 /// A rigid placement in millimetres: `p' = R p + t` (column vectors), `r` by rows.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,10 +40,6 @@ pub struct Placed {
     pub placement: Placement,
 }
 
-/// How far before an occurrence name its matrix may start, and how far before
-/// `CreateComponent` the name may be (bytes).
-const MATRIX_REACH: usize = 600;
-const NAME_REACH: usize = 400;
 /// Most occurrences read from one stream.
 const MAX_OCCURRENCES: usize = 10_000;
 /// Largest translation accepted (cm): beyond it the numbers are not a placement.
@@ -103,61 +112,556 @@ fn brep_id(s: &str) -> Option<String> {
         .then(|| id.to_string())
 }
 
-/// The placed bodies of a design stream. Bodies of the root component are left out.
-pub fn placements(bulk: &[u8]) -> Vec<Placed> {
-    let runs = utf16_runs(bulk);
-    // Occurrences: (name offset, name, matrix).
-    let mut occ: Vec<(usize, String, Placement)> = Vec::new();
-    let mut seen = 0usize;
-    for (k, (c, s)) in runs.iter().enumerate() {
-        if !s.starts_with("CreateComponent") {
-            continue;
-        }
-        // A design has a few hundred occurrences; a stream naming more is not looked at
-        // further (each costs a bounded backward search).
-        seen += 1;
-        if seen > MAX_OCCURRENCES {
-            break;
-        }
-        let Some((o, name)) = runs
-            .get(k.saturating_sub(16)..k)
-            .unwrap_or_default()
-            .iter()
-            .rev()
-            .find(|(o, n)| c - o < NAME_REACH && n.contains(':'))
-        else {
-            continue;
-        };
-        // The matrix nearest before the name.
-        let m = (o.saturating_sub(MATRIX_REACH)..*o).rev().find_map(|at| {
-            if at + 128 > *o {
-                return None;
-            }
-            rigid_at(bulk, at)
-        });
-        if let Some(m) = m {
-            occ.push((*o, name.clone(), m));
-        }
-    }
-    // Every `BREP.` in a run (neighbouring strings can run together).
-    let refs: Vec<(usize, String)> = runs
+/// How the block rules placed a body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BlockKind {
+    /// Among the listed instances of a component (`name:instance`, each with its matrix).
+    Listed,
+    /// By the matrix that follows the component's `CreateComponent`.
+    World,
+}
+
+fn is_uuid_text(s: &str) -> bool {
+    s.len() >= 36
+        && s.get(8..9) == Some("-")
+        && s.get(13..14) == Some("-")
+        && s.get(..8).is_some_and(|h| h.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The component name of the body at run `k`: the nearest earlier text that follows two ids.
+fn block_name(runs: &[(usize, String)], k: usize) -> Option<&str> {
+    let lo = k.saturating_sub(48);
+    (lo..k).rev().find_map(|j| {
+        let (_, s) = runs.get(j)?;
+        let two_ids = j >= 2
+            && runs.get(j - 1).is_some_and(|r| is_uuid_text(&r.1))
+            && runs.get(j - 2).is_some_and(|r| is_uuid_text(&r.1));
+        (two_ids && !is_uuid_text(s) && s.len() >= 3 && !s.starts_with("Prism") && !s.contains('$'))
+            .then_some(s.as_str())
+    })
+}
+
+/// Bodies placed by the older layout's blocks (module doc): a component's name, its body, then
+/// either the listed instances (`matrix`, `name:instance`, ...) or `CreateComponent` followed by
+/// the matrix of the component's first occurrence in design coordinates. Listed instances are
+/// relative to the component they were created in, which is the last block placed by a
+/// `CreateComponent` matrix. Bodies with neither stay in the root.
+fn block_placements(bulk: &[u8], runs: &[(usize, String)]) -> (Vec<(Placed, BlockKind)>, Option<Placement>) {
+    // Bodies, with their run index.
+    let bodies: Vec<(usize, usize, String)> = runs
         .iter()
-        .flat_map(|(o, s)| {
-            s.match_indices("BREP.").filter_map(move |(i, _)| brep_id(s.get(i..)?).map(|id| (o + 2 * i, id)))
+        .enumerate()
+        .flat_map(|(k, (o, s))| {
+            s.match_indices("BREP.").filter_map(move |(i, _)| brep_id(s.get(i..)?).map(|id| (k, o + 2 * i, id)))
         })
         .collect();
+    // Listed instances: a name with a colon right after its matrix (4 bytes: the text's length).
+    let mut listed: Vec<(usize, String, Placement)> = Vec::new();
+    let mut creates: Vec<usize> = Vec::new();
+    for (o, s) in runs {
+        if s.starts_with("CreateComponent") {
+            creates.push(*o);
+        } else if s.contains(':') && !is_uuid_text(s) && s.len() < 80 && !s.starts_with("Prism") {
+            let m = o.checked_sub(4 + 128).and_then(|at| rigid_at(bulk, at));
+            if let Some(m) = m {
+                listed.push((*o, s.clone(), m));
+            }
+        }
+        if listed.len() > MAX_OCCURRENCES {
+            break;
+        }
+    }
     let mut out = Vec::new();
-    for (i, (at, id)) in refs.iter().enumerate() {
-        let next_ref = refs.get(i + 1).map_or(usize::MAX, |r| r.0);
-        // The first occurrence after the body, unless another body comes first.
-        let k = occ.partition_point(|(o, _, _)| o < at);
-        if let Some((o, name, m)) = occ.get(k)
-            && *o < next_ref
-        {
-            out.push(Placed { brep: id.clone(), occurrence: name.clone(), placement: *m });
+    let mut context = Placement::IDENTITY;
+    let mut first_context = None;
+    for (i, (k, at, id)) in bodies.iter().enumerate() {
+        let end = bodies.get(i + 1).map_or(usize::MAX, |b| b.1);
+        let first = listed.partition_point(|l| l.0 < *at);
+        let mine: Vec<&(usize, String, Placement)> = listed.iter().skip(first).take_while(|l| l.0 < end).collect();
+        if !mine.is_empty() {
+            first_context.get_or_insert(context);
+            for (_, name, m) in mine {
+                out.push((
+                    Placed { brep: id.clone(), occurrence: name.clone(), placement: context.then(m) },
+                    BlockKind::Listed,
+                ));
+            }
+            continue;
+        }
+        let c = creates.partition_point(|c| c < at);
+        let Some(&cc) = creates.get(c).filter(|&&cc| cc < end) else { continue };
+        let reach = (cc + 2600).min(end);
+        let m = (cc..reach).find_map(|p| rigid_at(bulk, p));
+        if let Some(m) = m {
+            context = m;
+            let name = block_name(runs, *k).unwrap_or("Component");
+            out.push((Placed { brep: id.clone(), occurrence: format!("{name}:1"), placement: m }, BlockKind::World));
+        }
+    }
+    (out, first_context)
+}
+
+// ---------------------------------------------------------------------------------------
+// Occurrence records (the newer stream layout) and external references
+
+impl Placement {
+    /// The placement that leaves points where they are.
+    pub const IDENTITY: Placement = Placement { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3] };
+
+    /// The placement that undoes `self`.
+    #[must_use]
+    pub fn inverse(&self) -> Placement {
+        let r = [0, 1, 2].map(|i| [0, 1, 2].map(|j| self.r.get(j).and_then(|row| row.get(i)).copied().unwrap_or(0.0)));
+        let t = r.map(|row| -row.iter().zip(&self.t).map(|(a, b)| a * b).sum::<f64>());
+        Placement { r, t }
+    }
+
+    /// `self` applied after `inner`: `p' = self(inner(p))`. Placing a component inside a
+    /// component composes the parent's placement with the child's, parent outermost.
+    #[must_use]
+    pub fn then(&self, inner: &Placement) -> Placement {
+        let at = |i: usize, j: usize| self.r.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0.0);
+        let inn = |i: usize, j: usize| inner.r.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0.0);
+        let mut r = [[0.0; 3]; 3];
+        for (i, row) in r.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = (0..3).map(|k| at(i, k) * inn(k, j)).sum();
+            }
+        }
+        let mut t = self.t;
+        for (i, v) in t.iter_mut().enumerate() {
+            *v += (0..3).map(|k| at(i, k) * inner.t.get(k).copied().unwrap_or(0.0)).sum::<f64>();
+        }
+        Placement { r, t }
+    }
+}
+
+/// An external reference (xref) of a design: the instances of the referenced design, each
+/// the placement of that design's origin in this design (millimetres).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xref {
+    /// The reference's key, a lowercase UUID; the archive's `DesignDescription.json` names it
+    /// `neutronRole` and ties it to the referenced design file.
+    pub role: String,
+    pub instances: Vec<Placement>,
+    /// For each instance, where this design put the referenced design's context component (the
+    /// board of an electronics design, [`Design::context`]) in its own coordinates, when it
+    /// moved it away from where that design has it.
+    pub nested: Vec<Option<Placement>>,
+}
+
+/// Class identifiers: each record of the newer layout starts with its class as a
+/// length-prefixed (`24 00 00 00`) ASCII UUID.
+const CLASS_OCCURRENCE: &str = "FF415D89-A1DB-44AC-B824-E9A772B86ED4";
+const CLASS_COMPONENT: &str = "F9CB8717-EB86-47F2-AAA7-39E142C57A09";
+/// A transform that names its owner by record number just before it.
+const CLASS_TRANSFORM_OF: &str = "2E3AC990-483D-4A55-8662-C064B976A957";
+/// A transform that names its owner by a UUID string near it.
+const CLASS_TRANSFORM: &str = "E03784ED-5E19-4E14-B9F2-3B07017018CD";
+/// A record of this class repeats a reference's matrix and, a few bytes after it, stores the
+/// placement of a component inside the referenced design (in the referencing design's
+/// coordinates) when the referencing design moved that component.
+const CLASS_TRANSFORM_ALSO: &str = "CE2913AA-CFE0-4F04-9102-24424ED3BCFA";
+/// How far after a reference's matrix that repeat may start (bytes).
+const REPEAT_REACH: usize = 3000;
+/// Most records of one class read from a stream.
+const MAX_RECORDS: usize = 200_000;
+/// Most instances of one reference, and how far apart (bytes) the matrices of a list are.
+const MAX_INSTANCES: usize = 4096;
+const INSTANCE_GAP: usize = 160;
+/// Deepest occurrence nesting followed.
+const MAX_DEPTH: usize = 32;
+
+/// Offsets of the records of `class` (the start of the length prefix).
+fn class_records(b: &[u8], class: &str) -> Vec<usize> {
+    let mut needle = vec![0x24u8, 0, 0, 0];
+    needle.extend_from_slice(class.as_bytes());
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = b.get(from..).and_then(|rest| rest.iter().position(|&c| c == 0x24)) {
+        let at = from + rel;
+        if b.get(at..at + needle.len()) == Some(needle.as_slice()) {
+            out.push(at);
+            if out.len() >= MAX_RECORDS {
+                break;
+            }
+            from = at + needle.len();
+        } else {
+            from = at + 1;
         }
     }
     out
+}
+
+/// A UUID written as UTF-16LE text at `at`: `(lowercase id, end offset, ends in '$')`. The
+/// samples mark some ids with a trailing `$`.
+fn uuid16_at(b: &[u8], at: usize) -> Option<(String, usize, bool)> {
+    let mut id = String::with_capacity(36);
+    for k in 0..36 {
+        let lo = *b.get(at + 2 * k)?;
+        if *b.get(at + 2 * k + 1)? != 0 {
+            return None;
+        }
+        let ok = if matches!(k, 8 | 13 | 18 | 23) { lo == b'-' } else { lo.is_ascii_hexdigit() };
+        if !ok {
+            return None;
+        }
+        id.push(char::from(lo.to_ascii_lowercase()));
+    }
+    let end = at + 72;
+    let dollar = b.get(end) == Some(&b'$') && b.get(end + 1) == Some(&0);
+    Some((id, if dollar { end + 2 } else { end }, dollar))
+}
+
+/// The UUID strings in `b[lo..hi]`: `(start, end, id, ends in '$')`, at most `max`.
+fn uuid_strings(b: &[u8], lo: usize, hi: usize, max: usize) -> Vec<(usize, usize, String, bool)> {
+    let mut out = Vec::new();
+    let mut i = lo;
+    let hi = hi.min(b.len());
+    while i + 72 <= hi && out.len() < max {
+        if b.get(i + 1) == Some(&0)
+            && b.get(i).is_some_and(u8::is_ascii_hexdigit)
+            && let Some((id, end, dollar)) = uuid16_at(b, i)
+        {
+            out.push((i, end, id, dollar));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn u64_at(b: &[u8], at: usize) -> Option<u64> {
+    let s: [u8; 8] = b.get(at..at + 8)?.try_into().ok()?;
+    Some(u64::from_le_bytes(s))
+}
+
+/// The record number a record carries after its class: a 3-digit text (length-prefixed)
+/// and the number as a little-endian u64.
+fn record_number(b: &[u8], at: usize) -> Option<u64> {
+    (at + 40..at + 100).find_map(|i| {
+        let head = b.get(i..i + 7)?;
+        let (len, digits) = head.split_at(4);
+        (len == [3, 0, 0, 0] && digits.iter().all(u8::is_ascii_digit)).then(|| u64_at(b, i + 7)).flatten()
+    })
+}
+
+/// An occurrence: one use of a component in a component.
+struct OccRecord {
+    parent: Option<String>,
+    own: String,
+    comp: String,
+    number: Option<u64>,
+}
+
+fn occurrence_records(b: &[u8]) -> Vec<OccRecord> {
+    let mut out = Vec::new();
+    for at in class_records(b, CLASS_OCCURRENCE) {
+        // Ids marked `$`, then the component's id (unmarked): `parent$ own$ design$ comp` for an
+        // occurrence in a component, `own$ design$ comp` for one in the root.
+        let ids = uuid_strings(b, at + 40, at + 700, 5);
+        let Some(k) = ids.iter().position(|s| !s.3) else { continue };
+        let (parent, own) = match k {
+            3 => (ids.first().map(|s| s.2.clone()), ids.get(1).map(|s| s.2.clone())),
+            2 => (None, ids.first().map(|s| s.2.clone())),
+            _ => continue,
+        };
+        let (Some(own), Some(comp)) = (own, ids.get(k).map(|s| s.2.clone())) else { continue };
+        out.push(OccRecord { parent, own, comp, number: record_number(b, at) });
+    }
+    out
+}
+
+/// A component's record: its id and name.
+struct CompRecord {
+    at: usize,
+    id: String,
+    name: Option<String>,
+}
+
+fn component_records(b: &[u8]) -> Vec<CompRecord> {
+    let runs_in = |lo: usize, hi: usize| utf16_runs(b.get(lo..hi.min(b.len())).unwrap_or_default());
+    let mut out = Vec::new();
+    for at in class_records(b, CLASS_COMPONENT) {
+        let Some(id) = uuid_strings(b, at + 40, at + 200, 1).into_iter().next().map(|s| s.2) else { continue };
+        // The name: the first text after the ids that is not itself an id.
+        let name = runs_in(at + 40, at + 500)
+            .into_iter()
+            .map(|(_, s)| s)
+            .find(|s| !(s.len() >= 36 && s.get(8..9) == Some("-") && s.get(13..14) == Some("-")));
+        out.push(CompRecord { at, id, name });
+    }
+    out
+}
+
+/// Rigid matrices found in `b`, in stream order, keyed by what names their owner.
+struct Transforms {
+    /// Owner record number (just before the matrix) → matrices.
+    by_number: std::collections::HashMap<u64, Vec<Placement>>,
+    /// Owner UUID (the string before the matrix) → lists of matrices, one list per record.
+    by_id: std::collections::HashMap<String, Vec<Vec<Placement>>>,
+    /// The same shape as `by_id`: the placement stored after each matrix, see
+    /// [`CLASS_TRANSFORM_ALSO`].
+    nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>>,
+    /// Keys of records that name a reference but carry no matrix (a reference left at the
+    /// origin).
+    bare: std::collections::HashSet<String>,
+}
+
+/// The matrix a transform record carries: a few bytes after its class.
+fn matrix_in(b: &[u8], at: usize) -> Option<(usize, Placement)> {
+    (at + 40..=at + 46).find_map(|p| rigid_at(b, p).map(|m| (p, m)))
+}
+
+fn same_placement(a: &Placement, b: &Placement) -> bool {
+    let d = |x: f64, y: f64| (x - y).abs() < 1e-9;
+    a.r.iter().flatten().zip(b.r.iter().flatten()).all(|(x, y)| d(*x, *y))
+        && a.t.iter().zip(&b.t).all(|(x, y)| d(*x, *y))
+}
+
+/// The placement stored after a repeat of `x` in a record of class [`CLASS_TRANSFORM_ALSO`]
+/// that starts within [`REPEAT_REACH`] bytes after `after`: the matrix 8 to 24 bytes after it.
+fn nested_after(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Option<Placement> {
+    let k = repeats.partition_point(|a| *a < after);
+    repeats.iter().skip(k).take_while(|a| **a < after + REPEAT_REACH).take(8).find_map(|a| {
+        // The repeat's matrix is not at a fixed distance from the class: take the first.
+        let (mp, m) = (*a + 40..*a + 110).find_map(|p| rigid_at(b, p).map(|m| (p, m)))?;
+        if !same_placement(&m, x) {
+            return None;
+        }
+        (mp + 128 + 8..=mp + 128 + 24).find_map(|p| rigid_at(b, p))
+    })
+}
+
+fn transforms(b: &[u8]) -> Transforms {
+    let repeats = class_records(b, CLASS_TRANSFORM_ALSO);
+    let mut by_number: std::collections::HashMap<u64, Vec<Placement>> = std::collections::HashMap::new();
+    for at in class_records(b, CLASS_TRANSFORM_OF) {
+        let Some((_, m)) = matrix_in(b, at) else { continue };
+        if at >= 9
+            && b.get(at - 9) == Some(&1)
+            && let Some(n) = u64_at(b, at - 8)
+        {
+            by_number.entry(n).or_default().push(m);
+        }
+    }
+    let mut by_id: std::collections::HashMap<String, Vec<Vec<Placement>>> = std::collections::HashMap::new();
+    let mut nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>> = std::collections::HashMap::new();
+    let mut bare = std::collections::HashSet::new();
+    for at in class_records(b, CLASS_TRANSFORM) {
+        // (a) The owner's id ends shortly before the record, the matrix is in it.
+        if let Some((mp, m)) = matrix_in(b, at) {
+            let near = uuid_strings(b, at.saturating_sub(300), at, 16)
+                .into_iter()
+                .rfind(|s| at.saturating_sub(s.1) <= 60 && s.1 <= at);
+            if let Some((_, _, id, _)) = near {
+                nested.entry(id.clone()).or_default().push(vec![nested_after(b, &repeats, mp + 128, &m)]);
+                by_id.entry(id).or_default().push(vec![m]);
+            }
+            // (a') or the id just after the matrix (a reference used once).
+            let end = mp + 128;
+            if let Some((_, _, id, _)) =
+                uuid_strings(b, end, end + 24 + 72, 1).into_iter().next().filter(|s| s.0 <= end + 24)
+            {
+                nested.entry(id.clone()).or_default().push(vec![nested_after(b, &repeats, mp + 128, &m)]);
+                by_id.entry(id).or_default().push(vec![m]);
+            }
+            continue;
+        }
+        // (b) The id follows the class (after a length prefix), then the matrix and, for a
+        // reference used several times, the matrices of the other instances.
+        let Some((_, end, id, _)) = uuid_strings(b, at + 44, at + 44 + 80, 1).into_iter().next() else { continue };
+        let first = (end..=end + 32).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
+        let Some((mut pos, m)) = first else {
+            bare.insert(id);
+            continue;
+        };
+        let mut over = vec![nested_after(b, &repeats, pos + 128, &m)];
+        let mut list = vec![m];
+        while list.len() < MAX_INSTANCES {
+            pos += 128;
+            let next = (pos..=pos + INSTANCE_GAP).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
+            let Some((p, m)) = next else { break };
+            pos = p;
+            over.push(nested_after(b, &repeats, pos + 128, &m));
+            list.push(m);
+        }
+        nested.entry(id.clone()).or_default().push(over);
+        by_id.entry(id).or_default().push(list);
+    }
+    Transforms { by_number, by_id, nested, bare }
+}
+
+/// What a design stream says about placements.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Design {
+    /// Placed bodies: one entry per body and occurrence of its component, in the design's
+    /// coordinates (nesting composed). Bodies of the root component are left out.
+    pub bodies: Vec<Placed>,
+    /// External references with their instances in this design.
+    pub xrefs: Vec<Xref>,
+    /// In a design that lists instances (an electronics board), the placement of the component
+    /// they are relative to, as this design has it.
+    pub context: Option<Placement>,
+}
+
+/// Components, occurrences and references of a design stream.
+pub fn read_design(bulk: &[u8]) -> Design {
+    let runs = utf16_runs(bulk);
+    let comps = component_records(bulk);
+    let occs = occurrence_records(bulk);
+    let tf = transforms(bulk);
+    // One entry per occurrence id: the parent from any of its records, the transform from the
+    // first record that has one.
+    #[derive(Default)]
+    struct Occ {
+        parent: Option<String>,
+        comp: String,
+        local: Option<Placement>,
+    }
+    let mut by_own: std::collections::HashMap<&str, Occ> = std::collections::HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for o in &occs {
+        let e = by_own.entry(o.own.as_str()).or_insert_with(|| {
+            order.push(o.own.as_str());
+            Occ { comp: o.comp.clone(), ..Occ::default() }
+        });
+        if e.parent.is_none() {
+            e.parent.clone_from(&o.parent);
+        }
+        if e.local.is_none() {
+            // The owner number of a transform is the record before the occurrence's.
+            e.local = o
+                .number
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| tf.by_number.get(&n))
+                .and_then(|v| v.first())
+                .copied();
+        }
+    }
+    // Transforms keyed by the occurrence's id: the last record that has one.
+    for (own, e) in &mut by_own {
+        if e.local.is_none() {
+            e.local = tf.by_id.get(*own).and_then(|v| v.last()).and_then(|l| l.first()).copied();
+        }
+    }
+    // The placement of an occurrence in the design, and whether any placement in its chain was
+    // read (an occurrence with none anywhere above it sits at the origin, which is also what a
+    // body without occurrences gets).
+    let world = |own: &str| -> (Placement, bool) {
+        let mut chain = Vec::new();
+        let mut cur = Some(own);
+        let mut explicit = false;
+        while let Some(id) = cur {
+            if chain.len() >= MAX_DEPTH {
+                break;
+            }
+            let Some(e) = by_own.get(id) else { break };
+            explicit |= e.local.is_some();
+            chain.push(e.local.unwrap_or(Placement::IDENTITY));
+            cur = e.parent.as_deref();
+        }
+        // Outermost first.
+        (chain.iter().rev().fold(Placement::IDENTITY, |acc, l| acc.then(l)), explicit)
+    };
+    let (mut blocks, context) = block_placements(bulk, &runs);
+    let mut out = Design::default();
+    // A matrix after `CreateComponent` places a component only where listed instances follow
+    // (an electronics board: its matrix is where the board sits and the parts are relative to
+    // it); elsewhere it can be any move in the design's history.
+    if !blocks.iter().any(|(_, k)| *k == BlockKind::Listed) {
+        blocks.clear();
+    }
+    out.context = context.filter(|_| !blocks.is_empty());
+    // Components with an occurrence placed by a matrix of its own or of an ancestor.
+    let explicit: std::collections::HashSet<&str> =
+        order.iter().filter(|own| world(own).1).filter_map(|own| by_own.get(*own)).map(|e| e.comp.as_str()).collect();
+    if !occs.is_empty() {
+        // The component of each body: the last component record before it.
+        let refs = brep_refs_in(&runs);
+        // Instance numbers per component, in the order the stream lists the occurrences.
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let ordinal: std::collections::HashMap<&str, usize> = order
+            .iter()
+            .filter_map(|own| {
+                let comp = by_own.get(*own)?.comp.as_str();
+                let n = seen.entry(comp).or_insert(0);
+                *n += 1;
+                Some((*own, *n))
+            })
+            .collect();
+        for (at, id) in &refs {
+            let k = comps.partition_point(|c| c.at < *at);
+            let Some(comp) = k.checked_sub(1).and_then(|k| comps.get(k)) else { continue };
+            // Listed instances are relative to a component the occurrence records do not name.
+            if blocks.iter().any(|(p, kind)| p.brep == *id && *kind == BlockKind::Listed)
+                || !explicit.contains(comp.id.as_str())
+            {
+                continue;
+            }
+            for own in order.iter().filter(|own| by_own.get(**own).is_some_and(|e| e.comp == comp.id)) {
+                if out.bodies.len() >= MAX_OCCURRENCES {
+                    break;
+                }
+                let label = comp.name.as_deref().unwrap_or("Component");
+                out.bodies.push(Placed {
+                    brep: id.clone(),
+                    occurrence: format!("{label}:{}", ordinal.get(*own).copied().unwrap_or(1)),
+                    placement: world(own).0,
+                });
+            }
+        }
+    }
+    // The block rules: listed instances replace what the records said about their body; the
+    // others only place bodies the records left alone.
+    let listed: std::collections::HashSet<String> =
+        blocks.iter().filter(|(_, k)| *k == BlockKind::Listed).map(|(p, _)| p.brep.clone()).collect();
+    out.bodies.retain(|q| !listed.contains(&q.brep));
+    for (p, kind) in blocks {
+        if kind == BlockKind::Listed || !out.bodies.iter().any(|q| q.brep == p.brep) {
+            out.bodies.push(p);
+        }
+    }
+    // References: for each key, the record with the most instances (the last of equals).
+    let mut keys: Vec<&String> = tf.by_id.keys().collect();
+    keys.sort();
+    for key in keys {
+        if by_own.contains_key(key.as_str()) {
+            continue;
+        }
+        let best = tf.by_id.get(key).and_then(|lists| {
+            let most = lists.iter().map(Vec::len).max()?;
+            let k = lists.iter().rposition(|l| l.len() == most)?;
+            Some((lists.get(k)?, tf.nested.get(key).and_then(|n| n.get(k))))
+        });
+        if let Some((list, over)) = best {
+            let nested = (0..list.len()).map(|i| over.and_then(|o| o.get(i)).copied().flatten()).collect();
+            out.xrefs.push(Xref { role: key.clone(), instances: list.clone(), nested });
+        }
+    }
+    // A reference named without a matrix sits at the origin.
+    let mut bare: Vec<&String> =
+        tf.bare.iter().filter(|k| !tf.by_id.contains_key(*k) && !by_own.contains_key(k.as_str())).collect();
+    bare.sort();
+    for key in bare.into_iter().take(MAX_RECORDS) {
+        out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![None] });
+    }
+    out
+}
+
+/// Every `BREP.<id>.smb` in the text runs with its offset.
+fn brep_refs_in(runs: &[(usize, String)]) -> Vec<(usize, String)> {
+    runs.iter()
+        .flat_map(|(o, s)| {
+            s.match_indices("BREP.").filter_map(move |(i, _)| brep_id(s.get(i..)?).map(|id| (o + 2 * i, id)))
+        })
+        .collect()
+}
+
+/// The placed bodies of a design stream (see [`read_design`]).
+pub fn placements(bulk: &[u8]) -> Vec<Placed> {
+    read_design(bulk).bodies
 }
 
 #[cfg(test)]
@@ -185,7 +689,7 @@ mod tests {
         b.extend(u16s("BREP.bb22.smb"));
         b.extend([1u8; 33]);
         b.extend(matrix([0.8, 2.0, 0.157], true));
-        b.extend([0u8; 20]);
+        b.extend(7u32.to_le_bytes());
         b.extend(u16s("BTN:SW1"));
         b.extend([0u8; 30]);
         b.extend(u16s("CreateComponent!"));
@@ -200,6 +704,226 @@ mod tests {
         assert!(p[0].placement.r[0].iter().zip([0.0, -1.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-15));
     }
 
+    fn class(id: &str) -> Vec<u8> {
+        let mut v = vec![0x24, 0, 0, 0];
+        v.extend_from_slice(id.as_bytes());
+        v
+    }
+
+    fn uuid16(n: u8, dollar: bool) -> Vec<u8> {
+        let id = format!("{n:02x}000000-0000-4000-8000-000000000000");
+        u16s(&format!("{id}{}", if dollar { "$" } else { "" }))
+    }
+
+    fn id(n: u8) -> String {
+        format!("{n:02x}000000-0000-4000-8000-000000000000")
+    }
+
+    /// A component record: class, id, filler, name.
+    fn comp(n: u8, name: &str) -> Vec<u8> {
+        let mut v = class(CLASS_COMPONENT);
+        v.extend(uuid16(n, false));
+        v.extend([0u8; 12]);
+        v.extend(u16s(name));
+        v.extend([0u8; 30]);
+        v
+    }
+
+    /// An occurrence record numbered `number`: ids marked `$` then the component's.
+    fn occurrence(number: u64, parent: Option<u8>, own: u8, comp: u8) -> Vec<u8> {
+        let mut v = class(CLASS_OCCURRENCE);
+        v.extend([0u8; 9]);
+        v.extend([3, 0, 0, 0]);
+        v.extend(b"416");
+        v.extend(number.to_le_bytes());
+        v.extend([0u8; 6]);
+        if let Some(p) = parent {
+            v.extend(uuid16(p, true));
+        }
+        v.extend(uuid16(own, true));
+        v.extend(uuid16(0xee, true));
+        v.extend(uuid16(comp, false));
+        v.extend(uuid16(0xee, true));
+        v.extend([0u8; 20]);
+        v
+    }
+
+    /// A transform that names its owner by record number (cm in the matrix).
+    fn transform_of(owner: u64, t: [f64; 3], quarter_turn: bool) -> Vec<u8> {
+        let mut v = vec![1];
+        v.extend(owner.to_le_bytes());
+        v.extend(class(CLASS_TRANSFORM_OF));
+        v.extend([0u8; 3]);
+        v.extend(matrix(t, quarter_turn));
+        v.extend([0u8; 12]);
+        v
+    }
+
+    fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
+    }
+
+    #[test]
+    fn placements_compose_and_then_applies_the_parent_last() {
+        let quarter = Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [10.0, 0.0, 0.0] };
+        let inner = Placement { r: Placement::IDENTITY.r, t: [0.0, 5.0, 0.0] };
+        let w = quarter.then(&inner);
+        // The point (0, 5, 0) turned a quarter turn is (-5, 0, 0), then moved by 10 in x.
+        assert!(near(w.t, [5.0, 0.0, 0.0]), "{:?}", w.t);
+        assert!(near(Placement::IDENTITY.then(&w).t, w.t));
+        assert!(near(w.then(&Placement::IDENTITY).t, w.t));
+    }
+
+    #[test]
+    fn nested_occurrences_compose_and_a_component_used_twice_gives_two_bodies() {
+        let mut b = vec![9u8; 16];
+        // Root component, an assembly, a part inside it.
+        b.extend(comp(1, "Root"));
+        b.extend(comp(2, "Asm"));
+        b.extend(comp(3, "Part"));
+        b.extend(u16s("BREP.abcd.smb"));
+        b.extend([0u8; 40]);
+        // Asm:1 in the root (moved 1 cm along x, turned), Part:1 and Part:2 inside it.
+        b.extend(occurrence(100, None, 0x10, 2));
+        b.extend(occurrence(110, Some(0x10), 0x11, 3));
+        b.extend(occurrence(120, Some(0x10), 0x12, 3));
+        b.extend(transform_of(99, [1.0, 0.0, 0.0], true));
+        b.extend(transform_of(109, [0.0, 0.5, 0.0], false));
+        b.extend(transform_of(119, [0.0, 0.0, 0.2], false));
+        let d = read_design(&b);
+        assert_eq!(d.bodies.len(), 2, "{:?}", d.bodies);
+        assert!(d.bodies.iter().all(|p| p.brep == "abcd"));
+        let [first, second] = [&d.bodies[0], &d.bodies[1]];
+        assert_eq!(first.occurrence, "Part:1");
+        assert_eq!(second.occurrence, "Part:2");
+        // Part:1 at (0, 5, 0) mm in Asm, Asm turned a quarter and moved to x = 10 mm.
+        assert!(near(first.placement.t, [5.0, 0.0, 0.0]), "{:?}", first.placement.t);
+        assert!(near(second.placement.t, [10.0, 0.0, 2.0]), "{:?}", second.placement.t);
+        assert!(first.placement.r[0].iter().zip([0.0, -1.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-12));
+    }
+
+    #[test]
+    fn a_body_with_no_occurrence_of_its_component_stays_in_the_root() {
+        let mut b = Vec::new();
+        b.extend(comp(1, "Root"));
+        b.extend(u16s("BREP.aaaa.smb"));
+        b.extend(comp(2, "Part"));
+        b.extend(u16s("BREP.bbbb.smb"));
+        b.extend(occurrence(10, None, 0x20, 2));
+        b.extend(transform_of(9, [0.0, 0.0, 0.1], false));
+        let d = read_design(&b);
+        assert_eq!(d.bodies.len(), 1);
+        assert_eq!(d.bodies[0].brep, "bbbb");
+        assert!(near(d.bodies[0].placement.t, [0.0, 0.0, 1.0]));
+    }
+
+    /// A reference record: class, length prefix, the key, a few filler bytes, matrices.
+    fn reference(key: u8, ms: &[[f64; 3]]) -> Vec<u8> {
+        let mut v = class(CLASS_TRANSFORM);
+        v.extend([0x24, 0, 0, 0]);
+        v.extend(uuid16(key, false));
+        v.extend([0u8, 0x15, 0, 0, 0, 0, 0]);
+        for (i, t) in ms.iter().enumerate() {
+            v.extend(matrix(*t, false));
+            v.extend(vec![0u8; if i % 2 == 0 { 12 } else { 100 }]);
+        }
+        v.extend([7u8; 300]); // no more matrices
+        v
+    }
+
+    #[test]
+    fn a_reference_lists_its_instances_and_the_richest_record_wins() {
+        let mut b = Vec::new();
+        b.extend(reference(5, &[[0.0, 0.0, 2.4]]));
+        b.extend(reference(5, &[[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]));
+        b.extend(reference(5, &[[9.0, 0.0, 0.0]]));
+        b.extend(reference(6, &[[0.0, -1.27, -0.443]]));
+        let d = read_design(&b);
+        assert_eq!(d.xrefs.len(), 2, "{:?}", d.xrefs);
+        let five = d.xrefs.iter().find(|x| x.role == id(5)).unwrap();
+        let xs: Vec<f64> = five.instances.iter().map(|p| p.t[0]).collect();
+        assert_eq!(xs.len(), 3);
+        assert!((xs[0] - 10.0).abs() < 1e-9 && (xs[2] - 30.0).abs() < 1e-9, "{xs:?}");
+        let six = d.xrefs.iter().find(|x| x.role == id(6)).unwrap();
+        assert!(near(six.instances[0].t, [0.0, -12.7, -4.43]));
+    }
+
+    #[test]
+    fn listed_instances_follow_the_block_that_placed_the_parent() {
+        // Block "Board": body, CreateComponent, then the board's matrix in design coordinates.
+        // Block "Part": body, two listed instances (matrix, length, name), relative to the board.
+        let mut b = vec![5u8; 8];
+        b.extend(uuid16(1, false));
+        b.extend([0u8; 4]);
+        b.extend(uuid16(2, false));
+        b.extend([0u8; 4]);
+        b.extend(u16s("Board"));
+        b.extend([0u8; 4]);
+        b.extend(u16s("BREP.b0a1.smb"));
+        b.extend([0u8; 30]);
+        b.extend([0u8; 4]);
+        b.extend(u16s("CreateComponent"));
+        b.extend([0u8; 200]);
+        b.extend(matrix([10.0, 20.0, 0.0], true));
+        b.extend([0u8; 50]);
+        b.extend(uuid16(3, false));
+        b.extend([0u8; 4]);
+        b.extend(uuid16(4, false));
+        b.extend([0u8; 4]);
+        b.extend(u16s("Part"));
+        b.extend([0u8; 4]);
+        b.extend(u16s("BREP.c0b2.smb"));
+        b.extend([0u8; 30]);
+        for (n, x) in [("Part:R1", 1.0), ("Part:R2", 2.0)] {
+            b.extend(matrix([x, 0.0, 0.0], false));
+            b.extend(((n.len() * 2) as u32).to_le_bytes());
+            b.extend(u16s(n));
+            b.extend([0u8; 40]);
+        }
+        b.extend(u16s("CreateComponent"));
+        let d = read_design(&b);
+        assert_eq!(d.bodies.len(), 3, "{:?}", d.bodies);
+        assert_eq!(d.bodies[0].occurrence, "Board:1");
+        assert!(near(d.bodies[0].placement.t, [100.0, 200.0, 0.0]));
+        // The board is turned a quarter: a part 10 mm along its x lands 10 mm along y.
+        assert_eq!(d.bodies[1].occurrence, "Part:R1");
+        assert!(near(d.bodies[1].placement.t, [100.0, 210.0, 0.0]), "{:?}", d.bodies[1].placement.t);
+        assert!(near(d.bodies[2].placement.t, [100.0, 220.0, 0.0]));
+    }
+
+    #[test]
+    fn inverse_undoes_a_placement() {
+        let p = Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [3.0, 4.0, 5.0] };
+        let back = p.then(&p.inverse());
+        assert!(near(back.t, [0.0; 3]));
+        assert!(
+            back.r.iter().flatten().zip(Placement::IDENTITY.r.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-12)
+        );
+    }
+
+    #[test]
+    fn a_reference_moved_by_the_referencing_design_reports_where_it_put_the_inner_component() {
+        let mut b = Vec::new();
+        // The reference record: matrix, then the role (8 bytes later).
+        b.extend(class(CLASS_TRANSFORM));
+        b.extend([0u8; 2]);
+        b.extend(matrix([0.0, 0.0, 1.5], false));
+        b.extend([0u8; 8]);
+        b.extend(uuid16(7, false));
+        b.extend([5u8; 200]);
+        // A repeat of it, and 14 bytes after the matrix the other placement.
+        b.extend(class(CLASS_TRANSFORM_ALSO));
+        b.extend([0u8; 3]);
+        b.extend(matrix([0.0, 0.0, 1.5], false));
+        b.extend([1u8; 14]);
+        b.extend(matrix([-1.25, 0.0, 0.32], false));
+        b.extend([5u8; 100]);
+        let d = read_design(&b);
+        let x = d.xrefs.iter().find(|x| x.role == id(7)).unwrap();
+        assert!(near(x.instances[0].t, [0.0, 0.0, 15.0]));
+        assert!(near(x.nested[0].unwrap().t, [-12.5, 0.0, 3.2]), "{:?}", x.nested);
+    }
+
     #[test]
     fn a_mirror_or_a_scale_is_not_a_placement_and_noise_is_harmless() {
         let mut m = matrix([1.0, 2.0, 3.0], false);
@@ -211,6 +935,20 @@ mod tests {
         for n in [0usize, 1, 7, 127, 128, 1000] {
             let noise: Vec<u8> = (0..n).map(|i| (i * 37 % 251) as u8).collect();
             let _ = placements(&noise);
+            let _ = read_design(&noise);
         }
+        // Records cut short, repeated and nested in themselves.
+        let mut cut = Vec::new();
+        for _ in 0..3 {
+            cut.extend(occurrence(1, Some(1), 1, 1)); // its own parent
+            cut.extend(comp(1, "A"));
+            cut.extend(reference(1, &[[1.0, 2.0, 3.0]]));
+            cut.extend(class(CLASS_OCCURRENCE));
+            cut.extend(class(CLASS_TRANSFORM_OF));
+        }
+        for n in (0..cut.len()).step_by(37) {
+            let _ = read_design(&cut[..n]);
+        }
+        let _ = read_design(&cut);
     }
 }
