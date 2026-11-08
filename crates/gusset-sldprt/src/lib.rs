@@ -79,6 +79,82 @@ pub struct Extracted {
     pub warnings: Vec<String>,
 }
 
+/// Most bodies read from a `LocalBodies` stream.
+pub const MAX_LOCAL_BODIES: usize = 4096;
+
+/// The bodies of a part whose final partition holds none: a part made by an imported
+/// feature keeps them under `Config-<n>-FeatureBodies/LocalBodies`, one Parasolid transmit
+/// each. The stream is a count and, per body, a short name record followed by a block of
+/// the partition's kind (a length, a 16-byte tag shared by all blocks, the inflated and
+/// deflated sizes and a zlib stream). Derived from a sample with no other reader consulted.
+/// Empty when the file has no such stream.
+///
+/// # Errors
+/// [`SldprtError`] for unknown containers and damaged or over-limit files.
+pub fn local_bodies(bytes: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, SldprtError> {
+    let is_local = |n: &str| n.ends_with("LocalBodies") && (n == "LocalBodies" || n.contains("-FeatureBodies/"));
+    let stream = match detect(bytes).ok_or(SldprtError::NotSldprt)? {
+        Container::Ole2 => {
+            let f = cfb::Cfb::open(bytes, limits)?;
+            match f.streams.iter().position(|e| is_local(&e.name)) {
+                Some(i) => f.read(i, limits)?,
+                None => return Ok(Vec::new()),
+            }
+        }
+        Container::Chunks => {
+            let mut found = chunks::streams(bytes, limits, is_local)?;
+            found.sort_by(|a, b| a.name.cmp(&b.name));
+            match found.into_iter().next() {
+                Some(st) => st.data,
+                None => return Ok(Vec::new()),
+            }
+        }
+    };
+    local_blocks(&stream, limits)
+}
+
+/// The Parasolid transmits of a `LocalBodies` stream.
+fn local_blocks(stream: &[u8], limits: &Limits) -> Result<Vec<Vec<u8>>, SldprtError> {
+    let u32_at = |off: usize| -> Option<usize> {
+        usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
+    };
+    // A block at `at`: its length covers the header and the zlib data, which starts `78`.
+    let block = |at: usize| -> Option<(usize, usize, usize)> {
+        let (len, plain, deflated) = (u32_at(at)?, u32_at(at + 20)?, u32_at(at + 24)?);
+        let end = at.checked_add(4)?.checked_add(len)?;
+        (len >= 24usize.checked_add(deflated)? && end <= stream.len() && stream.get(at + 28) == Some(&0x78))
+            .then_some((end, plain, deflated))
+    };
+    let Some(first) = (0..stream.len().min(4096)).find(|i| block(*i).is_some()) else { return Ok(Vec::new()) };
+    let Some(tag) = stream.get(first + 4..first + 20) else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    let (mut at, mut spent) = (first, 0usize);
+    while let Some((end, plain, deflated)) = block(at) {
+        if out.len() >= MAX_LOCAL_BODIES {
+            return Err(SldprtError::TooLarge(format!("more than {MAX_LOCAL_BODIES} bodies")));
+        }
+        spent = spent.saturating_add(plain);
+        if plain > limits.max_stream_bytes
+            || spent > limits.max_total_bytes
+            || plain / limits.max_ratio.max(1) > deflated
+        {
+            return Err(SldprtError::TooLarge("the bodies inflate beyond the limit".into()));
+        }
+        let data = stream.get(at + 28..at + 28 + deflated).unwrap_or_default();
+        let xt = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, plain.saturating_add(1))
+            .map_err(|e| SldprtError::Malformed(format!("a body block does not inflate ({:?})", e.status)))?;
+        if xt.get(..2) == Some(b"PS") {
+            out.push(xt);
+        }
+        // The next block: after its name record, carrying the same tag.
+        let rest = stream.get(end..).unwrap_or_default();
+        let Some(k) = rest.windows(tag.len()).position(|w| w == tag) else { break };
+        let Some(next) = (end + k).checked_sub(4).filter(|n| *n >= end) else { break };
+        at = next;
+    }
+    Ok(out)
+}
+
 /// Which container `bytes` looks like, from its first bytes only.
 #[must_use]
 pub fn detect(bytes: &[u8]) -> Option<Container> {

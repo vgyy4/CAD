@@ -355,3 +355,28 @@ fn many_configurations_share_one_budget() {
     let r = extract_xt(&ole(&streams2), &limits).unwrap();
     assert_eq!(r.config, "Config-0");
 }
+
+#[test]
+fn an_imported_feature_keeps_its_bodies_in_local_bodies() {
+    // A count, then per body a name record (UTF-16) and a block.
+    let mut local = 3u32.to_le_bytes().to_vec();
+    for i in 0..3 {
+        local.extend([0xff, 0xfe, 0xff, 4]);
+        local.extend("Imp1".encode_utf16().flat_map(u16::to_le_bytes));
+        local.extend([0, 0, 0, 0, 0, 0x13, 0x39, 0, 0, 0, 0x0e, 0x39, 0, 0]);
+        local.extend(block(&xt(&format!("body {i}"), 50 + i)));
+    }
+    let f = chunk_file(&[
+        record(KEY, "Contents/Config-0-Partition", &[0u8; 8], None),
+        record(KEY, "Config-0-FeatureBodies/LocalBodies", &local, None),
+    ]);
+    let bodies = local_bodies(&f, &Limits::default()).unwrap();
+    assert_eq!(bodies, (0..3).map(|i| xt(&format!("body {i}"), 50 + i)).collect::<Vec<_>>());
+    // None in an ordinary part; damaged streams never panic.
+    let plain = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &partition_stream(5), None)]);
+    assert!(local_bodies(&plain, &Limits::default()).unwrap().is_empty());
+    for cut in [5, 40, 90, local.len() - 3] {
+        let f = chunk_file(&[record(KEY, "Config-0-FeatureBodies/LocalBodies", &local[..cut], None)]);
+        let _ = local_bodies(&f, &Limits::default());
+    }
+}

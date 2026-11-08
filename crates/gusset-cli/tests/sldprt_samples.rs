@@ -61,9 +61,6 @@ fn import(path: &Path) -> Result<Imported, String> {
     r
 }
 
-/// Files that hold their geometry only in feature-local bodies: the final partition is empty.
-const NO_PARTITION_GEOMETRY: &[&str] = &["Ecran_128x32oled.SLDPRT"];
-
 /// The STEP SolidWorks exported for `part`: `model.step` next to a blussyya `model.SLDPRT`, or
 /// NIST's `step/<test case>_ap242*.stp` for the NIST parts.
 fn ground_truth(part: &Path) -> Option<(PathBuf, bool)> {
@@ -108,13 +105,6 @@ fn sldprt_samples_match_their_step_exports() {
             Ok(o) if o.bodies >= 1 => o,
             Ok(_) => {
                 failures.push(format!("{shown}: no solid"));
-                continue;
-            }
-            Err(e) if NO_PARTITION_GEOMETRY.iter().any(|n| shown.ends_with(n)) => {
-                eprintln!(
-                    "{shown}: no solid in the partition, as expected ({})",
-                    e.chars().take(120).collect::<String>()
-                );
                 continue;
             }
             Err(e) => {

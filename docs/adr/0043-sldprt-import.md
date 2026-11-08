@@ -60,10 +60,9 @@ that noise never panics.
 Feature tree and history (`Contents/Config-<n>-ResolvedFeatures`, `swXmlContents/Features`,
 `Definition`), sketches, dimensions and equations, PMI, materials and custom properties,
 colours and display lists, the preview image. Assemblies (`.sldasm`) and drawings
-(`.slddrw`) are not read. Parts whose final partition is empty and whose bodies live only in
+(`.slddrw`) are not read. Parts whose final partition is empty keep their bodies in
 `Config-<n>-FeatureBodies/LocalBodies` (one imported-geometry part in our samples,
-`Ecran_128x32oled`: the partition is 268 bytes, the 1.1 MB `LocalBodies` stream holds one
-partition per feature step) fail with "holds no solid or sheet body".
+`Ecran_128x32oled`): see the amendment below.
 Files from before modeller 17 (SolidWorks 2008 and older) were not available to test.
 
 ## Consequences
@@ -71,10 +70,25 @@ Files from before modeller 17 (SolidWorks 2008 and older) were not available to 
   the 12 blussyya pairs (SolidWorks 2011 OLE2 and 2022 chunk; cube, cube with hole, shell,
   torus, loft with splines, cylinder with fillet) agree with SolidWorks' own STEP to a
   relative volume error below 1e-15 and 0.0000 mm bounding box difference. The other 10 parts import
-  as one solid each except `Ecran_128x32oled` (above). NIST's `ftc_06` differs from NIST's
+  as one solid each, `Ecran_128x32oled` as 114 bodies (amendment below). NIST's `ftc_06` differs from NIST's
   AP242 file by 0.3 % in volume and 2.54 mm in the box (two revisions of the model, not a reader
   difference), so the NIST pair is informational.
 * A rolling-ball blend and a self-intersecting torus in one part (`psu`) are skipped with the
   XT reader's warnings, as for `.x_t`.
 * The samples are CC BY-SA / MIT data and are not in the repository; tests build synthetic
   containers (OLE2 writer and chunk writer in `crates/gusset-sldprt/src/tests.rs`).
+
+## Amendment (2026-11-08): bodies of an imported feature
+
+A part whose geometry comes from an imported feature (`Importée1` in `Ecran_128x32oled`)
+writes an empty final partition (268 bytes, no body) and keeps the bodies in
+`Config-<n>-FeatureBodies/LocalBodies`. That stream is a `u32` body count, then per body a
+short name record (`ff fe ff`, a length byte, the UTF-16 name, three `u32`s) and one block of
+the partition's kind: a length, a 16-byte tag shared by every block of the stream, the inflated
+and deflated sizes and a zlib stream holding a binary Parasolid transmit with one body. The
+reader finds the first block by its shape (the length covers the header and the data, which
+starts `78`), then each next one by the shared tag after the name record; every block is
+inflated under the same budget as the partition, at most 4096 bodies. The import uses these
+bodies only when the final partition has none. `Ecran_128x32oled`: 114 distinct bodies (47
+pins share their size), 1545.995 mm3 in a 34.5 x 20.6 x 3.3 mm box, with no STEP of its own
+to compare against.

@@ -265,19 +265,56 @@ impl ImportJob {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let part = gusset_sldprt::extract_xt(&bytes, &gusset_sldprt::Limits::default())
-                    .map_err(|e| CommandError::new("io", format!("SolidWorks: {e}")))?;
-                let c = gusset_xt::to_step(&part.xt, &stem, &gusset_xt::Limits::default())
-                    .map_err(|e| CommandError::new("io", format!("SolidWorks (Parasolid): {e}")))?;
-                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
-                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                })?;
-                let bodies =
-                    bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step });
-                let mut warnings = part.warnings;
-                warnings.extend(c.warnings);
+                let limits = gusset_sldprt::Limits::default();
+                let sw = |e: gusset_sldprt::SldprtError| CommandError::new("io", format!("SolidWorks: {e}"));
+                let xt_err = |e: gusset_xt::XtError| CommandError::new("io", format!("SolidWorks (Parasolid): {e}"));
+                // The final partition; a part made by an imported feature keeps its bodies
+                // in that feature's `LocalBodies` instead (one transmit each).
+                // `failure`: why the final partition gave no body, reported if nothing else does.
+                let (mut transmits, mut warnings, failure) = match gusset_sldprt::extract_xt(&bytes, &limits) {
+                    Ok(part) => match gusset_xt::to_step(&part.xt, &stem, &gusset_xt::Limits::default()) {
+                        Ok(c) if c.bodies > 0 => {
+                            let mut w = part.warnings;
+                            w.extend(c.warnings);
+                            (vec![c.step], w, None)
+                        }
+                        Ok(_) => (Vec::new(), part.warnings, None),
+                        Err(e) => (Vec::new(), part.warnings, Some(xt_err(e))),
+                    },
+                    Err(e @ gusset_sldprt::SldprtError::NoGeometry(_)) => (Vec::new(), Vec::new(), Some(sw(e))),
+                    Err(e) => return Err(sw(e)),
+                };
+                if transmits.is_empty() {
+                    let locals = gusset_sldprt::local_bodies(&bytes, &limits).map_err(sw)?;
+                    if locals.is_empty() {
+                        return Err(failure.unwrap_or_else(|| {
+                            sw(gusset_sldprt::SldprtError::NoGeometry("no configuration has a solid body".into()))
+                        }));
+                    }
+                    warnings.push(format!("the part's {} bodies come from its imported feature", locals.len()));
+                    for (i, xt) in locals.iter().enumerate() {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(cancelled());
+                        }
+                        let c = gusset_xt::to_step(xt, &format!("{stem}_{}", i + 1), &gusset_xt::Limits::default())
+                            .map_err(xt_err)?;
+                        warnings.extend(c.warnings);
+                        transmits.push(c.step);
+                    }
+                }
+                let mut out = Vec::new();
+                for step in &transmits {
+                    let bodies = importer.import("step", step.as_bytes(), cancel).map_err(|e| {
+                        if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                    })?;
+                    out.extend(bodies.into_iter().map(|(name, blob)| PreparedBody {
+                        name,
+                        blob,
+                        format: ImportFormat::Step,
+                    }));
+                }
                 warnings.truncate(50);
-                (bodies.collect::<Vec<_>>(), TIER_XT, warnings)
+                (out, TIER_XT, warnings)
             }
             Kind::Sat => {
                 let importer =
