@@ -1224,4 +1224,4 @@ map that works for a direct edit.
 | F14-6 | Accepted (ADR 0045 limit): colours by face count; generic SolidWorks body names are the file's own. |
 | F14-7 | Accepted: the schemas stay `number` (the tool list is size-budgeted); strings work for lengths only, as feeds and speeds are not lengths. |
 | F14-8 | Fixed in part: the plastic coat is added, not sampled, so plastic and the floor are much less grainy; scenes of many bodies still take time in a debug build. |
-| F14-9 | Fixed in part: clearing an appearance that is not set says so. A rename's created/removed pair and the `prefer: ours` wording are open. |
+| F14-9 | Fixed: clearing an appearance that is not set says so; `body_changes` reports a rename as `renamed` with `from`; `prefer: "ours"` that settles conflicts returns `merged: true, taken: []` with a note. |

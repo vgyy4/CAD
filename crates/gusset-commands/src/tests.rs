@@ -1240,6 +1240,20 @@ fn merging_a_branch_takes_its_changes_and_reports_conflicts() {
     assert_eq!(r["merged"], true, "{r}");
     let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
     assert!(text.contains("param b = 11 mm") && text.contains("param a = 5 mm"), "{text}");
+    // Both change b again; keeping ours settles the merge (not a failure, F14-9) and the
+    // next merge does not report the conflict again.
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "12 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "idea"}));
+    run(&mut s, &u, "param.set", json!({"name": "b", "expr": "13 mm"}));
+    run(&mut s, &u, "branch.switch", json!({"branch": "main"}));
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea", "prefer": "ours"}));
+    assert_eq!(r["merged"], true, "{r}");
+    assert_eq!(r["taken"], json!([]), "{r}");
+    assert_eq!(r["conflicts"][0]["name"], "b", "{r}");
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("param b = 12 mm"), "{text}");
+    let r = run(&mut s, &u, "branch.merge", json!({"from": "idea"}));
+    assert_eq!(r["merged"], false, "{r}");
 }
 
 #[test]

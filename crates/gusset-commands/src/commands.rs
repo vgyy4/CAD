@@ -3040,6 +3040,14 @@ impl Command for BranchMerge {
             // report them again (review v0.3 N3).
             if prefer.is_some() && !m.conflicts.is_empty() {
                 s.history_mut().set_merged(head, src).map_err(CommandError::history)?;
+                // Settled, not failed: every conflict kept your side (dogfooding F14-9).
+                return Ok(json!({
+                    "merged": true,
+                    "node": head.to_string(),
+                    "taken": [],
+                    "conflicts": conflicts,
+                    "note": "every conflict kept your side; nothing else to take",
+                }));
             }
             return Ok(
                 json!({ "merged": false, "reason": "nothing to take: your branch has every change", "conflicts": conflicts }),
