@@ -141,13 +141,31 @@ impl FramePlan {
             let edges_too = px >= EDGES_PX;
             // The coarse copy below `LOD_PX`, unless something on it is highlighted or a
             // section is on (the cut face needs the exact closed mesh).
-            let lod = px < LOD_PX && m.lod.is_some() && m.face_highlights.is_empty() && opts.section.is_none();
+            let lod = px < LOD_PX
+                && m.lod.is_some()
+                && m.face_highlights.is_empty()
+                && m.face_colors.is_empty()
+                && opts.section.is_none();
             let data = m.data();
             let model_view = math::mul(&cm.view, m.transform());
             let base = m.material().color.linear();
             let tri_runs = if opts.faces && lod {
                 let n = m.lod.as_ref().map_or(0, |l| l.triangle_count() as u32);
                 vec![(0..n, base)]
+            } else if opts.faces && !m.face_colors.is_empty() {
+                // Face by face, neighbours of one colour in one run.
+                let mut runs: Vec<(Range<u32>, [f32; 3])> = Vec::new();
+                for (f, r) in (0u32..).zip(&data.face_ranges) {
+                    let c = hl(m.face_highlight(f), m.face_color(f).linear());
+                    match runs.last_mut() {
+                        Some((last, lc)) if lc.map(f32::to_bits) == c.map(f32::to_bits) && last.end == r.start => {
+                            last.end = r.end
+                        }
+                        _ if r.end > r.start => runs.push((r.clone(), c)),
+                        _ => {}
+                    }
+                }
+                runs
             } else if opts.faces {
                 SceneMesh::runs(&data.face_ranges, &m.face_highlights, data.triangle_count() as u32)
                     .into_iter()

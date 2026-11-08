@@ -419,6 +419,28 @@ mod tests {
     }
 
     #[test]
+    fn a_face_colour_shows_on_that_face_only() {
+        let mut s = Scene::new();
+        s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");
+        let mut cam = Camera::default();
+        cam.set_view(crate::NamedView::Front);
+        cam.fit(&s.bounds(), 1.0);
+        let r = SoftwareRenderer::new();
+        let plain = r.render_rgba(&s, &cam, [64, 64]).expect("render");
+        // The front face (2) red; another face blue, unseen from the front.
+        assert!(s.set_face_color(MeshId(1), 2, Some(crate::Srgb(0xd0_20_20))));
+        assert!(s.set_face_color(MeshId(1), 4, Some(crate::Srgb(0x20_20_d0))));
+        assert!(s.set_face_color(MeshId(1), 99, Some(crate::Srgb(0))), "out of range is ignored");
+        let red = r.render_rgba(&s, &cam, [64, 64]).expect("render");
+        let c = red.pixel(32, 32).expect("px");
+        assert!(c[0] > 2 * c[2] && c[0] > 2 * c[1], "{c:?}");
+        // Back to the material colour.
+        s.set_face_color(MeshId(1), 2, None);
+        s.set_face_color(MeshId(1), 4, None);
+        assert_eq!(r.render_rgba(&s, &cam, [64, 64]).expect("render").data, plain.data);
+    }
+
+    #[test]
     fn wireframe_draws_edges_but_no_faces() {
         let mut s = Scene::new();
         s.insert_mesh(MeshId(1), &demo::box_mesh([10.0; 3])).expect("ok");

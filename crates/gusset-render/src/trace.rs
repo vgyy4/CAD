@@ -157,7 +157,7 @@ impl World<'_> {
             let color = match face.map(|f| m.face_highlight(f as u32)) {
                 Some(crate::Highlight::Select) => crate::Theme::Light.colors().select,
                 Some(crate::Highlight::Preselect) => crate::Theme::Light.colors().preselect,
-                _ => m.material().color,
+                _ => face.map_or(m.material().color, |f| m.face_color(f as u32)),
             };
             let [r, g, bl] = color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
             Some((

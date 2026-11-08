@@ -83,6 +83,8 @@ pub struct SceneMesh {
     pub(crate) visible: bool,
     pub(crate) face_highlights: BTreeMap<u32, Highlight>,
     pub(crate) edge_highlights: BTreeMap<u32, Highlight>,
+    /// Colours of single faces (a STEP file's face colours), over the material's colour.
+    pub(crate) face_colors: BTreeMap<u32, Srgb>,
     /// The inverse transform and the world bounds, kept with the transform so a ray test
     /// against many meshes rejects most of them cheaply.
     pub(crate) inverse: Option<Mat4>,
@@ -158,6 +160,12 @@ impl SceneMesh {
     #[must_use]
     pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    /// The colour face `face` is drawn in: its own colour, else the material's.
+    #[must_use]
+    pub fn face_color(&self, face: u32) -> Srgb {
+        self.face_colors.get(&face).copied().unwrap_or(self.material.color)
     }
 
     /// Highlight of face `face`.
@@ -257,6 +265,7 @@ impl Scene {
                 m.geometry_rev = rev;
                 m.face_highlights.clear();
                 m.edge_highlights.clear();
+                m.face_colors.clear();
                 m.refresh();
             }
             None => {
@@ -268,6 +277,7 @@ impl Scene {
                     visible: true,
                     face_highlights: BTreeMap::new(),
                     edge_highlights: BTreeMap::new(),
+                    face_colors: BTreeMap::new(),
                     inverse: None,
                     world: Aabb::EMPTY,
                     lod,
@@ -330,6 +340,22 @@ impl Scene {
     /// Show or hide a mesh. Returns whether the mesh exists.
     pub fn set_visible(&mut self, id: MeshId, visible: bool) -> bool {
         self.meshes.get_mut(&id).map(|m| m.visible = visible).is_some()
+    }
+
+    /// Colour one face (`None` back to the material's colour). Returns whether the mesh
+    /// exists; a face index past the mesh's faces is ignored.
+    pub fn set_face_color(&mut self, id: MeshId, face: u32, color: Option<Srgb>) -> bool {
+        let Some(m) = self.meshes.get_mut(&id) else { return false };
+        match color {
+            Some(c) if (face as usize) < m.data.face_count() => {
+                m.face_colors.insert(face, c);
+            }
+            Some(_) => {}
+            None => {
+                m.face_colors.remove(&face);
+            }
+        }
+        true
     }
 
     /// Highlight one B-rep face. Returns whether the mesh and face exist.
