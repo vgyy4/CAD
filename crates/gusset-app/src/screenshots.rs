@@ -191,6 +191,11 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // The appearance form: colour text with its picker, the finishes offered.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.feature_choice("Body", crate::browser::FeatureChoice::Appearance);
+        shoot(&dir, &format!("19-appearance-form-{t}"), a, |_| {});
         // The marking menu (a right click in the viewport).
         let mut a = app(theme);
         bracket(&mut a);

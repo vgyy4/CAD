@@ -1451,6 +1451,7 @@ impl App {
                     let color = look.as_ref().map_or(0x00b4_bcc8, |a| a.color);
                     form.set("color", &format!("#{color:06x}"));
                     form.set("finish", look.as_ref().map_or("plastic", |a| a.finish.keyword()));
+                    form.show_more = true;
                 }
             }
             C::AcceptSuggestion => {

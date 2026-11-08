@@ -37,6 +37,7 @@ pub struct Field {
 #[must_use]
 pub fn suggestions(command: &str, field: &str) -> &'static [&'static str] {
     match (command, field) {
+        ("body.appearance", "finish") => &["plastic", "metal", "glass", "rubber"],
         ("cam.toolpath" | "cam.export_gcode", "operation") => &[
             "pocket",
             "pocket_adaptive",
@@ -238,6 +239,23 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
                         let r = ui.checkbox(&mut b, "");
                         f.value = b.to_string();
                         r
+                    }
+                    // A colour picker beside the "#rrggbb" text (ADR 0045).
+                    _ if form.command == "body.appearance" && f.name == "color" => {
+                        ui.horizontal(|ui| {
+                            let r = ui
+                                .add(egui::TextEdit::singleline(&mut f.value).desired_width(180.0).hint_text(&f.help));
+                            let mut rgb =
+                                gusset_doc::text::parse_color(f.value.trim()).map_or([0xb4, 0xbc, 0xc8], |c| {
+                                    let [_, r, g, b] = c.to_be_bytes();
+                                    [r, g, b]
+                                });
+                            if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
+                                f.value = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                            }
+                            r
+                        })
+                        .inner
                     }
                     _ => {
                         let known = suggestions(form.command, &f.name);
