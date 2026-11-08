@@ -6,17 +6,19 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 
 | Format | Direction | Tier | Status | Parse % | Valid solid % | Corpus size |
 |---|---|---|---|---|---|---|
-| STEP AP203/214/242 | import/export | 2 | planned (MVP, OCCT in worker) | – | – | 0 |
-| IGES | import | 2 | planned (MVP) | – | – | 0 |
-| STL | import/export | 3 | in progress (`gusset-meshio`) | – | n/a | 0 |
-| 3MF | import/export | 3 | in progress | – | n/a | 0 |
-| OBJ | import/export | 3 | in progress | – | n/a | 0 |
-| Fusion 360 .f3d | import | 2 | done (ADR 0039: the archive's binary ACIS bodies; component placements not read yet) | – | – | 0 |
-| ACIS SAT | import | 2 | done (ADR 0039, via STEP; versions 1 to 7; analytic and B-spline geometry, procedural surfaces by their stored approximation) | – | – | 0 |
-| Parasolid XT | import | 2 | done (ADR 0035, via STEP; outside the corpus, 4 of 5 NIST samples read, V3 refused) | – | – | 0 |
-| SolidWorks .sldprt | import | 2 | done (ADR 0043: the Parasolid partition of both containers, SW2007–2025; parts only, no feature history; 2026-11-08) | 100 % (23/23) | 100 % (23/23; the 12 controlled parts match SolidWorks' own STEP exactly; one part's bodies come from its imported feature) | 23 |
-| FreeCAD .FCStd | import | 1/2 | planned (v1) | – | – | 0 |
-| OpenSCAD .scad | import | 1 | planned (v1) | – | – | 0 |
+| STEP AP203/214/242 | import/export | 2 | done (OCCT XDE in the import worker; names, body and face colours both ways, assemblies as one body per solid) | – | – | 0 |
+| IGES | import/export | 2 | done (OCCT, in the worker) | – | – | 0 |
+| STL, 3MF, OBJ, PLY, glTF/GLB | import/export | 3 | done (`gusset-meshio`; 3MF and glTF carry colours both ways; imported meshes are reference meshes) | – | n/a | 0 |
+| DXF, SVG | export | – | done (2D drawings and sheet-metal flat patterns) | – | n/a | 0 |
+| Fusion 360 .f3d/.f3z | import | 2 | done (ADR 0039: binary ACIS bodies, component placements, nested and referenced designs, colours; per-sample coverage against the authors' STEP in ADR 0039, e.g. Pico 213/216, MacroPad 173/185) | – | – | 0 |
+| ACIS SAT/SAB, Autodesk SMT | import | 2 | done (ADR 0039, via STEP; versions 1 to 7; analytic, B-spline and procedural surfaces by their stored approximation, helical thread surfaces fitted) | – | – | 0 |
+| Parasolid XT | import | 2 | done (ADR 0035, via STEP; names, colours, assemblies; 4 of 5 NIST samples read, V3 refused) | – | – | 0 |
+| SolidWorks .sldprt | import | 2 | done (ADR 0043: the Parasolid partition of both containers, SW2007–2025; names and colours; no feature history) | 100 % (23/23) | 100 % (23/23; the 12 controlled parts match SolidWorks' own STEP exactly; one part's bodies come from its imported feature) | 23 |
+| SolidWorks .sldasm | import | 2 | done (ADR 0043 amendment: component tree and placements, parts read from the assembly's folder; one public sample, NIST's Nanocalorimeter; no mates, virtual components or OLE2-era assemblies yet) | 1/1 | 1/1 | 1 |
+| FreeCAD .FCStd | import | 2 | done (`gusset-scad`, shapes through the import worker) | – | – | 0 |
+| OpenSCAD .scad | import | 1 | done (`gusset-scad`, translated to the code view) | – | – | 0 |
+| Gusset feature tree .gtree.json | import | 1 | done (ADR 0042: exporter plugins for Fusion, SolidWorks and Onshape, unverified until run in the real apps) | – | – | 0 |
+| Solid Edge .par/.asm, Inventor .ipt/.iam | import | 2 | not started: no public sample files found (a clean-room reader needs samples; Solid Edge embeds Parasolid, Inventor ShapeManager, so the XT and ACIS readers would carry most of it) | – | – | 0 |
 
 ## Feature-tree exporter plugins
 | Plugin | Status |
