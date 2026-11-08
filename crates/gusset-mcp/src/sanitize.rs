@@ -33,7 +33,7 @@ pub const SUSPICIOUS_LEN: usize = 2000;
 /// characters instead of [`MAX_FIELD_CHARS`]; the command pages by line below it.
 pub const MAX_DOC_TEXT_CHARS: usize = 32_768;
 /// Maximum characters `get_text` returns per call.
-pub const MAX_GET_TEXT_CHARS: usize = 16_384;
+pub const MAX_GET_TEXT_CHARS: usize = 65_536;
 /// Object keys longer than this are cut (keys come from our own code, but be safe).
 const MAX_KEY_CHARS: usize = 128;
 

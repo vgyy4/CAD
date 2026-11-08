@@ -507,13 +507,13 @@ pub struct GetTextArgs {
     /// Character offset to start from (default 0).
     #[serde(default)]
     pub offset: usize,
-    /// Maximum characters to return (default 4096, at most 16384).
+    /// Maximum characters to return (default 16384, at most 65536).
     #[serde(default = "default_limit")]
     pub limit: usize,
 }
 
 fn default_limit() -> usize {
-    4096
+    16_384
 }
 
 /// Arguments of the `commands` tool.
