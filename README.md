@@ -1,11 +1,37 @@
-# CAD (working title)
+# Gusset
 
 A Rust-native, open-source parametric 3D CAD application with a built-in MCP server,
 so AI agents can do anything a human user can.
 
-Status: early development (Phase 0 — research). See `docs/PROGRESS.md`.
+Status: in development; a pre-release (v0.1.0-mvp) is published. What is done and what
+comes next: `docs/PROGRESS.md`. Architecture decisions: `docs/adr/`.
 
 License: MIT OR Apache-2.0.
+
+![Gusset with a bracket in the Render tab's photo preview](docs/screenshots/22-render-preview-dark.png)
+
+## What it does
+
+- **Parametric modelling:** sketches with a constraint solver (degrees of freedom shown),
+  extrude, revolve, sweep, loft, fillet, chamfer, shell, draft, holes and threads, text,
+  mirrors and patterns, parameters with units and expressions; a code view of the whole
+  model as text; generators for gears, springs, threads, nuts and bolts.
+- **History you can branch:** an undo tree, branches, three-way merge, rollback, and
+  history bundles to move a branch between copies of a project.
+- **Assemblies:** joints (rigid, revolute, slider, cylindrical, planar, ball, pin-slot),
+  components from other documents, configurations and parameter sliders, interference
+  checks, a bill of materials.
+- **Direct editing:** push/pull and move faces, delete faces, and a history-free mode.
+- **Sheet metal, surfaces, drawings:** flanges, bends and flat patterns; surface modelling;
+  2D drawings with views and dimensions, DXF/SVG export.
+- **Manufacture and simulation:** 2.5D and 3D CAM toolpaths with G-code; linear static and
+  modal FEA on solids and shells; topology optimisation.
+- **Rendering:** body colours, finishes (plastic, metal, glass, rubber), per-face colours
+  and procedural textures; a path-traced photo preview and image export.
+- **Files:** STEP, IGES, STL, 3MF, OBJ, PLY, glTF, DXF/SVG; imports from Fusion 360
+  (`.f3d`/`.f3z`), SolidWorks parts (`.sldprt`), Parasolid (`.x_t`/`.x_b`), ACIS (`.sat`),
+  FreeCAD and OpenSCAD, with names and colours kept. Imports run in a sandboxed worker.
+- **Headless:** the `gusset` command line builds, exports and renders documents.
 
 ## Using Gusset with AI agents (MCP)
 
