@@ -53,3 +53,18 @@ software fallback; GUI automation tests; a permissive license.
 - **Idle/startup/memory numbers are unmeasured** for our use. The first GUI milestone
   measures them on the reference-class hardware available in CI and records them in
   `docs/PERFORMANCE.md`.
+
+## Amendment (2026-11-08): path-traced stills
+
+`gusset_render::render_traced` renders a still on the CPU by path tracing (the "rendering"
+item of the later tier): diffuse materials in the parts' colours on a ground plane at the
+model's lowest point, smooth shading (vertex normals interpolated), a sky (blue above, white at the horizon) and a sun with an angular
+spread (soft shadows), up to six bounces (colour bleeding), a soft tone curve, sRGB out.
+Rays go through `Scene::pick`, the picking BVH, so whatever the viewport holds is traced. The
+noise is seeded by pixel and sample: the same scene gives the same image. Rows are split
+over the processor's threads (`std::thread::scope`). Limits: 4096 px a side, 1..=1024 samples,
+0..=6 bounces, 4e8 paths an image. `gusset build model.gus -e out.png [--samples N]
+[--size WxH]` writes one from the iso view. Not yet: materials beyond colour (metal,
+glass), depth of field, a denoiser, an MCP entry. The app renders
+the current view off the UI thread (File › Export › Rendered image (PNG), 1600 x 1200, 64
+paths a pixel).

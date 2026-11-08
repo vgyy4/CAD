@@ -895,3 +895,25 @@ fn panels_collapse_and_swap_sides() {
     h.run();
     assert!(!h.state().timeline_collapsed);
 }
+
+#[test]
+fn the_view_is_rendered_to_a_png_off_the_ui_thread() {
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    let dir = std::env::temp_dir().join(format!("gusset-app-render-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("view.png");
+    h.state_mut().render_quality = ([40, 30], 1);
+    h.state_mut().export(crate::app::PathPurpose::Render, &path, false);
+    for _ in 0..200 {
+        h.run_steps(1);
+        if h.state().notice.as_ref().is_some_and(|n| n.text.contains("written")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let n = h.state().notice.clone().unwrap();
+    assert!(n.text.contains("view.png") && !n.error, "{n:?}");
+    assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"));
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -1612,6 +1612,7 @@ dependencies = [
  "gusset-meshio",
  "gusset-occt-sys",
  "gusset-project",
+ "gusset-render",
  "gusset-sat",
  "gusset-sketch",
  "gusset-store",
@@ -1638,6 +1639,7 @@ dependencies = [
  "gusset-sat",
  "gusset-scad",
  "gusset-sketch",
+ "gusset-sldprt",
  "gusset-store",
  "gusset-units",
  "gusset-xt",
@@ -1876,6 +1878,13 @@ name = "gusset-sketch"
 version = "0.1.0-mvp"
 dependencies = [
  "libm",
+]
+
+[[package]]
+name = "gusset-sldprt"
+version = "0.1.0-mvp"
+dependencies = [
+ "miniz_oxide 0.9.1",
 ]
 
 [[package]]

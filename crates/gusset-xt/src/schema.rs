@@ -249,6 +249,20 @@ fn parse_field(spec: &str) -> Option<Field> {
     Some(Field { name: name.to_string(), code, count })
 }
 
+/// Where the base schema of embedded-schema files (13006) differs from 12006. Worked out
+/// from `.sldprt` partitions: the edit scripts of those files copy one more BODY field than
+/// 12006 has, and the byte stream shows it is a byte after `body_type`.
+const V13: &str = "
+12 BODY 1 highest_node_id:d attributes_groups:p attribute_chains:p surface:p curve:p point:p key:p res_size:f res_linear:f ref_instance:p next:p previous:p state:u owner:p body_type:u nom_geom_state:u shell:p boundary_surface:p boundary_curve:p boundary_point:p region:p edge:p vertex:p
+";
+
+/// The layouts edit scripts of embedded schemas start from.
+pub(crate) fn embedded_base() -> Schema {
+    let mut s = schema(Family::V12);
+    s.extend(parse_table(V13));
+    s
+}
+
 /// The layouts of a family.
 pub(crate) fn schema(family: Family) -> Schema {
     let mut s = parse_table(V12);
@@ -325,6 +339,16 @@ mod tests {
         assert_eq!(v4.get(&31).and_then(|l| l.position("tolerance")), Some(7));
         assert_eq!(Family::of(4035), Some(Family::V4));
         assert_eq!(Family::of(3000), None);
+    }
+
+    #[test]
+    fn the_embedded_base_has_the_extra_body_byte() {
+        let base = embedded_base();
+        let body = base.get(&12).unwrap();
+        assert_eq!(body.fields.len(), 23);
+        assert_eq!(body.position("nom_geom_state"), body.position("body_type").map(|i| i + 1));
+        // Everything else is as in 12006.
+        assert_eq!(base.get(&14), schema(Family::V12).get(&14));
     }
 
     #[test]

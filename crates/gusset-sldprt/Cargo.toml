@@ -1,0 +1,14 @@
+[package]
+name = "gusset-sldprt"
+description = "SolidWorks .sldprt container reader for Gusset (ADR 0043): finds the embedded Parasolid partition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

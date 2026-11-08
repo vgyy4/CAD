@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 const USAGE: &str = "usage:
   gusset build <model.gus|model.gus.txt> [--branch NAME] [--import FILE]... [--export OUT]... [--tolerance MM]
+               OUT: .step .iges .stl .3mf .obj, or .png (path traced; [--samples N] [--size WxH])
   gusset text <model.gus> [--branch NAME]
   gusset pack <model.gus.txt> -o <model.gus>
   gusset mcp [model.gus] [--read-only] [--no-attach]
@@ -92,11 +93,22 @@ struct Opts {
     imports: Vec<PathBuf>,
     tolerance: f64,
     output: Option<PathBuf>,
+    /// `.png` exports: paths a pixel and image size.
+    samples: u32,
+    size: [u32; 2],
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
-    let mut o =
-        Opts { file: PathBuf::new(), branch: None, exports: vec![], imports: vec![], tolerance: 0.01, output: None };
+    let mut o = Opts {
+        file: PathBuf::new(),
+        branch: None,
+        exports: vec![],
+        imports: vec![],
+        tolerance: 0.01,
+        output: None,
+        samples: 64,
+        size: [1600, 1200],
+    };
     let mut it = args.iter();
     let mut have_file = false;
     while let Some(a) = it.next() {
@@ -106,6 +118,15 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--export" | "-e" => o.exports.push(PathBuf::from(val("--export")?)),
             "--import" | "-i" => o.imports.push(PathBuf::from(val("--import")?)),
             "-o" | "--output" => o.output = Some(PathBuf::from(val("-o")?)),
+            "--samples" => {
+                o.samples = val("--samples")?.parse().map_err(|_| "--samples needs a whole number".to_string())?;
+            }
+            "--size" => {
+                let v = val("--size")?;
+                let (w, h) = v.split_once('x').ok_or("--size is WIDTHxHEIGHT, e.g. 1600x1200")?;
+                let n = |t: &str| t.parse::<u32>().map_err(|_| "--size is WIDTHxHEIGHT, e.g. 1600x1200".to_string());
+                o.size = [n(w)?, n(h)?];
+            }
             "--tolerance" => {
                 o.tolerance =
                     val("--tolerance")?.parse().map_err(|_| "--tolerance must be a number (mm)".to_string())?;
@@ -237,9 +258,10 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         let bytes = match ext.as_str() {
             "step" | "stp" => k.export_step(&bodies).map_err(|e| e.to_string())?,
             "iges" | "igs" => k.export_iges(&bodies).map_err(|e| e.to_string())?,
+            "png" => render_png(k.as_ref(), &bodies, &meshes, &o)?,
             other => {
                 let f = mesh_format(other)
-                    .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj)"))?;
+                    .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj, png)"))?;
                 mesh_export_bytes_with(k.as_ref(), &bodies, &meshes, f, o.tolerance).map_err(|e| e.to_string())?
             }
         };
@@ -247,6 +269,34 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
         println!("wrote {} ({} bytes)", out.display(), bytes.len());
     }
     Ok(if failed > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+/// A path-traced picture of the model from the iso view (`--size`, `--samples` paths a pixel).
+fn render_png(
+    k: &dyn gusset_kernel::Kernel,
+    bodies: &[(&gusset_kernel::Shape, &str)],
+    meshes: &[(&gusset_kernel::Mesh, &str)],
+    o: &Opts,
+) -> Result<Vec<u8>, String> {
+    let tolerance = o.tolerance;
+    let mut scene = gusset_render::Scene::new();
+    let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, ..Default::default() };
+    let mut id = 0u64;
+    for (shape, name) in bodies {
+        let m = k.tessellate(shape, &params).map_err(|e| format!("{name}: {e}"))?;
+        id += 1;
+        scene.insert_mesh(gusset_render::MeshId(id), &m).map_err(|e| format!("{name}: {e}"))?;
+    }
+    for (m, name) in meshes {
+        id += 1;
+        scene.insert_mesh(gusset_render::MeshId(id), m).map_err(|e| format!("{name}: {e}"))?;
+    }
+    let mut camera = gusset_render::Camera::default();
+    camera.set_view(gusset_render::NamedView::Iso);
+    camera.fit(&scene.bounds(), f64::from(o.size[0]) / f64::from(o.size[1].max(1)));
+    let settings = gusset_render::TraceSettings { samples: o.samples, ..Default::default() };
+    let img = gusset_render::render_traced(&scene, &camera, o.size, settings).map_err(|e| e.to_string())?;
+    img.to_png().map_err(|e| e.to_string())
 }
 
 /// Writes through gusset-store's durable write (temp file, fsync, verify, atomic rename).

@@ -92,6 +92,8 @@ pub enum PathPurpose {
     Export3mf,
     /// Another mesh format, by its `export.mesh` format name (`obj`, `ply`, `glb`).
     ExportMesh(&'static str),
+    /// A path-traced picture of the current view (PNG).
+    Render,
 }
 
 /// Status-bar message.
@@ -224,6 +226,10 @@ impl std::fmt::Debug for App {
 }
 
 pub struct App {
+    /// A path-traced picture being made off the UI thread: where to, and its outcome.
+    render_job: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    /// Size and paths a pixel of a rendered image.
+    pub render_quality: ([u32; 2], u32),
     host: HostHandle,
     kernel: Arc<dyn Kernel>,
     /// This frame's view of the model (refreshed when the host reports a change).
@@ -382,6 +388,8 @@ impl App {
         let agents = Agents::new(&host, waker.clone());
         let prefs = dirs.as_ref().map(|d| crate::prefs::load(&crate::prefs::path(d.data_dir()))).unwrap_or_default();
         let mut app = App {
+            render_job: None,
+            render_quality: ([1600, 1200], 64),
             host,
             kernel,
             snapshot: Snapshot::default(),
@@ -1814,6 +1822,7 @@ impl App {
         }
         self.apply_scale(&ctx);
         self.poll(Some(&ctx));
+        self.poll_render(&ctx);
         if let Some(p) = self.after_save.take() {
             // Saved; check again (an agent may have edited since) before continuing.
             self.request(p);
@@ -2074,6 +2083,7 @@ impl App {
                         ("OBJ…", PathPurpose::ExportMesh("obj"), "obj"),
                         ("PLY…", PathPurpose::ExportMesh("ply"), "ply"),
                         ("glTF (GLB)…", PathPurpose::ExportMesh("glb"), "glb"),
+                        ("Rendered image (PNG)…", PathPurpose::Render, "png"),
                     ] {
                         if ui.button(label).clicked() {
                             self.dialog = Some(Dialog::Path { purpose, text: format!("part.{ext}"), error: None });
@@ -3587,7 +3597,11 @@ impl App {
                 self.request(Pending::Open(abs));
                 Ok(())
             }
-            PathPurpose::ExportStep | PathPurpose::ExportStl | PathPurpose::Export3mf | PathPurpose::ExportMesh(_) => {
+            PathPurpose::ExportStep
+            | PathPurpose::ExportStl
+            | PathPurpose::Export3mf
+            | PathPurpose::ExportMesh(_)
+            | PathPurpose::Render => {
                 if abs.exists() {
                     // Never replace a file without asking (review L7).
                     self.dialog = Some(Dialog::Overwrite { purpose, path: abs });
@@ -3600,7 +3614,11 @@ impl App {
     }
 
     /// Starts an export to `path`; a failure re-opens the path dialog with the error.
-    fn export(&mut self, purpose: PathPurpose, path: &std::path::Path, overwrite: bool) {
+    pub(crate) fn export(&mut self, purpose: PathPurpose, path: &std::path::Path, overwrite: bool) {
+        if purpose == PathPurpose::Render {
+            self.render_to(path);
+            return;
+        }
         let (id, extra) = match purpose {
             PathPurpose::ExportStl => ("export.mesh", json!({ "format": "stl" })),
             PathPurpose::Export3mf => ("export.mesh", json!({ "format": "3mf" })),
@@ -3613,6 +3631,53 @@ impl App {
             a.extend(e.clone());
         }
         self.submit_command(id, args, Then::PathDialog(purpose, text));
+    }
+
+    /// Path-traces the current view (`render_quality`) on a worker thread and
+    /// writes it as PNG; [`Self::poll_render`] reports the outcome.
+    fn render_to(&mut self, path: &std::path::Path) {
+        let scene = self.viewport.scene().clone();
+        let camera = self.viewport.camera;
+        let path = path.to_path_buf();
+        let (size, samples) = self.render_quality;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.render_job = Some(rx);
+        self.notice = Some(Notice { text: tr("render.running").into(), hint: None, error: false });
+        std::thread::spawn(move || {
+            let out = gusset_render::render_traced(
+                &scene,
+                &camera,
+                size,
+                gusset_render::TraceSettings { samples, ..Default::default() },
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|img| img.to_png().map_err(|e| e.to_string()))
+            .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()))
+            .map(|()| path);
+            let _ = tx.send(out);
+        });
+    }
+
+    /// The outcome of a finished render, as a notice.
+    fn poll_render(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.render_job else { return };
+        match rx.try_recv() {
+            Ok(r) => {
+                self.render_job = None;
+                self.notice = Some(match r {
+                    Ok(p) => Notice {
+                        text: format!("{} {}", tr("render.done"), p.to_string_lossy()),
+                        hint: None,
+                        error: false,
+                    },
+                    Err(e) => Notice { text: format!("{}: {e}", tr("render.failed")), hint: None, error: true },
+                });
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200))
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.render_job = None,
+        }
     }
 
     fn close_now(&mut self, discard_recovery: bool) {

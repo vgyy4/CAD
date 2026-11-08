@@ -31,6 +31,7 @@ gusset-worker.workspace = true
 gusset-kernel-worker.workspace = true
 gusset-host.workspace = true
 gusset-mcp = { workspace = true, features = ["render"] }
+gusset-render.workspace = true
 serde_json.workspace = true
 
 [lints]

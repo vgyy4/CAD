@@ -23,6 +23,7 @@ gusset-cam.workspace = true
 gusset-fea.workspace = true
 gusset-sat.workspace = true
 gusset-xt.workspace = true
+gusset-sldprt.workspace = true
 gusset-store.workspace = true
 gusset-project.workspace = true
 libm.workspace = true

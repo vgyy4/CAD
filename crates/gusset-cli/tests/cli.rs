@@ -31,6 +31,11 @@ fn bracket_golden_volume_and_exports() {
     assert!(text.contains("volume 11272.584 mm³"), "{text}");
     assert!(std::fs::read(&step).unwrap().starts_with(b"ISO-10303-21;"));
     assert!(std::fs::read(&mf).unwrap().starts_with(b"PK"));
+    // A path-traced picture.
+    let png = dir.join("b.png");
+    let out = gusset().args(["build", ex, "--samples", "2", "--size", "80x60", "--export"]).arg(&png).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"));
     // Pack to .gus and rebuild from the binary project.
     let gus = dir.join("b.gus");
     assert!(gusset().args(["pack", ex, "-o"]).arg(&gus).status().unwrap().success());

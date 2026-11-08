@@ -43,6 +43,7 @@ mod pick;
 mod scene;
 mod software;
 mod theme;
+mod trace;
 mod view;
 
 pub use camera::{Camera, CameraMatrices, NamedView, Projection, Ray};
@@ -57,6 +58,7 @@ pub use pick::{EdgeHit, PickHit};
 pub use scene::{Highlight, Material, MeshId, Scene, SceneMesh};
 pub use software::{SOFTWARE_MAX_SIDE, SoftwareRenderer};
 pub use theme::{DEFAULT_PART_COLOR, Lighting, Srgb, Theme, ViewportColors, linear_to_srgb, srgb_to_linear};
+pub use trace::{TRACE_MAX_SIDE, TraceSettings, render_traced};
 pub use view::ViewRenderer;
 /// Re-exported so callers use the same wgpu version.
 pub use wgpu;

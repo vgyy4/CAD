@@ -152,7 +152,7 @@ fn run<S: Source>(src: &mut S, modeller: String, key: &str, limits: &Limits) -> 
         .ok_or_else(|| XtError::Unsupported(format!("XT schema {number} (older than Parasolid V4) cannot be read")))?;
     // With an embedded schema the layouts are edits of the base (V13's 13006, for which
     // the V12 table stands in) and the header carries the number of node types.
-    let mut layouts = schema::schema(if base.is_some() { Family::V12 } else { family });
+    let mut layouts = if base.is_some() { schema::embedded_base() } else { schema::schema(family) };
     if base.is_some() {
         src.int(Width::Short)?;
     }

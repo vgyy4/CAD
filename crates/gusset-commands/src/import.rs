@@ -46,6 +46,9 @@ enum Kind {
     Scad,
     /// A Parasolid XT file, converted here to STEP and imported by the worker (ADR 0035).
     Xt,
+    /// A SolidWorks part: its Parasolid partition is read out of the container, then as `Xt`
+    /// (ADR 0043).
+    Sldprt,
     /// An ACIS SAT file, converted here to STEP and imported by the worker (ADR 0039).
     Sat,
     /// A Fusion 360 archive: its binary ACIS bodies (`.smb`), as SAT (ADR 0039).
@@ -175,6 +178,7 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "iges" | "igs" => Kind::Brep(ImportFormat::Iges),
         "fcstd" => Kind::FreeCad,
         "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
+        "sldprt" => Kind::Sldprt,
         "sat" | "sab" => Kind::Sat,
         "f3d" | "f3z" => Kind::F3d,
         "scad" => Kind::Scad,
@@ -183,12 +187,14 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sldprt, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sat | Kind::F3d) && importer.is_none() {
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sldprt | Kind::Sat | Kind::F3d)
+        && importer.is_none()
+    {
         return Err(CommandError::new(
             "not_allowed",
             "STEP/IGES/Parasolid/FreeCAD import is not available in this session",
@@ -248,6 +254,28 @@ impl ImportJob {
                 let bodies =
                     bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step });
                 let mut warnings = c.warnings;
+                warnings.truncate(50);
+                (bodies.collect::<Vec<_>>(), TIER_XT, warnings)
+            }
+            Kind::Sldprt => {
+                let importer = self
+                    .importer
+                    .ok_or_else(|| CommandError::new("not_allowed", "SolidWorks import is not available"))?;
+                let stem = Path::new(&self.file_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let part = gusset_sldprt::extract_xt(&bytes, &gusset_sldprt::Limits::default())
+                    .map_err(|e| CommandError::new("io", format!("SolidWorks: {e}")))?;
+                let c = gusset_xt::to_step(&part.xt, &stem, &gusset_xt::Limits::default())
+                    .map_err(|e| CommandError::new("io", format!("SolidWorks (Parasolid): {e}")))?;
+                let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
+                    if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
+                })?;
+                let bodies =
+                    bodies.into_iter().map(|(name, blob)| PreparedBody { name, blob, format: ImportFormat::Step });
+                let mut warnings = part.warnings;
+                warnings.extend(c.warnings);
                 warnings.truncate(50);
                 (bodies.collect::<Vec<_>>(), TIER_XT, warnings)
             }
