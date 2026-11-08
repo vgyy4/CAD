@@ -1289,6 +1289,23 @@ impl App {
         self.save_prefs();
     }
 
+    /// The saved crash reports word for word (nothing is sent anywhere).
+    fn crash_text(&self) -> String {
+        let Some(d) = &self.dirs else { return tr("crash.none").into() };
+        let dir = crate::crash::dir(d.data_dir());
+        let files = crate::crash::list(&dir);
+        if files.is_empty() {
+            return tr("crash.none").into();
+        }
+        let mut out = format!("{} {}\n\n", tr("crash.where"), crate::crash::redact(&dir.to_string_lossy()));
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap_or_default();
+            out.push_str(&text.chars().take(20_000).collect::<String>());
+            out.push_str("\n----\n");
+        }
+        out
+    }
+
     /// Keeps the preferences for the next run (a failure only costs the preference).
     fn save_prefs(&mut self) {
         let Some(dirs) = &self.dirs else { return };
@@ -2225,6 +2242,18 @@ impl App {
                 }
                 if ui.button(format!("{}…", tr("agents.title"))).clicked() {
                     self.agents.show_panel = true;
+                }
+                if ui.button(tr("menu.crash_reports")).clicked() {
+                    self.dialog =
+                        Some(Dialog::Message { title: tr("menu.crash_reports").into(), body: self.crash_text() });
+                }
+                if ui.button(tr("menu.crash_delete")).clicked() {
+                    if let Some(d) = &self.dirs {
+                        for f in crate::crash::list(&crate::crash::dir(d.data_dir())) {
+                            let _ = std::fs::remove_file(f);
+                        }
+                    }
+                    self.notice = Some(Notice { text: tr("crash.deleted").into(), hint: None, error: false });
                 }
             });
             ui.separator();

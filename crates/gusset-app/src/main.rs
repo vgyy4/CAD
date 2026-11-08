@@ -48,9 +48,23 @@ fn main() -> eframe::Result {
     {
         eprintln!("warning: trusted-blob list unavailable: {e}");
     }
+    // Crash reports stay on this computer (nothing is sent); the app says when one exists.
+    let earlier_crashes =
+        dirs.as_ref().map_or(0, |d| gusset_app::crash::list(&gusset_app::crash::dir(d.data_dir())).len());
+    if let Some(d) = &dirs {
+        gusset_app::crash::install(gusset_app::crash::dir(d.data_dir()));
+    }
     let grant_file = dirs.as_ref().map(|d| d.data_dir().join("agent-grants.json"));
     let app_kernel_status = k.diagnostics();
     let mut app = App::new(k, dirs);
+    if earlier_crashes > 0 {
+        app.notice = Some(gusset_app::app::Notice {
+            text: "Gusset closed unexpectedly before; a crash report was saved on this computer (Help > Crash reports)"
+                .into(),
+            hint: None,
+            error: false,
+        });
+    }
     // Remembered "always allow" agent grants (ADR 0012 "Standing approvals").
     if let Some(f) = &grant_file
         && let Err(e) = app.agents.load_grants(f)
