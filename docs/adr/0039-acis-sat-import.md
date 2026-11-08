@@ -186,7 +186,7 @@ noise test.
 Measured on the samples (solids of the author's STEP with one of our bodies within 0.05 mm
 by vertex box, before to after): LoRa Radio Bonnet 0 to 82 of 83; CyberDeck 11 to 20 of 62;
 NeoKey Breakout 11 to 12 of 15; MacroPad Assembly 0 to 167 of 185; Keyplate 1 to 1 of 1; Pixel
-Trinkey 0 to 63 of 65; QT Py 0 to 138 of 142; USB-C HDMI 0 of 54; BQ25185 Buck 0 of 90; Pico
+Trinkey 0 to 63 of 65; QT Py 0 to 138 of 142; USB-C HDMI 0 of 54; BQ25185 Buck 0 to 65 of 90; Pico
 0 of 216; Crickit HAT 20 to 48 of 85 (35 of the author's solids have no body of that size in our
 import at all; of the other 50, 48 are placed).
 
@@ -197,4 +197,10 @@ it as doubles in cm, mm or m; only the root's matrix for the reference itself is
 read: the board lands rotated and moved correctly, its components at their own origins). Their
 places most likely come from joints, which are not solved on import. Per-body comparison
 (`scripts/f3d_compare.py`): the bodies are off by exactly those component offsets.
+
+Buck case, 2026-11-08: a reference named without a matrix (at the origin) whose board the root
+moved has no repeat of the reference's matrix: the first `CE2913AA` record after it holds the
+board's placement as its first matrix. That record is now read (the first one within 3000 bytes
+whose matrix is not the identity): 0 to 65 of 90 solids placed; the other samples unchanged
+(LoRa 82, CyberDeck 20, NeoKey 12, MacroPad 167, Keyplate 1, Trinkey 63, QT Py 138, Crickit 48).
 

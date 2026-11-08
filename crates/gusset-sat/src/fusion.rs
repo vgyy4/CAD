@@ -408,7 +408,9 @@ struct Transforms {
     nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>>,
     /// Keys of records that name a reference but carry no matrix (a reference left at the
     /// origin).
-    bare: std::collections::HashSet<String>,
+    /// References named without a matrix (at the origin), with where the design moved their
+    /// context component when it did (a moved-board record repeating the identity).
+    bare: std::collections::HashMap<String, Option<Placement>>,
 }
 
 /// The matrix a transform record carries: a few bytes after its class.
@@ -436,6 +438,18 @@ fn nested_after(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Opt
     })
 }
 
+/// For a reference at the origin: the first record of class [`CLASS_TRANSFORM_ALSO`] within
+/// [`REPEAT_REACH`] after `after` whose first matrix is not the identity holds the moved
+/// context component's placement itself (the Buck case: no repeat of the reference's matrix
+/// comes first).
+fn moved_after_bare(b: &[u8], repeats: &[usize], after: usize) -> Option<Placement> {
+    let k = repeats.partition_point(|a| *a < after);
+    repeats.iter().skip(k).take_while(|a| **a < after + REPEAT_REACH).take(8).find_map(|a| {
+        let m = (*a + 40..*a + 110).find_map(|p| rigid_at(b, p))?;
+        (!same_placement(&m, &Placement::IDENTITY)).then_some(m)
+    })
+}
+
 fn transforms(b: &[u8]) -> Transforms {
     let repeats = class_records(b, CLASS_TRANSFORM_ALSO);
     let mut by_number: std::collections::HashMap<u64, Vec<Placement>> = std::collections::HashMap::new();
@@ -450,7 +464,7 @@ fn transforms(b: &[u8]) -> Transforms {
     }
     let mut by_id: std::collections::HashMap<String, Vec<Vec<Placement>>> = std::collections::HashMap::new();
     let mut nested: std::collections::HashMap<String, Vec<Vec<Option<Placement>>>> = std::collections::HashMap::new();
-    let mut bare = std::collections::HashSet::new();
+    let mut bare: std::collections::HashMap<String, Option<Placement>> = std::collections::HashMap::new();
     for at in class_records(b, CLASS_TRANSFORM) {
         // (a) The owner's id ends shortly before the record, the matrix is in it.
         if let Some((mp, m)) = matrix_in(b, at) {
@@ -476,7 +490,13 @@ fn transforms(b: &[u8]) -> Transforms {
         let Some((_, end, id, _)) = uuid_strings(b, at + 44, at + 44 + 80, 1).into_iter().next() else { continue };
         let first = (end..=end + 32).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
         let Some((mut pos, m)) = first else {
-            bare.insert(id);
+            // At the origin; the board inside may still have been moved (the Buck case).
+            let over =
+                nested_after(b, &repeats, end, &Placement::IDENTITY).or_else(|| moved_after_bare(b, &repeats, end));
+            let slot = bare.entry(id).or_insert(None);
+            if slot.is_none() {
+                *slot = over;
+            }
             continue;
         };
         let mut over = vec![nested_after(b, &repeats, pos + 128, &m)];
@@ -671,11 +691,11 @@ pub fn read_design_cancellable(bulk: &[u8], cancel: &AtomicBool) -> Option<Desig
         }
     }
     // A reference named without a matrix sits at the origin.
-    let mut bare: Vec<&String> =
-        tf.bare.iter().filter(|k| !tf.by_id.contains_key(*k) && !by_own.contains_key(k.as_str())).collect();
-    bare.sort();
-    for key in bare.into_iter().take(MAX_RECORDS) {
-        out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![None] });
+    let mut bare: Vec<(&String, &Option<Placement>)> =
+        tf.bare.iter().filter(|(k, _)| !tf.by_id.contains_key(*k) && !by_own.contains_key(k.as_str())).collect();
+    bare.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, over) in bare.into_iter().take(MAX_RECORDS) {
+        out.xrefs.push(Xref { role: key.clone(), instances: vec![Placement::IDENTITY], nested: vec![*over] });
     }
     Some(out)
 }
@@ -952,6 +972,25 @@ mod tests {
         let x = d.xrefs.iter().find(|x| x.role == id(7)).unwrap();
         assert!(near(x.instances[0].t, [0.0, 0.0, 15.0]));
         assert!(near(x.nested[0].unwrap().t, [-12.5, 0.0, 3.2]), "{:?}", x.nested);
+    }
+
+    #[test]
+    fn a_reference_at_the_origin_with_a_moved_board_reports_the_board() {
+        // The Buck case: the reference names its role without a matrix; the next moved-board
+        // record holds the board's placement itself.
+        let mut b = Vec::new();
+        b.extend(class(CLASS_TRANSFORM));
+        b.extend([0u8; 6]);
+        b.extend(uuid16(9, false));
+        b.extend([5u8; 120]);
+        b.extend(class(CLASS_TRANSFORM_ALSO));
+        b.extend([0u8; 48]);
+        b.extend(matrix([-1.4605, -0.9525, 0.42], false));
+        b.extend([5u8; 100]);
+        let d = read_design(&b);
+        let x = d.xrefs.iter().find(|x| x.role == id(9)).unwrap();
+        assert!(near(x.instances[0].t, [0.0; 3]));
+        assert!(near(x.nested[0].unwrap().t, [-14.605, -9.525, 4.2]), "{:?}", x.nested);
     }
 
     #[test]
