@@ -3,7 +3,7 @@
 //! folder: version, platform, the panic message and where it happened, and a backtrace of
 //! function names. Nothing is ever sent: the app says a report exists, shows it word for
 //! word, and the user may attach it to an issue or delete it. The home folder is written as
-//! `~` so the report does not carry the user's name.
+//! `~` and the user name as `<user>` so the report does not carry them.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,16 @@ pub fn dir(data_dir: &Path) -> PathBuf {
 #[must_use]
 pub fn redact(text: &str) -> String {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default();
-    if home.len() > 1 { text.replace(&home, "~") } else { text.to_string() }
+    let mut out = if home.len() > 1 { text.replace(&home, "~") } else { text.to_string() };
+    // The user name elsewhere too (other users' folders, temp paths; security review S13).
+    for var in ["USER", "USERNAME", "LOGNAME"] {
+        if let Ok(name) = std::env::var(var)
+            && name.len() >= 3
+        {
+            out = out.replace(&name, "<user>");
+        }
+    }
+    out
 }
 
 /// The report for a panic with `message` at `location`.

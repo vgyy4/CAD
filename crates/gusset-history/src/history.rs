@@ -554,7 +554,7 @@ impl History {
         (self.limits.max_record_bytes / 16).min(64 << 10)
     }
 
-    fn fits(&self, need: &Need, use_reserve: bool) -> Result<(), String> {
+    pub(crate) fn fits(&self, need: &Need, use_reserve: bool) -> Result<(), String> {
         let l = &self.limits;
         let reserve = if use_reserve { 0 } else { self.event_reserve() };
         if self.sizes.nodes + need.nodes > l.max_record_bytes || self.nodes.len() + need.new_nodes > l.max_nodes {

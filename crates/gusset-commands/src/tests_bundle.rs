@@ -102,6 +102,16 @@ fn two_people_sync_through_a_shared_folder() {
     let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
     assert_eq!(r["written_user_text"], json!([]), "{r}");
     assert_eq!(r["imported"][0]["iterations_added"], 0, "{r}");
+    // A planted link to an endless file in place of our own is replaced, not read (S5).
+    #[cfg(unix)]
+    {
+        let own = d.join("alice__Main.gusb");
+        std::fs::remove_file(&own).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &own).unwrap();
+        let r = run(&mut alice, &u, "history.sync", json!({"folder": folder, "who": "alice"}));
+        assert_eq!(r["written_user_text"], json!(["alice__Main.gusb"]), "{r}");
+        assert!(std::fs::symlink_metadata(&own).unwrap().file_type().is_file());
+    }
     // Agents and odd names are refused; a junk bundle is reported, not fatal.
     let a = CmdCtx::agent("peer", 5);
     assert_eq!(

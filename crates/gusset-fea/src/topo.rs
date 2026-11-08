@@ -121,6 +121,11 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
         return bad("min_member is more than 16 voxels: use a larger voxel");
     }
     let reach = libm::floor(radius) as i64;
+    // The neighbour lists cost (2 reach + 1)^3 entries a voxel at most (security review S9).
+    let per = (2 * reach + 1).pow(3) as u64;
+    if per.saturating_mul(conn.len() as u64) > 60_000_000 {
+        return bad("min_member is too large for this many voxels: use a larger voxel or a smaller min_member");
+    }
     let mut neigh: Vec<Vec<(usize, f64)>> = Vec::with_capacity(ne);
     for c in elems {
         let mut list = Vec::new();

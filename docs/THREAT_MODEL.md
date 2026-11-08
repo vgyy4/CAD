@@ -124,6 +124,22 @@ files are created with create-new semantics and random names in our own director
 next to the target. Secrets live only in the OS credential store. Logs and opt-in crash
 reports scrub usernames, home paths and secrets.
 
+### In-app parsers of untrusted files (2026-11-08, security review S14)
+Not everything goes through the import worker. These parse untrusted bytes inside the app,
+in Rust, bounded and fuzzed where noted; the B-rep they yield still goes through the worker
+(or is canonicalized by it) before OCCT reads it:
+- `.sldprt` containers (`gusset-sldprt`: OLE2/CFB and the chunk container, one byte budget
+  per file, fuzz target `sldprt_read`) and the Parasolid XT they hold (`gusset-xt`).
+- ACIS SAT/SAB and Fusion `.f3d`/`.f3z` archives (`gusset-sat`, `fusion::read_design`, the
+  archives' JSON), zip entries including Zstandard ones (the C `zstd` decoder, output capped
+  at the declared size).
+- History bundles `.gusb` (`gusset-history::bundle`: checksum, sizes, counts, every object
+  re-hashed; refused bundles change nothing) and the shared folder of `history.sync`, which
+  other people can write to: files are opened without following links, never as pipes or
+  devices, within a byte budget per sync; bundle authors and branch names are not
+  authenticated (a collaborator can name a branch as someone else; merges stay explicit).
+- The spacenavd socket (root-owned, local).
+
 ## 5. Out of scope
 - Malware running as the same user with full privileges (it can read the token file).
   We only avoid making it worse.

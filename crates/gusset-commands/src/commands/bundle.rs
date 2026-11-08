@@ -102,8 +102,9 @@ pub struct HistorySync {
     pub who: String,
 }
 
-/// Most bundles one sync reads.
+/// Most bundles one sync reads, and their bytes together.
 const MAX_SYNC_FILES: usize = 256;
+const MAX_SYNC_BYTES: u64 = 256 << 20;
 
 impl Command for HistorySync {
     const ID: &'static str = "history.sync";
@@ -145,7 +146,13 @@ impl Command for HistorySync {
                 name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
             let file = format!("{prefix}{safe}.gusb");
             let path = dir.join(&file);
-            if std::fs::read(&path).is_ok_and(|old| old == bytes) {
+            // Unchanged files are left alone. The folder is shared: read our old file only
+            // if it is a regular file of a bounded size, never through a link or a pipe
+            // (security review S5); anything else is simply replaced (write + rename).
+            let same = crate::import::open_regular(&path, &file, bytes.len() as u64)
+                .and_then(|f| crate::import::read_capped(f, bytes.len() as u64, &s.rebuild_cancel_flag()))
+                .is_ok_and(|old| old == bytes);
+            if same {
                 continue;
             }
             crate::paths::write_file(&path, &file, &bytes)?;
@@ -164,7 +171,16 @@ impl Command for HistorySync {
         files.truncate(MAX_SYNC_FILES);
         let limits = BundleLimits::default();
         let (mut imported, mut failed) = (Vec::new(), Vec::new());
+        // All bundles of one sync together (security review S7).
+        let mut budget = MAX_SYNC_BYTES;
         for path in files {
+            let size = std::fs::symlink_metadata(&path).map_or(0, |m| m.len());
+            if size > budget {
+                failed.push(json!({"file_user_text": path.file_name().and_then(|n| n.to_str()).unwrap_or("bundle"),
+                    "error": "skipped: this sync already read its limit of bundles; sync again later"}));
+                continue;
+            }
+            budget -= size;
             let shown = path.file_name().and_then(|n| n.to_str()).unwrap_or("bundle").to_string();
             let read = crate::import::open_regular(&path, &shown, limits.max_bundle_bytes as u64)
                 .and_then(|f| crate::import::read_capped(f, limits.max_bundle_bytes as u64, &s.rebuild_cancel_flag()));

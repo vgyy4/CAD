@@ -101,12 +101,11 @@ fn partition_config(name: &str) -> Option<u32> {
 const PARTITION_TAG: &[u8] = b": TRANSMIT FILE (partition)";
 
 /// Splits a partition stream into its blocks and returns the first Parasolid partition.
-fn partition_block(stream: &[u8], limits: &Limits) -> Result<Vec<u8>, SldprtError> {
+fn partition_block(stream: &[u8], limits: &Limits, spent: &mut usize) -> Result<Vec<u8>, SldprtError> {
     let u32_at = |off: usize| -> Option<usize> {
         usize::try_from(u32::from_le_bytes(stream.get(off..off.checked_add(4)?)?.try_into().ok()?)).ok()
     };
     let mut at = 0usize;
-    let mut total = 0usize;
     while let Some(len) = u32_at(at) {
         // Block: length of the rest, tag (16), inflated size, deflated size, zlib data,
         // padding.
@@ -115,8 +114,9 @@ fn partition_block(stream: &[u8], limits: &Limits) -> Result<Vec<u8>, SldprtErro
         if len < 24usize.saturating_add(deflated) || end > stream.len() || plain > limits.max_stream_bytes {
             break;
         }
-        total = total.saturating_add(plain);
-        if total > limits.max_total_bytes || plain / limits.max_ratio.max(1) > deflated {
+        // One budget for the whole file, shared with the streams read (security review S1).
+        *spent = spent.saturating_add(plain);
+        if *spent > limits.max_total_bytes || plain / limits.max_ratio.max(1) > deflated {
             return Err(SldprtError::TooLarge("a partition block inflates beyond the limit".into()));
         }
         let data = stream.get(at + 28..at + 28 + deflated).unwrap_or_default();
@@ -139,37 +139,65 @@ fn partition_block(stream: &[u8], limits: &Limits) -> Result<Vec<u8>, SldprtErro
 /// a partition.
 pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtError> {
     let container = detect(bytes).ok_or(SldprtError::NotSldprt)?;
-    let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
-    match container {
+    let mut spent = 0usize;
+    let mut warnings = Vec::new();
+    // The configurations, lowest first, one entry each; streams are read only until the
+    // first partition is found (security review S1: entries sharing their data must not
+    // multiply what is read and kept).
+    let found = match container {
         Container::Ole2 => {
             let f = cfb::Cfb::open(bytes, limits)?;
-            for (i, e) in f.streams.iter().enumerate() {
-                if let Some(n) = partition_config(&e.name) {
-                    parts.push((n, f.read(i, limits)?));
+            let mut list: Vec<(u32, usize)> =
+                f.streams.iter().enumerate().filter_map(|(i, e)| partition_config(&e.name).map(|n| (n, i))).collect();
+            list.sort_unstable();
+            list.dedup_by_key(|(n, _)| *n);
+            let mut found = None;
+            for (n, i) in &list {
+                if found.is_some() {
+                    warnings.push(format!("configuration Config-{n} was not imported (only the first is)"));
+                    continue;
+                }
+                let stream = f.read(*i, limits)?;
+                spent = spent.saturating_add(stream.len());
+                if spent > limits.max_total_bytes {
+                    return Err(SldprtError::TooLarge("the file's streams exceed the size limit".into()));
+                }
+                match partition_block(&stream, limits, &mut spent) {
+                    Ok(xt) => found = Some((*n, xt)),
+                    Err(e @ SldprtError::TooLarge(_)) => return Err(e),
+                    Err(e) if list.len() == 1 => return Err(e),
+                    Err(e) => warnings.push(format!("Config-{n}: {e}")),
                 }
             }
+            found
         }
         Container::Chunks => {
-            for s in chunks::streams(bytes, limits, |n| partition_config(n).is_some())? {
-                if let Some(n) = partition_config(&s.name) {
+            let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
+            for st in chunks::streams(bytes, limits, |n| partition_config(n).is_some())? {
+                if let Some(n) = partition_config(&st.name) {
                     // A later valid record of the same stream replaces an earlier one.
                     parts.retain(|(m, _)| *m != n);
-                    parts.push((n, s.data));
+                    parts.push((n, st.data));
                 }
             }
+            parts.sort_by_key(|(n, _)| *n);
+            let single = parts.len() == 1;
+            let mut found = None;
+            for (n, stream) in &parts {
+                if found.is_some() {
+                    warnings.push(format!("configuration Config-{n} was not imported (only the first is)"));
+                    continue;
+                }
+                match partition_block(stream, limits, &mut spent) {
+                    Ok(xt) => found = Some((*n, xt)),
+                    Err(e @ SldprtError::TooLarge(_)) => return Err(e),
+                    Err(e) if single => return Err(e),
+                    Err(e) => warnings.push(format!("Config-{n}: {e}")),
+                }
+            }
+            found
         }
-    }
-    parts.sort_by_key(|(n, _)| *n);
-    let mut warnings = Vec::new();
-    let mut found = None;
-    for (n, stream) in &parts {
-        match partition_block(stream, limits) {
-            Ok(xt) if found.is_none() => found = Some((*n, xt)),
-            Ok(_) => warnings.push(format!("configuration Config-{n} was not imported (only the first is)")),
-            Err(e) if found.is_none() && parts.len() == 1 => return Err(e),
-            Err(e) => warnings.push(format!("Config-{n}: {e}")),
-        }
-    }
+    };
     let (n, xt) = found.ok_or_else(|| {
         SldprtError::NoGeometry(
             "no configuration has a Parasolid partition (an assembly or a part without a solid)".into(),

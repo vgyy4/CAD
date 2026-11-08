@@ -312,3 +312,20 @@ fn unknown_files_are_not_sldprt() {
     assert_eq!(extract_xt(b"hello world, not a part", &Limits::default()), Err(SldprtError::NotSldprt));
     assert_eq!(detect(&[]), None);
 }
+
+#[test]
+fn many_configurations_share_one_budget() {
+    // Security review S1: streams are read lazily against one budget for the whole file.
+    let junk = vec![0u8; 1024];
+    let names: Vec<String> = (0..40).map(|i| format!("Config-{i}-Partition")).collect();
+    let streams: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), junk.as_slice())).collect();
+    let file = ole(&streams);
+    let limits = Limits { max_total_bytes: 16 << 10, ..Limits::default() };
+    assert!(matches!(extract_xt(&file, &limits), Err(SldprtError::TooLarge(_))));
+    // A partition in the first configuration is found without reading the others.
+    let good = partition_stream(0);
+    let mut streams2: Vec<(&str, &[u8])> = vec![("Config-0-Partition", good.as_slice())];
+    streams2.extend(streams.iter().skip(1).copied());
+    let r = extract_xt(&ole(&streams2), &limits).unwrap();
+    assert_eq!(r.config, "Config-0");
+}

@@ -57,3 +57,21 @@ reproduced the finding. Nothing was fixed in this review.
 - 3D mouse: fixed 32-byte packets, saturating sums, and `Camera::zoom` rejects non-finite factors.
 - Path tracer: size, samples, bounces and the path count are validated, and the thread count is capped at 64.
 - `sim.optimize`: iterations at most 200, the keep share and loads are validated, at most 200 000 elements, a solver work budget, and smoothing at most 50 passes.
+
+## Fix status (2026-11-08)
+
+| # | Status |
+|---|---|
+| S1 | Fixed: configurations are listed without reading, deduplicated, read lowest first until a partition is found, against one byte budget for the whole file (streams and inflated blocks). Test: 40 configurations exceed a 16 KiB budget; the first found without reading the rest. |
+| S2–S4 | In progress (Fusion import). |
+| S5 | Fixed: `history.sync` reads its own old file only through `open_regular` + `read_capped` (no links, pipes or devices, bounded); anything else is replaced by write + rename. Test: a planted link to /dev/zero is replaced. |
+| S6 | Fixed: each snapshot is checked once, however many iterations share it. |
+| S7 | Fixed: bundle defaults 128 MiB file / 256 MiB unpacked; one sync reads at most 256 MiB of bundles (the rest are skipped and reported). |
+| S8 | Fixed: `sim.optimize` asks agents for approval before overwriting, as every export does. |
+| S9 | Fixed: the filter refuses more than 60 M neighbour entries (voxels × (2r+1)³). |
+| S10 | Accepted: photo renders are bounded by size, samples and bounces; cancelling them is left for the render job queue. |
+| S11 | Accepted and documented (THREAT_MODEL.md): sync names are not authenticated; merging stays explicit. |
+| S12 | Fixed: an import that does not fit is refused without compacting history. |
+| S13 | Fixed: crash reports replace the user name (USER/USERNAME/LOGNAME) as well as the home folder. |
+| S14 | Fixed: THREAT_MODEL.md lists the in-app parsers (sldprt, XT, SAT/Fusion, zstd, bundles, the shared folder). Fuzz targets for `read_design` and bundles remain to add. |
+| S15 | Accepted: the socket is root-owned and local. |

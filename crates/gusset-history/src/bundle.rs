@@ -38,8 +38,9 @@ pub struct BundleLimits {
 impl Default for BundleLimits {
     fn default() -> Self {
         BundleLimits {
-            max_bundle_bytes: 512 << 20,
-            max_decompressed_bytes: 1 << 30,
+            // A bundle is a branch of one part, not a project archive (security review S7).
+            max_bundle_bytes: 128 << 20,
+            max_decompressed_bytes: 256 << 20,
             max_nodes: 100_000,
             max_objects: 1_000_000,
             max_object_bytes: 256 << 20,
@@ -287,7 +288,13 @@ impl History {
             return refuse("unexpected data after the last object");
         }
         let mut reach = BTreeSet::new();
+        // Each snapshot is checked once, however many iterations share it (security review
+        // S6: a bundle of many iterations on one large snapshot parsed it each time).
+        let mut checked = BTreeSet::new();
         for n in &bnodes {
+            if !checked.insert(n.snapshot) {
+                continue;
+            }
             if !staged.snapshot_closure(n.snapshot, &mut reach) || staged.document(n.snapshot).is_err() {
                 return refuse("an iteration's document is missing or unreadable");
             }
@@ -344,7 +351,11 @@ impl History {
             new_branches: 1,
             events: 256,
         };
-        self.room(ctx.time, need, false)?;
+        // Refused without compacting: nothing changes when a bundle does not fit (security
+        // review S12); the user may compact history and import again.
+        self.fits(&need, false).map_err(|m| {
+            HistoryError::LimitReached(format!("{m}; compact history or delete branches, then import again"))
+        })?;
         let mut known: HashMap<(Hash, Option<NodeId>), NodeId> = HashMap::new();
         for n in self.nodes.values() {
             known.entry((n.snapshot, n.parent)).or_insert(n.id);

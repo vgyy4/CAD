@@ -677,9 +677,15 @@ impl Command for OptimizeQuery {
         let target = match &self.path {
             Some(p) => {
                 let path = crate::paths::export_target(s.project_dir.as_deref(), p, &ctx.actor, &["stl"])?;
-                if path.exists() && !self.overwrite {
-                    return Err(CommandError::new("confirmation_required", format!("'{p}' already exists"))
-                        .hint("pass overwrite: true to replace it"));
+                if path.exists() {
+                    if !self.overwrite {
+                        return Err(CommandError::new("confirmation_required", format!("'{p}' already exists"))
+                            .hint("pass overwrite: true to replace it"));
+                    }
+                    // As every other export (security review S8).
+                    if ctx.is_agent() && s.config.approvals_required && !ctx.approved {
+                        return Err(CommandError::approval("overwriting an exported file"));
+                    }
                 }
                 Some((path, p.clone()))
             }
