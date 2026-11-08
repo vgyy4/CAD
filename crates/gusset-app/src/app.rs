@@ -275,6 +275,8 @@ pub struct App {
     pub cam_tab: bool,
     /// The Render tab is chosen.
     pub render_tab: bool,
+    /// The Assemble tab is chosen.
+    pub assemble_tab: bool,
     /// The Render tab's photo preview of the viewport.
     pub photo: crate::photo_preview::PhotoPreview,
     /// The 3D view: camera, render scene, picking and the GPU/CPU renderer.
@@ -427,6 +429,7 @@ impl App {
             sheet_tab: false,
             cam_tab: false,
             render_tab: false,
+            assemble_tab: false,
             photo: crate::photo_preview::PhotoPreview::default(),
             theme_applied: None,
             viewport: Viewport::default(),
@@ -2378,6 +2381,7 @@ impl App {
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
                 render: self.render_tab,
+                assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
             },
         );
@@ -2405,6 +2409,7 @@ impl App {
                 sheet: self.sheet_tab,
                 cam: self.cam_tab,
                 render: self.render_tab,
+                assemble: self.assemble_tab,
                 photo_preview: self.photo.on,
             },
         );
@@ -2430,18 +2435,21 @@ impl App {
                 self.sheet_tab = false;
                 self.cam_tab = false;
                 self.render_tab = false;
+                self.assemble_tab = false;
                 self.photo.set(false);
                 self.finish_sketch();
             }
             Action::SurfaceTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (true, false, false, false);
+                self.assemble_tab = false;
                 self.photo.set(false);
                 self.finish_sketch();
             }
             Action::SheetTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, true, false, false);
+                self.assemble_tab = false;
                 self.photo.set(false);
                 self.finish_sketch();
             }
@@ -2449,11 +2457,20 @@ impl App {
             Action::RenderTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, true);
+                self.assemble_tab = false;
+                self.finish_sketch();
+            }
+            Action::AssembleTab => {
+                self.active_drawing = None;
+                (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, false, false);
+                self.assemble_tab = true;
+                self.photo.set(false);
                 self.finish_sketch();
             }
             Action::CamTab => {
                 self.active_drawing = None;
                 (self.surface_tab, self.sheet_tab, self.cam_tab, self.render_tab) = (false, false, true, false);
+                self.assemble_tab = false;
                 self.photo.set(false);
                 self.finish_sketch();
             }
@@ -2536,6 +2553,7 @@ impl App {
     pub fn edit_sketch(&mut self, name: &str) {
         // Sketch tools replace the Render tab; the photo preview would hide the sketch (R1).
         self.render_tab = false;
+        self.assemble_tab = false;
         self.photo.set(false);
         // An earlier sketch is edited with the model rolled back to just after it, and the
         // rest ghosted (DESIGN.md §1.5); Finish sketch puts the marker back.

@@ -822,9 +822,18 @@ fn the_workspace_switcher_names_the_workspace_and_switches() {
     assert!(h.state().cam_tab && !h.state().render_tab);
     h.get_by_label("Workspace: MANUFACTURE").click();
     h.run();
+    h.get_by_label("Assemble").click();
+    h.run();
+    assert!(h.state().assemble_tab && !h.state().cam_tab);
+    // The Assemble tab gathers the assembly tools.
+    for tool in ["Insert component", "Joint", "Joints"] {
+        assert!(h.query_all_by_label(tool).next().is_some(), "{tool}");
+    }
+    h.get_by_label("Workspace: ASSEMBLE").click();
+    h.run();
     h.get_by_label("Design").click();
     h.run();
-    assert!(!h.state().cam_tab && !h.state().render_tab);
+    assert!(!h.state().cam_tab && !h.state().render_tab && !h.state().assemble_tab);
 }
 
 #[test]

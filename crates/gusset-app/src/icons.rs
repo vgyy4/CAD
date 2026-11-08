@@ -347,7 +347,11 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "feature.text" => Tool::Text,
         "feature.combine" => Tool::Combine,
         "feature.joint" => Tool::Joint,
-        "assembly.insert_component" | "assembly.update_component" => Tool::Component,
+        "assembly.insert_component"
+        | "assembly.update_component"
+        | "assembly.configure_component"
+        | "query.components" => Tool::Component,
+        "study.motion" => Tool::Joint,
         "feature.move_body" => Tool::MoveBody,
         "feature.pattern_linear" => Tool::PatternLinear,
         "feature.pattern_circular" => Tool::PatternCircular,

@@ -28,6 +28,7 @@ pub enum Action {
     CamTab,
     /// The Render tab: appearances and path-traced pictures.
     RenderTab,
+    AssembleTab,
     /// The Render tab's "Photo preview": the viewport path-traced in place (on/off).
     PhotoPreview(bool),
     /// The Sketch tab: edits the latest sketch (or starts a new one).
@@ -140,6 +141,30 @@ const CAM: &[Group] = &[
     Group { key: "ribbon.create", large: 1, tools: &[d("sketch.create", "Sketch")] },
     Group { key: "ribbon.inspect", large: 1, tools: &[d("cam.toolpath", "Toolpath")] },
     Group { key: "ribbon.export", large: 1, tools: &[d("cam.export_gcode", "G-code")] },
+];
+
+const ASSEMBLE: &[Group] = &[
+    Group {
+        key: "ribbon.assemble",
+        large: 3,
+        tools: &[
+            d("assembly.insert_component", "Component"),
+            d("feature.joint", "Joint"),
+            d("assembly.update_component", "Update"),
+            d("assembly.configure_component", "Configure"),
+        ],
+    },
+    Group {
+        key: "ribbon.inspect",
+        large: 3,
+        tools: &[
+            d("query.joints", "Joints"),
+            d("query.interference", "Interference"),
+            d("study.motion", "Motion"),
+            d("query.bom", "Bill of materials"),
+            d("query.components", "Components"),
+        ],
+    },
 ];
 
 const RENDER: &[Group] = &[
@@ -289,6 +314,8 @@ pub struct Ribbon<'a> {
     pub cam: bool,
     /// The Render tab is chosen.
     pub render: bool,
+    /// The Assemble tab is chosen.
+    pub assemble: bool,
     /// The viewport shows the path-traced preview.
     pub photo_preview: bool,
 }
@@ -386,6 +413,8 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
             "workspace.manufacture"
         } else if r.render {
             "workspace.render"
+        } else if r.assemble {
+            "workspace.assemble"
         } else {
             "workspace.design"
         };
@@ -395,12 +424,13 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         for (label, active, act) in [
             (
                 tr("tab.solid"),
-                !sketching && !drawing && !r.surface && !r.sheet && !r.cam && !r.render,
+                !sketching && !drawing && !r.surface && !r.sheet && !r.cam && !r.render && !r.assemble,
                 Action::SolidTab,
             ),
             (tr("tab.surface"), !sketching && !drawing && r.surface, Action::SurfaceTab),
             (tr("tab.sheet"), !sketching && !drawing && r.sheet, Action::SheetTab),
             (tr("tab.cam"), !sketching && !drawing && r.cam, Action::CamTab),
+            (tr("tab.assemble"), !sketching && !drawing && r.assemble, Action::AssembleTab),
             (tr("tab.render"), !sketching && !drawing && r.render, Action::RenderTab),
             (tr("tab.sketch"), sketching, Action::SketchTab),
             (tr("tab.drawing"), drawing, Action::DrawingTab),
@@ -446,6 +476,7 @@ fn workspace_switcher(ui: &mut Ui, pal: &Palette, current: &str) -> Option<Actio
         ui.set_min_width(180.0);
         for (key, act) in [
             ("workspace.design", Action::SolidTab),
+            ("workspace.assemble", Action::AssembleTab),
             ("workspace.render", Action::RenderTab),
             ("workspace.manufacture", Action::CamTab),
             ("workspace.drawing", Action::DrawingTab),
@@ -518,6 +549,8 @@ pub fn show(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
         CAM
     } else if r.render {
         RENDER
+    } else if r.assemble {
+        ASSEMBLE
     } else {
         SOLID
     };
