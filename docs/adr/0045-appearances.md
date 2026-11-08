@@ -18,7 +18,8 @@ anywhere in the document.
   refraction, tinted once per pass; sun shadows pass through it tinted, not bent),
   `rubber` (diffuse only). The viewport draws the colour and shades the finish cheaply
   (metal: tinted sharp highlight and a sky/ground reflection; glass: lightened with a strong
-  highlight, not transparent; rubber: no highlight); the path tracer does it properly.
+  highlight and drawn see-through after the opaque model, alpha 0.4, without writing depth;
+  rubber: no highlight); the path tracer does it properly.
 * Specular paths (camera, metal, glass, coat) see the sun's disc; diffuse paths take the
   sun by next-event estimation only, so nothing is counted twice. Each path adds at most
   12 to its pixel, which removes fireflies from the small disc.

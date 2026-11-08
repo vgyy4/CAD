@@ -18,7 +18,8 @@ struct Globals {
     cap: vec4<f32>, // rgb: cut face tint (linear)
 };
 
-const CAP_MIX: f32 = 0.6; // cut face tint amount (software.rs CAP_MIX)
+const CAP_MIX: f32 = 0.6;
+const GLASS_ALPHA: f32 = 0.4; // theme.rs GLASS_ALPHA // cut face tint amount (software.rs CAP_MIX)
 
 fn sectioned() -> bool {
     return dot(g.clip.xyz, g.clip.xyz) > 0.5;
@@ -147,7 +148,12 @@ fn fs_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     if (!front) {
         n = -n;
     }
-    return encode(shade(d.color.rgb, n, view_dir(in.view_pos), finish_code()));
+    var c = encode(shade(d.color.rgb, n, view_dir(in.view_pos), finish_code()));
+    // Glass is drawn blended (gpu.rs `mesh_glass`); software.rs uses the same alpha.
+    if (finish_code() == 2u) {
+        c.a = GLASS_ALPHA;
+    }
+    return c;
 }
 
 fn view_dir(view_pos: vec3<f32>) -> vec3<f32> {

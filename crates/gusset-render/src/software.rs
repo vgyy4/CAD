@@ -10,7 +10,7 @@ use crate::image::RgbaImage;
 use crate::math::{self, Mat4, zip_with};
 use crate::mesh::unpack_normal;
 use crate::scene::Scene;
-use crate::theme::linear_to_srgb;
+use crate::theme::{GLASS_ALPHA, linear_to_srgb};
 
 /// Largest image side the CPU renderer accepts.
 pub const SOFTWARE_MAX_SIDE: u32 = 8192;
@@ -53,6 +53,16 @@ impl Target {
     }
 
     /// Depth-tested write; `less_equal` for edges.
+    /// Glass: mixed over what is there when in front of it; depth is not written.
+    fn blend(&mut self, i: usize, z: f32, c: [f32; 3]) {
+        if let (Some(d), Some(px)) = (self.depth.get(i), self.color.get_mut(i))
+            && (0.0..=1.0).contains(&z)
+            && z < *d
+        {
+            *px = zip_with(*px, c, |a, b| a + (b - a) * GLASS_ALPHA);
+        }
+    }
+
     fn plot(&mut self, i: usize, z: f32, c: [f32; 3], less_equal: bool) {
         if let (Some(d), Some(px)) = (self.depth.get_mut(i), self.color.get_mut(i))
             && (0.0..=1.0).contains(&z)
@@ -100,7 +110,9 @@ impl SoftwareRenderer {
             t.color.extend(std::iter::repeat_n(c, w));
         }
         let proj = &plan.proj;
-        for d in &plan.draws {
+        // Glass after everything opaque (as gpu.rs draws it).
+        let order = plan.draws.iter().filter(|d| d.finish != 2).chain(plan.draws.iter().filter(|d| d.finish == 2));
+        for d in order {
             let Some(m) = scene.mesh(d.id) else { continue };
             let data = m.data();
             let verts: Vec<ClipVert> = data
@@ -298,7 +310,12 @@ fn raster_triangle(t: &mut Target, v: [&ClipVert; 3], base: [f32; 3], plan: &Fra
                 let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
                 p.map(|c| -c / l)
             };
-            t.plot(i, z, light.shade_finish(base, n, vdir, finish), false);
+            let c = light.shade_finish(base, n, vdir, finish);
+            if finish == 2 && cap.is_none() {
+                t.blend(i, z, c);
+            } else {
+                t.plot(i, z, c, false);
+            }
         }
     }
 }

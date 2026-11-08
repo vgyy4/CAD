@@ -128,6 +128,9 @@ pub struct Lighting {
     pub rim: f32,
 }
 
+/// How opaque glass is in the viewport (shader.wgsl `GLASS_ALPHA`).
+pub(crate) const GLASS_ALPHA: f32 = 0.4;
+
 impl Lighting {
     /// The default rig.
     pub const DEFAULT: Lighting = Lighting {

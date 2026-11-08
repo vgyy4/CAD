@@ -81,11 +81,16 @@ impl Quality {
     }
 }
 
+/// The glass finish code (frame.rs `MeshDraw::finish`).
+const GLASS: u32 = 2;
+
 struct Pipelines {
     background: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
     /// The cut face of closed bodies under a section (writes the cut plane's depth).
     mesh_cap: wgpu::RenderPipeline,
+    /// Glass (ADR 0045): blended over what is behind, without writing depth.
+    mesh_glass: wgpu::RenderPipeline,
     edge_line: wgpu::RenderPipeline,
     edge_quad: wgpu::RenderPipeline,
 }
@@ -376,7 +381,8 @@ impl Renderer {
                     buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
                     topology: wgpu::PrimitiveTopology,
                     depth: (bool, wgpu::CompareFunction),
-                    bias: wgpu::DepthBiasState| {
+                    bias: wgpu::DepthBiasState,
+                    blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
@@ -399,11 +405,7 @@ impl Renderer {
                     module,
                     entry_point: Some(fs),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -429,6 +431,7 @@ impl Renderer {
                 wgpu::PrimitiveTopology::TriangleList,
                 (false, wgpu::CompareFunction::Always),
                 no_bias,
+                None,
             ),
             mesh: make(
                 "gusset-render mesh",
@@ -443,6 +446,7 @@ impl Renderer {
                 (true, wgpu::CompareFunction::Less),
                 // Push faces back a little at grazing angles so edges stay visible.
                 wgpu::DepthBiasState { constant: 0, slope_scale: 1.0, clamp: 0.0 },
+                None,
             ),
             mesh_cap: make(
                 "gusset-render cut faces",
@@ -456,6 +460,21 @@ impl Renderer {
                 wgpu::PrimitiveTopology::TriangleList,
                 (true, wgpu::CompareFunction::Less),
                 no_bias,
+                None,
+            ),
+            mesh_glass: make(
+                "gusset-render glass",
+                "vs_mesh",
+                "fs_mesh",
+                &[Some(wgpu::VertexBufferLayout {
+                    array_stride: VERTEX_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &mesh_attrs,
+                })],
+                wgpu::PrimitiveTopology::TriangleList,
+                (false, wgpu::CompareFunction::Less),
+                no_bias,
+                Some(wgpu::BlendState::ALPHA_BLENDING),
             ),
             edge_line: make(
                 "gusset-render edge lines",
@@ -469,6 +488,7 @@ impl Renderer {
                 wgpu::PrimitiveTopology::LineList,
                 (true, wgpu::CompareFunction::LessEqual),
                 no_bias,
+                None,
             ),
             edge_quad: make(
                 "gusset-render edge quads",
@@ -482,6 +502,7 @@ impl Renderer {
                 wgpu::PrimitiveTopology::TriangleList,
                 (true, wgpu::CompareFunction::LessEqual),
                 no_bias,
+                None,
             ),
         };
         self.pipelines.push((samples, p));
@@ -689,7 +710,7 @@ impl Renderer {
             stats.draw_calls += 1;
 
             pass.set_pipeline(&pipes.mesh);
-            for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets) {
+            for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish != GLASS) {
                 let Some(g) = self.meshes.get(&d.id) else { continue };
                 stats.meshes += 1;
                 pass.set_vertex_buffer(0, g.vertices.slice(..));
@@ -713,6 +734,20 @@ impl Renderer {
                         pass.draw_indexed(r.start * 3..r.end * 3, 0, 0..1);
                         stats.draw_calls += 1;
                     }
+                }
+            }
+            // Glass last, over the opaque model, without hiding what is behind it.
+            pass.set_pipeline(&pipes.mesh_glass);
+            for (d, (tri_offs, _)) in plan.draws.iter().zip(&offsets).filter(|(d, _)| d.finish == GLASS) {
+                let Some(g) = self.meshes.get(&d.id) else { continue };
+                stats.meshes += 1;
+                pass.set_vertex_buffer(0, g.vertices.slice(..));
+                pass.set_index_buffer(g.indices.slice(..), wgpu::IndexFormat::Uint32);
+                for ((r, _), off) in d.tri_runs.iter().zip(tri_offs) {
+                    pass.set_bind_group(1, &self.draw_bg, &[*off]);
+                    pass.draw_indexed(r.start * 3..r.end * 3, 0, 0..1);
+                    stats.draw_calls += 1;
+                    stats.triangles += u64::from(r.end - r.start);
                 }
             }
             pass.set_pipeline(if quad_edges { &pipes.edge_quad } else { &pipes.edge_line });

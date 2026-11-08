@@ -191,6 +191,20 @@ fn generate_gallery() {
                 h.state_mut().wait_idle();
             }
         });
+        // Glass in the viewport: the bracket seen through, a block behind it.
+        let mut a = app(theme);
+        bracket(&mut a);
+        a.run("sketch.create", json!({"plane": "XY"})).ok();
+        a.run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 10, "y": 35, "width": 20, "height": 20})).ok();
+        a.run("feature.extrude", json!({"sketch": "Sketch1", "distance": "30 mm", "op": "new"})).ok();
+        a.run("body.appearance", json!({"body": "Body", "color": "#9fd4ff", "finish": "glass"})).ok();
+        a.run("body.appearance", json!({"body": "Extrude1", "color": "#d04020"})).ok();
+        shoot(&dir, &format!("20-glass-{t}"), a, |h| {
+            for _ in 0..4 {
+                h.run_steps(5);
+                h.state_mut().wait_idle();
+            }
+        });
         // The appearance form: colour text with its picker, the finishes offered.
         let mut a = app(theme);
         bracket(&mut a);
