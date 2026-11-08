@@ -1692,6 +1692,40 @@ fn appearances_are_set_kept_renamed_merged_and_cleared() {
 }
 
 #[test]
+fn single_faces_take_their_own_colours() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let faces: Vec<String> = run(&mut s, &u, "query.body", json!({"names": true}))["face_names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["name"].as_str().map(String::from))
+        .collect();
+    let (a, b) = (faces[0].clone(), faces[1].clone());
+    // No appearance yet: the body takes the default colour, the faces theirs.
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [a, b], "color": "#d02020"}));
+    assert_eq!(r["coloured_faces"], 2, "{r}");
+    // One face moves to another colour.
+    run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [b], "color": "#2020d0"}));
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains(&format!("faces: {{\"#d02020\": [{a}], \"#2020d0\": [{b}]}}")), "{text}");
+    // A body colour change keeps them; clearing a face drops only its colour.
+    run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "color": "#808080"}));
+    let r = run(&mut s, &u, "body.appearance", json!({"body": "Extrude1", "faces": [a], "clear": true}));
+    assert_eq!(r["coloured_faces"], 1, "{r}");
+    let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains(&format!("color: \"#808080\", finish: plastic, faces: {{\"#2020d0\": [{b}]}}")), "{text}");
+    for bad in [
+        json!({"body": "Extrude1", "faces": ["Nope/face(9)"], "color": "#000000"}),
+        json!({"body": "Extrude1", "faces": [], "color": "#000000"}),
+        json!({"body": "Extrude1", "faces": [b], "finish": "metal"}),
+    ] {
+        assert!(execute(&mut s, &u, "body.appearance", bad.clone()).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn a_coloured_3mf_import_keeps_its_colours_as_appearances() {
     let mut s = session();
     let u = CmdCtx::user(1);

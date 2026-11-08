@@ -62,6 +62,8 @@ anywhere in the document.
   (`Scene::set_face_color`; a coloured body skips the coarse level-of-detail copy), STEP
   export writes them back as face colours, `body.appearance` keeps them when it changes the
   body's colour or finish, `clear` drops them, and renaming a feature renames them.
+  `body.appearance` with `faces` colours chosen faces of any body, or with `clear` drops
+  their colours; the body keeps its own colour.
   3MF export writes them on the faces' triangles (`p1` over the object's `pindex`, only when
   the body has a colour). Parasolid and SolidWorks face colours (`SDL/TYSA_COLOUR` on faces)
   are written by gusset-xt as AP214 styled items, so they reach the app the same way; the

@@ -22,6 +22,9 @@ pub struct SetAppearance {
     /// Back to the default look.
     #[serde(default)]
     pub clear: bool,
+    /// Only these faces: color colours them, clear drops their colour.
+    #[serde(default)]
+    pub faces: Option<Vec<String>>,
 }
 
 impl Command for SetAppearance {
@@ -62,6 +65,9 @@ impl Command for SetAppearance {
             return Err(CommandError::not_found(format!("no body '{}'", crate::paths::display_name(&self.body)))
                 .hint(format!("bodies: {}", names.join(", "))));
         }
+        if let Some(names) = &self.faces {
+            return set_face_colors(s, ctx, &ev, &self.body, names, color, finish.is_some());
+        }
         let body = self.body.clone();
         edit(s, ctx, &format!("Appearance of {body}"), |doc, _| {
             let old = doc.appearances.iter().position(|a| a.body == body);
@@ -98,3 +104,76 @@ impl Command for SetAppearance {
 
 /// The viewport's default part colour, for a finish set without a colour.
 const DEFAULT_COLOR: u32 = 0x00b4_bcc8;
+
+/// `body.appearance` with `faces`: colours those faces (`color`) or drops their colour
+/// (`color` none, i.e. `clear`). The body keeps its own colour and finish.
+fn set_face_colors(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    ev: &gusset_eval::Evaluation,
+    body: &str,
+    names: &[String],
+    color: Option<u32>,
+    finish: bool,
+) -> Result<Value, CommandError> {
+    if finish {
+        return Err(CommandError::args("faces take a colour, not a finish").hint("set the finish on the whole body"));
+    }
+    let b = ev.body(body).ok_or_else(|| {
+        CommandError::not_found(format!("no body '{}'", crate::paths::display_name(body)))
+            .hint("faces of reference meshes cannot be coloured one by one")
+    })?;
+    if names.is_empty() || names.len() > gusset_doc::text::MAX_LIST_ITEMS {
+        return Err(CommandError::args("give one or more faces"));
+    }
+    let own: std::collections::HashSet<String> = b.names.faces.iter().map(ToString::to_string).collect();
+    let mut faces = Vec::with_capacity(names.len());
+    for n in names {
+        let f = gusset_doc::text::parse_face_ref(n.trim()).ok().filter(|f| own.contains(&f.to_string())).ok_or_else(
+            || {
+                CommandError::not_found(format!("{body} has no face '{}'", crate::paths::display_name(n)))
+                    .hint("query_body lists its faces")
+            },
+        )?;
+        faces.push(f);
+    }
+    let body = body.to_string();
+    edit(s, ctx, &format!("Face colours of {body}"), |doc, _| {
+        let old = doc.appearances.iter().position(|a| a.body == body);
+        if color.is_none() && old.is_none() {
+            return Err(CommandError::args(format!("{body} has no face colours to clear")));
+        }
+        let total: usize = doc.appearances.iter().flat_map(|a| &a.faces).map(|g| g.faces.len()).sum();
+        if color.is_some() && total + faces.len() > gusset_doc::text::MAX_LIST_ITEMS {
+            return Err(CommandError::args("the document has as many face colours as it can hold"));
+        }
+        if old.is_none() && doc.appearances.len() >= gusset_doc::text::MAX_LIST_ITEMS {
+            return Err(CommandError::args("the document has as many appearances as it can hold"));
+        }
+        let i = match old {
+            Some(i) => i,
+            None => {
+                doc.appearances.push(Appearance {
+                    body: body.clone(),
+                    color: DEFAULT_COLOR,
+                    finish: Finish::default(),
+                    faces: Vec::new(),
+                });
+                doc.appearances.len() - 1
+            }
+        };
+        let Some(a) = doc.appearances.get_mut(i) else { return Err(CommandError::args("the appearance went missing")) };
+        for g in &mut a.faces {
+            g.faces.retain(|f| !faces.contains(f));
+        }
+        if let Some(c) = color {
+            match a.faces.iter_mut().find(|g| g.color == c) {
+                Some(g) => g.faces.extend(faces.iter().cloned()),
+                None => a.faces.push(gusset_doc::FaceColor { color: c, faces: faces.clone() }),
+            }
+        }
+        a.faces.retain(|g| !g.faces.is_empty());
+        let shown: usize = a.faces.iter().map(|g| g.faces.len()).sum();
+        Ok(json!({ "body": body, "faces": faces.len(), "coloured_faces": shown }))
+    })
+}
