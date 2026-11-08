@@ -1274,11 +1274,11 @@ correctly and STEP brings them back; the colours of three imports (SolidWorks bo
 | ID | Status |
 |---|---|
 | F15-1 | Fixed: a placed body (a located shape) is written with its name and colours on the part too, and a wrapper holding one solid is read as that solid; OCCT test `a_placed_body_keeps_its_name_and_colours_through_step`. |
-| F15-2 | Open |
+| F15-2 | Open: a reference mesh is one face today; per-triangle 3MF colours need faces split by colour on import (next). |
 | F15-3 | Fixed: merges take face colours face by face (different faces on the two branches combine; one face changed differently on both conflicts). `branch_compare` still lists the appearance as a whole. |
 | F15-4 | Fixed: more than 10 000 faces says `at most 10000 faces at once (n given)`. |
 | F15-5 | Fixed in part: an empty colour list is refused. Face refs that name no existing face stay allowed (a merge can bring them; they do nothing); the tool refuses them. |
 | F15-6 | Fixed: the face name is echoed whole; a name containing `), ` gets the hint `one face per list entry`. |
 | F15-7 | Fixed: clearing faces without a colour says so; the count is `faces_coloured_in_body`; a face set to the body's colour gets no entry, with a note. |
 | F15-8 | Fixed: STEP export notes that finishes are not stored; 3MF writes values within 1e-9 of zero as 0. |
-| F15-9 | Open |
+| F15-9 | Accepted: a face-range syntax would change the face-reference grammar everywhere for size alone; 14.5 kB for 83 bodies stays readable. |
