@@ -78,6 +78,8 @@ impl Command for SetAppearance {
                 body: body.clone(),
                 color: color.or(base.as_ref().map(|b| b.color)).unwrap_or(DEFAULT_COLOR),
                 finish: finish.or(base.as_ref().map(|b| b.finish)).unwrap_or_default(),
+                // A file's face colours stay; `clear` drops them with the rest.
+                faces: base.map(|b| b.faces).unwrap_or_default(),
             };
             let shown = json!({ "color": format!("#{:06x}", a.color), "finish": a.finish.keyword() });
             let full = doc.appearances.len() >= gusset_doc::text::MAX_LIST_ITEMS;

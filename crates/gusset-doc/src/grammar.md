@@ -15,13 +15,14 @@ param <name> = <expr>, min: <expr>, max: <expr>, step: <expr>   # with a range (
 configuration <Name> (set: [<param> = <expr>, ...])            # a named parameter preset
 sketch <Name> (<args>) { ... }
 extrude|revolve|sweep|loft|fillet|chamfer|hole|import <Name> (<args>)
-appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber)   # ADR 0045
+appearance <Body> (color: "#rrggbb", finish: plastic|metal|glass|rubber, faces: {"#rrggbb": [<face>, ...], ...})   # ADR 0045
 ```
 
 - `appearance` sets how a body looks in the viewport and in path-traced renders; it changes
   no geometry. One per body, printed after the features; `finish` defaults to `plastic`.
   A body that no longer exists leaves its appearance unused (not an error). Set it with
-  `body.appearance`; renaming the feature carries it along.
+  `body.appearance`; renaming the feature carries it along. `faces` (optional) colours single
+  faces differently, as STEP imports do; faces the body no longer has are ignored.
 
 - One statement per line. `#` starts a comment: a comment on its own line(s) before a
   statement becomes that statement's note, a trailing `# text` on a `param` its comment.

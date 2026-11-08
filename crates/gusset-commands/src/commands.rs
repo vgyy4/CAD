@@ -2458,6 +2458,10 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
         if a.body == from {
             a.body = to.to_string();
         }
+        // Face colours name faces by the features that made them.
+        for face in a.faces.iter_mut().flat_map(|g| &mut g.faces) {
+            face.rename_feature(from, to);
+        }
     }
     for f in &mut doc.features {
         if f.name == from {
@@ -3525,7 +3529,13 @@ impl Command for ExportStep {
         }
         // STEP carries each body's colour on its name (`name\u{1f}#rrggbb`, ADR 0045).
         let looks = if iges { Vec::new() } else { s.document(&ctx.actor)?.appearances };
-        let plain: Vec<&str> = sel_bodies.iter().map(|b| b.name.as_str()).collect();
+        let face_names: Vec<Vec<String>> = if looks.iter().any(|a| !a.faces.is_empty()) {
+            sel_bodies.iter().map(|b| b.names.faces.iter().map(ToString::to_string).collect()).collect()
+        } else {
+            vec![Vec::new(); sel_bodies.len()]
+        };
+        let plain: Vec<(&str, &[String])> =
+            sel_bodies.iter().zip(&face_names).map(|(b, f)| (b.name.as_str(), f.as_slice())).collect();
         let names = step_names(&plain, &looks);
         let bodies: Vec<(&gusset_kernel::Shape, &str)> =
             sel_bodies.iter().zip(&names).map(|(b, n)| (&b.shape, n.as_str())).collect();
@@ -3556,13 +3566,35 @@ pub struct ExportMesh {
 }
 
 /// Body names for a STEP export, each with its appearance colour after U+001F
-/// (`name\u{1f}#rrggbb`), which the kernel's STEP writer turns into an XDE colour (ADR 0045).
+/// (`name\u{1f}#rrggbb`), then the colours of single faces (`\u{1f}<index>=<rrggbb>,...`),
+/// which the kernel's STEP writer turns into XDE colours (ADR 0045).
 #[must_use]
-pub fn step_names(names: &[&str], looks: &[gusset_doc::Appearance]) -> Vec<String> {
-    names
+pub fn step_names(bodies: &[(&str, &[String])], looks: &[gusset_doc::Appearance]) -> Vec<String> {
+    bodies
         .iter()
-        .map(|n| match looks.iter().find(|a| a.body == *n) {
-            Some(a) => format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff),
+        .map(|(n, face_names)| match looks.iter().find(|a| a.body == *n) {
+            Some(a) => {
+                let mut out = format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff);
+                // Face colours by face index (`i=rrggbb`), for the faces the body still has.
+                if !a.faces.is_empty() {
+                    let index: std::collections::HashMap<&str, usize> =
+                        face_names.iter().enumerate().map(|(i, f)| (f.as_str(), i)).collect();
+                    let mut faces: Vec<(usize, u32)> = a
+                        .faces
+                        .iter()
+                        .flat_map(|g| g.faces.iter().map(move |f| (f, g.color)))
+                        .filter_map(|(f, c)| index.get(f.to_string().as_str()).map(|&i| (i, c & 0xff_ffff)))
+                        .collect();
+                    faces.sort_unstable();
+                    faces.dedup_by_key(|(i, _)| *i);
+                    if !faces.is_empty() {
+                        let list: Vec<String> = faces.iter().map(|(i, c)| format!("{i}={c:06x}")).collect();
+                        out.push('\u{1f}');
+                        out.push_str(&list.join(","));
+                    }
+                }
+                out
+            }
             None => (*n).to_string(),
         })
         .collect()

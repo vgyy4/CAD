@@ -213,6 +213,34 @@ fn tessellation_is_consistent() {
 }
 
 #[test]
+fn step_face_colours_round_trip() {
+    // ADR 0045: a body colour and two face colours ride on the name both ways.
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let topo = k().topology(&a.shape).unwrap();
+    let step = k().export_step(&[(&a.shape, "Plate\u{1f}#808080\u{1f}1=d02020,4=2020d0")]).unwrap();
+    let back = k().import_step(&step).unwrap();
+    assert_eq!(back.len(), 1);
+    let mut parts = back[0].1.split('\u{1f}');
+    assert_eq!(parts.next(), Some("Plate"));
+    assert_eq!(parts.next(), Some("#808080"));
+    let faces: Vec<(usize, &str)> = parts
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|e| e.split_once('=').map(|(i, c)| (i.parse().unwrap(), c)))
+        .collect();
+    assert_eq!(faces.len(), 2, "{faces:?}");
+    // The same faces (by place) came back in the same colours, whatever their order.
+    let back_topo = k().topology(&back[0].0).unwrap();
+    for (orig, colour) in [(1, "d02020"), (4, "2020d0")] {
+        let c = topo.faces[orig].centroid;
+        let (i, _) = faces.iter().find(|(_, col)| *col == colour).unwrap();
+        let d = back_topo.faces[*i].centroid;
+        assert!((0..3).all(|j| (c[j] - d[j]).abs() < 1e-6), "face {orig}: {c:?} vs {d:?}");
+    }
+}
+
+#[test]
 fn exchange_roundtrips() {
     let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
     let step = k().export_step(&[(&a.shape, "Plate")]).unwrap();

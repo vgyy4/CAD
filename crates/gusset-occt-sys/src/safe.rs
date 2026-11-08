@@ -570,9 +570,40 @@ pub fn read_shapes(data: &[u8]) -> ShimResult<Vec<RawShape>> {
     Ok(collect_shapes(arr, n))
 }
 
-/// [`read_shapes`] with each shape's name and colour (`0xRRGGBB`) from the STEP file's
-/// XDE data, when it has them (ADR 0045). Names are as the file wrote them: untrusted.
-pub fn read_shapes_meta(data: &[u8]) -> ShimResult<Vec<(RawShape, String, Option<u32>)>> {
+/// One shape of a STEP file with its name and colours (ADR 0045).
+#[derive(Debug)]
+pub struct StepShape {
+    pub shape: RawShape,
+    pub name: String,
+    /// `0xRRGGBB`.
+    pub colour: Option<u32>,
+    /// Faces in another colour (face index in the kernel's numbering, `0xRRGGBB`).
+    pub faces: Vec<(u32, u32)>,
+}
+
+impl StepShape {
+    /// The name as it travels to the app: control characters out (so U+001F only ever
+    /// separates), `Body <n>` for an empty one (`n` 1-based), then `\u{1f}#rrggbb` and
+    /// `\u{1f}<face>=<rrggbb>,...` when coloured (review R10).
+    #[must_use]
+    pub fn encoded_name(&self, n: usize) -> String {
+        let clean: String = self.name.chars().filter(|c| !c.is_control()).collect();
+        let mut name = if clean.trim().is_empty() { format!("Body {n}") } else { clean.trim().to_string() };
+        if let Some(c) = self.colour {
+            name.push_str(&format!("\u{1f}#{c:06x}"));
+            if !self.faces.is_empty() {
+                let faces: Vec<String> = self.faces.iter().map(|(i, c)| format!("{i}={c:06x}")).collect();
+                name.push('\u{1f}');
+                name.push_str(&faces.join(","));
+            }
+        }
+        name
+    }
+}
+
+/// [`read_shapes`] with each shape's name and colours from the STEP file's XDE data, when
+/// it has them (ADR 0045). Names are as the file wrote them: untrusted.
+pub fn read_shapes_meta(data: &[u8]) -> ShimResult<Vec<StepShape>> {
     let _g = EXCHANGE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut arr: *mut *mut GsShape = std::ptr::null_mut();
     let mut n = 0usize;
@@ -586,9 +617,17 @@ pub fn read_shapes_meta(data: &[u8]) -> ShimResult<Vec<(RawShape, String, Option
     Ok(shapes
         .into_iter()
         .map(|s| {
-            let (name, colour) = lines.next().and_then(|l| l.split_once('\t')).unwrap_or(("", "-"));
+            let mut f = lines.next().unwrap_or_default().split('\t');
+            let (name, colour, faces) = (f.next().unwrap_or(""), f.next().unwrap_or("-"), f.next().unwrap_or(""));
             let colour = colour.strip_prefix('#').and_then(|h| u32::from_str_radix(h, 16).ok());
-            (s, name.to_string(), colour)
+            let faces = faces
+                .split(',')
+                .filter_map(|e| {
+                    let (i, c) = e.split_once('=')?;
+                    Some((i.parse().ok()?, u32::from_str_radix(c, 16).ok()?))
+                })
+                .collect();
+            StepShape { shape: s, name: name.to_string(), colour, faces }
         })
         .collect())
 }

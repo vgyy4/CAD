@@ -94,14 +94,28 @@ struct PreparedBody {
     format: ImportFormat,
     /// Colour from the file (`0xRRGGBB`), kept as the body's appearance (ADR 0045).
     color: Option<u32>,
+    /// Faces in other colours (face index, `0xRRGGBB`), from a STEP file's face colours.
+    faces: Vec<(u32, u32)>,
 }
 
 /// A worker body name `name\u{1f}#rrggbb` as the name and its colour (ADR 0045); the name
 /// is the file's text, so control, bidi and zero-width characters go and it is cut to 200.
-fn split_look(raw: &str) -> (String, Option<u32>) {
-    let (name, color) = match raw.split_once('\u{1f}') {
-        Some((n, c)) => (n, gusset_doc::text::parse_color(c)),
-        None => (raw, None),
+fn split_look(raw: &str) -> (String, Option<u32>, Vec<(u32, u32)>) {
+    let mut parts = raw.split('\u{1f}');
+    let name = parts.next().unwrap_or_default();
+    let color = parts.next().and_then(gusset_doc::text::parse_color);
+    // `<face>=<rrggbb>,...` after a second separator, only with a body colour; at most
+    // the document's list limit.
+    let faces = match (color, parts.next()) {
+        (Some(_), Some(list)) => list
+            .split(',')
+            .filter_map(|e| {
+                let (i, c) = e.split_once('=')?;
+                Some((i.parse().ok()?, gusset_doc::text::parse_color(&format!("#{c}"))?))
+            })
+            .take(gusset_doc::text::MAX_LIST_ITEMS)
+            .collect(),
+        _ => Vec::new(),
     };
     let name: String = name
         .chars()
@@ -113,7 +127,13 @@ fn split_look(raw: &str) -> (String, Option<u32>) {
         .collect();
     // A name of only invisible characters keeps a readable fallback (review R10).
     let name = name.trim();
-    (if name.is_empty() { "Body".to_string() } else { name.to_string() }, color)
+    (if name.is_empty() { "Body".to_string() } else { name.to_string() }, color, faces)
+}
+
+/// A worker body as a prepared body: its name, colour and face colours split off.
+fn prepared(raw: &str, blob: Vec<u8>, format: ImportFormat) -> PreparedBody {
+    let (name, color, faces) = split_look(raw);
+    PreparedBody { name, blob, format, color, faces }
 }
 
 /// The worker's bodies of one STEP text, with the names and colours the Parasolid file
@@ -125,12 +145,13 @@ fn with_looks(bodies: Vec<(String, Vec<u8>)>, looks: &[(Option<String>, Option<u
         .enumerate()
         .map(|(i, (name, blob))| {
             let look = if same { looks.get(i) } else { None };
-            let (own, own_color) = split_look(&name);
+            let (own, own_color, faces) = split_look(&name);
             PreparedBody {
                 name: look.and_then(|l| l.0.clone()).unwrap_or(own),
                 blob,
                 format: ImportFormat::Step,
                 color: look.and_then(|l| l.1).or(own_color),
+                faces,
             }
         })
         .collect()
@@ -276,10 +297,7 @@ impl ImportJob {
                 let bodies = importer.import(format.keyword(), &bytes, cancel).map_err(|e| {
                     if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
                 })?;
-                let bodies = bodies.into_iter().map(|(name, blob)| {
-                    let (name, color) = split_look(&name);
-                    PreparedBody { name, blob, format, color }
-                });
+                let bodies = bodies.into_iter().map(|(name, blob)| prepared(&name, blob, format));
                 (bodies.collect::<Vec<_>>(), TIER_BREP, Vec::new())
             }
             Kind::Scad => scad(&bytes, self.kernel.as_ref(), cancel)?,
@@ -390,10 +408,7 @@ impl ImportJob {
                 let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
                     if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
                 })?;
-                let bodies = bodies.into_iter().map(|(name, blob)| {
-                    let (name, color) = split_look(&name);
-                    PreparedBody { name, blob, format: ImportFormat::Step, color }
-                });
+                let bodies = bodies.into_iter().map(|(name, blob)| prepared(&name, blob, ImportFormat::Step));
                 let mut warnings = c.warnings;
                 warnings.truncate(50);
                 (bodies.collect::<Vec<_>>(), TIER_SAT, warnings)
@@ -426,7 +441,13 @@ impl ImportJob {
                     let body = gusset_meshio::ExportBody { name: &m.name, mesh: &m.mesh, color: None };
                     let (blob, _) = gusset_meshio::export_to_vec(&[body], gusset_meshio::ExportFormat::StlBinary)
                         .map_err(|e| CommandError::new("io", format!("storing the mesh failed: {e}")))?;
-                    out.push(PreparedBody { name: m.name.clone(), blob, format: ImportFormat::Stl, color: m.color });
+                    out.push(PreparedBody {
+                        name: m.name.clone(),
+                        blob,
+                        format: ImportFormat::Stl,
+                        color: m.color,
+                        faces: Vec::new(),
+                    });
                 }
                 (out, TIER_MESH, imported.report.warnings)
             }
@@ -467,7 +488,13 @@ fn scad(
             if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", format!("OpenSCAD: {e}")) }
         })?;
         let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
-        out.push(PreparedBody { name: format!("Object {}", i + 1), blob, format: ImportFormat::Scad, color: None });
+        out.push(PreparedBody {
+            name: format!("Object {}", i + 1),
+            blob,
+            format: ImportFormat::Scad,
+            color: None,
+            faces: Vec::new(),
+        });
     }
     let warnings = model.warnings.into_iter().take(50).collect();
     Ok((out, TIER_SCAD, warnings))
@@ -810,10 +837,7 @@ fn f3d(
                                 ),
                             ));
                         }
-                        out.extend(bodies.into_iter().map(|(name, blob)| {
-                            let (name, color) = split_look(&name);
-                            PreparedBody { name, blob, format: ImportFormat::Step, color }
-                        }));
+                        out.extend(bodies.into_iter().map(|(name, blob)| prepared(&name, blob, ImportFormat::Step)));
                     }
                 }
             }
@@ -919,6 +943,7 @@ fn freecad(
                         blob: blob.clone(),
                         format: ImportFormat::FreeCad,
                         color: None,
+                        faces: Vec::new(),
                     });
                 }
             }
@@ -940,13 +965,18 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
     if let Some(tree) = &p.tree {
         return crate::tree_import::apply(s, ctx, tree, &p.file_name);
     }
-    let stored: Vec<(String, String, ImportFormat, Option<u32>)> =
-        p.bodies.iter().map(|b| (b.name.clone(), s.put_blob(&b.blob).to_hex(), b.format, b.color)).collect();
+    // (label, blob hash, format, colour, face colours)
+    type Stored<'a> = (String, String, ImportFormat, Option<u32>, &'a [(u32, u32)]);
+    let stored: Vec<Stored<'_>> = p
+        .bodies
+        .iter()
+        .map(|b| (b.name.clone(), s.put_blob(&b.blob).to_hex(), b.format, b.color, b.faces.as_slice()))
+        .collect();
     let file_name = p.file_name.clone();
     let (tier, warnings) = (p.tier, p.warnings);
     edit(s, ctx, &format!("Import {file_name}"), |doc, rb| {
         let mut names = Vec::new();
-        for (i, (body_name, blob, format, color)) in stored.iter().enumerate() {
+        for (i, (body_name, blob, format, color, faces)) in stored.iter().enumerate() {
             let name = doc.unique_feature_name("Import");
             let mut f = Feature::new(
                 name.clone(),
@@ -965,6 +995,7 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
                     body: name.clone(),
                     color: *c,
                     finish: gusset_doc::Finish::Plastic,
+                    faces: face_groups(&name, faces),
                 });
             }
             names.push(name);
@@ -972,6 +1003,19 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         let warnings: Vec<String> = warnings.iter().take(20).cloned().collect();
         Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings }))
     })
+}
+
+/// Face colours as the appearance's groups, one per colour in first-seen order.
+fn face_groups(feature: &str, faces: &[(u32, u32)]) -> Vec<gusset_doc::FaceColor> {
+    let mut groups: Vec<gusset_doc::FaceColor> = Vec::new();
+    for &(i, c) in faces {
+        let face = gusset_doc::FaceRef::new(feature, gusset_doc::FaceKey::Imported(i));
+        match groups.iter_mut().find(|g| g.color == c) {
+            Some(g) => g.faces.push(face),
+            None => groups.push(gusset_doc::FaceColor { color: c, faces: vec![face] }),
+        }
+    }
+    groups
 }
 
 fn import_spec() -> Result<&'static CommandSpec, CommandError> {
@@ -1042,5 +1086,27 @@ mod f3d_tests {
         let cancel: CancelFlag = Arc::new(AtomicBool::new(false));
         let e = f3d(&zip, &Never, &cancel).unwrap_err();
         assert!(e.message.contains("design streams"), "{e:?}");
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    #[test]
+    fn worker_names_carry_body_and_face_colours() {
+        assert_eq!(split_look("Gear"), ("Gear".into(), None, vec![]));
+        assert_eq!(split_look("Gear\u{1f}#808080"), ("Gear".into(), Some(0x80_80_80), vec![]));
+        let (n, c, f) = split_look("Gear\u{1f}#808080\u{1f}3=d02020,bad,4=zz0000,7=2020d0");
+        assert_eq!((n.as_str(), c), ("Gear", Some(0x80_80_80)));
+        assert_eq!(f, vec![(3, 0xd0_20_20), (7, 0x20_20_d0)]);
+        // Face colours need a body colour.
+        assert!(split_look("Gear\u{1f}-\u{1f}3=d02020").2.is_empty());
+        let g = face_groups("Import1", &f[..].iter().chain(&[(9, 0xd0_20_20)]).copied().collect::<Vec<_>>());
+        assert_eq!(g.len(), 2);
+        assert_eq!(
+            g[0].faces.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["Import1/face(3)", "Import1/face(9)"]
+        );
     }
 }

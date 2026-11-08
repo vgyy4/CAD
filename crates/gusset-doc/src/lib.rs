@@ -657,6 +657,19 @@ mod object_tests {
         );
         assert!(text::parse_feature_object(&format!("{obj}{obj}")).is_err());
     }
+
+    #[test]
+    fn face_colours_round_trip() {
+        let line = "appearance Import1 (color: \"#808080\", finish: plastic, faces: {\"#d02020\": [Import1/face(3), Import1/face(4)], \"#2020d0\": [Import1/face(0)]})";
+        let p = text::parse_params_object(&format!("{line}\n")).unwrap();
+        let a = p.appearances.first().unwrap();
+        assert_eq!(a.faces.len(), 2);
+        assert_eq!(a.faces[0].color, 0xd0_20_20);
+        assert_eq!(a.faces[0].faces.len(), 2);
+        let printed = text::print_params_object(&[], &[], &p.appearances);
+        assert!(printed.contains(line), "{printed}");
+        assert!(text::parse_params_object("appearance A (color: \"#000000\", faces: {\"red\": []})\n").is_err());
+    }
 }
 
 #[cfg(test)]

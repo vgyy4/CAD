@@ -30,6 +30,17 @@ pub struct Appearance {
     /// sRGB `0xRRGGBB`.
     pub color: u32,
     pub finish: Finish,
+    /// Faces in other colours than the body's (a STEP file's face colours), one group per
+    /// colour. Faces the body no longer has are ignored.
+    pub faces: Vec<FaceColor>,
+}
+
+/// One colour and the faces drawn in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceColor {
+    /// sRGB `0xRRGGBB`.
+    pub color: u32,
+    pub faces: Vec<FaceRef>,
 }
 
 /// Surface finish for rendering.

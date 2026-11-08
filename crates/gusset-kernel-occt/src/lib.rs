@@ -644,14 +644,9 @@ mod imp {
             Ok(ffi::read_shapes_meta(data)?
                 .into_iter()
                 .enumerate()
-                .map(|(i, (s, name, colour))| {
-                    let clean: String = name.chars().filter(|c| !c.is_control()).collect();
-                    let mut name =
-                        if clean.trim().is_empty() { format!("Body {}", i + 1) } else { clean.trim().to_string() };
-                    if let Some(c) = colour {
-                        name.push_str(&format!("\u{1f}#{c:06x}"));
-                    }
-                    (Shape::new(OcctShape::new(s)), name)
+                .map(|(i, s)| {
+                    let name = s.encoded_name(i + 1);
+                    (Shape::new(OcctShape::new(s.shape)), name)
                 })
                 .collect())
         }

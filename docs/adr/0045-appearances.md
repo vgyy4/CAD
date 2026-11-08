@@ -33,7 +33,7 @@ anywhere in the document.
 ## Consequences
 * Old readers refuse documents with appearances (unknown statement); documents without
   them are unchanged byte for byte.
-* No textures and no per-face colours. Parasolid (`.x_t`/`.x_b`) and SolidWorks imports
+* No textures. Per-face colours came later for STEP (amendment below). Parasolid (`.x_t`/`.x_b`) and SolidWorks imports
   keep each body's name (STEP's `\X2\` escapes decoded) as its label and its colour
   (`SDL/TYSA_COLOUR`) as a plastic appearance: the colour most of its faces have, else the
   body's own. Counting faces rather than area can pick the colour of many small faces (the
@@ -51,3 +51,15 @@ anywhere in the document.
   cut to 200. The colour travels from the worker on the body name after U+001F, so the
   importer interface did not change. Adafruit's LoRa bonnet: 1 grey body before, 83 named
   and coloured bodies now; reading took 2.5 s either way.
+* Face colours (amendment, 2026-11-08): an appearance may list faces in other colours than
+  the body's, grouped by colour: `faces: {"#d02020": [Import1/face(3), ...], ...}` (at most
+  10 000 faces). The STEP reader lists, per body, the faces whose XDE colour differs from the
+  body's by their index in `TopExp::MapShapes` order (the kernel's face numbering, which the
+  BRep round trip to the app keeps); they travel on the body name after a second U+001F
+  (`name\u{1f}#rrggbb\u{1f}3=d02020,4=...`, `StepShape::encoded_name`) and are stored by
+  the import's persistent face names, so faces a later feature keeps keep their colour and
+  faces it replaces lose it. The viewport, `render_view` and the path tracer draw them
+  (`Scene::set_face_color`; a coloured body skips the coarse level-of-detail copy), STEP
+  export writes them back as face colours, `body.appearance` keeps them when it changes the
+  body's colour or finish, `clear` drops them, and renaming a feature renames them.
+  Parasolid, SolidWorks and 3MF face colours are not read yet.

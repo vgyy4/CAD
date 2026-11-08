@@ -61,19 +61,25 @@ pub fn print(doc: &Document) -> String {
 }
 
 fn print_appearance(out: &mut String, a: &Appearance) {
-    let _ = writeln!(
-        out,
-        "appearance {} (color: \"#{:06x}\", finish: {})",
-        a.body,
-        a.color & 0xff_ffff,
-        a.finish.keyword()
-    );
+    let _ = writeln!(out, "appearance {} ({})", a.body, appearance_line(a));
 }
 
 /// An appearance's settings on one line: `color: "#8a9bb0", finish: metal` (compare view).
 #[must_use]
 pub fn appearance_line(a: &Appearance) -> String {
-    format!("color: \"#{:06x}\", finish: {}", a.color & 0xff_ffff, a.finish.keyword())
+    let mut line = format!("color: \"#{:06x}\", finish: {}", a.color & 0xff_ffff, a.finish.keyword());
+    if !a.faces.is_empty() {
+        let groups: Vec<String> = a
+            .faces
+            .iter()
+            .map(|g| {
+                let faces: Vec<String> = g.faces.iter().map(FaceRef::to_string).collect();
+                format!("\"#{:06x}\": [{}]", g.color & 0xff_ffff, faces.join(", "))
+            })
+            .collect();
+        let _ = write!(line, ", faces: {{{}}}", groups.join(", "));
+    }
+    line
 }
 
 /// `#rrggbb` as `0xRRGGBB`.
@@ -85,9 +91,10 @@ pub fn parse_color(text: &str) -> Option<u32> {
 
 fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
     let body = c.ident()?.to_string();
-    let (mut color, mut finish) = (None, None);
+    let (mut color, mut finish, mut faces) = (None, None, Vec::new());
     parse_args(c, |key, c| {
         match key {
+            "faces" => faces = parse_face_colors(c)?,
             "color" => {
                 let text = c.string()?;
                 color = Some(parse_color(&text).ok_or_else(|| {
@@ -100,7 +107,7 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
                     c.err_hint(format!("unknown finish '{k}'"), "use plastic, metal, glass or rubber")
                 })?);
             }
-            key => return Err(unknown_arg(c, "appearance", key, "color, finish")),
+            key => return Err(unknown_arg(c, "appearance", key, "color, finish, faces")),
         }
         Ok(())
     })?;
@@ -111,7 +118,36 @@ fn parse_appearance(c: &mut Cursor<'_>) -> Result<Appearance, ParseError> {
         body,
         color: color.ok_or_else(|| missing(c, "appearance", "color"))?,
         finish: finish.unwrap_or_default(),
+        faces,
     })
+}
+
+/// `{"#rrggbb": [<face>, ...], ...}`: at most `MAX_LIST_ITEMS` faces in all.
+fn parse_face_colors(c: &mut Cursor<'_>) -> Result<Vec<FaceColor>, ParseError> {
+    c.expect('{')?;
+    let mut out: Vec<FaceColor> = Vec::new();
+    let mut total = 0usize;
+    if !c.eat('}') {
+        loop {
+            let text = c.string()?;
+            let color = parse_color(&text).ok_or_else(|| {
+                c.err_hint(format!("'{text}' is not a colour"), "write \"#\" and six hex digits, like \"#8a9bb0\"")
+            })?;
+            c.expect(':')?;
+            let faces = parse_face_list(c)?;
+            total += faces.len();
+            if total > MAX_LIST_ITEMS {
+                return Err(c.err("too many faces"));
+            }
+            out.push(FaceColor { color, faces });
+            if c.eat(',') {
+                continue;
+            }
+            c.expect('}')?;
+            break;
+        }
+    }
+    Ok(out)
 }
 
 fn print_comment_lines(out: &mut String, text: &str) {

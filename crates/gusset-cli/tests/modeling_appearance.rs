@@ -47,3 +47,31 @@ fn a_coloured_step_round_trip_keeps_names_and_colours() {
     assert!(text.contains("label: \"Extrude1\"") && text.contains("label: \"Extrude2\""), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn face_colours_survive_import_and_export() {
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("gusset-face-colours-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A STEP file whose plate has two faces in their own colours.
+    let mut s = session(&dir);
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0, "y": 0, "width": 20, "height": 10}));
+    run(&mut s, "feature.extrude", json!({"sketch": "Sketch1", "distance": "5 mm", "op": "new"}));
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    let step = s.kernel().export_step(&[(&ev.bodies[0].shape, "Plate\u{1f}#808080\u{1f}0=d02020,3=2020d0")]).unwrap();
+    std::fs::write(dir.join("faces.step"), step).unwrap();
+    // Imported: the body colour and both face colours, by the import's face names.
+    let mut t = session(&dir);
+    run(&mut t, "import.file", json!({"path": "faces.step"}));
+    let text = run(&mut t, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("color: \"#808080\""), "{text}");
+    assert!(text.contains("\"#d02020\": [Import1/face(") && text.contains("\"#2020d0\": [Import1/face("), "{text}");
+    // Exported again and imported into a third project: still there.
+    run(&mut t, "export.step", json!({"path": "again.step"}));
+    let mut u = session(&dir);
+    run(&mut u, "import.file", json!({"path": "again.step"}));
+    let text = run(&mut u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
+    assert!(text.contains("\"#d02020\": [Import1/face(") && text.contains("\"#2020d0\": [Import1/face("), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}

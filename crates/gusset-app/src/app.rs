@@ -3901,10 +3901,9 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
         for (i, b) in bodies.iter().enumerate() {
             if let Some(a) = d.appearance(&b.name) {
                 let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
-                render.set_material(
-                    gusset_render::MeshId(i as u64),
-                    gusset_render::Material { color: gusset_render::Srgb(a.color), finish },
-                );
+                let id = gusset_render::MeshId(i as u64);
+                render.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
+                apply_face_colors(&mut render, id, &b.face_names, a);
             }
         }
     }
@@ -3926,6 +3925,27 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
         })
         .collect();
     Ok(SceneData { key: (head, rollback), render, bodies, mesh_errors, sketches, eval })
+}
+
+/// An appearance's face colours on the faces the body still has (by face name).
+pub(crate) fn apply_face_colors(
+    scene: &mut gusset_render::Scene,
+    id: gusset_render::MeshId,
+    face_names: &[String],
+    a: &gusset_doc::Appearance,
+) {
+    if a.faces.is_empty() {
+        return;
+    }
+    let index: std::collections::HashMap<&str, u32> =
+        face_names.iter().zip(0u32..).map(|(n, i)| (n.as_str(), i)).collect();
+    for g in &a.faces {
+        for f in &g.faces {
+            if let Some(&i) = index.get(f.to_string().as_str()) {
+                scene.set_face_color(id, i, Some(gusset_render::Srgb(g.color)));
+            }
+        }
+    }
 }
 
 /// The bodies and reference meshes of an evaluation as a render scene.

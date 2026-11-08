@@ -2259,21 +2259,44 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
   for (size_t i = 0; i < n; ++i) {
     TDF_Label l = st->AddShape(shapes[i]->s, false);
     if (!names || !names[i]) continue;
-    // "name\x1f#rrggbb": the body's colour rides on its name (ADR 0045).
+    // "name\x1f#rrggbb\x1fi=rrggbb,...": the body's colour and its faces' colours ride on
+    // its name (ADR 0045; i is the face's index in TopExp::MapShapes order).
     std::string full(names[i]);
-    std::string name = full, colour;
+    std::string name = full, colour, faces;
     size_t sep = full.find('\x1f');
     if (sep != std::string::npos) {
       name = full.substr(0, sep);
       colour = full.substr(sep + 1);
+      size_t sep2 = colour.find('\x1f');
+      if (sep2 != std::string::npos) {
+        faces = colour.substr(sep2 + 1);
+        colour = colour.substr(0, sep2);
+      }
     }
     TDataStd_Name::Set(l, TCollection_ExtendedString(name.c_str(), true));
-    if (colour.size() == 7 && colour[0] == '#') {
+    auto hex = [](const std::string& h, Quantity_Color& c) {
+      if (h.size() != 6) return false;
       char* end = nullptr;
-      unsigned long v = std::strtoul(colour.c_str() + 1, &end, 16);
-      if (end && *end == '\0') {
-        Quantity_Color c(((v >> 16) & 255) / 255.0, ((v >> 8) & 255) / 255.0, (v & 255) / 255.0, Quantity_TOC_sRGB);
-        ct->SetColor(l, c, XCAFDoc_ColorSurf);
+      unsigned long v = std::strtoul(h.c_str(), &end, 16);
+      if (!end || *end != '\0') return false;
+      c = Quantity_Color(((v >> 16) & 255) / 255.0, ((v >> 8) & 255) / 255.0, (v & 255) / 255.0, Quantity_TOC_sRGB);
+      return true;
+    };
+    Quantity_Color c;
+    if (colour.size() == 7 && colour[0] == '#' && hex(colour.substr(1), c)) ct->SetColor(l, c, XCAFDoc_ColorSurf);
+    if (!faces.empty()) {
+      ShapeMap fm;
+      TopExp::MapShapes(shapes[i]->s, TopAbs_FACE, fm);
+      std::istringstream fs(faces);
+      std::string e;
+      while (std::getline(fs, e, ',')) {
+        size_t eq = e.find('=');
+        if (eq == std::string::npos) continue;
+        char* end = nullptr;
+        long fi = std::strtol(e.c_str(), &end, 10);
+        if (end != e.c_str() + eq || fi < 0 || fi >= fm.Extent() || !hex(e.substr(eq + 1), c)) continue;
+        TDF_Label fl = st->AddSubShape(l, fm(static_cast<int>(fi) + 1));
+        if (!fl.IsNull()) ct->SetColor(fl, c, XCAFDoc_ColorSurf);
       }
     }
   }
@@ -2319,9 +2342,11 @@ int gs_step_read(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t*
 }
 
 /* Names and colours of the shapes a STEP file holds (ADR 0045): the same root shapes as
- * gs_step_read, read through XDE. `meta` gets one line per shape, "name\t#rrggbb\n", with
- * "-" for a missing colour; tabs and line breaks in names become spaces. A root without a
- * colour of its own takes the colour most of its first faces have. */
+ * gs_step_read, read through XDE. `meta` gets one line per shape, "name\t#rrggbb\tfaces\n",
+ * with "-" for a missing colour; tabs and line breaks in names become spaces. A root without
+ * a colour of its own takes the colour most of its faces have. `faces` lists the faces in
+ * another colour than the shape's, "i=rrggbb,..." (i: the face's index in
+ * TopExp::MapShapes order, as the kernel numbers faces; at most 10000), empty if none. */
 int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, size_t* n, GsBuf* meta) {
   GS_GUARD_BEGIN
   if (!data || !out_shapes || !n || !meta) return fail("null argument");
@@ -2441,7 +2466,21 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
       std::snprintf(hex, sizeof hex, "#%06lx", colour);
     else
       std::snprintf(hex, sizeof hex, "-");
-    lines += name + "\t" + hex + "\n";
+    std::string faces;
+    if (colour >= 0) {
+      ShapeMap fm;
+      TopExp::MapShapes(s, TopAbs_FACE, fm);
+      int listed = 0;
+      for (int i = 1; i <= fm.Extent() && listed < 10000; ++i) {
+        auto f = colours.find(fm(i).TShape().get());
+        if (f == colours.end() || f->second == colour) continue;
+        char e[32];
+        std::snprintf(e, sizeof e, "%s%d=%06lx", listed ? "," : "", i - 1, f->second);
+        faces += e;
+        ++listed;
+      }
+    }
+    lines += name + "\t" + hex + "\t" + faces + "\n";
     v.push_back(new GsShape{s});
   };
   for (int i = 1; i <= sr.NbShapes(); ++i) {
