@@ -178,15 +178,23 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain || rustup toolchain install
+      # Restore and save as separate steps: a fresh OCCT build (about an hour) is kept as soon
+      # as it is done, even if a later step fails or the run is cancelled.
       - name: Restore OCCT build
         id: occt-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/occt-install
           key: occt-${{ matrix.name }}-${{ hashFiles('deps/occt/**') }}
       - name: Build OCCT (cache miss only)
         if: steps.occt-cache.outputs.cache-hit != 'true'
         run: deps/occt/build-occt.sh "$RUNNER_TEMP/occt-install"
+      - name: Save OCCT build
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/occt-install
+          key: occt-${{ matrix.name }}-${{ hashFiles('deps/occt/**') }}
       - name: Point the build at OCCT
         run: |
           echo "GUSSET_OCCT_DIR=$RUNNER_TEMP/occt-install" >> "$GITHUB_ENV"
