@@ -987,6 +987,7 @@ impl GussetMcp {
                     face_names: b.names.faces.iter().map(ToString::to_string).collect(),
                     edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
                     look: looks.iter().find(|a| a.body == b.name).cloned(),
+                    face_colors: Vec::new(),
                 });
             }
             // Reference meshes (imported STL/3MF/OBJ) are drawn too; they have no
@@ -998,6 +999,7 @@ impl GussetMcp {
                     face_names: Vec::new(),
                     edge_names: Vec::new(),
                     look: looks.iter().find(|a| a.body == m.name).cloned(),
+                    face_colors: m.face_colors.clone(),
                 });
             }
             Ok(RenderScene { bodies })

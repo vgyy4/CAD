@@ -3930,6 +3930,14 @@ fn build_scene(s: &mut Session, _: Option<&mut Project>) -> Result<SceneData, Co
                 apply_face_colors(&mut render, id, &b.face_names, a);
             }
         }
+        // Imported mesh files' own face colours (3MF triangles coloured one by one).
+        for m in eval.meshes.iter().filter(|m| !m.face_colors.is_empty()) {
+            if let Some(i) = bodies.iter().position(|b| b.name == m.name) {
+                for &(f, c) in &m.face_colors {
+                    render.set_face_color(gusset_render::MeshId(i as u64), f, Some(gusset_render::Srgb(c)));
+                }
+            }
+        }
     }
     let def = |name: &str| {
         doc.as_ref()?.features.iter().find(|f| f.name == name).and_then(|f| match &f.kind {

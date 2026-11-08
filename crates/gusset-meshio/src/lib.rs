@@ -172,6 +172,9 @@ pub struct ImportedMesh {
     pub validation: MeshValidation,
     /// Its colour in the file (`0xRRGGBB`), when the format and file have one (ADR 0045).
     pub color: Option<u32>,
+    /// Faces (`mesh.face_ranges` index) in colours of their own: 3MF triangles coloured one by
+    /// one come in grouped by colour, one face per colour.
+    pub face_colors: Vec<(u32, u32)>,
 }
 
 /// Non-fatal findings while importing (repairs, ignored content, topology problems).
@@ -328,6 +331,7 @@ pub(crate) fn finish(
         units_note: units_note.to_string(),
         validation,
         color: None,
+        face_colors: Vec::new(),
     }
 }
 

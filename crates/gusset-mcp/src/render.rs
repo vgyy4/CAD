@@ -172,6 +172,8 @@ pub struct RenderBody {
     pub edge_names: Vec<String>,
     /// Colour and finish from the document (ADR 0045).
     pub look: Option<gusset_doc::Appearance>,
+    /// Faces in colours of their own from an imported mesh file (face index, `0xRRGGBB`).
+    pub face_colors: Vec<(u32, u32)>,
 }
 
 /// What to draw: the evaluated bodies of the agent's current branch.

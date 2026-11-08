@@ -1774,6 +1774,27 @@ fn a_coloured_3mf_import_keeps_its_colours_as_appearances() {
     assert!(text.contains(&format!("appearance {name} (color: \"#c03020\"")), "{text}");
     // Reference meshes take appearances like bodies.
     run(&mut s, &u, "body.appearance", json!({"body": name, "finish": "rubber"}));
+    // Triangles coloured one by one come in as faces of their own and stay through the
+    // stored copy and a rebuild (dogfooding F15-2).
+    let mut faced = cube.clone();
+    faced.face_ranges = vec![0..2, 2..12];
+    let (bytes, _) = gusset_meshio::export_to_vec(
+        &[gusset_meshio::ExportBody {
+            name: "two",
+            mesh: &faced,
+            color: Some(0x0080_8080),
+            face_colors: &[(0, 0x00d0_2020)],
+        }],
+        gusset_meshio::ExportFormat::ThreeMf,
+    )
+    .unwrap();
+    std::fs::write(d.join("t.3mf"), bytes).unwrap();
+    let r = run(&mut s, &u, "import.file", json!({"path": "t.3mf"}));
+    let two = r["features"][0].as_str().unwrap().to_string();
+    let ev = s.evaluate(&gusset_history::Actor::User).unwrap();
+    let m = ev.meshes.iter().find(|m| m.name == two).unwrap();
+    assert_eq!(m.face_colors, vec![(1, 0x00d0_2020)], "{:?}", m.mesh.face_ranges);
+    assert_eq!(m.mesh.face_ranges.len(), 2);
     let _ = std::fs::remove_dir_all(d);
 }
 

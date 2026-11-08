@@ -70,7 +70,8 @@ anywhere in the document.
   are written by gusset-xt as AP214 styled items, so they reach the app the same way; the
   STEP's own body colour then wins over the converter's look (its face colours are relative to
   it). Adafruit's OLED part now shows its blue board, white silkscreen and dark screen instead
-  of one lavender body. 3MF face colours are not read yet.
+  of one lavender body. 3MF triangle colours are read too: an imported mesh's triangles are grouped by colour,
+  one face per colour, kept in the stored copy (3MF instead of STL then) and drawn.
   A merge takes colour and finish apart from face colours (one side's finish and the other's
   face colours combine); deleting a feature drops the colours of the faces it made
   (docs/reviews/2026-11-08-face-colours-review.md).

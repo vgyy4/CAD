@@ -445,18 +445,23 @@ impl ImportJob {
                 let mut out = Vec::new();
                 for m in imported.meshes.iter().filter(|m| !m.mesh.indices.is_empty()) {
                     // Stored as binary STL: compact, and the evaluator re-reads it with
-                    // the same limits.
-                    let body =
-                        gusset_meshio::ExportBody { name: &m.name, mesh: &m.mesh, color: None, face_colors: &[] };
-                    let (blob, _) = gusset_meshio::export_to_vec(&[body], gusset_meshio::ExportFormat::StlBinary)
+                    // the same limits. A mesh with face colours is stored as 3MF, which keeps
+                    // them (dogfooding F15-2).
+                    let coloured = !m.face_colors.is_empty();
+                    let body = gusset_meshio::ExportBody {
+                        name: &m.name,
+                        mesh: &m.mesh,
+                        color: coloured.then(|| m.color.unwrap_or(0x00b4_bcc8)),
+                        face_colors: &m.face_colors,
+                    };
+                    let (store, format) = if coloured {
+                        (gusset_meshio::ExportFormat::ThreeMf, ImportFormat::ThreeMf)
+                    } else {
+                        (gusset_meshio::ExportFormat::StlBinary, ImportFormat::Stl)
+                    };
+                    let (blob, _) = gusset_meshio::export_to_vec(&[body], store)
                         .map_err(|e| CommandError::new("io", format!("storing the mesh failed: {e}")))?;
-                    out.push(PreparedBody {
-                        name: m.name.clone(),
-                        blob,
-                        format: ImportFormat::Stl,
-                        color: m.color,
-                        faces: Vec::new(),
-                    });
+                    out.push(PreparedBody { name: m.name.clone(), blob, format, color: m.color, faces: Vec::new() });
                 }
                 (out, TIER_MESH, imported.report.warnings)
             }

@@ -81,6 +81,8 @@ pub struct MeshBody {
     pub mesh: gusset_kernel::Mesh,
     /// Topology check (watertight, manifold, orientation, signed volume).
     pub validation: gusset_meshio::MeshValidation,
+    /// Faces (`mesh.face_ranges` index) in colours of their own, from the file (`0xRRGGBB`).
+    pub face_colors: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1642,7 +1644,10 @@ fn read_mesh(name: &str, bytes: &[u8], fmt: gusset_meshio::Format) -> Result<Mes
         .map_err(|e| EvalError::new(name, ErrorCode::Unsupported, format!("the stored mesh cannot be read: {e}")))?;
     let mut mesh = gusset_kernel::Mesh::default();
     let mut validation = gusset_meshio::MeshValidation::default();
+    let mut face_colors = Vec::new();
     for m in imported.meshes {
+        let face0 = u32::try_from(mesh.face_ranges.len()).unwrap_or(u32::MAX);
+        face_colors.extend(m.face_colors.iter().map(|(f, c)| (f.saturating_add(face0), *c)));
         let base = u32::try_from(mesh.positions.len())
             .map_err(|_| EvalError::new(name, ErrorCode::Unsupported, "the mesh is too large"))?;
         let tri0 = u32::try_from(mesh.indices.len() / 3).unwrap_or(u32::MAX);
@@ -1658,5 +1663,5 @@ fn read_mesh(name: &str, bytes: &[u8], fmt: gusset_meshio::Format) -> Result<Mes
         validation.inconsistent_edges += m.validation.inconsistent_edges;
         validation.signed_volume += m.validation.signed_volume;
     }
-    Ok(MeshBody { name: name.to_string(), mesh, validation })
+    Ok(MeshBody { name: name.to_string(), mesh, validation, face_colors })
 }

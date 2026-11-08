@@ -301,6 +301,13 @@ fn face_colours_are_written_on_their_triangles() {
     // Still a readable file.
     let back = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
     assert_eq!(back.meshes[0].color, Some(0x80_80_80));
+    // The red triangles come back as a face of their own (F15-2); black was the first
+    // face's triangles too, so two coloured faces, the body's own first.
+    let m = &back.meshes[0];
+    assert_eq!(m.mesh.face_ranges.len(), 2, "{:?} {:?}", m.mesh.face_ranges, m.face_colors);
+    assert_eq!(m.face_colors, vec![(1, 0xd0_20_20)]);
+    let r = &m.mesh.face_ranges[1];
+    assert_eq!(r.end - r.start, 2);
     // Without an object colour no triangle gets one.
     let bodies = [ExportBody { name: "c", mesh: &c, color: None, face_colors: &[(0, 0xd0_20_20)] }];
     let (bytes, _) = export_to_vec(&bodies, ExportFormat::ThreeMf).unwrap();

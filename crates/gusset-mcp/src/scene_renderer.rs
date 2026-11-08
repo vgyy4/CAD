@@ -85,6 +85,12 @@ pub fn build_scene(request: &RenderRequest, scene: &RenderScene) -> Result<Scene
         };
         // Body names are user text: refer to the body by position only.
         inserted.map_err(|e| format!("body #{} could not be prepared for rendering: {e}", i + 1))?;
+        // An imported mesh file's own face colours (under any appearance's face colours).
+        if request.style != RenderStyle::Wireframe {
+            for &(f, c) in &body.face_colors {
+                out.set_face_color(id, f, Some(gusset_render::Srgb(c)));
+            }
+        }
         if let Some(a) = &body.look {
             let finish = gusset_render::Finish::from_keyword(a.finish.keyword()).unwrap_or_default();
             out.set_material(id, gusset_render::Material { color: gusset_render::Srgb(a.color), finish });
@@ -198,6 +204,7 @@ impl ViewRenderer for SceneRenderer {
                 face_names: Vec::new(),
                 edge_names: Vec::new(),
                 look: None,
+                face_colors: Vec::new(),
             }],
         };
         if let Ok(request) = serde_json::from_value::<RenderRequest>(serde_json::json!({"width": 16, "height": 16})) {
@@ -248,6 +255,7 @@ extrude Extrude1 (profile: Sketch1, distance: 10 mm, op: new)
                 face_names: b.names.faces.iter().map(ToString::to_string).collect(),
                 edge_names: b.names.edges.iter().map(ToString::to_string).collect(),
                 look: None,
+                face_colors: Vec::new(),
             })
             .collect::<Vec<_>>();
         assert_eq!(bodies.len(), 1);

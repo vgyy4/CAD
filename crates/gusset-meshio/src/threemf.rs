@@ -116,6 +116,9 @@ struct Object {
     pindex: Option<u32>,
     vertices: Vec<[f64; 3]>,
     tris: Vec<Tri>,
+    /// Per triangle, its own material (`pid`, `p1`) when any triangle names one; empty
+    /// otherwise (ADR 0045 amendment: per-triangle colours).
+    tri_mat: Vec<Option<(Option<u32>, u32)>>,
     components: Vec<Component>,
 }
 
@@ -340,12 +343,21 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
                     return Err(limit("triangle count", totals.triangles, lim.max_triangles));
                 }
                 let mut t = [u32::MAX; 3];
+                let (mut pid, mut p1) = (None, None);
                 let n = obj.tris.len() + 1;
                 for_each_attr(&e, lim, &at, |_, key, v| {
                     let k = match key {
                         "v1" => 0,
                         "v2" => 1,
                         "v3" => 2,
+                        "pid" => {
+                            pid = parse_u32(v, &|| format!("object {id} triangle {n}"), "pid").ok();
+                            return Ok(());
+                        }
+                        "p1" => {
+                            p1 = parse_u32(v, &|| format!("object {id} triangle {n}"), "p1").ok();
+                            return Ok(());
+                        }
                         _ => return Ok(()),
                     };
                     if let Some(slot) = t.get_mut(k) {
@@ -357,6 +369,15 @@ fn parse_model(xml: &[u8], part: &str, lim: &Limits, cancel: Cancel<'_>, totals:
                     return Err(malformed(F, at(), format!("object {id} triangle {n} lacks v1, v2 or v3")));
                 }
                 obj.tris.push(t);
+                if let Some(p1) = p1 {
+                    // The first triangle with a material of its own: the earlier ones have none.
+                    if obj.tri_mat.is_empty() {
+                        obj.tri_mat.resize(obj.tris.len() - 1, None);
+                    }
+                    obj.tri_mat.push(Some((pid, p1)));
+                } else if !obj.tri_mat.is_empty() {
+                    obj.tri_mat.push(None);
+                }
                 Ctx::Other
             }
             (Some(Ctx::Components), "component") => {
@@ -585,6 +606,8 @@ struct Loader<'a, 'o> {
 struct Walk {
     stack: Vec<(String, u32)>,
     soup: Soup,
+    /// Face ranges (index into `soup.ranges`) in a colour of their own, `0xRRGGBB`.
+    face_colors: Vec<(u32, u32)>,
 }
 
 impl Loader<'_, '_> {
@@ -655,10 +678,47 @@ impl Loader<'_, '_> {
                 soup.positions.push(p32);
             }
             let flip = det(m) < 0.0;
-            for &[a, b, c] in &obj.tris {
+            let push = |soup: &mut Soup, [a, b, c]: Tri| {
                 soup.tris.push(if flip { [base + a, base + c, base + b] } else { [base + a, base + b, base + c] });
+            };
+            // Triangles with colours of their own: one range per colour (the object's own
+            // first), so each colour is a face.
+            let group = self.parts.get(&key).map(|md| &md.materials);
+            let colour_of = |t: usize| -> Option<u32> {
+                let (pid, p1) = obj.tri_mat.get(t).copied().flatten()?;
+                group?.get(&pid.or(obj.pid)?)?.get(p1 as usize).copied()
+            };
+            if obj.tri_mat.iter().any(Option::is_some) {
+                let own = obj.pid.zip(obj.pindex).and_then(|(g, i)| group?.get(&g)?.get(i as usize).copied());
+                let mut order: Vec<Option<u32>> = Vec::new();
+                let mut by: HashMap<Option<u32>, Vec<usize>> = HashMap::new();
+                for t in 0..obj.tris.len() {
+                    let c = colour_of(t).filter(|c| Some(*c) != own);
+                    if !by.contains_key(&c) {
+                        order.push(c);
+                    }
+                    by.entry(c).or_default().push(t);
+                }
+                // The object's own colour first, then the others in the order they appear.
+                order.sort_by_key(Option::is_some);
+                for c in &order {
+                    let at = soup.tris.len() as u32;
+                    for &t in by.get(c).into_iter().flatten() {
+                        if let Some(&tri) = obj.tris.get(t) {
+                            push(soup, tri);
+                        }
+                    }
+                    if let Some(c) = c {
+                        walk.face_colors.push((soup.ranges.len() as u32, *c));
+                    }
+                    soup.ranges.push(at..soup.tris.len() as u32);
+                }
+            } else {
+                for &t in &obj.tris {
+                    push(soup, t);
+                }
+                soup.ranges.push(start..soup.tris.len() as u32);
             }
-            soup.ranges.push(start..soup.tris.len() as u32);
         }
         let comps = obj.components.clone();
         walk.stack.push((key, id));
@@ -751,8 +811,10 @@ pub(crate) fn import(
             let group = ld.parts.get(&part.to_ascii_lowercase())?.materials.get(&o.pid?)?;
             group.get(o.pindex? as usize).copied()
         });
+        let face_colors = walk.face_colors;
         let mut m = finish(name, soup, &units_note, opts, warnings);
         m.color = color;
+        m.face_colors = face_colors;
         out.push(m);
     }
     for k in odd_types {
