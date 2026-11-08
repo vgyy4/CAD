@@ -7,9 +7,9 @@ under the software renderer for frame times.
 
 | Metric | Budget (starting target) | Measured | How measured |
 |---|---|---|---|
-| Cold start to interactive window | < 1.5 s | not yet measured | `gusset --bench-startup` |
-| Idle RAM, empty document | < 250 MB (incl. GPU memory on iGPU) | not yet measured | |
-| Idle CPU | ~0 % (no continuous redraw) | not yet measured | automated idle test (no frames requested over 5 s) |
+| Cold start to interactive window | < 1.5 s | app and first frames 8 ms (release, mock kernel, no window system); window creation, GPU set-up and the kernel worker not included yet | `gusset-app` test `startup_time` (`--ignored`) |
+| Idle RAM, empty document | < 250 MB (incl. GPU memory on iGPU) | 39 MB resident after the first frames (test process, no window or GPU) | `gusset-app` test `startup_time` |
+| Idle CPU | ~0 % (no continuous redraw) | no immediate repaint once idle (only delayed wake-ups for timers such as a notice fading) | `gusset-app` test `an_idle_window_asks_for_no_frames` (CI) |
 | Orbit frame time, typical part | 60 fps (16.7 ms) | 11.5 ms (87 fps) on llvmpipe (no GPU in the container), 1280 x 800, incl. readback | `gusset-render` test `perf` (`--ignored`) |
 | Large assembly | ≥ 30 fps | 400 bodies / 1.6 M triangles: 89 ms (11 fps) on llvmpipe, a CPU rasterizer, with level of detail (219 ms without); needs a real iGPU measurement | `gusset-render` test `perf` |
 | Software renderer | ≥ 15 fps | typical part 45-60 ms (17-22 fps) at 1280 x 800 (was 80 ms before an sRGB table); 400 bodies 87 ms with level of detail (311 ms without) | `gusset-render` test `perf` |

@@ -519,3 +519,44 @@ fn the_agents_panel_creates_an_agent_key_and_shows_it_once() {
     h.run();
     assert!(h.state().notice.as_ref().is_some_and(|n| n.error), "{:?}", h.state().notice);
 }
+
+#[test]
+fn an_idle_window_asks_for_no_frames() {
+    // Spec "idle means idle": once a model is shown and nothing moves, the UI requests no
+    // further frames (no continuous render loop).
+    let mut h = harness(app());
+    h.run();
+    h.state_mut().run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.state_mut()
+        .run("sketch.add_rectangle", json!({"sketch": "Sketch1", "x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0}))
+        .unwrap();
+    h.state_mut().run("feature.extrude", json!({"sketch": "Sketch1", "distance": "10 mm"})).unwrap();
+    h.state_mut().wait_idle();
+    h.run();
+    // Let notices fade and previews settle, then a quiet frame must not ask for another.
+    for _ in 0..3 {
+        h.step();
+    }
+    h.run();
+    h.step();
+    // Delayed wake-ups (a notice fading after 5 s) are fine; an immediate one each frame
+    // would be a render loop.
+    assert!(!h.ctx.requested_repaint_last_pass(), "the idle UI repaints every frame: {:?}", h.ctx.repaint_causes());
+}
+
+#[test]
+#[ignore = "measurement, run on demand with --release"]
+fn startup_time() {
+    // The cold-start budget (docs/PERFORMANCE.md): the app built and its first frame laid
+    // out, without the window system (kittest).
+    let t = std::time::Instant::now();
+    let a = app();
+    let built = t.elapsed();
+    let mut h = harness(a);
+    h.run();
+    println!("STARTUP app {:.1} ms, first frames {:.1} ms", built.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3);
+    // Resident memory after the first frames (Linux), for the idle RAM budget.
+    if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
+        println!("STARTUP {}", st.lines().find(|l| l.starts_with("VmRSS")).unwrap_or(""));
+    }
+}
