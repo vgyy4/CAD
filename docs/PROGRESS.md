@@ -273,9 +273,11 @@ Phase 3 has started (see Next).
      36 of the Crickit HAT's parts land on its board). Nested components (occurrence records,
      parents composed, a component used n times gives n bodies) and `.f3z` designs placed by
      the root's references done (ADR 0039 amendment 2026-11-08; per-body check against the
-     authors' STEP: LoRa 82/83, MacroPad 167/185, Trinkey 63/65, QT Py 138/142). Next: helical
-     sweep surfaces (threads), Fusion patterns and the 2025 layout's reference matrices (HDMI,
-     Pico, Buck stay unplaced).
+     authors' STEP: LoRa 82/83, MacroPad 167/185, Trinkey 63/65, QT Py 138/142). Buck case placed
+     2026-11-08 (0 -> 65/90: a reference at the origin whose board the root moved). Next: helical
+     sweep surfaces (threads), Fusion patterns (50 of the HDMI cable's 54 solids are pattern
+     copies), joints (the Pico board's components are placed by joints, not matrices), Fusion
+     colours (ADR 0039 has the map: `.smb` attribute -> design stream -> `.protein` package).
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
