@@ -120,7 +120,7 @@ Phase 3 has started (see Next).
   session's preview mode, where the single commit point (`commit_with_rollback`) evaluates
   the edited document instead of committing it (no history, no audit entry). The model
   as it was shows over the preview as accent-coloured edges, so before and after are seen
-  together (no translucent faces: the renderer has no transparency). Panels collapse and swap sides (View > Browser / Timeline / Browser on the right; a
+  together (glass bodies are drawn see-through since 2026-11-08; the preview itself stays opaque). Panels collapse and swap sides (View > Browser / Timeline / Browser on the right; a
   collapsed panel leaves a rail button; kept with the preferences, DESIGN.md §1.15). Timeline groups done (DESIGN.md §1.4: `group: "name"` on features, `feature.group`, the
   chip/browser menu's Group…/Ungroup; a run of grouped chips is framed with its name, which
   folds it to slivers). The S quick bar is customizable (right click a ribbon tool: add to or remove from
