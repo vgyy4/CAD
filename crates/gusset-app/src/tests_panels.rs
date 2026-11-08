@@ -930,6 +930,23 @@ fn the_share_menu_opens_the_sync_form() {
 }
 
 #[test]
+fn automatic_sync_repeats_the_last_folder_sync() {
+    let dir = std::env::temp_dir().join(format!("gusset-autosync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = harness(two_sketches());
+    settle(&mut h);
+    // Off by default: no sync runs and no wake-ups are asked for.
+    assert!(!h.state().auto_sync && h.state().sync_args.is_none());
+    h.state_mut().sync_args = Some(json!({"folder": dir.to_string_lossy(), "who": "me"}));
+    h.state_mut().auto_sync = true;
+    settle(&mut h);
+    let written: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).collect();
+    assert!(written.iter().any(|e| e.file_name().to_string_lossy().ends_with(".gusb")), "{written:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn draft_analysis_paints_the_model() {
     let mut h = harness(two_sketches());
     settle(&mut h);

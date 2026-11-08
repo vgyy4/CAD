@@ -85,6 +85,7 @@ const EN: &[(&str, &str)] = &[
     ("menu.help", "Help"),
     ("menu.diagnostics", "Diagnostics"),
     ("workspace.switcher", "Workspace"),
+    ("menu.share_auto", "Sync automatically every 2 minutes"),
     ("notice.no_data_save", "No data folder: cannot save"),
     ("notice.no_data", "No data folder"),
     ("notice.saving", "Saving…"),

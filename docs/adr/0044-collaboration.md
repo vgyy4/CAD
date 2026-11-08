@@ -50,7 +50,9 @@ your branches not received from others to a shared folder (a synced drive, a NAS
 `<who>__<branch>.gusb`, naming them `<who>/<branch>` inside, and imports everyone else's
 bundles there as `from/<who>/<branch>`; unchanged files are not rewritten, a re-import adds
 nothing, a damaged file is reported and skipped, at most 256 files a sync. Run it now and
-then (or from a timer) for near-live sharing without any network code.
+then (or from a timer) for near-live sharing without any network code. The app's Share
+menu repeats the last sync every two minutes when asked to ("Sync automatically"; off by
+default, only failures reported, a delayed wake-up rather than a render loop).
 
 ### Phase 2: live relay (later)
 A relay (`gusset serve`, opt-in, TLS, per-project tokens) forwards bundles of new nodes as

@@ -134,6 +134,9 @@ pub enum Then {
     ComponentUpdates,
 }
 
+/// How often the automatic folder sync runs.
+pub const AUTO_SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// An action that replaces or ends the open project, run once unsaved changes and
 /// running work were dealt with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +248,11 @@ pub struct App {
     done_rx: mpsc::Receiver<Done>,
     /// Host jobs sent and not yet answered.
     in_flight: usize,
+    /// The arguments of the last folder sync (ADR 0044), and whether to repeat it every
+    /// [`AUTO_SYNC_EVERY`] while the app is open.
+    pub sync_args: Option<Value>,
+    pub auto_sync: bool,
+    last_sync: Option<std::time::Instant>,
     /// Save and recovery-copy writers running on their own threads (also counted in
     /// `in_flight`).
     writers: usize,
@@ -410,6 +418,9 @@ impl App {
             done_tx,
             done_rx,
             in_flight: 0,
+            sync_args: None,
+            auto_sync: false,
+            last_sync: None,
             writers: 0,
             waker,
             agent_changes: 0,
@@ -562,6 +573,10 @@ impl App {
     /// the result when it arrives.
     pub fn submit_command(&mut self, id: &str, mut args: Value, then: Then) {
         let ctx = Self::ctx();
+        if id == "history.sync" {
+            self.sync_args = Some(args.clone());
+            self.last_sync = Some(std::time::Instant::now());
+        }
         if crate::results_panel::Kind::of(id).is_some() {
             self.last_jobs.insert(id.to_string(), args.clone());
         }
@@ -1927,6 +1942,7 @@ impl App {
         self.apply_scale(&ctx);
         self.poll(Some(&ctx));
         self.poll_render(&ctx);
+        self.auto_sync_tick(&ctx);
         if let Some(sm) = &self.spacemouse {
             match sm.drain() {
                 Some((Some((t, r)), _)) => {
@@ -2231,6 +2247,11 @@ impl App {
                         if ui.button(tr(label)).clicked() {
                             self.start_command(id);
                         }
+                    }
+                    // Near-live sharing without network code: the last sync, repeated.
+                    if self.sync_args.is_some() {
+                        ui.separator();
+                        ui.checkbox(&mut self.auto_sync, tr("menu.share_auto"));
                     }
                 });
                 ui.separator();
@@ -3897,6 +3918,23 @@ impl App {
             .map(|()| path);
             let _ = tx.send(out);
         });
+    }
+
+    /// Repeats the last folder sync every [`AUTO_SYNC_EVERY`] when asked to, while nothing
+    /// else runs; only failures are reported. Wakes the app for it (a delayed repaint, not
+    /// a render loop).
+    fn auto_sync_tick(&mut self, ctx: &egui::Context) {
+        if !self.auto_sync {
+            return;
+        }
+        let Some(args) = self.sync_args.clone() else { return };
+        let since = self.last_sync.map_or(AUTO_SYNC_EVERY, |t| t.elapsed());
+        if since >= AUTO_SYNC_EVERY && self.in_flight == 0 {
+            self.submit_command("history.sync", args, Then::Quiet);
+            ctx.request_repaint_after(AUTO_SYNC_EVERY);
+        } else {
+            ctx.request_repaint_after(AUTO_SYNC_EVERY.saturating_sub(since).max(std::time::Duration::from_secs(1)));
+        }
     }
 
     /// The outcome of a finished render, as a notice.
