@@ -19,4 +19,6 @@ fuzz_target!(|data: &[u8]| {
     let mut chunks = vec![0, 0, 0, 0, 0, 0, 0, 4, 0x14, 0, 6, 0, 8, 0, 1, 2, 3, 4];
     chunks.extend_from_slice(data);
     let _ = gusset_sldprt::extract_xt(&chunks, &limits);
+    let _ = gusset_sldprt::read_assembly(data, &limits);
+    let _ = gusset_sldprt::read_assembly(&chunks, &limits);
 });

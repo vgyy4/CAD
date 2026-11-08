@@ -49,6 +49,9 @@ enum Kind {
     /// A SolidWorks part: its Parasolid partition is read out of the container, then as `Xt`
     /// (ADR 0043).
     Sldprt,
+    /// A SolidWorks assembly: its component list, each referenced `.sldprt` read from the
+    /// same folder and placed (ADR 0043 amendment).
+    Sldasm,
     /// An ACIS SAT file, converted here to STEP and imported by the worker (ADR 0039).
     Sat,
     /// A Fusion 360 archive: its binary ACIS bodies (`.smb`), as SAT (ADR 0039).
@@ -77,6 +80,8 @@ pub struct ImportJob {
     file_name: String,
     importer: Option<Arc<dyn Importer>>,
     kernel: Arc<dyn gusset_kernel::Kernel>,
+    /// The folder of an assembly (the only place its parts are read from).
+    dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for ImportJob {
@@ -250,6 +255,7 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "fcstd" => Kind::FreeCad,
         "x_t" | "x_b" | "xmt_txt" | "xmt_bin" => Kind::Xt,
         "sldprt" => Kind::Sldprt,
+        "sldasm" => Kind::Sldasm,
         "sat" | "sab" => Kind::Sat,
         "f3d" | "f3z" => Kind::F3d,
         "scad" => Kind::Scad,
@@ -258,12 +264,12 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sldprt, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sldprt, .sldasm, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sldprt | Kind::Sat | Kind::F3d)
+    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sldprt | Kind::Sldasm | Kind::Sat | Kind::F3d)
         && importer.is_none()
     {
         return Err(CommandError::new(
@@ -274,7 +280,8 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
     }
     let file = open_regular(&full, path, MAX_IMPORT_BYTES)?;
     let file_name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone() })
+    let dir = matches!(kind, Kind::Sldasm).then(|| full.parent().map(Path::to_path_buf)).flatten();
+    Ok(ImportJob { file, kind, file_name, importer, kernel: s.kernel().clone(), dir })
 }
 
 impl ImportJob {
@@ -334,75 +341,16 @@ impl ImportJob {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let limits = gusset_sldprt::Limits::default();
-                let sw = |e: gusset_sldprt::SldprtError| CommandError::new("io", format!("SolidWorks: {e}"));
-                let xt_err = |e: gusset_xt::XtError| CommandError::new("io", format!("SolidWorks (Parasolid): {e}"));
-                // The final partition; a part made by an imported feature keeps its bodies
-                // in that feature's `LocalBodies` instead (one transmit each).
-                // `failure`: why the final partition gave no body, reported if nothing else does.
-                let (transmits, mut warnings, failure) = match gusset_sldprt::extract_xt(&bytes, &limits) {
-                    Ok(part) => match gusset_xt::to_step(&part.xt, &stem, &gusset_xt::Limits::default()) {
-                        Ok(c) if c.bodies > 0 => {
-                            let mut w = part.warnings;
-                            w.extend(c.warnings);
-                            (vec![(c.step, c.looks)], w, None)
-                        }
-                        Ok(_) => (Vec::new(), part.warnings, None),
-                        Err(e) => (Vec::new(), part.warnings, Some(xt_err(e))),
-                    },
-                    Err(e @ gusset_sldprt::SldprtError::NoGeometry(_)) => (Vec::new(), Vec::new(), Some(sw(e))),
-                    Err(e) => return Err(sw(e)),
-                };
-                let mut out = Vec::new();
-                for (step, looks) in &transmits {
-                    let bodies = importer.import("step", step.as_bytes(), cancel).map_err(|e| {
-                        if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                    })?;
-                    out.extend(with_looks(bodies, looks));
-                }
-                if transmits.is_empty() {
-                    let locals = gusset_sldprt::local_bodies(&bytes, &limits, cancel)
-                        .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { sw(e) })?;
-                    if locals.is_empty() {
-                        return Err(failure.unwrap_or_else(|| {
-                            sw(gusset_sldprt::SldprtError::NoGeometry("no configuration has a solid body".into()))
-                        }));
-                    }
-                    warnings.push(format!(
-                        "the part's {} bodies come from its imported feature; feature_combine unites them, feature_group folds them in the timeline",
-                        locals.len()
-                    ));
-                    // The final partition failed to read: say why, the bodies above still come in
-                    // (review R14).
-                    if let Some(f) = &failure {
-                        warnings.push(format!("the part's final body was not read: {}", f.message));
-                    }
-                    // One body at a time, its STEP text dropped before the next, under one byte
-                    // budget for all of them (security review T1).
-                    let mut step_bytes = 0usize;
-                    for (i, xt) in locals.iter().enumerate() {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Err(cancelled());
-                        }
-                        let c = gusset_xt::to_step(xt, &format!("{stem}_{}", i + 1), &gusset_xt::Limits::default())
-                            .map_err(xt_err)?;
-                        step_bytes = step_bytes.saturating_add(c.step.len());
-                        if step_bytes > MAX_SLDPRT_STEP_BYTES {
-                            return Err(CommandError::new(
-                                "invalid_args",
-                                format!("the part's bodies exceed {} MiB of geometry", MAX_SLDPRT_STEP_BYTES >> 20),
-                            ));
-                        }
-                        let room = 50usize.saturating_sub(warnings.len());
-                        warnings.extend(c.warnings.into_iter().take(room));
-                        let bodies = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| {
-                            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) }
-                        })?;
-                        out.extend(with_looks(bodies, &c.looks));
-                    }
-                }
-                warnings.truncate(50);
+                let (out, warnings) = sldprt_bodies(&bytes, &stem, importer.as_ref(), cancel, None)?;
                 (out, TIER_XT, warnings)
+            }
+            Kind::Sldasm => {
+                let importer = self
+                    .importer
+                    .ok_or_else(|| CommandError::new("not_allowed", "SolidWorks import is not available"))?;
+                let dir =
+                    self.dir.ok_or_else(|| CommandError::new("not_allowed", "the assembly's folder is not known"))?;
+                sldasm(&bytes, &dir, importer.as_ref(), cancel)?
             }
             Kind::Sat => {
                 let importer =
@@ -471,6 +419,317 @@ impl ImportJob {
         }
         Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings, tree: None })
     }
+}
+
+/// The bodies of one SolidWorks part (`bytes`), moved by `place` (metres, as stored) when
+/// given, and the warnings. The final partition, else the bodies of an imported feature.
+fn sldprt_bodies(
+    bytes: &[u8],
+    stem: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+    place: Option<&gusset_xt::Xf>,
+) -> Result<(Vec<PreparedBody>, Vec<String>), CommandError> {
+    let limits = gusset_sldprt::Limits::default();
+    let sw = |e: gusset_sldprt::SldprtError| CommandError::new("io", format!("SolidWorks: {e}"));
+    let xt_err = |e: gusset_xt::XtError| CommandError::new("io", format!("SolidWorks (Parasolid): {e}"));
+    // The final partition; a part made by an imported feature keeps its bodies
+    // in that feature's `LocalBodies` instead (one transmit each).
+    // `failure`: why the final partition gave no body, reported if nothing else does.
+    let (transmits, mut warnings, failure) = match gusset_sldprt::extract_xt(bytes, &limits) {
+        Ok(part) => match gusset_xt::to_step_placed(&part.xt, stem, &gusset_xt::Limits::default(), place) {
+            Ok(c) if c.bodies > 0 => {
+                let mut w = part.warnings;
+                w.extend(c.warnings);
+                (vec![(c.step, c.looks)], w, None)
+            }
+            Ok(_) => (Vec::new(), part.warnings, None),
+            Err(e) => (Vec::new(), part.warnings, Some(xt_err(e))),
+        },
+        Err(e @ gusset_sldprt::SldprtError::NoGeometry(_)) => (Vec::new(), Vec::new(), Some(sw(e))),
+        Err(e) => return Err(sw(e)),
+    };
+    let mut out = Vec::new();
+    for (step, looks) in &transmits {
+        let bodies = importer
+            .import("step", step.as_bytes(), cancel)
+            .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+        out.extend(with_looks(bodies, looks));
+    }
+    if transmits.is_empty() {
+        let locals = gusset_sldprt::local_bodies(bytes, &limits, cancel)
+            .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { sw(e) })?;
+        if locals.is_empty() {
+            return Err(failure.unwrap_or_else(|| {
+                sw(gusset_sldprt::SldprtError::NoGeometry("no configuration has a solid body".into()))
+            }));
+        }
+        warnings.push(format!(
+                "the part's {} bodies come from its imported feature; feature_combine unites them, feature_group folds them in the timeline",
+                locals.len()
+            ));
+        // The final partition failed to read: say why, the bodies above still come in
+        // (review R14).
+        if let Some(f) = &failure {
+            warnings.push(format!("the part's final body was not read: {}", f.message));
+        }
+        // One body at a time, its STEP text dropped before the next, under one byte
+        // budget for all of them (security review T1).
+        let mut step_bytes = 0usize;
+        for (i, xt) in locals.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            let c = gusset_xt::to_step_placed(xt, &format!("{stem}_{}", i + 1), &gusset_xt::Limits::default(), place)
+                .map_err(xt_err)?;
+            step_bytes = step_bytes.saturating_add(c.step.len());
+            if step_bytes > MAX_SLDPRT_STEP_BYTES {
+                return Err(CommandError::new(
+                    "invalid_args",
+                    format!("the part's bodies exceed {} MiB of geometry", MAX_SLDPRT_STEP_BYTES >> 20),
+                ));
+            }
+            let room = 50usize.saturating_sub(warnings.len());
+            warnings.extend(c.warnings.into_iter().take(room));
+            let bodies = importer
+                .import("step", c.step.as_bytes(), cancel)
+                .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+            out.extend(with_looks(bodies, &c.looks));
+        }
+    }
+    warnings.truncate(50);
+    Ok((out, warnings))
+}
+
+/// Most component instances (counting sub-assembly contents) one assembly import places.
+const MAX_SLDASM_INSTANCES: usize = 2000;
+/// Deepest chain of sub-assembly files followed.
+const MAX_SLDASM_DEPTH: usize = 4;
+/// Most bytes of part files read from the assembly's folder.
+const MAX_SLDASM_READ_BYTES: u64 = 2 << 30;
+/// Most directory entries looked at when matching a file name.
+const MAX_SLDASM_DIR_ENTRIES: usize = 100_000;
+
+/// `a(b(x))` for rigid placements `x' = R x + t`.
+fn compose_xf(a: &gusset_xt::Xf, b: &gusset_xt::Xf) -> gusset_xt::Xf {
+    let at = |m: &[[f64; 3]; 3], i: usize, j: usize| m.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
+    let mut r = [[0.0; 3]; 3];
+    for (i, row) in r.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| at(&a.0, i, k) * at(&b.0, k, j)).sum();
+        }
+    }
+    let mut t = a.1;
+    for (i, v) in t.iter_mut().enumerate() {
+        *v += (0..3).map(|k| at(&a.0, i, k) * b.1.get(k).copied().unwrap_or(0.0)).sum::<f64>();
+    }
+    (r, t)
+}
+
+/// A component's stored 4x4 as a rigid placement, if it is one (a rotation: orthonormal,
+/// determinant +1; a mirror or a scale is not).
+fn rigid(m: &[[f64; 4]; 4]) -> Option<gusset_xt::Xf> {
+    let at = |i: usize, j: usize| m.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
+    let r = [0, 1, 2].map(|i| [0, 1, 2].map(|j| at(i, j)));
+    let t = [0, 1, 2].map(|i| at(i, 3));
+    let col = |j: usize| [0, 1, 2].map(|i| at(i, j));
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let (x, y, z) = (col(0), col(1), col(2));
+    let cross = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    let ok = (dot(x, x) - 1.0).abs() < 1e-6
+        && (dot(y, y) - 1.0).abs() < 1e-6
+        && (dot(z, z) - 1.0).abs() < 1e-6
+        && dot(x, y).abs() < 1e-6
+        && (dot(cross, z) - 1.0).abs() < 1e-6
+        && t.iter().all(|v| v.is_finite() && v.abs() < 1e6);
+    ok.then_some((r, t))
+}
+
+/// Reads parts out of the folder of the assembly, never from anywhere else: a stored name is
+/// reduced to a plain file name by the reader, matched against the folder's own listing
+/// (exact, then ignoring case, then with spaces and underscores alike: downloads often turn
+/// one into the other) and opened without following links.
+struct Folder<'a> {
+    dir: &'a Path,
+    listing: Option<Vec<String>>,
+    read: u64,
+    cancel: &'a CancelFlag,
+}
+
+impl Folder<'_> {
+    fn find(&mut self, name: &str) -> Option<String> {
+        let dir = self.dir;
+        let listing = self.listing.get_or_insert_with(|| {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .map(|rd| {
+                    rd.filter_map(Result::ok)
+                        .take(MAX_SLDASM_DIR_ENTRIES)
+                        .filter_map(|e| e.file_name().into_string().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            v.sort();
+            v
+        });
+        let norm = |s: &str| s.to_lowercase().replace(' ', "_");
+        listing
+            .iter()
+            .find(|n| n.as_str() == name)
+            .or_else(|| listing.iter().find(|n| n.eq_ignore_ascii_case(name)))
+            .or_else(|| listing.iter().find(|n| norm(n) == norm(name)))
+            .cloned()
+    }
+
+    fn load(&mut self, name: &str) -> Result<Vec<u8>, CommandError> {
+        let plain = !name.is_empty() && !name.contains(['/', '\\', ':', '\0']) && name != "." && name != "..";
+        // Names come from the file: control characters out and cut for messages.
+        let shown: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+        if !plain {
+            return Err(CommandError::args(format!("'{shown}' is not a plain file name")));
+        }
+        let actual =
+            self.find(name).ok_or_else(|| CommandError::not_found(format!("'{shown}' is not in the folder")))?;
+        let f = open_regular(&self.dir.join(&actual), &actual, MAX_IMPORT_BYTES)?;
+        self.read = self.read.saturating_add(f.metadata().map(|m| m.len()).unwrap_or(MAX_IMPORT_BYTES));
+        if self.read > MAX_SLDASM_READ_BYTES {
+            return Err(CommandError::args("the assembly's parts add up to more than 2 GiB"));
+        }
+        read_capped(f, MAX_IMPORT_BYTES, self.cancel)
+    }
+}
+
+/// A SolidWorks assembly: the components listed in the file, each part file read from the same
+/// folder and imported at its instance placement (a part used n times gives n sets of bodies,
+/// named after the component). Missing, unreadable, suppressed, hidden and in-assembly
+/// ("virtual") components are warnings, not errors.
+fn sldasm(
+    bytes: &[u8],
+    dir: &Path,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    use gusset_sldprt::ComponentKind;
+    let limits = gusset_sldprt::Limits::default();
+    let top = gusset_sldprt::read_assembly(bytes, &limits)
+        .map_err(|e| CommandError::new("io", format!("SolidWorks assembly: {e}")))?;
+    let mut folder = Folder { dir, listing: None, read: 0, cancel };
+    let mut warnings = top.warnings.clone();
+    let (mut out, mut kept_bytes, mut instances) = (Vec::<PreparedBody>::new(), 0usize, 0usize);
+    let (mut suppressed, mut hidden, mut virtuals, mut mirrored) = (0usize, 0usize, 0usize, 0usize);
+    let mut truncated = false;
+    // Each assembly with the placement of the one that holds it, depth first.
+    let identity: gusset_xt::Xf = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3]);
+    let mut work: Vec<(gusset_sldprt::Assembly, gusset_xt::Xf, usize, String)> =
+        vec![(top, identity, 0, String::new())];
+    // Part files read once each.
+    let mut parts: std::collections::HashMap<String, Option<Vec<u8>>> = std::collections::HashMap::new();
+    while let Some((asm, parent, depth, prefix)) = work.pop() {
+        for c in &asm.components {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(cancelled());
+            }
+            let name = format!("{prefix}{}", c.name);
+            if c.suppressed {
+                suppressed += 1;
+                continue;
+            }
+            if c.hidden {
+                hidden += 1;
+                continue;
+            }
+            if c.kind == ComponentKind::Virtual {
+                virtuals += 1;
+                continue;
+            }
+            let Some(local) = rigid(&c.placement) else {
+                mirrored += 1;
+                continue;
+            };
+            let world = compose_xf(&parent, &local);
+            instances += 1;
+            if instances > MAX_SLDASM_INSTANCES {
+                truncated = true;
+                break;
+            }
+            if !parts.contains_key(&c.file) {
+                let loaded = match folder.load(&c.file) {
+                    Ok(b) => Some(b),
+                    Err(e) if e.code == "cancelled" => return Err(e),
+                    Err(e) => {
+                        warnings.push(format!(
+                            "component '{name}': {} ({})",
+                            crate::paths::display_name(&c.file),
+                            e.message
+                        ));
+                        None
+                    }
+                };
+                parts.insert(c.file.clone(), loaded);
+            }
+            let Some(Some(file)) = parts.get(&c.file) else { continue };
+            if c.kind == ComponentKind::Assembly {
+                if depth + 1 > MAX_SLDASM_DEPTH {
+                    warnings.push(format!(
+                        "sub-assembly '{name}' is nested deeper than {MAX_SLDASM_DEPTH} levels; left out"
+                    ));
+                    continue;
+                }
+                match gusset_sldprt::read_assembly(file, &limits) {
+                    Ok(sub) => work.push((sub, world, depth + 1, format!("{name}/"))),
+                    Err(e) => warnings.push(format!("sub-assembly '{name}': {e}")),
+                }
+                continue;
+            }
+            match sldprt_bodies(file, &name, importer, cancel, Some(&world)) {
+                Ok((bodies, w)) => {
+                    let many = bodies.len() > 1;
+                    for (i, mut b) in bodies.into_iter().enumerate() {
+                        kept_bytes += b.blob.len();
+                        b.name = if many { format!("{name} {}", i + 1) } else { name.clone() };
+                        out.push(b);
+                    }
+                    let room = 50usize.saturating_sub(warnings.len());
+                    warnings.extend(w.into_iter().take(room).map(|m| format!("component '{name}': {m}")));
+                }
+                Err(e) if cancel.load(Ordering::Relaxed) || e.code == "cancelled" => return Err(cancelled()),
+                Err(e) => warnings.push(format!("component '{name}' not imported: {}", e.message)),
+            }
+            if kept_bytes > MAX_F3D_OUTPUT_BYTES {
+                return Err(CommandError::new(
+                    "invalid_args",
+                    format!("the assembly's bodies exceed {} MiB of shapes", MAX_F3D_OUTPUT_BYTES >> 20),
+                ));
+            }
+        }
+        if truncated {
+            break;
+        }
+    }
+    let mut notes = Vec::new();
+    if suppressed > 0 {
+        notes.push(format!("{suppressed} suppressed components left out"));
+    }
+    if hidden > 0 {
+        notes.push(format!("{hidden} hidden components left out"));
+    }
+    if virtuals > 0 {
+        notes.push(format!("{virtuals} components made inside the assembly (virtual) are not read"));
+    }
+    if mirrored > 0 {
+        notes.push(format!("{mirrored} components with a mirrored or scaled placement are not imported"));
+    }
+    if truncated {
+        notes.push(format!("only the first {MAX_SLDASM_INSTANCES} component instances are imported"));
+    }
+    notes.append(&mut warnings);
+    notes.truncate(50);
+    if out.is_empty() {
+        return Err(CommandError::new(
+            "io",
+            format!("no component of the assembly could be imported: {}", notes.join("; ")),
+        ));
+    }
+    Ok((out, TIER_XT, notes))
 }
 
 /// An OpenSCAD program: one exact body per top-level statement.
@@ -1230,5 +1489,66 @@ mod look_tests {
             g[0].faces.iter().map(ToString::to_string).collect::<Vec<_>>(),
             ["Import1/face(3)", "Import1/face(9)"]
         );
+    }
+}
+
+#[cfg(test)]
+mod sldasm_tests {
+    #![allow(clippy::float_cmp)]
+    use super::*;
+
+    #[test]
+    fn placements_are_checked_and_composed() {
+        // Quarter turn about z and a shift: only rigid placements pass.
+        let m = [[0.0, -1.0, 0.0, 0.5], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let a = rigid(&m).unwrap();
+        assert_eq!(a.1, [0.5, 0.0, 0.0]);
+        let mut mirror = m;
+        mirror[2][2] = -1.0;
+        assert!(rigid(&mirror).is_none());
+        let mut scaled = m;
+        scaled[0][1] = -2.0;
+        assert!(rigid(&scaled).is_none());
+        let mut far = m;
+        far[0][3] = f64::NAN;
+        assert!(rigid(&far).is_none());
+        // Two quarter turns make a half turn; the inner shift is turned by the outer.
+        let (r, t) = compose_xf(&a, &a);
+        assert_eq!(r[0], [-1.0, 0.0, 0.0]);
+        assert!((t[0] - 0.5).abs() < 1e-12 && (t[1] - 0.5).abs() < 1e-12, "{t:?}");
+    }
+
+    #[test]
+    fn parts_are_read_from_the_folder_only() {
+        let dir = std::env::temp_dir().join(format!("gusset-sldasm-unit-{}", std::process::id()));
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(dir.join("My_Part.SLDPRT"), b"part").unwrap();
+        std::fs::write(sub.join("other.SLDPRT"), b"deep").unwrap();
+        let cancel: CancelFlag = Arc::default();
+        let mut f = Folder { dir: &dir, listing: None, read: 0, cancel: &cancel };
+        // Exact, case-insensitive, and spaces as underscores.
+        for n in ["My_Part.SLDPRT", "my_part.sldprt", "My Part.SLDPRT"] {
+            assert_eq!(f.load(n).unwrap(), b"part", "{n}");
+        }
+        // Anything with a separator, a drive or a dot name is refused, and files of
+        // sub-folders are not found by their plain name.
+        for n in ["sub/other.SLDPRT", r"sub\other.SLDPRT", "../x.SLDPRT", "C:x.SLDPRT", "..", ".", "", "other.SLDPRT"] {
+            assert!(f.load(n).is_err(), "{n}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_assembly_without_parts_is_an_error() {
+        struct Never;
+        impl Importer for Never {
+            fn import(&self, _: &str, _: &[u8], _: &AtomicBool) -> Result<Vec<(String, Vec<u8>)>, String> {
+                Err("not expected".into())
+            }
+        }
+        let cancel: CancelFlag = Arc::default();
+        let dir = std::env::temp_dir();
+        assert!(sldasm(b"not an assembly", &dir, &Never, &cancel).is_err());
     }
 }

@@ -29,7 +29,7 @@ License: MIT OR Apache-2.0.
 - **Rendering:** body colours, finishes (plastic, metal, glass, rubber), per-face colours
   and procedural textures; a path-traced photo preview and image export.
 - **Files:** STEP, IGES, STL, 3MF, OBJ, PLY, glTF, DXF/SVG; imports from Fusion 360
-  (`.f3d`/`.f3z`), SolidWorks parts (`.sldprt`), Parasolid (`.x_t`/`.x_b`), ACIS (`.sat`),
+  (`.f3d`/`.f3z`), SolidWorks parts and assemblies (`.sldprt`, `.sldasm`), Parasolid (`.x_t`/`.x_b`), ACIS (`.sat`),
   FreeCAD and OpenSCAD, with names and colours kept. Imports run in a sandboxed worker.
 - **Headless:** the `gusset` command line builds, exports and renders documents.
 

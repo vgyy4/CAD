@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic, clippy::float_cmp)]
 
 use super::*;
 use miniz_oxide::deflate::{compress_to_vec, compress_to_vec_zlib};
@@ -379,4 +379,119 @@ fn an_imported_feature_keeps_its_bodies_in_local_bodies() {
         let f = chunk_file(&[record(KEY, "Config-0-FeatureBodies/LocalBodies", &local[..cut], None)]);
         let _ = local_bodies(&f, &Limits::default(), &Default::default());
     }
+}
+
+// --- assemblies --------------------------------------------------------------------------
+
+const TREE: &str = "swXmlContents/COMPINSTANCETREE";
+
+fn tree_xml(body: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?><swSolidWorks><swHeader>
+<swFile id="3" swDocType="ASSEMBLY" swPath="C:\a\Top &amp; Co.SLDASM"/>
+<swFile id="6" swDocType="PART" swPath="C:\a\Bracket one.SLDPRT"/>
+<swFile id="9" swDocType="ASSEMBLY" swPath="D:/x/Sub.SLDASM"/>
+</swHeader><swModelList>
+<swModel id="5" swName="Bracket one" swConfigurationName="Default" swFileRef="6" swBoundingBox="0 0 0 0.01 0.02 0.03"/>
+<swModel id="8" swName="Sub" swConfigurationName="Default" swFileRef="9"/>
+<swModel id="2" swName="Top" swConfigurationName="Default" swFileRef="3">{body}</swModel>
+</swModelList></swSolidWorks>"#
+    )
+}
+
+fn asm_file(xml: &str) -> Vec<u8> {
+    chunk_file(&[record(KEY, "Preview", b"png", None), record(KEY, TREE, xml.as_bytes(), None)])
+}
+
+const IDENT: &str = "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1";
+
+#[test]
+fn an_assembly_lists_its_components_with_placements() {
+    let body = format!(
+        r#"<swReference id="4" swName="Bracket one" swReferenceNumber="1" swIsVirtualComponent="NO" swSuppressed="NO" swHidden="NO" swModelRef="5" swTransform="{IDENT}"/>
+<swReference id="7" swName="Bracket one" swReferenceNumber="2" swIsVirtualComponent="NO" swSuppressed="YES" swHidden="YES" swModelRef="5" swTransform="0 1 0 0 -1 0 0 0 0 0 1 0 0.5 0.25 -2 1"/>
+<swReference id="10" swName="Sub" swReferenceNumber="1" swIsVirtualComponent="NO" swSuppressed="NO" swHidden="NO" swModelRef="8" swTransform="{IDENT}"/>
+<swReference id="11" swName="Part1^Top" swReferenceNumber="1" swIsVirtualComponent="YES" swModelRef="5" swTransform="1 2"/>"#
+    );
+    let a = read_assembly(&asm_file(&tree_xml(&body)), &Limits::default()).unwrap();
+    assert_eq!(a.components.len(), 4);
+    let c = &a.components;
+    assert_eq!((c[0].name.as_str(), c[0].file.as_str()), ("Bracket one-1", "Bracket one.SLDPRT"));
+    assert_eq!(c[0].kind, ComponentKind::Part);
+    assert_eq!(c[0].bbox, Some([0.0, 0.0, 0.0, 0.01, 0.02, 0.03]));
+    assert_eq!(c[1].name, "Bracket one-2");
+    assert!(c[1].suppressed && c[1].hidden && !c[0].suppressed);
+    // Row-vector layout in, column vectors out: translation in the last column.
+    assert_eq!(c[1].placement[0], [0.0, -1.0, 0.0, 0.5]);
+    assert_eq!(c[1].placement[1], [1.0, 0.0, 0.0, 0.25]);
+    assert_eq!(c[1].placement[2], [0.0, 0.0, 1.0, -2.0]);
+    assert_eq!(c[1].placement[3], [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!((c[2].kind, c[2].file.as_str()), (ComponentKind::Assembly, "Sub.SLDASM"));
+    assert_eq!(c[3].kind, ComponentKind::Virtual);
+    assert!(a.warnings.iter().any(|w| w.contains("Part1^Top-1") && w.contains("placement")), "{:?}", a.warnings);
+}
+
+#[test]
+fn assembly_input_that_is_not_an_assembly_is_refused() {
+    let part = chunk_file(&[record(KEY, "Contents/Config-0-Partition", &partition_stream(30), None)]);
+    assert!(matches!(read_assembly(&part, &Limits::default()), Err(SldprtError::Malformed(_))));
+    assert!(matches!(read_assembly(b"hello", &Limits::default()), Err(SldprtError::NotSldprt)));
+    let o = ole(&[("Config-0-Partition", &partition_stream(30))]);
+    assert!(read_assembly(&o, &Limits::default()).is_err());
+    let none = asm_file(&tree_xml(""));
+    assert!(matches!(read_assembly(&none, &Limits::default()), Err(SldprtError::Malformed(_))));
+}
+
+#[test]
+fn hostile_assembly_trees_stay_bounded() {
+    let l = Limits::default();
+    // Truncations and noise never panic.
+    let body = format!(r#"<swReference swName="A" swReferenceNumber="1" swModelRef="5" swTransform="{IDENT}"/>"#);
+    let xml = tree_xml(&body);
+    for cut in (0..xml.len()).step_by(7) {
+        let _ = read_assembly(&asm_file(xml.get(..cut).unwrap_or_default()), &l);
+    }
+    for junk in ["<", "<a", "<a b", "<a b=", "<a b=\"", "<!--", "<?x", "&#xFFFFFFFF;<swFile id=\"&#;\" ", "\u{0}\u{1}"]
+    {
+        let _ = read_assembly(&asm_file(junk), &l);
+    }
+    // Numbers that are not finite or not 16 of them leave the component at the origin.
+    for t in
+        ["nan 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1", "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1", "inf 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"]
+    {
+        let b = format!(r#"<swReference swName="A" swReferenceNumber="1" swModelRef="5" swTransform="{t}"/>"#);
+        let a = read_assembly(&asm_file(&tree_xml(&b)), &l).unwrap();
+        assert_eq!(a.components[0].placement[0], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(a.warnings.len(), 1);
+    }
+    // A path that is only a separator names no file.
+    let x = tree_xml(&body).replace(r"C:\a\Bracket one.SLDPRT", r"C:\a\..");
+    let a = read_assembly(&asm_file(&x), &l).unwrap();
+    assert!(a.components.is_empty() && a.warnings.len() == 1);
+    // Huge component counts are capped.
+    let many = body.repeat(MAX_COMPONENTS + 50);
+    let a = read_assembly(&asm_file(&tree_xml(&many)), &l).unwrap();
+    assert_eq!(a.components.len(), MAX_COMPONENTS);
+    assert!(a.warnings.iter().any(|w| w.contains("first")));
+    // Deeply nested or endless tags: bounded by the stream limit and the tag budget.
+    let deep = "<a>".repeat(100_000);
+    let _ = read_assembly(&asm_file(&deep), &l);
+    // An inflate bomb larger than the stream limit is refused, not allocated.
+    let tight = Limits { max_stream_bytes: 1000, ..Limits::default() };
+    assert!(read_assembly(&asm_file(&tree_xml(&many)), &tight).is_err());
+}
+
+/// The NIST single-die assembly, when present (the sample is not in the repository).
+#[test]
+fn the_nist_assembly_sample() {
+    let Ok(dir) = std::env::var("GUSSET_SLDASM_SAMPLE_DIR") else { return };
+    let path = std::path::Path::new(&dir).join("NIST_Nanocalorimeter_single_die_3D_model.SLDASM");
+    let Ok(bytes) = std::fs::read(path) else { return };
+    let a = read_assembly(&bytes, &Limits::default()).unwrap();
+    let real: Vec<_> = a.components.iter().filter(|c| c.kind != ComponentKind::Virtual).collect();
+    assert_eq!(a.components.len(), 5);
+    assert_eq!(real.len(), 3);
+    assert!(real.iter().all(|c| c.file.ends_with(".SLDPRT") && !c.suppressed && !c.hidden));
+    let die = real.iter().find(|c| c.name.contains("die layer")).unwrap();
+    assert!((die.placement[0][3] + 0.068_197_763_517_917_76).abs() < 1e-15);
 }

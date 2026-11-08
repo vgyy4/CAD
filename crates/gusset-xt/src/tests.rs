@@ -444,3 +444,15 @@ fn step_escaped_names_are_decoded() {
     assert_eq!(crate::model::decode_step_text("plain"), "plain");
     assert_eq!(crate::model::decode_step_text("open \\X2\\00E8"), "open \\X2\\00E8");
 }
+
+#[test]
+fn a_placement_moves_every_body() {
+    // 90 degrees about z, then 0.005 m along x: the corner (10,10,10) mm of
+    // the cube goes to (-10 + 5, 10, 10) mm.
+    let p: crate::Xf = ([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], [0.005, 0.0, 0.0]);
+    let c = crate::to_step_placed(&cube(), "cube", &Limits::default(), Some(&p)).unwrap();
+    assert!(c.step.contains("(-5.0,10.0,10.0)"), "{}", c.step);
+    assert!(!c.step.contains("(10.0,10.0,10.0)"));
+    let same = crate::to_step_placed(&cube(), "cube", &Limits::default(), None).unwrap();
+    assert_eq!(same.step, to_step(&cube(), "cube", &Limits::default()).unwrap().step);
+}

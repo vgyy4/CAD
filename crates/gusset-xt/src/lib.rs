@@ -72,8 +72,26 @@ pub struct Converted {
 /// Malformed, unsupported (schema older than V4, bare binary, unknown node types) or too
 /// large files.
 pub fn to_step(bytes: &[u8], name: &str, limits: &Limits) -> Result<Converted, XtError> {
+    to_step_placed(bytes, name, limits, None)
+}
+
+/// [`to_step`] with every body moved by `place` (a rigid placement in the file's own length
+/// unit, metres for XT: `x' = M x + t`) after its own placements. Used to put a component
+/// of an assembly where the assembly stores it.
+///
+/// # Errors
+/// As [`to_step`].
+pub fn to_step_placed(bytes: &[u8], name: &str, limits: &Limits, place: Option<&Xf>) -> Result<Converted, XtError> {
     let g = decode(bytes, limits)?;
-    let m = model::build(&g)?;
+    let mut m = model::build(&g)?;
+    if let Some(p) = place {
+        for b in &mut m.bodies {
+            b.placement = Some(match &b.placement {
+                Some(own) => model::compose(p, own),
+                None => *p,
+            });
+        }
+    }
     let (step, warnings) = step::write(&g, &m, name);
     let (names, colours) = (model::names(&g), model::colours(&g));
     let looks = m

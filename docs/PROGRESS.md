@@ -296,7 +296,7 @@ Phase 3 has started (see Next).
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
      target `sldprt_read`; OCCT test `sldprt_samples.rs`). Parts whose bodies come from an
      imported feature (`LocalBodies`) done (ADR 0043 amendment; all 23 samples import); a file that
-     ends early warns. Not yet: feature history, `.sldasm`.
+     ends early warns. `.sldasm` assemblies import too (amendment 2026-11-08: component list + placements from `swXmlContents/COMPINSTANCETREE`, parts read from the assembly's folder). Not yet: feature history, virtual (in-assembly) components, OLE2-era assemblies.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

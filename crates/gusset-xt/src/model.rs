@@ -160,7 +160,7 @@ pub(crate) fn mat_vec(m: &[[f64; 3]; 3], x: [f64; 3]) -> [f64; 3] {
 }
 
 /// `a(b(x))`.
-fn compose(a: &Xf, b: &Xf) -> Xf {
+pub(crate) fn compose(a: &Xf, b: &Xf) -> Xf {
     let [b0, b1, b2] = b.0;
     // Columns of b, mapped by a.
     let col = |j: usize| {

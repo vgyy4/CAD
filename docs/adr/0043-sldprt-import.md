@@ -59,8 +59,8 @@ that noise never panics.
 ### Not read
 Feature tree and history (`Contents/Config-<n>-ResolvedFeatures`, `swXmlContents/Features`,
 `Definition`), sketches, dimensions and equations, PMI, materials and custom properties,
-colours and display lists, the preview image. Assemblies (`.sldasm`) and drawings
-(`.slddrw`) are not read. Parts whose final partition is empty keep their bodies in
+colours and display lists, the preview image. Drawings
+(`.slddrw`) are not read; assemblies are read as a component list (amendment below). Parts whose final partition is empty keep their bodies in
 `Config-<n>-FeatureBodies/LocalBodies` (one imported-geometry part in our samples,
 `Ecran_128x32oled`): see the amendment below.
 Files from before modeller 17 (SolidWorks 2008 and older) were not available to test.
@@ -95,3 +95,62 @@ to compare against.
 
 Only one `LocalBodies` stream is read (a part with several imported features keeps the others; the
 chunk container takes the lowest name, OLE2 the first directory entry; security review T3).
+
+## Amendment (2026-11-08): assemblies (`.sldasm`)
+
+Sample: NIST's single-die nanocalorimeter assembly (SolidWorks 2018, public domain) with its
+three parts. Derived from the bytes only, with `python3 -I` scripts, as above.
+
+### Layout facts learnt
+* An assembly is the same chunk container (`69 ce 88 ca 00 00 00 04`). Next to the part streams'
+  siblings it holds plain XML streams (`swXmlContents/COMPINSTANCETREE`, `docProps/*.xml`,
+  `[Content_Types].xml`) and binary ones (`Contents/Config-0`, `Contents/Config-0-MatesList`,
+  `Contents/DisplayLists`, ...). There is no `Config-<n>-Partition`: the geometry lives in the part files.
+* `swXmlContents/COMPINSTANCETREE` holds everything needed to place parts: `swFile` elements
+  (`id`, `swDocType` = `PART`/`ASSEMBLY`, `swPath` = the full path of the file *where the author
+  saved it*, with backslashes), `swModel` elements (`id`, `swName`, `swConfigurationName`, `swFileRef`
+  = a `swFile` id, `swBoundingBox` = six numbers, min then max, in the part's own space) and, inside
+  the root `swModel` (the one no other model uses), one `swReference` per component instance:
+  `swName` + `swReferenceNumber` (instance `Name-1`), `swModelRef`, `swSuppressed`, `swHidden`,
+  `swIsVirtualComponent`, and `swTransform`, sixteen numbers.
+* `swTransform` is a row-vector 4x4: `1 0 0 0 / 0 1 0 0 / 0 0 1 0 / tx ty tz 1`, translation in the last
+  row, `p' = p M`. **Lengths are metres** (bounding boxes of 0.014 for a 14 mm die).
+* A component made inside the assembly (`swIsVirtualComponent="YES"`, name `Part1^<assembly>`) has its
+  geometry in the opaque stream `VirtualComp/Part1`; the stored path is a temp folder. Not read.
+* The file names in `swPath` are the author's; our sample files were downloaded with spaces turned
+  into `_`, so the importer matches a name exactly, then ignoring case, then treating space and
+  `_` alike.
+
+### Evidence for the placements
+The assembly's own bounding box (`-0.13551042 0.03572588 -0.02168140 / -0.12153442 0.04106688
+-0.02118140`) equals the die layer's part box plus its translation `(-0.06819776, -0.01923062,
+-0.02168140)` on all six values. The imported bodies (OCCT, `crates/gusset-cli/tests/sldasm_sample.rs`,
+env `GUSSET_SLDASM_SAMPLES`) land at: die z -21.6814 .. -21.1814 mm (0.5 mm thick, 13.976 x 5.341 mm),
+silicon nitride layer z -21.6814 .. -21.6813 (rotated by its matrix, same footprint as the die) and
+top metal layer z -21.6815 .. -21.6814 inside the die outline: the layers stack on the die's underside
+as the assembly intended, so metres, the row-vector layout and the translation are confirmed.
+
+### Decision
+`gusset_sldprt::read_assembly` returns the components (name, file name, configuration, kind, 4x4
+column-vector placement, suppressed, hidden, part box). `import.file` on `.sldasm` reads each referenced
+`.sldprt` from the assembly's own folder only (a stored name is cut to its file name, refused if it has
+a separator, drive or dot name, matched against that folder's listing, opened without following links),
+imports it as a part and moves it through `gusset_xt::to_step_placed` by the instance placement
+(composed through sub-assemblies, which are read from their `.sldasm` files next to it, four levels deep).
+A part used n times gives n bodies named after the component (`Name-2`; `Name-2 1`... for a multi-body part).
+Missing or unreadable parts, suppressed and hidden components, virtual components and mirrored or scaled
+placements are warnings, not errors; an assembly with no importable component is an error.
+
+### Limits
+* Only one sample: both rotations in it are symmetric matrices, so a transposed rotation would not
+  show. The row-vector reading follows from the translation sitting in the last row; the first
+  asymmetric assembly should be checked.
+* Sub-assembly nesting inside one file is untested (the sample has none); it is handled by reading the
+  referenced `.sldasm` file, whose own component list is complete. Structure inside the file is not used.
+* Mates, configurations other than the one a component names, exploded views, in-assembly features and
+  virtual components are not read. A component's configuration is not selected (the part's lowest
+  configuration with a partition is imported). Compound-file (OLE2) assemblies, from before about 2015,
+  are refused: no sample.
+* Bounds: 20000 components, 2000 placed instances, 4 sub-assembly levels, 2 GiB of part files, 1 GiB of
+  shapes; the XML scanner expands no entities beyond the predefined and numeric ones. `sldprt_read`
+  fuzzes `read_assembly` too.

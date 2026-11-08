@@ -1,6 +1,6 @@
 //! SolidWorks `.sldprt` reader (ADR 0043): finds the embedded Parasolid partition and
 //! returns it as an XT transmit file for `gusset-xt`. Nothing else is read (no feature
-//! history, no display lists, no assemblies).
+//! history, no display lists; assemblies only as a component list, see [`read_assembly`]).
 //!
 //! Two containers exist. Files up to about SolidWorks 2014 are OLE2 compound files whose
 //! `Config-<n>-Partition` stream holds the partition; newer files use a custom chunk
@@ -11,9 +11,12 @@
 //! for them, with no other SolidWorks reader consulted. Input is untrusted: every count,
 //! chain and inflated size is bounded by [`Limits`].
 
+mod assembly;
 mod cfb;
 mod chunks;
 mod crc;
+
+pub use assembly::{Assembly, Component, ComponentKind, MAX_COMPONENTS, read_assembly};
 
 /// Why a file cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
