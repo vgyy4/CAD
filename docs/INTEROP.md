@@ -14,8 +14,7 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 | Fusion 360 .f3d | import | 2 | done (ADR 0039: the archive's binary ACIS bodies; component placements not read yet) | – | – | 0 |
 | ACIS SAT | import | 2 | done (ADR 0039, via STEP; versions 1 to 7; analytic and B-spline geometry, procedural surfaces by their stored approximation) | – | – | 0 |
 | Parasolid XT | import | 2 | done (ADR 0035, via STEP; outside the corpus, 4 of 5 NIST samples read, V3 refused) | – | – | 0 |
-| SolidWorks .sldprt | import | 2 | planned | – | – | 0 |
-| Fusion .f3d | import | 2 | planned | – | – | 0 |
+| SolidWorks .sldprt | import | 2 | done (ADR 0043: the Parasolid partition of both containers, SW2007–2025; parts only, no feature history; 2026-11-08) | 100 % (23/23) | 96 % (22/23; the 12 controlled parts match SolidWorks' own STEP exactly; one part keeps its bodies only per feature) | 23 |
 | FreeCAD .FCStd | import | 1/2 | planned (v1) | – | – | 0 |
 | OpenSCAD .scad | import | 1 | planned (v1) | – | – | 0 |
 
