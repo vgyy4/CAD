@@ -58,7 +58,8 @@ software fallback; GUI automation tests; a permissive license.
 
 `gusset_render::render_traced` renders a still on the CPU by path tracing (the "rendering"
 item of the later tier): diffuse materials in the parts' colours on a ground plane at the
-model's lowest point, smooth shading (vertex normals interpolated), a sky (blue above, white at the horizon) and a sun with an angular
+model's lowest point, smooth shading (vertex normals interpolated), a thin clear coat on the parts
+(4 % Fresnel, slightly rough), a sky (blue above, white at the horizon) and a sun with an angular
 spread (soft shadows), up to six bounces (colour bleeding), a soft tone curve, sRGB out.
 Rays go through `Scene::pick`, the picking BVH, so whatever the viewport holds is traced. The
 noise is seeded by pixel and sample: the same scene gives the same image. Rows are split

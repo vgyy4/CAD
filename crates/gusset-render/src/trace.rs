@@ -37,6 +37,9 @@ const SUN: Vec3 = [0.408_248_29, 0.408_248_29, 0.816_496_58];
 const SUN_POWER: f64 = 2.2;
 const SUN_SPREAD: f64 = 0.05;
 const GROUND_ALBEDO: f64 = 0.7;
+/// Clear coat: reflectance at normal incidence (a lacquer's 4 %) and roughness.
+const COAT_F0: f64 = 0.04;
+const COAT_ROUGH: f64 = 0.08;
 
 /// A little xorshift generator, seeded per pixel and sample.
 struct Rng(u64);
@@ -88,6 +91,8 @@ struct Hit {
     point: Vec3,
     normal: Vec3,
     albedo: [f64; 3],
+    /// Parts have a clear coat; the ground does not.
+    coat: bool,
 }
 
 struct World<'a> {
@@ -135,7 +140,7 @@ impl World<'_> {
                 n = scale(n, -1.0);
             }
             let [r, g, bl] = m.material().color.bytes().map(|v| f64::from(srgb_to_linear(f32::from(v) / 255.0)));
-            Some((h.distance, Hit { point: h.point, normal: n, albedo: [r, g, bl] }))
+            Some((h.distance, Hit { point: h.point, normal: n, albedo: [r, g, bl], coat: true }))
         });
         // The ground plane under the parts.
         let ground = (ray.dir[2] < -1e-9).then(|| (self.ground - ray.origin[2]) / ray.dir[2]).filter(|t| *t > self.eps);
@@ -146,6 +151,7 @@ impl World<'_> {
                 point: add(ray.origin, scale(ray.dir, g)),
                 normal: [0.0, 0.0, 1.0],
                 albedo: [GROUND_ALBEDO; 3],
+                coat: false,
             }),
             (None, None) => None,
         }
@@ -174,6 +180,27 @@ impl World<'_> {
                 }
                 break;
             };
+            // A thin clear coat (parts only): a Fresnel share of the paths reflects off it,
+            // slightly rough; the rest goes into the diffuse base.
+            if h.coat {
+                let cos_i = (-dot(ray.dir, h.normal)).clamp(0.0, 1.0);
+                let fresnel = COAT_F0 + (1.0 - COAT_F0) * (1.0 - cos_i).powi(5);
+                if rng.next() < fresnel {
+                    if depth == bounces {
+                        break;
+                    }
+                    let mirror = sub(ray.dir, scale(h.normal, 2.0 * dot(ray.dir, h.normal)));
+                    let (t, b) = basis(mirror);
+                    let (u, v) = (rng.next() - 0.5, rng.next() - 0.5);
+                    let mut dir =
+                        normalize_or(add(mirror, add(scale(t, u * COAT_ROUGH), scale(b, v * COAT_ROUGH))), mirror);
+                    if dot(dir, h.normal) <= 0.0 {
+                        dir = mirror;
+                    }
+                    ray = Ray { origin: add(h.point, scale(h.normal, self.eps)), dir };
+                    continue;
+                }
+            }
             for (t, a) in through.iter_mut().zip(h.albedo) {
                 *t *= a;
             }
@@ -282,6 +309,11 @@ mod tests {
         let (lo, hi) = (all.iter().min().unwrap(), all.iter().max().unwrap());
         assert!(hi - lo > 150, "{lo}..{hi}");
         assert!(img.to_png().unwrap().starts_with(b"\x89PNG"));
+        // A look at a bigger picture on request (not in CI).
+        if let Ok(out) = std::env::var("GUSSET_TRACE_OUT") {
+            let big = render_traced(&s, &c, [480, 360], TraceSettings { samples: 64, bounces: 3 }).unwrap();
+            std::fs::write(out, big.to_png().unwrap()).unwrap();
+        }
     }
 
     #[test]
