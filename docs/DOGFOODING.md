@@ -1282,3 +1282,44 @@ correctly and STEP brings them back; the colours of three imports (SolidWorks bo
 | F15-7 | Fixed: clearing faces without a colour says so; the count is `faces_coloured_in_body`; a face set to the body's colour gets no entry, with a note. |
 | F15-8 | Fixed: STEP export notes that finishes are not stored; 3MF writes values within 1e-9 of zero as 0. |
 | F15-9 | Accepted: a face-range syntax would change the face-reference grammar everywhere for size alone; 14.5 kB for 83 bodies stays readable. |
+
+## Run 16 — textures and image export (2026-11-08)
+
+Setup: debug `gusset` with real OCCT and workers, `gusset mcp --no-attach` over stdio behind run 15's Python client
+(`dogfood16/`: `a` one box, `b` four textured boxes (wood, brushed metal, carbon, speckle) on a blue plate, `e` an
+imported STEP). About 150 client calls plus a few CLI calls (`gusset text/pack/build`). Overwriting an export needs the
+user's approval, so the daemon's elicitation policy had to answer `{approve: true}` (the form's field is `approve`;
+`content: {}` is a decline). Images were looked at (PNG at 480x300 to 1280x800). Debug build, so timings are upper
+bounds. Tools: `export_image` and `branch_merge` are callable by name but absent from `tools/list` (as in run 15).
+
+| # | Part | Result | Notes |
+|---|---|---|---|
+| 1 | `body.appearance` texture kinds and size | Works: wood 6, brushed 2, carbon 3, speckle 1.5 mm defaults (`texture_size_mm` in the reply). A kind change resets the size to the new default (speckle 12 -> wood 6); resize alone keeps the kind; the same kind again keeps the size (`texture: wood` after size 3 stays 3, same node). The text prints `texture_size` only when it differs from the default (`texture: wood, texture_size: 1234.5 mm`). Names are case-insensitive in the tool (`WOOD`) | 20 calls |
+| 2 | Refusals of the tool | Nothing committed: `marble` (`unknown texture`, hint lists the kinds), size 0.005 / 10000.5 / -1 / 0 / 1e300 (`texture_size must be 0.01 to 10000 mm`; 0.01 and 10000 accepted), `"12 mm"` or `"NaN"` as strings (serde `expected f64`), size without texture (`texture_size needs a texture`, hint `add texture: wood`), `clear` plus texture or size (`clear takes no colour, finish or texture`), `faces` plus texture or size (`faces take a colour, not a finish or texture`, hint `set the finish and texture on the whole body`), `texture: none` plus size (`texture none takes no size`) | 16 calls |
+| 3 | Text round trip, undo, rename | `document_get_text` -> `gusset pack` -> `gusset text` is byte-identical for six appearances; `bt.png` from `gusset build` equals the tool's picture (same bytes, deterministic). `document_set_text` refuses (line and column): size without texture, `marble`, `none`, size 0.001 / 20000 mm, `2 in` and `2` (`needs a unit`, F16-3), `p`, the same argument twice. `history_undo`/`history_redo` move texture and size back and forth; `feature_rename Blk -> Plank` carries the texture, undo and redo too | 25 calls |
+| 4 | Branches | A texture change on one side merges (`taken: ["appearance Blk"]`). Different textures on both sides: `conflict` with `ours`/`theirs` texts, `prefer: theirs` takes it. A colour change on one branch and a size change on the other also conflict (F16-2). `branch_compare` shows old/new appearance text | 12 calls |
+| 5 | `export.image` refusals | `../x.png`, `/tmp/x.png` (`not_allowed`, hint `use a plain relative name such as exports/part.step`), `x.jpg`, `x`, `.png`, empty (`the picture is a PNG`), width/height 0 or 4097 (`1 to 4096 pixels`), samples 0 / 1025 (`samples is 1 to 1024`), view `sideways` (lists the views), `a/b.png` (`the target folder does not exist`, hint `create the folder inside the project first`), 1.5 / -3 / `"big"` (serde `expected u32`), existing file (`confirmation_required`, hint `pass overwrite: true`), overwrite without approval (`approval_denied`). `ISO` is accepted. Success reply: `written`, `bytes`, `width`, `height`, `samples`, `seconds` | 25 calls |
+| 6 | `export.image` timing (debug) | 160x100 at 16 samples 0.5 s; 320x200 at 4: 0.6 s, at 16: 1.9 s; 640x400 at 4: 2.3 s, at 16: 4.9-8.3 s, at 64: 30.8 s; 1280x800 at 8: 16.5 s, at 32: 62.8 s; 4096x4096 at 1: 69.8 s (20 MB PNG, F16-6); 4096x8: 0.1 s; 1x1: 0 s (83 bytes). `render_view` photo 640x400 at 16: 9.95 s, shaded 0.03 s | 20 calls |
+| 7 | Looking at the pictures | Correct in photo (`export_image`, `render_view`) and shaded: wood shows rings and streaks, brushed metal streaks and reflects the blue plate, carbon shows a twill, speckle shows discs on every face including cuts through the top; the colour reads as chosen. Size 1 mm wood is a fine grid, 0.01 mm brushed, 40 mm carbon and 10000 mm speckle read as plain colour (no moire, no artefacts). Photo and shaded agree on pattern, scale and orientation; shaded textures are visible at 0.03 s | 8 calls |
+| 8 | Textured imported body (`blk.step`, red body, three faces in own colours) | `texture: wood, texture_size: 5` is accepted next to `faces: {...}`; shaded and photo draw wood on the body-colour faces and plain blue, slate and (hidden) cyan on the coloured faces, as the ADR says. `export_step` notes `STEP stores colours but not finishes or textures...` | 6 calls |
+| 9 | Other exports of textured bodies | 3MF, STL, OBJ, GLB give no note that textures (and finishes) are not written (F16-4); 3MF has the `basematerials` colours only | 5 calls |
+
+What worked well: the texture is two more arguments of `body.appearance` and takes the same forms (tool, text, CLI);
+every refusal names the rule and has a hint where one helps; sizes are bounded in the tool and in text with a line
+and column; the result is deterministic across tool, CLI and viewport; `export_image` keeps files inside the
+project, asks before overwriting, and reports its own `seconds`; the viewport shader and the path tracer agree.
+
+| ID | Sev | Item | Repro | Suggested fix |
+|---|---|---|---|---|
+| F16-1 | nit | An empty or blank string for `texture`, `finish` or `color` is echoed as the word `file`: `unknown texture 'file'`, `unknown finish 'file'`, `'file' is not a colour`. (`" wood"` with a leading space is accepted, so only the empty case shows it.) | `body.appearance {body, texture: ""}` (also `"  "`, `finish: ""`, `color: ""`) | Echo the given text (`''`) or say `texture is empty; use none to remove it`. |
+| F16-2 | minor | Merges treat scalar fields of an appearance as one unit (F15-3 for faces was fixed): a colour change on one branch and a `texture_size` change on the other conflict; `prefer` takes one side whole. | Branch `c1`: `color: "#ff0000"`; branch `c2`: `texture_size: 9`; `branch_merge {from: c1}` on `c2` gives `conflict {kind: appearance}` | Merge colour, finish, texture, size and faces field by field; conflict only when one field changed differently on both sides. |
+| F16-3 | nit | Small input oddities: `texture_size: 2 in` in text says `needs a unit (write it in mm...)` although it has one; the tool takes only a number, so `"12 mm"` gives a serde `expected f64` while the text form requires `12 mm`; sizes are rounded to 3 decimals without a word (`0.123456 -> 0.123`, `6.0000001` is a no-op returning the old node). | `document_set_text` with `texture_size: 2 in`; `body.appearance {texture_size: "12 mm"}` | `texture_size must be in mm`; accept `"12 mm"` strings in the tool or say `a number in mm` in the error; note the rounding. |
+| F16-4 | nit | Only STEP export says textures are lost. 3MF, glTF, OBJ and STL of a textured body say nothing (3MF/glTF also lose finishes). | `export_mesh {path: "x.3mf"}` with a textured body | Same note as STEP (`textures are not written`). |
+| F16-5 | nit | Small inconsistencies: `texture: none` on an untextured body returns the same node with no note (cf F15-7); the tool accepts `WOOD`, the text form refuses `Wood` (`unknown texture 'Wood'`); the reply key is `texture_size_mm` for the argument `texture_size`. | `body.appearance {texture: "none"}` twice; `appearance W (texture: Wood)` | `note: no texture to remove`; accept either case in both or neither; document the unit in the schema (`Texture scale in mm` is there, the key differs). |
+| F16-6 | minor | `export.image` bounds each factor but not the work: 4096x4096 at 1 sample took 69.8 s (debug) and wrote a 20 MB PNG; 1280x800 at 32 samples 62.8 s; the 4096x4096 at 1024 samples that the limits allow would take hours (not run). No progress and no estimate before starting, and a client that waits has only the call's end. | `export_image {path: "big.png", width: 4096, height: 4096, samples: 1}` | Cap `width*height*samples` (say `too much work: lower samples or size`, with the estimate) or return a `job` that can be polled; compress the PNG harder. |
+
+### Status of the run 16 findings
+
+| ID | Status |
+|---|---|
+| F16-1..F16-6 | Open. |
