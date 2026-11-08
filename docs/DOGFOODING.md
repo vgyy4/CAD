@@ -1328,3 +1328,66 @@ project, asks before overwriting, and reports its own `seconds`; the viewport sh
 | F16-4 | Fixed: mesh exports note that finishes and textures are not written. |
 | F16-5 | Fixed in part: `texture: none` on an untextured body notes it. Accepted: the tool accepts any case (F14-3) while the document text stays lower case; the reply names the unit (`texture_size_mm`). |
 | F16-6 | Fixed: `export.image` refuses more than 2^26 paths (1280 x 800 at 64 samples fits) and stops with Stop and agents' deadlines (review R3). |
+
+## Run 17 — SolidWorks assemblies and OpenSCAD features (2026-11-08)
+
+Setup: debug `gusset` with real OCCT and workers, `gusset mcp --no-attach` over stdio behind run 16's Python client
+(`dogfood17/`: project `a` for the assembly and "existing features" checks, project `b` for the OpenSCAD files).
+The NIST single-die nanocalorimeter `.sldasm` and its three `.sldprt` were copied into the project folder, with
+variants (`miss/` without the silicon nitride part, `alone/` with no parts, `case/` all lower case, `space/` names with
+spaces instead of underscores, `bad/` truncated assembly, `bad2/` truncated die part, `cs/` symlinked parts). About
+20 `.scad` files were written (primitives, polygons with holes, partial `rotate_extrude`, booleans, nested and
+arbitrary-axis rotations, scales, loops, modifiers, unsupported operations). About 110 client calls. Volumes were
+checked by hand against the formulas, and one rotated cube's box against an independent computation. Undo is the tool
+`history_undo`. Note: `document_get_text` returns 500 lines per call (`more_available`, `next_offset`); pass
+`limit` to get the rest, or a round trip through `document_set_text` fails with an unclosed sketch (a client slip
+here, not a bug).
+
+| # | Part | Result | Notes |
+|---|---|---|---|
+| 1 | `.sldasm` import with its 3 parts | Works: three bodies `Import1..3` (die 26.138 mm3 at z -21.68..-21.18, nitride 0.0075 mm3, top metal 0.0033 mm3) at the ADR's placements; the iso render shows the die with its window and the layers inside it. Two warnings name the virtual components `Part1^...`/`Part2^...` (`the file holds no solid or sheet body`). The text has `import ImportN (... format: step, file: "<asm>", label: "<component>")` | 3 calls |
+| 2 | Part missing / assembly alone | A missing part is one warning (`... .SLDPRT ('...' is not in the folder)`) and the other bodies still come in with `rebuild_ok: true`; with no part at all the import fails (`no component of the assembly could be imported: ...`, code `io`, message cut at 512 characters with a `full_text` pointer) | 4 calls |
+| 3 | Renamed parts | Lower case file names and names with spaces instead of underscores are matched; same bodies, volumes and boxes as the original | 2 calls |
+| 4 | Damaged input | Truncated assembly: `the SolidWorks file is damaged: the file has no component tree (is it a part?)`; truncated part: a warning for that component only; symlinked part: refused for that component (raw errno text, F17-10) | 3 calls |
+| 5 | Refusals | `../x.sldasm`, `/etc/passwd`, `/tmp/x.SLDASM` give `not_allowed`; missing file `not_found`; a directory, `.sha256` and empty name give `invalid_args` | 7 calls |
+| 6 | Re-import, undo, redo | Importing twice gives six bodies (two exactly overlapping sets) with no note (F17-9); one `history_undo` removes all bodies of one import and `history_redo` brings them back, text byte-identical | 6 calls |
+| 7 | `.scad` primitives and extrusions | Cube 6000, cylinder 753.98, cone 408.41, sphere 904.78, square extrude 500, polygon with circle and square hole 2186.90, polygon with `paths` hole 2064, hexagonal cylinder `$fn=6` 649.52: all equal the formulas and come in as features (`sketch`, `extrude`/`revolve`, `move`, `combine`) | 3 calls |
+| 8 | `rotate_extrude`, booleans, transforms | Full ring 1083.85, 90 deg 270.96, 200 deg of a circle 438.65 all exact; `difference`/`union`/`intersection` as `combine`; `rotate([30,40,50])` box equals an independent computation to 1e-3; arbitrary axis `rotate(a, v)` is written as `axis`/`angle`; uniform `scale(2)` scales the sizes (r 6, h 10); nested translate/rotate/scale/rotate cone 275.67 | 4 calls |
+| 9 | Mirror and uneven scale | `mirror` and `scale([1,2,3]) cube` come in as `Import` bodies (`format: scad`) with a warning naming `Object n`; in a `difference` too. An uneven scale of a cylinder or sphere, or a skew, aborts the whole import (F17-2) | 8 calls |
+| 10 | Loops and modules | A `for` over a module gives repeated sketch/extrude/move triples and one `combine` (4 pegs, 6 cubes; 561 lines for the file set, F17-7) | 1 call |
+| 11 | Editing | `feature_edit {name, set: {distance: "20 mm"}}` updates the body (volume 1131 -> 2262); editing `Place9` moves it; `Combine1 op: add` changes the result; `document_set_text` with a circle radius 6 -> 8 gives 4021.2 and undo restores 2261.9. A rectangle's sketch has DOF 8 (F17-4); a no-op `document_set_text` still adds a history node (F17-8) | 8 calls |
+| 12 | Name clashes and rolled-back timeline | With `Sketch1` and `Cube1` present the import gives `Sketch5`, `Cube2`; with the timeline rolled back the objects come in as `ImportN` exact bodies in the right place, with no warning (F17-5); `history_undo` after clearing the rollback says `Undid rolled b2 forward to the end` | 6 calls |
+| 13 | Unsupported or odd `.scad` | `twist`/`scale` extrusions, `hull`, `text`, `import` are skipped with a line warning (F17-3); a file with only a `hull` fails with `makes no solid object`; `scale(0)`, a zero or negative `cube`, and a `rotate_extrude` shape across the axis abort the file; `%` and `!` modifiers are ignored (F17-1) | 8 calls |
+
+What worked well: placements, case and space matching and the per-component warnings of the assembly import; every
+primitive volume equals the formula; the feature text is readable and every distance, radius and move is editable
+with `feature_edit` or in the text; the exact fallback for mirror and uneven scale keeps the volume; names never
+clash with existing features; one undo per import.
+
+| ID | Sev | Item | Repro | Suggested fix |
+|---|---|---|---|---|
+| F17-1 | minor | OpenSCAD modifiers `%` (background) and `!` (root) are ignored (parser comment: "`!`, `#` and `%` are ignored"), so a `%cube(1)` background object is imported as a solid and `!obj` does not isolate that object. OpenSCAD itself renders and exports neither the `%` objects nor anything outside a `!` subtree, so volumes and bodies differ from OpenSCAD's own STL. | `%cube(1); cube(2); !translate([50,0,0]) cube(3);` gives three cubes (1, 8, 27 mm3); OpenSCAD gives one (27). | Drop `%` statements like `*`; with a `!` statement keep only that statement (OpenSCAD's root rule); warn once when either was used. |
+| F17-2 | minor | An uneven scale of a cylinder, cone or sphere (an ellipse) or a skew aborts the whole file with `a cylinder scaled unevenly across its axis is not supported`, while the same scale on a cube falls back to an exact body with a warning (the ADR amendment says an uneven scale falls back). No other object of the file is imported. | `scale([1,2,1]) cylinder(h=30,r=3);` or `rotate([0,0,30]) scale([1,2,1]) rotate([0,0,30]) cube(3);` (skew) fail; `scale([1,2,3]) cube(5)` imports. | Build an elliptical cylinder/sphere exactly if the kernel can, else skip that object with a warning like `hull` does, so the rest of the file comes in. |
+| F17-3 | minor | Skipped objects are only a line warning in a reply that says `rebuild_ok: true`; the reply has no count (`2 of 5 objects skipped`) and `features` simply lacks them, so an agent that does not read the warnings believes the import is complete. A file whose only object is a `hull` or `text` fails with `the OpenSCAD file makes no solid object`, which does not say that the object was skipped. `linear_extrude` with `twist` or `scale` is skipped although it is a plain solid. | `linear_extrude(height=10,twist=90,slices=10) square(5);` next to three good objects: 3 bodies, 2 warnings (`not supported; skipped`); `hull(){cube(2); translate([5,5,5]) cube(2);}` alone: `makes no solid object`. | Add `skipped_objects: n` (or `partial: true`) to the reply; name the skipped operation in the all-skipped error; support `scale`/`twist` in `linear_extrude`. |
+| F17-4 | minor | The sketches written for imported primitives have no constraints and no dimensions (a rectangle has DOF 8, `status: UnderConstrained`, every point free), so editing one coordinate turns the cube into a trapezoid, and a size is only editable as coordinates in several places. Only the extrude distance, a radius and the `move` are one-value edits. The ADR calls the result editable. | Import `cube([10,20,30])`, then in the text set `p2 = point(15, 0)` of `Sketch1`: volume 6000 -> 7500 and the base is a trapezoid. | Write `horizontal`/`vertical` constraints and width/height dimensions for rectangles (and a diameter for circles), so one value edits the size. |
+| F17-5 | nit | With the timeline rolled back the objects come in as exact `ImportN` bodies, as documented, but the reply has no warning and only the `tier` text differs (`exact geometry built from the OpenSCAD program (B-rep, its parameters are not kept)`), so an agent does not learn why the file did not give features. | `timeline_set_rollback {index: 11}`, then `import_file {path: "bool.scad"}`: `scad_features: []`, `warnings: []`. | Warn: `the timeline is rolled back: imported as exact bodies; clear the rollback and import again for features`. |
+| F17-6 | nit | The `import_file` description is stale: `STEP/IGES/XT/SAT/F3D/FCStd/SCAD become exact bodies`. It says nothing of `.sldprt`/`.sldasm` (assemblies need their parts in the assembly's own folder, matched by name ignoring case and `_`/space), nor that `.scad` now gives features (and what falls back). Only the error hint lists the extensions. | `commands {name: "import_file"}`. | Update the description: SolidWorks parts and assemblies, parts next to the assembly, `.scad` as editable features with exact fallback. |
+| F17-7 | nit | A `for` is unrolled into one sketch, extrude and move per iteration (6 cubes: 6 identical `Sketch` blocks), as the ADR says, but an agent gets no hint that `feature_pattern_linear` is the editable form; moves are named `PlaceN` and rotations are written as a 9-digit axis and angle (`axis: [0.158371333, 0.788279894, 0.594586688], angle: 61.357363038 deg`), so `rotate([30,40,50])` cannot be read back. | `for(i=[0:2], j=[0:1]) translate([i*10,20+j*10,0]) cube(4);` then `document_get_text`. | Recognise a plain `for` over a translation as `pattern_linear` (or share one sketch); keep the Euler angles in a comment or label. |
+| F17-8 | nit | `document_set_text` with the unchanged text returns `features_changed: 0` but still creates a history node (`n23`), so an undo step does nothing. `timeline_set_rollback {index: null}` returns `{}` while setting it returns `{"rollback": 11}`. | `document_set_text {text: <document_get_text, all pages>}`, then `history_undo`. | Return `no change` without a node; return `{"rollback": null}`. |
+| F17-9 | nit | Small assembly points. (a) Bodies are `Import1..n`; the component name is only in the `label`, so `query_body` names do not tell the parts apart. (b) A second import of the same assembly adds a second, exactly overlapping set with no note. (c) A truncated part is reported as `no configuration has a Parasolid partition (an assembly or a part with...`, not as damaged. (d) The warning for a missing part says `is not in the folder` without naming the folder. (e) Warnings for `.scad` say `Object n` while bodies are `ImportN` with another number (`Object 1` is `Import3`). | `import_file` of the assembly twice; `bad2/` with a 3000 byte die part; `mirror([1,0,0]) cube(1);` in a document that already has two imports. | Name bodies from the component (deduplicated); note `already imported as Import1..3` when the blob matches; use `damaged` wording when the file is short; name the folder; use the body name in the warning. |
+| F17-10 | nit | Error texts: a directory gives `'.' files cannot be imported`; a symlink part gives the raw errno `filesystem loop or indirection limit (e.g. symlink loop)`; `scale(0)`, a zero or negative cube size and an angle over 360 abort the file (OpenSCAD warns and drops that object). | `import_file {path: "nist"}`; `scale(0) cube(3);`; `cube([0,5,5]);` | `is a folder, not a file`; `symlinks are not followed`; skip the object with a warning (as for `hull`). |
+
+### Status of the run 17 findings
+
+| ID | Status |
+|---|---|
+| F17-1 | Open |
+| F17-2 | Open |
+| F17-3 | Open |
+| F17-4 | Open |
+| F17-5 | Open |
+| F17-6 | Open |
+| F17-7 | Open |
+| F17-8 | Open |
+| F17-9 | Open |
+| F17-10 | Open |
