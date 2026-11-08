@@ -966,3 +966,24 @@ fn settings_travel_between_installs_without_recent_files() {
     assert_eq!(s.recent, vec!["/mine.gus".to_string()]);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn appearance_with_a_picked_face_colours_just_that_face() {
+    use crate::viewport::Hit;
+    let mut h = quick_harness(with_plane());
+    settle(&mut h);
+    let at = find_pick(&h, |hit| matches!(hit, Hit::Face { .. })).expect("a face on screen");
+    click_at(&mut h, at);
+    let Some(Hit::Face { body, name, .. }) = h.state().selection.last().cloned() else { panic!("no face picked") };
+    h.state_mut().feature_choice(&body, crate::browser::FeatureChoice::Appearance);
+    h.run();
+    let form = h.state().form.as_ref().expect("appearance form");
+    assert_eq!((form.value("faces"), form.value("finish")), (Some(name.as_str()), Some("")));
+    h.state_mut().form.as_mut().map(|f| f.set("color", "#d02020"));
+    h.get_by_label("OK").click();
+    settle(&mut h);
+    assert!(h.state().form.is_none(), "{:?}", h.state().form.as_ref().and_then(|f| f.error.clone()));
+    let a = h.state().snapshot.doc.appearance(&body).cloned().expect("appearance");
+    assert_eq!(a.faces.len(), 1);
+    assert_eq!(a.faces[0].faces.iter().map(ToString::to_string).collect::<Vec<_>>(), [name]);
+}

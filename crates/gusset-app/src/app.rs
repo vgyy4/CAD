@@ -1468,12 +1468,36 @@ impl App {
                 };
                 let name = body.as_str();
                 let look = self.snapshot.doc.appearance(name).cloned();
+                // Faces of this body picked: colour just them (a face takes no finish).
+                let picked: Vec<String> = self
+                    .selection
+                    .iter()
+                    .filter_map(|h| match h {
+                        Hit::Face { body: b, name: f, .. } if b == name => Some(f.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 self.start_command("body.appearance");
                 if let Some(form) = self.form.as_mut() {
                     form.set("body", name);
-                    let color = look.as_ref().map_or(0x00b4_bcc8, |a| a.color);
+                    let mut color = look.as_ref().map_or(0x00b4_bcc8, |a| a.color);
+                    if picked.is_empty() {
+                        form.set("faces", "");
+                        form.set("finish", look.as_ref().map_or("plastic", |a| a.finish.keyword()));
+                    } else {
+                        // The first picked face's own colour, if it has one.
+                        if let Some(c) = look.as_ref().and_then(|a| {
+                            a.faces
+                                .iter()
+                                .find(|g| g.faces.iter().any(|f| picked.first() == Some(&f.to_string())))
+                                .map(|g| g.color)
+                        }) {
+                            color = c;
+                        }
+                        form.set("faces", &picked.join(", "));
+                        form.set("finish", "");
+                    }
                     form.set("color", &format!("#{color:06x}"));
-                    form.set("finish", look.as_ref().map_or("plastic", |a| a.finish.keyword()));
                     form.show_more = true;
                 }
             }
