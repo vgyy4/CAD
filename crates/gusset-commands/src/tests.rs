@@ -1609,6 +1609,11 @@ fn baking_keeps_the_bodies_and_free_sketches_and_undoes_in_one_step() {
     assert_eq!(r["rebuild_ok"], true, "{r}");
     assert_eq!(r["bodies"], json!(["Extrude1"]), "{r}");
     assert_eq!(r["kept_features"], json!(["Sketch1", "Job1"]), "{r}");
+    assert_eq!(r["removed_features"], json!(["Extrude1"]), "{r}");
+    assert_eq!(r["removed_count"], 1, "{r}");
+    // A second bake has nothing to bake (dogfooding F12-6).
+    let e = execute(&mut s, &u, "feature.bake", json!({"confirm": true})).unwrap_err();
+    assert!(e.message.contains("nothing to bake"), "{e:?}");
     let text = run(&mut s, &u, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("import Extrude1") && !text.contains("extrude Extrude1"), "{text}");
     assert!(text.contains("param width"), "{text}");

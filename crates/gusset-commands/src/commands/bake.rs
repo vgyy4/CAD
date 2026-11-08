@@ -19,6 +19,9 @@ pub struct Bake {
     pub confirm: bool,
 }
 
+/// Most removed features named in the reply.
+const MAX_LISTED: usize = 200;
+
 /// A feature that does not depend on bodies and is kept by a bake.
 fn kept(f: &Feature, kept_so_far: &[String]) -> bool {
     let free = |p: &PlaneRef| match p {
@@ -46,6 +49,21 @@ impl Command for Bake {
             return Err(CommandError::args("baking removes the feature history: pass confirm: true")
                 .hint("history_undo brings it back"));
         }
+        // A baked document (imports and free sketches only) has no history left to bake.
+        let doc = s.document(&ctx.actor)?;
+        let mut free = Vec::new();
+        let history = doc.features.iter().any(|f| {
+            if kept(f, &free) {
+                free.push(f.name.clone());
+                false
+            } else {
+                !matches!(f.kind, FeatureKind::Import(_))
+            }
+        });
+        if !history {
+            return Err(CommandError::args("nothing to bake: the model has no feature history")
+                .hint("the bodies are already imports; edit them directly"));
+        }
         let ev = s.evaluate(&ctx.actor)?;
         if !ev.errors().is_empty() {
             return Err(CommandError::args("the model has rebuild errors: fix them before baking")
@@ -67,13 +85,16 @@ impl Command for Bake {
             }
             let mut keep: Vec<String> = Vec::new();
             let mut out = Vec::new();
-            let mut dropped = 0usize;
+            let (mut dropped, mut lost_jobs) = (Vec::new(), Vec::new());
             for f in std::mem::take(&mut doc.features) {
                 if kept(&f, &keep) {
                     keep.push(f.name.clone());
                     out.push(f);
                 } else {
-                    dropped += 1;
+                    if matches!(f.kind, FeatureKind::CamJob(_)) {
+                        lost_jobs.push(f.name.clone());
+                    }
+                    dropped.push(f.name);
                 }
             }
             doc.features = out;
@@ -97,7 +118,27 @@ impl Command for Bake {
                 doc.features.push(f);
                 made.push(name);
             }
-            Ok(json!({ "bodies": made, "removed_features": dropped, "kept_features": keep }))
+            let removed_count = dropped.len();
+            dropped.truncate(MAX_LISTED);
+            let mut out = json!({
+                "bodies": made,
+                "removed_count": removed_count,
+                "removed_features": dropped,
+                "kept_features": keep,
+            });
+            if !lost_jobs.is_empty()
+                && let Some(o) = out.as_object_mut()
+            {
+                // Jobs on sketches that stood on faces go with them (dogfooding F12-6).
+                o.insert(
+                    "note".into(),
+                    json!(format!(
+                        "CAM jobs on face sketches were removed ({}); history_undo brings them back",
+                        lost_jobs.join(", ")
+                    )),
+                );
+            }
+            Ok(out)
         })
     }
 }
