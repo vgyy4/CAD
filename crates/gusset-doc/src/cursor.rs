@@ -198,7 +198,7 @@ impl<'a> Cursor<'a> {
     pub(crate) fn string(&mut self) -> Result<String, ParseError> {
         self.ws();
         if !self.eat('"') {
-            return Err(self.err("expected a quoted string"));
+            return Err(self.err_hint("expected a quoted string", "write it in double quotes, e.g. \"Finish\""));
         }
         let mut out = String::new();
         loop {
