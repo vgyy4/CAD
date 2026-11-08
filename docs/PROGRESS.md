@@ -361,9 +361,12 @@ Phase 3 has started (see Next).
   form has a colour picker, and the photo render's clear coat is added rather than sampled (no
   grain). Dogfooding run 14 is fixed but its open nits. 3MF and glTF carry colours both ways
   (base materials, materials); reference meshes take appearances. The code review of the day's
-  work (docs/reviews/2026-11-08-appearances-review.md) is fixed but R11-R14 (minor). Next:
-  per-face colours, textures, a top-level BVH for scenes of many bodies, Fusion colours (in its
-  design stream).
+  work (docs/reviews/2026-11-08-appearances-review.md) is fixed (R11 and R12 accepted). STEP
+  face colours done (ADR 0045 amendment): stored per face name in the appearance, drawn by the
+  viewport, `render_view` and the path tracer, written back by STEP export. Display geometry of
+  unchanged bodies is reused across rebuilds (PERFORMANCE.md). Next: face colours from
+  Parasolid/SolidWorks/3MF and in 3MF export, textures, a top-level BVH for scenes of many
+  bodies, Fusion colours (in its design stream).
 - Dogfooding runs 12 and 13 and the follow-up security review (T1-T12) are fixed but T2's
   single-record read (bounded) and T3 (one `LocalBodies` stream).
 
