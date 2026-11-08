@@ -35,7 +35,8 @@ struct Draw {
     normal1: vec4<f32>,
     normal2: vec4<f32>,
     color: vec4<f32>,
-    // x: texture kind (0 none, 1 wood, 2 brushed, 3 carbon, 4 speckle), y: 1 / size in mm.
+    // x: texture kind (0 none, 1 wood, 2 brushed, 3 carbon, 4 speckle), y: 1 / size in mm,
+    // z: grain axis (0 X, 1 Y, 2 Z).
     tex: vec4<f32>,
 };
 
@@ -196,7 +197,17 @@ fn textured(base: vec3<f32>, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     if (d.tex.x < 0.5) {
         return base;
     }
-    return min(base * tex_factor(p, n), vec3<f32>(0.98));
+    // The grain axis first (texture.rs `factor_along`).
+    var tp = p;
+    var tn = n;
+    if (d.tex.z > 1.5) {
+        tp = p.zxy;
+        tn = n.zxy;
+    } else if (d.tex.z > 0.5) {
+        tp = p.yzx;
+        tn = n.yzx;
+    }
+    return min(base * tex_factor(tp, tn), vec3<f32>(0.98));
 }
 
 // `d.color.w` = closed (1) + 2 * finish (0 plastic, 1 metal, 2 glass, 3 rubber).

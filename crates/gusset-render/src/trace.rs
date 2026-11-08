@@ -170,7 +170,7 @@ impl World<'_> {
                 let (v, w) = den;
                 let p = add(add(scale(ma, 1.0 - v - w), scale(mb, v)), scale(mc, w));
                 let mn = normalize_or(cross(sub(mb, ma), sub(mc, ma)), [0.0, 0.0, 1.0]);
-                for (a, f) in albedo.iter_mut().zip(t.factor(p, mn)) {
+                for (a, f) in albedo.iter_mut().zip(t.factor_along(crate::texture::grain_axis(&d.bounds), p, mn)) {
                     *a = (*a * f).min(0.98);
                 }
             }

@@ -89,8 +89,9 @@ anywhere in the document.
   (`texture: none` takes it off). Procedural, not images: a pattern computed from the hit
   point in the body's own coordinates (millimetres), so it needs no UV maps (tessellations
   carry none), moves with the body, costs no file references in the document, and is the same
-  on every run. Wood: growth rings around an axis along the body's X, wobbled by value noise,
-  with grain streaks; brushed: noise stretched along X; carbon: a 2x2 twill on the plane facing
+  on every run. Wood: growth rings around an axis along the body's longest side (its model
+  box's longest extent, X on ties), wobbled by value noise, with grain streaks; brushed: noise
+  stretched along that side; carbon: a 2x2 twill on the plane facing
   the normal's largest axis; speckle: balls jittered in a third of the lattice cells, so any
   cut through the body shows discs. Each multiplies the colour (a neutral mean, so the colour
   still reads as chosen). The path tracer (photo renders, `render_view`, `export.image`, the

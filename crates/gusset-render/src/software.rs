@@ -159,7 +159,7 @@ impl SoftwareRenderer {
                                     [p0, p1, p2],
                                     *base,
                                     &plan,
-                                    (d.closed, d.finish, d.texture_for(*base)),
+                                    (d.closed, d.finish, d.texture_for(*base).map(|x| (x, d.grain_axis))),
                                 );
                             }
                         }
@@ -275,13 +275,13 @@ fn to_screen(c: [f32; 4], w: usize, h: usize) -> Option<[f32; 4]> {
     Some([(c[0] * iw * 0.5 + 0.5) * w as f32, (0.5 - c[1] * iw * 0.5) * h as f32, c[2] * iw, iw])
 }
 
-/// `how`: closed mesh, finish code, texture.
+/// `how`: closed mesh, finish code, texture and its grain axis.
 fn raster_triangle(
     t: &mut Target,
     v: [&ClipVert; 3],
     base: [f32; 3],
     plan: &FramePlan,
-    how: (bool, u32, Option<crate::Texture>),
+    how: (bool, u32, Option<(crate::Texture, u32)>),
 ) {
     let (closed, finish, texture) = how;
     let (Some(s0), Some(s1), Some(s2)) =
@@ -341,10 +341,10 @@ fn raster_triangle(
                 Some(pl) => ([-pl[0], -pl[1], -pl[2]], zip_with(base, plan.cap, |b, c| b + (c - b) * CAP_MIX), 0),
                 _ => {
                     let base = match texture {
-                        Some(tex) => {
+                        Some((tex, axis)) => {
                             let p = attr(&|cv| cv.model).map(f64::from);
                             let mn = attr(&|cv| cv.model_normal).map(f64::from);
-                            zip_with(base, tex.factor(p, mn).map(|f| f as f32), |b, f| (b * f).min(0.98))
+                            zip_with(base, tex.factor_along(axis, p, mn).map(|f| f as f32), |b, f| (b * f).min(0.98))
                         }
                         None => base,
                     };

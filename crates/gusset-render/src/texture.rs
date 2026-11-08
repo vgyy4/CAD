@@ -15,9 +15,9 @@ pub struct Texture {
 /// What the pattern looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureKind {
-    /// Growth rings and grain along the body's X axis.
+    /// Growth rings and grain along the body's longest side.
     Wood,
-    /// Fine streaks along the body's X axis.
+    /// Fine streaks along the body's longest side.
     Brushed,
     /// A 2x2 twill weave.
     Carbon,
@@ -40,10 +40,10 @@ impl TextureKind {
 }
 
 impl Texture {
-    /// The shader's texture word: kind (1 wood, 2 brushed, 3 carbon, 4 speckle; 0 none) and
-    /// the inverse size in 1/mm.
+    /// The shader's texture word: kind (1 wood, 2 brushed, 3 carbon, 4 speckle; 0 none),
+    /// the inverse size in 1/mm and the grain axis.
     #[must_use]
-    pub(crate) fn shader_word(t: Option<Texture>) -> [f32; 4] {
+    pub(crate) fn shader_word(t: Option<Texture>, axis: u32) -> [f32; 4] {
         match t {
             None => [0.0; 4],
             Some(t) => {
@@ -53,7 +53,7 @@ impl Texture {
                     TextureKind::Carbon => 3.0,
                     TextureKind::Speckle => 4.0,
                 };
-                [kind, (1000.0 / f64::from(t.size_um.max(1))) as f32, 0.0, 0.0]
+                [kind, (1000.0 / f64::from(t.size_um.max(1))) as f32, axis as f32, 0.0]
             }
         }
     }
@@ -62,6 +62,19 @@ impl Texture {
     /// albedo by at model point `p` (mm) on a surface with model normal `n`.
     #[must_use]
     pub fn factor(&self, p: Vec3, n: Vec3) -> [f64; 3] {
+        self.factor_along(0, p, n)
+    }
+
+    /// As [`Texture::factor`], with the grain (wood, brushed) along model axis `axis` (0 X,
+    /// 1 Y, 2 Z) instead of X: the axes are turned round so `axis` comes first.
+    #[must_use]
+    pub fn factor_along(&self, axis: u32, p: Vec3, n: Vec3) -> [f64; 3] {
+        let turn = |v: Vec3| match axis {
+            1 => [v[1], v[2], v[0]],
+            2 => [v[2], v[0], v[1]],
+            _ => v,
+        };
+        let (p, n) = (turn(p), turn(n));
         let s = (f64::from(self.size_um) / 1000.0).max(1e-3);
         let q = [p[0] / s, p[1] / s, p[2] / s];
         let k = match self.kind {
@@ -71,6 +84,21 @@ impl Texture {
             TextureKind::Speckle => speckle(q),
         };
         [k; 3].map(|v: f64| v.clamp(0.0, 1.6))
+    }
+}
+
+/// The axis a body's grain runs along: its longest extent (X on ties), as a piece of wood
+/// is cut along the trunk.
+#[must_use]
+pub(crate) fn grain_axis(b: &crate::math::Aabb) -> u32 {
+    let e = [0, 1, 2].map(|k| b.max.get(k).copied().unwrap_or(0.0) - b.min.get(k).copied().unwrap_or(0.0));
+    let [x, y, z] = e;
+    if x >= y && x >= z {
+        0
+    } else if y >= z {
+        1
+    } else {
+        2
     }
 }
 
@@ -215,6 +243,21 @@ mod tests {
             let p = [f64::from(i) * 0.13, f64::from(i) * 0.29, 0.0];
             assert_eq!(small.factor(p, n).map(f64::to_bits), big.factor(p.map(|v| v * 2.0), n).map(f64::to_bits));
         }
+    }
+
+    #[test]
+    fn grain_follows_the_long_axis() {
+        let t = Texture { kind: TextureKind::Brushed, size_um: 1000 };
+        let n = [0.0, 0.0, 1.0];
+        // Along the grain the pattern barely changes; across it, it does.
+        let spread = |axis: u32, step: Vec3| {
+            let v: Vec<f64> = (0..200).map(|i| t.factor_along(axis, step.map(|c| c * f64::from(i)), n)[0]).collect();
+            v.iter().fold(f64::MIN, |a, b| a.max(*b)) - v.iter().fold(f64::MAX, |a, b| a.min(*b))
+        };
+        assert!(spread(1, [0.0, 0.02, 0.0]) < spread(1, [0.02, 0.0, 0.0]));
+        assert!(spread(0, [0.02, 0.0, 0.0]) < spread(0, [0.0, 0.02, 0.0]));
+        let b = crate::math::Aabb { min: [0.0; 3], max: [5.0, 40.0, 10.0] };
+        assert_eq!(grain_axis(&b), 1);
     }
 
     #[test]

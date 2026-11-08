@@ -51,9 +51,9 @@ pub const TEXTURE_SIZE_UM: std::ops::RangeInclusive<u32> = 10..=10_000_000;
 /// What the pattern looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureKind {
-    /// Growth rings and grain along the body's X axis.
+    /// Growth rings and grain along the body's longest side.
     Wood,
-    /// Fine streaks along the body's X axis.
+    /// Fine streaks along the body's longest side.
     Brushed,
     /// A 2x2 twill weave.
     Carbon,

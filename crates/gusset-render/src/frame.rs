@@ -93,6 +93,8 @@ pub(crate) struct MeshDraw {
     pub texture: Option<crate::Texture>,
     /// The material's linear colour.
     pub base: [f32; 3],
+    /// Model axis the texture's grain runs along (`texture::grain_axis`).
+    pub grain_axis: u32,
 }
 
 impl MeshDraw {
@@ -216,6 +218,7 @@ impl FramePlan {
                 lod,
                 texture: m.material().texture,
                 base,
+                grain_axis: crate::texture::grain_axis(&data.bounds),
                 finish: match m.material().finish {
                     crate::Finish::Plastic => 0,
                     crate::Finish::Metal => 1,

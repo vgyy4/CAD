@@ -663,7 +663,8 @@ impl Renderer {
                        color: [f32; 3],
                        closed: bool,
                        finish: u32,
-                       texture: Option<crate::Texture>|
+                       texture: Option<crate::Texture>,
+                       axis: u32|
          -> u32 {
             let off = slot * stride;
             let mut e = Vec::with_capacity(DRAW_SIZE as usize);
@@ -672,7 +673,7 @@ impl Renderer {
                 push_vec4(&mut e, [c[0] as f32, c[1] as f32, c[2] as f32, 0.0]);
             }
             push_vec4(&mut e, [color[0], color[1], color[2], f32::from(u8::from(closed)) + 2.0 * finish as f32]);
-            push_vec4(&mut e, crate::Texture::shader_word(texture));
+            push_vec4(&mut e, crate::Texture::shader_word(texture, axis));
             if let Some(dst) = bytes.get_mut(off..off + e.len()) {
                 dst.copy_from_slice(&e);
             }
@@ -684,12 +685,23 @@ impl Renderer {
             let tri = d
                 .tri_runs
                 .iter()
-                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, d.finish, d.texture_for(*c)))
+                .map(|(_, c)| {
+                    put(
+                        &mut draw_bytes,
+                        &d.model_view,
+                        &d.normal,
+                        *c,
+                        d.closed,
+                        d.finish,
+                        d.texture_for(*c),
+                        d.grain_axis,
+                    )
+                })
                 .collect();
             let edge = d
                 .edge_runs
                 .iter()
-                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, 0, None))
+                .map(|(_, c)| put(&mut draw_bytes, &d.model_view, &d.normal, *c, d.closed, 0, None, 0))
                 .collect();
             offsets.push((tri, edge));
         }
