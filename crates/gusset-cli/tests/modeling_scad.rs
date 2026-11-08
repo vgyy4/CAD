@@ -55,6 +55,20 @@ fn an_openscad_file_becomes_exact_bodies() {
     let ev = s.evaluate(&Actor::User).unwrap();
     assert!(ev.errors().is_empty(), "{:?}", ev.errors());
     let text = s.document(&Actor::User).unwrap().to_text();
+    // Every sketch written is fully defined (dogfooding F17-4): a dimension edit resizes.
+    let sketches: Vec<String> = s
+        .document(&Actor::User)
+        .unwrap()
+        .features
+        .iter()
+        .filter(|f| matches!(f.kind, gusset_doc::FeatureKind::Sketch(_)))
+        .map(|f| f.name.clone())
+        .collect();
+    assert!(!sketches.is_empty());
+    for sk in &sketches {
+        let q = execute(&mut s, &CmdCtx::user(1), "query.sketch", json!({"sketch": sk})).unwrap();
+        assert_eq!(q["dof"], 0, "{sk}: {q}");
+    }
     assert!(
         text.contains("combine Combine") && text.contains("move Place") && text.contains("revolve Sphere1"),
         "{text}"
@@ -95,7 +109,15 @@ fn bad_openscad_is_reported_with_its_line() {
     let doc = gusset_doc::Document::from_text("gusset 1\nunits mm\n").unwrap();
     let mut s = Session::new(&doc, k, &CmdCtx::user(0));
     s.project_dir = Some(dir.clone());
-    let e = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "bad.scad"})).unwrap_err();
-    assert!(e.message.contains("line 2") && e.message.contains("evenly"), "{e:?}");
+    // The object that cannot be built is skipped with its line and reason; the cube comes in
+    // (dogfooding F17-2).
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "bad.scad"})).unwrap();
+    assert_eq!(r["features"].as_array().unwrap().len(), 1, "{r}");
+    let w = r["warnings_user_text"].to_string();
+    assert!(w.contains("line 2") && w.contains("evenly"), "{r}");
+    // Nothing buildable at all is an error that says why.
+    std::fs::write(dir.join("worse.scad"), "scale([1, 2, 1]) sphere(3);\n").unwrap();
+    let e = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "worse.scad"})).unwrap_err();
+    assert!(e.message.contains("could be built") && e.details.unwrap().to_string().contains("evenly"), "{}", e.message);
     let _ = std::fs::remove_dir_all(&dir);
 }

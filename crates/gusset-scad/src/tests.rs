@@ -95,7 +95,12 @@ fn unsupported_and_hostile_input_is_reported() {
     let e = read("x = 1;\n\ny = ;").unwrap_err();
     assert_eq!(e.line, 3, "{e}");
     // Disabled objects and comments vanish.
-    assert_eq!(read("*cube(1); /* sphere(); */ %sphere(2);").unwrap().objects.len(), 1);
+    // `%` is a background object, not part of the model (dogfooding F17-1).
+    assert_eq!(read("*cube(1); /* sphere(); */ %sphere(2); cylinder(1, 1);").unwrap().objects.len(), 1);
+    // A top-level `!` keeps only the statements so marked; assignments stay.
+    let m = read("r = 3; cube(1); !sphere(r); cylinder(2, 1); #cube(2);").unwrap();
+    assert_eq!(m.objects.len(), 1, "{m:?}");
+    assert!(matches!(&m.objects[0], Csg::Leaf { prim: Prim::Sphere { radius }, .. } if (*radius - 3.0).abs() < 1e-12));
 }
 
 #[test]

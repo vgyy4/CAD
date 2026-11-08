@@ -209,9 +209,8 @@ impl Gen<'_> {
                     return Err("a cube without volume".into());
                 }
                 let (x0, y0) = if *center { (-sx / 2.0, -sy / 2.0) } else { (0.0, 0.0) };
-                let sk =
-                    self.polygon_sketch("XY", &[vec![[x0, y0], [x0 + sx, y0], [x0 + sx, y0 + sy], [x0, y0 + sy]]])?;
-                self.extrude(&sk.0, &sk.1, sz, *center, "Cube")?
+                let sk = self.rect_sketch([x0, y0], [sx, sy])?;
+                self.extrude(&sk, &sk, sz, *center, "Cube")?
             }
             Prim::Cylinder { h, r1, r2, center } => {
                 let (h, r1, r2) = (h * s, r1 * s, r2 * s);
@@ -245,7 +244,7 @@ impl Gen<'_> {
                 let (rn, mn) = (num(r)?, num(-r)?);
                 let _ = writeln!(
                     self.out,
-                    "sketch {sk} (plane: XZ) {{\n  p1 = point(0, {mn})\n  p2 = point(0, {rn})\n  p3 = point(0, 0)\n  a4 = arc(p3, p1, p2)\n  l5 = line(p2, p1)\n}}"
+                    "sketch {sk} (plane: XZ) {{\n  p1 = point(0, {mn})\n  p2 = point(0, {rn})\n  p3 = point(0, 0)\n  a4 = arc(p3, p1, p2)\n  l5 = line(p2, p1)\n  k6 = at_x(p3, 0 mm)\n  k7 = at_y(p3, 0 mm)\n  k8 = on_line(p3, l5)\n  k9 = vertical(l5)\n  k10 = radius(a4, {rn} mm)\n}}"
                 );
                 self.revolve(&sk, &sk, 360.0, "Sphere")?
             }
@@ -295,6 +294,25 @@ impl Gen<'_> {
         }
     }
 
+    /// A rectangle with its corner, sides and size as constraints: editing the width or the
+    /// height in the text resizes it.
+    fn rect_sketch(&mut self, at: [f64; 2], size: [f64; 2]) -> Result<String, String> {
+        self.count(4)?;
+        let sk = self.fresh("Sketch");
+        let [x0, y0] = at;
+        let [w, h] = size;
+        let (a, b, c, d) = (num(x0)?, num(y0)?, num(x0 + w)?, num(y0 + h)?);
+        let (wn, hn) = (num(w)?, num(h)?);
+        let _ = write!(
+            self.out,
+            "sketch {sk} (plane: XY) {{\n  p1 = point({a}, {b})\n  p2 = point({c}, {b})\n  p3 = point({c}, {d})\n  p4 = point({a}, {d})\n  \
+             l5 = line(p1, p2)\n  l6 = line(p2, p3)\n  l7 = line(p3, p4)\n  l8 = line(p4, p1)\n  \
+             k9 = horizontal(l5)\n  k10 = horizontal(l7)\n  k11 = vertical(l6)\n  k12 = vertical(l8)\n  \
+             k13 = at_x(p1, {a} mm)\n  k14 = at_y(p1, {b} mm)\n  k15 = h_distance(p1, p2, {wn} mm)\n  k16 = v_distance(p2, p3, {hn} mm)\n}}\n"
+        );
+        Ok(sk)
+    }
+
     fn circle_sketch(&mut self, plane: &str, c: [f64; 2], r: f64) -> Result<String, String> {
         if r.is_nan() || r <= 0.0 {
             return Err("a circle without radius".into());
@@ -303,10 +321,10 @@ impl Gen<'_> {
         let sk = self.fresh("Sketch");
         let _ = writeln!(
             self.out,
-            "sketch {sk} (plane: {plane}) {{\n  p1 = point({}, {})\n  c2 = circle(p1, {})\n}}",
-            num(c[0])?,
-            num(c[1])?,
-            num(r)?
+            "sketch {sk} (plane: {plane}) {{\n  p1 = point({x}, {y})\n  c2 = circle(p1, {r})\n  k3 = at_x(p1, {x} mm)\n  k4 = at_y(p1, {y} mm)\n  k5 = radius(c2, {r} mm)\n}}",
+            x = num(c[0])?,
+            y = num(c[1])?,
+            r = num(r)?
         );
         Ok(sk)
     }
@@ -345,6 +363,14 @@ impl Gen<'_> {
                 id += 1;
                 first_line.get_or_insert(id);
                 let _ = writeln!(body, "  l{id} = line(p{}, p{})", start + k, start + (k + 1) % n);
+            }
+            // Every corner at its place: the outline is fully defined, and a coordinate edited
+            // in the text moves that corner only.
+            for (k, p) in pts.iter().enumerate() {
+                let pid = start + k as u32;
+                let _ = writeln!(body, "  k{} = at_x(p{pid}, {} mm)", id + 1, num(p[0])?);
+                let _ = writeln!(body, "  k{} = at_y(p{pid}, {} mm)", id + 2, num(p[1])?);
+                id += 2;
             }
         }
         let _ = write!(self.out, "sketch {sk} (plane: {plane}) {{\n{body}}}\n");

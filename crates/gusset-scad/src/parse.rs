@@ -182,8 +182,9 @@ pub(crate) struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Stmt {
     Assign(String, Expr, u32),
-    /// A module call with its children; `line` for messages. Modifiers `*` (disable) drop
-    /// the statement while parsing; `!`, `#` and `%` are ignored.
+    /// A module call with its children; `line` for messages. Modifiers `*` (disable) and `%`
+    /// (background) drop the statement while parsing; a top-level `!` keeps only the
+    /// statements so marked; `#` is ignored.
     Inst {
         name: String,
         args: Vec<Arg>,
@@ -279,10 +280,18 @@ impl Parser {
 
     pub(crate) fn program(&mut self) -> Result<Vec<Stmt>, ScadError> {
         let mut out = Vec::new();
+        // Top-level statements marked `!` (root): OpenSCAD shows only them.
+        let mut roots = Vec::new();
         while !matches!(self.peek(), Tok::Eof) {
+            let root = self.is("!");
             if let Some(s) = self.statement()? {
-                out.push(s);
+                if root { roots.push(s) } else { out.push(s) }
             }
+        }
+        if !roots.is_empty() {
+            // Definitions and assignments stay; every other object gives way to the roots.
+            out.retain(|s| matches!(s, Stmt::Assign(..) | Stmt::Module(..) | Stmt::Function(..) | Stmt::Uses(..)));
+            out.extend(roots);
         }
         Ok(out)
     }
@@ -312,12 +321,14 @@ impl Parser {
             }
             return Ok(Some(Stmt::Block(body)));
         }
-        // Modifiers.
-        if self.eat("*") {
+        // Modifiers: `*` (disabled) and `%` (background, shown but not part of the model)
+        // drop the statement; `#` (highlight) changes nothing here; a top-level `!` (root)
+        // is handled by `program`, one deeper down is ignored.
+        if self.eat("*") || self.eat("%") {
             self.statement()?;
             return Ok(None);
         }
-        if self.eat("!") || self.eat("#") || self.eat("%") {
+        if self.eat("!") || self.eat("#") {
             return self.statement();
         }
         let name = self.ident()?;

@@ -786,9 +786,16 @@ fn scad(
         if cancel.load(Ordering::Relaxed) {
             return Err(cancelled());
         }
-        let shape = crate::scad_build::build(k, c, cancel).map_err(|e| {
-            if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", format!("OpenSCAD: {e}")) }
-        })?;
+        // An object that cannot be built is skipped with its reason; the rest still come in
+        // (dogfooding F17-2).
+        let shape = match crate::scad_build::build(k, c, cancel) {
+            Ok(shape) => shape,
+            Err(_) if cancel.load(Ordering::Relaxed) => return Err(cancelled()),
+            Err(e) => {
+                notes.push(format!("Object {}: skipped ({e})", i + 1));
+                continue;
+            }
+        };
         let blob = k.write_native(&shape).map_err(|e| CommandError::new("io", e.message))?;
         // The object as features (ADR 0033 amendment) when they rebuild to the exact build's
         // volume; else it stays this exact body.
@@ -808,6 +815,12 @@ fn scad(
             faces: Vec::new(),
             scad: as_features,
         });
+    }
+    if out.is_empty() {
+        let mut e = CommandError::new("io", "no object of the OpenSCAD file could be built");
+        let why: Vec<String> = model.warnings.into_iter().chain(notes).take(20).collect();
+        e.details = Some(serde_json::json!({ "warnings_user_text": why }));
+        return Err(e);
     }
     let warnings = model.warnings.into_iter().chain(notes).take(50).collect();
     Ok((out, TIER_SCAD, warnings))
@@ -1455,7 +1468,14 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
             made = written.iter().map(|w| w.2.clone()).collect();
             names.extend(made.iter().cloned());
         }
-        let warnings: Vec<String> = warnings_now.iter().take(20).cloned().collect();
+        let mut warnings: Vec<String> = warnings_now.iter().take(20).cloned().collect();
+        if rb.is_some() && !feature_text.is_empty() {
+            // Dogfooding F17-5: say why the objects are not features.
+            warnings.push(
+                "the timeline is rolled back, so the OpenSCAD objects came in as exact bodies; move the marker to the end and import again for features"
+                    .into(),
+            );
+        }
         let tier = if made.is_empty() { tier } else { "tier 1: OpenSCAD objects as editable features" };
         Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings, "scad_features": made }))
     })?;
