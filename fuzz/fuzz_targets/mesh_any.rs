@@ -16,7 +16,8 @@ fuzz_target!(|data: &[u8]| {
         ..Default::default()
     };
     let Ok(imp) = import_bytes(data, None, &opts) else { return };
-    let bodies: Vec<ExportBody<'_>> = imp.meshes.iter().map(|m| ExportBody { name: &m.name, mesh: &m.mesh }).collect();
+    let bodies: Vec<ExportBody<'_>> =
+        imp.meshes.iter().map(|m| ExportBody { name: &m.name, mesh: &m.mesh, color: None }).collect();
     for f in
         [ExportFormat::StlBinary, ExportFormat::StlAscii, ExportFormat::ThreeMf, ExportFormat::Obj { normals: true }]
     {
