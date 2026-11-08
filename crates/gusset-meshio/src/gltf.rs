@@ -372,11 +372,23 @@ pub(crate) fn import(
                     format!("{base} {}", out.len() + 1)
                 }
             });
-        // The first primitive's material colour (ADR 0045): glTF factors are linear.
+        // The colour of the primitive with the most indices (a body's own colour when its faces'
+        // colours are primitives of their own; ADR 0045): glTF factors are linear.
+        let count = |q: &Value| {
+            q.get("indices")
+                .and_then(Value::as_u64)
+                .and_then(|a| doc.json.get("accessors")?.get(a as usize)?.get("count")?.as_u64())
+                .unwrap_or(0)
+        };
         let color = mesh
             .get("primitives")
             .and_then(Value::as_array)
-            .and_then(|p| p.iter().find_map(|q| q.get("material").and_then(Value::as_u64)))
+            .and_then(|p| {
+                p.iter()
+                    .filter_map(|q| Some((count(q), q.get("material").and_then(Value::as_u64)?)))
+                    .max_by_key(|(n, _)| *n)
+                    .map(|(_, m)| m)
+            })
             .and_then(|i| doc.json.get("materials").and_then(|m| m.get(i as usize)))
             .and_then(|m| m.get("pbrMetallicRoughness")?.get("baseColorFactor")?.as_array().cloned())
             .and_then(|f| {
@@ -399,7 +411,7 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
     let mut bin: Vec<u8> = Vec::new();
     let (mut views, mut accessors, mut meshes, mut nodes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     // One material per distinct body colour (ADR 0045); glTF wants linear factors.
-    let mut colours: Vec<u32> = Vec::new();
+    let mut colour_index: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     let mut materials = Vec::new();
     let mut triangles = 0u64;
     for (k, b) in bodies.iter().enumerate() {
@@ -422,35 +434,65 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "target": 34962}));
         accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5126, "count": pts.len(),
             "type": "VEC3", "min": lo, "max": hi}));
-        let start = bin.len();
-        for i in b.mesh.indices.iter() {
-            bin.extend_from_slice(&i.to_le_bytes());
-        }
-        views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "target": 34963}));
-        accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5125,
-            "count": b.mesh.indices.len(), "type": "SCALAR"}));
-        let mut prim = json!({"attributes": {"POSITION": accessors.len() - 2},
-            "indices": accessors.len() - 1, "mode": 4});
-        if let Some(c) = b.color.map(|c| c & 0xff_ffff) {
-            let i = match colours.iter().position(|x| *x == c) {
-                Some(i) => i,
-                None => {
-                    let lin = |v: u32| {
-                        let x = f64::from(v & 255) / 255.0;
-                        if x <= 0.04045 { x / 12.92 } else { libm::pow((x + 0.055) / 1.055, 2.4) }
-                    };
-                    colours.push(c);
-                    materials.push(json!({"name": format!("#{c:06x}"), "pbrMetallicRoughness": {
-                        "baseColorFactor": [lin(c >> 16), lin(c >> 8), lin(c), 1.0],
-                        "metallicFactor": 0.0, "roughnessFactor": 0.5}}));
-                    colours.len() - 1
+        // One primitive per colour: the body's, and its faces' own (ADR 0045 amendment),
+        // all on the body's vertices.
+        let body = b.color.map(|c| c & 0xff_ffff);
+        let mut groups: Vec<(Option<u32>, Vec<u32>)> = Vec::new();
+        if b.face_colors.is_empty() {
+            groups.push((body, b.mesh.indices.clone()));
+        } else {
+            let n = b.mesh.indices.len() / 3;
+            let mut tri: Vec<Option<u32>> = vec![body; n];
+            for &(f, c) in b.face_colors {
+                let Some(r) = b.mesh.face_ranges.get(f as usize) else { continue };
+                for t in tri.get_mut(r.start as usize..(r.end as usize).min(n)).unwrap_or_default() {
+                    *t = Some(c & 0xff_ffff);
                 }
-            };
-            if let Some(o) = prim.as_object_mut() {
-                o.insert("material".into(), json!(i));
+            }
+            let mut at: std::collections::HashMap<Option<u32>, usize> = std::collections::HashMap::new();
+            for (t, c) in b.mesh.indices.chunks_exact(3).zip(&tri) {
+                let k = *at.entry(*c).or_insert_with(|| {
+                    groups.push((*c, Vec::new()));
+                    groups.len() - 1
+                });
+                if let Some(g) = groups.get_mut(k) {
+                    g.1.extend_from_slice(t);
+                }
             }
         }
-        meshes.push(json!({"name": b.name, "primitives": [prim]}));
+        let position = accessors.len() - 1;
+        let mut prims = Vec::with_capacity(groups.len());
+        for (colour, indices) in &groups {
+            let start = bin.len();
+            for i in indices {
+                bin.extend_from_slice(&i.to_le_bytes());
+            }
+            views.push(json!({"buffer": 0, "byteOffset": start, "byteLength": bin.len() - start, "target": 34963}));
+            accessors.push(json!({"bufferView": views.len() - 1, "componentType": 5125,
+                "count": indices.len(), "type": "SCALAR"}));
+            let mut prim = json!({"attributes": {"POSITION": position}, "indices": accessors.len() - 1, "mode": 4});
+            if let Some(c) = *colour {
+                let i = match colour_index.get(&c) {
+                    Some(&i) => i,
+                    None => {
+                        let lin = |v: u32| {
+                            let x = f64::from(v & 255) / 255.0;
+                            if x <= 0.04045 { x / 12.92 } else { libm::pow((x + 0.055) / 1.055, 2.4) }
+                        };
+                        materials.push(json!({"name": format!("#{c:06x}"), "pbrMetallicRoughness": {
+                            "baseColorFactor": [lin(c >> 16), lin(c >> 8), lin(c), 1.0],
+                            "metallicFactor": 0.0, "roughnessFactor": 0.5}}));
+                        colour_index.insert(c, materials.len() - 1);
+                        materials.len() - 1
+                    }
+                };
+                if let Some(o) = prim.as_object_mut() {
+                    o.insert("material".into(), json!(i));
+                }
+            }
+            prims.push(prim);
+        }
+        meshes.push(json!({"name": b.name, "primitives": prims}));
         nodes.push(json!({"name": b.name, "mesh": meshes.len() - 1}));
         triangles += (b.mesh.indices.len() / 3) as u64;
         let _ = k;
@@ -506,6 +548,36 @@ mod tests {
             indices: vec![0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn face_colours_become_primitives() {
+        let mut t = tetra();
+        t.face_ranges = vec![0..1, 1..2, 2..4];
+        let (bytes, _) = export_to_vec(
+            &[ExportBody {
+                name: "a",
+                mesh: &t,
+                color: Some(0x00ff_0000),
+                face_colors: &[(0, 0x0000_ff00), (2, 0x0000_ff00)],
+            }],
+            ExportFormat::Glb,
+        )
+        .unwrap();
+        let len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let doc: Value = serde_json::from_slice(&bytes[20..20 + len]).unwrap();
+        // Two colours, two primitives on the same positions: 3 green triangles, 1 red.
+        let prims = doc["meshes"][0]["primitives"].as_array().unwrap();
+        assert_eq!(prims.len(), 2, "{doc}");
+        assert_eq!(prims[0]["attributes"]["POSITION"], prims[1]["attributes"]["POSITION"]);
+        let count = |p: &Value| doc["accessors"][p["indices"].as_u64().unwrap() as usize]["count"].as_u64().unwrap();
+        assert_eq!((count(&prims[0]), count(&prims[1])), (9, 3), "{doc}");
+        assert_eq!(doc["materials"].as_array().unwrap().len(), 2, "{doc}");
+        // It reads back as one mesh with all four triangles.
+        let back = import_bytes(&bytes, None, &ImportOptions::default()).unwrap();
+        assert_eq!(back.meshes[0].mesh.indices.len(), 12);
+        // Its colour is the one most triangles have.
+        assert_eq!(back.meshes[0].color, Some(0x0000_ff00));
     }
 
     #[test]
