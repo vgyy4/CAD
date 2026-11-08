@@ -1273,7 +1273,7 @@ correctly and STEP brings them back; the colours of three imports (SolidWorks bo
 
 | ID | Status |
 |---|---|
-| F15-1 | Open |
+| F15-1 | Fixed: a placed body (a located shape) is written with its name and colours on the part too, and a wrapper holding one solid is read as that solid; OCCT test `a_placed_body_keeps_its_name_and_colours_through_step`. |
 | F15-2 | Open |
 | F15-3 | Open |
 | F15-4 | Open |

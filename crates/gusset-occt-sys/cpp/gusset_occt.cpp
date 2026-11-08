@@ -120,6 +120,7 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
@@ -2257,7 +2258,20 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
   occ::handle<XCAFDoc_ShapeTool> st = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   occ::handle<XCAFDoc_ColorTool> ct = XCAFDoc_DocumentTool::ColorTool(doc->Main());
   for (size_t i = 0; i < n; ++i) {
-    TDF_Label l = st->AddShape(shapes[i]->s, false);
+    // A compound of one shape (an imported body) is written as that shape: as a compound it
+    // became an assembly holding a part named "SOLID", and its name and colours stayed on the
+    // assembly, out of reach of readers (dogfooding F15-1).
+    TopoDS_Shape shape = shapes[i]->s;
+    while (shape.ShapeType() == TopAbs_COMPOUND) {
+      TopoDS_Iterator it(shape);
+      if (!it.More()) break;
+      TopoDS_Shape only = it.Value();
+      it.Next();
+      if (it.More()) break;
+      only.Move(shape.Location());
+      shape = only;
+    }
+    TDF_Label l = st->AddShape(shape, false);
     if (!names || !names[i]) continue;
     // "name\x1f#rrggbb\x1fi=rrggbb,...": the body's colour and its faces' colours ride on
     // its name (ADR 0045; i is the face's index in TopExp::MapShapes order).
@@ -2274,6 +2288,25 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
       }
     }
     TDataStd_Name::Set(l, TCollection_ExtendedString(name.c_str(), true));
+    // A placed shape is added as a reference to (or an assembly of) the unplaced part: the part
+    // takes the name and colours too, where readers look (dogfooding F15-1).
+    TDF_Label part = l;
+    TopoDS_Shape part_shape = shape;
+    TDF_Label referred;
+    if (XCAFDoc_ShapeTool::IsReference(l) && XCAFDoc_ShapeTool::GetReferredShape(l, referred)) {
+      part = referred;
+      part_shape = XCAFDoc_ShapeTool::GetShape(referred);
+      TDataStd_Name::Set(part, TCollection_ExtendedString(name.c_str(), true));
+    } else if (XCAFDoc_ShapeTool::IsAssembly(l)) {
+      NCollection_Sequence<TDF_Label> comps;
+      XCAFDoc_ShapeTool::GetComponents(l, comps);
+      TDF_Label ref;
+      if (comps.Length() == 1 && XCAFDoc_ShapeTool::GetReferredShape(comps.Value(1), ref)) {
+        part = ref;
+        part_shape = XCAFDoc_ShapeTool::GetShape(ref);
+        TDataStd_Name::Set(part, TCollection_ExtendedString(name.c_str(), true));
+      }
+    }
     auto hex = [](const std::string& h, Quantity_Color& c) {
       if (h.size() != 6) return false;
       char* end = nullptr;
@@ -2283,10 +2316,13 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
       return true;
     };
     Quantity_Color c;
-    if (colour.size() == 7 && colour[0] == '#' && hex(colour.substr(1), c)) ct->SetColor(l, c, XCAFDoc_ColorSurf);
+    if (colour.size() == 7 && colour[0] == '#' && hex(colour.substr(1), c)) {
+      ct->SetColor(l, c, XCAFDoc_ColorSurf);
+      if (part != l) ct->SetColor(part, c, XCAFDoc_ColorSurf);
+    }
     if (!faces.empty()) {
       ShapeMap fm;
-      TopExp::MapShapes(shapes[i]->s, TopAbs_FACE, fm);
+      TopExp::MapShapes(part_shape, TopAbs_FACE, fm);
       std::istringstream fs(faces);
       std::string e;
       while (std::getline(fs, e, ',')) {
@@ -2295,7 +2331,7 @@ int gs_step_write(const GsShape* const* shapes, const char* const* names, size_t
         char* end = nullptr;
         long fi = std::strtol(e.c_str(), &end, 10);
         if (end != e.c_str() + eq || fi < 0 || fi >= fm.Extent() || !hex(e.substr(eq + 1), c)) continue;
-        TDF_Label fl = st->AddSubShape(l, fm(static_cast<int>(fi) + 1));
+        TDF_Label fl = st->AddSubShape(part, fm(static_cast<int>(fi) + 1));
         if (!fl.IsNull()) ct->SetColor(fl, c, XCAFDoc_ColorSurf);
       }
     }
@@ -2505,7 +2541,10 @@ int gs_step_read_meta(const uint8_t* data, size_t len, GsShape*** out_shapes, si
       solids.push_back(e.Current());
       TopExp::MapShapes(e.Current(), TopAbs_FACE, in_solids);
     }
-    if (solids.size() > 1 && solids.size() <= 4096 && in_solids.Extent() == all_faces.Extent()) {
+    // One solid inside a wrapper (a placed part, as Gusset writes imported bodies) comes in as
+    // the solid too, so it takes its part's name and colour (dogfooding F15-1).
+    if (!solids.empty() && solids.size() <= 4096 && in_solids.Extent() == all_faces.Extent() &&
+        (solids.size() > 1 || !solids.front().IsSame(s) || s.ShapeType() != TopAbs_SOLID)) {
       for (const auto& so : solids) emit(so);
     } else {
       emit(s);

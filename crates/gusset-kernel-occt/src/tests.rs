@@ -1015,3 +1015,75 @@ fn a_sat_box_with_a_spline_edge_imports() {
         assert!((m.volume - 6000.0).abs() < 1e-6, "{spline}: {}", m.volume);
     }
 }
+
+/// The id of the first `#N = <KIND>(` entity in STEP text.
+fn entity(t: &str, kind: &str) -> usize {
+    let at = t.find(&format!(" = {kind}(")).unwrap();
+    let start = t[..at].rfind('#').unwrap();
+    t[start + 1..at].trim().parse().unwrap()
+}
+
+#[test]
+fn a_placed_body_keeps_its_name_and_colours_through_step() {
+    // Dogfooding F15-1: an imported part placed by its assembly (a located shape) was written
+    // as a reference whose part was named "SOLID", without the name or colours.
+    let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let plain = String::from_utf8(k().export_step(&[(&a.shape, "Part")]).unwrap()).unwrap();
+    // Wrap the part in an assembly that places it 100 mm along X.
+    let (pd, rep, pc, pdc) = (
+        entity(&plain, "PRODUCT_DEFINITION"),
+        entity(&plain, "ADVANCED_BREP_SHAPE_REPRESENTATION"),
+        entity(&plain, "PRODUCT_CONTEXT"),
+        entity(&plain, "PRODUCT_DEFINITION_CONTEXT"),
+    );
+    let ctx = {
+        let at = plain.find(" = ADVANCED_BREP_SHAPE_REPRESENTATION(").unwrap();
+        let line = &plain[at..plain[at..].find(';').unwrap() + at];
+        line.rsplit('#').next().unwrap().trim_end_matches(')').parse::<usize>().unwrap()
+    };
+    let n = 900_000usize;
+    let extra = format!(
+        "#{a}=CARTESIAN_POINT('',(0.,0.,0.));\n#{b}=DIRECTION('',(0.,0.,1.));\n#{c}=DIRECTION('',(1.,0.,0.));\n\
+         #{o}=AXIS2_PLACEMENT_3D('',#{a},#{b},#{c});\n#{p}=CARTESIAN_POINT('',(100.,0.,0.));\n\
+         #{q}=AXIS2_PLACEMENT_3D('',#{p},#{b},#{c});\n#{pr}=PRODUCT('Asm','Asm','',(#{pc}));\n\
+         #{pf}=PRODUCT_DEFINITION_FORMATION('','',#{pr});\n#{apd}=PRODUCT_DEFINITION('design','',#{pf},#{pdc});\n\
+         #{aps}=PRODUCT_DEFINITION_SHAPE('','',#{apd});\n#{asr}=SHAPE_REPRESENTATION('',(#{o},#{q}),#{ctx});\n\
+         #{sdr}=SHAPE_DEFINITION_REPRESENTATION(#{aps},#{asr});\n\
+         #{nauo}=NEXT_ASSEMBLY_USAGE_OCCURRENCE('1','Part','',#{apd},#{pd},$);\n#{nps}=PRODUCT_DEFINITION_SHAPE('','',#{nauo});\n\
+         #{idt}=ITEM_DEFINED_TRANSFORMATION('','',#{o},#{q});\n\
+         #{rr}=(REPRESENTATION_RELATIONSHIP('','',#{rep},#{asr})REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{idt})SHAPE_REPRESENTATION_RELATIONSHIP());\n\
+         #{cd}=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{rr},#{nps});\n",
+        a = n,
+        b = n + 1,
+        c = n + 2,
+        o = n + 3,
+        p = n + 4,
+        q = n + 5,
+        pr = n + 6,
+        pf = n + 7,
+        apd = n + 8,
+        aps = n + 9,
+        asr = n + 10,
+        sdr = n + 11,
+        nauo = n + 12,
+        nps = n + 13,
+        idt = n + 14,
+        rr = n + 15,
+        cd = n + 16,
+    );
+    let at = plain.rfind("ENDSEC;").unwrap();
+    let asm = format!("{}{extra}{}", &plain[..at], &plain[at..]);
+    let placed = k().import_step(asm.as_bytes()).unwrap();
+    assert_eq!(placed.len(), 1, "{:?}", placed.iter().map(|p| &p.1).collect::<Vec<_>>());
+    assert!((k().bbox(&placed[0].0).unwrap().min[0] - 100.0).abs() < 1e-6);
+    // Written again with a name, a colour and a face colour, then read: all there.
+    let step = k().export_step(&[(&placed[0].0, "Board\u{1f}#2050c0\u{1f}1=d02020")]).unwrap();
+    let text = String::from_utf8_lossy(&step);
+    assert!(!text.contains("PRODUCT('SOLID'"), "an unnamed part was written");
+    let back = k().import_step(&step).unwrap();
+    let mut parts = back[0].1.split('\u{1f}');
+    assert_eq!(parts.next(), Some("Board"), "{:?}", back[0].1);
+    assert_eq!(parts.next(), Some("#2050c0"), "{:?}", back[0].1);
+    assert_eq!(parts.next().map(|f| f.split(',').count()), Some(1), "{:?}", back[0].1);
+    assert!((k().bbox(&back[0].0).unwrap().min[0] - 100.0).abs() < 1e-6);
+}
