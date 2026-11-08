@@ -122,3 +122,40 @@ fn offset_face_reports_the_faces_that_went_along() {
         .unwrap();
     assert_eq!(r["also_moved"], json!([]), "{r}");
 }
+
+#[test]
+fn offset_face_with_rules_off_moves_only_the_face_or_refuses() {
+    use gusset_commands::{CmdCtx, Session, execute};
+    use serde_json::json;
+    let u = CmdCtx::user(1);
+    // A plain side moves alone: the caps and the sides around stretch (dogfooding F12-2).
+    let doc = gusset_doc::Document::from_text(BOX).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let r = execute(
+        &mut s,
+        &u,
+        "feature.offset_face",
+        json!({"faces": ["Extrude1/side(Sketch1/l6)"], "distance": "2 mm", "rules": false}),
+    )
+    .unwrap();
+    assert_eq!(r["rebuild_ok"], true, "{r}");
+    assert_eq!(r["also_moved"], json!([]), "{r}");
+    let b = execute(&mut s, &u, "query.body", json!({})).unwrap();
+    assert!(near(b["volume_mm3"].as_f64().unwrap(), 42.0 * 20.0 * 10.0), "{b}");
+    let text = execute(&mut s, &u, "document.get_text", json!({})).unwrap();
+    assert!(text["text_user_text"].as_str().unwrap().contains("rules: false"), "{text}");
+    // Between rounded corners the fillets would have to grow: refused, not carried along.
+    let text = format!(
+        "{BOX}\nfillet Fillet1 (edges: [edge(Extrude1/side(Sketch1/l5), Extrude1/side(Sketch1/l6)), \
+         edge(Extrude1/side(Sketch1/l6), Extrude1/side(Sketch1/l7))], radius: 3 mm)\n"
+    );
+    let doc = gusset_doc::Document::from_text(&text).unwrap();
+    let mut s = Session::new(&doc, kernel(), &CmdCtx::user(0));
+    let r = execute(
+        &mut s,
+        &u,
+        "feature.offset_face",
+        json!({"faces": ["Extrude1/side(Sketch1/l6)"], "distance": "2 mm", "rules": false}),
+    );
+    assert!(r.as_ref().map_or(true, |v| v["rebuild_ok"] == false), "{r:?}");
+}

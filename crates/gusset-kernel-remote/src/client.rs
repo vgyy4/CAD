@@ -547,6 +547,10 @@ impl Kernel for RemoteKernel {
         self.op(&Request::OffsetFaces(shape.clone(), faces.to_vec(), distance))
     }
 
+    fn offset_faces_only(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+        self.op(&Request::OffsetFacesOnly(shape.clone(), faces.to_vec(), distance))
+    }
+
     fn draft(&self, shape: &Shape, faces: &[u32], spec: &DraftSpec) -> KResult<OpResult> {
         self.op(&Request::Draft(shape.clone(), faces.to_vec(), *spec))
     }

@@ -82,7 +82,12 @@ impl Evaluator {
         }
         let (bi, body) = target_body(s, name, d.body.as_deref())?;
         let faces = resolve_faces(name, &body, &d.faces, "re-select the face to move")?;
-        let res = k.offset_faces(&body.shape, &faces, distance).map_err(|ke| {
+        let res = if d.rules {
+            k.offset_faces(&body.shape, &faces, distance)
+        } else {
+            k.offset_faces_only(&body.shape, &faces, distance)
+        };
+        let res = res.map_err(|ke| {
             let mut e = kernel_err(name, "offset face", ke);
             if e.hint.is_none() {
                 e.hint = Some("move the faces less far, or fewer faces at once".into());

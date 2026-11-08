@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub(crate) enum Request {
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
+    OffsetFacesOnly(Shape, Vec<u32>, f64),
     DeleteFaces(Shape, Vec<u32>),
     MoveFaces(Shape, Vec<u32>, Vec<Transform>),
     ExtrudeCurves(Profile, ExtrudeSpec),
@@ -138,6 +139,12 @@ impl Request {
             }
             Request::OffsetFaces(shape, faces, d) => {
                 w.u8(26);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, faces)?;
+                w.f64(*d);
+            }
+            Request::OffsetFacesOnly(shape, faces, d) => {
+                w.u8(34);
                 put_shape(&mut w, s, shape)?;
                 put_u32s(&mut w, faces)?;
                 w.f64(*d);
@@ -329,6 +336,7 @@ impl Request {
             31 => Request::Thicken(get_shape(&mut r, s)?, r.f64()?, r.u8()? != 0),
             32 => Request::Stitch(get_shapes(&mut r, s)?, r.f64()?),
             33 => Request::DeleteFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?),
+            34 => Request::OffsetFacesOnly(get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

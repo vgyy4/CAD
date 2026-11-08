@@ -199,6 +199,9 @@ pub struct OffsetFace {
     pub body: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// false: only these (planar) faces move.
+    #[serde(default)]
+    pub rules: Option<bool>,
 }
 
 impl Command for OffsetFace {
@@ -222,7 +225,7 @@ impl Command for OffsetFace {
         let mut r = edit(s, ctx, "Offset face", |doc, rb| {
             let name = feature_name(doc, self.name, "OffsetFace")?;
             let body = body_for(doc, rb, self.body.or(owner))?;
-            let def = OffsetFaceDef { body, faces, distance };
+            let def = OffsetFaceDef { body, faces, distance, rules: self.rules.unwrap_or(true) };
             insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::OffsetFace(def)));
             Ok(json!({ "feature": name }))
         })?;

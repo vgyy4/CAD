@@ -268,6 +268,14 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("offset face", self.name())
     }
 
+    /// [`Kernel::offset_faces`] that moves only `faces`: neighbours keep their surfaces and
+    /// stretch, and nothing tangent is carried along; refused when that cannot be built
+    /// (dogfooding F12-2, `rules: false`).
+    fn offset_faces_only(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+        let _ = (shape, faces, distance);
+        unsupported("offset face (rules: false)", self.name())
+    }
+
     /// Moves the faces `faces` rigidly by `steps` (translations and rotations, applied in
     /// order; ADR 0031). The other faces keep their surfaces and stretch or shrink to
     /// follow, so they must contain the moved edges (a hole slides along the plane it sits

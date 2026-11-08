@@ -106,6 +106,7 @@ impl<K: Kernel> Server<K> {
             Request::Shell(s, faces, t) => Reply::Op(k.shell(&s, &faces, t)?),
             Request::Draft(s, faces, spec) => Reply::Op(k.draft(&s, &faces, &spec)?),
             Request::OffsetFaces(s, faces, d) => Reply::Op(k.offset_faces(&s, &faces, d)?),
+            Request::OffsetFacesOnly(s, faces, d) => Reply::Op(k.offset_faces_only(&s, &faces, d)?),
             Request::DeleteFaces(s, faces) => Reply::Op(k.delete_faces(&s, &faces)?),
             Request::ExtrudeCurves(p, spec) => Reply::Op(k.extrude_curves(&p, &spec)?),
             Request::Patch(p) => Reply::Op(k.patch(&p)?),

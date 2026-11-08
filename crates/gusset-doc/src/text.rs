@@ -481,6 +481,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             let faces: Vec<String> = d.faces.iter().map(FaceRef::to_string).collect();
             args.push(format!("faces: [{}]", faces.join(", ")));
             args.push(format!("distance: {}", d.distance));
+            if !d.rules {
+                args.push("rules: false".into());
+            }
         }
         FeatureKind::Draft(d) => {
             push_body(&mut args, &d.body);
@@ -1162,6 +1165,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut plane = None;
     let mut merge = false;
     let mut flip = false;
+    let mut rules = true;
     let mut dir = None;
     let mut through = None;
     let mut count = None;
@@ -1171,7 +1175,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let allowed = match kw {
         "shell" => "body, faces, thickness, label, group, suppressed",
         "draft" => "body, faces, plane, angle, flip, label, group, suppressed",
-        "offset_face" => "body, faces, distance, label, group, suppressed",
+        "offset_face" => "body, faces, distance, rules, label, group, suppressed",
         "delete_face" => "body, faces, label, group, suppressed",
         "mirror" => "body, plane, merge, label, group, suppressed",
         "pattern_linear" => "body, direction, count, spacing, features, label, group, suppressed",
@@ -1187,6 +1191,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             ("shell", "thickness") => thickness = Some(c.expr()?),
             ("mirror" | "draft", "plane") => plane = Some(parse_plane(c)?),
             ("draft", "flip") => flip = parse_bool(c)?,
+            ("offset_face", "rules") => rules = parse_bool(c)?,
             ("mirror", "merge") => merge = parse_bool(c)?,
             ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
             ("pattern_circular", "through") => {
@@ -1223,6 +1228,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             body,
             faces: faces.ok_or_else(|| missing(c, kw, "faces"))?,
             distance: spacing.ok_or_else(|| missing(c, kw, "distance"))?,
+            rules,
         }),
         "draft" => FeatureKind::Draft(DraftDef {
             body,

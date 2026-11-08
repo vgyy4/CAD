@@ -1102,6 +1102,9 @@ pub struct OffsetFaceDef {
     pub body: Option<String>,
     pub faces: Vec<FaceRef>,
     pub distance: Expr,
+    /// `false`: only these faces move, tangent neighbours are not carried along (planar
+    /// faces; refused when the neighbours cannot simply stretch). Default `true`.
+    pub rules: bool,
 }
 
 /// Removes faces of a body (a hole, a fillet, a boss's sides; ADR 0038): the faces around

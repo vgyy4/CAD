@@ -1166,7 +1166,7 @@ SolidWorks files other than the OLED part, SolidWorks assemblies, jobs on face s
 | ID | Status |
 |---|---|
 | F13-1 | Fixed: the thin-shank note is given only for the 3D finishing operations that check a holder. |
-| F13-2 | Fixed: `also_moved` also lists faces whose surface kind changed, revolved faces whose radius changed about the same axis (the corner blends an offset grows) and other surfaces whose place or area changed. `rules: false` is still open. |
+| F13-2 | Fixed: `also_moved` also lists faces whose surface kind changed, revolved faces whose radius changed about the same axis (the corner blends an offset grows) and other surfaces whose place or area changed; `rules: false` is done (F12-2). |
 | F13-3 | Fixed: `kept_share` above `keep` gives a warning that the voxels at the supports and loads are always kept; the thinned-`shape_quads` warning is left out when `path` was given. |
 | F13-4 | Fixed: `body_changes` lists the 20 largest bodies and counts the rest (`body_changes_more`); the multi-body warning names `feature_combine` and `feature_group`; Parasolid and SolidWorks bodies take their names (labels such as `Corps de pièce.27.48`) and colours (appearances) from the file (ADR 0045). |
 | F13-5 | Fixed: CAM lengths (`tool_diameter`, `depth`, `stepdown`, `top`, `safe`, `peck`, `previous`) take numbers in mm or unit strings (`"3 mm"`, `"0.5 cm"`). |

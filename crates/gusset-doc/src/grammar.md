@@ -455,6 +455,8 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   normals (direct edit, ADR 0030): positive adds material, negative removes it; the
   neighbouring faces stretch to follow and every face keeps its name. A cylindrical hole's
   wall moved by `distance` changes its radius by that much (outward from the material).
+  Tangent faces (rounded corners) go along and grow; `rules: false` moves only the given
+  planar faces and is refused where a tangent neighbour would have to change shape.
 - `move_face (faces: [<face>], translate: [x, y, z], axis: <dir>, angle: <angle>, through: [x, y, z])`,
   or `move_face (faces: [<face>], onto: <face>)`: planar faces slide along their normal onto the
   plane of a parallel planar face of any body (re-read on rebuild); onto a tilted plane they turn

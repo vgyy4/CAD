@@ -502,6 +502,27 @@ mod imp {
             op_result(ffi::offset_faces(raw(shape)?, faces, distance)?)
         }
 
+        fn offset_faces_only(&self, shape: &Shape, faces: &[u32], distance: f64) -> KResult<OpResult> {
+            if faces.is_empty() {
+                return Err(KernelError::new(KernelErrorKind::InvalidInput, "no faces to offset"));
+            }
+            if !distance.is_finite() || distance.abs() < 1e-9 {
+                return Err(KernelError::new(KernelErrorKind::InvalidInput, "the offset distance must be non-zero"));
+            }
+            let topo = shape.downcast::<OcctShape>()?.topology()?;
+            let normals: Option<Vec<V3>> = faces
+                .iter()
+                .map(|&f| topo.faces.get(f as usize).filter(|i| i.kind == SurfaceKind::Plane).map(|i| i.normal))
+                .collect();
+            let normals = normals.ok_or_else(|| {
+                KernelError::new(
+                    KernelErrorKind::InvalidInput,
+                    "only planar faces move alone (rules: false); curved faces offset with their neighbours",
+                )
+            })?;
+            offset_planes(shape, faces, &normals, distance)
+        }
+
         fn delete_faces(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
             op_result(ffi::delete_faces(raw(shape)?, faces)?)
         }
