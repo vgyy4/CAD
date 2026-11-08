@@ -370,15 +370,28 @@ pub fn icon_button_with(
     resp.on_hover_text(label)
 }
 
-/// The Design workspace switcher, the tabs and the search button.
+/// The workspace switcher, the tabs and the search button.
 pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
     let pal = r.pal;
     let mut action = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::SPACE[4];
-        workspace_switcher(ui, pal);
         let sketching = r.sketch.is_some() && r.drawing.is_none();
         let drawing = r.drawing.is_some();
+        let current = if drawing {
+            "workspace.drawing"
+        } else if sketching {
+            "workspace.design"
+        } else if r.cam {
+            "workspace.manufacture"
+        } else if r.render {
+            "workspace.render"
+        } else {
+            "workspace.design"
+        };
+        if let Some(a) = workspace_switcher(ui, pal, current) {
+            action = Some(a);
+        }
         for (label, active, act) in [
             (
                 tr("tab.solid"),
@@ -408,15 +421,17 @@ pub fn tabs(ui: &mut Ui, r: &Ribbon<'_>) -> Option<Action> {
     action
 }
 
-/// "Design" with a dropdown arrow: the workspace switcher (Design is the only workspace so
-/// far; others are listed as they ship).
-fn workspace_switcher(ui: &mut Ui, pal: &Palette) {
-    let name = tr("workspace.design").to_uppercase();
+/// The current workspace's name with a dropdown arrow: the workspace switcher (spec: Design,
+/// Render, Manufacture, Drawing). Choosing one opens its tab.
+fn workspace_switcher(ui: &mut Ui, pal: &Palette, current: &str) -> Option<Action> {
+    let name = tr(current).to_uppercase();
     let font = egui::FontId::proportional(theme::FONT_BODY);
     let galley = ui.painter().layout_no_wrap(name.clone(), font, pal.text);
     let size = Vec2::new(galley.size().x + 38.0, 24.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, name.as_str()));
+    // Its own accessible name: the tab of the same workspace reads the same (RENDER).
+    let label = format!("{}: {name}", tr("workspace.switcher"));
+    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label.as_str()));
     let fill = if resp.hovered() { pal.bg_hover } else { pal.bg_raised };
     ui.painter().rect(rect, theme::RADIUS_SM, fill, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
     ui.painter().galley(Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, pal.text);
@@ -426,12 +441,21 @@ fn workspace_switcher(ui: &mut Ui, pal: &Palette) {
         icons::Icon::ChevronDown,
         pal.text_muted,
     );
+    let mut action = None;
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(180.0);
-        ui.add_enabled(true, egui::Button::selectable(true, tr("workspace.design")));
-        ui.separator();
-        ui.weak("More workspaces arrive as they ship.");
+        for (key, act) in [
+            ("workspace.design", Action::SolidTab),
+            ("workspace.render", Action::RenderTab),
+            ("workspace.manufacture", Action::CamTab),
+            ("workspace.drawing", Action::DrawingTab),
+        ] {
+            if ui.add(egui::Button::selectable(key == current, tr(key))).clicked() {
+                action = Some(act);
+            }
+        }
     });
+    action
 }
 
 /// A workspace tab: caption text with an accent underline when active.

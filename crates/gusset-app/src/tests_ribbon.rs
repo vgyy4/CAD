@@ -806,6 +806,28 @@ fn the_render_tab_offers_appearance_and_a_rendered_image_of_the_view() {
 }
 
 #[test]
+fn the_workspace_switcher_names_the_workspace_and_switches() {
+    let mut h = harness(app());
+    h.run();
+    h.get_by_label("Workspace: DESIGN").click();
+    h.run();
+    h.get_by_label("Render").click();
+    h.run();
+    assert!(h.state().render_tab);
+    // The switcher now names the Render workspace.
+    h.get_by_label("Workspace: RENDER").click();
+    h.run();
+    h.get_by_label("Manufacture").click();
+    h.run();
+    assert!(h.state().cam_tab && !h.state().render_tab);
+    h.get_by_label("Workspace: MANUFACTURE").click();
+    h.run();
+    h.get_by_label("Design").click();
+    h.run();
+    assert!(!h.state().cam_tab && !h.state().render_tab);
+}
+
+#[test]
 fn the_photo_preview_traces_the_view_and_stops_with_the_tab() {
     let mut a = app();
     a.run("sketch.create", json!({"plane": "XY"})).unwrap();
