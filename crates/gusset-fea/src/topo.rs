@@ -20,6 +20,9 @@ pub struct TopoProblem<'a> {
     pub keep: f64,
     /// Most design iterations (each one a static solve).
     pub iterations: usize,
+    /// Mirror symmetry about the voxel grid's middle across X, Y and Z (the layout is the
+    /// same on both sides; supports and loads should be symmetric too).
+    pub symmetry: [bool; 3],
 }
 
 /// The optimised layout.
@@ -235,6 +238,35 @@ pub fn optimise(p: &TopoProblem<'_>) -> Result<TopoResult, FeaError> {
             if hi / lo < 1.0 + 1e-6 {
                 break;
             }
+        }
+        // Symmetry: each density and its mirror images share their mean.
+        if p.symmetry.iter().any(|v| *v) {
+            let mut sym = next.clone();
+            for (e, c) in elems.iter().enumerate() {
+                let (mut sum, mut cnt) = (0.0, 0usize);
+                for mask in 0..8u8 {
+                    if (0..3).any(|a| mask & (1 << a) != 0 && !p.symmetry.get(a).copied().unwrap_or(false)) {
+                        continue;
+                    }
+                    let mut q = *c;
+                    for (a, (qv, nv)) in q.iter_mut().zip(n).enumerate() {
+                        if mask & (1 << a) != 0 {
+                            *qv = nv - 1 - *qv;
+                        }
+                    }
+                    if let Ok(m) = index.binary_search(&lin(q)) {
+                        sum += next.get(m).copied().unwrap_or(0.0);
+                        cnt += 1;
+                    }
+                }
+                if let Some(v) = sym.get_mut(e)
+                    && cnt > 0
+                    && !frozen.get(e).copied().unwrap_or(false)
+                {
+                    *v = sum / cnt as f64;
+                }
+            }
+            next = sym;
         }
         change = next.iter().zip(&rho).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         rho = next;

@@ -18,6 +18,7 @@ fn cantilever(keep: f64, iterations: usize) -> Result<TopoResult, FeaError> {
         material: steel(),
         keep,
         iterations,
+        symmetry: [false; 3],
     })
 }
 
@@ -42,4 +43,32 @@ fn bad_input_is_refused() {
     for (keep, its) in [(0.0, 10), (0.99, 10), (f64::NAN, 10), (0.4, 0), (0.4, 201)] {
         assert!(matches!(cantilever(keep, its), Err(FeaError::Invalid(_))), "{keep} {its}");
     }
+}
+
+#[test]
+fn a_symmetric_layout_is_its_own_mirror_image() {
+    // A beam held at both ends (x = 0 and 60), pushed down in the middle of its top: with
+    // symmetry about the middle across X, every kept face has its mirror.
+    let m = box_mesh([60.0, 10.0, 20.0]);
+    let r = optimise(&TopoProblem {
+        mesh: &m,
+        voxel: 2.5,
+        fixed: vec![0, 1],
+        loads: vec![Load { face: 5, force: [0.0, 0.0, -100.0] }],
+        material: steel(),
+        keep: 0.4,
+        iterations: 20,
+        symmetry: [true, false, false],
+    })
+    .unwrap();
+    let key = |f: &[[f64; 3]; 4], mirror: bool| {
+        let mut c: Vec<[i64; 3]> = f
+            .iter()
+            .map(|p| [if mirror { 60.0 - p[0] } else { p[0] }, p[1], p[2]].map(|v| (v * 100.0).round() as i64))
+            .collect();
+        c.sort_unstable();
+        c
+    };
+    let all: std::collections::HashSet<Vec<[i64; 3]>> = r.faces.iter().map(|f| key(f, false)).collect();
+    assert!(r.faces.iter().all(|f| all.contains(&key(f, true))), "not symmetric");
 }

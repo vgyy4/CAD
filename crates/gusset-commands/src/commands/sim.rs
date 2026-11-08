@@ -652,6 +652,9 @@ pub struct OptimizeQuery {
     pub path: Option<String>,
     #[serde(default)]
     pub overwrite: bool,
+    /// Mirror axes: x, y, z.
+    #[serde(default)]
+    pub symmetry: Vec<String>,
 }
 
 impl Command for OptimizeQuery {
@@ -685,6 +688,17 @@ impl Command for OptimizeQuery {
         for l in &self.loads {
             loads.push(gusset_fea::Load { face: face(&l.face)?, force: l.force });
         }
+        let mut symmetry = [false; 3];
+        for a in &self.symmetry {
+            match a.trim().to_ascii_lowercase().as_str() {
+                "x" => symmetry[0] = true,
+                "y" => symmetry[1] = true,
+                "z" => symmetry[2] = true,
+                other => {
+                    return Err(CommandError::args(format!("symmetry axis '{other}' is not x, y or z")));
+                }
+            }
+        }
         let r = gusset_fea::topo::optimise(&gusset_fea::topo::TopoProblem {
             mesh: &mesh,
             voxel,
@@ -693,6 +707,7 @@ impl Command for OptimizeQuery {
             material: gusset_fea::Material { young: 210_000.0, poisson: 0.3 },
             keep: self.keep,
             iterations: self.iterations.unwrap_or(30),
+            symmetry,
         })
         .map_err(fea_err)?;
         let first = r.compliance.first().copied().unwrap_or(0.0);

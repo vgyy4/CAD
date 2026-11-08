@@ -210,5 +210,7 @@ The result is the kept voxels (density >= 0.5): their share and volume, the comp
 the first and last iteration, and their outer faces (`shape_quads`, shown in place of the
 model in the app); `path` writes them as a binary STL. Steel is assumed (stiffness alone sets
 the layout; the material only scales compliance). Not yet: manufacturing constraints
-(symmetry, draw direction, minimum member size beyond the filter), stress constraints, a
-smoothed surface or a B-rep of the result, sheet bodies.
+(draw direction, minimum member size beyond the filter), stress constraints, a
+smoothed surface or a B-rep of the result, sheet bodies. Symmetry (2026-11-08): `symmetry:
+["x", "y", "z"]` makes the layout its own mirror image about the voxel grid's middle across
+those axes (each density and its mirror images share their mean after every update).
