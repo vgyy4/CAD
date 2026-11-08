@@ -288,7 +288,9 @@ fn build(args: &[String]) -> Result<ExitCode, String> {
             other => {
                 let f = mesh_format(other)
                     .ok_or_else(|| format!("unknown export format '.{other}' (step, iges, stl, 3mf, obj, png)"))?;
-                mesh_export_bytes_styled(k.as_ref(), &bodies, &meshes, f, o.tolerance, &doc.appearances)
+                let face_names: Vec<Vec<String>> =
+                    r.bodies.iter().map(|b| b.names.faces.iter().map(ToString::to_string).collect()).collect();
+                mesh_export_bytes_styled(k.as_ref(), &bodies, &meshes, f, o.tolerance, &doc.appearances, &face_names)
                     .map_err(|e| e.to_string())?
             }
         };

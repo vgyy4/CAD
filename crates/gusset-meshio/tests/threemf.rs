@@ -271,8 +271,8 @@ fn colours_are_written_as_base_materials_and_read_back() {
     use gusset_meshio::{ExportBody, ExportFormat, export_to_vec};
     let c = common::cube(10.0);
     let bodies = [
-        ExportBody { name: "red", mesh: &c, color: Some(0x00c0_3020) },
-        ExportBody { name: "plain", mesh: &c, color: None },
+        ExportBody { name: "red", mesh: &c, color: Some(0x00c0_3020), face_colors: &[] },
+        ExportBody { name: "plain", mesh: &c, color: None, face_colors: &[] },
     ];
     let (bytes, _) = export_to_vec(&bodies, ExportFormat::ThreeMf).unwrap();
     let entries =
@@ -282,4 +282,29 @@ fn colours_are_written_as_base_materials_and_read_back() {
     assert!(model.contains(r#"name="red" type="model" pid="1" pindex="0""#), "{model}");
     let back = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
     assert_eq!(back.meshes.iter().map(|m| m.color).collect::<Vec<_>>(), [Some(0x00c0_3020), None]);
+}
+
+#[test]
+fn face_colours_are_written_on_their_triangles() {
+    use gusset_meshio::{ExportBody, ExportFormat, export_to_vec};
+    let mut c = common::cube(10.0);
+    // Two faces: the first two triangles, then the rest.
+    c.face_ranges = vec![0..2, 2..12];
+    let bodies = [ExportBody { name: "c", mesh: &c, color: Some(0x80_80_80), face_colors: &[(0, 0xd0_20_20), (9, 0)] }];
+    let (bytes, _) = export_to_vec(&bodies, ExportFormat::ThreeMf).unwrap();
+    let entries =
+        gusset_meshio::archive::read_entries(&bytes, &Limits::default(), &|n: &str| n.ends_with(".model")).unwrap();
+    let model = String::from_utf8(entries.into_iter().next().unwrap().1).unwrap();
+    assert!(model.contains(r##"<base name="#D02020" displaycolor="#D02020"/>"##), "{model}");
+    assert_eq!(model.matches(r#"pid="1" p1="1""#).count(), 2, "{model}");
+    assert!(model.contains(r#"type="model" pid="1" pindex="0""#), "{model}");
+    // Still a readable file.
+    let back = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
+    assert_eq!(back.meshes[0].color, Some(0x80_80_80));
+    // Without an object colour no triangle gets one.
+    let bodies = [ExportBody { name: "c", mesh: &c, color: None, face_colors: &[(0, 0xd0_20_20)] }];
+    let (bytes, _) = export_to_vec(&bodies, ExportFormat::ThreeMf).unwrap();
+    let entries =
+        gusset_meshio::archive::read_entries(&bytes, &Limits::default(), &|n: &str| n.ends_with(".model")).unwrap();
+    assert!(!String::from_utf8(entries.into_iter().next().unwrap().1).unwrap().contains("p1="));
 }

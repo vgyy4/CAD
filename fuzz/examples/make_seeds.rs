@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Meshes in every export format.
     let mesh = cube();
-    let bodies = [ExportBody { name: "cube", mesh: &mesh, color: None }];
+    let bodies = [ExportBody { name: "cube", mesh: &mesh, color: None, face_colors: &[] }];
     for (target, file, format) in [
         ("mesh_stl", "cube_binary.stl", ExportFormat::StlBinary),
         ("mesh_stl", "cube_ascii.stl", ExportFormat::StlAscii),

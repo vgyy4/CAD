@@ -513,9 +513,9 @@ mod tests {
         let t = tetra();
         let (bytes, _) = export_to_vec(
             &[
-                ExportBody { name: "a", mesh: &t, color: Some(0x00ff_0000) },
-                ExportBody { name: "b", mesh: &t, color: Some(0x00ff_0000) },
-                ExportBody { name: "c", mesh: &t, color: None },
+                ExportBody { name: "a", mesh: &t, color: Some(0x00ff_0000), face_colors: &[] },
+                ExportBody { name: "b", mesh: &t, color: Some(0x00ff_0000), face_colors: &[] },
+                ExportBody { name: "c", mesh: &t, color: None, face_colors: &[] },
             ],
             ExportFormat::Glb,
         )
@@ -537,7 +537,10 @@ mod tests {
     fn glb_round_trip_keeps_size_orientation_and_names() {
         let t = tetra();
         let (bytes, r) = export_to_vec(
-            &[ExportBody { name: "tetra", mesh: &t, color: None }, ExportBody { name: "two", mesh: &t, color: None }],
+            &[
+                ExportBody { name: "tetra", mesh: &t, color: None, face_colors: &[] },
+                ExportBody { name: "two", mesh: &t, color: None, face_colors: &[] },
+            ],
             ExportFormat::Glb,
         )
         .unwrap();
@@ -553,10 +556,16 @@ mod tests {
         let top = m.meshes[0].mesh.positions.iter().map(|p| p[2]).fold(f32::MIN, f32::max);
         assert!((top - 10.0).abs() < 1e-4, "{top}");
         assert_eq!(
-            export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Glb).unwrap().0.len(),
+            export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None, face_colors: &[] }], ExportFormat::Glb)
+                .unwrap()
+                .0
+                .len(),
             {
-                let (b, _) =
-                    export_to_vec(&[ExportBody { name: "tetra", mesh: &t, color: None }], ExportFormat::Glb).unwrap();
+                let (b, _) = export_to_vec(
+                    &[ExportBody { name: "tetra", mesh: &t, color: None, face_colors: &[] }],
+                    ExportFormat::Glb,
+                )
+                .unwrap();
                 b.len()
             }
         );

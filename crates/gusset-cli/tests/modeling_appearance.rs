@@ -67,6 +67,13 @@ fn face_colours_survive_import_and_export() {
     let text = run(&mut t, "document.get_text", json!({}))["text_user_text"].as_str().unwrap().to_string();
     assert!(text.contains("color: \"#808080\""), "{text}");
     assert!(text.contains("\"#d02020\": [Import1/face(") && text.contains("\"#2020d0\": [Import1/face("), "{text}");
+    // 3MF carries them on the faces' triangles (two faces, two triangles each).
+    run(&mut t, "export.mesh", json!({"path": "faces.3mf", "format": "3mf"}));
+    let pkg = std::fs::read(dir.join("faces.3mf")).unwrap();
+    let limits = gusset_meshio::Limits::default();
+    let model = gusset_meshio::archive::read_entries(&pkg, &limits, &|n: &str| n.ends_with(".model")).unwrap();
+    let model = String::from_utf8(model.into_iter().next().unwrap().1).unwrap();
+    assert_eq!(model.matches(" p1=").count(), 4, "{model}");
     // Exported again and imported into a third project: still there.
     run(&mut t, "export.step", json!({"path": "again.step"}));
     let mut u = session(&dir);

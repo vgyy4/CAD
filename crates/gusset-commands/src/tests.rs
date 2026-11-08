@@ -1714,7 +1714,7 @@ fn a_coloured_3mf_import_keeps_its_colours_as_appearances() {
         ..Default::default()
     };
     let (bytes, _) = gusset_meshio::export_to_vec(
-        &[gusset_meshio::ExportBody { name: "red", mesh: &cube, color: Some(0x00c0_3020) }],
+        &[gusset_meshio::ExportBody { name: "red", mesh: &cube, color: Some(0x00c0_3020), face_colors: &[] }],
         gusset_meshio::ExportFormat::ThreeMf,
     )
     .unwrap();

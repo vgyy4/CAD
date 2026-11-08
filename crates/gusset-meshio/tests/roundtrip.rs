@@ -58,8 +58,10 @@ fn odd_tetra_is_outward() {
 fn roundtrip_every_format_is_exact() {
     let c = cube(12.5);
     let t = odd_tetra();
-    let bodies =
-        [ExportBody { name: "Cube body", mesh: &c, color: None }, ExportBody { name: "Tetra", mesh: &t, color: None }];
+    let bodies = [
+        ExportBody { name: "Cube body", mesh: &c, color: None, face_colors: &[] },
+        ExportBody { name: "Tetra", mesh: &t, color: None, face_colors: &[] },
+    ];
     for f in ALL {
         let (bytes, rep) = export_to_vec(&bodies, f).unwrap();
         assert_eq!(rep.triangles, 16, "{f:?}");
@@ -100,8 +102,10 @@ fn roundtrip_every_format_is_exact() {
 fn exports_are_deterministic() {
     let c = cube_unwelded(3.0);
     let t = odd_tetra();
-    let bodies =
-        [ExportBody { name: "a", mesh: &c, color: None }, ExportBody { name: "b & <c>", mesh: &t, color: None }];
+    let bodies = [
+        ExportBody { name: "a", mesh: &c, color: None, face_colors: &[] },
+        ExportBody { name: "b & <c>", mesh: &t, color: None, face_colors: &[] },
+    ];
     for f in ALL {
         let a = export_to_vec(&bodies, f).unwrap().0;
         let b = export_to_vec(&bodies, f).unwrap().0;
@@ -113,7 +117,8 @@ fn exports_are_deterministic() {
 fn threemf_export_welds_display_meshes() {
     let c = cube_unwelded(1.0);
     let (bytes, rep) =
-        export_to_vec(&[ExportBody { name: "c", mesh: &c, color: None }], ExportFormat::ThreeMf).unwrap();
+        export_to_vec(&[ExportBody { name: "c", mesh: &c, color: None, face_colors: &[] }], ExportFormat::ThreeMf)
+            .unwrap();
     assert!(rep.warnings.is_empty());
     let imp = import_bytes(&bytes, Some(Format::ThreeMf), &ImportOptions::default()).unwrap();
     assert_eq!(imp.meshes[0].validation.vertices, 8);
@@ -131,8 +136,11 @@ fn threemf_export_welds_display_meshes() {
 fn threemf_export_drops_collapsed_triangles_and_escapes_names() {
     let mut m = cube(1.0);
     m.indices.extend_from_slice(&[0, 0, 1]);
-    let (bytes, rep) =
-        export_to_vec(&[ExportBody { name: "a\"b<c>&'", mesh: &m, color: None }], ExportFormat::ThreeMf).unwrap();
+    let (bytes, rep) = export_to_vec(
+        &[ExportBody { name: "a\"b<c>&'", mesh: &m, color: None, face_colors: &[] }],
+        ExportFormat::ThreeMf,
+    )
+    .unwrap();
     assert_eq!(rep.triangles, 12);
     assert_eq!(rep.warnings.len(), 1);
     let imp = import_bytes(&bytes, None, &ImportOptions::default()).unwrap();
@@ -144,19 +152,26 @@ fn export_rejects_invalid_meshes() {
     let mut bad = cube(1.0);
     bad.indices.push(99);
     bad.indices.extend_from_slice(&[0, 1]);
-    let e = export_to_vec(&[ExportBody { name: "x", mesh: &bad, color: None }], ExportFormat::StlBinary).unwrap_err();
+    let e =
+        export_to_vec(&[ExportBody { name: "x", mesh: &bad, color: None, face_colors: &[] }], ExportFormat::StlBinary)
+            .unwrap_err();
     assert!(e.to_string().contains("references vertex 99"), "{e}");
 
     let mut nan = cube(1.0);
     nan.positions[3][1] = f32::NAN;
-    let e = export_to_vec(&[ExportBody { name: "n", mesh: &nan, color: None }], ExportFormat::ThreeMf).unwrap_err();
+    let e =
+        export_to_vec(&[ExportBody { name: "n", mesh: &nan, color: None, face_colors: &[] }], ExportFormat::ThreeMf)
+            .unwrap_err();
     assert!(e.to_string().contains("vertex 3 has a NaN"), "{e}");
 
     let mut ragged = cube(1.0);
     ragged.indices.pop();
     assert!(
-        export_to_vec(&[ExportBody { name: "r", mesh: &ragged, color: None }], ExportFormat::Obj { normals: false })
-            .is_err()
+        export_to_vec(
+            &[ExportBody { name: "r", mesh: &ragged, color: None, face_colors: &[] }],
+            ExportFormat::Obj { normals: false }
+        )
+        .is_err()
     );
 }
 
@@ -164,7 +179,8 @@ fn export_rejects_invalid_meshes() {
 fn normal_modes() {
     let c = cube(2.0);
     let (bytes, _) =
-        export_to_vec(&[ExportBody { name: "c", mesh: &c, color: None }], ExportFormat::StlBinary).unwrap();
+        export_to_vec(&[ExportBody { name: "c", mesh: &c, color: None, face_colors: &[] }], ExportFormat::StlBinary)
+            .unwrap();
     let with = |normals| {
         let o = ImportOptions { normals, ..Default::default() };
         import_bytes(&bytes, None, &o).unwrap().meshes.remove(0).mesh
@@ -193,8 +209,11 @@ fn import_file_uses_stem_as_name() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("bracket.stl");
     let c = cube(1.0);
-    let (bytes, _) =
-        export_to_vec(&[ExportBody { name: "ignored", mesh: &c, color: None }], ExportFormat::StlBinary).unwrap();
+    let (bytes, _) = export_to_vec(
+        &[ExportBody { name: "ignored", mesh: &c, color: None, face_colors: &[] }],
+        ExportFormat::StlBinary,
+    )
+    .unwrap();
     std::fs::write(&path, bytes).unwrap();
     let imp = gusset_meshio::import_file(&path, &ImportOptions::default()).unwrap();
     assert_eq!(imp.meshes[0].name, "bracket");
@@ -231,11 +250,14 @@ fn perf_binary_stl_2m_triangles() {
     }
     let t0 = std::time::Instant::now();
     let (bytes, _) =
-        export_to_vec(&[ExportBody { name: "grid", mesh: &m, color: None }], ExportFormat::StlBinary).unwrap();
+        export_to_vec(&[ExportBody { name: "grid", mesh: &m, color: None, face_colors: &[] }], ExportFormat::StlBinary)
+            .unwrap();
     let t1 = std::time::Instant::now();
     let imp = import_bytes(&bytes, None, &ImportOptions::default()).unwrap();
     let t2 = std::time::Instant::now();
-    let (tmf, _) = export_to_vec(&[ExportBody { name: "grid", mesh: &m, color: None }], ExportFormat::ThreeMf).unwrap();
+    let (tmf, _) =
+        export_to_vec(&[ExportBody { name: "grid", mesh: &m, color: None, face_colors: &[] }], ExportFormat::ThreeMf)
+            .unwrap();
     let t3 = std::time::Instant::now();
     let imp3 = import_bytes(&tmf, None, &ImportOptions::default()).unwrap();
     let t4 = std::time::Instant::now();

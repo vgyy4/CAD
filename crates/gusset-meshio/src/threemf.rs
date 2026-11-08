@@ -804,7 +804,7 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
     s.push_str(" <metadata name=\"Application\">Gusset</metadata>\n <resources>\n");
     // Colours as one base-material group (ADR 0045), id 1; objects follow.
     let mut colours: Vec<u32> = Vec::new();
-    for c in bodies.iter().filter_map(|b| b.color) {
+    for c in bodies.iter().flat_map(|b| b.color.into_iter().chain(b.face_colors.iter().map(|f| f.1))) {
         if !colours.contains(&(c & 0xff_ffff)) {
             colours.push(c & 0xff_ffff);
         }
@@ -822,9 +822,28 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         let (positions, remap) = utils::weld_exact(&b.mesh.positions);
         let mut tris: Vec<Tri> =
             utils::triangles(b.mesh).map(|t| t.map(|i| remap.get(i as usize).copied().unwrap_or(0))).collect();
+        // Each triangle's own colour (its face's), as an index into the material group.
+        // Only over an object colour: triangle properties need the object's default.
+        let mut tri_colour: Vec<Option<usize>> = Vec::new();
+        if !b.face_colors.is_empty() && b.color.is_some() {
+            tri_colour = vec![None; tris.len()];
+            for &(f, c) in b.face_colors {
+                let Some(r) = b.mesh.face_ranges.get(f as usize) else { continue };
+                let i = colours.iter().position(|x| *x == c & 0xff_ffff);
+                for t in tri_colour.get_mut(r.start as usize..(r.end as usize).min(tris.len())).unwrap_or_default() {
+                    *t = i;
+                }
+            }
+        }
         let before = tris.len();
         // 3MF forbids triangles that reuse a vertex.
-        tris.retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+        let keep: Vec<bool> = tris.iter().map(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]).collect();
+        let mut kept = keep.iter();
+        tris.retain(|_| kept.next().copied().unwrap_or(false));
+        if !tri_colour.is_empty() {
+            let mut kept = keep.iter();
+            tri_colour.retain(|_| kept.next().copied().unwrap_or(false));
+        }
         let dropped = before - tris.len();
         if dropped > 0 {
             report.warnings.push(format!("{:?}: {dropped} collapsed triangles were not written", b.name));
@@ -839,7 +858,8 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
         let _ = write!(s, "  <object id=\"{id}\" name=\"");
         xml_escape(b.name, &mut s);
         s.push_str("\" type=\"model\"");
-        if let Some(i) = b.color.and_then(|c| colours.iter().position(|x| *x == c & 0xff_ffff)) {
+        let own = b.color.and_then(|c| colours.iter().position(|x| *x == c & 0xff_ffff));
+        if let Some(i) = own {
             let _ = write!(s, " pid=\"1\" pindex=\"{i}\"");
         }
         s.push_str(">\n   <mesh>\n    <vertices>\n");
@@ -847,8 +867,17 @@ pub(crate) fn write(bodies: &[ExportBody<'_>], out: &mut dyn Write) -> Result<Ex
             let _ = writeln!(s, "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", p[0], p[1], p[2]);
         }
         s.push_str("    </vertices>\n    <triangles>\n");
-        for t in &tris {
-            let _ = writeln!(s, "     <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>", t[0], t[1], t[2]);
+        for (k, t) in tris.iter().enumerate() {
+            let _ = write!(s, "     <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"", t[0], t[1], t[2]);
+            // A face in its own colour; the object's colour otherwise (spec: a triangle
+            // without `p1` takes the object's `pindex`).
+            match tri_colour.get(k).copied().flatten() {
+                Some(i) if Some(i) != own => {
+                    let _ = write!(s, " pid=\"1\" p1=\"{i}\"");
+                }
+                _ => {}
+            }
+            s.push_str("/>\n");
         }
         s.push_str("    </triangles>\n   </mesh>\n  </object>\n");
         report.triangles += tris.len() as u64;

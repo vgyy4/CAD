@@ -3565,6 +3565,26 @@ pub struct ExportMesh {
     pub bodies: Vec<String>,
 }
 
+/// An appearance's face colours as (face index, `0xRRGGBB`), by the body's face names in
+/// kernel order; faces the body no longer has are left out, sorted, one per face.
+#[must_use]
+pub fn face_color_indices(a: &gusset_doc::Appearance, face_names: &[String]) -> Vec<(u32, u32)> {
+    if a.faces.is_empty() {
+        return Vec::new();
+    }
+    let index: std::collections::HashMap<&str, u32> =
+        face_names.iter().zip(0u32..).map(|(f, i)| (f.as_str(), i)).collect();
+    let mut faces: Vec<(u32, u32)> = a
+        .faces
+        .iter()
+        .flat_map(|g| g.faces.iter().map(move |f| (f, g.color)))
+        .filter_map(|(f, c)| index.get(f.to_string().as_str()).map(|&i| (i, c & 0xff_ffff)))
+        .collect();
+    faces.sort_unstable();
+    faces.dedup_by_key(|(i, _)| *i);
+    faces
+}
+
 /// Body names for a STEP export, each with its appearance colour after U+001F
 /// (`name\u{1f}#rrggbb`), then the colours of single faces (`\u{1f}<index>=<rrggbb>,...`),
 /// which the kernel's STEP writer turns into XDE colours (ADR 0045).
@@ -3576,22 +3596,11 @@ pub fn step_names(bodies: &[(&str, &[String])], looks: &[gusset_doc::Appearance]
             Some(a) => {
                 let mut out = format!("{n}\u{1f}#{:06x}", a.color & 0xff_ffff);
                 // Face colours by face index (`i=rrggbb`), for the faces the body still has.
-                if !a.faces.is_empty() {
-                    let index: std::collections::HashMap<&str, usize> =
-                        face_names.iter().enumerate().map(|(i, f)| (f.as_str(), i)).collect();
-                    let mut faces: Vec<(usize, u32)> = a
-                        .faces
-                        .iter()
-                        .flat_map(|g| g.faces.iter().map(move |f| (f, g.color)))
-                        .filter_map(|(f, c)| index.get(f.to_string().as_str()).map(|&i| (i, c & 0xff_ffff)))
-                        .collect();
-                    faces.sort_unstable();
-                    faces.dedup_by_key(|(i, _)| *i);
-                    if !faces.is_empty() {
-                        let list: Vec<String> = faces.iter().map(|(i, c)| format!("{i}={c:06x}")).collect();
-                        out.push('\u{1f}');
-                        out.push_str(&list.join(","));
-                    }
+                let faces = face_color_indices(a, face_names);
+                if !faces.is_empty() {
+                    let list: Vec<String> = faces.iter().map(|(i, c)| format!("{i}={c:06x}")).collect();
+                    out.push('\u{1f}');
+                    out.push_str(&list.join(","));
                 }
                 out
             }
@@ -3608,10 +3617,11 @@ pub fn mesh_export_bytes_with(
     format: gusset_meshio::ExportFormat,
     tolerance: f64,
 ) -> Result<Vec<u8>, CommandError> {
-    mesh_export_bytes_styled(kernel, bodies, meshes, format, tolerance, &[])
+    mesh_export_bytes_styled(kernel, bodies, meshes, format, tolerance, &[], &[])
 }
 
-/// [`mesh_export_bytes_with`] with the bodies' appearances (3MF keeps their colours).
+/// [`mesh_export_bytes_with`] with the bodies' appearances (3MF keeps their colours, and
+/// their face colours given each body's face names in `face_names`, which may be empty).
 pub fn mesh_export_bytes_styled(
     kernel: &dyn gusset_kernel::Kernel,
     bodies: &[(&gusset_kernel::Shape, &str)],
@@ -3619,17 +3629,34 @@ pub fn mesh_export_bytes_styled(
     format: gusset_meshio::ExportFormat,
     tolerance: f64,
     looks: &[gusset_doc::Appearance],
+    face_names: &[Vec<String>],
 ) -> Result<Vec<u8>, CommandError> {
     let color = |n: &str| looks.iter().find(|a| a.body == n).map(|a| a.color);
+    let face_colors: Vec<Vec<(u32, u32)>> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, (_, n))| match (looks.iter().find(|a| a.body == *n), face_names.get(i)) {
+            (Some(a), Some(f)) => face_color_indices(a, f),
+            _ => Vec::new(),
+        })
+        .collect();
     let params = gusset_kernel::TessellationParams { linear_deflection: tolerance, angular_deflection: 0.25 };
     let tess = bodies
         .iter()
         .map(|(s, n)| kernel.tessellate(s, &params).map(|m| (m, *n)))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CommandError::new("io", e.to_string()))?;
-    let mut eb: Vec<gusset_meshio::ExportBody<'_>> =
-        tess.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n) }).collect();
-    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n) }));
+    let mut eb: Vec<gusset_meshio::ExportBody<'_>> = tess
+        .iter()
+        .zip(&face_colors)
+        .map(|((m, n), f)| gusset_meshio::ExportBody { name: n, mesh: m, color: color(n), face_colors: f })
+        .collect();
+    eb.extend(meshes.iter().map(|(m, n)| gusset_meshio::ExportBody {
+        name: n,
+        mesh: m,
+        color: color(n),
+        face_colors: &[],
+    }));
     gusset_meshio::export_to_vec(&eb, format).map(|(b, _)| b).map_err(|e| CommandError::new("io", e.to_string()))
 }
 
@@ -3701,7 +3728,12 @@ impl Command for ExportMesh {
             sel_bodies.iter().map(|b| (&b.shape, b.name.as_str())).collect();
         let refs: Vec<(&gusset_kernel::Mesh, &str)> = sel_meshes.iter().map(|m| (&m.mesh, m.name.as_str())).collect();
         let looks = s.document(&ctx.actor)?.appearances;
-        let bytes = mesh_export_bytes_styled(s.kernel().as_ref(), &bodies, &refs, format, tol, &looks)?;
+        let face_names: Vec<Vec<String>> = if looks.iter().any(|a| !a.faces.is_empty()) {
+            sel_bodies.iter().map(|b| b.names.faces.iter().map(ToString::to_string).collect()).collect()
+        } else {
+            Vec::new()
+        };
+        let bytes = mesh_export_bytes_styled(s.kernel().as_ref(), &bodies, &refs, format, tol, &looks, &face_names)?;
         crate::paths::write_file(&path, &self.path, &bytes)?;
         Ok(merge(json!({ "written": self.path, "bytes": bytes.len(), "bodies": bodies.len() }), rebuild_report(&ev)))
     }
