@@ -147,4 +147,18 @@ def main():
     loose=sum(1 for a in gs if min((np.linalg.norm(cen(a)-cen(b)) for b in os_),default=9e9)<0.5)
     bad=[x for x in ng if x is not None and x>=tol]
     print(f'GT solids {len(gs)}: covered {okg} (centre within 0.5 mm: {loose}); ours {len(os_)}: matched {oko}'+('; GT misses: median %.2f mm, max %.2f'%(np.median(bad),max(bad)) if bad else ''))
+    if os.environ.get('F3D_VERBOSE'):
+        # Each miss: its size, and the nearest body of ours with the same size (sorted
+        # extents within 0.05 mm) and the offset from it: a placement error shows as a
+        # same-size body elsewhere, a missing shape as none.
+        ext=lambda a: np.sort(a[3:]-a[:3])
+        for a,best in zip(gs,ng):
+            if best is not None and best<tol: continue
+            same=[b for b in os_ if np.abs(ext(a)-ext(b)).max()<0.05]
+            if same:
+                b=min(same,key=lambda b: np.linalg.norm(cen(a)-cen(b)))
+                d=cen(a)-cen(b)
+                print('miss size %s: same-size body off by %s'%(np.round(a[3:]-a[:3],2), np.round(d,2)))
+            else:
+                print('miss size %s: no body of that size'%(np.round(a[3:]-a[:3],2),))
 if __name__=='__main__': main()

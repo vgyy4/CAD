@@ -92,3 +92,6 @@ inflated under the same budget as the partition, at most 4096 bodies. The import
 bodies only when the final partition has none. `Ecran_128x32oled`: 114 distinct bodies (47
 pins share their size), 1545.995 mm3 in a 34.5 x 20.6 x 3.3 mm box, with no STEP of its own
 to compare against.
+
+Only one `LocalBodies` stream is read (a part with several imported features keeps the others; the
+chunk container takes the lowest name, OLE2 the first directory entry; security review T3).
