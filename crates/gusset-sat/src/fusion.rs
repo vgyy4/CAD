@@ -438,6 +438,23 @@ fn nested_after(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Opt
     })
 }
 
+/// [`nested_after`] for the 2025 layout, whose records carry no class tags: a repeat of `x`
+/// anywhere within [`REPEAT_REACH`] bytes after `after`, and the matrix 8 to 24 bytes after
+/// that repeat (HDMI cable: both of its references, the pins' and the USB-C connector's).
+fn nested_loose(b: &[u8], after: usize, x: &Placement) -> Option<Placement> {
+    let end = after.saturating_add(REPEAT_REACH).min(b.len());
+    (after..end)
+        .filter(|p| rigid_at(b, *p).is_some_and(|m| same_placement(&m, x)))
+        .take(8)
+        .find_map(|p| (p + 128 + 8..=p + 128 + 24).find_map(|q| rigid_at(b, q)))
+        .filter(|m| !same_placement(m, x))
+}
+
+/// The placement the design stores for a reference whose matrix `x` ends at `after`.
+fn nested_for(b: &[u8], repeats: &[usize], after: usize, x: &Placement) -> Option<Placement> {
+    nested_after(b, repeats, after, x).or_else(|| nested_loose(b, after, x))
+}
+
 /// For a reference at the origin: the first record of class [`CLASS_TRANSFORM_ALSO`] within
 /// [`REPEAT_REACH`] after `after` whose first matrix is not the identity holds the moved
 /// context component's placement itself (the Buck case: no repeat of the reference's matrix
@@ -472,7 +489,7 @@ fn transforms(b: &[u8]) -> Transforms {
                 .into_iter()
                 .rfind(|s| at.saturating_sub(s.1) <= 60 && s.1 <= at);
             if let Some((_, _, id, _)) = near {
-                nested.entry(id.clone()).or_default().push(vec![nested_after(b, &repeats, mp + 128, &m)]);
+                nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
                 by_id.entry(id).or_default().push(vec![m]);
             }
             // (a') or the id just after the matrix (a reference used once).
@@ -480,7 +497,7 @@ fn transforms(b: &[u8]) -> Transforms {
             if let Some((_, _, id, _)) =
                 uuid_strings(b, end, end + 24 + 72, 1).into_iter().next().filter(|s| s.0 <= end + 24)
             {
-                nested.entry(id.clone()).or_default().push(vec![nested_after(b, &repeats, mp + 128, &m)]);
+                nested.entry(id.clone()).or_default().push(vec![nested_for(b, &repeats, mp + 128, &m)]);
                 by_id.entry(id).or_default().push(vec![m]);
             }
             continue;
@@ -499,14 +516,14 @@ fn transforms(b: &[u8]) -> Transforms {
             }
             continue;
         };
-        let mut over = vec![nested_after(b, &repeats, pos + 128, &m)];
+        let mut over = vec![nested_for(b, &repeats, pos + 128, &m)];
         let mut list = vec![m];
         while list.len() < MAX_INSTANCES {
             pos += 128;
             let next = (pos..=pos + INSTANCE_GAP).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
             let Some((p, m)) = next else { break };
             pos = p;
-            over.push(nested_after(b, &repeats, pos + 128, &m));
+            over.push(nested_for(b, &repeats, pos + 128, &m));
             list.push(m);
         }
         nested.entry(id.clone()).or_default().push(over);
@@ -1315,6 +1332,49 @@ mod tests {
         let x = d.xrefs.iter().find(|x| x.role == id(9)).unwrap();
         assert!(near(x.instances[0].t, [0.0; 3]));
         assert!(near(x.nested[0].unwrap().t, [-14.605, -9.525, 4.2]), "{:?}", x.nested);
+    }
+
+    #[test]
+    fn a_classless_repeat_of_a_references_matrix_gives_the_moved_placement() {
+        // The 2025 layout (HDMI cable): the repeat has no class tag, the placement the root
+        // stored for the design stands 14 bytes after the repeat's matrix.
+        let mut b = Vec::new();
+        b.extend(class(CLASS_TRANSFORM));
+        b.extend([0u8; 2]);
+        b.extend(matrix([0.55, 1.5464, 1.9], true));
+        b.extend([0u8; 8]);
+        b.extend(uuid16(7, false));
+        b.extend([5u8; 300]);
+        b.extend(matrix([0.55, 1.5464, 1.9], true));
+        b.extend([1u8; 14]);
+        b.extend(matrix([0.0, 0.77, 0.427], true));
+        b.extend([5u8; 100]);
+        let d = read_design(&b);
+        let x = d.xrefs.iter().find(|x| x.role == id(7)).unwrap();
+        assert!(near(x.instances[0].t, [5.5, 15.464, 19.0]));
+        assert!(near(x.nested[0].unwrap().t, [0.0, 7.7, 4.27]), "{:?}", x.nested);
+        // A repeat with no placement after it, or too far away, gives nothing.
+        let mut c = b.clone();
+        let cut = c.len() - 100 - 128 - 14;
+        c.truncate(cut);
+        let d = read_design(&c);
+        assert!(d.xrefs.iter().find(|x| x.role == id(7)).unwrap().nested[0].is_none());
+        let mut far = b.clone();
+        for _ in 0..REPEAT_REACH {
+            far.insert(128 + 40 + 2 + 8 + 72 + 20, 9);
+        }
+        let d = read_design(&far);
+        assert!(d.xrefs.iter().find(|x| x.role == id(7)).unwrap().nested[0].is_none());
+        // Hostile: one reference followed by thousands of repeats stays bounded and total.
+        let mut many = Vec::new();
+        many.extend(class(CLASS_TRANSFORM));
+        many.extend([0u8; 2]);
+        for _ in 0..4000 {
+            many.extend(matrix([0.1, 0.2, 0.3], true));
+            many.extend([1u8; 14]);
+        }
+        many.extend(uuid16(7, false));
+        let _ = read_design(&many);
     }
 
     #[test]

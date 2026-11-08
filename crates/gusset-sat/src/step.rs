@@ -333,7 +333,20 @@ fn bs3_surface(r: &Rec, from: usize) -> Result<Bs3Surface, SatError> {
             return Ok(sf);
         }
     }
-    bs3_surface_rest(r, &mut k, du, dv, rational)
+    let mut k1 = k;
+    let first = bs3_surface_rest(r, &mut k1, du, dv, rational);
+    // A rational surface of the 2025 layout (Fusion's `exact_spl_sur` inside a `pcurve`):
+    // `both` and four enumeration values stand before the counts.
+    if first.is_err()
+        && !words.is_empty()
+        && (k..k + 4).all(|i| r.num(i).is_some_and(|v| (0.0..=3.0).contains(&v) && v.fract().abs() < 1e-12))
+    {
+        let mut kb = k + 4;
+        if let Ok(sf) = bs3_surface_rest(r, &mut kb, du, dv, rational) {
+            return Ok(sf);
+        }
+    }
+    first
 }
 
 /// A B-spline surface from its knot counts on (`k` at the u count).
@@ -1169,5 +1182,19 @@ mod surface_layout_tests {
         // Without descriptors at all, the counts come right after the degrees.
         let bare = rec(&format!("nubs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
         assert_eq!(bs3_surface(&bare, 0).unwrap().points, a.points);
+    }
+
+    #[test]
+    fn a_rational_surface_may_put_both_and_four_enumeration_values_before_the_counts() {
+        // Fusion's `exact_spl_sur` inside a `pcurve` (the 2025 layout, HDMI cable's pins).
+        let pts = "0 0 0 1 1 0 0 1 0 1 0 1 1 1 0 1";
+        let plain = rec(&format!("nurbs 1 1 2 2 0 1 1 1 0 1 1 1 {pts}"));
+        let both = rec(&format!("nurbs 1 1 both 2 0 0 0 2 2 0 1 1 1 0 1 1 1 {pts}"));
+        let (a, b) = (bs3_surface(&plain, 0).unwrap(), bs3_surface(&both, 0).unwrap());
+        assert_eq!(a.points, b.points);
+        assert_eq!(a.knots, b.knots);
+        assert_eq!(b.weights, a.weights);
+        // Damaged counts are an error, not a panic.
+        assert!(bs3_surface(&rec("nurbs 1 1 both 2 0 0 0 2"), 0).is_err());
     }
 }

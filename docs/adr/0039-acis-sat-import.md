@@ -172,8 +172,8 @@ little-endian doubles, row-major, centimetres.
   design), a record of class `CE2913AA-CFE0-4F04-9102-24424ED3BCFA` repeats the reference's
   matrix and stores the component's placement in the root's coordinates 8 to 24 bytes after it
   (Trinkey, QTPy); the design is then placed so that its board lands there.
-- Not read: patterns (instances 2 to 4 of a rectangular pattern, the pins of a header, exist
-  only as pattern parameters and world matrices after the pattern record); designs whose
+- Not read: pattern instances, should a design store any as parameters only (none found: the
+  HDMI cable's pins turned out to be ordinary bodies, see "USB-C HDMI cable" below); designs whose
   components keep only stale matrices; a moved board reference that names its role
   without a matrix (the Buck case); the 2025 layout's reference matrices (HDMI: the matrices
   found are earlier states); joints.
@@ -204,8 +204,34 @@ board's placement as its first matrix. That record is now read (the first one wi
 whose matrix is not the identity): 0 to 65 of 90 solids placed; the other samples unchanged
 (LoRa 82, CyberDeck 20, NeoKey 12, MacroPad 167, Keyplate 1, Trinkey 63, QT Py 138, Crickit 48).
 
-USB-C HDMI cable, 2026-11-08: 50 of the author's 54 solids are pin copies made by Fusion patterns
-(8 distinct sizes in all), which are not read; the four parts are within 0.5 mm.
+USB-C HDMI cable, 2026-11-08: 50 of the author's 54 solids are pin copies made by Fusion
+patterns (8 distinct sizes in all). Investigated and corrected: **the pin copies are stored as
+bodies.** The referenced design's blob (`BREP.1ae4a36e-....smb`) holds 52 bodies (52 `body`,
+`lump`, `shell` records: 24 + 20 + 4 pins and the housing parts); no pattern record, parameter or
+extra matrix exists for them in either design stream (the strings `Pattern`, `Rectangular`,
+`Circular`, `Quantity` appear in none of the three `BulkStream.dat`). They were missing for two other reasons:
+
+1. The blob did not convert (`pcurve: v knot count`): a `pcurve` record carries a second subtype
+   block, `{ exact_spl_sur 22800 0 nurbs <du> <dv> both 2 0 0 0 <nu> <nv> ... }`, a rational
+   surface with `both` and four enumeration values (not the three words of the older layout)
+   before the knot counts, and `{ ref n }` of a `spline-surface` points at it. `bs3_surface` now
+   tries the counts after the four values when the plain reading fails. This also made more
+   faces readable in the other samples (below).
+2. The design was placed by an earlier state. The 2025 stream layout (`FusionDesignSegmentType1`)
+   has the reference's matrix in a class `E03784ED` record, then the same matrix repeated in
+   records with no class tag (1000 and 640 bytes later) and, 14 bytes after the matrix of the last
+   repeat (128 + 14 after its start), the placement the root gave the design (a 180 degree turn
+   about Z and (0, 7.7, 4.27) mm instead of (5.5, 15.46, 19.0) mm). The same shape holds for the
+   second reference (a quarter turn about X: (0, 10.35, 1.78) mm, then (0.219, 9.65, 0.892) mm).
+   `fusion::nested_loose` reads it when no class `CE2913AA` repeat is found, and `f3d` uses a
+   reference's moved placement as the design's own when the design has no context component.
+   Both references land within 0.001 mm of the author's solids.
+
+Result: 0 to 53 of 54 (the one solid left is 24.65 mm from any body of ours; not investigated). The reader fix also lifted: BQ25185 Buck
+65 to 71 of 90, Crickit HAT 48 to 54 of 85, MacroPad 167 to 168 of 185, Pixel Trinkey 63 to 64
+of 65, QT Py 138 to 139 of 142; LoRa 82, CyberDeck 20, NeoKey 12, Keyplate 1 and Pico 0 are
+unchanged. True pattern instances (parameters only) were not found in any sample; if a design
+turns up that stores them that way, nothing reads them.
 
 Fusion colours (2026-11-08, implemented): the findings below are read by `gusset-sat` and
 `gusset-commands` and the colours reach the app through the STEP face-colour path (ADR 0045

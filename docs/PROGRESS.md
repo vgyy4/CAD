@@ -274,9 +274,12 @@ Phase 3 has started (see Next).
      parents composed, a component used n times gives n bodies) and `.f3z` designs placed by
      the root's references done (ADR 0039 amendment 2026-11-08; per-body check against the
      authors' STEP: LoRa 82/83, MacroPad 167/185, Trinkey 63/65, QT Py 138/142). Buck case placed
-     2026-11-08 (0 -> 65/90: a reference at the origin whose board the root moved). Next: helical
-     sweep surfaces (threads), Fusion patterns (50 of the HDMI cable's 54 solids are pattern
-     copies), joints (the Pico board's components are placed by joints, not matrices). Fusion colours
+     2026-11-08 (0 -> 65/90: a reference at the origin whose board the root moved). HDMI cable
+     2026-11-08 (0 -> 53/54): its pins are real bodies, not pattern instances (a rational
+     `exact_spl_sur` layout the SAT reader refused, and a moved-design placement of the 2025 layout);
+     the same reader fix lifted Buck 65 -> 71, Crickit 48 -> 54, MacroPad 167 -> 168, Trinkey
+     63 -> 64, QT Py 138 -> 139. Next: helical
+     sweep surfaces (threads), true pattern instances (none found in any sample), joints (the Pico board's components are placed by joints, not matrices). Fusion colours
      done (ADR 0039 amendment: `.smb` attribute -> design stream -> `.protein` package -> STEP
      styles); the history blob (`.smbh`) before a body gives the face materials its `.smb` lost
      (matched by face tag, ADR 0039); the `BASEFEAT_PM_BODY_REF` records colour the imported

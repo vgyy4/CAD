@@ -875,8 +875,11 @@ fn f3d(
                     for &(origin, moved) in insts {
                         // Design coordinates to the root's: the reference's matrix, or the root's
                         // own placement of the design's context component taken as the design's.
+                        // A design without a context component (the HDMI connector) was moved as
+                        // a whole: the placement the root stored for it is the design's own.
                         let inst = match (moved, design.info.context) {
                             (Some(o), Some(ctx)) => o.then(&ctx.inverse()),
+                            (Some(o), None) => o,
                             _ => origin,
                         };
                         if cancel.load(Ordering::Relaxed) {
@@ -1093,10 +1096,10 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
                     color: *c,
                     finish: gusset_doc::Finish::Plastic,
                     faces: face_groups(&name, faces),
+                    texture: None,
                 });
             }
             names.push(name);
-                    texture: None,
         }
         let warnings: Vec<String> = warnings.iter().take(20).cloned().collect();
         Ok(json!({ "features": names, "tier": tier, "warnings_user_text": warnings }))
