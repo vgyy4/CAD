@@ -366,7 +366,8 @@ impl ImportJob {
                 let (out, mut warnings) = sldprt_bodies(&bytes, &stem, importer.as_ref(), cancel, None)?;
                 // The feature history as editable features, when it rebuilds to the part's
                 // own bodies (ADR 0043 amendment); else the bodies themselves.
-                match solidworks_history(&bytes, &out, &self.kernel, &self.file_name) {
+                let stock = sldprt_stock(&bytes, &stem, importer.as_ref(), cancel);
+                match solidworks_history(&bytes, &out, &self.kernel, &self.file_name, stock) {
                     Ok((tree, note)) => {
                         warnings.extend(note);
                         return Ok(PreparedImport {
@@ -1175,13 +1176,162 @@ fn solidworks_history(
     bodies: &[PreparedBody],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
+    stock: Result<Vec<Vec<u8>>, String>,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
-    let tree = gusset_sldprt::features::feature_tree(bytes, file_name, &gusset_sldprt::Limits::default())?
+    let mut tree = gusset_sldprt::features::feature_tree(bytes, file_name, &gusset_sldprt::Limits::default())?
         .ok_or_else(String::new)?;
+    let (stored, stock_note) = stored_stock(&mut tree, bodies, kernel, stock)?;
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut tree = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    tree.stored_bodies = stored;
     let note = rebuild_check(&mut tree, bodies, kernel, file_name, "the part's")?;
+    let note = match (stock_note, note) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    };
     Ok((tree, note))
+}
+
+/// The native bodies of a part's `StockBodies` stream (the source body of a mirrored stock
+/// part), as stored bodies for the tree.
+fn sldprt_stock(
+    bytes: &[u8],
+    stem: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<Vec<Vec<u8>>, String> {
+    let Some(part) =
+        gusset_sldprt::extract_stock(bytes, &gusset_sldprt::Limits::default()).map_err(|e| e.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    let c = gusset_xt::to_step(&part.xt, stem, &gusset_xt::Limits::default()).map_err(|e| e.to_string())?;
+    let bodies = importer.import("step", c.step.as_bytes(), cancel)?;
+    Ok(bodies.into_iter().map(|(_, blob)| blob).collect())
+}
+
+/// A plane normal to axis `ax` at `c`: its origin and unit normal.
+fn axis_plane(ax: usize, c: f64) -> ([f64; 3], [f64; 3]) {
+    let mut o = [0.0; 3];
+    let mut n = [0.0; 3];
+    if let (Some(a), Some(b)) = (o.get_mut(ax), n.get_mut(ax)) {
+        *a = c;
+        *b = 1.0;
+    }
+    (o, n)
+}
+
+/// Hands the stock body to a tree that has a mirrored-stock feature, and adds the mirror
+/// across the plane that carries the stock's box onto the part's final box (a plane parallel to
+/// XY, XZ or YZ). The rebuild check then decides whether that is the part.
+fn stored_stock(
+    tree: &mut Value,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    stock: Result<Vec<Vec<u8>>, String>,
+) -> Result<(Vec<Vec<u8>>, Option<String>), String> {
+    let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok((Vec::new(), None)) };
+    let Some(at) = feats.iter().position(|f| f.get("stock_mirror").is_some()) else {
+        return Ok((Vec::new(), None));
+    };
+    let stock = stock.map_err(|e| format!("the stock body was not read: {e}"))?;
+    // A part without a stock stream keeps the mirrored body only: that body is the stored one.
+    if stock.is_empty() {
+        if bodies.is_empty() {
+            return Err("the part keeps no stock body".into());
+        }
+        let name = feats.get(at).and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("Stock").to_string();
+        for i in 1..bodies.len() {
+            feats.push(serde_json::json!({"type": "stored_body", "name": format!("{name}_{}", i + 1), "body": i}));
+        }
+        return Ok((
+            bodies.iter().map(|b| b.blob.clone()).collect(),
+            Some("the file keeps only the mirrored bodies, not the part they were mirrored from".into()),
+        ));
+    }
+    let [blob] = stock.as_slice() else {
+        return Err(format!("the part keeps {} stock bodies (one is expected)", stock.len()));
+    };
+    let ix = |a: [f64; 3], i: usize| a.get(i).copied().unwrap_or(0.0);
+    let box_of = |blobs: &[&Vec<u8>]| -> Result<gusset_kernel::BBox, String> {
+        let mut out: Option<gusset_kernel::BBox> = None;
+        for b in blobs {
+            let shape = kernel.read_native(b).map_err(|e| e.message)?;
+            let bb = kernel.bbox(&shape).map_err(|e| e.message)?;
+            out = Some(match out {
+                None => bb,
+                Some(a) => gusset_kernel::BBox {
+                    min: [0, 1, 2].map(|k| ix(a.min, k).min(ix(bb.min, k))),
+                    max: [0, 1, 2].map(|k| ix(a.max, k).max(ix(bb.max, k))),
+                },
+            });
+        }
+        out.ok_or_else(|| "no body".to_string())
+    };
+    let from = box_of(&[blob])?;
+    let to = box_of(&bodies.iter().map(|b| &b.blob).collect::<Vec<_>>())?;
+    let tol = 1e-4 * (1.0 + gusset_kernel::norm(to.size()));
+    let close = |a: f64, b: f64| (a - b).abs() <= tol;
+    let same = |ax: usize| close(ix(from.min, ax), ix(to.min, ax)) && close(ix(from.max, ax), ix(to.max, ax));
+    let name = feats.get(at).and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("Stock").to_string();
+    // Not moved at all: the stock is the part.
+    if (0..3).all(same) {
+        return Ok((stock, None));
+    }
+    for ax in 0..3 {
+        let c = f64::midpoint(ix(from.max, ax), ix(to.min, ax));
+        let flipped = close(ix(to.max, ax), 2.0 * c - ix(from.min, ax));
+        if flipped && (0..3).filter(|a| *a != ax).all(same) {
+            // The mirror unites the image with the stock (a body of its own would leave the
+            // stock in the part): the half space of the stock is cut away afterwards.
+            let below = ix(from.max, ax) <= c + tol;
+            if !below && ix(from.min, ax) < c - tol {
+                // The image overlaps the stock: no half space separates them, so the
+                // stored body is the mirrored stock.
+                let shape = kernel.read_native(blob).map_err(|e| e.message)?;
+                let (o, n) = axis_plane(ax, c);
+                let r = kernel
+                    .transform(&shape, &gusset_kernel::Transform::Mirror { origin: o, normal: n })
+                    .map_err(|e| e.message)?;
+                let mirrored = kernel.write_native(&r.shape).map_err(|e| e.message)?;
+                return Ok((
+                    vec![mirrored],
+                    Some("the stored body is the stock body mirrored (the image overlaps the stock)".into()),
+                ));
+            }
+            let (origin, normal) = axis_plane(ax, c);
+            let mirror = format!("{name}_Mirror");
+            let (xa, ya, (iu, iv)): ([f64; 3], [f64; 3], (usize, usize)) = match ax {
+                0 => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], (1, 2)),
+                1 => ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], (2, 0)),
+                _ => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], (0, 1)),
+            };
+            let mid = |i: usize| f64::midpoint(ix(from.min, i).min(ix(to.min, i)), ix(from.max, i).max(ix(to.max, i)));
+            let half = |i: usize| 0.5 * (ix(from.max, i).max(ix(to.max, i)) - ix(from.min, i).min(ix(to.min, i))) + 1.0;
+            let (hu, hv) = (2.0 * half(iu), 2.0 * half(iv));
+            let (cu, cv) = (mid(iu), mid(iv));
+            let size = 2.0 * (half(ax) + ix(from.max, ax).abs().max(ix(from.min, ax).abs()));
+            let cut_sketch = format!("{name}_Half");
+            feats.push(serde_json::json!({
+                "type": "mirror", "name": mirror, "target": name, "merge": true,
+                "features": [], "plane": {"origin": origin, "normal": normal}
+            }));
+            let corners = [(cu - hu, cv - hv), (cu + hu, cv - hv), (cu + hu, cv + hv), (cu - hu, cv + hv)];
+            feats.push(serde_json::json!({
+                "type": "sketch", "name": cut_sketch,
+                "plane": {"origin": origin, "x_axis": xa, "y_axis": ya},
+                "points": corners.iter().enumerate().map(|(i, (u, v))| serde_json::json!({"id": format!("p{i}"), "x": u, "y": v})).collect::<Vec<_>>(),
+                "curves": (0..4).map(|i| serde_json::json!({"id": format!("c{i}"), "type": "line", "start": format!("p{i}"), "end": format!("p{}", (i + 1) % 4)})).collect::<Vec<_>>()
+            }));
+            feats.push(serde_json::json!({
+                "type": "extrude", "name": format!("{name}_RemoveStock"), "sketch": cut_sketch, "profiles": "all",
+                "operation": "cut", "target": name, "end_condition": "blind", "symmetric": false,
+                "distance": if below { -size } else { size }
+            }));
+            return Ok((stock, None));
+        }
+    }
+    Err("the mirror plane of the stock body was not found".into())
 }
 
 /// Tier note for an Inventor part whose feature history came in as features.

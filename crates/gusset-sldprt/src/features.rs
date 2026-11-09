@@ -2383,6 +2383,15 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 js.insert("edges_selected".into(), json!(sel.len()));
             }
             feats.push(Value::Object(js));
+        } else if cls.as_deref() == Some("moMirrorStock_c") {
+            // A mirrored copy of an external part: the part keeps the source body in its
+            // `StockBodies` stream (the importer hands it over as stored body 0); the
+            // mirror plane is found by the importer by comparing it with the final body.
+            feats.push(json!({"type": "stored_body", "name": n.name, "body": 0, "stock_mirror": true}));
+            solid = true;
+            if first_solid.as_deref().is_none_or(str::is_empty) {
+                first_solid = Some(n.name.clone());
+            }
         } else if cls.is_none() || is_in(&cls, &SKIPPED) {
             continue;
         } else {
@@ -2432,6 +2441,7 @@ fn check(tree: &Value) -> Result<(), String> {
                     return Err(format!("{name}: no axis line in its sketch"));
                 }
             }
+            "stored_body" => solids += 1,
             "hole" | "mirror" if f.get("unresolved").is_some() => {
                 return Err(format!("{name}: the {} was not resolved", s("type")));
             }

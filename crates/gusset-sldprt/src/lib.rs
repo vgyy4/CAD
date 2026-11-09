@@ -193,9 +193,9 @@ pub fn detect(bytes: &[u8]) -> Option<Container> {
 
 /// The configuration number of a `Config-<n>-Partition` stream name (not the ghost
 /// partition), with or without the `Contents/` prefix.
-fn partition_config(name: &str) -> Option<u32> {
+fn stream_config(name: &str, suffix: &str) -> Option<u32> {
     let rest = name.strip_prefix("Contents/").unwrap_or(name).strip_prefix("Config-")?;
-    rest.strip_suffix("-Partition")?.parse().ok()
+    rest.strip_suffix(suffix)?.parse().ok()
 }
 
 /// The warning for a file that ends early (dogfooding F12-9).
@@ -241,6 +241,24 @@ fn partition_block(stream: &[u8], limits: &Limits, spent: &mut usize) -> Result<
 /// [`SldprtError`] for unknown containers, damaged or over-limit files, and files without
 /// a partition.
 pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtError> {
+    extract_stream(bytes, limits, "-Partition")
+}
+
+/// The Parasolid transmit of a part's `StockBodies` stream (the body a mirror-part feature
+/// starts from; the final partition holds the mirrored result): `None` when the part has no
+/// such stream.
+///
+/// # Errors
+/// [`SldprtError`] for damaged or over-limit files.
+pub fn extract_stock(bytes: &[u8], limits: &Limits) -> Result<Option<Extracted>, SldprtError> {
+    match extract_stream(bytes, limits, "-StockBodies") {
+        Ok(x) => Ok(Some(x)),
+        Err(SldprtError::NoGeometry(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn extract_stream(bytes: &[u8], limits: &Limits, suffix: &str) -> Result<Extracted, SldprtError> {
     let container = detect(bytes).ok_or(SldprtError::NotSldprt)?;
     let mut spent = 0usize;
     let mut warnings = Vec::new();
@@ -253,8 +271,12 @@ pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtErro
             if f.cut_short() {
                 warnings.push(CUT_SHORT.to_string());
             }
-            let mut list: Vec<(u32, usize)> =
-                f.streams.iter().enumerate().filter_map(|(i, e)| partition_config(&e.name).map(|n| (n, i))).collect();
+            let mut list: Vec<(u32, usize)> = f
+                .streams
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| stream_config(&e.name, suffix).map(|n| (n, i)))
+                .collect();
             list.sort_unstable();
             list.dedup_by_key(|(n, _)| *n);
             let mut found = None;
@@ -282,8 +304,8 @@ pub fn extract_xt(bytes: &[u8], limits: &Limits) -> Result<Extracted, SldprtErro
                 warnings.push(CUT_SHORT.to_string());
             }
             let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
-            for st in chunks::streams(bytes, limits, |n| partition_config(n).is_some())? {
-                if let Some(n) = partition_config(&st.name) {
+            for st in chunks::streams(bytes, limits, |n| stream_config(n, suffix).is_some())? {
+                if let Some(n) = stream_config(&st.name, suffix) {
                     // A later valid record of the same stream replaces an earlier one.
                     parts.retain(|(m, _)| *m != n);
                     parts.push((n, st.data));
