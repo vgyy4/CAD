@@ -1006,6 +1006,72 @@ fn on_path_edges(ev: &gusset_eval::Evaluation, path: &[[f64; 3]]) -> Vec<(String
     out
 }
 
+/// The model's edges that hold a source edge: its midpoint and both ends lie on one edge of
+/// the model (a line, or a circle's arc). FreeCAD splits an edge where the faces of a joined
+/// pattern meet; Gusset keeps the whole edge, and a fillet takes all of it.
+fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(String, String)> {
+    let (Some(first), Some(last)) = (pick.path.first().copied(), pick.path.last().copied()) else {
+        return Vec::new();
+    };
+    let pts = [pick.midpoint, first, last];
+    let mut out = Vec::new();
+    for b in &ev.bodies {
+        let t = &b.topology;
+        for (i, e) in t.edges.iter().enumerate() {
+            let ends: Vec<V3> =
+                e.vertices.iter().filter_map(|v| t.vertices.get(*v as usize)).map(|v| v.point).collect();
+            if edge_holds(e.kind, &ends, e.midpoint, e.circle, &pts)
+                && let Some(n) = b.names.edges.get(i)
+            {
+                out.push((b.feature.clone(), n.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Whether every point lies (within 0.01 mm) on a line or circular arc given by its ends and
+/// midpoint.
+fn edge_holds(
+    kind: gusset_kernel::CurveKind,
+    ends: &[V3],
+    mid: V3,
+    circle: Option<gusset_kernel::Circle3>,
+    pts: &[V3],
+) -> bool {
+    let tol = 0.01;
+    match (kind, ends, circle) {
+        (gusset_kernel::CurveKind::Line, [a, b], _) => pts.iter().all(|p| {
+            let ab = sub(*b, *a);
+            let l2 = dot(ab, ab);
+            let u = if l2 > 1e-18 { (dot(sub(*p, *a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let q = [a[0] + ab[0] * u, a[1] + ab[1] * u, a[2] + ab[2] * u];
+            norm(sub(*p, q)) <= tol
+        }),
+        (gusset_kernel::CurveKind::Circle, [a, b], Some(c)) => {
+            let u0 = sub(*a, c.center);
+            let v0 = cross(c.normal, u0);
+            let ang = |p: V3| {
+                let w = sub(p, c.center);
+                libm::atan2(dot(w, v0), dot(w, u0))
+            };
+            let two_pi = 2.0 * core::f64::consts::PI;
+            // The arc runs from its first end through its midpoint to the second.
+            let dir = if ang(mid) >= 0.0 { 1.0 } else { -1.0 };
+            let sweep = (dir * ang(*b)).rem_euclid(two_pi);
+            let slack = tol / c.radius.max(1e-9);
+            pts.iter().all(|p| {
+                let w = sub(*p, c.center);
+                let a = (dir * ang(*p)).rem_euclid(two_pi);
+                (norm(w) - c.radius).abs() <= tol
+                    && dot(w, c.normal).abs() <= tol
+                    && (a <= sweep + slack || a >= two_pi - slack)
+            })
+        }
+        _ => false,
+    }
+}
+
 /// Most points of a source edge's path looked at.
 const MAX_PATH_POINTS: usize = 512;
 
@@ -1033,7 +1099,10 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         match best {
             Some((dd, body, n)) if dd <= 0.01 => by_body.entry(body).or_default().push(n),
             _ => {
-                let on_path = on_path_edges(&ev, &pick.path);
+                let mut on_path = on_path_edges(&ev, &pick.path);
+                if on_path.is_empty() {
+                    on_path = containing_edges(&ev, pick);
+                }
                 if on_path.is_empty() {
                     let near = best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
                     return Err(format!("no edge of the model has its midpoint at {:?}{near}", pick.midpoint));
@@ -1047,8 +1116,11 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     if by_body.len() != 1 {
         return Err("its edges are on several bodies".into());
     }
-    let (body, names) = by_body.into_iter().next().ok_or("no edges")?;
+    let (body, mut names) = by_body.into_iter().next().ok_or("no edges")?;
     let _ = body;
+    // Several source pieces of one edge of the model name it once.
+    let mut seen = HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
     let name = g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" });
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
     let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm)\n", names.join(", "), num(size));
@@ -1060,4 +1132,41 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edge_holds;
+    use gusset_kernel::{Circle3, CurveKind};
+
+    #[test]
+    fn a_source_piece_of_an_arc_lies_on_the_whole_arc() {
+        // A quarter circle of radius 10 about the origin, from (10, 0) to (0, 10).
+        let c = Circle3 { center: [0.0; 3], normal: [0.0, 0.0, 1.0], radius: 10.0 };
+        let r = core::f64::consts::FRAC_1_SQRT_2 * 10.0;
+        let ends = [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0]];
+        let mid = [r, r, 0.0];
+        let at = |deg: f64| {
+            let a = deg.to_radians();
+            [10.0 * libm::cos(a), 10.0 * libm::sin(a), 0.0]
+        };
+        // A piece in the middle, and one starting exactly at the first end.
+        assert!(edge_holds(CurveKind::Circle, &ends, mid, Some(c), &[at(50.0), at(30.0), at(60.0)]));
+        assert!(edge_holds(CurveKind::Circle, &ends, mid, Some(c), &[at(10.0), at(0.0), at(20.0)]));
+        // Past the end, off the circle and off its plane do not.
+        assert!(!edge_holds(CurveKind::Circle, &ends, mid, Some(c), &[at(100.0), at(80.0), at(95.0)]));
+        assert!(!edge_holds(CurveKind::Circle, &ends, mid, Some(c), &[[5.0, 0.0, 0.0]; 3]));
+        assert!(!edge_holds(CurveKind::Circle, &ends, mid, Some(c), &[[r, r, 1.0]; 3]));
+        // A line holds a piece of itself.
+        let line = [[0.0; 3], [10.0, 0.0, 0.0]];
+        assert!(edge_holds(
+            CurveKind::Line,
+            &line,
+            [5.0, 0.0, 0.0],
+            None,
+            &[[4.0, 0.0, 0.0], [3.0, 0.0, 0.0], [6.0, 0.0, 0.0]]
+        ));
+        assert!(!edge_holds(CurveKind::Line, &line, [5.0, 0.0, 0.0], None, &[[4.0, 1.0, 0.0]; 3]));
+        assert!(!edge_holds(CurveKind::Line, &line, [5.0, 0.0, 0.0], None, &[[11.0, 0.0, 0.0]; 3]));
+    }
 }
