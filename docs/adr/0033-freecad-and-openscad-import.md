@@ -179,3 +179,19 @@ OCCT's fillet of its 48 edges then yields a face BRepCheck reports as unorientab
 ShapeFix does not repair (two edges of neighbouring teeth fail together, each alone and the
 pair of the same tooth are fine), so the file stays at tier 2. Page_089 with its patterns
 unrefined builds but is 5% off in volume (not traced).
+
+### Amendment: pads and pockets up to a face (2026-11-09)
+
+A pad or pocket of `Type` 3 (UpToFace) whose `UpToFace` names a planar `FaceN` of a feature's stored shape, ahead of the
+sweep and with `Offset` 0, is written as `"end_condition": "to_face"` with the face's point (inside the face, from its
+largest triangle) and outward normal, and `reverse` for a sweep against the sketch normal (a pocket cuts against it, `Reversed`
+flips either); the stored-shape reader (`Edges`) now also returns each face (`SrcFace`). Anything else keeps the distance read
+off the stored `AddSubShape`: an offset (FreeCAD's offset direction is not established), a curved face, a face behind the
+sketch, a missing shape. A file whose tree has an extrusion up to a face is rebuilt as before; if the rebuild check fails
+(the kernel wants the face to cover the whole profile, FreeCAD extends the surface) the importer retries every tree variant
+with the distance path, so the change cannot lose a file the distance path rebuilds (checked by turning the through-all
+pockets of Page_032 and others into up-to-face ones on each of their faces: the ones the kernel refuses come in through the
+fallback). UpToFirst/UpToLast stay distances: their end face would have to be found among the base shape's faces by outline, which
+`SrcFace` does not carry. `page67_bynormandc` (the one UpToFace in the 160 files) stays at tier 2: its sketch is tilted 45 degrees
+to the face z = -25 behind it, so the pad is FreeCAD's two-sided up-to (-72.14 .. +28.28 mm along the sketch normal); Gusset
+refuses a face behind part of the profile. Coverage unchanged: 126 of 160.

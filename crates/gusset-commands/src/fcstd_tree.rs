@@ -663,6 +663,47 @@ fn part_features(
     Ok(())
 }
 
+/// The face a pad or pocket up to a face ends on, as a pick of the model (`face`) and whether it
+/// sweeps against its sketch's normal.
+struct UpTo {
+    point: V3,
+    normal: V3,
+    reverse: bool,
+}
+
+/// The `UpToFace` of a pad or pocket as a pick, when it is a plane ahead of the sweep with no offset:
+/// the face of the named feature's stored shape (`FaceN`) as it stood there. Anything else (an
+/// offset, a curved or missing face, a face behind the sketch, an extrusion that reaches both
+/// sides of its sketch) is left to the distance read off the stored shape.
+fn up_to_face(
+    o: &Obj,
+    pocket: bool,
+    sk: &Place,
+    objects: &BTreeMap<String, Obj>,
+    shape_edges: ShapeEdges<'_>,
+) -> Option<UpTo> {
+    if o.float("Offset").is_some_and(|v| v.abs() > 1e-9) {
+        return None;
+    }
+    let (obj, subs) = o.link("UpToFace")?;
+    let n = subs.first()?.strip_prefix("Face")?.parse::<usize>().ok().filter(|n| *n > 0)?;
+    let file = objects.get(&obj)?.first("Shape", "Part")?.attrs.get("file").filter(|f| !f.is_empty())?.clone();
+    let shape = shape_edges(&file).ok()?;
+    let face = shape.faces.get(n - 1).filter(|f| f.planar)?;
+    let dot = |a: V3, b: V3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let den = dot(sk.z, face.normal);
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    // A pad grows along the sketch's normal and a pocket cuts against it; `Reversed` flips either.
+    let reverse = pocket != o.bool("Reversed");
+    let dir = if reverse { -1.0 } else { 1.0 };
+    let rel = [face.point[0] - sk.p[0], face.point[1] - sk.p[1], face.point[2] - sk.p[2]];
+    // Where the face's plane cuts the sketch's normal axis: ahead of the sweep.
+    let ahead = dot(rel, face.normal) / den * dir;
+    (ahead > 1e-6).then_some(UpTo { point: face.point, normal: face.normal, reverse })
+}
+
 /// What a reference can name: the document's objects, the body's placement and its sketches
 /// read so far (frame and lines).
 struct Refs<'a> {
@@ -965,9 +1006,43 @@ pub(crate) fn has_bodies(xml: &[u8]) -> bool {
     })
 }
 
-/// The edges of a stored shape file, in FreeCAD's numbering (`Edge1` first): each edge's
-/// midpoint and the 0-based numbers of the faces it bounds.
-pub(crate) type Edges = Vec<SrcEdge>;
+/// A stored shape file: its edges in FreeCAD's numbering (`Edge1` first), each edge's midpoint and
+/// the 0-based numbers of the faces it bounds, and its faces (`Face1` first). It derefs to the edges.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Edges {
+    pub edges: Vec<SrcEdge>,
+    pub faces: Vec<SrcFace>,
+}
+
+impl std::ops::Deref for Edges {
+    type Target = Vec<SrcEdge>;
+    fn deref(&self) -> &Self::Target {
+        &self.edges
+    }
+}
+
+impl IntoIterator for Edges {
+    type Item = SrcEdge;
+    type IntoIter = std::vec::IntoIter<SrcEdge>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.edges.into_iter()
+    }
+}
+
+impl From<Vec<SrcEdge>> for Edges {
+    fn from(edges: Vec<SrcEdge>) -> Self {
+        Edges { edges, faces: Vec::new() }
+    }
+}
+
+/// A face of a stored FreeCAD shape: whether it is a plane, a point on it (inside the face) and
+/// its outward normal.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SrcFace {
+    pub planar: bool,
+    pub point: [f64; 3],
+    pub normal: [f64; 3],
+}
 
 /// An edge of a stored FreeCAD shape: its midpoint, the 0-based faces it bounds and points
 /// along it (a refined shape's edge may be several of Gusset's).
@@ -1048,6 +1123,18 @@ pub(crate) fn tree_variant(
     shape_edges: ShapeEdges<'_>,
     tool_patterns: bool,
     copy_sources: bool,
+) -> Result<crate::tree_import::Tree, String> {
+    tree_options(xml, shape_edges, tool_patterns, copy_sources, true)
+}
+
+/// [`tree_variant`], with `up_to_faces` off: a pad or pocket up to a face is written as the
+/// distance the stored shape shows, not as an extrusion up to that face.
+pub(crate) fn tree_options(
+    xml: &[u8],
+    shape_edges: ShapeEdges<'_>,
+    tool_patterns: bool,
+    copy_sources: bool,
+    up_to_faces: bool,
 ) -> Result<crate::tree_import::Tree, String> {
     let objects = parse(xml)?;
     // Solids made outside PartDesign bodies (Part workbench booleans, sweeps, arrays) are not
@@ -1168,6 +1255,35 @@ pub(crate) fn tree_variant(
                     }
                     let ty = o.int("Type").unwrap_or(0);
                     let len = o.float("Length").unwrap_or(0.0);
+                    // Up to a face: the extrusion ends on the face the object names (`UpToFace`).
+                    if ty == 3
+                        && up_to_faces
+                        && !o.bool("UseCustomVector")
+                        && !(o.bool("Midplane") || matches!(o.int("SideType"), Some(1 | 2)))
+                        && let Some((sk, _)) = sketches.get(&profile)
+                        && let Some(pick) = up_to_face(o, pocket, sk, &objects, shape_edges)
+                    {
+                        let op = match (&first_solid, pocket) {
+                            (None, false) => "new",
+                            (None, true) => return Err(format!("{name}: a pocket before any solid")),
+                            (Some(_), false) => "join",
+                            (Some(_), true) => "cut",
+                        };
+                        let mut f = json!({"type": "extrude", "name": name, "sketch": profile, "profiles": "all",
+                            "end_condition": "to_face", "face": {"point": pick.point, "normal": pick.normal},
+                            "operation": op});
+                        if let Some(m) = f.as_object_mut() {
+                            if pick.reverse {
+                                m.insert("reverse".into(), json!(true));
+                            }
+                            if let Some(t) = &first_solid {
+                                m.insert("target".into(), json!(t));
+                            }
+                        }
+                        features.push(f);
+                        first_solid.get_or_insert_with(|| name.clone());
+                        continue;
+                    }
                     let distance = match (pocket, ty) {
                         (_, 0 | 4) => len,
                         // Through all: far enough for any part (the volume check confirms).
@@ -1720,6 +1836,58 @@ mod tests {
         assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
     }
 
+    /// The test document with the pocket cut up to `Face1` of the pad (z = -3, normal -z) and the
+    /// pad's shape stored, with the given offset.
+    fn up_to_face_doc(offset: &str) -> String {
+        DOC.replace(
+            r#"<Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>"#,
+            r#"<Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape.brp"/></Property>"#,
+        )
+        .replace(
+            r#"<Property name="Length" type="App::PropertyLength"><Float value="1"/></Property>"#,
+            &format!(
+                r#"<Property name="UpToFace" type="App::PropertyLinkSub"><LinkSub value="Pad" count="1"><Sub value="Face1"/></LinkSub></Property>
+    <Property name="Offset" type="App::PropertyLength"><Float value="{offset}"/></Property>"#
+            ),
+        )
+        .replace(
+            r#"<Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>"#,
+            r#"<Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="Type" type="App::PropertyEnumeration"><Integer value="3"/></Property>"#,
+        )
+    }
+
+    fn pad_shape(_: &str) -> Result<Edges, String> {
+        let face = |z: f64, nz: f64| SrcFace { planar: true, point: [5.0, 1.0, z], normal: [0.0, 0.0, nz] };
+        Ok(Edges { edges: Vec::new(), faces: vec![face(-3.0, -1.0), face(2.0, 1.0)] })
+    }
+
+    #[test]
+    fn a_pocket_up_to_a_face_names_the_face() {
+        let t = tree(up_to_face_doc("0").as_bytes(), &mut pad_shape).unwrap();
+        let f = &t.features[2];
+        assert_eq!(f["end_condition"], "to_face");
+        assert_eq!(f["face"], serde_json::json!({"point": [5.0, 1.0, -3.0], "normal": [0.0, 0.0, -1.0]}));
+        assert_eq!(f["operation"], "cut");
+        assert_eq!(f["reverse"], true, "a pocket cuts against its sketch's normal");
+        assert!(f.get("distance").is_none());
+        // Without faces (the fallback variant) and with an offset the distance path stands: with
+        // no stored shape of the pocket it is refused.
+        let off = tree_options(up_to_face_doc("0").as_bytes(), &mut pad_shape, false, false, false);
+        assert!(off.unwrap_err().contains("without its stored shape"));
+        let off = tree(up_to_face_doc("1.5").as_bytes(), &mut pad_shape);
+        assert!(off.unwrap_err().contains("without its stored shape"));
+    }
+
+    #[test]
+    fn a_face_behind_the_sweep_is_not_an_up_to_face() {
+        // Face2 (z = 2, normal +z) lies on the other side of the sketch: the pocket cuts against +z.
+        let doc = up_to_face_doc("0").replace(r#"<Sub value="Face1"/>"#, r#"<Sub value="Face2"/>"#);
+        assert!(tree(doc.as_bytes(), &mut pad_shape).unwrap_err().contains("without its stored shape"));
+    }
+
     #[test]
     fn refine_false_marks_the_joining_and_cutting_features() {
         let refine =
@@ -1999,7 +2167,7 @@ mod tests {
                 path: vec![a, b],
                 smooth: false,
             };
-            Ok(vec![edge([0.0, 0.0, 0.0], [5.0, 0.0, 0.0]), edge([1.0, 1.0, 0.0], [1.0, 1.0, 4.0])])
+            Ok(vec![edge([0.0, 0.0, 0.0], [5.0, 0.0, 0.0]), edge([1.0, 1.0, 0.0], [1.0, 1.0, 4.0])].into())
         };
         let t = tree(doc.as_bytes(), &mut edges).unwrap();
         let p = t.features.iter().find(|f| f["type"] == "pattern_linear").expect("the pattern");
@@ -2111,7 +2279,8 @@ mod tests {
                     faces: vec![0, 1],
                     path: vec![[0.0; 3], [1.0, 0.0, 0.0]],
                     smooth: false,
-                }])
+                }]
+                .into())
             };
             tree(doc.as_bytes(), &mut edges).unwrap().features.last().unwrap().clone()
         };

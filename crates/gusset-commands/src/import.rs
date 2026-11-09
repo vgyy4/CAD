@@ -1143,6 +1143,38 @@ fn freecad_history(
                     .unwrap_or_default(),
             })
             .collect();
+        // The faces, for an extrusion up to one: a point inside each (the middle of its largest
+        // triangle) and its normal.
+        let faces: Vec<_> = topo
+            .faces
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let at = |k: u32| -> [f64; 3] {
+                    let p = mesh.indices.get(k as usize).and_then(|v| mesh.positions.get(*v as usize));
+                    p.map_or([0.0; 3], |p| p.map(f64::from))
+                };
+                let area = |t: u32| -> f64 {
+                    let (a, b, c) = (at(3 * t), at(3 * t + 1), at(3 * t + 2));
+                    let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                    n[0] * n[0] + n[1] * n[1] + n[2] * n[2]
+                };
+                let tris = mesh.face_ranges.get(i).cloned().unwrap_or_default();
+                let best = tris.max_by(|a, b| area(*a).total_cmp(&area(*b)));
+                let point = best.map_or(f.centroid, |t| {
+                    let (a, b, c) = (at(3 * t), at(3 * t + 1), at(3 * t + 2));
+                    [0, 1, 2]
+                        .map(|k| (a.get(k).unwrap_or(&0.0) + b.get(k).unwrap_or(&0.0) + c.get(k).unwrap_or(&0.0)) / 3.0)
+                });
+                crate::fcstd_tree::SrcFace {
+                    planar: f.kind == gusset_kernel::SurfaceKind::Plane,
+                    point,
+                    normal: f.normal,
+                }
+            })
+            .collect();
+        let e = crate::fcstd_tree::Edges { edges: e, faces };
         cache.insert(file.to_string(), e.clone());
         Ok(e)
     };
@@ -1151,12 +1183,24 @@ fn freecad_history(
     if let Err(why) = &first {
         // FreeCAD copies a pad's or pocket's whole tool in a pattern, and a Part object takes a
         // copy of its input (the body goes on beside it): try the tree written so.
-        for (tools, copies) in [(true, false), (false, true), (true, true)] {
-            if let Ok(mut alt) = crate::fcstd_tree::tree_variant(doc, &mut shape_edges, tools, copies)
-                && alt.features != tree.features
-                && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
-            {
-                return Ok((alt, note));
+        // A pad or pocket up to a face that does not rebuild as such is tried as the distance
+        // its stored shape shows.
+        let up_to = tree.features.iter().any(|f| f.get("end_condition").and_then(Value::as_str) == Some("to_face"));
+        for faces in [true, false] {
+            if !faces && !up_to {
+                break;
+            }
+            for (tools, copies) in [(false, false), (true, false), (false, true), (true, true)] {
+                // The plain tree with faces is the first attempt.
+                if faces && !tools && !copies {
+                    continue;
+                }
+                if let Ok(mut alt) = crate::fcstd_tree::tree_options(doc, &mut shape_edges, tools, copies, faces)
+                    && alt.features != tree.features
+                    && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
+                {
+                    return Ok((alt, note));
+                }
             }
         }
         return Err(why.clone());
