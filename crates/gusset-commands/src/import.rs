@@ -1072,7 +1072,31 @@ fn freecad_history(
         let [(_, blob)] = blobs.as_slice() else { return Err("its base shape is not one solid".into()) };
         let shape = kernel.read_native(blob).map_err(|e| e.message)?;
         let topo = kernel.topology(&shape).map_err(|e| e.message)?;
-        let e: Vec<_> = topo.edges.iter().map(|e| (e.midpoint, e.faces.clone())).collect();
+        // Points along each edge, for edges a refined shape merged (Gusset keeps them split).
+        let fine = gusset_kernel::TessellationParams { linear_deflection: 0.002, angular_deflection: 0.05 };
+        let mesh = kernel.tessellate(&shape, &fine).map_err(|e| e.message)?;
+        let e: Vec<_> = topo
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(i, e)| crate::fcstd_tree::SrcEdge {
+                mid: e.midpoint,
+                faces: e.faces.clone(),
+                path: mesh
+                    .edges
+                    .get(i)
+                    .map(|pl| {
+                        // At most about 256 points, ends kept (a 50 mm arc stays within 0.004 mm).
+                        let step = pl.len().div_ceil(256).max(1);
+                        let mut v: Vec<[f64; 3]> = pl.iter().step_by(step).map(|p| p.map(f64::from)).collect();
+                        if let Some(last) = pl.last().filter(|_| (pl.len() - 1) % step != 0) {
+                            v.push(last.map(f64::from));
+                        }
+                        v
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect();
         cache.insert(file.to_string(), e.clone());
         Ok(e)
     };

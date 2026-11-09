@@ -100,7 +100,11 @@ ADR 0042) and the tree importer builds it. Translated:
   passed on by its midpoint;
 * additive and subtractive boxes, cylinders, cones and spheres (as a sketch and an extrusion
   or revolution);
-* datums and the origin carry no geometry and are skipped.
+* datums and the origin carry no geometry and are skipped;
+* files from before FreeCAD had bodies: their sketches and PartDesign features form one
+  implicit body in document order;
+* fillet and chamfer edges on refined shapes (merged faces) are passed with points along them,
+  and the model's edges lying on such an edge stand in for it.
 
 **Check.** Before anything is committed the tree is built in a scratch session and compared
 with the shapes FreeCAD stored: every feature must build, the volume must agree within 2e-5
@@ -111,7 +115,7 @@ arrays) keep their shapes. Any untranslated feature, failure or mismatch keeps t
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 91 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 96 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
 volume (fillets whose edges change with the feature order, and stale shapes), lofts,
 pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and

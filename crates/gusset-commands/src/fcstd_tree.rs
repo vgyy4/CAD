@@ -27,6 +27,8 @@ struct Elem {
 #[derive(Debug, Clone, Default)]
 struct Obj {
     kind: String,
+    /// Position in the document's object list.
+    order: usize,
     props: HashMap<String, Vec<Elem>>,
 }
 
@@ -109,7 +111,10 @@ fn parse(xml: &[u8]) -> Result<BTreeMap<String, Obj>, String> {
                             if objects.len() >= MAX_OBJECTS {
                                 return Err("the document has too many objects".into());
                             }
-                            objects.entry(name).or_default().kind = a.get("type").cloned().unwrap_or_default();
+                            let order = objects.len();
+                            let o = objects.entry(name).or_default();
+                            o.kind = a.get("type").cloned().unwrap_or_default();
+                            o.order = order;
                         }
                     }
                     "Property" => property = attrs().get("name").cloned(),
@@ -565,12 +570,22 @@ fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
 /// Whether the document holds a PartDesign body worth translating.
 #[must_use]
 pub(crate) fn has_bodies(xml: &[u8]) -> bool {
-    parse(xml).is_ok_and(|o| o.values().any(|o| o.kind == "PartDesign::Body"))
+    // Bodies, or PartDesign features from before FreeCAD had bodies.
+    parse(xml).is_ok_and(|o| o.values().any(|o| o.kind.starts_with("PartDesign::")))
 }
 
 /// The edges of a stored shape file, in FreeCAD's numbering (`Edge1` first): each edge's
 /// midpoint and the 0-based numbers of the faces it bounds.
-pub(crate) type Edges = Vec<([f64; 3], Vec<u32>)>;
+pub(crate) type Edges = Vec<SrcEdge>;
+
+/// An edge of a stored FreeCAD shape: its midpoint, the 0-based faces it bounds and points
+/// along it (a refined shape's edge may be several of Gusset's).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SrcEdge {
+    pub mid: [f64; 3],
+    pub faces: Vec<u32>,
+    pub path: Vec<[f64; 3]>,
+}
 /// Reads [`Edges`] of a shape file.
 pub(crate) type ShapeEdges<'a> = &'a mut dyn FnMut(&str) -> Result<Edges, String>;
 
@@ -598,7 +613,25 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
     let mut features: Vec<Value> = Vec::new();
     let mut sketches: HashMap<String, (Place, HashMap<String, String>)> = HashMap::new();
     let mut bodies = 0usize;
-    for (body_name, body) in objects.iter().filter(|(_, o)| o.kind == "PartDesign::Body") {
+    let mut bodies_list: Vec<(String, Obj)> =
+        objects.iter().filter(|(_, o)| o.kind == "PartDesign::Body").map(|(n, o)| (n.clone(), o.clone())).collect();
+    // Files from before FreeCAD had bodies: the sketches and PartDesign features form one
+    // implicit body, in document order.
+    if bodies_list.is_empty() && objects.values().any(|o| o.kind.starts_with("PartDesign::")) {
+        let mut chain: Vec<(&String, &Obj)> = objects
+            .iter()
+            .filter(|(_, o)| o.kind.starts_with("PartDesign::") || o.kind == "Sketcher::SketchObject")
+            .collect();
+        chain.sort_by_key(|(_, o)| o.order);
+        let group = chain
+            .iter()
+            .map(|(n, _)| Elem { tag: "Link".into(), attrs: HashMap::from([("value".to_string(), (*n).clone())]) })
+            .collect();
+        let mut body = Obj { kind: "PartDesign::Body".into(), ..Obj::default() };
+        body.props.insert("Group".into(), group);
+        bodies_list.push(("Body".into(), body));
+    }
+    for (body_name, body) in &bodies_list {
         bodies += 1;
         let place = Place::of(body);
         let mut first_solid: Option<String> = None;
@@ -839,30 +872,43 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                         .filter(|f| !f.is_empty())
                         .ok_or(format!("{name}: its base shape is not stored in the file"))?;
                     let edges = shape_edges(file).map_err(|e| format!("{name}: {e}"))?;
-                    let mut mids: Vec<[f64; 3]> = Vec::new();
-                    let mut add = |m: [f64; 3]| {
-                        if !mids.iter().any(|p| p.iter().zip(m).all(|(a, b)| (a - b).abs() < 1e-9)) {
-                            mids.push(m);
+                    let mut picked: Vec<usize> = Vec::new();
+                    let mut add = |i: usize| {
+                        let m = edges.get(i).map(|e| e.mid).unwrap_or_default();
+                        let same = |j: &usize| {
+                            edges.get(*j).is_some_and(|p| p.mid.iter().zip(m).all(|(a, b)| (a - b).abs() < 1e-9))
+                        };
+                        if !picked.iter().any(same) {
+                            picked.push(i);
                         }
                     };
                     if o.bool("UseAllEdges") {
-                        edges.iter().for_each(|(m, _)| add(*m));
+                        (0..edges.len()).for_each(&mut add);
                     }
                     for sub in &subs {
                         let n = |p: &str| sub.strip_prefix(p).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0);
                         if let Some(i) = n("Edge") {
-                            add(edges.get(i - 1).ok_or(format!("{name}: {sub} is not on its base"))?.0);
+                            if i > edges.len() {
+                                return Err(format!("{name}: {sub} is not on its base"));
+                            }
+                            add(i - 1);
                         } else if let Some(i) = n("Face") {
                             let f = u32::try_from(i - 1).map_err(|_| format!("{name}: a bad face"))?;
-                            edges.iter().filter(|(_, fs)| fs.contains(&f)).for_each(|(m, _)| add(*m));
+                            (0..edges.len())
+                                .filter(|k| edges.get(*k).is_some_and(|e| e.faces.contains(&f)))
+                                .for_each(&mut add);
                         } else if !sub.is_empty() {
                             return Err(format!("{name}: a pick of {sub} is not translated yet"));
                         }
                     }
-                    if mids.is_empty() || mids.len() > MAX_EDGE_PICKS {
-                        return Err(format!("{name}: {} edges", mids.len()));
+                    if picked.is_empty() || picked.len() > MAX_EDGE_PICKS {
+                        return Err(format!("{name}: {} edges", picked.len()));
                     }
-                    let picks: Vec<Value> = mids.iter().map(|m| json!({"midpoint": m})).collect();
+                    let picks: Vec<Value> = picked
+                        .iter()
+                        .filter_map(|i| edges.get(*i))
+                        .map(|e| json!({"midpoint": e.mid, "path": e.path}))
+                        .collect();
                     let f = if fillet {
                         let r = o.float("Radius").filter(|r| *r > 0.0).ok_or(format!("{name}: no radius"))?;
                         json!({"type": "fillet", "name": name, "edges": picks, "radius": r, "target": target})

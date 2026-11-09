@@ -167,6 +167,10 @@ struct SolidF {
 #[derive(Debug, Clone, Deserialize)]
 struct EdgePick {
     midpoint: [f64; 3],
+    /// Points along the source edge, when a source may merge several of Gusset's edges into
+    /// one (FreeCAD's refine): the model's edges lying on it stand in for it.
+    #[serde(default)]
+    path: Vec<[f64; 3]>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -967,6 +971,41 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     Ok(())
 }
 
+/// The model's edges whose midpoint and ends all lie within 0.01 mm of a source edge's
+/// points (at most 256 points are looked at); their bodies and names.
+fn on_path_edges(ev: &gusset_eval::Evaluation, path: &[[f64; 3]]) -> Vec<(String, String)> {
+    let path = path.get(..path.len().min(MAX_PATH_POINTS)).unwrap_or_default();
+    if path.len() < 2 {
+        return Vec::new();
+    }
+    let near = |q: V3| {
+        path.windows(2).any(|w| {
+            let [a, b] = [w.first().copied().unwrap_or_default(), w.last().copied().unwrap_or_default()];
+            let ab = sub(b, a);
+            let l2 = dot(ab, ab);
+            let u = if l2 > 1e-18 { (dot(sub(q, a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            norm(sub(q, [a[0] + ab[0] * u, a[1] + ab[1] * u, a[2] + ab[2] * u])) <= 0.01
+        })
+    };
+    let mut out = Vec::new();
+    for b in &ev.bodies {
+        let t = &b.topology;
+        for (i, e) in t.edges.iter().enumerate() {
+            let ends_on = e.vertices.iter().all(|v| t.vertices.get(*v as usize).is_some_and(|v| near(v.point)));
+            if near(e.midpoint)
+                && ends_on
+                && let Some(n) = b.names.edges.get(i)
+            {
+                out.push((b.feature.clone(), n.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Most points of a source edge's path looked at.
+const MAX_PATH_POINTS: usize = 512;
+
 fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String> {
     let size = if fillet { d.radius } else { d.distance };
     let size = size.filter(|v| v.is_finite() && *v > 0.0 && *v < 1e12).ok_or("no positive size")?;
@@ -990,7 +1029,16 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         }
         match best {
             Some((dd, body, n)) if dd <= 0.01 => by_body.entry(body).or_default().push(n),
-            _ => return Err(format!("no edge of the model has its midpoint at {:?}", pick.midpoint)),
+            _ => {
+                let on_path = on_path_edges(&ev, &pick.path);
+                if on_path.is_empty() {
+                    let near = best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
+                    return Err(format!("no edge of the model has its midpoint at {:?}{near}", pick.midpoint));
+                }
+                for (body, n) in on_path {
+                    by_body.entry(body).or_default().push(n);
+                }
+            }
         }
     }
     if by_body.len() != 1 {
