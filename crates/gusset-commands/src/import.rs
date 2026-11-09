@@ -418,7 +418,8 @@ impl ImportJob {
                 // The PartDesign history as editable features, when it rebuilds to the
                 // shapes FreeCAD stored (ADR 0033 amendment); else the shapes themselves.
                 match freecad_history(&bytes, &bodies, &self.kernel, importer.as_ref(), cancel, &self.file_name) {
-                    Ok(tree) => {
+                    Ok((tree, note)) => {
+                        warnings.extend(note);
                         return Ok(PreparedImport {
                             bodies: Vec::new(),
                             file_name: self.file_name,
@@ -1021,7 +1022,7 @@ fn freecad_history(
     importer: &dyn Importer,
     cancel: &CancelFlag,
     file_name: &str,
-) -> Result<crate::tree_import::Tree, String> {
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let limits = gusset_meshio::Limits::default();
     let mut budget = limits.max_decompressed_bytes;
     let xml = gusset_meshio::archive::read_entries_within(
@@ -1085,7 +1086,10 @@ fn freecad_history(
         return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
     }
     let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
-    let close = (got - want).abs() <= 1e-6 * want;
+    // Blends and sweeps are approximated surfaces, computed by another OCCT build in FreeCAD:
+    // their volumes agree to about 1e-5. A larger difference is a different model.
+    let rel = (got - want).abs() / want;
+    let close = rel <= FREECAD_VOLUME_TOLERANCE;
     if want.is_nan() || want <= 0.0 || !close {
         return Err(format!("the features give {got:.4} mm3, FreeCAD's shapes {want:.4} mm3"));
     }
@@ -1105,8 +1109,14 @@ fn freecad_history(
             ));
         }
     }
-    Ok(tree)
+    let note = (rel > 1e-7).then(|| {
+        format!("the features' volume differs from FreeCAD's stored shapes by {:.1e} (approximated surfaces)", rel)
+    });
+    Ok((tree, note))
 }
+
+/// Largest relative volume difference between rebuilt features and FreeCAD's stored shapes.
+const FREECAD_VOLUME_TOLERANCE: f64 = 2e-5;
 
 /// Most base shapes read for the edges of one FreeCAD document's fillets and chamfers.
 const MAX_FREECAD_EDGE_SHAPES: usize = 64;

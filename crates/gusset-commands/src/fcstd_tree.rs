@@ -585,6 +585,16 @@ const MAX_EDGE_PICKS: usize = 256;
 /// The first feature that cannot be written, or a damaged document.
 pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tree_import::Tree, String> {
     let objects = parse(xml)?;
+    // Solids made outside PartDesign bodies (Part workbench booleans, sweeps, arrays) are not
+    // history this translates; the stored shapes stand in for the whole document.
+    if let Some((n, o)) = objects.iter().find(|(_, o)| {
+        o.props.contains_key("Shape")
+            && !o.kind.starts_with("PartDesign::")
+            && !o.kind.starts_with("Sketcher::")
+            && !o.kind.starts_with("App::")
+    }) {
+        return Err(format!("{n}: a {} outside a PartDesign body is not translated yet", o.kind));
+    }
     let mut features: Vec<Value> = Vec::new();
     let mut sketches: HashMap<String, (Place, HashMap<String, String>)> = HashMap::new();
     let mut bodies = 0usize;

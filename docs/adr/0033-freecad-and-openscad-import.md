@@ -103,13 +103,15 @@ ADR 0042) and the tree importer builds it. Translated:
 * datums and the origin carry no geometry and are skipped.
 
 **Check.** Before anything is committed the tree is built in a scratch session and compared
-with the shapes FreeCAD stored: every feature must build, the volume must agree within 1e-6
-and the bounding box within 1e-4 of its diagonal (the box catches a mirror about the wrong
-plane, which keeps the volume). Any untranslated feature, failure or mismatch keeps the exact
+with the shapes FreeCAD stored: every feature must build, the volume must agree within 2e-5
+(blends and sweeps are approximated surfaces and FreeCAD's OCCT build differs from ours by
+up to about 1e-5; any difference above 1e-7 is reported as a warning) and the bounding box within 1e-4 of its diagonal (the box catches a mirror about the wrong
+plane, which keeps the volume). Documents with solids made outside PartDesign bodies (Part workbench booleans, sweeps,
+arrays) keep their shapes. Any untranslated feature, failure or mismatch keeps the exact
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 84 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 91 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
 volume (fillets whose edges change with the feature order, and stale shapes), lofts,
 pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
