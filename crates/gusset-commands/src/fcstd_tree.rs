@@ -1032,7 +1032,7 @@ mod tests {
 
     #[test]
     fn what_is_not_translated_refuses_the_whole_tree() {
-        let doc = DOC.replace("PartDesign::Pocket", "PartDesign::AdditiveLoft");
+        let doc = DOC.replace("PartDesign::Pocket", "PartDesign::AdditiveHelix");
         assert!(tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("not translated"));
         assert!(tree(b"<Document/>", &mut no_shapes).is_err());
         assert!(tree(b"\xff\xfe garbage", &mut no_shapes).is_err());
