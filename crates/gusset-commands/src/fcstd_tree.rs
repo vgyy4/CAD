@@ -653,7 +653,8 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                         sketches.get(&profile).ok_or(format!("{name}: its profile is not a sketch of the body"))?;
                     let (axis_obj, subs) = o.link("ReferenceAxis").ok_or(format!("{name}: no axis"))?;
                     let sub = subs.first().map(String::as_str).unwrap_or_default();
-                    let axis = if axis_obj == profile {
+                    let mut axis_od: Option<(V3, V3)> = None;
+                    let mut axis = if axis_obj == profile {
                         match sub {
                             "V_Axis" => json!({"origin": sk_place.p, "direction": sk_place.y}),
                             "H_Axis" => json!({"origin": sk_place.p, "direction": sk_place.x}),
@@ -673,6 +674,7 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                         let sk = *sk_place;
                         let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
                         let (o3, d3) = refs.axis(name, &(axis_obj.clone(), subs.clone()))?;
+                        axis_od = Some((o3, d3));
                         match axis_line(&mut features, &profile, &sk, o3, d3) {
                             Some(id) => json!({"line": id}),
                             None => json!({"origin": o3, "direction": d3}),
@@ -682,7 +684,23 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     if o.bool("Midplane") || o.int("Type").unwrap_or(0) != 0 {
                         return Err(format!("{name}: a symmetric or bounded revolution is not translated yet"));
                     }
-                    let angle = if o.bool("Reversed") { -angle } else { angle };
+                    // Gusset turns about its axis one way: a reversed part turn is a turn about
+                    // the reversed axis, drawn into the sketch (a full turn needs neither).
+                    if o.bool("Reversed") && angle < 360.0 - 1e-9 {
+                        let v3 = |k: &str| -> Option<V3> {
+                            let a = axis.get(k)?.as_array()?;
+                            Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+                        };
+                        let (ao, ad) = axis_od
+                            .or_else(|| Some((v3("origin")?, v3("direction")?)))
+                            .ok_or(format!("{name}: a reversed turn about a sketch edge is not translated yet"))?;
+                        let rev = ad.map(|c| -c);
+                        let sk = *sk_place;
+                        axis = match axis_line(&mut features, &profile, &sk, ao, rev) {
+                            Some(id) => json!({"line": id}),
+                            None => json!({"origin": ao, "direction": rev}),
+                        };
+                    }
                     let op = match (&first_solid, groove) {
                         (None, false) => "new",
                         (None, true) => return Err(format!("{name}: a groove before any solid")),

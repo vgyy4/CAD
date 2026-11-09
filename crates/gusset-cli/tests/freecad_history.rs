@@ -63,7 +63,7 @@ fn freecad_files_come_in_as_history_or_shapes() {
                             Some((n, rest)) if !n.contains(' ') => rest,
                             _ => w,
                         };
-                        w.split(" is not").next().unwrap_or_default().chars().take(110).collect::<String>()
+                        w.split(" is not").next().unwrap_or_default().chars().take(400).collect::<String>()
                     })
                     .unwrap_or_else(|| "no PartDesign body".into());
                 *reasons.entry(why).or_default() += 1;
