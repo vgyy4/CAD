@@ -1573,11 +1573,15 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeLis
 std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const ShapeList& args,
                                                                   const ShapeList& tools, bool refine = true) {
   if (refine) {
-    auto b = run_boolean(op, args, tools, true);
-    if (BRepCheck_Analyzer(b->Shape(), true, true).IsValid()) return b;
+    auto unified = run_boolean(op, args, tools, true);
+    const BRepCheck_Analyzer unified_check(unified->Shape(), Standard_True, Standard_True);
+    if (unified_check.IsValid()) return unified;
   }
-  auto raw = run_boolean(op, args, tools, false);
-  if (BRepCheck_Analyzer(raw->Shape(), true, true).IsValid()) return raw;
+  // Named locals (not `raw`, which MSVC's headers can define) and no temporaries in the
+  // condition: MSVC failed to parse the inline form.
+  auto unrefined = run_boolean(op, args, tools, false);
+  const BRepCheck_Analyzer unrefined_check(unrefined->Shape(), Standard_True, Standard_True);
+  if (unrefined_check.IsValid()) return unrefined;
   throw Standard_Failure("boolean operation produced an invalid solid");
 }
 
