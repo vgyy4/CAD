@@ -141,8 +141,19 @@ face normal), 20 csink diameter (guess). Tapped holes carry the minor diameter (
   plane+coaxial cylinder circles for torus/cone blends) and its end faces, and passes the edge
   midpoint. Full circles use Gusset's seam convention (midpoint = centre - R*ref, ref = world X
   projected, or world Y when the normal is along X; found by experiment with the binary).
-* Chamfer: slot 2 distance (cm), 3 second distance, 4 `7daa0032` type, 10 angle.
-  Only equal-distance chamfers are emitted.
+* Chamfer: slot 2 distance (cm), 3 second distance, 4 `7daa0032` type, 10 angle, 8 `d83ef271`
+  reference geometry. The type record ends `u16 2, u16 type, u32 0`: type 0 = equal distances,
+  type 1 = distance and angle (confirmed on the M8 screw, `Fase2`/`Fase3`: slot 2 = 0.0677 cm
+  measured on the planar face, slot 10 = 30 deg, the other leg on the cylinder is
+  0.0677 tan 30 = 0.0391 cm in the result body; slot 3 is then a stale default). Slot 8 lists two
+  `797737b1` records (kind u32 at offset 10: 2 line, 5 curve), one per support face of the first
+  edge, in the part's cm: f64 triples from offset 22, first the start point on the edge, then the end
+  point `distance` away inside that support face. In the M8 the first record runs along the face of the
+  first distance (length = slot 2); equal chamfers show the same two lines of equal length. The
+  importer emits `angle` (deg) and `face: {point: end of record 1}` for type 1 on a single edge; an
+  unseen type (two distances is probably another value), a first line whose length is not the
+  distance, or several edges (the pick would apply to all) stay refused. Only one non-equal
+  chamfer exists in the corpus (the two M8 features), so which record is "first" rests on it.
 
 ## 3. Coverage (Gusset debug binary as oracle, `rebuild.py`)
 

@@ -224,3 +224,13 @@ the 15 sample parts only 2 are ordered-feature parts; the other 13 are synchrono
 which keep no extrude or revolve history (their body is all there is). 1 part rebuilds
 exactly. Missing: reference-plane records, hole placement, patterns, revolve angles, and more
 ordered-feature samples. `.par` stays tier 2.
+
+## Amendment (2026-11-09, 4): Inventor distance-angle chamfers
+
+The Inventor importer reads the chamfer type (slot 4 record, `u16 2, u16 type, u32 0`; 0 equal,
+1 distance and angle) and, for type 1 on a single edge, emits `angle` (slot 10) and `face` (a point
+on the support face the first distance runs along: the end of the first line of the slot-8
+reference geometry, whose length must equal the distance). Other types, a first line of another
+length and unequal chamfers on several edges stay refused. The M8 screw (2 chamfers, 30 deg) now
+rebuilds within the volume check: 21 of 47 sample parts come in as history (was 20). Open: the
+two-distances type value and which record names the face are inferred from that one part.

@@ -789,9 +789,68 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         st.out.push(json!({"type": "fillet", "name": name, "edges": edges, "radius": rnd(rad)}));
     } else {
         let dist = r.pval(&s, 2)?;
-        st.out.push(json!({"type": "chamfer", "name": name, "edges": edges, "distance": rnd(dist * CM)}));
+        let mut ch = json!({"type": "chamfer", "name": name, "edges": edges, "distance": rnd(dist * CM)});
+        match chamfer_kind(r, &s, dist, edges.len()) {
+            Ok(None) => {}
+            Ok(Some((angle, face))) => {
+                put(&mut ch, "angle", json!(rnd(angle.to_degrees())));
+                put(&mut ch, "face", json!({"point": face}));
+            }
+            Err(why) => {
+                st.out.push(unsupported(name, "chamfer", Some(why)));
+                return Ok(());
+            }
+        }
+        st.out.push(ch);
     }
     Ok(())
+}
+
+/// The chamfer type (slot 4, `7daa0032`: `u16 2, u16 type, u32 0` at the end; 0 equal
+/// distances, 1 distance and angle, confirmed on the M8 screw) and, for an unequal one, the
+/// angle (slot 10, radians) and the point (mm) that names the face the distance runs along.
+/// Slot 8 holds two records of the two offset lines of the first edge: start on the edge, end
+/// `distance` away inside a support face; the first one is the face of the first distance.
+/// Anything else (another type, one record not a line of that length, several edges: the pick
+/// would apply to every edge) is refused.
+fn chamfer_kind(r: &Reader, s: &Slots, dist: f64, edges: usize) -> Result<Option<(f64, V3)>, String> {
+    let rec = r.dc.r(s.need(4)?);
+    let n = rec.len();
+    let (Some(two), Some(ty), Some(zero)) = (
+        n.checked_sub(8).and_then(|k| u16_at(rec, k)),
+        n.checked_sub(6).and_then(|k| u16_at(rec, k)),
+        n.checked_sub(4).and_then(|k| u32_at(rec, k)),
+    ) else {
+        return Err("the chamfer type is not readable".into());
+    };
+    if two != 2 || zero != 0 {
+        return Err("the chamfer type record has an unknown layout".into());
+    }
+    match ty {
+        0 => return Ok(None),
+        1 => {}
+        t => return Err(format!("chamfer type {t} is not decoded")),
+    }
+    if edges != 1 {
+        return Err("an unequal chamfer on several edges: the reference face of each edge is not read".into());
+    }
+    let angle = r.pval(s, 10)?;
+    if !(angle > 0.0 && angle < std::f64::consts::FRAC_PI_2) {
+        return Err("the chamfer angle is out of range".into());
+    }
+    let (items, _) = r.dc.first_list(s.need(8)?, None).ok_or("the chamfer has no reference faces")?;
+    let first = items.first().copied().flatten().ok_or("the chamfer has no reference face")?;
+    let rf = r.dc.r(first);
+    let f = |k: usize| f64_at(rf, 22 + 8 * k).filter(|v| v.is_finite());
+    let (Some(p0), Some(p1)) =
+        (f(0).zip(f(1)).zip(f(2)).map(|((a, b), c)| [a, b, c]), f(3).zip(f(4)).zip(f(5)).map(|((a, b), c)| [a, b, c]))
+    else {
+        return Err("the reference face of the chamfer is not readable".into());
+    };
+    if u32_at(rf, 10) != Some(2) || (crate::acis::dist(p0, p1) - dist).abs() > 1e-6 {
+        return Err("the first distance does not run along the first reference face".into());
+    }
+    Ok(Some((angle, [rnd_to(p1[0] * CM, 1e6), rnd_to(p1[1] * CM, 1e6), rnd_to(p1[2] * CM, 1e6)])))
 }
 
 /// The part's feature history as a tree (see the module notes).
