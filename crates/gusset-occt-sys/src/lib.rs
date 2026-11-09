@@ -19,6 +19,8 @@ pub const GS_SEG_LINE: i32 = 0;
 pub const GS_SEG_ARC: i32 = 1;
 pub const GS_SEG_CIRCLE: i32 = 2;
 pub const GS_SEG_BEZIER: i32 = 3;
+pub const GS_SEG_ELLIPSE: i32 = 4;
+pub const GS_SEG_ELLIPSE_ARC: i32 = 5;
 
 pub const GS_ORIGIN_LATERAL: i64 = 0;
 pub const GS_ORIGIN_CAP: i64 = 1;
@@ -72,6 +74,10 @@ pub struct GsSeg {
     /// of the profile (x, y pairs; `pole_count` is 4).
     pub pole_first: u32,
     pub pole_count: u32,
+    /// Ellipses: `c` is the centre, `major` the unit direction of the semi-axis `r`, `rb`
+    /// the other semi-axis; an arc also has `a` (start), `b` (end) and `ccw`.
+    pub major: [f64; 2],
+    pub rb: f64,
 }
 
 #[repr(C)]

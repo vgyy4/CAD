@@ -36,6 +36,8 @@ typedef struct {
 #define GS_SEG_ARC 1    /* center c, from a to b; ccw != 0 for counter-clockwise */
 #define GS_SEG_CIRCLE 2 /* center c, radius r */
 #define GS_SEG_BEZIER 3 /* cubic Bezier: the 4 points GsProfile.poles[pole_first ..] */
+#define GS_SEG_ELLIPSE 4     /* center c, unit major direction, semi-axes r (major) and rb */
+#define GS_SEG_ELLIPSE_ARC 5 /* as ELLIPSE, from point a to point b; ccw != 0 for counter-clockwise */
 
 typedef struct {
   int32_t kind;
@@ -47,6 +49,8 @@ typedef struct {
   uint64_t tag;
   uint32_t pole_first; /* Bezier only: index into GsProfile.poles (points, not doubles) */
   uint32_t pole_count;
+  double major[2]; /* ellipses only */
+  double rb;       /* ellipses only: the semi-axis across `major` */
 } GsSeg;
 
 /* A loop: segs[first .. first+count). `outer` != 0 for the outer loop of `region`. */

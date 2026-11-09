@@ -456,6 +456,7 @@ fn sample(l: &Loop2) -> Vec<[f64; 2]> {
                     out.push([center[0] + radius * libm::cos(a), center[1] + radius * libm::sin(a)]);
                 }
             }
+            Seg2::Ellipse { .. } | Seg2::EllipseArc { .. } => out.extend(e.seg.ellipse_points(96)),
             Seg2::Bezier { p } => {
                 for s in 0..8 {
                     let u = f64::from(s) / 8.0;

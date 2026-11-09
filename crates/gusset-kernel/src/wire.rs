@@ -456,6 +456,25 @@ impl Wire for Seg2 {
                 w.u8(3);
                 p.put(w, s)
             }
+            Seg2::Ellipse { center, major, a, b } => {
+                w.u8(4);
+                center.put(w, s)?;
+                major.put(w, s)?;
+                w.f64(*a);
+                w.f64(*b);
+                Ok(())
+            }
+            Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
+                w.u8(5);
+                center.put(w, s)?;
+                major.put(w, s)?;
+                w.f64(*a);
+                w.f64(*b);
+                start.put(w, s)?;
+                end.put(w, s)?;
+                w.bool(*ccw);
+                Ok(())
+            }
         }
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
@@ -469,6 +488,21 @@ impl Wire for Seg2 {
             }),
             2 => Ok(Seg2::Circle { center: Wire::get(r, s)?, radius: r.f64()? }),
             3 => Ok(Seg2::Bezier { p: Wire::get(r, s)? }),
+            4 => Ok(Seg2::Ellipse {
+                center: Wire::get(r, s)?,
+                major: Wire::get(r, s)?,
+                a: r.f64()?,
+                b: r.f64()?,
+            }),
+            5 => Ok(Seg2::EllipseArc {
+                center: Wire::get(r, s)?,
+                major: Wire::get(r, s)?,
+                a: r.f64()?,
+                b: r.f64()?,
+                start: Wire::get(r, s)?,
+                end: Wire::get(r, s)?,
+                ccw: r.bool()?,
+            }),
             t => Err(WireError::bad_tag("Seg2", t)),
         }
     }
@@ -1090,6 +1124,16 @@ mod tests {
             Seg2::Arc { center: [1.0, 2.0], start: [3.0, 4.0], end: [5.0, 6.0], ccw: false },
             Seg2::Circle { center: [0.5, 0.5], radius: f64::INFINITY },
             Seg2::Bezier { p: [[0.0, 0.0], [1.0, 2.0], [3.0, 4.0], [5.0, 6.0]] },
+            Seg2::Ellipse { center: [0.5, 0.25], major: [0.6, 0.8], a: 5.0, b: 3.0 },
+            Seg2::EllipseArc {
+                center: [1.0, 2.0],
+                major: [1.0, 0.0],
+                a: 4.0,
+                b: 2.0,
+                start: [5.0, 2.0],
+                end: [1.0, 4.0],
+                ccw: true,
+            },
         ]
     }
 
@@ -1468,7 +1512,7 @@ mod tests {
         assert!(decode::<bool>(&[2], &NoShapes).is_err());
         assert!(decode::<Option<u8>>(&[2], &NoShapes).is_err());
         assert!(decode::<BoolOp>(&[3], &NoShapes).is_err());
-        assert!(decode::<Seg2>(&[4], &NoShapes).is_err());
+        assert!(decode::<Seg2>(&[6], &NoShapes).is_err());
         assert!(decode::<FaceOrigin>(&[8], &NoShapes).is_err());
         assert!(decode::<Transform>(&[3], &NoShapes).is_err());
         assert!(decode::<KernelErrorKind>(&[8], &NoShapes).is_err());

@@ -324,6 +324,11 @@ fn polyline(l: &Loop2) -> Polyline<f64> {
                 p.add(center[0] + radius, center[1], 1.0);
                 p.add(center[0] - radius, center[1], 1.0);
             }
+            Seg2::Ellipse { .. } | Seg2::EllipseArc { .. } => {
+                for q in e.seg.ellipse_points(96) {
+                    p.add(q[0], q[1], 0.0);
+                }
+            }
             Seg2::Bezier { p: c } => {
                 let n = bezier_steps(&c);
                 for i in 0..n {

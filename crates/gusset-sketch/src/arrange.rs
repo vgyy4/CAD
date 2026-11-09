@@ -150,7 +150,12 @@ pub(crate) fn arc_overlap(a0: f64, sa: f64, b0: f64, sb: f64) -> f64 {
 fn curve_on(cv: &Cv, p: V2, tol: f64) -> bool {
     match cv.shape {
         Shape::Arc { c, r, a0, span } => on_arc(p, c, a0, span, tol / r),
-        Shape::Line | Shape::Circle { .. } | Shape::Spline { .. } => true,
+        Shape::EArc { c, ang, a, b, t0, span } => {
+            let rel = wrap_2pi(crate::ellipse::param(c, ang, a, b, p) - t0);
+            let slack = tol / b;
+            rel <= span + slack || rel >= TAU - slack
+        }
+        Shape::Line | Shape::Circle { .. } | Shape::Ellipse { .. } | Shape::Spline { .. } => true,
     }
 }
 
@@ -164,6 +169,8 @@ fn param_on(cv: &Cv, p: V2) -> f64 {
         }
         Shape::Arc { c, a0, .. } => wrap_2pi(angle(sub(p, *c)) - a0),
         Shape::Circle { c, .. } => wrap_2pi(angle(sub(p, *c))),
+        Shape::Ellipse { c, ang, a, b } => crate::ellipse::param(*c, *ang, *a, *b, p),
+        Shape::EArc { c, ang, a, b, t0, .. } => wrap_2pi(crate::ellipse::param(*c, *ang, *a, *b, p) - t0),
         Shape::Spline { .. } => crate::curves::nearest_param(cv, p),
     }
 }
@@ -176,7 +183,7 @@ fn direction_at(cv: &Cv, p: V2) -> V2 {
             let q = sub(p, *c);
             [-q[1], q[0]]
         }
-        Shape::Spline { .. } => crate::curves::eval(cv, crate::curves::nearest_param(cv, p)).1,
+        Shape::Ellipse { .. } | Shape::EArc { .. } | Shape::Spline { .. } => crate::curves::eval(cv, param_on(cv, p)).1,
     }
 }
 
@@ -196,16 +203,54 @@ fn crossing_sign(a: &Cv, b: &Cv, p: V2) -> i8 {
 /// Points where two curves meet (both ends of a stretch they share); `Err` when the
 /// intersection work limit was reached.
 fn raw_points(a: &Cv, b: &Cv, tol: f64, work: &mut crate::curves::Work) -> Result<Vec<V2>, ()> {
-    if matches!(a.shape, Shape::Spline { .. }) || matches!(b.shape, Shape::Spline { .. }) {
+    let ell = |s: &Shape| matches!(s, Shape::Ellipse { .. } | Shape::EArc { .. });
+    if ell(&a.shape)
+        && ell(&b.shape)
+        && let Some(pts) = same_ellipse(a, b, tol)
+    {
+        return Ok(pts);
+    }
+    if matches!(a.shape, Shape::Spline { .. } | Shape::Ellipse { .. } | Shape::EArc { .. })
+        || matches!(b.shape, Shape::Spline { .. } | Shape::Ellipse { .. } | Shape::EArc { .. })
+    {
         return crate::curves::numeric_hits(a, b, tol, work).map_err(|_| ());
     }
     Ok(raw_points_analytic(a, b, tol))
 }
 
+/// The parameters of an ellipse shape: centre, axis angle, `a`, `b`.
+fn ell_of(s: &Shape) -> Option<(V2, f64, f64, f64)> {
+    match *s {
+        Shape::Ellipse { c, ang, a, b } | Shape::EArc { c, ang, a, b, .. } => Some((c, ang, a, b)),
+        _ => None,
+    }
+}
+
+/// Two ellipse curves on the same ellipse meet where one's ends lie on the other (`Some`);
+/// `None` when they are different ellipses.
+fn same_ellipse(a: &Cv, b: &Cv, tol: f64) -> Option<Vec<V2>> {
+    let ((c1, g1, a1, b1), (c2, g2, a2, b2)) = (ell_of(&a.shape)?, ell_of(&b.shape)?);
+    let ends = |cv: &Cv| if matches!(cv.shape, Shape::EArc { .. }) { vec![cv.p[0], cv.p[1]] } else { Vec::new() };
+    let on = |cv: &Cv, p: V2| crate::ellipse::distance(c1, g1, a1, b1, p).abs() <= tol && curve_on(cv, p, tol);
+    let round = (a1 - b1).abs() <= tol;
+    let same = dist(c1, c2) <= tol
+        && (a1 - a2).abs() <= tol
+        && (b1 - b2).abs() <= tol
+        && (round || libm::sin(g1 - g2).abs() * a1 <= tol);
+    if !same {
+        return None;
+    }
+    let mut pts = ends(a);
+    pts.extend(ends(b));
+    pts.retain(|&p| on(a, p) && on(b, p));
+    // Arcs that only touch end to end share a vertex already.
+    Some(pts)
+}
+
 fn raw_points_analytic(a: &Cv, b: &Cv, tol: f64) -> Vec<V2> {
     let circ = |s: &Shape| match *s {
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => Some((c, r)),
-        Shape::Line | Shape::Spline { .. } => None,
+        Shape::Line | Shape::Spline { .. } | Shape::Ellipse { .. } | Shape::EArc { .. } => None,
     };
     let (ca, cb) = (circ(&a.shape), circ(&b.shape));
     let mut pts = match (ca, cb) {
@@ -284,6 +329,7 @@ pub(crate) fn find_splits(cvs: &[Cv], verts: &mut Verts, tol: f64) -> Result<Spl
                 .iter()
                 .map(|s| match **s {
                     Shape::Arc { r, .. } | Shape::Circle { r, .. } => r,
+                    Shape::Ellipse { a, b, .. } | Shape::EArc { a, b, .. } => a * a / b,
                     Shape::Line | Shape::Spline { .. } => 0.0,
                 })
                 .fold(0.0, f64::max);
@@ -402,6 +448,11 @@ fn piece_of(cv: &Cv, v: [usize; 2], u: [f64; 2], verts: &Verts, piece: u32) -> C
             let span = wrap_2pi(angle(sub(p[1], *c)) - a0);
             Shape::Arc { c: *c, r: *r, a0, span }
         }
+        Shape::Ellipse { c, ang, a, b } | Shape::EArc { c, ang, a, b, .. } => {
+            let t0 = crate::ellipse::param(*c, *ang, *a, *b, p[0]);
+            let span = wrap_2pi(crate::ellipse::param(*c, *ang, *a, *b, p[1]) - t0);
+            Shape::EArc { c: *c, ang: *ang, a: *a, b: *b, t0, span }
+        }
         Shape::Spline { chain, total, closed, first } => {
             // Chain parameters are relative to this shape's first segment.
             let mut sub_chain = crate::spline::sub_chain(chain, u[0], u[1], *closed);
@@ -429,7 +480,8 @@ pub(crate) fn dedup_pieces(pieces: &mut Vec<Cv>, verts: &Verts, tol: f64) {
             Some(add(c, [r * libm::cos(m), r * libm::sin(m)]))
         }
         Shape::Line => Some(scale(add(verts.at(cv.v[0]), verts.at(cv.v[1])), 0.5)),
-        Shape::Circle { .. } | Shape::Spline { .. } => None,
+        Shape::EArc { c, ang, a, b, t0, span } => Some(crate::ellipse::point(c, ang, a, b, t0 + 0.5 * span)),
+        Shape::Circle { .. } | Shape::Ellipse { .. } | Shape::Spline { .. } => None,
     };
     let mut seen: BTreeMap<(usize, usize), Vec<V2>> = BTreeMap::new();
     let mut order: Vec<usize> = (0..pieces.len()).collect();
@@ -460,6 +512,12 @@ pub(crate) fn dedup_circles(circles: &mut Vec<Cv>, tol: f64) {
         let same = |o: &Cv| match (&o.shape, &c.shape) {
             (&Shape::Circle { c: c1, r: r1 }, &Shape::Circle { c: c2, r: r2 }) => {
                 dist(c1, c2) <= tol && (r1 - r2).abs() <= tol
+            }
+            (&Shape::Ellipse { c: c1, ang: g1, a: a1, b: b1 }, &Shape::Ellipse { c: c2, ang: g2, a: a2, b: b2 }) => {
+                dist(c1, c2) <= tol
+                    && (a1 - a2).abs() <= tol
+                    && (b1 - b2).abs() <= tol
+                    && ((a1 - b1).abs() <= tol || libm::sin(g1 - g2).abs() * a1 <= tol)
             }
             _ => false,
         };
@@ -525,7 +583,7 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
     };
     let mut verts = Verts::new(tol);
     for cv in &mut cvs {
-        if matches!(cv.shape, Shape::Circle { .. }) {
+        if cv.shape.is_ring() {
             continue;
         }
         for k in 0..2 {
@@ -540,8 +598,10 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
     list.sort_by(|x, y| x.param.total_cmp(&y.param).then(x.vertex.cmp(&y.vertex)));
     let own: Vec<EntityId> = match sketch.entity(entity).map(|e| e.geom) {
         Some(Geom::Line { a, b }) => vec![a, b],
-        Some(Geom::Circle { center, .. }) => vec![center],
-        Some(Geom::Arc { center, start, end }) => vec![center, start, end],
+        Some(Geom::Circle { center, .. } | Geom::Ellipse { center, .. }) => vec![center],
+        Some(Geom::Arc { center, start, end } | Geom::EllipseArc { center, start, end, .. }) => {
+            vec![center, start, end]
+        }
         _ => Vec::new(),
     };
     let mut out: Vec<Cut> = Vec::new();
@@ -561,19 +621,19 @@ pub fn cuts(sketch: &crate::sketch::Sketch, entity: EntityId, pick: [f64; 2], to
         out.push(Cut { param: s.param, pos, partner: s.partner, at_point });
     }
     let span = match target.shape {
-        Shape::Arc { span, .. } => span,
+        Shape::Arc { span, .. } | Shape::EArc { span, .. } => span,
         _ => 0.0,
     };
     let mut pick_param = param_on(target, pick);
     match target.shape {
         Shape::Line => pick_param = pick_param.clamp(0.0, 1.0),
-        Shape::Arc { span, .. } => {
+        Shape::Arc { span, .. } | Shape::EArc { span, .. } => {
             if pick_param > span {
                 // Outside the arc: nearer to the end or to the start?
                 pick_param = if pick_param - span < TAU - pick_param { span } else { 0.0 };
             }
         }
-        Shape::Circle { .. } | Shape::Spline { .. } => {}
+        Shape::Circle { .. } | Shape::Ellipse { .. } | Shape::Spline { .. } => {}
     }
     Ok(Cuts { cuts: out, pick: pick_param, span })
 }

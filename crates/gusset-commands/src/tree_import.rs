@@ -430,6 +430,7 @@ fn loop_points(edges: &[gusset_kernel::ProfileEdge]) -> Vec<[f64; 2]> {
                     out.push([center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)]);
                 }
             }
+            Seg2::Ellipse { .. } | Seg2::EllipseArc { .. } => out.extend(e.seg.ellipse_points(48)),
             Seg2::Bezier { p } => {
                 for i in 0..16 {
                     let u = f64::from(i) / 16.0;

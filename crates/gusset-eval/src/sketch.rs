@@ -353,6 +353,10 @@ pub(crate) fn solve_sketch(
                     sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                     sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
                     sk::Curve::Bezier { p } => Seg2::Bezier { p },
+                sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
+                sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
+                    Seg2::EllipseArc { center, major, a, b, start, end, ccw }
+                }
                 };
                 ProfileEdge { seg: seg2, tag }
             };
@@ -533,6 +537,10 @@ pub(crate) fn path_chain(
                 sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                 sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
                 sk::Curve::Bezier { p } => Seg2::Bezier { p },
+                sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
+                sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
+                    Seg2::EllipseArc { center, major, a, b, start, end, ccw }
+                }
             };
             ProfileEdge { seg: seg2, tag }
         })

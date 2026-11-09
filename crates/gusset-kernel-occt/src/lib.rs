@@ -211,6 +211,23 @@ mod imp {
                             s.c = center;
                             s.r = radius;
                         }
+                        Seg2::Ellipse { center, major, a, b } => {
+                            s.kind = sys::GS_SEG_ELLIPSE;
+                            s.c = center;
+                            s.major = major;
+                            s.r = a;
+                            s.rb = b;
+                        }
+                        Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
+                            s.kind = sys::GS_SEG_ELLIPSE_ARC;
+                            s.c = center;
+                            s.major = major;
+                            s.r = a;
+                            s.rb = b;
+                            s.a = start;
+                            s.b = end;
+                            s.ccw = i32::from(ccw);
+                        }
                         Seg2::Bezier { p: pts } => {
                             s.kind = sys::GS_SEG_BEZIER;
                             s.pole_first =
@@ -224,7 +241,7 @@ mod imp {
                             }
                         }
                     }
-                    let finite = [s.a, s.b, s.c].iter().flatten().chain([&s.r]).all(|v| v.is_finite());
+                    let finite = [s.a, s.b, s.c, s.major].iter().flatten().chain([&s.r, &s.rb]).all(|v| v.is_finite());
                     if !finite {
                         return Err(invalid("profile contains non-finite coordinates"));
                     }

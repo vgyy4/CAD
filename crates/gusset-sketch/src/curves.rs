@@ -40,7 +40,8 @@ pub(crate) fn domain(cv: &Cv) -> (f64, f64) {
     match &cv.shape {
         Shape::Line => (0.0, 1.0),
         Shape::Arc { span, .. } => (0.0, *span),
-        Shape::Circle { .. } => (0.0, TAU),
+        Shape::Circle { .. } | Shape::Ellipse { .. } => (0.0, TAU),
+        Shape::EArc { span, .. } => (0.0, *span),
         Shape::Spline { chain, .. } => (0.0, chain.len() as f64),
     }
 }
@@ -58,6 +59,12 @@ pub(crate) fn eval(cv: &Cv, u: f64) -> (V2, V2) {
         }
         Shape::Circle { c, r } => {
             ([c[0] + r * libm::cos(u), c[1] + r * libm::sin(u)], [-r * libm::sin(u), r * libm::cos(u)])
+        }
+        Shape::Ellipse { c, ang, a, b } => {
+            (crate::ellipse::point(*c, *ang, *a, *b, u), crate::ellipse::deriv(*ang, *a, *b, u))
+        }
+        Shape::EArc { c, ang, a, b, t0, .. } => {
+            (crate::ellipse::point(*c, *ang, *a, *b, t0 + u), crate::ellipse::deriv(*ang, *a, *b, t0 + u))
         }
         Shape::Spline { chain, .. } => {
             let n = chain.len();
@@ -93,7 +100,7 @@ pub(crate) fn cells(cv: &Cv) -> Vec<Cell> {
     let (u0, u1) = domain(cv);
     match &cv.shape {
         Shape::Line => vec![cell_of(cv, u0, u1, 1)],
-        Shape::Arc { .. } | Shape::Circle { .. } => {
+        Shape::Arc { .. } | Shape::Circle { .. } | Shape::Ellipse { .. } | Shape::EArc { .. } => {
             let n = (((u1 - u0) / (core::f64::consts::FRAC_PI_4)).ceil() as usize).max(1);
             (0..n)
                 .map(|k| {

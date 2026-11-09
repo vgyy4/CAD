@@ -96,6 +96,55 @@ pub enum Seg2 {
     Bezier {
         p: [P2; 4],
     },
+    /// A full ellipse (forms a loop on its own, travelled counter-clockwise): `major` is the
+    /// unit direction of the semi-axis `a` (`a >= b`).
+    Ellipse {
+        center: P2,
+        major: P2,
+        a: f64,
+        b: f64,
+    },
+    /// Arc of an ellipse from `start` to `end` (points on it); `ccw` gives the direction.
+    EllipseArc {
+        center: P2,
+        major: P2,
+        a: f64,
+        b: f64,
+        start: P2,
+        end: P2,
+        ccw: bool,
+    },
+}
+
+impl Seg2 {
+    /// Points along an ellipse or elliptical arc: `n` points from the start, the end
+    /// excluded (a full ellipse starts at the end of the `a` axis). Empty for other segments.
+    pub fn ellipse_points(&self, n: usize) -> Vec<P2> {
+        let at = |center: P2, major: P2, a: f64, b: f64, t: f64| {
+            let (x, y) = (a * libm::cos(t), b * libm::sin(t));
+            [center[0] + major[0] * x - major[1] * y, center[1] + major[1] * x + major[0] * y]
+        };
+        let param = |center: P2, major: P2, a: f64, b: f64, p: P2| {
+            let d = [p[0] - center[0], p[1] - center[1]];
+            libm::atan2((major[0] * d[1] - major[1] * d[0]) / b, (major[0] * d[0] + major[1] * d[1]) / a)
+        };
+        let (center, major, a, b, t0, sweep) = match *self {
+            Seg2::Ellipse { center, major, a, b } => (center, major, a, b, 0.0, std::f64::consts::TAU),
+            Seg2::EllipseArc { center, major, a, b, start, end, ccw } => {
+                let (t0, t1) = (param(center, major, a, b, start), param(center, major, a, b, end));
+                let mut sweep = t1 - t0;
+                if ccw && sweep <= 0.0 {
+                    sweep += std::f64::consts::TAU;
+                }
+                if !ccw && sweep >= 0.0 {
+                    sweep -= std::f64::consts::TAU;
+                }
+                (center, major, a, b, t0, sweep)
+            }
+            _ => return Vec::new(),
+        };
+        (0..n).map(|k| at(center, major, a, b, t0 + sweep * k as f64 / n as f64)).collect()
+    }
 }
 
 /// A profile edge plus the persistent tag of the sketch entity it came from.

@@ -107,6 +107,7 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <Geom_BezierCurve.hxx>
+#include <gp_Elips.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <Standard_Version.hxx>
 #include <TDataStd_Name.hxx>
@@ -232,6 +233,29 @@ double loop_area(const GsProfile* p, const GsLoop& l) {
         double t = 2.0 * M_PI * k / 32.0;
         pts.emplace_back(s.c[0] + s.r * std::cos(t), s.c[1] + s.r * std::sin(t));
       }
+    } else if (s.kind == GS_SEG_ELLIPSE || s.kind == GS_SEG_ELLIPSE_ARC) {
+      // Sampled by eccentric anomaly in the ellipse's own frame.
+      double t0 = 0, sweep = 2.0 * M_PI;
+      auto param = [&](const double* q) {
+        double dx = q[0] - s.c[0], dy = q[1] - s.c[1];
+        return std::atan2((s.major[0] * dy - s.major[1] * dx) / s.rb, (s.major[0] * dx + s.major[1] * dy) / s.r);
+      };
+      int n = 32;
+      if (s.kind == GS_SEG_ELLIPSE_ARC) {
+        t0 = param(s.a);
+        sweep = param(s.b) - t0;
+        if (s.ccw) {
+          while (sweep <= 0) sweep += 2 * M_PI;
+        } else {
+          while (sweep >= 0) sweep -= 2 * M_PI;
+        }
+        n = 16;
+      }
+      for (int k = 0; k < n; ++k) {
+        double t = t0 + sweep * k / n;
+        double x = s.r * std::cos(t), y = s.rb * std::sin(t);
+        pts.emplace_back(s.c[0] + s.major[0] * x - s.major[1] * y, s.c[1] + s.major[1] * x + s.major[0] * y);
+      }
     } else if (s.kind == GS_SEG_BEZIER) {
       if (s.pole_count == 4 && p->poles && size_t(s.pole_first) + 4 <= p->npoles) {
         const double* q = p->poles + 2 * size_t(s.pole_first);
@@ -288,6 +312,24 @@ TopoDS_Edge make_seg_edge(const GsProfile* p, const GsSeg& s, const Frame& f) {
     if (!(s.r > 0)) throw Standard_Failure("circle with non-positive radius in profile");
     gp_Circ c(gp_Ax2(f.at(s.c[0], s.c[1]), f.n, f.x), s.r);
     e = BRepBuilderAPI_MakeEdge(c).Edge();
+  } else if (s.kind == GS_SEG_ELLIPSE || s.kind == GS_SEG_ELLIPSE_ARC) {
+    if (!(s.r > 0) || !(s.rb > 0) || s.rb > s.r * (1 + 1e-12))
+      throw Standard_Failure("ellipse with invalid semi-axes in profile");
+    double ml = std::hypot(s.major[0], s.major[1]);
+    if (!(ml > 0)) throw Standard_Failure("ellipse without a major axis in profile");
+    gp_Pnt c = f.at(s.c[0], s.c[1]);
+    gp_Pnt tip = f.at(s.c[0] + s.major[0] / ml, s.c[1] + s.major[1] / ml);
+    gp_Dir xdir(gp_Vec(c, tip));
+    if (s.kind == GS_SEG_ELLIPSE) {
+      gp_Elips el(gp_Ax2(c, f.n, xdir), s.r, s.rb);
+      e = BRepBuilderAPI_MakeEdge(el).Edge();
+    } else {
+      gp_Dir axis = s.ccw ? f.n : f.n.Reversed();
+      gp_Elips el(gp_Ax2(c, axis, xdir), s.r, s.rb);
+      BRepBuilderAPI_MakeEdge me(el, f.at(s.a[0], s.a[1]), f.at(s.b[0], s.b[1]));
+      if (!me.IsDone()) throw Standard_Failure("could not build an elliptical arc of the profile");
+      e = me.Edge();
+    }
   } else if (s.kind == GS_SEG_BEZIER) {
     BRepBuilderAPI_MakeEdge me(bezier_curve(p, s, f));
     if (!me.IsDone()) throw Standard_Failure("could not build a spline edge of the profile");
@@ -1295,6 +1337,9 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   b->SetRunParallel(false);
   b->Build();
   if (!b->IsDone() || b->HasErrors()) return fail("boolean operation failed");
+  // DBGBEGIN
+  if (getenv("GS_DBG")) { BRepCheck_Analyzer a0(target->s), a1(tool->s), a2(b->Shape()); fprintf(stderr,"DBG in %d %d raw %d\n",a0.IsValid(),a1.IsValid(),a2.IsValid()); }
+  // DBGEND
   b->SimplifyResult(true, true);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");

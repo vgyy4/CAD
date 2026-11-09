@@ -305,11 +305,11 @@ fn random_mixed_curves_never_panic_and_give_closed_loops() {
                 for i in 0..n {
                     let end = |c: &Curve| match *c {
                         Curve::Line { end, .. } | Curve::Arc { end, .. } => Some(end),
-                        Curve::Circle { .. } | Curve::Bezier { .. } => None,
+                        Curve::Circle { .. } | Curve::Bezier { .. } | Curve::Ellipse { .. } | Curve::EllipseArc { .. } => None,
                     };
                     let start = |c: &Curve| match *c {
                         Curve::Line { start, .. } | Curve::Arc { start, .. } => Some(start),
-                        Curve::Circle { .. } | Curve::Bezier { .. } => None,
+                        Curve::Circle { .. } | Curve::Bezier { .. } | Curve::Ellipse { .. } | Curve::EllipseArc { .. } => None,
                     };
                     if let (Some(e), Some(s2)) = (end(&l.segments[i].curve), start(&l.segments[(i + 1) % n].curve)) {
                         assert!((e[0] - s2[0]).abs() < 1e-9 && (e[1] - s2[1]).abs() < 1e-9, "round {round}: gap");

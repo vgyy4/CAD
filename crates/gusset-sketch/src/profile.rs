@@ -47,6 +47,24 @@ pub enum Curve {
         radius: f64,
         ccw: bool,
     },
+    /// A whole ellipse: `major` is the unit direction of the semi-axis `a` (`a >= b`).
+    Ellipse {
+        center: [f64; 2],
+        major: [f64; 2],
+        a: f64,
+        b: f64,
+        ccw: bool,
+    },
+    /// An elliptical arc travelled from `start` to `end`; `ccw == false` means clockwise.
+    EllipseArc {
+        center: [f64; 2],
+        major: [f64; 2],
+        a: f64,
+        b: f64,
+        start: [f64; 2],
+        end: [f64; 2],
+        ccw: bool,
+    },
     /// One cubic Bézier segment of a spline, with its four control points. A spline piece
     /// is several of these in a row (see [`Segment::sub`]).
     Bezier {
@@ -208,6 +226,23 @@ pub(crate) enum Shape {
         c: V2,
         r: f64,
     },
+    /// A whole ellipse (`a >= b`, `ang` the direction of `a`); the curve parameter is the
+    /// eccentric anomaly.
+    Ellipse {
+        c: V2,
+        ang: f64,
+        a: f64,
+        b: f64,
+    },
+    /// Counter-clockwise ellipse arc from eccentric anomaly `t0` through `span`.
+    EArc {
+        c: V2,
+        ang: f64,
+        a: f64,
+        b: f64,
+        t0: f64,
+        span: f64,
+    },
     /// A chain of cubic Béziers (a whole spline, or a piece of one with `closed: false`).
     /// `chain[j]` is segment `(first + j) % total` of the spline.
     Spline {
@@ -221,7 +256,7 @@ pub(crate) enum Shape {
 impl Shape {
     /// A curve without end points: a circle or a closed spline.
     pub(crate) fn is_ring(&self) -> bool {
-        matches!(self, Shape::Circle { .. } | Shape::Spline { closed: true, .. })
+        matches!(self, Shape::Circle { .. } | Shape::Ellipse { .. } | Shape::Spline { closed: true, .. })
     }
 }
 
@@ -243,6 +278,10 @@ pub(crate) fn bbox_of(shape: &Shape, p: [V2; 2]) -> [f64; 4] {
     match shape {
         Shape::Line => [p[0][0].min(p[1][0]), p[0][1].min(p[1][1]), p[0][0].max(p[1][0]), p[0][1].max(p[1][1])],
         Shape::Arc { c, r, .. } | Shape::Circle { c, r } => [c[0] - r, c[1] - r, c[0] + r, c[1] + r],
+        Shape::Ellipse { c, ang, a, b } | Shape::EArc { c, ang, a, b, .. } => {
+            let h = crate::ellipse::half_extents(*ang, *a, *b);
+            [c[0] - h[0], c[1] - h[1], c[0] + h[0], c[1] + h[1]]
+        }
         Shape::Spline { chain, .. } => {
             let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
             for q in chain.iter().flatten() {
@@ -302,8 +341,31 @@ pub(crate) fn collect_with(
                 }
                 (Shape::Arc { c, r, a0, span }, [ps, pe])
             }
-            // Regions of ellipses: not built yet.
-            Geom::Ellipse { .. } | Geom::EllipseArc { .. } => return Err(deg),
+            Geom::Ellipse { center, angle, a, b } => {
+                let c = pt_of(s, center)?;
+                let (ang, a, b, _) = crate::ellipse::normalized(angle, a, b);
+                if not_gt(b, tol) {
+                    return Err(deg);
+                }
+                (Shape::Ellipse { c, ang, a, b }, [c, c])
+            }
+            Geom::EllipseArc { center, angle, a, b, start, end } => {
+                let (c, ps, pe) = (pt_of(s, center)?, pt_of(s, start)?, pt_of(s, end)?);
+                let (ang, a, b, _) = crate::ellipse::normalized(angle, a, b);
+                if not_gt(b, tol)
+                    || crate::ellipse::distance(c, ang, a, b, ps).abs() > tol
+                    || crate::ellipse::distance(c, ang, a, b, pe).abs() > tol
+                    || not_gt(dist(ps, pe), tol)
+                {
+                    return Err(deg);
+                }
+                let t0 = crate::ellipse::param(c, ang, a, b, ps);
+                let span = wrap_2pi(crate::ellipse::param(c, ang, a, b, pe) - t0);
+                if not_gt(span, 0.0) {
+                    return Err(deg);
+                }
+                (Shape::EArc { c, ang, a, b, t0, span }, [ps, pe])
+            }
             Geom::Spline { closed, .. } => {
                 let fit: Vec<V2> =
                     s.spline_points(e.id).unwrap_or(&[]).iter().map(|&q| pt_of(s, q)).collect::<Result<Vec<_>, _>>()?;
@@ -382,6 +444,22 @@ fn make_segment(cvs: &[Cv], verts: &[V2], u: Use) -> Option<Segment> {
             }
         }
         Shape::Circle { c, r } => Curve::Circle { center: *c, radius: *r, ccw: !u.rev },
+        Shape::Ellipse { c, ang, a, b } => {
+            Curve::Ellipse { center: *c, major: crate::ellipse::major_dir(*ang), a: *a, b: *b, ccw: !u.rev }
+        }
+        Shape::EArc { c, ang, a, b, .. } => {
+            let (s, e) = (vp(0)?, vp(1)?);
+            let (start, end) = if u.rev { (e, s) } else { (s, e) };
+            Curve::EllipseArc {
+                center: *c,
+                major: crate::ellipse::major_dir(*ang),
+                a: *a,
+                b: *b,
+                start,
+                end,
+                ccw: !u.rev,
+            }
+        }
         // Splines are handled by `make_segments`.
         Shape::Spline { .. } => return None,
     };
@@ -403,6 +481,40 @@ fn seg_area(s: &Segment) -> f64 {
             if *ccw { a } else { -a }
         }
         Curve::Bezier { p } => spline::area_term(p),
+        Curve::Ellipse { a, b, ccw, .. } => {
+            let v = PI * a * b;
+            if *ccw { v } else { -v }
+        }
+        Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
+            // Area term of the underlying counter-clockwise arc (s0 → e0):
+            // ½ (c × (e0 − s0) + a b span).
+            let (s0, e0) = if *ccw { (*start, *end) } else { (*end, *start) };
+            let ang = angle(*major);
+            let span = wrap_2pi(
+                crate::ellipse::param(*center, ang, *a, *b, e0) - crate::ellipse::param(*center, ang, *a, *b, s0),
+            );
+            let t = 0.5 * (cross(*center, sub(e0, s0)) + a * b * span);
+            if *ccw { t } else { -t }
+        }
+    }
+}
+
+/// An ellipse (arc) as a unit-circle arc: the map `(u/a, v/b)` is affine and orientation
+/// preserving, so winding numbers carry over.
+fn unit_circle(curve: &Curve) -> Option<Curve> {
+    let map = |center: V2, major: V2, a: f64, b: f64, p: V2| {
+        let d = sub(p, center);
+        [dot(d, major) / a, cross(major, d) / b]
+    };
+    match *curve {
+        Curve::EllipseArc { center, major, a, b, start, end, ccw } => Some(Curve::Arc {
+            center: [0.0, 0.0],
+            radius: 1.0,
+            start: map(center, major, a, b, start),
+            end: map(center, major, a, b, end),
+            ccw,
+        }),
+        _ => None,
     }
 }
 
@@ -438,6 +550,16 @@ fn seg_winding(s: &Segment, p: V2) -> f64 {
             let w = if dist(p, *center) < *radius { TAU } else { 0.0 };
             if *ccw { w } else { -w }
         }
+        Curve::Ellipse { center, major, a, b, ccw } => {
+            let w = if crate::ellipse::distance(*center, angle(*major), *a, *b, p) < 0.0 { TAU } else { 0.0 };
+            if *ccw { w } else { -w }
+        }
+        Curve::EllipseArc { center, major, a, b, .. } => {
+            let Some(unit) = unit_circle(&s.curve) else { return 0.0 };
+            let d = sub(p, *center);
+            let q = [dot(d, *major) / a, cross(*major, d) / b];
+            seg_winding(&Segment { curve: unit, ..*s }, q)
+        }
     }
 }
 
@@ -448,20 +570,24 @@ fn winding(l: &Loop, p: V2) -> i64 {
 
 fn loop_bbox(l: &Loop) -> [f64; 4] {
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-    let mut grow = |p: V2, r: f64| {
-        b[0] = b[0].min(p[0] - r);
-        b[1] = b[1].min(p[1] - r);
-        b[2] = b[2].max(p[0] + r);
-        b[3] = b[3].max(p[1] + r);
+    let mut grow = |p: V2, rx: f64, ry: f64| {
+        b[0] = b[0].min(p[0] - rx);
+        b[1] = b[1].min(p[1] - ry);
+        b[2] = b[2].max(p[0] + rx);
+        b[3] = b[3].max(p[1] + ry);
     };
     for s in &l.segments {
         match &s.curve {
             Curve::Line { start, end } => {
-                grow(*start, 0.0);
-                grow(*end, 0.0);
+                grow(*start, 0.0, 0.0);
+                grow(*end, 0.0, 0.0);
             }
-            Curve::Arc { center, radius, .. } | Curve::Circle { center, radius, .. } => grow(*center, *radius),
-            Curve::Bezier { p } => p.iter().for_each(|q| grow(*q, 0.0)),
+            Curve::Arc { center, radius, .. } | Curve::Circle { center, radius, .. } => grow(*center, *radius, *radius),
+            Curve::Bezier { p } => p.iter().for_each(|q| grow(*q, 0.0, 0.0)),
+            Curve::Ellipse { center, major, a, b, .. } | Curve::EllipseArc { center, major, a, b, .. } => {
+                let h = crate::ellipse::half_extents(angle(*major), *a, *b);
+                grow(*center, h[0], h[1]);
+            }
         }
     }
     b
@@ -524,7 +650,16 @@ fn tangent(cv: &Cv, verts: &[V2], rev: bool) -> (f64, f64) {
                 (angle([-q[1], q[0]]), 1.0 / *r)
             }
         }
-        Shape::Circle { .. } => (0.0, 0.0),
+        Shape::Circle { .. } | Shape::Ellipse { .. } => (0.0, 0.0),
+        Shape::EArc { ang, a, b, t0, span, .. } => {
+            if rev {
+                let t = t0 + span;
+                let d = crate::ellipse::deriv(*ang, *a, *b, t);
+                (angle([-d[0], -d[1]]), -crate::ellipse::curvature(*a, *b, t))
+            } else {
+                (angle(crate::ellipse::deriv(*ang, *a, *b, *t0)), crate::ellipse::curvature(*a, *b, *t0))
+            }
+        }
         Shape::Spline { chain, .. } => match (chain.first(), chain.last()) {
             (Some(first), Some(_)) if !rev => {
                 (angle(spline::tangent_dir(first, false)), spline::curvature(first, false))
@@ -615,6 +750,24 @@ fn polygon(l: &Loop) -> Vec<V2> {
                     pts.push([center[0] + radius * libm::cos(t), center[1] + radius * libm::sin(t)]);
                 }
             }
+            Curve::Ellipse { center, major, a, b, ccw } => {
+                let ang = angle(*major);
+                const N: usize = 64;
+                for k in 0..N {
+                    let t = TAU * k as f64 / N as f64;
+                    pts.push(crate::ellipse::point(*center, ang, *a, *b, if *ccw { t } else { -t }));
+                }
+            }
+            Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
+                let ang = angle(*major);
+                let t0 = crate::ellipse::param(*center, ang, *a, *b, *start);
+                let t1 = crate::ellipse::param(*center, ang, *a, *b, *end);
+                let sweep = if *ccw { wrap_2pi(t1 - t0) } else { -wrap_2pi(t0 - t1) };
+                const N: usize = 32;
+                for k in 0..N {
+                    pts.push(crate::ellipse::point(*center, ang, *a, *b, t0 + sweep * k as f64 / N as f64));
+                }
+            }
             Curve::Circle { center, radius, .. } => {
                 let (center, radius) = (*center, *radius);
                 const N: usize = 64;
@@ -661,8 +814,9 @@ fn interior_point(outer: &Loop, holes: &[Loop]) -> V2 {
     best.map_or_else(
         || {
             outer.segments.first().map_or([0.0, 0.0], |s| match &s.curve {
-                Curve::Line { start, .. } | Curve::Arc { start, .. } => *start,
+                Curve::Line { start, .. } | Curve::Arc { start, .. } | Curve::EllipseArc { start, .. } => *start,
                 Curve::Circle { center, radius, .. } => [center[0] + radius, center[1]],
+                Curve::Ellipse { center, major, a, .. } => [center[0] + a * major[0], center[1] + a * major[1]],
                 Curve::Bezier { p } => p[0],
             })
         },
@@ -843,6 +997,7 @@ pub fn arrange(sketch: &Sketch, tol: f64) -> Result<Arrangement, ProfileError> {
     for (i, cv) in circles.iter().enumerate() {
         let (sample, ccw) = match &cv.shape {
             Shape::Circle { c, r } => ([c[0] + r, c[1]], true),
+            Shape::Ellipse { c, ang, a, b } => (crate::ellipse::point(*c, *ang, *a, *b, 0.0), true),
             Shape::Spline { chain, .. } => {
                 (chain.first().map_or([0.0, 0.0], |b| b[0]), chain.iter().map(spline::area_term).sum::<f64>() > 0.0)
             }
@@ -1080,6 +1235,11 @@ mod tests {
         match s.curve {
             Curve::Line { start, end } | Curve::Arc { start, end, .. } => (start, end),
             Curve::Bezier { p } => (p[0], p[3]),
+            Curve::EllipseArc { start, end, .. } => (start, end),
+            Curve::Ellipse { center, major, a, .. } => {
+                let p = [center[0] + a * major[0], center[1] + a * major[1]];
+                (p, p)
+            }
             Curve::Circle { center, radius, .. } => ([center[0] + radius, center[1]], [center[0] + radius, center[1]]),
         }
     }
