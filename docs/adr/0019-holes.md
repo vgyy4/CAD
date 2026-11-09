@@ -92,8 +92,9 @@ Written from the published nominal values (no code or table text copied):
   13.44 mm).
 ISO 4762 itself prescribes only the screw; the counterbore values are the DIN 974-1
 recommendation, which is why the preset phrase names both. The values of DIN 974-1 and the
-ISO 4762/10642 head sizes were written from memory of the standards' tables and should be checked
-against the owner's copy before they are relied on for manufacturing (they are ordinary
+ISO 4762/10642 head sizes were first written from memory of the standards' tables; see "Values checked
+below (2026-11-09)" for what has since been compared with public sources. Counterbore depths in
+particular should be checked against the owner's copy before they are relied on for manufacturing (they are ordinary
 parameters, so correcting one is an edit, not a code change); the table's internal consistency
 is tested (ordering, clearance above thread, tap drill below it, counterbore above head) and
 spot values are asserted. Tapped presets add two defaults that are *not* from a standard: the
@@ -142,3 +143,55 @@ combinations; hole tables in drawings; copying a hole to patterns with cosmetic 
   `op: add`: a tool body that is cut away or intersected leaves no holes in the target. After
   every feature, records whose wall face no longer exists on the body (a pocket or a later cut
   removed the hole) are dropped, so `query_body` lists only holes that are there.
+
+## Amendment (2026-11-09): Values checked
+
+Each group of the section 5 table was compared, number by number, with at least two public
+sources that reproduce the standards' dimensions (manufacturer/distributor and engineering
+reference pages; no table text was copied, only numbers compared). The standards themselves
+were not consulted (paywalled), so "verified" means "two independent public sources agree",
+not "checked against the standard". No value in `hole_standards.rs` was changed.
+
+Verified (two or more sources agree with our value):
+- **ISO 4762 `dk` and `k`**, M3 to M24 (all rows): Misumi metric socket head cap screw table
+  (us.misumi-ec.com/blog/metric-socket-head-cap-screws-dimensions/) and the DIN EN ISO 4762
+  dimension table on fasten.it (fasten.it/norms/norm/din_en_iso_4762); `k` also by the
+  Noramark and AmesWeb counterbore charts (below).
+- **ISO 261/262 coarse pitch**, M1.6 to M24: Misumi (above, M1.6 to M24 without M3.5, M18,
+  M22), Optimas tapping-size table (optimas.com/technical-resources/tapping-sizes/) and the
+  get-it-made.co.uk metric thread chart (get-it-made.co.uk/resources/metric-thread-chart).
+- **ISO 2306 tap-drill diameter**, M1.6 to M24: Optimas and get-it-made (above) list the same
+  values, including M8 6.8 and M12 10.2 (Optimas gives 6.75 for M8, the unrounded d - P).
+- **ISO 10642 `dk` (theoretical maximum)**, M3 to M20: fasten.it DIN EN ISO 10642 page
+  (fasten.it/norms/norm/din_en_iso_10642, editions 2004, 2013 and 2020 agree) and the
+  Westfield Fasteners ISO 10642 data sheet (westfieldfasteners.co.uk/Standards/ScrewBolt-SHCsk-M.pdf).
+  The standard stops at M20, which is why M24 has no countersink row.
+- **ISO 273 clearance holes**, M1.6 to M10, M20 and M24 (all three series): Optimas, The
+  Engineer's Bible counterbore chart (engineersbible.com/counterbore-socket-iso/) and AmesWeb's
+  clearance chart (amesweb.info/Screws/Metric-Clearance-Hole-Chart.aspx, ASME B18.2.8, which
+  coincides with ISO 273 here). M3.5 (3.7, 3.9, 4.2): Optimas and Fractory
+  (fractory.com/?p=21620).
+- **DIN 974-1 counterbore diameter** for M3, M4, M5, M6, M8, M10, M12, M16, M20, M24 (6.5, 8,
+  10, 11, 15, 18, 20, 26, 33, 40): The Engineer's Bible and the Noramark counterbore chart
+  (noramark.com/resources/charts/counterbore-dimensions/, which names DIN 974-1 for ISO 4762).
+
+Changed: nothing.
+
+Uncertain (sources disagree or only one source found); the values stay as they are:
+- **Counterbore depth** (all sizes). Sources use different conventions and do not agree:
+  Noramark and AmesWeb give the flush depth `k` (M6: 6.0); whole-spec.com (whole-spec.com/en/
+  counterbore/counterbore) gives about k + 0.5 (M6: 6.5, M10: 10.5, M12: 13); The Engineer's
+  Bible gives k + 0.8 (M6: 6.8, M10: 10.8, M12: 12.8). Ours (k + 0.4 to 0.6, M6 6.5, M10 10.8)
+  matches one of them only for M6 and M10, but lies within the range of all sources (k to
+  k + 0.8) for every size, so a screw never stands proud. The DIN 974-1 depth table itself was
+  not reachable; take the owner's copy as authoritative. Depths are ordinary parameters.
+- **Counterbore diameter M14 (24 mm)**: only tooling catalogues (Hoffmann Group, Intercity
+  Industrial counterbore tools for M14) found; whole-spec.com gives 23. Other whole-spec.com
+  rows (M5 9.5, M8 14, M10 17.5) also differ from the two sources above, which look like a
+  different (KS) series; we follow DIN 974-1 as the two sources do.
+- **ISO 273 M12, M14, M16 medium and coarse**: our 13.5/14.5, 15.5/16.5, 17.5/18.5 are given by
+  the Engineer's Bible, AmesWeb and whole-spec.com, while Optimas gives 14/15, 16/17, 18/19
+  and Fractory 14/15 (M12) and 18/19 (M16). Kept ours (two to three sources against two).
+  Fractory also lists M3 medium 3.35 and M6 medium 6.5, against 3.4 and 6.6 everywhere else.
+- **ISO 273 M18 and M22** (19, 20, 21 and 23, 24, 26): only Optimas found; the sources
+  consulted do not list these sizes. M14 fine/medium/coarse is covered by AmesWeb only.
