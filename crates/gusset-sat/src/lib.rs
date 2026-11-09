@@ -169,6 +169,14 @@ pub fn to_step_coloured_history(
 /// Fusion stores centimetres.
 const FUSION_CM_TO_MM: f64 = 10.0;
 
+/// How many bodies a blob holds (the `of` that [`to_step_nth`] wants).
+///
+/// # Errors
+/// [`SatError`] for a damaged blob.
+pub fn body_count(bytes: &[u8], limits: &Limits) -> Result<usize, SatError> {
+    Ok(parse(bytes, limits)?.recs.iter().filter(|r| r.ty == "body").count())
+}
+
 /// One body of a blob as STEP text: body `nth` (from 0, in file order) of a blob that must hold
 /// exactly `of` bodies, moved by `place`. A Fusion base feature's output is the last bodies of its
 /// history blob (`BREP.<id>.smbh`). An error where the blob holds another number of bodies or the

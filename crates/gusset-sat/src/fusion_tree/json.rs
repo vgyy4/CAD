@@ -731,6 +731,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
             feats.push(j);
+        } else if c8 == "428B5C6E" {
+            feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if c8 == "D7015B81" {
             // Base Feature: its visible bodies are bodies the file stores (section 13), handed
             // to the importer as `stored_body` features.
@@ -775,6 +777,67 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// Component Insert `428B5C6E`: the placement of the occurrence it inserts and the keys that name
+/// the inserted design. The record holds a reference to the occurrence (`2D6E13A1`), then the bytes
+/// `00 01` and a byte that is `00` when the occurrence's placement follows, as 12 doubles (a
+/// row-major 3 x 4 [R | t], centimetres), and `01` when there is none (the origin). The
+/// occurrence's own `CE2913AA` record repeats the 12 doubles and holds the design's keys as wide
+/// strings that start with a UUID (in one sample the key goes on with a `_urn:` text). The two
+/// copies of the matrix must agree byte for byte.
+fn insert_json(d: &Design, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
+    let fail = |why: &str| {
+        json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
+            "source_id": fid, "error": why})
+    };
+    let rec = d.rec(fid);
+    let found = stream::refs_at(d, rec, 0).into_iter().find_map(|(at, occ)| {
+        let (_, end) = stream::ref_end(d, rec, at)?;
+        (d.is(occ, "2D6E13A1")
+            && rec.get(end) == Some(&0)
+            && rec.get(end + 1) == Some(&1)
+            && matches!(rec.get(end + 2), Some(0 | 1)))
+        .then_some((occ, end))
+    });
+    let Some((occ, end)) = found else { return fail("the occurrence it inserts is not recognised") };
+    let Some(cx) = ref_ids(d, d.rec(occ)).into_iter().find(|q| d.is(*q, "CE2913AA")) else {
+        return fail("the occurrence has no transform record");
+    };
+    let crec = d.rec(cx);
+    let mut keys: Vec<String> = Vec::new();
+    for (_, _, w) in stream::wstrings_all(crec) {
+        if let Some(head) = w.get(..36)
+            && stream::is_uuid_text(head)
+            && !head.starts_with("00000000-0000-0000-0000")
+        {
+            let k = w.to_ascii_lowercase();
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+    }
+    let (r, t) = if rec.get(end + 2) == Some(&0) {
+        let Some(m) = stream::dbl::<12>(rec, end + 3) else { return fail("its placement is not readable") };
+        // The occurrence repeats the same bytes.
+        let raw = rec.get(end + 3..end + 3 + 96).unwrap_or(&[]);
+        if raw.len() != 96 || !crec.windows(96).any(|w| w == raw) {
+            return fail("its placement differs from the occurrence's");
+        }
+        let (r0, r1, r2) = ([m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]);
+        // A placement is a rotation: orthonormal rows.
+        let ok = |a: V3, b: V3| (dot(a, b)).abs() < 1e-6;
+        if !(ok(r0, r1) && ok(r0, r2) && ok(r1, r2)) || [r0, r1, r2].iter().any(|r| (dot(*r, *r) - 1.0).abs() > 1e-6) {
+            return fail("its placement is not a rotation");
+        }
+        ([r0, r1, r2], [m[3] * 10.0, m[7] * 10.0, m[11] * 10.0])
+    } else {
+        ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3])
+    };
+    let rr = |v: V3| json!([round9(v[0]), round9(v[1]), round9(v[2])]);
+    json!({"type": "component_insert", "fusion_type": fusion_type, "name": name, "source_id": fid,
+        "insert_keys": keys,
+        "placement": {"r": [rr(r[0]), rr(r[1]), rr(r[2])], "t": [round6(t[0]), round6(t[1]), round6(t[2])]}})
 }
 
 /// The bodies a Base Feature makes: per visible (DM) body, the history blob its state list names
@@ -905,6 +968,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" => None,
+        "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
         "pattern_circular" => (!has("axis") || !has("count")).then(|| "the circular pattern has no axis".to_string()),
@@ -1026,84 +1090,128 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
         else {
             continue;
         };
-        let ty = f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
-        let pt = |v: Option<&Value>| get3(v).map(|p| v3mm_raw(xf_point(&pl, p)));
-        let dir = |v: Option<&Value>| get3(v).map(|p| v3_9(xf_dir(&pl, p)));
-        match ty.as_str() {
-            "sketch" => {
-                if let Some(p) = f.get_mut("plane").and_then(Value::as_object_mut) {
-                    let (o, x, y) = (pt(p.get("origin")), dir(p.get("x_axis")), dir(p.get("y_axis")));
-                    for (k, v) in [("origin", o), ("x_axis", x), ("y_axis", y)] {
-                        if let Some(v) = v {
-                            p.insert(k.into(), v);
-                        }
-                    }
-                }
-            }
-            "fillet" | "chamfer" => {
-                if let Some(es) = f.get_mut("edges").and_then(Value::as_array_mut) {
-                    for e in es {
-                        if let Some(m) = pt(e.get("midpoint"))
-                            && let Some(o) = e.as_object_mut()
-                        {
-                            o.insert("midpoint".into(), m);
-                        }
-                    }
-                }
-            }
-            "hole" => {
-                if let Some(fc) = f.get_mut("face").and_then(Value::as_object_mut) {
-                    let (p, n) = (pt(fc.get("point")), dir(fc.get("normal")));
-                    for (k, v) in [("point", p), ("normal", n)] {
-                        if let Some(v) = v {
-                            fc.insert(k.into(), v);
-                        }
-                    }
-                }
-                if let Some(ps) = f.get_mut("positions").and_then(Value::as_array_mut) {
-                    for p in ps {
-                        if let Some(m) = pt(Some(&*p)) {
-                            *p = m;
-                        }
-                    }
-                }
-            }
-            "mirror" => {
-                if let Some(fc) = f.get_mut("plane").and_then(Value::as_object_mut) {
-                    let (p, n) = (pt(fc.get("origin")), dir(fc.get("normal")));
-                    for (k, v) in [("origin", p), ("normal", n)] {
-                        if let Some(v) = v {
-                            fc.insert(k.into(), v);
-                        }
-                    }
-                }
-            }
-            "stored_body" => {
-                if let Some(o) = f.as_object_mut() {
-                    o.insert("placement".into(), json!({"r": pl.r, "t": pl.t}));
-                }
-            }
-            "pattern_circular" => {
-                if let Some(a) = f.get_mut("axis").and_then(Value::as_object_mut) {
-                    let (o, d) = (pt(a.get("origin")), dir(a.get("direction")));
-                    for (k, v) in [("origin", o), ("direction", d)] {
-                        if let Some(v) = v {
-                            a.insert(k.into(), v);
-                        }
-                    }
-                }
-            }
-            "pattern_linear" => {
-                if let Some(d) = dir(f.get("direction"))
-                    && let Some(o) = f.as_object_mut()
-                {
-                    o.insert("direction".into(), d);
-                }
-            }
-            _ => {}
-        }
+        move_feature(f, &pl);
     }
     Ok(())
+}
+
+/// A `{"r": [[..]x3], "t": [..]}` placement.
+pub(super) fn placement_of(v: &Value) -> Option<crate::fusion::Placement> {
+    let mut r = [[0.0; 3]; 3];
+    let mut t = [0.0; 3];
+    for (i, row) in v.get("r")?.as_array()?.iter().enumerate().take(3) {
+        for (j, x) in row.as_array()?.iter().enumerate().take(3) {
+            *r.get_mut(i)?.get_mut(j)? = x.as_f64()?;
+        }
+    }
+    for (i, x) in v.get("t")?.as_array()?.iter().enumerate().take(3) {
+        *t.get_mut(i)? = x.as_f64()?;
+    }
+    Some(crate::fusion::Placement { r, t })
+}
+
+/// Moves one feature by a placement: every point turns and shifts, every direction turns.
+pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
+    let pl = *pl;
+    let ty = f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    let pt = |v: Option<&Value>| get3(v).map(|p| v3mm_raw(xf_point(&pl, p)));
+    let dir = |v: Option<&Value>| get3(v).map(|p| v3_9(xf_dir(&pl, p)));
+    match ty.as_str() {
+        "sketch" => {
+            if let Some(p) = f.get_mut("plane").and_then(Value::as_object_mut) {
+                let (o, x, y) = (pt(p.get("origin")), dir(p.get("x_axis")), dir(p.get("y_axis")));
+                for (k, v) in [("origin", o), ("x_axis", x), ("y_axis", y)] {
+                    if let Some(v) = v {
+                        p.insert(k.into(), v);
+                    }
+                }
+            }
+        }
+        "fillet" | "chamfer" => {
+            if let Some(es) = f.get_mut("edges").and_then(Value::as_array_mut) {
+                for e in es {
+                    if let Some(m) = pt(e.get("midpoint"))
+                        && let Some(o) = e.as_object_mut()
+                    {
+                        o.insert("midpoint".into(), m);
+                    }
+                }
+            }
+        }
+        "hole" => {
+            if let Some(fc) = f.get_mut("face").and_then(Value::as_object_mut) {
+                let (p, n) = (pt(fc.get("point")), dir(fc.get("normal")));
+                for (k, v) in [("point", p), ("normal", n)] {
+                    if let Some(v) = v {
+                        fc.insert(k.into(), v);
+                    }
+                }
+            }
+            if let Some(ps) = f.get_mut("positions").and_then(Value::as_array_mut) {
+                for p in ps {
+                    if let Some(m) = pt(Some(&*p)) {
+                        *p = m;
+                    }
+                }
+            }
+        }
+        "mirror" => {
+            if let Some(fc) = f.get_mut("plane").and_then(Value::as_object_mut) {
+                let (p, n) = (pt(fc.get("origin")), dir(fc.get("normal")));
+                for (k, v) in [("origin", p), ("normal", n)] {
+                    if let Some(v) = v {
+                        fc.insert(k.into(), v);
+                    }
+                }
+            }
+        }
+        "stored_body" => {
+            // A body that already stands somewhere (the placement of its component) moves on.
+            let before = f.get("placement").and_then(placement_of);
+            let pl = before.map_or(pl, |old| pl.then(&old));
+            if let Some(o) = f.as_object_mut() {
+                o.insert("placement".into(), json!({"r": pl.r, "t": pl.t}));
+            }
+        }
+        "pattern_circular" => {
+            if let Some(a) = f.get_mut("axis").and_then(Value::as_object_mut) {
+                let (o, d) = (pt(a.get("origin")), dir(a.get("direction")));
+                for (k, v) in [("origin", o), ("direction", d)] {
+                    if let Some(v) = v {
+                        a.insert(k.into(), v);
+                    }
+                }
+            }
+        }
+        "pattern_linear" => {
+            if let Some(d) = dir(f.get("direction"))
+                && let Some(o) = f.as_object_mut()
+            {
+                o.insert("direction".into(), d);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replaces every string equal to a key of `map` (except under the keys that hold kinds and names).
+pub(super) fn rename(v: &mut Value, map: &HashMap<String, String>) {
+    match v {
+        Value::String(s) => {
+            if let Some(n) = map.get(s.as_str()) {
+                *s = n.clone();
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| rename(x, map)),
+        Value::Object(o) => {
+            for (k, x) in o.iter_mut() {
+                if !matches!(k.as_str(), "type" | "operation" | "component" | "fusion_type" | "name") {
+                    rename(x, map);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Writes the features of a component that stands in `k` places `k` times (instance `i` carries
@@ -1114,24 +1222,6 @@ fn replicate_instances(feats: &mut Vec<Value>, by_comp: &HashMap<u64, Vec<crate:
         |f: &Value| f.get("_component").and_then(Value::as_u64).and_then(|c| by_comp.get(&c)).map_or(1, Vec::len);
     if feats.iter().all(|f| count(f) <= 1) {
         return;
-    }
-    fn rename(v: &mut Value, map: &HashMap<String, String>) {
-        match v {
-            Value::String(s) => {
-                if let Some(n) = map.get(s.as_str()) {
-                    *s = n.clone();
-                }
-            }
-            Value::Array(a) => a.iter_mut().for_each(|x| rename(x, map)),
-            Value::Object(o) => {
-                for (k, x) in o.iter_mut() {
-                    if !matches!(k.as_str(), "type" | "operation" | "component" | "fusion_type" | "name") {
-                        rename(x, map);
-                    }
-                }
-            }
-            _ => {}
-        }
     }
     let old = std::mem::take(feats);
     // Per component, the names its features carry.

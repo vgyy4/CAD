@@ -17,6 +17,7 @@
 mod acis;
 mod feature;
 mod geom;
+mod insert;
 mod json;
 mod naming;
 mod sketch;
@@ -87,19 +88,54 @@ fn pick_stream<'a>(files: &'a [(String, Vec<u8>)]) -> Result<(&'a [u8], &'a [u8]
     }
 }
 
+/// Gives the entries of the design an insert names, from the keys the insert carries.
+pub type InsertResolver<'r> = dyn FnMut(&[String]) -> Option<Vec<(String, Vec<u8>)>> + 'r;
+
 /// The feature tree of the design in `files` (entry names and contents of a Fusion `.f3d`:
 /// the design stream pair and the `Breps.BlobParts` blobs), as `gusset-feature-tree` JSON, with
-/// each component's features where the file's occurrences put it.
+/// each component's features where the file's occurrences put it. A Component Insert is an
+/// error here; see [`feature_tree_with_inserts`].
 ///
 /// # Errors
 /// A reason naming the first feature or structure that cannot be read.
 pub fn feature_tree(files: &[(String, Vec<u8>)], file_name: &str) -> Result<serde_json::Value, String> {
-    let mut tree = feature_tree_local(files, file_name)?;
+    feature_tree_with_inserts(files, file_name, &mut |_| None)
+}
+
+/// [`feature_tree`] for a design that inserts other designs (Component Insert, an archive's
+/// referenced designs): `resolve` gets the keys that name an inserted design (lowercase, the
+/// UUID texts of the occurrence) and returns the entries of that design, or `None`. The inserted
+/// design's own tree stands in the insert's place, moved by the insert's placement, its names
+/// made unique with the insert's name; a design without a readable timeline is inserted as the
+/// bodies its `.smb` blobs store. Anything the resolver cannot give stays an error.
+///
+/// # Errors
+/// As [`feature_tree`].
+pub fn feature_tree_with_inserts(
+    files: &[(String, Vec<u8>)],
+    file_name: &str,
+    resolve: &mut InsertResolver,
+) -> Result<serde_json::Value, String> {
+    let mut tree = built(files, file_name, resolve, 0)?;
+    json::finish(&mut tree);
+    Ok(tree)
+}
+
+/// The checked tree of one design with its inserts merged and its components placed, before the
+/// stored bodies are numbered.
+fn built(
+    files: &[(String, Vec<u8>)],
+    file_name: &str,
+    resolve: &mut InsertResolver,
+    depth: usize,
+) -> Result<serde_json::Value, String> {
+    let mut tree = feature_tree_unchecked(files, file_name)?;
+    insert::splice(&mut tree, resolve, depth)?;
+    json::check(&tree)?;
     // The features are in each component's own coordinates; the file's bodies stand where the
     // occurrences of the components put them.
     let (_, bulk) = pick_stream(files)?;
     json::place(&mut tree, &crate::fusion::read_design(bulk).bodies)?;
-    json::finish(&mut tree);
     Ok(tree)
 }
 

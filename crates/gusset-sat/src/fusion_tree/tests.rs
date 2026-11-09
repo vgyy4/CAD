@@ -585,3 +585,87 @@ fn a_closed_curve_cut_off_its_start_numbers_the_piece_holding_the_start_first() 
     let b = geom::piece(&circle, true, &others, 2, 2).unwrap();
     assert!(a.iter().all(|p| p[0] >= -1e-9) && b.iter().all(|p| p[0] <= 1e-9));
 }
+
+/// A placement that turns 90 degrees about z and shifts by (10, 0, 5) mm.
+fn quarter_turn() -> crate::fusion::Placement {
+    crate::fusion::Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [10.0, 0.0, 5.0] }
+}
+
+fn inserted_features() -> Vec<serde_json::Value> {
+    vec![
+        json!({"type": "sketch", "name": "Sketch1", "plane": {"origin": [1.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0],
+            "y_axis": [0.0, 1.0, 0.0]}, "_component": 7}),
+        json!({"type": "extrude", "name": "Extrude1", "sketch": "Sketch1", "operation": "new", "_component": 7}),
+        json!({"type": "extrude", "name": "Extrude2", "sketch": "Sketch1", "operation": "cut", "target": "Extrude1"}),
+        json!({"type": "stored_body", "name": "Base", "brep": "BREP.a.smbh", "index": 1, "count": 2, "body": 0,
+            "placement": {"r": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "t": [1.0, 2.0, 3.0]}}),
+    ]
+}
+
+#[test]
+fn an_inserted_design_is_moved_and_named_apart() {
+    let out = super::insert::bring(inserted_features(), "Component Insert1", &quarter_turn()).unwrap();
+    let names: Vec<&str> = out.iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "Sketch1 [Component Insert1]",
+            "Extrude1 [Component Insert1]",
+            "Extrude2 [Component Insert1]",
+            "Base [Component Insert1]"
+        ]
+    );
+    // References follow the new names; the reader's own keys are gone.
+    assert_eq!(out[1]["sketch"], "Sketch1 [Component Insert1]");
+    assert_eq!(out[2]["target"], "Extrude1 [Component Insert1]");
+    assert_eq!(out[1]["operation"], "new");
+    assert!(out.iter().all(|f| f.get("_component").is_none() && f.get("body").is_none()));
+    // The sketch plane: origin (1, 0, 0) -> (10, 1, 5); x axis -> y, y axis -> -x.
+    assert_eq!(out[0]["plane"]["origin"], json!([10.0, 1.0, 5.0]));
+    assert_eq!(out[0]["plane"]["x_axis"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(out[0]["plane"]["y_axis"], json!([-1.0, 0.0, 0.0]));
+    // A stored body that already stood somewhere moves on: turned, then shifted.
+    let p = super::json::placement_of(&out[3]["placement"]).unwrap();
+    assert_eq!(p.t, [8.0, 1.0, 8.0]);
+    assert_eq!(p.r, quarter_turn().r);
+}
+
+#[test]
+fn an_insert_at_the_origin_keeps_the_features_in_place() {
+    let out =
+        super::insert::bring(inserted_features(), "Component Insert1", &crate::fusion::Placement::IDENTITY).unwrap();
+    assert_eq!(out[0]["plane"]["origin"], json!([1.0, 0.0, 0.0]));
+    assert_eq!(out[3]["placement"]["t"], json!([1.0, 2.0, 3.0]));
+}
+
+#[test]
+fn features_that_cannot_be_moved_are_refused_for_a_moved_insert() {
+    let sweep = vec![json!({"type": "sweep", "name": "Sweep1"})];
+    let e = super::insert::bring(sweep.clone(), "Component Insert1", &quarter_turn()).unwrap_err();
+    assert!(e.contains("Sweep1"), "{e}");
+    assert!(super::insert::bring(sweep, "Component Insert1", &crate::fusion::Placement::IDENTITY).is_ok());
+}
+
+#[test]
+fn an_insert_nobody_resolves_stays_and_the_check_names_it() {
+    let mut tree = json!({"features": [
+        {"type": "component_insert", "name": "Component Insert1", "fusion_type": "Component Insert",
+         "insert_keys": ["aa"], "placement": {"r": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], "t": [0.0, 0.0, 0.0]}},
+        {"type": "extrude", "name": "E", "operation": "new", "sketch": "S", "profiles": "all", "distance": 1.0,
+         "creates_bodies": 1}]});
+    let asked = std::cell::Cell::new(0);
+    super::insert::splice(
+        &mut tree,
+        &mut |keys| {
+            assert_eq!(keys, ["aa".to_string()]);
+            asked.set(asked.get() + 1);
+            None
+        },
+        0,
+    )
+    .unwrap();
+    assert_eq!(asked.get(), 1);
+    assert_eq!(tree["features"].as_array().unwrap().len(), 2);
+    let why = check(&tree).unwrap_err();
+    assert!(why.contains("Component Insert1") && why.contains("not merged"), "{why}");
+}
