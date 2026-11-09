@@ -297,7 +297,7 @@ Phase 3 has started (see Next).
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
      target `sldprt_read`; OCCT test `sldprt_samples.rs`). Parts whose bodies come from an
      imported feature (`LocalBodies`) done (ADR 0043 amendment; all 23 samples import); a file that
-     ends early warns. `.sldasm` assemblies import too (amendment 2026-11-08: component list + placements from `swXmlContents/COMPINSTANCETREE`, parts read from the assembly's folder). Virtual components are read from their embedded part streams (amendment 2; the sample's two are empty parts). Rotation transposition is not settled by the sample (symmetric matrices). Not yet: feature history, OLE2-era assemblies. Solid Edge and Inventor: no public sample files found (2026-11-08); a reader waits for samples (docs/INTEROP.md).
+     ends early warns. `.sldasm` assemblies import too (amendment 2026-11-08: component list + placements from `swXmlContents/COMPINSTANCETREE`, parts read from the assembly's folder). Virtual components are read from their embedded part streams (amendment 2; the sample's two are empty parts). The row-vector rotation reading is confirmed on 54 public assemblies (ADR 0043 limits). Not yet: feature history, OLE2-era assemblies. Solid Edge and Inventor: no public sample files found (2026-11-08); a reader waits for samples (docs/INTEROP.md).
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
