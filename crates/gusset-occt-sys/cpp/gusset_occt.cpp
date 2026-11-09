@@ -1545,8 +1545,10 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** ou
   GS_GUARD_END
 }
 
-// C++ helpers inside the extern "C" block need internal linkage: MSVC refuses a C-linkage
-// function that returns a C++ class (error C2526), which GCC and Clang accept.
+// C++ helpers inside the extern "C" block: MSVC keeps C language linkage even in an anonymous
+// namespace and refuses a C-linkage function that returns a C++ class (error C2526), which GCC
+// and Clang accept; an explicit extern "C++" block gives them C++ linkage.
+extern "C++" {
 namespace {
 
 // The general boolean on the given arguments and tools. With `simplify` the result's
@@ -1588,6 +1590,7 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const 
 }
 
 }  // namespace
+}  // extern "C++"
 
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
