@@ -248,7 +248,7 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 ## Features
 
 ```
-extrude  <Name> (profile: <P>, distance: <expr>, [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
+extrude  <Name> (profile: <P>, distance: <expr> | to: <face> [, offset: <expr>] [, reverse: true], [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
 revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...], [refine: false])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
 fillet   <Name> (full_round: [<face>, ...])
@@ -263,6 +263,17 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   `intersect` combine with the body created by the feature named in `body:` (default:
   the latest body). A sketch on a face extrudes along the face's outward normal, so a
   `cut` into the material needs a negative distance.
+- `to: <face>` instead of `distance:` ends the extrude on a face of an earlier body (SolidWorks
+  "up to surface" and "offset from surface", FreeCAD `UpToFace`, Fusion "To object"). The
+  sweep runs along the sketch normal, or against it with `reverse: true`, and stops on the
+  face's surface: a plane (also tilted) or a cylinder or other curved face; a plane parallel to
+  the sketch gives a blind extrude to that plane. `offset:` moves the end past the face
+  (negative: short of it), measured perpendicular to a planar face; curved faces take none.
+  The face must lie ahead of the whole profile and be large enough to contain the end of the
+  sweep, or the extrude fails with a message; `symmetric` does not combine with `to:`. The
+  end cap is named like any extrude's (`Extrude1/cap(end)`); the face is a persistent
+  reference, so it follows renames and model changes. `extrude E (profile: S, to: Base/cap(end),
+  offset: 2 mm, op: cut, body: Base)` is a pocket up to that face plus 2 mm.
 - `refine: false` (extrude, revolve, sweep, loft, combine; default `true`) keeps the result of an
   `add`, `cut` or `intersect` as the boolean made it: coplanar faces and collinear edges are not
   unified, so two touching boxes stay split along the seam. FreeCAD files with `Refine = false`

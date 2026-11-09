@@ -423,7 +423,7 @@ impl Command for GenerateGear {
                         name.clone(),
                         FeatureKind::Extrude(ExtrudeDef {
                             profile: ProfileRef { sketch: ring_sketch, regions: Vec::new() },
-                            distance: width.clone(),
+                            end: ExtrudeEnd::Distance(width.clone()),
                             symmetric: false,
                             op: BodyOp::New,
                             body: None,
@@ -436,7 +436,7 @@ impl Command for GenerateGear {
                     format!("{name}_teeth"),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile,
-                        distance: width,
+                        end: ExtrudeEnd::Distance(width),
                         symmetric: false,
                         op: BodyOp::Cut,
                         body: Some(name.clone()),
@@ -470,7 +470,7 @@ impl Command for GenerateGear {
                     name.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile,
-                        distance: width,
+                        end: ExtrudeEnd::Distance(width),
                         symmetric: false,
                         op: BodyOp::New,
                         body: None,
@@ -901,7 +901,7 @@ impl Command for GenerateWorm {
                     core.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
-                        distance: parse_expr("length", &ln)?,
+                        end: ExtrudeEnd::Distance(parse_expr("length", &ln)?),
                         symmetric: false,
                         op: BodyOp::New,
                         body: None,
@@ -1168,7 +1168,7 @@ impl Command for GenerateRack {
                     name.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile: ProfileRef { sketch: sketch_name.clone(), regions: Vec::new() },
-                        distance: parse_expr("width", &nm.n("width"))?,
+                        end: ExtrudeEnd::Distance(parse_expr("width", &nm.n("width"))?),
                         symmetric: false,
                         op: BodyOp::New,
                         body: None,
@@ -1688,7 +1688,7 @@ impl Command for GenerateThread {
                     core.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile: ProfileRef { sketch: core_sk.clone(), regions: Vec::new() },
-                        distance: parse_expr("length", &nm.n("length"))?,
+                        end: ExtrudeEnd::Distance(parse_expr("length", &nm.n("length"))?),
                         symmetric: false,
                         op: BodyOp::New,
                         body: None,
@@ -1755,7 +1755,7 @@ impl Command for GenerateThread {
                     format!("{name}_head"),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile: ProfileRef { sketch: head_sk, regions: Vec::new() },
-                        distance: parse_expr("head_height", &format!("-{}", nm.n("head_height")))?,
+                        end: ExtrudeEnd::Distance(parse_expr("head_height", &format!("-{}", nm.n("head_height")))?),
                         symmetric: false,
                         op: BodyOp::Add,
                         body: Some(core.clone()),
@@ -1794,7 +1794,7 @@ impl Command for GenerateThread {
                         format!("{name}_socket"),
                         FeatureKind::Extrude(ExtrudeDef {
                             profile: ProfileRef { sketch: sock_sk, regions: Vec::new() },
-                            distance: parse_expr("socket_depth", &nm.n("socket_depth"))?,
+                            end: ExtrudeEnd::Distance(parse_expr("socket_depth", &nm.n("socket_depth"))?),
                             symmetric: false,
                             op: BodyOp::Cut,
                             body: Some(core.clone()),
@@ -2025,7 +2025,7 @@ impl Command for GenerateNut {
                     hex.clone(),
                     FeatureKind::Extrude(ExtrudeDef {
                         profile: ProfileRef { sketch: hex_sk.clone(), regions: Vec::new() },
-                        distance: parse_expr("height", &nm.n("height"))?,
+                        end: ExtrudeEnd::Distance(parse_expr("height", &nm.n("height"))?),
                         symmetric: false,
                         op: BodyOp::New,
                         body: None,

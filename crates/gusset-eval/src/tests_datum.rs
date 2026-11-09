@@ -172,7 +172,7 @@ sketch Sketch2 (plane: Plane1, next_id: 2) {{
     // A change to the extrusion height moves the face-based plane too.
     let mut d3 = d2.clone();
     if let FeatureKind::Extrude(e) = &mut d3.features[1].kind {
-        e.distance = gusset_units::expr::parse("15 mm").unwrap();
+        e.end = gusset_doc::ExtrudeEnd::Distance(gusset_units::expr::parse("15 mm").unwrap());
     }
     let r3 = ev.evaluate(&d3, None, &());
     assert!(close(frame(&r3, "Plane1").origin, [0.0, 0.0, 35.0]));

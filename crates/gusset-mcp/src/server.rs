@@ -602,7 +602,7 @@ pub fn tool_list() -> Vec<Tool> {
     tools.push(
         Tool::new(
             COMMANDS,
-            "List the commands not shown as tools (STEP/mesh import and export, gears, shell, sweep, loft, \
+            "List the commands not shown as tools (STEP/mesh import and export, gears, extrude to a face, shell, sweep, loft, \
              mirror, patterns, holes, datum planes, move/combine bodies, trim, more branch and history \
              commands), or get one command's arguments by name.",
             schema_object::<CommandsArgs>(),

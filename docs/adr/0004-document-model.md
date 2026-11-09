@@ -224,3 +224,47 @@ different material (FreeCAD Page_108: 90 faces instead of 174, volume 1.1e-4 off
   its own origin and, with the ADR 0003 ties, its own persistent name; golden tests check that
   all 10 faces of two touching cubes are named distinctly, survive a parameter change and take a
   fillet by name. A fillet of the flat seam edge itself fails as in FreeCAD (tangent faces).
+
+### Amendment: extrude end condition "up to a face" (2026-11-09)
+
+SolidWorks' "up to surface" and "offset from surface", FreeCAD's Pad/Pocket `UpToFace` and
+Fusion's "To object" end an extrude on a face of the model instead of a distance. FreeCAD's
+up-to types used to be translated to a computed distance, which broke when the target moved.
+
+- **Syntax.** `extrude E (profile: S, to: Base/cap(end), offset: 2 mm, reverse: true, op: ...)`.
+  `to:` takes a persistent face reference (ADR 0003) and excludes `distance:` and `symmetric:`;
+  `offset:` (a length expression, default 0) and `reverse:` (default false) go with `to:` only
+  (each misuse is a parse error and, for programmatic documents, a validation issue). The
+  model replaces `ExtrudeDef.distance` by `ExtrudeDef.end: ExtrudeEnd` (`Distance(Expr)` or
+  `ToFace { face, offset, reverse }`). The face is a dependency of the feature (renames follow it
+  through `rename_feature`; the offset reads parameters), and the feature reads all bodies at
+  evaluation time (dependency analysis marks it dynamic).
+- **Semantics.** The profile is swept along the sketch normal (against it with `reverse`) and ends
+  on the surface of the face: a plane (also tilted), a cylinder or another surface bounded as the
+  face is. `offset` moves the end further along the sweep (negative: short of it), measured
+  perpendicular to a planar face; curved faces take none. The target body may be the body being
+  cut (a pocket up to a face).
+- **Refusals** (clear messages, nothing is guessed): the face does not exist any more (missing
+  reference with a closest-name suggestion); the face is edge-on to the sweep; it lies behind the
+  sketch or only partly ahead of the profile (planar faces: every corner of the profile's box must
+  be reached; `reverse` flips the direction); the sweep never reaches the surface; the end of the
+  sweep is not inside the face itself (the face is too small to "cover" the profile); an offset on
+  a curved face.
+- **Kernel.** `Kernel::extrude_to_face(profile, target, face, offset, reverse)` returns the swept
+  tool solid with the face origins of an ordinary extrude (laterals by edge tag, start cap, end
+  cap), which the evaluator combines as for any extrude; the default is "unsupported" (the mock
+  kernel refuses). OCCT (`gs_extrude_to_face`) makes the prism longer than needed, splits it with
+  `BRepAlgoAPI_Splitter` by the face's surface (a plane or cylinder extended past the face, any
+  other surface as bounded, a planar surface shifted by the offset), keeps the piece holding the
+  start cap and checks that the cut-off end lies inside the (shifted) face by comparing its area
+  with its common part with the face. BRepFeat_MakePrism was not used: it works on the body it
+  fuses to and gives no tool solid for cuts, offsets or new bodies. Remote protocol request 37.
+- **Naming.** The end cap is `Feature/cap(end)` like any extrude's; the lateral faces
+  (`Feature/side(Sketch/l5)`) keep their names. Where the face cuts a lateral face in two, the
+  piece in the result keeps its origin.
+- **Commands.** `feature.up_to_face` (sketch, regions, to, offset, reverse, op, body,
+  body_name, name). `feature.extrude` keeps its schema: it is one of the always-listed tools
+  and the MCP tool list is capped at 18 000 bytes; the new command is reached through
+  `commands`/`run`.
+- **Not done.** No GUI form yet; curved target faces other than cylinders are cut at their own
+  parametric bounds; `symmetric` and "up to next / up to body / through all" are not covered.

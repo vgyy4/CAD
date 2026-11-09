@@ -118,6 +118,7 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<SketchDeleteItems>(),
         spec::<SketchMovePoint>(),
         spec::<Extrude>(),
+        spec::<ExtrudeToFace>(),
         spec::<Revolve>(),
         spec::<Fillet>(),
         spec::<Chamfer>(),
@@ -2162,39 +2163,124 @@ impl Command for Extrude {
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("E");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let distance = parse_expr("distance", &self.distance)?;
-        let op = op_of(&self.op)?;
-        let (sketch_name, all_regions) = (self.sketch.clone(), self.regions.is_empty());
-        let seen = std::cell::RefCell::new((String::new(), None::<String>));
-        edit_post(
+        let end = ExtrudeEnd::Distance(parse_expr("distance", &self.distance)?);
+        extrude_feature(
             s,
             ctx,
-            "Extrude",
-            |doc, rb| {
-                let name = feature_name(doc, self.name, "Extrude")?;
-                let body = target_body(doc, rb, op, self.body)?;
-                let body_name = check_new_body_name(doc, op, &name, self.body_name)?;
-                *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
-                let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
-                let f = Feature::new(
-                    name.clone(),
-                    FeatureKind::Extrude(ExtrudeDef {
-                        profile: ProfileRef { sketch: self.sketch, regions: self.regions },
-                        distance,
-                        symmetric: self.symmetric,
-                        op,
-                        body,
-                        body_name,
-                        refine: true,
-                    }),
-                );
-                insert_feature(doc, rb, f);
-                Ok(json!({ "feature": name, "body": created }))
+            ExtrudeParts {
+                sketch: self.sketch,
+                regions: self.regions,
+                end,
+                symmetric: self.symmetric,
+                op: self.op,
+                body: self.body,
+                body_name: self.body_name,
+                name: self.name,
             },
-            |_, out, ch| {
-                let (name, body) = &*seen.borrow();
-                let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
-                open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
+        )
+    }
+}
+
+/// What `feature.extrude` and `feature.up_to_face` share.
+struct ExtrudeParts {
+    sketch: String,
+    regions: Vec<String>,
+    end: ExtrudeEnd,
+    symmetric: bool,
+    op: Option<String>,
+    body: Option<String>,
+    body_name: Option<String>,
+    name: Option<String>,
+}
+
+fn extrude_feature(s: &mut Session, ctx: &CmdCtx, a: ExtrudeParts) -> Result<Value, CommandError> {
+    let op = op_of(&a.op)?;
+    let (sketch_name, all_regions) = (a.sketch.clone(), a.regions.is_empty());
+    let seen = std::cell::RefCell::new((String::new(), None::<String>));
+    edit_post(
+        s,
+        ctx,
+        "Extrude",
+        |doc, rb| {
+            let name = feature_name(doc, a.name, "Extrude")?;
+            let body = target_body(doc, rb, op, a.body)?;
+            let body_name = check_new_body_name(doc, op, &name, a.body_name)?;
+            *seen.borrow_mut() = (name.clone(), body.as_deref().map(|t| body_display_name(doc, t)));
+            let created = (op == BodyOp::New).then(|| body_name.clone().unwrap_or_else(|| name.clone()));
+            let f = Feature::new(
+                name.clone(),
+                FeatureKind::Extrude(ExtrudeDef {
+                    profile: ProfileRef { sketch: a.sketch, regions: a.regions },
+                    end: a.end,
+                    symmetric: a.symmetric,
+                    op,
+                    body,
+                    body_name,
+                    refine: true,
+                }),
+            );
+            insert_feature(doc, rb, f);
+            Ok(json!({ "feature": name, "body": created }))
+        },
+        |_, out, ch| {
+            let (name, body) = &*seen.borrow();
+            let w = combine_effect_warnings(name, op, body.as_deref(), &out.new_errors, ch);
+            open_ends_warning(w, &out.evaluation, &sketch_name, all_regions)
+        },
+    )
+}
+
+/// Extrudes closed sketch regions up to a face of an earlier body (ADR 0004).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExtrudeToFace {
+    pub sketch: String,
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// Face to end on, e.g. `Base/cap(end)`.
+    #[schemars(extend("x-essential" = true))]
+    pub to: String,
+    /// Past the face (negative: short); planar faces.
+    #[serde(default)]
+    pub offset: Option<String>,
+    /// Sweep against the sketch normal.
+    #[serde(default)]
+    pub reverse: bool,
+    /// new (default), add, cut, intersect.
+    #[serde(default)]
+    pub op: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub body_name: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Command for ExtrudeToFace {
+    const ID: &'static str = "feature.up_to_face";
+    const TITLE: &'static str = "Extrude up to face";
+    const DESCRIPTION: &'static str = "Extrude closed sketch regions until a face (planar or curved, ahead of the profile, covering its whole sweep); the end follows model changes. op cut makes a pocket up to a face. Result: body_changes.";
+    const CATEGORY: Category = Category::Solid;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let end = ExtrudeEnd::ToFace {
+            face: FaceRef::parse(&self.to).map_err(|e| CommandError::args(format!("to '{}': {e}", self.to)))?,
+            offset: self.offset.as_deref().map(|o| parse_expr("offset", o)).transpose()?,
+            reverse: self.reverse,
+        };
+        extrude_feature(
+            s,
+            ctx,
+            ExtrudeParts {
+                sketch: self.sketch,
+                regions: self.regions,
+                end,
+                symmetric: false,
+                op: self.op,
+                body: self.body,
+                body_name: self.body_name,
+                name: self.name,
             },
         )
     }

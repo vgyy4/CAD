@@ -250,6 +250,9 @@ impl FeatureKind {
                 if let Some(b) = &e.body {
                     add(b);
                 }
+                if let ExtrudeEnd::ToFace { face, .. } = &e.end {
+                    face.features(&mut add);
+                }
             }
             FeatureKind::Revolve(r) => {
                 add(&r.profile.sketch);
@@ -406,7 +409,7 @@ impl FeatureKind {
                     }
                 }
             }
-            FeatureKind::Extrude(e) => take(&e.distance),
+            FeatureKind::Extrude(e) => e.end.exprs().into_iter().for_each(&mut take),
             FeatureKind::Revolve(r) => take(&r.angle),
             FeatureKind::Sweep(d) => {
                 d.twist.iter().for_each(&mut take);
@@ -505,7 +508,7 @@ impl FeatureKind {
                     }
                 }
             }
-            FeatureKind::Extrude(e) => out.push(&mut e.distance),
+            FeatureKind::Extrude(e) => out.extend(e.end.exprs_mut()),
             FeatureKind::Revolve(r) => out.push(&mut r.angle),
             FeatureKind::Sweep(d) => {
                 out.extend(d.twist.iter_mut());
@@ -935,10 +938,48 @@ impl BodyOp {
     }
 }
 
+/// Where an extrude stops (ADR 0004 amendment, end conditions).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExtrudeEnd {
+    /// Blind: this far along the sketch normal (negative: the other way).
+    Distance(Expr),
+    /// Up to a face of an earlier body, found by its persistent name (SolidWorks "up to
+    /// surface" / "offset from surface", FreeCAD `UpToFace`, Fusion "To object"). The sweep
+    /// runs along the sketch normal, or against it with `reverse`, and stops on the face;
+    /// `offset` moves the end further along (negative: short of the face), planar faces only.
+    ToFace { face: FaceRef, offset: Option<Expr>, reverse: bool },
+}
+
+impl ExtrudeEnd {
+    /// The blind distance, if this is a blind end.
+    pub fn distance(&self) -> Option<&Expr> {
+        match self {
+            ExtrudeEnd::Distance(d) => Some(d),
+            ExtrudeEnd::ToFace { .. } => None,
+        }
+    }
+
+    /// Every expression of the end condition.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        match self {
+            ExtrudeEnd::Distance(d) => vec![d],
+            ExtrudeEnd::ToFace { offset, .. } => offset.iter().collect(),
+        }
+    }
+
+    /// Every expression of the end condition, mutable.
+    pub fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            ExtrudeEnd::Distance(d) => vec![d],
+            ExtrudeEnd::ToFace { offset, .. } => offset.iter_mut().collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtrudeDef {
     pub profile: ProfileRef,
-    pub distance: Expr,
+    pub end: ExtrudeEnd,
     pub symmetric: bool,
     pub op: BodyOp,
     /// Target body, as the name of the feature that created it; `None` = the most recent body.

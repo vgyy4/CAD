@@ -315,7 +315,7 @@ fn combined_names_survive_parameter_edits() {
         // A base height change moves the pins/bores; the names stay.
         let mut d3 = d.clone();
         if let gusset_doc::FeatureKind::Extrude(e) = &mut d3.features[2].kind {
-            e.distance = gusset_units::expr::parse("14 mm").unwrap();
+            e.end = gusset_doc::ExtrudeEnd::Distance(gusset_units::expr::parse("14 mm").unwrap());
         }
         let r3 = ev.evaluate(&d3, None, &());
         // Everything after the sketch on the top face follows the new height.

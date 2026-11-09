@@ -40,7 +40,9 @@ pub use ops::rule_faces;
 pub use sketch::{PartnerKind, RegionInfo, SketchResult, SketchStatus, TrimCut, TrimPlan, trim_plan};
 
 use gusset_doc::text::print_feature_object;
-use gusset_doc::{AxisRef, BodyOp, Document, EdgeRef, FaceRef, Feature, FeatureKind, ImportFormat, PlaneRef};
+use gusset_doc::{
+    AxisRef, BodyOp, Document, EdgeRef, ExtrudeEnd, FaceRef, Feature, FeatureKind, ImportFormat, PlaneRef,
+};
 use gusset_kernel::{
     BoolOp, ExtrudeSpec, Frame, Kernel, KernelError, OpResult, RevolveSpec, Shape, SurfaceKind, Topology, cross, dot,
     normalize, scale, sub,
@@ -1038,14 +1040,50 @@ impl Evaluator {
                 let (solved, frame) = sketch_input(name, &e.profile.sketch, s)?;
                 let (profile, regions) =
                     sketch::kernel_profile(name, &e.profile.sketch, &solved, frame, &e.profile.regions)?;
-                let distance = eval_expr(name, &e.distance, Dim::LENGTH, params, units)?;
-                if distance.abs() < 1e-9 {
-                    return Err(EvalError::new(name, ErrorCode::Expression, "extrude distance is zero")
-                        .with_hint("enter a non-zero distance"));
-                }
-                let r = k
-                    .extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
-                    .map_err(|ke| kernel_err(name, "extrusion", ke))?;
+                let r = match &e.end {
+                    ExtrudeEnd::Distance(d) => {
+                        let distance = eval_expr(name, d, Dim::LENGTH, params, units)?;
+                        if distance.abs() < 1e-9 {
+                            return Err(EvalError::new(name, ErrorCode::Expression, "extrude distance is zero")
+                                .with_hint("enter a non-zero distance"));
+                        }
+                        k.extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
+                            .map_err(|ke| kernel_err(name, "extrusion", ke))?
+                    }
+                    ExtrudeEnd::ToFace { face, offset, reverse } => {
+                        let offset = match offset {
+                            Some(o) => eval_expr(name, o, Dim::LENGTH, params, units)?,
+                            None => 0.0,
+                        };
+                        let (target, fi) =
+                            s.bodies.iter().rev().find_map(|b| b.names.face_index(face).map(|fi| (b, fi))).ok_or_else(
+                                || {
+                                    let mut err = EvalError::new(
+                                        name,
+                                        ErrorCode::MissingReference,
+                                        format!("face {face} no longer exists"),
+                                    )
+                                    .with_hint("re-select the face the extrude ends on");
+                                    err.reference = Some(face.to_string());
+                                    err.suggestion = s
+                                        .bodies
+                                        .last()
+                                        .and_then(|b| ops::closest_face(&b.names, face))
+                                        .map(|f| f.to_string());
+                                    err
+                                },
+                            )?;
+                        k.extrude_to_face(&profile, &target.shape, fi, offset, *reverse).map_err(|ke| {
+                            let mut err = kernel_err(name, "extrusion up to a face", ke);
+                            if err.hint.is_none() {
+                                err.hint = Some(format!(
+                                    "the face {face} must lie ahead of the whole profile (reverse flips the direction) and contain the end of the sweep"
+                                ));
+                            }
+                            err
+                        })?
+                    }
+                };
                 let ctx = OpContext::Sweep { feature: name, sketch: &e.profile.sketch, regions: &regions };
                 self.combine_refined(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()), e.refine)
             }

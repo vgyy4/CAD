@@ -51,7 +51,12 @@ fn access(kind: &FeatureKind) -> Access {
         | FeatureKind::Import(_)
         | FeatureKind::Component(_)
         | FeatureKind::CamJob(_) => Access { bodies: Vec::new(), dynamic: false },
-        FeatureKind::Extrude(d) => modifies(d.op, d.body.as_ref()),
+        FeatureKind::Extrude(d) => {
+            let mut a = modifies(d.op, d.body.as_ref());
+            // The end face is found among all bodies at evaluation time.
+            a.dynamic |= matches!(d.end, gusset_doc::ExtrudeEnd::ToFace { .. });
+            a
+        }
         FeatureKind::Revolve(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Sweep(d) => modifies(d.op, d.body.as_ref()),
         FeatureKind::Loft(d) => modifies(d.op, d.body.as_ref()),

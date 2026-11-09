@@ -388,7 +388,18 @@ fn print_feature(out: &mut String, f: &Feature) {
         }
         FeatureKind::Extrude(e) => {
             args.push(format!("profile: {}", print_profile(&e.profile)));
-            args.push(format!("distance: {}", e.distance));
+            match &e.end {
+                ExtrudeEnd::Distance(d) => args.push(format!("distance: {d}")),
+                ExtrudeEnd::ToFace { face, offset, reverse } => {
+                    args.push(format!("to: {face}"));
+                    if let Some(o) = offset {
+                        args.push(format!("offset: {o}"));
+                    }
+                    if *reverse {
+                        args.push("reverse: true".into());
+                    }
+                }
+            }
             if e.symmetric {
                 args.push("symmetric: true".into());
             }
@@ -1155,11 +1166,16 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut second: Option<ChamferSecond> = None;
     let mut faces: Option<Vec<FaceRef>> = None;
     let mut full_round: Option<Vec<FaceRef>> = None;
+    let mut to_face: Option<FaceRef> = None;
+    let mut to_offset = None;
+    let mut to_reverse = false;
     let mut blob = None;
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
-        "extrude" => "profile, distance, symmetric, op, body, body_name, refine, label, group, suppressed",
+        "extrude" => {
+            "profile, distance, to, offset, reverse, symmetric, op, body, body_name, refine, label, group, suppressed"
+        }
         "revolve" => "profile, axis, angle, op, body, body_name, refine, label, group, suppressed",
         "fillet" => "edges, radius, full_round, label, group, suppressed",
         "chamfer" => "edges, distance, distance2, angle, faces, label, group, suppressed",
@@ -1186,6 +1202,9 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 if kw == "extrude" { distance = Some(e) } else { size = Some(e) }
             }
             ("extrude", "symmetric") => symmetric = parse_bool(c)?,
+            ("extrude", "to") => to_face = Some(parse_face(c)?),
+            ("extrude", "offset") => to_offset = Some(c.expr()?),
+            ("extrude", "reverse") => to_reverse = parse_bool(c)?,
             ("revolve", "axis") => axis = Some(parse_axis(c)?),
             ("revolve", "angle") => angle = Some(c.expr()?),
             ("fillet" | "chamfer", "edges") => {
@@ -1238,7 +1257,21 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let kind = match kw {
         "extrude" => FeatureKind::Extrude(ExtrudeDef {
             profile: profile.ok_or_else(|| missing(c, kw, "profile"))?,
-            distance: distance.ok_or_else(|| missing(c, kw, "distance"))?,
+            end: match (distance, to_face) {
+                (Some(_), Some(_)) => {
+                    return Err(c.err_hint(
+                        "an extrude takes distance or to, not both",
+                        "to: ends the extrude on a face; distance: ends it blind",
+                    ));
+                }
+                (Some(d), None) if to_offset.is_none() && !to_reverse => ExtrudeEnd::Distance(d),
+                (Some(_), None) => return Err(c.err("offset and reverse go with to:, not with distance:")),
+                (None, Some(face)) if !symmetric => ExtrudeEnd::ToFace { face, offset: to_offset, reverse: to_reverse },
+                (None, Some(_)) => return Err(c.err("an extrude up to a face cannot be symmetric")),
+                (None, None) => {
+                    return Err(c.err_hint("'extrude' needs an end", "give distance: <length> or to: <face>"));
+                }
+            },
             symmetric,
             op: op.unwrap_or(BodyOp::New),
             body,
