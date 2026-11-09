@@ -223,3 +223,7 @@ curves of the path sketch (Gusset's `sweep`, ADR 0017). FreeCAD's pipes are writ
 `{"type": "loft", "name", "sketches": [two or more, in order], "ruled", "operation", "target"}`
 lofts through the sketches' closed profiles (Gusset's `loft`); FreeCAD's additive and
 subtractive lofts are written this way.
+
+A hole's positions may lie on several faces of its face's plane (separate pocket floors, as
+SolidWorks hole-wizard features with head clearance give): each face gets its own Gusset
+`hole`, named after the first.

@@ -132,6 +132,7 @@ fn finite3(v: V3, what: &str) -> Result<V3, String> {
 }
 
 /// A face found on the model so far.
+#[derive(Clone)]
 struct FaceHit {
     /// The feature that made the body.
     body: String,
@@ -374,36 +375,55 @@ pub(super) fn hole(g: &mut Gen, s: &Session, d: &HoleF) -> Result<(), String> {
     }
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     let fp = finite3(d.face.point, "the face point")?;
-    let face = find_face(s.kernel().as_ref(), &ev, &mut Vec::new(), fp, d.face.normal)?;
+    let mut meshes: Meshes = Vec::new();
+    let face = find_face(s.kernel().as_ref(), &ev, &mut meshes, fp, d.face.normal)?;
     warn_fallback(g, &face, fp);
     if !face.planar {
         return Err("a hole goes into a planar face".into());
     }
-    // Gusset's frame on a planar face (the evaluator's `face_frame`): the origin is the
-    // world origin projected onto the plane, x the world X projected (world Y when X is
-    // nearly the normal), y = normal x x.
-    let n = face.normal;
-    let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
-    let fx = unit(project([1.0, 0.0, 0.0]))
-        .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
-        .or_else(|| unit(project([0.0, 1.0, 0.0])))
-        .ok_or("the face has no usable frame")?;
-    let fy = cross(n, fx);
-    let origin = n.map(|c| c * dot(face.centroid, n));
-    let mut sites = Vec::new();
-    for (i, p) in d.positions.iter().enumerate() {
+    // Positions may lie on several faces of the face's plane (separate pocket floors): each
+    // face gets its own hole, in the order the faces are first met.
+    let mut groups: Vec<(FaceHit, Vec<V3>)> = Vec::new();
+    for p in &d.positions {
         let p = finite3(*p, "a hole position")?;
-        if dot(sub(p, origin), n).abs() > 0.01 {
+        if dot(sub(p, face.centroid), face.normal).abs() > 0.01 {
             return Err(format!("hole position {p:?} is not on the face"));
         }
-        let r = sub(p, origin);
-        sites.push(format!("e{}: [{} mm, {} mm]", i + 1, num(dot(r, fx)), num(dot(r, fy))));
+        let hit = find_face(s.kernel().as_ref(), &ev, &mut meshes, p, Some(face.normal))?;
+        let hit = if hit.planar && !hit.fallback && dot(hit.normal, face.normal) > 0.999 { hit } else { face.clone() };
+        match groups.iter_mut().find(|(f, _)| f.name == hit.name && f.body == hit.body) {
+            Some((_, ps)) => ps.push(p),
+            None => groups.push((hit, vec![p])),
+        }
     }
-    let name = g.fresh(&d.name, "Hole");
-    let _ = writeln!(g.text, "\nhole {name} (face: {}, at: [{}], {})", face.name, sites.join(", "), args.join(", "));
-    builds(g, s, &name)?;
-    g.made.push(name.clone());
-    g.features.insert(d.name.clone(), name);
+    let first = g.fresh(&d.name, "Hole");
+    for (k, (face, ps)) in groups.iter().enumerate() {
+        // Gusset's frame on a planar face (the evaluator's `face_frame`): the origin is the
+        // world origin projected onto the plane, x the world X projected (world Y when X is
+        // nearly the normal), y = normal x x.
+        let n = face.normal;
+        let project = |v: V3| sub(v, n.map(|c| c * dot(v, n)));
+        let fx = unit(project([1.0, 0.0, 0.0]))
+            .filter(|x| dot(*x, [1.0, 0.0, 0.0]).abs() > 1e-3)
+            .or_else(|| unit(project([0.0, 1.0, 0.0])))
+            .ok_or("the face has no usable frame")?;
+        let fy = cross(n, fx);
+        let origin = n.map(|c| c * dot(face.centroid, n));
+        let sites: Vec<String> = ps
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let r = sub(*p, origin);
+                format!("e{}: [{} mm, {} mm]", i + 1, num(dot(r, fx)), num(dot(r, fy)))
+            })
+            .collect();
+        let name = if k == 0 { first.clone() } else { g.fresh(&format!("{first}_{}", k + 1), "Hole") };
+        let _ =
+            writeln!(g.text, "\nhole {name} (face: {}, at: [{}], {})", face.name, sites.join(", "), args.join(", "));
+        builds(g, s, &name)?;
+        g.made.push(name);
+    }
+    g.features.insert(d.name.clone(), first);
     Ok(())
 }
 

@@ -424,3 +424,27 @@ fn a_countersunk_hole_on_a_pocket_floor() {
     assert_vol(v, 4000.0 - removed);
     assert!(r["features"].to_string().contains("\"H\""), "{r}");
 }
+
+#[test]
+fn one_tree_hole_on_two_separate_pocket_floors() {
+    // Two 6 mm, 0.15 mm deep pockets, then one countersunk through hole at both floors: the
+    // floors are separate faces of one plane.
+    let hole = json!({"type": "hole", "name": "H", "face": {"point": [5, 10, 9.85], "normal": [0, 0, 1]},
+        "positions": [[5, 10, 9.85], [15, 10, 9.85]], "diameter": 3, "through": true,
+        "variant": "countersink", "csink_diameter": 6, "csink_angle": 90});
+    let two = json!({"type": "sketch", "name": "Top", "plane": {"origin": [0, 0, 10], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "points": [{"id": "a", "x": 5, "y": 10}, {"id": "b", "x": 15, "y": 10}],
+        "curves": [{"id": "k1", "type": "circle", "center": "a", "radius": 3}, {"id": "k2", "type": "circle", "center": "b", "radius": 3}]});
+    let (_, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), 0.0, 0.0, 20.0, 20.0),
+        extrude("Block", "Base", 10.0, "new"),
+        two,
+        json!({"type": "extrude", "name": "Clear", "sketch": "Top", "profiles": "all", "distance": -0.15,
+            "operation": "cut", "target": "Block"}),
+        hole,
+    ]);
+    let pi = std::f64::consts::PI;
+    let frustum = pi * 1.5 / 3.0 * (9.0 + 4.5 + 2.25);
+    let one = pi * 9.0 * 0.15 + frustum + pi * 2.25 * (9.85 - 1.5);
+    assert_vol(v, 4000.0 - 2.0 * one);
+}
