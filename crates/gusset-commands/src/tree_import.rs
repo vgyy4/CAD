@@ -178,6 +178,21 @@ struct SolidF {
     /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
     #[serde(default = "refine_default")]
     refine: bool,
+    /// Extrude: `"blind"` (default, `distance`) or `"to_face"` (the sweep ends on `face`).
+    #[serde(default)]
+    end_condition: Option<String>,
+    /// Extrude to a face: a point on the face (and its outward normal) as it is before this
+    /// feature, like a hole's `face`.
+    #[serde(default)]
+    face: Option<v2::FacePick>,
+    /// Extrude to a face: mm past the face along the sweep (negative: short of it).
+    #[serde(default)]
+    offset: Option<f64>,
+    #[serde(default)]
+    offset_parameter: Option<String>,
+    /// Extrude to a face: sweep against the source sketch's normal.
+    #[serde(default)]
+    reverse: bool,
 }
 
 /// The default of the `refine` field of a body-combining tree feature: unified.
@@ -1017,11 +1032,36 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
         args.push(format!("axis: {a}"));
         args.push(format!("angle: {} deg", num(angle)));
     } else {
-        let dist = d.distance.filter(|v| v.abs() > 1e-9).ok_or("an extrude without a distance")?;
-        let dist = finite(dist, "the distance")?;
-        args.push(format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), flipped)));
-        if d.symmetric {
-            args.push("symmetric: true".into());
+        match d.end_condition.as_deref().unwrap_or("blind") {
+            "blind" => {
+                let dist = d.distance.filter(|v| v.abs() > 1e-9).ok_or("an extrude without a distance")?;
+                let dist = finite(dist, "the distance")?;
+                args.push(format!("distance: {}", g.value(dist, "mm", d.distance_parameter.as_ref(), flipped)));
+                if d.symmetric {
+                    args.push("symmetric: true".into());
+                }
+            }
+            "to_face" => {
+                if d.symmetric {
+                    return Err("an extrude up to a face cannot be symmetric".into());
+                }
+                if d.distance.is_some() {
+                    g.warn(format!("{}: the distance of an extrude up to a face is ignored", d.name));
+                }
+                let pick = d.face.as_ref().ok_or("an extrude up to a face without a face")?;
+                let ev = g.evaluate(s).map_err(|e| e.message)?;
+                let (_, face) = v2::pick_face_name(g, s, &ev, pick)?;
+                args.push(format!("to: {face}"));
+                if let Some(o) = d.offset.filter(|o| o.abs() > 1e-9) {
+                    let o = finite(o, "the offset")?;
+                    // Along the sweep, so it does not depend on the sketch's orientation.
+                    args.push(format!("offset: {}", g.value(o, "mm", d.offset_parameter.as_ref(), false)));
+                }
+                if d.reverse != flipped {
+                    args.push("reverse: true".into());
+                }
+            }
+            other => return Err(format!("end condition '{}' is not blind or to_face", short(other))),
         }
     }
     args.push(format!("op: {op}"));

@@ -331,3 +331,17 @@ true): the body-combining boolean then keeps the split faces of its result (ADR 
 `refine: false` in the generated text). It is written only for operations other than `new`. A
 reader that does not know `refine` unifies the result, which may change later face and edge
 picks of a source that was unrefined.
+
+### Amendment: extrude up to a face (2026-11-09)
+
+An `extrude` feature with `"end_condition": "to_face"` (default `"blind"`) ends on a face of the
+model (ADR 0004 amendment): SolidWorks "up to surface" / "offset from surface", FreeCAD
+`UpToFace`, Fusion "To object". Fields: `"face"` (`{"point": [x, y, z], "normal": [x, y, z]}`,
+the same pick as a hole's `face`, resolved by `pick_face_name`; a point on the face as it is
+before this feature, the normal optional but telling coplanar faces apart), `"offset"` (mm,
+positive moves the end past the face along the sweep, negative stops short; default 0) and
+`"offset_parameter"` (a named length), `"reverse"` (sweep against the source sketch's normal,
+like a negative `distance`; the importer combines it with the sketch's orientation).
+`distance` is ignored with a warning; `symmetric`, a missing or unresolvable face, a face behind the
+profile or too small to cover it skip the feature with the reason. `operation` and `target` work
+as for a blind extrude (a pocket up to a face is `"operation": "cut"`).

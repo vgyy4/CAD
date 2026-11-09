@@ -741,3 +741,83 @@ fn refine_false_on_a_pattern_keeps_the_seams_between_copies() {
         assert_eq!(b["faces"].as_u64(), Some(faces), "{b}");
     }
 }
+
+// ---- Extrudes up to a face (ADR 0042 amendment) ----
+
+fn to_face_tree(post: Value) -> Vec<Value> {
+    vec![
+        rect("PlateSketch", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "PlateSketch", 10.0, "new"),
+        rect("RoofSketch", plane_at(30.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Roof", "RoofSketch", 10.0, "new"),
+        rect("PostSketch", plane_at(0.0), 5.0, 5.0, 10.0, 10.0),
+        post,
+    ]
+}
+
+fn to_face_post(extra: Value) -> Value {
+    let mut p = json!({
+        "type": "extrude", "name": "Post", "sketch": "PostSketch", "profiles": "all", "operation": "new",
+        "end_condition": "to_face", "face": {"point": [20, 10, 30], "normal": [0, 0, -1]}
+    });
+    p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    p
+}
+
+#[test]
+fn an_extrude_to_face_ends_on_the_picked_face_with_its_offset() {
+    // The roof's underside is the plane z = 30; the post starts at z = 0.
+    for (extra, volume, args) in [
+        (json!({}), 3000.0, "to: Roof/cap(start)"),
+        (json!({"offset": 2}), 3200.0, "to: Roof/cap(start), offset: 2 mm"),
+        (json!({"offset": -5}), 2500.0, "to: Roof/cap(start), offset: -5 mm"),
+    ] {
+        let (mut s, r) = import_into_session(to_face_tree(to_face_post(extra.clone())));
+        assert_eq!(r["skipped_user_text"], json!([]), "{extra}: {r}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Post"})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), volume);
+        let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+        let line = text.lines().find(|l| l.starts_with("extrude Post")).unwrap_or_else(|| panic!("{text}"));
+        assert!(line.contains(args) && !line.contains("distance"), "{line}");
+    }
+}
+
+#[test]
+fn an_extrude_to_face_can_cut_a_pocket_and_reverse() {
+    // A pocket from the plate's top down to its underside, 3 mm short: the sketch is on the
+    // top (z = 10), the sweep runs against the sketch normal.
+    let pocket = json!({
+        "type": "extrude", "name": "Pocket", "sketch": "PocketSketch", "profiles": "all", "operation": "cut",
+        "target": "Plate", "end_condition": "to_face", "face": {"point": [20, 10, 0], "normal": [0, 0, -1]},
+        "offset": -3, "reverse": true
+    });
+    let (mut s, r) = import_into_session(vec![
+        rect("PlateSketch", plane_at(0.0), 0.0, 0.0, 40.0, 20.0),
+        extrude("Plate", "PlateSketch", 10.0, "new"),
+        rect("PocketSketch", plane_at(10.0), 5.0, 5.0, 10.0, 10.0),
+        pocket,
+    ]);
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 8000.0 - 700.0);
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("to: Plate/cap(start), offset: -3 mm, reverse: true, op: cut"), "{text}");
+}
+
+#[test]
+fn bad_extrudes_to_a_face_are_skipped_with_a_reason() {
+    for extra in [
+        json!({"face": null}),
+        json!({"symmetric": true}),
+        json!({"end_condition": "up_to_next"}),
+        // Behind the sketch: the roof's top is not ahead of a sweep that ends on... the plate's underside.
+        json!({"face": {"point": [20, 10, 0], "normal": [0, 0, -1]}}),
+        json!({"face": {"point": [500, 500, 500], "normal": [0, 0, -1]}}),
+    ] {
+        let (mut s, r) = import_into_session(to_face_tree(to_face_post(extra.clone())));
+        let skipped = r["skipped_user_text"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1, "{extra}: {r}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Roof"})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), 40.0 * 20.0 * 10.0);
+    }
+}
