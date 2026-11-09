@@ -183,6 +183,36 @@ on (`bottom cover`), 1 extrude whose boolean the kernel rejects (`LED Arm`). Tim
 chamfers with two distances or an angle (read as equal distances; the rebuild check refuses them if
 wrong), multi-body parts, assemblies.
 
+## Amendment (2026-11-09, 3): Inventor round 2 - edge picks, cylinder blends, rectangular patterns
+
+The prototype's second round (`docs/formats/inventor-feature-tree.md`, "Round 2") is ported to
+`gusset_ole`. **20 of 35 sample parts** now come in as history (was 16): the 16 above plus L-Bracket,
+side, Conecting plate 1 and back accses panel (OCCT test `ipt_history.rs`, floor
+`GUSSET_IPT_MIN_HISTORY=20`).
+
+- **Picks.** A fillet or chamfer edge is `{midpoint, path: [m - 0.1 mm t, m + 0.1 mm t]}` with `m` on the
+  true pre-fillet edge (not the edge's middle after later cuts), so the importer's path matching finds
+  the model edge whatever its extent at that step. A whole circle (fewer than two distinct vertex
+  angles) is picked at its seam midpoint (centre - R * ref), decided from the result body alone: the
+  prototype flips to the seam only after the importer skipped the feature; here the rule is fixed
+  and no rebuild feedback is used. An arc that was a whole circle before a later cut split it is
+  still picked at the arc's middle (the prototype's flip rescues those in parts that do not match
+  anyway).
+- **Blend faces.** `circ_mid` normalises angles to [0, 2pi) and merges angles under 1e-6 (the +-pi
+  bug); planar faces that carry a fillet's tag are dropped; `NMx_edge_blend_tag` faces (circle
+  chamfers) count; cylinder blends take any two supports (planes parallel to the axis, cylinders
+  parallel to it) and intersect them in the cross-section; torus, cone and other blends first try
+  the circle between two coaxial neighbours (planes, cylinders, cones, tori as profile curves).
+- **Holes.** The plain-cut fallback's revolve axis is the profile's closing line (`{"line": id}`);
+  the importer's sketch origin is the foot of the world origin, so an origin+direction axis was refused.
+- **Rectangular pattern** (record `20673244`). Patterned features, direction `a244457b` (run against
+  -V), count `bb1dd5df`, spacing parameter, a second direction chained as a pattern of the originals
+  and the first pattern, and the midplane flag (`90874d28`, the last one) as a shift of the original
+  hole by -(n-1)/2 * spacing (holes only; any other midplane pattern is `unsupported`).
+- **Not done.** Thicken (not proven by an exact rebuild), ellipse sketch curves (no ellipse in the tree
+  format: 4 O-rings), asymmetric chamfers of the M8 screw, full-round fillets, rolling-ball and vertex
+  blends, the knurl pattern of the thumbscrews.
+
 ## Amendment (2026-11-09): Solid Edge feature history, decoding in progress
 
 A part's history is in `PSMcluster0` (objects framed by `QQ`, a type index into `PSMtypetable`

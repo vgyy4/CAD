@@ -325,9 +325,13 @@ Phase 3 has started (see Next).
      editable features (OCCT test `ipt_history.rs`, env `GUSSET_IPT_SAMPLES`, floor `GUSSET_IPT_MIN_HISTORY`), the
      same 16 as the prototype; all 35 Rust trees equal the prototype's to 1e-6. Holes the kernel refuses are retried as plain cuts, decided by
      the rebuild (deterministic). Cosmetic threads and suppressed features are left out and listed in the warnings.
-     Fuzz target `ole_read` covers the reader. Next here: fillet/chamfer edges whose midpoint is not an edge
-     of the model before the blend (5 parts), cylinder blends without two planar supports (2), ellipse sketch
-     curves (4 O-rings), thicken (3), rectangular pattern direction (L-Bracket), the M8 chamfer's blend faces.
+     Fuzz target `ole_read` covers the reader. Round 2 (amendment 3, 2026-11-09): fillet/chamfer picks on the
+     true pre-fillet edge with a 0.1 mm path, cylinder blends with any two plane/cylinder supports, edge-blend
+     tags, the +-pi fix, seam picks for whole circles, hole fallback axis as a profile line, rectangular
+     patterns (direction, count, spacing, chained second direction, midplane): 20 of 35 as history
+     (L-Bracket, side, Conecting plate 1, back accses panel added); Rust trees equal the prototype's except
+     fp ties in a degenerate thumbscrew arc. Next here: ellipse sketch curves (4 O-rings, needs an ellipse in the
+     tree format), thicken (3), two-distance chamfers (M8), full-round fillets, rolling-ball/vertex blends.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
