@@ -264,7 +264,12 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
 /// Sweep `FCBB1707`: the operation enum is the first u32 of the body; the profile is a `4BD53E5A`
 /// (names its sketch), the path a list of `5A1BF548` -> `E2CEFD18` sketch-curve references
 /// (`u64 sketch data id`, `u64 crv_primary_id`).
-fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, String>) -> Map<String, Value> {
+fn sweep_json(
+    cx: &mut Ctx,
+    fid: u64,
+    name: &str,
+    sketch_names: &HashMap<u64, String>,
+) -> (Map<String, Value>, Option<f64>) {
     let d = cx.d;
     let mut j = Map::new();
     j.insert("type".into(), "sweep".into());
@@ -273,7 +278,7 @@ fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, St
     let rec = d.rec(fid);
     let Some(h) = stream::parse_header(rec) else {
         j.insert("error".into(), "layout not recognised".into());
-        return j;
+        return (j, None);
     };
     let op = rec.get(h.body).copied().unwrap_or(0);
     let profile = feature::profile_sketch_of(d, rec);
@@ -281,6 +286,7 @@ fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, St
     j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
     let mut path_sketch: Option<u64> = None;
     let mut curves: Vec<String> = Vec::new();
+    let mut curve_ids: Vec<u64> = Vec::new();
     let mut ok = true;
     for q in ref_ids(d, rec) {
         if !d.is(q, "5A1BF548") {
@@ -302,7 +308,10 @@ fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, St
             path_sketch = Some(sk);
             let s = cx.sketch(sk);
             match sketch::curve_by_primary(d, &s, prim) {
-                Some(cid) => curves.push(format!("c{cid}")),
+                Some(cid) => {
+                    curves.push(format!("c{cid}"));
+                    curve_ids.push(cid);
+                }
                 None => ok = false,
             }
         }
@@ -316,7 +325,36 @@ fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, St
     j.insert("orientation".into(), "frenet".into());
     j.insert("operation".into(), op_name(op).into());
     j.insert("target".into(), Value::Null);
-    j
+    let shift = profile.filter(|_| ok).and_then(|p| path_start_offset(cx, p, path_sketch?, &curve_ids));
+    (j, shift)
+}
+
+/// How far (cm, along the profile's normal) the plane through the start of the path lies from the
+/// profile's plane: the chain's end nearest to the profile, or `None` when the path is closed or
+/// the profile lies on it already.
+fn path_start_offset(cx: &mut Ctx, profile: u64, path: u64, curves: &[u64]) -> Option<f64> {
+    let pl = cx.sketch(profile).plane?;
+    let s = cx.sketch(path);
+    let ppl = s.plane?;
+    let mut ends: Vec<(u64, V3)> = Vec::new();
+    for q in curves {
+        let refs: Vec<u64> = if let Some(l) = s.lines.get(q) {
+            [l.start_ref, l.end_ref].into_iter().flatten().collect()
+        } else {
+            let a = s.arcs.get(q)?;
+            a.refs.iter().skip(1).copied().collect()
+        };
+        for r in refs {
+            let p = *s.points.get(&r)?;
+            ends.push((r, geom::world(&ppl, [p[0], p[1]], 0.0)));
+        }
+    }
+    let t = ends
+        .iter()
+        .filter(|(r, _)| ends.iter().filter(|(x, _)| x == r).count() == 1)
+        .map(|(_, p)| dot(pl.z, geom::sub(*p, pl.origin)))
+        .min_by(|a, b| a.abs().total_cmp(&b.abs()))?;
+    (t.abs() > 1e-9).then_some(t)
 }
 
 fn hole_json(cx: &mut Ctx, fid: u64, name: &str) -> Map<String, Value> {
@@ -515,7 +553,46 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
         } else if d.is(fid, SWEEP) {
-            let mut j = sweep_json(cx, fid, &nm, &sketch_names);
+            let (mut j, shift) = sweep_json(cx, fid, &nm, &sketch_names);
+            if let Some(sid) = j.get("sketch_source_id").and_then(Value::as_u64) {
+                // The profile is one loop of its sketch, not all of it; and Fusion sweeps a
+                // profile that is not on the path's start plane from the plane through the path's
+                // start. Gusset wants the sketch to hold exactly the profile, on that plane: a
+                // copy of the sketch with only the profile's curves, moved along its normal.
+                let sk = cx.sketch(sid);
+                let used: Option<HashSet<String>> =
+                    cx.rc.regions(d, fid, &sk).ok().map(|rg| {
+                        rg.iter().flat_map(|r| r.segments.iter().map(|sg| format!("c{}", sg.curve))).collect()
+                    });
+                let moved = feats
+                    .iter()
+                    .find(|f| {
+                        f.get("type").and_then(Value::as_str) == Some("sketch")
+                            && f.get("source_id").and_then(Value::as_u64) == Some(sid)
+                    })
+                    .cloned();
+                if let Some(Value::Object(mut c)) = moved {
+                    let before = c.get("curves").and_then(Value::as_array).map_or(0, Vec::len);
+                    if let (Some(used), Some(cs)) = (&used, c.get_mut("curves").and_then(Value::as_array_mut)) {
+                        cs.retain(|x| x.get("id").and_then(Value::as_str).is_some_and(|i| used.contains(i)));
+                    }
+                    let after = c.get("curves").and_then(Value::as_array).map_or(0, Vec::len);
+                    if let (Some(t), Some(pl)) = (shift, sk.plane.as_ref()) {
+                        let o = geom::add(pl.origin, geom::mul(pl.z, t));
+                        c.insert("plane".into(), json!({"origin": v3mm(o), "x_axis": pl.x, "y_axis": pl.y}));
+                        c.insert(
+                            "plane_note".into(),
+                            "moved along its normal to the start plane of a sweep path".into(),
+                        );
+                    }
+                    if shift.is_some() || after != before {
+                        let copy = format!("{nm} profile");
+                        c.insert("name".into(), copy.clone().into());
+                        j.insert("sketch".into(), copy.into());
+                        feats.push(Value::Object(c));
+                    }
+                }
+            }
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
