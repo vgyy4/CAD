@@ -507,3 +507,18 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
   dimension (cause not found; the extrude body of the same blob matches), so they fail the
   rebuild; 4979/4980/5020 stop at Extrude3, whose sketch has 21 circles for 95 profile
   regions (sketch entities not read).
+
+## Amendment (2026-11-09, round 7): sketch point noise, `.smbh` unit, circle piece numbering
+
+- A sketch point whose z is rounding noise (below 1e-9) is on the plane (it was dropped, with every circle centred on it):
+  NeoKey FeatherWing, 1x4 QT and Trinkey read all their sketch circles and come in as history.
+- A body link led by a `40DCC3F4` reference no longer takes it for its creator (NeoKey Trinkey 0805-NO Base Feature).
+- Bodies of an `.smbh` history blob are read in centimetres whatever the header unit says (20..50 against the `.smb`
+  blobs' 10; the "5x" DM bodies of the BQ25185 designs). Evidence: the raw boxes equal the `.smb` bodies' and the final
+  bodies'.
+- Closed-curve pieces are numbered by where they end (cuts in (0, 1], piece 1 holds the curve's start): BQ25185 3V Buck
+  and 5V Extrude2 (slots with a tangent circle). The round 4 numbering (cut exactly at the start) is the same.
+- Result: 8 of 18 designs as history (BQ25185 3V Buck, 5V, NeoKey x3 added). Tolerances and checks unchanged.
+- Component Insert: the 12 doubles are the occurrence's 3 x 4 placement (identical to the `CE2913AA` record, 6124); not built:
+  the inserted design's own tree must be rebuilt inside the root (docs/formats/fusion-design-stream.md section 15).
+- Open: `fusion_states_check` speed (a per-feature hook in `tree_import::apply` would make it one pass).

@@ -567,3 +567,21 @@ fn a_file_without_a_design_stream_is_not_a_design() {
     let why = super::feature_tree(&[("a.txt".to_string(), vec![1])], "f").unwrap_err();
     assert!(why.starts_with("the file has no"), "{why}");
 }
+
+#[test]
+fn a_closed_curve_cut_off_its_start_numbers_the_piece_holding_the_start_first() {
+    // A circle starting on the right, touched by two lines at the top and the bottom: piece 1
+    // is the half through the start (the right one), piece 2 the left half.
+    let circle: Vec<P2> = (0..=64)
+        .map(|k| {
+            let t = f64::from(k) / 64.0 * std::f64::consts::TAU;
+            [libm::cos(t), libm::sin(t)]
+        })
+        .collect();
+    let top: Vec<P2> = vec![[-0.5, 1.0], [0.5, 1.0]];
+    let bottom: Vec<P2> = vec![[-0.5, -1.0], [0.5, -1.0]];
+    let others: Vec<&[P2]> = vec![&top, &bottom];
+    let a = geom::piece(&circle, true, &others, 1, 2).unwrap();
+    let b = geom::piece(&circle, true, &others, 2, 2).unwrap();
+    assert!(a.iter().all(|p| p[0] >= -1e-9) && b.iter().all(|p| p[0] <= 1e-9));
+}

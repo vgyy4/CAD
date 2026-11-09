@@ -527,3 +527,72 @@ Chamfer3 (past the group); MacroPad RP2040: R-Pattern1 (pattern of components); 
   OffsetFaces, two Moves, two Base Features, thirteen RemoveBody and further blends with unresolved edges (Chamfer4 2,
   Fillet2 1, Chamfer5 2) and **nine extrudes the layout search does not recognise** (Extrude13, 15, 18, 26, 28, 32, 33,
   37, 39). Resolving Chamfer3 alone gains nothing; the Assembly shows the same chain.
+
+## 15. Round 7: sketch points, `.smbh` unit, circle pieces, Component Insert (2026-11-09)
+All from the 18-design Adafruit set; each statement names its check.
+
+### NeoKey sketches had 21 of 93 circles (4979, 4980, 5020)
+* The sketch lists all its entities (Sketch3 of 4979: 102 points, 93 circles, 8 lines in one reference list); the reader
+  dropped most circles because their **centre point is dropped**: a point record's z is exactly 0 in some points
+  and rounding noise (`-1.1e-17`) in others (the points of circles created by a transformed copy). `point()`
+  required z == 0. A z below 1e-9 is on the plane now (z set to 0). Confirmed: Extrude3 reads 95 of 95 profile
+  regions and 4979, 4980 come in as history (45 / 111 stored solids are states, 95 / 112 cut tools).
+* NeoKey Trinkey then stopped at its 0805-NO Base Feature ("makes no body", two stored 2.4961 mm3 bodies missing): the body
+  link `D26351F0` of that feature starts with a reference to an object of class `40DCC3F4` (the blob-name holder, object
+  10) before the creator. `Graph::new` took the first reference that is not a body/component record as the creator.
+  `40DCC3F4` is skipped (the only link of the set that has one). 5020 comes in as history.
+
+### The `.smbh` header unit is not a length unit (6092, 6106: the "5x" bodies)
+* The first header double of every `.smb` is 10 (centimetres to millimetres). An `.smbh` carries **10 x something**: 10
+  (6091), 20 (the NeoKeys, Crickit HAT, MacroPad), 30 (Crickit CPX, keyplate, bottom-plate), 40 (Crickit Assembly), 50
+  (CyberDeck, NeoKey Breakout, BQ25185 3V Buck / 5V / Cases). Constant inside one design. Not a scale: all 46 DM bodies of
+  6092's `.smbh` blobs have exactly the raw vertex box of a pre-feature body of an `.smb` (same numbers), and the
+  component's final bodies agree with the raw numbers read as centimetres (0402 pad body 0.46 x 0.5 x 0.48 mm = 0.11 mm3
+  vs 13.8 mm3 at unit 50). The body records carry identity transforms (`transform` scale 1). What the 20..50 counts is
+  not established (no sample property tracks it). `to_step_nth` (the `.smbh` reader) uses 10 whatever the header says.
+  The SolidWorks/Inventor paths are untouched.
+
+### Circle pieces: piece 1 holds the start (6092, 6106)
+* 6092 Extrude2 (cut) has four slots (a pill outline of 2 lines and 4 quarter arcs) with a circle of the slot's width in the
+  middle, tangent to both lines. The profile group lists the slot outline plus **three child regions**: the disc, the left
+  part and the right part. The circle is cut at its two tangent points (top, bottom) into 2 pieces, the lines into 2, and the
+  left part names "circle piece 2 of 2", the right part "piece 1 of 2". The circle starts at its rightmost point,
+  so **the piece that holds the curve's start is piece 1**, the other follows in parameter order. The reader numbered the
+  pieces by their first cut (piece 1 = from the first cut to the second), the opposite, and drew each side part
+  with the wrong half circle; both rings close, so nothing complained; the interior point of each side part fell in the
+  disc, the three picks of a slot named one region, `Sketch2.regions(...)` held 53 ids for 60 picks and the cut removed 2.684
+  mm3 less than the stored tools (the slots' tool is the whole pill: 1.0091 / 1.4801 mm3).
+  Rule now (`geom::piece`, closed curves): cuts in (0, 1] (a cut at the start counts as 1), piece k ends at the k-th cut; piece
+  1 starts at the last cut of the turn before. For a cut exactly at the start this is the old numbering (the round 4 case,
+  USB Charger Extrude2, still reproduces), so both samples agree.
+* The two unit tests `a_closed_curve_cut_at_its_start_...` and `a_closed_curve_cut_off_its_start_...` pin the two cases.
+
+### Component Insert `428B5C6E` (decoded for 6124; the history is still not built)
+* Layout (434 bytes in 6124): header, then **12 doubles = the occurrence's placement as a row-major 3 x 4 [R | t]**
+  (cm; 6124: identity rotation, t = (-1.15389, -0.99564, 0)) at body+0x2D; they are identical to the 12 doubles of the
+  occurrence's `CE2913AA` transform record (at +312 there), checked by value. The other samples' inserts (records of 302..430 bytes) have the same
+  layout with the block at another offset (it follows the header, which varies with the record length; read at the fixed
+  offset of 6124 they show rotations about X in 4862 and translations in z in the MacroPad assembly, but only 6124 was
+  verified value by value, so those are leads, not facts). Then two refs to the same `2D6E13A1` occurrence record
+  (-> `CE2913AA` and the component timeline `6CCF41D5`), a nil design UUID string, the wide string "Component Insert", the
+  usual tail. The record names no design: the occurrence's UUIDs (`516131ec...`, `a19c6bc7...`) do, through
+  `DesignDescription.json` (what `xref_files` reads).
+* It is the **first timeline entry** of 6124/6126 and the 60 entries after it (extrudes, shells, fillets) act on the root's own
+  case bodies and on the inserted PCB. The inserted bodies are the **whole referenced design** (6091-style: component
+  bodies, pre-cut Board, cut tools - every solid of the referenced blobs is a stored solid of the root's file), so the
+  states check of the root needs the referenced design's own feature tree (its extrudes, base features and cuts) rebuilt
+  inside the root at the insert's placement, not just stored bodies of the insert; stored bodies alone would leave the
+  PCB's tool solids unexplained. Not implemented: it needs (a) the referenced design's `feature_tree` merged into the
+  root's with the insert matrix as `json::place` placement and renamed features, (b) 6124's own remaining features and
+  (c) the `.f3z` loader to hand the referenced design's blobs to `fusion_stored_bodies` (import.rs). The PCB designs
+  themselves now rebuild (6092, 6106), so (a) is the first step.
+
+### Corpus after this round
+8 of 18 as history (3 before): MacroPad keyplate, bottom-plate, bq25185 USB Charger (6091), NeoKey FeatherWing (4979),
+1x4 QT (4980), Trinkey (5020), BQ25185 3V Buck (6092), BQ25185 5V (6106). Blockers of the rest, unchanged: Crickit CPX and
+Assembly -> Chamfer3; CyberDeck HAT -> Fillet1 (swept faces); MacroPad RP2040 -> R-Pattern1 (pattern of components);
+Crickit HAT, CyberDeck Bonnet, NeoKey Breakout, BQ25185 Cases -> Component Insert.
+`fusion_states_check` still rebuilds every prefix from scratch for each feature that changes a body (6091 about 5 minutes,
+the corpus about 25): the per-feature volumes it needs are what `tree_import::apply` already evaluates after each feature
+(`Gen::evaluate`), so a hook there (a callback with the session after feature k) would give all states in one pass; the
+check itself would not change. `tree_import.rs` is outside this round's files, so it is not done.

@@ -167,10 +167,18 @@ pub(super) fn piece(poly: &[P2], closed: bool, others: &[&[P2]], a: u32, b: u32)
         if b == 1 {
             return Some(poly.to_vec());
         }
-        let f0 = *fs.get(a - 1)?;
-        let f1 = *fs.get(a % b)?;
-        if f1 <= f0 {
-            let mut v = sub_poly(poly, f0, 1.0);
+        // The pieces are numbered by where they end: cuts in (0, 1] (a cut at the start counts
+        // as 1), piece k ends at the k-th cut and starts at the one before it, piece 1 at the
+        // last cut of the turn before. So the piece that holds the curve's start is piece 1
+        // (a circle cut at top and bottom, starting on the right: the right half is piece 1;
+        // BQ25185 Extrude2's slots) and, for a cut exactly at the start, piece 1 runs from the
+        // start to the next cut.
+        let mut c: Vec<f64> = fs.iter().map(|f| if *f == 0.0 { 1.0 } else { *f }).collect();
+        c.sort_by(f64::total_cmp);
+        let f1 = *c.get(a - 1)?;
+        let f0 = if a == 1 { *c.get(b - 1)? - 1.0 } else { *c.get(a - 2)? };
+        if f0 < 0.0 {
+            let mut v = sub_poly(poly, f0 + 1.0, 1.0);
             v.extend(sub_poly(poly, 0.0, f1).into_iter().skip(1));
             return Some(v);
         }
