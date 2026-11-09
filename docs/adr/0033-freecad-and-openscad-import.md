@@ -110,7 +110,19 @@ ADR 0042) and the tree importer builds it. Translated:
 * files from before FreeCAD had bodies: their sketches and PartDesign features form one
   implicit body in document order;
 * fillet and chamfer edges on refined shapes (merged faces) are passed with points along them,
-  and the model's edges lying on such an edge stand in for it.
+  and the model's edges lying on such an edge stand in for it; the other way round, a picked
+  piece of an edge FreeCAD split (where the faces of a joined pattern meet) names the whole
+  line or arc of the model that holds it, and a whole-face pick leaves out the seam lines
+  between two halves of one cylinder or plane (Gusset has no edge there);
+* two-length pads and pockets ignore `Reversed` (the stored solids of the examples show the
+  second length is offset instead), `SideType` 2 of FreeCAD 1.1+ is the midplane, a symmetric
+  revolution or groove is two half turns (one about the reversed axis), a linear-pattern
+  direction or axis that names a straight edge of a feature's stored shape is that edge's
+  line, a sketch arc whose ends meet is a circle, and a body group listing a fillet before its
+  base or a pad before its sketch is put in dependency order;
+* Part booleans and Draft arrays take a renamed copy of the PartDesign body features up to
+  their input when the plain tree does not rebuild (the body goes on and shows beside the
+  result, as in FreeCAD).
 
 **Check.** Before anything is committed the tree is built in a scratch session and compared
 with the shapes FreeCAD stored: every feature must build, the volume must agree within 2e-5
@@ -121,8 +133,11 @@ Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch k
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 105 come in as history,
-the rest as exact shapes. The main remaining reasons: features that rebuild with a different
-volume (fillets whose edges change with the feature order, and stale shapes), lofts,
-pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
-axes on edges of solids.
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 121 come in as history
+(11 more files show no solid), the rest as exact shapes. Unequal chamfers (two distances,
+distance and angle) are written but no example file uses them. The main remaining reasons:
+boolean and fillet failures of the kernel on valid FreeCAD models (invalid-solid results),
+fillets whose edges FreeCAD drops as tangent (a face pick over smooth edges), a primitive
+attached to a datum line at a tilt (Page_056-2), a MultiTransform of primitives about a
+placed body (Page_089), lofts, helices, thickness and offset objects, ellipse arcs and
+ellipsoids, shape binders, and profiles that are datum planes.
