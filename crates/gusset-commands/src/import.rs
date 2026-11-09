@@ -363,7 +363,23 @@ impl ImportJob {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let (out, warnings) = sldprt_bodies(&bytes, &stem, importer.as_ref(), cancel, None)?;
+                let (out, mut warnings) = sldprt_bodies(&bytes, &stem, importer.as_ref(), cancel, None)?;
+                // The feature history as editable features, when it rebuilds to the part's
+                // own bodies (ADR 0043 amendment); else the bodies themselves.
+                match solidworks_history(&bytes, &out, &self.kernel, &self.file_name) {
+                    Ok((tree, note)) => {
+                        warnings.extend(note);
+                        return Ok(PreparedImport {
+                            bodies: Vec::new(),
+                            file_name: self.file_name,
+                            tier: TIER_SOLIDWORKS_HISTORY,
+                            warnings,
+                            tree: Some(tree),
+                        });
+                    }
+                    Err(why) if why.is_empty() => {}
+                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
+                }
                 (out, TIER_XT, warnings)
             }
             Kind::Sldasm => {
@@ -1061,6 +1077,41 @@ fn freecad_history(
         Ok(e)
     };
     let mut tree = crate::fcstd_tree::tree(doc, &mut shape_edges)?;
+    let note = rebuild_check(&mut tree, bodies, kernel, file_name, "FreeCAD's")?;
+    Ok((tree, note))
+}
+
+/// Tier note for a SolidWorks part whose feature history came in as features.
+const TIER_SOLIDWORKS_HISTORY: &str = "tier 1: the SolidWorks feature history as editable features";
+
+/// A SolidWorks part's feature history as a feature tree (ADR 0043 amendment), kept only when
+/// it rebuilds to the part's own bodies like a FreeCAD history does. `Err("")`: the part has
+/// no feature stream (nothing to say).
+fn solidworks_history(
+    bytes: &[u8],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
+    let tree = gusset_sldprt::features::feature_tree(bytes, file_name, &gusset_sldprt::Limits::default())?
+        .ok_or_else(String::new)?;
+    let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
+    let mut tree = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    let note = rebuild_check(&mut tree, bodies, kernel, file_name, "the part's")?;
+    Ok((tree, note))
+}
+
+/// Builds `tree` in a scratch session and accepts it only when every feature builds and it
+/// gives the volume of `bodies` (within [`FREECAD_VOLUME_TOLERANCE`]) and their bounding box.
+/// `whose` names the bodies in the reasons ("FreeCAD's"). Returns a note when the volumes
+/// differ measurably.
+fn rebuild_check(
+    tree: &mut crate::tree_import::Tree,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+    whose: &str,
+) -> Result<Option<String>, String> {
     // The stored shapes' volume is what the features must give.
     let mut want = 0.0;
     let mut want_box: Option<gusset_kernel::BBox> = None;
@@ -1079,19 +1130,20 @@ fn freecad_history(
     let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
     let ctx = crate::CmdCtx::user(0);
     let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
-    let r = crate::tree_import::apply(&mut scratch, &ctx, &tree, file_name).map_err(|e| e.message)?;
+    let r = crate::tree_import::apply(&mut scratch, &ctx, tree, file_name).map_err(|e| e.message)?;
     let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
     if let Some(first) = skipped.first() {
         let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
         return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
     }
     let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
-    // Blends and sweeps are approximated surfaces, computed by another OCCT build in FreeCAD:
-    // their volumes agree to about 1e-5. A larger difference is a different model.
+    // Blends and sweeps are approximated surfaces, computed by another modeller (FreeCAD's
+    // OCCT build, Parasolid): their volumes agree to about 1e-5. A larger difference is a
+    // different model.
     let rel = (got - want).abs() / want;
     let close = rel <= FREECAD_VOLUME_TOLERANCE;
     if want.is_nan() || want <= 0.0 || !close {
-        return Err(format!("the features give {got:.4} mm3, FreeCAD's shapes {want:.4} mm3"));
+        return Err(format!("the features give {got:.4} mm3, {whose} shapes {want:.4} mm3"));
     }
     // The same volume in another place (a mirror about the wrong plane) is caught by the box.
     let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
@@ -1104,18 +1156,19 @@ fn freecad_history(
         let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
         if far(w.min, g.min) || far(w.max, g.max) {
             return Err(format!(
-                "the features lie in {:?}..{:?}, FreeCAD's shapes in {:?}..{:?}",
+                "the features lie in {:?}..{:?}, {whose} shapes in {:?}..{:?}",
                 g.min, g.max, w.min, w.max
             ));
         }
     }
     let note = (rel > 1e-7).then(|| {
-        format!("the features' volume differs from FreeCAD's stored shapes by {:.1e} (approximated surfaces)", rel)
+        format!("the features' volume differs from {whose} stored shapes by {rel:.1e} (approximated surfaces)")
     });
-    Ok((tree, note))
+    Ok(note)
 }
 
-/// Largest relative volume difference between rebuilt features and FreeCAD's stored shapes.
+/// Largest relative volume difference between rebuilt features and the shapes stored with
+/// them (FreeCAD documents, SolidWorks parts).
 const FREECAD_VOLUME_TOLERANCE: f64 = 2e-5;
 
 /// Most base shapes read for the edges of one FreeCAD document's fillets and chamfers.
@@ -1688,8 +1741,9 @@ fn freecad(
 pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<Value, CommandError> {
     if let Some(tree) = &p.tree {
         let mut out = crate::tree_import::apply(s, ctx, tree, &p.file_name)?;
-        // A FreeCAD document's history says where it came from (not an exporter plugin).
-        if p.tier == TIER_FREECAD_HISTORY
+        // A FreeCAD document's or SolidWorks part's history says where it came from (not an
+        // exporter plugin).
+        if (p.tier == TIER_FREECAD_HISTORY || p.tier == TIER_SOLIDWORKS_HISTORY)
             && let Some(o) = out.as_object_mut()
         {
             o.insert("tier".into(), json!(p.tier));
