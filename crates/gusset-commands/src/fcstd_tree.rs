@@ -961,8 +961,9 @@ pub(crate) fn tree_with(
                     }
                     // A pad grows along the sketch normal, a pocket cuts against it;
                     // `Reversed` flips either.
+                    // (Two lengths ignores `Reversed`: FreeCAD offsets the second length instead.)
                     let mut d = if pocket { -distance } else { distance };
-                    if o.bool("Reversed") {
+                    if o.bool("Reversed") && ty != 4 {
                         d = -d;
                     }
                     let symmetric = o.bool("Midplane");
@@ -1400,6 +1401,27 @@ mod tests {
         assert_eq!(t.features[1]["distance"], 2.0);
         assert_eq!(t.features[2]["operation"], "cut");
         assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
+    }
+
+    #[test]
+    fn two_lengths_ignore_reversed() {
+        // FreeCAD offsets the second length of a two-length pad or pocket; `Reversed` does not
+        // turn the pair around (the stored solids of the examples show it).
+        let lens = |reversed: &str| {
+            let doc = DOC.replace(
+                r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>"#,
+                &format!(
+                    r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="4"/></Property>
+    <Property name="Length2" type="App::PropertyLength"><Float value="3"/></Property>
+    <Property name="Reversed" type="App::PropertyBool"><Bool value="{reversed}"/></Property>"#
+                ),
+            );
+            let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+            let d = |i: usize| t.features[i]["distance"].as_f64().unwrap();
+            (d(2), d(3))
+        };
+        assert_eq!(lens("false"), (-1.0, 3.0));
+        assert_eq!(lens("true"), lens("false"));
     }
 
     #[test]
