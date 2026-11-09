@@ -984,7 +984,15 @@ pub(crate) fn tree_with(
                     if o.bool("Reversed") && ty != 4 {
                         d = -d;
                     }
-                    let symmetric = o.bool("Midplane");
+                    // FreeCAD 1.1 and later: `SideType` replaces `Midplane` (0 one side, 1 two sides,
+                    // 2 symmetric).
+                    let symmetric = o.bool("Midplane") || o.int("SideType") == Some(2);
+                    if o.int("SideType") == Some(1) {
+                        return Err(format!(
+                            "{name}: a two-sided {} is not translated yet",
+                            if pocket { "pocket" } else { "pad" }
+                        ));
+                    }
                     let op = match (&first_solid, pocket) {
                         (None, false) => "new",
                         (None, true) => return Err(format!("{name}: a pocket before any solid")),
@@ -1430,6 +1438,18 @@ mod tests {
         let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
         let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
         assert_eq!(kinds, ["sketch", "extrude", "extrude"]);
+    }
+
+    #[test]
+    fn a_symmetric_side_type_is_a_midplane_pad() {
+        let doc = DOC.replace(
+            r#"<Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>"#,
+            r#"<Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>
+    <Property name="SideType" type="App::PropertyEnumeration"><Integer value="2"/></Property>"#,
+        );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        assert_eq!(t.features[1]["symmetric"], true);
+        assert_eq!(t.features[1]["distance"], 2.0);
     }
 
     #[test]
