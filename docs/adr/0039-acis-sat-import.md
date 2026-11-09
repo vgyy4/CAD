@@ -441,3 +441,24 @@ not decoded (2), a pattern of bodies (1), a profile whose curves do not close or
 reproduced (2), a component used with several placements (the bottom plate, whose four mounting-hole
 copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and takes
 `GUSSET_F3D_MIN_HISTORY` as its floor.
+
+## Amendment (2026-11-09, round 4): profile gaps, timeline groups, circular and body patterns
+
+* Profile regions: a loop whose record omits a curve is closed by the one sketch curve that joins its open ends
+  (Crickit CPX Extrude1), and a closed curve cut where it starts counts that crossing once (bq25185 USB Charger Extrude2).
+  The prototype (`regions.py`) has the same two fixes.
+* Timeline group `A917FE80` (the "A#FE#" of the corpus summary) is a non-geometric entry: it lists the features that follow
+  it; they convert as before. CyberDeck HAT moves on to its next blocker (Sweep).
+* `pattern_circular` (axis from the `F2A7590D` point and vector, `countU`, a full `TotalAngle`) and patterns of one body
+  (`target`, `features: []`) are produced; both refuse a pattern whose file makes fewer bodies than its count (suppressed
+  instances; the one circular sample, the Crickit Assembly's C-Pattern1, is such a case, so it stays unsupported).
+  Patterns of components (MacroPad RP2040 R-Pattern1) have no tree form. The Python prototype does not do the pattern
+  part; the Rust trees are authoritative for it.
+* Base Feature: analysed only (`docs/formats/fusion-design-stream.md` section 13): PM/DM body pairs, DM bodies are the last
+  N bodies of the post-state `.smbh`, 5 of 7 designs have them off the timeline, and the tree would need a stored-bodies
+  feature (blob file, first body, count, component placement). Not converted: that needs a tree-format and
+  `gusset-commands` change, which this round did not make.
+* Corpus result (18 designs): 1 as history before and after; the two profile failures and the group blocker are gone, each
+  design now stops at its next feature (Base Feature for the BQ25185 and NeoKey/Trinkey designs, Chamfer3 with 4 unresolved
+  edges for Crickit CPX, Sweep for CyberDeck HAT, Component Insert for the `.f3z` inner designs, a component pattern for
+  MacroPad RP2040).

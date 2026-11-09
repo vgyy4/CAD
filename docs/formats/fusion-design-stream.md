@@ -358,3 +358,106 @@ new-body extrudes match (was 206/236).
 * Everything else in the Adafruit set is blocked by `Base Feature` (PCB bodies), Component Insert, Draft, Shell, Combine, Sweep, Move,
   RemoveBody, Scale or by extrude profiles/extents the prototype does not resolve (importable.py lists the first blockers per design).
 * Fix this round: `ext_geom` returns t0/t1 = None when the extent is not a distance (the rewritten edgeprobe crashed Crickit otherwise).
+
+## 13. Round 4: profile gaps, groups, circular and body patterns, Base Feature (2026-11-09)
+All from the 18-design Adafruit set; "confirmed" names the check.
+
+### Profile loops that omit a curve; closed curves cut at their start
+* Crickit CPX Extrude1: the outer loop of an octagon with eight corner arcs lists 7 arcs and 8 lines (15 entries; the
+  record parses exactly, the entries are in creation order, not walking order). The missing arc (`crv_primary_id` 9464,
+  bottom right) exists in the sketch, as does a second arc of the same geometry (9749, drawn later). Both corner arcs at
+  the other end of that edge are duplicated the same way, and the record names
+  one of the pair at the bottom left and none at the bottom right. Rule used: when the loop's polylines leave exactly the open ends
+  the chain cannot join, the sketch curve (not already in the loop) whose two ends sit on two open ends completes the
+  loop (`geom::close_gaps`; the first in sketch order wins on ties, the geometry is identical). Reason for the omission: not
+  established (hypothesis: the record is written before the sketch's last edit and one arc was re-created).
+  Evidence: Crickit CPX Extrude1 now reads (it was the first blocker). Unverified by a stored body of that extrude; the
+  rebuild check decides per design. **Still failing in the same design (other features, not needed by the corpus result
+  because Draft/Shell/Combine/Move/RemoveBody follow)**: (a) a 5-entry loop whose top edge is line 27650 (x -0.38..0.38,
+  y 4.064) plus "piece 2 of 3" of another line 19290 lying on the same y over x 0..-0.38: the piece duplicates part of
+  27650 and leaves a spur the chain cannot close (dropping a polyline wholly covered by another one of the loop would close
+  it; not done: the rule is a guess); (b) piece 2 of 3 of a vertical line 0.7 cm long that three stubs (T-junctions at 0.29,
+  0.5, 0.71) cut into 4 pieces: which stub Fusion does not count is not established.
+* A closed curve (circle) cut where it starts: the crossing is found at parameter ~0 and ~1 (`-2.4e-14`, `1.000000000000024`);
+  after `rem_euclid(1)` and rounding to 9 places the two became `1.0` and `0.0` and counted as two cuts. A value of 1.0 now
+  maps to 0.0. bq25185 USB Charger Extrude2 (a slot whose round end is a circle cut by the slot's arcs): "piece 1/2" now
+  reproduces. Confirmed: that design now reads up to its first Base Feature.
+
+### Timeline group `A917FE80` (the "A#FE#" blocker)
+* Parent class `CB844AB6`; one record per user group in the timeline, body = list of refs (typed or plain) of the grouped
+  features in timeline order, then a trailing ref to the component timeline marker `3A6D1E62`. CyberDeck HAT: the group
+  (id 5561) lists 24 features; the timeline holds the group first, then exactly those 24 in the same order
+  (confirmed on this one group; the Crickit Assembly has the same record). It names nothing new and creates no body (never
+  a creator in a body link), so it is a non-geometric timeline entry, like CreateComponent. The features inside it are
+  ordinary and are converted as before. No name string in the record (the importer shows `?`); "A#FE#" in the corpus
+  summary is the class prefix with digits masked.
+
+### Circular pattern `11F1A5CE` (one sample: Crickit CPX Assembly, "C-Pattern1")
+* Parameters as for the rectangular patterns: `countU` = 12 (`A085449A` -> `7A6A3D31`), `TotalAngle` = 360 deg
+  (`D91D429C` -> `7A6A3D31`, 6.2832 rad). Axis: `F2A7590D` (same record as the linear direction, the sample is a typed-ref
+  stream so it sits at the same body offsets, flag 8): **point (0,0,0.175) cm and vector (0,0,2.075) cm** at body+25 / +49,
+  `5A1BF548` -> `90055C05` = an origin axis, here Z. The vector's length (2.075) is the axis' display length, only the
+  direction counts; the point is on the axis (Z through x=y=0).
+* Input = a body, not a feature: `8DB90DAE` -> `9716F783` -> `D26351F0` (body link, creator Extrude2 (2)). A pattern's
+  `6CCF41D5` feature list is empty then (this is also why every "pattern of bodies" stayed unsupported).
+* **Suppressed instances**: the record lists 12 instances (`7493A99D`, 12 refs) but creates only 9 body links
+  (`D26351F0` with the pattern as creator): the file has 10 bodies of 12 (CPX NeoPixels: 10). A tree pattern cannot skip
+  instances, so a body pattern is converted only when made + 1 == countU x CountV; this one is not (left unsupported).
+  So no circular sample converts today; the code path (`pattern_circular` with `axis`, `angle` 360, `count`, `target` or
+  `features`) is exercised by the unit tests of the chain only. Partial angles are not converted (how Fusion spaces the
+  copies for angle < 360 is not shown by a sample).
+* Body patterns (linear): the input bodies are the `D26351F0` links directly under the `9716F783` selection records
+  (reached through `EA0E146E` / `2CA5A1CD` / `8DB90DAE`). Links under the direction edge (`F2A7590D` -> `5662F619`) are
+  the body the edge lies on, not an input (Crickit R-Pattern1: Extrude1's body is the direction edge's, Extrude5's body
+  is the input; made = 3 = countU - 1). The tree form is `pattern_linear` with `features: []` and `target` = the creating
+  feature; two directions are not chained (the second would have to copy the first's bodies).
+* 5100 MacroPad `R-Pattern1` is a pattern of components: four `2D6E13A1` occurrence refs, no body selection. A pattern of
+  components has no tree form (it places copies of a component), so MacroPad RP2040 stays at that feature (and at its
+  Base Features after it).
+
+### Base Feature `D7015B81` (150 records in the set, 7 designs; investigation only, not converted)
+* Layout (record of 448 bytes with 3 bodies): `D3937028` refs: the PM bodies, the DM bodies, then the PM list again;
+  `493A89BA` x2; one `D26351F0` body link per DM body (link = [DM body, base feature, component timeline]); `B7F34D7B`,
+  `5FBE538E`, `6CCF41D5`, last the `3A6D1E62` component marker. Counts over all 150: #PM == #DM == #links; PM[k] and DM[k]
+  reference each other (same order); 147 of 150 have the first block "PM bodies then DM bodies" (3 other orders); PM bodies
+  carry the attribute `BASEFEAT_PM_BODY_REF` and **never** have a body link (they are not visible bodies), DM bodies carry
+  `BASEFEAT_DM_BODY_REF` and are the base feature's output (the body link's creator is the base feature).
+* Where the geometry is: each body record refs a body-state list `CD57BC48`. The PM bodies' list is the state before the
+  base feature; it names its file through `40DCC3F4` (`BREP.<uuid>.smb`). The DM bodies' list is the state after; it names
+  `74CA4562` (`BREP.<uuid>.smbh`, 142 of 142 with a PM file). That `.smbh` holds **every body of the component after the
+  base feature, in list order**: NeoKey FeatherWing KAILH_SOCKET: list [Extrude body, DM1, DM2, DM3] and the `.smbh` has
+  4 bodies with 8/106/24/24 vertices and boxes equal to the PM file's last three bodies; the PM `.smb` has 6 (the plate,
+  two sheet bodies that the base feature consumed, three PM solids). 23 of 23 base features checked (4979, 6092, 5020): list
+  length == bodies in the `.smbh` and the DM bodies are the last N of the list (the earlier ones are the component's
+  bodies made by extrudes before, e.g. the "Board"-style plate). So a DM body k of N is body `len-N+k` of the `.smbh`
+  (list order == file order, verified by vertex counts/boxes on the one sample opened in detail).
+* Position in the timeline: 0 of the base features of 5 designs are in the timeline (they exist only in the compute-order
+  list `B65B5682`: importer flag `in_timeline:false`, appended last); 2 of 6 in the Crickit CPX Assembly are timeline
+  entries (followed by `RemoveBody-BodyN` features that delete their bodies). PCB-generated components (NeoKey, BQ25185,
+  MacroPad, CyberDeck parts) therefore have the plate/extrude features in the timeline and the package solids as base
+  feature bodies off it.
+* Later features that reference the bodies: found by walking body links from every feature: only `RemoveBody` (Crickit
+  Assembly), joint origins and a body pattern (MacroPad Assembly 5128, "hardware" standoffs) and one extrude of NeoKey
+  Trinkey (Board Extrude2, through a `2DF7DA30` body-state snapshot listing the component's bodies, not as its operand;
+  its `target` stays "Board"). No join/cut extrude of the set takes a base feature body as its target.
+* What a tree-side "stored body" feature needs (not implemented; the tree format and gusset-commands are not touched):
+  1. a feature, e.g. `{"type":"stored_bodies","name":"Base Feature1","component":..., "file":"BREP.<uuid>.smbh",
+     "first":len-N, "count":N}`, whose bodies come from that ACIS blob's bodies `first..first+N` (the importer already
+     reads these blobs: `gusset_sat::fusion` places them per component occurrence), in the **component's own
+     coordinates** (the blob is stored there; `json::place` already moves tree features with the occurrence, a stored-body
+     feature must take the same placement);
+  2. bodies named per DM body (`<feature>`, `<feature> 2` ...) so later `target`s, patterns and RemoveBody can name them
+     (a body link's creator is the base feature, so today's `target` logic already yields the base feature's name);
+  3. no timeline position needed for the 5 off-timeline designs (append, no feature depends on them); the two timeline
+     base features of the Crickit Assembly need the order;
+  4. for the rebuild check the stored model must contain these bodies: with them as stored solids the final bodies of the
+     PCB components equal the tree's (without them the body count differs, which is why the designs fall back to bodies);
+  5. 8 of 150 base features have no PM `.smb` and (5020 "0805-NO") create 0 bodies: they must be accepted as empty.
+  The remaining blockers of the six PCB designs after that are unknown (the first one hit is the base feature itself:
+  4979, 4980, 5020, 6091 (after the profile fix), 6092, 6106).
+
+### Corpus after this round (Rust trees, first unsupported feature per design)
+3093 Crickit CPX: Chamfer3 (4 edges unresolved; further down Draft, Shell, Combine, Move, OffsetFaces, RemoveBody, Base Feature);
+6091/6092/6106/4979/4980/5020 and the BQ25185 cases: Base Feature; 4863 CyberDeck HAT and Crickit CPX Assembly: Sweep1 /
+Chamfer3 (past the group); MacroPad RP2040: R-Pattern1 (pattern of components); `.f3z` inner designs: Component Insert1
+(`428B5C6E`, not decoded) or no timeline.
