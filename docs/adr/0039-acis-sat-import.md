@@ -480,3 +480,30 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
 * Corpus: 1 of 18 as history before and after; no design was lost. Blockers now: CyberDeck HAT -> Fillet1 (swept
   faces) then Base Features; MacroPad bottom-plate -> the step check; Crickit CPX / Assembly -> Chamfer3 and a
   long chain (Draft, Shell, OffsetFaces, Move, RemoveBody, Base Feature, unrecognised extrude layouts).
+
+## Amendment (2026-11-09, round 6): Base Feature bodies, `.f3z` root, per-body state check
+
+- A Base Feature's visible (DM) bodies are `stored_body` features (ADR 0042 amendment "stored
+  bodies"): per DM body the reader finds the `CD57BC48` state list that names a
+  `BREP.<id>.smbh`, the body's place in that list (a list holds its bodies twice in the
+  record; they are de-duplicated) and the list length; the DM bodies must be among the last
+  bodies of the list. The importer converts body `index` of a blob that must hold exactly
+  `count` bodies (`gusset_sat::to_step_nth`), applies the component's placement as
+  `json::place` does for the other features, and hands the native bytes over in tree order.
+  A Base Feature that makes no body is skipped. A history that is only stored bodies, or
+  where a later feature targets a stored body equal in volume to a final body of the file,
+  is not a history.
+- `.f3z`: only the root design of `Manifest.json` is read (else the single design that has a
+  timeline). None of the six archives comes in yet: each root stops at `Component Insert`.
+- `fusion_states_check` compares each stored solid with the bodies of the model (a state is
+  the volume of some single body after some feature), counts a cut or join extrude's tools
+  per profile loop, and accepts a cut of several loops whose tools are fewer than its loops
+  when their volumes add up to what the cut removed (a loop on empty space makes no tool;
+  bq25185 USB Charger: 68 loops, 60 stored tools, 56.25 mm3 both ways). Runs of features that
+  only add bodies are built once. Tolerances are unchanged.
+- Result: MacroPad bottom-plate and bq25185 USB Charger now come in as history (3 of 18 with
+  the keyplate).
+- Open: 6092/6106 - the `.smbh` DM bodies of their PCB parts are 5x the final bodies in every
+  dimension (cause not found; the extrude body of the same blob matches), so they fail the
+  rebuild; 4979/4980/5020 stop at Extrude3, whose sketch has 21 circles for 95 profile
+  regions (sketch entities not read).
