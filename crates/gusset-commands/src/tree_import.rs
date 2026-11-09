@@ -509,6 +509,8 @@ struct Gen {
     params: HashMap<String, String>,
     sketches: HashMap<String, SketchMap>,
     features: HashMap<String, String>,
+    /// Source names of bodies a `remove_body` dropped -> the removing feature's name.
+    removed: HashMap<String, String>,
     made: Vec<String>,
     skipped: Vec<Value>,
     warnings: Vec<String>,
@@ -540,6 +542,14 @@ impl Gen {
         }
         self.taken.insert(name.to_ascii_lowercase());
         name
+    }
+
+    /// The body feature a source name stands for; a removed body says so.
+    fn body_named(&self, t: &str, what: &str) -> Result<String, String> {
+        if let Some(by) = self.removed.get(t) {
+            return Err(format!("its {what} '{}' was removed by '{}'", short(t), short(by)));
+        }
+        self.features.get(t).cloned().ok_or_else(|| format!("its {what} '{}' was not imported", short(t)))
     }
 
     fn skip(&mut self, name: &str, why: impl Into<String>) {
@@ -610,6 +620,7 @@ pub fn apply_with(
         taken,
         params: HashMap::new(),
         sketches: HashMap::new(),
+        removed: HashMap::new(),
         features: HashMap::new(),
         made: Vec::new(),
         skipped: Vec::new(),
@@ -702,6 +713,7 @@ pub fn apply_with(
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
+            | "move_body" | "draft" | "scale_body" | "remove_body"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
@@ -727,6 +739,18 @@ pub fn apply_with(
             "stored_body" => serde_json::from_value::<v2::StoredBodyF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::stored_body(&mut g, s, &d, &tree.stored_bodies)),
+            "move_body" => serde_json::from_value::<v2::MoveBodyF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::move_body(&mut g, s, &d)),
+            "scale_body" => serde_json::from_value::<v2::ScaleBodyF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::scale_body(&mut g, s, &d)),
+            "remove_body" => serde_json::from_value::<v2::RemoveBodyF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::remove_body(&mut g, s, &d)),
+            "draft" => serde_json::from_value::<v2::DraftF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::draft(&mut g, s, &d)),
             "shell" => serde_json::from_value::<v2::ShellF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::shell(&mut g, s, &d)),
@@ -1090,7 +1114,7 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     if op != "new"
         && let Some(t) = &d.target
     {
-        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        let tn = &g.body_named(t, "target")?;
         args.push(format!("body: {tn}"));
     }
     if !d.refine && op != "new" {

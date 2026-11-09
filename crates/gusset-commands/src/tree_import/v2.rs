@@ -504,7 +504,7 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
     if d.features.is_empty() {
         // The whole body.
         if let Some(t) = &d.target {
-            let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+            let tn = &g.body_named(t, "target")?;
             args.push(format!("body: {tn}"));
         }
     } else {
@@ -681,8 +681,9 @@ pub(super) fn mirror(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value]) -> 
     r
 }
 
-/// The whole body, across a base plane or an offset datum plane.
-fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<(), String> {
+/// The text name of the plane through `o` with normal `n`: a base plane when it is one, else
+/// an offset or tilted datum plane written to the text (named after `name`).
+fn datum_plane(g: &mut Gen, name: &str, o: V3, n: V3) -> Result<String, String> {
     let mut found = None;
     for (base, x, y) in BASES {
         let bn = cross(x, y);
@@ -691,7 +692,6 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
             break;
         }
     }
-    let name = g.fresh(&d.name, "Mirror");
     let plane = match found {
         Some((base, offset)) if offset.abs() < 1e-9 => base.to_string(),
         Some((base, offset)) => {
@@ -714,9 +714,16 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
             placed.plane
         }
     };
+    Ok(plane)
+}
+
+/// The whole body, across a base plane or an offset datum plane.
+fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<(), String> {
+    let name = g.fresh(&d.name, "Mirror");
+    let plane = datum_plane(g, &name, o, n)?;
     let mut args = vec![format!("plane: {plane}")];
     if let Some(t) = &d.target {
-        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        let tn = &g.body_named(t, "target")?;
         args.push(format!("body: {tn}"));
     }
     if d.merge.unwrap_or(true) {
@@ -823,7 +830,7 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
     if op != "new"
         && let Some(t) = &d.target
     {
-        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        let tn = &g.body_named(t, "target")?;
         args.push(format!("body: {tn}"));
     }
     if !d.refine && op != "new" {
@@ -867,7 +874,7 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     if op != "new"
         && let Some(t) = &d.target
     {
-        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        let tn = &g.body_named(t, "target")?;
         args.push(format!("body: {tn}"));
     }
     if !d.refine && op != "new" {
@@ -914,8 +921,7 @@ pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), Stri
         "new" => return Err("a combine joins, cuts or intersects".into()),
         op => op,
     };
-    let named =
-        |t: &String| g.features.get(t).cloned().ok_or_else(|| format!("its body '{}' was not imported", short(t)));
+    let named = |t: &String| g.body_named(t, "body");
     let target = named(&d.target)?;
     let mut tools = Vec::new();
     for t in &d.tools {
@@ -932,5 +938,173 @@ pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), Stri
     g.made.push(name.clone());
     // The combined body keeps its target's name for later references.
     g.features.insert(d.name.clone(), target);
+    Ok(())
+}
+
+/// A turn about an axis (degrees), applied before the translation.
+#[derive(Debug, Clone, Deserialize)]
+struct Rotate {
+    axis: [f64; 3],
+    #[serde(default)]
+    origin: [f64; 3],
+    angle: f64,
+}
+
+/// A whole body moved rigidly (or copied): the rotation first, then the translation.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct MoveBodyF {
+    name: String,
+    target: String,
+    #[serde(default)]
+    translate: Option<[f64; 3]>,
+    #[serde(default)]
+    rotate: Option<Rotate>,
+    #[serde(default)]
+    copy: bool,
+}
+
+fn mm3(v: V3) -> String {
+    format!("[{} mm, {} mm, {} mm]", num(v[0]), num(v[1]), num(v[2]))
+}
+
+pub(super) fn move_body(g: &mut Gen, s: &Session, d: &MoveBodyF) -> Result<(), String> {
+    let target = g.body_named(&d.target, "target")?;
+    let mut args = vec![format!("body: {target}")];
+    let mut motion = false;
+    if let Some(t) = d.translate {
+        let t = finite3(t, "the translation")?;
+        for c in t {
+            if c.abs() > MAX_LENGTH {
+                return Err("the translation is too long".into());
+            }
+        }
+        args.push(format!("translate: {}", mm3(t)));
+        motion = true;
+    }
+    if let Some(r) = &d.rotate {
+        let axis = unit(finite3(r.axis, "the rotation axis")?).ok_or("the rotation axis has no direction")?;
+        let origin = finite3(r.origin, "the rotation origin")?;
+        finite(r.angle, "the rotation angle")?;
+        args.push(format!("axis: [{}, {}, {}]", fine(axis[0]), fine(axis[1]), fine(axis[2])));
+        args.push(format!("angle: {} deg", num(r.angle)));
+        args.push(format!("through: {}", mm3(origin)));
+        motion = true;
+    }
+    if !motion {
+        return Err("it has neither a translation nor a rotation".into());
+    }
+    if d.copy {
+        args.push("copy: true".into());
+    }
+    let name = g.fresh(&d.name, if d.copy { "Copy" } else { "Move" });
+    let _ = writeln!(g.text, "\nmove {name} ({})", args.join(", "));
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    // A moved body keeps its name for later references; a copy is the new one.
+    g.features.insert(d.name.clone(), if d.copy { name } else { target });
+    Ok(())
+}
+
+/// A whole body scaled about a point: one factor, or one per world axis.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ScaleBodyF {
+    name: String,
+    target: String,
+    #[serde(default)]
+    factor: Option<f64>,
+    #[serde(default)]
+    factors: Option<[f64; 3]>,
+    #[serde(default)]
+    center: Option<[f64; 3]>,
+}
+
+pub(super) fn scale_body(g: &mut Gen, s: &Session, d: &ScaleBodyF) -> Result<(), String> {
+    let target = g.body_named(&d.target, "target")?;
+    let factor = match (d.factor, d.factors) {
+        (Some(f), None) => format!("factor: {}", fine(positive(Some(f), "the scale factor")?)),
+        (None, Some(f)) => {
+            let [x, y, z] = f.map(|c| positive(Some(c), "a scale factor"));
+            format!("factors: [{}, {}, {}]", fine(x?), fine(y?), fine(z?))
+        }
+        _ => return Err("give either 'factor' or 'factors'".into()),
+    };
+    let mut args = vec![format!("body: {target}"), factor];
+    if let Some(c) = d.center {
+        let c = finite3(c, "the scaling centre")?;
+        args.push(format!("about: {}", mm3(c)));
+    }
+    let name = g.fresh(&d.name, "Scale");
+    let _ = writeln!(g.text, "\nscale {name} ({})", args.join(", "));
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), target);
+    Ok(())
+}
+
+/// A body dropped from the result; later features cannot name it.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct RemoveBodyF {
+    name: String,
+    target: String,
+}
+
+pub(super) fn remove_body(g: &mut Gen, s: &Session, d: &RemoveBodyF) -> Result<(), String> {
+    let target = g.body_named(&d.target, "target")?;
+    let name = g.fresh(&d.name, "Remove");
+    let _ = writeln!(g.text, "\nremove {name} (body: {target})");
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    let gone: Vec<String> = g.features.iter().filter(|(_, v)| **v == target).map(|(k, _)| k.clone()).collect();
+    for k in gone {
+        g.features.remove(&k);
+        g.removed.insert(k, d.name.clone());
+    }
+    Ok(())
+}
+
+/// Taper faces for molding about their line on a neutral plane.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct DraftF {
+    name: String,
+    faces: Vec<FacePick>,
+    plane: MirrorPlane,
+    angle: f64,
+    #[serde(default)]
+    flip: bool,
+}
+
+pub(super) fn draft(g: &mut Gen, s: &Session, d: &DraftF) -> Result<(), String> {
+    if d.faces.is_empty() || d.faces.len() > MAX_PICKS {
+        return Err("a draft tapers between 1 and 256 faces".into());
+    }
+    finite(d.angle, "the draft angle")?;
+    let n = unit(finite3(d.plane.normal, "the neutral plane")?).ok_or("the neutral plane has no normal")?;
+    let o = finite3(d.plane.origin, "the neutral plane")?;
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let mut body: Option<String> = None;
+    let mut names: Vec<String> = Vec::new();
+    for pick in &d.faces {
+        let (b, face) = pick_face_name(g, s, &ev, pick)?;
+        if body.as_ref().is_some_and(|x| *x != b) {
+            return Err("its faces are on several bodies".into());
+        }
+        body = Some(b);
+        if !names.contains(&face) {
+            names.push(face);
+        }
+    }
+    let body = body.ok_or("no faces")?;
+    let name = g.fresh(&d.name, "Draft");
+    let plane = datum_plane(g, &name, o, n)?;
+    let flip = if d.flip { ", flip: true" } else { "" };
+    let _ = writeln!(
+        g.text,
+        "\ndraft {name} (body: {body}, faces: [{}], plane: {plane}, angle: {} deg{flip})",
+        names.join(", "),
+        num(d.angle)
+    );
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), body);
     Ok(())
 }

@@ -345,3 +345,39 @@ like a negative `distance`; the importer combines it with the sketch's orientati
 `distance` is ignored with a warning; `symmetric`, a missing or unresolvable face, a face behind the
 profile or too small to cover it skip the feature with the reason. `operation` and `target` work
 as for a blind extrude (a pocket up to a face is `"operation": "cut"`).
+
+### Amendment: whole-body edits `move_body`, `scale_body`, `remove_body`, `draft` (2026-11-10)
+
+Version 2 trees may carry four more feature types. All of them name bodies by the *source name*
+of the feature that made or last edited them (`target`), like `combine`.
+
+```json
+{"type": "move_body", "name": "Lift", "target": "Box", "translate": [0, 0, 5],
+ "rotate": {"axis": [0, 0, 1], "origin": [10, 5, 0], "angle": 90}, "copy": false}
+{"type": "scale_body", "name": "Big", "target": "Box", "factor": 2.0, "center": [5, 10, 15]}
+{"type": "scale_body", "name": "Stretch", "target": "Box", "factors": [2.0, 1.0, 0.5]}
+{"type": "remove_body", "name": "Drop", "target": "Pin"}
+{"type": "draft", "name": "Taper", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+ "plane": {"origin": [0, 0, 0], "normal": [0, 0, 1]}, "angle": 5, "flip": false}
+```
+
+- `move_body` becomes the document's `move` (ADR 0004). `translate` (mm) and `rotate` (`axis`, `origin`
+  default the world origin, `angle` degrees, right-hand rule) are optional but one must be given;
+  the turn is applied first, then the translation (the order of `move`). A moved body keeps its
+  tree name for later `target`s, as a combine keeps its target's. With `"copy": true` the original
+  stays and `name` names the new body.
+- `scale_body` becomes `scale`: `factor` (positive) or `factors` (three positive), `center` in mm
+  (default the origin); exactly one of `factor` and `factors`. The body keeps its name.
+  Non-uniform factors are along the world axes and turn curved faces into B-splines.
+- `remove_body` becomes `remove`. Every source name of that body (the original and any
+  feature that edited it) is forgotten; a later `target` naming one is skipped with "its target
+  'X' was removed by 'Drop'". The geometry of its earlier features stays in the history.
+- `draft` becomes the document's `draft`. Faces are picked like a hole's (`pick_face_name`; all on
+  one body); `plane` is the neutral plane (a base plane, an offset datum plane or a tilted one,
+  generated like a mirror's); `angle` degrees as in the document (positive leans inward along the
+  pull, the plane's normal; `flip` reverses the pull). Faces that are not planar, cylindrical or
+  conical, or do not cross the plane, skip the feature with the kernel's reason.
+- In a version 1 file these types are skipped like the other version 2 types. An angle outside
+  the kernel's range, a zero factor, a missing target or an empty motion skips the feature with
+  the reason in `skipped_user_text`. A reader that does not know them skips them and later
+  features that depend on the changed geometry may not resolve their picks.

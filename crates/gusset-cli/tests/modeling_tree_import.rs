@@ -821,3 +821,207 @@ fn bad_extrudes_to_a_face_are_skipped_with_a_reason() {
         assert_vol(b["volume_mm3"].as_f64().unwrap(), 40.0 * 20.0 * 10.0);
     }
 }
+
+// ---- Whole-body edits: move_body, scale_body, remove_body, draft (ADR 0042 amendment) ----
+
+fn box_tree(w: f64, d: f64, h: f64) -> Vec<Value> {
+    vec![rect("Base", plane_at(0.0), 0.0, 0.0, w, d), extrude("Box", "Base", h, "new")]
+}
+
+fn body_of(s: &mut Session, name: Option<&str>) -> Value {
+    execute(s, &CmdCtx::user(1), "query.body", json!({"body": name})).unwrap()
+}
+
+fn close3(got: &Value, want: [f64; 3]) {
+    for (i, w) in want.iter().enumerate() {
+        let g = got[i].as_f64().unwrap();
+        assert!((g - w).abs() < 1e-6, "centroid {got}, expected {want:?}");
+    }
+}
+
+#[test]
+fn a_moved_body_keeps_its_tree_name_for_later_features() {
+    // A 10 mm cube lifted 5 mm; a boss joined on its new top targets the old name.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "move_body", "name": "Lift", "target": "Box", "translate": [0, 0, 5]}));
+    f.push(disc("Top", plane_at(15.0), 5.0, 5.0, 2.0));
+    f.push(json!({"type": "extrude", "name": "Boss", "sketch": "Top", "profiles": "all", "distance": 3.0,
+                  "operation": "join", "target": "Box"}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 + std::f64::consts::PI * 4.0 * 3.0);
+    assert!((b["bbox_min_mm"][2].as_f64().unwrap() - 5.0).abs() < 1e-6, "{b}");
+}
+
+#[test]
+fn a_body_turned_about_an_axis_then_translated() {
+    // A 20 x 10 x 10 block turned 90 degrees about the vertical axis through (10, 5, 0)
+    // (it now spans x 5..15, y -5..15), then moved 100 mm along x.
+    let mut f = box_tree(20.0, 10.0, 10.0);
+    f.push(json!({"type": "move_body", "name": "Turn", "target": "Box", "translate": [100, 0, 0],
+                  "rotate": {"axis": [0, 0, 1], "origin": [10, 5, 0], "angle": 90}}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 2000.0);
+    close3(&b["centroid_mm"], [110.0, 5.0, 5.0]);
+}
+
+#[test]
+fn a_copied_body_leaves_the_original_in_place() {
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "move_body", "name": "Twin", "target": "Box", "translate": [30, 0, 0], "copy": true}));
+    let (mut s, _) = import_v2_session(f);
+    let orig = body_of(&mut s, Some("Box"));
+    close3(&orig["centroid_mm"], [5.0, 5.0, 5.0]);
+    let twin = body_of(&mut s, Some("Twin"));
+    assert_vol(twin["volume_mm3"].as_f64().unwrap(), 1000.0);
+    close3(&twin["centroid_mm"], [35.0, 5.0, 5.0]);
+}
+
+#[test]
+fn a_move_without_motion_is_skipped() {
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "move_body", "name": "Nothing", "target": "Box"}));
+    f.push(json!({"type": "move_body", "name": "Lost", "target": "Nope", "translate": [1, 0, 0]}));
+    let (_, r) = import_into_session(f);
+    let skipped = r["skipped_user_text"].to_string();
+    assert!(skipped.contains("neither a translation nor a rotation") && skipped.contains("was not imported"), "{r}");
+}
+
+#[test]
+fn a_body_scaled_uniformly_about_a_point() {
+    // 10 x 20 x 30 doubled about its own centre: 8 times the volume, centre unchanged.
+    let mut f = box_tree(10.0, 20.0, 30.0);
+    f.push(json!({"type": "scale_body", "name": "Big", "target": "Box", "factor": 2.0, "center": [5, 10, 15]}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 6000.0 * 8.0);
+    close3(&b["centroid_mm"], [5.0, 10.0, 15.0]);
+}
+
+#[test]
+fn a_scaled_body_about_the_origin_moves_away_from_it() {
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "scale_body", "name": "Half", "target": "Box", "factor": 0.5}));
+    // A boss on the new top (z = 5) joins the scaled body by its old name.
+    f.push(disc("Top", plane_at(5.0), 2.5, 2.5, 1.0));
+    f.push(json!({"type": "extrude", "name": "Boss", "sketch": "Top", "profiles": "all", "distance": 2.0,
+                  "operation": "join", "target": "Box"}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 125.0 + std::f64::consts::PI * 2.0);
+}
+
+#[test]
+fn a_body_scaled_by_a_factor_per_axis() {
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "scale_body", "name": "Stretch", "target": "Box", "factors": [2.0, 1.0, 0.5]}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0);
+    close3(&b["centroid_mm"], [10.0, 5.0, 2.5]);
+}
+
+#[test]
+fn bad_scales_are_skipped_with_a_reason() {
+    for bad in [
+        json!({"factor": 0.0}),
+        json!({"factor": -2.0}),
+        json!({"factors": [1.0, 0.0, 1.0]}),
+        json!({}),
+        json!({"factor": 2.0, "factors": [1.0, 1.0, 1.0]}),
+        json!({"factor": 1e300, "center": [0, 0, 0]}),
+    ] {
+        let mut f = box_tree(10.0, 10.0, 10.0);
+        let mut s = json!({"type": "scale_body", "name": "Bad", "target": "Box"});
+        s.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        f.push(s);
+        let (_, r) = import_into_session(f);
+        assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{bad}: {r}");
+    }
+}
+
+#[test]
+fn a_removed_body_is_gone_and_cannot_be_named_again() {
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(disc("Round", plane_at(0.0), 20.0, 5.0, 2.0));
+    f.push(extrude("Pin", "Round", 10.0, "new"));
+    f.push(json!({"type": "remove_body", "name": "Drop", "target": "Pin"}));
+    f.push(json!({"type": "move_body", "name": "Again", "target": "Pin", "translate": [1, 0, 0]}));
+    let (mut s, r) = import_into_session(f);
+    let skipped = r["skipped_user_text"].to_string();
+    assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{r}");
+    assert!(skipped.contains("removed by"), "{r}");
+    let b = body_of(&mut s, None);
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0);
+    assert!(execute(&mut s, &CmdCtx::user(1), "query.body", json!({"body": "Pin"})).is_err());
+}
+
+#[test]
+fn removing_a_modified_body_removes_it_under_every_name() {
+    // The cube was joined with a boss (still "Box"), then dropped; the pin stays.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(disc("Round", plane_at(0.0), 20.0, 5.0, 2.0));
+    f.push(extrude("Pin", "Round", 10.0, "new"));
+    f.push(json!({"type": "scale_body", "name": "Grow", "target": "Box", "factor": 2.0}));
+    f.push(json!({"type": "remove_body", "name": "Drop", "target": "Grow"}));
+    f.push(json!({"type": "scale_body", "name": "Late", "target": "Box", "factor": 2.0}));
+    let (mut s, r) = import_into_session(f);
+    assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{r}");
+    assert!(r["skipped_user_text"].to_string().contains("removed by"), "{r}");
+    assert_vol(body_of(&mut s, None)["volume_mm3"].as_f64().unwrap(), std::f64::consts::PI * 4.0 * 10.0);
+}
+
+#[test]
+fn a_drafted_side_face_leans_inward() {
+    // The +x wall of a 10 mm cube turns 5 degrees about its foot on z = 0, narrowing the
+    // cube upwards: a wedge of 10 * (10 tan 5) / 2 over the 10 mm depth is gone.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "draft", "name": "Taper", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "plane": {"origin": [0, 0, 0], "normal": [0, 0, 1]}, "angle": 5}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    let want = 1000.0 - 500.0 * libm::tan(5.0_f64.to_radians());
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), want);
+}
+
+#[test]
+fn a_flipped_draft_on_an_offset_plane_leans_the_other_way() {
+    // Neutral plane at z = 10 (the top), pulled the other way (down): the wall narrows
+    // towards the foot, the mirror image of the first case, so the same volume is lost.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "draft", "name": "Taper", "flip": true,
+                  "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1]}, "angle": 5}));
+    let (mut s, _) = import_v2_session(f);
+    let b = body_of(&mut s, None);
+    let want = 1000.0 - 500.0 * libm::tan(5.0_f64.to_radians());
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), want);
+}
+
+#[test]
+fn bad_drafts_are_skipped_with_a_reason() {
+    for bad in [
+        json!({"faces": []}),
+        json!({"faces": [{"point": [10, 5, 5]}], "plane": {"origin": [0, 0, 0], "normal": [0, 0, 0]}}),
+        json!({"faces": [{"point": [10, 5, 5]}], "angle": 95}),
+    ] {
+        let mut f = box_tree(10.0, 10.0, 10.0);
+        let mut d = json!({"type": "draft", "name": "Bad", "faces": [{"point": [10, 5, 5]}],
+                           "plane": {"origin": [0, 0, 0], "normal": [0, 0, 1]}, "angle": 5});
+        d.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        f.push(d);
+        let (_, r) = import_into_session(f);
+        assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{bad}: {r}");
+    }
+}
+
+#[test]
+fn the_whole_body_edits_need_a_version_2_file() {
+    let tree = json!({"format": "gusset-feature-tree", "version": 1, "source": {"app": "test"},
+        "features": [{"type": "remove_body", "name": "R", "target": "X"}]});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    assert!(r["skipped_user_text"].to_string().contains("version 2"), "{r}");
+}
