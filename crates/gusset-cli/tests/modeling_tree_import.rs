@@ -375,3 +375,18 @@ fn a_body_mirrored_across_a_tilted_plane_lands_on_its_reflection() {
         assert!((l - lo[i]).abs() < 1e-3 && (h - hi[i]).abs() < 1e-3, "{i}: {l}..{h} vs {}..{} ({b})", lo[i], hi[i]);
     }
 }
+
+#[test]
+fn a_disc_swept_along_a_path_sketch_line() {
+    // A radius 2 disc swept 20 mm up a line of an XZ sketch: pi 4 20.
+    let path = json!({
+        "type": "sketch", "name": "Path", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]},
+        "points": [{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 0, "y": 20}],
+        "curves": [{"id": "p", "type": "line", "start": "a", "end": "b"}]
+    });
+    let sweep = json!({"type": "sweep", "name": "Pipe", "sketch": "Disc", "path": "Path", "path_curves": ["p"],
+        "orientation": "frenet", "operation": "new"});
+    let (r, v) = import_v2(vec![disc("Disc", plane_at(0.0), 0.0, 0.0, 2.0), path, sweep]);
+    assert_vol(v, std::f64::consts::PI * 4.0 * 20.0);
+    assert!(r["features"].to_string().contains("Pipe"), "{r}");
+}
