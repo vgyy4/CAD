@@ -6,8 +6,9 @@
 use crate::proto::{Fault, Reply, Request, VERSION};
 use gusset_kernel::wire::{ShapeRefs, WireError};
 use gusset_kernel::{
-    BBox, BoolOp, DraftSpec, ExtrudeSpec, KResult, Kernel, KernelError, KernelErrorKind, LoftSpec, MassProps, Mesh,
-    OpResult, Profile, RevolveSpec, Shape, ShapeData, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
+    BBox, BoolOp, ChamferSpec, DraftSpec, ExtrudeSpec, KResult, Kernel, KernelError, KernelErrorKind, LoftSpec,
+    MassProps, Mesh, OpResult, Profile, RevolveSpec, Shape, ShapeData, SweepPath, SweepSpec, TessellationParams,
+    Topology, Transform,
 };
 use std::any::Any;
 use std::borrow::Cow;
@@ -517,6 +518,10 @@ impl Kernel for RemoteKernel {
 
     fn chamfer(&self, shape: &Shape, edges: &[u32], distance: f64) -> KResult<OpResult> {
         self.op(&Request::Chamfer(shape.clone(), edges.to_vec(), distance))
+    }
+
+    fn chamfer_ref(&self, shape: &Shape, edges: &[u32], faces: &[u32], spec: &ChamferSpec) -> KResult<OpResult> {
+        self.op(&Request::ChamferRef(shape.clone(), edges.to_vec(), faces.to_vec(), *spec))
     }
 
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {

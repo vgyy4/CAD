@@ -4,8 +4,8 @@
 
 use gusset_kernel::wire::{Reader, ShapeRefs, Wire, WireError, Writer};
 use gusset_kernel::{
-    BBox, BoolOp, DraftSpec, ExtrudeSpec, HlrCurve, HlrView, KernelError, LoftSpec, MassProps, Mesh, OpResult, Profile,
-    RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
+    BBox, BoolOp, ChamferSpec, DraftSpec, ExtrudeSpec, HlrCurve, HlrView, KernelError, LoftSpec, MassProps, Mesh,
+    OpResult, Profile, RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
 };
 
 /// Protocol version, checked by `Ping`.
@@ -40,6 +40,7 @@ pub(crate) enum Request {
     BooleanMany(BoolOp, Shape, Vec<Shape>),
     Fillet(Shape, Vec<u32>, f64),
     Chamfer(Shape, Vec<u32>, f64),
+    ChamferRef(Shape, Vec<u32>, Vec<u32>, ChamferSpec),
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
@@ -148,6 +149,13 @@ impl Request {
                 put_shape(&mut w, s, shape)?;
                 put_u32s(&mut w, faces)?;
                 w.f64(*d);
+            }
+            Request::ChamferRef(shape, edges, faces, spec) => {
+                w.u8(35);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, edges)?;
+                put_u32s(&mut w, faces)?;
+                spec.put(&mut w, s)?;
             }
             Request::Draft(shape, faces, spec) => {
                 w.u8(25);
@@ -337,6 +345,12 @@ impl Request {
             32 => Request::Stitch(get_shapes(&mut r, s)?, r.f64()?),
             33 => Request::DeleteFaces(get_shape(&mut r, s)?, get_u32s(&mut r)?),
             34 => Request::OffsetFacesOnly(get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?),
+            35 => Request::ChamferRef(
+                get_shape(&mut r, s)?,
+                get_u32s(&mut r)?,
+                get_u32s(&mut r)?,
+                ChamferSpec::get(&mut r, s)?,
+            ),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

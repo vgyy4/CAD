@@ -91,6 +91,10 @@ pub(crate) fn boolean_many(op: i32, target: &RawShape, tools: &[&RawShape]) -> K
     safe::boolean_many(op, target, tools).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn chamfer_asym(s: &RawShape, edges: &[u32], faces: &[u32], mode: i32, a: f64, b: f64) -> KResult<OpOut> {
+    safe::chamfer_asym(s, edges, faces, mode, a, b).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> KResult<OpOut> {
     safe::blend(s, edges, size, fillet).map_err(err(KernelErrorKind::OperationFailed))
 }

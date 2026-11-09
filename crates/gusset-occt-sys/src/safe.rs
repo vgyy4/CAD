@@ -362,6 +362,25 @@ pub fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> ShimResult
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Chamfer with a reference face per edge: `mode` 1 = two distances `(a, b)`, 2 = distance `a`
+/// and angle `b` (radians). `faces[i]` is a face adjacent to `edges[i]`; `a` runs along it.
+pub fn chamfer_asym(s: &RawShape, edges: &[u32], faces: &[u32], mode: i32, a: f64, b: f64) -> ShimResult<OpOut> {
+    if edges.len() != faces.len() {
+        return Err(ShimError::Failed("chamfer needs one reference face per edge".into()));
+    }
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = s.with(|p| {
+        // SAFETY: shape locked and valid; `edges` and `faces` have equal length and stay alive
+        // for the call; out-params are valid.
+        unsafe {
+            sys::gs_chamfer_asym(p, edges.as_ptr(), faces.as_ptr(), edges.len(), mode, a, b, &mut out, &mut origins)
+        }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

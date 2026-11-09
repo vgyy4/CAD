@@ -114,6 +114,11 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
                     GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);
+/* Chamfers with a reference face per edge (`faces[i]` is a face index adjacent to `edges[i]`;
+ * the first distance `a` runs along it). mode 1: two distances (a, b); mode 2: distance `a`
+ * and angle `b` (radians, in (0, pi/2)) measured from the reference face. */
+int gs_chamfer_asym(const GsShape* s, const uint32_t* edges, const uint32_t* faces, size_t nedges, int mode, double a,
+                    double b, GsShape** out, GsBuf* origins);
 /* Hollows `s` to a wall of `thickness` (> 0 inward, < 0 outward), removing the faces
  * `faces` (indices into the shape's face order). */
 int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,

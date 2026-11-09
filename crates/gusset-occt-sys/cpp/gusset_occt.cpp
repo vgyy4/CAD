@@ -493,13 +493,7 @@ int shapes_out(std::vector<GsShape*>& v, GsShape*** out, size_t* n) {
 }
 
 template <typename Mk>
-int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, bool fillet, GsShape** out,
-          GsBuf* origins) {
-  if (!s || !out || !origins || (!edges && nedges)) return fail("null argument");
-  if (nedges == 0) return fail("no edges selected");
-  if (!std::isfinite(size) || size <= 0) return fail(fillet ? "fillet radius must be positive" : "chamfer distance must be positive");
-  Mk mk(s->s);
-  for (size_t i = 0; i < nedges; ++i) mk.Add(size, edge_by_index(s->s, edges[i]));
+int finish_blend(Mk& mk, const GsShape* s, bool fillet, GsShape** out, GsBuf* origins) {
   mk.Build();
   if (!mk.IsDone()) return fail(fillet ? "fillet failed" : "chamfer failed");
   TopoDS_Shape result = mk.Shape();
@@ -513,6 +507,17 @@ int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, b
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
+}
+
+template <typename Mk>
+int blend(const GsShape* s, const uint32_t* edges, size_t nedges, double size, bool fillet, GsShape** out,
+          GsBuf* origins) {
+  if (!s || !out || !origins || (!edges && nedges)) return fail("null argument");
+  if (nedges == 0) return fail("no edges selected");
+  if (!std::isfinite(size) || size <= 0) return fail(fillet ? "fillet radius must be positive" : "chamfer distance must be positive");
+  Mk mk(s->s);
+  for (size_t i = 0; i < nedges; ++i) mk.Add(size, edge_by_index(s->s, edges[i]));
+  return finish_blend(mk, s, fillet, out, origins);
 }
 
 // Does the shape have a face that is not a plane, cylinder, cone, sphere or torus?
@@ -1359,6 +1364,29 @@ int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double rad
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   return blend<BRepFilletAPI_MakeChamfer>(s, edges, nedges, dist, false, out, origins);
+  GS_GUARD_END
+}
+
+int gs_chamfer_asym(const GsShape* s, const uint32_t* edges, const uint32_t* faces, size_t nedges, int mode, double a,
+                    double b, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!edges && nedges) || (!faces && nedges)) return fail("null argument");
+  if (nedges == 0) return fail("no edges selected");
+  if (mode != 1 && mode != 2) return fail("unknown chamfer mode");
+  if (!std::isfinite(a) || a <= 0) return fail("chamfer distance must be positive");
+  if (mode == 1 && (!std::isfinite(b) || b <= 0)) return fail("chamfer distance must be positive");
+  if (mode == 2 && (!std::isfinite(b) || b <= 0 || b >= M_PI / 2)) return fail("chamfer angle must be between 0 and 90 degrees");
+  ShapeMap face_map;
+  TopExp::MapShapes(s->s, TopAbs_FACE, face_map);
+  BRepFilletAPI_MakeChamfer mk(s->s);
+  for (size_t i = 0; i < nedges; ++i) {
+    if (faces[i] >= uint32_t(face_map.Extent())) return fail("face index out of range");
+    TopoDS_Edge e = edge_by_index(s->s, edges[i]);
+    TopoDS_Face f = TopoDS::Face(face_map(int(faces[i]) + 1));
+    if (mode == 1) mk.Add(a, b, e, f);
+    else mk.AddDA(a, b, e, f);
+  }
+  return finish_blend(mk, s, false, out, origins);
   GS_GUARD_END
 }
 

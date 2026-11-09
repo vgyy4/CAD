@@ -445,6 +445,18 @@ mod imp {
             op_result(ffi::blend(raw(shape)?, edges, distance, false)?)
         }
 
+        fn chamfer_ref(&self, shape: &Shape, edges: &[u32], faces: &[u32], spec: &ChamferSpec) -> KResult<OpResult> {
+            match *spec {
+                ChamferSpec::Equal(d) => self.chamfer(shape, edges, d),
+                ChamferSpec::TwoDistances { first, second } => {
+                    op_result(ffi::chamfer_asym(raw(shape)?, edges, faces, 1, first, second)?)
+                }
+                ChamferSpec::DistanceAngle { distance, angle } => {
+                    op_result(ffi::chamfer_asym(raw(shape)?, edges, faces, 2, distance, angle)?)
+                }
+            }
+        }
+
         fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
             op_result(ffi::shell(raw(shape)?, remove, thickness)?)
         }

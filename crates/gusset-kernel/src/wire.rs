@@ -572,6 +572,40 @@ impl Wire for DraftSpec {
     }
 }
 
+impl Wire for ChamferSpec {
+    const MIN_SIZE: usize = 9;
+    fn put(&self, w: &mut Writer, _s: &dyn ShapeRefs) -> Result<(), WireError> {
+        match *self {
+            ChamferSpec::Equal(d) => {
+                w.u8(0);
+                w.f64(d);
+                w.f64(0.0);
+            }
+            ChamferSpec::TwoDistances { first, second } => {
+                w.u8(1);
+                w.f64(first);
+                w.f64(second);
+            }
+            ChamferSpec::DistanceAngle { distance, angle } => {
+                w.u8(2);
+                w.f64(distance);
+                w.f64(angle);
+            }
+        }
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>, _s: &dyn ShapeRefs) -> Result<Self, WireError> {
+        let tag = r.u8()?;
+        let (a, b) = (r.f64()?, r.f64()?);
+        match tag {
+            0 => Ok(ChamferSpec::Equal(a)),
+            1 => Ok(ChamferSpec::TwoDistances { first: a, second: b }),
+            2 => Ok(ChamferSpec::DistanceAngle { distance: a, angle: b }),
+            t => Err(WireError(format!("unknown chamfer form {t}"))),
+        }
+    }
+}
+
 impl Wire for HlrView {
     const MIN_SIZE: usize = 57;
     fn put(&self, w: &mut Writer, s: &dyn ShapeRefs) -> Result<(), WireError> {
@@ -1146,6 +1180,9 @@ mod tests {
             rt(&SweepSpec { orientation, twist: 0.75 });
             rt(&DraftSpec { pull: [0.0, 0.0, 1.0], neutral: [1.0, -2.0, 3.5], angle: -0.1 });
         }
+        rt(&ChamferSpec::Equal(1.5));
+        rt(&ChamferSpec::TwoDistances { first: 2.0, second: 3.0 });
+        rt(&ChamferSpec::DistanceAngle { distance: 2.0, angle: 0.5 });
         rt(&LoftSpec { ruled: true });
         rt(&LoftSpec { ruled: false });
         rt(&TessellationParams::default());

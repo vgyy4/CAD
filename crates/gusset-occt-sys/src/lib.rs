@@ -206,6 +206,17 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_chamfer_asym(
+            s: *const GsShape,
+            edges: *const u32,
+            faces: *const u32,
+            nedges: usize,
+            mode: i32,
+            a: f64,
+            b: f64,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_shell(
             s: *const GsShape,
             faces: *const u32,

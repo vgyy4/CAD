@@ -170,6 +170,23 @@ pub struct SweepSpec {
     pub twist: f64,
 }
 
+/// How [`crate::Kernel::chamfer_ref`] cuts an edge. Lengths in mm, angles in radians.
+///
+/// Reference face: for the asymmetric forms every edge comes with one of its (two) adjacent
+/// faces. The first distance runs along that face (the chamfer face meets it that far from
+/// the edge); the second distance, or the angle, belongs to the other side. For the angle
+/// form the angle is measured from the reference face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChamferSpec {
+    /// One distance on both faces (the same as [`crate::Kernel::chamfer`]).
+    Equal(f64),
+    /// `first` along the reference face, `second` along the other face.
+    TwoDistances { first: f64, second: f64 },
+    /// `distance` along the reference face, then the chamfer face leaves it at `angle`,
+    /// `0 < angle < π/2`.
+    DistanceAngle { distance: f64, angle: f64 },
+}
+
 /// A draft (taper) for [`crate::Kernel::draft`] (ADR 0028).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DraftSpec {

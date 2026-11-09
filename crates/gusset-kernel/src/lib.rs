@@ -207,6 +207,19 @@ pub trait Kernel: Send + Sync + Debug {
         unsupported("chamfer", self.name())
     }
 
+    /// Chamfers `edges` as `spec` says. `faces[i]` is the reference face of `edges[i]`
+    /// (a face index adjacent to the edge); it is ignored for [`ChamferSpec::Equal`].
+    /// The default handles only the equal form.
+    fn chamfer_ref(&self, shape: &Shape, edges: &[u32], faces: &[u32], spec: &ChamferSpec) -> KResult<OpResult> {
+        match *spec {
+            ChamferSpec::Equal(d) => self.chamfer(shape, edges, d),
+            _ => {
+                let _ = faces;
+                unsupported("asymmetric chamfer", self.name())
+            }
+        }
+    }
+
     /// Hollows a solid: removes the faces `remove` (indices into the shape's topology) and
     /// leaves walls of `thickness` mm (> 0 grows inward, < 0 outward). Faces that
     /// remain on the outside report [`FaceOrigin::Input`]; the new inner faces report

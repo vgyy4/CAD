@@ -201,6 +201,89 @@ fn fillet_and_chamfer_history() {
     assert!(k().fillet(&a.shape, &[9999], 1.0).is_err());
 }
 
+/// A 10 mm cube and one of its edges with both adjacent faces (ascending indices).
+fn cube_edge() -> (OpResult, u32, [u32; 2]) {
+    let a = k().extrude(&boxp(10.0, 10.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let t = k().topology(&a.shape).unwrap();
+    let e = t.edges.iter().position(|e| (e.length - 10.0).abs() < 1e-9 && e.faces.len() == 2).unwrap();
+    let f = &t.edges[e].faces;
+    (a, e as u32, [f[0], f[1]])
+}
+
+/// Area of the output face that descends from input face `f`.
+fn area_of(r: &OpResult, f: u32) -> f64 {
+    let i = r.face_origins.iter().position(|o| o.contains(&FaceOrigin::Input { input: 0, face: f })).unwrap();
+    k().topology(&r.shape).unwrap().faces[i].area
+}
+
+fn face_areas(r: &OpResult) -> Vec<f64> {
+    let mut v: Vec<f64> = k().topology(&r.shape).unwrap().faces.iter().map(|f| f.area).collect();
+    v.sort_by(f64::total_cmp);
+    v
+}
+
+#[test]
+fn chamfer_two_distances_follows_the_reference_face() {
+    let (a, e, faces) = cube_edge();
+    let spec = ChamferSpec::TwoDistances { first: 2.0, second: 3.0 };
+    let mut shapes = Vec::new();
+    for rf in faces {
+        let c = k().chamfer_ref(&a.shape, &[e], &[rf], &spec).unwrap();
+        let m = k().mass_properties(&c.shape).unwrap();
+        assert!(close(m.volume, 1000.0 - 0.5 * 2.0 * 3.0 * 10.0, 1e-6), "{}", m.volume);
+        assert_eq!(k().topology(&c.shape).unwrap().faces.len(), 7);
+        // The reference face loses 2 mm of its width, the other 3 mm.
+        let areas = face_areas(&c);
+        assert!(
+            areas.iter().any(|x| close(*x, 80.0, 1e-6)) && areas.iter().any(|x| close(*x, 70.0, 1e-6)),
+            "{areas:?}"
+        );
+        // The chamfer face is a blend of the edge.
+        assert!(c.face_origins.iter().flatten().any(|o| *o == FaceOrigin::FromEdge { input: 0, edge: e }));
+        shapes.push(c);
+    }
+    // Swapping the reference face swaps which neighbour is cut by 2 mm.
+    assert!(close(area_of(&shapes[0], faces[0]), 80.0, 1e-6) && close(area_of(&shapes[0], faces[1]), 70.0, 1e-6));
+    assert!(close(area_of(&shapes[1], faces[1]), 80.0, 1e-6) && close(area_of(&shapes[1], faces[0]), 70.0, 1e-6));
+}
+
+#[test]
+fn chamfer_distance_and_angle() {
+    let (a, e, faces) = cube_edge();
+    // 45 degrees: both legs equal.
+    let spec = ChamferSpec::DistanceAngle { distance: 2.0, angle: std::f64::consts::FRAC_PI_4 };
+    let c = k().chamfer_ref(&a.shape, &[e], &[faces[0]], &spec).unwrap();
+    let v = k().mass_properties(&c.shape).unwrap().volume;
+    assert!(close(v, 1000.0 - 0.5 * 2.0 * 2.0 * 10.0, 1e-6), "{v}");
+    // 30 degrees from the reference face: the other leg is d * tan(30 deg).
+    let spec = ChamferSpec::DistanceAngle { distance: 3.0, angle: std::f64::consts::FRAC_PI_6 };
+    let other = 3.0 * std::f64::consts::FRAC_PI_6.tan();
+    let c = k().chamfer_ref(&a.shape, &[e], &[faces[1]], &spec).unwrap();
+    let v = k().mass_properties(&c.shape).unwrap().volume;
+    assert!(close(v, 1000.0 - 0.5 * 3.0 * other * 10.0, 1e-6), "{v}");
+    assert!(close(area_of(&c, faces[1]), 100.0 - 3.0 * 10.0, 1e-6));
+    assert!(close(area_of(&c, faces[0]), 100.0 - other * 10.0, 1e-6));
+}
+
+#[test]
+fn chamfer_ref_errors_are_clean() {
+    let (a, e, faces) = cube_edge();
+    let two = ChamferSpec::TwoDistances { first: 2.0, second: 3.0 };
+    assert!(k().chamfer_ref(&a.shape, &[e], &[9999], &two).is_err());
+    assert!(
+        k().chamfer_ref(&a.shape, &[e], &[faces[0]], &ChamferSpec::TwoDistances { first: 2.0, second: -1.0 }).is_err()
+    );
+    let bad = ChamferSpec::DistanceAngle { distance: 2.0, angle: std::f64::consts::FRAC_PI_2 };
+    assert!(k().chamfer_ref(&a.shape, &[e], &[faces[0]], &bad).is_err());
+    // Equal goes to the plain chamfer.
+    let c = k().chamfer_ref(&a.shape, &[e], &[], &ChamferSpec::Equal(1.0)).unwrap();
+    assert!(close(k().mass_properties(&c.shape).unwrap().volume, 1000.0 - 5.0, 1e-6));
+    // Too large for the cube.
+    assert!(
+        k().chamfer_ref(&a.shape, &[e], &[faces[0]], &ChamferSpec::TwoDistances { first: 50.0, second: 1.0 }).is_err()
+    );
+}
+
 #[test]
 fn tessellation_is_consistent() {
     let a = k().extrude(&boxp(40.0, 20.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();

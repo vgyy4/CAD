@@ -9,8 +9,9 @@
 
 use crate::RemoteKernel;
 use gusset_kernel::{
-    BBox, BoolOp, DraftSpec, ExtrudeSpec, KResult, Kernel, KernelError, KernelErrorKind, LoftSpec, MassProps, Mesh,
-    OpResult, Profile, RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology, Transform,
+    BBox, BoolOp, ChamferSpec, DraftSpec, ExtrudeSpec, KResult, Kernel, KernelError, KernelErrorKind, LoftSpec,
+    MassProps, Mesh, OpResult, Profile, RevolveSpec, Shape, SweepPath, SweepSpec, TessellationParams, Topology,
+    Transform,
 };
 use std::sync::Arc;
 
@@ -158,6 +159,11 @@ impl Kernel for PoolKernel {
     fn chamfer(&self, shape: &Shape, edges: &[u32], distance: f64) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.chamfer(&s, edges, distance)
+    }
+
+    fn chamfer_ref(&self, shape: &Shape, edges: &[u32], faces: &[u32], spec: &ChamferSpec) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.chamfer_ref(&s, edges, faces, spec)
     }
 
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
