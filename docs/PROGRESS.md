@@ -340,8 +340,10 @@ Phase 3 has started (see Next).
      tags, the +-pi fix, seam picks for whole circles, hole fallback axis as a profile line, rectangular
      patterns (direction, count, spacing, chained second direction, midplane): 20 of 47 as history
      (L-Bracket, side, Conecting plate 1, back accses panel added); Rust trees equal the prototype's except
-     fp ties in a degenerate thumbscrew arc. Next here: ellipse sketch curves (4 O-rings, needs an ellipse in the
-     tree format), thicken (3), two-distance chamfers (M8), full-round fillets, rolling-ball/vertex blends.
+     fp ties in a degenerate thumbscrew arc. Rounds 3-4 (amendments 4-6, 2026-11-09): distance-angle chamfers
+     with their reference face (M8), ellipses (the 4 O-rings), full-round fillets and thicken as a join extrude:
+     25 of 47 as history. Next here: chamfers chained round a cylinder with cone corner patches (blocks the 3
+     thicken parts), rolling-ball/vertex blends, the knurl pattern count of the thumbscrews.
    - Full-round fillets done (2026-11-09; ADR 0004 amendment, ADR 0042 amendment): `fillet F (full_round: [<face>])`
      replaces a planar face between two parallel planar faces by a tangent half cylinder (radius t/2). `Kernel::full_round`
      (OCCT `gs_full_round`: corner prisms cut in one boolean, exact; remote protocol request 36; mock: none), eval
