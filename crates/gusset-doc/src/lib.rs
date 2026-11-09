@@ -241,6 +241,7 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             "combine Combine1 ",
             "pattern_linear ",
             "spline(",
+            "ellipse(",
             "pattern_linear(of:",
             "sweep Sweep1 ",
             "loft Loft1 ",
@@ -506,6 +507,38 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
             let issues = validate::validate(&d);
             assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
         }
+    }
+
+    #[test]
+    fn ellipses_round_trip_and_are_validated() {
+        let ok = "gusset 1\nunits mm\n\nsketch S (plane: XY, next_id: 11) {\n  p1 = point(0, 0)\n  p2 = point(5, 0)\n  p3 = point(0, 3)\n  o4 = ellipse(p1, 0.5, 5, 3)\n  q5 = ellipse_arc(p1, 0, 5, 3, p2, p3) construction\n  k6 = semi_major(o4, 5 mm)\n  k7 = semi_minor(o4, 3 mm)\n  k8 = horizontal(o4)\n  k9 = on_circle(p2, o4)\n  k10 = fixed(q5)\n}\n";
+        let doc = Document::from_text(ok).unwrap();
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Sketch(s) = &doc.features[0].kind else { panic!() };
+        assert_eq!(s.entities[3].geom, SkGeom::Ellipse { center: "p1".into(), angle: 0.5, a: 5.0, b: 3.0 });
+        assert_eq!(
+            s.entities[4].geom,
+            SkGeom::EllipseArc {
+                center: "p1".into(),
+                angle: 0.0,
+                a: 5.0,
+                b: 3.0,
+                start: "p2".into(),
+                end: "p3".into()
+            }
+        );
+        assert!(validate::validate(&doc).is_empty());
+        for (bad, why) in [
+            (ok.replace("ellipse(p1, 0.5, 5, 3)", "ellipse(p1, 0.5, 0, 3)"), "positive semi-axes"),
+            (ok.replace("ellipse(p1, 0.5, 5, 3)", "ellipse(p9, 0.5, 5, 3)"), "p9"),
+            (ok.replace("o4 = ellipse", "c4 = ellipse"), "c4"),
+            (ok.replace("p2, p3) construction", "p2, p2) construction"), "three different points"),
+        ] {
+            let d = text::parse(&bad).unwrap();
+            let issues = validate::validate(&d);
+            assert!(issues.iter().any(|i| i.to_string().contains(why)), "{why}: {issues:?}");
+        }
+        assert!(text::parse(&ok.replace("ellipse(p1, 0.5, 5, 3)", "ellipse(p1, 0.5, 5)")).is_err());
     }
 
     /// Review v0.2 M1: the profile sketch of a generated gear names its gear's parameter

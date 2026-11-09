@@ -1050,6 +1050,11 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
             SkGeom::Circle { radius, .. } if !(radius.is_finite() && *radius > 0.0) => {
                 out.push(issue(n, format!("circle '{}' needs a positive radius", e.id)));
             }
+            SkGeom::Ellipse { angle, a, b, .. } | SkGeom::EllipseArc { angle, a, b, .. }
+                if !(angle.is_finite() && a.is_finite() && b.is_finite() && *a > 0.0 && *b > 0.0) =>
+            {
+                out.push(issue(n, format!("ellipse '{}' needs a finite angle and positive semi-axes", e.id)));
+            }
             _ => {}
         }
     }
@@ -1062,6 +1067,11 @@ fn validate_sketch(n: &str, s: &SketchDef, out: &mut Vec<Issue>) {
             } else if !defined.contains(r) {
                 out.push(issue(n, format!("'{}' refers to point '{r}' before it is defined", e.id)));
             }
+        }
+        if let SkGeom::EllipseArc { center, start, end, .. } = &e.geom
+            && (start == end || center == start || center == end)
+        {
+            out.push(issue(n, format!("elliptical arc '{}' needs three different points", e.id)));
         }
         if let SkGeom::Line { a, b } = &e.geom
             && a == b

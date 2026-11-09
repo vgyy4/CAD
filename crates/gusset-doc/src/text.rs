@@ -340,6 +340,20 @@ fn print_feature(out: &mut String, f: &Feature) {
                     SkGeom::Line { a, b } => format!("line({a}, {b})"),
                     SkGeom::Circle { center, radius } => format!("circle({center}, {})", format_exact(*radius)),
                     SkGeom::Arc { center, start, end } => format!("arc({center}, {start}, {end})"),
+                    SkGeom::Ellipse { center, angle, a, b } => {
+                        format!(
+                            "ellipse({center}, {}, {}, {})",
+                            format_exact(*angle),
+                            format_exact(*a),
+                            format_exact(*b)
+                        )
+                    }
+                    SkGeom::EllipseArc { center, angle, a, b, start, end } => format!(
+                        "ellipse_arc({center}, {}, {}, {}, {start}, {end})",
+                        format_exact(*angle),
+                        format_exact(*a),
+                        format_exact(*b)
+                    ),
                     SkGeom::Spline { points, closed } => {
                         format!("spline({}){}", points.join(", "), if *closed { " closed" } else { "" })
                     }
@@ -2298,7 +2312,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
         }
         lc.expect('(')?;
         match kind {
-            "point" | "line" | "circle" | "arc" | "spline" => {
+            "point" | "line" | "circle" | "arc" | "spline" | "ellipse" | "ellipse_arc" => {
                 let geom = match kind {
                     "point" => {
                         let x = lc.number()?;
@@ -2317,6 +2331,24 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                         lc.expect(',')?;
                         let radius = lc.number()?;
                         SkGeom::Circle { center, radius }
+                    }
+                    "ellipse" | "ellipse_arc" => {
+                        let center = lc.ident()?.to_string();
+                        lc.expect(',')?;
+                        let angle = lc.number()?;
+                        lc.expect(',')?;
+                        let a = lc.number()?;
+                        lc.expect(',')?;
+                        let b = lc.number()?;
+                        if kind == "ellipse" {
+                            SkGeom::Ellipse { center, angle, a, b }
+                        } else {
+                            lc.expect(',')?;
+                            let start = lc.ident()?.to_string();
+                            lc.expect(',')?;
+                            let end = lc.ident()?.to_string();
+                            SkGeom::EllipseArc { center, angle, a, b, start, end }
+                        }
                     }
                     "spline" => {
                         let mut points = Vec::new();
@@ -2355,7 +2387,7 @@ fn parse_sketch(c: &mut Cursor<'_>, lines: &[&str], mut i: usize) -> Result<(Fea
                 let Some(ck) = SkConstraintKind::from_keyword(other) else {
                     return Err(lc.err_hint(
                         format!("unknown sketch item '{other}'"),
-                        "entities: point, line, circle, arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle, radius, diameter, fixed, symmetric",
+                        "entities: point, line, circle, arc, ellipse, ellipse_arc, spline; patterns: pattern_linear, pattern_circular; constraints: coincident, on_line, on_circle, midpoint, horizontal, vertical, parallel, perpendicular, tangent, equal, distance, h_distance, v_distance, at_x, at_y, angle, radius, diameter, semi_major, semi_minor, fixed, symmetric",
                     ));
                 };
                 let (n, has_value) = ck.arity();

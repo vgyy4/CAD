@@ -708,6 +708,11 @@ fn store_solution(doc: &mut Document, sketch: &str) {
                         *radius = snap(*rr);
                     }
                 }
+                SkGeom::Ellipse { angle, a, b, .. } | SkGeom::EllipseArc { angle, a, b, .. } => {
+                    if let Some(&(g, ra, rb)) = r.ellipses.get(&e.id) {
+                        (*angle, *a, *b) = (snap(g), snap(ra), snap(rb));
+                    }
+                }
                 _ => {}
             }
         }

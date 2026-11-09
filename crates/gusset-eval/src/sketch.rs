@@ -19,6 +19,8 @@ pub struct SketchResult {
     pub points: BTreeMap<String, [f64; 2]>,
     /// Solved circle radii (doc id → mm).
     pub radii: BTreeMap<String, f64>,
+    /// Solved ellipses and elliptical arcs (doc id → angle in radians, `a`, `b` in mm).
+    pub ellipses: BTreeMap<String, (f64, f64, f64)>,
     pub free_entities: Vec<String>,
     pub redundant: Vec<String>,
     pub conflicting: Vec<String>,
@@ -117,6 +119,10 @@ fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: Length
             SkGeom::Arc { center, start, end } => {
                 s.add_arc_between(get(&ids, center)?, get(&ids, start)?, get(&ids, end)?)
             }
+            SkGeom::Ellipse { center, angle, a, b } => s.add_ellipse_at(get(&ids, center)?, *angle, *a, *b),
+            SkGeom::EllipseArc { center, angle, a, b, start, end } => {
+                s.add_ellipse_arc_between(get(&ids, center)?, *angle, *a, *b, get(&ids, start)?, get(&ids, end)?)
+            }
             SkGeom::Spline { points, closed } => {
                 let fit = points.iter().map(|p| get(&ids, p)).collect::<Result<Vec<_>, _>>()?;
                 s.add_spline(&fit, *closed)
@@ -161,6 +167,8 @@ fn build<'a>(name: &str, def: &'a SketchDef, params: &ParamValues, units: Length
             K::Angle => sk::Constraint::Angle { a: ent(0)?, b: ent(1)?, value: value(Dim::ANGLE)? },
             K::Radius => sk::Constraint::Radius { c: ent(0)?, value: value(Dim::LENGTH)? },
             K::Diameter => sk::Constraint::Diameter { c: ent(0)?, value: value(Dim::LENGTH)? },
+            K::SemiMajor => sk::Constraint::SemiMajor { e: ent(0)?, value: value(Dim::LENGTH)? },
+            K::SemiMinor => sk::Constraint::SemiMinor { e: ent(0)?, value: value(Dim::LENGTH)? },
             K::Fixed => sk::Constraint::Fixed(ent(0)?),
             K::Symmetric => sk::Constraint::Symmetric { a: ent(0)?, b: ent(1)?, axis: ent(2)? },
             K::HDistance => sk::Constraint::HDistance { from: Some(ent(0)?), to: ent(1)?, value: value(Dim::LENGTH)? },
@@ -201,6 +209,7 @@ pub(crate) fn solve_sketch(
     };
     let mut points = BTreeMap::new();
     let mut radii = BTreeMap::new();
+    let mut ellipses = BTreeMap::new();
     for e in r.sketch.entities() {
         let Some(doc_id) = back.get(&e.id) else { continue };
         match e.geom {
@@ -210,6 +219,9 @@ pub(crate) fn solve_sketch(
             sk::Geom::Circle { radius, .. } => {
                 radii.insert((*doc_id).to_string(), radius);
             }
+            sk::Geom::Ellipse { angle, a, b, .. } | sk::Geom::EllipseArc { angle, a, b, .. } => {
+                ellipses.insert((*doc_id).to_string(), (angle, a, b));
+            }
             _ => {}
         }
     }
@@ -218,6 +230,7 @@ pub(crate) fn solve_sketch(
         dof: r.dof,
         points,
         radii,
+        ellipses,
         free_entities: names(&r.free_entities),
         redundant: cnames(&r.redundant),
         conflicting: cnames(&r.conflicting),
@@ -250,7 +263,31 @@ pub(crate) fn solve_sketch(
             .collect(),
         splines: Vec::new(),
     };
-    result.splines = def
+    // Ellipses are drawn as polylines, like splines.
+    for e in &def.entities {
+        let (center, start_end) = match &e.geom {
+            SkGeom::Ellipse { center, .. } => (center, None),
+            SkGeom::EllipseArc { center, start, end, .. } => (center, Some((start, end))),
+            _ => continue,
+        };
+        let (Some(&(ang, a, b)), Some(&c)) = (result.ellipses.get(&e.id), result.points.get(center)) else {
+            continue;
+        };
+        let (t0, span) = match start_end {
+            Some((s, f)) => match (result.points.get(s), result.points.get(f)) {
+                (Some(&ps), Some(&pe)) => {
+                    let t0 = sk::ellipse::param(c, ang, a, b, ps);
+                    (t0, sk::ellipse::wrap(sk::ellipse::param(c, ang, a, b, pe) - t0))
+                }
+                _ => continue,
+            },
+            None => (0.0, std::f64::consts::TAU),
+        };
+        let n = 96;
+        let pts = (0..=n).map(|k| sk::ellipse::point(c, ang, a, b, t0 + span * f64::from(k) / f64::from(n))).collect();
+        result.splines.push((e.id.clone(), pts));
+    }
+    let fitted: Vec<(String, Vec<[f64; 2]>)> = def
         .entities
         .iter()
         .filter_map(|e| match &e.geom {
@@ -261,6 +298,7 @@ pub(crate) fn solve_sketch(
             _ => None,
         })
         .collect();
+    result.splines.extend(fitted);
     if status == SketchStatus::Failed {
         let why = r.error.map_or_else(|| "the solver did not converge".to_string(), |e| e.to_string());
         result.regions = Err(why.clone());
@@ -321,7 +359,7 @@ pub(crate) fn solve_sketch(
                 result.splines.push((c.id.clone(), sk::spline_polyline(&pts, *closed, 16)));
                 arr_sketch.add_spline(&fit, *closed)
             }
-            SkGeom::Point { .. } => continue,
+            SkGeom::Point { .. } | SkGeom::Ellipse { .. } | SkGeom::EllipseArc { .. } => continue,
         }
         .map_err(|e| bad(&c.id, e))?;
         if c.construction {
@@ -353,10 +391,10 @@ pub(crate) fn solve_sketch(
                     sk::Curve::Arc { center, start, end, ccw, .. } => Seg2::Arc { center, start, end, ccw },
                     sk::Curve::Circle { center, radius, .. } => Seg2::Circle { center, radius },
                     sk::Curve::Bezier { p } => Seg2::Bezier { p },
-                sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
-                sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
-                    Seg2::EllipseArc { center, major, a, b, start, end, ccw }
-                }
+                    sk::Curve::Ellipse { center, major, a, b, .. } => Seg2::Ellipse { center, major, a, b },
+                    sk::Curve::EllipseArc { center, major, a, b, start, end, ccw } => {
+                        Seg2::EllipseArc { center, major, a, b, start, end, ccw }
+                    }
                 };
                 ProfileEdge { seg: seg2, tag }
             };
@@ -443,7 +481,11 @@ fn hole_sites(
             SkGeom::Circle { center, .. } => {
                 centres.insert(center);
             }
-            g @ (SkGeom::Line { .. } | SkGeom::Arc { .. } | SkGeom::Spline { .. }) => on_curve.extend(g.refs()),
+            g @ (SkGeom::Line { .. }
+            | SkGeom::Arc { .. }
+            | SkGeom::Spline { .. }
+            | SkGeom::Ellipse { .. }
+            | SkGeom::EllipseArc { .. }) => on_curve.extend(g.refs()),
             SkGeom::Point { .. } => {}
         }
     }

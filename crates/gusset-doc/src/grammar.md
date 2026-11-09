@@ -50,6 +50,7 @@ sketch Sketch1 (plane: XY, next_id: 12) {
   c7 = circle(p1, 5)           # centre point, radius in mm
   a9 = arc(p1, p2, p3)         # centre, start, end: counter-clockwise from start to end
   s4 = spline(p1, p2, p3) closed   # smooth curve through the points (see "Splines")
+  o8 = ellipse(p1, 0, 5, 3)    # centre, angle of the `a` axis (radians), a, b in mm (see "Ellipses")
   k10 = horizontal(l5)         # constraints
 }
 ```
@@ -58,7 +59,7 @@ sketch Sketch1 (plane: XY, next_id: 12) {
   point (u, v) maps to world `origin + u * x_axis + v * y_axis`; `sketch_create` and
   `query_sketch` report that frame.
 - Entity and constraint ids share ONE counter per sketch and start at 1: points `p`,
-  lines `l`, circles `c`, arcs `a`, constraints `k`, followed by the number (`p1`, `l5`,
+  lines `l`, circles `c`, arcs `a`, ellipses `o`, elliptical arcs `q`, constraints `k`, followed by the number (`p1`, `l5`,
   `c7`, `a9`, `k10`). `next_id` is the next unused number; it is optional in hand-written
   text and derived from the largest id when left out. Ids must be unique.
 - An entity can be followed by `construction` (solved but never part of a profile):
@@ -112,15 +113,44 @@ sketch Sketch1 (plane: XY) {
 extrude Extrude1 (profile: Sketch1, distance: 4 mm, op: new)
 ```
 
+### Ellipses
+
+`o5 = ellipse(p1, angle, a, b)` is an ellipse around the point `p1`: `a` is the semi-axis
+along the direction `angle` (radians, counter-clockwise from the u axis) and `b` the semi-axis
+across it (all in mm; `a` may be the smaller one). `q6 = ellipse_arc(p1, angle, a, b, p2, p3)`
+is the counter-clockwise part of that ellipse from point `p2` to point `p3`; the solver keeps
+both points on the ellipse. A whole ellipse is a region of its own, an elliptical arc joins
+lines and other arcs like a circular one. Extrusions and revolutions work as for circles
+(a revolved ellipse is an O-ring section). `angle`, `a` and `b` are solved like a circle's
+radius: `semi_major(o5, 5 mm)` / `semi_minor(o5, 3 mm)` drive `a` and `b`, `horizontal(o5)` /
+`vertical(o5)` turn the `a` axis along u / v, `on_circle(p, o5)` puts a point on the curve and
+`fixed(o5)` keeps all of it. Tangency, equal and trimming do not apply to ellipses yet.
+
+```gusset
+gusset 1
+units mm
+
+sketch Sketch1 (plane: XZ, next_id: 7) {
+  p1 = point(7.85, 0)
+  o2 = ellipse(p1, 1.5707963267948966, 3.24, 2.15)
+  k3 = semi_major(o2, 3.24 mm)
+  k4 = semi_minor(o2, 2.15 mm)
+  k5 = at_x(p1, 7.85 mm)
+  k6 = at_y(p1, 0 mm)
+}
+
+revolve Revolve1 (profile: Sketch1, axis: Y, angle: 360 deg, op: new)
+```
+
 Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 
 | kind | entities | meaning |
 |---|---|---|
 | `coincident` | point, point | same location |
 | `on_line` | point, line | point on the infinite line |
-| `on_circle` | point, circle/arc | point on the circle |
+| `on_circle` | point, circle/arc/ellipse/ellipse_arc | point on the curve |
 | `midpoint` | point, line | point is the midpoint |
-| `horizontal`, `vertical` | line | parallel to the u / v axis |
+| `horizontal`, `vertical` | line or ellipse | parallel to the u / v axis (an ellipse: its `a` axis) |
 | `parallel`, `perpendicular` | line, line | |
 | `tangent` | line or circle/arc, circle/arc | |
 | `equal` | line, line or circle/arc, circle/arc | equal length / radius |
@@ -131,7 +161,8 @@ Constraints (`k<n> = kind(entities..., value)`; a value is an expression):
 | `at_x`, `at_y` | point + value | the point's u / v coordinate in the sketch: drives a position by a parameter, e.g. `at_x(p5, width / 2)` |
 | `angle` | line a, line b + value | directed angle, see below |
 | `radius`, `diameter` | circle/arc + value | |
-| `fixed` | point or circle | keep at its current position |
+| `semi_major`, `semi_minor` | ellipse/ellipse_arc + value | the semi-axes `a` and `b` |
+| `fixed` | point, circle or ellipse | keep at its current position |
 | `symmetric` | point, point, line | mirror images across the line |
 
 Directed angle: `angle(a, b, v)` takes two LINES (not three points). Each line has a

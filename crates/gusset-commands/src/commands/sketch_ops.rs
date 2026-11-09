@@ -63,6 +63,10 @@ pub(super) fn explode(doc: &mut Document, sk: &str, pattern: &str, fresh: bool) 
             SkGeom::Circle { center, radius } => SkGeom::Circle { center: r(&center), radius },
             SkGeom::Arc { center, start, end } => SkGeom::Arc { center: r(&center), start: r(&start), end: r(&end) },
             SkGeom::Spline { points, closed } => SkGeom::Spline { points: points.iter().map(r).collect(), closed },
+            SkGeom::Ellipse { center, angle, a, b } => SkGeom::Ellipse { center: r(&center), angle, a, b },
+            SkGeom::EllipseArc { center, angle, a, b, start, end } => {
+                SkGeom::EllipseArc { center: r(&center), angle, a, b, start: r(&start), end: r(&end) }
+            }
         };
         d.entities.push(SkEntity { id: id.clone(), geom, construction });
         made.push(id);
@@ -86,8 +90,8 @@ fn rename_entity(d: &mut SketchDef, from: &str, to: &str) {
                 r(a);
                 r(b);
             }
-            SkGeom::Circle { center, .. } => r(center),
-            SkGeom::Arc { center, start, end } => {
+            SkGeom::Circle { center, .. } | SkGeom::Ellipse { center, .. } => r(center),
+            SkGeom::Arc { center, start, end } | SkGeom::EllipseArc { center, start, end, .. } => {
                 r(center);
                 r(start);
                 r(end);
@@ -445,6 +449,10 @@ fn apply_trim(d: &mut SketchDef, id: &str, plan: &TrimPlan) -> Result<Value, Com
     let construction = d.entities.iter().find(|e| e.id == id).is_some_and(|e| e.construction);
     match (&geom, &plan.lo, &plan.hi) {
         (SkGeom::Point { .. }, _, _) => return Err(CommandError::args(format!("'{id}' is a point, not a curve"))),
+        (SkGeom::Ellipse { .. } | SkGeom::EllipseArc { .. }, _, _) => {
+            return Err(CommandError::args("ellipses cannot be trimmed yet")
+                .hint("delete it and draw an elliptical arc between the crossings"));
+        }
         (SkGeom::Spline { points, closed }, lo, hi) => {
             trim_spline(d, id, points, *closed, lo.as_ref(), hi.as_ref(), construction, &mut rep)?;
         }

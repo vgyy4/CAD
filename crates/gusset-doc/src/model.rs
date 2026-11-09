@@ -677,6 +677,22 @@ pub enum SkGeom {
         start: String,
         end: String,
     },
+    /// Ellipse: `angle` (radians) is the direction of the `a` semi-axis, `b` the other one.
+    Ellipse {
+        center: String,
+        angle: f64,
+        a: f64,
+        b: f64,
+    },
+    /// Counter-clockwise from `start` to `end` along the ellipse (both points are kept on it).
+    EllipseArc {
+        center: String,
+        angle: f64,
+        a: f64,
+        b: f64,
+        start: String,
+        end: String,
+    },
     /// Interpolating spline (centripetal Catmull-Rom) through the fit points, which are
     /// ordinary sketch points; `closed` joins the last point back to the first.
     Spline {
@@ -695,6 +711,8 @@ impl SkGeom {
             SkGeom::Line { .. } => "line",
             SkGeom::Circle { .. } => "circle",
             SkGeom::Arc { .. } => "arc",
+            SkGeom::Ellipse { .. } => "ellipse",
+            SkGeom::EllipseArc { .. } => "ellipse_arc",
             SkGeom::Spline { .. } => "spline",
         }
     }
@@ -704,6 +722,8 @@ impl SkGeom {
             SkGeom::Line { .. } => 'l',
             SkGeom::Circle { .. } => 'c',
             SkGeom::Arc { .. } => 'a',
+            SkGeom::Ellipse { .. } => 'o',
+            SkGeom::EllipseArc { .. } => 'q',
             SkGeom::Spline { .. } => 's',
         }
     }
@@ -714,6 +734,8 @@ impl SkGeom {
             SkGeom::Line { a, b } => vec![a, b],
             SkGeom::Circle { center, .. } => vec![center],
             SkGeom::Arc { center, start, end } => vec![center, start, end],
+            SkGeom::Ellipse { center, .. } => vec![center],
+            SkGeom::EllipseArc { center, start, end, .. } => vec![center, start, end],
             SkGeom::Spline { points, .. } => points.iter().map(String::as_str).collect(),
         }
     }
@@ -735,6 +757,10 @@ pub enum SkConstraintKind {
     Angle,
     Radius,
     Diameter,
+    /// Semi-axis `a` of an ellipse (the one along its angle).
+    SemiMajor,
+    /// Semi-axis `b` of an ellipse.
+    SemiMinor,
     Fixed,
     Symmetric,
     /// Signed horizontal distance between two points: `x(b) − x(a)`.
@@ -748,7 +774,7 @@ pub enum SkConstraintKind {
 }
 
 impl SkConstraintKind {
-    pub const ALL: [SkConstraintKind; 20] = [
+    pub const ALL: [SkConstraintKind; 22] = [
         SkConstraintKind::Coincident,
         SkConstraintKind::PointOnLine,
         SkConstraintKind::PointOnCircle,
@@ -763,6 +789,8 @@ impl SkConstraintKind {
         SkConstraintKind::Angle,
         SkConstraintKind::Radius,
         SkConstraintKind::Diameter,
+        SkConstraintKind::SemiMajor,
+        SkConstraintKind::SemiMinor,
         SkConstraintKind::Fixed,
         SkConstraintKind::Symmetric,
         SkConstraintKind::HDistance,
@@ -787,6 +815,8 @@ impl SkConstraintKind {
             SkConstraintKind::Angle => "angle",
             SkConstraintKind::Radius => "radius",
             SkConstraintKind::Diameter => "diameter",
+            SkConstraintKind::SemiMajor => "semi_major",
+            SkConstraintKind::SemiMinor => "semi_minor",
             SkConstraintKind::Fixed => "fixed",
             SkConstraintKind::Symmetric => "symmetric",
             SkConstraintKind::HDistance => "h_distance",
@@ -805,7 +835,7 @@ impl SkConstraintKind {
         use SkConstraintKind::*;
         match self {
             Horizontal | Vertical | Fixed => (1, false),
-            Radius | Diameter | AtX | AtY => (1, true),
+            Radius | Diameter | SemiMajor | SemiMinor | AtX | AtY => (1, true),
             Coincident | PointOnLine | PointOnCircle | Midpoint | Parallel | Perpendicular | Tangent | Equal => {
                 (2, false)
             }

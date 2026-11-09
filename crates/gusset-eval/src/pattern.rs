@@ -196,6 +196,13 @@ pub(crate) fn derive(
                             format!("'{src}' is a point; patterns copy lines, circles, arcs and splines"),
                         ));
                     }
+                    SkGeom::Ellipse { .. } | SkGeom::EllipseArc { .. } => {
+                        return Err(sketch_err(
+                            name,
+                            pat,
+                            format!("'{src}' is an ellipse; patterns copy lines, circles, arcs and splines"),
+                        ));
+                    }
                     SkGeom::Line { a, b } => SkGeom::Line { a: point(a)?, b: point(b)? },
                     SkGeom::Circle { center, .. } => {
                         SkGeom::Circle { center: point(center)?, radius: radii.get(src).copied().unwrap_or(0.0) }
