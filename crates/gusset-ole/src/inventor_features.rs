@@ -790,12 +790,19 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut mids: Vec<(V3, Option<[V3; 2]>)> = Vec::new();
     let mut why: Vec<String> = Vec::new();
     let mut radii: Vec<f64> = Vec::new();
+    let mut rounds: Vec<(V3, V3)> = Vec::new();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
         let k = b.kind(face);
         // A corner patch; and a planar face with a fillet's tag is a leftover of an edge split
         // later (a fillet face is never planar).
         if matches!(k, Surf::Sphere) || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
+            continue;
+        }
+        if typ == FeatType::Fillet
+            && let Some((p, n)) = b.full_round(face)
+        {
+            rounds.push((mm(p), n));
             continue;
         }
         match b.edge_mid(face) {
@@ -808,6 +815,22 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     _ => {}
                 }
             }
+        }
+    }
+    if !rounds.is_empty() {
+        if !mids.is_empty() || !why.is_empty() {
+            why.push("a full round next to other fillet edges".into());
+        } else {
+            // One feature, several middle faces: one full-round fillet each (the first keeps
+            // the feature's name).
+            rounds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            rounds.dedup_by(|a, b| crate::acis::dist(a.0, b.0) < 1e-6);
+            for (k, (p, n)) in rounds.iter().enumerate() {
+                let nm = if k == 0 { name.to_string() } else { format!("{name}_{}", k + 1) };
+                let normal = [rnd(n[0]), rnd(n[1]), rnd(n[2])];
+                st.out.push(json!({"type": "fillet", "name": nm, "full_round": {"point": p, "normal": normal}}));
+            }
+            return Ok(());
         }
     }
     if faces.is_empty() {

@@ -472,6 +472,50 @@ impl Acis {
 
     /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
     /// some circle edges use) attribute whose 4th int is `fid`.
+    /// A full round: the cylinder face `f` is tangent to two parallel planar faces (apart by
+    /// twice its radius, on opposite sides of its axis) and replaces the face between them.
+    /// Returns a point on that middle face (the crest of the half cylinder, at the middle of
+    /// its extent along the axis) and the face's outward normal, in file units. `None` when
+    /// `f` is not such a blend.
+    pub(crate) fn full_round(&self, f: i64) -> Option<(V3, V3)> {
+        let Surf::Cyl { c, ax, r } = self.kind(f) else { return None };
+        let u = unit(ax);
+        let mut sup: Vec<(i64, V3, f64)> = Vec::new();
+        for (g, _) in self.neighbours(f) {
+            if sup.iter().any(|x| x.0 == g) {
+                continue;
+            }
+            if let Surf::Plane { p, n } = self.kind(g)
+                && dot(n, u).abs() < 1e-6
+                && (dot(sub(p, c), n).abs() - r).abs() < 1e-6
+            {
+                sup.push((g, n, dot(sub(p, c), n)));
+            }
+        }
+        let [a, b] = sup.as_slice() else { return None };
+        // Parallel, with the axis between them.
+        if (dot(a.1, b.1).abs() - 1.0).abs() > 1e-6 || (dot(a.1, b.1) * a.2 * b.2) >= 0.0 {
+            return None;
+        }
+        let m = unit(cross(u, a.1));
+        // The body lies behind the crest: the supports' vertices are mostly on its side.
+        let vs: Vec<f64> = [a.0, b.0].iter().flat_map(|&g| self.verts(g)).map(|v| dot(sub(v, c), m)).collect();
+        let hi = vs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lo = vs.iter().copied().fold(f64::INFINITY, f64::min);
+        if !hi.is_finite() || !lo.is_finite() || (hi + lo).abs() < 1e-6 {
+            return None;
+        }
+        let out = if hi.abs() > lo.abs() { mul(m, -1.0) } else { m };
+        let ts: Vec<f64> = self.verts(f).iter().map(|&v| dot(sub(v, c), u)).collect();
+        let t = (ts.iter().copied().fold(f64::INFINITY, f64::min)
+            + ts.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+            / 2.0;
+        if !t.is_finite() {
+            return None;
+        }
+        Some((add(c, add(mul(u, t), mul(out, r))), out))
+    }
+
     pub(crate) fn blend_faces(&self, fid: i64) -> Vec<i64> {
         let mut out = Vec::new();
         for r in &self.recs {

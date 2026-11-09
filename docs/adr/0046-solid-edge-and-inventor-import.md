@@ -250,3 +250,16 @@ surface) that cannot be turned into a straight pre-fillet edge, 3 differ by abou
 (the thumbscrew knurl: ~32 notches that are not in the extrusion's stored profile), 3 name an
 edge the analysis cannot place, 1 uses extrude extents not decoded, 2 are kernel fillet
 failures. No new tree feature was needed except full-round.
+
+## Amendment (2026-11-09, 6): Inventor full-round fillets
+
+A fillet feature whose blend face is a cylinder tangent to two parallel planes on opposite sides of
+its axis (apart by twice the radius) is a full round (`Acis::full_round`). The reader emits
+`{"type": "fillet", "full_round": {"point", "normal"}}` (ADR 0042 amendment): `normal` is the
+outward direction of the middle face, `point` its crest (axis plus radius times the normal, at the
+middle of the half cylinder along the axis). The side is found from the supports' vertices (the
+body lies behind the crest). One feature with several middle faces becomes one tree fillet each
+(`Name`, `Name_2`, ...). A full round mixed with ordinary edges of the same feature stays refused.
+Result: the full-round fillets of `Long Bottom Nut Traps` rebuild in Gusset; the part still comes
+in as a body (see `docs/formats/inventor-feature-tree.md` I). Coverage stays 25 of 47.
+

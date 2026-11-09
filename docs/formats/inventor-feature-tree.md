@@ -316,3 +316,19 @@ Tally of the 22 others (corpus test, `GUSSET_IPT_RAW=1` prints the unabridged re
 * `reviii Fixture Body`: 95 features, extrude extents 7 (11x) and 4 (1x) not decoded, 18 fillets unsupported.
 * `LED Washer` (`ChFi3d_Builder: only 1 faces`), `Leg Shelf` (invalid solid): kernel fillet failures on a correct tree.
 * Harness note: a failed run with "could not start the import worker" happens when the workers are rebuilt during the run.
+
+## I. Full-round fillets (2026-11-09)
+* How a full round shows: the feature's `NMx_blend_tag` face is a cylinder (not a torus), its radius is half the gap of two
+  neighbouring parallel planes, and the cylinder axis lies between them. `Acis::full_round` checks that (planes perpendicular to the
+  axis direction, signed distance from the axis +-r with opposite signs), takes the crest direction `cross(axis, support normal)`, and flips
+  it to the side away from the supports' other vertices (the body). The crest is tangent to the removed middle face (rolling ball),
+  so `point = axis point + r * out`, `normal = out`. No separate blend type is stored; Inventor's radius parameter equals r.
+* `Long Bottom Nut Traps`: Fillet2 = two full rounds (x = -+88.5, r 2.5 on the 5 mm slab); both rebuild. Next blocker: Fillet3 (r 5) is a
+  torus blend between the plane z = 5 mm and a tiny torus (minor 0.5 mm) that a LATER feature made; its true support (the boss cylinder)
+  no longer exists in the result body, so the pre-fillet edge is not recoverable by the support walk ("no edge of the model has its midpoint").
+* `bottom cover` Fillet4 (r 27.5) is NOT a planar full round: the blend is a torus (major 5.25, minor 2.75 cm) between a cone and the plane z = 0,
+  so it is not expressible as `full_round` (planar, perpendicular case only). Still a body.
+* The 3 thicken parts (bottom plate, bottom plate mod, Top motor plate) are blocked by `thicken` itself: the reader does not emit
+  it yet (section F gives the equivalence: extrude join of the base's side outline, distance = -thickness). Their Fillet10/11/12 full
+  rounds are then covered by `full_round`; untested until thicken is read.
+
