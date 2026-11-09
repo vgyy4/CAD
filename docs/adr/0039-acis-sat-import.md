@@ -392,3 +392,49 @@ The L-Bracket (Zenodo 8028536) rebuilds exactly from its decoded timeline (13 fe
 stored volume and box), and so does the MacroPad RP2040 keyplate's component. A Rust port
 behind the rebuild check comes next; revolve axes and counterbore/countersink holes wait
 for samples that contain them.
+
+## Amendment (2026-11-09, later): the Fusion timeline as features (`gusset_sat::fusion_tree`)
+
+`.f3d` designs whose timeline the reader can say in full come in as editable features, not as
+the stored bodies (tier 1: "the Fusion design timeline as editable features"). The reader is the
+Rust port of the clean-room prototype (`scripts/re/fusion/`, layout notes in
+`docs/formats/fusion-design-stream.md`): `gusset_sat::fusion_tree::feature_tree` frames the design
+stream, reads sketches, profile regions, extrudes (new/join/cut, symmetric, through-all, to-object),
+fillets and chamfers by edge midpoint, holes, linear patterns (chained, symmetric split) and
+mirrors, and uses the stored ACIS blobs for edge naming (face tags) and through-all reach. It
+returns the `gusset-feature-tree` JSON, or an `Err` naming the first feature it cannot say
+(revolves, draft, shell, sweep, base features, patterns of bodies, two-sided extrudes, tapers,
+extrudes whose profile or extent is not decoded). Reads are bounded (records, strings, depths,
+stream size) and never panic; the fuzz target `fusion_design` runs it on split input.
+`feature_tree_local` gives the features in each component's own coordinates (what the prototype
+writes); `feature_tree` moves every component's features by its occurrence placement (sketch
+planes, edge midpoints, hole and mirror geometry, pattern directions), and refuses a component
+whose bodies stand in different places.
+
+The import (`fusion_history` in `import.rs`) keeps the tree only when it rebuilds to what the file
+stores, like FreeCAD, SolidWorks and Inventor histories:
+
+* `rebuild_check` first: the features' volume within 2e-5 and box equal the sum of the stored
+  solids (MacroPad RP2040 keyplate: the Board and keyplate extrudes give both bodies exactly; the
+  PCB component's surfaces are not solids and are left out as before).
+* A file may instead store the body of every feature step (the L-Bracket's blob holds the prism,
+  the blended prism, the slotted body and the slot and hole cut tools; the finished body with its
+  nine holes is not stored, the author's STL has it). Then `fusion_states_check` rebuilds each
+  prefix of the timeline and requires every stored solid to be a state of the model (its volume
+  after some feature) or a whole multiple (pattern copies) of what a feature removes or adds, at
+  least one state, and the finished model to lie in the stored solids' box. The features after the
+  last stored state (L-Bracket: the holes and their patterns) are checked only by the volume they
+  remove being whole copies of the stored tool; the note on the import says so. Counts of pattern
+  copies are therefore not verified against the file there (they were against the STL in the
+  prototype work: 197515.929 = 199654.175 - 9 x 237.583 mm3).
+
+Result on the sample set (19 files): `8028536__L-Bracket.f3d` (13 features: fillets by two radius
+sets, chamfer, cut through the leg, chained linear patterns, hole) and `5128 MacroPad
+RP2040-Keyplate.f3d` come in as history. The Rust trees equal the prototype's for both
+(`crates/gusset-cli/tests/f3d_history.rs`, `GUSSET_F3D_PROTO`). The other 17 stay exact bodies,
+with the reason: no timeline or `.f3z` archives (6; the Assembly's keyplate component would need
+the design inside the archive read separately), base features/PCB bodies (5), a feature of a class
+not decoded (2), a pattern of bodies (1), a profile whose curves do not close or whose pieces are not
+reproduced (2), a component used with several placements (the bottom plate, whose four mounting-hole
+copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and takes
+`GUSSET_F3D_MIN_HISTORY` as its floor.

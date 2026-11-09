@@ -293,6 +293,18 @@ Phase 3 has started (see Next).
      helper, only when the counts agree, ADR 0039 "Body references"); next there: the board's
      plate takes the component-named `Board` material (no id link found), single-record
      features' colours (parse as black, unread).
+     Fusion design timeline as features done 2026-11-09 (ADR 0039 amendment, `gusset_sat::fusion_tree`,
+     `fusion_history` in `import.rs`): port of the clean-room prototype (sketches, profile regions,
+     extrudes, fillets/chamfers by edge midpoint, holes, linear patterns, mirrors; ACIS blobs name
+     edges); kept only when it rebuilds to the stored bodies (`rebuild_check`) or, for a file that
+     stores the bodies of each feature step, when every stored solid is a state or a cut tool of the
+     rebuilt model (`fusion_states_check`; weaker for the features after the last stored state, see the
+     ADR). 2 of 19 samples come in as history (L-Bracket, MacroPad keyplate; Rust trees equal the
+     prototype's); test `f3d_history.rs` (`GUSSET_F3D_SAMPLES`, `GUSSET_F3D_MIN_HISTORY`,
+     `GUSSET_F3D_PROTO`), fuzz target `fusion_design` extended. Next there: designs inside `.f3z`
+     (the Assembly's keyplate component), revolve axes and counterbore/countersink holes (need samples),
+     profile pieces and loops that do not close (Crickit, BQ25185), pattern of bodies/components,
+     base features (PCB bodies), a component used several times (bottom plate), Draft/Shell/Sweep.
    - SolidWorks `.sldprt` import done (ADR 0043, `gusset-sldprt`: OLE2 and chunk containers read clean-room
      from samples; the Parasolid partition goes through `gusset-xt`, whose V13-base BODY gained
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
