@@ -488,12 +488,7 @@ impl Wire for Seg2 {
             }),
             2 => Ok(Seg2::Circle { center: Wire::get(r, s)?, radius: r.f64()? }),
             3 => Ok(Seg2::Bezier { p: Wire::get(r, s)? }),
-            4 => Ok(Seg2::Ellipse {
-                center: Wire::get(r, s)?,
-                major: Wire::get(r, s)?,
-                a: r.f64()?,
-                b: r.f64()?,
-            }),
+            4 => Ok(Seg2::Ellipse { center: Wire::get(r, s)?, major: Wire::get(r, s)?, a: r.f64()?, b: r.f64()? }),
             5 => Ok(Seg2::EllipseArc {
                 center: Wire::get(r, s)?,
                 major: Wire::get(r, s)?,
