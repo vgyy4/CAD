@@ -277,17 +277,53 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, S
                 edge += 1;
                 construction = false;
             }
-            t if matches!(
-                t,
-                "Ellipse"
-                    | "ArcOfEllipse"
-                    | "ArcOfHyperbola"
-                    | "ArcOfParabola"
-                    | "BSplineCurve"
-                    | "Hyperbola"
-                    | "Parabola"
-            ) =>
-            {
+            "Ellipse" | "ArcOfEllipse" => {
+                edge += 1;
+                // The same refusal as for arcs: a mirrored sketch plane flips the normal.
+                if e.attrs.get("NormalZ").and_then(|v| v.parse::<f64>().ok()).is_some_and(|z| z < 0.0) {
+                    return Err(format!("{name}: a clockwise ellipse"));
+                }
+                let (cx, cy) = (num(e, "CenterX")?, num(e, "CenterY")?);
+                let (a, b) = (num(e, "MajorRadius")?, num(e, "MinorRadius")?);
+                let ang = e.attrs.get("AngleXU").and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite());
+                let ang = ang.unwrap_or(0.0);
+                if a <= 0.0 || b <= 0.0 {
+                    return Err(format!("{name}: an ellipse without area"));
+                }
+                let (u, v) = ([libm::cos(ang), libm::sin(ang)], [-libm::sin(ang), libm::cos(ang)]);
+                let at = |t: f64| {
+                    (
+                        cx + a * libm::cos(t) * u[0] + b * libm::sin(t) * v[0],
+                        cy + a * libm::cos(t) * u[1] + b * libm::sin(t) * v[1],
+                    )
+                };
+                let c = point(cx, cy, &mut pjson);
+                let full = if e.tag == "Ellipse" {
+                    true
+                } else {
+                    // The parameter is the eccentric anomaly, counter-clockwise about the normal.
+                    let (t0, t1) = (num(e, "StartAngle")?, num(e, "EndAngle")?);
+                    if (t1 - t0).abs() >= std::f64::consts::TAU - 1e-9 {
+                        true
+                    } else {
+                        let (p0, p1) = (at(t0), at(t1));
+                        let s = point(p0.0, p0.1, &mut pjson);
+                        let t = point(p1.0, p1.1, &mut pjson);
+                        if s == t {
+                            return Err(format!("{name}: a degenerate elliptical arc"));
+                        }
+                        curves.push(json!({"id": format!("q{edge}"), "type": "ellipse_arc", "center": c, "major": u,
+                            "a": a, "b": b, "start": s, "end": t, "construction": construction}));
+                        false
+                    }
+                };
+                if full {
+                    curves.push(json!({"id": format!("o{edge}"), "type": "ellipse", "center": c, "major": u,
+                        "a": a, "b": b, "construction": construction}));
+                }
+                construction = false;
+            }
+            t if matches!(t, "ArcOfHyperbola" | "ArcOfParabola" | "BSplineCurve" | "Hyperbola" | "Parabola") => {
                 return Err(format!("{name}: {t} curves are not translated yet"));
             }
             _ => {}
@@ -843,6 +879,37 @@ fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
                 json!({"type": "revolve", "name": name, "sketch": sk, "profiles": "all", "axis": {"origin": pl.p, "direction": pl.z}, "angle": 360.0}),
             ])
         }
+        "Ellipsoid" => {
+            // A spheroid: the half ellipse in the x-z plane (polar radius along z), turned about z.
+            let (r1, r2) = (pos("Radius1")?, pos("Radius2")?);
+            let r3 = o.float("Radius3").unwrap_or(0.0);
+            if r3 != 0.0 && (r3 - r2).abs() > 1e-9 {
+                return Err(format!("{name}: a three-axis ellipsoid is not translated yet"));
+            }
+            if !full("Angle3")
+                || o.float("Angle1").is_some_and(|a| (a + 90.0).abs() > 1e-9)
+                || o.float("Angle2").is_some_and(|a| (a - 90.0).abs() > 1e-9)
+            {
+                return Err(format!("{name}: a partial ellipsoid is not translated yet"));
+            }
+            let points = vec![
+                json!({"id": "c", "x": 0.0, "y": 0.0}),
+                json!({"id": "s", "x": 0.0, "y": -r1}),
+                json!({"id": "t", "x": 0.0, "y": r1}),
+            ];
+            let curve = if (r1 - r2).abs() < 1e-12 {
+                json!({"id": "a", "type": "arc", "center": "c", "start": "s", "end": "t"})
+            } else if r1 > r2 {
+                json!({"id": "a", "type": "ellipse_arc", "center": "c", "major": [0.0, 1.0], "a": r1, "b": r2, "start": "s", "end": "t"})
+            } else {
+                json!({"id": "a", "type": "ellipse_arc", "center": "c", "major": [1.0, 0.0], "a": r2, "b": r1, "start": "s", "end": "t"})
+            };
+            Ok(vec![
+                json!({"type": "sketch", "name": sk, "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.z}, "points": points,
+                    "curves": [curve, {"id": "l", "type": "line", "start": "t", "end": "s"}]}),
+                json!({"type": "revolve", "name": name, "sketch": sk, "profiles": "all", "axis": {"origin": pl.p, "direction": pl.z}, "angle": 360.0}),
+            ])
+        }
         _ => Err(format!("{name}: {} is not translated yet", o.kind)),
     }
 }
@@ -1341,7 +1408,9 @@ pub(crate) fn tree_variant(
                 | "PartDesign::AdditiveCone"
                 | "PartDesign::SubtractiveCone"
                 | "PartDesign::AdditiveSphere"
-                | "PartDesign::SubtractiveSphere" => {
+                | "PartDesign::SubtractiveSphere"
+                | "PartDesign::AdditiveEllipsoid"
+                | "PartDesign::SubtractiveEllipsoid" => {
                     let sub = kind.starts_with("PartDesign::Subtractive");
                     let op = match (&first_solid, sub) {
                         (None, false) => "new",
@@ -1913,6 +1982,33 @@ mod tests {
         let curves = t.features[0]["curves"].as_array().unwrap();
         assert!(curves.iter().any(|c| c["type"] == "circle" && c["radius"] == 1.0), "{curves:?}");
         assert!(curves.iter().all(|c| c["type"] != "arc"));
+    }
+
+    #[test]
+    fn ellipses_and_their_arcs_become_tree_ellipses() {
+        let circle = r#"<Geometry type="Part::GeomCircle"><Construction value="0"/><Circle CenterX="5" CenterY="2.5" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1"/></Geometry>"#;
+        let make = |g: &str| tree(DOC.replace(circle, g).as_bytes(), &mut no_shapes);
+        let whole = make(r#"<Geometry type="Part::GeomEllipse"><Construction value="0"/><Ellipse CenterX="5" CenterY="2.5" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" MajorRadius="3" MinorRadius="1" AngleXU="0.5"/></Geometry>"#).unwrap();
+        let c = whole.features[0]["curves"].as_array().unwrap().iter().find(|c| c["type"] == "ellipse").unwrap();
+        assert_eq!(
+            (c["type"].as_str(), c["a"].as_f64(), c["b"].as_f64()),
+            (Some("ellipse"), Some(3.0), Some(1.0)),
+            "{c}"
+        );
+        assert!((c["major"][0].as_f64().unwrap() - libm::cos(0.5)).abs() < 1e-12);
+        // A quarter arc from the major to the minor end, about a major axis along y.
+        let arc = make(r#"<Geometry type="Part::GeomArcOfEllipse"><Construction value="0"/><ArcOfEllipse CenterX="0" CenterY="0" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" MajorRadius="3" MinorRadius="1" AngleXU="1.5707963267948966" StartAngle="0" EndAngle="1.5707963267948966"/></Geometry>"#).unwrap();
+        let f = &arc.features[0];
+        let q = f["curves"].as_array().unwrap().iter().find(|c| c["type"] == "ellipse_arc").unwrap();
+        let at = |id: &str| f["points"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+        let (s, e) = (at(q["start"].as_str().unwrap()), at(q["end"].as_str().unwrap()));
+        assert!(s["x"].as_f64().unwrap().abs() < 1e-9 && (s["y"].as_f64().unwrap() - 3.0).abs() < 1e-9, "{s}");
+        assert!((e["x"].as_f64().unwrap() + 1.0).abs() < 1e-9 && e["y"].as_f64().unwrap().abs() < 1e-9, "{e}");
+        // A mirrored plane is refused.
+        let mirrored = make(
+            r#"<Geometry type="Part::GeomEllipse"><Construction value="0"/><Ellipse CenterX="0" CenterY="0" CenterZ="0" NormalX="0" NormalY="0" NormalZ="-1" MajorRadius="3" MinorRadius="1" AngleXU="0"/></Geometry>"#,
+        );
+        assert!(mirrored.is_err());
     }
 
     #[test]

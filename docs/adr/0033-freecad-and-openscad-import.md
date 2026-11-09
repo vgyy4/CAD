@@ -133,7 +133,7 @@ Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch k
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 124 come in as history
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 126 come in as history
 (11 more files show no solid), the rest as exact shapes. Unequal chamfers (two distances,
 distance and angle) are written but no example file uses them. Three files were gained by
 kernel and translator fixes: a boolean whose face unification leaves an invalid solid is
@@ -151,5 +151,11 @@ removes 54 mm3 too much although none of its 18 edges lies between tangent faces
 (Page_028); a volume 4e-5 off after ring pads over fillets (Page_015 fillets variant); these
 three are not traced; a primitive
 attached to a datum line at a tilt (Page_056-2), a MultiTransform of primitives about a
-placed body (Page_089), lofts, helices, thickness and offset objects, ellipse arcs and
-ellipsoids, shape binders, and profiles that are datum planes.
+placed body (Page_089), lofts, helices, thickness and offset objects, hyperbola and
+parabola arcs, shape binders, and profiles that are datum planes. Ellipses and elliptical
+arcs of a sketch (`Part::GeomEllipse`, `GeomArcOfEllipse`: major axis from `AngleXU`, the
+arc's parameters are eccentric anomalies, counter-clockwise; a mirrored plane is refused like
+an arc) and `PartDesign` ellipsoids (a half ellipse turned about z, two radii) come in as
+tree ellipses and a revolve (Page_022 x2, Page_029). Page_108 needs a boolean that keeps
+FreeCAD's `Refine=false` result: the shim's `run_boolean` has a `simplify` flag but the
+kernel API, the document feature and the eval op do not carry it.
