@@ -11,6 +11,7 @@
 #[doc(hidden)]
 pub mod fixtures;
 pub mod fusion;
+pub mod fusion_tree;
 mod parse;
 mod step;
 

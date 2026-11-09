@@ -1876,6 +1876,7 @@ name = "gusset-sat"
 version = "0.1.0-mvp"
 dependencies = [
  "libm",
+ "serde_json",
 ]
 
 [[package]]
