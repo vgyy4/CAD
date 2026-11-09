@@ -149,7 +149,7 @@ pub(crate) fn surface_at(g: &Graph, s: u32, u: f64, v: f64, depth: u32) -> Optio
             let (a, x) = (unit(g.vec3(s, "axis")?)?, unit(g.vec3(s, "x_axis")?)?);
             let (r, sn, cs) = (g.real(s, "radius")?, g.real(s, "sin_half_angle")?, g.real(s, "cos_half_angle")?);
             let radial = add(scale(x, cu), scale(cross(a, x), su));
-            Some(add(sub(g.vec3(s, "pvec")?, scale(a, v)), scale(radial, r + v * sn / cs)))
+            Some(add(add(g.vec3(s, "pvec")?, scale(a, v)), scale(radial, r + v * sn / cs)))
         }
         "SPHERE" => {
             let (a, x) = (unit(g.vec3(s, "axis")?)?, unit(g.vec3(s, "x_axis")?)?);
@@ -245,8 +245,8 @@ pub(crate) fn project(g: &Graph, s: u32, p: V3) -> Option<V3> {
             let q = sub(p, o);
             let radial = unit(sub(q, scale(a, dot(q, a)))).unwrap_or(x);
             let start = add(o, scale(radial, r));
-            // Direction of increasing v: -A + tan(a) * radial.
-            let dir = unit(add(scale(a, -cs), scale(radial, sn)))?;
+            // Direction of increasing v: A + tan(a) * radial.
+            let dir = unit(add(scale(a, cs), scale(radial, sn)))?;
             Some(add(start, scale(dir, dot(sub(p, start), dir))))
         }
         _ => project_numeric(g, s, p),

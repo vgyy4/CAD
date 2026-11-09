@@ -258,14 +258,15 @@ impl Writer<'_> {
                 ))
             }
             "CONE" => {
-                // XT uses the half cone away from its axis: R = P - vA + (r + v tan a)(...).
-                // STEP's cone along -A has the same points; its u runs the other way, so the
-                // natural normal flips.
+                // XT's cone widens along its axis: R = P + vA + (r + v tan a)(...), as STEP's
+                // cone placed on the same axis (checked on countersinks: read the other way,
+                // the faces' own edges are off the surface and their volumes disagree with
+                // their meshes).
                 let axis = g.vec3(s, "axis")?;
-                let a = self.place(g.vec3(s, "pvec")?, geom::scale(axis, -1.0), g.vec3(s, "x_axis")?);
+                let a = self.place(g.vec3(s, "pvec")?, axis, g.vec3(s, "x_axis")?);
                 let angle = libm::atan2(g.real(s, "sin_half_angle")?, g.real(s, "cos_half_angle")?);
                 let r = g.real(s, "radius")? * self.mm();
-                Some((self.add(&format!("CONICAL_SURFACE('',#{a},{},{})", real(r), real(angle))), true))
+                Some((self.add(&format!("CONICAL_SURFACE('',#{a},{},{})", real(r), real(angle))), false))
             }
             "SPHERE" => {
                 let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);

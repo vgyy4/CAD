@@ -59,3 +59,15 @@ passes that text to the sandboxed STEP importer (no new OCCT code, no new unsafe
   neutral binary, the rotation matrix's storage order. Wrong guesses in the first three fail
   loudly (an unknown node type or a misread stream).
 * Colours are not carried: the STEP path into the kernel keeps no styles.
+
+## Amendment (2026-11-09): cones widen along their axis
+
+The reader had XT's cone widening away from its axis (`P - vA`). Countersinks in SolidWorks
+and Solid Edge parts showed otherwise: read that way, the faces' own edges were off their
+surfaces, OCCT split them, and the solids' volumes disagreed with their own meshes
+(finger_aperture: 2712 vs 1170 mm3). Read as widening along the axis (`P + vA + (r + v tan
+a)`, the same placement as STEP's cone), solid and mesh volumes agree. Over all sample
+SolidWorks and Solid Edge parts, bodies whose solid and mesh volumes differ by more than 1 %
+went from 55 of 129 to 23. Of those 23, 21 are imported surface bodies of one third-party
+set and 2 are SolidWorks parts (the idler arms) still to be explained. The earlier controlled
+samples had no cones, which is why this was not seen.

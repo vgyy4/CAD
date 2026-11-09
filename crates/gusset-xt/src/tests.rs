@@ -456,3 +456,29 @@ fn a_placement_moves_every_body() {
     let same = crate::to_step_placed(&cube(), "cube", &Limits::default(), None).unwrap();
     assert_eq!(same.step, to_step(&cube(), "cube", &Limits::default()).unwrap().step);
 }
+
+#[test]
+fn a_cone_widens_along_its_axis() {
+    // Radius 1 at the base point, half angle 45 deg: one unit along the axis the radius is 2
+    // (checked on countersinks of SolidWorks and Solid Edge parts: read the other way, their
+    // volumes disagree with their meshes).
+    let mut f = TextFile::new();
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    f.node(
+        52,
+        2,
+        &[
+            ("pvec", v3([0.0, 0.0, 0.0])),
+            ("axis", v3([0.0, 0.0, 1.0])),
+            ("radius", vec![n(1)]),
+            ("sin_half_angle", vec![n(h)]),
+            ("cos_half_angle", vec![n(h)]),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+        ],
+    );
+    let g = decode(&f.finish(), &Limits::default()).unwrap();
+    let p = crate::eval::surface_at(&g, 2, 0.0, 1.0, 0).unwrap();
+    assert!((p[0] - 2.0).abs() < 1e-12 && p[1].abs() < 1e-12 && (p[2] - 1.0).abs() < 1e-12, "{p:?}");
+    let q = crate::eval::project(&g, 2, [0.0, 2.0, 1.0]).unwrap();
+    assert!((q[1] - 2.0).abs() < 1e-9 && (q[2] - 1.0).abs() < 1e-9, "a point on the cone stays: {q:?}");
+}
