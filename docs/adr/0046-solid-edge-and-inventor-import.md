@@ -114,5 +114,71 @@ alone (`docs/formats/inventor-feature-tree.md`; prototype in `scripts/re/invento
 the 35 sample parts' trees rebuild exactly to the stored result body (volume within 9e-8,
 box within 8.1e-5 of the diagonal). Not decoded yet: edge-naming records (fillet and chamfer
 edges are taken from the result body's blend faces), pattern directions, thicken, ellipse
-sketches. `.ipt` stays tier 2 until the Rust import is written; it will use the same rebuild
-check as FreeCAD and SolidWorks.
+sketches. The Rust import follows in amendment 2 below.
+
+## Amendment (2026-11-09, 2): Inventor feature history imports as editable features
+
+`.ipt` parts now come in as a feature tree when it rebuilds to the part's own result body, as
+SolidWorks (ADR 0043) and FreeCAD (ADR 0033) histories do; otherwise the exact body (tier 2) with the
+reason as a warning. The Python prototype (`scripts/re/inventor/`) is ported to Rust, clean room, from
+the sample bytes and `docs/formats/inventor-feature-tree.md` only.
+
+**Code.** `gusset_ole::inventor_features::feature_tree(bytes, file_name, limits)` returns the
+`gusset-feature-tree` v2 JSON or an error reason. Modules (private except the entry point):
+`inventor_dc` (the `PmDCSegment`: meta and `B` streams, class table, framed records, references,
+feature list and history order, parameters, placements), `acis` (a topology-level ShapeManager
+reader: loops of a body as sampled polylines; blend faces of the result body and the edge each
+replaced), `inventor_profile` (which regions of a sketch a feature's loops select: a 500-cell grid
+flood fill). `inventor_history` in `gusset-commands/src/import.rs` is wired like `solidworks_history`
+(`TIER_INVENTOR_HISTORY`, the `commit_import` override) and ends in the shared `rebuild_check`
+(volume within 2e-5, box within 1e-4 of the diagonal, nothing skipped).
+
+**Features read.** Sketches (mask-compressed 4x4 placement in cm, points, lines, arcs, circles,
+construction flags), extrude (new/join/cut; distance, symmetric, through all, reversed), revolve (full
+or angle), hole (simple/counterbore, blind/through, drill point angle, several centres), fillet (one
+radius) and chamfer (equal distances). Fillet and chamfer edges are not stored as geometry in the
+file: the result body's faces tagged `NMx_blend_tag` with the feature's id are found and the original
+edge is rebuilt from the faces beside them (plane/plane lines, plane+coaxial cylinder circles for
+torus and cone blends) and passed as an edge midpoint, which is what the kernel can pick by.
+Corner patches (spheres) are skipped.
+
+**Left out, and said so.** A cosmetic thread (no geometry) and a feature suppressed in the source
+(flag bit 2 of its header; absent from the result body) are not emitted; their names are listed in
+the import's warnings ("left out, no effect on the body") and in the tree's `source.omitted`. Any
+other kind (thicken, rectangular pattern, ...) or a record that does not read is emitted as
+`unsupported` with the reason, so the rebuild check refuses the tree and the reason reaches the
+warning ("the design history came in as an exact body: the fillet feature F cannot be read: ...").
+
+**Hole choice (deterministic).** Gusset refuses some holes the part has (the kernel's hole feature
+needs a planar start face and a clean cylinder). The reader attaches to each hole, once a body exists,
+`_fallback`: the same hole as plain cuts (a through hole as a circle sketch cut through all, a blind
+one as one revolve cut per centre with the counterbore and drill tip in the profile). The importer
+rebuilds with all holes as hole features; when a hole is the first skipped feature it is swapped for
+its fallback and the rebuild repeats (one swap per round, in history order); if the failure is not a
+skipped hole (volume or box differ) it tries all holes swapped once. The outcome depends only on the
+file and the kernel, never on timing. The warning says how many holes are plain cuts.
+
+**Bounds.** Streams and inflated sizes by `Limits`; at most 1 000 000 records, 4096 list items, 2000
+features, 20 000 curves per sketch, 4 million ShapeManager records and 40 million tokens; every
+reference, offset and chain is checked (no unwrap, expect or indexing; no recursion); the profile grid
+is fixed. The `ole_read` fuzz target runs the reader on raw bytes, behind the compound-file signature
+and as records cut from the input inside a well-formed segment; unit tests mutate every byte of a
+synthetic part.
+
+**Coverage (35 sample parts, OCCT test `crates/gusset-cli/tests/ipt_history.rs`,
+`GUSSET_IPT_SAMPLES`, floor `GUSSET_IPT_MIN_HISTORY`).** 16 of 35 come in as history: AL2O3_tube,
+ALUMINUM_sleeve, FIBERGLASS_rod, GLASSFIBRE_isolation_inner/outer, GLASS_tube, PIA_flange_inlet/outlet,
+TITAN_flange_inlet/outlet, TITAN_nut_big/small, TITAN_pressure_ring_big/small, Base Plate, side 2 (the
+prototype's 16, the same parts). The Rust trees of all 35 parts equal the prototype's to 1e-6, apart
+from the wording of the labels of unsupported features and the cosmetic or suppressed features Rust
+leaves out. The other 19 stay exact bodies, with these reasons: 4 O-rings (an ellipse
+sketch curve the tree cannot say, so the revolve's profile is open), 3 thickens and 1 rectangular
+pattern (not in the tree format), 9 fillets or chamfers whose edge cannot be rebuilt or picked (2
+cylinder blends without two planar supports, 1 torus corner, 1 chamfer with no tagged blend face, 5
+whose rebuilt midpoint is not an edge midpoint of the model at that step), 1 fillet the kernel fails
+on (`bottom cover`), 1 extrude whose boolean the kernel rejects (`LED Arm`). Time: about 3 s per part in a debug build
+(the rebuild is the cost).
+
+**Not done.** Edge-naming records (`375c6982` ids), pattern directions, thicken, ellipse sketch curves,
+chamfers with two distances or an angle (read as equal distances; the rebuild check refuses them if
+wrong), multi-body parts, assemblies.

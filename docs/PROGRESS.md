@@ -306,7 +306,16 @@ Phase 3 has started (see Next).
      as binary ShapeManager in a deflated `RSeStorage/B*` stream (35 of 35 parts import via `gusset-sat`; 6 of the 8
      parts with a STEP twin match it to 1e-15, the other two are different revisions of the model).
      `gusset-sat` now stops at an end record without terminator. Fuzz target `ole_read`; OCCT test `ole_samples.rs`
-     (env `GUSSET_OLE_SAMPLES`). Not done: `.asm`/`.iam` assemblies, `.psm` (no sample), feature history.
+     (env `GUSSET_OLE_SAMPLES`). Not done: `.asm`/`.iam` assemblies, `.psm` (no sample), feature history of Solid Edge parts.
+   - Inventor feature history (ADR 0046 amendment 2, 2026-11-09): the clean-room Python prototype is ported to
+     Rust (`gusset_ole::inventor_features`, modules `inventor_dc`, `acis`, `inventor_profile`; `inventor_history`
+     in `import.rs`, tier `TIER_INVENTOR_HISTORY`, the shared `rebuild_check`). 16 of 35 sample parts come in as
+     editable features (OCCT test `ipt_history.rs`, env `GUSSET_IPT_SAMPLES`, floor `GUSSET_IPT_MIN_HISTORY`), the
+     same 16 as the prototype; all 35 Rust trees equal the prototype's to 1e-6. Holes the kernel refuses are retried as plain cuts, decided by
+     the rebuild (deterministic). Cosmetic threads and suppressed features are left out and listed in the warnings.
+     Fuzz target `ole_read` covers the reader. Next here: fillet/chamfer edges whose midpoint is not an edge
+     of the model before the blend (5 parts), cylinder blends without two planar supports (2), ellipse sketch
+     curves (4 O-rings), thicken (3), rectangular pattern direction (L-Bracket), the M8 chamfer's blend faces.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

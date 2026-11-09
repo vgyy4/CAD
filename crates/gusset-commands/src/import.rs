@@ -418,7 +418,24 @@ impl ImportJob {
                 if matches!(self.kind, Kind::SolidEdge) {
                     solid_edge_part(&bytes, &stem, importer.as_ref(), cancel)?
                 } else {
-                    inventor_part(&bytes, &stem, importer.as_ref(), cancel)?
+                    let (out, tier, mut warnings) = inventor_part(&bytes, &stem, importer.as_ref(), cancel)?;
+                    // The feature history as editable features, when it rebuilds to the part's
+                    // own body (ADR 0046 amendment); else the body itself.
+                    match inventor_history(&bytes, &out, &self.kernel, &self.file_name) {
+                        Ok((tree, note)) => {
+                            warnings.extend(note);
+                            return Ok(PreparedImport {
+                                bodies: Vec::new(),
+                                file_name: self.file_name,
+                                tier: TIER_INVENTOR_HISTORY,
+                                warnings,
+                                tree: Some(tree),
+                            });
+                        }
+                        Err(why) if why.is_empty() => {}
+                        Err(why) => warnings.push(format!("the design history came in as an exact body: {why}")),
+                    }
+                    (out, tier, warnings)
                 }
             }
             Kind::F3d => {
@@ -1136,6 +1153,115 @@ fn solidworks_history(
     Ok((tree, note))
 }
 
+/// Tier note for an Inventor part whose feature history came in as features.
+const TIER_INVENTOR_HISTORY: &str = "tier 1: the Inventor feature history as editable features";
+
+/// The tree for an Inventor part's holes, kept or swapped for their plain-cut form: the tree
+/// without the reader's `_` keys, each hole named in `swapped` replaced by its `_fallback`.
+fn inventor_candidate(tree: &Value, swapped: &std::collections::HashSet<String>) -> Value {
+    let mut out = tree.clone();
+    let feats = tree.get("features").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut next = Vec::with_capacity(feats.len());
+    for f in feats {
+        let name = f.get("name").and_then(Value::as_str).unwrap_or_default();
+        if f.get("type").and_then(Value::as_str) == Some("hole")
+            && swapped.contains(name)
+            && let Some(fb) = f.get("_fallback").and_then(Value::as_array)
+        {
+            next.extend(fb.iter().cloned());
+            continue;
+        }
+        let mut f = f;
+        if let Some(o) = f.as_object_mut() {
+            o.retain(|k, _| !k.starts_with('_'));
+        }
+        next.push(f);
+    }
+    if let Some(o) = out.as_object_mut() {
+        o.insert("features".into(), Value::Array(next));
+    }
+    out
+}
+
+/// The feature a failed [`rebuild_check`] reports first ("..., the first: {json}").
+fn first_skipped(why: &str) -> Option<String> {
+    let rest = why.split_once("the first: ")?.1;
+    let v: Value = serde_json::from_str(rest).ok()?;
+    v.get("feature").and_then(Value::as_str).map(str::to_string)
+}
+
+/// An Inventor part's feature history as a feature tree (ADR 0046 amendment), kept only when
+/// it rebuilds to the part's own body like a FreeCAD history does. A hole the kernel refuses
+/// is tried as plain cuts (one by one in order, then all of them): the rebuild decides, so the
+/// outcome is the same every time. `Err("")`: nothing to say.
+fn inventor_history(
+    bytes: &[u8],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
+    let tree = gusset_ole::inventor_features::feature_tree(bytes, file_name, &gusset_ole::Limits::default())?;
+    let holes: Vec<String> = tree
+        .get("features")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|f| f.get("type").and_then(Value::as_str) == Some("hole") && f.get("_fallback").is_some())
+        .filter_map(|f| f.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let omitted: Vec<String> = tree
+        .pointer("/source/omitted")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|o| Some(format!("{} ({})", o.get("name")?.as_str()?, o.get("why")?.as_str()?)))
+        .take(20)
+        .collect();
+    let mut swapped = std::collections::HashSet::new();
+    let mut all_tried = false;
+    for _ in 0..holes.len() + 2 {
+        let text = serde_json::to_vec(&inventor_candidate(&tree, &swapped)).map_err(|e| e.to_string())?;
+        let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+        match rebuild_check(&mut t, bodies, kernel, file_name, "the part's") {
+            Ok(note) => {
+                let mut notes: Vec<String> = note.into_iter().collect();
+                if !swapped.is_empty() {
+                    notes
+                        .push(format!("{} hole(s) are plain cuts: the kernel refused the hole feature", swapped.len()));
+                }
+                if !omitted.is_empty() {
+                    notes.push(format!("left out, no effect on the body: {}", omitted.join(", ")));
+                }
+                return Ok((t, (!notes.is_empty()).then(|| notes.join("; "))));
+            }
+            Err(why) => {
+                if let Some(n) = first_skipped(&why).filter(|n| holes.contains(n) && !swapped.contains(n)) {
+                    swapped.insert(n);
+                } else if !all_tried && swapped.len() < holes.len() {
+                    all_tried = true;
+                    swapped = holes.iter().cloned().collect();
+                } else {
+                    // A feature the reader could not read says why, which the rebuild's own
+                    // "not exported" does not.
+                    let named = first_skipped(&why).and_then(|n| {
+                        tree.get("features")?.as_array()?.iter().find_map(|f| {
+                            (f.get("name")?.as_str()? == n && f.get("type")?.as_str()? == "unsupported")
+                                .then(|| {
+                                    let what = f.get("original_type")?.as_str()?;
+                                    let reason = f.get("reason")?.as_str()?;
+                                    Some(format!("the {what} feature {n} cannot be read: {reason}"))
+                                })
+                                .flatten()
+                        })
+                    });
+                    return Err(named.unwrap_or(why));
+                }
+            }
+        }
+    }
+    Err("the holes could not be rebuilt".into())
+}
+
 /// Builds `tree` in a scratch session and accepts it only when every feature builds and it
 /// gives the volume of `bodies` (within [`FREECAD_VOLUME_TOLERANCE`]) and their bounding box.
 /// `whose` names the bodies in the reasons ("FreeCAD's"). Returns a note when the volumes
@@ -1778,7 +1904,7 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         let mut out = crate::tree_import::apply(s, ctx, tree, &p.file_name)?;
         // A FreeCAD document's or SolidWorks part's history says where it came from (not an
         // exporter plugin).
-        if (p.tier == TIER_FREECAD_HISTORY || p.tier == TIER_SOLIDWORKS_HISTORY)
+        if (p.tier == TIER_FREECAD_HISTORY || p.tier == TIER_SOLIDWORKS_HISTORY || p.tier == TIER_INVENTOR_HISTORY)
             && let Some(o) = out.as_object_mut()
         {
             o.insert("tier".into(), json!(p.tier));
