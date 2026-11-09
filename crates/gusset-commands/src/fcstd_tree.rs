@@ -372,6 +372,30 @@ impl Refs<'_> {
     }
 }
 
+/// Adds a construction line along an axis to a sketch feature already written, when the axis
+/// lies in the sketch's plane; returns its id.
+fn axis_line(features: &mut [Value], sketch: &str, sk: &Place, o: V3, d: V3) -> Option<String> {
+    let dot = |a: V3, b: V3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let rel = [o[0] - sk.p[0], o[1] - sk.p[1], o[2] - sk.p[2]];
+    if dot(d, sk.z).abs() > 1e-9 || dot(rel, sk.z).abs() > 1e-6 {
+        return None;
+    }
+    let f = features.iter_mut().rev().find(|f| {
+        f.get("type").and_then(Value::as_str) == Some("sketch") && f.get("name").and_then(Value::as_str) == Some(sketch)
+    })?;
+    let (u, v, du, dv) = (dot(rel, sk.x), dot(rel, sk.y), dot(d, sk.x), dot(d, sk.y));
+    let n = f.get("curves").and_then(Value::as_array).map_or(0, Vec::len);
+    let id = format!("axis{n}");
+    let (a, b) = (format!("{id}a"), format!("{id}b"));
+    f.get_mut("points")?
+        .as_array_mut()?
+        .extend([json!({"id": a, "x": u, "y": v}), json!({"id": b, "x": u + 10.0 * du, "y": v + 10.0 * dv})]);
+    f.get_mut("curves")?
+        .as_array_mut()?
+        .push(json!({"id": id, "type": "line", "start": a, "end": b, "construction": true}));
+    Some(id)
+}
+
 /// One transformation of a pattern as a tree feature (without its features and target), or
 /// none when it makes no copies.
 fn transform(name: &str, o: &Obj, refs: &Refs<'_>) -> Result<Option<Value>, String> {
@@ -644,19 +668,15 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                             },
                         }
                     } else {
-                        // The body's origin axes.
-                        let ax = objects.get(&axis_obj).map(|a| a.kind.as_str()).unwrap_or_default();
-                        let label = axis_obj.to_ascii_uppercase();
-                        let dir = if label.starts_with("X_AXIS") {
-                            place.x
-                        } else if label.starts_with("Y_AXIS") {
-                            place.y
-                        } else if label.starts_with("Z_AXIS") {
-                            place.z
-                        } else {
-                            return Err(format!("{name}: an axis of type {ax} is not translated yet"));
-                        };
-                        json!({"origin": place.p, "direction": dir})
+                        // Another object's axis: drawn into the profile sketch as a construction
+                        // line (Gusset revolves about a sketch line or the sketch's own axes).
+                        let sk = *sk_place;
+                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                        let (o3, d3) = refs.axis(name, &(axis_obj.clone(), subs.clone()))?;
+                        match axis_line(&mut features, &profile, &sk, o3, d3) {
+                            Some(id) => json!({"line": id}),
+                            None => json!({"origin": o3, "direction": d3}),
+                        }
                     };
                     let angle = o.float("Angle").unwrap_or(360.0);
                     if o.bool("Midplane") || o.int("Type").unwrap_or(0) != 0 {
@@ -684,7 +704,11 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     let target = first_solid.clone().ok_or(format!("{name}: a pattern before any solid"))?;
                     // Mode 1 transforms the whole body; otherwise the listed features.
                     let whole = o.int("TransformMode").unwrap_or(0) == 1;
-                    let mut feats: Vec<String> = if whole { Vec::new() } else { o.link_list("Originals") };
+                    let originals = o.link_list("Originals");
+                    // Gusset repeats features that change a body; repeating the body's first
+                    // feature is a transform of the whole body (the check confirms).
+                    let whole = whole || originals.contains(&target);
+                    let mut feats: Vec<String> = if whole { Vec::new() } else { originals };
                     if !whole && feats.is_empty() {
                         return Err(format!("{name}: a pattern of no features"));
                     }
