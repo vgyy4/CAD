@@ -870,9 +870,27 @@ pub(crate) fn tree_with(
     for (body_name, body) in &bodies_list {
         let place = Place::of(body);
         let mut first_solid: Option<String> = None;
-        let group = body.link_list("Group");
+        let mut group = body.link_list("Group");
         if group.len() > MAX_FEATURES {
             return Err(format!("{body_name}: too many features"));
+        }
+        // A fillet or chamfer comes after the feature it rounds, and a pad or pocket after its
+        // sketch, whatever order the body's group lists (a document reordered by hand).
+        for _ in 0..group.len() {
+            let Some((i, j)) = group.iter().enumerate().find_map(|(i, n)| {
+                let o = objects.get(n)?;
+                let needs = match o.kind.as_str() {
+                    "PartDesign::Fillet" | "PartDesign::Chamfer" => o.link("Base"),
+                    "PartDesign::Pad" | "PartDesign::Pocket" => o.link("Profile"),
+                    _ => None,
+                }?;
+                let j = group.iter().position(|g| *g == needs.0)?;
+                (j > i).then_some((i, j))
+            }) else {
+                break;
+            };
+            let moved = group.remove(i);
+            group.insert(j, moved);
         }
         // A MultiTransform's steps are listed in the body too; they act through it.
         let steps: std::collections::HashSet<String> = group
@@ -1401,6 +1419,17 @@ mod tests {
         assert_eq!(t.features[1]["distance"], 2.0);
         assert_eq!(t.features[2]["operation"], "cut");
         assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
+    }
+
+    #[test]
+    fn a_group_listing_a_pad_before_its_sketch_is_put_in_order() {
+        let doc = DOC.replace(
+            r#"<Link value="Sketch"/><Link value="Pad"/><Link value="Pocket"/>"#,
+            r#"<Link value="Pad"/><Link value="Sketch"/><Link value="Pocket"/>"#,
+        );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
+        assert_eq!(kinds, ["sketch", "extrude", "extrude"]);
     }
 
     #[test]
