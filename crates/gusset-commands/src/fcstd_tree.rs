@@ -384,12 +384,52 @@ fn draft_array(name: &str, o: &Obj, target: &str) -> Result<Vec<Value>, String> 
     Ok(out)
 }
 
+/// A PartDesign body's features up to an object, with the name of its first solid then.
+type Snapshots = HashMap<String, (Vec<Value>, Option<String>)>;
+
 /// The Part workbench objects, in document order, as separate bodies and combines.
 fn part_features(
     objects: &BTreeMap<String, Obj>,
     features: &mut Vec<Value>,
     body_of: &mut HashMap<String, String>,
+    snaps: Option<&Snapshots>,
 ) -> Result<(), String> {
+    // The body a Part object works on: the PartDesign feature's own body as built, or (with
+    // snapshots) a renamed copy of the features up to it.
+    let mut copies = 0usize;
+    let mut input = |features: &mut Vec<Value>, body_of: &HashMap<String, String>, who: &str, i: &str| {
+        if let Some((slice, Some(first))) = snaps.and_then(|m| m.get(i)) {
+            copies += 1;
+            let suffix = format!("_c{copies}");
+            let names: std::collections::HashSet<&str> =
+                slice.iter().filter_map(|f| f.get("name").and_then(Value::as_str)).collect();
+            let rename = |v: &Value| match v {
+                Value::String(t) if names.contains(t.as_str()) => json!(format!("{t}{suffix}")),
+                Value::Array(a) => Value::Array(
+                    a.iter()
+                        .map(|x| match x {
+                            Value::String(t) if names.contains(t.as_str()) => json!(format!("{t}{suffix}")),
+                            other => other.clone(),
+                        })
+                        .collect(),
+                ),
+                other => other.clone(),
+            };
+            for f in slice {
+                let mut f = f.clone();
+                if let Some(m) = f.as_object_mut() {
+                    for k in ["name", "sketch", "target", "features", "tools", "sketches", "path", "profile"] {
+                        if let Some(v) = m.get(k).map(&rename) {
+                            m.insert(k.into(), v);
+                        }
+                    }
+                }
+                features.push(f);
+            }
+            return Ok(format!("{first}{suffix}"));
+        }
+        body_of.get(i).cloned().ok_or(format!("{who}: its input {i} is not translated"))
+    };
     let mut parts: Vec<(&String, &Obj)> =
         objects.iter().filter(|(_, o)| PART_KINDS.contains(&o.kind.as_str()) || is_draft_array(o)).collect();
     parts.sort_by_key(|(_, o)| o.order);
@@ -416,7 +456,7 @@ fn part_features(
                 };
                 let mut bodies: Vec<String> = Vec::new();
                 for i in &inputs {
-                    bodies.push(body_of.get(i).cloned().ok_or(format!("{name}: its input {i} is not translated"))?);
+                    bodies.push(input(features, body_of, name, i)?);
                 }
                 let [target, tools @ ..] = bodies.as_slice() else { return Err(format!("{name}: no inputs")) };
                 if tools.is_empty() {
@@ -484,7 +524,7 @@ fn part_features(
             }
             "Part::FeaturePython" => {
                 let (base, _) = o.link("Base").ok_or(format!("{name}: an array of nothing"))?;
-                let target = body_of.get(&base).cloned().ok_or(format!("{name}: its base {base} is not translated"))?;
+                let target = input(features, body_of, name, &base)?;
                 features.extend(draft_array(name, o, &target)?);
                 body_of.insert(name.clone(), target);
             }
@@ -832,6 +872,18 @@ pub(crate) fn tree_with(
     shape_edges: ShapeEdges<'_>,
     tool_patterns: bool,
 ) -> Result<crate::tree_import::Tree, String> {
+    tree_variant(xml, shape_edges, tool_patterns, false)
+}
+
+/// [`tree_with`], optionally giving each Part object (boolean, Draft array) its own copy of the
+/// PartDesign feature it takes as input, as the body stood at that feature. FreeCAD's Part
+/// objects copy their inputs: the body goes on, and shows beside them.
+pub(crate) fn tree_variant(
+    xml: &[u8],
+    shape_edges: ShapeEdges<'_>,
+    tool_patterns: bool,
+    copy_sources: bool,
+) -> Result<crate::tree_import::Tree, String> {
     let objects = parse(xml)?;
     // Solids made outside PartDesign bodies (Part workbench booleans, sweeps, arrays) are not
     // history this translates; the stored shapes stand in for the whole document.
@@ -867,9 +919,22 @@ pub(crate) fn tree_with(
         body.props.insert("Group".into(), group);
         bodies_list.push(("Body".into(), body));
     }
+    // The PartDesign objects a Part object takes as input.
+    let wanted: std::collections::HashSet<String> = objects
+        .values()
+        .filter(|o| PART_KINDS.contains(&o.kind.as_str()) || is_draft_array(o))
+        .flat_map(|o| {
+            let mut v: Vec<String> = o.link_list("Shapes");
+            v.extend(["Base", "Tool"].iter().filter_map(|k| o.link(k)).map(|(n, _)| n));
+            v
+        })
+        .collect();
+    let mut snaps: Snapshots = HashMap::new();
     for (body_name, body) in &bodies_list {
         let place = Place::of(body);
         let mut first_solid: Option<String> = None;
+        let body_start = features.len();
+        let mut prev: Option<String> = None;
         let mut group = body.link_list("Group");
         if group.len() > MAX_FEATURES {
             return Err(format!("{body_name}: too many features"));
@@ -903,9 +968,14 @@ pub(crate) fn tree_with(
         let tip = body.link("Tip").map(|(t, _)| t).filter(|t| group.contains(t));
         let mut past_tip = false;
         for name in &group {
+            // The body as it stood after the previous feature, for a Part object that copies it.
+            if let Some(p) = prev.take().filter(|p| wanted.contains(p)) {
+                snaps.insert(p, (features.get(body_start..).unwrap_or_default().to_vec(), first_solid.clone()));
+            }
             if past_tip {
                 break;
             }
+            prev = Some(name.clone());
             past_tip = tip.as_ref() == Some(name);
             let Some(o) = objects.get(name) else { continue };
             if steps.contains(name) {
@@ -1352,6 +1422,15 @@ pub(crate) fn tree_with(
                 other => return Err(format!("{name}: {other} is not translated yet")),
             }
         }
+        if let Some(p) = prev.take().filter(|p| wanted.contains(p)) {
+            snaps.insert(p, (features.get(body_start..).unwrap_or_default().to_vec(), first_solid.clone()));
+        }
+        if wanted.contains(body_name) {
+            snaps.insert(
+                body_name.clone(),
+                (features.get(body_start..).unwrap_or_default().to_vec(), first_solid.clone()),
+            );
+        }
         if let Some(f) = &first_solid {
             body_of.insert(body_name.clone(), f.clone());
             // A Part object may take a body's feature as input: the body as built (the
@@ -1361,7 +1440,7 @@ pub(crate) fn tree_with(
             }
         }
     }
-    part_features(&objects, &mut features, &mut body_of)?;
+    part_features(&objects, &mut features, &mut body_of, copy_sources.then_some(&snaps))?;
     if features.is_empty() {
         return Err("no PartDesign body".into());
     }
@@ -1609,6 +1688,50 @@ mod tests {
         let c = &t.features[4];
         assert_eq!((c["target"].as_str(), c["operation"].as_str()), (Some("Box"), Some("cut")));
         assert_eq!(c["tools"], serde_json::json!(["Cylinder"]));
+    }
+
+    #[test]
+    fn a_part_object_can_take_a_copy_of_a_body_it_leaves_standing() {
+        // A box cut from the body's pocket stage: the body (and its pocket) stay as they are.
+        let doc = DOC
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+</Objects>"#,
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+  <Object type="Part::Box" name="Box"/>
+  <Object type="Part::Cut" name="Cut"/>
+</Objects>"#,
+            )
+            .replace(
+                "</ObjectData>",
+                r#"  <Object name="Box"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="1"/></Property>
+    <Property name="Width" type="App::PropertyLength"><Float value="1"/></Property>
+    <Property name="Height" type="App::PropertyLength"><Float value="1"/></Property>
+  </Properties></Object>
+  <Object name="Cut"><Properties>
+    <Property name="Base" type="App::PropertyLink"><Link value="Body"/></Property>
+    <Property name="Tool" type="App::PropertyLink"><Link value="Box"/></Property>
+  </Properties></Object>
+</ObjectData>"#,
+            );
+        let names = |t: &crate::tree_import::Tree| -> Vec<String> {
+            t.features.iter().filter_map(|f| f["name"].as_str().map(String::from)).collect()
+        };
+        // Consumed: the cut works on the body itself.
+        let plain = tree_variant(doc.as_bytes(), &mut no_shapes, false, false).unwrap();
+        assert!(!names(&plain).iter().any(|n| n.ends_with("_c1")));
+        assert_eq!(plain.features.last().unwrap()["target"], "Pad");
+        // Copied: the body's features come again under new names, and the cut takes the copy.
+        let copy = tree_variant(doc.as_bytes(), &mut no_shapes, false, true).unwrap();
+        let n = names(&copy);
+        assert!(n.contains(&"Pad".to_string()) && n.contains(&"Pad_c1".to_string()), "{n:?}");
+        let cut = copy.features.last().unwrap();
+        assert_eq!((cut["target"].as_str(), cut["operation"].as_str()), (Some("Pad_c1"), Some("cut")));
+        let sketch_copy = copy.features.iter().find(|f| f["name"] == "Sketch_c1").expect("the sketch is copied");
+        assert_eq!(sketch_copy["type"], "sketch");
+        let pad_copy = copy.features.iter().find(|f| f["name"] == "Pad_c1").unwrap();
+        assert_eq!(pad_copy["sketch"], "Sketch_c1");
     }
 
     #[test]

@@ -1148,12 +1148,15 @@ fn freecad_history(
     let mut tree = crate::fcstd_tree::tree(doc, &mut shape_edges)?;
     let first = rebuild_check(&mut tree, bodies, kernel, file_name, "FreeCAD's");
     if let Err(why) = &first {
-        // FreeCAD copies a pad's or pocket's whole tool in a pattern: try the tree written so.
-        if let Ok(mut alt) = crate::fcstd_tree::tree_with(doc, &mut shape_edges, true)
-            && alt.features != tree.features
-            && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
-        {
-            return Ok((alt, note));
+        // FreeCAD copies a pad's or pocket's whole tool in a pattern, and a Part object takes a
+        // copy of its input (the body goes on beside it): try the tree written so.
+        for (tools, copies) in [(true, false), (false, true), (true, true)] {
+            if let Ok(mut alt) = crate::fcstd_tree::tree_variant(doc, &mut shape_edges, tools, copies)
+                && alt.features != tree.features
+                && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
+            {
+                return Ok((alt, note));
+            }
         }
         return Err(why.clone());
     }
@@ -1290,69 +1293,6 @@ fn inventor_history(
     Err("the holes could not be rebuilt".into())
 }
 
-/// Builds `tree` in a scratch session and accepts it only when every feature builds and it
-/// gives the volume of `bodies` (within [`FREECAD_VOLUME_TOLERANCE`]) and their bounding box.
-/// `whose` names the bodies in the reasons ("FreeCAD's"). Returns a note when the volumes
-/// differ measurably.
-fn rebuild_check(
-    tree: &mut crate::tree_import::Tree,
-    bodies: &[PreparedBody],
-    kernel: &Arc<dyn gusset_kernel::Kernel>,
-    file_name: &str,
-    whose: &str,
-) -> Result<Option<String>, String> {
-    // The stored shapes' volume is what the features must give.
-    let mut want = 0.0;
-    let mut want_box: Option<gusset_kernel::BBox> = None;
-    let union = |a: Option<gusset_kernel::BBox>, b: gusset_kernel::BBox| {
-        Some(a.map_or(b, |a| gusset_kernel::BBox {
-            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
-            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
-        }))
-    };
-    for b in bodies {
-        let shape = kernel.read_native(&b.blob).map_err(|e| e.message)?;
-        want += kernel.mass_properties(&shape).map_err(|e| e.message)?.volume;
-        want_box = union(want_box, kernel.bbox(&shape).map_err(|e| e.message)?);
-    }
-    tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(want) }];
-    let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
-    let ctx = crate::CmdCtx::user(0);
-    let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
-    let r = crate::tree_import::apply(&mut scratch, &ctx, tree, file_name).map_err(|e| e.message)?;
-    let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
-    if let Some(first) = skipped.first() {
-        let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
-        return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
-    }
-    let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
-    // Blends and sweeps are approximated surfaces, computed by another modeller (FreeCAD's
-    // OCCT build, Parasolid): their volumes agree to about 1e-5. A larger difference is a
-    // different model.
-    let rel = (got - want).abs() / want;
-    let close = rel <= FREECAD_VOLUME_TOLERANCE;
-    if want.is_nan() || want <= 0.0 || !close {
-        return Err(format!("the features give {got:.4} mm3, {whose} shapes {want:.4} mm3"));
-    }
-    // The same volume in another place (a mirror about the wrong plane) is caught by the box.
-    let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
-    let mut got_box = None;
-    for b in &ev.bodies {
-        got_box = union(got_box, kernel.bbox(&b.shape).map_err(|e| e.message)?);
-    }
-    if let (Some(w), Some(g)) = (want_box, got_box) {
-        let tol = 1e-4 * (1.0 + gusset_kernel::norm(w.size()));
-        let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
-        if far(w.min, g.min) || far(w.max, g.max) {
-            return Err(format!(
-                "the features lie in {:?}..{:?}, {whose} shapes in {:?}..{:?}",
-                g.min, g.max, w.min, w.max
-            ));
-        }
-    }
-    let note = (rel > 1e-7).then(|| {
-        format!("the features' volume differs from {whose} stored shapes by {rel:.1e} (approximated surfaces)")
-    });
 /// Tier note for a Fusion design whose timeline came in as features.
 const TIER_FUSION_HISTORY: &str = "tier 1: the Fusion design timeline as editable features";
 
@@ -1601,6 +1541,69 @@ fn fusion_states_check(
     ))
 }
 
+/// Builds `tree` in a scratch session and accepts it only when every feature builds and it
+/// gives the volume of `bodies` (within [`FREECAD_VOLUME_TOLERANCE`]) and their bounding box.
+/// `whose` names the bodies in the reasons ("FreeCAD's"). Returns a note when the volumes
+/// differ measurably.
+fn rebuild_check(
+    tree: &mut crate::tree_import::Tree,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+    whose: &str,
+) -> Result<Option<String>, String> {
+    // The stored shapes' volume is what the features must give.
+    let mut want = 0.0;
+    let mut want_box: Option<gusset_kernel::BBox> = None;
+    let union = |a: Option<gusset_kernel::BBox>, b: gusset_kernel::BBox| {
+        Some(a.map_or(b, |a| gusset_kernel::BBox {
+            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+        }))
+    };
+    for b in bodies {
+        let shape = kernel.read_native(&b.blob).map_err(|e| e.message)?;
+        want += kernel.mass_properties(&shape).map_err(|e| e.message)?.volume;
+        want_box = union(want_box, kernel.bbox(&shape).map_err(|e| e.message)?);
+    }
+    tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(want) }];
+    let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
+    let ctx = crate::CmdCtx::user(0);
+    let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
+    let r = crate::tree_import::apply(&mut scratch, &ctx, tree, file_name).map_err(|e| e.message)?;
+    let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
+    if let Some(first) = skipped.first() {
+        let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
+        return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
+    }
+    let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
+    // Blends and sweeps are approximated surfaces, computed by another modeller (FreeCAD's
+    // OCCT build, Parasolid): their volumes agree to about 1e-5. A larger difference is a
+    // different model.
+    let rel = (got - want).abs() / want;
+    let close = rel <= FREECAD_VOLUME_TOLERANCE;
+    if want.is_nan() || want <= 0.0 || !close {
+        return Err(format!("the features give {got:.4} mm3, {whose} shapes {want:.4} mm3"));
+    }
+    // The same volume in another place (a mirror about the wrong plane) is caught by the box.
+    let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
+    let mut got_box = None;
+    for b in &ev.bodies {
+        got_box = union(got_box, kernel.bbox(&b.shape).map_err(|e| e.message)?);
+    }
+    if let (Some(w), Some(g)) = (want_box, got_box) {
+        let tol = 1e-4 * (1.0 + gusset_kernel::norm(w.size()));
+        let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
+        if far(w.min, g.min) || far(w.max, g.max) {
+            return Err(format!(
+                "the features lie in {:?}..{:?}, {whose} shapes in {:?}..{:?}",
+                g.min, g.max, w.min, w.max
+            ));
+        }
+    }
+    let note = (rel > 1e-7).then(|| {
+        format!("the features' volume differs from {whose} stored shapes by {rel:.1e} (approximated surfaces)")
+    });
     Ok(note)
 }
 
