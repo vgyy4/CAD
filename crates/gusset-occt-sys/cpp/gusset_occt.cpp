@@ -1265,7 +1265,16 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   if (!target || !tool || !out || !origins) return fail("null argument");
   ShapeList args, tools;
   args.Append(target->s);
-  tools.Append(tool->s);
+  // A multi-region extrusion is a compound of prisms that may share faces (two sketch
+  // regions with a common edge). As one tool such a compound is self-touching and the
+  // result is invalid; as separate tools the general fuse splits the shared faces.
+  // (Union and cut only: they act on the tools' union, which this does not change.)
+  if (tool->s.ShapeType() == TopAbs_COMPOUND && (op == GS_BOOL_UNION || op == GS_BOOL_CUT)) {
+    for (TopoDS_Iterator it(tool->s); it.More(); it.Next()) tools.Append(it.Value());
+  } else {
+    tools.Append(tool->s);
+  }
+  if (tools.IsEmpty()) return fail("the tool is empty");
   BRepAlgoAPI_BooleanOperation* b = nullptr;
   BRepAlgoAPI_Fuse fuse;
   BRepAlgoAPI_Cut cut;

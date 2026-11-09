@@ -461,3 +461,27 @@ fn a_tree_combine_cuts_one_body_from_another() {
     ]);
     assert_vol(v, 1000.0 - std::f64::consts::PI * 4.0 * 10.0);
 }
+
+#[test]
+fn a_cut_through_two_regions_that_share_an_edge() {
+    // A 10 x 176.25 strip and a 3 x 32 tab whose corner lies on the strip's side: two
+    // regions with a common edge. Their prisms touch face to face; the cut must still take
+    // both (it once failed as an invalid solid).
+    let profile = json!({
+        "type": "sketch", "name": "S1", "plane": plane_at(0.0),
+        "points": [{"id": "p0", "x": -90, "y": -80}, {"id": "p1", "x": -80, "y": -80}, {"id": "p2", "x": -80, "y": 96.25},
+                   {"id": "p3", "x": -90, "y": 96.25}, {"id": "p4", "x": -80, "y": -48}, {"id": "p5", "x": -77, "y": -80},
+                   {"id": "p6", "x": -77, "y": -48}],
+        "curves": [{"id": "c0", "type": "line", "start": "p0", "end": "p1"}, {"id": "c1", "type": "line", "start": "p1", "end": "p2"},
+                   {"id": "c2", "type": "line", "start": "p2", "end": "p3"}, {"id": "c3", "type": "line", "start": "p3", "end": "p0"},
+                   {"id": "c4", "type": "line", "start": "p1", "end": "p5"}, {"id": "c5", "type": "line", "start": "p5", "end": "p6"},
+                   {"id": "c6", "type": "line", "start": "p6", "end": "p4"}, {"id": "c7", "type": "line", "start": "p4", "end": "p1"}]
+    });
+    let (_, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), -100.0, -100.0, 200.0, 200.0),
+        extrude("Plate", "Base", 1.5, "new"),
+        profile,
+        json!({"type": "extrude", "name": "Cut", "sketch": "S1", "profiles": "all", "distance": 5.0, "operation": "cut", "target": "Plate"}),
+    ]);
+    assert_vol(v, 60000.0 - 1.5 * (10.0 * 176.25 + 3.0 * 32.0));
+}
