@@ -1239,6 +1239,28 @@ fn cap_tags_of(records: &[(usize, Vec<Rep>)]) -> HashSet<u16> {
     caps
 }
 
+/// The extrusion direction an extrude node writes: a unit vector one byte after the marker
+/// `0005 0002 0002 0002`. An extrusion along z (a sketch on a Front-like plane) is written as
+/// the y component, negated; the other axes are written as they are.
+fn extrude_direction(d: &[u8], a: usize, b: usize) -> Option<V3> {
+    const MARK: [u8; 8] = [0, 5, 0, 2, 0, 2, 0, 2];
+    let i = find(d, &MARK, a, b)?;
+    let v = f64s_at::<3>(d, i + MARK.len() + 1)?;
+    (v.iter().all(|c| c.is_finite()) && (dot(v, v) - 1.0).abs() < 1e-6).then_some(v)
+}
+
+/// Whether the signed depth `dist` along the sketch normal `n` runs the way the written
+/// direction `v` says; `None` when the sketch is not axis aligned or the vector says nothing
+/// about the axis.
+fn direction_agrees(n: V3, dist: f64, v: V3) -> Option<bool> {
+    let axis = (0..3).find(|&k| n.get(k).is_some_and(|c| c.abs() > 1.0 - 1e-6))?;
+    let written = if axis == 2 { -v.get(1)? } else { *v.get(axis)? };
+    if written.abs() < 1.0 - 1e-6 {
+        return None;
+    }
+    Some(written * n.get(axis)? * dist > 0.0)
+}
+
 /// A solid feature an edge can name: its sketch, plane and signed depth (mm).
 #[derive(Debug, Clone, Copy)]
 struct Swept {
@@ -1669,11 +1691,22 @@ fn midpoint(
 /// # Errors
 /// A short human-readable reason.
 pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Option<Value>, String> {
+    let tree = feature_tree_unchecked(bytes, file_name, limits)?;
+    if let Some(t) = &tree {
+        check(t)?;
+    }
+    Ok(tree)
+}
+
+/// [`feature_tree`] without the check for features it cannot rebuild: the tree as far as it
+/// is read (unsupported features appear as `unsupported`), for study and tests.
+///
+/// # Errors
+/// A short human-readable reason.
+pub fn feature_tree_unchecked(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Option<Value>, String> {
     let Some((rf, c0, chunk)) = streams(bytes, limits)? else { return Ok(None) };
     let file = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
-    let tree = convert_in(&rf, &c0, file, chunk)?;
-    check(&tree)?;
-    Ok(Some(tree))
+    convert_in(&rf, &c0, file, chunk).map(Some)
 }
 
 /// A hole-wizard feature being read: its node is followed by a placement sketch and a
@@ -2138,23 +2171,36 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if op == "cut" && !symmetric && distance.is_some_and(|v| v > 0.0) {
                 distance = distance.map(|v| -v);
             }
-            // A blind cut with a second dimension `D2` and an end spec of X 0 starts that far
-            // from its sketch plane (idler_single_v1: D1 10 mm, D2 1 mm; the truth's bore spans
-            // x -1 .. 2.9 from the Right plane, so it starts 1 mm behind the plane and runs
-            // along the sketch normal).
+            // The written direction vector says which way the extrusion really runs; a distance
+            // against it is reversed (MicroGearMotor Boss-Extrude1).
+            if let (Some(d), Some(sk), false, false) = (distance, last_sketch.as_ref(), symmetric, through_all)
+                && let Some(&(_, plane)) = sketch_by_name.get(sk)
+                && let Some(dir) = extrude_direction(rf, a, b)
+                && let Some(agree) = direction_agrees(cross(plane.x, plane.y), d, dir)
+                && !agree
+            {
+                distance = Some(-d);
+            }
+            // A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its
+            // own sketch) starts that far from its sketch plane. With an end spec of X 1 the start
+            // lies ahead along the cut direction (MicroGearMotor Cut-Extrude2: D1 4.25 mm, offset
+            // 0.8 mm, the void spans z -5.05 .. -0.8 from the Front plane); with X 0 it lies
+            // behind (idler_single_v1: D1 10 mm, D2 1 mm, the truth's bore spans x -1 .. 2.9 from
+            // the Right plane, running along the normal).
             let start_offset = named_params(rf, a, b, nt)?
                 .iter()
-                .find(|(k, _)| k == "D2")
+                .find(|(k, _)| k.strip_prefix('D').is_some_and(|n| n != "1" && n.bytes().all(|c| c.is_ascii_digit())))
                 .map(|(_, v)| mm(*v))
-                .filter(|_| op == "cut" && typ == Some(0) && es.is_some_and(|e| e.x == 0) && !symmetric);
+                .filter(|_| op == "cut" && typ == Some(0) && !symmetric);
             if let (Some(off), Some(sk), Some(d)) = (start_offset, last_sketch.as_ref(), distance)
                 && let Some(entry) = sketch_by_name.get_mut(sk)
                 && swept.values().all(|w| w.sketch != entry.0)
             {
-                let nrm = cross(entry.1.x, entry.1.y);
+                let ahead = es.is_some_and(|e| e.x == 1);
+                let dir = cross(entry.1.x, entry.1.y).map(|c| c * d.signum() * if ahead { 1.0 } else { -1.0 });
                 let mut o = entry.1.origin;
-                for (v, n) in o.iter_mut().zip(nrm) {
-                    *v = round_to(*v - off * n, 6) + 0.0;
+                for (v, n) in o.iter_mut().zip(dir) {
+                    *v = round_to(*v + off * n, 6) + 0.0;
                 }
                 entry.1.origin = o;
                 let origin = entry.1.origin;
@@ -2165,7 +2211,6 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 {
                     pl.insert("origin".into(), json!(origin));
                 }
-                distance = Some(d.abs());
             }
             let mut js = Map::new();
             js.insert("type".into(), json!("extrude"));
@@ -2463,4 +2508,34 @@ fn check(tree: &Value) -> Result<(), String> {
         return Err("no extrude or revolve was read".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod direction_tests {
+    use super::*;
+
+    #[test]
+    fn written_direction_decides_the_sign() {
+        // Sketch normal +z: an extrusion along +z is written as -y.
+        assert_eq!(direction_agrees([0.0, 0.0, 1.0], 9.0, [0.0, -1.0, 0.0]), Some(true));
+        assert_eq!(direction_agrees([0.0, 0.0, 1.0], 9.0, [0.0, 1.0, 0.0]), Some(false));
+        assert_eq!(direction_agrees([0.0, 0.0, 1.0], -9.0, [0.0, 1.0, 0.0]), Some(true));
+        // Other axes are written as they are.
+        assert_eq!(direction_agrees([1.0, 0.0, 0.0], 2.0, [-1.0, 0.0, 0.0]), Some(false));
+        assert_eq!(direction_agrees([0.0, -1.0, 0.0], -2.0, [0.0, 1.0, 0.0]), Some(true));
+        // A tilted sketch, or a vector along another axis, says nothing.
+        assert_eq!(direction_agrees([0.8, 0.0, 0.6], 2.0, [1.0, 0.0, 0.0]), None);
+        assert_eq!(direction_agrees([1.0, 0.0, 0.0], 2.0, [0.0, 1.0, 0.0]), None);
+    }
+
+    #[test]
+    fn direction_vector_follows_the_marker() {
+        let mut d = vec![7u8; 3];
+        d.extend([0, 5, 0, 2, 0, 2, 0, 2, 9]);
+        for c in [0.0f64, 1.0, 0.0] {
+            d.extend(c.to_le_bytes());
+        }
+        assert_eq!(extrude_direction(&d, 0, d.len()), Some([0.0, 1.0, 0.0]));
+        assert_eq!(extrude_direction(&d, 0, 8), None);
+    }
 }

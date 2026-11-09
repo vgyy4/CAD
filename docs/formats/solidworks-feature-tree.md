@@ -541,3 +541,22 @@ included mirror parts whose history was the stored body alone (20) or the stored
   features. **baseJoint 1.4e-4**: four planar faces differ by 0.002 .. 0.02 mm2, not located.
 * Not attempted for lack of time: GT2_Bobbin (revolve faces), arm_idler_single_v4 (chamfer face; also two extrudes without end
   spec), MicroGearMotor reverse flag, FrameBracket end types 4/5, spring_base (end type 5 and the countersink).
+
+## L10. Round 4 (extrusion direction, start offsets)
+Corpus (slip-pad 35 + arig-revisions 50): 33 -> 34 as history (slip-pad 19 -> 20).
+* **Extrusion direction (solved, MicroGearMotor).** The unit vector one byte after the `0005 0002 0002 0002` marker of an extrude
+  node IS the extrusion direction, in a frame where a z direction is written as the y component negated (+z -> (0,-1,0),
+  -z -> (0,1,0)) and x/y directions as they are. The earlier "dot product 0/+1/-1" scatter was this z twist. Checked on 80
+  extrudes of the slip-pad parts with a vector (blind and cut, axis-aligned sketches): all agree with `sign(distance) * sketch
+  normal` except MicroGearMotor Boss-Extrude1 (the known reversed one) and four nodes that carry no end spec or end type 5
+  (FrameBracket Cut-Extrude3 / Boss-Extrude10, Top_mainplate Cut-Extrude3, arm_idler_single_v4 Boss-Extrude5), whose sign
+  our reading of D1 gets wrong; the reader now negates a distance that runs against the written direction (only for
+  axis-aligned sketches, not for symmetric or through-all). Tilted sketch planes (arm_idler_single_v4 Boss-Extrude4,
+  Cut-Extrude7) write a vector that is neither the normal nor an axis: not used.
+* **Start offset (D19).** The dimensions of a feature are numbered through its sketch: a cut with a 17-dimension sketch
+  writes its depth as `D1` and its start offset as `D19`; with no sketch dimensions it is `D2` (idler_single_v1). MicroGearMotor
+  Cut-Extrude2 (D1 4.25, D19 0.8) and Cut-Extrude3 (D1 2.5, D19 0.8) void z -5.05 .. -0.8 and -8.35 .. -5.85 from sketch planes
+  at z 0 and -5.05: the cut starts D19 *ahead* of the plane along its direction (end spec X 1). idler_single_v1 has X 0 and
+  starts behind. Both fit "X 1: ahead, X 0: behind". The truth was compared with the rebuild by ray casting the two STLs
+  along z (layer volumes), which located the 0.8 mm shifts although the total volume was within 1e-3.
+  loadcell_centerPlatform_v1 Cut-Extrude3 has a D19 of 4 mm too and still rebuilds (its cut lies in empty space either way).
