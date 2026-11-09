@@ -672,3 +672,40 @@ covered only by a unit test.
 
 ### Corpus after this round
 Unchanged: 10 of 18 as history.
+
+## 18. Round 10: construction curves, shelled faces, Case chain (2026-11-09)
+### Construction flag of sketch curves
+* One byte after the curve's last point reference (the 2nd of a line, the 3rd of an arc/circle), at an offset that depends on
+  the record layout. Checked against the profiles (a curve of a sketch that has profiles; `(primary, secondary)` ids in the
+  `0D57BD2F` loops): every flagged curve lies outside all profiles of its sketch, and no other byte of the record has that
+  property. Layouts: line 303 and 307 bytes: +7 (24 + 49 flagged, 0 used); line 396: +2 (72 flagged, 0 used); arc 471: +2
+  (one flagged arc, 0 used; the pair +6/+7 is a different flag that also occurs on used lines, so it is not construction).
+  Layouts 413, 417, 440, 444, 447, 448, 496, 500 (lines) and the other arc layouts hold no flagged curve in the sample set
+  and are read as "not construction". The reader drops construction curves from the sketch (`sketch::construction`).
+* Effect: Sketch1 of 6124's Bottom component is the plain 34 x 24 mm box now; Extrude2 = 11424 mm3, which is a stored solid.
+  Fillet1 (11231.7168) and Shell1 (3349.0916 mm3 = the hand-computed shell of the filleted box) rebuild. No design that is
+  history changed (10 of 18).
+
+### Shelled faces
+A face name `[extrude op, shell op]` ([321, 324] in 6124) is the extrude's face moved inward by the shell's `innerThickness`
+(inward = the side of the mean of the profile vertices at mid height); `[321]` stays the outer wall. With this, Fillet2's 4
+edges (pocket corners cut through the 1.6 mm wall, bounded by the outer and the inner wall) resolve and Fillet2 rebuilds
+(+3.5 mm3, concave corners). Later ops that are not shells leave the face where it was (as before).
+
+### Where 6124/6126 stop now
+Chamfer1 (8 edges): its faces are Fillet2's. **A fillet's generator k is the face of the k-th edge of its edge list** (Fillet2:
+g1..g4 = the corners (g3,g4), (g3,g6), (g5,g6), (g4,g5) of Extrude5's pocket; confirmed on all 8 Chamfer1 edges: 4 are
+arcs "fillet face x outer wall" bounded by the two pocket sides, 4 are straight "outer wall x pocket side" bounded by two
+fillet faces). Not implemented: fillet faces need a cylinder face kind (arc mid point = corner + r (a + b)(1 - 1/sqrt 2), a, b the
+unit normals of the two sides toward the void; straight edge mid point = mid point of the two corners). After the Chamfers
+come Draft1 (no tree feature), Fillet3/4 (16 edges), the Top component's blends and Extrude4 (face profile), the logo
+Extrude16/17 (profile regions), Scale5, Move3-5, Combine1, RemoveBody. So neither Case can become history with the
+current tree; what a tree would need: `draft`, a body `transform` (scale + move), `remove_body`, and a combine operation.
+
+### Combine operation: not found
+Compared all eight Combine records (3093 CPX x2, CPX Assembly x2, Bonnet, CyberDeck HAT, 6124, 6126): the same fields in
+the same order; they differ only in ids, tool counts and the u64 after the first block (0x219, 0x150, 0x181, 0x1f2 ... =
+not an enum). The `2E3AC990` records are identical in all four that have one. No sample has a Combine whose operation is
+known (the Bonnet's and the CyberDeck HAT's are in unreadable inserted designs; the rebuild of the Cases stops before
+theirs), so a join/cut/intersect byte cannot be told apart by comparison. Next evidence needed: a Combine whose
+result is a stored state (volume before/after).

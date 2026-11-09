@@ -94,6 +94,31 @@ fn point(d: &Design, i: u64) -> Option<V3> {
     None
 }
 
+/// Whether a sketch curve is a construction curve (never a profile curve). The flag is a byte
+/// after the curve's last point reference; where it is depends on the record layout, and only
+/// the layouts whose flag was checked against the profiles are read (every flagged curve of the
+/// sample set lies outside all profiles of its sketch: 24 + 49 lines of the 303/307-byte
+/// layout, 72 of the 396-byte one, one arc of the 471-byte one):
+/// line 303/307 bytes: 7 after the second point reference, 396: 2; arc 471: 2 after the third.
+/// Another layout reads as "not construction" (no sample has a flagged curve there).
+fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
+    let need = if line { 2 } else { 3 };
+    let pts: Vec<usize> =
+        refs_at(d, rec, e_from).into_iter().filter(|p| has_section(d, p.1, POINT)).map(|p| p.0).take(need).collect();
+    let Some(at) = (pts.len() == need).then(|| pts.last().copied()).flatten() else { return false };
+    let Some((_, end)) = ref_end(d, rec, at) else { return false };
+    construction_flag_offset(line, rec.len()).is_some_and(|off| rec.get(end + off) == Some(&1))
+}
+
+/// Bytes between the end of the last point reference and the construction flag, by record layout.
+pub(super) fn construction_flag_offset(line: bool, record_len: usize) -> Option<usize> {
+    match (line, record_len) {
+        (true, 303 | 307) => Some(7),
+        (true, 396) | (false, 471) => Some(2),
+        _ => None,
+    }
+}
+
 fn line(d: &Design, i: u64) -> Option<Line> {
     let (b, e) = find_section(d, i, LINE)?;
     let rec = d.rec(i);
@@ -171,11 +196,17 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
                 out.points.insert(q, p);
             }
         } else if has_section(d, q, LINE) {
-            if let Some(l) = line(d, q) {
+            if let Some(l) = line(d, q)
+                && let Some((b, _)) = find_section(d, q, LINE)
+                && !construction(d, d.rec(q), b + 72, true)
+            {
                 out.lines.insert(q, l);
             }
         } else if has_section(d, q, ARC) {
-            if let Some(a) = arc(d, q) {
+            if let Some(a) = arc(d, q)
+                && let Some((b, _)) = find_section(d, q, ARC)
+                && !construction(d, d.rec(q), b + 96, false)
+            {
                 out.arcs.insert(q, a);
             }
         } else {

@@ -705,3 +705,17 @@ fn a_shell_with_faces_and_a_thickness_is_readable() {
     ]});
     assert!(check(&tree).is_ok());
 }
+
+#[test]
+fn the_construction_flag_is_read_only_for_the_layouts_it_was_checked_in() {
+    use super::sketch::construction_flag_offset as off;
+    assert_eq!(off(true, 307), Some(7));
+    assert_eq!(off(true, 303), Some(7));
+    assert_eq!(off(true, 396), Some(2));
+    assert_eq!(off(false, 471), Some(2));
+    // Layouts of the other samples: no flagged curve was seen, so none is read as construction.
+    for len in [413, 417, 440, 444, 448, 496, 500] {
+        assert_eq!(off(true, len), None);
+    }
+    assert_eq!(off(false, 431), None);
+}

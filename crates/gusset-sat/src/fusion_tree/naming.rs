@@ -391,8 +391,52 @@ impl Ctx<'_> {
         if let [one] = cands.as_slice() { Some(*one) } else { None }
     }
 
-    /// Geometry of a face named (generator, operation ids), when it is an extrude's cap or side.
+    /// Geometry of a face named (generator, operation ids). A planar face of an extrude that a
+    /// Shell then changed (the name lists the extrude's operation, then the shell's) is the
+    /// shell's inner wall: the extrude's plane moved inward by the wall thickness, inward being
+    /// the side of the middle of the extrude's profile (the profile vertices' mean at mid
+    /// height). The shell's op names the face on both its sides in the samples (6124: Fillet2's
+    /// edges end on the outer wall `[321]` and the inner wall `[321, 324]`).
     pub(super) fn face(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
+        let (first, rest) = ops.split_first()?;
+        if rest.is_empty() {
+            return self.face_of_extrude(g, ops);
+        }
+        // Other later operations leave the face where the extrude put it (as before).
+        let mut wall = 0.0;
+        let mut shelled = false;
+        for o in rest {
+            let Some(fid) = u64::try_from(*o).ok().and_then(|o| self.opmap.get(&o).copied()) else { continue };
+            if self.d.is(fid, "E8063467") {
+                shelled = true;
+                wall += super::feature::param_values(self.d, fid, &["innerThickness"]).first().copied()?;
+            }
+        }
+        if !shelled {
+            return self.face_of_extrude(g, ops);
+        }
+        let base = self.face_of_extrude(g, std::slice::from_ref(first))?;
+        let FaceG::Plane { n, p, cap } = base else { return None };
+        let efid = *self.opmap.get(&u64::try_from(*first).ok()?)?;
+        let eg = self.ext_geom(efid)?;
+        let (t0, t1) = (eg.t0?, eg.t1?);
+        let pts: Vec<P2> = eg.segs.iter().flat_map(|sg| sg.poly.iter().copied()).collect();
+        if pts.is_empty() {
+            return None;
+        }
+        let k = pts.len() as f64;
+        let mean = [pts.iter().map(|q| q[0]).sum::<f64>() / k, pts.iter().map(|q| q[1]).sum::<f64>() / k];
+        let c = world(&eg.pl, mean, (t0 + t1) / 2.0);
+        let side = dot(n, sub(c, p));
+        if side.abs() < 1e-9 {
+            return None;
+        }
+        let q = add(p, mul(n, wall * side.signum()));
+        Some(FaceG::Plane { n, p: q, cap })
+    }
+
+    /// Geometry of a face named (generator, operation ids), when it is an extrude's cap or side.
+    fn face_of_extrude(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
         let op = u64::try_from(*ops.first()?).ok()?;
         let fid = *self.opmap.get(&op)?;
         if !self.d.is(fid, super::EXTRUDE) {
