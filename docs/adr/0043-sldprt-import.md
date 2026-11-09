@@ -317,9 +317,12 @@ the prototype's field for field (only the diagnostic `edges_selected` of the Rus
 - **Mirror.** `moMirrorSolid_c` reads like the mirror pattern; the mirror face is the first reference of the last
   face list of the node (the `moSingleFaceRef_w` object): the cap plane, or for a side face the plane through
   its sketch line along the extrusion normal. Edge lists may hold n - 1 references.
-- **Distance-angle chamfer** (second parameter an angle in (0.1, pi/2] rad) is written as one triangular through
-  cut per corner, since Gusset's chamfer is symmetric (leg on the shared face = D1, other leg D1 tan D2; the
-  assignment of the legs is a guess from one sample).
+- **Distance-angle chamfer** (second parameter an angle in (0.1, pi/2) rad, not 45 degrees) is a `chamfer` with
+  `angle` (degrees) and a `face` pick (ADR 0042 amendment) for the face D1 runs along: the face shared by the most
+  selected side/side edges (ties: lower key; a guess from one sample, plaque_superieure). Edges are grouped by that
+  face, one chamfer per group (`Name`, `Name_2`, ...); edges that are not such a corner get a last chamfer with no
+  pick. This replaces the triangular through-cuts per corner. The bytes have no equal/two-distance flag (all 13
+  chamfer nodes carry D1 and D2 only, D2 an angle), so no `distance2` is written.
 - **Sketch lines are normalized** (merge coincident points, split lines at points on them, drop walls shared by
   two different segments and zero-length lines): two loops sharing part of an edge made the region finder ignore
   the cut silently. Capped at 5e7 point-line tests per sketch (a larger sketch is left as read).

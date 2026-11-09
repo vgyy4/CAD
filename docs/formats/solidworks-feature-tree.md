@@ -433,8 +433,14 @@ Changes to the OLE2 prototype that were needed (each verified by the rebuild):
    0.1 < D2 <= pi/2 (a length param is in metres, so that range cannot be a chamfer distance). Truth corner legs: 30 mm on the
    face a=4 and 30*tan(50 deg)=35.75 mm on the side face (STL vertices (60,-135) and (90,-99.25)). Edge refs of the Chamfer
    node = side/side edges [14,4] and [4,6] (+2 stale refs on construction lines); D1 lies on the face common to both edges
-   (guess, one sample). Gusset has no unequal chamfer, so each corner is emitted as a triangular through-cut sketch
-   (P, P+D1*u_a, P+D1*tan(a)*u_b) -> plaque_superieure 5 of 6 revisions exact.
+   (guess, one sample). Since Gusset has unequal chamfers (ADR 0042 amendment) the importer writes a real `chamfer` with
+   `angle` in degrees (not 45; 45 deg is the equal chamfer) and a `face` pick naming the face D1 runs along: the face shared by
+   the most selected side/side edges (ties: lower key), one chamfer per reference face (`Name`, `Name_2`, ...), the pick a
+   point 0.3 of the face's line (at most 5 mm) from the first edge's midpoint. Edges that are not a corner of two lines of one
+   sketch go in a last chamfer without a pick (default face). plaque_superieure still 5 of 6 revisions exact.
+   Bytes: every chamfer in the corpus (13 nodes, 2 parameters D1/D2) has D2 an angle (45 deg x7, 50, 70, 90 deg); there is no
+   type flag, equal-distance and 45-degree distance-angle chamfers are identical, and no two-distance sample exists (no
+   `distance2` is written; a length D2 <= 0.1 is still ignored).
 
 ## L5. Status after round 1 (see py/ for the patched prototype; `python3 -I py/batch.py <name-substr>` rebuilds and compares)
 * **Exact (vol rel < 2e-5, box < 0.01 mm): 10 of 11 parts that have a truth** = plaque_base_roulante 5/5, plaque_superieure 5/6.

@@ -1691,75 +1691,126 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
 
 /// `convert` for a part of the given container: a chunk-container part (2015 and newer)
 /// learns its unit-component tag from the bytes of the feature stream.
-/// A distance-angle chamfer (`D1` a length, `D2` an angle in radians) as triangular through
-/// cuts, one per corner (swfeat.py, guessed from one sample: `D1` runs along the face
-/// shared by the selected edges, the other leg is `D1 * tan(D2)`). Gusset's chamfer is
-/// symmetric only. `None` where some selected edge is not a corner of two sketch lines.
-fn chamfer_corners(name: &str, (d1, angle): (f64, f64), sel: &[(usize, Vec<Rep>)], c: &Corners) -> Option<Vec<Value>> {
-    let mut uses: HashMap<u32, usize> = HashMap::new();
-    for (_, reps) in sel {
-        for r in reps.iter().take(2).filter(|r| c.swept.contains_key(&r.fid)) {
-            *uses.entry(r.idx).or_default() += 1;
+/// A distance-angle chamfer (`D1` a length, `D2` an angle in radians) as real `chamfer`
+/// features with `angle` (degrees) and a `face` pick: the face `D1` runs along.
+///
+/// For an edge between two side faces of one sketch (two lines meeting at a corner) `D1` runs
+/// along the face shared by the most selected edges (swfeat.py, guessed from one sample: the
+/// truth of plaque_superieure puts it on the face two selected corners have in common; ties
+/// go to the lower face key). The edges are grouped by that face and each group becomes one
+/// chamfer (`name`, `name_2`, ...) whose `face` pick is a point on the face next to the first
+/// edge, so the pick (which applies to every selected edge bordering the face) names it for
+/// the whole group. An edge that is not such a corner has no known reference face: those go
+/// in a last chamfer without a pick (the default face). `None` where no edge could be placed.
+fn chamfer_angle(
+    name: &str,
+    (d1, angle): (f64, f64),
+    edges: &[Option<V3>],
+    sel: &[(usize, Vec<Rep>)],
+    c: &Corners,
+) -> Option<Vec<Value>> {
+    // Per edge: the two candidate (fid, line key) faces, and for each the 3D direction away
+    // from the corner and the line's length (mm).
+    type Cand = ((u32, u32), V3, f64);
+    let cands: Vec<Option<[Cand; 2]>> = sel
+        .iter()
+        .map(|(_, reps)| {
+            let (fa, fb) = (reps.first()?, reps.get(1)?);
+            if fa.fid != fb.fid {
+                return None;
+            }
+            let f = c.swept.get(&fa.fid)?;
+            let g = c.sketches.get(f.sketch)?;
+            let lines = |idx: u32| -> Vec<Seg> {
+                g.segs.iter().filter(|q| q.a == idx && q.kind == SegKind::Line && !q.construction).copied().collect()
+            };
+            let (sa, sb) = (lines(fa.idx), lines(fb.idx));
+            let ([sa], [sb]) = (&sa[..], &sb[..]) else { return None };
+            let ends = |q: &Seg| [q.s, q.e];
+            let common: Vec<usize> = ends(sa).into_iter().filter(|e| ends(sb).contains(e)).collect();
+            let [corner] = common[..] else { return None };
+            let p = point(&g.pts, corner)?;
+            let origin = lift(f, 0.0, 0.0, 0.0);
+            let far = |q: &Seg, key: u32| -> Option<Cand> {
+                let other = if q.s == corner { q.e } else { q.s };
+                let o = point(&g.pts, other)?;
+                let (dx, dy) = (o.x - p.x, o.y - p.y);
+                let len = libm::hypot(dx, dy);
+                if len < 1e-9 {
+                    return None;
+                }
+                let d = sub(lift(f, dx / len, dy / len, 0.0), origin);
+                Some(((fa.fid, key), d, len * 1000.0))
+            };
+            Some([far(sa, fa.idx)?, far(sb, fb.idx)?])
+        })
+        .collect();
+    let mut groups: Vec<(Option<Cand>, Vec<V3>)> = Vec::new();
+    let mut left: Vec<usize> = (0..sel.len()).filter(|&k| cands.get(k).is_some_and(Option::is_some)).collect();
+    let mut loose: Vec<V3> = Vec::new();
+    while !left.is_empty() {
+        // Faces counted over the edges not placed yet.
+        let mut uses: HashMap<(u32, u32), usize> = HashMap::new();
+        for cd in left.iter().filter_map(|&k| cands.get(k)?.as_ref()).flatten() {
+            *uses.entry(cd.0).or_default() += 1;
+        }
+        let best = left
+            .iter()
+            .filter_map(|&k| cands.get(k)?.as_ref())
+            .flatten()
+            .map(|cd| (uses.get(&cd.0).copied().unwrap_or(0), std::cmp::Reverse(cd.0)))
+            .max()?;
+        let face = best.1.0;
+        let mut mids = Vec::new();
+        let mut pick = None;
+        left.retain(|&k| {
+            let Some(Some(pair)) = cands.get(k) else { return true };
+            let Some(cd) = pair.iter().find(|cd| cd.0 == face) else { return true };
+            if let Some(Some(m)) = edges.get(k) {
+                mids.push(*m);
+                pick.get_or_insert(*cd);
+            }
+            false
+        });
+        groups.push((pick, mids));
+    }
+    for (k, m) in edges.iter().enumerate() {
+        if let Some(m) = m
+            && cands.get(k).is_none_or(Option::is_none)
+        {
+            loose.push(*m);
         }
     }
-    let lines = |g: &Geometry, idx: u32| -> Vec<Seg> {
-        g.segs.iter().filter(|q| q.a == idx && q.kind == SegKind::Line && !q.construction).copied().collect()
-    };
-    let (mut outs, mut corners) = (Vec::new(), 0usize);
-    for (k, (_, reps)) in sel.iter().enumerate() {
-        let (Some(fa), Some(fb)) = (reps.first(), reps.get(1)) else { continue };
-        let Some(f) = c.swept.get(&fa.fid) else { continue };
-        let Some(g) = c.sketches.get(f.sketch) else { continue };
-        if fa.fid != fb.fid {
+    let deg = round_to(angle * 180.0 / std::f64::consts::PI, 9);
+    let mut outs = Vec::new();
+    for (pick, mids) in groups.into_iter().chain(std::iter::once((None, loose))) {
+        if mids.is_empty() {
             continue;
         }
-        // An edge between two lines of the sketch.
-        if g.segs.iter().filter(|q| (q.a == fa.idx || q.a == fb.idx) && !q.construction).count() == 2 {
-            corners += 1;
+        let nm = if outs.is_empty() { name.to_string() } else { format!("{name}_{}", outs.len() + 1) };
+        let mut js = Map::new();
+        js.insert("type".into(), json!("chamfer"));
+        js.insert("name".into(), json!(nm));
+        js.insert("distance".into(), json!(mm(d1)));
+        js.insert("angle".into(), json!(deg));
+        js.insert("edges".into(), json!(mids.iter().map(|m| json!({"midpoint": m})).collect::<Vec<_>>()));
+        if let Some((_, dir, len)) = pick
+            && let Some(m) = mids.first()
+        {
+            // A point on the face, off the edge (which borders two faces).
+            let t = (0.3 * len).min(5.0);
+            let q = [m[0] + dir[0] * t, m[1] + dir[1] * t, m[2] + dir[2] * t].map(|v| round_to(v, 6));
+            js.insert("face".into(), json!({"point": q}));
         }
-        let (sa, sb) = (lines(g, fa.idx), lines(g, fb.idx));
-        let ([sa], [sb]) = (&sa[..], &sb[..]) else { continue };
-        let ends = |q: &Seg| [q.s, q.e];
-        let common: Vec<usize> = ends(sa).into_iter().filter(|e| ends(sb).contains(e)).collect();
-        let [corner] = common[..] else { continue };
-        let Some(p) = point(&g.pts, corner) else { continue };
-        let far = |q: &Seg| -> Option<(f64, f64)> {
-            let other = if q.s == corner { q.e } else { q.s };
-            let o = point(&g.pts, other)?;
-            let (dx, dy) = (o.x - p.x, o.y - p.y);
-            let len = libm::hypot(dx, dy);
-            (len > 1e-12).then(|| (dx / len, dy / len))
-        };
-        let (Some(ua), Some(ub)) = (far(sa), far(sb)) else { continue };
-        let d2 = d1 * libm::tan(angle);
-        let (la, lb) = if uses.get(&fb.idx) > uses.get(&fa.idx) { (d2, d1) } else { (d1, d2) };
-        let tri = [(p.x, p.y), (p.x + ua.0 * la, p.y + ua.1 * la), (p.x + ub.0 * lb, p.y + ub.1 * lb)];
-        let nm = format!("{name}_corner{}", k + 1);
-        let points: Vec<Value> =
-            tri.iter().enumerate().map(|(i, q)| json!({"id": format!("p{i}"), "x": mm(q.0), "y": mm(q.1)})).collect();
-        let curves: Vec<Value> = (0..3)
-            .map(|i| json!({"id": format!("c{i}"), "type": "line", "start": format!("p{i}"), "end": format!("p{}", (i + 1) % 3)}))
-            .collect();
-        outs.push(json!({
-            "type": "sketch", "name": nm, "plane": c.planes.get(f.sketch).cloned().unwrap_or(Value::Null),
-            "points": points, "curves": curves,
-        }));
-        outs.push(json!({
-            "type": "extrude", "name": format!("{nm}_cut"), "sketch": nm, "profiles": "all", "operation": "cut",
-            "target": c.target, "distance": 2.0 * BIG, "through_all": true, "symmetric": true,
-            "end_condition": "through_all_both",
-        }));
+        outs.push(Value::Object(js));
     }
-    (!outs.is_empty() && outs.len() == 2 * corners).then_some(outs)
+    (!outs.is_empty()).then_some(outs)
 }
 
-/// What `chamfer_corners` reads from the features before it.
+/// What `chamfer_angle` reads from the features before it.
 struct Corners<'a> {
     swept: &'a HashMap<u32, Swept>,
     sketches: &'a [Geometry],
-    /// The written plane of each sketch.
-    planes: &'a [Value],
-    target: &'a Option<String>,
 }
 
 pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Result<Value, String> {
@@ -2076,25 +2127,14 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let fillet = cls.as_deref() == Some("Fillet_c");
             let ps = params(rf, a, b, nt)?;
             let sel = selection(edge_records(rf, a, b)?);
-            if !fillet
-                && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
-                && angle > 0.1
-                && angle <= TAU / 4.0 + 1e-9
-                && let Some(cuts) = chamfer_corners(
-                    &n.name,
-                    (d1, angle),
-                    &sel,
-                    &Corners { swept: &swept, sketches: &sketches, planes: &planes, target: &first_solid },
-                )
-            {
-                feats.extend(cuts);
-                continue;
-            }
             let mut edges = Vec::new();
+            let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
             let mut unresolved = false;
             for (_, reps) in &sel {
-                match midpoint(reps, &swept, &sketches, &cap_tags, &mut work)? {
+                let m = midpoint(reps, &swept, &sketches, &cap_tags, &mut work)?;
+                mids.push(m);
+                match m {
                     Some(m) => edges.push(json!({"midpoint": m})),
                     // References to faces the sketch no longer has are superseded selections.
                     None if reps.iter().all(|r| swept.contains_key(&r.fid)) => stale += 1,
@@ -2102,6 +2142,19 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 }
             }
             unresolved |= edges.is_empty();
+            // A distance-angle chamfer; 45 degrees is an equal one, 90 has no tangent.
+            if !fillet
+                && !unresolved
+                && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
+                && angle > 0.1
+                && (angle - TAU / 8.0).abs() > 1e-6
+                && angle < TAU / 4.0 - 1e-6
+                && let Some(chs) =
+                    chamfer_angle(&n.name, (d1, angle), &mids, &sel, &Corners { swept: &swept, sketches: &sketches })
+            {
+                feats.extend(chs);
+                continue;
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!(if fillet { "fillet" } else { "chamfer" }));
             js.insert("name".into(), json!(n.name));

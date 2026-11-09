@@ -961,6 +961,28 @@ fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
 }
 
 #[test]
+fn a_distance_angle_chamfer_is_a_chamfer_with_angle_and_a_face() {
+    // The corner edge of the fillet test above, with D2 an angle: 70 degrees is written as
+    // `angle`, with a pick on side 1 (a point 0.3 of the line away from the edge); 45 degrees
+    // is an equal chamfer and writes no angle.
+    for (d2, angle) in [(70f64.to_radians(), Some(70.0)), (45f64.to_radians(), None)] {
+        let mut ch = feature_node("Chamfer_c", "Chamfer1", 30);
+        let refs = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+        ch.extend(edge_record(&refs, 0));
+        ch.extend([0u8; 4]);
+        ch.extend(parameter("D1", 0.001));
+        ch.extend(parameter("D2", d2));
+        let t = history(&feature_stream(&ch)).unwrap().unwrap();
+        let f = t["features"].as_array().unwrap().last().unwrap();
+        assert_eq!(f["type"], "chamfer", "{t}");
+        assert_eq!(f["distance"].as_f64(), Some(1.0));
+        assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
+        assert_eq!(f.get("angle").and_then(serde_json::Value::as_f64), angle, "{f}");
+        assert_eq!(f.get("face").is_some(), angle.is_some(), "{f}");
+    }
+}
+
+#[test]
 fn damaged_feature_streams_never_panic() {
     let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
     let refs = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
