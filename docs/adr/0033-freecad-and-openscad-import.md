@@ -104,7 +104,9 @@ ADR 0042) and the tree importer builds it. Translated:
   or revolution);
 * datums and the origin carry no geometry and are skipped;
 * Part workbench primitives (box, cylinder, sphere, cone), booleans (cut, fuse, common and their
-  multi forms, as Gusset `combine`) and extrusions of sketches along their normal;
+  multi forms, as Gusset `combine`), extrusions of sketches along their normal and Draft arrays
+  (polar: a circular body pattern; ortho: up to three linear ones; their sample files do not
+  rebuild yet);
 * files from before FreeCAD had bodies: their sketches and PartDesign features form one
   implicit body in document order;
 * fillet and chamfer edges on refined shapes (merged faces) are passed with points along them,

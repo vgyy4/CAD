@@ -329,6 +329,61 @@ const PART_KINDS: [&str; 10] = [
     "Part::Extrusion",
 ];
 
+/// A Draft array (`Part::FeaturePython` whose proxy is Draft's `_Array`).
+fn is_draft_array(o: &Obj) -> bool {
+    o.kind == "Part::FeaturePython"
+        && o.first("Proxy", "Python").is_some_and(|e| e.attrs.get("class").is_some_and(|c| c == "_Array"))
+}
+
+/// A `PropertyVector` value.
+fn vector(o: &Obj, prop: &str) -> Option<V3> {
+    let e = o.first(prop, "PropertyVector")?;
+    let g = |k: &str| e.attrs.get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite());
+    Some([g("valueX")?, g("valueY")?, g("valueZ")?])
+}
+
+/// A Draft array of a translated body as body patterns (polar: one circular pattern; ortho:
+/// up to three linear ones).
+fn draft_array(name: &str, o: &Obj, target: &str) -> Result<Vec<Value>, String> {
+    let pl = Place::of(o);
+    if pl.p.iter().any(|c| c.abs() > 1e-9) || (pl.x[0] - 1.0).abs() > 1e-12 || (pl.y[1] - 1.0).abs() > 1e-12 {
+        return Err(format!("{name}: a placed Draft array is not translated yet"));
+    }
+    let polar =
+        o.elems("ArrayType").iter().any(|e| e.tag == "Integer" && e.attrs.get("value").is_some_and(|v| v == "1"));
+    let mut out = Vec::new();
+    if polar {
+        let count = o.int("NumberPolar").unwrap_or(1);
+        if vector(o, "IntervalAxis").is_some_and(|v| v.iter().any(|c| c.abs() > 1e-12)) {
+            return Err(format!("{name}: a polar array with an axial step is not translated yet"));
+        }
+        if count >= 2 {
+            let axis = vector(o, "Axis").ok_or(format!("{name}: no axis"))?;
+            let center = vector(o, "Center").unwrap_or([0.0; 3]);
+            out.push(json!({"type": "pattern_circular", "name": name, "features": [], "target": target,
+                "axis": {"origin": center, "direction": axis}, "angle": o.float("Angle").unwrap_or(360.0), "count": count}));
+        }
+    } else {
+        for (i, (n, v)) in
+            [("NumberX", "IntervalX"), ("NumberY", "IntervalY"), ("NumberZ", "IntervalZ")].iter().enumerate()
+        {
+            let count = o.int(n).unwrap_or(1);
+            if count < 2 {
+                continue;
+            }
+            let step = vector(o, v).ok_or(format!("{name}: no {v}"))?;
+            let len = libm::sqrt(step[0] * step[0] + step[1] * step[1] + step[2] * step[2]);
+            if len <= 1e-12 {
+                return Err(format!("{name}: a zero array step"));
+            }
+            let suffix = ["x", "y", "z"].get(i).copied().unwrap_or("d");
+            out.push(json!({"type": "pattern_linear", "name": format!("{name}_{suffix}"),
+                "features": [], "target": target, "direction": step, "spacing": len, "count": count}));
+        }
+    }
+    Ok(out)
+}
+
 /// The Part workbench objects, in document order, as separate bodies and combines.
 fn part_features(
     objects: &BTreeMap<String, Obj>,
@@ -336,7 +391,7 @@ fn part_features(
     body_of: &mut HashMap<String, String>,
 ) -> Result<(), String> {
     let mut parts: Vec<(&String, &Obj)> =
-        objects.iter().filter(|(_, o)| PART_KINDS.contains(&o.kind.as_str())).collect();
+        objects.iter().filter(|(_, o)| PART_KINDS.contains(&o.kind.as_str()) || is_draft_array(o)).collect();
     parts.sort_by_key(|(_, o)| o.order);
     let mut sketched: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, o) in parts {
@@ -426,6 +481,12 @@ fn part_features(
                     }
                 }
                 body_of.insert(name.clone(), name.clone());
+            }
+            "Part::FeaturePython" => {
+                let (base, _) = o.link("Base").ok_or(format!("{name}: an array of nothing"))?;
+                let target = body_of.get(&base).cloned().ok_or(format!("{name}: its base {base} is not translated"))?;
+                features.extend(draft_array(name, o, &target)?);
+                body_of.insert(name.clone(), target);
             }
             _ => {}
         }
@@ -693,8 +754,10 @@ fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
 #[must_use]
 pub(crate) fn has_bodies(xml: &[u8]) -> bool {
     // Bodies, or PartDesign features from before FreeCAD had bodies.
-    parse(xml)
-        .is_ok_and(|o| o.values().any(|o| o.kind.starts_with("PartDesign::") || PART_KINDS.contains(&o.kind.as_str())))
+    parse(xml).is_ok_and(|o| {
+        o.values()
+            .any(|o| o.kind.starts_with("PartDesign::") || PART_KINDS.contains(&o.kind.as_str()) || is_draft_array(o))
+    })
 }
 
 /// The edges of a stored shape file, in FreeCAD's numbering (`Edge1` first): each edge's
@@ -731,6 +794,7 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
             && !o.kind.starts_with("Sketcher::")
             && !o.kind.starts_with("App::")
             && !PART_KINDS.contains(&o.kind.as_str())
+            && !is_draft_array(o)
     }) {
         return Err(format!("{n}: a {} outside a PartDesign body is not translated yet", o.kind));
     }
@@ -1170,6 +1234,11 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
         }
         if let Some(f) = &first_solid {
             body_of.insert(body_name.clone(), f.clone());
+            // A Part object may take a body's feature as input: the body as built (the
+            // rebuild check catches a feature that is not the body's last).
+            for n in &group {
+                body_of.entry(n.clone()).or_insert_with(|| f.clone());
+            }
         }
     }
     part_features(&objects, &mut features, &mut body_of)?;
