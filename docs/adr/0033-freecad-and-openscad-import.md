@@ -133,11 +133,23 @@ Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch k
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 121 come in as history
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 124 come in as history
 (11 more files show no solid), the rest as exact shapes. Unequal chamfers (two distances,
-distance and angle) are written but no example file uses them. The main remaining reasons:
-boolean and fillet failures of the kernel on valid FreeCAD models (invalid-solid results),
-fillets whose edges FreeCAD drops as tangent (a face pick over smooth edges), a primitive
+distance and angle) are written but no example file uses them. Three files were gained by
+kernel and translator fixes: a boolean whose face unification leaves an invalid solid is
+redone without it (Page_009, Page_015), the volume of a trimmed torus is integrated
+adaptively (the fixed quadrature was off by 1e-4, Page_033), and a pattern of a groove or
+revolution copies the whole tool as pads and pockets do (Page_078). A fillet or chamfer that
+BRepCheck rejects is repaired with ShapeFix as FreeCAD's is (Page_108 now builds). The main
+remaining reasons: FreeCAD's `Refine=false` and its lighter refine keep faces and edges
+that Gusset always unifies, so a fillet of the unrefined shape differs in its corners by
+about 1e-4 of the volume (Page_108) or picks an edge Gusset has merged
+(Page_025, Page_026, Page_089; the picks of a split circle are found on the whole circle
+now, but a fillet of half an edge is not expressible); a 10 mm fillet of one 22 mm edge that
+OCCT refuses (Page_020, stripe status ok, cause not found); a first fillet of two faces that
+removes 54 mm3 too much although none of its 18 edges lies between tangent faces
+(Page_028); a volume 4e-5 off after ring pads over fillets (Page_015 fillets variant); these
+three are not traced; a primitive
 attached to a datum line at a tilt (Page_056-2), a MultiTransform of primitives about a
 placed body (Page_089), lofts, helices, thickness and offset objects, ellipse arcs and
 ellipsoids, shape binders, and profiles that are datum planes.
