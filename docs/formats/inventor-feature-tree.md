@@ -169,3 +169,118 @@ Not exact, with the cause:
 * Hole counterbore/countersink flags (0x20000 guessed), chamfer types, revolve slot 5,
   extrude slot 7, pattern direction, thicken, the second extent direction.
 * Multi-body parts and op code 4 (none in the samples).
+
+# Round 2 (2026-11-09): edge tags, patterns, ellipses, thicken
+
+# LAYOUT.md : additions to docs/formats/inventor-feature-tree.md (round 2)
+
+Scratch setup notes
+* The repo's scripts/re/inventor/ lacks `ole.py stlbox.py sab.py blobs.py sk.py` (imports). Re-created in proto/:
+  ole.py/stlbox.py copied from scripts/re/solidworks, sab.py from scripts/re/fusion (tokens() now stops at the
+  first unknown tag = past `End-of-ASM-data`), blobs.py (`part_blobs`: B*.bin blobs `ASM BinaryFile` with the u32 record type 8 bytes before: 0x031d result, 0x0357 history), sk.py (`backrefs`).
+* 47 .ipt in the 4 records; truth for 45 (the 9434K580 spring and one other time out at 150 s in Gusset itself).
+
+## A. Edge naming of fillet/chamfer (CONFIRMED on L-Bracket, Connecting plate 2, Heatpad Tray)
+* Feature slot 0 `1b48e9da` -> list of edge sets `aad64116` -> `90874d51` (edge collection) -> `375c6982` (one per edge).
+* `375c6982` is back-referenced by `90874d53` (record "edge name"): body = `u32 flags(0x0501..)`, ref Solid body record,
+  `u32 2, u32 0, u32 2`, list(tag 0x30000008) of the source (e.g. `3d 00 00 00` = non-ref index+1 of a sketch line),
+  empty list, `00`, ref `375c6982`, ref `cce92042` (the TAG TABLE, see below), **`u32 tag` as the LAST 4 bytes**.
+* `cce92042` (one per part) = table of `u32 tag, ref` pairs: tag -> entity record (`2e04a208`, `0645c2a5`, `9bb4281c` ...).
+* That last-u32 `tag` equals, on every checked fillet/chamfer, the 8th int (ints[7]) of the `NMx_blend_tag` attribute on the
+  result body's blend face(s) of that feature (feature id = ints[3]). A split edge gives several blend faces with the same tag.
+  => The edge named by the feature and the blend face(s) it produced are linked 1:1 by the tag. (script edgetags.py)
+
+## B. Why midpoints failed, and fixes (CONFIRMED by exact rebuilds: side, Conecting plate 1)
+1. The midpoint taken from the RESULT body is the middle of the edge as it is LAST (after later cuts trim/split it). The
+   importer (tree_import.rs `edges`) first needs a model edge midpoint within 0.01 mm, then falls back to `path`
+   (`containing_edges`: the model edge that holds midpoint + first + last path point). Fix: emit
+   `{"midpoint": m, "path": [m-eps*t, m+eps*t]}` with m ON the pre-fillet edge (line: along the support-plane
+   intersection; circle: on the circle, +-eps/R rotated) and eps = 0.1 mm: the importer then picks the model edge that
+   contains the point whatever its extent at that time. (blend.py local_path / EDGE_INFO)
+2. Planar faces carrying a FILLET's `NMx_blend_tag` are leftovers (an edge split later); drop them (a fillet face is never planar).
+3. circ_mid bug: atan2 gives -pi and +pi for the same angle; after round() they differ by 1e-9, which made the "largest gap"
+   a bogus 2pi-1e-9 and the arc midpoint the vertex. Normalise to [0,2pi) and merge angles < 1e-6 apart.
+4. Hole fallback (revolve cut): the importer's sketch origin is the foot of the WORLD origin on the plane, so a revolve axis
+   given as origin+direction at the hole centre is refused ("axis off the sketch's origin"). Use the profile's closing
+   line (apex -> start, on the hole axis) as `"axis": {"line": "<id>"}`. => `side` rebuilds exactly.
+5. The CLI `gusset build` prints only ok/FAILED per feature, not why a feature was skipped. The reason is in the
+   `import.file` result `skipped_user_text` (MCP: `gusset mcp m.gus --no-attach`, tool `run` {name:"import.file",args:{path}}),
+   see proto/mcpcall.py + skips.py.
+
+## C. Rectangular pattern (L-Bracket exact rebuild, 3 patterns)
+Pattern feature record `20673244` (class 'PatternFeature'; name type GUID `767ac2da`). Its refs, in record order:
+* the patterned features (`90874d91` part features and/or earlier `20673244`), in pattern order; a second direction is a
+  SECOND pattern feature whose list is [originals..., first pattern] (CONFIRMED: Pattern3 = [Hole1, Pattern2]).
+* `a244457b` DIRECTION (125 bytes): the LAST 81 bytes are `3 x (3 x f64 cm)` then `u8 1, ref, ref`:
+  `A (3), V (3), B (3)`. Edge reference: A start, V = B - A, B end (L-Bracket P1/P3: A=(-4.5,17,0), V=(9,0,0), B=(4.5,17,0) =
+  the end-face edge, LED_Arm: V=(-1.75,0,0)). Axis/other reference: A = B = a point, V = direction x length
+  (L-Bracket P2: A=B=(5.5,1,0), V=(0,15,0)).
+* `bb1dd5df` COUNT: the one whose last u32 is the count (>1) (the other `RDxVarN` has 0); both u32 at the end are the count.
+* `90874d26` Param = spacing (cm; L-Bracket d18=3 -> 30 mm, d29=0.7 -> 7 mm).
+* `90874d28` flags (4 at the end of the record order). LAST one = 1 on P2 only. P2's rebuilt hole centres are 151,158,165
+  around the original Hole1 at 158 => flag = MIDPLANE (symmetric about the original). [GUESS from one case]
+* SIGN (GUESS, 2 observations, same edge): the pattern runs along -V (L-Bracket P1: cut slots start at x=+55 mm and go -X;
+  P3: holes 30,0,-30). Under midplane the sign is irrelevant (P2). Verified by volume 196765.929 = truth and the hole centres.
+* Gusset has no midplane pattern: emitted by moving the original hole by -(n-1)/2*spacing along the direction (positions of the
+  hole feature), only for hole features (others -> unsupported).
+* Volume cannot distinguish the spacing for holes in solid material: verified with hole centres from the STL (groups.py).
+
+## D. Ellipse sketch curve `4507d460` (4 O-rings; CONFIRMED against truth volume and bbox, axis-aligned only)
+Record tail (offsets from the record END, all ellipses seen): `f64 s, f64 a, f64 b, u8 1` at len-25, len-17, len-9
+(s = value at len-25). Header: `u32 flags(0)` after the common header; refs (high-bit u32) include the sketch (offset 14),
+the points: for the three listed points `[axis end 1, axis end 2, centre]` order varies, the CENTRE is the ref'd
+`ce52df35` SkPoint with flags 0 (the others have flags 0x10000 = "hole centre" bit; in Oring_65x3 only the centre is ref'd).
+* `a` = semi-major, `b` = semi-minor (cm), `s` = y component of the major axis direction (0.0/-0.0 = along sketch x, 1.0 = along sketch y).
+  Data (cm): Oring_10x5 centre (0.785,0) s=1 a=0.324 b=0.215; 30x3_5 centre (1.675,0) s=0 a=0.175 b=0.158505;
+  54x3 centre (2.91,0) s=1 a=0.199 b=0.12; 65x3 centre (3.4,0) s=0 a=0.15 b=0.119039.
+* Checks: V = 2*pi*Rc*pi*a*b with Rc = centre x (mm) gives the truth volume (1079.401 for 10x5); bbox: radius = Rc + semi-x,
+  z = +-semi-y (the revolve axis is the sketch line x=0 along sketch y; 10x5 z +-3.24 = a (s=1), 65x3 z +-1.19 = b (s=0)).
+* So: semi_x = a if s==0 else b; semi_y = b if s==0 else a. A general rotation would need cos too: s alone is a GUESS
+  (sin of the angle); no rotated sample exists.
+* Revolve: `Umdrehung1` extent 3 (full), axis = the construction line `ce52df3a` #34 on the sketch y axis (points (0,-0.45),(0,0.45)).
+* Proposed tree JSON: {"type":"ellipse","id","center":"<point id>","semi_major":a_mm,"semi_minor":b_mm,"angle":deg of the major axis}
+  (angle = 0 when s==0, 90 when s==1).
+
+## E. Cylinder blends generalised (CONFIRMED: back_accses_panel exact)
+A cylindrical blend face (cone-surface with zero half-angle... `cyl` in blend.py) replaced a STRAIGHT edge parallel to its axis.
+Cross-section the problem perpendicular to the blend axis u: the blend circle (radius r, centre C) is tangent to the two
+support faces: planes parallel to u (|dist(C,plane)| = r) or cylinders parallel to u (|centre distance| = R+r or |R-r|).
+The pre-fillet edge = the support curves' intersection nearest to C (line/line, line/circle, circle/circle), a line along u;
+its range comes from the blend face's vertices (clamped to end planes as before). Replaces the plane-plane-only rule
+(failure texts "cylinder blend with 0/1 planar supports").
+
+## F. Thicken (`7281f4ec`; bottom plate, bottom plate mod, top motor plate)
+* Slots: 0 `eff2257a` (face reference) -> `bf8b8868` -> { `24bcb2f1` -> `509fb5cc` (face name), **Param = thickness (cm)** (bottom plate "d24" = 2.0 =
+  20 mm) }; 1 operation `729abe28` (3 = join); 6 Param d25 = 4.4 (cm; not the thickness, meaning unknown); 12 Param
+  `RDxVarN` = 10.0 (unknown). The face name `509fb5cc` is back-referenced by `03aa812c` (refs a SkPoint through `f3fc69c6`,
+  the tag table `cce92042` and tag keys): a face named through a sketch point of Sketch1; NOT decoded to a face.
+* Result body: planar faces tagged `NMx_Brep_Feature_tag` (4 side planes) with ints[3] = the Thicken id; the cap is the one
+  lying exactly `thickness` outside the base block (bottom plate: x=+73 vs base +-53; top motor plate: x=-73).
+* EQUIVALENCE (CONFIRMED on the bounding box of all 3 parts: box err 2.7e-18/9.4e-18; volume within 0.2..1 % but not exact because
+  other fillets of these parts are still unresolved): thicken of the base block's side face by d == extrude (join) of that side's
+  outline (the base block's y/z extent), `distance = -d` from a sketch plane at the cap with outward normal. NOT `shell`.
+  (The slab is bounded by the base block's extent, so a later fillet on the base's side edges shows up on the slab.)
+
+## G. Other findings (round 2)
+* Chamfers of the M8 screw (`Fase2/3`) carry `NMx_edge_blend_tag` (ints = [-1,42,1,featid,-1,tag]) instead of `NMx_blend_tag`
+  (the same tag as the named edge, see A). blend.py `tagged()` now accepts both. They are circle chamfers (cone faces) that
+  rebuild, but the volume stays 0.6 % off: the cone half-angle is 60 deg from the axis while both distances are equal
+  (d8 = d40 = 0.06766 cm), i.e. the legs are NOT equal; scanning the distance gives the truth volume at d ~ 0.5175 mm
+  (0.6766 mm * 0.765). Gusset's chamfer takes one distance, so asymmetric chamfers need two distances / distance+angle. OPEN.
+* Full-round fillets ("supports do not meet": a cylinder blend whose two planar supports are parallel, radius = half the
+  gap; bottom plate Fillet10/11, Top motor plate Fillet12, Long_Bottom_Nut_Traps Fillet2) have no edge before the fillet. Not expressible. OPEN.
+* Blend faces of type `spline-surface-rb_blend_spl_sur-...` (rolling-ball blend between cone/plane supports) and
+  `srf_srf_v_bl_spl_sur` / `VBL_SURF` (vertex blends): not analysed (edge is a conic, and the importer only matches Line/Circle edges
+  by `path`, so a conic edge would need the exact Gusset midpoint). OPEN: LED_Arm/Elbow/Washer, Heatpad, Fixture Pull Bracket,
+  Leg_Shelf, Thumbscrew 20mm M5.
+* Thumbscrews: all features build, volume 1 % off: `Extrusion4` (last feature) is one tiny rectangle at the rim whose
+  sketch is a (sketch-level) pattern of ~30 knurl notches; the profile list `22947391` of the feature has only the first loop
+  (history bodies 129..142 are circles/helpers). The truth has the knurl, so the pattern instances are not in the loops. OPEN.
+* top_cover_2: all features build; remaining 0.19 % = `Chamfer3`, whose 4 tagged faces are sliver vertex-blend pieces. OPEN.
+* The history blob (`57 03 00 00`) holds only sketch/profile bodies and removed volumes (5 bodies in L-Bracket), NOT
+  intermediate solids: pre-fillet bodies cannot be taken from it. The result blob (`1d 03`) is an ACIS history stream
+  (`Begin-of-ASM-History-Data`, 23 `delta_state` records, records after `End-of-ASM-History-Section` are the deleted
+  pre-feature entities, e.g. the pre-fillet edge 772 with its vertices (5.5,0,0) and straight curve) but their ref numbering is
+  not the record index; not decoded. The tag route (A) + support-face geometry (B/E) was sufficient instead.
+* Importer-side limits met: `path` picks only match Line/Circle edges; full circles (1 vertex) never match by `path`
+  -> use the seam midpoint (build.py flips a pick to `_full` = centre - R*ref when the importer reports it missing).

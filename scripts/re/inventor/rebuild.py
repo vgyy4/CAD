@@ -3,7 +3,7 @@ Usage: python3 -I rebuild.py truth/truth.json out/*.json"""
 import sys, os, json, subprocess, re, shutil, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stlbox import stl
-HERE = os.path.dirname(os.path.abspath(__file__)); G='/home/user/CAD/target/debug/gusset'
+HERE = os.path.dirname(os.path.abspath(__file__)); G=os.environ.get('GUSSET_BIN', 'gusset')
 truth = json.load(open(sys.argv[1])); res = {}
 d = os.path.join(HERE, 'rebuild'); os.makedirs(d, exist_ok=True)
 for fn in sys.argv[2:]:

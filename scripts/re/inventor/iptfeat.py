@@ -175,7 +175,7 @@ def hole_fallback(f, target):
         cur = [{'id': 'e%d' % j, 'type': 'line', 'start': 'q%d' % j, 'end': 'q%d' % ((j + 1) % len(prof))} for j in range(len(prof))]
         out.append({'type': 'sketch', 'name': sk, 'plane': {'origin': P, 'x_axis': x, 'y_axis': n}, 'points': pts, 'curves': cur})
         out.append({'type': 'revolve', 'name': '%s_%d' % (f['name'], k), 'sketch': sk, 'profiles': 'all', 'operation': 'cut',
-                    'target': target, 'axis': {'origin': P, 'direction': n}, 'angle': 360.0, 'from_hole': f['name']})
+                    'target': target, 'axis': {'line': 'e%d' % (len(prof) - 1)}, 'angle': 360.0, 'from_hole': f['name']})
     return out
 
 
@@ -192,7 +192,7 @@ def result_body(D):
 def blend_feature(d, fi, s, nm, typ, D):
     """Fillet/chamfer: edges rebuilt from the result body's blend faces tagged with this
     feature's id; size from the fillet's radius parameter / the chamfer's distance parameter."""
-    from blend import edge_mid
+    from blend import edge_mid, local_path, EDGE_INFO
     B = result_body(D)
     if B is None: return {'type': 'unsupported', 'name': nm, 'original_type': typ}
     faces = B.tagged(seq(d, fi))
@@ -201,9 +201,15 @@ def blend_feature(d, fi, s, nm, typ, D):
     for f in faces:
         k, data = B.kind(f)
         if k == 'sphere-surface': continue          # corner patch
+        if k == 'plane' and typ == 'fillet': continue   # a planar face carrying a fillet's tag is a leftover, not a blend
         m, w = edge_mid(B, f)
         if m is None: why.append(w); continue
-        mids.append([rnd(c * CM, 6) for c in m])
+        lp = local_path(m, EDGE_INFO[0])
+        info = EDGE_INFO[0]; full = None
+        if info and info[0] == 'circle':
+            from blend import ref_dir, sub as bsub, mul as bmul
+            full = [rnd(c * CM, 6) for c in bsub(info[1], bmul(ref_dir(info[2]), info[3]))]
+        mids.append(([rnd(c * CM, 6) for c in m], [[rnd(c * CM, 6) for c in q] for q in lp] if lp else None, full))
         if k == 'cyl': radii.add(round(data[2] * CM, 6))
         if k == 'torus': radii.add(round(data[3] * CM, 6))
     if not faces: why.append('no blend faces tagged with this feature in the result body')
@@ -211,8 +217,9 @@ def blend_feature(d, fi, s, nm, typ, D):
         return {'type': 'unsupported', 'name': nm, 'original_type': typ, 'reason': '; '.join(sorted(set(why)))}
     # de-duplicate (a split face gives the same edge twice)
     uniq = []
-    for m in mids:
-        if all(math.dist(m, q) > 1e-6 for q in uniq): uniq.append(m)
+    for m, lp, full in mids:
+        if all(math.dist(m, q['midpoint']) > 1e-6 for q in uniq):
+            uniq.append({'midpoint': m, **({'path': lp} if lp else {}), **({'_full': full} if full else {})})
     if typ == 'fillet':
         # radius: the parameter of the first edge set (aad64116 record -> Param)
         rad = None
@@ -225,13 +232,96 @@ def blend_feature(d, fi, s, nm, typ, D):
         if rad is None and len(radii) == 1: rad = radii.pop()
         if len(it) > 1 or (radii and any(abs(r - rad) > 1e-6 for r in radii)):
             return {'type': 'unsupported', 'name': nm, 'original_type': 'fillet with several radii'}
-        return {'type': 'fillet', 'name': nm, 'edges': [{'midpoint': m} for m in uniq], 'radius': rnd(rad)}
+        return {'type': 'fillet', 'name': nm, 'edges': uniq, 'radius': rnd(rad)}
     else:
         ctype = struct.unpack_from('<H', d.r[s[4]], d.body(s[4]))[0] if s[4] is not None else None
         dist = pval(d, s, 2)
-        f = {'type': 'chamfer', 'name': nm, 'edges': [{'midpoint': m} for m in uniq], 'distance': rnd(dist * CM),
+        f = {'type': 'chamfer', 'name': nm, 'edges': uniq, 'distance': rnd(dist * CM),
              '_inventor': {'chamfer_type': ctype, 'd2': pval(d, s, 3), 'angle': pval(d, s, 10)}}
         return f
+
+
+PAT_SPACING_IS_TOTAL = False
+
+
+def pattern_feature(d, fi, nm, feats):
+    """Rectangular pattern, one direction. Refs of the record: the patterned features (part or
+    pattern features, in order), `a244457b` direction (three triples at the record end: start
+    point, vector, end point, cm, then u8 1 and two refs), `bb1dd5df` with the count as its last
+    u32, and the spacing Param (cm)."""
+    names = {i: n for i, n, t in feats}
+    tgt = [names[x] for k, x in d.refs(fi) if x != fi and x in names]
+    dirs = [x for k, x in d.refs(fi) if d.g[x].startswith('a244457b')]
+    cnt = [x for k, x in d.refs(fi) if d.g[x].startswith('bb1dd5df') and 1 < struct.unpack_from('<I', d.r[x], len(d.r[x]) - 4)[0] < 1000]
+    par = [x for k, x in d.refs(fi) if d.role[x] == 'Param']
+    if not (tgt and dirs and cnt and par):
+        return {'type': 'unsupported', 'name': nm, 'original_type': 'rect_pattern (direction, count or spacing not found)'}
+    r = d.r[dirs[0]]; n = len(r)
+    A, V, B = [struct.unpack_from('<3d', r, n - 9 - 24 * k) for k in (3, 2, 1)]
+    ln = math.sqrt(dot(V, V))
+    count = struct.unpack_from('<I', d.r[cnt[0]], len(d.r[cnt[0]]) - 4)[0]
+    sp = param(d, par[0])[1] * CM
+    if PAT_SPACING_IS_TOTAL: sp = sp / (count - 1)
+    flags = [d.r[x][-1] for k, x in d.refs(fi) if d.g[x].startswith('90874d28')]
+    sym = bool(flags and flags[-1])      # guess: last flag = midplane (symmetric about the original)
+    # guess (L-Bracket, confirmed by volume + hole centres on 2 patterns): the pattern runs against the edge vector
+    u = [-c / ln for c in V]
+    return {'type': 'pattern_linear', 'name': nm, 'features': tgt, 'direction': [rnd(c) for c in u],
+            'spacing': rnd(sp), 'count': count, '_midplane': sym, '_inventor': {'A': A, 'V': V, 'B': B}}
+
+
+
+def thicken_feature(d, fi, s, nm, D, out):
+    """Thicken of a side face of the base block by a distance = an extrude (join) of that face's
+    outline. Distance: the Param under the face reference (slot 0 -> bf8b8868 -> Param). The cap is the
+    thicken-tagged planar face of the result lying `distance` outside the first extrusion's bounding box.
+    GUESS (unproven if the part has other failures): outline = the base block's side."""
+    from blend import Body
+    B = result_body(D)
+    if B is None or s[0] is None: return {'type': 'unsupported', 'name': nm, 'original_type': 'thicken'}
+    dist = None
+    for k1, x1 in d.refs(s[0]):
+        for k2, x2 in d.refs(x1):
+            if d.role[x2] == 'Param': dist = param(d, x2)[1] * CM
+    first = next((o for o in out if o['type'] == 'extrude' and o.get('operation') == 'new'), None)
+    sk = next((o for o in out if o['type'] == 'sketch' and first and o['name'] == first['sketch']), None)
+    if dist is None or not first or not sk:
+        return {'type': 'unsupported', 'name': nm, 'original_type': 'thicken (no distance or base)'}
+    pl = sk['plane']; o = pl['origin']; X = pl['x_axis']; Y = pl['y_axis']; N = cross(X, Y)
+    pts3 = []
+    for p in sk['points']:
+        P = [o[i] + p['x'] * X[i] + p['y'] * Y[i] for i in range(3)]
+        pts3.append(P); pts3.append([P[i] + N[i] * first['distance'] for i in range(3)])
+    if first.get('symmetric'): pts3 += [[P[i] - N[i] * first['distance'] for i in range(3)] for P in pts3[::2]]
+    lo = [min(p[i] for p in pts3) for i in range(3)]; hi = [max(p[i] for p in pts3) for i in range(3)]
+    fid = seq(d, fi); a = B.a; cands = []
+    for k, t in enumerate(a.types):
+        if t.startswith('NMx_Brep_Feature_tag') and len(a.ints[k]) > 3 and a.ints[k][3] == fid:
+            for y in a.refs[k]:
+                if a.is_(y, 'face'):
+                    kd, data = B.kind(y)
+                    if kd == 'plane':
+                        P, n = data
+                        for ax in range(3):
+                            if abs(abs(n[ax]) - 1) < 1e-6:
+                                sg = 1 if n[ax] > 0 else -1; c = P[ax] * CM
+                                ext = hi[ax] if sg > 0 else lo[ax]
+                                if abs(sg * (c - ext) - dist) < 1e-4: cands.append((ax, sg, c))
+    cands = sorted(set(cands))
+    if len(cands) != 1: return {'type': 'unsupported', 'name': nm, 'original_type': 'thicken (cap face not found: %d)' % len(cands)}
+    ax, sg, c = cands[0]
+    j, k = [i for i in range(3) if i != ax]
+    ej = [1.0 if i == j else 0.0 for i in range(3)]; ek = [1.0 if i == k else 0.0 for i in range(3)]
+    if dot(cross(ej, ek), [sg if i == ax else 0 for i in range(3)]) < 0: ek = [-v for v in ek]
+    org = [(lo[i] + hi[i]) / 2 for i in range(3)]; org[ax] = c
+    hj = (hi[j] - lo[j]) / 2; hk = (hi[k] - lo[k]) / 2
+    ps = [(-hj, -hk), (hj, -hk), (hj, hk), (-hj, hk)]
+    ssk = {'type': 'sketch', 'name': nm + '_sketch', 'plane': {'origin': [rnd(v) for v in org], 'x_axis': ej, 'y_axis': ek},
+           'points': [{'id': 't%d' % i, 'x': rnd(u), 'y': rnd(v)} for i, (u, v) in enumerate(ps)],
+           'curves': [{'id': 'tl%d' % i, 'type': 'line', 'start': 't%d' % i, 'end': 't%d' % ((i + 1) % 4)} for i in range(4)]}
+    out.append(ssk)
+    return {'type': 'extrude', 'name': nm, 'sketch': ssk['name'], 'profiles': 'all', 'operation': 'join', 'target': first['name'],
+            'distance': rnd(-dist), 'symmetric': False}
 
 
 def decode(D):
@@ -300,6 +390,21 @@ def decode(D):
             if not body_made: body_made = True; first_body = nm
         elif typ in ('fillet', 'chamfer'):
             out.append(blend_feature(d, fi, s, nm, typ, D))
+        elif typ == 'thicken':
+            out.append(thicken_feature(d, fi, s, nm, D, out))
+        elif typ == 'rect_pattern':
+            pf = pattern_feature(d, fi, nm, feats)
+            if pf.get('_midplane'):
+                sh = [-c * pf['spacing'] * (pf['count'] - 1) / 2 for c in pf['direction']]
+                tgt = [o for o in out if o.get('name') in pf['features'] and o['type'] == 'hole']
+                if len(tgt) == len(pf['features']):
+                    for o in tgt:
+                        o['positions'] = [[rnd(p[i] + sh[i]) for i in range(3)] for p in o['positions']]
+                        o['face']['point'] = [rnd(o['face']['point'][i] + sh[i]) for i in range(3)]
+                        if '_fallback' in o: o['_fallback'] = hole_fallback(o, first_body)
+                else:
+                    pf = {'type': 'unsupported', 'name': nm, 'original_type': 'rect_pattern (midplane of a non-hole feature)'}
+            out.append(pf)
         elif typ == 'hole':
             f = hole(d, fi, s, nm)
             if body_made: f['_fallback'] = hole_fallback(f, first_body)
