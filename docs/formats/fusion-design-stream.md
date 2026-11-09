@@ -158,3 +158,63 @@ with every body box of the same design (component coordinates).
 * Corpus coverage: 37/37 segment streams frame; 105,644 records with tag = 256+class index;
   29 designs written, 23 with features: 291 sketches, 395 extrudes, 56 fillets, 44 chamfers,
   2 revolves, 622 unsupported feature records (CreateComponent 213, Base Feature 102, Draft 33, …).
+
+## 10. Round 2: profiles, bodies, components, timeline classes
+
+### Profile regions (prof.py, regions.py)
+* Extrude/revolve → `4BD53E5A` (profile; names the sketch by its object id) ← `0D57BD2F`
+  (profile geometry; first ref = owner `4BD53E5A`). Layout after the owner ref and one byte:
+  `u32 nregions`, per region `u32 nloops`, per loop `u32 n`, n × 40-byte entries
+  `{u32 kind (2/3), u64 crv_primary_id, u64 crv_secondary_id, u32 reversed?, u32 a, u32 b, 8 bytes}`,
+  `u8 flag` (1 = outer, 0 = hole), then per region `u32 0`. Parses 338/387 records exactly up to the
+  next section tag (confirmed); 49 records (Crickit, 1WireRGBW, 1054…) use a nested variant
+  (non-zero region trailer followed by more loops) that is NOT decoded.
+* `(crv_primary_id, crv_secondary_id)` = the attribute pair every sketch curve record carries:
+  2409/2412 loop entries resolve to exactly one sketch curve (confirmed).
+* `(a, b)` = the loop uses piece a of b of that curve, the curve being cut at its crossings with
+  the other profile-bounding curves (confirmed by reproducing the split on the samples; construction
+  lines do not cut, and they are not flagged reliably, so the splitter first uses only curves that
+  bound some profile of the same sketch, then neighbours in the loop, then all curves).
+* Output: `profiles:[{"point":[x,y]}]` (sketch coords, mm), one point per region, found by a grid
+  search for the point farthest from all edges inside the outer loop and outside the holes.
+  `_profile_bbox_mm` (outer-loop box) is emitted for checking.
+* Box check with the decoded regions instead of all sketch points: new-body extrudes matching a
+  body box within 0.01 mm went from 176/229 to **206/236**.
+
+### Bodies and targets
+* `D26351F0` = body link: refs (body record `D3937028`, creating feature, component timeline
+  `C3423E04`) — 676/677 links in the corpus have exactly this shape. Creators seen: Base Feature
+  352, Extrude 239, R-Pattern 71, C-Pattern 9, Split 3, Sweep 2.
+* A join/cut reaches the body links of the bodies it modifies through its own child records
+  (`9716F783`, `2CA5A1CD`, …). `target` = name of the link's creating feature: 139 of 140
+  join/cut extrudes get exactly one target (structurally derived; geometrically checked only on
+  the L-Bracket slot cut → Extrude1).
+
+### Components
+* Component record `E03784ED`: last non-UUID UTF-16 string = component name; refs its timeline
+  `C3423E04`; bodies through `CD57BC48` → `40DCC3F4` (`BREP.<id>.smb`).
+* Feature → component: feature's last ref `3A6D1E62` ← `C3423E04` ← `E03784ED` (1049/1055
+  features resolved). Each feature carries `component`; `components:[{name, bodies:[BREP…]}]`
+  lets the importer place a component's features with the same transform it already computes for
+  that component's bodies (placements themselves are not re-decoded here; gusset_sat::fusion has them).
+  `single_component` = all features in one component and at most one component with bodies.
+
+### Timeline classes
+* Dropped (moved to `skipped`): CreateComponent `78B9DEFC`, component activation `54F9ACE8`,
+  JointOrigin `02E8AA49`, Assemble `8DFDD543`, As-built `AA8B3D40`, Position `8EE00B00`,
+  Canvas `0EE4A83E`, Decal `1339A425`, WorkPlane `D869265F`, PCB link `B0EEF272`. Basis: none of
+  them is ever the creator in a body link, none references a body record. (Position and
+  WorkPlane are assumed harmless for body geometry — guess.)
+* Base Feature `D7015B81`: every one creates bodies (refs `D3937028` + body links) → kept as
+  unsupported with `creates_bodies` (its bodies are plain ACIS, importable as such).
+* Patterns `AE12AD3F`/`E8816367` (rectangular), `11F1A5CE` (circular), Mirror `D1728651`:
+  inputs (5A1BF548 → 6CCF41D5 list of features), counts (`A085449A` integer parameters `countU`,
+  `CountV`), spacing (`uSpaceDistance`, `vSpaceDistance`), `TotalAngle` decoded; direction / axis /
+  mirror plane are topological references → still unsupported.
+
+### Edges (fillet/chamfer/pattern direction/revolve axis): not decoded
+`4B31DA1B` → `7ACC2A03` "edge_recipe_data": an edge is named by the faces around it, each face as
+(operation id, generator index), e.g. `(0x37, op 0x12f)`. `5D89B935` maps operation ids to features
+(0x12f and 0x130 → Extrude1 of the L-Bracket), `ABA79BE7` lists per operation the generator ids
+(0x33…0x38 for the 6 profile curves). Resolving that to geometry needs the generator → sketch curve
+and face-kind (side/start/end cap) mapping, which I did not establish.

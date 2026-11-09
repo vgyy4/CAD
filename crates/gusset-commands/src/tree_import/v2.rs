@@ -79,6 +79,19 @@ pub(super) struct MirrorF {
     merge: Option<bool>,
 }
 
+/// A loft through the closed profiles of two or more sketches, in order.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct LoftF {
+    name: String,
+    sketches: Vec<String>,
+    #[serde(default)]
+    ruled: bool,
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+}
+
 /// A profile sketch swept along curves of a path sketch.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct SweepF {
@@ -749,6 +762,47 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
         args.push(format!("body: {tn}"));
     }
     let _ = writeln!(g.text, "\nsweep {name} ({})", args.join(", "));
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+/// The Gusset operation of a tree operation.
+fn body_op(op: Option<&str>) -> Result<&'static str, String> {
+    match op.unwrap_or("new") {
+        "new" => Ok("new"),
+        "join" => Ok("add"),
+        "cut" => Ok("cut"),
+        "intersect" => Ok("intersect"),
+        other => Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
+    }
+}
+
+pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
+    if !(2..=MAX_PICKS).contains(&d.sketches.len()) {
+        return Err("a loft needs from 2 to 256 sketches".into());
+    }
+    let mut names = Vec::new();
+    for sk in &d.sketches {
+        names.push(
+            g.sketches.get(sk).ok_or_else(|| format!("its sketch '{}' was not imported", short(sk)))?.name.clone(),
+        );
+    }
+    let op = body_op(d.operation.as_deref())?;
+    let name = g.fresh(&d.name, "Loft");
+    let mut args = vec![format!("profiles: [{}]", names.join(", "))];
+    if d.ruled {
+        args.push("ruled: true".into());
+    }
+    args.push(format!("op: {op}"));
+    if op != "new"
+        && let Some(t) = &d.target
+    {
+        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        args.push(format!("body: {tn}"));
+    }
+    let _ = writeln!(g.text, "\nloft {name} ({})", args.join(", "));
     builds(g, s, &name)?;
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);

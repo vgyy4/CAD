@@ -625,7 +625,9 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "fillet" | "chamfer" => serde_json::from_value::<EdgeF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
-            "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" if tree.version < 2 => {
+            "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft"
+                if tree.version < 2 =>
+            {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
             }
             "hole" => serde_json::from_value::<v2::HoleF>(f.clone())
@@ -637,6 +639,9 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "mirror" => serde_json::from_value::<v2::MirrorF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::mirror(&mut g, s, &d, &tree.features)),
+            "loft" => serde_json::from_value::<v2::LoftF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::loft(&mut g, s, &d)),
             "sweep" => serde_json::from_value::<v2::SweepF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::sweep(&mut g, s, &d)),

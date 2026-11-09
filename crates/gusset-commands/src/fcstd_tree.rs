@@ -918,6 +918,35 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     first_solid.get_or_insert_with(|| name.clone());
                     features.push(f);
                 }
+                "PartDesign::AdditiveLoft" | "PartDesign::SubtractiveLoft" => {
+                    let sub = kind == "PartDesign::SubtractiveLoft";
+                    let (profile, _) = o.link("Profile").ok_or(format!("{name}: no profile"))?;
+                    let mut list = vec![profile];
+                    for sec in o.link_list("Sections") {
+                        // Newer files list the profile again as the first section.
+                        if list.last() != Some(&sec) {
+                            list.push(sec);
+                        }
+                    }
+                    if list.iter().any(|sk| !sketches.contains_key(sk)) {
+                        return Err(format!("{name}: a loft section is not a sketch of the body"));
+                    }
+                    if o.bool("Closed") {
+                        return Err(format!("{name}: a closed loft is not translated yet"));
+                    }
+                    let op = match (&first_solid, sub) {
+                        (None, false) => "new",
+                        (None, true) => return Err(format!("{name}: a subtractive loft before any solid")),
+                        (Some(_), false) => "join",
+                        (Some(_), true) => "cut",
+                    };
+                    let mut f = json!({"type": "loft", "name": name, "sketches": list, "ruled": o.bool("Ruled"), "operation": op});
+                    if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
+                        m.insert("target".into(), json!(t));
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
+                    features.push(f);
+                }
                 // Datums and the origin carry no geometry of the body.
                 "App::Origin" | "App::Line" | "App::Plane" | "PartDesign::Plane" | "PartDesign::Line"
                 | "PartDesign::Point" => {}

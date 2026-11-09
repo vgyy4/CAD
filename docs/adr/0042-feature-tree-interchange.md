@@ -219,3 +219,7 @@ for the rest.
 "orientation": "frenet" | "fixed", "operation", "target"}` sweeps the profile sketch along
 curves of the path sketch (Gusset's `sweep`, ADR 0017). FreeCAD's pipes are written this way
 (ADR 0033 amendment 2026-11-09).
+
+`{"type": "loft", "name", "sketches": [two or more, in order], "ruled", "operation", "target"}`
+lofts through the sketches' closed profiles (Gusset's `loft`); FreeCAD's additive and
+subtractive lofts are written this way.

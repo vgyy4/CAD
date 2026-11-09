@@ -390,3 +390,15 @@ fn a_disc_swept_along_a_path_sketch_line() {
     assert_vol(v, std::f64::consts::PI * 4.0 * 20.0);
     assert!(r["features"].to_string().contains("Pipe"), "{r}");
 }
+
+#[test]
+fn a_loft_between_two_squares() {
+    // Two 10 mm squares 8 mm apart: a 10 x 10 x 8 block.
+    let loft = json!({"type": "loft", "name": "Block", "sketches": ["Low", "High"], "operation": "new"});
+    let (_, v) = import_v2(vec![
+        rect("Low", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+        rect("High", plane_at(8.0), 0.0, 0.0, 10.0, 10.0),
+        loft,
+    ]);
+    assert_vol(v, 800.0);
+}

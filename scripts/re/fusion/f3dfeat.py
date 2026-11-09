@@ -9,7 +9,7 @@ data: everything is bounded, nothing is executed.
 """
 import sys, os, json, math, struct, hashlib, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import f3dzip, fdesign
+import f3dzip, fdesign, regions
 
 # Class GUIDs (stable across streams; the per-stream tag is 256 + index in the MetaStream class table)
 C = dict(
@@ -122,6 +122,11 @@ def xform(d, i):
     return None
 
 def sketch(d, sid):
+    cache = d.__dict__.setdefault('_sk', {})
+    if sid not in cache: cache[sid] = _sketch(d, sid)
+    return cache[sid]
+
+def _sketch(d, sid):
     rec = d.rec(sid)
     s = find_section(d, sid, C['SKETCH_BASE'])
     out = dict(id=sid, plane=None, points={}, lines={}, arcs={}, other={})
@@ -205,7 +210,13 @@ def extrude_raw(d, i):
     except Exception: return None
     b = max(b - 8, 15)
     # u32 operation, u32 extent, u32 kind, then 00 01 (position varies with the class version)
-    m = re.compile(rb'([\x01-\x05])\x00\x00\x00([\x01-\x04])\x00\x00\x00([\x00-\x03])\x00\x00\x00[\x00\x01]\x01', re.S).search(rec, b, b + 64)
+    ENUM = re.compile(rb'([\x01-\x05])\x00\x00\x00([\x01-\x04])\x00\x00\x00([\x00-\x03])\x00\x00\x00[\x00\x01]\x01', re.S)
+    m = ENUM.search(rec, b, b + 64)
+    if not m and b'SpecifiedColor' in rec[:200]:
+        # the colour attribute is a nested object of variable size: search after its appearance name
+        k = rec.find('PrismOpaque'.encode('utf-16le'))
+        if k < 0: k = rec.find(b'P\x00r\x00i\x00s\x00m\x00')
+        if k > 0: m = ENUM.search(rec, k, k + 200)
     if not m: return None
     op, ext, kind = m.group(1)[0], m.group(2)[0], m.group(3)[0]
     vec, at = find_rigid_dir(rec, m.end())
@@ -294,6 +305,13 @@ def extrude_json(d, fid, name, sketch_names):
     j['sketch'] = sketch_names.get(e['sketch']) if e['sketch'] else None
     j['sketch_source_id'] = e['sketch']
     j['profiles'] = 'all'
+    if e['sketch']:
+        rg = regions.feature_regions(sys.modules[__name__], d, fid, sketch(d, e['sketch']))
+        if rg:
+            j['profiles'] = [dict(point=[mm(r['point'][0]), mm(r['point'][1])]) for r in rg]
+            j['_profile_bbox_mm'] = [[mm(v) for v in r['bbox']] for r in rg]
+        else:
+            j['profiles'] = None; j['profile_note'] = 'profile regions not decoded'
     ps = e['params']
     along = ps.get('AlongDistance'); against = ps.get('AgainstDistance')
     sign = 1.0
@@ -321,11 +339,90 @@ def simple_json(d, fid, typ, name, keys):
             j[k] = conv(ps[pname]['value']); j[k + '_expr'] = ps[pname]['expr']
     return j
 
+# Timeline entries that create no body geometry (confirmed by class: they reference no body record
+# D3937028 and are not referenced as a body's creator in any D26351F0 record of the corpus).
+NON_GEOMETRIC = {
+    '78B9DEFC': 'CreateComponent', '54F9ACE8': 'component activation', '02E8AA49': 'JointOrigin',
+    '8DFDD543': 'Assemble (joint)', 'AA8B3D40': 'As-built joint', '8EE00B00': 'Position (assembly)',
+    '0EE4A83E': 'Canvas (image)', '1339A425': 'Decal', 'D869265F': 'WorkPlane (construction)',
+    'B0EEF272': 'PCB link (bodies come from the extrudes that follow)',
+}
+PATTERNS = {'AE12AD3F': 'pattern_linear', 'E8816367': 'pattern_linear', '11F1A5CE': 'pattern_circular'}
+MIRROR = 'D1728651'
+
+class Graph:
+    """Body/feature/component relations of one design stream."""
+    def __init__(self, d):
+        self.d = d
+        self.creator = {}      # D26351F0 body-link id -> creating feature id
+        self.link_body = {}    # D26351F0 id -> body record (D3937028)
+        self.comp_of_tl = {}   # C3423E04 -> component (E03784ED)
+        self.tl_of_3a6d = {}   # 3A6D1E62 -> C3423E04
+        for i in d.objs:
+            c = cls(d, i)[:8]
+            if c == 'D26351F0':
+                rs = [q for o, q in fdesign.refs_at(d, d.rec(i))]
+                for q in rs:
+                    if cls(d, q)[:8] == 'D3937028': self.link_body.setdefault(i, q)
+                    elif cls(d, q)[:8] not in ('C3423E04', '2C54F6D6'): self.creator.setdefault(i, q)
+            elif c == 'E03784ED':
+                for o, q in fdesign.refs_at(d, d.rec(i)):
+                    if cls(d, q)[:8] == 'C3423E04': self.comp_of_tl.setdefault(q, i)
+            elif c == 'C3423E04':
+                for o, q in fdesign.refs_at(d, d.rec(i)):
+                    if cls(d, q)[:8] == '3A6D1E62': self.tl_of_3a6d.setdefault(q, i)
+    def component(self, fid):
+        for o, q in reversed(fdesign.refs_at(self.d, self.d.rec(fid))):
+            if cls(self.d, q)[:8] == '3A6D1E62' and q in self.tl_of_3a6d:
+                return self.comp_of_tl.get(self.tl_of_3a6d[q])
+        return None
+    def body_links(self, fid, depth=2):
+        """D26351F0 records reachable from a feature through its own child records."""
+        d = self.d; seen = {fid}; front = [fid]; out = set()
+        for _ in range(depth):
+            nxt = []
+            for x in front:
+                for o, q in fdesign.refs_at(d, d.rec(x)):
+                    if q in seen: continue
+                    seen.add(q); c = cls(d, q)[:8]
+                    if c == 'D26351F0': out.add(q)
+                    elif c in ('9716F783', '2CA5A1CD', '5A1BF548', '5662F619', '0897AF07', 'F2A7590D', '8DB90DAE', 'EA0E146E'):
+                        nxt.append(q)
+            front = nxt
+        return out
+    def inputs(self, fid):
+        """Features a pattern/mirror copies: 6CCF41D5 lists under its 5A1BF548 input records."""
+        d = self.d; out = []
+        for o, q in fdesign.refs_at(d, d.rec(fid)):
+            if cls(d, q)[:8] != '5A1BF548': continue
+            for o2, q2 in fdesign.refs_at(d, d.rec(q)):
+                if cls(d, q2)[:8] != '6CCF41D5': continue
+                for o3, q3 in fdesign.refs_at(d, d.rec(q2)):
+                    if q3 != q and cls(d, q3)[:8] not in ('5A1BF548', '8DA771B7') and feature_name(d, q3)[0] and q3 not in out:
+                        out.append(q3)
+        return out
+
+def component_name(d, c):
+    ws = [w[2] for w in fdesign.wstrings(d.rec(c)) if not UUID_RE.match(w[2]) and not w[2].startswith('PrismMaterial')]
+    return ws[-1] if ws else None
+
+def component_bodies(d, c):
+    out = []
+    for o, q in fdesign.refs_at(d, d.rec(c)):
+        if cls(d, q)[:8] == 'CD57BC48':
+            for o2, q2 in fdesign.refs_at(d, d.rec(q)):
+                for w in fdesign.wstrings(d.rec(q2)):
+                    if w[2].startswith('BREP.') and w[2].endswith('.smb') and w[2] not in out: out.append(w[2])
+    return out
+
 def design_json(d):
-    feats = []
+    feats = []; skipped = []
     sketch_names = {}
     tl, extra = timeline(d)
     used_names = set()
+    G = Graph(d)
+    names = {}
+    comps = {}
     for fid in tl + extra:
         base, name = feature_name(d, fid)
         c = cls(d, fid)
@@ -334,12 +431,26 @@ def design_json(d):
             while '%s (%d)' % (name, k) in used_names: k += 1
             name = '%s (%d)' % (name, k)
         used_names.add(name)
+        names[fid] = name
+        comp = G.component(fid)
+        if comp is not None and comp not in comps:
+            comps[comp] = dict(name=component_name(d, comp), bodies=component_bodies(d, comp))
+        if c[:8] in NON_GEOMETRIC:
+            skipped.append(dict(name=name, fusion_type=base or c[:8], reason=NON_GEOMETRIC[c[:8]], source_id=fid))
+            continue
         if c == C['SKETCH_FEAT']:
             j, sid = sketch_json(d, fid, name)
             if j: feats.append(j); sketch_names[sid] = name
             else: feats.append(dict(type='sketch', name=name, error='sketch data not found'))
         elif c == C['EXTRUDE']:
-            feats.append(extrude_json(d, fid, name, sketch_names))
+            j = extrude_json(d, fid, name, sketch_names)
+            links = G.body_links(fid)
+            made = [names.get(G.creator.get(l), G.creator.get(l)) for l in links if G.creator.get(l) == fid]
+            acted = sorted({names.get(G.creator.get(l), str(G.creator.get(l))) for l in links if G.creator.get(l) not in (None, fid)})
+            if j.get('operation') in ('join', 'cut', 'intersect'):
+                j['target'] = acted[0] if len(acted) == 1 else (acted or None)
+            j['creates_bodies'] = len(made)
+            feats.append(j)
         elif c.startswith(C['FILLET']):
             j = simple_json(d, fid, 'fillet', name, {'radius': ('Radius', mm)})
             j['edges'] = []; j['edges_note'] = 'edge references not decoded (EntityTracking records)'
@@ -352,10 +463,38 @@ def design_json(d):
             j['sketch'] = sketch_names.get(sk) if sk else None; j['sketch_source_id'] = sk; j['profiles'] = 'all'
             j['axis'] = None; j['axis_note'] = 'axis is a topological reference (EntityTracking recipe), not decoded'
             feats.append(j)
+        elif c[:8] in PATTERNS or c[:8] == MIRROR:
+            typ = PATTERNS.get(c[:8], 'mirror')
+            j = dict(type='unsupported', gtree_type=typ, fusion_type=base, name=name, source_id=fid,
+                     features=[names.get(q, str(q)) for q in G.inputs(fid)])
+            ps = {}
+            for o, q in fdesign.refs_at(d, d.rec(fid)):
+                if cls(d, q)[:8] in ('D91D429C', 'A085449A'):
+                    for o2, q2 in fdesign.refs_at(d, d.rec(q)):
+                        if cls(d, q2) == C['PARAM']:
+                            pp = fdesign.param(d, q2)
+                            if pp: ps[pp['name']] = pp
+            if 'countU' in ps: j['count'] = ps['countU']['value']
+            if 'CountV' in ps: j['count_v'] = ps['CountV']['value']
+            if 'uSpaceDistance' in ps: j['spacing'] = mm(ps['uSpaceDistance']['value']); j['spacing_expr'] = ps['uSpaceDistance']['expr']
+            if 'vSpaceDistance' in ps: j['spacing_v'] = mm(ps['vSpaceDistance']['value'])
+            if 'TotalAngle' in ps: j['angle'] = math.degrees(ps['TotalAngle']['value'])
+            j['note'] = 'direction / axis / mirror plane is a topological reference (EntityTracking recipe), not decoded'
+            feats.append(j)
         else:
-            feats.append(dict(type='unsupported', fusion_type=base or c[:8], name=name, class_guid=c, source_id=fid))
+            j = dict(type='unsupported', fusion_type=base or c[:8], name=name, class_guid=c, source_id=fid)
+            if c[:8] == 'D7015B81':
+                j['creates_bodies'] = sum(1 for l, f in G.creator.items() if f == fid)
+            feats.append(j)
+        if comp is not None: feats[-1]['component'] = comps[comp]['name']
         if fid in extra: feats[-1]['in_timeline'] = False
-    return dict(format='gusset-feature-tree', version=2, source=dict(app='fusion'), features=feats)
+    out = dict(format='gusset-feature-tree', version=2, source=dict(app='fusion'), features=feats, skipped=skipped)
+    allcomps = [i for i in d.objs if cls(d, i)[:8] == 'E03784ED']
+    out['components'] = [dict(name=v['name'], source_id=k, bodies=v['bodies']) for k, v in comps.items()]
+    with_bodies = [k for k, v in comps.items() if v['bodies']]
+    out['single_component'] = len({f.get('component') for f in feats}) <= 1 and len(with_bodies) <= 1
+    out['component_records'] = len(allcomps)
+    return out
 
 def main():
     out = sys.argv[1]; os.makedirs(out, exist_ok=True)
@@ -380,6 +519,7 @@ def main():
                 ft = {}
                 for x in j['features']: ft[x['type']] = ft.get(x['type'], 0) + 1
                 print('%-60s %s %s' % (base[:60], ft, j.get('error', '')))
+    print('profile failures:', regions.WHY)
 
 if __name__ == '__main__':
     main()

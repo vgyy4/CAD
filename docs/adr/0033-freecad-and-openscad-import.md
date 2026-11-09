@@ -94,7 +94,7 @@ ADR 0042) and the tree importer builds it. Translated:
 * revolution and groove about a sketch axis or line, or an origin axis;
 * mirrored, linear and polar patterns and MultiTransform (each step in turn, about sketch
   axes, origin axes and planes or datum lines and planes; the whole body or listed features);
-* pipes along sketch curves (as sweeps; not through sections);
+* pipes along sketch curves (as sweeps; not through sections) and open lofts;
 * fillets and chamfers (equal distance): FreeCAD names edges (`EdgeN`, `FaceN`) of the base
   feature's stored shape, so that shape is read through the import worker and each edge is
   passed on by its midpoint;

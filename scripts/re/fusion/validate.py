@@ -34,6 +34,9 @@ for p in sys.argv[2:]:
                 if c['type']=='circle' and c['center'] in P:
                     cx,cy=P[c['center']]; r=c['radius']; ext+= [(cx-r,cy-r),(cx+r,cy+r)]
             pts2=[v for kk,v in P.items() if any(c.get('center')!=kk or c['type']!='circle' for c in s['curves'])]+ext
+            if isinstance(f.get('_profile_bbox_mm'),list) and os.environ.get('ALLPTS')!='1':
+                pts2=[]
+                for (x0,y0,x1,y1) in f['_profile_bbox_mm']: pts2+=[(x0,y0),(x1,y1),(x0,y1),(x1,y0)]
             if not pts2: continue
             pl=s['plane']; o=pl['origin']; X=pl['x_axis']; Y=pl['y_axis']
             Z=[X[1]*Y[2]-X[2]*Y[1],X[2]*Y[0]-X[0]*Y[2],X[0]*Y[1]-X[1]*Y[0]]
