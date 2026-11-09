@@ -212,3 +212,10 @@ Everything else about a feature that the importer cannot express (variable-radiu
 pattern seed bodies, tilted mirror planes, tapped holes with helical geometry) is skipped
 with its reason. The plugins export what the source API gives directly and write `unsupported`
 for the rest.
+
+## Amendment (2026-11-09): sweeps in format version 2
+
+`{"type": "sweep", "name", "sketch", "path", "path_curves": [curve ids, all when empty],
+"orientation": "frenet" | "fixed", "operation", "target"}` sweeps the profile sketch along
+curves of the path sketch (Gusset's `sweep`, ADR 0017). FreeCAD's pipes are written this way
+(ADR 0033 amendment 2026-11-09).

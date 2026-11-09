@@ -194,9 +194,9 @@ impl Place {
     }
 }
 
-/// A sketch written as a tree sketch; returns the feature JSON and its lines by FreeCAD edge
-/// number (1-based `EdgeN`) for revolve axes.
-fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, String>), String> {
+/// A sketch written as a tree sketch; returns the feature JSON and its curve ids by FreeCAD's
+/// names for them (`Edge1`.., `Axis0`..), for axes and paths.
+fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, String>), String> {
     let pl = body.then(&Place::of(o));
     let mut points: Vec<(f64, f64)> = Vec::new();
     let mut pjson = Vec::new();
@@ -210,7 +210,7 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, St
         pjson.push(json!({"id": id, "x": x, "y": y}));
         id
     };
-    let (mut curves, mut lines) = (Vec::new(), HashMap::new());
+    let (mut curves, mut lines): (Vec<Value>, HashMap<String, String>) = (Vec::new(), HashMap::new());
     let mut construction = false;
     let mut edge = 0usize;
     let num = |e: &Elem, k: &str| -> Result<f64, String> {
@@ -237,7 +237,6 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, St
                     return Err(format!("{name}: a line of zero length"));
                 }
                 let id = format!("l{edge}");
-                lines.insert(edge, id.clone());
                 curves.push(json!({"id": id, "type": "line", "start": a, "end": b, "construction": construction}));
                 construction = false;
             }
@@ -293,6 +292,21 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, St
         "points": pjson,
         "curves": curves,
     });
+    // FreeCAD names a sketch's curves `Edge1`.. over the non-construction ones, in order, and
+    // its construction lines `Axis0`..
+    let (mut ne, mut na) = (0usize, 0usize);
+    for c in f.get("curves").and_then(Value::as_array).into_iter().flatten() {
+        let id = c.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        if c.get("construction").and_then(Value::as_bool) == Some(true) {
+            if c.get("type").and_then(Value::as_str) == Some("line") {
+                lines.insert(format!("Axis{na}"), id);
+                na += 1;
+            }
+        } else {
+            ne += 1;
+            lines.insert(format!("Edge{ne}"), id);
+        }
+    }
     Ok((f, lines))
 }
 
@@ -301,7 +315,7 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, St
 struct Refs<'a> {
     objects: &'a BTreeMap<String, Obj>,
     body: &'a Place,
-    sketches: &'a HashMap<String, (Place, HashMap<usize, String>)>,
+    sketches: &'a HashMap<String, (Place, HashMap<String, String>)>,
 }
 
 impl Refs<'_> {
@@ -572,7 +586,7 @@ const MAX_EDGE_PICKS: usize = 256;
 pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tree_import::Tree, String> {
     let objects = parse(xml)?;
     let mut features: Vec<Value> = Vec::new();
-    let mut sketches: HashMap<String, (Place, HashMap<usize, String>)> = HashMap::new();
+    let mut sketches: HashMap<String, (Place, HashMap<String, String>)> = HashMap::new();
     let mut bodies = 0usize;
     for (body_name, body) in objects.iter().filter(|(_, o)| o.kind == "PartDesign::Body") {
         bodies += 1;
@@ -672,11 +686,7 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                             "V_Axis" => json!({"origin": sk_place.p, "direction": sk_place.y}),
                             "H_Axis" => json!({"origin": sk_place.p, "direction": sk_place.x}),
                             "N_Axis" => json!({"origin": sk_place.p, "direction": sk_place.z}),
-                            s => match s
-                                .strip_prefix("Edge")
-                                .and_then(|n| n.parse::<usize>().ok())
-                                .and_then(|n| lines.get(&n))
-                            {
+                            s => match lines.get(s).filter(|l| l.starts_with('l')) {
                                 Some(l) => json!({"line": l}),
                                 None => return Err(format!("{name}: its axis is not a sketch line")),
                             },
@@ -846,6 +856,49 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                         let d = o.float("Size").filter(|r| *r > 0.0).ok_or(format!("{name}: no size"))?;
                         json!({"type": "chamfer", "name": name, "edges": picks, "distance": d, "target": target})
                     };
+                    features.push(f);
+                }
+                "PartDesign::AdditivePipe" | "PartDesign::SubtractivePipe" => {
+                    let sub = kind == "PartDesign::SubtractivePipe";
+                    let (profile, _) = o.link("Profile").ok_or(format!("{name}: no profile"))?;
+                    if !sketches.contains_key(&profile) {
+                        return Err(format!("{name}: its profile is not a sketch of the body"));
+                    }
+                    let (spine, edges) = o.link("Spine").ok_or(format!("{name}: no path"))?;
+                    let (_, refs) =
+                        sketches.get(&spine).ok_or(format!("{name}: its path is not a sketch of the body"))?;
+                    if !o.link_list("Sections").is_empty() || o.link("AuxillerySpine").is_some() {
+                        return Err(format!(
+                            "{name}: a pipe through sections or with a second path is not translated yet"
+                        ));
+                    }
+                    if o.int("Transition").unwrap_or(0) != 0 || o.int("Transformation").unwrap_or(0) != 0 {
+                        return Err(format!("{name}: this pipe transition is not translated yet"));
+                    }
+                    // Mode 1 keeps the profile's orientation; the others follow the path.
+                    let orientation = match o.int("Mode").unwrap_or(0) {
+                        1 => "fixed",
+                        0 | 2 => "frenet",
+                        _ => return Err(format!("{name}: this pipe mode is not translated yet")),
+                    };
+                    let mut curves = Vec::new();
+                    for e in edges.iter().filter(|e| !e.is_empty()) {
+                        curves.push(
+                            refs.get(e).ok_or(format!("{name}: its path edge {e} is not a sketch curve"))?.clone(),
+                        );
+                    }
+                    let op = match (&first_solid, sub) {
+                        (None, false) => "new",
+                        (None, true) => return Err(format!("{name}: a subtractive pipe before any solid")),
+                        (Some(_), false) => "join",
+                        (Some(_), true) => "cut",
+                    };
+                    let mut f = json!({"type": "sweep", "name": name, "sketch": profile, "path": spine,
+                        "path_curves": curves, "orientation": orientation, "operation": op});
+                    if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
+                        m.insert("target".into(), json!(t));
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
                     features.push(f);
                 }
                 // Datums and the origin carry no geometry of the body.

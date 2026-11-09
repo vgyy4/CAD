@@ -79,6 +79,24 @@ pub(super) struct MirrorF {
     merge: Option<bool>,
 }
 
+/// A profile sketch swept along curves of a path sketch.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct SweepF {
+    name: String,
+    sketch: String,
+    path: String,
+    /// Curve ids of the path sketch; all of its curves when empty.
+    #[serde(default)]
+    path_curves: Vec<String>,
+    /// `frenet` (default) or `fixed`.
+    #[serde(default)]
+    orientation: Option<String>,
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ShellF {
     name: String,
@@ -687,5 +705,52 @@ fn mirror_features(g: &mut Gen, s: &Session, d: &MirrorF, feats: &[Value], o: V3
     // Patterns and later mirrors name the mirror by its last copy.
     let last = last.and_then(|l| g.features.get(&l).cloned()).ok_or("nothing was mirrored")?;
     g.features.insert(d.name.clone(), last);
+    Ok(())
+}
+
+pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> {
+    let profile = g
+        .sketches
+        .get(&d.sketch)
+        .ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?
+        .name
+        .clone();
+    let pm = g.sketches.get(&d.path).ok_or_else(|| format!("its path '{}' was not imported", short(&d.path)))?;
+    if d.path_curves.len() > MAX_PICKS {
+        return Err("too many path curves".into());
+    }
+    let path = if d.path_curves.is_empty() {
+        pm.name.clone()
+    } else {
+        let mut ids = Vec::new();
+        for c in &d.path_curves {
+            ids.push(pm.ids.get(c).ok_or_else(|| format!("unknown path curve '{}'", short(c)))?.clone());
+        }
+        format!("{}.curves({})", pm.name, ids.join(", "))
+    };
+    let orientation = match d.orientation.as_deref().unwrap_or("frenet") {
+        o @ ("frenet" | "fixed") => o,
+        other => return Err(format!("orientation '{}' is not frenet or fixed", short(other))),
+    };
+    let op = match d.operation.as_deref().unwrap_or("new") {
+        "new" => "new",
+        "join" => "add",
+        "cut" => "cut",
+        "intersect" => "intersect",
+        other => return Err(format!("operation '{}' is not new, join, cut or intersect", short(other))),
+    };
+    let name = g.fresh(&d.name, "Sweep");
+    let mut args = vec![format!("profile: {profile}"), format!("path: {path}"), format!("orientation: {orientation}")];
+    args.push(format!("op: {op}"));
+    if op != "new"
+        && let Some(t) = &d.target
+    {
+        let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
+        args.push(format!("body: {tn}"));
+    }
+    let _ = writeln!(g.text, "\nsweep {name} ({})", args.join(", "));
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
     Ok(())
 }

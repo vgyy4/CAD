@@ -94,6 +94,7 @@ ADR 0042) and the tree importer builds it. Translated:
 * revolution and groove about a sketch axis or line, or an origin axis;
 * mirrored, linear and polar patterns and MultiTransform (each step in turn, about sketch
   axes, origin axes and planes or datum lines and planes; the whole body or listed features);
+* pipes along sketch curves (as sweeps; not through sections);
 * fillets and chamfers (equal distance): FreeCAD names edges (`EdgeN`, `FaceN`) of the base
   feature's stored shape, so that shape is read through the import worker and each edge is
   passed on by its midpoint;
@@ -108,8 +109,8 @@ plane, which keeps the volume). Any untranslated feature, failure or mismatch ke
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 78 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 80 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
-volume (fillets whose edges change with the feature order, and stale shapes), lofts and
-pipes, pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
+volume (fillets whose edges change with the feature order, and stale shapes), lofts,
+pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
 axes on edges of solids.
