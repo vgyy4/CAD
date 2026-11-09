@@ -228,7 +228,7 @@ with the warning "the design history came in as exact bodies: {why}".
 past the data are errors (or a skipped sketch, where the prototype caught them). The
 `sldprt_read` fuzz target calls it on the same inputs as the container reader.
 
-**Coverage** on the 35 Slip-Pad parts (`GUSSET_SLDPRT_SAMPLES`,
+**Coverage** of the first port (superseded by amendment 5) on the 35 Slip-Pad parts (`GUSSET_SLDPRT_SAMPLES`,
 `crates/gusset-cli/tests/sldprt_history.rs`, floor `GUSSET_SLDPRT_MIN_HISTORY`): 12 come in
 as history (PCB_v1, PET_tape_v1, PET_tape_top_v1, bearing_3x6x2, drive_belt_71mm_v1,
 loadcell_spacer_v1, shaft_3x22mm, shaft_3x55mm, spring_holder_v1, loadCell_v1,
@@ -240,3 +240,56 @@ midpoints miss the rebuilt edges (arm_idler_single_v4), a volume mismatch
 (idler_differential_baseJoint_v1: 96.6 vs 160.0 mm3), and a part whose stored body has a
 negative volume (idler_single_v1). The three NIST parts in the chunk container were not in
 this run.
+
+## Amendment 5 (2026-11-09): hole wizard, mirror, face-sketch frames, edge records
+
+**Decision.** `features.rs` follows the prototype through its round 3-7 additions
+(`docs/formats/solidworks-feature-tree.md` sections 6-9). New records read:
+
+- **Hole wizard** (`moHoleWzd_c`): the two sketches that follow the node are the placement
+  sketch and the (often empty) section sketch. The hole centres are the placement sketch's
+  stand-alone points (point field `A` = 1, id not -1, not projected), taken onto its plane;
+  the face is that plane (normal out of the face). Diameter, depth and countersink come from
+  the node's named parameters (`Hole Dia.`, `Thru Hole Depth`, `Near C'Sink Angle`, ...). A
+  countersink with a `Head Clearance` is written as a 0.15 mm circle pocket plus one hole on
+  the pocket floor per position (a hole whose positions lie on different faces is dropped by
+  the importer). A hole without centres, diameter or face refuses the history.
+- **Mirror** (`moMirrorPattern_c`): the plane is the frame stored in the mirror's own body
+  (`<4 f64 extents> 01 <R> <t> 1.0`); the whole body is mirrored and merged. The face list
+  in the same body is only a fallback (cap of a known feature).
+- **Sketches on model faces**: the first plane-data block is the face's, with axes that may
+  be turned; the sketch's own frame block (`01 00 00 00 <12 x 00> 01 <R> <t> 1.0`, same
+  normal) that follows replaces it.
+- **Edge records**: 0-2 extra zero bytes in the header, 0-2 extra words per face reference,
+  face lists of n-1 references; cap classes are learned per file; an edge may lie between
+  faces of two features (a cut's wall against a boss's cap); references to faces the
+  profile sketch no longer has are stale and dropped (`stale_edges`). Edge crossings sample
+  arcs at 2000 points; the work of all crossings of one part is capped at 1e8 point
+  pairs (more refuses the history).
+- **Segments** with flag bit 0x01 are not profile, like construction (bit 0x08); an empty
+  sketch (no entity headers) is an empty sketch, not a failure.
+- Parameter and end-condition patterns match any length byte, including a newline (the
+  prototype's DOTALL): `Hole Depth` is ten characters long.
+
+The trees of all 33 parts with a feature stream equal the prototype's field for field
+(only the diagnostic `edges_selected` of the Rust reader is extra). Tests: synthetic streams
+for the hole wizard, head clearance, mirror, face-sketch frame and a two-feature fillet edge
+(`crates/gusset-sldprt/src/tests.rs`), and the damage test now mutates hole, mirror and
+fillet streams.
+
+**Coverage** on the 35 Slip-Pad parts: **17 come in as history** (was 12): Base_loadCell_v1,
+PCB_v1, PET_tape_v1, PET_tape_top_v1, Top_modular_aperture_v2, arm_idler_v2, bearing_3x6x2,
+drive_belt_71mm_v1, finger_aperture_15mm_v4, idler_single_v2, loadCell_v1,
+loadcell_centerPlatform_v1, loadcell_spacer_v1, shaft_3x22mm, shaft_3x55mm,
+spring_base_tab_v1, spring_holder_v1; 17 as exact bodies; one (setScrew_M2x2_5) fails in the
+Parasolid reader as before. The prototype rebuilds 18: the eighteenth, **motorClip_v1**,
+rebuilds to 656.082 against 656.055 mm3 (4.1e-5; the prototype accepts 1e-4) and is refused
+by the 2e-5 check shared with FreeCAD. A cut depth of 0.901 instead of the stored 0.9 mm gives
+656.056, so the residual is one part in 1e-3 of something not identified, not a missing
+record; the tolerance is the owner's decision. The reasons for the rest: end type 4 (2),
+imported bodies (2), chamfer edges not resolved (3), cosmetic thread (1), mirrored stock (1),
+fillet edges not resolved (3: arm_idler_single_v4 3 of 4, the two idler arms 16 of 30), volume
+mismatch (baseJoint 1.4e-4, idler_single_v1 whose stored body is suspect, motorClip), a
+countersink on a clearance pocket floor that the kernel refuses (spring_base_v1), and no
+feature stream (1).
+
