@@ -66,6 +66,9 @@ fn freecad_files_come_in_as_history_or_shapes() {
                         w.split(" is not").next().unwrap_or_default().chars().take(400).collect::<String>()
                     })
                     .unwrap_or_else(|| "no PartDesign body".into());
+                if std::env::var_os("GUSSET_FCSTD_VERBOSE").is_some() {
+                    eprintln!("{}: {why}", f.display());
+                }
                 *reasons.entry(why).or_default() += 1;
             }
             Err(e) => {

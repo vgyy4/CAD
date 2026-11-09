@@ -369,3 +369,16 @@ With the 2025-layout rational fix above: MacroPad Assembly 168 to 173 of 185, BQ
 10 mm case part we have as 26 x 56 x 10, a 26 x 56 x 4.2 one as 1.6 thick, a 8 x 6 x 3.5 one as
 6.9 x 4.2 x 2) differ in shape, like the HDMI panel: the stored blob is an earlier state of the
 body; they are not placement errors.
+
+## Amendment (2026-11-09): the Fusion timeline, decoding in progress
+
+A Fusion design's parametric timeline lives in the design segment's `MetaStream.dat` /
+`BulkStream.dat` beside the ACIS bodies. Its framing, sketches (placement, points, lines,
+arcs, circles; cm) and extrusions (operation, extent, signed distance) are decoded from the
+sample bytes alone (`docs/formats/fusion-design-stream.md`; prototype in `scripts/re/fusion/`):
+all 37 sample design streams frame, and 176 of 229 new-body extrusions reproduce a stored
+body's box within 0.01 mm. Still missing before features can be imported: which profiles
+of a sketch an extrusion uses, fillet/chamfer edges and revolve axes (topological
+references), and each feature's component placement. Until then `.f3d` stays tier 2. The
+import will follow FreeCAD's rule (ADR 0033 amendment 2026-11-09): features only when they
+rebuild to the stored bodies.
