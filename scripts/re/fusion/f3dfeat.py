@@ -484,6 +484,7 @@ NON_GEOMETRIC = {
     '8DFDD543': 'Assemble (joint)', 'AA8B3D40': 'As-built joint', '8EE00B00': 'Position (assembly)',
     '0EE4A83E': 'Canvas (image)', '1339A425': 'Decal', 'D869265F': 'WorkPlane (construction)',
     'B0EEF272': 'PCB link (bodies come from the extrudes that follow)',
+    'A917FE80': 'timeline group (a folder: its members follow it in the timeline)',
 }
 PATTERNS = {'AE12AD3F': 'pattern_linear', 'E8816367': 'pattern_linear', '11F1A5CE': 'pattern_circular'}
 MIRROR = 'D1728651'

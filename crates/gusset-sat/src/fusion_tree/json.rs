@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Timeline entries that create no body geometry (none is the creator of a body link or
 /// references a body record in the samples).
-const NON_GEOMETRIC: [(&str, &str); 10] = [
+const NON_GEOMETRIC: [(&str, &str); 11] = [
     ("78B9DEFC", "CreateComponent"),
     ("54F9ACE8", "component activation"),
     ("02E8AA49", "JointOrigin"),
@@ -23,6 +23,7 @@ const NON_GEOMETRIC: [(&str, &str); 10] = [
     ("1339A425", "Decal"),
     ("D869265F", "WorkPlane (construction)"),
     ("B0EEF272", "PCB link (bodies come from the extrudes that follow)"),
+    ("A917FE80", "timeline group (a folder: its members follow it in the timeline)"),
 ];
 
 fn op_name(op: u8) -> String {
