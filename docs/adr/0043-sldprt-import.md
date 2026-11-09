@@ -293,3 +293,44 @@ mismatch (baseJoint 1.4e-4, idler_single_v1 whose stored body is suspect, motorC
 countersink on a clearance pocket floor that the kernel refuses (spring_base_v1), and no
 feature stream (1).
 
+
+## Amendment 6 (2026-11-09): newer chunk-container parts
+
+The clean-room prototype (`scripts/re/solidworks/`, diff in `newer-format.diff`, layout notes
+"Newer chunk-container parts" in `docs/formats/solidworks-feature-tree.md`) learnt the feature
+streams of the 2015+ chunk-container parts of the public ARIG revision set. `gusset_sldprt::features`
+takes over each gain; the Rust trees of all 99 parts of the Slip-Pad, ARIG revision and Zenodo sets equal
+the prototype's field for field (only the diagnostic `edges_selected` of the Rust reader is extra).
+
+- **Streams.** `Config-<N>-ResolvedFeatures` and `Config-<N>` for any N, with or without the `Contents/`
+  prefix, in both containers; the lowest N that has both streams is read (the 8 Servo revisions use N = 1).
+  The newer stream starts with a `u32 B` before the `u16` object count; nothing in the reader looks at the
+  header (anchors only), so no change was needed for it.
+- **Unit-component tag.** A chunk-container part learns the class tag of `moUnitComponent_c` from the
+  bytes (the most frequent `XX 80 02 00 <10 x 00>`), not from the `Config-0` numbering. Reference planes read
+  their id at tag + 45 (older) or + 69 (newer component base, 55 bytes instead of 31) and the plane of the
+  first sketch, written before the node, is searched 400 bytes backwards.
+- **Parameters** may hold an empty string (`ff fe ff 00`) before their final `00 00`.
+- **Boss or cut** comes from the node flags word, low 20 bits `0x201ca` = cut (`0x00140` = boss), besides the
+  class and the old "Cut-" name rule; it holds for OLE2 parts too (the 17 history parts are unchanged).
+  A line of kind 0 is a centerline or construction only when its flags have `0x8008`.
+- **Mirror.** `moMirrorSolid_c` reads like the mirror pattern; the mirror face is the first reference of the last
+  face list of the node (the `moSingleFaceRef_w` object): the cap plane, or for a side face the plane through
+  its sketch line along the extrusion normal. Edge lists may hold n - 1 references.
+- **Distance-angle chamfer** (second parameter an angle in (0.1, pi/2] rad) is written as one triangular through
+  cut per corner, since Gusset's chamfer is symmetric (leg on the shared face = D1, other leg D1 tan D2; the
+  assignment of the legs is a guess from one sample).
+- **Sketch lines are normalized** (merge coincident points, split lines at points on them, drop walls shared by
+  two different segments and zero-length lines): two loops sharing part of an edge made the region finder ignore
+  the cut silently. Capped at 5e7 point-line tests per sketch (a larger sketch is left as read).
+- **Hole wizard** in other UI languages: the parameters not called `D<n>`, in order diameter, depth, tip angle.
+- More geometry-free folder classes are skipped (selection sets, notes area, feature, surface/solid body,
+  reference axis/plane and profile folders).
+
+**Coverage.** Slip-Pad: 17 of 35 as history (unchanged). ARIG revisions (`arig-revisions`, 50 part files):
+**10 as history** (was 0): `plaque_base_roulante` 5 of 5 and `plaque_superieure` 5 of 6. The sixth
+(`plaque_superieure` 1618664833) is refused by the rebuild check: its Congé1 (r = 3 mm, three concave
+corners) is a silent no-op in the kernel when the three edges are given together (the prototype notes the same:
+1.5e-4 low). 33 files are `moMirrorStock_c` parts (mirror of an external part, no sketch to read) and come in as
+exact bodies; the 6 `Angle_support` revisions fail in the Parasolid reader (damaged XT, node type -15684) and
+need loft cut, move face, thin boss, fillet-edge and through-all-up-to-next records.
