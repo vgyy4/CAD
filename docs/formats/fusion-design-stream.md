@@ -567,26 +567,6 @@ All from the 18-design Adafruit set; each statement names its check.
   USB Charger Extrude2, still reproduces), so both samples agree.
 * The two unit tests `a_closed_curve_cut_at_its_start_...` and `a_closed_curve_cut_off_its_start_...` pin the two cases.
 
-### Component Insert `428B5C6E` (decoded for 6124; the history is still not built)
-* Layout (434 bytes in 6124): header, then **12 doubles = the occurrence's placement as a row-major 3 x 4 [R | t]**
-  (cm; 6124: identity rotation, t = (-1.15389, -0.99564, 0)) at body+0x2D; they are identical to the 12 doubles of the
-  occurrence's `CE2913AA` transform record (at +312 there), checked by value. The other samples' inserts (records of 302..430 bytes) have the same
-  layout with the block at another offset (it follows the header, which varies with the record length; read at the fixed
-  offset of 6124 they show rotations about X in 4862 and translations in z in the MacroPad assembly, but only 6124 was
-  verified value by value, so those are leads, not facts). Then two refs to the same `2D6E13A1` occurrence record
-  (-> `CE2913AA` and the component timeline `6CCF41D5`), a nil design UUID string, the wide string "Component Insert", the
-  usual tail. The record names no design: the occurrence's UUIDs (`516131ec...`, `a19c6bc7...`) do, through
-  `DesignDescription.json` (what `xref_files` reads).
-* It is the **first timeline entry** of 6124/6126 and the 60 entries after it (extrudes, shells, fillets) act on the root's own
-  case bodies and on the inserted PCB. The inserted bodies are the **whole referenced design** (6091-style: component
-  bodies, pre-cut Board, cut tools - every solid of the referenced blobs is a stored solid of the root's file), so the
-  states check of the root needs the referenced design's own feature tree (its extrudes, base features and cuts) rebuilt
-  inside the root at the insert's placement, not just stored bodies of the insert; stored bodies alone would leave the
-  PCB's tool solids unexplained. Not implemented: it needs (a) the referenced design's `feature_tree` merged into the
-  root's with the insert matrix as `json::place` placement and renamed features, (b) 6124's own remaining features and
-  (c) the `.f3z` loader to hand the referenced design's blobs to `fusion_stored_bodies` (import.rs). The PCB designs
-  themselves now rebuild (6092, 6106), so (a) is the first step.
-
 ### Corpus after this round
 8 of 18 as history (3 before): MacroPad keyplate, bottom-plate, bq25185 USB Charger (6091), NeoKey FeatherWing (4979),
 1x4 QT (4980), Trinkey (5020), BQ25185 3V Buck (6092), BQ25185 5V (6106). Blockers of the rest, unchanged: Crickit CPX and
@@ -596,3 +576,35 @@ Crickit HAT, CyberDeck Bonnet, NeoKey Breakout, BQ25185 Cases -> Component Inser
 the corpus about 25): the per-feature volumes it needs are what `tree_import::apply` already evaluates after each feature
 (`Gen::evaluate`), so a hook there (a callback with the session after feature k) would give all states in one pass; the
 check itself would not change. `tree_import.rs` is outside this round's files, so it is not done.
+
+## 16. Round 8: Component Insert merged (2026-11-09)
+Done in the reader (`gusset-sat`, `fusion_tree/insert.rs`), not in `fusion_history`: the reader already has the design
+stream, and the archive's other designs only have to be handed over.
+
+* API: `feature_tree_with_inserts(files, name, resolve)`; `resolve(keys)` gets the keys of an insert (lowercase UUID texts of
+  its occurrence) and returns the entries (streams and blobs) of the inserted design or `None`. `feature_tree` is the same with
+  a resolver that gives none, so a lone `.f3d` still stops at its Component Insert ("the design it inserts is not merged").
+  `fusion_history` reads `Manifest.json` and `DesignDescription.json` (`xref_files`), resolves a key to the archive's `.f3d`
+  (exact key, else the same first 36 characters) and adds the inserted designs' blobs to the entries that
+  `fusion_stored_bodies` searches.
+* The insert's place in the tree is taken by the inserted design's own checked, component-placed tree (recursively; depth
+  limit 4), every feature moved by the insert's placement (`json::move_feature`, the function `place` uses for components:
+  sketch planes, edge midpoints, hole faces and positions, mirror and pattern axes; stored-body placements are composed with
+  the one they already have) and renamed `<name> [<insert name>]` (every reference to a renamed feature follows). A moved
+  insert whose tree has a kind `move_feature` does not move (sweep, ...) is refused.
+* A design whose tree cannot be read (no timeline, no extrude, an unsupported feature) is inserted as `stored_body` features,
+  one per solid body of its `.smb` blobs (sheets are skipped like the import skips them), `note` says why. The rebuild/state
+  check then decides: the history counts only if every stored solid of the root is explained.
+* Cost bound: `fusion_states_check` counted every non-sketch, non-stored feature against its 80-feature limit; new-body
+  extrudes and sweeps are built in runs (one build for a run), so only the features that change a body count now. Crickit HAT
+  has 85 new-body extrudes after instance replication. The checks themselves are unchanged.
+
+### Corpus (six `.f3z`)
+| archive | before | after |
+|---|---|---|
+| NeoKey Breakout (4978) | Component Insert | **history** (27 stored solids are states, 27 cut tools) |
+| CyberDeck Bonnet (4862) | Component Insert | **history** (68 states, 84 cut tools; the header is inserted as stored bodies) |
+| Crickit HAT (3957) | Component Insert | bodies: 221 stored solids (0.9988, 1.2331, 12.6267, 9.667 mm3 ...) are neither states of the model nor cut tools; the model has none of the 1.2331 mm3 bodies (55 stored). Not caused by the insert: the inserted header (one 1030.5 mm3 solid) is a state. |
+| BQ25185 3V Buck Case (6124) | Component Insert | bodies: the inserted PCB design rebuilds inside; stops at the root's Shell1 |
+| BQ25185 5V Buck Case (6126) | Component Insert | bodies: same, Shell1 (then Draft, Combine, Move, Scale, RemoveBody) |
+| MacroPad RP2040-Assembly (5128) | no history | bodies: its inserts now resolve, so the reason is the inserted MacroPad's R-Pattern (no feature history of its own before) |

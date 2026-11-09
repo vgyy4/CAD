@@ -1547,15 +1547,17 @@ fn fusion_history(
         let manifest = gusset_meshio::archive::read_entries_within(
             bytes,
             &limits,
-            &|n| n == "Manifest.json",
+            &|n| n == "Manifest.json" || n == "DesignDescription.json",
             MAX_F3D_JSON_BYTES,
             &mut budget,
         )
         .map_err(|e| e.to_string())?;
-        let root = manifest
-            .first()
-            .and_then(|(_, b)| serde_json::from_slice::<Value>(b).ok())
-            .and_then(|m| m.get("root").and_then(Value::as_str).map(str::to_string));
+        let json_of = |name: &str| {
+            manifest.iter().find(|(n, _)| n == name).and_then(|(_, b)| serde_json::from_slice::<Value>(b).ok())
+        };
+        let root = json_of("Manifest.json").and_then(|m| m.get("root").and_then(Value::as_str).map(str::to_string));
+        // The designs the others insert (Component Insert): the file each reference key names.
+        let xrefs = json_of("DesignDescription.json").map(|d| xref_files(&d)).unwrap_or_default();
         let mut order: Vec<&(String, Vec<u8>)> = inner.iter().collect();
         order.sort_by_key(|(n, _)| root.as_deref() != Some(n.as_str()));
         let root_first = order.first().is_some_and(|(n, _)| root.as_deref() == Some(n.as_str()));
@@ -1565,9 +1567,26 @@ fn fusion_history(
             if !has_stream(&design) {
                 continue;
             }
-            match gusset_sat::fusion_tree::feature_tree(&design, file_name) {
+            // The inserted designs' entries (their blobs are stored bodies of this design's tree).
+            let mut inserted: Vec<(String, Vec<u8>)> = Vec::new();
+            let r = {
+                let mut resolve = |keys: &[String]| -> Option<Vec<(String, Vec<u8>)>> {
+                    let exact = keys.iter().find_map(|q| xrefs.get(q));
+                    let file = exact.or_else(|| {
+                        xrefs.iter().find_map(|(x, f)| keys.iter().any(|q| q.get(..36) == x.get(..36)).then_some(f))
+                    })?;
+                    let (_, data) = inner.iter().find(|(n, _)| n == file)?;
+                    let e = read(data, &mut budget).ok()?;
+                    inserted.extend(e.iter().filter(|(n, _)| n.contains("Breps.BlobParts/")).cloned());
+                    Some(e)
+                };
+                gusset_sat::fusion_tree::feature_tree_with_inserts(&design, file_name, &mut resolve)
+            };
+            match r {
                 Err(why) if no_timeline(&why) => {}
                 r => {
+                    let mut design = design;
+                    design.extend(inserted);
                     if k == 0 && root_first {
                         // The root has a timeline: it is the file's.
                         with_timeline = vec![(design, r)];
@@ -1898,7 +1917,17 @@ fn fusion_states_check(
     let n = tree.features.len();
     let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
     // Sketches change no body and a stored body adds the one it holds: only the others are built.
-    let steps = tree.features.iter().filter(|f| !matches!(kind(f).as_str(), "sketch" | "stored_body")).count();
+    // A new-body extrude or sweep adds a body too: a run of them is built once (below), so only the
+    // features that change a body are counted against the limit (it bounds the work, not the check).
+    let steps = tree
+        .features
+        .iter()
+        .filter(|f| {
+            let new_body = matches!(kind(f).as_str(), "extrude" | "sweep")
+                && f.get("operation").and_then(Value::as_str) == Some("new");
+            !(new_body || matches!(kind(f).as_str(), "sketch" | "stored_body"))
+        })
+        .count();
     if steps > MAX_FUSION_STATE_FEATURES {
         return Err(format!("more than {MAX_FUSION_STATE_FEATURES} features"));
     }

@@ -522,3 +522,16 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
 - Component Insert: the 12 doubles are the occurrence's 3 x 4 placement (identical to the `CE2913AA` record, 6124); not built:
   the inserted design's own tree must be rebuilt inside the root (docs/formats/fusion-design-stream.md section 15).
 - Open: `fusion_states_check` speed (a per-feature hook in `tree_import::apply` would make it one pass).
+
+## Amendment (2026-11-09, round 8): Component Insert is merged into the root's tree
+
+- A Component Insert's placement is the occurrence's 3 x 4 matrix (identical to the occurrence's `CE2913AA` record, checked
+  by value in four archives; flag 1 = no matrix = origin). The reader (`fusion_tree::feature_tree_with_inserts`) replaces the
+  insert by the inserted design's tree, moved by the placement and renamed per insert; the archive loader hands it the
+  referenced designs through a resolver (`DesignDescription.json` keys). A design without a readable timeline comes in as its
+  stored solids.
+- Nothing is loosened: the rebuild and state checks are as before and a history of stored bodies only still does not count.
+  The state check's 80-feature limit now counts the features that change a body (a run of new-body extrudes is one build).
+- Result: NeoKey Breakout and CyberDeck Bonnet come in as history (10 of 18). Crickit HAT: 221 stored solids unexplained;
+  the two Cases stop at Shell (then Draft, Combine, Move, Scale, RemoveBody, none read yet).
+
