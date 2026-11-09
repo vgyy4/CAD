@@ -62,7 +62,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parki
 # gusset-render: PNG encoding for render_view and screenshot goldens.
 png = "0.18.1"
 # gusset-mcp: the official MCP Rust SDK (Apache-2.0), pinned exactly (ADR 0012).
-rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server", "elicitation"] }
 # gusset-host / gusset-mcp: async runtime and the localhost HTTP stack (already pulled
 # in by rmcp's streamable-HTTP transport; listed so we can enable server/client parts).
 tokio = { version = "1.53.2", default-features = false }
