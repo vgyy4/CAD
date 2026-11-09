@@ -103,3 +103,16 @@ none was made. `.psm` (sheet metal) is mapped to the Solid Edge reader without a
 * Importing every ShapeManager blob of an Inventor file: adds feature-history bodies (see above).
 * Skipping the 0x031d tag and judging blobs by content (solid with faces): fragile for the history blobs
   of one-feature parts, whose intermediate body equals the result.
+
+## Amendment (2026-11-09): Inventor feature history, decoding in progress
+
+The part's history lives in the `PmDCSegment` streams (records framed by size and class, a
+class table in the matching meta stream): feature records with a type GUID (extrude, revolve,
+hole, fillet, chamfer, rectangular pattern, thicken, thread), their history order, sketches
+with a sketch-to-model matrix (cm), and feature parameters. Decoded from the sample bytes
+alone (`docs/formats/inventor-feature-tree.md`; prototype in `scripts/re/inventor/`): 16 of
+the 35 sample parts' trees rebuild exactly to the stored result body (volume within 9e-8,
+box within 8.1e-5 of the diagonal). Not decoded yet: edge-naming records (fillet and chamfer
+edges are taken from the result body's blend faces), pattern directions, thicken, ellipse
+sketches. `.ipt` stays tier 2 until the Rust import is written; it will use the same rebuild
+check as FreeCAD and SolidWorks.
