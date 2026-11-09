@@ -2326,6 +2326,26 @@ fn check_blend_size(
     Ok(())
 }
 
+/// Rejects a chamfer angle outside (0, 90) degrees before the feature is committed.
+fn check_chamfer_angle(s: &mut Session, ctx: &CmdCtx, angle: &gusset_units::expr::Expr) -> Result<(), CommandError> {
+    let ev = s.evaluate(&ctx.actor)?;
+    let units = s.document(&ctx.actor)?.units;
+    let scope = |n: &str| ev.params.get(n).and_then(|r| r.as_ref().ok().copied());
+    let q = gusset_units::expr::eval(angle, &scope).map_err(|e| {
+        let mut ce = CommandError::args(format!("angle: {}", e.message));
+        ce.hint = e.hint;
+        ce
+    })?;
+    let rad = params::coerce(q, gusset_units::Dim::ANGLE, units)
+        .map_err(|m| CommandError::args(format!("angle: {m}")))?
+        .value;
+    if !(rad > 0.0 && rad < std::f64::consts::FRAC_PI_2) {
+        return Err(CommandError::args(format!("chamfer angle is {:.1} deg", rad.to_degrees()))
+            .hint("use an angle between 0 and 90 deg; 45 deg is an equal chamfer"));
+    }
+    Ok(())
+}
+
 /// Result fields for a fillet/chamfer that was committed although the rebuild failed.
 fn blend_outcome(out: &crate::session::CommitOutcome) -> Value {
     if out.new_errors.is_empty() {
@@ -2366,7 +2386,11 @@ impl Command for Fillet {
             "Fillet",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Fillet")?;
-                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef { edges, size })));
+                insert_feature(
+                    doc,
+                    rb,
+                    Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef::new(edges, size))),
+                );
                 Ok(json!({ "feature": name }))
             },
             |_, out, _| blend_outcome(out),
@@ -2379,7 +2403,17 @@ impl Command for Fillet {
 #[serde(deny_unknown_fields)]
 pub struct Chamfer {
     pub edges: Vec<String>,
+    /// On the reference face.
     pub distance: String,
+    /// Unequal: distance on the other face, or `angle`.
+    #[serde(default)]
+    pub distance2: Option<String>,
+    /// Unequal: angle from the reference face (0-90 deg).
+    #[serde(default)]
+    pub angle: Option<String>,
+    /// Reference face per edge (default: first by name).
+    #[serde(default)]
+    pub faces: Option<Vec<String>>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -2387,22 +2421,52 @@ pub struct Chamfer {
 impl Command for Chamfer {
     const ID: &'static str = "feature.chamfer";
     const TITLE: &'static str = "Chamfer";
-    const DESCRIPTION: &'static str =
-        "Bevel edges by a distance; unknown references are rejected with candidate names.";
+    const DESCRIPTION: &'static str = "Bevel edges by a distance (unequal: + distance2 or angle); unknown references are rejected with candidate names.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
         let edges = parse_edges(&self.edges)?;
         let size = parse_expr("distance", &self.distance)?;
+        let second = match (&self.distance2, &self.angle) {
+            (Some(_), Some(_)) => {
+                return Err(CommandError::args("give distance2 or angle, not both")
+                    .hint("distance2 is a length on the other face; angle is measured from the reference face"));
+            }
+            (Some(d), None) => ChamferSecond::Distance(parse_expr("distance2", d)?),
+            (None, Some(a)) => ChamferSecond::Angle(parse_expr("angle", a)?),
+            (None, None) => ChamferSecond::Equal,
+        };
+        let faces = match &self.faces {
+            Some(f) if !f.is_empty() => {
+                if second == ChamferSecond::Equal {
+                    return Err(CommandError::args("faces need distance2 or angle")
+                        .hint("an equal chamfer has no reference face"));
+                }
+                if f.len() != edges.len() {
+                    return Err(CommandError::args(format!("{} faces for {} edges", f.len(), edges.len()))
+                        .hint("give one reference face per edge, in edge order"));
+                }
+                f.iter()
+                    .map(|x| FaceRef::parse(x).map_err(|err| CommandError::args(format!("face '{x}': {err}"))))
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            _ => Vec::new(),
+        };
         check_edges_resolve(s, ctx, &edges)?;
         check_blend_size(s, ctx, &edges, &size, "distance")?;
+        match &second {
+            ChamferSecond::Distance(d) => check_blend_size(s, ctx, &edges, d, "distance2")?,
+            ChamferSecond::Angle(a) => check_chamfer_angle(s, ctx, a)?,
+            ChamferSecond::Equal => {}
+        }
         edit_post(
             s,
             ctx,
             "Chamfer",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Chamfer")?;
-                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(EdgeBlendDef { edges, size })));
+                let def = EdgeBlendDef { edges, size, second, faces };
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(def)));
                 Ok(json!({ "feature": name }))
             },
             |_, out, _| blend_outcome(out),

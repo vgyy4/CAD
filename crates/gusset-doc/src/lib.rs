@@ -353,6 +353,43 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     const SWEEP_BASE: &str = "gusset 1\nunits mm\n\nparam turn = 30 deg\n\nsketch P (plane: XY, next_id: 3) {\n  p1 = point(0, 0)\n  c2 = circle(p1, 3)\n}\n\nsketch Q (plane: XZ, next_id: 7) {\n  p1 = point(0, 0)\n  p2 = point(0, 9)\n  p3 = point(5, 9)\n  l4 = line(p1, p2)\n  l5 = line(p2, p3)\n}\n\n";
 
     #[test]
+    fn unequal_chamfers_round_trip_and_are_validated() {
+        let e1 = "edge(E/cap(end), E/side(P/l4))";
+        let e2 = "edge(E/cap(end), E/side(P/l5))";
+        let ok = format!(
+            "{HOLE_BASE}chamfer C1 (edges: [{e1}], distance: 1 mm)\n\nchamfer C2 (edges: [{e1}, {e2}], distance: 2 mm, distance2: d / 2)\n\nchamfer C3 (edges: [{e1}], distance: 2 mm, angle: 30 deg, faces: [E/cap(end)])\n\nchamfer C4 (edges: [{e1}, {e2}], distance: 2 mm, distance2: 3 mm, faces: [E/cap(end), E/side(P/l5)])\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Chamfer(c) = &doc.feature("C1").unwrap().kind else { panic!() };
+        assert_eq!((&c.second, c.faces.len()), (&ChamferSecond::Equal, 0));
+        let FeatureKind::Chamfer(c) = &doc.feature("C3").unwrap().kind else { panic!() };
+        assert!(matches!(c.second, ChamferSecond::Angle(_)));
+        assert_eq!(c.faces.len(), 1);
+        // The second leg's expression counts for parameters and references.
+        assert_eq!(doc.feature("C2").unwrap().kind.parameters(), ["d"]);
+        assert_eq!(doc.feature("C3").unwrap().kind.dependencies(), ["E", "P"]);
+        // The old form is unchanged; both second legs at once, and faces on a fillet, are refused.
+        let both = ok.replace("distance2: 3 mm,", "distance2: 3 mm, angle: 20 deg,");
+        let e = Document::from_text(&both).unwrap_err().to_string();
+        assert!(e.contains("not both"), "{e}");
+        let e = Document::from_text(
+            &ok.replace("chamfer C1 (edges: [", "fillet C1 (edges: [")
+                .replace("distance: 1 mm", "radius: 1 mm, distance2: 1 mm"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("distance2"), "{e}");
+        // Validation: one face per edge, none without a second leg.
+        let short = ok.replace(", faces: [E/cap(end), E/side(P/l5)]", ", faces: [E/cap(end)]");
+        let issues = validate::validate(&text::parse(&short).unwrap());
+        assert!(issues.iter().any(|i| i.message.contains("1 reference faces for 2 edges")), "{issues:?}");
+        let stray = ok.replace("chamfer C1 (edges: [", "chamfer C1 (faces: [E/cap(end)], edges: [");
+        let issues = validate::validate(&text::parse(&stray).unwrap());
+        assert!(issues.iter().any(|i| i.message.contains("need distance2 or angle")), "{issues:?}");
+    }
+
+    #[test]
     fn sweep_and_loft_round_trip_and_are_validated() {
         let ok = format!(
             "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, op: new)\n"

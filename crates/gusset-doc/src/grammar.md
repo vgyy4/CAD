@@ -220,7 +220,7 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 extrude  <Name> (profile: <P>, distance: <expr>, [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>])
 revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
-chamfer  <Name> (edges: [<edge>, ...], distance: <expr>)
+chamfer  <Name> (edges: [<edge>, ...], distance: <expr>, [distance2: <expr> | angle: <expr>], [faces: [<face>, ...]])
 import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "name.step")
 ```
 
@@ -235,6 +235,12 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   is refused); `Sketch1.l5` is a line of a sketch.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
   `names: true`; never guess them).
+- A chamfer is equal (one `distance` on both faces) unless it has a second leg: `distance2`
+  (a length on the other face) or `angle` (the angle from the reference face, between 0 and 90
+  degrees; the second leg is `distance * tan(angle)`), not both. `distance` always runs along
+  the edge's reference face. `faces` names that face for each edge (same count and order as
+  `edges`, each one of the edge's two faces); left out, the reference face is the adjacent
+  face with the smaller name (names compare as text, so the choice survives regeneration).
 
 ## References
 
@@ -276,6 +282,8 @@ extrude Extrude2 (profile: Sketch2, distance: -wall, op: cut, body: Extrude1)
 fillet Fillet1 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))], radius: 1 mm)
 
 chamfer Chamfer1 (edges: [edge(Extrude1/cap(start), Extrude1/side(Sketch1/l7))], distance: 0.5 mm)
+
+chamfer Chamfer2 (edges: [edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))], distance: 2 mm, distance2: 1 mm, faces: [Extrude1/cap(end)])
 ```
 
 Revolve, with a sketch line as the axis:
@@ -821,7 +829,7 @@ counter-clockwise, optional `constraints` `{type, entities, value, parameter}` w
 grammar's constraint types), `extrude` (`sketch`, `profiles: "all"` or `[{point: [u, v]}]`,
 `distance` along the sketch normal, `symmetric`, `distance_parameter`, `operation:
 new|join|cut|intersect`, `target`), `revolve` (`axis: {line}` or `{origin, direction}`, `angle`),
-`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`), and
+`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`; a chamfer also takes `distance2` or `angle`, see version 2), and
 `unsupported` (`original_type`). Version 2 adds (faces are found by a point on them, like edges
 by midpoint): `hole` (`face: {point, normal}`, world `positions: [[x, y, z]]`, `diameter`,
 `through` or `depth`, `variant: simple|counterbore|countersink`, `cbore_diameter`, `cbore_depth`,

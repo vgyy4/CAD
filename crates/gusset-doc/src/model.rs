@@ -281,6 +281,9 @@ impl FeatureKind {
                 for e in &b.edges {
                     e.features(&mut add);
                 }
+                for f in &b.faces {
+                    f.features(&mut add);
+                }
             }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => {
@@ -413,7 +416,12 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Loft(_) => {}
-            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => take(&b.size),
+            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
+                take(&b.size);
+                if let ChamferSecond::Distance(e) | ChamferSecond::Angle(e) = &b.second {
+                    take(e);
+                }
+            }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => take(&d.thickness),
             FeatureKind::Surface(d) => match &d.op {
@@ -507,7 +515,12 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Loft(_) => {}
-            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => out.push(&mut b.size),
+            FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
+                out.push(&mut b.size);
+                if let ChamferSecond::Distance(e) | ChamferSecond::Angle(e) = &mut b.second {
+                    out.push(e);
+                }
+            }
             FeatureKind::Import(_) => {}
             FeatureKind::Shell(d) => out.push(&mut d.thickness),
             FeatureKind::Surface(d) => match &mut d.op {
@@ -1007,6 +1020,31 @@ pub const MAX_LOFT_PROFILES: usize = 64;
 pub struct EdgeBlendDef {
     pub edges: Vec<EdgeRef>,
     pub size: Expr,
+    /// Chamfer only (ADR 0004 amendment): the second leg. `None` = equal chamfer.
+    pub second: ChamferSecond,
+    /// Chamfer only: the reference face of each edge (`faces[i]` for `edges[i]`), the face the
+    /// first distance runs along. Empty = the default rule (see `gusset-eval`); otherwise one
+    /// per edge. Ignored when `second` is `None`.
+    pub faces: Vec<FaceRef>,
+}
+
+impl EdgeBlendDef {
+    /// A blend with one size: a fillet, or an equal chamfer.
+    pub fn new(edges: Vec<EdgeRef>, size: Expr) -> Self {
+        EdgeBlendDef { edges, size, second: ChamferSecond::Equal, faces: Vec::new() }
+    }
+}
+
+/// The second leg of a chamfer.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ChamferSecond {
+    /// Both legs are `size`.
+    #[default]
+    Equal,
+    /// The other face gets this distance (`distance2: <len>`).
+    Distance(Expr),
+    /// The chamfer leaves the reference face at this angle (`angle: <deg>`, 0 to 90 exclusive).
+    Angle(Expr),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

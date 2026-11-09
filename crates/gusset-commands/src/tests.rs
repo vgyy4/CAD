@@ -143,6 +143,50 @@ fn impossible_blend_sizes_are_rejected_before_committing() {
 }
 
 #[test]
+fn unequal_chamfer_arguments_are_checked_before_committing() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let head = s.history().head(s.history().main()).unwrap();
+    let edge = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))";
+    let face = "Extrude1/cap(end)";
+    for (extra, why) in [
+        (json!({"distance2": "0 mm"}), "positive"),
+        (json!({"distance2": "-1 mm"}), "positive"),
+        (json!({"angle": "0 deg"}), "angle"),
+        (json!({"angle": "90 deg"}), "angle"),
+        (json!({"angle": "135 deg"}), "angle"),
+        (json!({"distance2": "1 mm", "angle": "30 deg"}), "not both"),
+        (json!({"faces": [face]}), "distance2 or angle"),
+        (json!({"distance2": "1 mm", "faces": [face, face]}), "2 faces for 1 edges"),
+        (json!({"distance2": "1 mm", "faces": ["nonsense("]}), "face 'nonsense('"),
+    ] {
+        let mut args = json!({"edges": [edge], "distance": "2 mm"});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let e = execute(&mut s, &u, "feature.chamfer", args).unwrap_err();
+        assert_eq!(e.code, "invalid_args", "{why}: {e:?}");
+        assert!(e.message.contains(why), "{why}: {e:?}");
+    }
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
+    // Valid forms are committed and print as the text language says (the mock kernel cannot
+    // cut them, so the rebuild is flagged, but the feature is in the document).
+    let r = run(
+        &mut s,
+        &u,
+        "feature.chamfer",
+        json!({"edges": [edge], "distance": "2 mm", "angle": "30 deg", "faces": [face], "name": "C1"}),
+    );
+    assert_eq!(r["feature"], "C1");
+    let text = s.document(&u.actor).unwrap().to_text();
+    assert!(
+        text.contains(&format!("chamfer C1 (edges: [{edge}], distance: 2 mm, angle: 30 deg, faces: [{face}])")),
+        "{text}"
+    );
+    let r = run(&mut s, &u, "feature.chamfer", json!({"edges": [edge], "distance": "2 mm", "distance2": "3 mm"}));
+    assert!(s.document(&u.actor).unwrap().to_text().contains("distance: 2 mm, distance2: 3 mm)"), "{r}");
+}
+
+#[test]
 fn agents_work_on_their_own_branch_and_need_approval() {
     let mut s = session();
     let u = CmdCtx::user(1);

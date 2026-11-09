@@ -267,6 +267,20 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 if b.edges.is_empty() {
                     out.push(issue_h(n, "no edges selected", "select at least one edge"));
                 }
+                if !b.faces.is_empty() && b.faces.len() != b.edges.len() {
+                    out.push(issue_h(
+                        n,
+                        format!("{} reference faces for {} edges", b.faces.len(), b.edges.len()),
+                        "give one reference face per edge, or none",
+                    ));
+                }
+                if !b.faces.is_empty() && b.second == ChamferSecond::Equal {
+                    out.push(issue_h(
+                        n,
+                        "reference faces need distance2 or angle",
+                        "remove faces, or add distance2/angle",
+                    ));
+                }
             }
             FeatureKind::Shell(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);

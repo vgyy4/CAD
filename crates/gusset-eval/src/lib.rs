@@ -13,6 +13,7 @@
 #![allow(clippy::result_large_err, reason = "cold-path errors with rich context")]
 
 mod budget;
+mod chamfer;
 mod component;
 mod datum;
 mod delta;
@@ -1098,8 +1099,12 @@ impl Evaluator {
                     .get(bi)
                     .cloned()
                     .ok_or_else(|| EvalError::new(name, ErrorCode::NoTargetBody, "no body"))?;
-                let res =
-                    if fillet { k.fillet(&body.shape, &edges, size) } else { k.chamfer(&body.shape, &edges, size) };
+                let (res, size) = if fillet {
+                    (k.fillet(&body.shape, &edges, size), size)
+                } else {
+                    let plan = chamfer::plan(name, b, size, &edges, &body, params, units)?;
+                    (k.chamfer_ref(&body.shape, &edges, &plan.faces, &plan.spec), plan.longest)
+                };
                 let res = res.map_err(|ke| blend_error(name, fillet, size, &edges, &body, ke, units))?;
                 let topo = k.topology(&res.shape).map_err(|ke| kernel_err(name, "topology", ke))?;
                 let names =
@@ -1569,6 +1574,8 @@ fn resolve_edges(feature: &str, refs: &[EdgeRef], bodies: &[Arc<Body>]) -> Resul
 mod tests;
 #[cfg(test)]
 mod tests_budget;
+#[cfg(test)]
+mod tests_chamfer;
 #[cfg(test)]
 mod tests_crash;
 #[cfg(test)]

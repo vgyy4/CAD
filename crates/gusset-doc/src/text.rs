@@ -440,6 +440,15 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("edges: [{}]", edges.join(", ")));
             let key = if matches!(f.kind, FeatureKind::Fillet(_)) { "radius" } else { "distance" };
             args.push(format!("{key}: {}", b.size));
+            match &b.second {
+                ChamferSecond::Equal => {}
+                ChamferSecond::Distance(e) => args.push(format!("distance2: {e}")),
+                ChamferSecond::Angle(e) => args.push(format!("angle: {e}")),
+            }
+            if !b.faces.is_empty() && !matches!(b.second, ChamferSecond::Equal) {
+                let faces: Vec<String> = b.faces.iter().map(FaceRef::to_string).collect();
+                args.push(format!("faces: [{}]", faces.join(", ")));
+            }
         }
         FeatureKind::Surface(d) => {
             match &d.op {
@@ -1099,6 +1108,8 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut angle = None;
     let mut edges: Option<Vec<EdgeRef>> = None;
     let mut size = None;
+    let mut second: Option<ChamferSecond> = None;
+    let mut faces: Option<Vec<FaceRef>> = None;
     let mut blob = None;
     let mut format = None;
     let mut file = None;
@@ -1106,7 +1117,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
         "extrude" => "profile, distance, symmetric, op, body, body_name, label, group, suppressed",
         "revolve" => "profile, axis, angle, op, body, body_name, label, group, suppressed",
         "fillet" => "edges, radius, label, group, suppressed",
-        "chamfer" => "edges, distance, label, group, suppressed",
+        "chamfer" => "edges, distance, distance2, angle, faces, label, group, suppressed",
         _ => "blob, format, file, label, group, suppressed",
     };
     parse_args(c, |key, c| {
@@ -1150,6 +1161,19 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 edges = Some(list);
             }
             ("fillet", "radius") => size = Some(c.expr()?),
+            ("chamfer", "distance2") => {
+                if second.is_some() {
+                    return Err(c.err("a chamfer takes distance2 or angle, not both"));
+                }
+                second = Some(ChamferSecond::Distance(c.expr()?));
+            }
+            ("chamfer", "angle") => {
+                if second.is_some() {
+                    return Err(c.err("a chamfer takes distance2 or angle, not both"));
+                }
+                second = Some(ChamferSecond::Angle(c.expr()?));
+            }
+            ("chamfer", "faces") => faces = Some(parse_face_list(c)?),
             ("import", "blob") => blob = Some(c.string()?),
             ("import", "format") => {
                 let w = c.ident_or_digits()?;
@@ -1185,6 +1209,8 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             let def = EdgeBlendDef {
                 edges: edges.ok_or_else(|| missing(c, kw, "edges"))?,
                 size: size.ok_or_else(|| missing(c, kw, if kw == "fillet" { "radius" } else { "distance" }))?,
+                second: second.unwrap_or_default(),
+                faces: faces.unwrap_or_default(),
             };
             if kw == "fillet" { FeatureKind::Fillet(def) } else { FeatureKind::Chamfer(def) }
         }

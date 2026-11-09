@@ -521,6 +521,9 @@ impl Kernel for RemoteKernel {
     }
 
     fn chamfer_ref(&self, shape: &Shape, edges: &[u32], faces: &[u32], spec: &ChamferSpec) -> KResult<OpResult> {
+        if let ChamferSpec::Equal(d) = *spec {
+            return self.chamfer(shape, edges, d);
+        }
         self.op(&Request::ChamferRef(shape.clone(), edges.to_vec(), faces.to_vec(), *spec))
     }
 
