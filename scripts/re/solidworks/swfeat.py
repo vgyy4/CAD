@@ -10,11 +10,13 @@ from scan import scan
 from nodes2 import classify
 from sketch import parse_sketch, find_plane
 from feat import params, endspec_candidates, endspec_decl
+import edges as edgemod
 
 PLANE_NAMES = {2: 'Front', 3: 'Top', 4: 'Right'}
 EXTRUDE = ('moExtrusion_c', 'moICE_c', 'moCut_c')
 REVOLVE = ('moRevolution_c', 'moRevCut_c')
-END_TYPES = {0: 'blind', 1: 'through_all?', 2: 'through_all', 6: 'mid_plane'}
+BIG = 500.0
+END_TYPES = {0: 'blind', 1: 'through_all?', 2: 'through_all?', 6: 'mid_plane', 9: 'through_all_both'}
 
 def mm(v): return round(v * 1000.0, 6)
 
@@ -138,14 +140,15 @@ def convert(path):
     span = lambda n: (n['start'], min(s for s in starts if s > n['start']))
     feats, notes = [], []
     rep = dict(features=[], sketches=0, sketch_ok=0, extrudes=0, extrude_ok=0, revolves=0, unsupported=[])
-    last_sketch = None; sketch_geo = {}; solid = False
+    last_sketch = None; sketch_geo = {}; solid = False; first_solid = None; by_fid = {}; sk_json = {}
     # EndSpec class index (learned: most frequent EndSpec-shaped class-ref in extrude spans)
     C = collections.Counter()
     for n in ns:
         if n['cls'] in EXTRUDE + REVOLVE:
             a, b = span(n)
-            for c in endspec_candidates(rf, a, b): C[c['cls']] += 1
-    es_cls = [k for k, _ in C.most_common(2)]
+            for c in endspec_candidates(rf, a, b):
+                if c['cls'] < 0x3000 and c['X'] == 1: C[c['cls']] += 1
+    es_cls = [k for k, _ in C.most_common(1)]
     for n in ns:
         cls = n['cls']; a, b = span(n)
         rep['features'].append('%s:%s' % (cls, n['name']))
@@ -162,7 +165,7 @@ def convert(path):
             js = sketch_json(n['name'], pts, segs, plane)
             if plane is None: notes.append('%s: plane not found in span (back-referenced plane?)' % n['name'])
             else: rep['sketch_ok'] += 1
-            feats.append(js); last_sketch = n['name']; sketch_geo[n['name']] = (pts, segs, plane)
+            feats.append(js); last_sketch = n['name']; sketch_geo[n['name']] = (pts, segs, plane); sk_json[n['name']] = js
         elif cls in REVOLVE and endspec_decl(rf, a, b, b'moRevEndSpec_c') is None and \
                 any(c['cls'] in es_cls for c in endspec_candidates(rf, a, b)) and \
                 not any(abs(p['value'] - 2 * math.pi) < 1e-9 for p in params(rf, a, b, nt)):
@@ -170,26 +173,34 @@ def convert(path):
             n['cls'] = cls = 'moICE_c'
         if cls in EXTRUDE:
             rep['extrudes'] += 1
-            es = endspec_decl(rf, a, b)
-            if es is None:
-                cands = [c for c in endspec_candidates(rf, a, b) if c['cls'] in es_cls]
-                es = cands[0] if cands else None
+            dec = endspec_decl(rf, a, b)
+            cands = ([dec] if dec else []) + [c for c in endspec_candidates(rf, a, b) if c['cls'] in es_cls]
+            es = cands[0] if cands else None
             ps = params(rf, a, b, nt)
             op = 'new' if not solid else ('cut' if (cls == 'moCut_c' or n['name'].lower().startswith('cut')) else 'join')
             js = dict(type='extrude', name=n['name'], sketch=last_sketch, profiles='all', operation=op,
-                      target=None if op == 'new' else 'body1')
+                      target=None if op == 'new' else first_solid)
             typ = es['type'] if es else None
             js['end_condition'] = END_TYPES.get(typ, 'unknown(%s)' % typ)
             if typ in (0, 6) and ps:
                 js['distance'] = mm(ps[0]['value']); js['symmetric'] = typ == 6
-            elif typ == 2:
-                js['distance'] = None; js['through_all'] = True; js['symmetric'] = False
+            elif typ in (1, 2, 9) and es.get('flag') == 1 and op == 'cut':
+                js['distance'] = 2 * BIG; js['through_all'] = True; js['symmetric'] = True   # flag 1 = both directions (confirmed: loadCell_v1, idler_single_v2)
+            elif typ == 9:
+                js['distance'] = 2 * BIG; js['through_all'] = True; js['symmetric'] = True   # confirmed on loadCell_v1
+            elif typ == 2 or (typ == 1 and op == 'cut'):
+                js['distance'] = BIG; js['through_all'] = True; js['symmetric'] = False
             else:
                 js['distance'] = mm(ps[0]['value']) if ps else None; js['symmetric'] = False
-            if es and es.get('flag'): js['reverse_flag'] = True
+            if op == 'cut' and js.get('distance') and not js.get('symmetric') and js['distance'] > 0:
+                js['distance'] = -js['distance']   # SolidWorks cuts go into the material: against the sketch normal (confirmed by rebuild)
+            js['sw_end'] = [dict(X=c['X'], type=c['type'], flag=c['flag']) for c in cands[:3]]
+            if last_sketch in sketch_geo and js.get('distance') is not None:
+                by_fid[n['id']] = dict(pts=sketch_geo[last_sketch][0], segs=sketch_geo[last_sketch][1],
+                                       plane=sk_json[last_sketch]['plane'], distance=js['distance'], symmetric=js.get('symmetric'))
             if js.get('distance') is not None or js.get('through_all'): rep['extrude_ok'] += 1
             else: rep['unsupported'].append('%s (end type %s)' % (n['name'], typ))
-            feats.append(js); solid = True
+            feats.append(js); solid = True; first_solid = first_solid or n['name']
         elif cls in REVOLVE:
             rep['revolves'] += 1
             ps = params(rf, a, b, nt)
@@ -197,24 +208,33 @@ def convert(path):
             js = dict(type='revolve', name=n['name'], sketch=last_sketch, profiles='all',
                       operation='new' if not solid else ('cut' if cls == 'moRevCut_c' or n['name'].lower().startswith('cut') else 'join'),
                       angle=round(math.degrees(ang[0]['value']), 9) if ang else 360.0)
+            if js['operation'] != 'new': js['target'] = first_solid
             g = sketch_geo.get(last_sketch)
             if g:
                 cl = [k for k, s in enumerate(g[1]) if s['type'] == 'line' and s.get('centerline') and s['id'] != 0xFFFFFFFF]
                 cl += [k for k, s in enumerate(g[1]) if s['type'] == 'line' and s.get('construction') and k not in cl]
                 if cl: js['axis'] = dict(line='c%d' % cl[0])
                 else: js['axis'] = None; notes.append('%s: no construction line for the axis' % n['name'])
-            feats.append(js); solid = True
+            feats.append(js); solid = True; first_solid = first_solid or n['name']
         elif cls in ('Fillet_c', 'Chamfer_c'):
             ps = params(rf, a, b, nt)
             js = dict(type='fillet' if cls == 'Fillet_c' else 'chamfer', name=n['name'], edges=[],
-                      radius=mm(ps[0]['value']) if ps else None, edges_unresolved=True)
-            feats.append(js); rep['unsupported'].append('%s (edges not decoded)' % n['name'])
+                      radius=mm(ps[0]['value']) if ps else None)
+            if cls == 'Chamfer_c': js['distance'] = js.pop('radius')
+            sel = edgemod.selection(edgemod.edge_records(rf, a, b))
+            mids = [edgemod.midpoint(r, by_fid) for r in sel]
+            js['edges'] = [dict(midpoint=m) for m in mids if m is not None]
+            if not sel or any(m is None for m in mids):
+                js['edges_unresolved'] = True
+                rep['unsupported'].append('%s (%d of %d edges resolved)' % (n['name'], len(js['edges']), len(sel)))
+            feats.append(js)
         elif cls in ('moCommentsFolder_c', 'moFavoriteFolder_c', 'moHistoryFolder_c', 'moSensorFolder_c',
                      'moDocsFolder_c', 'moDetailCabinet_c', 'moSurfaceBodyFolder_c', 'moSolidBodyFolder_c',
                      'moEqnFolder_c', 'moMaterialFolder_c', 'moRefPlane_c', 'moOriginProfileFeature_c', 'moProfileFeature_c', None):
             continue
         else:
             rep['unsupported'].append('%s:%s' % (cls, n['name']))
+            feats.append(dict(type='unsupported', name=n['name'], original_type=cls))
     tree = {'format': 'gusset-feature-tree', 'version': 2, 'source': {'app': 'solidworks', 'file': os.path.basename(path)},
             'features': feats}
     rep['notes'] = notes

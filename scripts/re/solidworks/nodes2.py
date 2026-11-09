@@ -15,7 +15,7 @@ def feature_nodes(d):
         k=d.find(M,e)
         k3=d.find(M3,e)
         if k<0 or (0<=k3<k): k=k3
-        if k<0 or k>allp[i+1] or k-e>1500: continue
+        if k<0 or k-e>1500: continue
         if struct.unpack_from('<I',d,e+8)[0]==0xffffffff: continue   # parameters carry id -1   # not a feature node (parameter etc.)
         flags,fid=struct.unpack_from('<II',d,e+4)
         post=k+46+8+2

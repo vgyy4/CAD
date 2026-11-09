@@ -121,3 +121,84 @@ bytes but has not been checked against an independent value.
 * Boss or cut for moICE_c: **no flag found yet**. The prototype uses the class (moCut_c)
   and otherwise the feature name ("Cut-...").
 * Fillet/Chamfer: only the radius (first parameter) is read. The edges are not decoded.
+
+## 5. Round 2 additions
+
+Everything below was checked by rebuilding the emitted tree with the gusset binary
+(`rebuild.py`, which runs `gusset build ... --import x.gtree.json` and exports an STL) and
+comparing against the Parasolid body: volume within 1e-4 relative and box within 0.01 mm.
+
+### 5.1 Sketch lists. Confirmed.
+* The 8 bytes in the entity header are not always FF*8. Centerline records have
+  `ff ff ff ff 04 00 ff ff`, so headers are matched as
+  `FF FF 1F 00 <1|3> <8 bytes> 00 00 80 BF`. Missing these records skewed the earlier list
+  measurements.
+* Lists: `u32 count`, then each item is `u16 x0 (0 or 2), u32 a, u32 id, entity`.
+* List order: points, lines, two lists that were empty in every sample, arcs. Then 32
+  bytes, then a u16 that is the count of the dimension objects that follow (sgPntPntDist /
+  sgCircleDim ...). Sketches whose last item is a line show 48 zero bytes there instead of
+  the expected 46. These 2 bytes are not explained, so the typed walker still stops at the
+  end of the lists.
+* Line payload `u16 start, u16 end, u16 kind`: kind 1 is a normal line and kind 0 a
+  centerline (confirmed: the bearing revolve axis). Flag bit 0x08 means construction.
+* **Item key `a`:** the u32 before the record id. It is the key that extrusion side faces and
+  `moSketchChain_c` use.
+  * moSketchChain_c body: `u16 n, n x u32 a`, which lists the profile loop in order.
+  * Base_loadCell Sketch1 lists 9,4,3,2,1,8, which matches the geometry: right-mid,
+    right-lower, bottom, left, top, right-upper.
+
+### 5.2 End conditions (moEndSpec_c)
+* Body: `u16 0, u32 X, 10 x 00, u32 type, u32 flag, obj dimension`.
+* Each extrude has 2 or 3 of these objects. The first one is direction 1.
+* The EndSpec class index is learned as the most common class-ref tag that has this
+  layout and X=1, with indices >= 0x3000 excluded (those are doubles).
+  * The first round picked the wrong class in about 20 features. For example,
+    baseJoint/Boss-Extrude6 is really type 6 (mid-plane).
+
+| type | meaning | evidence |
+|---|---|---|
+| 0 | blind, D1 = depth | many parts |
+| 6 | mid-plane, D1 = total depth | shaft_3x55mm, PET tapes, baseJoint |
+| 9 (flag 1) | through all, both directions | loadCell_v1: symmetric ±500 rebuilds to the exact volume (11401.140 mm³); a one-sided cut does not |
+| 1 (flag 1) | through all, both directions | idler_single_v2: one-sided removes exactly half (65.08 mm³) |
+| 1 / 2 (flag 0) | through all one way (guess) | emitted as -500 mm for cuts; Base_loadCell, Top_modular, Top_beltSupportRim come within 1.5% (their remaining features are unresolved) |
+| 4, 5 | unknown (up to vertex/surface?) | left unresolved |
+
+* `flag` = 1 means "both directions", not "reverse". I found no reverse flag:
+  * The sign search (`search.py`) never needed a flip that a field explains.
+  * `X` is 1 on most first features and on through-all cuts. Its meaning is unknown.
+
+### 5.3 Boss vs cut and direction
+* moICE_c and moCut_c carry no boss/cut flag that I could find. The operation still comes
+  from the class (moCut_c) or the name ("Cut-...").
+* **Cuts go against the sketch normal.** Confirmed: Base_loadCell, Top_modular,
+  loadCell_v1 and spring_holder only rebuild with this rule. Bosses go along the normal.
+
+### 5.4 Fillet / chamfer edges (moEdgeRef_c)
+* Edge record header: `u32 1, u32 0, u32 nRefs(4), u8 0, u8 kind(2|3), u16 0, u32 id,
+  2 x f64 sentinel 7dc39425ad49b254, u16 0`.
+* Then nRefs face references: `<class tag> u16 0 <tag> u16, u32 feature-id, u32 stamp,
+  u32 index`. Cap references are followed by one more u32 (0 or 1).
+* **The first two references are the edge's two faces; the last two are the faces that
+  bound its end vertices.**
+* Side face of an extrusion: index = the sketch item key `a`. Cap face: index 0 = start,
+  1 = end.
+* Midpoint rule:
+  * side/side edge: the shared sketch point, at mid-depth;
+  * side/cap edge: the midpoint of the segment, at the cap's height.
+* The fillet's own selection is the first run of edge records in its span.
+* Results:
+  * Base_loadCell Fillet1 resolves 4 of 7 edges; with them the part comes within 1.46e-4.
+  * loadcell_centerPlatform now matches.
+  * The idler arms resolve 16 of 30. The unresolved edges use side keys (15-19) that no
+    item of the profile sketch carries; mirrored or derived entities are suspected.
+* Records written by other classes (e.g. some Chamfer_c) do not match this header yet.
+  Some fillets show "0 of 0" found.
+
+### 5.5 Still open
+* Typed walker past the sketch lists (dimension objects): not done. So back-referenced
+  sketch planes and the stream-based profile link are still not available. The profile
+  sketch is still taken to be the one just before the feature.
+* Hole wizard, mirror, patterns: emitted as `{"type":"unsupported"}`.
+* idler_single_v1: the Parasolid truth volume is negative (-163.557), so the truth itself is
+  suspect.

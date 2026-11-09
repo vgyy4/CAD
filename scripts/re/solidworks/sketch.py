@@ -11,9 +11,15 @@ Layout (see LAYOUT.md, confirmed on the Slip-Pad parts):
   arc payload  : u16 start, u16 end, u16 1, u16 0, f64 -1, i32 dir (+1 ccw / -1 cw), u16 centre index,
                  4 x i32 -2, ...
 """
-import struct
+import struct, re
 ENT_HDR = bytes.fromhex('ffff1f0001ffffffffffffffff000080bf')
 ENT_HDR3 = bytes.fromhex('ffff1f0003ffffffffffffffff000080bf')
+HDR_RE = re.compile(rb'\xff\xff\x1f\x00[\x01\x03].{8}\x00\x00\x80\xbf', re.S)
+
+def find_headers(d, a, b):
+    """entity headers: FF FF 1F 00 <ver 1|3> <8 bytes, usually FF*8> 00 00 80 BF"""
+    return [m.start() for m in HDR_RE.finditer(d, a, b)]
+
 ONE = bytes.fromhex('0000000000000000000000000000f03f')   # f64 0.0, f64 1.0
 
 def _payload(d, h):
@@ -33,19 +39,14 @@ def parse_sketch(d, body, end):
     """body: offset of the sgSketch body (after its class tag); end: end of the feature span."""
     npts = struct.unpack_from('<I', d, body)[0]
     hdrs = []
-    for H in (ENT_HDR, ENT_HDR3):
-        i = body
-        while True:
-            i = d.find(H, i, end)
-            if i < 0: break
-            hdrs.append(i); i += 1
-    hdrs.sort()
+    hdrs = find_headers(d, body, end)
     if npts > len(hdrs): raise ValueError('point count %d > records %d' % (npts, len(hdrs)))
     pts, segs, warn = [], [], []
     for k, h in enumerate(hdrs):
         kind = struct.unpack_from('<H', d, h + 17 + 12)[0]
         flags = struct.unpack_from('<H', d, h + 17 + 20)[0]
         rid = struct.unpack_from('<I', d, h - 4)[0]
+        aval = struct.unpack_from('<I', d, h - 8)[0]
         p, ext = _payload(d, h)
         if p is None: warn.append('record %x: no payload' % h); continue
         if k < npts:
@@ -61,9 +62,9 @@ def parse_sketch(d, body, end):
                 warn.append('record %x: not a line/arc record (kind %d)' % (h, kind)); continue
             if d[p + 22:p + 38] == b'\xfe\xff\xff\xff' * 4:
                 dirn, c = struct.unpack_from('<iH', d, p + 16)
-                segs.append(dict(type='arc', id=rid, s=s, e=e, c=c, dir=dirn, flags=flags, construction=bool(flags & 8)))
+                segs.append(dict(type='arc', id=rid, a=aval, s=s, e=e, c=c, dir=dirn, flags=flags, construction=bool(flags & 8)))
             else:
-                segs.append(dict(type='line', id=rid, s=s, e=e, flags=flags, construction=bool(flags & 8) or one == 0, centerline=one == 0))
+                segs.append(dict(type='line', id=rid, a=aval, s=s, e=e, flags=flags, construction=bool(flags & 8) or one == 0, centerline=one == 0))
     return pts, segs, warn
 
 def _orthonormal(v):
