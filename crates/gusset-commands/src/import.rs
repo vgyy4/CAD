@@ -1235,20 +1235,21 @@ fn stored_stock(
         return Ok((Vec::new(), None));
     };
     let stock = stock.map_err(|e| format!("the stock body was not read: {e}"))?;
-    // A part without a stock stream keeps the mirrored body only: that body is the stored one.
+    // A part without a stock stream keeps only the finished body. Storing that body and
+    // replaying the features after it would pass the rebuild check trivially (a cut or join
+    // repeated on a body that has it changes nothing), so such a part comes in as bodies.
     if stock.is_empty() {
-        if bodies.is_empty() {
-            return Err("the part keeps no stock body".into());
-        }
-        let name = feats.get(at).and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("Stock").to_string();
-        for i in 1..bodies.len() {
-            feats.push(serde_json::json!({"type": "stored_body", "name": format!("{name}_{}", i + 1), "body": i}));
-        }
-        return Ok((
-            bodies.iter().map(|b| b.blob.clone()).collect(),
-            Some("the file keeps only the mirrored bodies, not the part they were mirrored from".into()),
-        ));
+        return Err("the file keeps only the mirrored bodies, not the part they were mirrored from".into());
     }
+    // Where no mirror feature is written (the stock is the part, or the image is pre-mirrored
+    // below), a history of the stored body alone has nothing to edit: such a part is bodies.
+    let editable = feats
+        .iter()
+        .filter(|f| !matches!(f.get("type").and_then(Value::as_str), Some("stored_body" | "unsupported")))
+        .count();
+    let only_stored = || -> Result<(), String> {
+        if editable == 0 { Err("the history is the stored stock body only".into()) } else { Ok(()) }
+    };
     let [blob] = stock.as_slice() else {
         return Err(format!("the part keeps {} stock bodies (one is expected)", stock.len()));
     };
@@ -1276,6 +1277,7 @@ fn stored_stock(
     let name = feats.get(at).and_then(|f| f.get("name")).and_then(Value::as_str).unwrap_or("Stock").to_string();
     // Not moved at all: the stock is the part.
     if (0..3).all(same) {
+        only_stored()?;
         return Ok((stock, None));
     }
     for ax in 0..3 {
@@ -1288,6 +1290,7 @@ fn stored_stock(
             if !below && ix(from.min, ax) < c - tol {
                 // The image overlaps the stock: no half space separates them, so the
                 // stored body is the mirrored stock.
+                only_stored()?;
                 let shape = kernel.read_native(blob).map_err(|e| e.message)?;
                 let (o, n) = axis_plane(ax, c);
                 let r = kernel

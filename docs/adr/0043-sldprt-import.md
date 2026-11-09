@@ -352,4 +352,7 @@ A `moMirrorStock_c` part (a mirror of an external part) is a `stored_body` featu
 `StockBodies` partition, mirrored across the axis plane found by comparing bounding boxes, and the rebuild check
 stays as it was. A blind cut with a second dimension D2 starts D2 behind its sketch plane. A fillet of two straight
 profile sides is remembered, so that later edge references to its face locate the cap arc and a shortened side.
+A part whose history would be the stored body alone, or whose file keeps only the finished
+(mirrored) body, comes in as bodies: replaying features on a finished body passes the rebuild check
+trivially. Coverage 33 of 85 (slip-pad 19 of 35, arig-revisions 14 of 50).
 See `docs/formats/solidworks-feature-tree.md` L9.

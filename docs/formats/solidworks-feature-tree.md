@@ -509,7 +509,8 @@ Gusset-side 2 (plaque_superieure 1618664833 fillet; spring_base CSK hole 6.3 mm)
   our rebuild; reversing its direction changes nothing, so the cut is probably dropped silently by the importer. Unresolved.
 
 ## L9. Round 3 (stored stock bodies, start offsets, rounded corners)
-Corpus (slip-pad 35 + arig-revisions 50): 28 -> 63 as history (slip-pad 18 -> 19, arig-revisions 10 -> 44 counting the 33 mirror parts).
+Corpus (slip-pad 35 + arig-revisions 50): 28 -> 33 as history (slip-pad 18 -> 19, arig-revisions 10 -> 14). A first count of 63
+included mirror parts whose history was the stored body alone (20) or the stored finished body (9); those come in as bodies (below).
 * **Mirrored stock parts** (`moMirrorStock_c`, 33 arig `*_Symétrie_*` revisions + `arm_idler_single_v3_mirrored`): the reader emits a
   `stored_body` feature (tree name = the node name, `body` 0) and the importer fills `Tree::stored_bodies` from
   `Config-N-StockBodies` (same block framing as the partition: `u32 len, 16-byte tag, u32 inflated, u32 deflated, zlib`; the
@@ -518,8 +519,10 @@ Corpus (slip-pad 35 + arig-revisions 50): 28 -> 63 as history (slip-pad 18 -> 19
   plane parallel to XY/XZ/YZ), adds `mirror (merge: true)` plus a half-space cut that removes the stock (a `merge: false` mirror
   would keep the stock as a second body), and the unchanged rebuild check decides. Stock equal to the part (no mirror: Access,
   Igus_Bague) needs none. When the image overlaps the stock (Angle_support) the stored body is the stock mirrored by the kernel.
-  Files with no `StockBodies` stream (Servo_HS-485-HB, carter_screen_side rev 1) keep only the mirrored body: it is stored as is,
-  with a tier note (the source part is not in the file).
+  Files with no `StockBodies` stream (Servo_HS-485-HB, carter_screen_side rev 1) keep only the finished body. Storing it and
+  replaying the later features would pass the rebuild check trivially (a repeated cut or join changes nothing), so these
+  parts come in as bodies. Likewise, where no mirror feature is written (the stock already is the part, or the image is
+  pre-mirrored in the kernel) and nothing editable follows the stored body, the part comes in as bodies.
 * **Start offset `D2`** (idler_single_v1 Cut-Extrude1, the only extrude with a second dimension, EndSpec X 0): the truth's bore
   spans x -1 .. 2.9 from the Right plane (normal +x) with D1 = 10 mm blind and D2 = 1 mm. The cut starts D2 behind its sketch
   plane and runs along the normal; the sketch plane is shifted accordingly. One witness, so the direction of the offset
