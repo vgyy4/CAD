@@ -1363,6 +1363,155 @@ fn cap_height(f: &Swept, cap: u32) -> f64 {
     }
 }
 
+/// The face an up-to-surface or offset-from-surface end (`swEndConditions_e` 4 and 5) names: the
+/// first reference of the node's last `moSingleFaceRef_w` object (the object is the last thing
+/// the node writes; the `moEndFace3IntSurfIdRep_c` before it holds the extrude's own end face).
+/// The object's header ends with a pair of 8-byte words (the same value twice) and `00 00`; the
+/// reference follows, as an edge record's reference: class word, feature id, stamp, face number.
+/// A cap has the class of the caps, a side the sketch key of its line.
+fn end_face_ref(d: &[u8], a: usize, b: usize) -> Option<Rep> {
+    const WORD: [u8; 8] = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
+    let mut from = a;
+    let mut last = None;
+    while let Some(p) = find(d, &WORD, from, b) {
+        from = p + 1;
+        if d.get(p + 8..p + 16) == Some(&WORD[..]) {
+            last = Some(p);
+        }
+    }
+    let c = last? + 18;
+    let t = u16_at(d, c)?;
+    if t & 0x8000 == 0 || u16_at(d, c + 2)? != 0 {
+        return None;
+    }
+    Some(Rep { tag: t & 0x7fff, fid: u32_at(d, c + 8)?, idx: u32_at(d, c + 16)?, ext: false, ext2: false })
+}
+
+/// Whether `(u, v)` lies inside the profile (even-odd over its drawn segments; m).
+fn inside(g: &Geometry, u: f64, v: f64) -> bool {
+    let mut odd = false;
+    for s in g.segs.iter().filter(|s| !s.construction) {
+        let Some(pts) = seg_uv(g, s) else { continue };
+        for w in pts.windows(2) {
+            let [(x0, y0), (x1, y1)] = w else { continue };
+            if (*y0 > v) != (*y1 > v) && u < x0 + (v - y0) / (y1 - y0) * (x1 - x0) {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// The extent of an end face within its plane.
+#[derive(Clone, Copy)]
+enum Region {
+    /// A cap: the profile of the feature.
+    Cap(Swept),
+    /// A side: the line from `a` to `b` (m, in the sketch's axes), over the feature's height.
+    Wall(Swept, (f64, f64), (f64, f64)),
+}
+
+/// Whether the point `q` (mm) of the face's plane lies on the face, up to 0.01 mm.
+fn on_face(region: &Region, sketches: &[Geometry], q: V3) -> bool {
+    let (Region::Cap(f) | Region::Wall(f, ..)) = region;
+    let Some(g) = sketches.get(f.sketch) else { return false };
+    let d = sub(q, f.plane.origin);
+    let (u, v) = (dot(d, f.plane.x) / 1000.0, dot(d, f.plane.y) / 1000.0);
+    match region {
+        Region::Cap(_) => {
+            inside(g, u, v)
+                || g.segs.iter().filter(|s| !s.construction).any(|s| {
+                    seg_uv(g, s).is_some_and(|pts| {
+                        pts.windows(2).any(|w| match w {
+                            [(x0, y0), (x1, y1)] => dist_to_segment((u, v), (*x0, *y0), (*x1, *y1)) < 1e-5,
+                            _ => false,
+                        })
+                    })
+                })
+        }
+        Region::Wall(_, a, b) => {
+            let h = dot(d, normal(f));
+            let (lo, hi) = if f.symmetric {
+                (-f.distance.abs() / 2.0, f.distance.abs() / 2.0)
+            } else {
+                (f.distance.min(0.0), f.distance.max(0.0))
+            };
+            h >= lo - 0.01 && h <= hi + 0.01 && dist_to_segment((u, v), *a, *b) < 1e-5
+        }
+    }
+}
+
+fn dist_to_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-24 { 0.0 } else { (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0) };
+    libm::hypot(p.0 - (a.0 + t * dx), p.1 - (a.1 + t * dy))
+}
+
+/// The plane of the face a reference names, for a pick: a point on the face (mm), its outward
+/// normal and its extent. Only the caps and the straight sides of an extruded feature.
+fn face_pick(
+    r: &Rep,
+    swept: &HashMap<u32, Swept>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+) -> Option<(V3, V3, Region)> {
+    type Side = ((f64, f64), (f64, f64), f64);
+    let f = swept.get(&r.fid).filter(|f| !f.through && f.distance.abs() > 1e-9)?;
+    let g = sketches.get(f.sketch)?;
+    let sweep = if f.distance > 0.0 { 1.0 } else { -1.0 };
+    // The middle of a line of the profile (m), its outward direction (unit, in the sketch's axes) and its length.
+    let side = |s: &Seg| -> Option<Side> {
+        let (p, q) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+        let (dx, dy) = (q.x - p.x, q.y - p.y);
+        let len = libm::hypot(dx, dy);
+        if s.kind != SegKind::Line || len < 1e-9 {
+            return None;
+        }
+        let mid = ((p.x + q.x) / 2.0, (p.y + q.y) / 2.0);
+        let nrm = (dy / len, -dx / len);
+        let e = 1e-6 + 0.01 * len;
+        let out = if inside(g, mid.0 + nrm.0 * e, mid.1 + nrm.1 * e) { (-nrm.0, -nrm.1) } else { nrm };
+        Some((mid, out, len))
+    };
+    let unit = |v: V3| -> V3 { v.map(|c| round_to(c, 12) + 0.0) };
+    // A class of caps the edge records never showed: face 0 or 1 of a profile with no such side.
+    if cap_tags.contains(&r.tag) || (r.idx <= 1 && !g.segs.iter().any(|s| s.a == r.idx && !s.construction)) {
+        if r.idx > 1 {
+            return None;
+        }
+        let longest = g
+            .segs
+            .iter()
+            .filter(|s| !s.construction)
+            .filter_map(&side)
+            .fold(None::<Side>, |b, x| if b.is_none_or(|b| x.2 > b.2) { Some(x) } else { b })?;
+        let (mid, out, len) = longest;
+        let e = 1e-6 + 0.01 * len;
+        let (u, v) = (mid.0 - out.0 * e, mid.1 - out.1 * e);
+        if !inside(g, u, v) {
+            return None;
+        }
+        let o = if r.idx == 1 { sweep } else { -sweep };
+        return Some((
+            lift(f, u * 1000.0, v * 1000.0, cap_height(f, r.idx)),
+            unit(normal(f).map(|c| c * o)),
+            Region::Cap(*f),
+        ));
+    }
+    let mut c = g.segs.iter().filter(|s| s.a == r.idx && !s.construction);
+    let (Some(s), None) = (c.next(), c.next()) else { return None };
+    let (mid, out, _) = side(s)?;
+    let (pa, pb) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+    let (x, y) = (f.plane.x, f.plane.y);
+    let nrm = [0, 1, 2].map(|i| out.0 * x.get(i).copied().unwrap_or(0.0) + out.1 * y.get(i).copied().unwrap_or(0.0));
+    Some((
+        lift(f, mid.0 * 1000.0, mid.1 * 1000.0, f.distance / 2.0),
+        unit(nrm),
+        Region::Wall(*f, (pa.x, pa.y), (pb.x, pb.y)),
+    ))
+}
+
 fn lift(f: &Swept, x: f64, y: f64, h: f64) -> V3 {
     let (o, xa, ya) = (f.plane.origin, f.plane.x, f.plane.y);
     let n = cross(xa, ya);
@@ -1382,11 +1531,21 @@ const ARC_STEPS: usize = 2000;
 
 /// The 3D polyline (mm, on the sketch plane) of a sketch segment (`edges._poly`).
 fn poly(f: &Swept, g: &Geometry, s: &Seg, work: &mut u64) -> Result<Option<Vec<V3>>, String> {
-    let (Some(p), Some(q)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return Ok(None) };
-    let uv: Vec<(f64, f64)> = if s.kind == SegKind::Line {
+    let Some(uv) = seg_uv(g, s) else { return Ok(None) };
+    *work = work.saturating_add(uv.len() as u64);
+    if *work > MAX_EDGE_WORK {
+        return Err(TOO_MUCH_WORK.into());
+    }
+    Ok(Some(uv.into_iter().map(|(u, v)| lift(f, u * 1000.0, v * 1000.0, 0.0)).collect()))
+}
+
+/// A segment as points of its sketch (m): the two ends of a line, the points of an arc.
+fn seg_uv(g: &Geometry, s: &Seg) -> Option<Vec<(f64, f64)>> {
+    let (p, q) = (point(&g.pts, s.s)?, point(&g.pts, s.e)?);
+    Some(if s.kind == SegKind::Line {
         vec![(p.x, p.y), (q.x, q.y)]
     } else {
-        let Some(c) = point(&g.pts, s.c) else { return Ok(None) };
+        let c = point(&g.pts, s.c)?;
         let r = libm::hypot(p.x - c.x, p.y - c.y);
         let a0 = libm::atan2(p.y - c.y, p.x - c.x);
         let mut a1 = libm::atan2(q.y - c.y, q.x - c.x);
@@ -1408,12 +1567,7 @@ fn poly(f: &Swept, g: &Geometry, s: &Seg, work: &mut u64) -> Result<Option<Vec<V
                 (c.x + r * libm::cos(a), c.y + r * libm::sin(a))
             })
             .collect()
-    };
-    *work = work.saturating_add(uv.len() as u64);
-    if *work > MAX_EDGE_WORK {
-        return Err(TOO_MUCH_WORK.into());
-    }
-    Ok(Some(uv.into_iter().map(|(u, v)| lift(f, u * 1000.0, v * 1000.0, 0.0)).collect()))
+    })
 }
 
 /// Moves `p` along `along` onto the plane of `f` at height `h` (`edges._to_plane`).
@@ -2221,6 +2375,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 Some(1 | 2) => "through_all?".to_string(),
                 Some(6) => "mid_plane".to_string(),
                 Some(9) => "through_all_both".to_string(),
+                Some(4) => "up_to_surface".to_string(),
+                Some(5) => "offset_from_surface".to_string(),
                 Some(t) => format!("unknown({t})"),
                 None => "unknown(None)".to_string(),
             };
@@ -2246,6 +2402,75 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && !agree
             {
                 distance = Some(-d);
+            }
+            // Up to a surface (4) or offset from a surface (5): the face the end names. A face ahead
+            // of the sweep is the end condition itself (`to_face`); a face behind the sketch (an
+            // offset from the part's bottom face, say) only gives a distance.
+            let mut up_to: Option<(V3, V3, f64, bool)> = None;
+            let mut end_s: Option<f64> = None;
+            if let (Some(t @ (4 | 5)), Some(sk)) = (typ, last_sketch.as_ref()) {
+                distance = None;
+                if let Some(&(si, plane)) = sketch_by_name.get(sk)
+                    && let Some(r) = end_face_ref(rf, a, b)
+                    && let Some((pt, nf, region)) = face_pick(&r, &swept, &sketches, &cap_tags)
+                {
+                    let n = cross(plane.x, plane.y);
+                    let den = dot(n, nf);
+                    let parallel = (den.abs() - 1.0).abs() < 1e-9;
+                    // Where the face's plane cuts the sketch's normal axis (mm from the sketch plane).
+                    let s_face = dot(sub(pt, plane.origin), nf) / den;
+                    // Whether the whole profile, swept towards the face, lands on the face.
+                    let covered = |dir: f64| -> bool {
+                        let Some(g) = sketches.get(si) else { return false };
+                        g.segs.iter().filter(|q| !q.construction).all(|q| {
+                            let Some(pts) = seg_uv(g, q) else { return false };
+                            let step = (pts.len() / 24).max(1);
+                            pts.iter().step_by(step).chain(pts.last()).all(|&(u, v)| {
+                                let p = [0, 1, 2].map(|i| {
+                                    plane.origin.get(i).copied().unwrap_or(0.0)
+                                        + u * 1000.0 * plane.x.get(i).copied().unwrap_or(0.0)
+                                        + v * 1000.0 * plane.y.get(i).copied().unwrap_or(0.0)
+                                });
+                                let t = dot(sub(pt, p), nf) / dot([n[0] * dir, n[1] * dir, n[2] * dir], nf);
+                                let hit = [0, 1, 2].map(|i| {
+                                    p.get(i).copied().unwrap_or(0.0) + t * dir * n.get(i).copied().unwrap_or(0.0)
+                                });
+                                on_face(&region, &sketches, hit)
+                            })
+                        })
+                    };
+                    if t == 4 && den.abs() > 1e-9 {
+                        let dir = extrude_direction(rf, a, b)
+                            .and_then(|v| direction_agrees(n, 1.0, v))
+                            .map_or(s_face.signum(), |agree| if agree { 1.0 } else { -1.0 });
+                        if s_face * dir > 1e-9 && covered(dir) {
+                            up_to = Some((pt, nf, 0.0, dir < 0.0));
+                            end_s = parallel.then_some(s_face);
+                        } else if s_face * dir > 1e-9 && parallel {
+                            // The face is smaller than the profile: SolidWorks extends its surface.
+                            distance = Some(round_to(s_face, 6) + 0.0);
+                            end_s = distance;
+                        }
+                    } else if t == 5
+                        && parallel
+                        && let Some(off) = ps.first().map(|v| mm(*v))
+                    {
+                        // The end plane is the face's plane moved `D1` into the material (against the
+                        // face's outward normal): spring_base_v1 Boss-Extrude2 (bottom face y = 0, D1 10,
+                        // ends at y = 10), FrameBracket Cut-Extrude3 (a boss's far face, D1 1, leaves
+                        // a floor of 1 mm). The sweep runs from the sketch to that plane.
+                        let s_end = s_face - off / den;
+                        let dir = s_end.signum();
+                        if s_end.abs() > 1e-9 {
+                            end_s = Some(round_to(s_end, 6) + 0.0);
+                            if s_face * dir > 1e-9 && covered(dir) {
+                                up_to = Some((pt, nf, round_to((s_end - s_face) * dir, 6) + 0.0, dir < 0.0));
+                            } else {
+                                distance = end_s;
+                            }
+                        }
+                    }
+                }
             }
             // A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its
             // own sketch) starts that far from its sketch plane. With an end spec of X 1 the start
@@ -2286,7 +2511,18 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("operation".into(), json!(op));
             js.insert("target".into(), if op == "new" { Value::Null } else { json!(first_solid) });
             js.insert("sw_end_kind".into(), json!(end));
-            js.insert("distance".into(), json!(distance));
+            if let Some((pt, nf, off, reverse)) = up_to {
+                js.insert("end_condition".into(), json!("to_face"));
+                js.insert("face".into(), json!({"point": json_v3(pt), "normal": json_v3(nf)}));
+                if off.abs() > 1e-9 {
+                    js.insert("offset".into(), json!(round_to(off, 6) + 0.0));
+                }
+                if reverse {
+                    js.insert("reverse".into(), json!(true));
+                }
+            } else {
+                js.insert("distance".into(), json!(distance));
+            }
             if through_all {
                 js.insert("through_all".into(), json!(true));
             }
@@ -2294,7 +2530,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let sw: Vec<Value> =
                 cands.iter().take(3).map(|c| json!({"X": c.x, "type": c.kind, "flag": c.flag})).collect();
             js.insert("sw_end".into(), json!(sw));
-            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), distance)
+            if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), end_s.or(distance))
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
             {
                 swept.insert(n.id, Swept { sketch: i, plane, distance: dist, symmetric, through: through_all });
@@ -2561,7 +2797,10 @@ fn check(tree: &Value) -> Result<(), String> {
                 if f.get("sketch").is_none_or(Value::is_null) {
                     return Err(format!("{name}: its sketch could not be read"));
                 }
-                if s("type") == "extrude" && f.get("distance").is_none_or(Value::is_null) {
+                if s("type") == "extrude"
+                    && f.get("distance").is_none_or(Value::is_null)
+                    && s("end_condition") != "to_face"
+                {
                     return Err(format!("{name}: end condition {} is not supported", s("sw_end_kind")));
                 }
                 if s("type") == "revolve" && f.get("axis").is_none_or(Value::is_null) {
@@ -2619,5 +2858,84 @@ mod direction_tests {
         }
         assert_eq!(extrude_direction(&d, 0, d.len()), Some([0.0, 1.0, 0.0]));
         assert_eq!(extrude_direction(&d, 0, 8), None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::float_cmp, clippy::unwrap_used, clippy::indexing_slicing)]
+mod end_face_tests {
+    use super::*;
+
+    fn pt(x: f64, y: f64) -> Option<Pt> {
+        Some(Pt { x, y, ext: false, id: 0, alone: 0 })
+    }
+
+    /// A 20 x 10 mm rectangle (sketch keys 2..5) extruded 5 mm along +z.
+    fn plate() -> (HashMap<u32, Swept>, Vec<Geometry>) {
+        let line = |a: u32, s: usize, e: usize| Seg {
+            kind: SegKind::Line,
+            id: a,
+            a,
+            s,
+            e,
+            c: 0,
+            dir: 0,
+            construction: false,
+            centerline: false,
+        };
+        let g = Geometry {
+            pts: vec![pt(0.0, 0.0), pt(0.02, 0.0), pt(0.02, 0.01), pt(0.0, 0.01)],
+            segs: vec![line(2, 0, 1), line(3, 1, 2), line(4, 2, 3), line(5, 3, 0)],
+        };
+        let plane = JsonPlane { origin: [0.0; 3], x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0] };
+        let f = Swept { sketch: 0, plane, distance: 5.0, symmetric: false, through: false };
+        (HashMap::from([(32, f)]), vec![g])
+    }
+
+    #[test]
+    fn the_end_face_is_the_first_reference_of_the_single_face_object() {
+        let word = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
+        let node = |kind: u8| {
+            let mut d = vec![0u8; 30];
+            d.extend([0, kind, 0, 0, 0x65, 0x23, 0x1d, 0]);
+            d.extend(word);
+            d.extend(word);
+            d.extend([0, 0, 0x3e, 0x82, 0, 0, 0x3b, 0x82, 0x3d, 2, 32, 0, 0, 0, 0x2e, 0x6f, 0xb8, 0x54, 1, 0, 0, 0]);
+            d.extend([0u8; 20]);
+            d
+        };
+        let d = node(2);
+        let r = end_face_ref(&d, 0, d.len()).unwrap();
+        assert_eq!((r.tag, r.fid, r.idx), (0x23e, 32, 1));
+        // The header may say 3 there too (the object right behind its class declaration); a node
+        // without the pair names no face.
+        let d = node(3);
+        assert_eq!(end_face_ref(&d, 0, d.len()).map(|r| r.idx), Some(1));
+        assert!(end_face_ref(&d, 0, 40).is_none());
+    }
+
+    #[test]
+    fn a_cap_or_a_side_of_an_extruded_profile_is_picked_with_its_outward_normal() {
+        let (swept, sketches) = plate();
+        let rep = |idx| Rep { tag: 9, fid: 32, idx, ext: false, ext2: false };
+        let none = HashSet::new();
+        // Face 1 (no side has that key): the far cap; face 0: the near one.
+        let (p, n, _) = face_pick(&rep(1), &swept, &sketches, &none).unwrap();
+        assert_eq!((p[2], n), (5.0, [0.0, 0.0, 1.0]));
+        let (p, n, _) = face_pick(&rep(0), &swept, &sketches, &none).unwrap();
+        assert_eq!((p[2], n), (0.0, [0.0, 0.0, -1.0]));
+        // A side by its sketch key: the wall x = 20 faces +x, the wall y = 0 faces -y.
+        let (p, n, region) = face_pick(&rep(3), &swept, &sketches, &none).unwrap();
+        assert_eq!((p, n), ([20.0, 5.0, 2.5], [1.0, 0.0, 0.0]));
+        assert!(on_face(&region, &sketches, [20.0, 7.0, 4.0]));
+        assert!(!on_face(&region, &sketches, [20.0, 11.0, 4.0]));
+        assert!(!on_face(&region, &sketches, [20.0, 7.0, 6.0]));
+        let (_, n, _) = face_pick(&rep(2), &swept, &sketches, &none).unwrap();
+        assert_eq!(n, [0.0, -1.0, 0.0]);
+        // A cap's region is the profile; a key that is neither a cap nor a side picks nothing.
+        let (_, _, region) = face_pick(&rep(1), &swept, &sketches, &none).unwrap();
+        assert!(on_face(&region, &sketches, [10.0, 5.0, 5.0]));
+        assert!(!on_face(&region, &sketches, [25.0, 5.0, 5.0]));
+        assert!(face_pick(&rep(9), &swept, &sketches, &none).is_none());
     }
 }

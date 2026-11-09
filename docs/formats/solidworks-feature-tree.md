@@ -570,15 +570,29 @@ Corpus (slip-pad 35 + arig-revisions 50): 33 -> 34 as history (slip-pad 19 -> 20
   1723.947 mm3, 7e-5 off, so the truth is not exactly two 1 x 1 chamfers either). Top_mainplate Chamfer1 is the same case.
 * **End types are the SolidWorks API's `swEndConditions_e`** (consistent with every value seen: 0 blind, 1 through all, 2 up to
   next, 3 up to vertex, 4 up to surface, 5 offset from surface, 6 mid plane, 9 through all both). So a BOSS of type 2 is "up to
-  next" (L7), not through-all. Types 4 and 5 name a face that is not an edge-record reference: the extrude node holds a
-  `moEndFace3IntSurfIdRep_c` and a `moSingleFaceRef_w` whose entries are `39 82 00 00 | 3b 82 <u16 3d02 ...> 20 00 00 00 <u32
-  stamp> | <u32 face index>` (a persistent id of a body or feature, then a face number; the stamp 0x54b86f2e repeats for all
-  entries of one feature). The id is not the feature id, so it cannot be resolved with the tables the reader has; the tree has
-  no up-to-surface either (`SolidF` only has a distance). spring_base_v1 Boss-Extrude2 (type 5, D1 10 mm) ends at y = 10, which
-  is where Boss-Extrude3's sketch sits: offset 10 from a surface at y = 0 (the plate's bottom face or the Top plane), so a
-  blind distance of 7 mm would do if the reference were readable. The same part's countersinks fail in the importer because
-  the clearance pocket (6.3 mm) and the countersink (6.3 mm) have the same diameter (the hole must lie strictly inside the
-  pocket's floor).
+  next" (L7), not through-all.
+* **Up to surface / offset from surface (types 4 and 5).** The face is the first reference of the node's last
+  `moSingleFaceRef_w` object, a normal edge-record reference (`<class> 00 00 | <class> | <u32 feature id> | <u32 stamp> | <u32
+  face>`): the face of an earlier extrude, a cap (face 0 = at the sketch plane, 1 = the far end) or a side (the sketch key of its
+  line). The stamp is the creation time of that feature (a `u32` of seconds), the id its feature id (so `spring_base_v1` 32 =
+  Boss-Extrude1). The object is found by the pair of 8-byte words `7d c3 94 25 ad 49 b2 54` twice in its header, the last such
+  pair of the node; the `moEndFace3IntSurfIdRep_c` before it names the extrude's *own* end face (feature id = the node's id, face
+  1) and the faces it was made from, so a later feature can refer to it; it is not the up-to face.
+  Type 5 ends at that face's plane moved `D1` *into* the material of its feature (against its outward normal): spring_base_v1
+  Boss-Extrude2 (face 0 of Boss-Extrude1 at y = 0, `D1` 10, sketch at y = 3) ends at y = 10, a distance of 7 *along the sketch
+  normal*; FrameBracket Cut-Extrude3 (face 1 of Boss-Extrude3 at y = -3, `D1` 1, sketch at y = 0) stops 1 mm above the far
+  face (the other sign would cut the whole boss: volume 426 mm3 off). FrameBracket's four type-4 features (Boss-Extrude4/5/6,
+  Cut-Extrude6) end at the planes of the next sketches (y 7, x 42.5, z 20, x 40.4).
+  The reader emits `end_condition: "to_face"` with the face's point and outward normal when the face (the cap or side wall of
+  the earlier extrude, as that feature drew it) is ahead of the sweep and covers the whole profile swept onto it; when it
+  does not (SolidWorks extends a planar surface, the original feature's face may be smaller than the profile, as the
+  half-width wall at y = 7 of FrameBracket's main flange is), or the face is behind the sketch (spring_base Boss-Extrude2),
+  it writes the plane's distance as a blind extrusion. Only FrameBracket Cut-Extrude3 comes out as `to_face` in the corpus.
+  Neither FrameBracket nor spring_base becomes a history for other reasons: FrameBracket's Fillet1 edges join faces of
+  features with different normals (0 of 2 resolve) and its hole wizards fail; spring_base's four countersinks fail the
+  importer's fit check for a reason that is not equality: the pocket floor (r 3.15, hole at x = -22) is clipped by the plate's
+  edge at x = -25 (3.0 mm from the hole), so the countersink mouth (r 3.15) overhangs the plate by 0.15 mm. The check is right
+  to refuse it; it was left alone.
 * **setScrew**: the revolve sketch and the others parse with no curves at all (a sketch the parser does not read), and the
   part also has a helix and a swept thread cut; not attempted further.
 * **Angle_support (6 revisions)**: still `moBlendCut_c` (loft cut), two `moBossThin_c`, `moMoveFace_c`, three end type 4/5
