@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, Surf, V3, cross, dot};
+use crate::acis::{Acis, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
@@ -29,6 +29,8 @@ const CM: f64 = 10.0;
 const MAX_FEATURES: usize = 2000;
 /// Most curves of one sketch.
 const MAX_CURVES: usize = 20_000;
+/// How far either side of a blend edge's midpoint its pick's path reaches, in file units (cm): 0.1 mm.
+const PATH_EPS: f64 = 0.01;
 /// A through-all extent, in millimetres.
 const THROUGH: f64 = 1e4;
 
@@ -379,12 +381,25 @@ impl Reader<'_> {
     }
 }
 
+/// What a hole's plain-cut form is made from (kept to remake it when a pattern moves the hole).
+struct HoleInfo {
+    nd: V3,
+    diameter: f64,
+    through: bool,
+    depth: f64,
+    point_angle: Option<f64>,
+    cbore: Option<(f64, f64)>,
+}
+
 /// Everything decoded so far.
 struct State {
     out: Vec<Value>,
     done: HashMap<usize, ()>,
     first_body: Option<String>,
     omitted: Vec<Value>,
+    /// Feature record -> its name.
+    names: HashMap<usize, String>,
+    holes: HashMap<String, HoleInfo>,
 }
 
 fn solid(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
@@ -524,12 +539,13 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
             point_angle = Some(a);
         }
     }
-    if st.first_body.is_some() {
-        let target = st.first_body.clone().unwrap_or_default();
-        if let Some(fb) = hole_fallback(name, &pos, nd, diameter, through, depth, point_angle, cb, &target) {
-            put(&mut j, "_fallback", Value::Array(fb));
-        }
+    let info = HoleInfo { nd, diameter, through, depth, point_angle, cbore: cb };
+    if let Some(target) = &st.first_body
+        && let Some(fb) = hole_fallback(name, &pos, &info, target)
+    {
+        put(&mut j, "_fallback", Value::Array(fb));
     }
+    st.holes.insert(name.to_string(), info);
     st.out.push(j);
     Ok(())
 }
@@ -537,18 +553,8 @@ fn hole(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), Strin
 /// The same hole as plain cuts (exact geometry, less editable): a through hole as a circle
 /// sketch cut through everything, a blind one as one revolve cut per position (drill point
 /// and counterbore included).
-#[allow(clippy::too_many_arguments)]
-fn hole_fallback(
-    name: &str,
-    pos: &[V3],
-    nd: V3,
-    diameter: f64,
-    through: bool,
-    depth: f64,
-    point_angle: Option<f64>,
-    cbore: Option<(f64, f64)>,
-    target: &str,
-) -> Option<Vec<Value>> {
+fn hole_fallback(name: &str, pos: &[V3], info: &HoleInfo, target: &str) -> Option<Vec<Value>> {
+    let HoleInfo { nd, diameter, through, depth, point_angle, cbore } = *info;
     let ln = libm::sqrt(dot(nd, nd));
     if ln == 0.0 || !ln.is_finite() || pos.is_empty() {
         return None;
@@ -593,9 +599,96 @@ fn hole_fallback(
             .collect();
         out.push(json!({"type": "sketch", "name": sk, "plane": {"origin": p, "x_axis": x, "y_axis": n}, "points": pts, "curves": cur}));
         out.push(json!({"type": "revolve", "name": format!("{name}_{k}"), "sketch": sk, "profiles": "all", "operation": "cut",
-                        "target": target, "axis": {"origin": p, "direction": n}, "angle": 360.0, "from_hole": name}));
+                        "target": target, "axis": {"line": format!("e{}", prof.len() - 1)}, "angle": 360.0, "from_hole": name}));
     }
     Some(out)
+}
+
+/// A rectangular pattern, one direction. The record's references, in order: the patterned
+/// features (part or pattern features; a second direction is a pattern of the originals and
+/// the first pattern), `a244457b` the direction (three triples at the end: start, vector, end
+/// point, cm), `bb1dd5df` the count (its last u32), the spacing parameter, and `90874d28` flags
+/// (the last one: midplane). The pattern runs against the edge vector (confirmed on two
+/// patterns by volume and hole centres).
+fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    const G_DIR: u32 = 0xa244_457b;
+    const G_COUNT: u32 = 0xbb1d_d5df;
+    const G_FLAGS: u32 = 0x9087_4d28;
+    let refs = r.dc.refs(f.rec);
+    let tgt: Vec<String> =
+        refs.iter().filter(|&&(_, x)| x != f.rec).filter_map(|&(_, x)| st.names.get(&x).cloned()).collect();
+    let count_of = |x: usize| {
+        let b = r.dc.r(x);
+        u32_at(b, b.len().checked_sub(4)?)
+    };
+    let dir = refs.iter().map(|x| x.1).find(|&x| r.dc.class(x) == G_DIR);
+    let cnt =
+        refs.iter().map(|x| x.1).find(|&x| r.dc.class(x) == G_COUNT && count_of(x).is_some_and(|c| 1 < c && c < 1000));
+    let par = refs.iter().map(|x| x.1).find(|&x| r.dc.role(x) == Role::Param);
+    let (true, Some(dir), Some(cnt), Some(par)) = (!tgt.is_empty(), dir, cnt, par) else {
+        return Err("direction, count or spacing not found".into());
+    };
+    let rec = r.dc.r(dir);
+    let n = rec.len();
+    // Start point, vector, end point (3 doubles each), then `u8 1` and two references.
+    let o = n.checked_sub(57).ok_or("the direction is cut short")?;
+    let vec = [f64_at(rec, o), f64_at(rec, o + 8), f64_at(rec, o + 16)];
+    let [Some(x), Some(y), Some(z)] = vec else { return Err("the direction is cut short".into()) };
+    let vec: V3 = [x, y, z];
+    let ln = libm::sqrt(dot(vec, vec));
+    if ln == 0.0 || !ln.is_finite() {
+        return Err("the direction has no length".into());
+    }
+    let count = count_of(cnt).ok_or("no count")?;
+    let spacing = rnd(r.dc.param(par).ok_or("the spacing is not readable")?.1 * CM);
+    let midplane = refs
+        .iter()
+        .rfind(|&&(_, x)| r.dc.class(x) == G_FLAGS)
+        .is_some_and(|&(_, x)| r.dc.r(x).last().is_some_and(|&b| b != 0));
+    let u = [rnd(-vec[0] / ln), rnd(-vec[1] / ln), rnd(-vec[2] / ln)];
+    if midplane {
+        // Gusset has no midplane pattern: move the original holes back by half the run.
+        let sh: V3 = u.map(|c| -c * spacing * f64::from(count - 1) / 2.0);
+        let holes_only = tgt.iter().all(|t| st.holes.contains_key(t));
+        if !holes_only {
+            return Err("a midplane pattern of a feature that is not a hole".into());
+        }
+        for t in &tgt {
+            let Some(info) = st.holes.get(t) else { continue };
+            let Some(o) = st.out.iter_mut().find(|o| o.get("name").and_then(Value::as_str) == Some(t.as_str())) else {
+                continue;
+            };
+            let moved: Vec<V3> = o
+                .get("positions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?]))
+                .map(|p| [rnd(p[0] + sh[0]), rnd(p[1] + sh[1]), rnd(p[2] + sh[2])])
+                .collect();
+            let fp = o
+                .pointer("/face/point")
+                .and_then(Value::as_array)
+                .and_then(|p| Some([p.first()?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?]));
+            put(o, "positions", Value::Array(moved.iter().map(|p| arr(*p)).collect()));
+            if let (Some(fp), Some(face)) = (fp, o.get_mut("face")) {
+                put(face, "point", arr([rnd(fp[0] + sh[0]), rnd(fp[1] + sh[1]), rnd(fp[2] + sh[2])]));
+            }
+            if o.get("_fallback").is_some() {
+                let fb = st.first_body.as_deref().and_then(|tb| hole_fallback(t, &moved, info, tb));
+                match fb {
+                    Some(fb) => put(o, "_fallback", Value::Array(fb)),
+                    None => {
+                        if let Some(m) = o.as_object_mut() {
+                            m.remove("_fallback");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    st.out.push(json!({"type": "pattern_linear", "name": name, "features": tgt, "direction": u, "spacing": spacing, "count": count}));
+    Ok(())
 }
 
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
@@ -615,19 +708,23 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     };
     let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
     let faces = b.blend_faces(fid);
-    let mut mids: Vec<V3> = Vec::new();
+    // A pick: the midpoint of the pre-fillet edge (mm) and, unless the edge is a whole circle,
+    // two points 0.1 mm either side of it along the edge.
+    let mut mids: Vec<(V3, Option<[V3; 2]>)> = Vec::new();
     let mut why: Vec<String> = Vec::new();
     let mut radii: Vec<f64> = Vec::new();
+    let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
         let k = b.kind(face);
-        if matches!(k, Surf::Sphere) {
+        // A corner patch; and a planar face with a fillet's tag is a leftover of an edge split
+        // later (a fillet face is never planar).
+        if matches!(k, Surf::Sphere) || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
             continue;
         }
         match b.edge_mid(face) {
             Err(w) => why.push(w),
-            Ok(m) => {
-                let [a, b, c] = m;
-                mids.push([rnd_to(a * CM, 1e6), rnd_to(b * CM, 1e6), rnd_to(c * CM, 1e6)]);
+            Ok((m, info)) => {
+                mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)])));
                 match k {
                     Surf::Cyl { r, .. } => radii.push(rnd_to(r * CM, 1e6)),
                     Surf::Torus { minor, .. } => radii.push(rnd_to(minor * CM, 1e6)),
@@ -645,13 +742,23 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
         st.out.push(unsupported(name, &label, Some(why.join("; "))));
         return Ok(());
     }
-    let mut uniq: Vec<V3> = Vec::new();
-    for m in mids {
-        if uniq.iter().all(|q| crate::acis::dist(m, *q) > 1e-6) {
-            uniq.push(m);
+    let mut uniq: Vec<(V3, Option<[V3; 2]>)> = Vec::new();
+    for (m, p) in mids {
+        if uniq.iter().all(|q| crate::acis::dist(m, q.0) > 1e-6) {
+            uniq.push((m, p));
         }
     }
-    let edges: Vec<Value> = uniq.iter().map(|m| json!({"midpoint": m})).collect();
+    if uniq.is_empty() {
+        st.out.push(unsupported(name, &label, Some("no edge of the blend faces".into())));
+        return Ok(());
+    }
+    let edges: Vec<Value> = uniq
+        .iter()
+        .map(|(m, p)| match p {
+            Some([a, b]) => json!({"midpoint": m, "path": [a, b]}),
+            None => json!({"midpoint": m}),
+        })
+        .collect();
     if typ == FeatType::Fillet {
         let mut rad = None;
         let (sets, _) = r.dc.first_list(s.need(0)?, None).ok_or("the fillet has no edge sets")?;
@@ -710,7 +817,16 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
         history: OnceCell::new(),
         result: OnceCell::new(),
     };
-    let mut st = State { out: Vec::new(), done: HashMap::new(), first_body: None, omitted: Vec::new() };
+    let names: HashMap<usize, String> =
+        feats.iter().map(|f| (f.rec, f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec)))).collect();
+    let mut st = State {
+        out: Vec::new(),
+        done: HashMap::new(),
+        first_body: None,
+        omitted: Vec::new(),
+        names,
+        holes: HashMap::new(),
+    };
     for f in &feats {
         let name = f.name.clone().unwrap_or_else(|| format!("Feature{}", f.rec));
         let Some(typ) = f.typ else {
@@ -727,6 +843,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Extrude | FeatType::Revolve => solid(&r, &mut st, f, &name, typ),
             FeatType::Fillet | FeatType::Chamfer => blend(&r, &mut st, f, &name, typ),
             FeatType::Hole => hole(&r, &mut st, f, &name),
+            FeatType::RectPattern => pattern(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));

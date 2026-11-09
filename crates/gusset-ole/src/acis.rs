@@ -348,7 +348,7 @@ pub(crate) enum Surf {
     Plane { p: V3, n: V3 },
     Cyl { c: V3, ax: V3, r: f64 },
     Cone,
-    Torus { major: f64, minor: f64 },
+    Torus { c: V3, ax: V3, major: f64, minor: f64 },
     Sphere,
     Other(String),
     None,
@@ -380,8 +380,8 @@ impl Acis {
             return Surf::Cone;
         }
         if t.ends_with("torus-surface") {
-            return match (r.dbls.first(), r.dbls.get(1)) {
-                (Some(&a), Some(&b)) => Surf::Torus { major: a, minor: b.abs() },
+            return match (r.dbls.first(), r.dbls.get(1), p0, v0) {
+                (Some(&a), Some(&b), Some(c), Some(ax)) => Surf::Torus { c, ax: unit(ax), major: a, minor: b.abs() },
                 _ => Surf::None,
             };
         }
@@ -420,8 +420,8 @@ impl Acis {
         out
     }
 
-    /// The faces across each coedge of a face.
-    pub(crate) fn neighbours(&self, f: i64) -> Vec<i64> {
+    /// The faces across each coedge of a face, with the edge between them.
+    pub(crate) fn neighbours(&self, f: i64) -> Vec<(i64, Option<i64>)> {
         let mut out = Vec::new();
         for c in self.coedges(f) {
             let Some(p) = self.rec(c).and_then(|r| r.refs.get(4).copied()).filter(|&p| self.is(p, "coedge")) else {
@@ -431,10 +431,26 @@ impl Acis {
                 continue;
             };
             if let Some(g) = self.rec(l).and_then(|r| r.refs.iter().copied().find(|&y| self.is(y, "face"))) {
-                out.push(g);
+                let e = self.rec(c).and_then(|r| r.refs.iter().copied().find(|&y| self.is(y, "edge")));
+                out.push((g, e));
             }
         }
         out
+    }
+
+    /// The points of an edge's vertices.
+    fn edge_points(&self, e: i64) -> Vec<V3> {
+        let Some(r) = self.rec(e) else { return Vec::new() };
+        r.refs.iter().filter(|&&v| self.is(v, "vertex")).filter_map(|&v| self.point_of_vertex(v)).collect()
+    }
+
+    /// A point on the axis and the unit direction of a face of revolution (cone, cylinder or
+    /// torus surface).
+    fn rev_axis(&self, f: i64) -> Option<(V3, V3)> {
+        let r = self.recs.get(self.surf_rec(f)?)?;
+        (r.ty.ends_with("cone-surface") || r.ty.ends_with("torus-surface"))
+            .then(|| Some((*r.pos.first()?, unit(*r.vec.first()?))))
+            .flatten()
     }
 
     pub(crate) fn verts(&self, f: i64) -> Vec<V3> {
@@ -454,11 +470,12 @@ impl Acis {
         pts
     }
 
-    /// Faces that carry an `NMx_blend_tag` attribute whose 4th int is `fid`.
+    /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
+    /// some circle edges use) attribute whose 4th int is `fid`.
     pub(crate) fn blend_faces(&self, fid: i64) -> Vec<i64> {
         let mut out = Vec::new();
         for r in &self.recs {
-            if r.ty.starts_with("NMx_blend_tag")
+            if (r.ty.starts_with("NMx_blend_tag") || r.ty.starts_with("NMx_edge_blend_tag"))
                 && r.ints.get(3) == Some(&fid)
                 && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
             {
@@ -498,23 +515,49 @@ fn ref_dir(n: V3) -> V3 {
     unit(sub(x, mul(n, dot(x, n))))
 }
 
+/// The edge a blend face replaced, as far as a pick on it needs: a straight edge's direction,
+/// or a circle (a full one has its midpoint at the seam).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum EdgeInfo {
+    Line { dir: V3 },
+    Circle { cen: V3, ax: V3, r: f64 },
+}
+
+/// The midpoint of the arc the vertices `vs` bound on a circle; of a whole circle (fewer than
+/// two distinct vertex angles) the seam, where the model has the midpoint of a full circle.
 fn circ_mid(cen: V3, ax: V3, rad: f64, vs: &[V3]) -> V3 {
     let rf = ref_dir(ax);
     let oth = cross(unit(ax), rf);
+    let tau = 2.0 * std::f64::consts::PI;
     let mut angs: Vec<f64> = Vec::new();
     for &v in vs {
         let q = sub(v, cen);
         let q = sub(q, mul(ax, dot(q, ax)));
         if libm::sqrt(dot(q, q)) > 1e-9 {
-            angs.push(round_to(libm::atan2(dot(q, oth), dot(q, rf)), 9));
+            // atan2 gives -pi and +pi for one angle: into [0, tau) before comparing.
+            let a = libm::atan2(dot(q, oth), dot(q, rf));
+            let a = libm::fmod(a, tau);
+            angs.push(if a < 0.0 { a + tau } else { a });
         }
     }
     angs.sort_by(f64::total_cmp);
-    angs.dedup();
+    let mut ded: Vec<f64> = Vec::new();
+    for a in angs {
+        if ded.last().is_none_or(|&l| a - l > 1e-6) {
+            ded.push(a);
+        }
+    }
+    if ded.len() > 1
+        && let (Some(&f), Some(&l)) = (ded.first(), ded.last())
+        && f + tau - l < 1e-6
+    {
+        ded.pop();
+    }
+    let angs = ded;
     if angs.len() < 2 {
         return sub(cen, mul(rf, rad));
     }
-    let tau = 2.0 * std::f64::consts::PI;
+    // The arc is the complement of the largest gap between vertex angles.
     let n = angs.len();
     let gaps: Vec<f64> = (0..n)
         .map(|i| {
@@ -536,11 +579,205 @@ fn circ_mid(cen: V3, ax: V3, rad: f64, vs: &[V3]) -> V3 {
     add(cen, add(mul(rf, rad * libm::cos(am)), mul(oth, rad * libm::sin(am))))
 }
 
+/// A curve in a plane: a line `n . x = d` or a circle.
+#[derive(Debug, Clone, Copy)]
+enum Curve2 {
+    Line { n: (f64, f64), d: f64 },
+    Circ { c: (f64, f64), r: f64 },
+}
+
+/// The intersections of two plane curves, nearest to `o` first.
+fn inter2(s1: Curve2, s2: Curve2, o: (f64, f64)) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    match (s1, s2) {
+        (Curve2::Line { n: n1, d: d1 }, Curve2::Line { n: n2, d: d2 }) => {
+            let det = n1.0 * n2.1 - n1.1 * n2.0;
+            if det.abs() < 1e-9 {
+                return Vec::new();
+            }
+            pts.push(((d1 * n2.1 - d2 * n1.1) / det, (n1.0 * d2 - n2.0 * d1) / det));
+        }
+        (Curve2::Line { n, d }, Curve2::Circ { c, r }) | (Curve2::Circ { c, r }, Curve2::Line { n, d }) => {
+            let h = n.0 * c.0 + n.1 * c.1 - d;
+            if h.abs() > r + 1e-9 {
+                return Vec::new();
+            }
+            let t = libm::sqrt((r * r - h * h).max(0.0));
+            let foot = (c.0 - n.0 * h, c.1 - n.1 * h);
+            let tg = (-n.1, n.0);
+            pts.push((foot.0 + tg.0 * t, foot.1 + tg.1 * t));
+            pts.push((foot.0 - tg.0 * t, foot.1 - tg.1 * t));
+        }
+        (Curve2::Circ { c: c1, r: r1 }, Curve2::Circ { c: c2, r: r2 }) => {
+            let (dx, dy) = (c2.0 - c1.0, c2.1 - c1.1);
+            let dd = libm::hypot(dx, dy);
+            if dd < 1e-9 || dd > r1 + r2 + 1e-9 || dd < (r1 - r2).abs() - 1e-9 {
+                return Vec::new();
+            }
+            let a = (r1 * r1 - r2 * r2 + dd * dd) / (2.0 * dd);
+            let h = libm::sqrt((r1 * r1 - a * a).max(0.0));
+            let (mx, my) = (c1.0 + dx * a / dd, c1.1 + dy * a / dd);
+            pts.push((mx - dy * h / dd, my + dx * h / dd));
+            pts.push((mx + dy * h / dd, my - dx * h / dd));
+        }
+    }
+    pts.sort_by(|p, q| libm::hypot(p.0 - o.0, p.1 - o.1).total_cmp(&libm::hypot(q.0 - o.0, q.1 - o.1)));
+    pts
+}
+
+/// Two unit vectors perpendicular to `u` and to each other.
+fn basis(u: V3) -> (V3, V3) {
+    let a = if u[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let e1 = unit(cross(u, a));
+    (e1, cross(u, e1))
+}
+
+/// The straight edge (a point on it and its direction) a cylindrical blend replaced: the two
+/// support faces beside the blend (planes parallel to its axis, cylinders parallel to it) are
+/// tangent to the blend circle; the edge is where they meet in the cross-section.
+fn cyl_edge(nb: &[(i64, Surf)], c: V3, ax: V3, rad: f64) -> Result<(V3, V3), String> {
+    let u = unit(ax);
+    let (e1, e2) = basis(u);
+    let p2 = |q: V3| (dot(sub(q, c), e1), dot(sub(q, c), e2));
+    let mut sup: Vec<(i64, Curve2)> = Vec::new();
+    for (g, s) in nb {
+        if sup.iter().any(|x| x.0 == *g) {
+            continue;
+        }
+        match s {
+            Surf::Plane { p, n } => {
+                if dot(*n, u).abs() > 1e-6 || (dot(sub(*p, c), *n).abs() - rad).abs() >= 1e-6 {
+                    continue;
+                }
+                let n2 = (dot(*n, e1), dot(*n, e2));
+                let q = p2(*p);
+                sup.push((*g, Curve2::Line { n: n2, d: n2.0 * q.0 + n2.1 * q.1 }));
+            }
+            Surf::Cyl { c: cp, ax: n, r } => {
+                if (dot(*n, u).abs() - 1.0).abs() > 1e-6 {
+                    continue;
+                }
+                let c2 = p2(*cp);
+                let dist = libm::hypot(c2.0, c2.1);
+                let tangent = ((dist - (r + rad)).abs()).min((dist - (r - rad).abs()).abs()) < 1e-6;
+                if tangent && dist > 1e-9 {
+                    sup.push((*g, Curve2::Circ { c: c2, r: *r }));
+                }
+            }
+            _ => {}
+        }
+    }
+    let [a, b] = sup.as_slice() else {
+        return Err(format!("cylinder blend with {} usable supports", sup.len()));
+    };
+    let q = *inter2(a.1, b.1, (0.0, 0.0)).first().ok_or("supports do not meet")?;
+    Ok((add(c, add(mul(e1, q.0), mul(e2, q.1))), u))
+}
+
 impl Acis {
-    /// The midpoint (file units) of the edge the blend face `f` replaced, or why not.
-    pub(crate) fn edge_mid(&self, f: i64) -> Result<V3, String> {
+    /// (distance from the axis, height along it) of a point.
+    fn rh(o: V3, ax: V3, p: V3) -> (f64, f64) {
+        let q = sub(p, o);
+        let h = dot(q, ax);
+        (libm::sqrt((dot(q, q) - h * h).max(0.0)), h)
+    }
+
+    fn profile_curve(&self, g: i64, o: V3, ax: V3, kind: &Surf) -> Option<Curve2> {
+        let coaxial = |a: V3| (dot(a, ax).abs() - 1.0).abs() <= 1e-6;
+        match kind {
+            Surf::Plane { p, n } => coaxial(*n).then(|| Curve2::Line { n: (0.0, 1.0), d: Self::rh(o, ax, *p).1 }),
+            Surf::Cyl { c, ax: u, r } => {
+                (coaxial(*u) && Self::rh(o, ax, *c).0 <= 1e-6).then_some(Curve2::Line { n: (1.0, 0.0), d: *r })
+            }
+            Surf::Torus { c, ax: u, major, minor } => {
+                coaxial(*u).then(|| Curve2::Circ { c: (*major, Self::rh(o, ax, *c).1), r: *minor })
+            }
+            Surf::Cone => {
+                let mut pts: Vec<(f64, f64)> = Vec::new();
+                for p in self.verts(g) {
+                    let c = Self::rh(o, ax, p);
+                    if pts.iter().all(|q| libm::hypot(c.0 - q.0, c.1 - q.1) > 1e-6) {
+                        pts.push(c);
+                    }
+                }
+                let a = *pts.first()?;
+                let mut b = *pts.get(1)?;
+                for &q in pts.iter().skip(1) {
+                    if libm::hypot(q.0 - a.0, q.1 - a.1) > libm::hypot(b.0 - a.0, b.1 - a.1) {
+                        b = q;
+                    }
+                }
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let l = libm::hypot(dx, dy);
+                let n = (-dy / l, dx / l);
+                if pts.iter().any(|q| (n.0 * (q.0 - a.0) + n.1 * (q.1 - a.1)).abs() > 1e-6) {
+                    return None;
+                }
+                Some(Curve2::Line { n, d: n.0 * a.0 + n.1 * a.1 })
+            }
+            _ => None,
+        }
+    }
+
+    /// The circle a blend face replaced, from its two long-side neighbours (coaxial surfaces of
+    /// revolution, or planes across the axis), whatever the blend face's own surface is:
+    /// (centre, axis, radius).
+    fn circle_edge(&self, f: i64) -> Result<(V3, V3, f64), String> {
+        let nb: Vec<(i64, i64, Surf)> = self
+            .neighbours(f)
+            .into_iter()
+            .filter_map(|(g, e)| (g != f).then_some((g, e?)))
+            .map(|(g, e)| (g, e, self.kind(g)))
+            .collect();
+        let (o, ax) = std::iter::once(f)
+            .chain(nb.iter().map(|x| x.0))
+            .find_map(|g| self.rev_axis(g))
+            .ok_or("no axis of revolution")?;
+        let vs = self.verts(f);
+        if vs.is_empty() {
+            return Err("no vertices".into());
+        }
+        let k = 1.0 / vs.len() as f64;
+        let mean = vs.iter().fold((0.0, 0.0), |a, &v| {
+            let c = Self::rh(o, ax, v);
+            (a.0 + c.0, a.1 + c.1)
+        });
+        let mean = (mean.0 * k, mean.1 * k);
+        let mut sup: Vec<(i64, Curve2)> = Vec::new();
+        for (g, e, kd) in &nb {
+            let cs: Vec<(f64, f64)> = self.edge_points(*e).into_iter().map(|p| Self::rh(o, ax, p)).collect();
+            let Some(c0) = cs.first() else { continue };
+            // An end edge, not a long side.
+            if cs.iter().any(|c| (c.0 - c0.0).abs() > 1e-5 || (c.1 - c0.1).abs() > 1e-5) {
+                continue;
+            }
+            if matches!(kd, Surf::None) {
+                continue;
+            }
+            let Some(pc) = self.profile_curve(*g, o, ax, kd) else { continue };
+            match sup.iter_mut().find(|x| x.0 == *g) {
+                Some(x) => x.1 = pc,
+                None => sup.push((*g, pc)),
+            }
+        }
+        let [a, b] = sup.as_slice() else {
+            return Err(format!("{} coaxial long-side neighbours", sup.len()));
+        };
+        let pts = inter2(a.1, b.1, mean);
+        let (rho, h) = *pts.first().ok_or("supports do not meet in the half-plane")?;
+        if rho < 1e-9 {
+            return Err("edge on the axis".into());
+        }
+        Ok((add(o, mul(ax, h)), ax, rho))
+    }
+}
+
+impl Acis {
+    /// The midpoint (file units) of the edge the blend face `f` replaced, with the edge's
+    /// tangent information, or why not.
+    pub(crate) fn edge_mid(&self, f: i64) -> Result<(V3, EdgeInfo), String> {
         let kind = self.kind(f);
-        let nb: Vec<(i64, Surf)> = self.neighbours(f).into_iter().map(|g| (g, self.kind(g))).collect();
+        let nb: Vec<(i64, Surf)> = self.neighbours(f).into_iter().map(|(g, _)| (g, self.kind(g))).collect();
         let mut planes: Vec<(i64, V3, V3)> = Vec::new();
         for (g, s) in &nb {
             if let Surf::Plane { p, n } = s {
@@ -554,19 +791,10 @@ impl Acis {
         if vs.is_empty() {
             return Err("no vertices".into());
         }
+        let circle = |cen: V3, ax: V3, r: f64| (circ_mid(cen, ax, r, &vs), EdgeInfo::Circle { cen, ax, r });
         let (p, u);
         match &kind {
-            Surf::Cyl { c, ax, r } => {
-                let sup: Vec<(V3, V3)> = planes
-                    .iter()
-                    .filter(|(_, pp, n)| dot(*n, *ax).abs() < 1e-6 && (dot(sub(*c, *pp), *n).abs() - r).abs() < 1e-6)
-                    .map(|(_, pp, n)| (*pp, *n))
-                    .collect();
-                let [a, b] = sup.as_slice() else {
-                    return Err(format!("cylinder blend with {} planar supports", sup.len()));
-                };
-                (p, u) = line_of_planes(a.0, a.1, b.0, b.1, *c).ok_or("parallel supports")?;
-            }
+            Surf::Cyl { c, ax, r } => (p, u) = cyl_edge(&nb, *c, *ax, *r)?,
             Surf::Plane { n: nc, .. } => {
                 let k = 1.0 / vs.len() as f64;
                 let cen = mul(vs.iter().fold([0.0; 3], |a, &v| add(a, v)), k);
@@ -585,11 +813,23 @@ impl Acis {
                 }
                 (p, u) = best.ok_or("no support pair")?.1;
             }
-            Surf::Torus { major, .. } => return self.corner_circle(f, &nb, &vs, Some(*major), "torus"),
-            Surf::Cone => return self.corner_circle(f, &nb, &vs, None, "cone"),
-            Surf::Sphere => return Err("blend surface sphere-surface".into()),
-            Surf::Other(t) => return Err(format!("blend surface {t}")),
-            Surf::None => return Err("blend surface None".into()),
+            other => {
+                // A circle edge: from the coaxial supports, else (torus, cone) from the corner.
+                let ce = self.circle_edge(f);
+                if let Ok((cen, ax, r)) = ce {
+                    return Ok(circle(cen, ax, r));
+                }
+                let why = ce.err().unwrap_or_default();
+                let (major, what) = match other {
+                    Surf::Torus { major, .. } => (Some(*major), "torus"),
+                    Surf::Cone => (None, "cone"),
+                    Surf::Sphere => return Err("blend surface sphere-surface".into()),
+                    Surf::Other(t) => return Err(format!("blend surface {t} ({why})")),
+                    _ => return Err(format!("blend surface None ({why})")),
+                };
+                let (cen, ax, r) = self.corner_circle(f, &nb, &vs, major, what)?;
+                return Ok(circle(cen, ax, r));
+            }
         }
         let ts: Vec<f64> = vs.iter().map(|&v| dot(sub(v, p), u)).collect();
         let mut lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
@@ -623,10 +863,10 @@ impl Acis {
         if let Some(t) = closest(near_hi, hi) {
             hi = t;
         }
-        Ok(add(p, mul(u, (lo + hi) / 2.0)))
+        Ok((add(p, mul(u, (lo + hi) / 2.0)), EdgeInfo::Line { dir: u }))
     }
 
-    /// The edge of a torus or cone blend (a circle at an end face): its midpoint.
+    /// The circle of a torus or cone blend at an end face: (centre, axis, radius).
     fn corner_circle(
         &self,
         f: i64,
@@ -634,19 +874,12 @@ impl Acis {
         vs: &[V3],
         torus_major: Option<f64>,
         what: &str,
-    ) -> Result<V3, String> {
+    ) -> Result<(V3, V3, f64), String> {
         let miss = || format!("{what} blend: corner circle not found");
         let s = self.surf_rec(f).and_then(|s| self.recs.get(s)).ok_or_else(miss)?;
         let o = *s.pos.first().ok_or_else(miss)?;
         let ax = unit(*s.vec.first().ok_or_else(miss)?);
-        let rh: Vec<(f64, f64)> = vs
-            .iter()
-            .map(|&v| {
-                let q = sub(v, o);
-                let h = dot(q, ax);
-                (libm::sqrt((dot(q, q) - h * h).max(0.0)), h)
-            })
-            .collect();
+        let rh: Vec<(f64, f64)> = vs.iter().map(|&v| Self::rh(o, ax, v)).collect();
         let axial = |n: V3| (dot(n, ax).abs() - 1.0).abs() < 1e-6;
         let pls: Vec<V3> = nb
             .iter()
@@ -694,6 +927,66 @@ impl Acis {
             }
         }
         let (Some(hp), Some(rc)) = (hp, rc) else { return Err(miss()) };
-        Ok(circ_mid(add(o, mul(ax, hp)), ax, rc, vs))
+        Ok((add(o, mul(ax, hp)), ax, rc))
+    }
+}
+
+/// Two points `eps` (file units) either side of `m` on the edge, for a pick's `path`: the
+/// importer then takes the model edge that holds the midpoint and both points, whatever its
+/// extent at that point of the history.
+pub(crate) fn local_path(m: V3, info: &EdgeInfo, eps: f64) -> Option<[V3; 2]> {
+    match *info {
+        EdgeInfo::Line { dir } => Some([sub(m, mul(dir, eps)), add(m, mul(dir, eps))]),
+        EdgeInfo::Circle { cen, ax, r } => {
+            let q = sub(m, cen);
+            let q = sub(q, mul(ax, dot(q, ax)));
+            if libm::sqrt(dot(q, q)) < 1e-9 {
+                return None;
+            }
+            let a = unit(q);
+            let b = cross(unit(ax), a);
+            let d = eps / r;
+            let pt = |t: f64| add(cen, mul(add(mul(a, libm::cos(t)), mul(b, libm::sin(t))), r));
+            Some([pt(-d), pt(d)])
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_arc_across_minus_pi_and_pi_keeps_its_midpoint() {
+        // Two vertices straddle the +-pi seam of atan2 (the reference axis, a hair to each side)
+        // and one is a quarter turn away: the arc between them is the short way round.
+        let ax = [0.0, 0.0, 1.0];
+        let rf = ref_dir(ax);
+        let oth = cross(ax, rf);
+        let v0 = [rf[0] * 2.0, rf[1] * 2.0 - 1e-12, 0.0];
+        let v1 = [oth[0] * 2.0, oth[1] * 2.0, 0.0];
+        let v2 = [rf[0] * 2.0, rf[1] * 2.0 + 1e-12, 0.0];
+        let m = circ_mid([0.0; 3], ax, 2.0, &[v0, v1, v2]);
+        let want = unit(add(rf, oth));
+        assert!(dist(m, mul(want, 2.0)) < 1e-6, "{m:?}");
+        // A single vertex is a whole circle: the seam.
+        assert!(dist(circ_mid([0.0; 3], ax, 2.0, &[v0]), mul(rf, -2.0)) < 1e-12);
+    }
+
+    #[test]
+    fn a_cylinder_blend_between_a_plane_and_a_cylinder() {
+        // A blend of radius 1 about an axis along z, centred at (2, sqrt 5): tangent to the plane
+        // x = 1 (distance 1) and outside the cylinder of radius 2 about the origin (distance 3).
+        // The edge it replaced is where the two meet nearest the blend: (1, sqrt 3).
+        let nb = [
+            (1, Surf::Plane { p: [1.0, 0.0, 0.0], n: [1.0, 0.0, 0.0] }),
+            (2, Surf::Cyl { c: [0.0; 3], ax: [0.0, 0.0, 1.0], r: 2.0 }),
+        ];
+        let c = [2.0, libm::sqrt(5.0), 0.5];
+        let (p, u) = cyl_edge(&nb, c, [0.0, 0.0, 1.0], 1.0).unwrap();
+        assert!(dist(p, [1.0, libm::sqrt(3.0), 0.5]) < 1e-9, "{p:?}");
+        assert!(dot(u, [0.0, 0.0, 1.0]).abs() > 0.999);
+        // A third face beside it does not matter; a missing support does.
+        assert!(cyl_edge(&nb[..1], c, [0.0, 0.0, 1.0], 1.0).unwrap_err().contains("1 usable supports"));
     }
 }

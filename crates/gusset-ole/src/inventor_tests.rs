@@ -561,11 +561,14 @@ mod sab {
         let a = Acis::parse(&blend(42, true)).unwrap();
         assert_eq!(a.blend_faces(42), [2]);
         assert!(a.blend_faces(43).is_empty());
-        let m = a.edge_mid(2).unwrap();
+        let (m, info) = a.edge_mid(2).unwrap();
         assert!(m.iter().zip([0.0, 1.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-9), "{m:?}");
+        // A straight edge: the path runs along it, 0.1 mm (0.01 cm) either side of the midpoint.
+        let p = crate::acis::local_path(m, &info, 0.01).unwrap();
+        assert!((crate::acis::dist(p[0], p[1]) - 0.02).abs() < 1e-12, "{p:?}");
         // One support missing: the reason.
         let a = Acis::parse(&blend(42, false)).unwrap();
-        assert!(a.edge_mid(2).unwrap_err().contains("1 planar supports"));
+        assert!(a.edge_mid(2).unwrap_err().contains("1 usable supports"));
     }
 
     #[test]
