@@ -35,7 +35,7 @@ def edge_records(d, a, b):
                 p += 4; extra += 1
                 if k == n - 1 and w != 0xFFFFFFFF: break
             reps.append(dict(tag=t & 0x7fff, fid=fid, idx=idx, ext=extra == 1 and k < n - 1, extra=extra))
-        if len(reps) == n or (m.group(2) is None and reps):   # face lists (mirror planes) hold n-1 refs
+        if len(reps) == n or (len(reps) == n - 1 and reps):   # face lists (mirror planes) hold n-1 refs
             out.append((m.start(), reps))
     return out
 

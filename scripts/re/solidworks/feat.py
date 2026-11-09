@@ -1,6 +1,6 @@
 """Pattern-anchored extraction of extrude / revolve / fillet parameters inside a feature span."""
 import re, struct, collections
-PARAM_TAIL = re.compile(rb'\x00\x00\x00\x00(.\x00\x00[\x40\xc0])\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00', re.S)
+PARAM_TAIL = re.compile(rb'\x00\x00\x00\x00(.\x00\x00[\x40\xc0])\xff\xff\xff\xff\x00\x00\x00\x00(?:\xff\xfe\xff\x00)?\x00\x00', re.S)
 
 def params(d, a, b, nn_tag):
     """Dimension parameters (moLengthParameter_c / moAngleParameter_c ...) in [a,b):

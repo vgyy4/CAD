@@ -352,3 +352,121 @@ Nothing changed in the trees for these: their reference volumes were wrong befor
   * Top_mainplate also improves, from 21% to 2.5%.
 * Top_modular Cut-Extrude2 uses all regions of Sketch6. Its earlier mismatch came from the
   wrong reference volume.
+
+# Newer chunk-container parts (2015+), round 1 (2026-11-09)
+
+# LAYOUT.md — newer chunk-container .sldprt feature tree (clean room, from ARIG samples)
+(append-only; newest at bottom)
+
+## L1. Where the tree lives
+* Chunk records (see crates/gusset-sldprt/src/chunks.rs / py/chunks.py) hold the OLE2-era streams under the
+  prefix `Contents/`: `Contents/Config-<N>-ResolvedFeatures` and `Contents/Config-<N>` where N is 0 in 41 of 49
+  samples and **1** in the 8 Servo_HS-485-HB revisions (so "Config-0" must not be hard-coded; the prototype's
+  `Config-0-ResolvedFeatures` lookup misses them: "no ResolvedFeatures stream"). Match `Config-(\d+)-ResolvedFeatures`.
+* Streams are already raw object streams: **no `__ZLB` GUID wrapper**, the container inflates them (raw deflate).
+* Other streams: `Contents/Config-N-Partition` (Parasolid), `-GhostPartition` (17 of 49), `-StockBodies`
+  (24 of 49, exactly the "<name>_Symétrique" mirror parts, see L2), `-ModelHeader`, `-LWDATA`, `Contents/Definition`,
+  `swXmlContents/Features` (868-byte XML shell without features, useless).
+## L2. Sample census (arig-revisions, 49 files)
+* 33 of the 49 files (all `elfa_2021__Symétrie_*`: Access_HS-645, Angle_support, Igus_Bague_d06, Servo_HS-485-HB,
+  carter_screen_side) are **mirror parts**: the tree is the 13 standard folders + 3 default planes + Origin +
+  one `moMirrorStock_c` named "<part>_Symétrique" + empty folders. No sketch/extrude exists, the body derives from
+  an external part. Not rebuildable from the feature list (unsupported, one feature each).
+* Real feature trees: `elfa_2021_plaque_base_roulante` (5 revs), `elfa_2021_plaque_superieure` (6),
+  `elfa_2021_Angle_support` (6; its Parasolid is damaged in Gusset: "XT file is damaged ... node type -15684", no truth).
+
+## L3. Framing of Config-N-ResolvedFeatures in the chunk container (all 49 samples)
+* Byte 0: **u32 B** (105..153 in the samples), byte 4: **u16 count of top-level objects** (0x11 in the 33 mirror parts, 0x19..0x44
+  in the others). In OLE2 files the stream starts with the u16 count only; the u32 is new. First object (an `FF FF 01 00 12 00
+  moCommentsFolder_c` class declaration) follows at byte 6 in every sample.
+* B is the MFC-style map index at which this stream's first *class declaration* (moCommentsFolder_c) is numbered
+  (checked on Igus_Bague_d06: with B=105, NotesAreaFtrFolder=131 and RefPlane=148 equal the tags `83 80` / `94 80` that later
+  nodes use). I.e. class tags are `0x8000 | idx` and the numbering continues at B, as in OLE2 files where B was
+  derived from Config-0. Counting the idx exactly needs every object tag, including the classes that were registered
+  *before* this stream (nodename, unit component, ...): their tags are NOT the Config-0 declaration indices.
+  moNodeName_c is `04 80` in plaque_*, `06 80` in the 33 mirror parts (Config-0 numbering says 3); moUnitComponent_c is
+  `2b 80` (43) in plaque_*/Angle_support, found as the most common `XX 80 02 00 <10 x 00>` (py/uc.py `uctag`). Learn both
+  from the bytes, never from Config-0 indices.
+* Nodename tag: the 2 bytes after the first class declaration (`moCommentsFolder_c 04 80 ff fe ff <CString>`), the
+  prototype's regex still works unchanged.
+* Parameter objects (moLengthParameter_c etc.): `nodename "D1", u32 0, u32 0x40000000, u32 -1, u32 0,` then **`ff fe ff 00`
+  (an empty CString, new in this format)**, `u16 0, f64 value`. Without the inserted CString the prototype's
+  PARAM_TAIL regex never matches (=> "extrude distance None"). Fix: `(?:\xff\xfe\xff\x00)?` before the `\x00\x00`.
+  Confirmed on 1000+ parameters in plaque_*/Angle_support; e.g. plaque_base_roulante Boss.-Extru.1 D1 = 0x3f70624dd2f1a9fc = 4 mm.
+* EndSpec (moEndSpec_c) is unchanged: after the 11-byte name `00 00 | X u32 | 10 x 00 | type u32 | flag u32`
+  (Boss.-Extru.1: X=1, type 0 blind, flag 0), then the dimension object (class tag then moFeatureDimHandle_c /
+  ParallelPlaneDistanceDim_c ... that holds the "D1" parameter).
+* Comp base of moCompRefPlane_c is 24 bytes longer than OLE2: the unit component (`2b 80 02 00 <10 x 00>`, 14 bytes) is followed by
+  **55** bytes (zeros, 16 x FF, 8 zeros) instead of 31, then `u32 plane-feature-id (2 Front, 3 Top, 4 Right), u32 stamp,
+  u16 0, u32 k, u8 hasRot, [9 f64 R], 3 f64 t, f64 1.0` as before (plaque_base_roulante Esquisse1: id 2, k 3, hasRot 0).
+* **Boss versus cut flag (new, also true for OLE2 samples):** the feature-node flags word: low 20 bits `0x00140` = boss/add,
+  `0x201ca` = cut/remove (top bits 0x40000000 / 0xC0000000 are just selection). Held on 100% of slip-pad moICE_c/moCut_c/moExtrusion_c
+  nodes (e.g. 'Bear…' moICE_c 0xc00201ca) and on the French-named ARIG ICE nodes ('Enlèv. mat.-Extru.n' 0x?00201ca,
+  'Boss.-Extru.n' 0x?0000140). It replaces the English "Cut-" name heuristic (fails in other UI languages). moRevolution_c:
+  boss 0x40000000, cut 0x?00201ca; moRevCut_c has 0x40000000 (class decides there).
+
+## L4. First exact rebuilds (plaque_base_roulante, all 5 revisions: volume rel 0.0, box 0.000)
+Changes to the OLE2 prototype that were needed (each verified by the rebuild):
+1. Stream lookup `Contents/Config-(\d+)-ResolvedFeatures` (see L1).
+2. PARAM_TAIL with optional `ff fe ff 00` (L3) -> extrude depth (D1) found; blind (type 0) and mid-plane (6) as before.
+3. Unit component tag learned from bytes (`XX 80 02 00 <10 x 00>`, most frequent) instead of Config-0 index; the sketch plane
+   (moCompRefPlane_c) is found at unit-tag + 69 (u32 plane id) instead of +45; the FIRST sketch's plane object is serialized
+   *before* the moProfileFeature_c class declaration (right after Origin's tail, `moCompRefPlane_c` decl within 400 bytes
+   before the node), so extend the search window backwards when the span has none.
+4. Boss/cut from the flags word (L3).
+5. Folder classes moSelectionSetFolder_c, moNotesAreaFtrFolder_c, moFtrFolder_c, moFeat*BodyFolder_c, moRef*FtrFolder_c,
+   moProfileFtrFolder_c carry no geometry (skip, they are not failures).
+6. **moMirrorSolid_c** (feature "Symétrie1") = mirror of the whole solid about a FACE: the body holds an edge-record-like face
+   list (header `01 00*7 n 00 00 00 00 kind 00 00 id sentinel*2 00 00`, here n=6, kind 2) that holds **n-1 = 5 references**
+   (the old regex demanded n). First reference = the mirrored plane: tag/fid/idx = (side class, fid 0x23 = Boss.-Extru.1,
+   idx 5 = sketch item key `a` of the line at x=0). Plane = through that sketch line, normal = line direction x extrusion
+   normal. Emitted as {type: mirror, plane, merge: true} -> exact (plaque_base_roulante 5/5, incl. Congé1 12 edges and
+   Congé2 2 edges resolved by the unchanged edges.py).
+7. **Mirror face = first reference of the moSingleFaceRef_w list (the LAST face list in the moMirrorSolid_c span), not of the
+   first list.** Each Symétrie node holds two face lists: list A (before `moSingleFaceRef_w`, typically kind 0/2) and list B
+   (the moSingleFaceRef_w object). Verified on plaque_superieure Symétrie1: A = [S14, C1, S'(0x2f,3), C0, S17], B = [S17, C0, S8, C1, S14]
+   where Sn = side face with sketch item key a=n of Boss.-Extru.1 (fid 0x2c); the truth mirror plane is the sketch line
+   a=17 (z=0) = B[0] (box error 0.000 with B[0], 180 mm with A[0]). In plaque_base_roulante A[0]=B[0]=S5 (coincidence).
+   Rule: plane through the sketch line of B[0] (or the cap plane if B[0] is a cap class), normal = line dir x extrusion normal.
+   Result: plaque_superieure box exact on all 6 revisions; volume residual 8.5e-3 left = chamfer (see below).
+8. **Distance-angle chamfer** (plaque_superieure Chanfrein1: params D1=0.03 (length), D2=0.8726646 rad = 50 deg): D2 is an angle when
+   0.1 < D2 <= pi/2 (a length param is in metres, so that range cannot be a chamfer distance). Truth corner legs: 30 mm on the
+   face a=4 and 30*tan(50 deg)=35.75 mm on the side face (STL vertices (60,-135) and (90,-99.25)). Edge refs of the Chamfer
+   node = side/side edges [14,4] and [4,6] (+2 stale refs on construction lines); D1 lies on the face common to both edges
+   (guess, one sample). Gusset has no unequal chamfer, so each corner is emitted as a triangular through-cut sketch
+   (P, P+D1*u_a, P+D1*tan(a)*u_b) -> plaque_superieure 5 of 6 revisions exact.
+
+## L5. Status after round 1 (see py/ for the patched prototype; `python3 -I py/batch.py <name-substr>` rebuilds and compares)
+* **Exact (vol rel < 2e-5, box < 0.01 mm): 10 of 11 parts that have a truth** = plaque_base_roulante 5/5, plaque_superieure 5/6.
+  The 6th (1618664833) is 1.5e-4 low: Congé1 (r=3, 3 concave pocket corners) is a silent no-op in Gusset when the 3 edges are
+  given together (edges 1 and 3 alone each add 2.897 mm3, edge 2 (the corner next to a 3 mm wall) adds nothing) - Gusset side.
+* Old OLE2 set unchanged: 17 of 33 (no regressions from the patches).
+* Sketch line `kind` u16 (the one after start/end, "1 normal / 0 centerline" in OLE2 notes) is NOT a centerline flag by itself in
+  this format: plaque_superieure Esquisse6 has two profile lines with kind 0 and flags 4 (normal) that the truth cuts. Treat as
+  centerline/construction only when flags & 0x8008 (bit 0x08 construction, 0x8000 = true centerline: 0x80da on the axis line).
+* Sketch normalisation needed for Gusset: two closed loops that share part of an edge (pocket drawn next to a pocket) make the
+  Gusset import silently ignore the cut (repro exp/dup.json: volume 60000 instead of 57356; no skip/fail line). Union outline works
+  (exp/union.json 57212.25 as expected). py/swfeat.py normalize_lines(): merge coincident points, split lines at points on them,
+  drop walls shared by two different segments, drop zero-length lines.
+
+## L6. Byte-diff evidence from the revision pairs (plaque_superieure 1615503535 -> 1615847865: thickness 2 -> 1.5 mm)
+* The 77 length/angle parameters of the stream differ in exactly ONE: `D1` at 0x700d, 0.002 -> 0.0015 (that is Boss.-Extru.1's
+  EndSpec dimension; truth box y 2.0 -> 1.5 and volume 80769.8 -> 60577.35 agree). So D1 of the dimension object that follows
+  the moEndSpec_c is the extrusion depth, in metres.
+* plaque_base_roulante 1615039322 -> 1615365433 (90534 -> 96964): same thickness, a pocket removed; tree identical except one
+  sketch dimension.
+* Feature order/ids: node `u32 feature-id` increases monotonically (0x19 Esquisse1, 0x23 Boss.-Extru.1, 0x24 Esquisse2 ...);
+  Mirror/fillet/chamfer face references use these ids (fid) + the sketch-item key `a` (side) or 0/1 (caps).
+
+## L7. Not solved (blocked), with the evidence
+* 33 of 49 revision files are `moMirrorStock_c` parts (mirror of an external part; geometry only in Config-N-StockBodies /
+  Partition, both `__ZLB`-wrapped Parasolid). No sketch/extrude to decode; the tree is 13 standard folders + 3 planes + Origin +
+  1 stock node. Reported as unsupported (1 feature). A rebuild would need the stock Parasolid + a mirror plane, not expressible in gtree.
+* Angle_support (46-63 features): decoded = 23-31 sketches, 12-17 extrudes (cut/boss from flags), 5 hole wizards (French param
+  names, see L5), fillets partly. NOT decoded: moBlendCut_c ("Enlèvement de matière-Lissage1", loft cut), moMoveFace_c
+  ("Déplacer la face2"), moBossThin_c ("Extru.-Mince1"), distance-angle Chamfer on it, fillet edges ("Congé2/3" unresolved),
+  boss with end type 2 (not "through all": emitted as +500 mm, wrong), cut end type 5 (= -15 mm taken from first param, unverified).
+  Volume 3.4e-3 off at best (rev 1618859437), box not comparable (truth only via mirrored S_ part: sizes).
+* End types seen on the new samples: 0 blind, 1/2 through-all cut (one direction for flag 0), 9+flag 1 both directions
+  (as OLE2), 5 unknown. For a BOSS end type 2 is NOT through-all (unknown meaning: up-to-next?).
+* moBaseBody_c / moRefSurface_c (77 + 22 nodes in the 14 zenodo parts) are imported (STEP) bodies: no parametric tree.

@@ -65,7 +65,7 @@ def parse_sketch(d, body, end):
                 dirn, c = struct.unpack_from('<iH', d, p + 16)
                 segs.append(dict(type='arc', id=rid, a=aval, s=s, e=e, c=c, dir=dirn, flags=flags, construction=bool(flags & 9)))
             else:
-                segs.append(dict(type='line', id=rid, a=aval, s=s, e=e, flags=flags, construction=bool(flags & 9) or one == 0, centerline=one == 0))
+                segs.append(dict(type='line', id=rid, a=aval, s=s, e=e, flags=flags, construction=bool(flags & 9) or (one == 0 and bool(flags & 0x8008)), centerline=one == 0 and bool(flags & 0x8008)))
     return pts, segs, warn
 
 def _orthonormal(v):
@@ -103,16 +103,19 @@ def find_plane(d, a, b, unitcomp_idx):
     cands = []
     for i0 in sorted(hits):
         i = i0 - 2
-        p = i + 14 + 31
-        cid, ts = struct.unpack_from('<II', d, p); p += 8
-        if d[p:p+2] == b'\x00\x00':
+        # comp base: 31 bytes in OLE2 files, 55 in chunk-container files: search the u32 id + u32 stamp + u16 0
+        for off in (45, 69):
+            p = i + off
+            if p + 8 > len(d): continue
+            cid, ts = struct.unpack_from('<II', d, p); p += 8
+            if not (1 <= cid < 0x400) or d[p:p+2] != b'\x00\x00': continue
             k = struct.unpack_from('<I', d, p + 2)[0]; hr = d[p + 6]; q = p + 7
             if hr in (0, 1) and k < 16:
                 R = list(struct.unpack_from('<9d', d, q)) if hr else IDENT
                 if hr: q += 72
                 t = struct.unpack_from('<3d', d, q); sc = struct.unpack_from('<d', d, q + 24)[0]
                 if sc == 1.0 and _orthonormal(R) and all(abs(x) < 10 for x in t):
-                    cands.append((i, 'compRefPlane', cid, R, t))
+                    cands.append((i, 'compRefPlane', cid, R, t)); break
     # plane data blocks
     for i in range(a, b - 160):
         hr = d[i + 48]

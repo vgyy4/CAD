@@ -52,6 +52,55 @@ def sketch_json(name, pts, segs, plane):
         if s.get('construction'): c['construction'] = True
         if s.get('centerline'): c['centerline'] = True
         js['curves'].append(c)
+    return normalize_lines(js)
+
+def normalize_lines(js):
+    """Merge coincident points, split lines at points lying inside them and drop duplicate lines
+    (SolidWorks sketches may hold overlapping collinear segments, e.g. a pocket drawn next to another one;
+    the region finder needs one edge per geometric edge)."""
+    key = lambda q: (round(q['x'], 6), round(q['y'], 6))
+    canon = {}; remap = {}
+    for q in js['points']:
+        remap[q['id']] = canon.setdefault(key(q), q['id'])
+    P = {q['id']: q for q in js['points']}
+    lines = [c for c in js['curves'] if c['type'] == 'line' and not c.get('construction')]
+    for c in js['curves']:
+        for k in ('start', 'end', 'center'):
+            if k in c: c[k] = remap.get(c[k], c[k])
+    ids = sorted(set(c[k] for c in js['curves'] if c['type'] in ('line', 'arc') and not c.get('construction') for k in ('start', 'end')))
+    pieces = []   # (curve, u, v, original endpoints)
+    for c in js['curves']:
+        if c['type'] == 'line' and c['start'] == c['end']: continue   # a merged zero-length helper
+        if c['type'] != 'line' or c.get('construction') or c.get('centerline'):
+            pieces.append((c, None, None, None)); continue
+        a, b = P[c['start']], P[c['end']]
+        dx, dy = b['x'] - a['x'], b['y'] - a['y']; L2 = dx * dx + dy * dy
+        cut = []
+        for i in ids:
+            q = P[i]
+            if i in (c['start'], c['end']): continue
+            t = ((q['x'] - a['x']) * dx + (q['y'] - a['y']) * dy) / L2
+            if 1e-9 < t < 1 - 1e-9 and abs((q['x'] - a['x']) * dy - (q['y'] - a['y']) * dx) / math.sqrt(L2) < 1e-6:
+                cut.append((t, i))
+        chain = [c['start']] + [i for _, i in sorted(cut)] + [c['end']]
+        for u, v in zip(chain, chain[1:]):
+            pieces.append((c, u, v, frozenset((c['start'], c['end']))))
+    # a piece covered by two segments that differ is the shared wall of two adjacent loops (Gusset ignores such a sketch
+    # silently, and SolidWorks fills both), drop it; identical duplicates are merged
+    from collections import defaultdict
+    owners = defaultdict(set)
+    for c, u, v, orig in pieces:
+        if u is not None: owners[frozenset((u, v))].add(orig)
+    out = []; seen = set(); nid = 0
+    for c, u, v, orig in pieces:
+        if u is None: out.append(c); continue
+        kk = frozenset((u, v))
+        if len(owners[kk]) > 1 or kk in seen: continue
+        seen.add(kk); nid += 1
+        d = dict(c); d['start'] = u; d['end'] = v
+        if orig != frozenset((u, v)): d['id'] = '%s_%d' % (c['id'], nid)
+        out.append(d)
+    js['curves'] = out
     return js
 
 # ------------------------------------------------------------ profile area (for the volume check)
@@ -138,6 +187,9 @@ def finish_hole(h, rep):
         return None
     dia = get('Hole Dia.', 'Thru Hole Dia.', 'Tap Drill Dia.')
     dep = get('Hole Depth', 'Thru Hole Depth', 'Tap Drill Depth')
+    if dia is None:   # localised file (French: 'Diamètre du perçage', 'Profondeur du perçage', 'Angle de pointe'): the user-facing
+        named = [v for k, v in ps.items() if not re.fullmatch(r'D\d+|\d+', k)]   # parameters are the ones not called D<n>, in order dia, depth, [tip angle]
+        if len(named) >= 2: dia, dep = named[0], named[1]
     cs_d = get("C'Sink Dia.", "Near C'Sink Dia.")
     cs_a = get("C'Sink Angle", "Near C'Sink Angle")
     if dia: h['diameter'] = mm(dia)
@@ -177,16 +229,25 @@ def expand_holes(feats):
             out.append(g)
     return out
 
+def path_is_chunk(path): return open(path,'rb').read(8)[4:8] == b'\0\0\0\4'
+
 # ------------------------------------------------------------ per part
 def convert(path):
     st = load(path)
-    rf = st.get('Config-0-ResolvedFeatures') or st.get('Contents/Config-0-ResolvedFeatures')
-    c0 = st.get('Config-0') or st.get('Contents/Config-0')
+    import re as _re
+    rf = c0 = None
+    for _k in st:
+        _m = _re.fullmatch(r'(?:Contents/)?Config-(\d+)-ResolvedFeatures', _k)
+        if _m: rf = st[_k]; c0 = st.get('Config-%s' % _m.group(1)) or st.get('Contents/Config-%s' % _m.group(1))
     if rf is None or c0 is None:
         return None, dict(status='no Config-0-ResolvedFeatures stream')
     ev0, cls0, n0 = scan(c0, 0)
     uc = [k for k, v in cls0.items() if v == 'moUnitComponent_c']
     uc = uc[0] if uc else None
+    if path_is_chunk(path):
+        from uc import uctag
+        t = uctag(rf)
+        uc = (struct.unpack('<H', t[0][0])[0] & 0x7fff) if t else None
     nt = re.search(rb'\xff\xff\x01\x00(..)(mo\w+?_c)(..)\xff\xfe\xff', rf).group(3)
     ns, mapping = classify(rf, None)
     starts = sorted(n['start'] for n in ns) + [len(rf)]
@@ -229,6 +290,9 @@ def convert(path):
                 if hole is not None: hole['_nsk'] += 1
                 continue
             plane = find_plane(rf, a, b, uc)
+            if plane is None:   # first sketch of a file: its moCompRefPlane_c is written just before the node
+                j = rf.rfind(b'moCompRefPlane_c', max(0, a - 400), a)
+                if j >= 0: plane = find_plane(rf, j - 6, b, uc)
             js = sketch_json(n['name'], pts, segs, plane)
             if hole is not None:
                 hole['_nsk'] += 1
@@ -259,7 +323,7 @@ def convert(path):
             cands = ([dec] if dec else []) + [c for c in endspec_candidates(rf, a, b) if c['cls'] in es_cls]
             es = cands[0] if cands else None
             ps = params(rf, a, b, nt)
-            op = 'new' if not solid else ('cut' if (cls == 'moCut_c' or n['name'].lower().startswith('cut')) else 'join')
+            op = 'new' if not solid else ('cut' if (cls == 'moCut_c' or (n['flags'] & 0xfffff) == 0x201ca or n['name'].lower().startswith('cut')) else 'join')
             js = dict(type='extrude', name=n['name'], sketch=last_sketch, profiles='all', operation=op,
                       target=None if op == 'new' else first_solid)
             typ = es['type'] if es else None
@@ -289,7 +353,7 @@ def convert(path):
             ps = params(rf, a, b, nt)
             ang = [p for p in ps if abs(p['value']) <= 2 * math.pi + 1e-9]
             js = dict(type='revolve', name=n['name'], sketch=last_sketch, profiles='all',
-                      operation='new' if not solid else ('cut' if cls == 'moRevCut_c' or n['name'].lower().startswith('cut') else 'join'),
+                      operation='new' if not solid else ('cut' if cls == 'moRevCut_c' or (n['flags'] & 0xfffff) == 0x201ca or n['name'].lower().startswith('cut') else 'join'),
                       angle=round(math.degrees(ang[0]['value']), 9) if ang else 360.0)
             if js['operation'] != 'new': js['target'] = first_solid
             g = sketch_geo.get(last_sketch)
@@ -299,7 +363,7 @@ def convert(path):
                 if cl: js['axis'] = dict(line='c%d' % cl[0])
                 else: js['axis'] = None; notes.append('%s: no construction line for the axis' % n['name'])
             feats.append(js); solid = True; first_solid = first_solid or n['name']
-        elif cls == 'moMirrorPattern_c':
+        elif cls in ('moMirrorPattern_c', 'moMirrorSolid_c'):
             # The mirror plane is stored as a face reference (same layout as fillet edge
             # references); the bodies to mirror are back-references into Config-0, i.e. the
             # whole solid body.  Seen once (FrameBracket Mirror1: end cap of 'main flange').
@@ -318,9 +382,18 @@ def convert(path):
                 pl = dict(origin=[round(v * 1000, 6) + 0.0 for v in o], normal=[round(v, 12) + 0.0 for v in z]); recs = []
                 break
             if recs:
-                r0 = recs[0][1][0]; f = by_fid.get(r0['fid'])
+                r0 = recs[-1][1][0]   # the moSingleFaceRef_w list (last in the span): its first reference is the mirror face
+                f = by_fid.get(r0['fid']); f = by_fid.get(r0['fid'])
                 if f is not None and r0['tag'] in cap_tags:
                     pl = dict(origin=edgemod.lift(f, 0.0, 0.0, edgemod.cap_height(f, r0['idx'])), normal=edgemod.normal(f))
+                elif f is not None:   # side face of the extrusion: the plane through its sketch line, along the extrusion normal
+                    sg = [q for q in f['segs'] if q.get('a') == r0['idx'] and q['type'] == 'line' and not q.get('construction')]
+                    if len(sg) == 1:
+                        P0 = f['pts'][sg[0]['s']]; P1 = f['pts'][sg[0]['e']]
+                        o3 = edgemod.lift(f, P0['x'] * 1000, P0['y'] * 1000, 0.0); q3 = edgemod.lift(f, P1['x'] * 1000, P1['y'] * 1000, 0.0)
+                        dv = [q3[i] - o3[i] for i in range(3)]; nn = edgemod.normal(f)
+                        c = cross(dv, nn); L = math.sqrt(sum(v * v for v in c))
+                        if L > 1e-9: pl = dict(origin=o3, normal=[round(v / L, 12) + 0.0 for v in c])
             if pl: js['plane'] = pl
             else:
                 js['unresolved'] = True; rep['unsupported'].append('%s (mirror plane not resolved)' % n['name'])
@@ -331,6 +404,41 @@ def convert(path):
                       radius=mm(ps[0]['value']) if ps else None)
             if cls == 'Chamfer_c': js['distance'] = js.pop('radius')
             sel = edgemod.selection(edgemod.edge_records(rf, a, b))
+            if cls == 'Chamfer_c' and len(ps) >= 2 and 0.1 < ps[1]['value'] <= math.pi / 2 + 1e-9:
+                # distance-angle chamfer (D2 is an angle in rad): Gusset's chamfer is symmetric only, so each side/side corner
+                # edge is emitted as the equivalent triangular through cut.  D1 runs along the face shared by the selected edges
+                # (guess from one sample: plaque_superieure, truth corner legs 30 and 30*tan(50 deg))
+                from collections import Counter
+                cnt = Counter(x['idx'] for r in sel for x in r[1][:2] if x['fid'] in by_fid)
+                outs = []
+                for k, r in enumerate(sel):
+                    fa, fb = r[1][0], r[1][1]
+                    f = by_fid.get(fa['fid'])
+                    if f is None or fa['fid'] != fb['fid']: continue
+                    sa = [q for q in f['segs'] if q.get('a') == fa['idx'] and q['type'] == 'line' and not q.get('construction')]
+                    sb = [q for q in f['segs'] if q.get('a') == fb['idx'] and q['type'] == 'line' and not q.get('construction')]
+                    if len(sa) != 1 or len(sb) != 1: continue
+                    sa, sb = sa[0], sb[0]
+                    com = {sa['s'], sa['e']} & {sb['s'], sb['e']}
+                    if len(com) != 1: continue
+                    c = com.pop(); P = f['pts'][c]
+                    def far(sg):
+                        o = sg['e'] if sg['s'] == c else sg['s']; Q = f['pts'][o]
+                        dx, dy = Q['x'] - P['x'], Q['y'] - P['y']; L = math.hypot(dx, dy); return dx / L, dy / L
+                    ua, ub = far(sa), far(sb)
+                    d1 = ps[0]['value']; d2 = d1 * math.tan(ps[1]['value'])
+                    if cnt[fb['idx']] > cnt[fa['idx']]: la, lb = d2, d1
+                    else: la, lb = d1, d2
+                    pts3 = [(P['x'], P['y']), (P['x'] + ua[0] * la, P['y'] + ua[1] * la), (P['x'] + ub[0] * lb, P['y'] + ub[1] * lb)]
+                    nm = '%s_corner%d' % (n['name'], k + 1)
+                    outs.append(dict(type='sketch', name=nm, plane=dict(f['plane']),
+                                     points=[dict(id='p%d' % i, x=mm(q[0]), y=mm(q[1])) for i, q in enumerate(pts3)],
+                                     curves=[dict(id='c%d' % i, type='line', start='p%d' % i, end='p%d' % ((i + 1) % 3)) for i in range(3)]))
+                    outs.append(dict(type='extrude', name=nm + '_cut', sketch=nm, profiles='all', operation='cut', target=first_solid,
+                                     distance=2 * BIG, through_all=True, symmetric=True, end_condition='through_all_both'))
+                if outs and len(outs) == 2 * len([r for r in sel if r[1][0]['fid'] == r[1][1]['fid'] and r[1][0]['fid'] in by_fid
+                                                  and len([q for q in by_fid[r[1][0]['fid']]['segs'] if q.get('a') in (r[1][0]['idx'], r[1][1]['idx']) and not q.get('construction')]) == 2]):
+                    feats.extend(outs); continue
             mids = [edgemod.midpoint(r, by_fid, cap_tags) for r in sel]
             js['edges'] = [dict(midpoint=m) for m in mids if m is not None]
             stale = [r for r, m in zip(sel, mids) if m is None and all(x['fid'] in by_fid for x in r[1])]
@@ -341,7 +449,7 @@ def convert(path):
             feats.append(js)
         elif cls in ('moCommentsFolder_c', 'moFavoriteFolder_c', 'moHistoryFolder_c', 'moSensorFolder_c',
                      'moDocsFolder_c', 'moDetailCabinet_c', 'moSurfaceBodyFolder_c', 'moSolidBodyFolder_c',
-                     'moEqnFolder_c', 'moMaterialFolder_c', 'moRefPlane_c', 'moOriginProfileFeature_c', 'moProfileFeature_c', None):
+                     'moEqnFolder_c', 'moMaterialFolder_c', 'moSelectionSetFolder_c', 'moNotesAreaFtrFolder_c', 'moFtrFolder_c', 'moFeatSurfaceBodyFolder_c', 'moFeatSolidBodyFolder_c', 'moRefAxisFtrFolder_c', 'moRefPlaneFtrFolder_c', 'moProfileFtrFolder_c', 'moRefPlane_c', 'moOriginProfileFeature_c', 'moProfileFeature_c', None):
             continue
         else:
             rep['unsupported'].append('%s:%s' % (cls, n['name']))
