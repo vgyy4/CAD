@@ -63,9 +63,9 @@ def parse_sketch(d, body, end):
                 warn.append('record %x: not a line/arc record (kind %d)' % (h, kind)); continue
             if d[p + 22:p + 38] == b'\xfe\xff\xff\xff' * 4:
                 dirn, c = struct.unpack_from('<iH', d, p + 16)
-                segs.append(dict(type='arc', id=rid, a=aval, s=s, e=e, c=c, dir=dirn, flags=flags, construction=bool(flags & 8)))
+                segs.append(dict(type='arc', id=rid, a=aval, s=s, e=e, c=c, dir=dirn, flags=flags, construction=bool(flags & 9)))
             else:
-                segs.append(dict(type='line', id=rid, a=aval, s=s, e=e, flags=flags, construction=bool(flags & 8) or one == 0, centerline=one == 0))
+                segs.append(dict(type='line', id=rid, a=aval, s=s, e=e, flags=flags, construction=bool(flags & 9) or one == 0, centerline=one == 0))
     return pts, segs, warn
 
 def _orthonormal(v):
@@ -134,5 +134,21 @@ def find_plane(d, a, b, unitcomp_idx):
     if not cands: return None
     cands.sort(key=lambda c: c[0])
     i, kind, cid, R, t = cands[0]
+    if kind == 'planeData':
+        # A sketch on a face: the first block is the face's plane data; the sketch's own frame
+        # (same normal, axes possibly turned) follows as '... 01 00 00 00 <12 x 00> 01 <R> <t> 1.0'.
+        # Confirmed on FrameBracket Sketch11 (box) - the face block's axes are turned 180 deg there.
+        j = i + 49
+        while True:
+            j = d.find(b'\x01\x00\x00\x00' + bytes(12) + b'\x01', j, b)
+            if j < 0: break
+            q = j + 17
+            R2 = list(struct.unpack_from('<9d', d, q))
+            if _orthonormal(R2) and all(abs(R2[3*r+2] - R[3*r+2]) < 1e-9 for r in range(3)):
+                t2 = struct.unpack_from('<3d', d, q + 72); sc = struct.unpack_from('<d', d, q + 96)[0]
+                if sc == 1.0:
+                    R, t, kind = R2, t2, 'faceSketch'
+                    break
+            j += 1
     o, x, y, z = _frame(R, t)
     return dict(at=i, kind=kind, plane_feature_id=cid, R=R, t=list(t), origin=o, x_axis=x, y_axis=y, normal=z)

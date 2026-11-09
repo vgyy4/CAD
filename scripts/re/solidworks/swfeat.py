@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dump import load
 from scan import scan
 from nodes2 import classify
-from sketch import parse_sketch, find_plane
+from sketch import parse_sketch, find_plane, _orthonormal, _frame
 from feat import params, endspec_candidates, endspec_decl
 import edges as edgemod
 
@@ -299,6 +299,32 @@ def convert(path):
                 if cl: js['axis'] = dict(line='c%d' % cl[0])
                 else: js['axis'] = None; notes.append('%s: no construction line for the axis' % n['name'])
             feats.append(js); solid = True; first_solid = first_solid or n['name']
+        elif cls == 'moMirrorPattern_c':
+            # The mirror plane is stored as a face reference (same layout as fillet edge
+            # references); the bodies to mirror are back-references into Config-0, i.e. the
+            # whole solid body.  Seen once (FrameBracket Mirror1: end cap of 'main flange').
+            js = dict(type='mirror', name=n['name'], features=[], target=first_solid, merge=True)
+            recs = edgemod.edge_records(rf, a, b)
+            pl = None
+            # the mirror plane's own frame: '<4 f64 display extents> 01 <R 3x3> <t> 1.0' (confirmed:
+            # FrameBracket Mirror1 = Right plane, x = 0; the face list is the faces it was picked by)
+            for i in range(a, b - 129):
+                if rf[i] != 1: continue
+                R = list(struct.unpack_from('<9d', rf, i + 1))
+                if not _orthonormal(R): continue
+                t = struct.unpack_from('<3d', rf, i + 73)
+                if struct.unpack_from('<d', rf, i + 97)[0] != 1.0: continue
+                o, x, y, z = _frame(R, t)
+                pl = dict(origin=[round(v * 1000, 6) + 0.0 for v in o], normal=[round(v, 12) + 0.0 for v in z]); recs = []
+                break
+            if recs:
+                r0 = recs[0][1][0]; f = by_fid.get(r0['fid'])
+                if f is not None and r0['tag'] in cap_tags:
+                    pl = dict(origin=edgemod.lift(f, 0.0, 0.0, edgemod.cap_height(f, r0['idx'])), normal=edgemod.normal(f))
+            if pl: js['plane'] = pl
+            else:
+                js['unresolved'] = True; rep['unsupported'].append('%s (mirror plane not resolved)' % n['name'])
+            feats.append(js)
         elif cls in ('Fillet_c', 'Chamfer_c'):
             ps = params(rf, a, b, nt)
             js = dict(type='fillet' if cls == 'Fillet_c' else 'chamfer', name=n['name'], edges=[],

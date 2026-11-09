@@ -298,3 +298,57 @@ comparing against the Parasolid body: volume within 1e-4 relative and box within
   * Repro: `rebuild/arm_fillet2_noop.gtree.json`.
 * `mcp.py` imports a tree through `gusset mcp` (`run import.file`) and prints
   `skipped_user_text`. It needs `mcpw/p.gus` (made with `gusset pack`).
+
+### 8.3 Round 6 notes
+* Mirror (FrameBracket Mirror1).
+  * Its post-base body holds two u16-counted back-reference lists, `01 00 6c 01` and
+    `01 00 6e 01`. Both point to object indices below the ResolvedFeatures base, i.e. objects
+    in Config-0 (guess: the bodies).
+  * It also holds a face list: header `01 00*7 08 00*11 sentinel*2 00 00`, then 7 references.
+    The first is a cap (cap 1 of 'main flange'); the rest are its bounding side faces. Face
+    lists hold n-1 references.
+  * Mirroring the whole body about that cap plane (z=5) blows the box up to z 40. Mirroring
+    about x=0 adds 3300 mm3 toward the true volume.
+  * FrameBracket's own tree already has the wrong z extent (box error 20 mm without the
+    mirror), so the plane cannot be confirmed yet.
+* The truth itself is inconsistent on several parts.
+  * Gusset's Parasolid volume and the volume of the STL it exports for the same body
+    disagree beyond tessellation error:
+    * motorClip 651.5 vs 663.7
+    * spring_base 7829 vs 7960
+    * finger_aperture 2712 vs 1279
+    * Top_mainplate 2701 vs 2667
+    * arm_idler_v2 2141 vs 2112
+    * the idler arms 204.9 vs 194.0
+  * Against the truth STL, arm_idler_v2 rebuilds within 5e-4 (2113.2 vs 2112.1).
+
+## 9. Round 7 (after the Gusset cone fix)
+
+The truth was regenerated with the fixed binaries. 18 parts now rebuild exactly; the 5 gained
+this round are arm_idler_v2, motorClip, finger_aperture, spring_base_tab and Top_modular.
+Nothing changed in the trees for these: their reference volumes were wrong before.
+
+* **Face-sketch frame (confirmed by box).**
+  * A sketch on a model face stores the face's plane data first; its axes may be turned
+    180 deg about the normal.
+  * The sketch's own frame follows as `01 00 00 00 <12 x 00> 01 <R 3x3> <t> 1.0`, with the
+    same normal column.
+  * FrameBracket Sketch11 put Boss-Extrude3 at z -20..0 with the face block. With the
+    following block it sits at 0..20, matching the true box.
+* **Mirror plane (confirmed by box).**
+  * The moMirrorPattern_c body holds the mirror plane's frame:
+    `<4 f64 display extents (+-88.99, +-55)> 01 <R> <t> 1.0`.
+  * In FrameBracket Mirror1 that frame is the Right plane, x = 0, and it brings the
+    FrameBracket box to the true box exactly.
+  * The face list in the same body (cap 1 of 'main flange' plus its bounding faces) is not
+    the plane. Its role is unknown.
+  * The prototype emits the whole body mirrored with `merge: true`.
+* **Segment flag bit 0x01: not part of the profile.**
+  * baseJoint Sketch11 holds an arc with flags 5 whose centre does not even fit its end
+    points (radii 35.0 vs 35.4).
+  * Treating flags & 0x01 like construction brings baseJoint from 40% to 1.4e-4
+    (159.979 vs 159.956). That part of the evidence is confirmed by volume.
+  * The meaning of the bit is guessed; PCB's id -1 helper record carries it too.
+  * Top_mainplate also improves, from 21% to 2.5%.
+* Top_modular Cut-Extrude2 uses all regions of Sketch6. Its earlier mismatch came from the
+  wrong reference volume.

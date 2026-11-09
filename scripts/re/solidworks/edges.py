@@ -12,7 +12,7 @@ Layout (from Base_loadCell_v1 Fillet1, see LAYOUT.md):
 """
 import re, struct
 SENT = b'\x7d\xc3\x94\x25\xad\x49\xb2\x54' * 2
-HDR = re.compile(rb'\x01\x00{7}([\x01-\x08])\x00{4,6}([\x01-\x04])\x00\x00(....)' + re.escape(SENT) + rb'\x00\x00', re.S)
+HDR = re.compile(rb'\x01\x00{7}([\x01-\x10])(?:\x00{4,6}([\x01-\x04])\x00\x00(....)|\x00{11})' + re.escape(SENT) + rb'\x00\x00', re.S)
 
 def edge_records(d, a, b):
     """All edge records in [a,b): list of (pos, [refs]).  A reference is a 20-byte core
@@ -35,7 +35,8 @@ def edge_records(d, a, b):
                 p += 4; extra += 1
                 if k == n - 1 and w != 0xFFFFFFFF: break
             reps.append(dict(tag=t & 0x7fff, fid=fid, idx=idx, ext=extra == 1 and k < n - 1, extra=extra))
-        if len(reps) == n: out.append((m.start(), reps))
+        if len(reps) == n or (m.group(2) is None and reps):   # face lists (mirror planes) hold n-1 refs
+            out.append((m.start(), reps))
     return out
 
 def selection(recs):
