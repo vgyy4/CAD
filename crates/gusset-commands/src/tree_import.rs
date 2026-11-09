@@ -274,9 +274,9 @@ fn short(s: &str) -> String {
     s.chars().take(MAX_REPORT_CHARS).collect()
 }
 
-/// A number for the text: up to 12 decimals, no trailing zeros.
+/// A number for the text: up to 6 decimals, no trailing zeros.
 fn num(v: f64) -> String {
-    let s = format!("{:.12}", if v.abs() < 5e-13 { 0.0 } else { v });
+    let s = format!("{:.6}", if v.abs() < 5e-7 { 0.0 } else { v });
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
     if s == "-0" { "0".into() } else { s }
 }
@@ -1096,6 +1096,15 @@ fn edge_holds(
             let q = [a[0] + ab[0] * u, a[1] + ab[1] * u, a[2] + ab[2] * u];
             norm(sub(*p, q)) <= tol
         }),
+        // A whole circle (one vertex, or both ends together): FreeCAD splits it into arcs.
+        (gusset_kernel::CurveKind::Circle, [_] | [_, _], Some(c))
+            if ends.len() == 1 || ends.first().zip(ends.get(1)).is_some_and(|(a, b)| norm(sub(*a, *b)) <= 1e-9) =>
+        {
+            pts.iter().all(|p| {
+                let w = sub(*p, c.center);
+                (norm(w) - c.radius).abs() <= tol && dot(w, c.normal).abs() <= tol
+            })
+        }
         (gusset_kernel::CurveKind::Circle, [a, b], Some(c)) => {
             let u0 = sub(*a, c.center);
             let v0 = cross(c.normal, u0);

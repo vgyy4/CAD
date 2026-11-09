@@ -1270,15 +1270,15 @@ pub(crate) fn tree_variant(
                     if steps.is_empty() {
                         return Err(format!("{name}: no transformations"));
                     }
-                    // FreeCAD copies the whole extruded tool: each pad or pocket is repeated as
-                    // a separate tool body that is patterned and then joined or cut.
+                    // FreeCAD copies the whole extruded or revolved tool: each pad, pocket, revolution or
+                    // groove is repeated as a separate tool body that is patterned and then joined or cut.
                     let tools: Vec<String> = feats
                         .iter()
                         .flat_map(|n| [n.clone(), format!("{n}_back")])
                         .filter(|n| {
                             features.iter().any(|f| {
                                 f.get("name").and_then(Value::as_str) == Some(n)
-                                    && f.get("type").and_then(Value::as_str) == Some("extrude")
+                                    && matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "revolve"))
                                     && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
                             })
                         })
