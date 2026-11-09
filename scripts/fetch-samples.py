@@ -64,9 +64,26 @@ def get(url, dest, sha256=None, md5=None):
     return True
 
 
-def git(*args, cwd=None):
+def git_bytes(*args, cwd=None):
     env = dict(os.environ, GIT_LFS_SKIP_SMUDGE="1", GIT_TERMINAL_PROMPT="0")
-    return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(["git", "-c", "core.quotePath=false", *args], cwd=cwd, env=env, check=True, capture_output=True).stdout
+
+
+def git(*args, cwd=None):
+    return git_bytes(*args, cwd=cwd).decode("utf-8", "surrogateescape")
+
+
+def blob(repo, rev, path, cwd, dest):
+    """A file at a revision: its LFS object when the blob is a pointer, else the blob itself."""
+    data = git_bytes("show", f"{rev}:{path}", cwd=cwd)
+    if data.startswith(b"version https://git-lfs"):
+        return lfs(repo, rev, path, data.decode("utf-8", "replace"), dest)
+    if os.path.exists(dest) or len(data) > MAX_FILE:
+        return False
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(data)
+    return True
 
 
 def clone(repo, dest, full=False):
@@ -121,8 +138,7 @@ def arig(root):
     # The assemblies at the head.
     for p in git("ls-tree", "-r", "--name-only", head, cwd=hist).splitlines():
         if p.lower().endswith(".sldasm"):
-            ptr = git("show", f"{head}:{p}", cwd=hist)
-            lfs(ARIG, head, p, ptr, os.path.join(root, "arig-sldasm", p))
+            blob(ARIG, head, p, hist, os.path.join(root, "arig-sldasm", p))
     # Every revision of the most revised parts (revision-pair analysis).
     counts = {}
     for p in git("log", "--format=", "--name-only", "--", "*.SLDPRT", "*.sldprt", cwd=hist).splitlines():
@@ -131,12 +147,11 @@ def arig(root):
     for p in sorted(counts, key=lambda k: -counts[k])[:8]:
         for line in git("log", "--format=%H %ct %h", "--", p, cwd=hist).splitlines():
             c, t, h = line.split()
+            dest = os.path.join(root, "arig-revisions", p.replace("/", "_"), f"{t}_{h}.SLDPRT")
             try:
-                ptr = git("show", f"{c}:{p}", cwd=hist)
+                blob(ARIG, c, p, hist, dest)
             except subprocess.CalledProcessError:
                 continue
-            dest = os.path.join(root, "arig-revisions", p.replace("/", "_"), f"{t}_{h}.SLDPRT")
-            lfs(ARIG, c, p, ptr, dest)
 
 
 def adafruit(root):
