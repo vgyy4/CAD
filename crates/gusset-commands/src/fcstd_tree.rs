@@ -1414,11 +1414,29 @@ pub(crate) fn tree_variant(
                         let r = o.float("Radius").filter(|r| *r > 0.0).ok_or(format!("{name}: no radius"))?;
                         json!({"type": "fillet", "name": name, "edges": picks, "radius": r, "target": target})
                     } else {
-                        if o.int("ChamferType").unwrap_or(0) != 0 {
-                            return Err(format!("{name}: an unequal chamfer is not translated yet"));
-                        }
                         let d = o.float("Size").filter(|r| *r > 0.0).ok_or(format!("{name}: no size"))?;
-                        json!({"type": "chamfer", "name": name, "edges": picks, "distance": d, "target": target})
+                        let mut c =
+                            json!({"type": "chamfer", "name": name, "edges": picks, "distance": d, "target": target});
+                        // 0 equal distance, 1 two distances, 2 a distance and an angle. The
+                        // reference face is left to Gusset's default; the rebuild check confirms.
+                        let extra = match o.int("ChamferType").unwrap_or(0) {
+                            0 => None,
+                            1 => Some((
+                                "distance2",
+                                o.float("Size2").filter(|v| *v > 0.0).ok_or(format!("{name}: no second size"))?,
+                            )),
+                            2 => Some((
+                                "angle",
+                                o.float("Angle")
+                                    .filter(|v| *v > 0.0 && *v < 90.0)
+                                    .ok_or(format!("{name}: no angle"))?,
+                            )),
+                            _ => return Err(format!("{name}: this chamfer type is not translated yet")),
+                        };
+                        if let (Some((k, v)), Some(m)) = (extra, c.as_object_mut()) {
+                            m.insert(k.into(), json!(v));
+                        }
+                        c
                     };
                     features.push(f);
                 }
@@ -1883,6 +1901,63 @@ mod tests {
         assert_eq!((turns[0]["operation"].as_str(), turns[1]["operation"].as_str()), (Some("new"), Some("join")));
         assert_eq!(turns[1]["target"], "Revolution");
         assert_ne!(turns[0]["axis"], turns[1]["axis"], "the second half turns the other way");
+    }
+
+    #[test]
+    fn an_arc_of_a_whole_turn_is_a_circle() {
+        let doc = DOC.replace(
+            r#"<Geometry type="Part::GeomCircle"><Construction value="0"/><Circle CenterX="5" CenterY="2.5" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1"/></Geometry>"#,
+            r#"<Geometry type="Part::GeomArcOfCircle"><Construction value="0"/><ArcOfCircle CenterX="5" CenterY="2.5" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1" StartAngle="0" EndAngle="6.283185307179586"/></Geometry>"#,
+        );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let curves = t.features[0]["curves"].as_array().unwrap();
+        assert!(curves.iter().any(|c| c["type"] == "circle" && c["radius"] == 1.0), "{curves:?}");
+        assert!(curves.iter().all(|c| c["type"] != "arc"));
+    }
+
+    #[test]
+    fn unequal_chamfers_carry_their_second_size_or_angle() {
+        let make = |ty: u8| {
+            let doc = DOC
+                .replace(
+                    r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+</Objects>"#,
+                    r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+  <Object type="PartDesign::Chamfer" name="Chamfer"/>
+</Objects>"#,
+                )
+                .replace(r#"<Link value="Pocket"/></LinkList>"#, r#"<Link value="Pocket"/><Link value="Chamfer"/></LinkList>"#)
+                .replace(
+                    "</ObjectData>",
+                    &format!(
+                        r#"  <Object name="Chamfer"><Properties>
+    <Property name="Base" type="App::PropertyLinkSub"><LinkSub value="Pocket" count="1"><Sub value="Edge1"/></LinkSub></Property>
+    <Property name="ChamferType" type="App::PropertyEnumeration"><Integer value="{ty}"/></Property>
+    <Property name="Size" type="App::PropertyLength"><Float value="2"/></Property>
+    <Property name="Size2" type="App::PropertyLength"><Float value="3"/></Property>
+    <Property name="Angle" type="App::PropertyAngle"><Float value="30"/></Property>
+  </Properties></Object>
+</ObjectData>"#
+                    ),
+                )
+                .replace(
+                    r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>"#,
+                    r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape2.brp"/></Property>"#,
+                );
+            let mut edges = |_: &str| -> Result<Edges, String> {
+                Ok(vec![SrcEdge {
+                    mid: [0.0; 3],
+                    faces: vec![0, 1],
+                    path: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+                    smooth: false,
+                }])
+            };
+            tree(doc.as_bytes(), &mut edges).unwrap().features.last().unwrap().clone()
+        };
+        assert!(make(0).get("distance2").is_none());
+        assert_eq!(make(1)["distance2"], 3.0);
+        assert_eq!(make(2)["angle"], 30.0);
     }
 
     #[test]
