@@ -180,3 +180,18 @@ the same 12 numbers appear verbatim, in the same order, in `Contents/Config-0`, 
 `DisplayLists` (and the translation in `Config-0-LWDATA` as a box), so those streams carry the same
 representation and no independent orientation to compare. The row-vector reading rests on the translation
 being the last row. An assembly with an asymmetric rotation (any 90-degree turn about one axis) settles it.
+
+## Amendment 3 (2026-11-09): the feature tree, decoding in progress
+
+`Config-0-ResolvedFeatures` is an MFC-archive object stream continuing `Config-0`'s object
+index (class declarations `FFFF schema len name`, new objects `8000|class`, back-references).
+Decoded from the sample bytes alone (`docs/formats/solidworks-feature-tree.md`; prototype in
+`scripts/re/solidworks/`): the feature list and order, the default planes, sketch points,
+lines and arcs (metres, sketch frame from the plane's rotation and translation), extrusion
+depth and blind/mid-plane ends, revolve angles. On 6 of 33 parts the prototype's tree gives
+the true volume within 0.1 %. Still missing before features can be imported: sketch
+relations and dimensions (the typed walker stops there, so later back-referenced planes are
+unresolved), the boss/cut flag, other end conditions, fillet edges, hole-wizard and mirror
+records, and the newer (chunk-container) layouts. `.sldprt` stays tier 2 until a tree
+rebuilds to the stored Parasolid body, which will be checked as for FreeCAD (ADR 0033
+amendment 2026-11-09).
