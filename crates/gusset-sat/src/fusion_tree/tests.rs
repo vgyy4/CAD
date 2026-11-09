@@ -216,6 +216,32 @@ fn open_ends_of_a_loop_are_joined_by_the_one_curve_that_fits() {
 }
 
 #[test]
+fn a_body_pattern_names_its_body_and_does_not_chain() {
+    let dirs: Vec<(geom::V3, geom::V3)> = vec![([0.0; 3], [0.0, 1.0, 0.0])];
+    let mk = |count_v: f64, dirs: &[(geom::V3, geom::V3)]| {
+        let p = super::json::PatternInputs {
+            name: "R-Pattern1",
+            originals: &[],
+            count: 4.0,
+            count_v,
+            spacing: 5.0,
+            spacing_v: 3.0,
+            dirs,
+            sym: [false; 3],
+            target: Some("Extrude5"),
+        };
+        super::json::linear_pattern_chain(&p)
+    };
+    let one = mk(1.0, &dirs).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0]["target"], "Extrude5");
+    assert_eq!(one[0]["features"], json!([]));
+    // Two directions would need the first copies as features.
+    let two: Vec<(geom::V3, geom::V3)> = vec![dirs[0], ([0.0; 3], [1.0, 0.0, 0.0])];
+    assert!(mk(2.0, &two).is_none());
+}
+
+#[test]
 fn a_curve_is_cut_at_its_crossings_into_numbered_pieces() {
     let line: Vec<P2> = vec![[0.0, 0.0], [10.0, 0.0]];
     let c1: Vec<P2> = vec![[3.0, -1.0], [3.0, 1.0]];
@@ -360,6 +386,7 @@ fn a_symmetric_pattern_direction_becomes_two_chained_patterns() {
             spacing_v: 30.0,
             dirs: &dirs,
             sym: [true, false, false],
+            target: None,
         };
         super::json::linear_pattern_chain(&p).unwrap()
     };
@@ -380,6 +407,7 @@ fn a_symmetric_pattern_direction_becomes_two_chained_patterns() {
         spacing_v: 0.0,
         dirs: &dirs,
         sym: [true, false, false],
+        target: None,
     };
     assert!(super::json::linear_pattern_chain(&p).is_none());
 }

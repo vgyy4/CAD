@@ -175,6 +175,36 @@ impl Graph {
         None
     }
 
+    /// `D26351F0` body links a pattern copies: the ones its body selections (`9716F783`, reached
+    /// through the pattern's `EA0E146E` / `2CA5A1CD` / `8DB90DAE` children) name. The links
+    /// under the direction edge (`F2A7590D`) and under the pattern itself are not inputs.
+    fn selected_bodies(&self, d: &Design, fid: u64) -> Vec<u64> {
+        let mut seen = std::collections::HashSet::from([fid]);
+        let mut front = vec![fid];
+        let mut out: Vec<u64> = Vec::new();
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for x in front {
+                for q in ref_ids(d, d.rec(x)) {
+                    if !seen.insert(q) {
+                        continue;
+                    }
+                    if d.is(q, "9716F783") {
+                        for l in ref_ids(d, d.rec(q)) {
+                            if d.is(l, "D26351F0") && !out.contains(&l) {
+                                out.push(l);
+                            }
+                        }
+                    } else if ["EA0E146E", "2CA5A1CD", "8DB90DAE"].iter().any(|c| d.is(q, c)) {
+                        next.push(q);
+                    }
+                }
+            }
+            front = next;
+        }
+        out
+    }
+
     /// `D26351F0` body links reachable from a feature through its own child records.
     fn body_links(&self, d: &Design, fid: u64, depth: usize) -> Vec<u64> {
         let mut seen = std::collections::HashSet::from([fid]);

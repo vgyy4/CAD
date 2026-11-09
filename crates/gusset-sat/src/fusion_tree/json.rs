@@ -317,6 +317,8 @@ pub(super) struct PatternInputs<'a> {
     pub(super) spacing_v: f64,
     pub(super) dirs: &'a [(V3, V3)],
     pub(super) sym: [bool; 3],
+    /// A pattern of one whole body (named by the feature that made it) instead of features.
+    pub(super) target: Option<&'a str>,
 }
 
 /// A rectangular pattern as chained `pattern_linear` features (U first; V takes the originals and
@@ -340,7 +342,8 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
         };
         jobs.push(("V", *dv?, p.spacing_v, nv, p.sym[1]));
     }
-    if jobs.is_empty() {
+    // Chained directions copy the earlier copies as features; a body pattern cannot.
+    if jobs.is_empty() || (p.target.is_some() && jobs.len() > 1) {
         return None;
     }
     let mut out: Vec<Value> = Vec::new();
@@ -365,7 +368,7 @@ pub(super) fn linear_pattern_chain(p: &PatternInputs) -> Option<Vec<Value>> {
             out.push(json!({
                 "type": "pattern_linear", "name": nm, "features": features,
                 "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])], "spacing": round9(*sp_), "count": n_,
-                "target": null, "pattern_axis": tag, "symmetric": sy,
+                "target": p.target, "pattern_axis": tag, "symmetric": sy,
                 "note": format!("direction = the stored F2A7590D vector (sign included){}", if sy { "; symmetric about the original: split into + and - halves" } else { "" }),
             }));
             names_now.push(nm);
@@ -506,13 +509,33 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let val = |n: &str| pget(&ps, n).and_then(|p| p.value);
             let in_names: Vec<String> =
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
-            let dirs = if linear { feature::pattern_dirs(d, fid) } else { Vec::new() };
-            if linear
-                && !ins.is_empty()
-                && ins.iter().all(|q| names.contains_key(q))
-                && !dirs.is_empty()
-                && val("countU").is_some()
-            {
+            let dirs = feature::pattern_dirs(d, fid);
+            // A pattern of bodies names no feature: the bodies it copies are the ones its input
+            // records reach, each named by the feature that made it.
+            let mut body_in: Vec<String> = Vec::new();
+            if ins.is_empty() {
+                for l in g.selected_bodies(d, fid) {
+                    if let Some(c) = g.creator.get(&l).copied().filter(|c| *c != fid)
+                        && let Some(n) = names.get(&c)
+                        && !body_in.contains(n)
+                    {
+                        body_in.push(n.clone());
+                    }
+                }
+            }
+            // One new body per copy: fewer means the file suppresses some instances (the sample
+            // C-Pattern of 12 makes 9 bodies), which a tree pattern cannot say.
+            let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+            let copies = {
+                let n = val("countU").unwrap_or(1.0).round().max(1.0) as usize;
+                if linear { n * val("CountV").unwrap_or(1.0).round().max(1.0) as usize } else { n }
+            };
+            let target: Option<&str> = match body_in.as_slice() {
+                [one] if made + 1 == copies => Some(one.as_str()),
+                _ => None,
+            };
+            let inputs_ok = if ins.is_empty() { target.is_some() } else { ins.iter().all(|q| names.contains_key(q)) };
+            if linear && inputs_ok && !dirs.is_empty() && val("countU").is_some() {
                 let sym = feature::pattern_symmetric(d, fid).unwrap_or([false; 3]);
                 let p = PatternInputs {
                     name: &nm,
@@ -523,6 +546,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     spacing_v: val("vSpaceDistance").map_or(0.0, mm),
                     dirs: &dirs,
                     sym,
+                    target,
                 };
                 if let Some(chain) = linear_pattern_chain(&p) {
                     feats.extend(chain.into_iter().map(|mut v| {
@@ -535,9 +559,27 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     continue;
                 }
             }
+            // Circular: `countU` copies over `TotalAngle` about the picked axis (point and vector
+            // as for the linear directions). Only the full circle is converted: how a partial
+            // angle spreads the copies is not established by a sample.
+            if !linear
+                && inputs_ok
+                && let Some((pt, dir)) = dirs.first()
+                && let Some(count) = val("countU").filter(|c| (2.0..=500.0).contains(c))
+                && let Some(angle) = val("TotalAngle").map(f64::to_degrees)
+                && (angle - 360.0).abs() < 1e-6
+            {
+                feats.push(json!({"type": "pattern_circular", "name": nm, "source_id": fid,
+                    "features": in_names, "target": target,
+                    "axis": {"origin": v3mm(*pt), "direction": [round9(dir[0]), round9(dir[1]), round9(dir[2])]},
+                    "angle": 360.0, "count": count.round() as i64,
+                    "note": "axis = the stored F2A7590D point and vector"}));
+                tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
+                continue;
+            }
             let mut j = json!({"type": "unsupported", "gtree_type": if linear { "pattern_linear" } else { "pattern_circular" },
                 "fusion_type": fusion_type, "name": nm, "source_id": fid, "features": in_names,
-                "note": "pattern of bodies/components, circular, or no direction record: not converted"});
+                "note": "pattern of components, of several bodies, with a partial angle, or no direction record: not converted"});
             if let (Some(o), Some((_, dir))) = (j.as_object_mut(), dirs.first()) {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
@@ -629,6 +671,7 @@ fn blocker(f: &Value) -> Option<String> {
         }
         "hole" | "mirror" => None,
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
+        "pattern_circular" => (!has("axis") || !has("count")).then(|| "the circular pattern has no axis".to_string()),
         _ => Some(text("error").or_else(|| text("note")).map(str::to_string).unwrap_or_else(|| {
             format!("{} is not supported", text("fusion_type").or_else(|| text("gtree_type")).unwrap_or(t))
         })),
@@ -771,6 +814,16 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
                     for (k, v) in [("origin", p), ("normal", n)] {
                         if let Some(v) = v {
                             fc.insert(k.into(), v);
+                        }
+                    }
+                }
+            }
+            "pattern_circular" => {
+                if let Some(a) = f.get_mut("axis").and_then(Value::as_object_mut) {
+                    let (o, d) = (pt(a.get("origin")), dir(a.get("direction")));
+                    for (k, v) in [("origin", o), ("direction", d)] {
+                        if let Some(v) = v {
+                            a.insert(k.into(), v);
                         }
                     }
                 }
