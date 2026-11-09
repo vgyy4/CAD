@@ -1261,6 +1261,71 @@ fn direction_agrees(n: V3, dist: f64, v: V3) -> Option<bool> {
     Some(written * n.get(axis)? * dist > 0.0)
 }
 
+/// A full revolve an edge can name: the sketch (and its plane) and the index of the axis line.
+#[derive(Debug, Clone, Copy)]
+struct Revolved {
+    on: Swept,
+    axis: usize,
+}
+
+/// The circle where two profile segments of a full revolve meet, from an edge record whose
+/// first two references are the revolve's faces (the index is the key of the profile
+/// segment): a point on it, opposite the profile plane, and the whole circle as a closed
+/// path. `None` for anything else (a construction segment, segments that do not meet, the
+/// axis).
+fn revolve_circle(reps: &[Rep], revolved: &HashMap<u32, Revolved>, sketches: &[Geometry]) -> Option<(V3, Vec<V3>)> {
+    let [r0, r1, ..] = reps else { return None };
+    if r0.fid != r1.fid {
+        return None;
+    }
+    let rv = revolved.get(&r0.fid)?;
+    let g = sketches.get(rv.on.sketch)?;
+    let seg = |k: u32| {
+        let mut it = g.segs.iter().filter(|s| s.a == k && !s.construction && !s.centerline);
+        match (it.next(), it.next()) {
+            (Some(s), None) => Some(*s),
+            _ => None,
+        }
+    };
+    let (sa, sb) = (seg(r0.idx)?, seg(r1.idx)?);
+    let mut common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+    common.dedup();
+    let [shared] = common.as_slice() else { return None };
+    let v = point(&g.pts, *shared)?;
+    let ax = g.segs.get(rv.axis)?;
+    let (a0, a1) = (point(&g.pts, ax.s)?, point(&g.pts, ax.e)?);
+    let (dx, dy) = (a1.x - a0.x, a1.y - a0.y);
+    let len = libm::hypot(dx, dy);
+    if len < 1e-12 {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let t = (v.x - a0.x) * ux + (v.y - a0.y) * uy;
+    let foot = (a0.x + t * ux, a0.y + t * uy);
+    let c = lift(&rv.on, foot.0 * 1000.0, foot.1 * 1000.0, 0.0);
+    let r0v = sub(lift(&rv.on, v.x * 1000.0, v.y * 1000.0, 0.0), c);
+    let radius = libm::sqrt(dot(r0v, r0v));
+    if radius < 1e-6 {
+        return None;
+    }
+    let along = sub(lift(&rv.on, foot.0 * 1000.0 + ux, foot.1 * 1000.0 + uy, 0.0), c);
+    let e2 = cross(along, r0v);
+    let steps = 200u32;
+    let at = |th: f64| -> V3 {
+        let (cs, sn) = (libm::cos(th), libm::sin(th));
+        [0, 1, 2].map(|i| {
+            let (c, a, b) = (
+                c.get(i).copied().unwrap_or(0.0),
+                r0v.get(i).copied().unwrap_or(0.0),
+                e2.get(i).copied().unwrap_or(0.0),
+            );
+            round_to(c + cs * a + sn * b, 6) + 0.0
+        })
+    };
+    let path = (0..=steps).map(|k| at(TAU * f64::from(k) / f64::from(steps))).collect();
+    Some((at(TAU / 2.0), path))
+}
+
 /// A solid feature an edge can name: its sketch, plane and signed depth (mm).
 #[derive(Debug, Clone, Copy)]
 struct Swept {
@@ -2030,6 +2095,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut first_solid: Option<String> = None;
     let mut swept: HashMap<u32, Swept> = HashMap::new();
     let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
+    let mut revolved: HashMap<u32, Revolved> = HashMap::new();
     let mut hole: Option<HoleState> = None;
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
@@ -2304,6 +2370,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                         .or(first)
                 };
                 js.insert("axis".into(), axis.map_or(Value::Null, |k| json!({"line": format!("c{k}")})));
+                // A full revolve's circles can be named by edge records.
+                if let (Some(k), Some(&(_, plane))) = (axis, last_sketch.as_ref().and_then(|s| sketch_by_name.get(s)))
+                    && ang.is_none_or(|v| (v.abs() - TAU).abs() < 1e-9)
+                {
+                    let on = Swept { sketch: i, plane, distance: 0.0, symmetric: false, through: false };
+                    revolved.insert(n.id, Revolved { on, axis: k });
+                }
             }
             feats.push(Value::Object(js));
             solid = true;
@@ -2386,13 +2459,22 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut unresolved = false;
             let mut made: Vec<Option<Round>> = Vec::new();
             for (_, reps) in &sel {
+                if let Some((m, path)) = revolve_circle(reps, &revolved, &sketches) {
+                    mids.push(Some(m));
+                    made.push(None);
+                    edges.push(json!({"midpoint": m, "path": path}));
+                    continue;
+                }
                 let m = midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?;
                 mids.push(m);
                 made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
                 match m {
                     Some(m) => edges.push(json!({"midpoint": m})),
                     // References to faces the sketch no longer has are superseded selections.
-                    None if reps.iter().all(|r| swept.contains_key(&r.fid) || rounds.contains_key(&r.fid)) => {
+                    None if reps.iter().all(|r| {
+                        swept.contains_key(&r.fid) || rounds.contains_key(&r.fid) || revolved.contains_key(&r.fid)
+                    }) =>
+                    {
                         stale += 1;
                     }
                     None => unresolved = true,

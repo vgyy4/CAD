@@ -560,3 +560,11 @@ Corpus (slip-pad 35 + arig-revisions 50): 33 -> 34 as history (slip-pad 19 -> 20
   starts behind. Both fit "X 1: ahead, X 0: behind". The truth was compared with the rebuild by ray casting the two STLs
   along z (layer volumes), which located the 0.8 mm shifts although the total volume was within 1e-3.
   loadcell_centerPlatform_v1 Cut-Extrude3 has a D19 of 4 mm too and still rebuilds (its cut lies in empty space either way).
+* **Revolve circles (GT2_Bobbin_v2, reader done, part still blocked).** In an edge record of a full revolve the faces are
+  the profile segments by sketch key (`a`, as for extrudes); the edge between two segments that share a vertex is the circle
+  through it about the axis line. The reader emits it as `{midpoint (opposite the profile plane), path (200-point closed
+  circle)}`. Of the five selected edges, three name construction segments (stale selections); the other two (keys 3/8 and
+  10/11, the flange rims at x 7 and x 11, r 8) are the whole chamfer: the truth minus the no-chamfer rebuild is 48.05 mm3 =
+  2 x 24.1 (a 1 x 1 mm triangle ring at r 8 - 1/3), and its z-ray layers sit exactly at x 6..7 and 11..12. OCCT refuses the
+  chamfer because the 1 mm distance equals the 1 mm wall it runs along (0.9 works; 0.999999 works but gives 1723.829 against
+  1723.947 mm3, 7e-5 off, so the truth is not exactly two 1 x 1 chamfers either). Top_mainplate Chamfer1 is the same case.
