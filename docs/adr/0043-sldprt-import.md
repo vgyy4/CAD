@@ -383,3 +383,13 @@ Fillet1 (edges between faces of features with different normals) and its hole wi
 countersinks, which are not a fit-check equality problem: the pocket floor (r 3.15 at x = -22) is clipped by the plate's
 edge at x = -25, so the mouth overhangs the plate by 0.15 mm and the check is right (left as it is). See
 `docs/formats/solidworks-feature-tree.md` L10.
+
+**Amendment 8 (edges between merged coplanar faces; findings).** An edge record whose two faces are not neighbours in one
+profile (a later feature's face coplanar with an earlier one merges with it, and the record keeps naming the earlier feature's
+face) is resolved as the line where the two face planes meet, between the planes of the two vertex faces
+(`plane_edge`, straight sides and caps only). FrameBracket Fillet1 now resolves 2 of 2 edges and builds; the part still comes
+in as bodies (a cut read against the truth, hole wizards on faces that do not hold them, a hole width not read). Coverage 34 of
+85, unchanged. Findings that close other leads: idler_differential_arm(_short) fail against an incomplete truth (the Parasolid
+conversion drops the lug fillets' spindle-torus faces, so the history cannot match it); the 1 x 1 mm chamfer OCCT refuses
+(GT2_Bobbin_v2, Top_mainplate) has an exact construction (a cut by the revolved triangle) but the truth is 7e-5 away from a plain
+1 x 1 chamfer, over the 2e-5 check. See `docs/formats/solidworks-feature-tree.md` L11.

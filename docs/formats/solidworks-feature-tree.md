@@ -609,3 +609,45 @@ Corpus (slip-pad 35 + arig-revisions 50): 33 -> 34 as history (slip-pad 19 -> 20
 * **Method note**: comparing the truth (the part's own Parasolid body, exported by `gusset build part.SLDPRT --export x.stl`)
   with the rebuilt STL by ray casting along an axis and printing layer volumes (and 2D masks) finds an error that the
   total volume hides (MicroGearMotor: 1e-3 of the volume, three layers 0.8 mm off). The scratch scripts are not kept.
+
+## L11. Round 5 (edges between merged coplanar faces; what blocks FrameBracket, idler_differential_arm, the chamfers)
+Corpus (slip-pad 35 + arig-revisions 50): 34 -> 34 as history. One reader fix; the rest are findings.
+* **Edges between planar faces of different features (solved, FrameBracket Fillet1).** A later feature's face that is coplanar
+  with an earlier one merges with it, and the edge record keeps naming the *earlier* feature's face. FrameBracket Fillet1's two
+  edges are `[Boss-Extrude3 side 16, Boss-Extrude3 side 14, Boss-Extrude5 side 10, Boss-Extrude5 side 8]`: sides 16 (z = 20) and
+  14 (x = 42.5) of the plate are not neighbours in its profile (an R10 corner arc lies between them) and meet only on the
+  box of Boss-Extrude5, whose top and end faces are coplanar with them. The edge is the line where the two face planes meet,
+  between the planes of the two vertex faces (references 3 and 4): (42.5, 23, 20) and (-42.5, 8, 20). Ray casting the truth
+  against the rebuild without the fillet found it first (the truth is 0.8 mm lower at x = 40.25, z = 19.17: a convex r5 round).
+  `plane_edge` computes it when the sketch-based reading finds nothing (sides and caps of extrudes, straight lines only).
+  Both edges resolve and the fillet builds; no other part changes (34 stay, same reasons).
+* **FrameBracket still stops, now for three independent reasons.** (1) Cut-Extrude3 (end type 5 "offset from surface") as read
+  removes y -2..0 over the plate (|x| < 22.5, z 5..20), 850 mm3; the truth has that plate intact (z-ray at (0, -1) gives
+  z 10..20 in the truth, nothing in the rebuild) and the rebuild WITHOUT the cut matches the truth to the holes (26262 against
+  26239 mm3 with the CSK and the first tapped hole missing). A later cut cannot restore it, so the cut is a no-op in the
+  truth or reads a different plane/direction; the node's flags word (0xc00201ca) is that of every cut and no suppression
+  flag was found. The "volume 426 mm3 off for the other sign" of L10 was measured on a different partial history. Not solved.
+  (2) The CSK wizard builds a pocket on the plate's far face at (0, 3), where the truth has no plate (the plate is hollow
+  z < 10 for |x| < 22.5, made by a later through cut), and the first tapped hole puts 3 positions on faces that do not
+  hold them. (3) The truth's holes at x = 35.5 are 3.46 mm wide against 3.0 mm in the rebuild (Cut-Extrude6..9 or
+  Mount Holes): a sketch dimension that is not read. FrameBracket_v2_loadCell_v1 adds Cut-Extrude17 with no end spec.
+* **Merged coplanar faces for up-to-surface ends (item not done).** Would only change which of the five FrameBracket
+  extrudes are `to_face` instead of blind; FrameBracket does not come in, so nothing is gained.
+* **idler_differential_arm / _short: the truth is incomplete, not the profile.** The Parasolid reader warns `torus N is
+  self-intersecting (apple or lemon)` / `face N was left out` for the lug fillets (Fillet1/2, r 1 on the r 1.5 lugs: major
+  radius 0.5 < minor radius 1, a spindle torus). The truth body is missing those faces (its mesh volume 194.0 against the
+  window's 204.9; the bounding box still reaches y = 7.4995 because it comes from the Parasolid box), which is why the
+  "upper half of both lugs" is missing in the truth. Keys 15-19 are stale selections: the parsed sketch has all 13 segments
+  the file writes (keys 0, 1, 3-6, 13, 14, 20-24); no entity carries 15-19 or 2, 7-12. Nothing to decode in the profile; the
+  fix belongs to the exact-body conversion (gusset-xt: spindle tori), outside this crate. Fillet1 refers to Fillet2's faces
+  (tag 672, fid 68) and Fillet2 comes first in the stream, as before.
+* **arm_idler_single_v4.** Fillet1's fourth edge is `[Boss-Extrude1 side 5, face 1 of feature 100 (Chamfer1), Cut-Extrude1
+  cap 1, Boss-Extrude1 cap 1]`: the edge between side 5 and the chamfer's bevel face. It needs the bevel as a face with
+  a tangent line on side 5 (for the distance-angle Chamfer1, 3 mm and 70 degrees, the other offset is 3 tan 70 = 8.24 mm on
+  the face the chamfer does not run along; which face is the reference is the one-sample guess of `chamfer_angle`).
+  Boss-Extrude4/5 (no end spec, tilted planes) follow. Three coupled guesses; not started.
+* **GT2_Bobbin_v2 / Top_mainplate (item 5).** The chamfer is a 1 x 1 mm bevel along a 1 mm wide flange face. An exact
+  construction exists (cut the revolved triangle (x 7, r 8), (x 6, r 8), (x 7, r 7); the cutter's face is coplanar with
+  the flange face and its far vertex lies on the bore edge), but it would give 2 x 24.086 = 48.17 mm3 where the truth
+  removes 48.05 (centroid radius 0.25 % lower), 7e-5 of the volume against the check's 2e-5. So the truth is not a plain
+  1 x 1 chamfer and a correct construction would still fail the check; no kernel change made.
