@@ -603,7 +603,14 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
             .filter(|o| o.kind == "PartDesign::MultiTransform")
             .flat_map(|o| o.link_list("Transformations"))
             .collect();
+        // The body's shape is its Tip's: features after it are not part of the result.
+        let tip = body.link("Tip").map(|(t, _)| t).filter(|t| group.contains(t));
+        let mut past_tip = false;
         for name in &group {
+            if past_tip {
+                break;
+            }
+            past_tip = tip.as_ref() == Some(name);
             let Some(o) = objects.get(name) else { continue };
             if steps.contains(name) {
                 continue;
