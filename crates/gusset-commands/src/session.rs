@@ -461,6 +461,11 @@ impl Session {
         true
     }
 
+    /// The project's stored blobs, for evaluations outside the cache (trial builds).
+    pub(crate) fn blobs(&self) -> impl BlobSource + '_ {
+        HistoryBlobs(&self.history)
+    }
+
     /// Stores imported data once, content-addressed (shared by every branch).
     pub(crate) fn put_blob(&mut self, bytes: &[u8]) -> gusset_history::Hash {
         self.history_mut().put_blob(bytes)

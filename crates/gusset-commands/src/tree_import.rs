@@ -44,6 +44,11 @@ pub struct Tree {
     pub features: Vec<Value>,
     #[serde(default)]
     pub bodies: Vec<TreeBody>,
+    /// B-rep bytes a native importer read from the source file (a frozen base body, a
+    /// mirrored stock body), named by index from `stored_body` features. Never read from
+    /// the JSON: a tree file alone cannot bring in geometry.
+    #[serde(skip)]
+    pub stored_bodies: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -538,7 +543,7 @@ impl Gen {
         }
         let doc = gusset_doc::text::parse(&self.text)
             .map_err(|e| CommandError::new("evaluation", format!("generated text: {e}")))?;
-        Ok(gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &()))
+        Ok(gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &s.blobs()))
     }
 }
 
@@ -649,6 +654,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft"
+            | "stored_body"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
@@ -671,6 +677,9 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "sweep" => serde_json::from_value::<v2::SweepF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::sweep(&mut g, s, &d)),
+            "stored_body" => serde_json::from_value::<v2::StoredBodyF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::stored_body(&mut g, s, &d, &tree.stored_bodies)),
             "shell" => serde_json::from_value::<v2::ShellF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::shell(&mut g, s, &d)),

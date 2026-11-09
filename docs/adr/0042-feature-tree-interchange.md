@@ -281,3 +281,28 @@ volume `2 pi R * pi a b`.
 - Constraints on ellipses are not in the exchange format: a source's `radius`-like
   dimensions on ellipses are left out like any unknown constraint; the geometry is imported
   as it is drawn.
+
+## Amendment (2026-11-09): stored bodies
+
+Some histories start from geometry the source keeps as a body, not as features: Fusion's
+Base Feature (its bodies are the last N bodies of a `BREP.*.smbh` stream, ADR 0039 section
+13 of the format notes) and SolidWorks' mirrored stock parts (the stock body sits in its own
+Parasolid partition). Version 2 adds
+
+```json
+{"type": "stored_body", "name": "Base Feature1", "body": 0}
+```
+
+- `body` indexes the B-rep bodies a native importer hands over with the tree
+  (`Tree::stored_bodies`, kernel-native bytes). It is never read from JSON: a `.gtree.json`
+  file on its own cannot bring geometry in, and its `stored_body` features are skipped with
+  "a stored body comes only from a native importer".
+- It becomes an ordinary `import <Name> (blob: ..., format: brep)` feature, so later
+  features take it as `target` (joins, cuts, fillets on its edges, whole-body mirrors and
+  patterns) exactly as they take an extrude's body.
+- The body is placed as the importer gives it; placement (a component's transform) is the
+  importer's job.
+- The trial builds during an import now evaluate with the project's blobs, so a stored
+  body is visible to the features after it.
+- OCCT test: a stored 40 x 20 x 10 box, a disc boss joined on its top and the body mirrored
+  across x = 0 give twice (8000 + 100 pi) mm3.

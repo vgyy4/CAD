@@ -853,6 +853,32 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     Ok(())
 }
 
+/// A body the source file stores as geometry, not as features (a Fusion base feature, a
+/// SolidWorks mirrored stock body): an import of the B-rep the native reader handed over.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct StoredBodyF {
+    name: String,
+    /// Index into the stored bodies the importer passed with the tree.
+    body: usize,
+}
+
+pub(super) fn stored_body(g: &mut Gen, s: &mut Session, d: &StoredBodyF, stored: &[Vec<u8>]) -> Result<(), String> {
+    let bytes = stored.get(d.body).ok_or_else(|| {
+        if stored.is_empty() {
+            "a stored body comes only from a native importer, not a tree file".to_string()
+        } else {
+            format!("stored body {} does not exist ({} were read)", d.body, stored.len())
+        }
+    })?;
+    let hex = s.put_blob(bytes).to_hex();
+    let name = g.fresh(&d.name, "Body");
+    let _ = writeln!(g.text, "\nimport {name} (blob: \"{hex}\", format: brep, file: \"stored.brep\")");
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
 pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), String> {
     if d.tools.is_empty() || d.tools.len() > MAX_PICKS {
         return Err("a combine takes between 1 and 256 tool bodies".into());

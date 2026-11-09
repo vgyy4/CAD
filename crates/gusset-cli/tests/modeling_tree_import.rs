@@ -604,3 +604,56 @@ fn a_bad_ellipse_is_skipped_with_a_reason() {
     let (_, r) = import_into_session(vec![e]);
     assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{r}");
 }
+
+/// A 40 x 20 x 10 box as the kernel's native B-rep bytes.
+fn native_box() -> Vec<u8> {
+    use gusset_kernel::{ExtrudeSpec, Frame, Kernel, Loop2, Profile, ProfileEdge, Region2, Seg2};
+    let pts = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    let edges = (0..4)
+        .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % 4] }, tag: 10 + i as u64 })
+        .collect();
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] };
+    let k = gusset_kernel_occt::OcctKernel::new().unwrap();
+    let r = k.extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    k.write_native(&r.shape).unwrap()
+}
+
+#[test]
+fn a_stored_body_is_imported_and_later_features_build_on_it() {
+    // A frozen base body (a Fusion base feature, a SolidWorks stock body), a boss joined on
+    // its top, then the whole body mirrored across x = 0 and merged.
+    let tree = json!({
+        "format": "gusset-feature-tree", "version": 2, "source": {"app": "test"},
+        "features": [
+            {"type": "stored_body", "name": "Base", "body": 0},
+            disc("Top", plane_at(10.0), 20.0, 10.0, 5.0),
+            {"type": "extrude", "name": "Boss", "sketch": "Top", "profiles": "all", "distance": 4.0,
+             "operation": "join", "target": "Base"},
+            {"type": "mirror", "name": "Both", "target": "Base", "merge": true, "features": [],
+             "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]}}
+        ]
+    });
+    let mut t = gusset_commands::tree_import::parse(&serde_json::to_vec(&tree).unwrap()).unwrap();
+    t.stored_bodies.push(native_box());
+    let mut s = session();
+    let r = gusset_commands::tree_import::apply(&mut s, &CmdCtx::user(1), &t, "t.gtree.json").unwrap();
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    let one = 8000.0 + std::f64::consts::PI * 25.0 * 4.0;
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 2.0 * one);
+}
+
+#[test]
+fn a_tree_file_alone_cannot_bring_in_a_stored_body() {
+    let (r, _) = {
+        let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"},
+            "features": [{"type": "stored_body", "name": "Base", "body": 0}, rect("S", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+                         extrude("E", "S", 5.0, "new")]});
+        let mut s = session();
+        std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap())
+            .unwrap();
+        (execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap(), ())
+    };
+    let skipped = r["skipped_user_text"].to_string();
+    assert!(skipped.contains("native importer"), "{r}");
+}
