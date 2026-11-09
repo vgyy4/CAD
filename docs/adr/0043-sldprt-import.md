@@ -356,3 +356,14 @@ A part whose history would be the stored body alone, or whose file keeps only th
 (mirrored) body, comes in as bodies: replaying features on a finished body passes the rebuild check
 trivially. Coverage 33 of 85 (slip-pad 19 of 35, arig-revisions 14 of 50).
 See `docs/formats/solidworks-feature-tree.md` L9.
+
+## Amendment (2026-11-09): extrusion direction and start offsets
+
+The unit vector after the `0005 0002 0002 0002` marker of an extrude node is the extrusion direction (a z direction is
+written as the y component, negated); a distance that runs against it is reversed, for axis-aligned sketches that are
+neither symmetric nor through-all. A blind cut with a second length (`D2`, or `D<n+1>` after the `n` dimensions of its own
+sketch) starts that far from its sketch plane, ahead of it along the cut for end spec X 1 and behind it for X 0. The
+circle edges of a full revolve are named by edge records (key of the profile segment on either side) and resolved as
+closed paths. The rebuild check is unchanged. Coverage 34 of 85 (slip-pad 20 of 35, arig-revisions 14 of 50);
+MicroGearMotor_v1 is the new one. GT2_Bobbin_v2 now fails in the kernel (a 1 mm chamfer along a 1 mm wall), the
+end types 4/5 and the Angle_support features are decoded as far as `docs/formats/solidworks-feature-tree.md` L10 says.

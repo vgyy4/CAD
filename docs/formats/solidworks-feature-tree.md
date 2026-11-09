@@ -568,3 +568,30 @@ Corpus (slip-pad 35 + arig-revisions 50): 33 -> 34 as history (slip-pad 19 -> 20
   2 x 24.1 (a 1 x 1 mm triangle ring at r 8 - 1/3), and its z-ray layers sit exactly at x 6..7 and 11..12. OCCT refuses the
   chamfer because the 1 mm distance equals the 1 mm wall it runs along (0.9 works; 0.999999 works but gives 1723.829 against
   1723.947 mm3, 7e-5 off, so the truth is not exactly two 1 x 1 chamfers either). Top_mainplate Chamfer1 is the same case.
+* **End types are the SolidWorks API's `swEndConditions_e`** (consistent with every value seen: 0 blind, 1 through all, 2 up to
+  next, 3 up to vertex, 4 up to surface, 5 offset from surface, 6 mid plane, 9 through all both). So a BOSS of type 2 is "up to
+  next" (L7), not through-all. Types 4 and 5 name a face that is not an edge-record reference: the extrude node holds a
+  `moEndFace3IntSurfIdRep_c` and a `moSingleFaceRef_w` whose entries are `39 82 00 00 | 3b 82 <u16 3d02 ...> 20 00 00 00 <u32
+  stamp> | <u32 face index>` (a persistent id of a body or feature, then a face number; the stamp 0x54b86f2e repeats for all
+  entries of one feature). The id is not the feature id, so it cannot be resolved with the tables the reader has; the tree has
+  no up-to-surface either (`SolidF` only has a distance). spring_base_v1 Boss-Extrude2 (type 5, D1 10 mm) ends at y = 10, which
+  is where Boss-Extrude3's sketch sits: offset 10 from a surface at y = 0 (the plate's bottom face or the Top plane), so a
+  blind distance of 7 mm would do if the reference were readable. The same part's countersinks fail in the importer because
+  the clearance pocket (6.3 mm) and the countersink (6.3 mm) have the same diameter (the hole must lie strictly inside the
+  pocket's floor).
+* **setScrew**: the revolve sketch and the others parse with no curves at all (a sketch the parser does not read), and the
+  part also has a helix and a swept thread cut; not attempted further.
+* **Angle_support (6 revisions)**: still `moBlendCut_c` (loft cut), two `moBossThin_c`, `moMoveFace_c`, three end type 4/5
+  cuts, a chamfer with unresolved edges (4), fillets of 18 and 89 edges that do not resolve, and boss end type 2 (up to
+  next) emitted as +500 mm. Seven independent gaps, each larger than one afternoon; not started.
+* **arm_idler_single_v4**: the extrudes without an end spec (Boss-Extrude4/5) sit on tilted sketch planes whose written
+  direction vector (1,0,0) is not the plane normal (0.81, 0, -0.59), so the vector rule says nothing there; Fillet1 resolves
+  3 of 4 edges and Chamfer1 needs a face pick. Not solved.
+* **idler_differential_arm(_short)**: the volume excess is localised: ray casting the truth against the rebuild shows the
+  upper half of both end lugs (centres (+-16.5, 6), r 1.5, above y = 5.9) is missing in the truth for all z, leaving a stub
+  at x 16.1 .. 16.9, y 6.1 .. 6.4. The truth's bounding box still reaches y = 7.4995 there. The profile keys 15-19 that no
+  parsed segment carries are probably what shapes the lug; not decoded. Fillet1 is stored before Fillet2 in the stream
+  (ids 66 and 68) and refers to Fillet2's faces, so stream order is the rebuild order.
+* **Method note**: comparing the truth (the part's own Parasolid body, exported by `gusset build part.SLDPRT --export x.stl`)
+  with the rebuilt STL by ray casting along an axis and printing layer volumes (and 2D masks) finds an error that the
+  total volume hides (MicroGearMotor: 1e-3 of the volume, three layers 0.8 mm off). The scratch scripts are not kept.
