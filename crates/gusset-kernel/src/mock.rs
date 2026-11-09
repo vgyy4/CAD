@@ -399,6 +399,16 @@ fn transform_prism(p: &Prism, t: &Transform) -> KResult<Prism> {
             q.frame.x = rot(p.frame.x);
             q.frame.y = rot(p.frame.y);
         }
+        Transform::Scale { center, factors } => {
+            // Only a uniform scale keeps a prism a prism.
+            let f = factors[0];
+            if !(f.is_finite() && f > 0.0 && factors.iter().all(|&g| (g - f).abs() <= 1e-12 * f)) {
+                return Err(invalid("the mock kernel scales uniformly by a positive factor only"));
+            }
+            q.frame.origin = add(center, scale(sub(p.frame.origin, center), f));
+            q.poly = p.poly.iter().map(|&[x, y]| [x * f, y * f]).collect();
+            (q.lo, q.hi) = (p.lo * f, p.hi * f);
+        }
         Transform::Mirror { origin, normal } => {
             let n = normalize(normal).ok_or_else(|| invalid("mirror plane has no normal"))?;
             let refl = |v: V3| sub(v, scale(n, 2.0 * dot(v, n)));

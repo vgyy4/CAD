@@ -817,6 +817,11 @@ impl Wire for Transform {
                 w.f64(*angle);
                 Ok(())
             }
+            Transform::Scale { center, factors } => {
+                w.u8(3);
+                center.put(w, s)?;
+                factors.put(w, s)
+            }
         }
     }
     fn get(r: &mut Reader<'_>, s: &dyn ShapeRefs) -> Result<Self, WireError> {
@@ -824,6 +829,7 @@ impl Wire for Transform {
             0 => Ok(Transform::Mirror { origin: Wire::get(r, s)?, normal: Wire::get(r, s)? }),
             1 => Ok(Transform::Translate(Wire::get(r, s)?)),
             2 => Ok(Transform::Rotate { origin: Wire::get(r, s)?, axis: Wire::get(r, s)?, angle: r.f64()? }),
+            3 => Ok(Transform::Scale { center: Wire::get(r, s)?, factors: Wire::get(r, s)? }),
             t => Err(WireError::bad_tag("Transform", t)),
         }
     }
@@ -1231,6 +1237,7 @@ mod tests {
         }
         rt(&Transform::Translate([1.0, -2.0, 3.0]));
         rt(&Transform::Rotate { origin: [1.0, 0.0, 0.0], axis: [0.0, 0.0, 1.0], angle: 1.25 });
+        rt(&Transform::Scale { center: [1.0, 2.0, 3.0], factors: [2.0, 2.0, 0.5] });
     }
 
     #[test]

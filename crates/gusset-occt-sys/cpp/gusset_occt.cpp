@@ -57,6 +57,8 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
+#include <BRepBuilderAPI_ModifyShape.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepAlgo_Image.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
@@ -67,6 +69,7 @@
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <GeomAbs_JoinType.hxx>
+#include <gp_GTrsf.hxx>
 #include <gp_Trsf.hxx>
 #include <BRepAlgoAPI_Check.hxx>
 #include <BRepTools_Modifier.hxx>
@@ -2280,14 +2283,59 @@ int gs_move_faces(const GsShape* s, const uint32_t* faces, size_t nfaces, const 
   GS_GUARD_END
 }
 
+// make_gtrsf returns a C++ class: extern "C++" keeps MSVC from giving it C linkage (C2526).
+extern "C++" {
+namespace {
+
+// Whether a GS_XF_SCALE has the same factor on every axis (a similarity, kept analytic).
+bool uniform_scale(const double params[7]) { return params[3] == params[4] && params[4] == params[5]; }
+
+// Validates the parameters of a GS_XF_SCALE; an error message when they are no scaling.
+const char* check_scale(const double params[7]) {
+  for (int i = 0; i < 6; ++i)
+    if (!std::isfinite(params[i])) return "scale has non-finite parameters";
+  for (int i = 3; i < 6; ++i)
+    if (!(params[i] > 1e-9)) return "scale factors must be positive";
+  return nullptr;
+}
+
+// Scaling by different factors per axis: an affine map, so curved faces become B-splines.
+gp_GTrsf make_gtrsf(const double params[7]) {
+  gp_GTrsf g;
+  for (int i = 0; i < 3; ++i) {
+    g.SetValue(i + 1, i + 1, params[3 + i]);
+    g.SetValue(i + 1, 4, params[i] * (1.0 - params[3 + i]));
+  }
+  return g;
+}
+
+}  // namespace
+}  // extern "C++"
+
 int gs_transform(int kind, const double params[7], const GsShape* s, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!params || !s || !out || !origins) return fail("null argument");
-  gp_Trsf t;
-  if (const char* err = make_trsf(kind, params, t)) return fail(err);
-  BRepBuilderAPI_Transform xf(s->s, t, true);
+  TopoDS_Shape result;
+  // The builder keeps the face history, so it lives to the end of the function.
+  std::unique_ptr<BRepBuilderAPI_ModifyShape> builder;
+  if (kind == GS_XF_SCALE) {
+    if (const char* err = check_scale(params)) return fail(err);
+    if (uniform_scale(params)) {
+      gp_Trsf t;
+      t.SetScale(gp_Pnt(params[0], params[1], params[2]), params[3]);
+      builder.reset(new BRepBuilderAPI_Transform(s->s, t, true));
+    } else {
+      gp_GTrsf g = make_gtrsf(params);
+      builder.reset(new BRepBuilderAPI_GTransform(s->s, g, true));
+    }
+  } else {
+    gp_Trsf t;
+    if (const char* err = make_trsf(kind, params, t)) return fail(err);
+    builder.reset(new BRepBuilderAPI_Transform(s->s, t, true));
+  }
+  BRepBuilderAPI_ModifyShape& xf = *builder;
   if (!xf.IsDone()) return fail("transform failed");
-  TopoDS_Shape result = xf.Shape();
+  result = xf.Shape();
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   ShapeMap in_faces;

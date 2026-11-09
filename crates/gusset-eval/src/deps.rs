@@ -74,6 +74,8 @@ fn access(kind: &FeatureKind) -> Access {
         FeatureKind::PatternLinear(d) => target(d.body.as_ref()),
         FeatureKind::PatternCircular(d) => target(d.body.as_ref()),
         FeatureKind::Move(d) => target(d.body.as_ref()),
+        FeatureKind::Scale(d) => target(d.body.as_ref()),
+        FeatureKind::Remove(d) => Access { bodies: vec![d.body.clone()], dynamic: false },
         FeatureKind::Joint(d) => {
             Access { bodies: std::iter::once(&d.body).chain(&d.with).cloned().collect(), dynamic: false }
         }

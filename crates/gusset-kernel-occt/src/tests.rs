@@ -558,6 +558,51 @@ fn transform_golden() {
     assert!(close(rm.centroid[0], -20.0, 1e-9) && close(rm.centroid[1], -10.0, 1e-9));
 }
 
+#[test]
+fn scale_golden() {
+    let k = k();
+    let pi = std::f64::consts::PI;
+    // Uniform: volume * f^3, the box keeps its planes, the centre of scaling stays put.
+    let b = plain_box(40.0, 20.0, 10.0);
+    let sc = k.transform(&b.shape, &Transform::Scale { center: [0.0; 3], factors: [2.0; 3] }).unwrap();
+    let m = k.mass_properties(&sc.shape).unwrap();
+    assert!(close(m.volume, 8000.0 * 8.0, 1e-9), "{}", m.volume);
+    assert!(close(m.centroid[0], 40.0, 1e-9), "{:?}", m.centroid);
+    let t = k.topology(&sc.shape).unwrap();
+    assert_eq!(t.faces.len(), 6);
+    assert!(t.faces.iter().all(|f| f.kind == SurfaceKind::Plane));
+    for (i, o) in sc.face_origins.iter().enumerate() {
+        assert!(matches!(o.as_slice(), [FaceOrigin::Input { input: 0, face }] if *face as usize == i), "{o:?}");
+    }
+    // About the box centre: the centroid does not move.
+    let c = k.transform(&b.shape, &Transform::Scale { center: [20.0, 10.0, 5.0], factors: [0.5; 3] }).unwrap();
+    let mc = k.mass_properties(&c.shape).unwrap();
+    assert!(close(mc.volume, 1000.0, 1e-9) && close(mc.centroid[0], 20.0, 1e-9), "{mc:?}");
+    // A cylinder stays a cylinder under a uniform scale.
+    let circle = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: 5.0 }, tag: 1 }] },
+            holes: vec![],
+        }],
+    };
+    let cyl = k.extrude(&circle, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let cs = k.transform(&cyl.shape, &Transform::Scale { center: [0.0; 3], factors: [1.5; 3] }).unwrap();
+    assert!(close(k.mass_properties(&cs.shape).unwrap().volume, pi * 250.0 * 3.375, 1e-9));
+    assert!(k.topology(&cs.shape).unwrap().faces.iter().any(|f| f.kind == SurfaceKind::Cylinder));
+    // Per axis: volume * fx * fy * fz, also for a curved body; faces map one to one.
+    let g = k.transform(&b.shape, &Transform::Scale { center: [0.0; 3], factors: [2.0, 0.5, 3.0] }).unwrap();
+    assert!(close(k.mass_properties(&g.shape).unwrap().volume, 8000.0 * 3.0, 1e-9));
+    assert_eq!(g.face_origins.len(), 6);
+    let gc = k.transform(&cyl.shape, &Transform::Scale { center: [0.0; 3], factors: [2.0, 1.0, 0.5] }).unwrap();
+    let v = k.mass_properties(&gc.shape).unwrap().volume;
+    // The ellipse is a B-spline surface now: the volume is integrated numerically.
+    assert!(close(v, pi * 250.0, 1e-5), "{v}");
+    for bad in [[0.0, 1.0, 1.0], [-1.0, 1.0, 1.0], [1.0, f64::NAN, 1.0]] {
+        assert!(k.transform(&b.shape, &Transform::Scale { center: [0.0; 3], factors: bad }).is_err());
+    }
+}
+
 /// A closed Bézier chain through `n` points of a circle of radius `r` (Catmull-Rom tangents).
 fn circle_chain(n: usize, r: f64) -> Vec<[f64; 2]> {
     let pt = |i: usize| {

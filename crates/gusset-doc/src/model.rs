@@ -193,6 +193,10 @@ pub enum FeatureKind {
     PatternCircular(PatternCircularDef),
     Plane(PlaneDef),
     Move(MoveDef),
+    /// Scales a whole body about a point (ADR 0004 amendment).
+    Scale(ScaleDef),
+    /// Drops a body from the result (ADR 0004 amendment).
+    Remove(RemoveDef),
     Combine(CombineDef),
     Hole(HoleDef),
     Joint(Box<JointDef>),
@@ -228,6 +232,8 @@ impl FeatureKind {
             FeatureKind::Plane(_) => "plane",
             FeatureKind::CamJob(_) => "cam_job",
             FeatureKind::Move(_) => "move",
+            FeatureKind::Scale(_) => "scale",
+            FeatureKind::Remove(_) => "remove",
             FeatureKind::Combine(_) => "combine",
             FeatureKind::Hole(_) => "hole",
             FeatureKind::Joint(_) => "joint",
@@ -359,6 +365,8 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Move(d) => add_body(&mut add, &d.body),
+            FeatureKind::Scale(d) => add_body(&mut add, &d.body),
+            FeatureKind::Remove(d) => add(&d.body),
             FeatureKind::Combine(d) => {
                 add_body(&mut add, &d.body);
                 d.tools.iter().for_each(|t| add(t));
@@ -473,6 +481,8 @@ impl FeatureKind {
             FeatureKind::CamJob(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Move(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
             FeatureKind::MoveFace(d) => motion_exprs(&d.translate, &d.rotation).into_iter().for_each(&mut take),
+            FeatureKind::Scale(d) => d.exprs().into_iter().for_each(&mut take),
+            FeatureKind::Remove(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => d.exprs().into_iter().for_each(&mut take),
             FeatureKind::Joint(d) => d.exprs().into_iter().for_each(&mut take),
@@ -579,6 +589,8 @@ impl FeatureKind {
             FeatureKind::CamJob(d) => out.extend(d.exprs_mut()),
             FeatureKind::Move(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
             FeatureKind::MoveFace(d) => motion_exprs_mut(&mut d.translate, &mut d.rotation, &mut out),
+            FeatureKind::Scale(d) => out.extend(d.exprs_mut()),
+            FeatureKind::Remove(_) => {}
             FeatureKind::Combine(_) => {}
             FeatureKind::Hole(d) => out.extend(d.exprs_mut()),
             FeatureKind::Joint(d) => out.extend(d.exprs_mut()),
@@ -1578,6 +1590,50 @@ pub struct MoveDef {
     pub translate: Option<[Expr; 3]>,
     pub rotation: Option<MoveRotation>,
     pub copy: bool,
+}
+
+/// How much `scale` stretches a body: one factor on every axis, or one per world axis.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScaleFactor {
+    Uniform(Expr),
+    /// Factors along the world X, Y and Z axes (dimensionless).
+    Axes([Expr; 3]),
+}
+
+/// Scales a body about a point, in place (the body keeps its name and its face names). A
+/// uniform factor keeps every surface's type; per-axis factors turn curved faces into
+/// free-form surfaces.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScaleDef {
+    /// Body to scale (named after the feature that created it); `None` = the most recent body.
+    pub body: Option<String>,
+    pub factor: ScaleFactor,
+    /// The fixed point (lengths); `None` = the world origin.
+    pub about: Option<[Expr; 3]>,
+}
+
+impl ScaleDef {
+    fn exprs(&self) -> Vec<&Expr> {
+        let f: Vec<&Expr> = match &self.factor {
+            ScaleFactor::Uniform(e) => vec![e],
+            ScaleFactor::Axes(a) => a.iter().collect(),
+        };
+        f.into_iter().chain(self.about.iter().flatten()).collect()
+    }
+    fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let f: Vec<&mut Expr> = match &mut self.factor {
+            ScaleFactor::Uniform(e) => vec![e],
+            ScaleFactor::Axes(a) => a.iter_mut().collect(),
+        };
+        f.into_iter().chain(self.about.iter_mut().flatten()).collect()
+    }
+}
+
+/// Removes a body from the result; later features cannot name it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoveDef {
+    /// The body to drop (named after the feature that created it).
+    pub body: String,
 }
 
 /// The kind of a joint (ADR 0026): which motions it leaves free.

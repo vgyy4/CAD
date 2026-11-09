@@ -361,6 +361,12 @@ pub enum Transform {
         axis: V3,
         angle: f64,
     },
+    /// Scaling about `center` by one factor per world axis (all positive and finite; equal
+    /// factors keep analytic surfaces, unequal ones turn curved faces into free-form ones).
+    Scale {
+        center: V3,
+        factors: V3,
+    },
 }
 
 /// Coarse surface classification, used for naming keys and UI.

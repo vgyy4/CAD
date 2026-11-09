@@ -1195,6 +1195,8 @@ impl Evaluator {
                 Ok(())
             }
             FeatureKind::Move(d) => self.run_move(s, name, d, units, params),
+            FeatureKind::Scale(d) => self.run_scale(s, name, d, units, params),
+            FeatureKind::Remove(d) => self.run_remove(s, name, d),
             FeatureKind::Joint(d) => self.run_joint(s, name, d, units, params),
             FeatureKind::Component(d) => self.run_component(s, name, d, params, blobs),
             FeatureKind::Combine(d) => self.run_combine(s, name, d),

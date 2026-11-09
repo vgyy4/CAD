@@ -722,6 +722,17 @@ fn print_feature(out: &mut String, f: &Feature) {
                 args.push("copy: true".into());
             }
         }
+        FeatureKind::Scale(d) => {
+            push_body(&mut args, &d.body);
+            match &d.factor {
+                ScaleFactor::Uniform(e) => args.push(format!("factor: {e}")),
+                ScaleFactor::Axes(a) => args.push(format!("factors: {}", print_vec3(a))),
+            }
+            if let Some(a) = &d.about {
+                args.push(format!("about: {}", print_vec3(a)));
+            }
+        }
+        FeatureKind::Remove(d) => args.push(format!("body: {}", d.body)),
         FeatureKind::Combine(d) => {
             push_body(&mut args, &d.body);
             args.push(format!("tools: [{}]", d.tools.join(", ")));
@@ -981,9 +992,9 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
             }
             "sketch" | "extrude" | "revolve" | "sweep" | "loft" | "fillet" | "chamfer" | "import" | "shell"
             | "draft" | "offset_face" | "delete_face" | "move_face" | "text" | "mirror" | "pattern_linear"
-            | "pattern_circular" | "plane" | "move" | "combine" | "hole" | "joint" | "component"
-            | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab" | "edge_flange"
-            | "cam_job" => {
+            | "pattern_circular" | "plane" | "move" | "scale" | "remove" | "combine" | "hole" | "joint"
+            | "component" | "surface_extrude" | "patch" | "thicken" | "stitch" | "contour_flange" | "tab"
+            | "edge_flange" | "cam_job" => {
                 if doc.features.len() >= MAX_FEATURES {
                     return Err(c.err(format!("more than {MAX_FEATURES} features")));
                 }
@@ -1002,7 +1013,7 @@ pub fn parse(text: &str) -> Result<Document, ParseError> {
                         | "pattern_circular"
                 ) {
                     parse_feature_ext(kw, &mut c)?
-                } else if matches!(kw, "plane" | "move" | "move_face" | "combine") {
+                } else if matches!(kw, "plane" | "move" | "move_face" | "scale" | "remove" | "combine") {
                     parse_feature_ext2(kw, &mut c)?
                 } else if matches!(kw, "sweep" | "loft") {
                     parse_feature_ext3(kw, &mut c)?
@@ -1891,7 +1902,12 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut rules = false;
     let mut op = None;
     let mut refine = true;
+    let mut factor = None;
+    let mut factors = None;
+    let mut about = None;
     let allowed = match kw {
+        "scale" => "body, factor, factors, about, label, group, suppressed",
+        "remove" => "body, label, group, suppressed",
         "plane" => "base, offset, axis, angle, label, group, suppressed",
         "move" => "body, translate, axis, angle, through, copy, label, group, suppressed",
         "move_face" => "body, faces, translate, axis, angle, through, onto, rules, label, group, suppressed",
@@ -1902,7 +1918,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             (_, "label") => label = Some(c.string()?),
             (_, "group") => group = Some(c.string()?),
             (_, "suppressed") => suppressed = parse_bool(c)?,
-            ("move" | "move_face" | "combine", "body") => body = Some(c.ident()?.to_string()),
+            ("move" | "move_face" | "combine" | "scale" | "remove", "body") => body = Some(c.ident()?.to_string()),
             ("plane", "base") => base = Some(parse_plane(c)?),
             ("plane", "offset") => offset = Some(c.expr()?),
             ("plane", "axis") => {
@@ -1925,6 +1941,9 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             ("move_face", "onto") => onto = Some(parse_face(c)?),
             ("move_face", "rules") => rules = parse_bool(c)?,
             ("move", "copy") => copy = parse_bool(c)?,
+            ("scale", "factor") => factor = Some(c.expr()?),
+            ("scale", "factors") => factors = Some(parse_vec3(c)?),
+            ("scale", "about") => about = Some(parse_vec3(c)?),
             ("combine", "tools") => {
                 c.expect('[')?;
                 let mut list = Vec::new();
@@ -2002,6 +2021,20 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 FeatureKind::MoveFace(MoveFaceDef { body, faces, translate, rotation, onto, rules })
             }
         }
+        "scale" => {
+            let factor = match (factor, factors) {
+                (Some(e), None) => ScaleFactor::Uniform(e),
+                (None, Some(a)) => ScaleFactor::Axes(a),
+                (None, None) => return Err(missing(c, kw, "factor")),
+                (Some(_), Some(_)) => {
+                    return Err(
+                        c.err_hint("'scale' takes either factor or factors", "give one factor, or one per axis")
+                    );
+                }
+            };
+            FeatureKind::Scale(ScaleDef { body, factor, about })
+        }
+        "remove" => FeatureKind::Remove(RemoveDef { body: body.ok_or_else(|| missing(c, kw, "body"))? }),
         _ => FeatureKind::Combine(CombineDef {
             body,
             tools: tools.ok_or_else(|| missing(c, kw, "tools"))?,

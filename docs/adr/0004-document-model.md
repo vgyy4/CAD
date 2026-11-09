@@ -268,3 +268,24 @@ up-to types used to be translated to a computed distance, which broke when the t
   `commands`/`run`.
 - **Not done.** No GUI form yet; curved target faces other than cylinders are cut at their own
   parametric bounds; `symmetric` and "up to next / up to body / through all" are not covered.
+
+## Amendment (2026-11-10): `scale` and `remove`
+
+Two whole-body features complete the set of body edits a feature tree (ADR 0042) can express.
+
+- `scale <Name> (factor: <n> | factors: [<x>, <y>, <z>], [about: [x, y, z]], [body: <Feature>])`
+  scales a body about a point (default the origin). Factors are dimensionless and must be
+  positive (a mirror flips); `factor` is one for all axes, `factors` one per world axis. The
+  kernel transform is `Transform::Scale { center, factors }`: equal factors are a `gp_Trsf`
+  similarity (every surface keeps its type, volumes grow by factor^3), unequal ones a `gp_GTrsf`
+  through `BRepBuilderAPI_GTransform` (curved faces become B-spline surfaces; volume is the
+  product of the factors, to integration accuracy). Like `move` the body stays in place in the
+  document: its feature, name and face names do not change (`OpContext::Modify`), and holes
+  recorded on it keep their records. The mock kernel scales uniformly only.
+- `remove <Name> (body: <Feature>)` drops the body from the evaluated bodies. `body:` is required
+  (a deletion by default would be too easy to write by mistake). Validation treats it like a
+  consumed combine tool: a later feature naming the body is an error ("body 'X' was removed by
+  R", hint: move the feature before R or delete R); a feature without `body:` works on the latest
+  body that remains. A suppressed `remove` removes nothing. Appearances of a removed body stay
+  unused, as for any body that is gone. The body's features before the `remove` still build
+  (the history is kept); only the result lacks it.

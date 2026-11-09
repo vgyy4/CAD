@@ -100,6 +100,8 @@ pub(super) fn rename_refs(kind: &mut FeatureKind, from: &str, to: &str) {
             }
         }
         FeatureKind::Move(d) => body_of(&mut d.body),
+        FeatureKind::Scale(d) => body_of(&mut d.body),
+        FeatureKind::Remove(d) => sketch_of(&mut d.body),
         FeatureKind::CamJob(d) => sketch_of(&mut d.sketch),
         FeatureKind::Hole(d) => super::hole::rename_refs(d, from, to),
         FeatureKind::Joint(d) => d.rename_feature(from, to),

@@ -174,6 +174,9 @@ mod imp {
             Transform::Rotate { origin, axis, angle } => {
                 (sys::GS_XF_ROTATE, [origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], angle])
             }
+            Transform::Scale { center, factors } => {
+                (sys::GS_XF_SCALE, [center[0], center[1], center[2], factors[0], factors[1], factors[2], 0.0])
+            }
         }
     }
 

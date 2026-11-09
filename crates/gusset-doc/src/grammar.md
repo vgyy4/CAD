@@ -486,6 +486,8 @@ that notches an edge or adds material marks the pattern `changed_by` instead. Fl
 plane  <Name> (base: <plane>, offset: <length>)
 plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
 move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
+scale  <Name> (factor: <n> | factors: [<x>, <y>, <z>], [about: [x, y, z]], [body: <Feature>])
+remove <Name> (body: <Feature>)
 combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>], [refine: false])
 shell, draft, offset_face, delete_face, move_face, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
 text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length>, distance: <length>, [font: sans|mono], [align: left|center|right], [angle: <angle>], [op: ...], [body: ...], [body_name: ...])
@@ -501,6 +503,13 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   it. With `copy: true` the original stays and the moved copy is a new body named after the
   feature (its faces: `Move1/copy(<face>)`); otherwise the body moves and keeps its names.
   `body:` defaults to the latest body.
+- `scale` scales a body about the point `about` (default the origin): `factor` is one positive
+  plain number for all axes, `factors` one per world axis. The body keeps its feature, name and
+  face names. A uniform factor keeps planes, cylinders and the like as they are; unequal factors
+  turn curved faces into free-form (B-spline) surfaces. `body:` defaults to the latest body.
+- `remove` drops a body (named by the feature that created it) from the result. Later
+  features cannot name it ("removed by Remove1"); a feature without `body:` works on the
+  latest remaining body. A suppressed `remove` removes nothing.
 - `combine` merges the tool bodies (named by the feature that created them) into the target
   with a boolean operation and consumes them: a tool cannot be used afterwards. `body:`
   defaults to the latest body that is not a tool. This is how one feature is patterned: make
@@ -895,5 +904,9 @@ by midpoint): `hole` (`face: {point, normal}`, world `positions: [[x, y, z]]`, `
 `direction`, `count`, `spacing`), `pattern_circular` (`features` or `target`, `axis: {origin,
 direction}`, `count`, `angle`), `mirror` (`plane: {origin, normal}`, `features` rebuilt reflected,
 or `target` + `merge` for a whole body) and `shell` (`faces: [{point, normal}]`, `thickness`,
-`side: inside|outside`). The exporter plugins in `plugins/` write these files.
+`side: inside|outside`). Whole-body edits (version 2): `move_body` (`target`, `translate: [x, y, z]`
+mm and/or `rotate: {axis, origin, angle}` degrees, the turn first; `copy: true` makes a new body
+named after the feature), `scale_body` (`target`, `factor` or `factors: [x, y, z]`, `center`),
+`remove_body` (`target`) and `draft` (`faces: [{point, normal}]`, `plane: {origin, normal}`,
+`angle` degrees, `flip`). The exporter plugins in `plugins/` write these files.
 Anything that cannot be imported is listed in `skipped_user_text` with its reason.

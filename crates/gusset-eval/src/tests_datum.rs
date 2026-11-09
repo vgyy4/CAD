@@ -403,3 +403,59 @@ fn combine_survives_rollback_and_suppression() {
     let r = ev.evaluate(&doc2, Some(doc2.features.len() - 1), &());
     assert_eq!(r.bodies.len(), 2, "rolled back before the combine");
 }
+
+#[test]
+fn scale_grows_a_body_about_a_point_keeping_names() {
+    let (_, base) = run("");
+    // About the origin by 2: the box spans (0..80, 0..40, 0..20); parameters work.
+    let (ev, r) = run("scale Scale1 (factor: 2)");
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.bodies.len(), 1);
+    let bb = bbox(&ev, &r, "Extrude1");
+    assert!(close(bb.min, [0.0; 3]) && close(bb.max, [80.0, 40.0, 20.0]), "{bb:?}");
+    assert!((volume(&ev, &r, "Extrude1") - 64000.0).abs() < 1e-6);
+    assert_eq!(face_names(&r, "Extrude1"), face_names(&base, "Extrude1"));
+    // About the centre of the box, halved; the factor may be a parameter expression.
+    let (ev, r) = run("scale Scale1 (body: Extrude1, factor: lift / 24 mm, about: [20 mm, 10 mm, 5 mm])");
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    let bb = bbox(&ev, &r, "Extrude1");
+    assert!(close(bb.min, [10.0, 5.0, 2.5]) && close(bb.max, [30.0, 15.0, 7.5]), "{bb:?}");
+    // Scaled faces are still addressable.
+    let (_, r) = run("scale Scale1 (factor: 2)
+sketch Sketch2 (plane: Extrude1/cap(end), next_id: 2) {
+  p1 = point(1, 1)
+}");
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert!(close(r.sketches["Sketch2"].frame.origin, [0.0, 0.0, 20.0]));
+}
+
+#[test]
+fn scale_factors_must_be_positive() {
+    for f in ["0", "-1", "1 - 1"] {
+        let (_, r) = run(&format!("scale Scale1 (factor: {f})"));
+        let e = r.errors();
+        assert!(e.iter().any(|e| e.feature == "Scale1" && e.message.contains("positive")), "{f}: {e:?}");
+    }
+}
+
+#[test]
+fn scale_factors_are_plain_numbers() {
+    let (_, r) = run("scale Scale1 (factor: tilt)");
+    assert!(r.errors().iter().any(|e| e.feature == "Scale1" && e.message.contains("plain number")), "{:?}", r.errors());
+}
+
+#[test]
+fn remove_drops_a_body_and_later_features_cannot_use_it() {
+    let doc = format!("{BASE}\n{TOOL}\nremove Remove1 (body: Extrude2)\n");
+    let mut ev = Evaluator::new(Arc::new(MockKernel));
+    let r = ev.evaluate(&Document::from_text(&doc).unwrap(), None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.bodies.len(), 1);
+    assert!(r.body("Extrude1").is_some() && r.body("Extrude2").is_none());
+    // Removing the other one leaves the plate; with `latest` defaults shifting back.
+    let doc = format!("{BASE}\n{TOOL}\nremove Remove1 (body: Extrude1)\nmove Move1 (translate: [1 mm, 0 mm, 0 mm])\n");
+    let r = ev.evaluate(&Document::from_text(&doc).unwrap(), None, &());
+    assert!(r.errors().is_empty(), "{:?}", r.errors());
+    assert_eq!(r.bodies.len(), 1);
+    assert!(close(bbox(&ev, &r, "Extrude2").min, [101.0, 0.0, 0.0]));
+}

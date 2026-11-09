@@ -179,7 +179,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
     let mut seen: BTreeMap<&str, &Feature> = BTreeMap::new();
     // Bodies that exist at this point (a combine consumes its tool bodies).
     let mut live_bodies = 0usize;
-    let mut consumed: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut consumed: BTreeMap<&str, (&str, bool)> = BTreeMap::new();
     let mut body_names: BTreeSet<&str> = BTreeSet::new();
     for f in &doc.features {
         let n = f.name.as_str();
@@ -351,6 +351,20 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
             FeatureKind::Move(d) => {
                 check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
             }
+            FeatureKind::Scale(d) => {
+                check_body_target(n, d.body.as_deref(), live_bodies > 0, &seen, &consumed, &mut out);
+            }
+            FeatureKind::Remove(d) => {
+                check_body_target(n, Some(&d.body), true, &seen, &consumed, &mut out);
+                // A suppressed remove is skipped by the evaluator, so it removes nothing.
+                if !f.suppressed
+                    && seen.get(d.body.as_str()).is_some_and(|g| creates_body(g))
+                    && !consumed.contains_key(d.body.as_str())
+                {
+                    consumed.insert(&d.body, (n, true));
+                    live_bodies = live_bodies.saturating_sub(1);
+                }
+            }
             FeatureKind::Joint(d) => {
                 for b in std::iter::once(&d.body).chain(&d.with) {
                     check_body_target(n, Some(b), true, &seen, &consumed, &mut out);
@@ -411,7 +425,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 // A suppressed combine is skipped by the evaluator, so it consumes nothing.
                 for t in d.tools.iter().filter(|_| !f.suppressed) {
                     if seen.get(t.as_str()).is_some_and(|g| creates_body(g)) && !consumed.contains_key(t.as_str()) {
-                        consumed.insert(t, n);
+                        consumed.insert(t, (n, false));
                         live_bodies = live_bodies.saturating_sub(1);
                     }
                 }
@@ -459,7 +473,7 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                     }
                     for b in bodies.iter().filter(|_| !f.suppressed) {
                         if seen.get(b.as_str()).is_some_and(|g| creates_body(g)) && !consumed.contains_key(b.as_str()) {
-                            consumed.insert(b, n);
+                            consumed.insert(b, (n, false));
                             live_bodies = live_bodies.saturating_sub(1);
                         }
                     }
@@ -802,7 +816,7 @@ fn check_body_op(
     t: &BodyTarget<'_>,
     live_bodies: usize,
     seen: &BTreeMap<&str, &Feature>,
-    consumed: &BTreeMap<&str, &str>,
+    consumed: &BTreeMap<&str, (&str, bool)>,
     out: &mut Vec<Issue>,
 ) {
     if let Some(bn) = t.body_name {
@@ -883,7 +897,7 @@ fn check_body_target(
     body: Option<&str>,
     body_available: bool,
     seen: &BTreeMap<&str, &Feature>,
-    consumed: &BTreeMap<&str, &str>,
+    consumed: &BTreeMap<&str, (&str, bool)>,
     out: &mut Vec<Issue>,
 ) {
     match body {
@@ -907,8 +921,14 @@ fn check_body_target(
 }
 
 /// A body that an earlier `combine` used as a tool no longer exists.
-fn check_not_consumed(n: &str, body: &str, consumed: &BTreeMap<&str, &str>, out: &mut Vec<Issue>) {
-    if let Some(by) = consumed.get(body) {
+fn check_not_consumed(n: &str, body: &str, consumed: &BTreeMap<&str, (&str, bool)>, out: &mut Vec<Issue>) {
+    if let Some(&(by, true)) = consumed.get(body) {
+        out.push(issue_h(
+            n,
+            format!("body '{body}' was removed by {by}"),
+            format!("move this feature before {by}, or delete {by} to keep the body"),
+        ));
+    } else if let Some(&(by, false)) = consumed.get(body) {
         out.push(issue_h(
             n,
             format!("body '{body}' was consumed by {by}"),

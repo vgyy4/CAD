@@ -1229,6 +1229,53 @@ combine Combine2 (tools: [Mirror1], op: add, label: "Weld")
     }
 
     #[test]
+    fn scale_and_remove_roundtrip_and_validate() {
+        let base = "gusset 1\nunits mm\nparam k = 2\nsketch S (plane: XY, next_id: 1) {\n}\nextrude E (profile: S, distance: 1 mm, op: new)\nextrude F (profile: S, distance: 1 mm, op: new)\n";
+        let ok = format!(
+            "{base}\nscale Scale1 (body: E, factor: k, about: [1 mm, 2 mm, 3 mm])\n\nscale Scale2 (factors: [k, 1, 0.5])\n\nremove Remove1 (body: F)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert!(doc.to_text().contains("scale Scale2 (factors: [k, 1, 0.5])\n\nremove Remove1 (body: F)\n"));
+        assert_eq!(Document::from_text(&doc.to_text()).unwrap(), doc);
+        for f in &doc.features {
+            let obj = text::print_feature_object(f);
+            assert_eq!(&text::parse_feature_object(&obj).unwrap(), f, "{obj}");
+        }
+        assert_eq!(doc.feature("Remove1").unwrap().kind.dependencies(), vec!["F".to_string()]);
+        let bad = |extra: &str| Document::from_text(&format!("{base}{extra}\n")).unwrap_err().to_string();
+        let has = |extra: &str, want: &str| {
+            let e = bad(extra);
+            assert!(e.contains(want), "{extra}: {e}");
+        };
+        // A removed body cannot be named again, and goes from the live bodies.
+        has("remove R (body: F)\nscale T (body: F, factor: 2)", "removed by R");
+        has("remove R (body: F)\nremove R2 (body: F)", "removed by R");
+        has("remove R (body: F)\nmove M (body: F, translate: [1, 2, 3])", "removed by R");
+        has("remove R (body: S)", "does not create a body");
+        has("remove R (body: Nope)", "'Nope', which does not exist");
+        has("remove R (body: E)\nremove R2 (body: F)\nscale T (factor: 2)", "there is no body to work on");
+        assert!(Document::from_text(&format!("{base}remove R (body: F)\nscale T (body: E, factor: 2)\n")).is_ok());
+        assert!(
+            Document::from_text(&format!("{base}remove R (body: F, suppressed: true)\nscale T (body: F, factor: 2)\n"))
+                .is_ok(),
+            "a suppressed remove removes nothing"
+        );
+        for b in [
+            "remove R ()",
+            "remove R (body: F, copy: true)",
+            "scale T ()",
+            "scale T (body: E)",
+            "scale T (factor: 2, factors: [1, 2, 3])",
+            "scale T (factors: [1, 2])",
+            "scale T (factor: 2, translate: [1, 2, 3])",
+            "scale T (factor: )",
+        ] {
+            assert!(text::parse(&format!("gusset 1\n{b}\n")).is_err(), "{b}");
+        }
+        has("scale T (factor: nope)", "unknown parameter 'nope'");
+    }
+
+    #[test]
     fn parse_errors() {
         let bad = [
             "plane P (offset: 1 mm)",

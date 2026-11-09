@@ -34,6 +34,7 @@ pub const GS_ORIGIN_SECTION: i64 = 7;
 pub const GS_XF_MIRROR: i32 = 0;
 pub const GS_XF_TRANSLATE: i32 = 1;
 pub const GS_XF_ROTATE: i32 = 2;
+pub const GS_XF_SCALE: i32 = 3;
 
 pub const GS_BOOL_UNION: i32 = 0;
 pub const GS_BOOL_CUT: i32 = 1;

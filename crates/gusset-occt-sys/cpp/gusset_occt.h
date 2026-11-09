@@ -87,6 +87,7 @@ typedef struct {
 #define GS_XF_MIRROR 0    /* params: plane origin xyz, plane normal xyz */
 #define GS_XF_TRANSLATE 1 /* params: vector xyz */
 #define GS_XF_ROTATE 2    /* params: axis origin xyz, axis direction xyz, angle (radians) */
+#define GS_XF_SCALE 3     /* params: centre xyz, factors xyz (positive; equal = a similarity) */
 
 #define GS_BOOL_UNION 0
 #define GS_BOOL_CUT 1
