@@ -452,14 +452,63 @@ fn a_components_features_move_with_its_placement() {
     assert_eq!(tree["features"][0]["plane"]["x_axis"], json!([0.0, 1.0, 0.0]));
     assert_eq!(tree["features"][1]["edges"][0]["midpoint"], json!([0.0, 0.0, 5.0]));
     assert_eq!(tree["features"][2]["direction"], json!([0.0, 1.0, 0.0]));
-    // Two different placements of one component's bodies are refused.
+    // Two placements of one blob are two occurrences: the features are written once for each.
     let mut two = placed.clone();
     two.push(crate::fusion::Placed {
         brep: "abc".into(),
         occurrence: "p".into(),
-        placement: crate::fusion::Placement::IDENTITY,
+        placement: crate::fusion::Placement { r: crate::fusion::Placement::IDENTITY.r, t: [10.0, 0.0, 0.0] },
     });
-    assert!(place(&mut tree, &two).is_err());
+    let mut tree = json!({
+    "components": [{"source_id": 9, "bodies": ["BREP.abc.smb"]}],
+    "features": [
+        {"type": "sketch", "name": "S", "_component": 9,
+         "plane": {"origin": [0.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]}},
+        {"type": "extrude", "name": "E", "_component": 9, "sketch": "S", "operation": "new"},
+        {"type": "extrude", "name": "Other", "sketch": "S2", "operation": "new"},
+        {"type": "extrude", "name": "Cut", "_component": 9, "sketch": "S", "operation": "cut", "target": "E"},
+    ]});
+    place(&mut tree, &two).unwrap();
+    let names: Vec<&str> = tree["features"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["S", "S [2]", "E", "E [2]", "Other", "Cut", "Cut [2]"]);
+    assert_eq!(tree["features"][3]["sketch"], "S [2]");
+    assert_eq!(tree["features"][6]["target"], "E [2]");
+    assert_eq!(tree["features"][0]["plane"]["origin"], json!([0.0, 0.0, 5.0]));
+    assert_eq!(tree["features"][1]["plane"]["origin"], json!([10.0, 0.0, 0.0]));
+    // Different blobs of one component placed in different ways are refused.
+    let mut mixed = json!({
+    "components": [{"source_id": 9, "bodies": ["BREP.abc.smb", "BREP.def.smb"]}],
+    "features": [{"type": "sketch", "name": "S", "_component": 9}]});
+    let mut other = two.clone();
+    if let Some(o) = other.get_mut(1) {
+        o.brep = "def".into();
+    }
+    assert!(place(&mut mixed, &other).is_err());
+}
+
+#[test]
+fn a_sweep_needs_its_profile_and_path() {
+    let ok = json!({"type": "sweep", "name": "Sweep1", "sketch": "S2", "path": "S1", "path_curves": ["c1"],
+        "operation": "new"});
+    assert!(
+        check(&json!({"features": [
+        {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"}, ok.clone()]}))
+        .is_ok()
+    );
+    let mut bad = ok.clone();
+    bad["error"] = "sweep path is not a list of sketch curves of one sketch".into();
+    let why = check(&json!({"features": [
+        {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"}, bad]}))
+    .unwrap_err();
+    assert!(why.contains("Sweep1") && why.contains("path"), "{why}");
+    let mut join = ok;
+    join["operation"] = "join".into();
+    assert!(
+        check(&json!({"features": [
+        {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"}, join]}))
+        .unwrap_err()
+        .contains("body it changes")
+    );
 }
 
 /// Deterministic noise and damage: nothing may panic.

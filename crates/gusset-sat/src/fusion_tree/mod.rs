@@ -29,6 +29,7 @@ use std::rc::Rc;
 use stream::{Design, ref_ids, ref_lists, wstrings_all};
 
 const EXTRUDE: &str = "DD405BC2";
+const SWEEP: &str = "FCBB1707";
 const PARAM_HOLDER: &str = "D91D429C";
 const PARAM: &str = "7A6A3D31";
 
@@ -108,6 +109,18 @@ pub fn feature_tree(files: &[(String, Vec<u8>)], file_name: &str) -> Result<serd
 /// # Errors
 /// As [`feature_tree`].
 pub fn feature_tree_local(files: &[(String, Vec<u8>)], file_name: &str) -> Result<serde_json::Value, String> {
+    let tree = feature_tree_unchecked(files, file_name)?;
+    json::check(&tree)?;
+    Ok(tree)
+}
+
+/// [`feature_tree_local`] without the check that every feature was read in full: the features
+/// the reader could not read stay in the tree with a reason (for diagnosing a design).
+///
+/// # Errors
+/// As [`feature_tree`], except for the unread features.
+#[doc(hidden)]
+pub fn feature_tree_unchecked(files: &[(String, Vec<u8>)], file_name: &str) -> Result<serde_json::Value, String> {
     let (meta, bulk) = pick_stream(files)?;
     if meta.len().saturating_add(bulk.len()) > MAX_STREAM_BYTES {
         return Err("the design stream is too large".into());
@@ -120,7 +133,6 @@ pub fn feature_tree_local(files: &[(String, Vec<u8>)], file_name: &str) -> Resul
         .collect();
     let mut cx = Ctx::new(&d, &acis);
     let mut tree = json::design_json(&mut cx);
-    json::check(&tree)?;
     if let Some(src) = tree.get_mut("source").and_then(serde_json::Value::as_object_mut) {
         src.insert("file".into(), file_name.into());
         src.insert("design".into(), serde_json::Value::Null);

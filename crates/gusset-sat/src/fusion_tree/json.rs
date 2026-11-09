@@ -4,9 +4,10 @@
 use super::feature::{self, Params, extrude_raw, feature_name, params_of, pget, point3};
 use super::geom::{self, V3, dot, mm, round6, round9};
 use super::naming::{self, RecipeKind};
-use super::sketch::SKETCH_FEAT;
+use super::sketch::{self, SKETCH_FEAT};
 use super::stream::ref_ids;
-use super::{Ctx, EXTRUDE, Graph, PARAM, component_bodies, component_name, timeline};
+use super::stream::{self, Design};
+use super::{Ctx, EXTRUDE, Graph, PARAM, SWEEP, component_bodies, component_name, timeline};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -237,6 +238,87 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
     j
 }
 
+/// The bodies a feature made, and for a join/cut/intersect the feature(s) whose bodies it acted on.
+fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names: &HashMap<u64, String>) -> usize {
+    let links = g.body_links(d, fid, 2);
+    let made = links.iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+    let mut acted: Vec<String> = links
+        .iter()
+        .filter_map(|l| g.creator.get(l).copied())
+        .filter(|c| *c != fid)
+        .map(|c| names.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .collect();
+    acted.sort();
+    acted.dedup();
+    if matches!(j.get("operation").and_then(Value::as_str), Some("join" | "cut" | "intersect")) {
+        let t = match acted.as_slice() {
+            [] => Value::Null,
+            [one] => one.as_str().into(),
+            many => many.to_vec().into(),
+        };
+        j.insert("target".into(), t);
+    }
+    made
+}
+
+/// Sweep `FCBB1707`: the operation enum is the first u32 of the body; the profile is a `4BD53E5A`
+/// (names its sketch), the path a list of `5A1BF548` -> `E2CEFD18` sketch-curve references
+/// (`u64 sketch data id`, `u64 crv_primary_id`).
+fn sweep_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, String>) -> Map<String, Value> {
+    let d = cx.d;
+    let mut j = Map::new();
+    j.insert("type".into(), "sweep".into());
+    j.insert("name".into(), name.into());
+    j.insert("source_id".into(), fid.into());
+    let rec = d.rec(fid);
+    let Some(h) = stream::parse_header(rec) else {
+        j.insert("error".into(), "layout not recognised".into());
+        return j;
+    };
+    let op = rec.get(h.body).copied().unwrap_or(0);
+    let profile = feature::profile_sketch_of(d, rec);
+    j.insert("sketch".into(), profile.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
+    j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
+    let mut path_sketch: Option<u64> = None;
+    let mut curves: Vec<String> = Vec::new();
+    let mut ok = true;
+    for q in ref_ids(d, rec) {
+        if !d.is(q, "5A1BF548") {
+            continue;
+        }
+        for c in ref_ids(d, d.rec(q)) {
+            if !d.is(c, "E2CEFD18") {
+                continue;
+            }
+            let r = d.rec(c);
+            let word = |o: usize| r.get(o..o + 8).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes);
+            let (Some(sk), Some(prim)) = (word(0x21), word(0x29)) else {
+                ok = false;
+                continue;
+            };
+            if path_sketch.is_some_and(|p| p != sk) {
+                ok = false;
+            }
+            path_sketch = Some(sk);
+            let s = cx.sketch(sk);
+            match sketch::curve_by_primary(d, &s, prim) {
+                Some(cid) => curves.push(format!("c{cid}")),
+                None => ok = false,
+            }
+        }
+    }
+    j.insert("path".into(), path_sketch.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
+    j.insert("path_source_id".into(), path_sketch.map_or(Value::Null, Value::from));
+    j.insert("path_curves".into(), curves.into());
+    if !ok || path_sketch.is_none() {
+        j.insert("error".into(), "sweep path is not a list of sketch curves of one sketch".into());
+    }
+    j.insert("orientation".into(), "frenet".into());
+    j.insert("operation".into(), op_name(op).into());
+    j.insert("target".into(), Value::Null);
+    j
+}
+
 fn hole_json(cx: &mut Ctx, fid: u64, name: &str) -> Map<String, Value> {
     let d = cx.d;
     let ps = params_of(d, fid);
@@ -429,24 +511,12 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if d.is(fid, EXTRUDE) {
             let mut j = extrude_json(cx, fid, &nm, &sketch_names);
-            let links = g.body_links(d, fid, 2);
-            let made = links.iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
-            let mut acted: Vec<String> = links
-                .iter()
-                .filter_map(|l| g.creator.get(l).copied())
-                .filter(|c| *c != fid)
-                .map(|c| names.get(&c).cloned().unwrap_or_else(|| c.to_string()))
-                .collect();
-            acted.sort();
-            acted.dedup();
-            if matches!(j.get("operation").and_then(Value::as_str), Some("join" | "cut" | "intersect")) {
-                let t = match acted.as_slice() {
-                    [] => Value::Null,
-                    [one] => one.as_str().into(),
-                    many => many.to_vec().into(),
-                };
-                j.insert("target".into(), t);
-            }
+            let made = op_target(&mut j, &g, d, fid, &names);
+            j.insert("creates_bodies".into(), made.into());
+            feats.push(Value::Object(j));
+        } else if d.is(fid, SWEEP) {
+            let mut j = sweep_json(cx, fid, &nm, &sketch_names);
+            let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
         } else if d.is(fid, "A07D5F17") || d.is(fid, "F757D611") {
@@ -669,6 +739,22 @@ fn blocker(f: &Value) -> Option<String> {
             let key = if t == "fillet" { "radius" } else { "distance" };
             (!has(key)).then(|| format!("the {t} has no {key}"))
         }
+        "sweep" => {
+            if has("error") {
+                return Some(text("error").unwrap_or("its layout is not recognised").to_string());
+            }
+            if !has("sketch") || !has("path") {
+                return Some("its profile or path sketch is not decoded".into());
+            }
+            let op = text("operation").unwrap_or("");
+            if !matches!(op, "new" | "join" | "cut" | "intersect") {
+                return Some(format!("its operation is {op}"));
+            }
+            if matches!(op, "join" | "cut" | "intersect") && !f.get("target").is_some_and(Value::is_string) {
+                return Some("the body it changes is not one body of one feature".into());
+            }
+            None
+        }
         "hole" | "mirror" => None,
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
         "pattern_circular" => (!has("axis") || !has("count")).then(|| "the circular pattern has no axis".to_string()),
@@ -743,27 +829,45 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
             Some((id, bodies))
         })
         .collect();
-    let mut by_comp: HashMap<u64, crate::fusion::Placement> = HashMap::new();
+    // The placements of each component's occurrences; a component with several occurrences (one
+    // blob, several placements) has its features written once per occurrence.
+    let mut by_comp: HashMap<u64, Vec<crate::fusion::Placement>> = HashMap::new();
     for (id, bodies) in &comps {
-        let mut found: Option<crate::fusion::Placement> = None;
+        let mut found: Vec<crate::fusion::Placement> = Vec::new();
+        let mut breps: Vec<&str> = Vec::new();
         for p in placed {
             if bodies
                 .iter()
                 .any(|b| b.strip_prefix("BREP.").and_then(|b| b.strip_suffix(".smb")) == Some(p.brep.as_str()))
             {
-                if found.is_some_and(|f| f != p.placement) {
-                    return Err("a component's bodies are placed in different ways".into());
+                if !found.contains(&p.placement) {
+                    found.push(p.placement);
                 }
-                found = Some(p.placement);
+                if !breps.contains(&p.brep.as_str()) {
+                    breps.push(p.brep.as_str());
+                }
             }
         }
-        if let Some(f) = found.filter(|f| *f != crate::fusion::Placement::IDENTITY) {
-            by_comp.insert(*id, f);
+        if found.len() > 1 && breps.len() > 1 {
+            return Err("a component's bodies are placed in different ways".into());
         }
+        if found.len() > 1 || found.first().is_some_and(|f| *f != crate::fusion::Placement::IDENTITY) {
+            by_comp.insert(*id, found);
+        }
+    }
+    if let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) {
+        replicate_instances(feats, &by_comp);
     }
     let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) else { return Ok(()) };
     for f in feats {
-        let Some(pl) = f.get("_component").and_then(Value::as_u64).and_then(|c| by_comp.get(&c)).copied() else {
+        let inst = f.get("_instance").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let Some(pl) = f
+            .get("_component")
+            .and_then(Value::as_u64)
+            .and_then(|c| by_comp.get(&c))
+            .and_then(|v| v.get(inst))
+            .copied()
+        else {
             continue;
         };
         let ty = f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
@@ -839,6 +943,66 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
         }
     }
     Ok(())
+}
+
+/// Writes the features of a component that stands in `k` places `k` times (instance `i` carries
+/// `_instance: i`; copies after the first get " [i+1]" after their names and every reference to a
+/// renamed feature follows), each copy right after the original so the timeline order holds.
+fn replicate_instances(feats: &mut Vec<Value>, by_comp: &HashMap<u64, Vec<crate::fusion::Placement>>) {
+    let count =
+        |f: &Value| f.get("_component").and_then(Value::as_u64).and_then(|c| by_comp.get(&c)).map_or(1, Vec::len);
+    if feats.iter().all(|f| count(f) <= 1) {
+        return;
+    }
+    fn rename(v: &mut Value, map: &HashMap<String, String>) {
+        match v {
+            Value::String(s) => {
+                if let Some(n) = map.get(s.as_str()) {
+                    *s = n.clone();
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(|x| rename(x, map)),
+            Value::Object(o) => {
+                for (k, x) in o.iter_mut() {
+                    if !matches!(k.as_str(), "type" | "operation" | "component" | "fusion_type" | "name") {
+                        rename(x, map);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let old = std::mem::take(feats);
+    // Per component, the names its features carry.
+    let names: Vec<Option<String>> =
+        old.iter().map(|f| f.get("name").and_then(Value::as_str).map(str::to_string)).collect();
+    let mut out = Vec::with_capacity(old.len());
+    for (i, f) in old.iter().enumerate() {
+        let k = count(f);
+        for inst in 0..k {
+            let mut c = f.clone();
+            if k > 1 {
+                let map: HashMap<String, String> = old
+                    .iter()
+                    .zip(&names)
+                    .filter(|(g, _)| g.get("_component") == f.get("_component"))
+                    .filter_map(|(_, n)| n.clone())
+                    .map(|n| (n.clone(), format!("{n} [{}]", inst + 1)))
+                    .collect();
+                if inst > 0 {
+                    rename(&mut c, &map);
+                    if let (Some(n), Some(o)) = (names.get(i).and_then(Clone::clone), c.as_object_mut()) {
+                        o.insert("name".into(), format!("{n} [{}]", inst + 1).into());
+                    }
+                }
+                if let Some(o) = c.as_object_mut() {
+                    o.insert("_instance".into(), inst.into());
+                }
+            }
+            out.push(c);
+        }
+    }
+    *feats = out;
 }
 
 fn v3mm_raw(p: V3) -> Value {

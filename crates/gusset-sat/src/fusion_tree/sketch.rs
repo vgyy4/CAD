@@ -327,6 +327,11 @@ fn crv_key(d: &Design, q: u64) -> Option<(u64, u64)> {
     Some((v("crv_primary_id")?, v("crv_secondary_id")?))
 }
 
+/// The object id of the line or arc of sketch `s` whose `crv_primary_id` is `primary`.
+pub(super) fn curve_by_primary(d: &Design, s: &Sketch, primary: u64) -> Option<u64> {
+    s.lines.keys().chain(s.arcs.keys()).copied().find(|q| crv_key(d, *q).is_some_and(|k| k.0 == primary))
+}
+
 /// Sketch curve `q` as a polyline from its start to its end (cm).
 fn curve_polyline(d: &Design, s: &Sketch, q: u64) -> Option<Vec<P2>> {
     if let Some(l) = s.lines.get(&q) {

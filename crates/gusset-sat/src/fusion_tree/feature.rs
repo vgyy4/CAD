@@ -140,7 +140,7 @@ fn find_bytes(rec: &[u8], pat: &[u8]) -> Option<usize> {
 }
 
 /// The sketch a profile record (`4BD53E5A`) names: its UTF-16 decimal text is the sketch's id.
-fn profile_sketch_of(d: &Design, rec: &[u8]) -> Option<u64> {
+pub(super) fn profile_sketch_of(d: &Design, rec: &[u8]) -> Option<u64> {
     let mut found = None;
     for q in ref_ids(d, rec) {
         if d.is(q, "4BD53E5A") {
