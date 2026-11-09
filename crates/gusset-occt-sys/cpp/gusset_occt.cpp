@@ -43,6 +43,10 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <memory>
+#include <ShapeFix_Shape.hxx>
+#include <ShapeFix_ShapeTolerance.hxx>
+#include <ShapeBuild_ReShape.hxx>
+#include <Precision.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Defeaturing.hxx>
@@ -119,6 +123,7 @@
 #include <TDocStd_Document.hxx>
 #include <TopAbs.hxx>
 #include <TopExp.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <OSD_Parallel.hxx>
 #include <array>
 #include <Geom_Plane.hxx>
@@ -443,18 +448,21 @@ void check_closed(const TopoDS_Shape& s, const char* what) {
 // Records Input/Modified history of every face of input `input_idx`.
 template <typename Op>
 void record_input_faces(Op& op, const TopoDS_Shape& input, int64_t input_idx, const ShapeMap& out_faces,
-                        std::vector<int64_t>& origins) {
+                        std::vector<int64_t>& origins,
+                        const Handle(ShapeBuild_ReShape)& ctx = Handle(ShapeBuild_ReShape)()) {
+  // `ctx` maps the operation's faces to the ones of a shape fixed afterwards.
+  auto find = [&](const TopoDS_Shape& f) { return out_faces.FindIndex(ctx.IsNull() ? f : ctx->Apply(f)); };
   ShapeMap in_faces;
   TopExp::MapShapes(input, TopAbs_FACE, in_faces);
   for (int i = 1; i <= in_faces.Extent(); ++i) {
     const TopoDS_Shape& g = in_faces(i);
     const ShapeList& mods = op.Modified(g);
     if (mods.IsEmpty()) {
-      int idx = out_faces.FindIndex(g);
+      int idx = find(g);
       if (idx > 0) push_origin(origins, idx - 1, GS_ORIGIN_INPUT, input_idx, i - 1);
     } else {
       for (ShapeList::Iterator it(mods); it.More(); it.Next()) {
-        int idx = out_faces.FindIndex(it.Value());
+        int idx = find(it.Value());
         if (idx > 0) push_origin(origins, idx - 1, GS_ORIGIN_INPUT, input_idx, i - 1);
       }
     }
@@ -463,14 +471,15 @@ void record_input_faces(Op& op, const TopoDS_Shape& input, int64_t input_idx, co
 
 template <typename Op>
 void record_generated(Op& op, const TopoDS_Shape& input, TopAbs_ShapeEnum type, int64_t kind, int64_t input_idx,
-                      const ShapeMap& out_faces, std::vector<int64_t>& origins) {
+                      const ShapeMap& out_faces, std::vector<int64_t>& origins,
+                      const Handle(ShapeBuild_ReShape)& ctx = Handle(ShapeBuild_ReShape)()) {
   ShapeMap in_sub;
   TopExp::MapShapes(input, type, in_sub);
   for (int i = 1; i <= in_sub.Extent(); ++i) {
     const ShapeList& gen = op.Generated(in_sub(i));
     for (ShapeList::Iterator it(gen); it.More(); it.Next()) {
       if (it.Value().ShapeType() != TopAbs_FACE) continue;
-      int idx = out_faces.FindIndex(it.Value());
+      int idx = out_faces.FindIndex(ctx.IsNull() ? it.Value() : ctx->Apply(it.Value()));
       if (idx > 0) push_origin(origins, idx - 1, kind, input_idx, i - 1);
     }
   }
@@ -544,13 +553,28 @@ int finish_blend(Mk& mk, const GsShape* s, bool fillet, GsShape** out, GsBuf* or
   mk.Build();
   if (!mk.IsDone()) return fail(fillet ? "fillet failed" : "chamfer failed");
   TopoDS_Shape result = mk.Shape();
+  // A blend can leave tolerances and small seams that BRepCheck rejects, which ShapeFix repairs
+  // (FreeCAD's fillet does the same when its own validity test fails).
+  Handle(ShapeBuild_ReShape) ctx;
+  if (!BRepCheck_Analyzer(result, true, true).IsValid()) {
+    ShapeFix_ShapeTolerance tol;
+    tol.LimitTolerance(result, Precision::Confusion(), Precision::Confusion(), TopAbs_SHAPE);
+    ShapeFix_Shape fix(result);
+    fix.Perform();
+    TopoDS_Shape fixed = fix.Shape();
+    if (!fixed.IsNull() && BRepCheck_Analyzer(fixed, true, true).IsValid()) {
+      result = fixed;
+      ctx = fix.Context();
+    } else {
+      throw Standard_Failure((std::string(fillet ? "fillet" : "chamfer") + " produced an invalid solid").c_str());
+    }
+  }
   ShapeMap out_faces;
   TopExp::MapShapes(result, TopAbs_FACE, out_faces);
   std::vector<int64_t> o;
-  record_input_faces(mk, s->s, 0, out_faces, o);
-  record_generated(mk, s->s, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o);
-  record_generated(mk, s->s, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o);
-  check_valid(result, fillet ? "fillet" : "chamfer");
+  record_input_faces(mk, s->s, 0, out_faces, o, ctx);
+  record_generated(mk, s->s, TopAbs_EDGE, GS_ORIGIN_FROM_EDGE, 0, out_faces, o, ctx);
+  record_generated(mk, s->s, TopAbs_VERTEX, GS_ORIGIN_FROM_VERTEX, 0, out_faces, o, ctx);
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -584,6 +608,15 @@ bool has_freeform_face(const TopoDS_Shape& s) {
 
 // Is there an extruded or revolved ellipse? Their faces are not analytic surfaces, and
 // the default and the 1e-7 adaptive quadrature leave a relative error of 1e-5 .. 1e-8.
+// A torus face trimmed by other faces (a revolved arc cut by a pad) is integrated with the
+// default fixed quadrature to only about 1e-4 of the volume.
+bool has_torus_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    if (BRepAdaptor_Surface(TopoDS::Face(ex.Current()), false).GetType() == GeomAbs_Torus) return true;
+  }
+  return false;
+}
+
 bool has_elliptic_face(const TopoDS_Shape& s) {
   for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
     Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(ex.Current()));
@@ -2061,7 +2094,7 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   GS_GUARD_BEGIN
   if (!s || !mass) return fail("null argument");
   GProp_GProps vol, area;
-  if (has_freeform_face(s->s)) {
+  if (has_freeform_face(s->s) || has_torus_face(s->s)) {
     // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
     // percent on twisted surfaces, so integrate adaptively.
     BRepGProp::VolumeProperties(s->s, vol, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
