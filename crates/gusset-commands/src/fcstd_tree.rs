@@ -611,7 +611,7 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     let ty = o.int("Type").unwrap_or(0);
                     let len = o.float("Length").unwrap_or(0.0);
                     let distance = match (pocket, ty) {
-                        (_, 0) => len,
+                        (_, 0 | 4) => len,
                         // Through all: far enough for any part (the volume check confirms).
                         (true, 1) => 100_000.0,
                         _ => {
@@ -642,8 +642,21 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
                         m.insert("target".into(), json!(t));
                     }
-                    first_solid.get_or_insert_with(|| name.clone());
                     features.push(f);
+                    // Two lengths: the second goes the other way from the sketch, written as a
+                    // second extrusion of the same profile into the same body.
+                    if ty == 4 && !symmetric {
+                        let len2 = o.float("Length2").unwrap_or(0.0);
+                        if len2 > 0.0 {
+                            let back = format!("{name}_back");
+                            let op2 = if pocket { "cut" } else { "join" };
+                            let t = first_solid.clone().unwrap_or_else(|| name.clone());
+                            features
+                                .push(json!({"type": "extrude", "name": back, "sketch": profile, "profiles": "all",
+                                "distance": -d.signum() * len2, "symmetric": false, "operation": op2, "target": t}));
+                        }
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
                 }
                 "PartDesign::Revolution" | "PartDesign::Groove" => {
                     let groove = kind == "PartDesign::Groove";
