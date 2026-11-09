@@ -1056,6 +1056,7 @@ pub(crate) fn write(
     keep_sheets: bool,
     colours: &crate::Colours,
     history: Option<&crate::History>,
+    only: Option<(usize, usize)>,
 ) -> Result<(String, usize, usize, Vec<String>), SatError> {
     let ident = Xf { r: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3], s: 1.0, unit: sat.scale };
     let mut w = Writer {
@@ -1106,6 +1107,21 @@ pub(crate) fn write(
         .filter(|(_, r)| r.ty == "body")
         .filter_map(|(i, _)| i64::try_from(i).ok())
         .collect();
+    // One body of a blob that must hold `of` bodies (a Fusion base feature's output).
+    let bodies: Vec<i64> = match only {
+        None => bodies,
+        Some((nth, of)) => {
+            if bodies.len() != of {
+                return Err(SatError::Unsupported(format!(
+                    "the blob holds {} bodies, {of} were expected",
+                    bodies.len()
+                )));
+            }
+            let one =
+                bodies.get(nth).copied().ok_or_else(|| SatError::Unsupported(format!("no body {nth} in the blob")))?;
+            vec![one]
+        }
+    };
     let many = bodies.len() > 1;
     // The bodies of a feature's blob that its body references colour: those with a transform
     // after the first, only when the counts agree (else the pairing is not known).

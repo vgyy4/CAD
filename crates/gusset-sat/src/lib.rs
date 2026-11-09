@@ -162,7 +162,31 @@ pub fn to_step_coloured_history(
     history: Option<&History>,
 ) -> Result<Converted, SatError> {
     let sat = parse(bytes, limits)?;
-    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets, colours, history)?;
+    let (step, bodies, skipped_sheets, warnings) = step::write(&sat, name, place, keep_sheets, colours, history, None)?;
+    Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
+}
+
+/// One body of a blob as STEP text: body `nth` (from 0, in file order) of a blob that must hold
+/// exactly `of` bodies, moved by `place`. A Fusion base feature's output is the last bodies of its
+/// history blob (`BREP.<id>.smbh`). An error where the blob holds another number of bodies or the
+/// body is not a solid.
+///
+/// # Errors
+/// [`SatError`] for a damaged blob, another body count, or a body without a closed shell.
+pub fn to_step_nth(
+    bytes: &[u8],
+    name: &str,
+    limits: &Limits,
+    place: Option<&fusion::Placement>,
+    nth: usize,
+    of: usize,
+) -> Result<Converted, SatError> {
+    let sat = parse(bytes, limits)?;
+    let (step, bodies, skipped_sheets, warnings) =
+        step::write(&sat, name, place, false, &Colours::new(), None, Some((nth, of)))?;
+    if bodies == 0 {
+        return Err(SatError::Unsupported(format!("body {nth} of the blob is not a solid")));
+    }
     Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 

@@ -731,6 +731,29 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
             feats.push(j);
+        } else if c8 == "D7015B81" {
+            // Base Feature: its visible bodies are bodies the file stores (section 13), handed
+            // to the importer as `stored_body` features.
+            match base_feature_bodies(d, &g, fid) {
+                Ok(bodies) if bodies.is_empty() => {
+                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": "Base Feature that makes no body", "source_id": fid}));
+                    continue;
+                }
+                Ok(bodies) => {
+                    let n = bodies.len();
+                    for (k, (brep, index, count)) in bodies.into_iter().enumerate() {
+                        let mut bn = if k == 0 { nm.clone() } else { format!("{nm} {}", k + 1) };
+                        while k > 0 && used_names.contains(&bn) {
+                            bn.push('_');
+                        }
+                        used_names.insert(bn.clone());
+                        feats.push(json!({"type": "stored_body", "name": bn, "source_id": fid, "brep": brep,
+                            "index": index, "count": count, "creates_bodies": n}));
+                    }
+                }
+                Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": name,
+                    "class_guid": class, "source_id": fid, "error": why})),
+            }
         } else {
             let mut j = json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class, "source_id": fid});
             if c8 == "D7015B81" {
@@ -752,6 +775,55 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// The bodies a Base Feature makes: per visible (DM) body, the history blob its state list names
+/// (`BREP.<id>.smbh`), the body's place in that blob and the number of bodies the blob holds
+/// (the DM bodies are its last ones, section 13). Empty for a base feature that makes no body.
+fn base_feature_bodies(d: &Design, g: &Graph, fid: u64) -> Result<Vec<(String, usize, usize)>, String> {
+    let mut out = Vec::new();
+    for link in ref_ids(d, d.rec(fid)) {
+        if !d.is(link, "D26351F0") || g.creator.get(&link) != Some(&fid) {
+            continue;
+        }
+        let Some(dm) = ref_ids(d, d.rec(link)).into_iter().find(|q| d.is(*q, "D3937028")) else {
+            return Err("a Base Feature body link names no body".into());
+        };
+        // The state list of the body that names a history blob.
+        let mut found: Option<(String, Vec<u64>)> = None;
+        for list in ref_ids(d, d.rec(dm)).into_iter().filter(|q| d.is(*q, "CD57BC48")) {
+            let members = ref_ids(d, d.rec(list));
+            let name = members.iter().find_map(|q| {
+                stream::wstrings_all(d.rec(*q))
+                    .into_iter()
+                    .map(|w| w.2)
+                    .find(|w| w.starts_with("BREP.") && w.ends_with(".smbh"))
+            });
+            if let Some(name) = name {
+                // The record lists its bodies twice (two reference lists).
+                let mut bodies: Vec<u64> = Vec::new();
+                for q in members.into_iter().filter(|q| d.is(*q, "D3937028")) {
+                    if !bodies.contains(&q) {
+                        bodies.push(q);
+                    }
+                }
+                found = Some((name, bodies));
+                break;
+            }
+        }
+        let Some((name, members)) = found else { return Err("a Base Feature body names no history blob".into()) };
+        let Some(at) = members.iter().position(|q| *q == dm) else {
+            return Err("a Base Feature body is not in its own state list".into());
+        };
+        // The visible bodies are the last of the list (section 13).
+        out.push((name, at, members.len()));
+    }
+    for (_, at, count) in &out {
+        if *at + out.len() < *count {
+            return Err("a Base Feature body is not among the last bodies of its state list".into());
+        }
+    }
+    Ok(out)
 }
 
 fn tag_feats(feats: &mut [Value], from: usize, comp: Option<(u64, Option<&str>)>, off_timeline: bool) {
@@ -833,6 +905,7 @@ fn blocker(f: &Value) -> Option<String> {
             None
         }
         "hole" | "mirror" => None,
+        "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
         "pattern_circular" => (!has("axis") || !has("count")).then(|| "the circular pattern has no axis".to_string()),
         _ => Some(text("error").or_else(|| text("note")).map(str::to_string).unwrap_or_else(|| {
@@ -867,9 +940,15 @@ pub(super) fn check(tree: &Value) -> Result<(), String> {
 /// Drops the reader's own keys (`_component`).
 pub(super) fn finish(tree: &mut Value) {
     if let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) {
+        // The stored bodies are numbered in tree order: the importer hands them over in that order.
+        let mut stored = 0u64;
         for f in feats {
             if let Some(o) = f.as_object_mut() {
                 o.retain(|k, _| !k.starts_with('_'));
+                if o.get("type").and_then(Value::as_str) == Some("stored_body") {
+                    o.insert("body".into(), stored.into());
+                    stored += 1;
+                }
             }
         }
     }
@@ -997,6 +1076,11 @@ pub(super) fn place(tree: &mut Value, placed: &[crate::fusion::Placed]) -> Resul
                             fc.insert(k.into(), v);
                         }
                     }
+                }
+            }
+            "stored_body" => {
+                if let Some(o) = f.as_object_mut() {
+                    o.insert("placement".into(), json!({"r": pl.r, "t": pl.t}));
                 }
             }
             "pattern_circular" => {
