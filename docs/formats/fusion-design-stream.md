@@ -288,3 +288,73 @@ new-body extrudes match (was 206/236).
   bodies/components (no feature inputs) and two-direction patterns stay unsupported.
 * Mirror planes and most pattern directions reference origin planes/axes (no recipe) and the
   revolve axis is a `face_recipe` on a cylindrical face: not decoded.
+
+## 12.0 housekeeping
+* The repo copy of the prototype lacked `edgeprobe.py` (imported by edges.py, genmap.py, f3dfeat.py). Rewritten
+  this round (vector helpers, `ext_geom`, `edge_recipes_of`, `input_recipes`, `body_edge_sets`, `colinear_exists`).
+  Reproduces round-3 L-Bracket output: Sketch1/2, Extrude1/2 (cut, through -10), Fillet 5/10, Chamfer 5, R-Pattern1 (+X 30x3).
+* Ground truth note: the L-Bracket .smb/.smbh hold many body states; `gusset --import file.f3d` shows Import1..5.
+
+## 12.1 Holes (only ONE hole exists in the whole corpus: L-Bracket Hole1, class 1C037A07; all statements are 1-sample)
+* Feature `1C037A07` params (via D91D429C -> 7A6A3D31, cm/rad): `HoleDepth` "10.00 mm", `HoleDiameter` "5.5 mm", `TipAngle` "118.0 deg".
+  No counterbore/countersink/through sample exists (searched all UTF-16 strings of all 37 streams for Bore/Sink/Through: none).
+  Role names for those variants are therefore UNKNOWN (guess: CBoreDiameter/CBoreDepth/CSinkDiameter/CSinkAngle).
+* Position: feature -> `69EE2FA7` -> `5A1BF548` -> `994C518A` = [u32 0, 2 bytes] then **x y z f64 (cm, component/world)** at body+0
+  (L-Bracket: -3.0 -1.0 15.8 = X -30, Y -10, Z 158 mm; it is point 898 `pt_tag 140` of Sketch2, which lies on Sketch2's plane).
+  The rest of 994C518A is a 3x3 identity-like block + `-1 -1` sentinels: not decoded.
+* Face frame: feature -> `F2A7590D`-like `5A1BF548` -> `CC54ECAD` (96 bytes): three unit vectors (9 doubles at body+1):
+  **outward face normal (0,-1,0)**, u (1,0,0), v (0,0,1); n = u x v. The face is the Y=-10 mm face of the leg (the hole enters towards +Y).
+* Depth 10 mm = leg thickness: the stored body shows a 5.5 mm cylinder from Y=-10 to Y=0 (cylinders at X -30/0/30, Z 151/158/165 mm).
+
+## 12.2 L-Bracket end-to-end (confirmed)
+* Tree = Sketch1, Extrude1, Fillet1 (+set 2), Chamfer1, Sketch2, Extrude2 (cut), R-Pattern1, Hole1, R-Pattern2 (3 chained
+  pattern_linear: U+ , U-, V). Rebuilds to ONE body, volume 197515.929 mm3, box [-55,-45,0]..[55,0,170], 13/13 features ok, 0 skipped.
+* Ground truth: gusset's .smbh importer yields Import2 = 199654.175 mm3 (state before the holes; also reproduced by my tree without
+  Hole1/R-Pattern2) and Import1 = one hole tool, 237.583 mm3. 199654.175 - 9 * 237.583 = 197516.0 (mine 197515.929, 4e-7 rel).
+  The STL has all nine circles of r 2.75 mm centred X in {-30,0,30}, Z in {151,158,165} on both Y=-10 and Y=0 faces (53 vertices each).
+
+## 12.3 Pattern directions (F2A7590D) — the direction is stored as geometry, no recipe needed
+* `F2A7590D` record (225 bytes in the 26 pattern-direction ones checked; the corpus also holds 245/465-byte variants used by other features, not examined): 15-byte preamble, `u32 flags` at 21 (**8** = as stored, **16** = direction
+  reversed by the user; 1 sample of 16: L-Bracket R-Pattern2 V), then **point (3 f64) and vector (3 f64), cm, world** at 25, then
+  `u32 kind` at 89 = 7 origin-axis ref (`90055C05`), 8 body edge (`5662F619`->recipe), 10 sketch curve (`E2CEFD18`); then refs.
+  Direction = normalize(vector), sign included. Checked against the stored bodies: R-Pattern1 vector (10,0,0) -> +X (slots at -30/0/30);
+  R-Pattern2 V (flag 16) vector (1,0,0) -> +X (holes at X -30/0/30). R-Pattern2 U vector (0,0,-15) -> -Z (symmetric, sign not testable).
+  When not reversed the vector is the picked edge/line vector (not normalised: 10, 15); when reversed it is a unit vector.
+* A sketch-curve direction is `E2CEFD18` (45 bytes): `u64 sketch data id` (body+0x1d... e.g. 454 = Sketch2) and `u64 crv_primary_id` of the
+  curve (0x76 = 118 -> line 516 of Sketch2, 0x7d = 125 -> line 526). The vector in F2A7590D equals that sketch line's start->end in world.
+  The `50AEE8B4` sibling repeats point + vector (and a frame). So "pattern direction = sketch line" is confirmed by id, and the geometry is already in F2A7590D.
+* Two-direction (rectangular) pattern: two F2A7590D refs in the pattern record, order U then V; U <-> `countU` + `uSpaceDistance`,
+  V <-> `CountV` + `vSpaceDistance` (R-Pattern2: U Z 3 x 7 mm, V X 3 x 30 mm; confirmed by the nine bores in the stored body).
+* **Symmetric extent**: the pattern's `EA0E146E` record holds `ff ff ff ff` followed by 3 doubles = per-direction flags
+  (U, V, ?): R-Pattern1 (0,0,0), R-Pattern2 (1,0,0). R-Pattern2 holes sit at Z 151/158/165 around the original (158) => U symmetric,
+  V (X -30,0,30 from the original at -30) one-sided. 2 samples only; (the third value is unknown).
+  Gusset's `pattern_linear` has no symmetric flag, so a symmetric odd-count direction is emitted as two patterns (+s and -s,
+  count (n+1)/2 each, both on the originals); the V pattern takes originals + both U results. Even symmetric counts are not converted.
+* Pattern tree for the L-Bracket: R-Pattern2 (U +7 x2) , R-Pattern2 U2 (spacing -7 x2), R-Pattern2 V (+X 30 x3, features Hole1 + both).
+* Patterns of bodies/components (no feature inputs; every CyberDeck/MacroPad/Crickit R-Pattern, C-Pattern) are not converted; their direction
+  vector is emitted as `direction` only. Crickit R-Pattern2 (countU 3, CountV 4) has ONE direction record: V direction unknown -> unsupported.
+  Origin-axis directions (kind 7) decode to a point/vector like the others (e.g. (0.175,0,0)+(2.075,0,0) cm), but no stored body proves them.
+
+## 12.4 Mirror planes (D1728651)
+* Plane = `5A1BF548` -> `CC54ECAD` (96 bytes): **origin (3), x axis (3), y axis (3) as f64 cm**, normal = x cross y. Same record the hole face uses.
+  8 mirrors in the corpus (BQ25185 3V/5V cases): normals (0,1,0) x6 and (1,0,0) x2, origin (0,0,0) = XZ / YZ origin planes. Input features come
+  from the usual `6CCF41D5` lists (Extrude + Draft). Schema accepted by gusset (`mirror` with plane origin/normal); NOT geometry-verified
+  (the case designs also hold Draft/Shell/Combine, which gusset cannot rebuild).
+* Hole face frame uses the same record: origin (0,-1,0) cm, x (1,0,0), y (0,0,1) -> normal (0,-1,0), the Y=-10 mm face. (Revises 12.1: the
+  three vectors are origin/x/y, not n/u/v.)
+
+## 12.5 Revolve axis — BLOCKED
+* The current corpus has no Revolve (`E3849A15`) record at all (the 2 revolves of rounds 1-3 were in 1054/1092/1WireRGBW, not available now).
+  Nothing derived. Hypothesis to test when a sample returns: the axis is picked like a pattern direction (`5A1BF548` -> `E2CEFD18` sketch
+  curve / `90055C05` origin axis / edge) and the world geometry sits in an `F2A7590D`-style point + vector record under the revolve; a
+  `face_recipe` on a cylinder (rounds 1-3 note) would otherwise need cylinder axis recovery from the ACIS faces.
+
+## 12.6 Whole components that rebuild
+* MacroPad RP2040-Keyplate (and the identical `3a5f270b` component inside the Assembly .f3z): Board extrude + keyplate extrude, 2 sketches:
+  tree rebuilds 2 bodies, volumes 3558.606 and 473.721 mm3 = stored bodies exactly, boxes equal. Fully supported.
+* MacroPad RP2040-bottom-plate (`42dd9734`): 5 sketches + 5 extrudes (Board with a 4-hole cut). Tree gives Board 9706.218 = stored
+  pre-cut Board (9750.608) minus the 4 stored cut tools (4 x 11.098); plates 621.612 and 605.735 exact. The stored file lists 4 copies of the
+  mounting-hole body (component instances), the tree has one. Counts as supported with that caveat.
+* Everything else in the Adafruit set is blocked by `Base Feature` (PCB bodies), Component Insert, Draft, Shell, Combine, Sweep, Move,
+  RemoveBody, Scale or by extrude profiles/extents the prototype does not resolve (importable.py lists the first blockers per design).
+* Fix this round: `ext_geom` returns t0/t1 = None when the extent is not a distance (the rewritten edgeprobe crashed Crickit otherwise).

@@ -385,3 +385,10 @@ planes and most pattern directions, revolve axes, edges between earlier blends, 
 sweeps/shells/splits; no single-component sample design is complete yet. Until then `.f3d` stays tier 2. The
 import will follow FreeCAD's rule (ADR 0033 amendment 2026-11-09): features only when they
 rebuild to the stored bodies.
+
+Round 4 (2026-11-09): holes (diameter, depth, position and face plane), pattern directions
+(stored as world geometry, two-direction and symmetric extents) and mirror planes decode.
+The L-Bracket (Zenodo 8028536) rebuilds exactly from its decoded timeline (13 features, the
+stored volume and box), and so does the MacroPad RP2040 keyplate's component. A Rust port
+behind the rebuild check comes next; revolve axes and counterbore/countersink holes wait
+for samples that contain them.

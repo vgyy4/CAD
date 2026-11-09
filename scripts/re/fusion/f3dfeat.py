@@ -240,6 +240,114 @@ def extrude_raw(d, i):
                     prof = int(w[2])
     return dict(flag=rec[m.start() - 1], op=op, extent=ext, kind=kind, vec=vec, sketch=prof, params=params_of(d, i))
 
+
+# ----- round 4: holes, pattern directions, mirror planes (LAYOUT.md section 12) --------------
+def under(d, fid, want, depth=4, via=None):
+    """Records of class prefix `want` reachable from fid through child records (breadth first)."""
+    out = []; seen = {fid}; front = [fid]
+    for _ in range(depth):
+        nxt = []
+        for x in front:
+            for o, q in fdesign.refs_at(d, d.rec(x)):
+                if q in seen: continue
+                seen.add(q); c = cls(d, q)[:8]
+                if c == want[:8]: out.append(q)
+                elif via is None or c in via: nxt.append(q)
+        front = nxt
+    return out
+
+def finite_doubles(rec, o, n, lim=1e6):
+    v = dbl(rec, o, n)
+    return v if v and all(abs(x) < lim for x in v) else None
+
+def plane_frame(d, q):
+    """CC54ECAD: a plane as origin, x axis, y axis (3 doubles each, cm); normal = x cross y."""
+    rec = d.rec(q)
+    for o in range(15, min(len(rec) - 72, 40)):
+        v = finite_doubles(rec, o, 9)
+        if not v: continue
+        x, y = v[3:6], v[6:9]
+        if abs(sum(a * a for a in x) - 1) < 1e-9 and abs(sum(a * a for a in y) - 1) < 1e-9 and abs(sum(a * b for a, b in zip(x, y))) < 1e-9:
+            n = [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]]
+            return dict(origin=v[0:3], x=x, y=y, normal=n)
+    return None
+
+def point3(d, q):
+    """994C518A: a 3D point (x y z f64 cm) right after the 6-byte record preamble."""
+    rec = d.rec(q)
+    for o in (21, 22, 20, 23):
+        v = finite_doubles(rec, o, 3)
+        if v and any(abs(a) > 1e-12 for a in v): return v
+    return None
+
+def hole_json(d, fid, name):
+    ps = params_of(d, fid)
+    j = dict(type='hole', name=name, source_id=fid)
+    pts = []
+    for q in under(d, fid, '994C518A', 4):
+        p = point3(d, q)
+        if p and p not in pts: pts.append(p)
+    frames = [plane_frame(d, q) for q in under(d, fid, 'CC54ECAD', 4)]
+    frames = [f for f in frames if f]
+    if not pts or not frames:
+        j['type'] = 'unsupported'; j['fusion_type'] = 'Hole'; j['error'] = 'hole position / face not found'
+        return j
+    fr = frames[0]
+    j['face'] = dict(point=[mm(x) for x in pts[0]], normal=[round(x, 9) for x in fr['normal']])
+    j['positions'] = [[mm(x) for x in p] for p in pts]
+    diam = ps.get('HoleDiameter')
+    if not diam or diam['value'] is None:
+        j['type'] = 'unsupported'; j['fusion_type'] = 'Hole'; j['error'] = 'no HoleDiameter'
+        return j
+    j['diameter'] = mm(diam['value'])
+    dep = ps.get('HoleDepth')
+    if dep and dep['value'] is not None: j['depth'] = mm(dep['value'])
+    else: j['through'] = True; j['extent_note'] = 'GUESS: no HoleDepth parameter => through (no sample)'
+    tip = ps.get('TipAngle')
+    if tip and tip['value'] is not None: j['point_angle'] = round(math.degrees(tip['value']), 6)
+    j['variant'] = 'simple'
+    # counterbore / countersink role names are not in any sample: GUESS by substring
+    for k, p in ps.items():
+        kl = k.lower()
+        if p['value'] is None: continue
+        if 'bore' in kl and 'diam' in kl: j['cbore_diameter'] = mm(p['value']); j['variant'] = 'counterbore'
+        elif 'bore' in kl and 'depth' in kl: j['cbore_depth'] = mm(p['value'])
+        elif 'sink' in kl and 'diam' in kl: j['csink_diameter'] = mm(p['value']); j['variant'] = 'countersink'
+        elif 'sink' in kl and 'angle' in kl: j['csink_angle'] = round(math.degrees(p['value']), 6)
+    if j['variant'] != 'simple': j['variant_note'] = 'GUESS: role names not seen in any sample'
+    return j
+
+def pattern_dirs(d, fid):
+    """[(point cm, vector cm, flags)] of the F2A7590D direction records of a pattern, in U, V order.
+    Layout: 15-byte preamble, u32 flags at 21 (8 = as stored, 16 = reversed), then point(3) and
+    vector(3) doubles at 25; the vector is the direction (sign included)."""
+    out = []
+    for o, q in fdesign.refs_at(d, d.rec(fid)):
+        if cls(d, q)[:8] != 'F2A7590D': continue
+        rec = d.rec(q)
+        v = finite_doubles(rec, 25, 6)
+        if not v: continue
+        n = math.sqrt(sum(a * a for a in v[3:6]))
+        if n < 1e-12: continue
+        out.append(dict(point=v[0:3], dir=[a / n for a in v[3:6]], length=n, flags=struct.unpack_from('<I', rec, 21)[0], source_id=q))
+    return out
+
+def pattern_symmetric(d, fid):
+    """(u, v) symmetric flags: three doubles after the first ff ff ff ff of the pattern's EA0E146E record."""
+    for o, q in fdesign.refs_at(d, d.rec(fid)):
+        if cls(d, q)[:8] != 'EA0E146E': continue
+        rec = d.rec(q); k = rec.find(b'\xff\xff\xff\xff')
+        if k < 0: continue
+        v = finite_doubles(rec, k + 4, 3)
+        if v and all(abs(a) in (0.0, 1.0) for a in v): return [bool(a) for a in v]
+    return None
+
+def mirror_plane(d, fid):
+    for q in under(d, fid, 'CC54ECAD', 4):
+        f = plane_frame(d, q)
+        if f: return dict(origin=[mm(a) for a in f['origin']], normal=[round(a, 9) for a in f['normal']])
+    return None
+
 # ----- timeline and JSON -----------------------------------------------------------------
 OPS = {1: 'join', 2: 'cut', 3: 'intersect', 4: 'new'}   # 1/2/4 seen with evidence; 3 a guess
 
@@ -535,6 +643,37 @@ def through_reach(d, fid, e):
     if neg and not pos: return min(neg)
     return None
 
+
+def linear_pattern_chain(name, originals, j, dirs, sym):
+    """Rectangular pattern -> chained pattern_linear features (U first; V takes originals + U results).
+    A symmetric direction (original in the middle, odd count) becomes two patterns, + and - spacing."""
+    nu = int(round(j.get('count') or 1)); nv = int(round(j.get('count_v') or 1))
+    jobs = []
+    if nu > 1: jobs.append(('U', dirs[0], j.get('spacing') or 0.0, nu, sym[0]))
+    if nv > 1:
+        dv = dirs[1] if len(dirs) > 1 else (dirs[0] if nu <= 1 else None)
+        if dv is None: return None
+        jobs.append(('V', dv, j.get('spacing_v') or 0.0, nv, sym[1]))
+    if not jobs: return None
+    out = []; made = []
+    for tag, dr, sp, n, sy in jobs:
+        parts = []
+        if sy:
+            if n % 2 == 0: return None
+            parts = [(sp, (n + 1) // 2), (-sp, (n + 1) // 2)]
+        else:
+            parts = [(sp, n)]
+        for k, (sp_, n_) in enumerate(parts):
+            nm = name if not out else '%s %s%s' % (name, tag, '' if len(parts) == 1 else str(k + 1))
+            if len(parts) > 1 and not out: nm = name
+            out.append(dict(type='pattern_linear', name=nm, features=list(originals) + list(made),
+                            direction=[round(a, 9) for a in dr['dir']], spacing=round(sp_, 9), count=n_,
+                            target=None, pattern_axis=tag, symmetric=bool(sy),
+                            note=('direction = the stored F2A7590D vector (sign included)' +
+                                  ('; symmetric about the original: split into + and - halves' if sy else ''))))
+        made += [o['name'] for o in out[len(out) - len(parts):]]
+    return out
+
 def design_json(d):
     feats = []; skipped = []
     sketch_names = {}
@@ -590,10 +729,20 @@ def design_json(d):
             j['sketch'] = sketch_names.get(sk) if sk else None; j['sketch_source_id'] = sk; j['profiles'] = 'all'
             j['axis'] = None; j['axis_note'] = 'axis is a topological reference (EntityTracking recipe), not decoded'
             feats.append(j)
-        elif c[:8] in PATTERNS or c[:8] == MIRROR:
-            typ = PATTERNS.get(c[:8], 'mirror')
-            j = dict(type='unsupported', gtree_type=typ, fusion_type=base, name=name, source_id=fid,
-                     features=[names.get(q, str(q)) for q in G.inputs(fid)])
+        elif c[:8] == '1C037A07':
+            feats.append(hole_json(d, fid, name))
+        elif c[:8] == MIRROR:
+            ins = G.inputs(fid)
+            j = dict(type='mirror', name=name, source_id=fid, features=[names.get(q, str(q)) for q in ins])
+            pl_ = mirror_plane(d, fid)
+            if pl_ and ins and all(names.get(q) for q in ins): j['plane'] = pl_
+            else:
+                j['type'] = 'unsupported'; j['gtree_type'] = 'mirror'; j['fusion_type'] = base
+                j['note'] = 'mirror plane is not an origin/construction plane frame (CC54ECAD), or it mirrors bodies'
+            feats.append(j)
+        elif c[:8] in PATTERNS:
+            typ = PATTERNS[c[:8]]
+            ins = G.inputs(fid)
             ps = {}
             for o, q in fdesign.refs_at(d, d.rec(fid)):
                 if cls(d, q)[:8] in ('D91D429C', 'A085449A'):
@@ -601,19 +750,24 @@ def design_json(d):
                         if cls(d, q2) == C['PARAM']:
                             pp = fdesign.param(d, q2)
                             if pp: ps[pp['name']] = pp
-            if 'countU' in ps: j['count'] = ps['countU']['value']
-            if 'CountV' in ps: j['count_v'] = ps['CountV']['value']
-            if 'uSpaceDistance' in ps: j['spacing'] = mm(ps['uSpaceDistance']['value']); j['spacing_expr'] = ps['uSpaceDistance']['expr']
-            if 'vSpaceDistance' in ps: j['spacing_v'] = mm(ps['vSpaceDistance']['value'])
-            if 'TotalAngle' in ps: j['angle'] = math.degrees(ps['TotalAngle']['value'])
-            j['note'] = 'direction / axis / mirror plane is a topological reference (EntityTracking recipe), not decoded'
-            if typ == 'pattern_linear' and j.get('spacing') and CURRENT_FILES:
-                dr = pattern_direction(d, fid, EN, G.inputs(fid), j['spacing'] / 10.0)
-                if dr:
-                    j['direction'] = dr; j['note'] = 'direction from the pattern edge; sign chosen where the stored body holds the first copy'
-                    if j.get('count_v', 1) in (1, 1.0, None) and all(names.get(q) for q in G.inputs(fid)):
-                        j['type'] = 'pattern_linear'; j['target'] = None
-            feats.append(j)
+            base_j = dict(type='unsupported', gtree_type=typ, fusion_type=base, name=name, source_id=fid,
+                          features=[names.get(q, str(q)) for q in ins])
+            if 'countU' in ps: base_j['count'] = ps['countU']['value']
+            if 'CountV' in ps: base_j['count_v'] = ps['CountV']['value']
+            if 'uSpaceDistance' in ps: base_j['spacing'] = mm(ps['uSpaceDistance']['value']); base_j['spacing_expr'] = ps['uSpaceDistance']['expr']
+            if 'vSpaceDistance' in ps: base_j['spacing_v'] = mm(ps['vSpaceDistance']['value'])
+            if 'TotalAngle' in ps: base_j['angle'] = math.degrees(ps['TotalAngle']['value'])
+            dirs = pattern_dirs(d, fid) if typ == 'pattern_linear' else []
+            if typ == 'pattern_linear' and ins and all(names.get(q) for q in ins) and dirs and 'countU' in ps:
+                out_p = linear_pattern_chain(name, [names[q] for q in ins], base_j, dirs, pattern_symmetric(d, fid) or [False] * 3)
+                if out_p:
+                    for p_ in out_p: p_['source_id'] = fid
+                    feats.extend(out_p); continue_ = True
+                else: feats.append(base_j)
+            else:
+                base_j['note'] = 'pattern of bodies/components, circular, or no direction record: not converted'
+                if dirs: base_j['direction'] = [round(a, 9) for a in dirs[0]['dir']]
+                feats.append(base_j)
         else:
             j = dict(type='unsupported', fusion_type=base or c[:8], name=name, class_guid=c, source_id=fid)
             if c[:8] == 'D7015B81':
