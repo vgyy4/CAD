@@ -59,6 +59,9 @@ pub enum Val {
 
 /// A source of field values.
 pub(crate) trait Source {
+    /// Whether an unset vector is stored as three unset reals (binary) rather than one
+    /// (text, a single `?`).
+    const UNSET_VECTOR_IS_TRIPLE: bool;
     fn int(&mut self, bytes: Width) -> Result<Option<i64>, XtError>;
     fn real(&mut self) -> Result<Option<f64>, XtError>;
     fn ch(&mut self) -> Result<u8, XtError>;
@@ -170,6 +173,8 @@ impl Text {
 }
 
 impl Source for Text {
+    const UNSET_VECTOR_IS_TRIPLE: bool = false;
+
     fn int(&mut self, _: Width) -> Result<Option<i64>, XtError> {
         match self.number()? {
             None => Ok(None),
@@ -281,6 +286,8 @@ impl<'a> Binary<'a> {
 }
 
 impl Source for Binary<'_> {
+    const UNSET_VECTOR_IS_TRIPLE: bool = true;
+
     fn int(&mut self, w: Width) -> Result<Option<i64>, XtError> {
         let v = match w {
             Width::Byte => i64::from(self.take::<1>()?.first().copied().unwrap_or(0)),

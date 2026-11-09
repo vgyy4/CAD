@@ -82,6 +82,16 @@ fn poles(g: &Graph, verts: u32, dim: usize, rational: bool, count: usize) -> Opt
     Some((ps, rational.then_some(ws)))
 }
 
+/// A knot (or multiplicity) list cut to the count its NURBS node declares: files of schema
+/// 25001 (SolidWorks 2017 on) store these lists padded with unset values and zeros to a
+/// longer length, which would break the knot-count check.
+fn trimmed<T>(mut v: Vec<T>, declared: Option<i64>) -> Vec<T> {
+    if let Some(n) = declared.and_then(|n| usize::try_from(n).ok()) {
+        v.truncate(n);
+    }
+    v
+}
+
 /// Highest NURBS degree read (OCCT's own limit); higher degrees are refused, not evaluated.
 const MAX_DEGREE: usize = 25;
 
@@ -106,8 +116,9 @@ pub(crate) fn nurbs_curve(g: &Graph, nurbs: u32) -> Option<Nurbs> {
     let dim = usize::try_from(g.int(nurbs, "vertex_dim")?).ok()?;
     let rational = g.int(nurbs, "rational") == Some(1);
     let (ps, ws) = poles(g, g.ptr(nurbs, "bspline_vertices"), dim, rational, n)?;
-    let mults = ints(g, g.ptr(nurbs, "knot_mult"), "mult");
-    let knots = reals(g, g.ptr(nurbs, "knots"), "knots");
+    let declared = g.int(nurbs, "n_knots");
+    let mults = trimmed(ints(g, g.ptr(nurbs, "knot_mult"), "mult"), declared);
+    let knots = trimmed(reals(g, g.ptr(nurbs, "knots"), "knots"), declared);
     if !valid(degree, n, &mults, &knots) {
         return None;
     }
@@ -133,10 +144,11 @@ pub(crate) fn nurbs_surface(g: &Graph, nurbs: u32) -> Option<Nurbs> {
     let dim = usize::try_from(g.int(nurbs, "vertex_dim")?).ok()?;
     let rational = g.int(nurbs, "rational") == Some(1);
     let (ps, ws) = poles(g, g.ptr(nurbs, "bspline_vertices"), dim, rational, nu.checked_mul(nv)?)?;
-    let mu = ints(g, g.ptr(nurbs, "u_knot_mult"), "mult");
-    let mv = ints(g, g.ptr(nurbs, "v_knot_mult"), "mult");
-    let ku = reals(g, g.ptr(nurbs, "u_knots"), "knots");
-    let kv = reals(g, g.ptr(nurbs, "v_knots"), "knots");
+    let (cu_n, cv_n) = (g.int(nurbs, "n_u_knots"), g.int(nurbs, "n_v_knots"));
+    let mu = trimmed(ints(g, g.ptr(nurbs, "u_knot_mult"), "mult"), cu_n);
+    let mv = trimmed(ints(g, g.ptr(nurbs, "v_knot_mult"), "mult"), cv_n);
+    let ku = trimmed(reals(g, g.ptr(nurbs, "u_knots"), "knots"), cu_n);
+    let kv = trimmed(reals(g, g.ptr(nurbs, "v_knots"), "knots"), cv_n);
     if !valid(du, nu, &mu, &ku) || !valid(dv, nv, &mv, &kv) {
         return None;
     }
@@ -275,6 +287,13 @@ pub(crate) fn eval_curve(c: &Nurbs, u: f64) -> Option<V3> {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn padded_knot_lists_are_cut_to_their_declared_count() {
+        assert_eq!(trimmed(vec![2, 2, 0, 0], Some(2)), vec![2, 2]);
+        assert_eq!(trimmed(vec![1.0, 2.0], Some(5)), vec![1.0, 2.0]);
+        assert_eq!(trimmed(vec![1, 2], None), vec![1, 2]);
+    }
 
     #[test]
     fn hostile_knot_vectors_are_refused() {

@@ -179,6 +179,8 @@ const V12: &str = "
 136 NURBS_CURVE 0 degree:n n_vertices:d vertex_dim:n n_knots:d knot_type:u periodic:l closed:l rational:l curve_form:u bspline_vertices:p knot_mult:p knots:p
 137 SP_CURVE 1 $C surface:p b_curve:p original:p tolerance_to_original:f
 141 GEOMETRIC_OWNER 0 owner:p next:p previous:p shared_geometry:p
+163 HELIX_SURF 0 axis_point:v axis:v sense:c parm_range:i pitch:f taper:f tolerance:f
+184 HELIX 0 axis_point:v axis:v start_point:v sense:c parm_range:i pitch:f tolerance:f
 ";
 
 /// Schemas 9000..=11999: fins have no attribute field (NIST sample `nut.x_t`, schema 9008).
@@ -365,5 +367,30 @@ mod tests {
         let out = apply_delta(&base, &edits);
         let names: Vec<&str> = out.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["node_id", "extra", "fin", "face", "next", "tail"]);
+    }
+
+    #[test]
+    fn helical_forms_have_the_sizes_seen_in_solidworks_files() {
+        // Binary sizes: 105 bytes for type 184 (3 vectors, a sense, 4 reals) and 89 for 163
+        // (2 vectors, a sense, 5 reals), after the node index, as in `setScrew_M2x2_5`.
+        let size = |code: Code, count: &Count| {
+            let one = match code {
+                Code::C | Code::U | Code::L => 1,
+                Code::F => 8,
+                Code::V | Code::H => 24,
+                Code::I => 16,
+                _ => 0,
+            };
+            one * match count {
+                Count::One => 1,
+                Count::Fixed(k) => usize::from(*k),
+                Count::Var => 0,
+            }
+        };
+        let base = embedded_base();
+        let bytes = |ty: u16| base.get(&ty).map(|l| l.fields.iter().map(|f| size(f.code, &f.count)).sum::<usize>());
+        assert_eq!(bytes(184), Some(105));
+        assert_eq!(bytes(163), Some(89));
+        assert!(schema(Family::V12).contains_key(&184));
     }
 }

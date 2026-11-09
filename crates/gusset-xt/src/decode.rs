@@ -232,8 +232,14 @@ fn value<S: Source>(src: &mut S, code: Code) -> Result<Val, XtError> {
         Code::P => Val::Ptr(src.ptr()?),
         Code::F => src.real()?.map_or(Val::Unset, Val::Real),
         Code::V | Code::H => match src.real()? {
-            // A wholly unset vector is a single unset value.
-            None => Val::Unset,
+            // A wholly unset vector is a single unset value in text and three in binary.
+            None => {
+                if S::UNSET_VECTOR_IS_TRIPLE {
+                    src.real()?;
+                    src.real()?;
+                }
+                Val::Unset
+            }
             Some(x) => Val::Vec3([x, src.real()?.unwrap_or(0.0), src.real()?.unwrap_or(0.0)]),
         },
         Code::I => Val::Pair([src.real()?.unwrap_or(0.0), src.real()?.unwrap_or(0.0)]),
@@ -298,4 +304,26 @@ fn script_field<S: Source>(src: &mut S) -> Result<schema::Field, XtError> {
     }
     schema::field_from_script(name.clone(), &type_str, class != 0, n_elts)
         .ok_or_else(|| XtError::Malformed(format!("embedded field '{name}' has an unknown type '{type_str}'")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::UNSET_REAL;
+
+    #[test]
+    fn a_binary_unset_vector_is_three_reals_and_a_text_one_is_a_question_mark() {
+        // `setScrew_M2x2_5`'s TRANSFORM stores its unset perspective vector as three unset reals.
+        let mut bytes = Vec::new();
+        for _ in 0..3 {
+            bytes.extend_from_slice(&UNSET_REAL.to_be_bytes());
+        }
+        bytes.extend_from_slice(&2.5f64.to_be_bytes());
+        let mut b = Binary::new(&bytes);
+        assert_eq!(value(&mut b, Code::V).ok(), Some(Val::Unset));
+        assert_eq!(b.real().ok(), Some(Some(2.5)));
+        let mut t = Text::new(b"? 2.5");
+        assert_eq!(value(&mut t, Code::V).ok(), Some(Val::Unset));
+        assert_eq!(t.real().ok(), Some(Some(2.5)));
+    }
 }

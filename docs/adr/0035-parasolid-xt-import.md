@@ -71,3 +71,34 @@ SolidWorks and Solid Edge parts, bodies whose solid and mesh volumes differ by m
 went from 55 of 129 to 23. Of those 23, 21 are imported surface bodies of one third-party
 set and 2 are SolidWorks parts (the idler arms) still to be explained. The earlier controlled
 samples had no cones, which is why this was not seen.
+
+## Amendment (2026-11-09): helical forms, binary unset vectors, padded knot lists
+
+Seven SolidWorks parts (six `Angle_support` revisions, `setScrew_M2x2_5`) and two Solid Edge
+parts stopped in the reader. Causes, all worked out from the sample bytes:
+
+* **Unset vectors in binary** are three unset reals, not one (text keeps a single `?`). Read
+  as one, the next two reals shifted every later field by 16 bytes after the first TRANSFORM
+  of a schema-30000 file and the node type came out as -15684. The `Source` trait now says
+  which (`UNSET_VECTOR_IS_TRIPLE`).
+* **Two node types the base schema lacks**, found in schema 25001 (embedded, base 13006: the
+  embedded schema marks them 255 "as the base", so no description is transmitted) and in
+  schema 31100 (not embedded) files of threaded parts. Both are the analytic form of a
+  B-curve / B-surface that is a helix (the surface data's `analytic_form_type` is `H`), and
+  are fixed-size, so the layouts follow from the bytes (no pointers; the three samples agree):
+  * 184 `HELIX` (105 bytes): `axis_point:v axis:v start_point:v sense:c parm_range:i
+    pitch:f tolerance:f`. In the screw the axis is +Z, the start point is the NURBS curve's
+    first pole, the range is 0 to 7.25 (turns) and the pitch is 0.4 mm (M2 x 0.4).
+  * 163 `HELIX_SURF` (89 bytes): `axis_point:v axis:v sense:c parm_range:i pitch:f taper:f
+    tolerance:f`; `taper` is the unset real in all samples (its role is a guess from the
+    position). Neither node is used for the geometry: the NURBS data carries the shape.
+* **Padded knot lists.** In schema 25001 the NURBS surface's knot and multiplicity lists are
+  longer than `n_u_knots` / `n_v_knots` (`[2,2,0,0]` for two knots, knots `[0,1,unset,unset]`).
+  They are cut to the declared count; the surface and curve checks then hold, where before the
+  helical thread surfaces were dropped as "cannot be converted".
+
+Result: all 6 `Angle_support` revisions and `setScrew_M2x2_5` read (the screw with no
+warnings, 5.2 mm3); the Angle_support bodies still warn that BLENDED_EDGE surfaces are left
+out, as their mirrored twins (`Symetrie_Angle_support`) do, and their volumes agree with those
+twins to 2e-5. Both Solid Edge parts that stopped at 163/184 (`M1.2x3 screw`,
+`Plastic-handle-Loaded-Felfer-holder`) read too.
