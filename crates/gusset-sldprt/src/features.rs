@@ -951,7 +951,138 @@ fn sketch_json(name: &str, g: &Geometry, plane: Option<&Plane>, jp: &JsonPlane) 
         }
         curves.push(Value::Object(o));
     }
-    json!({"type": "sketch", "name": name, "plane": Value::Object(pl), "points": points, "curves": curves})
+    normalize_lines(
+        json!({"type": "sketch", "name": name, "plane": Value::Object(pl), "points": points, "curves": curves}),
+    )
+}
+
+/// Most point-in-line tests `normalize_lines` makes for one sketch; a sketch needing more is
+/// left as read.
+const MAX_NORMALIZE_WORK: usize = 50_000_000;
+
+/// Cleans a sketch for the region finder (`swfeat.normalize_lines`): merges coincident points,
+/// splits lines at points lying on them, drops the walls two different segments share
+/// (SolidWorks fills both loops; Gusset would ignore the sketch silently) and zero-length lines.
+/// Construction lines, centerlines, arcs and circles are kept as they are.
+fn normalize_lines(mut sk: Value) -> Value {
+    let str_of = |c: &Value, k: &str| c.get(k).and_then(Value::as_str).map(str::to_string);
+    let flag = |c: &Value, k: &str| c.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let Some(points) = sk.get("points").and_then(Value::as_array) else { return sk };
+    let mut at: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut canon: HashMap<(u64, u64), String> = HashMap::new();
+    let mut remap: HashMap<String, String> = HashMap::new();
+    for q in points {
+        let (Some(id), Some(x), Some(y)) =
+            (str_of(q, "id"), q.get("x").and_then(Value::as_f64), q.get("y").and_then(Value::as_f64))
+        else {
+            return sk;
+        };
+        let key = ((round_to(x, 6) + 0.0).to_bits(), (round_to(y, 6) + 0.0).to_bits());
+        let first = canon.entry(key).or_insert_with(|| id.clone()).clone();
+        remap.insert(id.clone(), first);
+        at.insert(id, (x, y));
+    }
+    let Some(curves) = sk.get("curves").and_then(Value::as_array) else { return sk };
+    let mut curves = curves.clone();
+    for c in &mut curves {
+        for k in ["start", "end", "center"] {
+            if let Some(v) = str_of(c, k)
+                && let Some(to) = remap.get(&v)
+                && let Some(slot) = c.get_mut(k)
+            {
+                *slot = json!(to);
+            }
+        }
+    }
+    let is_line = |c: &Value| c.get("type").and_then(Value::as_str) == Some("line");
+    let profile = |c: &Value| !flag(c, "construction");
+    let ids: std::collections::BTreeSet<String> = curves
+        .iter()
+        .filter(|c| matches!(c.get("type").and_then(Value::as_str), Some("line" | "arc")) && profile(c))
+        .flat_map(|c| ["start", "end"].into_iter().filter_map(|k| str_of(c, k)))
+        .collect();
+    if curves.len().saturating_mul(ids.len()) > MAX_NORMALIZE_WORK {
+        return sk;
+    }
+    type Pair = (String, String);
+    let pair = |a: &str, b: &str| -> Pair { if a <= b { (a.into(), b.into()) } else { (b.into(), a.into()) } };
+    // (curve, the piece's ends, the curve's own ends)
+    let mut pieces: Vec<(Value, Option<Pair>, Option<Pair>)> = Vec::new();
+    for c in &curves {
+        let (Some(a_id), Some(b_id)) = (str_of(c, "start"), str_of(c, "end")) else {
+            pieces.push((c.clone(), None, None));
+            continue;
+        };
+        if is_line(c) && a_id == b_id {
+            continue; // a merged zero-length helper
+        }
+        if !is_line(c) || flag(c, "construction") || flag(c, "centerline") {
+            pieces.push((c.clone(), None, None));
+            continue;
+        }
+        let (Some(&(ax, ay)), Some(&(bx, by))) = (at.get(&a_id), at.get(&b_id)) else {
+            pieces.push((c.clone(), None, None));
+            continue;
+        };
+        let (dx, dy) = (bx - ax, by - ay);
+        let l2 = dx * dx + dy * dy;
+        let mut cut: Vec<(f64, String)> = Vec::new();
+        for i in &ids {
+            if *i == a_id || *i == b_id {
+                continue;
+            }
+            let Some(&(qx, qy)) = at.get(i) else { continue };
+            let t = ((qx - ax) * dx + (qy - ay) * dy) / l2;
+            if t > 1e-9 && t < 1.0 - 1e-9 && ((qx - ax) * dy - (qy - ay) * dx).abs() / libm::sqrt(l2) < 1e-6 {
+                cut.push((t, i.clone()));
+            }
+        }
+        cut.sort_by(|x, y| x.0.total_cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
+        let mut chain = vec![a_id.clone()];
+        chain.extend(cut.into_iter().map(|(_, i)| i));
+        chain.push(b_id.clone());
+        for w in chain.windows(2) {
+            if let [u, v] = w {
+                pieces.push((c.clone(), Some((u.clone(), v.clone())), Some(pair(&a_id, &b_id))));
+            }
+        }
+    }
+    // A piece covered by two segments that differ is the shared wall of two adjacent loops.
+    let mut owners: HashMap<Pair, Vec<Pair>> = HashMap::new();
+    for (_, piece, orig) in &pieces {
+        if let (Some((u, v)), Some(orig)) = (piece, orig) {
+            let list = owners.entry(pair(u, v)).or_default();
+            if !list.contains(orig) {
+                list.push(orig.clone());
+            }
+        }
+    }
+    let (mut out, mut seen, mut nid) = (Vec::new(), std::collections::HashSet::new(), 0usize);
+    for (c, piece, orig) in pieces {
+        let (Some((u, v)), Some(orig)) = (piece, orig) else {
+            out.push(c);
+            continue;
+        };
+        let key = pair(&u, &v);
+        if owners.get(&key).is_some_and(|o| o.len() > 1) || !seen.insert(key.clone()) {
+            continue;
+        }
+        nid += 1;
+        let mut d = c;
+        let id = str_of(&d, "id").unwrap_or_default();
+        if let Some(o) = d.as_object_mut() {
+            o.insert("start".into(), json!(u));
+            o.insert("end".into(), json!(v));
+            if orig != key {
+                o.insert("id".into(), json!(format!("{id}_{nid}")));
+            }
+        }
+        out.push(d);
+    }
+    if let Some(slot) = sk.get_mut("curves") {
+        *slot = Value::Array(out);
+    }
+    sk
 }
 
 // --- fillet and chamfer edges ----------------------------------------------------------------
@@ -1539,6 +1670,77 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
 
 /// `convert` for a part of the given container: a chunk-container part (2015 and newer)
 /// learns its unit-component tag from the bytes of the feature stream.
+/// A distance-angle chamfer (`D1` a length, `D2` an angle in radians) as triangular through
+/// cuts, one per corner (swfeat.py, guessed from one sample: `D1` runs along the face
+/// shared by the selected edges, the other leg is `D1 * tan(D2)`). Gusset's chamfer is
+/// symmetric only. `None` where some selected edge is not a corner of two sketch lines.
+fn chamfer_corners(name: &str, (d1, angle): (f64, f64), sel: &[(usize, Vec<Rep>)], c: &Corners) -> Option<Vec<Value>> {
+    let mut uses: HashMap<u32, usize> = HashMap::new();
+    for (_, reps) in sel {
+        for r in reps.iter().take(2).filter(|r| c.swept.contains_key(&r.fid)) {
+            *uses.entry(r.idx).or_default() += 1;
+        }
+    }
+    let lines = |g: &Geometry, idx: u32| -> Vec<Seg> {
+        g.segs.iter().filter(|q| q.a == idx && q.kind == SegKind::Line && !q.construction).copied().collect()
+    };
+    let (mut outs, mut corners) = (Vec::new(), 0usize);
+    for (k, (_, reps)) in sel.iter().enumerate() {
+        let (Some(fa), Some(fb)) = (reps.first(), reps.get(1)) else { continue };
+        let Some(f) = c.swept.get(&fa.fid) else { continue };
+        let Some(g) = c.sketches.get(f.sketch) else { continue };
+        if fa.fid != fb.fid {
+            continue;
+        }
+        // An edge between two lines of the sketch.
+        if g.segs.iter().filter(|q| (q.a == fa.idx || q.a == fb.idx) && !q.construction).count() == 2 {
+            corners += 1;
+        }
+        let (sa, sb) = (lines(g, fa.idx), lines(g, fb.idx));
+        let ([sa], [sb]) = (&sa[..], &sb[..]) else { continue };
+        let ends = |q: &Seg| [q.s, q.e];
+        let common: Vec<usize> = ends(sa).into_iter().filter(|e| ends(sb).contains(e)).collect();
+        let [corner] = common[..] else { continue };
+        let Some(p) = point(&g.pts, corner) else { continue };
+        let far = |q: &Seg| -> Option<(f64, f64)> {
+            let other = if q.s == corner { q.e } else { q.s };
+            let o = point(&g.pts, other)?;
+            let (dx, dy) = (o.x - p.x, o.y - p.y);
+            let len = libm::hypot(dx, dy);
+            (len > 1e-12).then(|| (dx / len, dy / len))
+        };
+        let (Some(ua), Some(ub)) = (far(sa), far(sb)) else { continue };
+        let d2 = d1 * libm::tan(angle);
+        let (la, lb) = if uses.get(&fb.idx) > uses.get(&fa.idx) { (d2, d1) } else { (d1, d2) };
+        let tri = [(p.x, p.y), (p.x + ua.0 * la, p.y + ua.1 * la), (p.x + ub.0 * lb, p.y + ub.1 * lb)];
+        let nm = format!("{name}_corner{}", k + 1);
+        let points: Vec<Value> =
+            tri.iter().enumerate().map(|(i, q)| json!({"id": format!("p{i}"), "x": mm(q.0), "y": mm(q.1)})).collect();
+        let curves: Vec<Value> = (0..3)
+            .map(|i| json!({"id": format!("c{i}"), "type": "line", "start": format!("p{i}"), "end": format!("p{}", (i + 1) % 3)}))
+            .collect();
+        outs.push(json!({
+            "type": "sketch", "name": nm, "plane": c.planes.get(f.sketch).cloned().unwrap_or(Value::Null),
+            "points": points, "curves": curves,
+        }));
+        outs.push(json!({
+            "type": "extrude", "name": format!("{nm}_cut"), "sketch": nm, "profiles": "all", "operation": "cut",
+            "target": c.target, "distance": 2.0 * BIG, "through_all": true, "symmetric": true,
+            "end_condition": "through_all_both",
+        }));
+    }
+    (!outs.is_empty() && outs.len() == 2 * corners).then_some(outs)
+}
+
+/// What `chamfer_corners` reads from the features before it.
+struct Corners<'a> {
+    swept: &'a HashMap<u32, Swept>,
+    sketches: &'a [Geometry],
+    /// The written plane of each sketch.
+    planes: &'a [Value],
+    target: &'a Option<String>,
+}
+
 pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Result<Value, String> {
     let uc = if chunk { unit_component_tag(rf) } else { unit_component_index(c0) };
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
@@ -1578,6 +1780,8 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
 
     let mut feats: Vec<Value> = Vec::new();
     let mut sketches: Vec<Geometry> = Vec::new();
+    // The written plane of each sketch (`sketches` indexes it too).
+    let mut planes: Vec<Value> = Vec::new();
     // name -> (index into `sketches`, written plane)
     let mut sketch_by_name: HashMap<String, (usize, JsonPlane)> = HashMap::new();
     let mut last_sketch: Option<String> = None;
@@ -1665,11 +1869,13 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                     h.face = seen.first().map(|p| (*p, nrm));
                     h.positions = seen;
                 }
+                planes.push(sk.get("plane").cloned().unwrap_or(Value::Null));
                 feats.push(sk);
                 sketches.push(geo);
                 sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
                 continue;
             }
+            planes.push(sk.get("plane").cloned().unwrap_or(Value::Null));
             feats.push(sk);
             sketches.push(geo);
             sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
@@ -1849,6 +2055,20 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let fillet = cls.as_deref() == Some("Fillet_c");
             let ps = params(rf, a, b, nt)?;
             let sel = selection(edge_records(rf, a, b)?);
+            if !fillet
+                && let (Some(&d1), Some(&angle)) = (ps.first(), ps.get(1))
+                && angle > 0.1
+                && angle <= TAU / 4.0 + 1e-9
+                && let Some(cuts) = chamfer_corners(
+                    &n.name,
+                    (d1, angle),
+                    &sel,
+                    &Corners { swept: &swept, sketches: &sketches, planes: &planes, target: &first_solid },
+                )
+            {
+                feats.extend(cuts);
+                continue;
+            }
             let mut edges = Vec::new();
             let mut stale = 0usize;
             let mut unresolved = false;
