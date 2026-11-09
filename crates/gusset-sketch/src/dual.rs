@@ -71,6 +71,16 @@ impl Dual {
         y.map2(x, v, x.v / r2, -y.v / r2)
     }
 
+    /// `sin x`.
+    pub(crate) fn sin(x: Dual) -> Dual {
+        x.map2(Dual::ZERO, libm::sin(x.v), libm::cos(x.v), 0.0)
+    }
+
+    /// `cos x`.
+    pub(crate) fn cos(x: Dual) -> Dual {
+        x.map2(Dual::ZERO, libm::cos(x.v), -libm::sin(x.v), 0.0)
+    }
+
     /// Division that never divides by (almost) zero: a divisor smaller than
     /// [`TINY`] in magnitude is replaced by `±TINY`.
     pub(crate) fn safe_div(self, o: Dual) -> Dual {

@@ -1,7 +1,7 @@
 //! Turns a [`Sketch`] into a vector of unknowns and scalar residual equations.
 //!
-//! Unknowns: `x, y` of every point entity and the radius of every circle, in entity
-//! order. Arc radii are derived from their centre and start point; each arc adds
+//! Unknowns: `x, y` of every point entity, the radius of every circle and the angle and
+//! semi-axes of every ellipse (three consecutive unknowns), in entity order. Arc radii are derived from their centre and start point; each arc adds
 //! one internal equation `|start − center| − |end − center| = 0`.
 //!
 //! Residual units: lengths in mm, angles in radians, and `sin`/`cos` of angles for
@@ -75,6 +75,13 @@ pub(crate) enum Kind {
     SymPerp { p: u8, q: u8, a: u8, b: u8 },
     /// `|s − c| − |e − c|`
     ArcRadius { c: u8, s: u8, e: u8 },
+    /// First-order distance from the point `p` to the ellipse with centre `c` and the three
+    /// scalars angle, `a`, `b` at `t ..`: `f / |∇f|` for `f = (u/a)² + (v/b)² − 1`.
+    PtEllipse { p: u8, c: u8, t: u8 },
+    /// `a − v` (`which == 1`) or `b − v` (`which == 2`) of the ellipse whose scalars start at `t`.
+    EllipseValue { t: u8, which: u8, v: f64 },
+    /// Major axis along x (`sin angle`) or y (`cos angle`).
+    AxisAlong { t: u8, y: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +115,10 @@ impl Layout {
                 Geom::Circle { radius, .. } => {
                     first.push(Some(x0.len()));
                     x0.push(radius);
+                }
+                Geom::Ellipse { angle, a, b, .. } | Geom::EllipseArc { angle, a, b, .. } => {
+                    first.push(Some(x0.len()));
+                    x0.extend_from_slice(&[angle, a, b]);
                 }
                 Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => first.push(None),
             }
@@ -171,6 +182,18 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Local offsets of an ellipse's centre point and of its angle, `a` and `b` (three
+    /// scalars pushed by this call).
+    fn ellipse(&mut self, id: EntityId) -> Option<(u8, u8)> {
+        let (center, ..) = self.s.ellipse(id)?;
+        let c = self.pt(center)?;
+        let g = self.lay.param(self.s, id)?;
+        let th = self.push(g)?;
+        self.push(g + 1)?;
+        self.push(g + 2)?;
+        Some((c, th))
+    }
+
     fn rad(&mut self, id: EntityId) -> Option<R> {
         match self.s.entity(id)?.geom {
             Geom::Circle { .. } => {
@@ -193,6 +216,13 @@ fn is_line(s: &Sketch, id: EntityId) -> bool {
 
 fn is_point(s: &Sketch, id: EntityId) -> bool {
     matches!(s.entity(id).map(|e| e.geom), Some(Geom::Point { .. }))
+}
+
+fn ellipse_arc_points(s: &Sketch, id: EntityId) -> Option<[EntityId; 2]> {
+    match s.entity(id)?.geom {
+        Geom::EllipseArc { start, end, .. } => Some([start, end]),
+        _ => None,
+    }
 }
 
 fn arc_ends(s: &Sketch, id: EntityId) -> Option<[EntityId; 2]> {
@@ -226,6 +256,14 @@ pub(crate) fn build(s: &Sketch, lay: &Layout) -> Option<Vec<Equation>> {
             let mut b = Builder::new(s, lay);
             let kind = Kind::ArcRadius { c: b.pt(center)?, s: b.pt(start)?, e: b.pt(end)? };
             eqs.push(b.finish(Owner::Internal(i), kind));
+        }
+        if let Some(pts) = ellipse_arc_points(s, e.id) {
+            for p in pts {
+                let mut b = Builder::new(s, lay);
+                let pp = b.pt(p)?;
+                let (c, t) = b.ellipse(e.id)?;
+                eqs.push(b.finish(Owner::Internal(i), Kind::PtEllipse { p: pp, c, t }));
+            }
         }
     }
     let mut joined = Joined::new();
@@ -270,7 +308,19 @@ fn constraint_eqs(
             })?;
         }
         Constraint::PointOnCircle(p, c) => {
-            one(&|b| Some(Kind::PtCircle { p: b.pt(p)?, c: b.center(c)?, r: b.rad(c)? }))?;
+            if s.ellipse(c).is_some() {
+                one(&|b| {
+                    let pp = b.pt(p)?;
+                    let (cc, t) = b.ellipse(c)?;
+                    Some(Kind::PtEllipse { p: pp, c: cc, t })
+                })?;
+            } else {
+                one(&|b| Some(Kind::PtCircle { p: b.pt(p)?, c: b.center(c)?, r: b.rad(c)? }))?;
+            }
+        }
+        Constraint::SemiMajor { e, value } | Constraint::SemiMinor { e, value } => {
+            let which = if matches!(c, Constraint::SemiMajor { .. }) { 1 } else { 2 };
+            one(&|b| Some(Kind::EllipseValue { t: b.ellipse(e)?.1, which, v: value }))?;
         }
         Constraint::Midpoint(p, l) => {
             for ax in 0..2u8 {
@@ -290,6 +340,10 @@ fn constraint_eqs(
                     None => Kind::Value { a: t, v: value },
                 })
             })?;
+        }
+        Constraint::Horizontal(l) | Constraint::Vertical(l) if s.ellipse(l).is_some() => {
+            let y = matches!(c, Constraint::Vertical(_));
+            one(&|b| Some(Kind::AxisAlong { t: b.ellipse(l)?.1, y }))?;
         }
         Constraint::Horizontal(l) | Constraint::Vertical(l) => {
             let ax = u8::from(matches!(c, Constraint::Horizontal(_)));
@@ -426,6 +480,18 @@ fn constraint_eqs(
                     for p in s.spline_points(e)? {
                         push_point(*p)?;
                     }
+                }
+                Geom::Ellipse { center, .. } => {
+                    push_point(center)?;
+                    let g = lay.param(s, e)?;
+                    params.extend_from_slice(&[g, g + 1, g + 2]);
+                }
+                Geom::EllipseArc { center, start, end, .. } => {
+                    push_point(center)?;
+                    push_point(start)?;
+                    push_point(end)?;
+                    let g = lay.param(s, e)?;
+                    params.extend_from_slice(&[g, g + 1, g + 2]);
                 }
             }
             for g in params {
@@ -565,6 +631,25 @@ pub(crate) fn eval(eq: &Equation, x: &[f64]) -> Dual {
             let (sx, sy) = dir(&v, c, s);
             let (ex, ey) = dir(&v, c, e);
             Dual::hypot(sx, sy) - Dual::hypot(ex, ey)
+        }
+        Kind::PtEllipse { p, c, t } => {
+            let (dx, dy) = dir(&v, c, p);
+            let (th, a, b) = (at(&v, t), at(&v, t + 1), at(&v, t + 2));
+            let (cs, sn) = (Dual::cos(th), Dual::sin(th));
+            let (u, w) = (cs * dx + sn * dy, cs * dy - sn * dx);
+            let (ua, wb) = (u / a, w / b);
+            let f = ua * ua + wb * wb - Dual::cst(1.0);
+            let g = Dual::hypot(u / (a * a), w / (b * b)).scale(2.0);
+            if g.v < crate::dual::TINY {
+                // At the centre the gradient vanishes: a residual in length units instead.
+                return f * a;
+            }
+            f / g
+        }
+        Kind::EllipseValue { t, which, v: val } => at(&v, t + which) - Dual::cst(val),
+        Kind::AxisAlong { t, y } => {
+            let th = at(&v, t);
+            if y { Dual::cos(th) } else { Dual::sin(th) }
         }
     }
 }

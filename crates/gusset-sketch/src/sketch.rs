@@ -68,6 +68,25 @@ pub enum Geom {
         count: u32,
         closed: bool,
     },
+    /// Full ellipse around `center`. `angle` (radians) is the direction of the `a` axis and
+    /// `a`, `b` the semi-axes along and across it (`a` may be smaller than `b`; profiles
+    /// normalise). All three are solver unknowns, like a circle's radius.
+    Ellipse {
+        center: EntityId,
+        angle: f64,
+        a: f64,
+        b: f64,
+    },
+    /// Counter-clockwise arc of an ellipse from `start` to `end`, two points the solver keeps
+    /// on the ellipse (their eccentric anomalies are what bound the arc).
+    EllipseArc {
+        center: EntityId,
+        angle: f64,
+        a: f64,
+        b: f64,
+        start: EntityId,
+        end: EntityId,
+    },
 }
 
 /// The kind of an entity, without its data.
@@ -78,6 +97,8 @@ pub enum EntityKind {
     Circle,
     Arc,
     Spline,
+    Ellipse,
+    EllipseArc,
 }
 
 impl Geom {
@@ -88,6 +109,8 @@ impl Geom {
             Geom::Circle { .. } => EntityKind::Circle,
             Geom::Arc { .. } => EntityKind::Arc,
             Geom::Spline { .. } => EntityKind::Spline,
+            Geom::Ellipse { .. } => EntityKind::Ellipse,
+            Geom::EllipseArc { .. } => EntityKind::EllipseArc,
         }
     }
 
@@ -100,6 +123,8 @@ impl Geom {
             Geom::Circle { center, .. } => vec![center],
             Geom::Arc { center, start, end } => vec![center, start, end],
             Geom::Spline { .. } => Vec::new(),
+            Geom::Ellipse { center, .. } => vec![center],
+            Geom::EllipseArc { center, start, end, .. } => vec![center, start, end],
         }
     }
 }
@@ -120,13 +145,14 @@ pub enum Constraint {
     Coincident(EntityId, EntityId),
     /// Point (first) lies on the infinite line through a line entity (second).
     PointOnLine(EntityId, EntityId),
-    /// Point (first) lies on a circle or on the full circle of an arc (second).
+    /// Point (first) lies on a circle, on the full circle of an arc, or on an ellipse or the
+    /// full ellipse of an elliptical arc (second).
     PointOnCircle(EntityId, EntityId),
     /// Point (first) is the midpoint of a line (second).
     Midpoint(EntityId, EntityId),
-    /// Line is parallel to the x axis.
+    /// Line is parallel to the x axis; an ellipse has its `a` axis along x.
     Horizontal(EntityId),
-    /// Line is parallel to the y axis.
+    /// Line is parallel to the y axis; an ellipse has its `a` axis along y.
     Vertical(EntityId),
     /// Two lines are parallel (same or opposite direction).
     Parallel(EntityId, EntityId),
@@ -154,6 +180,10 @@ pub enum Constraint {
     Diameter { c: EntityId, value: f64 },
     /// Fixes every defining point (and a circle's radius) at its current value.
     Fixed(EntityId),
+    /// Length of an ellipse's `a` semi-axis (the one along its `angle`).
+    SemiMajor { e: EntityId, value: f64 },
+    /// Length of an ellipse's `b` semi-axis (across its `angle`).
+    SemiMinor { e: EntityId, value: f64 },
     /// Points `a` and `b` are mirror images across the line `axis`.
     Symmetric { a: EntityId, b: EntityId, axis: EntityId },
     /// Signed horizontal distance: `x(to) − x(from)`, or `x(to)` itself (from the sketch
@@ -181,7 +211,9 @@ impl Constraint {
             | Constraint::Vertical(a)
             | Constraint::Fixed(a)
             | Constraint::Radius { c: a, .. }
-            | Constraint::Diameter { c: a, .. } => vec![a],
+            | Constraint::Diameter { c: a, .. }
+            | Constraint::SemiMajor { e: a, .. }
+            | Constraint::SemiMinor { e: a, .. } => vec![a],
             Constraint::Symmetric { a, b, axis } => vec![a, b, axis],
             Constraint::HDistance { from, to, .. } | Constraint::VDistance { from, to, .. } => {
                 from.into_iter().chain([to]).collect()
@@ -313,6 +345,16 @@ impl Sketch {
         }
     }
 
+    /// `(center, angle, a, b)` of an ellipse or elliptical arc.
+    pub fn ellipse(&self, id: EntityId) -> Option<(EntityId, f64, f64, f64)> {
+        match self.entity(id)?.geom {
+            Geom::Ellipse { center, angle, a, b } | Geom::EllipseArc { center, angle, a, b, .. } => {
+                Some((center, angle, a, b))
+            }
+            _ => None,
+        }
+    }
+
     /// Radius of a circle (stored) or arc (`|start - center|`).
     pub fn radius(&self, id: EntityId) -> Option<f64> {
         match self.entity(id)?.geom {
@@ -356,6 +398,21 @@ impl Sketch {
         }
     }
 
+    /// Changes the angle and semi-axes of an ellipse or elliptical arc.
+    pub fn set_ellipse(&mut self, id: EntityId, angle_: f64, a_: f64, b_: f64) -> Result<(), SketchError> {
+        if !(angle_.is_finite() && coord_ok(a_) && coord_ok(b_)) || a_ <= 0.0 || b_ <= 0.0 {
+            return Err(SketchError::NonFinite(id));
+        }
+        let i = self.entity_index(id).ok_or(SketchError::UnknownEntity(id))?;
+        match self.entities.get_mut(i) {
+            Some(Entity { geom: Geom::Ellipse { angle, a, b, .. } | Geom::EllipseArc { angle, a, b, .. }, .. }) => {
+                (*angle, *a, *b) = (angle_, a_, b_);
+                Ok(())
+            }
+            _ => Err(SketchError::WrongKind { entity: id, expected: "an ellipse" }),
+        }
+    }
+
     /// Marks an entity as construction geometry (or back).
     pub fn set_construction(&mut self, id: EntityId, construction: bool) -> Result<(), SketchError> {
         let i = self.entity_index(id).ok_or(SketchError::UnknownEntity(id))?;
@@ -386,6 +443,10 @@ impl Sketch {
 
     fn expect_line(&self, id: EntityId) -> Result<(), SketchError> {
         self.expect_kind(id, |k| k == EntityKind::Line, "a line")
+    }
+
+    fn expect_ellipse(&self, id: EntityId) -> Result<(), SketchError> {
+        self.expect_kind(id, |k| matches!(k, EntityKind::Ellipse | EntityKind::EllipseArc), "an ellipse")
     }
 
     fn expect_curve(&self, id: EntityId) -> Result<(), SketchError> {
@@ -464,6 +525,66 @@ impl Sketch {
         self.push(g)
     }
 
+    /// Adds an ellipse around a new centre point; `angle` turns the `a` axis from +x.
+    pub fn add_ellipse(&mut self, center: [f64; 2], angle: f64, a: f64, b: f64) -> Result<EntityId, SketchError> {
+        self.check_room(2)?;
+        let g = Geom::Ellipse { center: EntityId(u32::MAX), angle, a, b };
+        self.check_axes(&g)?;
+        let c = self.add_point(center)?;
+        self.add_ellipse_at(c, angle, a, b)
+    }
+
+    /// Adds an ellipse around an existing centre point.
+    pub fn add_ellipse_at(&mut self, center: EntityId, angle: f64, a: f64, b: f64) -> Result<EntityId, SketchError> {
+        let g = Geom::Ellipse { center, angle, a, b };
+        self.check_geom(&g)?;
+        self.push(g)
+    }
+
+    /// Adds a counter-clockwise elliptical arc with three new points, from eccentric anomaly
+    /// `t0` to `t1` (radians).
+    pub fn add_ellipse_arc(
+        &mut self,
+        center: [f64; 2],
+        angle: f64,
+        a: f64,
+        b: f64,
+        t0: f64,
+        t1: f64,
+    ) -> Result<EntityId, SketchError> {
+        self.check_room(4)?;
+        self.check_axes(&Geom::Ellipse { center: EntityId(u32::MAX), angle, a, b })?;
+        let c = self.add_point(center)?;
+        let s = self.add_point(crate::ellipse::point(center, angle, a, b, t0))?;
+        let e = self.add_point(crate::ellipse::point(center, angle, a, b, t1))?;
+        self.add_ellipse_arc_between(c, angle, a, b, s, e)
+    }
+
+    /// Adds a counter-clockwise elliptical arc between existing points (which the solver
+    /// moves onto the ellipse).
+    pub fn add_ellipse_arc_between(
+        &mut self,
+        center: EntityId,
+        angle: f64,
+        a: f64,
+        b: f64,
+        start: EntityId,
+        end: EntityId,
+    ) -> Result<EntityId, SketchError> {
+        let g = Geom::EllipseArc { center, angle, a, b, start, end };
+        self.check_geom(&g)?;
+        self.push(g)
+    }
+
+    fn check_axes(&self, g: &Geom) -> Result<(), SketchError> {
+        if let Geom::Ellipse { angle, a, b, .. } | Geom::EllipseArc { angle, a, b, .. } = *g
+            && !(angle.is_finite() && coord_ok(a) && coord_ok(b) && a > 0.0 && b > 0.0)
+        {
+            return Err(SketchError::InvalidValue { what: "ellipse semi-axes must be positive and finite" });
+        }
+        Ok(())
+    }
+
     /// Adds a spline through existing points: at least 3, at most
     /// [`crate::spline::MAX_SPLINE_POINTS`], no point twice in a row (nor first = last when
     /// closed). A closed spline connects the last point back to the first.
@@ -537,6 +658,22 @@ impl Sketch {
                     return Err(SketchError::RepeatedEntity(start));
                 }
             }
+            Geom::Ellipse { center, .. } => {
+                self.check_axes(g)?;
+                self.expect_point(center)?;
+            }
+            Geom::EllipseArc { center, start, end, .. } => {
+                self.check_axes(g)?;
+                self.expect_point(center)?;
+                self.expect_point(start)?;
+                self.expect_point(end)?;
+                if center == start || center == end {
+                    return Err(SketchError::RepeatedEntity(center));
+                }
+                if start == end {
+                    return Err(SketchError::RepeatedEntity(start));
+                }
+            }
             Geom::Spline { first, count, .. } => {
                 let (a, b) = (first as usize, (first as usize).saturating_add(count as usize));
                 let pts = self.spline_pts.get(a..b).ok_or(SketchError::InvalidValue { what: "spline point list" })?;
@@ -568,9 +705,25 @@ impl Sketch {
             }
             Constraint::PointOnCircle(p, c) => {
                 self.expect_point(p)?;
-                self.expect_curve(c)
+                if matches!(self.kind(c)?, EntityKind::Ellipse | EntityKind::EllipseArc) {
+                    Ok(())
+                } else {
+                    self.expect_curve(c)
+                }
             }
-            Constraint::Horizontal(l) | Constraint::Vertical(l) => self.expect_line(l),
+            Constraint::Horizontal(l) | Constraint::Vertical(l) => {
+                if matches!(self.kind(l)?, EntityKind::Ellipse | EntityKind::EllipseArc) {
+                    Ok(())
+                } else {
+                    self.expect_line(l)
+                }
+            }
+            Constraint::SemiMajor { e, value } | Constraint::SemiMinor { e, value } => {
+                if !len_ok(value) || value <= 0.0 {
+                    return Err(SketchError::InvalidValue { what: "semi-axis must be positive and finite" });
+                }
+                self.expect_ellipse(e)
+            }
             Constraint::Parallel(a, b) | Constraint::Perpendicular(a, b) => {
                 self.expect_line(a)?;
                 self.expect_line(b)?;
@@ -595,7 +748,7 @@ impl Sketch {
                 match self.kind(a)? {
                     EntityKind::Line => self.expect_line(b),
                     EntityKind::Circle | EntityKind::Arc => self.expect_curve(b),
-                    EntityKind::Point | EntityKind::Spline => {
+                    EntityKind::Point | EntityKind::Spline | EntityKind::Ellipse | EntityKind::EllipseArc => {
                         Err(SketchError::WrongKind { entity: a, expected: "a line, circle or arc" })
                     }
                 }
@@ -673,6 +826,8 @@ impl Sketch {
             | Constraint::Angle { value, .. }
             | Constraint::Radius { value, .. }
             | Constraint::Diameter { value, .. }
+            | Constraint::SemiMajor { value, .. }
+            | Constraint::SemiMinor { value, .. }
             | Constraint::HDistance { value, .. }
             | Constraint::VDistance { value, .. },
         )) = self.constraints.get_mut(index)

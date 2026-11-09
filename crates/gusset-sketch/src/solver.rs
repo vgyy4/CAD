@@ -303,6 +303,14 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
         {
             *r = true;
         }
+        // An ellipse's semi-axes stay positive too (its angle is free).
+        if let (Geom::Ellipse { .. } | Geom::EllipseArc { .. }, Some(g)) = (e.geom, first) {
+            for k in 1..3 {
+                if let Some(r) = is_radius.get_mut(*g + k) {
+                    *r = true;
+                }
+            }
+        }
     }
     let mut x = lay.x0.clone();
     let mut w = vec![1.0; n];
@@ -471,6 +479,12 @@ pub fn solve_drag(sketch: &Sketch, opts: &SolveOptions, drags: &[Drag]) -> Solve
                     error = Some(SolveError::NonPositiveRadius(e.id));
                 }
             }
+            Geom::Ellipse { angle, a, b, .. } | Geom::EllipseArc { angle, a, b, .. } => {
+                (*angle, *a, *b) = (xv(0), xv(1), xv(2));
+                if (crate::geom2::not_gt(*a, 0.0) || crate::geom2::not_gt(*b, 0.0)) && error.is_none() {
+                    error = Some(SolveError::NonPositiveRadius(e.id));
+                }
+            }
             Geom::Line { .. } | Geom::Arc { .. } | Geom::Spline { .. } => {}
         }
     }
@@ -517,6 +531,9 @@ fn free_entities(sketch: &Sketch, lay: &Layout, free_param: &[bool], ids: &[Enti
         match lay.first.get(i).copied().flatten() {
             Some(g) => match sketch.entity(id).map(|e| e.geom) {
                 Some(Geom::Point { .. }) => param_free(g) || param_free(g + 1),
+                Some(Geom::Ellipse { .. } | Geom::EllipseArc { .. }) => {
+                    param_free(g) || param_free(g + 1) || param_free(g + 2)
+                }
                 _ => param_free(g),
             },
             None => false,

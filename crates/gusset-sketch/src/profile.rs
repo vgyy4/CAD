@@ -302,6 +302,8 @@ pub(crate) fn collect_with(
                 }
                 (Shape::Arc { c, r, a0, span }, [ps, pe])
             }
+            // Regions of ellipses: not built yet.
+            Geom::Ellipse { .. } | Geom::EllipseArc { .. } => return Err(deg),
             Geom::Spline { closed, .. } => {
                 let fit: Vec<V2> =
                     s.spline_points(e.id).unwrap_or(&[]).iter().map(|&q| pt_of(s, q)).collect::<Result<Vec<_>, _>>()?;

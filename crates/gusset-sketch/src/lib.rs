@@ -21,6 +21,7 @@
 mod arrange;
 mod curves;
 mod dual;
+pub mod ellipse;
 mod equations;
 mod geom2;
 mod linalg;
