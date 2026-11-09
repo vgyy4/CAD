@@ -893,8 +893,17 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     let mut axis_od: Option<(V3, V3)> = None;
                     let mut axis = if axis_obj == profile {
                         match sub {
-                            "V_Axis" => json!({"origin": sk_place.p, "direction": sk_place.y}),
-                            "H_Axis" => json!({"origin": sk_place.p, "direction": sk_place.x}),
+                            // The sketch's own axes, as construction lines: Gusset's sketch axes
+                            // run through its plane's origin, which need not be this sketch's.
+                            "V_Axis" | "H_Axis" => {
+                                let sk = *sk_place;
+                                let d = if sub == "V_Axis" { sk.y } else { sk.x };
+                                axis_od = Some((sk.p, d));
+                                match axis_line(&mut features, &profile, &sk, sk.p, d) {
+                                    Some(id) => json!({"line": id}),
+                                    None => json!({"origin": sk.p, "direction": d}),
+                                }
+                            }
                             "N_Axis" => json!({"origin": sk_place.p, "direction": sk_place.z}),
                             s => match lines.get(s).filter(|l| l.starts_with('l')) {
                                 Some(l) => json!({"line": l}),

@@ -119,7 +119,7 @@ Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch k
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 103 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 105 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
 volume (fillets whose edges change with the feature order, and stale shapes), lofts,
 pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
