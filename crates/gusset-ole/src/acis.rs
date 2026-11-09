@@ -516,6 +516,22 @@ impl Acis {
         Some((add(c, add(mul(u, t), mul(out, r))), out))
     }
 
+    /// The planar faces (point, unit normal; file units) tagged `NMx_Brep_Feature_tag` by
+    /// the feature with id `fid`: what a thicken made.
+    pub(crate) fn feature_planes(&self, fid: i64) -> Vec<(V3, V3)> {
+        let mut out = Vec::new();
+        for r in &self.recs {
+            if r.ty.starts_with("NMx_Brep_Feature_tag")
+                && r.ints.get(3) == Some(&fid)
+                && let Some(&f) = r.refs.iter().find(|&&y| self.is(y, "face"))
+                && let Surf::Plane { p, n } = self.kind(f)
+            {
+                out.push((p, n));
+            }
+        }
+        out
+    }
+
     pub(crate) fn blend_faces(&self, fid: i64) -> Vec<i64> {
         let mut out = Vec::new();
         for r in &self.recs {

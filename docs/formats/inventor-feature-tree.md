@@ -328,7 +328,12 @@ Tally of the 22 others (corpus test, `GUSSET_IPT_RAW=1` prints the unabridged re
   no longer exists in the result body, so the pre-fillet edge is not recoverable by the support walk ("no edge of the model has its midpoint").
 * `bottom cover` Fillet4 (r 27.5) is NOT a planar full round: the blend is a torus (major 5.25, minor 2.75 cm) between a cone and the plane z = 0,
   so it is not expressible as `full_round` (planar, perpendicular case only). Still a body.
-* The 3 thicken parts (bottom plate, bottom plate mod, Top motor plate) are blocked by `thicken` itself: the reader does not emit
-  it yet (section F gives the equivalence: extrude join of the base's side outline, distance = -thickness). Their Fillet10/11/12 full
-  rounds are then covered by `full_round`; untested until thicken is read.
-
+* Thicken is read now (`thicken()` in `inventor_features.rs`, port of `thicken_feature` in `scripts/re/inventor/iptfeat.py`): join extrude of
+  the base's bounding rectangle on the cap plane. All 3 parts build through `Thicken1` and through their full rounds
+  (bottom plate Fillet10 = 12 rounds, Top motor plate Fillet12 = 8). Remaining blockers (the part then falls back to the exact body):
+  - bottom plate / bottom plate mod: `Chamfer1` "no support pair": planar chamfer faces whose neighbours are cones, i.e. a chamfer chained
+    round a loop of planes and a cylinder (r 23.25 mm) with conical corner patches; no plane pair holds the pre-chamfer edge.
+    `Fillet11` (r 8 mm) "supports do not meet": a ball between a plane and the r 3 mm half cylinder of the earlier full round, 5 mm
+    short of touching it (rolling ball between disjoint faces, no pre-fillet edge). `bottom plate` also has later fillets not reached.
+  - Top motor plate: `Chamfer5` "no support pair" (same chained-cone family) and `Chamfer6` "blend surface None" (a neighbour face
+    whose surface record `Acis::kind` cannot read).

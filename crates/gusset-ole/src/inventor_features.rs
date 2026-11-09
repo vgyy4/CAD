@@ -768,6 +768,125 @@ fn pattern(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), St
     Ok(())
 }
 
+/// A thicken of a side face of the base block: the same as a join extrude of that side's
+/// outline (the base block's extent across the side), from the cap plane back by the thickness
+/// (section F of the notes). The thickness is the parameter under the face reference (slot 0);
+/// the cap is the thicken-tagged planar face lying exactly that far outside the first extrusion's
+/// bounding box. The rebuild check confirms the reading.
+fn thicken(r: &Reader, st: &mut State, f: &Feature, name: &str) -> Result<(), String> {
+    let s = r.slots(f)?;
+    let mut dist = None;
+    for (_, x1) in r.dc.refs(s.need(0)?) {
+        for (_, x2) in r.dc.refs(x1) {
+            if r.dc.role(x2) == Role::Param {
+                dist = r.dc.param(x2).map(|p| p.1 * CM);
+            }
+        }
+    }
+    let dist = dist.filter(|d| d.is_finite() && *d > 0.0).ok_or("the thickness is not readable")?;
+    let b = r.result().ok_or("the result body is not readable")?;
+    let fid = i64::from(r.dc.seq(f.rec).ok_or("the feature has no id")?);
+    let num = |v: Option<&Value>| v.and_then(Value::as_f64);
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([num(a.first())?, num(a.get(1))?, num(a.get(2))?])
+    };
+    let first = st
+        .out
+        .iter()
+        .find(|o| {
+            o.get("type").and_then(Value::as_str) == Some("extrude")
+                && o.get("operation").and_then(Value::as_str) == Some("new")
+        })
+        .ok_or("no base extrusion")?;
+    let sk = st
+        .out
+        .iter()
+        .find(|o| o.get("type").and_then(Value::as_str) == Some("sketch") && o.get("name") == first.get("sketch"))
+        .ok_or("the base sketch is not found")?;
+    let (o, x, y) = (
+        v3(sk.pointer("/plane/origin")).ok_or("sketch plane")?,
+        v3(sk.pointer("/plane/x_axis")).ok_or("sketch plane")?,
+        v3(sk.pointer("/plane/y_axis")).ok_or("sketch plane")?,
+    );
+    let n = cross(x, y);
+    let len = num(first.get("distance")).ok_or("the base extent")?;
+    let symmetric = first.get("symmetric").and_then(Value::as_bool) == Some(true);
+    let target = first.get("name").and_then(Value::as_str).ok_or("the base name")?.to_string();
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in sk.get("points").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(u), Some(v)) = (num(p.get("x")), num(p.get("y"))) else { return Err("a base sketch point".into()) };
+        for k in [if symmetric { -len } else { 0.0 }, len] {
+            for i in 0..3 {
+                let c = o.get(i).copied().unwrap_or(0.0)
+                    + u * x.get(i).copied().unwrap_or(0.0)
+                    + v * y.get(i).copied().unwrap_or(0.0)
+                    + k * n.get(i).copied().unwrap_or(0.0);
+                if let (Some(l), Some(h)) = (lo.get_mut(i), hi.get_mut(i)) {
+                    *l = l.min(c);
+                    *h = h.max(c);
+                }
+            }
+        }
+    }
+    let mut caps: Vec<(usize, f64, f64)> = Vec::new();
+    for (p, nn) in b.feature_planes(fid) {
+        for ax in 0..3 {
+            let na = nn.get(ax).copied().unwrap_or(0.0);
+            if (na.abs() - 1.0).abs() < 1e-6 {
+                let sg = if na > 0.0 { 1.0 } else { -1.0 };
+                let c = p.get(ax).copied().unwrap_or(0.0) * CM;
+                let ext = if sg > 0.0 { hi.get(ax) } else { lo.get(ax) }.copied().unwrap_or(f64::NAN);
+                if (sg * (c - ext) - dist).abs() < 1e-4 && !caps.iter().any(|q| q.0 == ax && (q.2 - c).abs() < 1e-6) {
+                    caps.push((ax, sg, c));
+                }
+            }
+        }
+    }
+    let [(ax, sg, c)] = caps.as_slice() else {
+        return Err(format!("the cap face is not found ({} candidates)", caps.len()));
+    };
+    let (ax, sg, c) = (*ax, *sg, *c);
+    let (j, k) = match ax {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let unit_of = |i: usize, s: f64| -> V3 {
+        let mut v = [0.0; 3];
+        if let Some(e) = v.get_mut(i) {
+            *e = s;
+        }
+        v
+    };
+    let ej = unit_of(j, 1.0);
+    let mut ek = unit_of(k, 1.0);
+    if dot(cross(ej, ek), unit_of(ax, sg)) < 0.0 {
+        ek = unit_of(k, -1.0);
+    }
+    let mut org = [0.0; 3];
+    for (i, e) in org.iter_mut().enumerate() {
+        *e = (lo.get(i).copied().unwrap_or(0.0) + hi.get(i).copied().unwrap_or(0.0)) / 2.0;
+    }
+    if let Some(e) = org.get_mut(ax) {
+        *e = c;
+    }
+    let half = |i: usize| (hi.get(i).copied().unwrap_or(0.0) - lo.get(i).copied().unwrap_or(0.0)) / 2.0;
+    let (hj, hk) = (half(j), half(k));
+    let ps = [(-hj, -hk), (hj, -hk), (hj, hk), (-hj, hk)];
+    let sname = format!("{name}_sketch");
+    let points: Vec<Value> =
+        ps.iter().enumerate().map(|(i, &(u, v))| json!({"id": format!("t{i}"), "x": rnd(u), "y": rnd(v)})).collect();
+    let curves: Vec<Value> = (0..4)
+        .map(|i| json!({"id": format!("tl{i}"), "type": "line", "start": format!("t{i}"), "end": format!("t{}", (i + 1) % 4)}))
+        .collect();
+    st.out.push(json!({"type": "sketch", "name": sname, "plane": {"origin": arr(org), "x_axis": ej, "y_axis": ek},
+                       "points": points, "curves": curves}));
+    st.out.push(json!({"type": "extrude", "name": name, "sketch": sname, "profiles": "all", "operation": "join",
+                       "target": target, "distance": rnd(-dist), "symmetric": false}));
+    Ok(())
+}
+
 fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     let mut v = json!({"type": "unsupported", "name": name, "original_type": what});
     if let Some(r) = reason {
@@ -1003,6 +1122,7 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Va
             FeatType::Fillet | FeatType::Chamfer => blend(&r, &mut st, f, &name, typ),
             FeatType::Hole => hole(&r, &mut st, f, &name),
             FeatType::RectPattern => pattern(&r, &mut st, f, &name),
+            FeatType::Thicken => thicken(&r, &mut st, f, &name),
             // A cosmetic thread changes no geometry.
             FeatType::Thread => {
                 st.omitted.push(json!({"name": name, "why": "cosmetic thread"}));

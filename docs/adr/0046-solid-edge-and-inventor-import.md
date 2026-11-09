@@ -263,3 +263,10 @@ body lies behind the crest). One feature with several middle faces becomes one t
 Result: the full-round fillets of `Long Bottom Nut Traps` rebuild in Gusset; the part still comes
 in as a body (see `docs/formats/inventor-feature-tree.md` I). Coverage stays 25 of 47.
 
+Thicken (same amendment): the reader now emits `thicken` as a join extrude of the base block's side
+outline (a rectangle sketch on the cap plane, `distance = -thickness`); the thickness is the parameter
+under the face reference, the cap the thicken-tagged planar face lying exactly that far outside the
+first extrusion's bounding box. It is only trusted through the whole-part rebuild check. The three
+thicken parts now get past `Thicken1` and their full rounds (12, 12 and 8 tree fillets) are emitted,
+but each still stops at a later feature (docs/formats/inventor-feature-tree.md I), so they stay bodies.
+
