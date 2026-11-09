@@ -373,6 +373,7 @@ impl Command for GenerateGear {
                         op: BodyOp::New,
                         body: None,
                         body_name: None,
+                        refine: true,
                     }),
                 ));
             } else if internal {
@@ -427,6 +428,7 @@ impl Command for GenerateGear {
                             op: BodyOp::New,
                             body: None,
                             body_name: None,
+                            refine: true,
                         }),
                     ),
                 );
@@ -439,6 +441,7 @@ impl Command for GenerateGear {
                         op: BodyOp::Cut,
                         body: Some(name.clone()),
                         body_name: None,
+                        refine: true,
                     }),
                 ));
             } else if helical {
@@ -459,6 +462,7 @@ impl Command for GenerateGear {
                         op: BodyOp::New,
                         body: None,
                         body_name: None,
+                        refine: true,
                     }),
                 ));
             } else {
@@ -471,6 +475,7 @@ impl Command for GenerateGear {
                         op: BodyOp::New,
                         body: None,
                         body_name: None,
+                        refine: true,
                     }),
                 ));
             }
@@ -666,6 +671,7 @@ impl Command for GenerateSpring {
                         op: BodyOp::New,
                         body: None,
                         body_name: None,
+                        refine: true,
                     }),
                 ),
             ];
@@ -900,6 +906,7 @@ impl Command for GenerateWorm {
                         op: BodyOp::New,
                         body: None,
                         body_name: Some(name.clone()),
+                        refine: true,
                     }),
                 ),
             ];
@@ -926,6 +933,7 @@ impl Command for GenerateWorm {
                         op: BodyOp::Add,
                         body: Some(core.clone()),
                         body_name: None,
+                        refine: true,
                     }),
                 ));
             }
@@ -1165,6 +1173,7 @@ impl Command for GenerateRack {
                         op: BodyOp::New,
                         body: None,
                         body_name: None,
+                        refine: true,
                     }),
                 ),
             ];
@@ -1378,6 +1387,7 @@ fn shank_features(name: &str, nm: &Names, core: &str, vals: [f64; 4]) -> Result<
                 op: BodyOp::Add,
                 body: Some(core.to_string()),
                 body_name: None,
+                refine: true,
             }),
         ),
     ])
@@ -1452,6 +1462,7 @@ fn chamfer_features(
                 op: BodyOp::Cut,
                 body: Some(core.to_string()),
                 body_name: None,
+                refine: true,
             }),
         ),
     ])
@@ -1682,6 +1693,7 @@ impl Command for GenerateThread {
                         op: BodyOp::New,
                         body: None,
                         body_name: Some(name.clone()),
+                        refine: true,
                     }),
                 ),
                 Feature::new(tooth_sk.clone(), FeatureKind::Sketch(tooth_sketch)),
@@ -1700,6 +1712,7 @@ impl Command for GenerateThread {
                         op: BodyOp::Add,
                         body: Some(core.clone()),
                         body_name: None,
+                        refine: true,
                     }),
                 ),
             ];
@@ -1747,6 +1760,7 @@ impl Command for GenerateThread {
                         op: BodyOp::Add,
                         body: Some(core.clone()),
                         body_name: None,
+                        refine: true,
                     }),
                 ));
                 if socket {
@@ -1785,6 +1799,7 @@ impl Command for GenerateThread {
                             op: BodyOp::Cut,
                             body: Some(core.clone()),
                             body_name: None,
+                            refine: true,
                         }),
                     ));
                 }
@@ -2015,6 +2030,7 @@ impl Command for GenerateNut {
                         op: BodyOp::New,
                         body: None,
                         body_name: Some(name.clone()),
+                        refine: true,
                     }),
                 ),
                 Feature::new(groove_sk.clone(), FeatureKind::Sketch(groove_sketch)),
@@ -2033,6 +2049,7 @@ impl Command for GenerateNut {
                         op: BodyOp::Cut,
                         body: Some(hex.clone()),
                         body_name: None,
+                        refine: true,
                     }),
                 ),
             ];

@@ -945,6 +945,9 @@ pub struct ExtrudeDef {
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
     pub body_name: Option<String>,
+    /// Unify coplanar faces and collinear edges of the combined result (the default). `false`
+    /// keeps the boolean's own split faces, as FreeCAD does with `Refine = false` (ADR 0004).
+    pub refine: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -968,6 +971,8 @@ pub struct RevolveDef {
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
     pub body_name: Option<String>,
+    /// Unify the combined result (the default); `false` keeps the boolean's split faces (ADR 0004).
+    pub refine: bool,
 }
 
 /// How a sweep orients its profile along the path.
@@ -1027,6 +1032,8 @@ pub struct SweepDef {
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
     pub body_name: Option<String>,
+    /// Unify the combined result (the default); `false` keeps the boolean's split faces (ADR 0004).
+    pub refine: bool,
 }
 
 /// Lofts a solid through two or more closed profiles, each on its own plane.
@@ -1040,6 +1047,8 @@ pub struct LoftDef {
     pub body: Option<String>,
     /// Name of the body this feature creates (`op: new` only); `None` = the feature name.
     pub body_name: Option<String>,
+    /// Unify the combined result (the default); `false` keeps the boolean's split faces (ADR 0004).
+    pub refine: bool,
 }
 
 /// Most profiles one loft may use.
@@ -1368,6 +1377,8 @@ pub struct MirrorDef {
     /// `true`: unite the mirror image with the source body. `false`: add it as a new body
     /// named after this feature.
     pub merge: bool,
+    /// With `merge`: unify the united result (the default); `false` keeps the split faces (ADR 0004).
+    pub refine: bool,
 }
 
 /// A direction or axis direction: a base axis or an explicit vector (components are
@@ -1412,6 +1423,8 @@ pub struct PatternLinearDef {
     /// Features to repeat instead of the whole body: what each one added to or removed
     /// from its body is copied and applied to that body (holes, cuts, bosses).
     pub features: Vec<String>,
+    /// Unify the united copies (the default); `false` keeps the split faces (ADR 0004).
+    pub refine: bool,
 }
 
 /// Repeats a body around an axis and unites the copies with it.
@@ -1428,6 +1441,8 @@ pub struct PatternCircularDef {
     pub angle: Expr,
     /// Features to repeat instead of the whole body (see [`PatternLinearDef::features`]).
     pub features: Vec<String>,
+    /// Unify the united copies (the default); `false` keeps the split faces (ADR 0004).
+    pub refine: bool,
 }
 
 // ------------------------------------------------------------------ datum planes, move, combine
@@ -1723,6 +1738,8 @@ pub struct CombineDef {
     pub tools: Vec<String>,
     /// `Add` (unite), `Cut` (subtract) or `Intersect`; never `New`.
     pub op: BodyOp,
+    /// Unify the combined result (the default); `false` keeps the boolean's split faces (ADR 0004).
+    pub refine: bool,
 }
 
 // ------------------------------------------------------------------ holes

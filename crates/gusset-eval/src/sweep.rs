@@ -56,7 +56,7 @@ impl Evaluator {
         let res =
             k.sweep(&profile, &path, &SweepSpec { orientation, twist }).map_err(|ke| kernel_err(name, "sweep", ke))?;
         let ctx = OpContext::Sweep { feature: name, sketch: &d.profile.sketch, regions: &regions };
-        self.combine(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()))
+        self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
     }
 
     /// A helix about the axis, through the profile (ADR 0034): its radius and start direction
@@ -168,6 +168,6 @@ impl Evaluator {
         }
         let res = k.loft(&sections, &LoftSpec { ruled: d.ruled }).map_err(|ke| kernel_err(name, "loft", ke))?;
         let ctx = OpContext::Loft { feature: name, sketches: &sketches };
-        self.combine(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()))
+        self.combine_refined(s, name, &ctx, res, d.op, (d.body.as_deref(), d.body_name.as_deref()), d.refine)
     }
 }

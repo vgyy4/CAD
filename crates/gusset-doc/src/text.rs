@@ -399,6 +399,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(b) = &e.body_name {
                 args.push(format!("body_name: {b}"));
             }
+            if !e.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::Revolve(r) => {
             args.push(format!("profile: {}", print_profile(&r.profile)));
@@ -410,6 +413,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             }
             if let Some(b) = &r.body_name {
                 args.push(format!("body_name: {b}"));
+            }
+            if !r.refine {
+                args.push("refine: false".into());
             }
         }
         FeatureKind::Sweep(d) => {
@@ -436,6 +442,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if let Some(b) = &d.body_name {
                 args.push(format!("body_name: {b}"));
             }
+            if !d.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::Loft(d) => {
             let list: Vec<String> = d.profiles.iter().map(print_profile).collect();
@@ -447,6 +456,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             push_body(&mut args, &d.body);
             if let Some(b) = &d.body_name {
                 args.push(format!("body_name: {b}"));
+            }
+            if !d.refine {
+                args.push("refine: false".into());
             }
         }
         FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
@@ -601,6 +613,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             if d.merge {
                 args.push("merge: true".into());
             }
+            if !d.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::PatternLinear(d) => {
             push_body(&mut args, &d.body);
@@ -608,6 +623,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("count: {}", d.count));
             args.push(format!("spacing: {}", d.spacing));
             push_features(&mut args, &d.features);
+            if !d.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::PatternCircular(d) => {
             push_body(&mut args, &d.body);
@@ -618,6 +636,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             args.push(format!("count: {}", d.count));
             args.push(format!("angle: {}", d.angle));
             push_features(&mut args, &d.features);
+            if !d.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::CamJob(d) => {
             args.push(format!("sketch: {}", d.sketch));
@@ -694,6 +715,9 @@ fn print_feature(out: &mut String, f: &Feature) {
             push_body(&mut args, &d.body);
             args.push(format!("tools: [{}]", d.tools.join(", ")));
             args.push(format!("op: {}", d.op.keyword()));
+            if !d.refine {
+                args.push("refine: false".into());
+            }
         }
         FeatureKind::Joint(d) => {
             args.push(format!("type: {}", d.kind.keyword()));
@@ -1123,6 +1147,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut op = None;
     let mut body = None;
     let mut body_name = None;
+    let mut refine = true;
     let mut axis = None;
     let mut angle = None;
     let mut edges: Option<Vec<EdgeRef>> = None;
@@ -1134,8 +1159,8 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
-        "extrude" => "profile, distance, symmetric, op, body, body_name, label, group, suppressed",
-        "revolve" => "profile, axis, angle, op, body, body_name, label, group, suppressed",
+        "extrude" => "profile, distance, symmetric, op, body, body_name, refine, label, group, suppressed",
+        "revolve" => "profile, axis, angle, op, body, body_name, refine, label, group, suppressed",
         "fillet" => "edges, radius, full_round, label, group, suppressed",
         "chamfer" => "edges, distance, distance2, angle, faces, label, group, suppressed",
         _ => "blob, format, file, label, group, suppressed",
@@ -1155,6 +1180,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             }
             ("extrude" | "revolve", "body") => body = Some(c.ident()?.to_string()),
             ("extrude" | "revolve", "body_name") => body_name = Some(c.ident()?.to_string()),
+            ("extrude" | "revolve", "refine") => refine = parse_bool(c)?,
             ("extrude", "distance") | ("chamfer", "distance") => {
                 let e = c.expr()?;
                 if kw == "extrude" { distance = Some(e) } else { size = Some(e) }
@@ -1217,6 +1243,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             op: op.unwrap_or(BodyOp::New),
             body,
             body_name,
+            refine,
         }),
         "revolve" => FeatureKind::Revolve(RevolveDef {
             profile: profile.ok_or_else(|| missing(c, kw, "profile"))?,
@@ -1225,6 +1252,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             op: op.unwrap_or(BodyOp::New),
             body,
             body_name,
+            refine,
         }),
         "fillet" | "chamfer" if full_round.is_some() => {
             if full_round.as_ref().is_some_and(Vec::is_empty) {
@@ -1293,6 +1321,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
     let mut thickness = None;
     let mut plane = None;
     let mut merge = false;
+    let mut refine = true;
     let mut flip = false;
     let mut rules = true;
     let mut dir = None;
@@ -1306,9 +1335,9 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
         "draft" => "body, faces, plane, angle, flip, label, group, suppressed",
         "offset_face" => "body, faces, distance, rules, label, group, suppressed",
         "delete_face" => "body, faces, label, group, suppressed",
-        "mirror" => "body, plane, merge, label, group, suppressed",
-        "pattern_linear" => "body, direction, count, spacing, features, label, group, suppressed",
-        _ => "body, axis, through, count, angle, features, label, group, suppressed",
+        "mirror" => "body, plane, merge, refine, label, group, suppressed",
+        "pattern_linear" => "body, direction, count, spacing, features, refine, label, group, suppressed",
+        _ => "body, axis, through, count, angle, features, refine, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1322,6 +1351,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             ("draft", "flip") => flip = parse_bool(c)?,
             ("offset_face", "rules") => rules = parse_bool(c)?,
             ("mirror", "merge") => merge = parse_bool(c)?,
+            ("mirror" | "pattern_linear" | "pattern_circular", "refine") => refine = parse_bool(c)?,
             ("pattern_linear", "direction") | ("pattern_circular", "axis") => dir = Some(parse_dir(c)?),
             ("pattern_circular", "through") => {
                 c.expect('[')?;
@@ -1367,7 +1397,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             flip,
         }),
         "mirror" => {
-            FeatureKind::Mirror(MirrorDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))?, merge })
+            FeatureKind::Mirror(MirrorDef { body, plane: plane.ok_or_else(|| missing(c, kw, "plane"))?, merge, refine })
         }
         "pattern_linear" => FeatureKind::PatternLinear(PatternLinearDef {
             body,
@@ -1375,6 +1405,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             count: count.ok_or_else(|| missing(c, kw, "count"))?,
             spacing: spacing.ok_or_else(|| missing(c, kw, "spacing"))?,
             features: std::mem::take(&mut features),
+            refine,
         }),
         _ => FeatureKind::PatternCircular(PatternCircularDef {
             body,
@@ -1383,6 +1414,7 @@ fn parse_feature_ext(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError
             count: count.ok_or_else(|| missing(c, kw, "count"))?,
             angle: angle.ok_or_else(|| missing(c, kw, "angle"))?,
             features,
+            refine,
         }),
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind })
@@ -1531,9 +1563,10 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut op = None;
     let mut body = None;
     let mut body_name = None;
+    let mut refine = true;
     let allowed = match kw {
-        "sweep" => "profile, path, orientation, twist, op, body, body_name, label, group, suppressed",
-        _ => "profiles, ruled, op, body, body_name, label, group, suppressed",
+        "sweep" => "profile, path, orientation, twist, op, body, body_name, refine, label, group, suppressed",
+        _ => "profiles, ruled, op, body, body_name, refine, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1549,6 +1582,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             }
             (_, "body") => body = Some(c.ident()?.to_string()),
             (_, "body_name") => body_name = Some(c.ident()?.to_string()),
+            (_, "refine") => refine = parse_bool(c)?,
             ("sweep", "profile") => profile = Some(parse_profile(c)?),
             ("sweep", "path") => path = Some(parse_path(c)?),
             ("sweep", "orientation") => {
@@ -1591,6 +1625,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             op,
             body,
             body_name,
+            refine,
         }),
         _ => FeatureKind::Loft(LoftDef {
             profiles: profiles.ok_or_else(|| missing(c, kw, "profiles"))?,
@@ -1598,6 +1633,7 @@ fn parse_feature_ext3(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             op,
             body,
             body_name,
+            refine,
         }),
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind })
@@ -1821,11 +1857,12 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
     let mut onto = None;
     let mut rules = false;
     let mut op = None;
+    let mut refine = true;
     let allowed = match kw {
         "plane" => "base, offset, axis, angle, label, group, suppressed",
         "move" => "body, translate, axis, angle, through, copy, label, group, suppressed",
         "move_face" => "body, faces, translate, axis, angle, through, onto, rules, label, group, suppressed",
-        _ => "body, tools, op, label, group, suppressed",
+        _ => "body, tools, op, refine, label, group, suppressed",
     };
     parse_args(c, |key, c| {
         match (kw, key) {
@@ -1873,6 +1910,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
                 }
                 tools = Some(list);
             }
+            ("combine", "refine") => refine = parse_bool(c)?,
             ("combine", "op") => {
                 let w = c.ident()?;
                 op = Some(match BodyOp::from_keyword(w) {
@@ -1935,6 +1973,7 @@ fn parse_feature_ext2(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseErro
             body,
             tools: tools.ok_or_else(|| missing(c, kw, "tools"))?,
             op: op.unwrap_or(BodyOp::Add),
+            refine,
         }),
     };
     Ok(Feature { name, label, note: None, group, suppressed, kind })

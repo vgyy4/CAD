@@ -621,7 +621,10 @@ impl Command for Mirror {
             insert_feature(
                 doc,
                 rb,
-                Feature::new(name.clone(), FeatureKind::Mirror(MirrorDef { body, plane, merge: self.merge })),
+                Feature::new(
+                    name.clone(),
+                    FeatureKind::Mirror(MirrorDef { body, plane, merge: self.merge, refine: true }),
+                ),
             );
             Ok(json!({ "feature": name }))
         })
@@ -678,7 +681,14 @@ impl Command for PatternLinear {
                 rb,
                 Feature::new(
                     name.clone(),
-                    FeatureKind::PatternLinear(PatternLinearDef { body, direction, count, spacing, features }),
+                    FeatureKind::PatternLinear(PatternLinearDef {
+                        body,
+                        direction,
+                        count,
+                        spacing,
+                        features,
+                        refine: true,
+                    }),
                 ),
             );
             Ok(json!({ "feature": name }))
@@ -734,7 +744,15 @@ impl Command for PatternCircular {
                 rb,
                 Feature::new(
                     name.clone(),
-                    FeatureKind::PatternCircular(PatternCircularDef { body, axis, through, count, angle, features }),
+                    FeatureKind::PatternCircular(PatternCircularDef {
+                        body,
+                        axis,
+                        through,
+                        count,
+                        angle,
+                        features,
+                        refine: true,
+                    }),
                 ),
             );
             Ok(json!({ "feature": name }))

@@ -175,6 +175,14 @@ struct SolidF {
     operation: Option<String>,
     #[serde(default)]
     target: Option<String>,
+    /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
+}
+
+/// The default of the `refine` field of a body-combining tree feature: unified.
+pub(super) fn refine_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1022,6 +1030,9 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
     {
         let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
         args.push(format!("body: {tn}"));
+    }
+    if !d.refine && op != "new" {
+        args.push("refine: false".into());
     }
     let kw = if revolve { "revolve" } else { "extrude" };
     let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));

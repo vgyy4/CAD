@@ -32,6 +32,36 @@ struct Obj {
     props: HashMap<String, Vec<Elem>>,
 }
 
+/// Marks the body-combining features among `made` as unrefined when the FreeCAD object they
+/// came from has `Refine = false` (ADR 0033, 0042). A feature that starts a body does no
+/// boolean, so there is nothing to keep.
+fn mark_unrefined(made: &mut [Value], unrefined: bool) {
+    if !unrefined {
+        return;
+    }
+    // A two-length pad, pocket, groove or revolution is two features here (`_back` is the second
+    // side) where FreeCAD makes one solid: unrefined, their seam would be an edge FreeCAD's
+    // shape does not have (and its dressups pick), so such an object stays refined.
+    let two_sided = |f: &Value| f.get("name").and_then(Value::as_str).is_some_and(|n| n.ends_with("_back"));
+    if made.iter().any(two_sided) {
+        return;
+    }
+    for f in made {
+        let combines = matches!(
+            f.get("type").and_then(Value::as_str),
+            Some(
+                "extrude" | "revolve" | "sweep" | "loft" | "combine" | "pattern_linear" | "pattern_circular" | "mirror"
+            )
+        );
+        if combines
+            && f.get("operation").and_then(Value::as_str) != Some("new")
+            && let Some(m) = f.as_object_mut()
+        {
+            m.insert("refine".into(), json!(false));
+        }
+    }
+}
+
 impl Obj {
     fn elems(&self, prop: &str) -> &[Elem] {
         self.props.get(prop).map_or(&[], Vec::as_slice)
@@ -47,6 +77,11 @@ impl Obj {
     }
     fn bool(&self, prop: &str) -> bool {
         self.value(prop, "Bool") == Some("true")
+    }
+    /// FreeCAD's `Refine = false`: the feature keeps the split faces of its boolean. A missing
+    /// property is refined (FreeCAD's default for the files that do not store it).
+    fn unrefined(&self) -> bool {
+        self.value("Refine", "Bool") == Some("false")
     }
     fn int(&self, prop: &str) -> Option<i64> {
         self.value(prop, "Integer").and_then(|v| v.parse().ok())
@@ -555,8 +590,14 @@ fn part_features(
                     "Part::Fuse" | "Part::MultiFuse" => "join",
                     _ => "intersect",
                 };
-                features
-                    .push(json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op}));
+                let mut combine =
+                    json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op});
+                if o.unrefined()
+                    && let Some(m) = combine.as_object_mut()
+                {
+                    m.insert("refine".into(), json!(false));
+                }
+                features.push(combine);
                 body_of.insert(name.clone(), target.clone());
             }
             "Part::Extrusion" => {
@@ -1092,7 +1133,11 @@ pub(crate) fn tree_variant(
         // The body's shape is its Tip's: features after it are not part of the result.
         let tip = body.link("Tip").map(|(t, _)| t).filter(|t| group.contains(t));
         let mut past_tip = false;
+        // The features the object translated last made, and whether its `Refine` is off.
+        let mut last_made: (usize, bool) = (features.len(), false);
         for name in &group {
+            mark_unrefined(features.get_mut(last_made.0..).unwrap_or_default(), last_made.1);
+            last_made = (features.len(), false);
             // The body as it stood after the previous feature, for a Part object that copies it.
             if let Some(p) = prev.take().filter(|p| wanted.contains(p)) {
                 snaps.insert(p, (features.get(body_start..).unwrap_or_default().to_vec(), first_solid.clone()));
@@ -1106,6 +1151,7 @@ pub(crate) fn tree_variant(
             if steps.contains(name) {
                 continue;
             }
+            last_made.1 = o.unrefined();
             let kind = o.kind.as_str();
             match kind {
                 "Sketcher::SketchObject" => {
@@ -1587,6 +1633,7 @@ pub(crate) fn tree_variant(
                 other => return Err(format!("{name}: {other} is not translated yet")),
             }
         }
+        mark_unrefined(features.get_mut(last_made.0..).unwrap_or_default(), last_made.1);
         if let Some(p) = prev.take().filter(|p| wanted.contains(p)) {
             snaps.insert(p, (features.get(body_start..).unwrap_or_default().to_vec(), first_solid.clone()));
         }
@@ -1671,6 +1718,23 @@ mod tests {
         assert_eq!(t.features[1]["distance"], 2.0);
         assert_eq!(t.features[2]["operation"], "cut");
         assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
+    }
+
+    #[test]
+    fn refine_false_marks_the_joining_and_cutting_features() {
+        let refine =
+            |t: &crate::tree_import::Tree| t.features.iter().map(|f| f.get("refine").cloned()).collect::<Vec<_>>();
+        // Refined (or no property): nothing is marked.
+        let t = tree(DOC.as_bytes(), &mut no_shapes).unwrap();
+        assert!(refine(&t).iter().all(Option::is_none));
+        // Refine = false on the pad (a new body: nothing to keep) and on the pocket.
+        let off = r#"<Property name="Refine" type="App::PropertyBool"><Bool value="false"/></Property>
+    <Property name="Type" type="App::PropertyEnumeration">"#;
+        let doc = DOC.replace(r#"<Property name="Type" type="App::PropertyEnumeration">"#, off);
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let marks = refine(&t);
+        assert_eq!(marks[1], None, "a first pad does no boolean");
+        assert_eq!(marks[2], Some(serde_json::json!(false)), "{:?}", t.features[2]);
     }
 
     #[test]

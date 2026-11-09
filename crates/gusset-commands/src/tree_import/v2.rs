@@ -2,8 +2,8 @@
 //! patterns, mirrors and shells. Faces are found by a point on them, like edges by midpoint.
 
 use super::{
-    Axis, BASES, EdgeF, Gen, MAX_PICKS, SketchF, SolidF, V3, cross, dot, edges, finite, norm, num, short, sketch,
-    solid, sub,
+    Axis, BASES, EdgeF, Gen, MAX_PICKS, SketchF, SolidF, V3, cross, dot, edges, finite, norm, num, refine_default,
+    short, sketch, solid, sub,
 };
 use crate::Session;
 use serde::Deserialize;
@@ -59,6 +59,9 @@ pub(super) struct PatternF {
     #[serde(default)]
     angle: Option<f64>,
     count: u32,
+    /// `false` keeps the united copies' split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +80,9 @@ pub(super) struct MirrorF {
     target: Option<String>,
     #[serde(default)]
     merge: Option<bool>,
+    /// `false` keeps the united copies' split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
 }
 
 /// Bodies combined into a target body: `join`, `cut` or `intersect`.
@@ -86,6 +92,9 @@ pub(super) struct CombineF {
     target: String,
     tools: Vec<String>,
     operation: String,
+    /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
 }
 
 /// A loft through the closed profiles of two or more sketches, in order.
@@ -99,6 +108,9 @@ pub(super) struct LoftF {
     operation: Option<String>,
     #[serde(default)]
     target: Option<String>,
+    /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
 }
 
 /// A profile sketch swept along curves of a path sketch.
@@ -117,6 +129,9 @@ pub(super) struct SweepF {
     operation: Option<String>,
     #[serde(default)]
     target: Option<String>,
+    /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
+    #[serde(default = "refine_default")]
+    refine: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -501,6 +516,9 @@ pub(super) fn pattern(g: &mut Gen, s: &Session, d: &PatternF, circular: bool) ->
         args.push(format!("features: [{}]", names.join(", ")));
     }
     let name = g.fresh(&d.name, "Pattern");
+    if !d.refine {
+        args.push("refine: false".into());
+    }
     let kw = if circular { "pattern_circular" } else { "pattern_linear" };
     let _ = writeln!(g.text, "\n{kw} {name} ({})", args.join(", "));
     builds(g, s, &name)?;
@@ -703,6 +721,9 @@ fn mirror_body(g: &mut Gen, s: &Session, d: &MirrorF, o: V3, n: V3) -> Result<()
     }
     if d.merge.unwrap_or(true) {
         args.push("merge: true".into());
+        if !d.refine {
+            args.push("refine: false".into());
+        }
     }
     let _ = writeln!(g.text, "\nmirror {name} ({})", args.join(", "));
     builds(g, s, &name)?;
@@ -805,6 +826,9 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
         let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
         args.push(format!("body: {tn}"));
     }
+    if !d.refine && op != "new" {
+        args.push("refine: false".into());
+    }
     let _ = writeln!(g.text, "\nsweep {name} ({})", args.join(", "));
     builds(g, s, &name)?;
     g.made.push(name.clone());
@@ -845,6 +869,9 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     {
         let tn = g.features.get(t).ok_or_else(|| format!("its target '{}' was not imported", short(t)))?;
         args.push(format!("body: {tn}"));
+    }
+    if !d.refine && op != "new" {
+        args.push("refine: false".into());
     }
     let _ = writeln!(g.text, "\nloft {name} ({})", args.join(", "));
     builds(g, s, &name)?;
@@ -899,7 +926,8 @@ pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), Stri
         tools.push(n);
     }
     let name = g.fresh(&d.name, "Combine");
-    let _ = writeln!(g.text, "\ncombine {name} (body: {target}, tools: [{}], op: {op})", tools.join(", "));
+    let unrefined = if d.refine { "" } else { ", refine: false" };
+    let _ = writeln!(g.text, "\ncombine {name} (body: {target}, tools: [{}], op: {op}{unrefined})", tools.join(", "));
     builds(g, s, &name)?;
     g.made.push(name.clone());
     // The combined body keeps its target's name for later references.

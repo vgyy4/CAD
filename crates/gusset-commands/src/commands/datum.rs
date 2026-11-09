@@ -260,7 +260,7 @@ impl Command for Combine {
                 rb,
                 Feature::new(
                     name.clone(),
-                    FeatureKind::Combine(CombineDef { body: Some(body), tools: tools.clone(), op }),
+                    FeatureKind::Combine(CombineDef { body: Some(body), tools: tools.clone(), op, refine: true }),
                 ),
             );
             Ok(

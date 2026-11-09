@@ -311,8 +311,14 @@ impl Evaluator {
         }
         let faces_in = (body.topology.faces.len() + topo.faces.len()) as u64;
         self.charge(s, name, "the mirror", 1, faces_in)?;
-        let united =
-            self.unite(name, &body.shape, &body.names, &[Tool { shape: res.shape, names }], |_| String::new())?;
+        let united = self.unite(
+            name,
+            &body.shape,
+            &body.names,
+            &[Tool { shape: res.shape, names }],
+            |_| String::new(),
+            d.refine,
+        )?;
         replace_body(s, bi, &body, united.0, united.1, united.2);
         Ok(())
     }
@@ -335,9 +341,9 @@ impl Evaluator {
         let moves: Vec<Transform> =
             (1..count).map(|i| Transform::Translate(scale(dir, spacing * f64::from(i)))).collect();
         if !d.features.is_empty() {
-            return self.run_feature_pattern(s, name, &d.features, &moves);
+            return self.run_feature_pattern(s, name, &d.features, &moves, d.refine);
         }
-        self.run_pattern(s, name, d.body.as_deref(), &moves)
+        self.run_pattern(s, name, d.body.as_deref(), &moves, d.refine)
     }
 
     pub(crate) fn run_pattern_circular(
@@ -363,9 +369,9 @@ impl Evaluator {
         let turns: Vec<Transform> =
             (1..count).map(|i| Transform::Rotate { origin, axis, angle: step * f64::from(i) }).collect();
         if !d.features.is_empty() {
-            return self.run_feature_pattern(s, name, &d.features, &turns);
+            return self.run_feature_pattern(s, name, &d.features, &turns, d.refine);
         }
-        self.run_pattern(s, name, d.body.as_deref(), &turns)
+        self.run_pattern(s, name, d.body.as_deref(), &turns, d.refine)
     }
 
     /// Repeats features instead of a body: what each one removed from its body (before minus
@@ -377,6 +383,7 @@ impl Evaluator {
         name: &str,
         features: &[String],
         transforms: &[Transform],
+        refine: bool,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let mut target: Option<String> = None;
@@ -448,7 +455,7 @@ impl Evaluator {
         self.charge(s, name, "the pattern", cuts.len() + adds.len(), per)?;
         let (mut shape, mut names, mut topo) = (body.shape.clone(), body.names.clone(), body.topology.clone());
         if !cuts.is_empty() {
-            (shape, names, topo) = self.boolean_tools(
+            (shape, names, topo) = self.boolean_tools_refined(
                 name,
                 BoolOp::Cut,
                 (&shape, &names),
@@ -461,10 +468,11 @@ impl Evaluator {
                     }
                     e
                 },
+                refine,
             )?;
         }
         if !adds.is_empty() {
-            (shape, names, topo) = self.unite(name, &shape, &names, &adds, |i| format!("copy {}: ", i + 1))?;
+            (shape, names, topo) = self.unite(name, &shape, &names, &adds, |i| format!("copy {}: ", i + 1), refine)?;
         }
         replace_body(s, bi, &body, shape, names, topo);
         Ok(())
@@ -477,6 +485,7 @@ impl Evaluator {
         name: &str,
         body: Option<&str>,
         transforms: &[Transform],
+        refine: bool,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let (bi, body) = target_body(s, name, body)?;
@@ -497,7 +506,7 @@ impl Evaluator {
             copies.push(Tool { shape: copy.shape, names: cnames });
         }
         let (shape, names, topo) =
-            self.unite(name, &body.shape, &body.names, &copies, |i| format!("instance {}: ", i + 1))?;
+            self.unite(name, &body.shape, &body.names, &copies, |i| format!("instance {}: ", i + 1), refine)?;
         replace_body(s, bi, &body, shape, names, topo);
         Ok(())
     }
@@ -511,15 +520,24 @@ impl Evaluator {
         a_names: &BodyNames,
         tools: &[Tool],
         label: impl Fn(usize) -> String,
+        refine: bool,
     ) -> Result<(Shape, BodyNames, Topology), EvalError> {
-        self.boolean_tools(feature, BoolOp::Union, (a, a_names), tools, "", &|i, ke| {
-            let mut e = kernel_err(feature, "union", ke);
-            if let Some(i) = i {
-                e.message = format!("{}{}", label(i), e.message);
-            }
-            e.hint.get_or_insert_with(|| "the copies must overlap or touch cleanly; check the spacing".into());
-            e
-        })
+        self.boolean_tools_refined(
+            feature,
+            BoolOp::Union,
+            (a, a_names),
+            tools,
+            "",
+            &|i, ke| {
+                let mut e = kernel_err(feature, "union", ke);
+                if let Some(i) = i {
+                    e.message = format!("{}{}", label(i), e.message);
+                }
+                e.hint.get_or_insert_with(|| "the copies must overlap or touch cleanly; check the spacing".into());
+                e
+            },
+            refine,
+        )
     }
 
     /// Applies `op` to a named target with all `tools` in one kernel operation
@@ -533,10 +551,26 @@ impl Evaluator {
         &self,
         feature: &str,
         op: BoolOp,
+        target: (&Shape, &BodyNames),
+        tools: &[Tool],
+        empty: &str,
+        on_error: &dyn Fn(Option<usize>, KernelError) -> EvalError,
+    ) -> Result<(Shape, BodyNames, Topology), EvalError> {
+        self.boolean_tools_refined(feature, op, target, tools, empty, on_error, true)
+    }
+
+    /// [`Self::boolean_tools`] whose result is unified (`refine`) or kept as the boolean
+    /// made it (`refine: false`, ADR 0004).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn boolean_tools_refined(
+        &self,
+        feature: &str,
+        op: BoolOp,
         (target, target_names): (&Shape, &BodyNames),
         tools: &[Tool],
         empty: &str,
         on_error: &dyn Fn(Option<usize>, KernelError) -> EvalError,
+        refine: bool,
     ) -> Result<(Shape, BodyNames, Topology), EvalError> {
         let k = self.kernel.as_ref();
         let shapes: Vec<Shape> = tools.iter().map(|t| t.shape.clone()).collect();
@@ -549,7 +583,11 @@ impl Evaluator {
                 .map_err(|e| EvalError::new(feature, ErrorCode::KernelFailure, e.0))?;
             Ok((res.shape, names, topo))
         };
-        let first = match k.boolean_many(op, target, &shapes) {
+        let first = match if refine {
+            k.boolean_many(op, target, &shapes)
+        } else {
+            k.boolean_many_unrefined(op, target, &shapes)
+        } {
             Ok(res) => {
                 let mut inputs: Vec<&BodyNames> = Vec::with_capacity(tools.len() + 1);
                 inputs.push(target_names);
@@ -569,7 +607,8 @@ impl Evaluator {
             if self.is_cancelled() {
                 return Err(budget::cancelled(feature));
             }
-            let res = k.boolean(op, &cur.0, &t.shape).map_err(|ke| on_error(Some(i), ke))?;
+            let res = if refine { k.boolean(op, &cur.0, &t.shape) } else { k.boolean_unrefined(op, &cur.0, &t.shape) }
+                .map_err(|ke| on_error(Some(i), ke))?;
             cur = named(res, &[&cur.1, &t.names])?;
         }
         Ok(cur)
@@ -793,13 +832,14 @@ impl Evaluator {
             e
         };
         let (shape, names, topo) = self
-            .boolean_tools(
+            .boolean_tools_refined(
                 name,
                 bop,
                 (&body.shape, &body.names),
                 &tool_list,
                 "combining the tool bodies left no body",
                 &on_error,
+                d.refine,
             )
             .map_err(|e| {
                 if e.code != ErrorCode::EmptyResult {

@@ -421,6 +421,39 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn refine_false_round_trips_on_combining_features() {
+        let ok = format!(
+            "{HOLE_BASE}extrude E2 (profile: P, distance: 3 mm, op: add, body: E, refine: false)\n\nrevolve R1 (profile: P, axis: X, angle: 90 deg, op: cut, refine: false)\n\nextrude T (profile: P, distance: 2 mm, op: new)\n\ncombine C1 (body: E, tools: [T], op: add, refine: false)\n\nmirror M1 (body: E, plane: YZ, merge: true, refine: false)\n\npattern_linear PL (body: E, direction: X, count: 3, spacing: 40 mm, refine: false)\n\npattern_circular PC (body: E, axis: Z, count: 4, angle: 360 deg, refine: false)\n"
+        );
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Extrude(e) = &doc.feature("E2").unwrap().kind else { panic!() };
+        assert!(!e.refine);
+        // Refined is the default and prints nothing; the value must be a boolean.
+        let FeatureKind::Extrude(e) = &doc.feature("E").unwrap().kind else { panic!() };
+        assert!(e.refine);
+        assert!(!doc.to_text().contains("refine: true"));
+        let explicit = ok.replace("refine: false)\n\nrevolve", "refine: true)\n\nrevolve");
+        assert!(
+            !Document::from_text(&explicit)
+                .unwrap()
+                .to_text()
+                .contains("E2 (profile: P, distance: 3 mm, op: add, body: E, refine")
+        );
+        let e = Document::from_text(&ok.replace("refine: false)\n\nrevolve", "refine: maybe)\n\nrevolve"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("true or false") || e.contains("boolean"), "{e}");
+        // Dressups do not take it.
+        let e = Document::from_text(&format!(
+            "{HOLE_BASE}fillet F (edges: [edge(E/side(P/l4), E/cap(end))], radius: 1 mm, refine: false)\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("refine"), "{e}");
+    }
+
+    #[test]
     fn sweep_and_loft_round_trip_and_are_validated() {
         let ok = format!(
             "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, op: new)\n"

@@ -694,3 +694,50 @@ fn a_tree_file_alone_cannot_bring_in_a_stored_body() {
     let skipped = r["skipped_user_text"].to_string();
     assert!(skipped.contains("native importer"), "{r}");
 }
+
+#[test]
+fn refine_false_keeps_the_split_faces_of_a_join() {
+    // Two touching 10 mm cubes: refined they merge into one box (6 faces); `refine: false`
+    // keeps the four faces around the seam split (10 faces).
+    let tree = |refine: Option<bool>| {
+        let mut join = extrude("Box2", "Side", 10.0, "join");
+        join["target"] = json!("Box");
+        if let Some(r) = refine {
+            join["refine"] = json!(r);
+        }
+        vec![
+            rect("Base", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+            extrude("Box", "Base", 10.0, "new"),
+            rect("Side", plane_at(0.0), 10.0, 0.0, 10.0, 10.0),
+            join,
+        ]
+    };
+    for (refine, faces, line_has) in [(None, 6u64, false), (Some(true), 6, false), (Some(false), 10, true)] {
+        let (mut s, r) = import_v2_session(tree(refine));
+        assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+        let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+        assert_eq!(text.contains("refine: false"), line_has, "{text}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+        assert_eq!(b["faces"].as_u64(), Some(faces), "{b}");
+    }
+}
+
+#[test]
+fn refine_false_on_a_pattern_keeps_the_seams_between_copies() {
+    // Three touching 10 mm cubes from a linear pattern: 6 faces refined, 14 unrefined.
+    let tree = |refine: bool| {
+        let mut p = json!({"type": "pattern_linear", "name": "Row", "target": "Box", "direction": [1, 0, 0],
+            "spacing": 10, "count": 3});
+        if !refine {
+            p["refine"] = json!(false);
+        }
+        vec![rect("Base", plane_at(0.0), 0.0, 0.0, 10.0, 10.0), extrude("Box", "Base", 10.0, "new"), p]
+    };
+    for (refine, faces) in [(true, 6u64), (false, 14)] {
+        let (mut s, _) = import_v2_session(tree(refine));
+        let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+        assert_eq!(text.contains("refine: false"), !refine, "{text}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+        assert_eq!(b["faces"].as_u64(), Some(faces), "{b}");
+    }
+}

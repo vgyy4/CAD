@@ -1047,7 +1047,7 @@ impl Evaluator {
                     .extrude(&profile, &ExtrudeSpec { distance, symmetric: e.symmetric })
                     .map_err(|ke| kernel_err(name, "extrusion", ke))?;
                 let ctx = OpContext::Sweep { feature: name, sketch: &e.profile.sketch, regions: &regions };
-                self.combine(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()))
+                self.combine_refined(s, name, &ctx, r, e.op, (e.body.as_deref(), e.body_name.as_deref()), e.refine)
             }
             FeatureKind::Revolve(r) => {
                 let (solved, frame) = sketch_input(name, &r.profile.sketch, s)?;
@@ -1080,7 +1080,7 @@ impl Evaluator {
                     .revolve(&profile, &RevolveSpec { axis_origin, axis_dir, angle })
                     .map_err(|ke| kernel_err(name, "revolve", ke))?;
                 let ctx = OpContext::Sweep { feature: name, sketch: &r.profile.sketch, regions: &regions };
-                self.combine(s, name, &ctx, res, r.op, (r.body.as_deref(), r.body_name.as_deref()))
+                self.combine_refined(s, name, &ctx, res, r.op, (r.body.as_deref(), r.body_name.as_deref()), r.refine)
             }
             FeatureKind::Sweep(d) => self.run_sweep(s, name, d, units, params),
             FeatureKind::Loft(d) => self.run_loft(s, name, d),
@@ -1209,7 +1209,23 @@ impl Evaluator {
         ctx: &OpContext<'_>,
         tool: OpResult,
         op: BodyOp,
+        target: (Option<&str>, Option<&str>),
+    ) -> Result<(), EvalError> {
+        self.combine_refined(s, feature, ctx, tool, op, target, true)
+    }
+
+    /// [`Self::combine`] whose boolean result is unified (`refine`) or kept as the kernel
+    /// made it (`refine: false`, ADR 0004). `op: new` does no boolean.
+    #[allow(clippy::too_many_arguments)]
+    fn combine_refined(
+        &self,
+        s: &mut State,
+        feature: &str,
+        ctx: &OpContext<'_>,
+        tool: OpResult,
+        op: BodyOp,
         (target, new_name): (Option<&str>, Option<&str>),
+        refine: bool,
     ) -> Result<(), EvalError> {
         let k = self.kernel.as_ref();
         let tool_topo = k.topology(&tool.shape).map_err(|ke| kernel_err(feature, "topology", ke))?;
@@ -1253,7 +1269,12 @@ impl Evaluator {
         if self.is_cancelled() {
             return Err(budget::cancelled(feature));
         }
-        let res = k.boolean(bop, &body.shape, &tool.shape).map_err(|ke| {
+        let res = if refine {
+            k.boolean(bop, &body.shape, &tool.shape)
+        } else {
+            k.boolean_unrefined(bop, &body.shape, &tool.shape)
+        }
+        .map_err(|ke| {
             let mut e = kernel_err(feature, "boolean", ke);
             if op == BodyOp::Cut || op == BodyOp::Intersect {
                 e.hint.get_or_insert_with(|| "check that the profile overlaps the body".into());

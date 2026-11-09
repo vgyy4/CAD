@@ -248,8 +248,8 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 ## Features
 
 ```
-extrude  <Name> (profile: <P>, distance: <expr>, [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>])
-revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...])
+extrude  <Name> (profile: <P>, distance: <expr>, [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>], [refine: false])
+revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...], [refine: false])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
 fillet   <Name> (full_round: [<face>, ...])
 chamfer  <Name> (edges: [<edge>, ...], distance: <expr>, [distance2: <expr> | angle: <expr>], [faces: [<face>, ...]])
@@ -263,6 +263,11 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   `intersect` combine with the body created by the feature named in `body:` (default:
   the latest body). A sketch on a face extrudes along the face's outward normal, so a
   `cut` into the material needs a negative distance.
+- `refine: false` (extrude, revolve, sweep, loft, combine; default `true`) keeps the result of an
+  `add`, `cut` or `intersect` as the boolean made it: coplanar faces and collinear edges are not
+  unified, so two touching boxes stay split along the seam. FreeCAD files with `Refine = false`
+  rebuild the same way; a later fillet then sees the extra seam edges. It has no effect with
+  `op: new`. Prefer the default unless a model must match an unrefined source.
 - A revolve axis `X` or `Y` is the sketch's own x or y axis through its origin (`Z`, its normal,
   is refused); `Sketch1.l5` is a line of a sketch.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
@@ -349,8 +354,8 @@ revolve Revolve1 (profile: Sketch1, axis: Sketch1.l8, angle: 360 deg, op: new, b
 ## Sweep and loft
 
 ```
-sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...])
-loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], [body_name: ...])
+sweep <Name> (profile: <P>, path: <path>, [orientation: frenet|fixed], [twist: <angle>], [op: ...], [body: ...], [body_name: ...], [refine: false])
+loft  <Name> (profiles: [<P>, <P>, ...], [ruled: true], [op: ...], [body: ...], [body_name: ...], [refine: false])
 ```
 
 - `sweep` moves a closed profile along a path. `<path>` is a sketch (`Path`: all its curves must
@@ -470,7 +475,7 @@ that notches an edge or adds material marks the pattern `changed_by` instead. Fl
 plane  <Name> (base: <plane>, offset: <length>)
 plane  <Name> (base: <plane>, axis: X|Y|Z|<edge>, angle: <angle>)
 move   <Name> (translate: [<x>, <y>, <z>], axis: X|Y|Z|[x, y, z], angle: <angle>, [through: [x, y, z]], [copy: true], [body: <Feature>])
-combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>])
+combine <Name> (tools: [<Feature>, ...], [op: add|cut|intersect], [body: <Feature>], [refine: false])
 shell, draft, offset_face, delete_face, move_face, mirror, pattern_linear, pattern_circular   # whole-body operations (see below)
 text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length>, distance: <length>, [font: sans|mono], [align: left|center|right], [angle: <angle>], [op: ...], [body: ...], [body_name: ...])
 ```
@@ -495,6 +500,8 @@ text   <Name> (text: "<string>", plane: <plane>, at: [<x>, <y>], height: <length
   count: <n>, angle: <angle>)` repeat a body. All take an optional `body:`. A pattern with
   `features: [<feature>, ...]` repeats only those features instead: what each one added to or
   cut from its body is copied and applied to that body (a row of holes, a ring of bosses).
+  `mirror` (with `merge`), `pattern_linear` and `pattern_circular` take `refine: false` like
+  extrude: the united copies keep their seams (see "Features").
 - `draft (faces: [<face>], plane: <plane>, angle: <angle>, [flip: true])` tapers faces for
   molding: each face turns by `angle` about its line on the neutral `plane`, leaning inward
   along the pull direction (the part narrows that way; a negative angle leans it outward).

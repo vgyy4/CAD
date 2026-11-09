@@ -2185,6 +2185,7 @@ impl Command for Extrude {
                         op,
                         body,
                         body_name,
+                        refine: true,
                     }),
                 );
                 insert_feature(doc, rb, f);
@@ -2261,6 +2262,7 @@ impl Command for Revolve {
                         op,
                         body,
                         body_name,
+                        refine: true,
                     }),
                 );
                 insert_feature(doc, rb, f);
