@@ -1344,6 +1344,10 @@ fn sub(a: V3, b: V3) -> V3 {
 fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
+/// `a s + b t`.
+fn comb(a: V3, s: f64, b: V3, t: f64) -> V3 {
+    [a[0] * s + b[0] * t, a[1] * s + b[1] * t, a[2] * s + b[2] * t]
+}
 fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
@@ -1783,10 +1787,97 @@ fn round3(p: V3) -> V3 {
     p.map(|v| round_to(v, 6))
 }
 
+/// The face a reference names, as the feature drew it.
+fn face_of<'a>(
+    r: &Rep,
+    swept: &'a HashMap<u32, Swept>,
+    rounds: &HashMap<u32, Vec<Option<Round>>>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+) -> Option<Face<'a>> {
+    if let Some(list) = rounds.get(&r.fid) {
+        return list.get((r.idx as usize).checked_sub(1)?).copied().flatten().map(Face::Round);
+    }
+    let f = swept.get(&r.fid)?;
+    if cap_tags.contains(&r.tag) {
+        return Some(Face::Cap(r.fid, f, r.idx));
+    }
+    let mut c = sketches.get(f.sketch)?.segs.iter().filter(|s| s.a == r.idx && !s.construction);
+    match (c.next(), c.next()) {
+        (Some(s), None) => Some(Face::Side(r.fid, f, *s)),
+        _ => None,
+    }
+}
+
+/// The plane of a planar face as the feature drew it: a point on it and a unit normal.
+fn face_plane(face: &Face, sketches: &[Geometry]) -> Option<(V3, V3)> {
+    let unit = |v: V3| -> Option<V3> {
+        let l = libm::sqrt(dot(v, v));
+        (l > 1e-9).then(|| [v[0] / l, v[1] / l, v[2] / l])
+    };
+    match face {
+        Face::Cap(_, g, c) => Some((lift(g, 0.0, 0.0, cap_height(g, *c)), unit(normal(g))?)),
+        Face::Side(_, f, s) if s.kind == SegKind::Line => {
+            let gf = sketches.get(f.sketch)?;
+            let (p0, p1) = (point(&gf.pts, s.s)?, point(&gf.pts, s.e)?);
+            let o = lift(f, p0.x * 1000.0, p0.y * 1000.0, 0.0);
+            let q = lift(f, p1.x * 1000.0, p1.y * 1000.0, 0.0);
+            Some((o, unit(cross(sub(q, o), normal(f)))?))
+        }
+        _ => None,
+    }
+}
+
+/// An edge between two planar faces, found from the planes alone: the line where they meet,
+/// between the planes of the two vertex faces. This is the edge when a later feature's face
+/// is coplanar with an earlier one (SolidWorks merges the two, and the record keeps naming the
+/// earlier feature's face), so the two faces need not be neighbours in one profile.
+fn plane_edge(faces: &[Option<Face>], sketches: &[Geometry]) -> Option<V3> {
+    let [Some(fa), Some(fb), Some(fc), Some(fd)] = faces else { return None };
+    let ((p1, n1), (p2, n2)) = (face_plane(fa, sketches)?, face_plane(fb, sketches)?);
+    let (p3, n3) = face_plane(fc, sketches)?;
+    let (p4, n4) = face_plane(fd, sketches)?;
+    let d = cross(n1, n2);
+    let dl2 = dot(d, d);
+    if dl2 < 1e-9 {
+        return None;
+    }
+    // A point on both planes: o = (h1 (n2 x d) + h2 (d x n1)) / |d|^2 with h = n . p.
+    let (h1, h2) = (dot(n1, p1), dot(n2, p2));
+    let (u, v) = (cross(n2, d), cross(d, n1));
+    let o = comb(u, h1 / dl2, v, h2 / dl2);
+    let end = |p: V3, n: V3| -> Option<V3> {
+        let den = dot(d, n);
+        (den.abs() > 1e-9).then(|| comb(o, 1.0, d, dot(n, sub(p, o)) / den))
+    };
+    let (a, b) = (end(p3, n3)?, end(p4, n4)?);
+    let e = sub(b, a);
+    if dot(e, e) < 1e-12 {
+        return None;
+    }
+    Some(round3(comb(a, 0.5, b, 0.5)))
+}
+
 /// The midpoint of an edge record (`edges.midpoint`): the first two references are the
 /// edge's faces, the last two bound its end vertices. The faces may belong to different
-/// features (a cut's wall against a boss's cap).
+/// features (a cut's wall against a boss's cap), or be the merged coplanar face of an
+/// earlier one ([`plane_edge`]).
 fn midpoint(
+    reps: &[Rep],
+    swept: &HashMap<u32, Swept>,
+    rounds: &HashMap<u32, Vec<Option<Round>>>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+    work: &mut u64,
+) -> Result<Option<V3>, String> {
+    if let Some(m) = midpoint_sketch(reps, swept, rounds, sketches, cap_tags, work)? {
+        return Ok(Some(m));
+    }
+    let faces: Vec<Option<Face>> = reps.iter().map(|r| face_of(r, swept, rounds, sketches, cap_tags)).collect();
+    Ok(plane_edge(&faces, sketches))
+}
+
+fn midpoint_sketch(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
     rounds: &HashMap<u32, Vec<Option<Round>>>,
@@ -1796,20 +1887,7 @@ fn midpoint(
 ) -> Result<Option<V3>, String> {
     let [r0, r1, r2, r3] = reps else { return Ok(None) };
     let geo = |f: &Swept| sketches.get(f.sketch);
-    let face = |r: &Rep| -> Option<Face<'_>> {
-        if let Some(list) = rounds.get(&r.fid) {
-            return list.get((r.idx as usize).checked_sub(1)?).copied().flatten().map(Face::Round);
-        }
-        let f = swept.get(&r.fid)?;
-        if cap_tags.contains(&r.tag) {
-            return Some(Face::Cap(r.fid, f, r.idx));
-        }
-        let mut c = geo(f)?.segs.iter().filter(|s| s.a == r.idx && !s.construction);
-        match (c.next(), c.next()) {
-            (Some(s), None) => Some(Face::Side(r.fid, f, *s)),
-            _ => None,
-        }
-    };
+    let face = |r: &Rep| face_of(r, swept, rounds, sketches, cap_tags);
     let (Some(fa), Some(fb)) = (face(r0), face(r1)) else { return Ok(None) };
     let (fc, fd) = (face(r2), face(r3));
     let sides: Vec<Face> = [fa, fb].into_iter().filter(|x| matches!(x, Face::Side(..))).collect();
@@ -2937,5 +3015,27 @@ mod end_face_tests {
         assert!(on_face(&region, &sketches, [10.0, 5.0, 5.0]));
         assert!(!on_face(&region, &sketches, [25.0, 5.0, 5.0]));
         assert!(face_pick(&rep(9), &swept, &sketches, &none).is_none());
+    }
+
+    #[test]
+    fn an_edge_between_two_planes_is_found_without_a_shared_vertex() {
+        // The wall x = 20 against the far cap z = 5, between the walls y = 0 and y = 10: the
+        // middle of the 10 mm edge. (A record names such faces after the earlier feature when a
+        // later one is coplanar with them.)
+        let (swept, sketches) = plate();
+        let caps = HashSet::from([9u16]);
+        let side = |idx| Rep { tag: 4, fid: 32, idx, ext: false, ext2: false };
+        let cap = Rep { tag: 9, fid: 32, idx: 1, ext: false, ext2: false };
+        let faces: Vec<_> = [side(3), cap, side(2), side(4)]
+            .iter()
+            .map(|r| face_of(r, &swept, &HashMap::new(), &sketches, &caps))
+            .collect();
+        assert_eq!(plane_edge(&faces, &sketches), Some([20.0, 5.0, 5.0]));
+        // Parallel faces make no edge.
+        let faces: Vec<_> = [side(3), side(5), side(2), side(4)]
+            .iter()
+            .map(|r| face_of(r, &swept, &HashMap::new(), &sketches, &caps))
+            .collect();
+        assert_eq!(plane_edge(&faces, &sketches), None);
     }
 }
