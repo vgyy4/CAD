@@ -967,8 +967,8 @@ struct Rep {
 
 /// An edge record's header at `i` (`edges.HDR`): `01 00*7 n`, then either `00{4,6} kind(1..4)
 /// 00 00 <u32 id>` (an edge) or `00{11}` (a face list, e.g. a mirror's), the two sentinels and
-/// `00 00`. Returns `n`, whether it is a face list, and the end of the header.
-fn edge_header(d: &[u8], i: usize) -> Option<(usize, bool, usize)> {
+/// `00 00`. Returns `n` and the end of the header.
+fn edge_header(d: &[u8], i: usize) -> Option<(usize, usize)> {
     let w = d.get(i..i + 9)?;
     let n = *w.get(8)?;
     if w.get(..8) != Some(&[1, 0, 0, 0, 0, 0, 0, 0][..]) || !(1..=16).contains(&n) {
@@ -986,12 +986,12 @@ fn edge_header(d: &[u8], i: usize) -> Option<(usize, bool, usize)> {
         if matches!(d.get(k), Some(1..=4)) && d.get(k + 1..k + 3) == Some(&[0, 0][..]) {
             // k + 3 .. k + 7 is the id.
             if let Some(end) = sentinels_at(k + 7) {
-                return Some((usize::from(n), false, end));
+                return Some((usize::from(n), end));
             }
         }
     }
     if zeros == 11 {
-        return sentinels_at(i + 20).map(|end| (usize::from(n), true, end));
+        return sentinels_at(i + 20).map(|end| (usize::from(n), end));
     }
     None
 }
@@ -1003,7 +1003,7 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
     let mut i = a;
     let end = b.min(d.len());
     while i < end {
-        let Some((n, face_list, mut p)) = edge_header(d, i).filter(|h| h.2 <= end) else {
+        let Some((n, mut p)) = edge_header(d, i).filter(|h| h.1 <= end) else {
             i += 1;
             continue;
         };
@@ -1046,7 +1046,7 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
             reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last });
         }
         // Face lists (mirror planes) hold n - 1 references.
-        if reps.len() == n || (face_list && !reps.is_empty()) {
+        if reps.len() == n || (reps.len() + 1 == n && !reps.is_empty()) {
             out.push((start, reps));
             if out.len() > MAX_MATCHES {
                 return Err("too many edge records".into());
@@ -1779,7 +1779,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
-        } else if cls.as_deref() == Some("moMirrorPattern_c") {
+        } else if matches!(cls.as_deref(), Some("moMirrorPattern_c" | "moMirrorSolid_c")) {
             // The bodies to mirror are back-references into Config-0, i.e. the whole solid
             // body; the plane is the mirror plane's own frame:
             // `<4 f64 display extents> 01 <R 3x3> <t> 1.0` (confirmed by the box of
@@ -1803,13 +1803,32 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 plane = Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
                 break;
             }
+            // The mirror face: the first reference of the last face list of the span (the
+            // `moSingleFaceRef_w` object; the list before it is another selection).
             if plane.is_none()
-                && let Some((_, reps)) = edge_records(rf, a, b)?.first()
+                && let Some((_, reps)) = edge_records(rf, a, b)?.last()
                 && let Some(r0) = reps.first()
-                && cap_tags.contains(&r0.tag)
                 && let Some(f) = swept.get(&r0.fid)
             {
-                plane = Some((lift(f, 0.0, 0.0, cap_height(f, r0.idx)), normal(f)));
+                if cap_tags.contains(&r0.tag) {
+                    plane = Some((lift(f, 0.0, 0.0, cap_height(f, r0.idx)), normal(f)));
+                } else if let Some(g) = sketches.get(f.sketch) {
+                    // A side face of the extrusion: the plane through its sketch line, along
+                    // the extrusion normal.
+                    let mut lines =
+                        g.segs.iter().filter(|q| q.a == r0.idx && q.kind == SegKind::Line && !q.construction);
+                    if let (Some(sg), None) = (lines.next(), lines.next())
+                        && let (Some(p0), Some(p1)) = (point(&g.pts, sg.s), point(&g.pts, sg.e))
+                    {
+                        let o3 = lift(f, p0.x * 1000.0, p0.y * 1000.0, 0.0);
+                        let q3 = lift(f, p1.x * 1000.0, p1.y * 1000.0, 0.0);
+                        let c = cross(sub(q3, o3), normal(f));
+                        let len = libm::sqrt(dot(c, c));
+                        if len > 1e-9 {
+                            plane = Some((o3, c.map(|v| round_to(v / len, 12) + 0.0)));
+                        }
+                    }
+                }
             }
             let mut js = Map::new();
             js.insert("type".into(), json!("mirror"));
