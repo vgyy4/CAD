@@ -169,6 +169,24 @@ pub trait Kernel: Send + Sync + Debug {
     /// Linear sweep of a planar profile along its normal.
     fn extrude(&self, profile: &Profile, spec: &ExtrudeSpec) -> KResult<OpResult>;
 
+    /// Linear sweep of a planar profile along its normal (against it when `reverse`) until
+    /// the face `face` (index into the topology of `target`), moved `offset` mm further
+    /// along the sweep (negative: stops short; non-zero only for planar faces). The face
+    /// must reach past the whole end of the sweep; otherwise the call fails. The result is
+    /// the swept tool solid, with the same face origins as [`Kernel::extrude`] (`Cap` end is
+    /// the face cut). Like an extrude it is combined with a body by the caller.
+    fn extrude_to_face(
+        &self,
+        profile: &Profile,
+        target: &Shape,
+        face: u32,
+        offset: f64,
+        reverse: bool,
+    ) -> KResult<OpResult> {
+        let _ = (profile, target, face, offset, reverse);
+        unsupported("extrude up to a face", self.name())
+    }
+
     /// Rotational sweep of a planar profile around an in-plane axis.
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         let _ = (profile, spec);

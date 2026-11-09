@@ -33,6 +33,7 @@ pub(crate) enum Request {
     Status,
     Free(Vec<u64>),
     Extrude(Profile, ExtrudeSpec),
+    ExtrudeToFace(Profile, Shape, u32, f64, bool),
     Revolve(Profile, RevolveSpec),
     Sweep(Profile, SweepPath, SweepSpec),
     Loft(Vec<Profile>, LoftSpec),
@@ -200,6 +201,14 @@ impl Request {
                 w.seq_len(ids.len())?;
                 ids.iter().for_each(|i| w.u64(*i));
             }
+            Request::ExtrudeToFace(p, target, face, offset, reverse) => {
+                w.u8(37);
+                p.put(&mut w, s)?;
+                put_shape(&mut w, s, target)?;
+                w.u32(*face);
+                w.f64(*offset);
+                w.bool(*reverse);
+            }
             Request::Extrude(p, spec) => {
                 w.u8(2);
                 p.put(&mut w, s)?;
@@ -311,6 +320,9 @@ impl Request {
                 Request::Free((0..n).map(|_| r.u64()).collect::<Result<_, _>>()?)
             }
             2 => Request::Extrude(Profile::get(&mut r, s)?, ExtrudeSpec::get(&mut r, s)?),
+            37 => {
+                Request::ExtrudeToFace(Profile::get(&mut r, s)?, get_shape(&mut r, s)?, r.u32()?, r.f64()?, r.bool()?)
+            }
             3 => Request::Revolve(Profile::get(&mut r, s)?, RevolveSpec::get(&mut r, s)?),
             4 => Request::Sweep(Profile::get(&mut r, s)?, SweepPath::get(&mut r, s)?, SweepSpec::get(&mut r, s)?),
             5 => Request::Loft(Vec::<Profile>::get(&mut r, s)?, LoftSpec::get(&mut r, s)?),

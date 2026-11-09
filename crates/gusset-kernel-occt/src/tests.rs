@@ -1336,3 +1336,133 @@ fn unrefined_boolean_keeps_the_split_faces() {
     assert_eq!((faces(&many.shape), faces(&many_raw.shape)), (6, 14));
     assert!(close(vol(&many_raw.shape), 3000.0, 1e-9));
 }
+
+// ---- extrusion up to a face ----
+
+/// A slab `w` x `h` x `d` whose bottom face is at height `z` (sketch plane XY shifted up).
+fn slab(z: f64, w: f64, h: f64, d: f64) -> Shape {
+    let mut p = boxp(w, h);
+    p.frame.origin = [0.0, 0.0, z];
+    k().extrude(&p, &ExtrudeSpec { distance: d, symmetric: false }).unwrap().shape
+}
+
+/// The index of the planar face of `s` with normal `n` and centroid height `z`.
+fn flat_face(s: &Shape, n: [f64; 3], z: f64) -> u32 {
+    let t = k().topology(s).unwrap();
+    t.faces
+        .iter()
+        .position(|f| {
+            f.kind == SurfaceKind::Plane
+                && (0..3).all(|i| (f.normal[i] - n[i]).abs() < 1e-9)
+                && (f.centroid[2] - z).abs() < 1e-9
+        })
+        .unwrap() as u32
+}
+
+fn volume(s: &Shape) -> f64 {
+    k().mass_properties(s).unwrap().volume
+}
+
+#[test]
+fn extrude_to_parallel_plane_with_offset() {
+    let plate = slab(30.0, 40.0, 20.0, 10.0);
+    let f = flat_face(&plate, [0.0, 0.0, -1.0], 30.0);
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 0.0, false).unwrap();
+    assert!(close(volume(&r.shape), 3000.0, 1e-9));
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (6, 1));
+    // Same history as a plain extrude: four laterals, a start cap and an end cap in the plane.
+    let end = r.face_origins.iter().position(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]).unwrap();
+    assert!((t.faces[end].centroid[2] - 30.0).abs() < 1e-9);
+    let lat = r.face_origins.iter().flatten().filter(|o| matches!(o, FaceOrigin::Lateral { .. })).count();
+    assert_eq!(lat, 4);
+    assert!(r.face_origins.iter().any(|o| matches!(o[..], [FaceOrigin::Cap { end: CapEnd::Start, .. }])));
+    // Offset beyond the face and short of it.
+    let past = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, 2.0, false).unwrap();
+    assert!(close(volume(&past.shape), 3200.0, 1e-9));
+    let short = k().extrude_to_face(&boxp(10.0, 10.0), &plate, f, -5.0, false).unwrap();
+    assert!(close(volume(&short.shape), 2500.0, 1e-9));
+}
+
+#[test]
+fn extrude_to_face_reverse_and_refusals() {
+    // A plate below the sketch: only the reverse direction reaches its top.
+    let below = slab(-15.0, 40.0, 20.0, 10.0);
+    let top = flat_face(&below, [0.0, 0.0, 1.0], -5.0);
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, true).unwrap();
+    assert!(close(volume(&r.shape), 500.0, 1e-9));
+    let e = k().extrude_to_face(&boxp(10.0, 10.0), &below, top, 0.0, false).unwrap_err();
+    assert!(e.message.contains("behind"), "{}", e.message);
+    // A face smaller than the profile does not cover the sweep.
+    let small = slab(30.0, 4.0, 4.0, 10.0);
+    let f = flat_face(&small, [0.0, 0.0, -1.0], 30.0);
+    let e = k().extrude_to_face(&boxp(10.0, 10.0), &small, f, 0.0, false).unwrap_err();
+    assert!(e.message.contains("cover"), "{}", e.message);
+    // A face edge-on to the sweep is never reached.
+    let wall = slab(30.0, 40.0, 20.0, 10.0);
+    let side = k().topology(&wall).unwrap().faces.iter().position(|f| f.normal[0] < -0.9).unwrap() as u32;
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, side, 0.0, false).is_err());
+    // Out-of-range face.
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &wall, 999, 0.0, false).is_err());
+}
+
+fn xz_poly(pts: &[[f64; 2]]) -> Profile {
+    let edges = (0..pts.len())
+        .map(|i| ProfileEdge { seg: Seg2::Line { a: pts[i], b: pts[(i + 1) % pts.len()] }, tag: 1 + i as u64 })
+        .collect();
+    Profile { frame: Frame::XZ, regions: vec![Region2 { outer: Loop2 { edges }, holes: vec![] }] }
+}
+
+#[test]
+fn extrude_to_tilted_plane() {
+    // A wedge whose underside rises from z = 20 at x = 0 to z = 30 at x = 40 (y 0..30).
+    let wedge = k()
+        .extrude(
+            &xz_poly(&[[0.0, 20.0], [40.0, 30.0], [40.0, 50.0], [0.0, 50.0]]),
+            &ExtrudeSpec { distance: -30.0, symmetric: false },
+        )
+        .unwrap()
+        .shape;
+    let t = k().topology(&wedge).unwrap();
+    let under = t.faces.iter().position(|f| f.normal[2] < -0.9).unwrap() as u32;
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 0.0, false).unwrap();
+    // Height 20 + x / 4 over the 10 x 10 square: 10 * (200 + 12.5).
+    assert!(close(volume(&r.shape), 2125.0, 1e-9), "{}", volume(&r.shape));
+    let rt = k().topology(&r.shape).unwrap();
+    let end = r.face_origins.iter().position(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]).unwrap();
+    // The end cap lies on the wedge's underside, which rises toward +x: its outward normal leans to -x.
+    assert!(rt.faces[end].normal[2] > 0.9 && rt.faces[end].normal[0] < -0.1);
+    // Offset is measured along the sweep direction perpendicular to the face.
+    let off = k().extrude_to_face(&boxp(10.0, 10.0), &wedge, under, 1.0, false).unwrap();
+    let cos = (1.0f64 + 0.25f64 * 0.25).sqrt().recip();
+    assert!(close(volume(&off.shape), 2125.0 + 100.0 * 1.0 / cos, 1e-6), "{}", volume(&off.shape));
+}
+
+#[test]
+fn extrude_to_cylinder_face() {
+    // A cylinder along Y (radius 8, axis at x = 5, z = 20, y -10..30); the sweep from z = 0
+    // ends on its lower surface z = 20 - sqrt(64 - (x - 5)^2).
+    let circle = Profile {
+        frame: Frame::XZ,
+        regions: vec![Region2 {
+            outer: Loop2 {
+                edges: vec![ProfileEdge { seg: Seg2::Circle { center: [5.0, 20.0], radius: 8.0 }, tag: 1 }],
+            },
+            holes: vec![],
+        }],
+    };
+    let mut c = circle;
+    c.frame.origin = [0.0, -10.0, 0.0];
+    let cyl = k().extrude(&c, &ExtrudeSpec { distance: -40.0, symmetric: false }).unwrap().shape;
+    let t = k().topology(&cyl).unwrap();
+    let side = t.faces.iter().position(|f| f.kind == SurfaceKind::Cylinder).unwrap() as u32;
+    let r = k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 0.0, false).unwrap();
+    let a = 5.0f64;
+    let rad = 8.0f64;
+    let integral = a * (rad * rad - a * a).sqrt() + rad * rad * (a / rad).asin();
+    let expect = 10.0 * (200.0 - integral);
+    assert!(close(volume(&r.shape), expect, 1e-6), "{} vs {expect}", volume(&r.shape));
+    assert!(r.face_origins.iter().any(|o| o == &vec![FaceOrigin::Cap { end: CapEnd::End, region: 0 }]));
+    // A cylinder face takes no offset.
+    assert!(k().extrude_to_face(&boxp(10.0, 10.0), &cyl, side, 1.0, false).is_err());
+}

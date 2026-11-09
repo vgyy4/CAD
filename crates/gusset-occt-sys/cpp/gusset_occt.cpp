@@ -51,6 +51,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -1060,6 +1061,187 @@ int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out
   }
   for (auto* op : ops) delete op;
   check_closed(result, "extrusion");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
+  GS_GUARD_END
+}
+
+// Extrudes the profile from its plane until the face `face` of `target` (shifted by `offset`
+// along the face normal toward the far side for planes), returning the swept tool solid.
+// The prism is made longer than needed and split by the face's surface (a plane or cylinder
+// extended past the face, any other surface as bounded); the piece holding the start cap is
+// the result. The cut-off end must lie inside the face itself, or the call fails.
+int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int reverse,
+                       GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!p || !target || !out || !origins) return fail("null argument");
+  if (!std::isfinite(offset)) return fail("the offset must be finite");
+  ShapeMap tfaces;
+  TopExp::MapShapes(target->s, TopAbs_FACE, tfaces);
+  if (face >= uint32_t(tfaces.Extent())) return fail("the face to extrude up to does not exist");
+  TopoDS_Face tf = TopoDS::Face(tfaces(int(face) + 1));
+  Frame f = make_frame(p, 0.0);
+  const double sgn = reverse ? -1.0 : 1.0;
+  gp_Dir dir(f.n.X() * sgn, f.n.Y() * sgn, f.n.Z() * sgn);
+  std::vector<TaggedEdge> tagged;
+  std::vector<uint32_t> face_region;
+  std::vector<TopoDS_Face> faces = build_faces(p, f, tagged, face_region);
+
+  Bnd_Box pb, ub;
+  for (const auto& fc : faces) BRepBndLib::Add(fc, pb);
+  ub = pb;
+  BRepBndLib::Add(target->s, ub);
+  if (pb.IsVoid() || ub.IsVoid()) return fail("the extrusion has no extent");
+  auto corners = [](const Bnd_Box& b) {
+    double x0, y0, z0, x1, y1, z1;
+    b.Get(x0, y0, z0, x1, y1, z1);
+    std::vector<gp_Pnt> c;
+    for (int i = 0; i < 8; ++i) c.emplace_back((i & 1) ? x1 : x0, (i & 2) ? y1 : y0, (i & 4) ? z1 : z0);
+    return c;
+  };
+  const std::vector<gp_Pnt> pcorners = corners(pb);
+  const std::vector<gp_Pnt> ucorners = corners(ub);
+  const double pdiag = std::sqrt(pb.SquareExtent());
+  const double udiag = std::sqrt(ub.SquareExtent());
+
+  BRepAdaptor_Surface sa(tf, true);
+  TopoDS_Face tool_face, real_face = tf;
+  double len = 0.0;
+  if (sa.GetType() == GeomAbs_Plane) {
+    gp_Pln pl = sa.Plane();
+    gp_Dir pn = pl.Axis().Direction();
+    double d = dir.Dot(pn);
+    if (std::fabs(d) < 1e-9) return fail("the face is parallel to the extrusion direction, so the sweep never reaches it");
+    gp_Vec shift(pn.X() * (d > 0 ? offset : -offset), pn.Y() * (d > 0 ? offset : -offset),
+                 pn.Z() * (d > 0 ? offset : -offset));
+    gp_Pnt o2 = pl.Location().Translated(shift);
+    double tmin = 1e300, tmax = -1e300;
+    for (const auto& c : pcorners) {
+      double t = gp_Vec(c, o2).Dot(gp_Vec(pn)) / d;
+      tmin = std::min(tmin, t);
+      tmax = std::max(tmax, t);
+    }
+    if (tmax <= 1e-7) return fail("the face lies behind the sketch plane (reverse the direction)");
+    if (tmin <= 1e-7) return fail("the face does not lie fully ahead of the sketch plane");
+    len = tmax * 1.1 + 1.0;
+    if (offset != 0.0) {
+      gp_Trsf tr;
+      tr.SetTranslation(shift);
+      real_face = TopoDS::Face(BRepBuilderAPI_Transform(tf, tr, true).Shape());
+    }
+    gp_Pnt c0 = f.o;
+    gp_Pnt proj = c0.Translated(gp_Vec(pn) * (gp_Vec(c0, o2).Dot(gp_Vec(pn))));
+    double r = 2.0 * (tmax + pdiag) + 1.0;
+    BRepBuilderAPI_MakeFace mf(gp_Pln(proj, pn), -r, r, -r, r);
+    if (!mf.IsDone()) return fail("could not extend the face");
+    tool_face = mf.Face();
+  } else {
+    if (std::fabs(offset) > 1e-12) return fail("an offset from the face needs a planar face");
+    len = 2.0 * udiag + 1.0;
+    occ::handle<Geom_Surface> surf = BRep_Tool::Surface(tf);
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(tf, u0, u1, v0, v1);
+    if (sa.GetType() == GeomAbs_Cylinder) {
+      gp_Cylinder cyl = sa.Cylinder();
+      gp_Ax1 ax = cyl.Axis();
+      double lo = 1e300, hi = -1e300;
+      for (const auto& c : ucorners) {
+        double v = gp_Vec(ax.Location(), c).Dot(gp_Vec(ax.Direction()));
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+      }
+      occ::handle<Geom_CylindricalSurface> cs = new Geom_CylindricalSurface(cyl);
+      BRepBuilderAPI_MakeFace mf(cs, 0.0, 2.0 * M_PI, lo - 1.0, hi + 1.0, 1e-7);
+      if (!mf.IsDone()) return fail("could not extend the face");
+      tool_face = mf.Face();
+    } else {
+      if (surf->IsUPeriodic()) {
+        u0 = 0.0;
+        u1 = surf->UPeriod();
+      }
+      if (surf->IsVPeriodic()) {
+        v0 = 0.0;
+        v1 = surf->VPeriod();
+      }
+      BRepBuilderAPI_MakeFace mf(surf, u0, u1, v0, v1, 1e-7);
+      if (!mf.IsDone()) return fail("could not extend the face");
+      tool_face = mf.Face();
+    }
+  }
+
+  gp_Vec v(dir.X() * len, dir.Y() * len, dir.Z() * len);
+  TopoDS_Compound comp;
+  BRep_Builder bld;
+  bld.MakeCompound(comp);
+  std::vector<Rec> recs;
+  TopoDS_Shape single;
+  int nsolids = 0;
+  for (size_t ri = 0; ri < faces.size(); ++ri) {
+    BRepPrimAPI_MakePrism mk(faces[ri], v, true);
+    mk.Build();
+    if (!mk.IsDone()) return fail("extrusion failed");
+    std::vector<Rec> rr;
+    for (const auto& te : tagged) {
+      const ShapeList& gen = mk.Generated(te.e);
+      for (ShapeList::Iterator it(gen); it.More(); it.Next()) rr.push_back(Rec{it.Value(), GS_ORIGIN_LATERAL, int64_t(te.tag), 0});
+    }
+    TopoDS_Shape start = mk.FirstShape(faces[ri]);
+    rr.push_back(Rec{start, GS_ORIGIN_CAP, 0, int64_t(face_region[ri])});
+
+    ShapeList args, tools;
+    args.Append(mk.Shape());
+    tools.Append(tool_face);
+    BRepAlgoAPI_Splitter sp;
+    sp.SetArguments(args);
+    sp.SetTools(tools);
+    sp.Build();
+    if (!sp.IsDone() || sp.HasErrors()) return fail("could not cut the extrusion at the face");
+    ShapeList start_mods = sp.Modified(start);
+    if (start_mods.IsEmpty()) start_mods.Append(start);
+    TopoDS_Shape piece;
+    for (TopExp_Explorer sx(sp.Shape(), TopAbs_SOLID); sx.More() && piece.IsNull(); sx.Next()) {
+      ShapeMap pf;
+      TopExp::MapShapes(sx.Current(), TopAbs_FACE, pf);
+      for (ShapeList::Iterator it(start_mods); it.More(); it.Next())
+        if (pf.Contains(it.Value())) piece = sx.Current();
+    }
+    if (piece.IsNull()) return fail("could not find the extrusion's start after cutting at the face");
+    ShapeMap pf;
+    TopExp::MapShapes(piece, TopAbs_FACE, pf);
+    std::vector<TopoDS_Shape> caps;
+    const ShapeList& tm = sp.Modified(tool_face);
+    for (ShapeList::Iterator it(tm); it.More(); it.Next())
+      if (pf.Contains(it.Value())) caps.push_back(it.Value());
+    if (caps.empty()) return fail("the extrusion does not reach the face");
+    // The end must lie inside the face: the cap and its overlap with the real face agree.
+    for (const auto& cap : caps) {
+      GProp_GProps g0, g1;
+      BRepGProp::SurfaceProperties(cap, g0);
+      double common_area = 0.0;
+      BRepAlgoAPI_Common cm(cap, real_face);
+      if (cm.IsDone() && !cm.HasErrors()) {
+        BRepGProp::SurfaceProperties(cm.Shape(), g1);
+        common_area = g1.Mass();
+      }
+      if (g0.Mass() - common_area > 1e-6 * std::max(1.0, g0.Mass()))
+        return fail("the face does not cover the whole extrusion; pick a face that reaches past the profile");
+    }
+    carry_recs(sp, rr);
+    for (const auto& r : rr)
+      if (pf.Contains(r.face)) recs.push_back(r);
+    for (const auto& cap : caps) recs.push_back(Rec{cap, GS_ORIGIN_CAP, 1, int64_t(face_region[ri])});
+    bld.Add(comp, piece);
+    single = piece;
+    ++nsolids;
+  }
+  if (nsolids == 0) return fail("extrusion failed");
+  TopoDS_Shape result = nsolids == 1 ? single : TopoDS_Shape(comp);
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  std::vector<int64_t> o;
+  emit_recs(recs, out_faces, o);
+  check_valid(result, "extrusion to a face");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;

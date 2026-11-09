@@ -185,6 +185,19 @@ pub fn extrude(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<Op
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Extrudes a profile until face `face` of `target` (moved by `offset`).
+pub fn extrude_to_face(p: &ProfileData, target: &RawShape, face: u32, offset: f64, reverse: bool) -> ShimResult<OpOut> {
+    let raw = p.raw();
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = target.with(|t| {
+        // SAFETY: `raw` points into `p`'s vectors and `t` is locked and valid for the call; out-params are valid.
+        unsafe { sys::gs_extrude_to_face(&raw, t, face, offset, i32::from(reverse), &mut out, &mut origins) }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 /// Sheets swept from a profile's curves (ADR 0036).
 pub fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> ShimResult<OpOut> {
     let raw = p.raw();

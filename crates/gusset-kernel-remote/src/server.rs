@@ -95,6 +95,7 @@ impl<K: Kernel> Server<K> {
                 });
                 Reply::Unit
             }
+            Request::ExtrudeToFace(p, t, face, offset, rev) => Reply::Op(k.extrude_to_face(&p, &t, face, offset, rev)?),
             Request::Extrude(p, spec) => Reply::Op(k.extrude(&p, &spec)?),
             Request::Revolve(p, spec) => Reply::Op(k.revolve(&p, &spec)?),
             Request::Sweep(p, path, spec) => Reply::Op(k.sweep(&p, &path, &spec)?),

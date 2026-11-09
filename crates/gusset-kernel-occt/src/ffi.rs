@@ -22,6 +22,16 @@ pub(crate) fn extrude(p: &ProfileData, distance: f64, symmetric: bool) -> KResul
     safe::extrude(p, distance, symmetric).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn extrude_to_face(
+    p: &ProfileData,
+    target: &RawShape,
+    face: u32,
+    offset: f64,
+    reverse: bool,
+) -> KResult<OpOut> {
+    safe::extrude_to_face(p, target, face, offset, reverse).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn extrude_curves(p: &ProfileData, distance: f64, symmetric: bool) -> KResult<OpOut> {
     safe::extrude_curves(p, distance, symmetric).map_err(err(KernelErrorKind::OperationFailed))
 }

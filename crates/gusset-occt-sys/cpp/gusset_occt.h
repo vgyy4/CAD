@@ -98,6 +98,11 @@ void gs_shape_free(GsShape* s);
 void gs_buf_free(GsBuf* b);
 
 int gs_extrude(const GsProfile* p, double distance, int symmetric, GsShape** out, GsBuf* origins);
+/* Extrudes `p` along its normal (against it when `reverse`) until face `face` of `target`,
+ * moved by `offset` mm further along the extrusion (planar faces only). Fails when the sweep
+ * does not reach the face or the face does not cover the end of the sweep. */
+int gs_extrude_to_face(const GsProfile* p, const GsShape* target, uint32_t face, double offset, int reverse,
+                       GsShape** out, GsBuf* origins);
 int gs_revolve(const GsProfile* p, const double axis_origin[2], const double axis_dir[2], double angle,
                GsShape** out, GsBuf* origins);
 /* Sweeps the regions of `p` along a path: either sketch curves `path_curves` (one loop, an

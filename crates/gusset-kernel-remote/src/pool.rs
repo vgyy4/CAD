@@ -122,6 +122,18 @@ impl Kernel for PoolKernel {
         self.here()?.extrude(profile, spec)
     }
 
+    fn extrude_to_face(
+        &self,
+        profile: &Profile,
+        target: &Shape,
+        face: u32,
+        offset: f64,
+        reverse: bool,
+    ) -> KResult<OpResult> {
+        let (k, s) = self.on_one(target)?;
+        k.extrude_to_face(profile, &s, face, offset, reverse)
+    }
+
     fn revolve(&self, profile: &Profile, spec: &RevolveSpec) -> KResult<OpResult> {
         self.here()?.revolve(profile, spec)
     }

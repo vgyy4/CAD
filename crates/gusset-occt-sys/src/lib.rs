@@ -125,6 +125,15 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_extrude_to_face(
+            p: *const GsProfile,
+            target: *const GsShape,
+            face: u32,
+            offset: f64,
+            reverse: i32,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_extrude_curves(
             p: *const GsProfile,
             distance: f64,
