@@ -208,8 +208,9 @@ def _feature_regions(F, d, fid, s):
         if not owners.intersection(own): continue
         regs = prof.parse_profiles(d, i)
         if regs is None: return _fail('0D57BD2F layout')
-        for g in regs:
-            rings = []
+        def process(g):
+            nonlocal allpolys, used
+            rings = []; segs = []
             for l in g['loops']:
                 full = []
                 for c in l['curves']:
@@ -233,14 +234,34 @@ def _feature_regions(F, d, fid, s):
                         if not pc: return _fail('curve piece %d/%d not reproduced' % (c['a'], c['b']))
                         pl = pc
                     polys.append(pl)
+                    segs.append(dict(curve=q, entry=c, poly=pl, flag=l['flag'], loopkey=(i, id(g), id(l))))
                 ring = chain(polys)
                 if not ring: return _fail('loop does not close')
                 rings.append((l['flag'], ring))
-            outer = [r for f, r in rings if f == 1]
-            holes = [r for f, r in rings if f != 1]
-            if len(outer) != 1: return _fail('outer loops %d' % len(outer))
-            p = interior_point(outer[0], holes)
-            if p is None: return _fail('no interior point')
-            xs=[q[0] for q in outer[0]]; ys=[q[1] for q in outer[0]]
-            pts.append(dict(point=p, bbox=(min(xs),min(ys),max(xs),max(ys))))
+            return rings, segs
+        for g in regs:
+            naming = None
+            if g['children']:
+                if g['loops']:
+                    r = process(g)
+                    if isinstance(r, str): return r
+                    naming = r[1]
+                else:
+                    naming = []     # boundary not stored: face names of this extrude unknown
+                parts = g['children']
+            else:
+                parts = [g]
+            for k_, part in enumerate(parts):
+                r = process(part)
+                if isinstance(r, str): return r
+                rings, segs = r
+                outer = [x for f, x in rings if f == 1]
+                holes = [x for f, x in rings if f != 1]
+                if len(outer) != 1: return _fail('outer loops %d' % len(outer))
+                p = interior_point(outer[0], holes)
+                if p is None: return _fail('no interior point')
+                xs=[q[0] for q in outer[0]]; ys=[q[1] for q in outer[0]]
+                ent = dict(point=p, bbox=(min(xs),min(ys),max(xs),max(ys)), segments=segs)
+                if naming is not None: ent['naming_segments'] = naming if k_ == 0 else []
+                pts.append(ent)
     return pts or _fail('no 0D57BD2F for profile')

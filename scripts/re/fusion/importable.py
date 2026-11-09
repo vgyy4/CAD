@@ -12,8 +12,12 @@ def blockers(f):
         if f.get('taper_deg'): b.append('taper')
         if f.get('operation') in ('join','cut','intersect') and not isinstance(f.get('target'),str): b.append('extrude target')
         return b
-    if t=='fillet': return ['fillet edges']
-    if t=='chamfer': return ['chamfer edges']
+    if t in ('fillet','chamfer'):
+        b=[]
+        if not f.get('edges') or f.get('edges_unresolved'): b.append(t+' edges')
+        if f.get('radius' if t=='fillet' else 'distance') is None: b.append(t+' value')
+        return b
+    if t=='pattern_linear': return [] if f.get('direction') and f.get('features') else ['pattern']
     if t=='revolve': return ['revolve axis']
     return ['unsupported '+(f.get('gtree_type') or f.get('fusion_type') or '?')]
 C=collections.Counter(); rows=[]

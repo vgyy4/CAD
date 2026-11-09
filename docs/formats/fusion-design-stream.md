@@ -218,3 +218,73 @@ with every body box of the same design (component coordinates).
 (0x12f and 0x130 → Extrude1 of the L-Bracket), `ABA79BE7` lists per operation the generator ids
 (0x33…0x38 for the 6 profile curves). Resolving that to geometry needs the generator → sketch curve
 and face-kind (side/start/end cap) mapping, which I did not establish.
+
+## 11. Round 3: face/edge naming, nested profiles, extents
+
+### Naming records (naming.py)
+* `5D89B935` operation table → `{op id: feature}`. Two layouts: `u32 n, n × (u64 op, u64 feature)`
+  (older) and `u32 n, n × (u64 feature, u32 k, k × u64 op)` (newer). A feature can own several
+  operations (a symmetric extrude has two, one per half).
+* `ABA79BE7` (one per body): runs of `u32 n, n × str generator, u64 op` = generators an operation
+  left on the body.
+* `7ACC2A03` recipe (all 3,668 in the corpus parse): `u32 1, u32 3, u32 nfaces`, per face
+  `u32 k` entries `{str generator (decimal text, may be negative), u32 x, u32 n, n × i32 op ids,
+  u32 0}` — creator op first, then ops that modified the face — followed by the kind string
+  (`edge_recipe_data`, `face_recipe_data`, `bounded_face_recipe_data`, `vertex_recipe_data`,
+  `body_recipe_data`) and topology indices. **Edge recipe: faces 0 and 1 meet at the edge,
+  faces 2.. bound its ends** (confirmed on the L-Bracket against the ACIS body).
+* Selected entities of a feature: feature → `2CA5A1CD` → `5662F619` → `7ACC2A03`; fillet radius
+  sets: `4A557CE2` (one per set, own Radius parameter) → `2CA5A1CD` → … .
+
+### Extrude face generators (extnaming.py) — ground truth from the ACIS bodies
+* The `.smb` faces carry `generic_tag_attrib_def` attributes whose text is the generator, and
+  sketch-region edges carry `sketch_attrib_def "crv_primary crv_secondary …"`. A tagged face whose
+  vertices lie on exactly one profile curve's swept surface identifies that generator: 902 of
+  1,138 side generators resolved this way (genmap.py).
+* **"1" = start cap (at t0, the sketch plane or −d/2 when symmetric), "2" = end cap (t1)**
+  (confirmed: L-Bracket caps at X = ∓55 mm; 1Wire chamfers on cap 2 lie at t1).
+* Sides "3", "4", …: one per profile curve, loops in profile-record order; each outer loop walked
+  **counter-clockwise about the sketch normal, starting with the curve that, in that walk, starts
+  at the start point of the loop's highest-record-id curve**. Against the ACIS tags: 830 of 897
+  single-outer-loop generators (92.5 %; 96 % before the nested-profile extrudes were added), 45 of
+  142 for loops with holes (rule unknown there). The emitter uses the ACIS tag when the face
+  survives and the rule only for hole-free profiles; otherwise the face stays unresolved.
+
+### Fillet / chamfer edges (edges.py)
+* Face geometry: caps = planes ⟂ normal at t0/t1; sides = plane through a sketch line and the
+  normal, or cylinder for an arc. Edge = plane ∩ plane, cut by the planar bounding faces →
+  midpoint; cap ∩ arc side → mid point of the arc piece at the cap height.
+* Corpus: 591 selected edges; 227 resolved (220 straight, 7 arcs); 364 unresolved, mostly because
+  a face was made by a fillet/chamfer (no model), its extrude's profile failed, or bounds are not
+  planes. Evidence on the 220 straight ones: in no case does the stored body still hold the
+  computed edge; 73 are positively confirmed (both set-back lines at the radius/distance exist and
+  the edge is gone, or — fillets — a cylinder of the radius lies parallel at r/sin(θ/2));
+  the remaining 147 cannot be checked (later features changed those parts; 104 are in Crickit).
+  L-Bracket: Fillet 5 mm at sketch (−10, 10), 10 mm at (0, 0), Chamfer 5 mm at X = ±55, Z = 170
+  — all match the ACIS body.
+* Emitted per radius set: `{"type":"fillet","radius","edges":[{"midpoint":[mm]}],
+  "edges_unresolved":n}`; 22/60 fillet sets and 15/44 chamfer sets are complete.
+
+### Nested profiles (prof.py) — all 387 profile records now parse
+`Profile := u32 nloops, loops, u32 m, m × (u32 nloops, loops)`: when the selected area spans
+several sketch faces the first loops are its boundary (may be empty) and the m entries the faces.
+Points are emitted per face; side generators follow the boundary loops. Box check: 219/237
+new-body extrudes match (was 206/236).
+
+### Extents
+* To-object (`Side1Offset`): the first face of the extrude's `bounded_face_recipe_data` is the
+  target; when it is a plane parallel to the sketch, distance = its offset along the normal +
+  Side1Offset (8 extrudes).
+* Through-all (kind 0, no distance; 1 in the corpus): the stored record does not say the side (its
+  direction vector equals the sketch normal although the L-Bracket cut goes the other way). The
+  emitter measures it: copies of the profile's straight edges in the stored body at offsets along
+  the normal; one-sided offsets give side and reach (L-Bracket Extrude2: −10 mm, i.e. through the
+  10 mm leg).
+
+### Patterns, mirror, revolve axis
+* Linear pattern direction: `F2A7590D` → `5662F619` → edge recipe → edge direction; the sign is
+  chosen where the stored body holds the first copy of the input extrude's profile edges
+  (L-Bracket R-Pattern1: +X, 30 mm, ×3 — matches the slots at X = −30, 0, 30 mm). Patterns of
+  bodies/components (no feature inputs) and two-direction patterns stay unsupported.
+* Mirror planes and most pattern directions reference origin planes/axes (no recipe) and the
+  revolve axis is a `face_recipe` on a cylindrical face: not decoded.

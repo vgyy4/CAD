@@ -63,3 +63,104 @@ def points(b):
 def bbox(pts):
     if not pts: return None
     return [min(p[k] for p in pts) for k in range(3)],[max(p[k] for p in pts) for k in range(3)]
+
+def body_edges(b):
+    """Per body: list of (p0, p1) vertex positions of its edges (cm, body coordinates)."""
+    recs=records(b)
+    types=[rtype(r) for r in recs]
+    def ptrs(r): return [struct.unpack('<i' if len(v)==4 else '<q',v)[0] for t,v in r if t==0x0c]
+    pos={}
+    for k,r in enumerate(recs):
+        if types[k].endswith('point'):
+            for t,v in r:
+                if t==0x13: pos[k]=struct.unpack('<3d',v); break
+    vpt={}
+    for k,t in enumerate(types):
+        if t.endswith('vertex'):
+            for p in ptrs(recs[k]):
+                if p in pos: vpt[k]=pos[p]; break
+    out=[]
+    for k,t in enumerate(types):
+        if t.endswith('body') and not t.endswith('_body'):
+            seen={k}; st=[k]; edges=[]
+            while st:
+                x=st.pop()
+                for p in ptrs(recs[x]):
+                    if 0<=p<len(recs) and p not in seen and not types[p].endswith('body') and 'attrib' not in types[p] and 'transform' not in types[p]:
+                        seen.add(p); st.append(p)
+            for e in seen:
+                if types[e].endswith('edge') and not types[e].endswith('coedge'):
+                    vs=[vpt[p] for p in ptrs(recs[e]) if p in vpt]
+                    if len(vs)>=2: edges.append((vs[0],vs[1],types[e]))
+            if edges: out.append(edges)
+    return out
+
+def tagged_faces(b):
+    """[(body index, generic tag text, surface type, [vertex points])] for every face carrying a
+    generic_tag_attrib_def attribute (Fusion's face generator name)."""
+    recs=records(b)
+    types=[rtype(r) for r in recs]
+    def ptrs(r): return [struct.unpack('<i' if len(v)==4 else '<q',v)[0] for t,v in r if t==0x0c]
+    pos={}
+    for k,r in enumerate(recs):
+        if types[k].endswith('point'):
+            for t,v in r:
+                if t==0x13: pos[k]=struct.unpack('<3d',v); break
+    tag={}
+    for k,r in enumerate(recs):
+        if 'attrib' in types[k]:
+            strs=[v.decode('latin1') for t,v in r if t==0x07 and v]
+            if strs and strs[0]=='generic_tag_attrib_def':
+                o=[p for p in ptrs(r) if 0<=p<len(recs) and 'attrib' not in types[p]]
+                if o and types[o[0]].endswith('face'): tag[o[0]]=strs[-1]
+    vpt={}
+    for k,t in enumerate(types):
+        if t.endswith('vertex'):
+            for p in ptrs(recs[k]):
+                if p in pos: vpt[k]=pos[p]; break
+    ce_loop={}
+    for k,t in enumerate(types):
+        if t.endswith('coedge'):
+            for p in ptrs(recs[k]):
+                if 0<=p<len(recs) and types[p].endswith('loop'): ce_loop.setdefault(p,[]).append(k)
+    def coedges_of_loop(loops):
+        return [c for l in loops for c in ce_loop.get(l,[])]
+    out=[]
+    bi=0
+    for k,t in enumerate(types):
+        if not (t.endswith('body') and not t.endswith('_body')): continue
+        seen={k}; st=[k]
+        while st:
+            x=st.pop()
+            for p in ptrs(recs[x]):
+                if 0<=p<len(recs) and p not in seen and not types[p].endswith('body') and 'attrib' not in types[p] and 'transform' not in types[p]:
+                    seen.add(p); st.append(p)
+        for f in seen:
+            if f in tag:
+                loops={p for p in ptrs(recs[f]) if 0<=p<len(recs) and types[p].endswith('loop')}
+                vs=set()
+                for ce in coedges_of_loop(loops):
+                    for p in ptrs(recs[ce]):
+                        if 0<=p<len(recs) and types[p].endswith('edge') and not types[p].endswith('coedge'):
+                            for q in ptrs(recs[p]):
+                                if q in vpt: vs.add(vpt[q])
+                surf=[types[p] for p in ptrs(recs[f]) if 0<=p<len(recs) and types[p].endswith('surface')]
+                out.append((bi,tag[f],surf[0] if surf else None,sorted(vs)))
+        bi+=1
+    return out
+
+def cylinders(b):
+    """[(root, unit axis, radius)] of every cylindrical cone-surface record."""
+    out=[]
+    for r in records(b):
+        if not rtype(r).endswith('cone-surface'): continue
+        pos=[struct.unpack('<3d',v) for t,v in r if t==0x13]
+        vec=[struct.unpack('<3d',v) for t,v in r if t==0x14]
+        dbl=[struct.unpack('<d',v)[0] for t,v in r if t==0x06]
+        if not pos or len(vec)<2 or len(dbl)<3: continue
+        sin,cos=dbl[1],dbl[2]
+        if abs(sin)>1e-9: continue
+        a=vec[0]; n=sum(x*x for x in a)**0.5
+        rad=sum(x*x for x in vec[1])**0.5
+        out.append((pos[0],tuple(x/n for x in a),rad))
+    return out

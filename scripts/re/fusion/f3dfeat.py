@@ -9,7 +9,7 @@ data: everything is bounded, nothing is executed.
 """
 import sys, os, json, math, struct, hashlib, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import f3dzip, fdesign, regions
+import f3dzip, fdesign, regions, naming
 
 # Class GUIDs (stable across streams; the per-stream tag is 256 + index in the MetaStream class table)
 C = dict(
@@ -187,6 +187,17 @@ def params_of(d, i):
                     if p and p.get('name'): out.setdefault(p['name'], p)
     return out
 
+def param_values(d, i, names):
+    """All values of parameters with these role names that feature i references."""
+    out = []
+    for o, q in fdesign.refs_at(d, d.rec(i)):
+        if cls(d, q) == C['PARAM_HOLDER']:
+            for o2, q2 in fdesign.refs_at(d, d.rec(q)):
+                if cls(d, q2) == C['PARAM']:
+                    p = fdesign.param(d, q2)
+                    if p and p.get('name') in names and p['value'] is not None and p['value'] not in out: out.append(p['value'])
+    return out
+
 def find_rigid_dir(rec, b, span=40):
     """The unit axis vector (3 doubles) after the extrude's enums."""
     for o in range(b, b + span):
@@ -298,7 +309,7 @@ def sketch_json(d, fid, name):
         j['unsupported_entities'] = kinds   # dimensions, constraints, splines, text...
     return j, sid
 
-def extrude_json(d, fid, name, sketch_names):
+def extrude_json(d, fid, name, sketch_names, EN=None):
     e = extrude_raw(d, fid)
     j = dict(type='extrude', name=name, source_id=fid)
     if not e: j['error'] = 'layout not recognised'; return j
@@ -323,6 +334,25 @@ def extrude_json(d, fid, name, sketch_names):
     j['symmetric'] = e['extent'] == 3
     if e['extent'] == 2 and against:
         j['two_sided'] = True; j['distance2'] = mm(against['value']) * -sign; j['distance2_expr'] = against['expr']
+    if j['distance'] is None and 'Side1Offset' in ps and EN is not None:
+        # to-object: the first face of the extrude's bounded_face_recipe, if it is a plane parallel to the sketch
+        import edgeprobe as EP
+        off = ps['Side1Offset']['value'] or 0.0
+        for rid in EP.edge_recipes_of(d, fid, 3):
+            kind, faces, _ = naming.recipe(sys.modules[__name__], d, rid)
+            if kind != 'bounded_face_recipe_data' or not faces: continue
+            f = EN.face(faces[0][0])
+            pl = sketch(d, e['sketch'])['plane'] if e['sketch'] else None
+            if f and f['kind'] == 'plane' and pl and abs(abs(sum(a * b for a, b in zip(f['n'], pl['z']))) - 1) < 1e-9:
+                t = sum(f['n'][k] * (f['p'][k] - pl['origin'][k]) for k in range(3)) / sum(f['n'][k] * pl['z'][k] for k in range(3))
+                j['distance'] = mm(t + (off if t >= 0 else -off)); j['extent_from'] = 'to object (face %s of %s)' % (faces[0][0][0], f['feature'])
+            break
+    if j['distance'] is None and not ps.get('AlongDistance') and 'Side1Offset' not in ps and e['sketch'] and CURRENT_FILES:
+        # through all: the cut walls leave copies of the profile's straight edges in the body at the
+        # entry and exit faces; their offsets along the normal give the side and the reach
+        t = through_reach(d, fid, e)
+        if t:
+            j['distance'] = mm(t); j['extent_from'] = 'through all (reach measured on the stored body)'
     if j['distance'] is None: j['extent'] = 'not a distance (to object / through all)'
     j['operation'] = OPS.get(e['op'], 'unknown(%d)' % e['op'])
     j['target'] = None
@@ -415,12 +445,104 @@ def component_bodies(d, c):
                     if w[2].startswith('BREP.') and w[2].endswith('.smb') and w[2] not in out: out.append(w[2])
     return out
 
+def blend_edges(d, fid, N, names_):
+    """[(value cm, [edge dicts])] per radius/distance set of a fillet or chamfer."""
+    import edges as ED, edgeprobe as EP
+    sets = [q for o, q in fdesign.refs_at(d, d.rec(fid)) if cls(d, q)[:8] == '4A557CE2']
+    groups = []
+    if sets:
+        for q in sets:
+            vals = param_values(d, q, names_)
+            groups.append((vals[0] if vals else None, EP.input_recipes(d, q)))
+    else:
+        vals = param_values(d, fid, names_)
+        groups.append((vals[0] if vals else None, EP.input_recipes(d, fid)))
+    out = []
+    for v, recs in groups:
+        es = []; seen = set(); bad = 0
+        for rid in dict.fromkeys(recs):
+            kind, faces, _ = naming.recipe(sys.modules[__name__], d, rid)
+            if kind != 'edge_recipe_data' or not faces: continue
+            r = ED.edge_midpoint(N, faces)
+            if not r: bad += 1; continue
+            key = tuple(round(x, 6) for x in r[0])
+            if key in seen: continue
+            seen.add(key)
+            es.append(dict(midpoint=[mm(x) for x in r[0]], curve=r[1]))
+        out.append((v, es, bad))
+    return out
+
+def pattern_direction(d, fid, EN, inputs, spacing):
+    """Unit direction of a linear pattern from its direction edge (F2A7590D -> 5662F619 -> edge recipe),
+    signed so that the first copy of an input extrude's straight profile edges exists in a stored body."""
+    import edges as ED, edgeprobe as EP
+    u = None
+    for o, q in fdesign.refs_at(d, d.rec(fid)):
+        if cls(d, q)[:8] != 'F2A7590D': continue
+        for o2, q2 in fdesign.refs_at(d, d.rec(q)):
+            if cls(d, q2)[:8] != '5662F619': continue
+            for o3, q3 in fdesign.refs_at(d, d.rec(q2)):
+                if cls(d, q3)[:8] != '7ACC2A03': continue
+                kind, faces, _ = naming.recipe(sys.modules[__name__], d, q3)
+                if kind == 'edge_recipe_data' and faces and len(faces) >= 2:
+                    a, b = EN.face(faces[0][0]), EN.face(faces[1][0])
+                    if a and b and a['kind'] == 'plane' and b['kind'] == 'plane':
+                        L = ED.plane_plane(a, b)
+                        if L: u = L[1]
+    if not u: return None
+    sets = EP.body_edge_sets(CURRENT_FILES)
+    for sgn in (1, -1):
+        hits = 0; tried = 0
+        for q in inputs:
+            if cls(d, q) != C['EXTRUDE']: continue
+            G = EP.ext_geom(d, q)
+            if not G: continue
+            for sg in G['segs']:
+                if sg['curve'] not in G['sketch']['lines']: continue
+                A = EP.world(G['pl'], sg['poly'][0], 0); B = EP.world(G['pl'], sg['poly'][-1], 0)
+                sh = EP.mul(u, sgn * spacing)
+                tried += 1
+                if any(EP.colinear_exists(EP.add(A, sh), EP.add(B, sh), es, 1e-5) or
+                       any(EP.colinear_exists(EP.add(EP.add(A, sh), EP.mul(G['pl']['z'], t)), EP.add(EP.add(B, sh), EP.mul(G['pl']['z'], t)), es, 1e-5)
+                           for t in ([G['t1']] if G['t1'] else [])) for es in sets):
+                    hits += 1
+        if tried and hits == tried:
+            return [round(x * sgn, 9) for x in u]
+    return None
+
+CURRENT_FILES = None
+def through_reach(d, fid, e):
+    import edgeprobe as EP
+    G = EP.ext_geom(d, fid)
+    if not G: return None
+    pl = G['pl']; z = pl['z']
+    sets = EP.body_edge_sets(CURRENT_FILES)
+    ts = set()
+    for sg in G['segs']:
+        if sg['curve'] not in G['sketch']['lines']: continue
+        a, b = sg['poly'][0], sg['poly'][-1]
+        A = EP.world(pl, a, 0); B = EP.world(pl, b, 0); u = EP.sub(B, A)
+        for es in sets:
+            for p0, p1, t_ in es:
+                v = EP.sub(p1, p0)
+                if EP.norm(v) < 1e-9 or abs(abs(EP.dot(v, u)) / (EP.norm(v) * EP.norm(u)) - 1) > 1e-9: continue
+                w = EP.sub(p0, A); t = EP.dot(w, z)
+                off = EP.sub(w, EP.mul(z, t))      # in-plane offset from the profile segment's line
+                perp = EP.sub(off, EP.mul(u, EP.dot(off, u) / EP.dot(u, u)))
+                if EP.norm(perp) < 1e-6 and abs(t) > 1e-6: ts.add(round(t, 7))
+    pos = [t for t in ts if t > 0]; neg = [t for t in ts if t < 0]
+    if pos and not neg: return max(pos)
+    if neg and not pos: return min(neg)
+    return None
+
 def design_json(d):
     feats = []; skipped = []
     sketch_names = {}
     tl, extra = timeline(d)
     used_names = set()
     G = Graph(d)
+    import edges as ED
+    EN = ED.Naming(sys.modules[__name__], d, CURRENT_FILES)
     names = {}
     comps = {}
     for fid in tl + extra:
@@ -435,6 +557,7 @@ def design_json(d):
         comp = G.component(fid)
         if comp is not None and comp not in comps:
             comps[comp] = dict(name=component_name(d, comp), bodies=component_bodies(d, comp))
+        nbefore = len(feats)
         if c[:8] in NON_GEOMETRIC:
             skipped.append(dict(name=name, fusion_type=base or c[:8], reason=NON_GEOMETRIC[c[:8]], source_id=fid))
             continue
@@ -443,7 +566,7 @@ def design_json(d):
             if j: feats.append(j); sketch_names[sid] = name
             else: feats.append(dict(type='sketch', name=name, error='sketch data not found'))
         elif c == C['EXTRUDE']:
-            j = extrude_json(d, fid, name, sketch_names)
+            j = extrude_json(d, fid, name, sketch_names, EN)
             links = G.body_links(fid)
             made = [names.get(G.creator.get(l), G.creator.get(l)) for l in links if G.creator.get(l) == fid]
             acted = sorted({names.get(G.creator.get(l), str(G.creator.get(l))) for l in links if G.creator.get(l) not in (None, fid)})
@@ -451,12 +574,16 @@ def design_json(d):
                 j['target'] = acted[0] if len(acted) == 1 else (acted or None)
             j['creates_bodies'] = len(made)
             feats.append(j)
-        elif c.startswith(C['FILLET']):
-            j = simple_json(d, fid, 'fillet', name, {'radius': ('Radius', mm)})
-            j['edges'] = []; j['edges_note'] = 'edge references not decoded (EntityTracking records)'
-            feats.append(j)
-        elif c.startswith(C['CHAMFER']):
-            feats.append(simple_json(d, fid, 'chamfer', name, {'distance': ('Distance', mm)}))
+        elif c.startswith(C['FILLET']) or c.startswith(C['CHAMFER']):
+            fil = c.startswith(C['FILLET'])
+            key = 'radius' if fil else 'distance'
+            for k_, (v, es, bad) in enumerate(blend_edges(d, fid, EN, ('Radius',) if fil else ('Distance', 'leftDistance'))):
+                j = dict(type='fillet' if fil else 'chamfer', name=name if k_ == 0 else '%s set %d' % (name, k_ + 1), source_id=fid)
+                j[key] = mm(v) if v is not None else None
+                j['edges'] = [dict(midpoint=e['midpoint']) for e in es]
+                if bad: j['edges_unresolved'] = bad
+                if not es and not bad: j['edges_note'] = 'no edge recipes found'
+                feats.append(j)
         elif c.startswith(C['REVOLVE']):
             j = simple_json(d, fid, 'revolve', name, {'angle': ('AlongAngle', lambda v: round(math.degrees(v), 9))})
             sk = profile_sketch(d, fid)
@@ -480,14 +607,21 @@ def design_json(d):
             if 'vSpaceDistance' in ps: j['spacing_v'] = mm(ps['vSpaceDistance']['value'])
             if 'TotalAngle' in ps: j['angle'] = math.degrees(ps['TotalAngle']['value'])
             j['note'] = 'direction / axis / mirror plane is a topological reference (EntityTracking recipe), not decoded'
+            if typ == 'pattern_linear' and j.get('spacing') and CURRENT_FILES:
+                dr = pattern_direction(d, fid, EN, G.inputs(fid), j['spacing'] / 10.0)
+                if dr:
+                    j['direction'] = dr; j['note'] = 'direction from the pattern edge; sign chosen where the stored body holds the first copy'
+                    if j.get('count_v', 1) in (1, 1.0, None) and all(names.get(q) for q in G.inputs(fid)):
+                        j['type'] = 'pattern_linear'; j['target'] = None
             feats.append(j)
         else:
             j = dict(type='unsupported', fusion_type=base or c[:8], name=name, class_guid=c, source_id=fid)
             if c[:8] == 'D7015B81':
                 j['creates_bodies'] = sum(1 for l, f in G.creator.items() if f == fid)
             feats.append(j)
-        if comp is not None: feats[-1]['component'] = comps[comp]['name']
-        if fid in extra: feats[-1]['in_timeline'] = False
+        for f_ in feats[nbefore:]:
+            if comp is not None: f_['component'] = comps[comp]['name']
+            if fid in extra: f_['in_timeline'] = False
     out = dict(format='gusset-feature-tree', version=2, source=dict(app='fusion'), features=feats, skipped=skipped)
     allcomps = [i for i in d.objs if cls(d, i)[:8] == 'E03784ED']
     out['components'] = [dict(name=v['name'], source_id=k, bodies=v['bodies']) for k, v in comps.items()]
@@ -509,6 +643,8 @@ def main():
                 seen.add(h)
                 base = os.path.basename(p) + ('__' + os.path.basename(k) if k else '')
                 try:
+                    global CURRENT_FILES
+                    CURRENT_FILES = files
                     d = fdesign.Design(m, b)
                     j = design_json(d)
                 except Exception as ex:

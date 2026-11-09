@@ -377,8 +377,11 @@ A Fusion design's parametric timeline lives in the design segment's `MetaStream.
 arcs, circles; cm) and extrusions (operation, extent, signed distance) are decoded from the
 sample bytes alone (`docs/formats/fusion-design-stream.md`; prototype in `scripts/re/fusion/`):
 all 37 sample design streams frame, and 176 of 229 new-body extrusions reproduce a stored
-body's box within 0.01 mm. Still missing before features can be imported: which profiles
-of a sketch an extrusion uses, fillet/chamfer edges and revolve axes (topological
-references), and each feature's component placement. Until then `.f3d` stays tier 2. The
+body's box within 0.01 mm. Since then (three decoding rounds): extrusion profiles (all 387 profile records parse),
+join/cut targets, timeline classification, component membership, face and edge naming
+(fillet/chamfer edges where the faces are sketch-swept; 73 straight edges positively
+checked against the bodies), through-all and to-object sides. Still missing: holes, mirror
+planes and most pattern directions, revolve axes, edges between earlier blends, and
+sweeps/shells/splits; no single-component sample design is complete yet. Until then `.f3d` stays tier 2. The
 import will follow FreeCAD's rule (ADR 0033 amendment 2026-11-09): features only when they
 rebuild to the stored bodies.
