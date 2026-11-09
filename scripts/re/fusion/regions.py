@@ -80,7 +80,7 @@ def piece(poly, closed, others, a, b):
     crossings do not give b pieces."""
     fs = [f for f in split_params(poly, others) if (1e-6 < f < 1-1e-6) or closed]
     if closed:
-        fs = sorted(set(round(f % 1.0, 9) for f in fs))
+        fs = sorted(set(0.0 if round(f % 1.0, 9) >= 1.0 else round(f % 1.0, 9) for f in fs))
         if len(fs) != b: return None
         if b == 1: return poly
         f0, f1 = fs[a-1], fs[a % b]
@@ -107,6 +107,24 @@ def trim_by_neighbours(pl, prev, nxt, a, b):
             lo, hi = min(f0, f1), max(f0, f1)
             if hi - lo > 1e-6 and (best is None or hi - lo < best[1] - best[0]): best = (lo, hi)
     return sub_poly(pl, *best) if best else None
+
+def close_gaps(polys, cands, skip):
+    """Sketch curves (q, poly) of `cands` not in `skip` that join the open ends of the loop's polylines
+    (the record can leave out a corner arc that a duplicate arc shadows); appended to `polys`."""
+    pts = [p for pl in polys for p in pl]
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    tol = 1e-4 * max(math.dist((min(xs), min(ys)), (max(xs), max(ys))), 1e-6)
+    added = []
+    for _ in range(8):
+        ends = [e for pl in polys for e in (pl[0], pl[-1])]
+        opn = [e for i, e in enumerate(ends) if not any(j != i and math.dist(e, e2) < tol for j, e2 in enumerate(ends))]
+        if len(opn) < 2: break
+        near = lambda p: any(math.dist(o, p) < tol for o in opn)
+        hit = next(((q, v) for q, v in cands if v and q not in skip and all(q != a[0] for a in added)
+                    and math.dist(v[0], v[-1]) > tol and near(v[0]) and near(v[-1])), None)
+        if not hit: break
+        polys.append(hit[1]); added.append(hit)
+    return added
 
 def chain(polys):
     """Join polylines end to end (either direction, nearest endpoint first) into one closed ring."""
@@ -236,6 +254,12 @@ def _feature_regions(F, d, fid, s):
                     polys.append(pl)
                     segs.append(dict(curve=q, entry=c, poly=pl, flag=l['flag'], loopkey=(i, id(g), id(l))))
                 ring = chain(polys)
+                if not ring:
+                    if allpolys is None:
+                        allpolys = {kk: curve_polyline(F, d, s, kk) for kk in keymap.values()}
+                    for q2, pl2 in close_gaps(polys, list(allpolys.items()), [f[0] for f in full]):
+                        segs.append(dict(curve=q2, entry=None, poly=pl2, flag=l['flag'], loopkey=(i, id(g), id(l))))
+                    ring = chain(polys)
                 if not ring: return _fail('loop does not close')
                 rings.append((l['flag'], ring))
             return rings, segs

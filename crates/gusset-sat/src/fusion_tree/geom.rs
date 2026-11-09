@@ -157,7 +157,8 @@ pub(super) fn piece(poly: &[P2], closed: bool, others: &[&[P2]], a: u32, b: u32)
     let fs: Vec<f64> =
         split_params(poly, others).into_iter().filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed).collect();
     if closed {
-        let mut fs: Vec<f64> = fs.into_iter().map(|f| round9(f.rem_euclid(1.0))).collect();
+        let mut fs: Vec<f64> =
+            fs.into_iter().map(|f| round9(f.rem_euclid(1.0))).map(|f| if f >= 1.0 { 0.0 } else { f }).collect();
         fs.sort_by(f64::total_cmp);
         fs.dedup_by(|x, y| x == y);
         if fs.len() != b {
@@ -219,6 +220,48 @@ pub(super) fn trim_by_neighbours(
 }
 
 /// Joins polylines end to end (either direction, nearest end first) into one closed ring.
+/// Sketch curves that join the open ends of a loop's polylines: `polys` gains each curve of
+/// `cands` (not already `skip`ped) both of whose ends sit on open ends, until none does.
+/// Returns the curves added with their polylines (oriented as stored).
+pub(super) fn close_gaps(
+    polys: &mut Vec<Vec<P2>>,
+    cands: &[(u64, Option<Vec<P2>>)],
+    skip: &[u64],
+) -> Vec<(u64, Vec<P2>)> {
+    let mut added: Vec<(u64, Vec<P2>)> = Vec::new();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in polys.iter().flatten() {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let tol = 1e-4 * dist(lo, hi).max(1e-6);
+    for _ in 0..8 {
+        // Ends no other polyline end meets.
+        let ends: Vec<P2> = polys.iter().flat_map(|p| [p.first(), p.last()]).flatten().copied().collect();
+        let open: Vec<P2> = ends
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| !ends.iter().enumerate().any(|(j, e2)| j != *i && dist(**e, *e2) < tol))
+            .map(|(_, e)| *e)
+            .collect();
+        if open.len() < 2 {
+            break;
+        }
+        let near = |p: P2| open.iter().any(|o| dist(*o, p) < tol);
+        let Some((q, pl)) = cands.iter().find_map(|(q, v)| {
+            let v = v.as_ref()?;
+            let (a, b) = (*v.first()?, *v.last()?);
+            (!skip.contains(q) && !added.iter().any(|x| x.0 == *q) && dist(a, b) > tol && near(a) && near(b))
+                .then(|| (*q, v.clone()))
+        }) else {
+            break;
+        };
+        polys.push(pl.clone());
+        added.push((q, pl));
+    }
+    added
+}
+
 pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
     if polys.is_empty() {
         return None;

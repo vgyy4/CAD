@@ -184,6 +184,38 @@ fn segments_chain_into_a_ring_whatever_their_direction() {
 }
 
 #[test]
+fn a_closed_curve_cut_at_its_start_has_two_pieces_not_three() {
+    // A circle starting on the cutting line: the crossing at its start comes out as 0 and as 1.
+    let circle: Vec<P2> = (0..=64)
+        .map(|k| {
+            let t = f64::from(k) / 64.0 * std::f64::consts::TAU;
+            [libm::cos(t), libm::sin(t)]
+        })
+        .collect();
+    let cut: Vec<P2> = vec![[-2.0, 0.0], [2.0, 0.0]];
+    let others: Vec<&[P2]> = vec![&cut];
+    let a = geom::piece(&circle, true, &others, 1, 2).unwrap();
+    let b = geom::piece(&circle, true, &others, 2, 2).unwrap();
+    assert!(a.iter().all(|p| p[1] >= -1e-9) && b.iter().all(|p| p[1] <= 1e-9));
+}
+
+#[test]
+fn open_ends_of_a_loop_are_joined_by_the_one_curve_that_fits() {
+    let sq: Vec<Vec<P2>> =
+        vec![vec![[0.0, 0.0], [1.0, 0.0]], vec![[1.0, 1.0], [0.0, 1.0]], vec![[0.0, 1.0], [0.0, 0.0]]];
+    let cands: Vec<(u64, Option<Vec<P2>>)> =
+        vec![(1, Some(vec![[1.0, 0.0], [2.0, 2.0]])), (2, Some(vec![[1.0, 0.0], [1.0, 0.5], [1.0, 1.0]])), (3, None)];
+    let mut polys = sq.clone();
+    assert!(geom::chain(&polys).is_none());
+    let added = geom::close_gaps(&mut polys, &cands, &[]);
+    assert_eq!(added.iter().map(|a| a.0).collect::<Vec<_>>(), vec![2]);
+    assert!(geom::chain(&polys).is_some());
+    // A curve the loop already uses is not added again.
+    let mut again = sq;
+    assert!(geom::close_gaps(&mut again, &cands, &[2]).is_empty());
+}
+
+#[test]
 fn a_curve_is_cut_at_its_crossings_into_numbered_pieces() {
     let line: Vec<P2> = vec![[0.0, 0.0], [10.0, 0.0]];
     let c1: Vec<P2> = vec![[3.0, -1.0], [3.0, 1.0]];

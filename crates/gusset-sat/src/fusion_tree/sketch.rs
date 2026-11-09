@@ -536,8 +536,21 @@ impl RegionCache {
                 self.next_id += 1;
                 segs.push(Rc::new(Seg { id: self.next_id, curve: *q, poly: pl, flag: l.flag, loopkey }));
             }
-            let ring = geom::chain(&polys).ok_or("loop does not close")?;
-            rings.push((l.flag, ring));
+            let mut ring = geom::chain(&polys);
+            if ring.is_none() {
+                // The record can leave out a curve of the loop (a corner arc that a duplicate
+                // arc of the sketch shadows): a sketch curve that joins exactly the open ends
+                // completes it.
+                let all = allpolys
+                    .get_or_insert_with(|| curve_ids.iter().map(|kk| (*kk, curve_polyline(d, s, *kk))).collect());
+                let in_loop: Vec<u64> = full.iter().map(|f| f.0).collect();
+                for (q, pl) in geom::close_gaps(&mut polys, all, &in_loop) {
+                    self.next_id += 1;
+                    segs.push(Rc::new(Seg { id: self.next_id, curve: q, poly: pl, flag: l.flag, loopkey }));
+                }
+                ring = geom::chain(&polys);
+            }
+            rings.push((l.flag, ring.ok_or("loop does not close")?));
         }
         Ok((rings, segs))
     }
