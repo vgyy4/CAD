@@ -264,6 +264,12 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, S
                 let c = point(cx, cy, &mut pjson);
                 let s = point(cx + r * libm::cos(a0), cy + r * libm::sin(a0), &mut pjson);
                 let t = point(cx + r * libm::cos(a1), cy + r * libm::sin(a1), &mut pjson);
+                if s == t {
+                    // A whole turn stored as an arc is a circle.
+                    curves.push(json!({"id": format!("c{edge}"), "type": "circle", "center": c, "radius": r, "construction": construction}));
+                    construction = false;
+                    continue;
+                }
                 curves.push(json!({"id": format!("a{edge}"), "type": "arc", "center": c, "start": s, "end": t, "construction": construction}));
                 construction = false;
             }
@@ -382,6 +388,52 @@ fn draft_array(name: &str, o: &Obj, target: &str) -> Result<Vec<Value>, String> 
         }
     }
     Ok(out)
+}
+
+/// The straight edges of stored shapes that an axis or direction names (`Feature/EdgeN`): a point
+/// on the edge and its direction (as the stored edge runs). Others are left out.
+fn edge_axes(objects: &BTreeMap<String, Obj>, shape_edges: ShapeEdges<'_>) -> HashMap<String, (V3, V3)> {
+    let mut out = HashMap::new();
+    for o in objects.values() {
+        for prop in ["Direction", "Axis", "ReferenceAxis"] {
+            let Some((obj, subs)) = o.link(prop) else { continue };
+            let Some(file) = objects.get(&obj).filter(|t| t.kind.starts_with("PartDesign::")).and_then(|t| {
+                t.first("Shape", "Part").and_then(|e| e.attrs.get("file")).filter(|f| !f.is_empty()).cloned()
+            }) else {
+                continue;
+            };
+            for sub in subs.iter().filter(|s| s.starts_with("Edge")) {
+                let key = format!("{obj}/{sub}");
+                if out.contains_key(&key) {
+                    continue;
+                }
+                let Some(n) = sub.strip_prefix("Edge").and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0) else {
+                    continue;
+                };
+                let Ok(edges) = shape_edges(&file) else { continue };
+                let Some(e) = edges.get(n - 1) else { continue };
+                let (Some(a), Some(b)) = (e.path.first().copied(), e.path.last().copied()) else { continue };
+                let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let len = libm::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                if len < 1e-9 {
+                    continue;
+                }
+                let u = d.map(|c| c / len);
+                // Straight: every point of the path lies on the line through the ends (the path
+                // points are single precision).
+                let straight = e.path.iter().chain(std::iter::once(&e.mid)).all(|p| {
+                    let r = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+                    let t = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
+                    let q = [r[0] - t * u[0], r[1] - t * u[1], r[2] - t * u[2]];
+                    libm::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]) < 1e-3
+                });
+                if straight {
+                    out.insert(key, (a, u));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A PartDesign body's features up to an object, with the name of its first solid then.
@@ -540,6 +592,8 @@ struct Refs<'a> {
     objects: &'a BTreeMap<String, Obj>,
     body: &'a Place,
     sketches: &'a HashMap<String, (Place, HashMap<String, String>)>,
+    /// Straight edges of features' stored shapes, by `Feature/EdgeN`: a point and a direction.
+    edge_axes: &'a HashMap<String, (V3, V3)>,
 }
 
 impl Refs<'_> {
@@ -554,6 +608,9 @@ impl Refs<'_> {
                 "N_Axis" => Ok((sk.p, sk.z)),
                 _ => Err(format!("{who}: an axis on a sketch edge is not translated yet")),
             };
+        }
+        if let Some(a) = self.edge_axes.get(&format!("{obj}/{sub}")) {
+            return Ok(*a);
         }
         let kind = self.objects.get(obj).map(|o| o.kind.as_str()).unwrap_or_default();
         if let Some(d) = self.objects.get(obj).filter(|d| d.kind == "PartDesign::Line" && sub.is_empty()) {
@@ -930,6 +987,7 @@ pub(crate) fn tree_variant(
         })
         .collect();
     let mut snaps: Snapshots = HashMap::new();
+    let edge_axes = edge_axes(&objects, shape_edges);
     for (body_name, body) in &bodies_list {
         let place = Place::of(body);
         let mut first_solid: Option<String> = None;
@@ -1122,7 +1180,7 @@ pub(crate) fn tree_variant(
                         // Another object's axis: drawn into the profile sketch as a construction
                         // line (Gusset revolves about a sketch line or the sketch's own axes).
                         let sk = *sk_place;
-                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches, edge_axes: &edge_axes };
                         let (o3, d3) = refs.axis(name, &(axis_obj.clone(), subs.clone()))?;
                         axis_od = Some((o3, d3));
                         match axis_line(&mut features, &profile, &sk, o3, d3) {
@@ -1131,12 +1189,16 @@ pub(crate) fn tree_variant(
                         }
                     };
                     let angle = o.float("Angle").unwrap_or(360.0);
-                    if o.bool("Midplane") || o.int("Type").unwrap_or(0) != 0 {
-                        return Err(format!("{name}: a symmetric or bounded revolution is not translated yet"));
+                    if o.int("Type").unwrap_or(0) != 0 {
+                        return Err(format!("{name}: a bounded revolution is not translated yet"));
                     }
+                    // Symmetric about the sketch plane: half the angle each way (a full turn is
+                    // the same either way).
+                    let symmetric = o.bool("Midplane") && angle < 360.0 - 1e-9;
                     // Gusset turns about its axis one way: a reversed part turn is a turn about
                     // the reversed axis, drawn into the sketch (a full turn needs neither).
-                    if o.bool("Reversed") && angle < 360.0 - 1e-9 {
+                    let mut axis_back: Option<Value> = None;
+                    if (o.bool("Reversed") || symmetric) && angle < 360.0 - 1e-9 {
                         let v3 = |k: &str| -> Option<V3> {
                             let a = axis.get(k)?.as_array()?;
                             Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
@@ -1146,10 +1208,15 @@ pub(crate) fn tree_variant(
                             .ok_or(format!("{name}: a reversed turn about a sketch edge is not translated yet"))?;
                         let rev = ad.map(|c| -c);
                         let sk = *sk_place;
-                        axis = match axis_line(&mut features, &profile, &sk, ao, rev) {
+                        let reversed = match axis_line(&mut features, &profile, &sk, ao, rev) {
                             Some(id) => json!({"line": id}),
                             None => json!({"origin": ao, "direction": rev}),
                         };
+                        if symmetric {
+                            axis_back = Some(reversed);
+                        } else {
+                            axis = reversed;
+                        }
                     }
                     let op = match (&first_solid, groove) {
                         (None, false) => "new",
@@ -1157,13 +1224,19 @@ pub(crate) fn tree_variant(
                         (Some(_), false) => "join",
                         (Some(_), true) => "cut",
                     };
+                    let turn = if symmetric { angle / 2.0 } else { angle };
                     let mut f = json!({"type": "revolve", "name": name, "sketch": profile, "profiles": "all",
-                        "axis": axis, "angle": angle, "operation": op});
+                        "axis": axis, "angle": turn, "operation": op});
                     if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
                         m.insert("target".into(), json!(t));
                     }
                     first_solid.get_or_insert_with(|| name.clone());
                     features.push(f);
+                    if let Some(back) = axis_back {
+                        features.push(json!({"type": "revolve", "name": format!("{name}_back"), "sketch": profile,
+                            "profiles": "all", "axis": back, "angle": turn, "operation": if groove { "cut" } else { "join" },
+                            "target": first_solid.clone().unwrap_or_else(|| name.clone())}));
+                    }
                 }
                 "PartDesign::Mirrored"
                 | "PartDesign::LinearPattern"
@@ -1228,7 +1301,12 @@ pub(crate) fn tree_variant(
                             }
                             features.push(t);
                             for (step_name, so) in &steps {
-                                let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                                let refs = Refs {
+                                    objects: &objects,
+                                    body: &place,
+                                    sketches: &sketches,
+                                    edge_axes: &edge_axes,
+                                };
                                 let Some(mut f) = transform(&format!("{step_name}_{tool}"), so, &refs)? else {
                                     continue;
                                 };
@@ -1244,7 +1322,7 @@ pub(crate) fn tree_variant(
                         continue;
                     }
                     for (step_name, so) in steps {
-                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches, edge_axes: &edge_axes };
                         let Some(mut f) = transform(&step_name, so, &refs)? else { continue };
                         if let Some(m) = f.as_object_mut() {
                             m.insert("features".into(), json!(feats));
@@ -1732,6 +1810,79 @@ mod tests {
         assert_eq!(sketch_copy["type"], "sketch");
         let pad_copy = copy.features.iter().find(|f| f["name"] == "Pad_c1").unwrap();
         assert_eq!(pad_copy["sketch"], "Sketch_c1");
+    }
+
+    #[test]
+    fn a_pattern_direction_can_be_a_straight_edge_of_a_stored_shape() {
+        let doc = DOC
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+</Objects>"#,
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+  <Object type="PartDesign::LinearPattern" name="LinearPattern"/>
+</Objects>"#,
+            )
+            .replace(
+                r#"<Link value="Pocket"/></LinkList></Property>"#,
+                r#"<Link value="Pocket"/><Link value="LinearPattern"/></LinkList></Property>"#,
+            )
+            .replace(
+                r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>"#,
+                r#"<Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape2.brp"/></Property>"#,
+            )
+            .replace(
+                "</ObjectData>",
+                r#"  <Object name="LinearPattern"><Properties>
+    <Property name="Direction" type="App::PropertyLinkSub"><LinkSub value="Pocket" count="1"><Sub value="Edge2"/></LinkSub></Property>
+    <Property name="Length" type="App::PropertyLength"><Float value="6"/></Property>
+    <Property name="Occurrences" type="App::PropertyInteger"><Integer value="3"/></Property>
+    <Property name="Originals" type="App::PropertyLinkList"><LinkList count="1"><Link value="Pocket"/></LinkList></Property>
+  </Properties></Object>
+</ObjectData>"#,
+            );
+        let mut edges = |_: &str| -> Result<Edges, String> {
+            let edge = |a: [f64; 3], b: [f64; 3]| SrcEdge {
+                mid: [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0],
+                faces: vec![0, 1],
+                path: vec![a, b],
+                smooth: false,
+            };
+            Ok(vec![edge([0.0, 0.0, 0.0], [5.0, 0.0, 0.0]), edge([1.0, 1.0, 0.0], [1.0, 1.0, 4.0])])
+        };
+        let t = tree(doc.as_bytes(), &mut edges).unwrap();
+        let p = t.features.iter().find(|f| f["type"] == "pattern_linear").expect("the pattern");
+        assert_eq!(p["direction"], serde_json::json!([0.0, 0.0, 1.0]));
+        assert_eq!(p["spacing"], 3.0);
+    }
+
+    #[test]
+    fn a_symmetric_revolution_is_two_half_turns() {
+        let doc = DOC
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+</Objects>"#,
+                r#"<Object type="PartDesign::Revolution" name="Revolution"/>
+</Objects>"#,
+            )
+            .replace(r#"<Link value="Pad"/><Link value="Pocket"/>"#, r#"<Link value="Revolution"/>"#)
+            .replace(
+                r#"  <Object name="Pocket"><Properties>"#,
+                r#"  <Object name="Revolution"><Properties>
+    <Property name="Angle" type="App::PropertyAngle"><Float value="120"/></Property>
+    <Property name="Midplane" type="App::PropertyBool"><Bool value="true"/></Property>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="ReferenceAxis" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="1"><Sub value="H_Axis"/></LinkSub></Property>
+  </Properties></Object>
+  <Object name="Unused"><Properties>"#,
+            );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let turns: Vec<&Value> = t.features.iter().filter(|f| f["type"] == "revolve").collect();
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        assert_eq!((turns[0]["angle"].as_f64(), turns[1]["angle"].as_f64()), (Some(60.0), Some(60.0)));
+        assert_eq!((turns[0]["operation"].as_str(), turns[1]["operation"].as_str()), (Some("new"), Some("join")));
+        assert_eq!(turns[1]["target"], "Revolution");
+        assert_ne!(turns[0]["axis"], turns[1]["axis"], "the second half turns the other way");
     }
 
     #[test]
