@@ -402,3 +402,25 @@ fn a_loft_between_two_squares() {
     ]);
     assert_vol(v, 800.0);
 }
+
+#[test]
+fn a_countersunk_hole_on_a_pocket_floor() {
+    // A 20 x 20 x 10 block, a 6 mm, 0.15 mm deep pocket on top (a head clearance), then a
+    // through 3 mm hole with a 6 mm 90 deg countersink starting on the pocket floor.
+    let hole = json!({"type": "hole", "name": "H", "face": {"point": [10, 10, 9.85], "normal": [0, 0, 1]},
+        "positions": [[10, 10, 9.85]], "diameter": 3, "through": true,
+        "variant": "countersink", "csink_diameter": 6, "csink_angle": 90});
+    let (r, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), 0.0, 0.0, 20.0, 20.0),
+        extrude("Block", "Base", 10.0, "new"),
+        disc("Top", plane_at(10.0), 10.0, 10.0, 3.0),
+        json!({"type": "extrude", "name": "Clear", "sketch": "Top", "profiles": "all", "distance": -0.15,
+            "operation": "cut", "target": "Block"}),
+        hole,
+    ]);
+    let pi = std::f64::consts::PI;
+    let frustum = pi * 1.5 / 3.0 * (9.0 + 4.5 + 2.25);
+    let removed = pi * 9.0 * 0.15 + frustum + pi * 2.25 * (9.85 - 1.5);
+    assert_vol(v, 4000.0 - removed);
+    assert!(r["features"].to_string().contains("\"H\""), "{r}");
+}
