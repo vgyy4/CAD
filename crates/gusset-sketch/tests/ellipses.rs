@@ -10,7 +10,9 @@ fn an_ellipse_is_one_region_with_its_exact_area() {
     let ps = profiles(&s, 1e-6).unwrap();
     assert_eq!(ps.len(), 1);
     assert!((ps[0].area - PI * 15.0).abs() < 1e-9, "{}", ps[0].area);
-    assert!(matches!(ps[0].outer.segments[0].curve, Curve::Ellipse { a, b, .. } if a == 5.0 && b == 3.0));
+    assert!(
+        matches!(ps[0].outer.segments[0].curve, Curve::Ellipse { a, b, .. } if (a - 5.0).abs() < 1e-12 && (b - 3.0).abs() < 1e-12)
+    );
     assert!(ps[0].outer.contains(ps[0].label));
 }
 
@@ -20,7 +22,7 @@ fn minor_axis_given_first_is_normalised() {
     s.add_ellipse([0.0, 0.0], 0.0, 2.0, 7.0).unwrap();
     let ps = profiles(&s, 1e-6).unwrap();
     let Curve::Ellipse { major, a, b, .. } = ps[0].outer.segments[0].curve else { panic!() };
-    assert_eq!((a, b), (7.0, 2.0));
+    assert!((a - 7.0).abs() < 1e-12 && (b - 2.0).abs() < 1e-12);
     assert!(major[0].abs() < 1e-12 && (major[1] - 1.0).abs() < 1e-12);
     assert!((ps[0].area - PI * 14.0).abs() < 1e-9);
 }
@@ -90,7 +92,7 @@ fn solver_keeps_arc_ends_on_the_ellipse_and_honours_dimensions() {
     let r = solve(&s, &SolveOptions::default());
     assert_ne!(r.status, SolveStatus::Failed, "{:?}", r.error);
     let (_, ang, a, b) = r.sketch.ellipse(e).unwrap();
-    assert!((a - 6.0).abs() < 1e-8 && (b - 2.5).abs() < 1e-8 && ang.sin().abs() < 1e-8, "{ang} {a} {b}");
+    assert!((a - 6.0).abs() < 1e-8 && (b - 2.5).abs() < 1e-8 && libm::sin(ang).abs() < 1e-8, "{ang} {a} {b}");
     // The arc's own parameters are free but its end points stay on its ellipse.
     let (cc, ang, a, b) = r.sketch.ellipse(arc).unwrap();
     let cp = r.sketch.point(cc).unwrap();
