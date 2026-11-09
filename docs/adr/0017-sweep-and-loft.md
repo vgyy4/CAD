@@ -100,6 +100,17 @@ tenths of a percent on twisted ones. `gs_mass` integrates adaptively (relative e
 the shape has a face that is not a plane, cylinder, cone, sphere or torus, and keeps the fast
 default otherwise, so existing numbers do not change.
 
+Amendment (spindle tori): a trimmed torus face is integrated adaptively too (commit 7ab614a),
+and this is exact also for spindle tori (minor radius > major radius, SolidWorks fillets
+larger than the distance to the axis): the kernel golden test
+`a_rod_with_spindle_torus_rounds_has_its_exact_volume` matches the Pappus volume to 1e-9, and
+the result does not move between eps 1e-5 and 1e-13. A residual difference between an imported
+body and its history rebuild is therefore not quadrature error. For the Slip-Pad idler arms
+(2.7e-5, 2.1e-5) it is the imported body's geometry: the XT importer fits the file's
+intersection chart with a cubic, and the fitted cylinder/cylinder edges lie up to 8e-3 mm off
+the cylinders (`ShapeAnalysis_Edge::CheckSameParameter`), which moves the trimmed faces
+(the rebuild's edges are within 1.5e-5). A fine tessellation agrees with the rebuild's volume.
+
 ### 8. Kernels
 `Kernel::sweep` and `Kernel::loft` default to `Unsupported`; only OCCT implements them. With
 the mock kernel the features fail with `KernelFailure: sweep is not supported by the mock kernel`,

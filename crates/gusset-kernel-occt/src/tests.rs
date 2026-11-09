@@ -1206,6 +1206,40 @@ fn a_revolved_ellipse_is_an_o_ring() {
     assert!(close(m.volume, want, 1e-8), "{} vs {want}", m.volume);
 }
 
+/// A rod of radius 1.5 and length 4 with both end edges rounded by radius 1: each round is
+/// a spindle torus (major radius 1.5 - 1 = 0.5 < minor radius 1), the fillet of the
+/// SolidWorks idler arms. Each end is the solid of revolution of the disc of radius 1
+/// about its own centre line, so by Pappus a rounded end of height 1 has the volume
+/// pi * (5/4 + pi/4 - 1/3) and the rest is a cylinder.
+#[test]
+fn a_rod_with_spindle_torus_rounds_has_its_exact_volume() {
+    let rod = Profile {
+        frame: Frame::XY,
+        regions: vec![Region2 {
+            outer: Loop2 { edges: vec![ProfileEdge { seg: Seg2::Circle { center: [0.0, 0.0], radius: 1.5 }, tag: 1 }] },
+            holes: vec![],
+        }],
+    };
+    let a = k().extrude(&rod, &ExtrudeSpec { distance: 4.0, symmetric: false }).unwrap();
+    let t = k().topology(&a.shape).unwrap();
+    let ends: Vec<u32> = t
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.kind == CurveKind::Circle)
+        .map(|(i, _)| u32::try_from(i).unwrap())
+        .collect();
+    assert_eq!(ends.len(), 2);
+    let f = k().fillet(&a.shape, &ends, 1.0).unwrap();
+    let t = k().topology(&f.shape).unwrap();
+    assert_eq!(t.faces.iter().filter(|f| f.kind == SurfaceKind::Torus).count(), 2);
+    let pi = std::f64::consts::PI;
+    let end = pi * (1.25 + pi / 4.0 - 1.0 / 3.0);
+    let want = pi * 1.5 * 1.5 * 2.0 + 2.0 * end;
+    let m = k().mass_properties(&f.shape).unwrap();
+    assert!(close(m.volume, want, 1e-9), "{} vs {want}", m.volume);
+}
+
 #[test]
 fn elliptical_arcs_join_lines_either_way_round() {
     // Half of a 4 x 2 ellipse closed by its major axis, travelled both ways.
