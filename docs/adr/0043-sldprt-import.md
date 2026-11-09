@@ -195,3 +195,48 @@ unresolved), the boss/cut flag, other end conditions, fillet edges, hole-wizard 
 records, and the newer (chunk-container) layouts. `.sldprt` stays tier 2 until a tree
 rebuilds to the stored Parasolid body, which will be checked as for FreeCAD (ADR 0033
 amendment 2026-11-09).
+
+## Amendment 4 (2026-11-09): feature history import
+
+**Decision.** `gusset_sldprt::features::feature_tree` turns a part's
+`Config-0-ResolvedFeatures` (and `Config-0`, for the class index of the reference-plane
+component) into a Gusset feature tree (`.gtree.json` version 2, ADR 0042): sketches (points,
+lines, arcs, circles, centerlines; plane from the default-plane component or a plane-data
+block), extrudes (blind, mid-plane, through all), revolves (axis = the first centerline) and
+fillets/chamfers picked by edge midpoint. It is a faithful port of the prototype in
+`scripts/re/solidworks/` (layout notes: `docs/formats/solidworks-feature-tree.md`), guesses
+included: features are found by anchors rather than walked object by object, the profile
+sketch is the one before the feature, boss or cut comes from the class or a "Cut-" name, cuts
+go against the sketch normal, and the end-condition class is learnt per part. On the 33
+Slip-Pad parts the port's trees equal the prototype's bit for bit.
+
+Any feature the reader cannot say refuses the whole history with a reason naming it: an
+unknown class (`{"type":"unsupported"}` in the prototype), a sketch whose plane or lists
+were not found, an extrude with an unknown end condition, a revolve without an axis line, a
+fillet or chamfer with an unresolved edge, or a part with no extrude or revolve.
+
+**Check.** As for FreeCAD (ADR 0033 amendment), shared code in `import.rs`
+(`rebuild_check`): the tree is built in a scratch session against the exact bodies read from
+the Parasolid partition; every feature must build, the volume must agree within 2e-5 and the
+bounding box within 1e-4 of its diagonal. Then the part comes in as features (tier 1, "the
+SolidWorks feature history as editable features"); otherwise as exact bodies, as before,
+with the warning "the design history came in as exact bodies: {why}".
+
+**Limits.** Feature and `Config-0` streams of at most 64 MiB; at most 2048 feature nodes,
+65536 node names and 65536 matches of any pattern in one feature's span; names of at most
+256 UTF-16 units; every scan is linear or bounded by the node cap, nothing recurses, reads
+past the data are errors (or a skipped sketch, where the prototype caught them). The
+`sldprt_read` fuzz target calls it on the same inputs as the container reader.
+
+**Coverage** on the 35 Slip-Pad parts (`GUSSET_SLDPRT_SAMPLES`,
+`crates/gusset-cli/tests/sldprt_history.rs`, floor `GUSSET_SLDPRT_MIN_HISTORY`): 12 come in
+as history (PCB_v1, PET_tape_v1, PET_tape_top_v1, bearing_3x6x2, drive_belt_71mm_v1,
+loadcell_spacer_v1, shaft_3x22mm, shaft_3x55mm, spring_holder_v1, loadCell_v1,
+idler_single_v2, loadcell_centerPlatform_v1, the last with a fillet), 22 as exact bodies, and
+one (setScrew_M2x2_5) fails in the Parasolid reader (node type 184), as before. The reasons:
+hole wizard features (7), unresolved fillet edges (3) and chamfer edges (3), imported bodies
+(2), mirror patterns (2), a mirrored part (1), no feature stream (1), a chamfer whose
+midpoints miss the rebuilt edges (arm_idler_single_v4), a volume mismatch
+(idler_differential_baseJoint_v1: 96.6 vs 160.0 mm3), and a part whose stored body has a
+negative volume (idler_single_v1). The three NIST parts in the chunk container were not in
+this run.
