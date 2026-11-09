@@ -1678,6 +1678,29 @@ pub fn sketch_regions(
     Ok(profile.regions)
 }
 
+/// [`sketch_regions`] for each id on its own, from one solve of the sketch: the regions of
+/// `ids[i]` are `out[i]` (an id that makes no profile gives an empty list).
+///
+/// # Errors
+/// The sketch does not solve.
+pub fn sketch_regions_each(
+    name: &str,
+    def: &gusset_doc::SketchDef,
+    params: &ParamValues,
+    units: LengthUnit,
+    ids: &[String],
+) -> Result<Vec<Vec<gusset_kernel::Region2>>, EvalError> {
+    let solved = sketch::solve_sketch(name, def, params, units, Frame::XY)?;
+    Ok(ids
+        .iter()
+        .map(|id| {
+            sketch::kernel_profile(name, name, &solved, Frame::XY, std::slice::from_ref(id))
+                .map(|(p, _)| p.regions)
+                .unwrap_or_default()
+        })
+        .collect())
+}
+
 /// The copies one sketch pattern makes, from the solved sources: the copied points
 /// (`p3_2` → position) and curves (`l5_2`, geometry in copy ids, construction flag). For
 /// turning a pattern into ordinary entities (`sketch.explode_pattern`).

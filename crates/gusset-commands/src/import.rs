@@ -1868,13 +1868,16 @@ fn fusion_states_check(
     }
     let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
     // The volume of every body (and the box of the whole) of the model after the first k features.
-    let build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>, Vec<f64>), String> {
+    // One evaluator for every prefix: each build reuses what the shorter ones built.
+    let mut evaluator = gusset_eval::Evaluator::new(kernel.clone());
+    let mut build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>, Vec<f64>), String> {
         let mut t = tree.clone();
         t.features.truncate(k);
         t.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(1.0) }];
         let ctx = crate::CmdCtx::user(0);
         let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
-        let r = crate::tree_import::apply(&mut scratch, &ctx, &t, file_name).map_err(|e| e.message)?;
+        let r = crate::tree_import::apply_with(&mut scratch, &ctx, &t, file_name, &mut evaluator)
+            .map_err(|e| e.message)?;
         if let Some(first) = r.get("skipped_user_text").and_then(Value::as_array).and_then(|a| a.first()) {
             let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
             return Err(format!("a feature could not be rebuilt, the first: {first}"));

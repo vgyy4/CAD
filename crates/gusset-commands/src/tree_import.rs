@@ -520,6 +520,9 @@ struct Gen {
     /// Sketch entities generated so far (mirrors copy sketches: review of v2).
     entities: usize,
     started: std::time::Instant,
+    /// One evaluator for the whole import: its cache keeps every feature built so far, so
+    /// each trial build only builds what the new feature adds.
+    evaluator: gusset_eval::Evaluator,
 }
 
 impl Gen {
@@ -571,7 +574,7 @@ impl Gen {
         }
         let doc = gusset_doc::text::parse(&self.text)
             .map_err(|e| CommandError::new("evaluation", format!("generated text: {e}")))?;
-        Ok(gusset_eval::Evaluator::new(s.kernel().clone()).evaluate(&doc, None, &s.blobs()))
+        Ok(self.evaluator.evaluate(&doc, None, &s.blobs()))
     }
 }
 
@@ -580,6 +583,22 @@ impl Gen {
 /// # Errors
 /// An evaluation or commit error; features that cannot be imported are reported, not errors.
 pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Result<Value, CommandError> {
+    let mut evaluator = gusset_eval::Evaluator::new(s.kernel().clone());
+    apply_with(s, ctx, tree, file_name, &mut evaluator)
+}
+
+/// [`apply`] with the caller's evaluator for the trial builds, so that a caller importing
+/// several prefixes of one tree (Fusion's state check) builds each feature once.
+///
+/// # Errors
+/// As [`apply`].
+pub fn apply_with(
+    s: &mut Session,
+    ctx: &CmdCtx,
+    tree: &Tree,
+    file_name: &str,
+    evaluator: &mut gusset_eval::Evaluator,
+) -> Result<Value, CommandError> {
     let doc = s.document(&ctx.actor)?;
     let mut taken: HashSet<String> = doc.features.iter().map(|f| f.name.to_ascii_lowercase()).collect();
     taken.extend(doc.params.iter().map(|p| p.name.to_ascii_lowercase()));
@@ -600,6 +619,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
         index: HashMap::new(),
         entities: 0,
         started: std::time::Instant::now(),
+        evaluator: std::mem::replace(evaluator, gusset_eval::Evaluator::new(s.kernel().clone())),
     };
     // Parameters go after the header lines; each is evaluated with those before it, so one
     // that cannot be (1/0, a unit clash) falls back to its value (dogfooding F7-4).
@@ -729,6 +749,8 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             }
         }
     }
+    // The caller keeps the evaluator and what it has built.
+    std::mem::swap(evaluator, &mut g.evaluator);
     // Commit the whole as one edit, validated like document_set_text.
     let new = gusset_doc::text::parse(&g.text)
         .map_err(|e| CommandError::new("invalid_document", format!("the generated features do not parse: {e}")))?;
@@ -967,16 +989,16 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
             let Some(gusset_doc::FeatureKind::Sketch(def)) = doc.feature(&sk_name).map(|f| &f.kind) else {
                 return Err("its sketch is missing".into());
             };
+            // Every region's outline from one solve (not one solve per pick and region).
+            let all: Vec<String> = infos.iter().map(|ri| ri.id.clone()).collect();
+            let outlines = gusset_eval::sketch_regions_each(&sk_name, def, &ev.params, doc.units, &all)
+                .map_err(|e| format!("its sketch does not solve: {}", e.message))?;
             let mut ids = Vec::new();
             for pk in picks {
                 let p = sm.map(pk.point[0], pk.point[1]);
-                let hit = infos.iter().find(|ri| {
-                    gusset_eval::sketch_regions(&sk_name, def, &ev.params, doc.units, std::slice::from_ref(&ri.id))
-                        .ok()
-                        .is_some_and(|rs| rs.iter().any(|r| region_holds(r, p)))
-                });
+                let hit = all.iter().zip(&outlines).find(|(_, rs)| rs.iter().any(|r| region_holds(r, p)));
                 match hit {
-                    Some(ri) => ids.push(ri.id.clone()),
+                    Some((id, _)) => ids.push(id.clone()),
                     None => return Err(format!("no region of its sketch holds the profile point {:?}", pk.point)),
                 }
             }
