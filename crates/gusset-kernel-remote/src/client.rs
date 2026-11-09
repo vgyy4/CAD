@@ -527,6 +527,10 @@ impl Kernel for RemoteKernel {
         self.op(&Request::ChamferRef(shape.clone(), edges.to_vec(), faces.to_vec(), *spec))
     }
 
+    fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+        self.op(&Request::FullRound(shape.clone(), faces.to_vec()))
+    }
+
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
         self.op(&Request::Shell(shape.clone(), remove.to_vec(), thickness))
     }

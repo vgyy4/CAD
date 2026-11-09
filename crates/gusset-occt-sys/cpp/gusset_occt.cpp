@@ -52,6 +52,7 @@
 #include <BRepAlgoAPI_Defeaturing.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -1486,6 +1487,192 @@ int gs_chamfer_asym(const GsShape* s, const uint32_t* edges, const uint32_t* fac
     else mk.AddDA(a, b, e, f);
   }
   return finish_blend(mk, s, false, out, origins);
+  GS_GUARD_END
+}
+
+namespace {
+
+// Outward unit normal of a planar face, or false when the face is not planar.
+bool planar_face(const TopoDS_Face& f, gp_Dir& n, gp_Pnt& p) {
+  BRepAdaptor_Surface sf(f, false);
+  if (sf.GetType() != GeomAbs_Plane) return false;
+  gp_Pln pl = sf.Plane();
+  n = pl.Axis().Direction();
+  if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
+  p = pl.Location();
+  return true;
+}
+
+// The two removal corners of a full round on `m` (ADR 0004 amendment): a prism along the
+// round's axis whose section is the rectangle across the wall, from just outside the middle
+// face down to the round's centre line, minus the half disc of the round.
+struct RoundCutter {
+  TopoDS_Shape shape;
+  std::vector<uint32_t> edges;  // edges of the middle face shared with its two sides
+};
+
+RoundCutter full_round_cutter(const TopoDS_Shape& body, const ShapeMap& face_map, const AncMap& anc, uint32_t fi) {
+  if (face_map.Extent() <= 0 || fi >= uint32_t(face_map.Extent())) throw Standard_Failure("face index out of range");
+  TopoDS_Face m = TopoDS::Face(face_map(int(fi) + 1));
+  gp_Dir nm;
+  gp_Pnt pm;
+  if (!planar_face(m, nm, pm)) throw Standard_Failure("a full round needs a planar middle face");
+  // The planar neighbours of the middle face.
+  std::vector<TopoDS_Face> nb;
+  for (TopExp_Explorer ex(m, TopAbs_EDGE); ex.More(); ex.Next()) {
+    int ei = anc.FindIndex(ex.Current());
+    if (ei <= 0) continue;
+    for (ShapeList::Iterator it(anc(ei)); it.More(); it.Next()) {
+      if (it.Value().IsSame(m)) continue;
+      bool seen = false;
+      for (const auto& g : nb) seen = seen || g.IsSame(it.Value());
+      if (!seen) nb.push_back(TopoDS::Face(it.Value()));
+    }
+  }
+  // The pair of parallel sides with the smallest distance whose planes bound the wall.
+  const double tol = 1e-7;
+  int ia = -1, ib = -1;
+  double best = 0;
+  gp_Dir na, nbb;
+  gp_Pnt pa, pb;
+  for (size_t i = 0; i < nb.size(); ++i) {
+    gp_Dir ni;
+    gp_Pnt pi;
+    if (!planar_face(nb[i], ni, pi)) continue;
+    if (std::fabs(ni.Dot(nm)) > 1e-6) continue;
+    for (size_t j = i + 1; j < nb.size(); ++j) {
+      gp_Dir nj;
+      gp_Pnt pj;
+      if (!planar_face(nb[j], nj, pj)) continue;
+      if (ni.Dot(nj) > -1.0 + tol) continue;
+      double t = -gp_Vec(pi, pj).Dot(gp_Vec(ni));
+      if (t < 1e-6) continue;
+      if (ia < 0 || t < best - 1e-9) {
+        ia = int(i);
+        ib = int(j);
+        best = t;
+        na = ni;
+        nbb = nj;
+        pa = pi;
+        pb = pj;
+      }
+    }
+  }
+  (void)nbb;
+  (void)pb;
+  if (ia < 0)
+    throw Standard_Failure(
+        "a full round needs a planar middle face between two parallel planar faces, perpendicular to both");
+  const double t = best, r = t / 2;
+  gp_Vec vu = gp_Vec(nm).Crossed(gp_Vec(na));
+  gp_Dir u(vu);
+  gp_Vec w = gp_Vec(na).Reversed();    // across the wall, from the first side
+  gp_Vec dd = gp_Vec(nm).Reversed();   // into the material
+  // A point on the middle plane and the first side's plane, at the origin along the axis.
+  gp_Vec toa = gp_Vec(pm, pa);
+  gp_Pnt o = pm.Translated(gp_Vec(na).Multiplied(toa.Dot(gp_Vec(na))));
+  // Extent of the middle face along the axis.
+  double umin = 1e300, umax = -1e300;
+  auto take = [&](const gp_Pnt& p) {
+    double s = gp_Vec(o, p).Dot(gp_Vec(u));
+    umin = std::min(umin, s);
+    umax = std::max(umax, s);
+  };
+  for (TopExp_Explorer ex(m, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge& e = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(e)) continue;
+    BRepAdaptor_Curve c(e);
+    for (int k = 0; k <= 32; ++k) take(c.Value(c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * k / 32.0));
+  }
+  if (!(umax - umin > 1e-6)) throw Standard_Failure("the middle face has no extent");
+  const double delta = 0.25 * r;
+  auto P = [&](double x, double y) {
+    return o.Translated(w.Multiplied(x) + dd.Multiplied(y) + gp_Vec(u).Multiplied(umin));
+  };
+  BRepBuilderAPI_MakeWire mw;
+  mw.Add(BRepBuilderAPI_MakeEdge(P(0, -delta), P(t, -delta)).Edge());
+  mw.Add(BRepBuilderAPI_MakeEdge(P(t, -delta), P(t, r)).Edge());
+  GC_MakeArcOfCircle arc(P(t, r), P(r, 0), P(0, r));
+  if (!arc.IsDone()) throw Standard_Failure("could not build the round");
+  mw.Add(BRepBuilderAPI_MakeEdge(arc.Value()).Edge());
+  mw.Add(BRepBuilderAPI_MakeEdge(P(0, r), P(0, -delta)).Edge());
+  if (!mw.IsDone()) throw Standard_Failure("could not build the round");
+  BRepBuilderAPI_MakeFace mf(mw.Wire(), true);
+  if (!mf.IsDone()) throw Standard_Failure("could not build the round");
+  BRepPrimAPI_MakePrism prism(mf.Face(), gp_Vec(u).Multiplied(umax - umin));
+  prism.Build();
+  if (!prism.IsDone()) throw Standard_Failure("could not build the round");
+  RoundCutter rc;
+  rc.shape = prism.Shape();
+  if (signed_volume(rc.shape) < 0) rc.shape.Reverse();
+  // The middle face's edges on the two sides.
+  ShapeMap edge_map;
+  TopExp::MapShapes(body, TopAbs_EDGE, edge_map);
+  for (TopExp_Explorer ex(m, TopAbs_EDGE); ex.More(); ex.Next()) {
+    int ei = anc.FindIndex(ex.Current());
+    if (ei <= 0) continue;
+    for (ShapeList::Iterator it(anc(ei)); it.More(); it.Next()) {
+      if (it.Value().IsSame(nb[size_t(ia)]) || it.Value().IsSame(nb[size_t(ib)])) {
+        int k = edge_map.FindIndex(ex.Current());
+        if (k > 0) rc.edges.push_back(uint32_t(k - 1));
+      }
+    }
+  }
+  return rc;
+}
+
+}  // namespace
+
+// Replaces each middle face in `faces` by a half cylinder across the wall between its two
+// parallel sides (a full round). The faces refer to `s`.
+int gs_full_round(const GsShape* s, const uint32_t* faces, size_t nfaces, GsShape** out, GsBuf* origins) {
+  GS_GUARD_BEGIN
+  if (!s || !out || !origins || (!faces && nfaces)) return fail("null argument");
+  if (nfaces == 0) return fail("no faces selected");
+  ShapeMap face_map;
+  TopExp::MapShapes(s->s, TopAbs_FACE, face_map);
+  AncMap anc;
+  TopExp::MapShapesAndAncestors(s->s, TopAbs_EDGE, TopAbs_FACE, anc);
+  std::vector<RoundCutter> cutters;
+  ShapeList args, tools;
+  args.Append(s->s);
+  for (size_t i = 0; i < nfaces; ++i) {
+    cutters.push_back(full_round_cutter(s->s, face_map, anc, faces[i]));
+    tools.Append(cutters.back().shape);
+  }
+  auto b = run_boolean_checked(GS_BOOL_CUT, args, tools);
+  TopoDS_Shape result = b->Shape();
+  if (result.IsNull()) return fail("the full round produced no result");
+  ShapeMap out_faces;
+  TopExp::MapShapes(result, TopAbs_FACE, out_faces);
+  if (out_faces.Extent() == 0) return fail("the full round removed all material");
+  for (size_t i = 0; i < nfaces; ++i)
+    if (out_faces.Contains(face_map(int(faces[i]) + 1))) return fail("the full round did not replace the face");
+  std::vector<int64_t> o;
+  record_input_faces(*b, s->s, 0, out_faces, o);
+  for (const auto& c : cutters) {
+    bool found = false;
+    ShapeMap cf;
+    TopExp::MapShapes(c.shape, TopAbs_FACE, cf);
+    for (int j = 1; j <= cf.Extent(); ++j) {
+      if (surface_kind(TopoDS::Face(cf(j))) != 1) continue;
+      const ShapeList& mods = b->Modified(cf(j));
+      std::vector<TopoDS_Shape> res;
+      for (ShapeList::Iterator it(mods); it.More(); it.Next()) res.push_back(it.Value());
+      if (mods.IsEmpty() && !b->IsDeleted(cf(j))) res.push_back(cf(j));
+      for (const auto& g : res) {
+        int idx = out_faces.FindIndex(g);
+        if (idx <= 0) continue;
+        found = true;
+        for (uint32_t e : c.edges) push_origin(o, idx - 1, GS_ORIGIN_FROM_EDGE, 0, e);
+      }
+    }
+    if (!found) return fail("the full round produced no rounded face");
+  }
+  check_valid(result, "full round");
+  to_buf(o, origins);
+  *out = new GsShape{result};
+  return GS_OK;
   GS_GUARD_END
 }
 

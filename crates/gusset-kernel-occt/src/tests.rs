@@ -1231,3 +1231,82 @@ fn elliptical_arcs_join_lines_either_way_round() {
         assert!(close(m.volume, want, 1e-8), "ccw={ccw}: {} vs {want}", m.volume);
     }
 }
+
+/// Index of the face of `t` whose outward normal is `n` (planar faces of a box).
+fn face_with_normal(t: &Topology, n: [f64; 3]) -> u32 {
+    let i = t.faces.iter().position(|f| f.normal.iter().zip(n).all(|(a, b)| (a - b).abs() < 1e-9)).unwrap();
+    i as u32
+}
+
+#[test]
+fn full_round_replaces_an_end_face_by_a_half_cylinder() {
+    // 20 x 4 x 10 slab, a full round on the 4 x 10 end face: radius 2 about the z direction.
+    let a = k().extrude(&boxp(20.0, 4.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let t = k().topology(&a.shape).unwrap();
+    let end = face_with_normal(&t, [1.0, 0.0, 0.0]);
+    let r = k().full_round(&a.shape, &[end]).unwrap();
+    let m = k().mass_properties(&r.shape).unwrap();
+    let expect = 800.0 - (4.0 * 2.0 * 10.0 - std::f64::consts::PI * 4.0 / 2.0 * 10.0);
+    assert!(close(m.volume, expect, 1e-9), "{} vs {expect}", m.volume);
+    let t2 = k().topology(&r.shape).unwrap();
+    assert_eq!((t2.faces.len(), t2.solids), (6, 1));
+    // The end face is gone; the rounded face is a cylinder of radius 2, half a turn, 10 long.
+    let cyl: Vec<usize> = (0..t2.faces.len()).filter(|&i| t2.faces[i].kind == SurfaceKind::Cylinder).collect();
+    assert_eq!(cyl.len(), 1);
+    let f = &t2.faces[cyl[0]];
+    assert!(close(f.area, std::f64::consts::PI * 2.0 * 10.0, 1e-9), "{}", f.area);
+    let ax = f.axis.unwrap();
+    assert!(ax.dir[2].abs() > 0.999999 && close(ax.origin[0], 18.0, 1e-9) && close(ax.origin[1], 2.0, 1e-9));
+    let bb = k().bbox(&r.shape).unwrap();
+    assert!(close(bb.max[0], 20.0, 1e-9), "{:?}", bb.max);
+    // History: the cylinder descends from the two edges of the end face; the sides survive.
+    assert!(r.face_origins[cyl[0]].iter().all(|o| matches!(o, FaceOrigin::FromEdge { input: 0, .. })));
+    assert_eq!(r.face_origins[cyl[0]].len(), 2);
+    for n in [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]] {
+        let side = face_with_normal(&t, n);
+        assert!(close(area_of(&r, side), 18.0 * 10.0, 1e-9));
+    }
+}
+
+#[test]
+fn full_round_several_faces_and_a_cube() {
+    let a = k().extrude(&boxp(20.0, 4.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let t = k().topology(&a.shape).unwrap();
+    let both = [face_with_normal(&t, [1.0, 0.0, 0.0]), face_with_normal(&t, [-1.0, 0.0, 0.0])];
+    let r = k().full_round(&a.shape, &both).unwrap();
+    let v = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(v, 800.0 - 2.0 * (80.0 - 20.0 * std::f64::consts::PI), 1e-9), "{v}");
+    // A cube face has two pairs of parallel sides at the same distance: it still rounds.
+    let (c, _, _) = cube_edge();
+    let tc = k().topology(&c.shape).unwrap();
+    let top = face_with_normal(&tc, [0.0, 0.0, 1.0]);
+    let r = k().full_round(&c.shape, &[top]).unwrap();
+    let v = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(close(v, 1000.0 - (10.0 * 5.0 - std::f64::consts::PI * 25.0 / 2.0) * 10.0, 1e-9), "{v}");
+}
+
+#[test]
+fn full_round_errors_are_clean() {
+    let a = k().extrude(&boxp(20.0, 4.0), &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    assert!(k().full_round(&a.shape, &[9999]).is_err());
+    assert!(k().full_round(&a.shape, &[]).is_err());
+    // A triangular prism: its caps lie between no parallel sides.
+    let tri = Loop2 {
+        edges: [([0.0, 0.0], [10.0, 0.0]), ([10.0, 0.0], [0.0, 8.0]), ([0.0, 8.0], [0.0, 0.0])]
+            .iter()
+            .enumerate()
+            .map(|(i, &(a, b))| ProfileEdge { seg: Seg2::Line { a, b }, tag: 20 + i as u64 })
+            .collect(),
+    };
+    let p = Profile { frame: Frame::XY, regions: vec![Region2 { outer: tri, holes: vec![] }] };
+    let prism = k().extrude(&p, &ExtrudeSpec { distance: 5.0, symmetric: false }).unwrap();
+    let t = k().topology(&prism.shape).unwrap();
+    for n in [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+        assert!(k().full_round(&prism.shape, &[face_with_normal(&t, n)]).is_err());
+    }
+    // Its slanted side lies between the two caps, 5 mm apart: that one rounds.
+    let hyp = t.faces.iter().position(|f| f.normal[0] > 0.1 && f.normal[1] > 0.1).unwrap() as u32;
+    let r = k().full_round(&prism.shape, &[hyp]).unwrap();
+    let v = k().mass_properties(&r.shape).unwrap().volume;
+    assert!(v < 200.0 && v > 150.0, "{v}");
+}

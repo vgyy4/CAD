@@ -166,6 +166,11 @@ impl Kernel for PoolKernel {
         k.chamfer_ref(&s, edges, faces, spec)
     }
 
+    fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+        let (k, s) = self.on_one(shape)?;
+        k.full_round(&s, faces)
+    }
+
     fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.shell(&s, remove, thickness)

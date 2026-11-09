@@ -123,6 +123,9 @@ int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double di
  * and angle `b` (radians, in (0, pi/2)) measured from the reference face. */
 int gs_chamfer_asym(const GsShape* s, const uint32_t* edges, const uint32_t* faces, size_t nedges, int mode, double a,
                     double b, GsShape** out, GsBuf* origins);
+/* Full round: replaces each planar middle face `faces[i]` of `s`, lying between two parallel
+ * planar faces, by a half cylinder of half their distance, tangent to both. */
+int gs_full_round(const GsShape* s, const uint32_t* faces, size_t nfaces, GsShape** out, GsBuf* origins);
 /* Hollows `s` to a wall of `thickness` (> 0 inward, < 0 outward), removing the faces
  * `faces` (indices into the shape's face order). */
 int gs_shell(const GsShape* s, const uint32_t* faces, size_t nfaces, double thickness, GsShape** out,

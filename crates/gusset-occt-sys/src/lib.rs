@@ -223,6 +223,13 @@ mod raw {
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
+        pub(crate) fn gs_full_round(
+            s: *const GsShape,
+            faces: *const u32,
+            nfaces: usize,
+            out: *mut *mut GsShape,
+            origins: *mut GsBuf,
+        ) -> i32;
         pub(crate) fn gs_shell(
             s: *const GsShape,
             faces: *const u32,

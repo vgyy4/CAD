@@ -41,6 +41,7 @@ pub(crate) enum Request {
     Fillet(Shape, Vec<u32>, f64),
     Chamfer(Shape, Vec<u32>, f64),
     ChamferRef(Shape, Vec<u32>, Vec<u32>, ChamferSpec),
+    FullRound(Shape, Vec<u32>),
     Shell(Shape, Vec<u32>, f64),
     Draft(Shape, Vec<u32>, DraftSpec),
     OffsetFaces(Shape, Vec<u32>, f64),
@@ -156,6 +157,11 @@ impl Request {
                 put_u32s(&mut w, edges)?;
                 put_u32s(&mut w, faces)?;
                 spec.put(&mut w, s)?;
+            }
+            Request::FullRound(shape, faces) => {
+                w.u8(36);
+                put_shape(&mut w, s, shape)?;
+                put_u32s(&mut w, faces)?;
             }
             Request::Draft(shape, faces, spec) => {
                 w.u8(25);
@@ -351,6 +357,7 @@ impl Request {
                 get_u32s(&mut r)?,
                 ChamferSpec::get(&mut r, s)?,
             ),
+            36 => Request::FullRound(get_shape(&mut r, s)?, get_u32s(&mut r)?),
             25 => Request::Draft(get_shape(&mut r, s)?, get_u32s(&mut r)?, DraftSpec::get(&mut r, s)?),
             t => return Err(WireError(format!("unknown request {t}"))),
         };

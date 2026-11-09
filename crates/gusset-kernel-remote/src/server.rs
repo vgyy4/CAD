@@ -105,6 +105,7 @@ impl<K: Kernel> Server<K> {
             Request::Chamfer(s, edges, d) => Reply::Op(k.chamfer(&s, &edges, d)?),
             Request::Shell(s, faces, t) => Reply::Op(k.shell(&s, &faces, t)?),
             Request::ChamferRef(s, edges, faces, spec) => Reply::Op(k.chamfer_ref(&s, &edges, &faces, &spec)?),
+            Request::FullRound(s, faces) => Reply::Op(k.full_round(&s, &faces)?),
             Request::Draft(s, faces, spec) => Reply::Op(k.draft(&s, &faces, &spec)?),
             Request::OffsetFaces(s, faces, d) => Reply::Op(k.offset_faces(&s, &faces, d)?),
             Request::OffsetFacesOnly(s, faces, d) => Reply::Op(k.offset_faces_only(&s, &faces, d)?),

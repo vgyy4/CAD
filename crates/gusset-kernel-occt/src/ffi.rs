@@ -95,6 +95,10 @@ pub(crate) fn chamfer_asym(s: &RawShape, edges: &[u32], faces: &[u32], mode: i32
     safe::chamfer_asym(s, edges, faces, mode, a, b).map_err(err(KernelErrorKind::OperationFailed))
 }
 
+pub(crate) fn full_round(s: &RawShape, faces: &[u32]) -> KResult<OpOut> {
+    safe::full_round(s, faces).map_err(err(KernelErrorKind::OperationFailed))
+}
+
 pub(crate) fn blend(s: &RawShape, edges: &[u32], size: f64, fillet: bool) -> KResult<OpOut> {
     safe::blend(s, edges, size, fillet).map_err(err(KernelErrorKind::OperationFailed))
 }

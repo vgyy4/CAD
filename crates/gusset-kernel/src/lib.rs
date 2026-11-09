@@ -220,6 +220,15 @@ pub trait Kernel: Send + Sync + Debug {
         }
     }
 
+    /// A full round: replaces each planar middle face in `faces` that lies between two
+    /// parallel planar faces by a half cylinder of half their distance, tangent to both
+    /// (the cylinder's face reports [`FaceOrigin::FromEdge`] for the middle face's edges on
+    /// the two sides). Fails when a face has no such pair of sides.
+    fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+        let _ = (shape, faces);
+        unsupported("full round", self.name())
+    }
+
     /// Hollows a solid: removes the faces `remove` (indices into the shape's topology) and
     /// leaves walls of `thickness` mm (> 0 grows inward, < 0 outward). Faces that
     /// remain on the outside report [`FaceOrigin::Input`]; the new inner faces report

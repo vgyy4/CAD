@@ -381,6 +381,18 @@ pub fn chamfer_asym(s: &RawShape, edges: &[u32], faces: &[u32], mode: i32, a: f6
     Ok((RawShape::from_ptr(out)?, take(origins)))
 }
 
+/// Full round of the planar middle faces `faces` (each between two parallel planar faces).
+pub fn full_round(s: &RawShape, faces: &[u32]) -> ShimResult<OpOut> {
+    let mut out = std::ptr::null_mut();
+    let mut origins = GsBuf::default();
+    let rc = s.with(|p| {
+        // SAFETY: shape locked and valid; `faces` stays alive for the call; out-params are valid.
+        unsafe { sys::gs_full_round(p, faces.as_ptr(), faces.len(), &mut out, &mut origins) }
+    });
+    check(rc)?;
+    Ok((RawShape::from_ptr(out)?, take(origins)))
+}
+
 pub fn shell(s: &RawShape, faces: &[u32], thickness: f64) -> ShimResult<OpOut> {
     let mut out = std::ptr::null_mut();
     let mut origins = GsBuf::default();

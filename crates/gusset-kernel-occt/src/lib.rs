@@ -474,6 +474,10 @@ mod imp {
             }
         }
 
+        fn full_round(&self, shape: &Shape, faces: &[u32]) -> KResult<OpResult> {
+            op_result(ffi::full_round(raw(shape)?, faces)?)
+        }
+
         fn shell(&self, shape: &Shape, remove: &[u32], thickness: f64) -> KResult<OpResult> {
             op_result(ffi::shell(raw(shape)?, remove, thickness)?)
         }
