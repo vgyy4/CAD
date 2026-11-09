@@ -462,3 +462,21 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
   design now stops at its next feature (Base Feature for the BQ25185 and NeoKey/Trinkey designs, Chamfer3 with 4 unresolved
   edges for Crickit CPX, Sweep for CyberDeck HAT, Component Insert for the `.f3z` inner designs, a component pattern for
   MacroPad RP2040).
+
+## Amendment (2026-11-09, round 5): sweeps, component occurrences, `.f3z` roots
+
+* Sweep `FCBB1707` is read (operation, profile loop, path curves by `crv_primary_id`; format notes section 14). A profile
+  that is off the path's start plane, or one loop of a sketch with several, becomes a copy of its sketch with only
+  that loop, moved along its normal onto the plane through the path's nearer end; Sweep1 of the CyberDeck HAT then
+  rebuilds to the stored pin (4.735 mm3, same box). Twist and taper are not converted.
+* A component stored once and placed several times (the MacroPad bottom-plate's mounting holes) no longer refuses the
+  design: its features are written once per occurrence. That design now reaches the importer's step check and fails there
+  (the check compares stored solids with the model's total volume and counts a cut extrude as one copy); the fix is in
+  `gusset-commands` and is written up in the format notes.
+* `.f3z`: no design of the six converts yet. The mapping to use (root design from `Manifest.json`) and the reason that
+  still blocks them (Component Insert and Base Feature bodies live in other designs of the archive: a stored-bodies
+  feature is needed) are in the format notes. `gusset_sat::fusion_tree::feature_tree_unchecked` (doc-hidden) returns the
+  tree with the unread features left in, for diagnosing a design.
+* Corpus: 1 of 18 as history before and after; no design was lost. Blockers now: CyberDeck HAT -> Fillet1 (swept
+  faces) then Base Features; MacroPad bottom-plate -> the step check; Crickit CPX / Assembly -> Chamfer3 and a
+  long chain (Draft, Shell, OffsetFaces, Move, RemoveBody, Base Feature, unrecognised extrude layouts).

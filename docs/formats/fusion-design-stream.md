@@ -461,3 +461,69 @@ All from the 18-design Adafruit set; "confirmed" names the check.
 6091/6092/6106/4979/4980/5020 and the BQ25185 cases: Base Feature; 4863 CyberDeck HAT and Crickit CPX Assembly: Sweep1 /
 Chamfer3 (past the group); MacroPad RP2040: R-Pattern1 (pattern of components); `.f3z` inner designs: Component Insert1
 (`428B5C6E`, not decoded) or no timeline.
+
+## 14. Round 5: Sweep, component instances, `.f3z` roots, bottom-plate (2026-11-09)
+
+### Sweep `FCBB1707` (CyberDeck HAT: Sweep1, Sweep2; confirmed against the stored pin)
+* Record layout (541 bytes in both samples, identical bytes except ids): after the header (body at the offset
+  `parse_header` gives) the first u32 is the **operation** (4 = new body, same enum as the extrude: 1 join, 2 cut,
+  3 intersect, 4 new; both samples are 4). Then `01 00 00 01 01 01` (flags, constant in the samples; the orientation
+  is not among the things proved: the tree says `frenet`, which rebuilt the stored pin exactly). The parameter holders
+  `D91D429C` (refs, each with a `7A6A3D31`): `AlongDistance`, `AgainstDistance`, `AlongRailDistance`,
+  `AgainstRailDistance` (all 1, unitless), `TwistAngle`, `TaperAngle` (0 deg). Twist and taper are not converted (never non-zero in a sample).
+* Profile = a `4BD53E5A` ref (as for extrudes; its wide string names the sketch data id) with its `0D57BD2F` region
+  record: the profile is **one loop** of a sketch that may hold several (Sketch2 holds two squares and more).
+* Path = one `5A1BF548` ref per path curve, each pointing to an `E2CEFD18` (45 bytes, the same record as a sketch-curve
+  pattern direction): **u64 sketch data id at +0x21, u64 `crv_primary_id` at +0x29**. The `crv_primary_id` is the
+  curve's attribute (not its object id); the tree's `cNNNN` ids are object ids, so the primary id is looked up among the
+  sketch's curves (`sketch::curve_by_primary`). Sweep1: sketch 3466 (a sketch of the component `header`, the sweep
+  belongs to component `Pins`), curves 127 and 129 = two lines, 2.56 mm down then 9 mm at 30 degrees.
+* Which end of the path starts: Fusion does not require the profile on the path. The pin's profile sketch lies in z = 0,
+  the path starts in z = 0.5 and 1.27 mm to the side (x = 0 vs the profile's x = 1.27): the stored pin starts at
+  z = 0.5 (the profile moved along its normal to the plane through the path start, x and y kept, the offset to the path
+  kept all the way) and ends exactly at the path's end (vertices (-3.507, -9.694) and (-2.953, -10.014) around the end
+  point (-3.23, -9.854)). Gusset's sweep needs the path to start on the profile's plane, so the reader writes a copy of
+  the profile sketch (only the loop's curves) moved along its normal onto the plane through the nearer end of the path.
+  Checked: Sweep1 rebuilt in Gusset = 4.735 mm3, box (0.95..1.59, -3.51..1.59, -10.01..0.50) mm = the stored
+  pin body of the `Pins` blob (16-vertex state, before the fillet).
+* Not finished: CyberDeck HAT then stops at Fillet1 (1 + 1 edges unresolved: the faces are swept faces, `naming::face`
+  knows extrude faces only) and, beyond, at six Base Features. So no design is gained by the sweep alone.
+
+### A component with several occurrences (MacroPad bottom-plate: four `MOUNTINGHOLE_3.0_PLATEDTHIN:U$1..4`)
+* One blob (`BREP.<id>.smb`), four occurrence placements. The features of such a component are written once per
+  placement (names of the copies " [2]", " [3]", ...; the references between a component's features follow the
+  renaming; each copy right behind the original in the timeline), then every copy is moved by its occurrence.
+  Different blobs of one component placed in different ways stay refused.
+* The design then fails the importer's step check, not the reader: stored solids are Board 9750.608 mm3 (the board
+  **before** its Extrude4 cut), four holes' cut tools of 11.098 mm3 each, four mounting holes of 1.936, the front plate
+  621.612 and the back plate 605.735; the tree gives 10941.31 mm3, the stored 11030.09 (= the tree + the uncut board's
+  44.39 + the four tools 44.39). `fusion_states_check` (gusset-commands, `import.rs`) compares each stored solid to the
+  **total** volume of the model after a feature, which only works for a design with one body at a time; here the new
+  bodies of the other components (mounting holes, plates) are states of single bodies, and the four tools of one cut are four
+  solids of one feature (`fusion_instances` counts a cut extrude as 1 copy). Needed there (not done, other agent's crate):
+  per-body states (the volume of the body the feature changed) and a copy count of the profile's loops for a cut extrude.
+
+### `.f3z` archives (6 files: the "no feature history" cases)
+* `Manifest.json` names the root design (`{"root": "<uuid>.f3d"}`); `DesignDescription.json` lists the others as XREFs.
+  Root designs: Crickit HAT (39 timeline entries, 1 Component Insert, 24 Base Feature records), CyberDeck Bonnet (14, 1, 6),
+  NeoKey Breakout (12, 1, 4; also a second, empty stream of the same design), MacroPad Kit assembly (4 entries, 4 inserts, 1 base),
+  the two cases 6124/6126 (4 timeline entries holding 61 listed features, 1 insert, no Base Feature). The referenced designs
+  carry the PCB (Base Features) or the other parts.
+* `fusion_history` gives `feature_tree` the entries of **all** inner designs, so `pick_stream` finds several streams. Mapping to
+  write (not done, import.rs belongs to another agent): take the root design's entries only (those whose path starts
+  with the `Manifest.json` root) and, if the root has no timeline, the single inner design that has one. Every root
+  above has a timeline, so the root rule alone covers the 6 files; the placements of the referenced designs are what
+  `import.rs` already derives from the root (`Use`/`Xref`).
+* `Component Insert` (`428B5C6E`, 434 bytes in the cases; only looked at, not decoded): after the header there are 12 doubles
+  that read as a rotation and translation (not proved), two refs to the same `2D6E13A1` occurrence record, a nil design
+  UUID string, the wide string "Component Insert" and the usual `B7F34D7B` / `5FBE538E` / `6CCF41D5` / `3A6D1E62` tail. The
+  referenced design is named by the occurrence, not by the record.
+  The root's features after it (shell, fillets, extrudes: 61 entries in 6124) act on the root's own case bodies and on the
+  inserted PCB; the inserted bodies exist only in the referenced design's blobs, so the tree needs the same stored-bodies
+  feature as the Base Features to rebuild the stored model. No `.f3z` can come in as history before that.
+
+### Crickit CPX chain after Chamfer3 (documented, not worked)
+* Chamfer3 (4 edges) is followed by a Combine, a pattern of components (R-Pattern2), a Shell, eight Drafts, three
+  OffsetFaces, two Moves, two Base Features, thirteen RemoveBody and further blends with unresolved edges (Chamfer4 2,
+  Fillet2 1, Chamfer5 2) and **nine extrudes the layout search does not recognise** (Extrude13, 15, 18, 26, 28, 32, 33,
+  37, 39). Resolving Chamfer3 alone gains nothing; the Assembly shows the same chain.
