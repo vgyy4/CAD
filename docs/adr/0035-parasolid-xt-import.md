@@ -121,3 +121,30 @@ out with a warning. Equal radii (horn torus) are written as an apple; no sample 
 Over all samples only the three torus parts changed (both idler arms and one zenodo
 `Combination` body, 166766 to 167950 mm3, not checked face by face); history counts are
 unchanged (34 as history).
+
+## Amendment (2026-11-09): intersection curves are refined onto their surfaces
+
+An `INTERSECTION` curve carries a chart, a polyline accurate only to its chordal tolerance, and
+the two surfaces it lies on. Fitting a cubic through the chart left the curve up to 8e-3 mm off
+the surfaces (cylinder/cylinder edges of the Slip-Pad idler arms), so after the STEP read the
+trimmed faces moved and the body volume was off by about 2.5e-5 relative.
+
+When both supports are analytic (plane, cylinder, cone, sphere, torus) `refine.rs` now snaps each
+chart point onto both surfaces (Newton on the two signed distances, the smallest step, at most a
+quarter of the gap to the neighbouring chart points), fits a Hermite cubic whose tangents are
+the curves' own (the cross product of the two normals), and inserts snapped points where the fit
+strays more than 1e-8 of the curve's extent from either surface, up to 12 rounds and 4000
+points. Segments next to a point that does not snap (tangent supports, crossing branches) are
+left as they were, curves with other supports (B-surfaces, spun/swept/offset) or fewer than
+three chart points keep the plain chart fit, and the refinement is used only if it is not worse
+than that fit. Deviation from the surfaces drops from 2e-6..4e-5 m to about 1e-11 m on the
+curves of the samples. No `unsafe`, no indexing, no new input-dependent allocation beyond the
+point cap; the fuzz API is unchanged.
+
+Measured on the 99 SolidWorks samples (`sldprt_samples`): the idler arms import at 230.111 and
+336.098 mm3 (exact 230.1106, 336.0977), and `sldprt_history` now takes both arms and `motorClip`
+(656.0549 to 656.082, the rebuild's 656.0822) as history: 37 of 99 parts, was 34 (Slip-Pad 23 of
+35, was 20). `idler_differential_baseJoint` has no intersection curves, so its 2.3e-2 mm3
+difference has another cause. Other bodies moved by at most 6e-5 relative, except two zenodo
+parts whose cone/plane and cylinder curves were furthest off (`adpator` -1.6e-3, `CP20S`
+-1.4e-4).

@@ -210,14 +210,18 @@ impl Writer<'_> {
             }
             "TRIMMED_CURVE" => self.curve(g.ptr(c, "basis_curve")),
             "INTERSECTION" => {
-                // The chart is a polyline accurate to its chordal error: fit a cubic.
+                // The chart is a polyline accurate to its chordal error: refine it onto the (analytic)
+                // supports and fit a cubic, or fit the chart as it is.
                 let chart = g.ptr(c, "chart");
                 let pts: Vec<V3> = g
                     .list(chart, "hvec")
                     .iter()
                     .filter_map(|v| if let crate::reader::Val::Vec3(p) = v { Some(*p) } else { None })
                     .collect();
-                let n = geom::through(&pts)?;
+                let n = match crate::refine::intersection(g, c, &pts) {
+                    Some(n) => n,
+                    None => geom::through(&pts)?,
+                };
                 Some(self.bspline(&n))
             }
             "SP_CURVE" => {

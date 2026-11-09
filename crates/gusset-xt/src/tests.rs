@@ -517,3 +517,66 @@ fn apple_and_lemon_tori_are_both_written() {
         assert!(r.is_none() && w.len() == 2, "{a} {b}: {w:?}");
     }
 }
+
+/// Two unit cylinders with perpendicular axes (z and x), and an INTERSECTION node on them.
+fn steinmetz_graph() -> crate::decode::Graph {
+    let mut f = TextFile::new();
+    let cyl = |axis: [f64; 3], x: [f64; 3]| {
+        [("pvec", v3([0.0; 3])), ("axis", v3(axis)), ("radius", vec![n(1.0)]), ("x_axis", v3(x))]
+    };
+    f.node(51, 2, &cyl([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+    f.node(51, 3, &cyl([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+    f.node(38, 4, &[("surface", vec![n(2), n(3)])]);
+    decode(&f.finish(), &Limits::default()).unwrap()
+}
+
+/// How far a curve strays from both cylinders of `steinmetz_graph`, over a dense sampling.
+fn steinmetz_error(c: &crate::geom::Nurbs) -> f64 {
+    let k = &c.knots[0];
+    let (lo, hi) = (k[0], k[k.len() - 1]);
+    (0..=2000)
+        .map(|i| {
+            let p = crate::geom::eval_curve(c, lo + (hi - lo) * f64::from(i) / 2000.0).unwrap();
+            let d1 = (p[0] * p[0] + p[1] * p[1]).sqrt() - 1.0;
+            let d2 = (p[1] * p[1] + p[2] * p[2]).sqrt() - 1.0;
+            d1.abs().max(d2.abs())
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn an_intersection_chart_is_refined_onto_both_surfaces() {
+    let g = steinmetz_graph();
+    // Coarse chart points of x = z = sin t, y = cos t, 1e-4 off the cylinders.
+    let pts: Vec<[f64; 3]> = (0..6)
+        .map(|i| {
+            let t = 0.3 + 0.9 * f64::from(i) / 5.0;
+            let e = 1e-4 * if i % 2 == 0 { 1.0 } else { -1.0 };
+            [libm::sin(t), libm::cos(t) + e, libm::sin(t) - e]
+        })
+        .collect();
+    let plain = crate::geom::through(&pts).unwrap();
+    let refined = crate::refine::intersection(&g, 4, &pts).unwrap();
+    let (before, after) = (steinmetz_error(&plain), steinmetz_error(&refined));
+    assert!(before > 1e-5, "{before}");
+    assert!(after < 1e-8, "{after}");
+    // The ends stay where the chart's are.
+    let (a, b) = (refined.poles[0], refined.poles[refined.poles.len() - 1]);
+    assert!((a[0] - pts[0][0]).abs() < 1e-3 && (b[0] - pts[5][0]).abs() < 1e-3, "{a:?} {b:?}");
+}
+
+#[test]
+fn intersection_refinement_gives_up_quietly() {
+    let g = steinmetz_graph();
+    let pts = [[0.0, 1.0, 0.0], [0.1, 0.99, 0.1], [0.2, 0.97, 0.2]];
+    // Too few points, NaN points and a node without two supports are left to the plain fit.
+    assert!(crate::refine::intersection(&g, 4, &pts[..2]).is_none());
+    assert!(crate::refine::intersection(&g, 2, &pts).is_none());
+    let nan = [[0.0, 1.0, 0.0], [f64::NAN, 0.99, 0.1], [0.2, 0.97, 0.2]];
+    let _ = crate::refine::intersection(&g, 4, &nan);
+    // Points far from the surfaces are not dragged onto them.
+    let far = [[5.0, 5.0, 5.0], [5.0, 5.1, 5.0], [5.0, 5.2, 5.0]];
+    if let Some(c) = crate::refine::intersection(&g, 4, &far) {
+        assert!((c.poles[0][0] - 5.0).abs() < 1e-9);
+    }
+}

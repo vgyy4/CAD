@@ -13,6 +13,7 @@ mod eval;
 mod geom;
 mod model;
 mod reader;
+mod refine;
 mod schema;
 mod step;
 
