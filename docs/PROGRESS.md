@@ -342,6 +342,13 @@ Phase 3 has started (see Next).
      (L-Bracket, side, Conecting plate 1, back accses panel added); Rust trees equal the prototype's except
      fp ties in a degenerate thumbscrew arc. Next here: ellipse sketch curves (4 O-rings, needs an ellipse in the
      tree format), thicken (3), two-distance chamfers (M8), full-round fillets, rolling-ball/vertex blends.
+   - Full-round fillets done (2026-11-09; ADR 0004 amendment, ADR 0042 amendment): `fillet F (full_round: [<face>])`
+     replaces a planar face between two parallel planar faces by a tangent half cylinder (radius t/2). `Kernel::full_round`
+     (OCCT `gs_full_round`: corner prisms cut in one boolean, exact; remote protocol request 36; mock: none), eval
+     (`gusset-eval/src/full_round.rs`), `feature.fillet` `full_round` argument, tree import `"full_round": {point, normal}`.
+     Golden tests (20 x 4 x 10 slab = 800 - (80 - 20 pi)) in `gusset-kernel-occt`, `modeling_full_round.rs`,
+     `modeling_tree_import.rs`. Left: the Inventor reader must emit it, no GUI form, only the planar perpendicular
+     case (slanted or curved middle faces, a choice of side pair for square faces).
    - Unequal chamfers done (2026-11-09; ADR 0004 amendment, ADR 0042 amendment): `chamfer` takes
      `distance2: <len>` or `angle: <deg>` and an optional `faces: [..]` (one reference face per edge;
      default: the adjacent face whose persistent name sorts first). `Kernel::chamfer_ref` +

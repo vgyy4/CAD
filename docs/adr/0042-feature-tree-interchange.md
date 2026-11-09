@@ -306,3 +306,20 @@ Parasolid partition). Version 2 adds
   body is visible to the features after it.
 - OCCT test: a stored 40 x 20 x 10 box, a disc boss joined on its top and the body mirrored
   across x = 0 give twice (8000 + 100 pi) mm3.
+
+## Amendment (2026-11-09): full-round fillets
+
+A `fillet` feature (version 2) may carry `"full_round": {"point": [x, y, z], "normal": [x, y, z]}`
+(`normal` optional) instead of `edges` and `radius`: the *middle face* of a full round, the face
+that lies between two parallel faces (a wall's end, a slot's end) and is replaced by a half
+cylinder of half their distance (ADR 0004 amendment). Exporters map their full-round blends
+(Inventor: a blend whose two supports are parallel planes at twice its radius) to it, picking the
+face the blend removes, i.e. the face of the model as built *before* the fillet.
+
+- The face is found like a hole's face (a point on the surface within 0.01 mm, the normal within
+  2.5 degrees when given) and written as a persistent name in `full_round: [...]`.
+- `edges`, `radius` or `distance` next to `full_round`, or `full_round` on a `chamfer`, skips the
+  feature with the reason in `skipped_user_text`; so does a face that is not planar between two
+  parallel planar faces ("it does not build here: ...").
+- The feature needs no `radius`: it is half the distance between the sides.
+- A reader that does not know `full_round` has no edges and no size, so it skips the fillet.

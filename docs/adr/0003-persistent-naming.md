@@ -24,6 +24,7 @@ literature (Kripac 1997; Capoyleas, Chen & Hoffmann 1996). We never use indices.
      2026-10-11, review L4).
    - Faces of a fillet/chamfer: `<feature>/blend(<edge name>)`. Unequal chamfers (ADR 0004 amendment) name their face the same way;
     a reference face is chosen by comparing these names, never kernel indices.
+   A full round (ADR 0004 amendment) names its half-cylinder `<feature>/blend(<edge name>)` after the smaller-named of the old face's two edges with the wall's sides.
    - Faces of a shell (v0.2): the inner wall made from face F is
      `<feature>/inner(<F's name>)`; outer faces keep their names. A removed face has no
      inner wall; the rim ring left where it was keeps the removed face's name, so

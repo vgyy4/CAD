@@ -167,3 +167,36 @@ extruded or revolved ellipse are named `Sketch1/o5` like those of circles (ADR 0
 Commands `sketch.add_ellipse` (cx, cy, a, b, angle in degrees) and `sketch.add_ellipse_arc`
 (plus `from`/`to`, parametric angles in degrees); the GUI Ellipse tool is two clicks (centre,
 bounding-box corner; axes along u / v).
+
+## Amendment (2026-11-09): full-round fillets
+
+A full round replaces a face lying between two parallel faces by a tangent half cylinder
+across the whole wall (Inventor, SolidWorks and Fusion have it; OCCT's fillet of both edges at
+r = t/2 fails with "fillet failed" because the two blends are tangent to each other).
+
+- **Syntax.** `fillet <Name> (full_round: [<face>, ...])`. It replaces `edges` and `radius`
+  (giving them too is a parse error; `full_round: []` is one too). `chamfer` has no such form.
+  The faces are ordinary persistent face references, so they are renamed with the feature they
+  point to and count as dependencies, and the round is editable (`feature.edit`, code view).
+  The model keeps it in `EdgeBlendDef::full_round: Vec<FaceRef>` (empty for every other
+  fillet or chamfer, which print exactly as before); `size` is an unused `0 mm` placeholder.
+- **Meaning.** Each named face must be planar and have two planar neighbours with antiparallel
+  outward normals (parallel planes, the material between them) at distance t, both
+  perpendicular to the face. The face is replaced by a half cylinder of radius t/2 whose axis
+  runs along the face's edges with the two sides, tangent to both sides, with its crest on the
+  old face's plane: the material removed is the two corner pieces, volume
+  `(t * t/2 - pi * (t/2)^2 / 2) * L` for a face of length L along the axis. When the face has
+  several pairs of parallel neighbours (a cube face has two), the pair with the smaller distance
+  is rounded, the first found on a tie. Other cases (non-planar middle face, slanted sides,
+  no parallel pair) fail with a hint; they are not approximated.
+- **Kernel.** `Kernel::full_round(shape, faces)`; OCCT builds, per face, a prism along the axis
+  over the face's extent whose section is the rectangle across the wall (from just outside the
+  old face down to the cylinder's centre line) minus the half disc, and cuts all of them in one
+  boolean (`gs_full_round`, exact result, no near-tangent offset). The remote protocol carries it
+  as request 36. The mock kernel does not support it.
+- **Naming.** The cylindrical face reports `FromEdge` for the old face's edges with its two
+  sides, so it is named `<feature>/blend(<edge name>)` with the smaller edge name (ADR 0003);
+  the sides keep their names, the old face disappears.
+- **Command.** `feature.fillet` gains `full_round` (list of face names); `edges` and `radius`
+  are then left out (and `radius` is required otherwise). The MCP tool entry stays under the
+  byte budget. No GUI form yet.
