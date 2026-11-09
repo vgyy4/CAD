@@ -785,6 +785,17 @@ const MAX_EDGE_PICKS: usize = 256;
 /// # Errors
 /// The first feature that cannot be written, or a damaged document.
 pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tree_import::Tree, String> {
+    tree_with(xml, shape_edges, false)
+}
+
+/// [`tree`], optionally writing a pattern of pads and pockets the way FreeCAD computes it:
+/// the whole extruded tool is copied, not only the material it added or removed from its
+/// body (the two differ when a copy lands where the original did not reach the material).
+pub(crate) fn tree_with(
+    xml: &[u8],
+    shape_edges: ShapeEdges<'_>,
+    tool_patterns: bool,
+) -> Result<crate::tree_import::Tree, String> {
     let objects = parse(xml)?;
     // Solids made outside PartDesign bodies (Part workbench booleans, sweeps, arrays) are not
     // history this translates; the stored shapes stand in for the whole document.
@@ -1053,6 +1064,52 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                     if steps.is_empty() {
                         return Err(format!("{name}: no transformations"));
                     }
+                    // FreeCAD copies the whole extruded tool: each pad or pocket is repeated as
+                    // a separate tool body that is patterned and then joined or cut.
+                    let tools: Vec<String> = feats
+                        .iter()
+                        .flat_map(|n| [n.clone(), format!("{n}_back")])
+                        .filter(|n| {
+                            features.iter().any(|f| {
+                                f.get("name").and_then(Value::as_str) == Some(n)
+                                    && f.get("type").and_then(Value::as_str) == Some("extrude")
+                                    && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
+                            })
+                        })
+                        .collect();
+                    if tool_patterns && !whole && !tools.is_empty() && tools.len() >= feats.len() {
+                        let n_tools = tools.len();
+                        for (ti, orig) in tools.iter().enumerate() {
+                            let Some(src) =
+                                features.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(orig)).cloned()
+                            else {
+                                continue;
+                            };
+                            let op = src.get("operation").cloned().unwrap_or(json!("cut"));
+                            let tool = format!("{orig}_tool");
+                            let mut t = src;
+                            if let Some(m) = t.as_object_mut() {
+                                m.insert("name".into(), json!(tool));
+                                m.insert("operation".into(), json!("new"));
+                                m.remove("target");
+                            }
+                            features.push(t);
+                            for (step_name, so) in &steps {
+                                let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                                let Some(mut f) = transform(&format!("{step_name}_{tool}"), so, &refs)? else {
+                                    continue;
+                                };
+                                if let Some(m) = f.as_object_mut() {
+                                    m.insert("target".into(), json!(tool));
+                                }
+                                features.push(f);
+                            }
+                            let cname = if ti + 1 == n_tools { name.clone() } else { format!("{name}_{}", ti + 1) };
+                            features.push(json!({"type": "combine", "name": cname, "target": target,
+                                "tools": [tool], "operation": op}));
+                        }
+                        continue;
+                    }
                     for (step_name, so) in steps {
                         let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
                         let Some(mut f) = transform(&step_name, so, &refs)? else { continue };
@@ -1307,6 +1364,50 @@ mod tests {
         assert_eq!(t.features[1]["distance"], 2.0);
         assert_eq!(t.features[2]["operation"], "cut");
         assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
+    }
+
+    #[test]
+    fn a_pattern_of_a_pocket_can_copy_the_whole_tool() {
+        let doc = DOC
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>"#,
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>
+  <Object type="PartDesign::LinearPattern" name="LinearPattern"/>"#,
+            )
+            .replace(
+                r#"<Link value="Pocket"/></LinkList></Property>
+  </Properties></Object>
+  <Object name="Sketch">"#,
+                r#"<Link value="Pocket"/><Link value="LinearPattern"/></LinkList></Property>
+  </Properties></Object>
+  <Object name="Sketch">"#,
+            )
+            .replace(
+                "</ObjectData>",
+                r#"  <Object name="LinearPattern"><Properties>
+    <Property name="Direction" type="App::PropertyLinkSub"><LinkSub value="X_Axis" count="1"><Sub value=""/></LinkSub></Property>
+    <Property name="Length" type="App::PropertyLength"><Float value="30"/></Property>
+    <Property name="Occurrences" type="App::PropertyIntegerConstraint"><Integer value="4"/></Property>
+    <Property name="Originals" type="App::PropertyLinkList"><LinkList count="1"><Link value="Pocket"/></LinkList></Property>
+  </Properties></Object>
+</ObjectData>"#,
+            );
+        let plain = tree_with(doc.as_bytes(), &mut no_shapes, false).unwrap();
+        let kinds = |t: &crate::tree_import::Tree| {
+            t.features.iter().map(|f| f["type"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&plain).last().map(String::as_str), Some("pattern_linear"));
+        let tools = tree_with(doc.as_bytes(), &mut no_shapes, true).unwrap();
+        let k = kinds(&tools);
+        assert_eq!(&k[3..], ["extrude", "pattern_linear", "combine"], "{k:?}");
+        let (tool, pat, comb) = (&tools.features[3], &tools.features[4], &tools.features[5]);
+        assert_eq!(tool["operation"], "new");
+        assert_eq!(tool["name"], "Pocket_tool");
+        assert_eq!(pat["target"], "Pocket_tool");
+        assert_eq!(pat["spacing"], 10.0);
+        assert_eq!(comb["name"], "LinearPattern");
+        assert_eq!(comb["operation"], "cut");
+        assert_eq!(comb["tools"][0], "Pocket_tool");
     }
 
     #[test]

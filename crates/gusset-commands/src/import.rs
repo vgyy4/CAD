@@ -1101,7 +1101,18 @@ fn freecad_history(
         Ok(e)
     };
     let mut tree = crate::fcstd_tree::tree(doc, &mut shape_edges)?;
-    let note = rebuild_check(&mut tree, bodies, kernel, file_name, "FreeCAD's")?;
+    let first = rebuild_check(&mut tree, bodies, kernel, file_name, "FreeCAD's");
+    if let Err(why) = &first {
+        // FreeCAD copies a pad's or pocket's whole tool in a pattern: try the tree written so.
+        if let Ok(mut alt) = crate::fcstd_tree::tree_with(doc, &mut shape_edges, true)
+            && alt.features != tree.features
+            && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
+        {
+            return Ok((alt, note));
+        }
+        return Err(why.clone());
+    }
+    let note = first?;
     Ok((tree, note))
 }
 
