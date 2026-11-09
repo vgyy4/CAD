@@ -122,10 +122,6 @@ fn compare(ours: &Imported, theirs: &Imported) -> (f64, f64) {
 /// `Top motor plate`: 1.5 mm3 of 61109, the area differs by 0.8 mm2, the box is identical.)
 const REVISION_PAIRS: &[&str] = &["top cover 2", "Top motor plate"];
 
-/// Parts that use Parasolid node types of schema 31100 that gusset-xt does not know yet
-/// (ADR 0046): they are reported as errors, not silently skipped.
-const UNKNOWN_NODE_TYPES: &[&str] = &["M1.2x3 screw", "Plastic-handle-Loaded-Felfer-holder"];
-
 #[test]
 fn solid_edge_and_inventor_parts_import() {
     let Ok(root) = std::env::var("GUSSET_OLE_SAMPLES") else { return };
@@ -145,15 +141,8 @@ fn solid_edge_and_inventor_parts_import() {
                 continue;
             }
             Err(e) => {
-                let known = UNKNOWN_NODE_TYPES.iter().any(|u| shown.contains(u));
-                eprintln!(
-                    "{shown}: import failed{}: {}",
-                    if known { " (expected)" } else { "" },
-                    e.chars().take(200).collect::<String>()
-                );
-                if !known {
-                    failures.push(format!("{shown}: import failed: {}", e.chars().take(300).collect::<String>()));
-                }
+                eprintln!("{shown}: import failed: {}", e.chars().take(200).collect::<String>());
+                failures.push(format!("{shown}: import failed: {}", e.chars().take(300).collect::<String>()));
                 continue;
             }
         };

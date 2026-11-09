@@ -84,7 +84,9 @@ with the sample folders):
   (`M1.2x3 screw`, `Plastic-handle-Loaded-Felfer-holder`) stop at **Parasolid node types 163 and 184
   of schema 31100**, which `gusset-xt` does not know (163 follows a B-surface's `SURFACE_DATA`; the
   files carry no embedded schema to read their layout from, and it was not derived from the bytes
-  here). The error says so; nothing is skipped silently. The OCCT test lists them as expected failures.
+  here). The error says so; nothing is skipped silently. *Update (ADR 0035 amendment, 2026-11-09):*
+  163 is the helical-surface and 184 the helix analytic form, read from SolidWorks samples; all 15
+  Solid Edge parts now import and the OCCT test no longer exempts any.
 * Time: about 0.5 s per part in a debug build.
 
 ### Not read
