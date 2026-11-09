@@ -337,3 +337,11 @@ corners) is a silent no-op in the kernel when the three edges are given together
 1.5e-4 low). 33 files are `moMirrorStock_c` parts (mirror of an external part, no sketch to read) and come in as
 exact bodies; the 6 `Angle_support` revisions fail in the Parasolid reader (damaged XT, node type -15684) and
 need loft cut, move face, thin boss, fillet-edge and through-all-up-to-next records.
+
+### Amendment: history round 2 (2026-11-09)
+- Cap references with two extra words (index 0/1, first extra not -1) are caps in edge records (`Rep.ext2`); lifts
+  Top_beltSupportRim to history. A revolve axis is chosen so the whole profile lies on one side; cosmetic threads and the
+  configuration table are skipped. Slip-Pad 18 of 35, ARIG 10 of 50 (28 of 85).
+- Tally of the rest and the unsolved ones (extrusion direction of MicroGearMotor Boss-Extrude1 has no known flag; revolve and
+  fillet-face edge references; mirror-stock bodies need an "imported body" tree feature) are in
+  `docs/formats/solidworks-feature-tree.md` section L8. The test labels revision files as `<part>/<stamp>`.

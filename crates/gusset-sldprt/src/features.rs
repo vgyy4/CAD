@@ -37,7 +37,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 21] = [
+const SKIPPED: [&str; 23] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -59,6 +59,9 @@ const SKIPPED: [&str; 21] = [
     "moRefPlane_c",
     "moOriginProfileFeature_c",
     "moProfileFeature_c",
+    // Annotations: a cosmetic thread and the configuration table add no geometry.
+    "moCosmeticThread_c",
+    "moConfigTableFolder_c",
 ];
 
 /// The 46-byte block after a feature node's comment (older files, then newer ones).
@@ -1094,6 +1097,8 @@ struct Rep {
     idx: u32,
     /// Followed by exactly one extra word and not the record's last reference: a cap face.
     ext: bool,
+    /// Followed by two extra words, the first not -1 (sides have -1, 0): also a cap face.
+    ext2: bool,
 }
 
 /// An edge record's header at `i` (`edges.HDR`): `01 00*7 n`, then either `00{4,6} kind(1..4)
@@ -1155,6 +1160,7 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
             p += 20;
             let last = k + 1 == n;
             let mut extra = 0;
+            let mut first_extra = None;
             while extra < 2 && p + 4 <= d.len() {
                 let n0 = need(u16_at(d, p), "an edge record")?;
                 let n1 = need(u16_at(d, p + 2), "an edge record")?;
@@ -1170,13 +1176,23 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
                 }
                 p += 4;
                 extra += 1;
+                if extra == 1 {
+                    first_extra = Some(w);
+                }
                 if last && w != 0xffff_ffff {
                     break;
                 }
             }
-            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last });
+            let ext2 = extra == 2 && !last && idx <= 1 && first_extra.is_some_and(|w| w != 0xffff_ffff);
+            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last, ext2 });
         }
         // Face lists (mirror planes) hold n - 1 references.
+        if reps.len() + 1 == n {
+            // The last reference of a face list has no `last` treatment: its extras are not a cap's.
+            for r in &mut reps {
+                r.ext2 = false;
+            }
+        }
         if reps.len() == n || (reps.len() + 1 == n && !reps.is_empty()) {
             out.push((start, reps));
             if out.len() > MAX_MATCHES {
@@ -1208,7 +1224,7 @@ fn cap_tags_of(records: &[(usize, Vec<Rep>)]) -> HashSet<u16> {
     for (_, reps) in records {
         for r in reps {
             idx.entry(r.tag).or_default().insert(r.idx);
-            if r.ext {
+            if r.ext || r.ext2 {
                 caps.insert(r.tag);
             }
         }
@@ -2045,11 +2061,53 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
                 && let Some(g) = sketches.get(i)
             {
                 let line = |s: &Seg| s.kind == SegKind::Line;
-                let axis = g
+                let first = g
                     .segs
                     .iter()
                     .position(|s| line(s) && s.centerline && s.id != 0xffff_ffff)
                     .or_else(|| g.segs.iter().position(|s| line(s) && s.construction));
+                // A revolve axis has the whole profile on one side. When the first centerline
+                // cuts the profile (a sketch with several centerlines), take the first line that
+                // does not: a centerline, a construction line, or a profile edge on the sketch's
+                // own x or y axis (the revolve's axis is then a profile line).
+                let one_sided = |k: usize| -> bool {
+                    let Some(s) = g.segs.get(k) else { return false };
+                    let (Some(a), Some(b)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return false };
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    if libm::hypot(dx, dy) < 1e-9 {
+                        return false;
+                    }
+                    let side = |q: &Pt| dx * (q.y - a.y) - dy * (q.x - a.x);
+                    let (mut pos, mut neg) = (false, false);
+                    for o in g.segs.iter().filter(|o| !o.construction && !o.centerline) {
+                        for i in [o.s, o.e] {
+                            let Some(q) = point(&g.pts, i) else { continue };
+                            let v = side(&q) / libm::hypot(dx, dy);
+                            pos |= v > 1e-9;
+                            neg |= v < -1e-9;
+                        }
+                    }
+                    !(pos && neg)
+                };
+                let on_sketch_axis = |s: &Seg| {
+                    let (Some(a), Some(b)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return false };
+                    (a.x.abs() < 1e-9 && b.x.abs() < 1e-9) || (a.y.abs() < 1e-9 && b.y.abs() < 1e-9)
+                };
+                let axis = if first.is_some_and(one_sided) {
+                    first
+                } else {
+                    (0..g.segs.len())
+                        .find(|&k| {
+                            g.segs.get(k).is_some_and(|s| {
+                                line(s) && s.id != 0xffff_ffff && (s.centerline || s.construction) && one_sided(k)
+                            })
+                        })
+                        .or_else(|| {
+                            (0..g.segs.len())
+                                .find(|&k| g.segs.get(k).is_some_and(|s| line(s) && on_sketch_axis(s)) && one_sided(k))
+                        })
+                        .or(first)
+                };
                 js.insert("axis".into(), axis.map_or(Value::Null, |k| json!({"line": format!("c{k}")})));
             }
             feats.push(Value::Object(js));

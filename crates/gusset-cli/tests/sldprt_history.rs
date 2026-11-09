@@ -67,7 +67,12 @@ fn sldprt_parts_come_in_as_history_or_shapes() {
         s.importer = Some(Arc::new(
             gusset_worker::WorkerImporter::new(worker.clone()).with_timeout(std::time::Duration::from_secs(600)),
         ));
-        let shown = f.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let stem = |p: &Path| p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        // A revision folder (`part.SLDPRT/<stamp>.SLDPRT`) names its files after the folder too.
+        let shown = match f.parent().filter(|d| d.extension().is_some()) {
+            Some(d) => format!("{}/{}", stem(d), stem(f)),
+            None => stem(f),
+        };
         match execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "part.SLDPRT"})) {
             Ok(r) if r["tier"].as_str().unwrap_or_default().contains("SolidWorks feature history") => {
                 history += 1;

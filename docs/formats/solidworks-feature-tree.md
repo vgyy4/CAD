@@ -476,3 +476,34 @@ Changes to the OLE2 prototype that were needed (each verified by the rebuild):
 * End types seen on the new samples: 0 blind, 1/2 through-all cut (one direction for flag 0), 9+flag 1 both directions
   (as OLE2), 5 unknown. For a BOSS end type 2 is NOT through-all (unknown meaning: up-to-next?).
 * moBaseBody_c / moRefSurface_c (77 + 22 nodes in the 14 zenodo parts) are imported (STEP) bodies: no parametric tree.
+
+## L8. Round 2 (reasons tally, what was fixed, what was learned)
+Corpus (slip-pad 35 + arig-revisions 50): 27 -> 28 as history (slip-pad 17 -> 18, arig 10 unchanged).
+Remaining reasons, by parts: 34 `moMirrorStock_c` (33 arig `*_Symétrie_*` revisions + `arm_idler_single_v3_mirrored`; body
+is only in StockBodies/Partition, gtree has no "imported body" feature: report); 6 `Angle_support` revisions + `setScrew`
+fail in the Parasolid reader (gusset-xt, not this crate); fillet/chamfer edges unresolved 6 (see below); end type
+4/5 on extrudes 2 (FrameBracket x2, also cosmetic threads, a fillet and end type 5, so not close); volume mismatch 3
+(motorClip 4e-5, baseJoint 1.4e-4, idler_single 12 %); `moBaseBody_c` 2 (STEP bodies); `moHelix_c` 1 (sweep along a helix);
+Gusset-side 2 (plaque_superieure 1618664833 fillet; spring_base CSK hole 6.3 mm).
+* **Cap faces with two extra words.** A cap reference in an edge record usually has one extra u32 after the 20-byte core; the
+  caps of a *cut* (and of a join whose side faces are of the `3Int` kind) have two, `u32 1/0, u32 0`, whereas side references
+  have `ffffffff, 0`. Such a reference with index 0/1 is a cap (`Rep.ext2`); the last reference of a face list (n-1 refs) must
+  not count (record 0x151fb of Top_beltSupportRim). Fixes Top_beltSupportRim (8 chamfer edges, rebuilds exact) and lets
+  Top_mainplate Chamfer2 resolve (the part then stops at Chamfer1, a 3 mm 45-degree chamfer on a 3 mm wall, which OCCT refuses).
+* **Cosmetic threads and the configuration table** (`moCosmeticThread_c`, `moConfigTableFolder_c`) add no geometry: skipped.
+* **Revolve axis.** With several centerlines the first can cut the profile (MicroGearMotor Sketch3: two vertical centerlines,
+  the profile lies along the sketch x axis). The axis must have the whole profile on one side: the first such centerline or
+  construction line, else a profile line on the sketch x/y axis. MicroGearMotor's revolve builds now.
+* **Extrusion direction (not solved).** MicroGearMotor Boss-Extrude1 (Front plane, 9 mm) only rebuilds when reversed (Sketch2 sits
+  on the plate's far face at z = -9, the revolve and the tapped hole agree: volume within 1e-3 after reversing). No reverse flag
+  was found: the EndSpec (type 0, flag 0, X 1) is identical to every non-reversed boss; the 260 bytes before D1 and the bytes after
+  it contain no field that separates it from 119 other boss/cut nodes except a 3 x f64 unit vector 1 byte after the
+  `0005 0002 0002 0002` marker (98 of 138 nodes), whose relation to the sketch normal is not consistent (dot product 0 in 30,
+  +1 in 40, -1 in 28 of 98). Parts with a single feature pass either way (volume check), so the corpus has no second witness.
+* **Revolve faces in edge records** (GT2_Bobbin Chamfer1): all four references are one revolve (`fid` 59, tags 0x82b3) with idx = the
+  sketch key of the profile segment; the edge between keys 10 and 11 is the circle through their shared vertex. `Swept` only
+  knows extrudes, so these are unresolved; the importer accepts a `path` of points for a full circle.
+* **Fillets on fillet faces** (idler_differential_arm, 14 of 30 edges): references with another feature's id (a Fillet2 face,
+  tag 672, fid 68); the other 16 use keys 15-19 / 7-12 that no parsed sketch item carries. Not resolved.
+* idler_single_v1: Cut-Extrude1 (blind 10, EndSpec X = 0, the only blind cut with X 0) removes 22 mm3 more in the truth than in
+  our rebuild; reversing its direction changes nothing, so the cut is probably dropped silently by the importer. Unresolved.
