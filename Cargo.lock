@@ -1894,7 +1894,9 @@ dependencies = [
 name = "gusset-sldprt"
 version = "0.1.0-mvp"
 dependencies = [
+ "libm",
  "miniz_oxide 0.9.1",
+ "serde_json",
 ]
 
 [[package]]

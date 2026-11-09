@@ -534,3 +534,221 @@ fn virtual_components_keep_a_part_inside_the_assembly() {
         }
     }
 }
+
+// --- feature history -----------------------------------------------------------------------
+
+/// A class declaration: `FF FF 01 00 <len> 00 <name>`.
+fn class_decl(name: &str) -> Vec<u8> {
+    let mut v = vec![0xff, 0xff, 1, 0, name.len() as u8, 0];
+    v.extend(name.as_bytes());
+    v
+}
+
+/// A node-name object (tag 0x8045) with a UTF-16 name.
+fn node_name(name: &str) -> Vec<u8> {
+    let mut v = vec![0x45, 0x80, 0xff, 0xfe, 0xff, name.encode_utf16().count() as u8];
+    v.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
+    v
+}
+
+/// A feature node of class `cls`: its declaration, name, flags, id and the 46-byte block.
+fn feature_node(cls: &str, name: &str, id: u32) -> Vec<u8> {
+    let mut v = class_decl(cls);
+    v.extend(node_name(name));
+    v.extend(0u32.to_le_bytes());
+    v.extend(0x4000_0000u32.to_le_bytes());
+    v.extend(id.to_le_bytes());
+    v.extend([0u8; 20]);
+    v.extend([0, 0xff, 0xff, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf]);
+    v.extend([0u8; 38]);
+    v
+}
+
+/// A sketch item: `u16 0, u32 key, u32 id`, the entity header and its fixed fields.
+fn sketch_item(key: u32, id: u32, kind: u16) -> Vec<u8> {
+    let mut v = vec![0, 0];
+    v.extend(key.to_le_bytes());
+    v.extend(id.to_le_bytes());
+    v.extend([0xff, 0xff, 0x1f, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x80, 0xbf]);
+    v.extend([0u8; 12]);
+    v.extend(kind.to_le_bytes());
+    v.extend((-1.0f32).to_le_bytes());
+    v.extend([0, 0, 4, 0, 0]); // no reference object, flags, a byte
+    v.extend(0.0f64.to_le_bytes());
+    v.extend(1.0f64.to_le_bytes());
+    v
+}
+
+/// `Config-0`: declares moUnitComponent_c as class 1.
+fn config0() -> Vec<u8> {
+    let mut v = vec![1, 0];
+    v.extend(class_decl("moUnitComponent_c"));
+    v.extend([0u8; 8]);
+    v
+}
+
+/// A 10 x 10 mm square sketch on the Front plane, extruded 5 mm (and `extra` nodes after).
+fn feature_stream(extra: &[u8]) -> Vec<u8> {
+    let mut rf = vec![3, 0];
+    rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
+    // The plane: a reference-plane component of plane feature 2 (Front), identity, t = 0.
+    rf.extend([0x01, 0x80, 2, 0]);
+    rf.extend([0u8; 10]);
+    rf.extend([0u8; 31]);
+    rf.extend(2u32.to_le_bytes());
+    rf.extend(9u32.to_le_bytes());
+    rf.extend([0, 0, 0, 0, 0, 0, 0]);
+    rf.extend([0u8; 24]);
+    rf.extend(1.0f64.to_le_bytes());
+    rf.extend([0u8; 16]);
+    let corners = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01)];
+    rf.extend(4u32.to_le_bytes());
+    for (i, (x, y)) in corners.iter().enumerate() {
+        rf.extend(sketch_item(100 + i as u32, 10 + i as u32, 0));
+        rf.extend(0x1eu16.to_le_bytes());
+        rf.extend(f64::to_le_bytes(*x));
+        rf.extend(f64::to_le_bytes(*y));
+        rf.extend([0u8; 12]);
+    }
+    rf.extend(4u32.to_le_bytes());
+    for i in 0..4u16 {
+        rf.extend(sketch_item(1 + u32::from(i), 20 + u32::from(i), 1));
+        rf.extend(i.to_le_bytes());
+        rf.extend(((i + 1) % 4).to_le_bytes());
+        rf.extend([1, 0, 0, 0]);
+        rf.extend((-1.0f64).to_le_bytes());
+        rf.extend([0u8; 24]);
+    }
+    rf.extend([0u8; 16]);
+    rf.extend(feature_node("moExtrusion_c", "Boss-Extrude1", 7));
+    // Blind, then the depth parameter D1 = 5 mm.
+    rf.extend(class_decl("moEndSpec_c"));
+    rf.extend([0, 0, 1, 0, 0, 0]);
+    rf.extend([0u8; 10]);
+    rf.extend([0u8; 8]);
+    rf.extend([0u8; 8]);
+    rf.extend(class_decl("moLengthParameter_c"));
+    rf.extend(node_name("D1"));
+    rf.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    rf.extend(0.005f64.to_le_bytes());
+    rf.extend([0u8; 16]);
+    rf.extend(extra);
+    rf
+}
+
+fn history(rf: &[u8]) -> Result<Option<serde_json::Value>, String> {
+    let f = ole(&[("Config-0", &config0()), ("Config-0-ResolvedFeatures", rf), ("Preview", b"png")]);
+    features::feature_tree(&f, "dir/part.SLDPRT", &Limits::default())
+}
+
+#[test]
+fn a_sketch_and_an_extrude_become_a_tree() {
+    let t = history(&feature_stream(&[])).unwrap().unwrap();
+    assert_eq!(t["format"], "gusset-feature-tree");
+    assert_eq!(t["version"], 2);
+    assert_eq!(t["source"]["file"], "part.SLDPRT");
+    let f = t["features"].as_array().unwrap();
+    assert_eq!(f.len(), 2, "{t}");
+    let sk = &f[0];
+    assert_eq!(sk["type"], "sketch");
+    assert_eq!(sk["name"], "Sketch1");
+    assert_eq!(sk["plane"]["ref"], "Front");
+    assert_eq!(sk["plane"]["x_axis"], serde_json::json!([1.0, 0.0, 0.0]));
+    let pts = sk["points"].as_array().unwrap();
+    assert_eq!(pts.len(), 4);
+    assert_eq!((pts[2]["x"].as_f64(), pts[2]["y"].as_f64()), (Some(10.0), Some(10.0)));
+    let curves = sk["curves"].as_array().unwrap();
+    assert_eq!(curves.len(), 4);
+    assert_eq!(curves[3]["type"], "line");
+    assert_eq!((curves[3]["start"].as_str(), curves[3]["end"].as_str()), (Some("p3"), Some("p0")));
+    let ex = &f[1];
+    assert_eq!(ex["type"], "extrude");
+    assert_eq!(ex["sketch"], "Sketch1");
+    assert_eq!(ex["operation"], "new");
+    assert_eq!(ex["end_condition"], "blind");
+    assert_eq!(ex["distance"].as_f64(), Some(5.0));
+    assert_eq!(ex["symmetric"], false);
+    // The same streams in the chunk container.
+    let rf = feature_stream(&[]);
+    let c = chunk_file(&[
+        record(KEY, "Contents/Config-0", &config0(), None),
+        record(KEY, "Contents/Config-0-ResolvedFeatures", &rf, None),
+    ]);
+    assert_eq!(
+        features::feature_tree(&c, "part.sldprt", &Limits::default()).unwrap().unwrap()["features"],
+        t["features"]
+    );
+}
+
+#[test]
+fn a_mid_plane_cut_and_an_unknown_feature() {
+    // A second sketch and a "Cut-" extrude: a cut against the first solid.
+    let mut extra = feature_node("moProfileFeature_c", "Sketch2", 8);
+    let base = feature_stream(&[]);
+    let sk = base.windows(4).position(|w| w == [0x01, 0x80, 2, 0]).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    extra.extend(&base[sk..ex]);
+    extra.extend(feature_node("moICE_c", "Cut-Extrude1", 9));
+    extra.extend(class_decl("moEndSpec_c"));
+    extra.extend([0, 0, 1, 0, 0, 0]);
+    extra.extend([0u8; 10]);
+    extra.extend(6u32.to_le_bytes());
+    extra.extend([0u8; 12]);
+    extra.extend(class_decl("moLengthParameter_c"));
+    extra.extend(node_name("D1"));
+    extra.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    extra.extend(0.002f64.to_le_bytes());
+    extra.extend([0u8; 16]);
+    let t = history(&feature_stream(&extra)).unwrap().unwrap();
+    let cut = &t["features"][3];
+    assert_eq!(cut["operation"], "cut", "{t}");
+    assert_eq!(cut["target"], "Boss-Extrude1");
+    assert_eq!(cut["sketch"], "Sketch2");
+    assert_eq!(cut["end_condition"], "mid_plane");
+    assert_eq!((cut["distance"].as_f64(), cut["symmetric"].as_bool()), (Some(2.0), Some(true)));
+    // A feature class the reader does not know refuses the whole history, naming it.
+    let mut hole = extra.clone();
+    hole.extend(feature_node("moHoleWzd_c", "Tapped Hole1", 11));
+    let why = history(&feature_stream(&hole)).unwrap_err();
+    assert!(why.contains("Tapped Hole1") && why.contains("moHoleWzd_c"), "{why}");
+}
+
+#[test]
+fn parts_without_a_feature_stream_have_no_history() {
+    let f = ole(&[("Config-0-Partition", &partition_stream(30))]);
+    assert_eq!(features::feature_tree(&f, "p.sldprt", &Limits::default()), Ok(None));
+    assert!(features::feature_tree(b"not a part at all", "p.sldprt", &Limits::default()).is_err());
+    // A stream without node names, or with no solid feature, is a reason.
+    assert!(history(&[0u8; 300]).is_err());
+    let rf = feature_stream(&[]);
+    let only_sketch = &rf[..rf.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6];
+    assert!(history(only_sketch).unwrap_err().contains("no extrude"));
+}
+
+#[test]
+fn damaged_feature_streams_never_panic() {
+    let rf = feature_stream(&feature_node("moHoleWzd_c", "Hole1", 11));
+    let c0 = config0();
+    let mut rng = Lcg(11);
+    for n in 0..rf.len() {
+        let _ = features::convert(&rf[..n], &c0, "p");
+    }
+    for _ in 0..1500 {
+        let mut m = rf.clone();
+        for _ in 0..1 + rng.next() % 8 {
+            let i = rng.next() % m.len();
+            m[i] = rng.next() as u8;
+        }
+        let _ = features::convert(&m, &c0, "p");
+        let _ = features::convert(&m, &m, "p");
+    }
+    // Whole files, cut anywhere.
+    let f = ole(&[("Config-0", &c0), ("Config-0-ResolvedFeatures", &rf)]);
+    for n in (0..f.len()).step_by(13) {
+        let _ = features::feature_tree(&f[..n], "p", &Limits::default());
+    }
+    for len in [0usize, 7, 64, 4096] {
+        let noise: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        assert!(features::convert(&noise, &noise, "p").is_err());
+    }
+}

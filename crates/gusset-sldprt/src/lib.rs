@@ -1,6 +1,7 @@
 //! SolidWorks `.sldprt` reader (ADR 0043): finds the embedded Parasolid partition and
-//! returns it as an XT transmit file for `gusset-xt`. Nothing else is read (no feature
-//! history, no display lists; assemblies only as a component list, see [`read_assembly`]).
+//! returns it as an XT transmit file for `gusset-xt`. Nothing else is read (no
+//! display lists; assemblies only as a component list, see [`read_assembly`]; the feature
+//! history only as a feature tree, see [`features::feature_tree`]).
 //!
 //! Two containers exist. Files up to about SolidWorks 2014 are OLE2 compound files whose
 //! `Config-<n>-Partition` stream holds the partition; newer files use a custom chunk
@@ -16,6 +17,8 @@ mod assembly;
 pub mod cfb;
 mod chunks;
 mod crc;
+/// The feature history as a Gusset feature tree (ADR 0043 amendment).
+pub mod features;
 
 pub use assembly::{Assembly, Component, ComponentKind, MAX_COMPONENTS, embedded_part, read_assembly};
 
