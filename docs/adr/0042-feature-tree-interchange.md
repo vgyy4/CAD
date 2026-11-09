@@ -227,3 +227,7 @@ subtractive lofts are written this way.
 A hole's positions may lie on several faces of its face's plane (separate pocket floors, as
 SolidWorks hole-wizard features with head clearance give): each face gets its own Gusset
 `hole`, named after the first.
+
+`{"type": "combine", "name", "target", "tools": [names], "operation": "join" | "cut" |
+"intersect"}` combines bodies made by earlier features into the target body (Gusset's
+`combine`); FreeCAD's Part workbench booleans are written this way.

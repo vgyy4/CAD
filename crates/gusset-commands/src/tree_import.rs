@@ -643,6 +643,9 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "mirror" => serde_json::from_value::<v2::MirrorF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::mirror(&mut g, s, &d, &tree.features)),
+            "combine" => serde_json::from_value::<v2::CombineF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::combine(&mut g, s, &d)),
             "loft" => serde_json::from_value::<v2::LoftF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::loft(&mut g, s, &d)),

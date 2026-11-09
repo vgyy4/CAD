@@ -79,6 +79,15 @@ pub(super) struct MirrorF {
     merge: Option<bool>,
 }
 
+/// Bodies combined into a target body: `join`, `cut` or `intersect`.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct CombineF {
+    name: String,
+    target: String,
+    tools: Vec<String>,
+    operation: String,
+}
+
 /// A loft through the closed profiles of two or more sketches, in order.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct LoftF {
@@ -826,5 +835,33 @@ pub(super) fn loft(g: &mut Gen, s: &Session, d: &LoftF) -> Result<(), String> {
     builds(g, s, &name)?;
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
+pub(super) fn combine(g: &mut Gen, s: &Session, d: &CombineF) -> Result<(), String> {
+    if d.tools.is_empty() || d.tools.len() > MAX_PICKS {
+        return Err("a combine takes between 1 and 256 tool bodies".into());
+    }
+    let op = match body_op(Some(&d.operation))? {
+        "new" => return Err("a combine joins, cuts or intersects".into()),
+        op => op,
+    };
+    let named =
+        |t: &String| g.features.get(t).cloned().ok_or_else(|| format!("its body '{}' was not imported", short(t)));
+    let target = named(&d.target)?;
+    let mut tools = Vec::new();
+    for t in &d.tools {
+        let n = named(t)?;
+        if n == target || tools.contains(&n) {
+            return Err("a combine's bodies must differ".into());
+        }
+        tools.push(n);
+    }
+    let name = g.fresh(&d.name, "Combine");
+    let _ = writeln!(g.text, "\ncombine {name} (body: {target}, tools: [{}], op: {op})", tools.join(", "));
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    // The combined body keeps its target's name for later references.
+    g.features.insert(d.name.clone(), target);
     Ok(())
 }

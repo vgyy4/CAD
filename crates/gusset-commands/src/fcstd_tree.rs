@@ -315,6 +315,124 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, S
     Ok((f, lines))
 }
 
+/// Part workbench objects translated (primitives, booleans, extrusions of sketches).
+const PART_KINDS: [&str; 10] = [
+    "Part::Box",
+    "Part::Cylinder",
+    "Part::Sphere",
+    "Part::Cone",
+    "Part::Cut",
+    "Part::Fuse",
+    "Part::MultiFuse",
+    "Part::Common",
+    "Part::MultiCommon",
+    "Part::Extrusion",
+];
+
+/// The Part workbench objects, in document order, as separate bodies and combines.
+fn part_features(
+    objects: &BTreeMap<String, Obj>,
+    features: &mut Vec<Value>,
+    body_of: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let mut parts: Vec<(&String, &Obj)> =
+        objects.iter().filter(|(_, o)| PART_KINDS.contains(&o.kind.as_str())).collect();
+    parts.sort_by_key(|(_, o)| o.order);
+    let mut sketched: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, o) in parts {
+        let kind = o.kind.as_str();
+        match kind {
+            "Part::Box" | "Part::Cylinder" | "Part::Sphere" | "Part::Cone" => {
+                for mut f in primitive(name, o, &IDENTITY)? {
+                    if f.get("type").and_then(Value::as_str) != Some("sketch")
+                        && let Some(m) = f.as_object_mut()
+                    {
+                        m.insert("operation".into(), json!("new"));
+                    }
+                    features.push(f);
+                }
+                body_of.insert(name.clone(), name.clone());
+            }
+            "Part::Cut" | "Part::Fuse" | "Part::MultiFuse" | "Part::Common" | "Part::MultiCommon" => {
+                let inputs: Vec<String> = if kind.starts_with("Part::Multi") {
+                    o.link_list("Shapes")
+                } else {
+                    [o.link("Base"), o.link("Tool")].into_iter().flatten().map(|(n, _)| n).collect()
+                };
+                let mut bodies: Vec<String> = Vec::new();
+                for i in &inputs {
+                    bodies.push(body_of.get(i).cloned().ok_or(format!("{name}: its input {i} is not translated"))?);
+                }
+                let [target, tools @ ..] = bodies.as_slice() else { return Err(format!("{name}: no inputs")) };
+                if tools.is_empty() {
+                    return Err(format!("{name}: a boolean of one shape"));
+                }
+                let op = match kind {
+                    "Part::Cut" => "cut",
+                    "Part::Fuse" | "Part::MultiFuse" => "join",
+                    _ => "intersect",
+                };
+                features
+                    .push(json!({"type": "combine", "name": name, "target": target, "tools": tools, "operation": op}));
+                body_of.insert(name.clone(), target.clone());
+            }
+            "Part::Extrusion" => {
+                let (base, _) = o.link("Base").ok_or(format!("{name}: nothing to extrude"))?;
+                let sk = objects.get(&base).filter(|b| b.kind == "Sketcher::SketchObject").ok_or(format!(
+                    "{name}: an extrusion of a {} is not translated yet",
+                    objects.get(&base).map_or("missing object", |b| b.kind.as_str())
+                ))?;
+                if !o.bool("Solid")
+                    || o.float("TaperAngle").is_some_and(|a| a.abs() > 1e-12)
+                    || o.float("TaperAngleRev").is_some_and(|a| a.abs() > 1e-12)
+                {
+                    return Err(format!("{name}: an open or tapered extrusion is not translated yet"));
+                }
+                let frame = Place::of(sk);
+                if sketched.insert(base.clone()) {
+                    let (f, _) = sketch(&base, sk, &IDENTITY)?;
+                    features.push(f);
+                }
+                // The direction: the sketch normal (mode 2) or a custom vector along it.
+                let dir = match o.int("DirMode").unwrap_or(0) {
+                    2 => frame.z,
+                    0 => {
+                        let e = o.first("Dir", "PropertyVector").ok_or(format!("{name}: no direction"))?;
+                        let g = |k: &str| e.attrs.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+                        [g("valueX"), g("valueY"), g("valueZ")]
+                    }
+                    _ => return Err(format!("{name}: an extrusion along an edge is not translated yet")),
+                };
+                let dn = libm::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+                let along = (dir[0] * frame.z[0] + dir[1] * frame.z[1] + dir[2] * frame.z[2]) / dn.max(1e-300);
+                if dn.is_nan() || dn <= 1e-12 || (along.abs() - 1.0).abs() > 1e-9 {
+                    return Err(format!("{name}: an extrusion not along its sketch's normal is not translated yet"));
+                }
+                let mut fwd = o.float("LengthFwd").unwrap_or(0.0);
+                if fwd.abs() < 1e-12 {
+                    fwd = dn;
+                }
+                let rev = o.float("LengthRev").unwrap_or(0.0);
+                let mut sign = along.signum();
+                if o.bool("Reversed") {
+                    sign = -sign;
+                }
+                if o.bool("Symmetric") {
+                    features.push(json!({"type": "extrude", "name": name, "sketch": base, "profiles": "all", "distance": fwd, "symmetric": true, "operation": "new"}));
+                } else {
+                    features.push(json!({"type": "extrude", "name": name, "sketch": base, "profiles": "all", "distance": sign * fwd, "symmetric": false, "operation": "new"}));
+                    if rev > 1e-12 {
+                        features.push(json!({"type": "extrude", "name": format!("{name}_back"), "sketch": base, "profiles": "all", "distance": -sign * rev, "symmetric": false, "operation": "join", "target": name}));
+                    }
+                }
+                body_of.insert(name.clone(), name.clone());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// What a reference can name: the document's objects, the body's placement and its sketches
 /// read so far (frame and lines).
 struct Refs<'a> {
@@ -475,8 +593,12 @@ fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
     let pl = body.then(&Place::of(o));
     let pos = |k: &str| o.float(k).filter(|v| *v > 0.0).ok_or(format!("{name}: no positive {k}"));
     let sk = format!("{name}_profile");
-    let kind =
-        o.kind.trim_start_matches("PartDesign::").trim_start_matches("Additive").trim_start_matches("Subtractive");
+    let kind = o
+        .kind
+        .trim_start_matches("PartDesign::")
+        .trim_start_matches("Part::")
+        .trim_start_matches("Additive")
+        .trim_start_matches("Subtractive");
     let full = |k: &str| o.float(k).is_none_or(|a| (a - 360.0).abs() < 1e-9);
     match kind {
         "Box" => {
@@ -571,7 +693,8 @@ fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
 #[must_use]
 pub(crate) fn has_bodies(xml: &[u8]) -> bool {
     // Bodies, or PartDesign features from before FreeCAD had bodies.
-    parse(xml).is_ok_and(|o| o.values().any(|o| o.kind.starts_with("PartDesign::")))
+    parse(xml)
+        .is_ok_and(|o| o.values().any(|o| o.kind.starts_with("PartDesign::") || PART_KINDS.contains(&o.kind.as_str())))
 }
 
 /// The edges of a stored shape file, in FreeCAD's numbering (`Edge1` first): each edge's
@@ -607,12 +730,14 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
             && !o.kind.starts_with("PartDesign::")
             && !o.kind.starts_with("Sketcher::")
             && !o.kind.starts_with("App::")
+            && !PART_KINDS.contains(&o.kind.as_str())
     }) {
         return Err(format!("{n}: a {} outside a PartDesign body is not translated yet", o.kind));
     }
     let mut features: Vec<Value> = Vec::new();
     let mut sketches: HashMap<String, (Place, HashMap<String, String>)> = HashMap::new();
-    let mut bodies = 0usize;
+    // The tree feature whose body each body object's result is (for Part booleans).
+    let mut body_of: HashMap<String, String> = HashMap::new();
     let mut bodies_list: Vec<(String, Obj)> =
         objects.iter().filter(|(_, o)| o.kind == "PartDesign::Body").map(|(n, o)| (n.clone(), o.clone())).collect();
     // Files from before FreeCAD had bodies: the sketches and PartDesign features form one
@@ -632,7 +757,6 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
         bodies_list.push(("Body".into(), body));
     }
     for (body_name, body) in &bodies_list {
-        bodies += 1;
         let place = Place::of(body);
         let mut first_solid: Option<String> = None;
         let group = body.link_list("Group");
@@ -999,8 +1123,12 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                 other => return Err(format!("{name}: {other} is not translated yet")),
             }
         }
+        if let Some(f) = &first_solid {
+            body_of.insert(body_name.clone(), f.clone());
+        }
     }
-    if bodies == 0 || features.is_empty() {
+    part_features(&objects, &mut features, &mut body_of)?;
+    if features.is_empty() {
         return Err("no PartDesign body".into());
     }
     let v = json!({
@@ -1101,7 +1229,7 @@ mod tests {
             .replace(
                 r#"<Objects Count="4">"#,
                 r#"<Objects Count="5">
-  <Object type="Part::Cut" name="Cut"/>"#,
+  <Object type="Part::Thickness" name="Cut"/>"#,
             )
             .replace(
                 r#"<ObjectData Count="4">"#,
@@ -1110,7 +1238,9 @@ mod tests {
     <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape9.brp"/></Property>
   </Properties></Object>"#,
             );
-        assert!(tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("Part::Cut outside a PartDesign body"));
+        assert!(
+            tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("Part::Thickness outside a PartDesign body")
+        );
     }
 
     #[test]
@@ -1122,5 +1252,40 @@ mod tests {
         assert_eq!(names.get("Axis0").map(String::as_str), Some("l1"));
         assert_eq!(names.get("Edge1").map(String::as_str), Some("l2"));
         assert_eq!(names.get("Edge4").map(String::as_str), Some("c5"));
+    }
+
+    #[test]
+    fn part_primitives_and_booleans_become_bodies_and_combines() {
+        let doc = r#"<Document SchemaVersion="4">
+<Objects Count="3">
+  <Object type="Part::Box" name="Box"/>
+  <Object type="Part::Cylinder" name="Cylinder"/>
+  <Object type="Part::Cut" name="Cut"/>
+</Objects>
+<ObjectData Count="3">
+  <Object name="Box"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="10"/></Property>
+    <Property name="Width" type="App::PropertyLength"><Float value="10"/></Property>
+    <Property name="Height" type="App::PropertyLength"><Float value="10"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape.brp"/></Property>
+  </Properties></Object>
+  <Object name="Cylinder"><Properties>
+    <Property name="Radius" type="App::PropertyLength"><Float value="2"/></Property>
+    <Property name="Height" type="App::PropertyLength"><Float value="10"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape1.brp"/></Property>
+  </Properties></Object>
+  <Object name="Cut"><Properties>
+    <Property name="Base" type="App::PropertyLink"><Link value="Box"/></Property>
+    <Property name="Tool" type="App::PropertyLink"><Link value="Cylinder"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape2.brp"/></Property>
+  </Properties></Object>
+</ObjectData>
+</Document>"#;
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
+        assert_eq!(kinds, ["sketch", "extrude", "sketch", "extrude", "combine"]);
+        let c = &t.features[4];
+        assert_eq!((c["target"].as_str(), c["operation"].as_str()), (Some("Box"), Some("cut")));
+        assert_eq!(c["tools"], serde_json::json!(["Cylinder"]));
     }
 }

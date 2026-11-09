@@ -448,3 +448,16 @@ fn one_tree_hole_on_two_separate_pocket_floors() {
     let one = pi * 9.0 * 0.15 + frustum + pi * 2.25 * (9.85 - 1.5);
     assert_vol(v, 4000.0 - 2.0 * one);
 }
+
+#[test]
+fn a_tree_combine_cuts_one_body_from_another() {
+    // A 10 mm cube less a radius 2 mm through cylinder.
+    let (_, v) = import_v2(vec![
+        rect("Base", plane_at(0.0), 0.0, 0.0, 10.0, 10.0),
+        extrude("Box", "Base", 10.0, "new"),
+        disc("Round", plane_at(0.0), 5.0, 5.0, 2.0),
+        extrude("Pin", "Round", 10.0, "new"),
+        json!({"type": "combine", "name": "Cut", "target": "Box", "tools": ["Pin"], "operation": "cut"}),
+    ]);
+    assert_vol(v, 1000.0 - std::f64::consts::PI * 4.0 * 10.0);
+}

@@ -101,6 +101,8 @@ ADR 0042) and the tree importer builds it. Translated:
 * additive and subtractive boxes, cylinders, cones and spheres (as a sketch and an extrusion
   or revolution);
 * datums and the origin carry no geometry and are skipped;
+* Part workbench primitives (box, cylinder, sphere, cone), booleans (cut, fuse, common and their
+  multi forms, as Gusset `combine`) and extrusions of sketches along their normal;
 * files from before FreeCAD had bodies: their sketches and PartDesign features form one
   implicit body in document order;
 * fillet and chamfer edges on refined shapes (merged faces) are passed with points along them,
@@ -110,12 +112,12 @@ ADR 0042) and the tree importer builds it. Translated:
 with the shapes FreeCAD stored: every feature must build, the volume must agree within 2e-5
 (blends and sweeps are approximated surfaces and FreeCAD's OCCT build differs from ours by
 up to about 1e-5; any difference above 1e-7 is reported as a warning) and the bounding box within 1e-4 of its diagonal (the box catches a mirror about the wrong
-plane, which keeps the volume). Documents with solids made outside PartDesign bodies (Part workbench booleans, sweeps,
-arrays) keep their shapes. Any untranslated feature, failure or mismatch keeps the exact
+plane, which keeps the volume). Documents with other solids outside PartDesign bodies (Part sweeps, helices, thickness,
+Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch keeps the exact
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 96 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 99 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
 volume (fillets whose edges change with the feature order, and stale shapes), lofts,
 pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and
