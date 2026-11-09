@@ -3,6 +3,9 @@
 //! either comes in as features that rebuild to its own Parasolid body, or as exact bodies with
 //! a reason; the counts and reasons are printed (a part whose exact body cannot be read
 //! either counts as failed).
+//! The variable may name several folders (separated like `PATH`): the Slip-Pad parts (the older
+//! OLE2 container) and the ARIG revision folders (`arig-revisions`, the newer chunk container, where
+//! `plaque_base_roulante` and `plaque_superieure` are the parts that come in as history).
 //! `GUSSET_SLDPRT_MIN_HISTORY` asserts a floor for the history count.
 
 #![cfg(gusset_occt)]
@@ -35,7 +38,7 @@ fn kind_of(why: &str) -> String {
 fn sldprt_parts_come_in_as_history_or_shapes() {
     let Ok(dir) = std::env::var("GUSSET_SLDPRT_SAMPLES") else { return };
     let mut files = Vec::new();
-    let mut stack = vec![std::path::PathBuf::from(dir)];
+    let mut stack: Vec<std::path::PathBuf> = std::env::split_paths(&dir).collect();
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).unwrap().flatten() {
             let p = e.path();

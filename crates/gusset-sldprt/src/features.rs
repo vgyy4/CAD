@@ -167,7 +167,7 @@ fn utf16(raw: &[u8]) -> String {
 type Streams = (Vec<u8>, Vec<u8>, bool);
 
 /// The configuration number of a stream called `[Contents/]Config-<N><suffix>`.
-fn config_number(name: &str, suffix: &str) -> Option<u32> {
+pub(crate) fn config_number(name: &str, suffix: &str) -> Option<u32> {
     let rest = name.strip_prefix("Contents/").unwrap_or(name).strip_prefix("Config-")?;
     let digits = rest.strip_suffix(suffix)?;
     if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
@@ -277,7 +277,7 @@ fn unit_component_index(c0: &[u8]) -> Option<usize> {
 /// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
 /// (`py/uc.py`): the most frequent `XX 80 02 00 <10 x 00>`, the first seen winning ties.
 /// The numbering of these files does not follow `Config-0`.
-fn unit_component_tag(rf: &[u8]) -> Option<usize> {
+pub(crate) fn unit_component_tag(rf: &[u8]) -> Option<usize> {
     let mut counts: Vec<(u16, usize)> = Vec::new();
     let mut i = 0usize;
     while let Some(w) = rf.get(i..i + 14) {
@@ -964,7 +964,7 @@ const MAX_NORMALIZE_WORK: usize = 50_000_000;
 /// splits lines at points lying on them, drops the walls two different segments share
 /// (SolidWorks fills both loops; Gusset would ignore the sketch silently) and zero-length lines.
 /// Construction lines, centerlines, arcs and circles are kept as they are.
-fn normalize_lines(mut sk: Value) -> Value {
+pub(crate) fn normalize_lines(mut sk: Value) -> Value {
     let str_of = |c: &Value, k: &str| c.get(k).and_then(Value::as_str).map(str::to_string);
     let flag = |c: &Value, k: &str| c.get(k).and_then(Value::as_bool).unwrap_or(false);
     let Some(points) = sk.get("points").and_then(Value::as_array) else { return sk };
@@ -1563,8 +1563,29 @@ fn finish_hole(h: HoleState) -> Value {
     let ps: HashMap<&str, f64> = h.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
     let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
     let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
-    let dia = nonzero(get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia."]));
-    let dep = nonzero(get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth"]));
+    let (mut dia, mut dep) = (
+        get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia."]),
+        get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth"]),
+    );
+    if dia.is_none() {
+        // A localised file ("Diamètre du perçage", "Profondeur du perçage", "Angle de pointe"): the
+        // user-facing parameters are those not called `D<n>`, in the order diameter, depth, tip angle.
+        let mut named: Vec<(&str, f64)> = Vec::new();
+        for (k, v) in &h.params {
+            let all_digits = |t: &str| !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit());
+            if all_digits(k) || k.strip_prefix('D').is_some_and(all_digits) {
+                continue;
+            }
+            match named.iter_mut().find(|(n, _)| n == k) {
+                Some(slot) => slot.1 = *v,
+                None => named.push((k, *v)),
+            }
+        }
+        if let [(_, d), (_, p), ..] = named[..] {
+            (dia, dep) = (Some(d), Some(p));
+        }
+    }
+    let (dia, dep) = (nonzero(dia), nonzero(dep));
     let cs_d = nonzero(get(&["C'Sink Dia.", "Near C'Sink Dia."]));
     let cs_a = nonzero(get(&["C'Sink Angle", "Near C'Sink Angle"]));
     let clearance = nonzero(get(&["Head Clearance"]));

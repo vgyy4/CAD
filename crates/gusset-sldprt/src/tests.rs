@@ -1047,3 +1047,110 @@ fn dump_sample_trees() {
         eprintln!("{name}: {verdict}");
     }
 }
+
+// --- newer chunk-container parts -------------------------------------------------------------
+
+#[test]
+fn feature_streams_of_any_configuration_number() {
+    assert_eq!(features::config_number("Contents/Config-12-ResolvedFeatures", "-ResolvedFeatures"), Some(12));
+    assert_eq!(features::config_number("Config-1", ""), Some(1));
+    assert_eq!(features::config_number("Config-1-Partition", ""), None);
+    assert_eq!(features::config_number("Config--ResolvedFeatures", "-ResolvedFeatures"), None);
+    let rf = feature_stream(&[]);
+    let want = history(&rf).unwrap().unwrap()["features"].clone();
+    // Configuration 1 has no `Config-1` stream: the lowest configuration with both wins.
+    let c = chunk_file(&[
+        record(KEY, "Contents/Config-1-ResolvedFeatures", &[0u8; 40], None),
+        record(KEY, "Contents/Config-3", &config0(), None),
+        record(KEY, "Contents/Config-3-ResolvedFeatures", &rf, None),
+    ]);
+    assert_eq!(features::feature_tree(&c, "p.sldprt", &Limits::default()).unwrap().unwrap()["features"], want);
+    let f = ole(&[("Config-2", &config0()), ("Config-2-ResolvedFeatures", &rf)]);
+    assert_eq!(features::feature_tree(&f, "p.sldprt", &Limits::default()).unwrap().unwrap()["features"], want);
+}
+
+#[test]
+fn the_unit_component_tag_is_learned_from_the_bytes() {
+    let mut rf = vec![9u8; 20];
+    for tag in [0x2b, 0x2b, 0x31] {
+        rf.extend([tag, 0x80, 2, 0]);
+        rf.extend([0u8; 10]);
+        rf.extend([7u8; 5]);
+    }
+    assert_eq!(features::unit_component_tag(&rf), Some(0x2b));
+    assert_eq!(features::unit_component_tag(&[1, 2, 3]), None);
+}
+
+/// A cut named like a boss: only the flags word of its node says what it is.
+#[test]
+fn a_cut_is_told_by_the_flags_word_of_its_node() {
+    let base = feature_stream(&[]);
+    let sk = base.windows(4).position(|w| w == [0x01, 0x80, 2, 0]).unwrap();
+    let ex = base.windows(13).position(|w| w == b"moExtrusion_c").unwrap() - 6;
+    let operation = |flags: u32| {
+        let mut node = feature_node("moICE_c", "Enlèv. Extru.1", 9);
+        let at = class_decl("moICE_c").len() + node_name("Enlèv. Extru.1").len() + 4;
+        node[at..at + 4].copy_from_slice(&flags.to_le_bytes());
+        let mut extra = feature_node("moProfileFeature_c", "Sketch2", 8);
+        extra.extend(&base[sk..ex]);
+        extra.extend(node);
+        extra.extend(class_decl("moEndSpec_c"));
+        extra.extend([0, 0, 1, 0, 0, 0]);
+        extra.extend([0u8; 10]);
+        extra.extend(0u32.to_le_bytes());
+        extra.extend([0u8; 12]);
+        // The newer layout: an empty string before the end of the parameter.
+        extra.extend(class_decl("moLengthParameter_c"));
+        extra.extend(node_name("D1"));
+        extra.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xfe, 0xff, 0, 0, 0]);
+        extra.extend(0.002f64.to_le_bytes());
+        extra.extend([0u8; 16]);
+        let t = history(&feature_stream(&extra)).unwrap().unwrap();
+        (t["features"][3]["operation"].clone(), t["features"][3]["distance"].clone())
+    };
+    assert_eq!(operation(0x4002_01ca), (serde_json::json!("cut"), serde_json::json!(-2.0)));
+    assert_eq!(operation(0x4000_0140), (serde_json::json!("join"), serde_json::json!(2.0)));
+}
+
+#[test]
+fn a_localised_hole_wizard_takes_its_parameters_in_order() {
+    let plane = comp_plane(2, -0.005);
+    let mut v = feature_node("moHoleWzd_c", "Perçage1", 11);
+    v.extend(point_sketch("Sketch2", 12, &plane, &[(0.002, 0.003, 1)]));
+    v.extend(feature_node("moProfileFeature_c", "Sketch3", 13));
+    v.extend(&plane);
+    v.extend([0u8; 40]);
+    v.extend(parameter("D1", 0.5));
+    v.extend(parameter("Diamètre du perçage", 0.002));
+    v.extend(parameter("D2", 0.7));
+    v.extend(parameter("Profondeur du perçage", 0.003));
+    v.extend(parameter("Angle de pointe", 2.05));
+    let t = history(&feature_stream(&v)).unwrap().unwrap();
+    let hole = t["features"].as_array().unwrap().iter().find(|x| x["type"] == "hole").unwrap();
+    assert_eq!((hole["diameter"].as_f64(), hole["depth"].as_f64()), (Some(2.0), Some(3.0)));
+}
+
+#[test]
+fn sketch_lines_are_split_merged_and_stripped_of_shared_walls() {
+    let pts: Vec<_> =
+        [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0), (10.0, 0.0), (10.0, 10.0), (10.0, 1e-9), (10.0, 5.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y))| serde_json::json!({"id": format!("p{i}"), "x": x, "y": y}))
+            .collect();
+    let line = |id: &str, a: &str, b: &str| serde_json::json!({"id": id, "type": "line", "start": a, "end": b});
+    // Two squares side by side: the outline is split where the middle wall meets it, the wall
+    // is drawn by different segments (one whole, two halves) and the helper lies on the same point as p4.
+    let sk = serde_json::json!({"type": "sketch", "name": "S", "plane": {}, "points": pts, "curves": [
+        line("c0", "p0", "p1"), line("c1", "p1", "p2"), line("c2", "p2", "p3"), line("c3", "p3", "p0"),
+        line("c4", "p4", "p5"), line("c5", "p4", "p7"), line("c6", "p7", "p5"), line("c7", "p4", "p6"),
+    ]});
+    let out = features::normalize_lines(sk);
+    let curves = out["curves"].as_array().unwrap();
+    let ends: Vec<_> = curves.iter().map(|c| (c["start"].as_str().unwrap(), c["end"].as_str().unwrap())).collect();
+    // c0 -> (p0,p4) (p4,p1); c1 kept; c2 -> (p2,p5) (p5,p3); c3 kept; the wall and the
+    // zero-length helper are gone.
+    assert_eq!(ends, [("p0", "p4"), ("p4", "p1"), ("p1", "p2"), ("p2", "p5"), ("p5", "p3"), ("p3", "p0")], "{out}");
+    assert_eq!(curves[0]["id"], "c0_1");
+    assert_eq!(curves[2]["id"], "c1");
+}
