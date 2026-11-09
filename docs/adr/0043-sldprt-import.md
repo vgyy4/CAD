@@ -345,3 +345,11 @@ need loft cut, move face, thin boss, fillet-edge and through-all-up-to-next reco
 - Tally of the rest and the unsolved ones (extrusion direction of MicroGearMotor Boss-Extrude1 has no known flag; revolve and
   fillet-face edge references; mirror-stock bodies need an "imported body" tree feature) are in
   `docs/formats/solidworks-feature-tree.md` section L8. The test labels revision files as `<part>/<stamp>`.
+
+## Amendment (2026-11-09): stored stock bodies and rounded corners
+
+A `moMirrorStock_c` part (a mirror of an external part) is a `stored_body` feature whose body is the part's
+`StockBodies` partition, mirrored across the axis plane found by comparing bounding boxes, and the rebuild check
+stays as it was. A blind cut with a second dimension D2 starts D2 behind its sketch plane. A fillet of two straight
+profile sides is remembered, so that later edge references to its face locate the cap arc and a shortened side.
+See `docs/formats/solidworks-feature-tree.md` L9.

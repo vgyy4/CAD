@@ -507,3 +507,34 @@ Gusset-side 2 (plaque_superieure 1618664833 fillet; spring_base CSK hole 6.3 mm)
   tag 672, fid 68); the other 16 use keys 15-19 / 7-12 that no parsed sketch item carries. Not resolved.
 * idler_single_v1: Cut-Extrude1 (blind 10, EndSpec X = 0, the only blind cut with X 0) removes 22 mm3 more in the truth than in
   our rebuild; reversing its direction changes nothing, so the cut is probably dropped silently by the importer. Unresolved.
+
+## L9. Round 3 (stored stock bodies, start offsets, rounded corners)
+Corpus (slip-pad 35 + arig-revisions 50): 28 -> 63 as history (slip-pad 18 -> 19, arig-revisions 10 -> 44 counting the 33 mirror parts).
+* **Mirrored stock parts** (`moMirrorStock_c`, 33 arig `*_Symétrie_*` revisions + `arm_idler_single_v3_mirrored`): the reader emits a
+  `stored_body` feature (tree name = the node name, `body` 0) and the importer fills `Tree::stored_bodies` from
+  `Config-N-StockBodies` (same block framing as the partition: `u32 len, 16-byte tag, u32 inflated, u32 deflated, zlib`; the
+  first block is a `TRANSMIT FILE (partition)`; 24 of 49 revision files have the stream). The node carries no mirror plane, so
+  `solidworks_history` takes the axis plane that maps the stock's box onto the final body's box (bounding boxes only: any
+  plane parallel to XY/XZ/YZ), adds `mirror (merge: true)` plus a half-space cut that removes the stock (a `merge: false` mirror
+  would keep the stock as a second body), and the unchanged rebuild check decides. Stock equal to the part (no mirror: Access,
+  Igus_Bague) needs none. When the image overlaps the stock (Angle_support) the stored body is the stock mirrored by the kernel.
+  Files with no `StockBodies` stream (Servo_HS-485-HB, carter_screen_side rev 1) keep only the mirrored body: it is stored as is,
+  with a tier note (the source part is not in the file).
+* **Start offset `D2`** (idler_single_v1 Cut-Extrude1, the only extrude with a second dimension, EndSpec X 0): the truth's bore
+  spans x -1 .. 2.9 from the Right plane (normal +x) with D1 = 10 mm blind and D2 = 1 mm. The cut starts D2 behind its sketch
+  plane and runs along the normal; the sketch plane is shifted accordingly. One witness, so the direction of the offset
+  relative to the cut direction is a guess that fits the position (the part is symmetric, the volume cannot tell).
+* **Fillet faces in edge records** (idler_differential_arm / _short): a fillet's faces are named by the fillet's feature id and
+  the 1-based number of the edge in its selection (the selection order); a later record's `[face A, face B, vertex face C, D]`
+  may name them. A fillet of two straight profile sides is kept as a rounded corner (tangent points, arc middle); an edge
+  between a cap and that face is the arc (middle = corner + (r / sin(h) - r) along the bisector, h = half the corner angle),
+  and a side that meets the corner is shortened to the tangent point at that end, whatever neighbours the record lists (the
+  record of side 3 still names side 13 as its neighbour after the fillet). Records whose faces are keys missing from the parsed
+  sketch (keys 15-19) are the stale selections. With this all 30 edges resolve; the parts then give 27 mm3 too much
+  (336.10 against 309.08): the parsed sketch is short of segments (keys 15-19 are real faces, three of their cap edges are
+  filleted), not solved.
+* **motorClip 4e-5**: the truth's plane face at y = 10.1 is 25.822 mm2, the exact value (cone against plane) is 25.831; the
+  exact body's cone/plane intersection is a fitted curve, so the shortfall is in the exact-body reading (gusset-xt), not in the
+  features. **baseJoint 1.4e-4**: four planar faces differ by 0.002 .. 0.02 mm2, not located.
+* Not attempted for lack of time: GT2_Bobbin (revolve faces), arm_idler_single_v4 (chamfer face; also two extrudes without end
+  spec), MicroGearMotor reverse flag, FrameBracket end types 4/5, spring_base (end type 5 and the countersink).
