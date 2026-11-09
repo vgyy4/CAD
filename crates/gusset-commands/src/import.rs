@@ -1920,8 +1920,8 @@ fn fusion_states_check(
         t.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(1.0) }];
         let ctx = crate::CmdCtx::user(0);
         let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
-        let r = crate::tree_import::apply_with(&mut scratch, &ctx, &t, file_name, &mut evaluator)
-            .map_err(|e| e.message)?;
+        let r =
+            crate::tree_import::apply_with(&mut scratch, &ctx, &t, file_name, &mut evaluator).map_err(|e| e.message)?;
         if let Some(first) = r.get("skipped_user_text").and_then(Value::as_array).and_then(|a| a.first()) {
             let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
             return Err(format!("a feature could not be rebuilt, the first: {first}"));
