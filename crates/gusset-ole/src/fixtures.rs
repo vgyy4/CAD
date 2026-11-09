@@ -127,3 +127,52 @@ pub fn inventor_part(sab: &[u8]) -> Vec<u8> {
 pub fn solid_edge_part(xt: &[u8]) -> Vec<u8> {
     ole(&[("SKETCH.P_B", b"**sketch"), ("STREAM0.X_B", xt)])
 }
+
+/// The `M` (meta) and `B` streams of an Inventor `PmDCSegment` made of `recs`, each a class
+/// index into `classes` (the first 32 bits of each class GUID) and the record's bytes.
+pub fn dc_segment(classes: &[u32], recs: &[(usize, Vec<u8>)]) -> (Vec<u8>, Vec<u8>) {
+    let mut b = Vec::new();
+    b.extend((0x100 + recs.first().map_or(0, |r| r.0 as u32)).to_le_bytes());
+    for (i, (_, c)) in recs.iter().enumerate() {
+        b.extend(c);
+        b.extend((c.len() as u32).to_le_bytes());
+        b.push(0);
+        b.extend(recs.get(i + 1).map_or(0xffff_ffffu32, |r| 0x100 + r.0 as u32).to_le_bytes());
+    }
+    let mut meta = vec![0u8; 14];
+    meta.extend((recs.len() as u32).to_le_bytes());
+    for (_, c) in recs {
+        meta.extend((c.len() as u32 | 0x8000_0000).to_le_bytes());
+    }
+    meta.extend([0u8; 32]);
+    meta.extend([0u8; 6]);
+    meta.extend(4u32.to_le_bytes());
+    meta.extend((classes.len() as u32).to_le_bytes());
+    for g in classes {
+        meta.extend(g.to_le_bytes());
+        meta.extend([0xaau8; 12]);
+        meta.extend([0u8; 12]);
+    }
+    let name = "PmDCSegment";
+    let mut raw = Vec::new();
+    let tag = b"RSe Meta Stream Version 8";
+    raw.extend((tag.len() as u32).to_le_bytes());
+    raw.extend(tag);
+    raw.extend([0u8; 18]);
+    raw.extend((name.len() as u32).to_le_bytes());
+    for u in name.encode_utf16() {
+        raw.extend(u.to_le_bytes());
+    }
+    raw.extend([0u8; 75]);
+    raw.extend(compress_to_vec_zlib(&meta, 6));
+    (raw, b_stream(&b))
+}
+
+/// An Inventor part whose feature segment holds `recs` (see [`dc_segment`]), with `extra`
+/// streams beside it.
+pub fn inventor_dc_part(classes: &[u32], recs: &[(usize, Vec<u8>)], extra: &[(&str, &[u8])]) -> Vec<u8> {
+    let (m, b) = dc_segment(classes, recs);
+    let mut s: Vec<(&str, &[u8])> = vec![("MdcSegment0001", &m), ("BdcSegment0001", &b)];
+    s.extend(extra.iter().copied());
+    ole(&s)
+}

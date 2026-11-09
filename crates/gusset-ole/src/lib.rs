@@ -12,9 +12,13 @@
 //! other reader, write-up or SDK consulted. Input is untrusted: every count, chain and
 //! inflated size is bounded by [`Limits`].
 
+mod acis;
 #[doc(hidden)]
 pub mod fixtures;
 pub mod inventor;
+mod inventor_dc;
+pub mod inventor_features;
+mod inventor_profile;
 pub mod solidedge;
 
 pub use gusset_sldprt::Limits;
@@ -71,5 +75,7 @@ fn open<'a>(
     Ok(f)
 }
 
+#[cfg(test)]
+mod inventor_tests;
 #[cfg(test)]
 mod tests;
