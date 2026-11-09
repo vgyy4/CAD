@@ -999,3 +999,51 @@ fn damaged_feature_streams_never_panic() {
         assert!(features::convert(&noise, &noise, "p").is_err());
     }
 }
+
+/// With `GUSSET_SLDPRT_SAMPLES` (a folder of parts, searched recursively) and
+/// `GUSSET_SLDPRT_DUMP` (an output folder): writes every part's feature tree as
+/// `<name>.gtree.json` (the tree as read, before the check that refuses an incomplete one)
+/// and prints why a part has none. For comparing with the prototype.
+#[test]
+fn dump_sample_trees() {
+    let (Ok(dir), Ok(out)) = (std::env::var("GUSSET_SLDPRT_SAMPLES"), std::env::var("GUSSET_SLDPRT_DUMP")) else {
+        return;
+    };
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    let mut files = Vec::new();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("sldprt")) {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    std::fs::create_dir_all(&out).unwrap();
+    for f in files {
+        // A revision folder (`part.SLDPRT/<stamp>.SLDPRT`) names its files after the folder too.
+        let stem = |p: &std::path::Path| p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let name = match f.parent().filter(|d| d.extension().is_some()) {
+            Some(d) => format!("{}__{}", stem(d), stem(&f)),
+            None => stem(&f),
+        };
+        let bytes = std::fs::read(&f).unwrap();
+        let verdict = match features::streams(&bytes, &Limits::default()) {
+            Ok(Some((rf, c0, chunk))) => match features::convert_in(&rf, &c0, &name, chunk) {
+                Ok(tree) => {
+                    let why = features::feature_tree(&bytes, &name, &Limits::default()).err();
+                    std::fs::write(std::path::Path::new(&out).join(format!("{name}.gtree.json")), tree.to_string())
+                        .unwrap();
+                    why.unwrap_or_else(|| "history".into())
+                }
+                Err(e) => format!("convert: {e}"),
+            },
+            Ok(None) => "no feature stream".into(),
+            Err(e) => format!("streams: {e}"),
+        };
+        eprintln!("{name}: {verdict}");
+    }
+}

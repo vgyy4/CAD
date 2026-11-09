@@ -37,7 +37,7 @@ const PLANE_NAMES: [(u32, &str); 3] = [(2, "Front"), (3, "Top"), (4, "Right")];
 const EXTRUDE: [&str; 3] = ["moExtrusion_c", "moICE_c", "moCut_c"];
 const REVOLVE: [&str; 2] = ["moRevolution_c", "moRevCut_c"];
 /// Classes that carry nothing the tree needs (sketches are handled before this list).
-const SKIPPED: [&str; 13] = [
+const SKIPPED: [&str; 21] = [
     "moCommentsFolder_c",
     "moFavoriteFolder_c",
     "moHistoryFolder_c",
@@ -48,6 +48,14 @@ const SKIPPED: [&str; 13] = [
     "moSolidBodyFolder_c",
     "moEqnFolder_c",
     "moMaterialFolder_c",
+    "moSelectionSetFolder_c",
+    "moNotesAreaFtrFolder_c",
+    "moFtrFolder_c",
+    "moFeatSurfaceBodyFolder_c",
+    "moFeatSolidBodyFolder_c",
+    "moRefAxisFtrFolder_c",
+    "moRefPlaneFtrFolder_c",
+    "moProfileFtrFolder_c",
     "moRefPlane_c",
     "moOriginProfileFeature_c",
     "moProfileFeature_c",
@@ -66,6 +74,10 @@ const ONE: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f];
 const SENTINEL: [u8; 8] = [0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54];
 const CLASS_DECL: [u8; 4] = [0xff, 0xff, 1, 0];
 const UTF16_MARK: [u8; 3] = [0xff, 0xfe, 0xff];
+/// The empty string some newer files write before the end of a parameter.
+/// The low 20 bits of a feature node's flags word that mark a cut (a boss has `0x140`).
+const CUT_FLAGS: u32 = 0x2_01ca;
+const PARAM_CSTRING: [u8; 4] = [0xff, 0xfe, 0xff, 0];
 const IDENT: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 // --- bounded reads ---------------------------------------------------------------------------
@@ -151,40 +163,65 @@ fn utf16(raw: &[u8]) -> String {
 
 // --- the streams -----------------------------------------------------------------------------
 
-/// `Config-0-ResolvedFeatures` and `Config-0`.
-type Streams = (Vec<u8>, Vec<u8>);
+/// `Config-<N>-ResolvedFeatures`, `Config-<N>`, and whether the part is a chunk-container file.
+type Streams = (Vec<u8>, Vec<u8>, bool);
 
-/// `Config-0-ResolvedFeatures` and `Config-0`, or `None` when the part has no feature stream.
+/// The configuration number of a stream called `[Contents/]Config-<N><suffix>`.
+fn config_number(name: &str, suffix: &str) -> Option<u32> {
+    let rest = name.strip_prefix("Contents/").unwrap_or(name).strip_prefix("Config-")?;
+    let digits = rest.strip_suffix(suffix)?;
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The lowest configuration that has both streams among `names`.
+fn lowest_config<'a>(names: impl Iterator<Item = &'a str> + Clone) -> Option<u32> {
+    names
+        .clone()
+        .filter_map(|n| config_number(n, "-ResolvedFeatures"))
+        .filter(|&k| names.clone().any(|n| config_number(n, "") == Some(k)))
+        .min()
+}
+
+/// `Config-<N>-ResolvedFeatures` and `Config-<N>` of the lowest configuration N that has
+/// both, or `None` when the part has no feature stream.
 pub(crate) fn streams(bytes: &[u8], limits: &Limits) -> Result<Option<Streams>, String> {
-    const RF: &str = "Config-0-ResolvedFeatures";
-    const C0: &str = "Config-0";
     let limits = Limits { max_stream_bytes: limits.max_stream_bytes.min(MAX_FEATURE_STREAM), ..*limits };
     let mut found: HashMap<String, Vec<u8>> = HashMap::new();
-    match detect(bytes).ok_or("not a SolidWorks part file")? {
+    let chunk = match detect(bytes).ok_or("not a SolidWorks part file")? {
         Container::Ole2 => {
             let f = cfb::Cfb::open(bytes, &limits).map_err(|e| e.to_string())?;
-            for name in [RF, C0] {
+            let Some(k) = lowest_config(f.streams.iter().map(|e| e.name.as_str())) else { return Ok(None) };
+            for name in [format!("Config-{k}-ResolvedFeatures"), format!("Config-{k}")] {
                 // A later entry of the same name replaces an earlier one, as in the prototype.
                 if let Some(i) = f.streams.iter().rposition(|e| e.name == name) {
-                    found.insert(name.to_string(), f.read(i, &limits).map_err(|e| e.to_string())?);
+                    found.insert(name, f.read(i, &limits).map_err(|e| e.to_string())?);
                 }
             }
+            false
         }
         Container::Chunks => {
-            let wanted = |n: &str| [RF, C0].iter().any(|w| n == *w || n.strip_prefix("Contents/") == Some(*w));
+            let any = |n: &str| config_number(n, "-ResolvedFeatures").is_some() || config_number(n, "").is_some();
+            let names = chunks::names(bytes, &limits, any);
+            let Some(k) = lowest_config(names.iter().map(String::as_str)) else { return Ok(None) };
+            let wanted = |n: &str| config_number(n, "-ResolvedFeatures") == Some(k) || config_number(n, "") == Some(k);
             for st in chunks::streams(bytes, &limits, wanted).map_err(|e| e.to_string())? {
                 found.insert(st.name, st.data);
             }
+            true
         }
-    }
+    };
+    let Some(k) = found.keys().find_map(|n| config_number(n, "-ResolvedFeatures")) else { return Ok(None) };
     // The plain name first, unless it is empty (the prototype's `or`).
-    let mut take = |name: &str| match found.remove(name) {
+    let mut take = |name: String| match found.remove(&name) {
         Some(v) if !v.is_empty() => Some(v),
         plain => found.remove(&format!("Contents/{name}")).or(plain),
     };
-    let (rf, c0) = (take(RF), take(C0));
+    let (rf, c0) = (take(format!("Config-{k}-ResolvedFeatures")), take(format!("Config-{k}")));
     match (rf, c0) {
-        (Some(rf), Some(c0)) => Ok(Some((rf, c0))),
+        (Some(rf), Some(c0)) => Ok(Some((rf, c0, chunk))),
         _ => Ok(None),
     }
 }
@@ -235,6 +272,33 @@ fn unit_component_index(c0: &[u8]) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// The class tag of `moUnitComponent_c` learned from the bytes of a chunk-container stream
+/// (`py/uc.py`): the most frequent `XX 80 02 00 <10 x 00>`, the first seen winning ties.
+/// The numbering of these files does not follow `Config-0`.
+fn unit_component_tag(rf: &[u8]) -> Option<usize> {
+    let mut counts: Vec<(u16, usize)> = Vec::new();
+    let mut i = 0usize;
+    while let Some(w) = rf.get(i..i + 14) {
+        if w.get(1) == Some(&0x80)
+            && w.get(2..4) == Some(&[2, 0][..])
+            && w.get(4..).is_some_and(|z| z.iter().all(|&c| c == 0))
+        {
+            let key = u16::from_le_bytes([w.first().copied().unwrap_or(0), 0x80]) & 0x7fff;
+            match counts.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, v)) => *v += 1,
+                None => counts.push((key, 1)),
+            }
+            i += 14;
+        } else {
+            i += 1;
+        }
+    }
+    counts
+        .iter()
+        .fold(None::<(u16, usize)>, |b, &(k, v)| if b.is_none_or(|(_, bv)| v > bv) { Some((k, v)) } else { b })
+        .map(|(k, _)| usize::from(k))
 }
 
 /// The two-byte tag of node-name objects: the first `mo..._c` class declaration directly
@@ -293,6 +357,8 @@ struct Node {
     cls: Option<String>,
     tag: Option<u16>,
     name: String,
+    /// The flags word of the node: the low 20 bits tell a boss (`0x140`) from a cut (`0x201ca`).
+    flags: u32,
     id: u32,
     post: usize,
     head_len: usize,
@@ -330,6 +396,7 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
             continue; // a parameter
         }
         let id = need(u32_at(d, e + 8), "a node")?;
+        let flags = need(u32_at(d, e + 4), "a node")?;
         let post = k + 56;
         need(u16_at(d, post - 2), "a node")?;
         // The class: declared right before the name object, or a class reference tag.
@@ -345,7 +412,7 @@ fn feature_nodes(d: &[u8], nt: [u8; 2]) -> Result<Vec<Node>, String> {
                 _ => return Err(format!("feature node '{name}' has no class")),
             }
         };
-        out.push(Node { start, cls, tag, name, id, post, head_len: k - (e + 12).min(k) });
+        out.push(Node { start, cls, tag, name, flags, id, post, head_len: k - (e + 12).min(k) });
         if out.len() > MAX_NODES {
             return Err(format!("more than {MAX_NODES} feature nodes"));
         }
@@ -416,18 +483,21 @@ fn named_params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String
         let Some(&n) = d.get(i + 5).filter(|_| i + 6 <= b) else { break };
         at = i + 6;
         let q = i + 6 + 2 * usize::from(n);
-        let tail = d.get(q..q + 18);
-        let ok = tail.is_some_and(|t| {
+        // `00 00 00 00, X 00 00 {40|c0}, ff ff ff ff, 00 00 00 00`, then an empty CString
+        // (`ff fe ff 00`, newer files only) and `00 00`.
+        let head = d.get(q..q + 16);
+        let head_ok = head.is_some_and(|t| {
             t.get(..4) == Some(&[0, 0, 0, 0][..])
                 && t.get(5..7) == Some(&[0, 0][..])
                 && matches!(t.get(7), Some(0x40 | 0xc0))
-                && t.get(8..18) == Some(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0][..])
+                && t.get(8..16) == Some(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0][..])
         });
-        if !ok {
+        let end = if d.get(q + 16..q + 20) == Some(&PARAM_CSTRING[..]) { q + 22 } else { q + 18 };
+        if !head_ok || d.get(end - 2..end) != Some(&[0, 0][..]) {
             continue;
         }
         let name = utf16(d.get(i + 6..q).unwrap_or_default());
-        out.push((name, need(f64_at(d, q + 18), "a parameter")?));
+        out.push((name, need(f64_at(d, end), "a parameter")?));
         if out.len() > MAX_MATCHES {
             return Err("too many parameters".into());
         }
@@ -606,6 +676,9 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
             // Bit 0x08 is construction; bit 0x01 is not part of the profile either
             // (confirmed by volume on baseJoint and Top_mainplate).
             let construction = flags & 9 != 0;
+            // A line of kind 0 is a centerline only when its flags say so (0x8000, or the
+            // construction bit): newer files write ordinary profile lines with kind 0.
+            let centerline = one == 0 && flags & 0x8008 != 0;
             if d.get(p + 22..p + 38).is_some_and(|w| w.chunks(4).all(|c| c == [0xfe, 0xff, 0xff, 0xff])) {
                 let dir = i32_at(d, p + 16)?;
                 let c = usize::from(u16_at(d, p + 20)?);
@@ -629,8 +702,8 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                     e,
                     c: 0,
                     dir: 0,
-                    construction: construction || one == 0,
-                    centerline: one == 0,
+                    construction: construction || centerline,
+                    centerline,
                 });
             }
         }
@@ -707,27 +780,32 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
     };
     for i0 in hits {
         let i = i0 - 2;
-        let mut p = i0 + 43;
-        let cid = need(u32_at(d, p), "a plane reference")?;
-        need(u32_at(d, p + 4), "a plane reference")?;
-        p += 8;
-        if d.get(p..p + 2) != Some(&[0, 0][..]) {
-            continue;
-        }
-        let k = need(u32_at(d, p + 2), "a plane reference")?;
-        let hr = *need(d.get(p + 6), "a plane reference")?;
-        let mut q = p + 7;
-        if hr > 1 || k >= 16 {
-            continue;
-        }
-        let r = if hr == 1 { need(f64s_at::<9>(d, q), "a plane reference")? } else { IDENT };
-        if hr == 1 {
-            q += 72;
-        }
-        let t = need(f64s_at::<3>(d, q), "a plane reference")?;
-        let sc = need(f64_at(d, q + 24), "a plane reference")?;
-        if is(sc, 1.0) && orthonormal(&r) && t.iter().all(|x| x.abs() < 10.0) {
-            offer(i, frame(&r, &t, Some(cid)), None);
+        // The component base is 31 bytes after the unit component in older files and 55 in
+        // chunk-container ones: try the id (`u32 id, u32 stamp, u16 0`) at both places.
+        for off in [43usize, 67] {
+            let p = i0 + off;
+            let (Some(cid), Some(_)) = (u32_at(d, p), u32_at(d, p + 4)) else { continue };
+            let p = p + 8;
+            if !(1..0x400).contains(&cid) || d.get(p..p + 2) != Some(&[0, 0][..]) {
+                continue;
+            }
+            let (Some(k), Some(&hr)) = (u32_at(d, p + 2), d.get(p + 6)) else { continue };
+            if hr > 1 || k >= 16 {
+                continue;
+            }
+            let mut q = p + 7;
+            let r = if hr == 1 {
+                let Some(r) = f64s_at::<9>(d, q) else { continue };
+                q += 72;
+                r
+            } else {
+                IDENT
+            };
+            let (Some(t), Some(sc)) = (f64s_at::<3>(d, q), f64_at(d, q + 24)) else { continue };
+            if is(sc, 1.0) && orthonormal(&r) && t.iter().all(|x| x.abs() < 10.0) {
+                offer(i, frame(&r, &t, Some(cid)), None);
+                break;
+            }
         }
     }
     // Plane-data blocks: origin, normal, hasRot, [R], t, 1.0.
@@ -1324,9 +1402,9 @@ fn midpoint(
 /// # Errors
 /// A short human-readable reason.
 pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Option<Value>, String> {
-    let Some((rf, c0)) = streams(bytes, limits)? else { return Ok(None) };
+    let Some((rf, c0, chunk)) = streams(bytes, limits)? else { return Ok(None) };
     let file = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
-    let tree = convert(&rf, &c0, file)?;
+    let tree = convert_in(&rf, &c0, file, chunk)?;
     check(&tree)?;
     Ok(Some(tree))
 }
@@ -1454,8 +1532,15 @@ fn expand_holes(feats: Vec<Value>) -> Vec<Value> {
 }
 
 /// `swfeat.convert`: the tree, with unresolved features marked as the prototype marks them.
+#[cfg(test)]
 pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String> {
-    let uc = unit_component_index(c0);
+    convert_in(rf, c0, file, false)
+}
+
+/// `convert` for a part of the given container: a chunk-container part (2015 and newer)
+/// learns its unit-component tag from the bytes of the feature stream.
+pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Result<Value, String> {
+    let uc = if chunk { unit_component_tag(rf) } else { unit_component_index(c0) };
     let nt = node_tag(rf).ok_or("the feature stream has no node names")?;
     let mut nodes = feature_nodes(rf, nt)?;
     classify(rf, &mut nodes);
@@ -1542,7 +1627,13 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
                 }
                 continue;
             };
-            let plane = find_plane(rf, a, b, uc)?;
+            let mut plane = find_plane(rf, a, b, uc)?;
+            if plane.is_none()
+                // The first sketch of a file: its plane object is written just before the node.
+                && let Some(j) = rfind(rf, b"moCompRefPlane_c", a.saturating_sub(400), a)
+            {
+                plane = find_plane(rf, j.saturating_sub(6), b, uc)?;
+            }
             let jp = json_plane(plane.as_ref());
             let sk = sketch_json(&n.name, &geo, plane.as_ref(), &jp);
             if let Some(h) = hole.as_mut() {
@@ -1594,7 +1685,10 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
         let op_for = |cut_class: &str, solid: bool| {
             if !solid {
                 "new"
-            } else if cls.as_deref() == Some(cut_class) || n.name.to_lowercase().starts_with("cut") {
+            } else if cls.as_deref() == Some(cut_class)
+                || n.flags & 0xf_ffff == CUT_FLAGS
+                || n.name.to_lowercase().starts_with("cut")
+            {
                 "cut"
             } else {
                 "join"
