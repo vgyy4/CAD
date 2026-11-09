@@ -445,7 +445,7 @@ impl ImportJob {
                 let (out, tier, mut warnings) = f3d(&bytes, importer.as_ref(), cancel)?;
                 // The design timeline as editable features, when it rebuilds to the bodies the
                 // file stores (ADR 0039 amendment); else the bodies themselves.
-                match fusion_history(&bytes, &out, &self.kernel, &self.file_name) {
+                match fusion_history(&bytes, &out, &self.kernel, &self.file_name, importer.as_ref(), cancel) {
                     Ok((tree, note)) => {
                         // The warnings of the exact-body import (placements, repeats) do not
                         // describe the features; the surfaces it leaves out still hold.
@@ -1461,6 +1461,8 @@ fn fusion_history(
     bodies: &[PreparedBody],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
 ) -> Result<(crate::tree_import::Tree, Option<String>), String> {
     let limits = gusset_meshio::Limits::default();
     let mut budget = limits.max_decompressed_bytes;
@@ -1470,21 +1472,80 @@ fn fusion_history(
             || (n.contains("Breps.BlobParts/")
                 && (n.to_ascii_lowercase().ends_with(".smb") || n.to_ascii_lowercase().ends_with(".smbh")))
     };
-    let entries =
-        gusset_meshio::archive::read_entries_within(bytes, &limits, &wanted, MAX_F3D_STREAM_BYTES, &mut budget)
-            .map_err(|e| e.to_string())?;
-    if !entries.iter().any(|(n, _)| n.ends_with("/BulkStream.dat")) {
-        return Err(String::new());
-    }
-    let tree = match gusset_sat::fusion_tree::feature_tree(&entries, file_name) {
-        Ok(t) => t,
-        Err(why) if why.starts_with("the design has no") || why.starts_with("the file has no") => {
-            return Err(String::new());
+    let read = |data: &[u8], budget: &mut u64| {
+        gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget)
+            .map_err(|e| e.to_string())
+    };
+    let has_stream = |e: &[(String, Vec<u8>)]| e.iter().any(|(n, _)| n.ends_with("/BulkStream.dat"));
+    // "The design has no feature timeline": nothing to say about this design.
+    let no_timeline = |why: &str| why.starts_with("the design has no") || why.starts_with("the file has no");
+    let mut entries = read(bytes, &mut budget)?;
+    let tree = if has_stream(&entries) {
+        match gusset_sat::fusion_tree::feature_tree(&entries, file_name) {
+            Ok(t) => t,
+            Err(why) if no_timeline(&why) => return Err(String::new()),
+            Err(why) => return Err(why),
         }
-        Err(why) => return Err(why),
+    } else {
+        // An `.f3z`: the designs it holds. The root design named in `Manifest.json` is the one
+        // whose timeline is the file's; where it has none, the single design that has one.
+        let inner = gusset_meshio::archive::read_entries_within(
+            bytes,
+            &limits,
+            &|n| n.to_ascii_lowercase().ends_with(".f3d"),
+            MAX_F3D_PART_BYTES,
+            &mut budget,
+        )
+        .map_err(|e| e.to_string())?;
+        if inner.len() > MAX_F3D_PARTS {
+            return Err(format!("the archive holds more than {MAX_F3D_PARTS} designs"));
+        }
+        let manifest = gusset_meshio::archive::read_entries_within(
+            bytes,
+            &limits,
+            &|n| n == "Manifest.json",
+            MAX_F3D_JSON_BYTES,
+            &mut budget,
+        )
+        .map_err(|e| e.to_string())?;
+        let root = manifest
+            .first()
+            .and_then(|(_, b)| serde_json::from_slice::<Value>(b).ok())
+            .and_then(|m| m.get("root").and_then(Value::as_str).map(str::to_string));
+        let mut order: Vec<&(String, Vec<u8>)> = inner.iter().collect();
+        order.sort_by_key(|(n, _)| root.as_deref() != Some(n.as_str()));
+        let root_first = order.first().is_some_and(|(n, _)| root.as_deref() == Some(n.as_str()));
+        let mut with_timeline = Vec::new();
+        for (k, (_, data)) in order.into_iter().enumerate() {
+            let design = read(data, &mut budget)?;
+            if !has_stream(&design) {
+                continue;
+            }
+            match gusset_sat::fusion_tree::feature_tree(&design, file_name) {
+                Err(why) if no_timeline(&why) => {}
+                r => {
+                    if k == 0 && root_first {
+                        // The root has a timeline: it is the file's.
+                        with_timeline = vec![(design, r)];
+                        break;
+                    }
+                    with_timeline.push((design, r));
+                }
+            }
+        }
+        match (with_timeline.pop(), with_timeline.is_empty()) {
+            (Some((design, Ok(t))), true) => {
+                entries = design;
+                t
+            }
+            (Some((_, Err(why))), true) => return Err(why),
+            _ => return Err(String::new()),
+        }
     };
     let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
     let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    let stored = fusion_stored_bodies(&tree, &entries, bodies, kernel, importer, cancel)?;
+    t.stored_bodies = stored.clone();
     match rebuild_check(&mut t, bodies, kernel, file_name, "the file's stored") {
         Ok(note) => {
             // One entry per stored body, so the import's own body count check agrees.
@@ -1503,12 +1564,119 @@ fn fusion_history(
         }
         Err(why) if bodies.len() > 1 && why.contains("mm3") => {
             let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+            t.stored_bodies = stored;
             let note = fusion_states_check(&mut t, bodies, kernel, file_name)
                 .map_err(|states| format!("{why}; checked step by step: {states}"))?;
             Ok((t, Some(note)))
         }
         Err(why) => Err(why),
     }
+}
+
+/// The kernel-native bodies the tree's `stored_body` features (Fusion Base Features) stand for, in
+/// the order of their `body` numbers: body `index` of the history blob the feature names, moved by
+/// the component's placement like the tree's other features. A history that has nothing but stored
+/// bodies, or whose stored body is already the finished body that a later feature changes, is not a
+/// history: the rebuild check would pass trivially.
+fn fusion_stored_bodies(
+    tree: &Value,
+    entries: &[(String, Vec<u8>)],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<Vec<Vec<u8>>, String> {
+    let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let ty = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    let stored_feats: Vec<&Value> = feats.iter().filter(|f| ty(f) == "stored_body").collect();
+    if stored_feats.is_empty() {
+        return Ok(Vec::new());
+    }
+    if feats.iter().all(|f| matches!(ty(f).as_str(), "stored_body" | "unsupported")) {
+        return Err("the history is the stored base feature bodies only".into());
+    }
+    if stored_feats.len() > MAX_F3D_BODIES {
+        return Err("the design has too many base feature bodies".into());
+    }
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for (k, f) in stored_feats.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let name = f.get("name").and_then(Value::as_str).unwrap_or("?");
+        if f.get("body").and_then(Value::as_u64) != Some(k as u64) {
+            return Err(format!("the stored body {name} is not numbered in tree order"));
+        }
+        let blob_name = f.get("brep").and_then(Value::as_str).unwrap_or("");
+        let blob = entries
+            .iter()
+            .find(|(n, _)| n.rsplit('/').next() == Some(blob_name))
+            .map(|(_, b)| b)
+            .ok_or_else(|| format!("the history blob {blob_name} of {name} is not in the file"))?;
+        let num = |key: &str| f.get(key).and_then(Value::as_u64).map(|v| v as usize);
+        let (Some(index), Some(count)) = (num("index"), num("count")) else {
+            return Err(format!("the stored body {name} does not say which body of its blob it is"));
+        };
+        let place = f.get("placement").map(|p| -> Option<gusset_sat::fusion::Placement> {
+            let mut r = [[0.0; 3]; 3];
+            let mut t = [0.0; 3];
+            for (i, row) in p.get("r")?.as_array()?.iter().enumerate().take(3) {
+                for (j, v) in row.as_array()?.iter().enumerate().take(3) {
+                    *r.get_mut(i)?.get_mut(j)? = v.as_f64()?;
+                }
+            }
+            for (i, v) in p.get("t")?.as_array()?.iter().enumerate().take(3) {
+                *t.get_mut(i)? = v.as_f64()?;
+            }
+            Some(gusset_sat::fusion::Placement { r, t })
+        });
+        let place = match place {
+            Some(Some(p)) => Some(p),
+            Some(None) => return Err(format!("the placement of {name} cannot be read")),
+            None => None,
+        };
+        let c = gusset_sat::to_step_nth(blob, name, &gusset_sat::Limits::default(), place.as_ref(), index, count)
+            .map_err(|e| format!("the stored body {name}: {e}"))?;
+        let mut imported = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| e.to_string())?;
+        let (Some((_, blob)), true) = (imported.pop(), imported.is_empty()) else {
+            return Err(format!("the stored body {name} did not come in as one body"));
+        };
+        out.push(blob);
+    }
+    // A later feature that changes a stored body must find it as it was before: when the stored
+    // body is the very body the file ends with, the feature has nothing left to do and the
+    // rebuild would agree with the file whatever the feature was.
+    let names: std::collections::HashMap<&str, usize> =
+        stored_feats.iter().enumerate().filter_map(|(k, f)| Some((f.get("name")?.as_str()?, k))).collect();
+    let mut targeted: Vec<usize> = Vec::new();
+    for f in feats.iter().filter(|f| ty(f) != "stored_body") {
+        let t = f.get("target");
+        let list: Vec<&str> = match t {
+            Some(Value::String(s)) => vec![s.as_str()],
+            Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        for n in list {
+            // The feature's name stands for its first body.
+            if let Some(k) = names.get(n) {
+                targeted.push(*k);
+            }
+        }
+    }
+    if !targeted.is_empty() {
+        let vol = |blob: &Vec<u8>| -> Result<f64, String> {
+            let shape = kernel.read_native(blob).map_err(|e| e.message)?;
+            Ok(kernel.mass_properties(&shape).map_err(|e| e.message)?.volume)
+        };
+        let finals = bodies.iter().map(|b| vol(&b.blob)).collect::<Result<Vec<_>, _>>()?;
+        for k in targeted {
+            let v = out.get(k).map_or(Ok(0.0), vol)?;
+            if finals.iter().any(|f| (f - v).abs() <= 1e-9 * f.abs().max(v.abs())) {
+                return Err("a feature changes a stored body that already is a finished body of the file".into());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// How many copies of its cut tool (or added body) each feature makes, from the tree: a cut or
@@ -1530,7 +1698,10 @@ fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
         };
         let n = match get("type") {
             Some("hole") => f.get("positions").and_then(Value::as_array).map(|p| p.len() as u64).filter(|n| *n > 0),
-            Some("extrude") if matches!(get("operation"), Some("cut" | "join")) => Some(1),
+            // One tool per profile loop the extrude names (none where it takes "all" of its sketch).
+            Some("extrude") if matches!(get("operation"), Some("cut" | "join")) => {
+                Some(f.get("profiles").and_then(Value::as_array).map_or(1, |p| p.len().max(1)) as u64)
+            }
             Some("pattern_linear") => {
                 let count = f.get("count").and_then(Value::as_u64).filter(|c| *c >= 2);
                 count.and_then(|c| inputs()?.checked_mul(c - 1))
@@ -1546,15 +1717,34 @@ fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
     out
 }
 
-/// The stored volumes against the model's volume after each feature (`vols[k]` after `k`
-/// features) and the copies each feature makes: every stored solid is a state (some `vols[k]`) or
-/// a tool whose volume times the copies of some feature is that feature's volume change, and
+/// Which features may make fewer tools than they have profile loops: a cut or join extrude of
+/// several loops makes no tool for a loop that lies where there is no material to change (an
+/// outline the board already has). Those are explained by the sum of their tools, not one tool
+/// times the copies.
+fn fusion_loose(features: &[Value]) -> Vec<bool> {
+    features
+        .iter()
+        .map(|f| {
+            f.get("type").and_then(Value::as_str) == Some("extrude")
+                && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
+                && f.get("profiles").and_then(Value::as_array).is_some_and(|p| p.len() > 1)
+        })
+        .collect()
+}
+
+/// The stored volumes against the bodies of the model after each feature (`per_body[k]` holds the
+/// volume of every body after `k` features, `vols[k]` their sum) and the copies each feature
+/// makes: every stored solid is a state (the volume of some body of the model after some feature)
+/// or a tool whose volume times the copies of some feature is that feature's volume change, and
 /// every feature after the last state changes the volume by exactly a stored tool times its
-/// copies. Returns the numbers of states and tools.
+/// copies. A cut of several loops may make fewer tools than loops (`loose`): its volume change is
+/// then the sum of the tools no other feature explains. Returns the numbers of states and tools.
 fn fusion_explain_steps(
     vols: &[f64],
+    per_body: &[Vec<f64>],
     stored: &[f64],
     insts: &[Option<u64>],
+    loose: &[bool],
     names: &[String],
 ) -> Result<(usize, usize), String> {
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
@@ -1564,28 +1754,70 @@ fn fusion_explain_steps(
             _ => 0.0,
         }
     };
-    let is_state = |v: f64| vols.iter().skip(1).any(|s| same(*s, v));
+    let is_state = |v: f64| per_body.iter().skip(1).any(|bs| bs.iter().any(|b| same(*b, v)));
     let copies = |k: usize| insts.get(k - 1).copied().flatten();
     let explains = |tool: f64, k: usize| copies(k).is_some_and(|m| same(delta(k), tool * m as f64));
-    let (mut states, mut tools) = (0, 0);
     let mut tool_volumes = Vec::new();
+    let mut states = 0;
     for v in stored {
         if is_state(*v) {
             states += 1;
-        } else if (1..vols.len()).any(|k| delta(k) > 1e-9 && explains(*v, k)) {
-            tools += 1;
-            tool_volumes.push(*v);
         } else {
-            return Err(format!(
-                "a stored solid of {v:.4} mm3 is neither a state of the model nor the cut tool of a feature with the copies the tree makes"
-            ));
+            tool_volumes.push(*v);
         }
     }
     if states == 0 {
         return Err("no stored solid is a state of the model".into());
     }
+    // The tools one feature makes: one stored tool times its copies, or (a loose cut) the sum of
+    // the tools no other feature explains, not more than its loops.
+    let mut covered: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut explained: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for k in 1..vols.len() {
+        if delta(k) <= 1e-9 {
+            continue;
+        }
+        for (i, t) in tool_volumes.iter().enumerate() {
+            if explains(*t, k) {
+                covered.insert(i);
+                explained.insert(k);
+            }
+        }
+    }
+    for k in 1..vols.len() {
+        if delta(k) <= 1e-9 || explained.contains(&k) || !loose.get(k - 1).copied().unwrap_or(false) {
+            continue;
+        }
+        let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+        let sum: f64 = group.iter().filter_map(|i| tool_volumes.get(*i)).sum();
+        if !group.is_empty() && copies(k).is_some_and(|m| group.len() as u64 <= m) && same(delta(k), sum) {
+            covered.extend(group);
+            explained.insert(k);
+        }
+    }
+    if let Some(i) = (0..tool_volumes.len()).find(|i| !covered.contains(i)) {
+        let v = tool_volumes.get(i).copied().unwrap_or(0.0);
+        return Err(format!(
+            "a stored solid of {v:.4} mm3 is neither a state of the model nor the cut tool of a feature with the copies the tree makes"
+        ));
+    }
+    let tools = tool_volumes.len();
+    // The last step that added or changed a body to a stored volume.
+    let changed = |k: usize| -> Vec<f64> {
+        let mut before: Vec<f64> = k.checked_sub(1).and_then(|p| per_body.get(p)).cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        for b in per_body.get(k).map_or(&[][..], Vec::as_slice) {
+            match before.iter().position(|x| same(*x, *b)) {
+                Some(at) => {
+                    before.swap_remove(at);
+                }
+                None => out.push(*b),
+            }
+        }
+        out
+    };
     let last =
-        (1..vols.len()).rev().find(|k| vols.get(*k).is_some_and(|v| stored.iter().any(|s| same(*s, *v)))).unwrap_or(0);
+        (1..vols.len()).rev().find(|k| changed(*k).iter().any(|b| stored.iter().any(|s| same(*s, *b)))).unwrap_or(0);
     for k in last + 1..vols.len() {
         if delta(k) <= 1e-9 {
             continue;
@@ -1596,7 +1828,7 @@ fn fusion_explain_steps(
                 "how many copies {name} makes cannot be derived from the tree, and it follows the last stored state"
             ));
         };
-        if !tool_volumes.iter().any(|t| explains(*t, k)) {
+        if !explained.contains(&k) {
             return Err(format!(
                 "{name} changes the volume by {:.4} mm3, not {m} copies of a stored cut tool",
                 delta(k)
@@ -1620,7 +1852,10 @@ fn fusion_states_check(
     file_name: &str,
 ) -> Result<String, String> {
     let n = tree.features.len();
-    if n > MAX_FUSION_STATE_FEATURES {
+    let kind = |f: &Value| f.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+    // Sketches change no body and a stored body adds the one it holds: only the others are built.
+    let steps = tree.features.iter().filter(|f| !matches!(kind(f).as_str(), "sketch" | "stored_body")).count();
+    if steps > MAX_FUSION_STATE_FEATURES {
         return Err(format!("more than {MAX_FUSION_STATE_FEATURES} features"));
     }
     let mut stored: Vec<(f64, gusset_kernel::BBox)> = Vec::new();
@@ -1632,8 +1867,8 @@ fn fusion_states_check(
         ));
     }
     let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
-    // The volume and box of the model after the first k features.
-    let build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>), String> {
+    // The volume of every body (and the box of the whole) of the model after the first k features.
+    let build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>, Vec<f64>), String> {
         let mut t = tree.clone();
         t.features.truncate(k);
         t.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(1.0) }];
@@ -1646,9 +1881,11 @@ fn fusion_states_check(
         }
         let vol = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(0.0);
         let mut bb: Option<gusset_kernel::BBox> = None;
-        if full {
-            let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
-            for b in &ev.bodies {
+        let mut each = Vec::new();
+        let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
+        for b in &ev.bodies {
+            each.push(kernel.mass_properties(&b.shape).map_err(|e| e.message)?.volume);
+            if full {
                 let g = kernel.bbox(&b.shape).map_err(|e| e.message)?;
                 bb = Some(bb.map_or(g, |a| gusset_kernel::BBox {
                     min: [a.min[0].min(g.min[0]), a.min[1].min(g.min[1]), a.min[2].min(g.min[2])],
@@ -1656,21 +1893,64 @@ fn fusion_states_check(
                 }));
             }
         }
-        Ok((vol, bb))
+        Ok((vol, bb, each))
     };
-    // States: after every feature that changes the solid (sketches do not).
+    // States: the bodies after every feature. Sketches change no body; a run of features that
+    // only add bodies (new-body extrudes and sweeps, stored bodies) is built once and its
+    // bodies, in the order they were made, are shared out to its steps; a feature that changes
+    // a body is built on its own.
+    let adds = |f: &Value| match kind(f).as_str() {
+        "sketch" => Some(0usize),
+        "stored_body" => Some(1),
+        "extrude" | "sweep" if f.get("operation").and_then(Value::as_str) == Some("new") => Some(1),
+        _ => None,
+    };
+    let same_vol = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let mut vols = vec![0.0f64];
-    for k in 1..=n {
-        let is_sketch = tree.features.get(k - 1).and_then(|f| f.get("type")).and_then(Value::as_str) == Some("sketch");
-        let prev = vols.last().copied().unwrap_or(0.0);
-        vols.push(if is_sketch { prev } else { build(k, false)?.0 });
+    let mut per_body: Vec<Vec<f64>> = vec![Vec::new()];
+    let mut k = 1;
+    while k <= n {
+        let prev_bodies = per_body.last().cloned().unwrap_or_default();
+        let mut end = k;
+        while end <= n && tree.features.get(end - 1).and_then(adds).is_some() {
+            end += 1;
+        }
+        // The run k..end-1 only adds bodies; it is built as one when it is longer than a step.
+        if end > k + 1 {
+            let (_, _, each) = build(end - 1, false)?;
+            let made: Vec<usize> = (k..end).map(|j| tree.features.get(j - 1).and_then(adds).unwrap_or(0)).collect();
+            let total: usize = made.iter().sum();
+            let ordered =
+                each.len() == prev_bodies.len() + total && prev_bodies.iter().zip(&each).all(|(a, b)| same_vol(*a, *b));
+            if ordered {
+                let mut have = prev_bodies.len();
+                for m in made {
+                    have += m;
+                    let bodies: Vec<f64> = each.iter().take(have).copied().collect();
+                    vols.push(bodies.iter().sum());
+                    per_body.push(bodies);
+                }
+                k = end;
+                continue;
+            }
+        }
+        if tree.features.get(k - 1).map(kind).as_deref() == Some("sketch") {
+            vols.push(vols.last().copied().unwrap_or(0.0));
+            per_body.push(prev_bodies);
+        } else {
+            let (v, _, each) = build(k, false)?;
+            vols.push(v);
+            per_body.push(each);
+        }
+        k += 1;
     }
-    let (final_vol, final_box) = build(n, true)?;
+    let (final_vol, final_box, _) = build(n, true)?;
     let names: Vec<String> =
         tree.features.iter().map(|f| f.get("name").and_then(Value::as_str).unwrap_or("?").to_string()).collect();
     let insts = fusion_instances(&tree.features);
+    let loose = fusion_loose(&tree.features);
     let volumes: Vec<f64> = stored.iter().map(|(v, _)| *v).collect();
-    let (states, tools) = fusion_explain_steps(&vols, &volumes, &insts, &names)?;
+    let (states, tools) = fusion_explain_steps(&vols, &per_body, &volumes, &insts, &loose, &names)?;
     let mut want_box: Option<gusset_kernel::BBox> = None;
     for (_, b) in &stored {
         want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
@@ -2700,6 +2980,11 @@ mod fusion_steps_tests {
         (tree, v)
     }
 
+    /// A model of one body: its volume after each feature is the volume of the model.
+    fn one_body(v: &[f64]) -> Vec<Vec<f64>> {
+        v.iter().map(|x| if *x > 0.0 { vec![*x] } else { Vec::new() }).collect()
+    }
+
     fn names(t: &[Value]) -> Vec<String> {
         t.iter().map(|f| f["name"].as_str().unwrap().to_string()).collect()
     }
@@ -2711,19 +2996,49 @@ mod fusion_steps_tests {
     }
 
     #[test]
+    fn states_are_per_body_and_a_loose_cut_is_the_sum_of_its_tools() {
+        // A board (100), a part (7), then a cut of three loops that made two tools (1 and 2.5).
+        let t = vec![
+            json!({"type": "extrude", "name": "Board", "operation": "new"}),
+            json!({"type": "extrude", "name": "Part", "operation": "new"}),
+            json!({"type": "extrude", "name": "Cut", "operation": "cut", "profiles": [{}, {}, {}]}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![100.0, 7.0], vec![96.5, 7.0]];
+        let vols = [0.0, 100.0, 107.0, 103.5];
+        let stored = [100.0, 7.0, 1.0, 2.5];
+        let got = fusion_explain_steps(&vols, &per_body, &stored, &fusion_instances(&t), &fusion_loose(&t), &names(&t));
+        assert_eq!(got, Ok((2, 2)));
+        // The tools do not add up to the cut: refused.
+        let bad = [100.0, 7.0, 1.0, 2.0];
+        let why = fusion_explain_steps(&vols, &per_body, &bad, &fusion_instances(&t), &fusion_loose(&t), &names(&t))
+            .unwrap_err();
+        assert!(why.contains("neither a state"), "{why}");
+        // More tools than loops: refused.
+        let many = [100.0, 7.0, 0.5, 0.5, 0.5, 0.5, 1.5];
+        assert!(
+            fusion_explain_steps(&vols, &per_body, &many, &fusion_instances(&t), &fusion_loose(&t), &names(&t))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn the_exact_pattern_count_is_accepted_and_a_wrong_one_refused() {
         let stored = [225500.0, 223479.535, 199654.177, 237.583, 7941.786];
         let (t, v) = lbracket(3);
-        let ok = fusion_explain_steps(&v, &stored, &fusion_instances(&t), &names(&t));
+        let ok = fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t), &fusion_loose(&t), &names(&t));
         assert_eq!(ok, Ok((3, 2)));
         // The file's volumes belong to three columns of holes; a tree making two refuses.
         let (t2, _) = lbracket(2);
-        let why = fusion_explain_steps(&v, &stored, &fusion_instances(&t2), &names(&t2)).unwrap_err();
+        let why =
+            fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t2), &fusion_loose(&t2), &names(&t2))
+                .unwrap_err();
         assert!(why.contains("P2v") && why.contains("copies"), "{why}");
         // A tree whose copies cannot be derived (a pattern of a blend) is refused.
         let (mut t3, _) = lbracket(3);
         t3[8] = json!({"type": "pattern_linear", "name": "P2v", "features": ["F1"], "count": 3});
-        let why = fusion_explain_steps(&v, &stored, &fusion_instances(&t3), &names(&t3)).unwrap_err();
+        let why =
+            fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t3), &fusion_loose(&t3), &names(&t3))
+                .unwrap_err();
         assert!(why.contains("cannot be derived"), "{why}");
     }
 }

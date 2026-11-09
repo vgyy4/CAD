@@ -84,6 +84,9 @@ fn fusion_designs_come_in_as_history_or_bodies() {
                     .map(|w| kind_of(w.split_once("exact bodies: ").map_or(w, |x| x.1)))
                     .unwrap_or_else(|| "no feature history".into());
                 if verbose {
+                    if std::env::var_os("GUSSET_F3D_RAW").is_some() {
+                        eprintln!("{}: raw {:?}", f.display(), r["warnings_user_text"]);
+                    }
                     eprintln!("{}: {why}", f.display());
                 }
                 *reasons.entry(why).or_default() += 1;
