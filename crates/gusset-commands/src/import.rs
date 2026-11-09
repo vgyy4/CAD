@@ -382,7 +382,23 @@ impl ImportJob {
             Kind::FreeCad => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "FreeCAD import is not available"))?;
-                freecad(&bytes, importer.as_ref(), cancel)?
+                let (bodies, tier, mut warnings) = freecad(&bytes, importer.as_ref(), cancel)?;
+                // The PartDesign history as editable features, when it rebuilds to the
+                // shapes FreeCAD stored (ADR 0033 amendment); else the shapes themselves.
+                match freecad_history(&bytes, &bodies, &self.kernel, importer.as_ref(), cancel, &self.file_name) {
+                    Ok(tree) => {
+                        return Ok(PreparedImport {
+                            bodies: Vec::new(),
+                            file_name: self.file_name,
+                            tier: TIER_FREECAD_HISTORY,
+                            warnings,
+                            tree: Some(tree),
+                        });
+                    }
+                    Err(why) if why.is_empty() => {}
+                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
+                }
+                (bodies, tier, warnings)
             }
             Kind::Mesh(format) => {
                 let opts = gusset_meshio::ImportOptions {
@@ -910,6 +926,108 @@ fn scad(
     let warnings = model.warnings.into_iter().chain(notes).take(50).collect();
     Ok((out, TIER_SCAD, warnings))
 }
+
+/// Tier note for a FreeCAD document whose PartDesign history came in as features.
+const TIER_FREECAD_HISTORY: &str = "tier 1: the FreeCAD PartDesign history as editable features";
+
+/// A FreeCAD document's PartDesign bodies as a feature tree, rebuilt in a scratch session and
+/// kept only when it gives the volume of the shapes FreeCAD stored (within a millionth) with
+/// nothing skipped. `Err("")`: there is no PartDesign body (nothing to say).
+fn freecad_history(
+    bytes: &[u8],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+    file_name: &str,
+) -> Result<crate::tree_import::Tree, String> {
+    let limits = gusset_meshio::Limits::default();
+    let mut budget = limits.max_decompressed_bytes;
+    let xml = gusset_meshio::archive::read_entries_within(
+        bytes,
+        &limits,
+        &|n| n == "Document.xml",
+        crate::fcstd::MAX_XML as u64,
+        &mut budget,
+    )
+    .map_err(|e| e.to_string())?;
+    let doc = xml.first().map(|(_, v)| v.as_slice()).ok_or_else(String::new)?;
+    if !crate::fcstd_tree::has_bodies(doc) {
+        return Err(String::new());
+    }
+    // Fillets and chamfers name edges of their base feature's stored shape: each shape file
+    // is read through the import worker once, and its edges taken from the kernel.
+    let mut cache: std::collections::HashMap<String, crate::fcstd_tree::Edges> = std::collections::HashMap::new();
+    let mut shape_edges = |file: &str| -> Result<crate::fcstd_tree::Edges, String> {
+        if let Some(e) = cache.get(file) {
+            return Ok(e.clone());
+        }
+        if cache.len() >= MAX_FREECAD_EDGE_SHAPES {
+            return Err("too many base shapes".into());
+        }
+        let mut b = limits.max_decompressed_bytes;
+        let data = gusset_meshio::archive::read_entries_within(bytes, &limits, &|n| n == file, u64::MAX, &mut b)
+            .map_err(|e| e.to_string())?;
+        let data = data.first().map(|(_, v)| v.as_slice()).ok_or("its base shape is missing")?;
+        let format = if file.to_ascii_lowercase().ends_with(".bin") { "brep_bin" } else { "brp" };
+        let blobs = importer.import(format, data, cancel).map_err(|e| e.to_string())?;
+        let [(_, blob)] = blobs.as_slice() else { return Err("its base shape is not one solid".into()) };
+        let shape = kernel.read_native(blob).map_err(|e| e.message)?;
+        let topo = kernel.topology(&shape).map_err(|e| e.message)?;
+        let e: Vec<_> = topo.edges.iter().map(|e| (e.midpoint, e.faces.clone())).collect();
+        cache.insert(file.to_string(), e.clone());
+        Ok(e)
+    };
+    let mut tree = crate::fcstd_tree::tree(doc, &mut shape_edges)?;
+    // The stored shapes' volume is what the features must give.
+    let mut want = 0.0;
+    let mut want_box: Option<gusset_kernel::BBox> = None;
+    let union = |a: Option<gusset_kernel::BBox>, b: gusset_kernel::BBox| {
+        Some(a.map_or(b, |a| gusset_kernel::BBox {
+            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+        }))
+    };
+    for b in bodies {
+        let shape = kernel.read_native(&b.blob).map_err(|e| e.message)?;
+        want += kernel.mass_properties(&shape).map_err(|e| e.message)?.volume;
+        want_box = union(want_box, kernel.bbox(&shape).map_err(|e| e.message)?);
+    }
+    tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(want) }];
+    let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
+    let ctx = crate::CmdCtx::user(0);
+    let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
+    let r = crate::tree_import::apply(&mut scratch, &ctx, &tree, file_name).map_err(|e| e.message)?;
+    let skipped = r.get("skipped_user_text").and_then(Value::as_array).map_or(0, Vec::len);
+    if skipped > 0 {
+        return Err(format!("{skipped} features could not be rebuilt"));
+    }
+    let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
+    let close = (got - want).abs() <= 1e-6 * want;
+    if want.is_nan() || want <= 0.0 || !close {
+        return Err(format!("the features give {got:.4} mm3, FreeCAD's shapes {want:.4} mm3"));
+    }
+    // The same volume in another place (a mirror about the wrong plane) is caught by the box.
+    let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
+    let mut got_box = None;
+    for b in &ev.bodies {
+        got_box = union(got_box, kernel.bbox(&b.shape).map_err(|e| e.message)?);
+    }
+    if let (Some(w), Some(g)) = (want_box, got_box) {
+        let tol = 1e-4 * (1.0 + gusset_kernel::norm(w.size()));
+        let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
+        if far(w.min, g.min) || far(w.max, g.max) {
+            return Err(format!(
+                "the features lie in {:?}..{:?}, FreeCAD's shapes in {:?}..{:?}",
+                g.min, g.max, w.min, w.max
+            ));
+        }
+    }
+    Ok(tree)
+}
+
+/// Most base shapes read for the edges of one FreeCAD document's fillets and chamfers.
+const MAX_FREECAD_EDGE_SHAPES: usize = 64;
 
 /// Most OpenSCAD objects written as features in one import (security review S3).
 const MAX_SCAD_FEATURE_OBJECTS: usize = 500;
@@ -1477,7 +1595,17 @@ fn freecad(
 /// Phase 3 without policy checks: stores the blobs and commits the import features.
 pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) -> Result<Value, CommandError> {
     if let Some(tree) = &p.tree {
-        return crate::tree_import::apply(s, ctx, tree, &p.file_name);
+        let mut out = crate::tree_import::apply(s, ctx, tree, &p.file_name)?;
+        // A FreeCAD document's history says where it came from (not an exporter plugin).
+        if p.tier == TIER_FREECAD_HISTORY
+            && let Some(o) = out.as_object_mut()
+        {
+            o.insert("tier".into(), json!(p.tier));
+            if let Some(w) = o.get_mut("warnings_user_text").and_then(Value::as_array_mut) {
+                w.extend(p.warnings.iter().take(20).map(|x| Value::from(x.as_str())));
+            }
+        }
+        return Ok(out);
     }
     // (label, blob hash, format, colour, face colours)
     type Stored<'a> = (String, String, ImportFormat, Option<u32>, &'a [(u32, u32)]);

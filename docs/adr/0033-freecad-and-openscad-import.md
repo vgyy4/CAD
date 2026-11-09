@@ -78,3 +78,38 @@ comes in as an exact body. Not translated yet: `hull`, `minkowski` and text, whi
 already refuses or evaluates elsewhere; loops and modules are unrolled, so a `for` gives
 repeated features, not a pattern.
 
+
+## Amendment (2026-11-09): FreeCAD PartDesign history as editable features
+
+A `.FCStd` file holds the whole PartDesign history in `Document.xml`: each `PartDesign::Body`
+lists its features in order (`Group`), sketches keep their geometry in their own frame plus a
+placement, and every feature names its inputs and sizes. FreeCAD is open source, so the format
+is read directly (`crates/gusset-commands/src/fcstd_tree.rs`).
+
+**Decision.** The history is written as a Gusset feature tree (`.gtree.json` format version 2,
+ADR 0042) and the tree importer builds it. Translated:
+
+* sketches (lines, circles, counter-clockwise arcs, construction geometry);
+* pad and pocket (a length, midplane, reversed; pocket through all);
+* revolution and groove about a sketch axis or line, or an origin axis;
+* mirrored, linear and polar patterns and MultiTransform (each step in turn, about sketch
+  axes, origin axes and planes or datum lines and planes; the whole body or listed features);
+* fillets and chamfers (equal distance): FreeCAD names edges (`EdgeN`, `FaceN`) of the base
+  feature's stored shape, so that shape is read through the import worker and each edge is
+  passed on by its midpoint;
+* additive and subtractive boxes, cylinders, cones and spheres (as a sketch and an extrusion
+  or revolution);
+* datums and the origin carry no geometry and are skipped.
+
+**Check.** Before anything is committed the tree is built in a scratch session and compared
+with the shapes FreeCAD stored: every feature must build, the volume must agree within 1e-6
+and the bounding box within 1e-4 of its diagonal (the box catches a mirror about the wrong
+plane, which keeps the volume). Any untranslated feature, failure or mismatch keeps the exact
+shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
+
+**Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 60 come in as history,
+the rest as exact shapes. The main remaining reasons: features that rebuild with a different
+volume (fillets whose edges change with the feature order, and stale shapes), lofts and
+pipes, pad and pocket types other than a length (up to face, two lengths), ellipse arcs, and
+axes on edges of solids.

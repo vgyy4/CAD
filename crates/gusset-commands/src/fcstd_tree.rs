@@ -1,0 +1,886 @@
+//! FreeCAD PartDesign history as editable features (ADR 0033 amendment, spec: "FreeCAD
+//! .FCStd, aim for tier 1"). FreeCAD is open source and its document format is plain XML:
+//! each `PartDesign::Body` lists its features in order (`Group`), sketches store their
+//! geometry in their own frame and their placement, and pads, pockets, revolutions and grooves
+//! name their profile sketch and their sizes. They are written as a Gusset feature tree
+//! (`.gtree.json`, ADR 0042), which the tree importer turns into features; the import checks
+//! the result against the shapes FreeCAD stored and keeps the exact shapes when they differ.
+
+use quick_xml::Reader;
+use quick_xml::events::Event;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
+
+/// Most objects, elements per property and features per body read.
+const MAX_OBJECTS: usize = 20_000;
+const MAX_ELEMENTS: usize = 100_000;
+const MAX_FEATURES: usize = 2000;
+
+/// One element inside a property: its tag and attributes.
+#[derive(Debug, Clone, Default)]
+struct Elem {
+    tag: String,
+    attrs: HashMap<String, String>,
+}
+
+/// An object: its type and its properties (each a list of the elements inside it).
+#[derive(Debug, Clone, Default)]
+struct Obj {
+    kind: String,
+    props: HashMap<String, Vec<Elem>>,
+}
+
+impl Obj {
+    fn elems(&self, prop: &str) -> &[Elem] {
+        self.props.get(prop).map_or(&[], Vec::as_slice)
+    }
+    fn first(&self, prop: &str, tag: &str) -> Option<&Elem> {
+        self.elems(prop).iter().find(|e| e.tag == tag)
+    }
+    fn value(&self, prop: &str, tag: &str) -> Option<&str> {
+        self.first(prop, tag).and_then(|e| e.attrs.get("value")).map(String::as_str)
+    }
+    fn float(&self, prop: &str) -> Option<f64> {
+        self.value(prop, "Float").and_then(|v| v.parse().ok()).filter(|v: &f64| v.is_finite())
+    }
+    fn bool(&self, prop: &str) -> bool {
+        self.value(prop, "Bool") == Some("true")
+    }
+    fn int(&self, prop: &str) -> Option<i64> {
+        self.value(prop, "Integer").and_then(|v| v.parse().ok())
+    }
+    /// The object a Link / LinkSub property names, and its sub-element names.
+    fn link(&self, prop: &str) -> Option<(String, Vec<String>)> {
+        let e = self.elems(prop);
+        let target = e.iter().find(|e| e.tag == "Link" || e.tag == "LinkSub")?.attrs.get("value")?.clone();
+        if target.is_empty() {
+            return None;
+        }
+        let subs = e.iter().filter(|e| e.tag == "Sub").filter_map(|e| e.attrs.get("value").cloned()).collect();
+        Some((target, subs))
+    }
+    /// The objects a LinkList property names, in order.
+    fn link_list(&self, prop: &str) -> Vec<String> {
+        self.elems(prop).iter().filter(|e| e.tag == "Link").filter_map(|e| e.attrs.get("value").cloned()).collect()
+    }
+}
+
+/// Parses `Document.xml` into objects with all their property elements.
+fn parse(xml: &[u8]) -> Result<BTreeMap<String, Obj>, String> {
+    if xml.len() > crate::fcstd::MAX_XML {
+        return Err("Document.xml is too large".into());
+    }
+    let mut r = Reader::from_reader(xml);
+    r.config_mut().check_end_names = false;
+    let mut buf = Vec::new();
+    let mut objects: BTreeMap<String, Obj> = BTreeMap::new();
+    let (mut in_data, mut current, mut property) = (false, None::<String>, None::<String>);
+    let (mut depth, mut elements) = (0u32, 0usize);
+    loop {
+        let ev = r.read_event_into(&mut buf).map_err(|e| format!("Document.xml: {e}"))?;
+        match &ev {
+            Event::Start(e) | Event::Empty(e) => {
+                if matches!(ev, Event::Start(_)) {
+                    depth += 1;
+                    if depth > 64 {
+                        return Err("Document.xml is nested too deeply".into());
+                    }
+                }
+                let attrs = || -> HashMap<String, String> {
+                    e.attributes()
+                        .flatten()
+                        .take(64)
+                        .filter_map(|a| {
+                            let k: &str = a.key.as_ref();
+                            let k = k.to_string();
+                            let v = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok()?;
+                            Some((k, v.chars().take(1000).collect()))
+                        })
+                        .collect()
+                };
+                match e.name().as_ref() {
+                    "ObjectData" => in_data = true,
+                    "Object" => {
+                        let a = attrs();
+                        let Some(name) = a.get("name").cloned() else { continue };
+                        if in_data {
+                            current = Some(name);
+                        } else {
+                            if objects.len() >= MAX_OBJECTS {
+                                return Err("the document has too many objects".into());
+                            }
+                            objects.entry(name).or_default().kind = a.get("type").cloned().unwrap_or_default();
+                        }
+                    }
+                    "Property" => property = attrs().get("name").cloned(),
+                    tag => {
+                        let (Some(obj), Some(prop)) = (current.as_ref(), property.as_ref()) else { continue };
+                        let Some(o) = objects.get_mut(obj) else { continue };
+                        elements += 1;
+                        if elements > MAX_ELEMENTS {
+                            return Err("Document.xml has too many elements".into());
+                        }
+                        let tag = tag.to_string();
+                        o.props.entry(prop.clone()).or_default().push(Elem { tag, attrs: attrs() });
+                    }
+                }
+            }
+            Event::End(e) => {
+                depth = depth.saturating_sub(1);
+                match e.name().as_ref() {
+                    "ObjectData" => in_data = false,
+                    "Object" => current = None,
+                    "Property" => property = None,
+                    _ => {}
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(objects)
+}
+
+type V3 = [f64; 3];
+
+/// A rigid placement: rotation (columns are the frame's axes) and translation.
+#[derive(Debug, Clone, Copy)]
+struct Place {
+    x: V3,
+    y: V3,
+    z: V3,
+    p: V3,
+}
+
+const IDENTITY: Place = Place { x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0], z: [0.0, 0.0, 1.0], p: [0.0; 3] };
+
+impl Place {
+    /// FreeCAD's placement: position and a unit quaternion (Q0..Q2 the vector part, Q3 the
+    /// scalar).
+    fn of(o: &Obj) -> Place {
+        let Some(e) = o.first("Placement", "PropertyPlacement") else { return IDENTITY };
+        let g = |k: &str| e.attrs.get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0);
+        let (qx, qy, qz, qw) = (g("Q0"), g("Q1"), g("Q2"), g("Q3"));
+        let n = libm::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+        if n < 1e-12 {
+            return Place { p: [g("Px"), g("Py"), g("Pz")], ..IDENTITY };
+        }
+        let (x, y, z, w) = (qx / n, qy / n, qz / n, qw / n);
+        Place {
+            x: [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)],
+            y: [2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w)],
+            z: [2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y)],
+            p: [g("Px"), g("Py"), g("Pz")],
+        }
+    }
+
+    fn dir(&self, v: V3) -> V3 {
+        [
+            self.x[0] * v[0] + self.y[0] * v[1] + self.z[0] * v[2],
+            self.x[1] * v[0] + self.y[1] * v[1] + self.z[1] * v[2],
+            self.x[2] * v[0] + self.y[2] * v[1] + self.z[2] * v[2],
+        ]
+    }
+
+    fn point(&self, v: V3) -> V3 {
+        let d = self.dir(v);
+        [d[0] + self.p[0], d[1] + self.p[1], d[2] + self.p[2]]
+    }
+
+    /// `self` after `inner` (inner's frame given in self's).
+    fn then(&self, inner: &Place) -> Place {
+        Place { x: self.dir(inner.x), y: self.dir(inner.y), z: self.dir(inner.z), p: self.point(inner.p) }
+    }
+}
+
+/// A sketch written as a tree sketch; returns the feature JSON and its lines by FreeCAD edge
+/// number (1-based `EdgeN`) for revolve axes.
+fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<usize, String>), String> {
+    let pl = body.then(&Place::of(o));
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    let mut pjson = Vec::new();
+    let mut point = |x: f64, y: f64, pjson: &mut Vec<Value>| -> String {
+        // Ends that meet share one point, so loops close.
+        if let Some(i) = points.iter().position(|(a, b)| (a - x).abs() < 1e-7 && (b - y).abs() < 1e-7) {
+            return format!("p{}", i + 1);
+        }
+        points.push((x, y));
+        let id = format!("p{}", points.len());
+        pjson.push(json!({"id": id, "x": x, "y": y}));
+        id
+    };
+    let (mut curves, mut lines) = (Vec::new(), HashMap::new());
+    let mut construction = false;
+    let mut edge = 0usize;
+    let num = |e: &Elem, k: &str| -> Result<f64, String> {
+        e.attrs
+            .get(k)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| format!("{name}: a bad {k}"))
+    };
+    for e in o.elems("Geometry") {
+        match e.tag.as_str() {
+            "Construction" => construction = e.attrs.get("value").is_some_and(|v| v == "1"),
+            "GeoExtension" if e.attrs.get("type").is_some_and(|t| t.contains("SketchGeometryExtension")) => {
+                // Newer files keep the construction flag here (geometry mode bit 0).
+                if let Some(m) = e.attrs.get("geometryModeFlags") {
+                    construction = m.ends_with('1');
+                }
+            }
+            "LineSegment" => {
+                edge += 1;
+                let a = point(num(e, "StartX")?, num(e, "StartY")?, &mut pjson);
+                let b = point(num(e, "EndX")?, num(e, "EndY")?, &mut pjson);
+                if a == b {
+                    return Err(format!("{name}: a line of zero length"));
+                }
+                let id = format!("l{edge}");
+                lines.insert(edge, id.clone());
+                curves.push(json!({"id": id, "type": "line", "start": a, "end": b, "construction": construction}));
+                construction = false;
+            }
+            "Circle" => {
+                edge += 1;
+                let c = point(num(e, "CenterX")?, num(e, "CenterY")?, &mut pjson);
+                let r = num(e, "Radius")?;
+                curves.push(json!({"id": format!("c{edge}"), "type": "circle", "center": c, "radius": r, "construction": construction}));
+                construction = false;
+            }
+            "ArcOfCircle" => {
+                edge += 1;
+                let (cx, cy, r) = (num(e, "CenterX")?, num(e, "CenterY")?, num(e, "Radius")?);
+                let (a0, a1) = (num(e, "StartAngle")?, num(e, "EndAngle")?);
+                // Counter-clockwise from the start angle to the end angle about the sketch
+                // normal (a mirrored arc's normal points the other way: refused).
+                if e.attrs.get("NormalZ").and_then(|v| v.parse::<f64>().ok()).is_some_and(|z| z < 0.0) {
+                    return Err(format!("{name}: a clockwise arc"));
+                }
+                let c = point(cx, cy, &mut pjson);
+                let s = point(cx + r * libm::cos(a0), cy + r * libm::sin(a0), &mut pjson);
+                let t = point(cx + r * libm::cos(a1), cy + r * libm::sin(a1), &mut pjson);
+                curves.push(json!({"id": format!("a{edge}"), "type": "arc", "center": c, "start": s, "end": t, "construction": construction}));
+                construction = false;
+            }
+            "Point" => {
+                edge += 1;
+                construction = false;
+            }
+            t if matches!(
+                t,
+                "Ellipse"
+                    | "ArcOfEllipse"
+                    | "ArcOfHyperbola"
+                    | "ArcOfParabola"
+                    | "BSplineCurve"
+                    | "Hyperbola"
+                    | "Parabola"
+            ) =>
+            {
+                return Err(format!("{name}: {t} curves are not translated yet"));
+            }
+            _ => {}
+        }
+    }
+    if curves.is_empty() {
+        return Err(format!("{name}: an empty sketch"));
+    }
+    let f = json!({
+        "type": "sketch",
+        "name": name,
+        "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.y},
+        "points": pjson,
+        "curves": curves,
+    });
+    Ok((f, lines))
+}
+
+/// What a reference can name: the document's objects, the body's placement and its sketches
+/// read so far (frame and lines).
+struct Refs<'a> {
+    objects: &'a BTreeMap<String, Obj>,
+    body: &'a Place,
+    sketches: &'a HashMap<String, (Place, HashMap<usize, String>)>,
+}
+
+impl Refs<'_> {
+    /// An axis (point and direction) a LinkSub names: a sketch's own axes, the body origin's
+    /// axes or a datum line.
+    fn axis(&self, who: &str, (obj, subs): &(String, Vec<String>)) -> Result<(V3, V3), String> {
+        let sub = subs.first().map(String::as_str).unwrap_or_default();
+        if let Some((sk, _)) = self.sketches.get(obj) {
+            return match sub {
+                "H_Axis" => Ok((sk.p, sk.x)),
+                "V_Axis" => Ok((sk.p, sk.y)),
+                "N_Axis" => Ok((sk.p, sk.z)),
+                _ => Err(format!("{who}: an axis on a sketch edge is not translated yet")),
+            };
+        }
+        let kind = self.objects.get(obj).map(|o| o.kind.as_str()).unwrap_or_default();
+        if let Some(d) = self.objects.get(obj).filter(|d| d.kind == "PartDesign::Line" && sub.is_empty()) {
+            let pl = self.body.then(&Place::of(d));
+            return Ok((pl.p, pl.z));
+        }
+        let up = obj.to_ascii_uppercase();
+        let b = self.body;
+        if up.starts_with("X_AXIS") {
+            Ok((b.p, b.x))
+        } else if up.starts_with("Y_AXIS") {
+            Ok((b.p, b.y))
+        } else if up.starts_with("Z_AXIS") {
+            Ok((b.p, b.z))
+        } else {
+            Err(format!(
+                "{who}: an axis on {} is not translated yet",
+                if kind.is_empty() { "a missing object" } else { kind }
+            ))
+        }
+    }
+
+    /// A plane (point and normal) a LinkSub names: a sketch axis (the plane holds that axis
+    /// and the sketch normal), the sketch plane, the origin's planes or a datum plane.
+    fn plane(&self, who: &str, (obj, subs): &(String, Vec<String>)) -> Result<(V3, V3), String> {
+        let sub = subs.first().map(String::as_str).unwrap_or_default();
+        if let Some((sk, _)) = self.sketches.get(obj) {
+            return match sub {
+                "H_Axis" => Ok((sk.p, sk.y)),
+                "V_Axis" => Ok((sk.p, sk.x)),
+                "" | "N_Axis" => Ok((sk.p, sk.z)),
+                _ => Err(format!("{who}: a plane on a sketch edge is not translated yet")),
+            };
+        }
+        let kind = self.objects.get(obj).map(|o| o.kind.as_str()).unwrap_or_default();
+        if let Some(d) = self.objects.get(obj).filter(|d| d.kind == "PartDesign::Plane" && sub.is_empty()) {
+            let pl = self.body.then(&Place::of(d));
+            return Ok((pl.p, pl.z));
+        }
+        let up = obj.to_ascii_uppercase();
+        let b = self.body;
+        if up.starts_with("XY_PLANE") {
+            Ok((b.p, b.z))
+        } else if up.starts_with("XZ_PLANE") {
+            Ok((b.p, b.y))
+        } else if up.starts_with("YZ_PLANE") {
+            Ok((b.p, b.x))
+        } else {
+            Err(format!(
+                "{who}: a mirror plane on {} is not translated yet",
+                if kind.is_empty() { "a missing object" } else { kind }
+            ))
+        }
+    }
+}
+
+/// One transformation of a pattern as a tree feature (without its features and target), or
+/// none when it makes no copies.
+fn transform(name: &str, o: &Obj, refs: &Refs<'_>) -> Result<Option<Value>, String> {
+    let count = o.int("Occurrences").unwrap_or(2);
+    match o.kind.as_str() {
+        "PartDesign::Mirrored" => {
+            let link = o.link("MirrorPlane").ok_or(format!("{name}: no mirror plane"))?;
+            let (origin, normal) = refs.plane(name, &link)?;
+            Ok(Some(
+                json!({"type": "mirror", "name": name, "plane": {"origin": origin, "normal": normal}, "merge": true}),
+            ))
+        }
+        "PartDesign::LinearPattern" => {
+            if count < 2 {
+                return Ok(None);
+            }
+            let link = o.link("Direction").ok_or(format!("{name}: no direction"))?;
+            let (_, mut dir) = refs.axis(name, &link)?;
+            if o.bool("Reversed") {
+                dir = dir.map(|c| -c);
+            }
+            // Mode 0: the overall length; mode 1: the spacing (`Offset`).
+            let spacing = match o.int("Mode").unwrap_or(0) {
+                0 => o.float("Length").ok_or(format!("{name}: no length"))? / (count - 1) as f64,
+                1 => o.float("Offset").ok_or(format!("{name}: no offset"))?,
+                _ => return Err(format!("{name}: this pattern mode is not translated yet")),
+            };
+            Ok(Some(
+                json!({"type": "pattern_linear", "name": name, "direction": dir, "spacing": spacing, "count": count}),
+            ))
+        }
+        "PartDesign::PolarPattern" => {
+            if count < 2 {
+                return Ok(None);
+            }
+            let link = o.link("Axis").ok_or(format!("{name}: no axis"))?;
+            let (origin, mut dir) = refs.axis(name, &link)?;
+            if o.bool("Reversed") {
+                dir = dir.map(|c| -c);
+            }
+            // Mode 0: the overall angle (a full turn spaces evenly, as in Gusset); mode 1:
+            // the angle between copies (`Offset`).
+            let angle = match o.int("Mode").unwrap_or(0) {
+                0 => o.float("Angle").unwrap_or(360.0),
+                1 => o.float("Offset").ok_or(format!("{name}: no offset"))? * (count - 1) as f64,
+                _ => return Err(format!("{name}: this pattern mode is not translated yet")),
+            };
+            Ok(Some(json!({"type": "pattern_circular", "name": name, "axis": {"origin": origin, "direction": dir},
+                "angle": angle, "count": count})))
+        }
+        other => Err(format!("{name}: {other} is not translated yet")),
+    }
+}
+
+/// A PartDesign primitive as a profile sketch and an extrusion or revolution (placed by the
+/// primitive's placement in the body).
+fn primitive(name: &str, o: &Obj, body: &Place) -> Result<Vec<Value>, String> {
+    let pl = body.then(&Place::of(o));
+    let pos = |k: &str| o.float(k).filter(|v| *v > 0.0).ok_or(format!("{name}: no positive {k}"));
+    let sk = format!("{name}_profile");
+    let kind =
+        o.kind.trim_start_matches("PartDesign::").trim_start_matches("Additive").trim_start_matches("Subtractive");
+    let full = |k: &str| o.float(k).is_none_or(|a| (a - 360.0).abs() < 1e-9);
+    match kind {
+        "Box" => {
+            let (l, w, h) = (pos("Length")?, pos("Width")?, pos("Height")?);
+            let pts = [(0.0, 0.0), (l, 0.0), (l, w), (0.0, w)];
+            let points: Vec<Value> = pts
+                .iter()
+                .enumerate()
+                .map(|(i, (x, y))| json!({"id": format!("p{}", i + 1), "x": x, "y": y}))
+                .collect();
+            let curves: Vec<Value> = (0..4)
+                .map(|i| json!({"id": format!("l{}", i + 1), "type": "line", "start": format!("p{}", i + 1), "end": format!("p{}", (i + 1) % 4 + 1)}))
+                .collect();
+            Ok(vec![
+                json!({"type": "sketch", "name": sk, "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.y}, "points": points, "curves": curves}),
+                json!({"type": "extrude", "name": name, "sketch": sk, "profiles": "all", "distance": h, "symmetric": false}),
+            ])
+        }
+        "Cylinder" => {
+            let (r, h) = (pos("Radius")?, pos("Height")?);
+            if !full("Angle")
+                || o.float("FirstAngle").is_some_and(|a| a != 0.0)
+                || o.float("SecondAngle").is_some_and(|a| a != 0.0)
+            {
+                return Err(format!("{name}: a partial or slanted cylinder is not translated yet"));
+            }
+            Ok(vec![
+                json!({"type": "sketch", "name": sk, "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.y},
+                    "points": [{"id": "c", "x": 0.0, "y": 0.0}], "curves": [{"id": "k", "type": "circle", "center": "c", "radius": r}]}),
+                json!({"type": "extrude", "name": name, "sketch": sk, "profiles": "all", "distance": h, "symmetric": false}),
+            ])
+        }
+        "Cone" | "Sphere" => {
+            // A half section in the plane of the primitive's x and z axes, turned about z.
+            let (points, curves) = if kind == "Cone" {
+                let (r1, r2, h) =
+                    (o.float("Radius1").unwrap_or(0.0), o.float("Radius2").unwrap_or(0.0), pos("Height")?);
+                if r1 < 0.0 || r2 < 0.0 || (r1 <= 0.0 && r2 <= 0.0) {
+                    return Err(format!("{name}: a cone without radius"));
+                }
+                let mut pts = vec![(0.0, 0.0)];
+                if r1 > 0.0 {
+                    pts.push((r1, 0.0));
+                }
+                if r2 > 0.0 {
+                    pts.push((r2, h));
+                }
+                pts.push((0.0, h));
+                let n = pts.len();
+                let points: Vec<Value> = pts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (x, y))| json!({"id": format!("p{}", i + 1), "x": x, "y": y}))
+                    .collect();
+                let curves: Vec<Value> = (0..n)
+                    .map(|i| json!({"id": format!("l{}", i + 1), "type": "line", "start": format!("p{}", i + 1), "end": format!("p{}", (i + 1) % n + 1)}))
+                    .collect();
+                (points, curves)
+            } else {
+                let r = pos("Radius")?;
+                if !full("Angle3")
+                    || o.float("Angle1").is_some_and(|a| (a + 90.0).abs() > 1e-9)
+                    || o.float("Angle2").is_some_and(|a| (a - 90.0).abs() > 1e-9)
+                {
+                    return Err(format!("{name}: a partial sphere is not translated yet"));
+                }
+                (
+                    vec![
+                        json!({"id": "c", "x": 0.0, "y": 0.0}),
+                        json!({"id": "s", "x": 0.0, "y": -r}),
+                        json!({"id": "t", "x": 0.0, "y": r}),
+                    ],
+                    vec![
+                        json!({"id": "a", "type": "arc", "center": "c", "start": "s", "end": "t"}),
+                        json!({"id": "l", "type": "line", "start": "t", "end": "s"}),
+                    ],
+                )
+            };
+            if kind == "Cone" && !full("Angle") {
+                return Err(format!("{name}: a partial cone is not translated yet"));
+            }
+            Ok(vec![
+                json!({"type": "sketch", "name": sk, "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.z}, "points": points, "curves": curves}),
+                json!({"type": "revolve", "name": name, "sketch": sk, "profiles": "all", "axis": {"origin": pl.p, "direction": pl.z}, "angle": 360.0}),
+            ])
+        }
+        _ => Err(format!("{name}: {} is not translated yet", o.kind)),
+    }
+}
+
+/// Whether the document holds a PartDesign body worth translating.
+#[must_use]
+pub(crate) fn has_bodies(xml: &[u8]) -> bool {
+    parse(xml).is_ok_and(|o| o.values().any(|o| o.kind == "PartDesign::Body"))
+}
+
+/// The edges of a stored shape file, in FreeCAD's numbering (`Edge1` first): each edge's
+/// midpoint and the 0-based numbers of the faces it bounds.
+pub(crate) type Edges = Vec<([f64; 3], Vec<u32>)>;
+/// Reads [`Edges`] of a shape file.
+pub(crate) type ShapeEdges<'a> = &'a mut dyn FnMut(&str) -> Result<Edges, String>;
+
+/// Most edges one fillet or chamfer picks.
+const MAX_EDGE_PICKS: usize = 256;
+
+/// The document's PartDesign bodies as a feature tree (format version 2), or why not. Every
+/// feature of every body must be translated: one that is not makes the whole tree refused
+/// (the exact shapes then stand in).
+///
+/// # Errors
+/// The first feature that cannot be written, or a damaged document.
+pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tree_import::Tree, String> {
+    let objects = parse(xml)?;
+    let mut features: Vec<Value> = Vec::new();
+    let mut sketches: HashMap<String, (Place, HashMap<usize, String>)> = HashMap::new();
+    let mut bodies = 0usize;
+    for (body_name, body) in objects.iter().filter(|(_, o)| o.kind == "PartDesign::Body") {
+        bodies += 1;
+        let place = Place::of(body);
+        let mut first_solid: Option<String> = None;
+        let group = body.link_list("Group");
+        if group.len() > MAX_FEATURES {
+            return Err(format!("{body_name}: too many features"));
+        }
+        // A MultiTransform's steps are listed in the body too; they act through it.
+        let steps: std::collections::HashSet<String> = group
+            .iter()
+            .filter_map(|n| objects.get(n))
+            .filter(|o| o.kind == "PartDesign::MultiTransform")
+            .flat_map(|o| o.link_list("Transformations"))
+            .collect();
+        for name in &group {
+            let Some(o) = objects.get(name) else { continue };
+            if steps.contains(name) {
+                continue;
+            }
+            let kind = o.kind.as_str();
+            match kind {
+                "Sketcher::SketchObject" => {
+                    let (f, lines) = sketch(name, o, &place)?;
+                    sketches.insert(name.clone(), (place.then(&Place::of(o)), lines));
+                    features.push(f);
+                }
+                "PartDesign::Pad" | "PartDesign::Pocket" => {
+                    let pocket = kind == "PartDesign::Pocket";
+                    let (profile, _) =
+                        o.link("Profile").or_else(|| o.link("Sketch")).ok_or(format!("{name}: no profile"))?;
+                    if !sketches.contains_key(&profile) {
+                        return Err(format!("{name}: its profile is not a sketch of the body"));
+                    }
+                    let ty = o.int("Type").unwrap_or(0);
+                    let len = o.float("Length").unwrap_or(0.0);
+                    let distance = match (pocket, ty) {
+                        (_, 0) => len,
+                        // Through all: far enough for any part (the volume check confirms).
+                        (true, 1) => 100_000.0,
+                        _ => {
+                            return Err(format!(
+                                "{name}: this {} type is not translated yet",
+                                if pocket { "pocket" } else { "pad" }
+                            ));
+                        }
+                    };
+                    if o.bool("UseCustomVector") {
+                        return Err(format!("{name}: a custom direction is not translated yet"));
+                    }
+                    // A pad grows along the sketch normal, a pocket cuts against it;
+                    // `Reversed` flips either.
+                    let mut d = if pocket { -distance } else { distance };
+                    if o.bool("Reversed") {
+                        d = -d;
+                    }
+                    let symmetric = o.bool("Midplane");
+                    let op = match (&first_solid, pocket) {
+                        (None, false) => "new",
+                        (None, true) => return Err(format!("{name}: a pocket before any solid")),
+                        (Some(_), false) => "join",
+                        (Some(_), true) => "cut",
+                    };
+                    let mut f = json!({"type": "extrude", "name": name, "sketch": profile, "profiles": "all",
+                        "distance": if symmetric { distance } else { d }, "symmetric": symmetric, "operation": op});
+                    if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
+                        m.insert("target".into(), json!(t));
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
+                    features.push(f);
+                }
+                "PartDesign::Revolution" | "PartDesign::Groove" => {
+                    let groove = kind == "PartDesign::Groove";
+                    let (profile, _) =
+                        o.link("Profile").or_else(|| o.link("Sketch")).ok_or(format!("{name}: no profile"))?;
+                    let (sk_place, lines) =
+                        sketches.get(&profile).ok_or(format!("{name}: its profile is not a sketch of the body"))?;
+                    let (axis_obj, subs) = o.link("ReferenceAxis").ok_or(format!("{name}: no axis"))?;
+                    let sub = subs.first().map(String::as_str).unwrap_or_default();
+                    let axis = if axis_obj == profile {
+                        match sub {
+                            "V_Axis" => json!({"origin": sk_place.p, "direction": sk_place.y}),
+                            "H_Axis" => json!({"origin": sk_place.p, "direction": sk_place.x}),
+                            "N_Axis" => json!({"origin": sk_place.p, "direction": sk_place.z}),
+                            s => match s
+                                .strip_prefix("Edge")
+                                .and_then(|n| n.parse::<usize>().ok())
+                                .and_then(|n| lines.get(&n))
+                            {
+                                Some(l) => json!({"line": l}),
+                                None => return Err(format!("{name}: its axis is not a sketch line")),
+                            },
+                        }
+                    } else {
+                        // The body's origin axes.
+                        let ax = objects.get(&axis_obj).map(|a| a.kind.as_str()).unwrap_or_default();
+                        let label = axis_obj.to_ascii_uppercase();
+                        let dir = if label.starts_with("X_AXIS") {
+                            place.x
+                        } else if label.starts_with("Y_AXIS") {
+                            place.y
+                        } else if label.starts_with("Z_AXIS") {
+                            place.z
+                        } else {
+                            return Err(format!("{name}: an axis of type {ax} is not translated yet"));
+                        };
+                        json!({"origin": place.p, "direction": dir})
+                    };
+                    let angle = o.float("Angle").unwrap_or(360.0);
+                    if o.bool("Midplane") || o.int("Type").unwrap_or(0) != 0 {
+                        return Err(format!("{name}: a symmetric or bounded revolution is not translated yet"));
+                    }
+                    let angle = if o.bool("Reversed") { -angle } else { angle };
+                    let op = match (&first_solid, groove) {
+                        (None, false) => "new",
+                        (None, true) => return Err(format!("{name}: a groove before any solid")),
+                        (Some(_), false) => "join",
+                        (Some(_), true) => "cut",
+                    };
+                    let mut f = json!({"type": "revolve", "name": name, "sketch": profile, "profiles": "all",
+                        "axis": axis, "angle": angle, "operation": op});
+                    if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
+                        m.insert("target".into(), json!(t));
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
+                    features.push(f);
+                }
+                "PartDesign::Mirrored"
+                | "PartDesign::LinearPattern"
+                | "PartDesign::PolarPattern"
+                | "PartDesign::MultiTransform" => {
+                    let target = first_solid.clone().ok_or(format!("{name}: a pattern before any solid"))?;
+                    // Mode 1 transforms the whole body; otherwise the listed features.
+                    let whole = o.int("TransformMode").unwrap_or(0) == 1;
+                    let mut feats: Vec<String> = if whole { Vec::new() } else { o.link_list("Originals") };
+                    if !whole && feats.is_empty() {
+                        return Err(format!("{name}: a pattern of no features"));
+                    }
+                    let steps: Vec<(String, &Obj)> = if kind == "PartDesign::MultiTransform" {
+                        let list = o.link_list("Transformations");
+                        let n = list.len();
+                        list.into_iter()
+                            .enumerate()
+                            .map(|(i, t)| {
+                                let so = objects.get(&t).ok_or(format!("{name}: a missing transformation"))?;
+                                // The last step carries the feature's own name, for later references.
+                                Ok((if i + 1 == n { name.clone() } else { t }, so))
+                            })
+                            .collect::<Result<_, String>>()?
+                    } else {
+                        vec![(name.clone(), o)]
+                    };
+                    if steps.is_empty() {
+                        return Err(format!("{name}: no transformations"));
+                    }
+                    for (step_name, so) in steps {
+                        let refs = Refs { objects: &objects, body: &place, sketches: &sketches };
+                        let Some(mut f) = transform(&step_name, so, &refs)? else { continue };
+                        if let Some(m) = f.as_object_mut() {
+                            m.insert("features".into(), json!(feats));
+                            m.insert("target".into(), json!(target));
+                        }
+                        features.push(f);
+                        if !whole {
+                            feats.push(step_name);
+                        }
+                    }
+                }
+                "PartDesign::AdditiveBox"
+                | "PartDesign::SubtractiveBox"
+                | "PartDesign::AdditiveCylinder"
+                | "PartDesign::SubtractiveCylinder"
+                | "PartDesign::AdditiveCone"
+                | "PartDesign::SubtractiveCone"
+                | "PartDesign::AdditiveSphere"
+                | "PartDesign::SubtractiveSphere" => {
+                    let sub = kind.starts_with("PartDesign::Subtractive");
+                    let op = match (&first_solid, sub) {
+                        (None, false) => "new",
+                        (None, true) => return Err(format!("{name}: a subtractive primitive before any solid")),
+                        (Some(_), false) => "join",
+                        (Some(_), true) => "cut",
+                    };
+                    for mut f in primitive(name, o, &place)? {
+                        if f.get("type").and_then(Value::as_str) != Some("sketch")
+                            && let Some(m) = f.as_object_mut()
+                        {
+                            m.insert("operation".into(), json!(op));
+                            if let Some(t) = &first_solid {
+                                m.insert("target".into(), json!(t));
+                            }
+                        }
+                        features.push(f);
+                    }
+                    first_solid.get_or_insert_with(|| name.clone());
+                }
+                "PartDesign::Fillet" | "PartDesign::Chamfer" => {
+                    let fillet = kind == "PartDesign::Fillet";
+                    let target = first_solid.clone().ok_or(format!("{name}: an edge feature before any solid"))?;
+                    let (base, subs) = o.link("Base").ok_or(format!("{name}: no edges"))?;
+                    let file = objects
+                        .get(&base)
+                        .and_then(|b| b.first("Shape", "Part"))
+                        .and_then(|e| e.attrs.get("file"))
+                        .filter(|f| !f.is_empty())
+                        .ok_or(format!("{name}: its base shape is not stored in the file"))?;
+                    let edges = shape_edges(file).map_err(|e| format!("{name}: {e}"))?;
+                    let mut mids: Vec<[f64; 3]> = Vec::new();
+                    let mut add = |m: [f64; 3]| {
+                        if !mids.iter().any(|p| p.iter().zip(m).all(|(a, b)| (a - b).abs() < 1e-9)) {
+                            mids.push(m);
+                        }
+                    };
+                    if o.bool("UseAllEdges") {
+                        edges.iter().for_each(|(m, _)| add(*m));
+                    }
+                    for sub in &subs {
+                        let n = |p: &str| sub.strip_prefix(p).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0);
+                        if let Some(i) = n("Edge") {
+                            add(edges.get(i - 1).ok_or(format!("{name}: {sub} is not on its base"))?.0);
+                        } else if let Some(i) = n("Face") {
+                            let f = u32::try_from(i - 1).map_err(|_| format!("{name}: a bad face"))?;
+                            edges.iter().filter(|(_, fs)| fs.contains(&f)).for_each(|(m, _)| add(*m));
+                        } else if !sub.is_empty() {
+                            return Err(format!("{name}: a pick of {sub} is not translated yet"));
+                        }
+                    }
+                    if mids.is_empty() || mids.len() > MAX_EDGE_PICKS {
+                        return Err(format!("{name}: {} edges", mids.len()));
+                    }
+                    let picks: Vec<Value> = mids.iter().map(|m| json!({"midpoint": m})).collect();
+                    let f = if fillet {
+                        let r = o.float("Radius").filter(|r| *r > 0.0).ok_or(format!("{name}: no radius"))?;
+                        json!({"type": "fillet", "name": name, "edges": picks, "radius": r, "target": target})
+                    } else {
+                        if o.int("ChamferType").unwrap_or(0) != 0 {
+                            return Err(format!("{name}: an unequal chamfer is not translated yet"));
+                        }
+                        let d = o.float("Size").filter(|r| *r > 0.0).ok_or(format!("{name}: no size"))?;
+                        json!({"type": "chamfer", "name": name, "edges": picks, "distance": d, "target": target})
+                    };
+                    features.push(f);
+                }
+                // Datums and the origin carry no geometry of the body.
+                "App::Origin" | "App::Line" | "App::Plane" | "PartDesign::Plane" | "PartDesign::Line"
+                | "PartDesign::Point" => {}
+                other => return Err(format!("{name}: {other} is not translated yet")),
+            }
+        }
+    }
+    if bodies == 0 || features.is_empty() {
+        return Err("no PartDesign body".into());
+    }
+    let v = json!({
+        "format": "gusset-feature-tree",
+        "version": 2,
+        "source": {"app": "freecad", "exporter": "gusset fcstd_tree"},
+        "features": features,
+    });
+    serde_json::from_value(v).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_shapes(_: &str) -> Result<Edges, String> {
+        Err("no shapes".into())
+    }
+
+    const DOC: &str = r#"<?xml version='1.0' encoding='utf-8'?>
+<Document SchemaVersion="4">
+<Objects Count="4">
+  <Object type="PartDesign::Body" name="Body"/>
+  <Object type="Sketcher::SketchObject" name="Sketch"/>
+  <Object type="PartDesign::Pad" name="Pad"/>
+  <Object type="PartDesign::Pocket" name="Pocket"/>
+</Objects>
+<ObjectData Count="4">
+  <Object name="Body"><Properties>
+    <Property name="Group" type="App::PropertyLinkList"><LinkList count="3"><Link value="Sketch"/><Link value="Pad"/><Link value="Pocket"/></LinkList></Property>
+  </Properties></Object>
+  <Object name="Sketch"><Properties>
+    <Property name="Geometry" type="Part::PropertyGeometryList"><GeometryList count="5">
+      <Geometry type="Part::GeomLineSegment"><Construction value="0"/><LineSegment StartX="0" StartY="0" StartZ="0" EndX="10" EndY="0" EndZ="0"/></Geometry>
+      <Geometry type="Part::GeomLineSegment"><Construction value="0"/><LineSegment StartX="10" StartY="0" StartZ="0" EndX="10" EndY="5" EndZ="0"/></Geometry>
+      <Geometry type="Part::GeomLineSegment"><Construction value="0"/><LineSegment StartX="10" StartY="5" StartZ="0" EndX="0" EndY="5" EndZ="0"/></Geometry>
+      <Geometry type="Part::GeomLineSegment"><Construction value="0"/><LineSegment StartX="0" StartY="5" StartZ="0" EndX="0" EndY="0" EndZ="0"/></Geometry>
+      <Geometry type="Part::GeomCircle"><Construction value="0"/><Circle CenterX="5" CenterY="2.5" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1"/></Geometry>
+    </GeometryList></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="0" Pz="0" Q0="0" Q1="0" Q2="0" Q3="1"/></Property>
+  </Properties></Object>
+  <Object name="Pad"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="Type" type="App::PropertyEnumeration"><Integer value="0"/></Property>
+  </Properties></Object>
+  <Object name="Pocket"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="1"/></Property>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="Type" type="App::PropertyEnumeration"><Integer value="1"/></Property>
+  </Properties></Object>
+</ObjectData>
+</Document>"#;
+
+    #[test]
+    fn a_pad_and_a_pocket_become_tree_features() {
+        let t = tree(DOC.as_bytes(), &mut no_shapes).unwrap();
+        assert_eq!(t.features.len(), 3);
+        assert_eq!(t.features[0]["type"], "sketch");
+        assert_eq!(t.features[0]["points"].as_array().unwrap().len(), 5, "shared corners plus the circle centre");
+        assert_eq!(t.features[1]["operation"], "new");
+        assert_eq!(t.features[1]["distance"], 2.0);
+        assert_eq!(t.features[2]["operation"], "cut");
+        assert!(t.features[2]["distance"].as_f64().unwrap() < -1000.0, "through all, against the normal");
+    }
+
+    #[test]
+    fn placements_turn_the_sketch_frame() {
+        // Half a turn about X: the sketch's y axis points down.
+        let doc = DOC.replace(r#"Q0="0" Q1="0" Q2="0" Q3="1""#, r#"Q0="1" Q1="0" Q2="0" Q3="0""#);
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let y = &t.features[0]["plane"]["y_axis"];
+        assert!((y[1].as_f64().unwrap() + 1.0).abs() < 1e-12, "{y}");
+    }
+
+    #[test]
+    fn what_is_not_translated_refuses_the_whole_tree() {
+        let doc = DOC.replace("PartDesign::Pocket", "PartDesign::AdditiveLoft");
+        assert!(tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("not translated"));
+        assert!(tree(b"<Document/>", &mut no_shapes).is_err());
+        assert!(tree(b"\xff\xfe garbage", &mut no_shapes).is_err());
+    }
+}
