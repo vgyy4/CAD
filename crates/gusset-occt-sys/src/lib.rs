@@ -185,6 +185,7 @@ mod raw {
             op: i32,
             target: *const GsShape,
             tool: *const GsShape,
+            refine: i32,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;
@@ -193,6 +194,7 @@ mod raw {
             target: *const GsShape,
             tools: *const *const GsShape,
             ntools: usize,
+            refine: i32,
             out: *mut *mut GsShape,
             origins: *mut GsBuf,
         ) -> i32;

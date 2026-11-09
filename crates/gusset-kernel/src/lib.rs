@@ -75,12 +75,24 @@ fn unsupported<T>(what: &str, kernel: &str) -> KResult<T> {
 /// [`Kernel::boolean_many`] as one [`Kernel::boolean`] per tool, with the face history of
 /// every step composed so that origins refer to the original target and tools.
 pub fn sequential_boolean<K: Kernel + ?Sized>(k: &K, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+    sequential_boolean_with(k, op, target, tools, true)
+}
+
+/// [`sequential_boolean`] with the result of every step refined (`refine`) or kept as the
+/// boolean made it ([`Kernel::boolean_unrefined`]).
+pub fn sequential_boolean_with<K: Kernel + ?Sized>(
+    k: &K,
+    op: BoolOp,
+    target: &Shape,
+    tools: &[Shape],
+    refine: bool,
+) -> KResult<OpResult> {
     let internal = |what: &str| KernelError::new(KernelErrorKind::Internal, what.to_string());
     let mut cur: Option<OpResult> = None;
     for (i, tool) in tools.iter().enumerate() {
         let tool_no = u32::try_from(i + 1).map_err(|_| internal("too many tools"))?;
         let from = cur.as_ref().map_or(target, |r| &r.shape);
-        let step = k.boolean(op, from, tool)?;
+        let step = if refine { k.boolean(op, from, tool)? } else { k.boolean_unrefined(op, from, tool)? };
         let mut origins = Vec::with_capacity(step.face_origins.len());
         for os in &step.face_origins {
             let mut out: Vec<FaceOrigin> = Vec::new();
@@ -195,6 +207,19 @@ pub trait Kernel: Send + Sync + Debug {
     /// The default runs [`Kernel::boolean`] once per tool and composes the face histories.
     fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
         sequential_boolean(self, op, target, tools)
+    }
+
+    /// [`Kernel::boolean`] that keeps the result as the operation made it: coplanar faces
+    /// and collinear edges are not unified (FreeCAD's `Refine = false`, ADR 0004). The
+    /// default refines like [`Kernel::boolean`] for kernels that never unify.
+    fn boolean_unrefined(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
+        self.boolean(op, target, tool)
+    }
+
+    /// [`Kernel::boolean_many`] without unification of the result (see
+    /// [`Kernel::boolean_unrefined`]).
+    fn boolean_many_unrefined(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+        self.boolean_many(op, target, tools)
     }
 
     fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {

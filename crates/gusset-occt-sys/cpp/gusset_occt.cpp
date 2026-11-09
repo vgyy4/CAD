@@ -1387,16 +1387,19 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeLis
 }
 
 // The boolean with unification, or without it when unification breaks the result.
+// With `refine` false the result is kept as the boolean made it (FreeCAD's Refine = false).
 std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const ShapeList& args,
-                                                                  const ShapeList& tools) {
-  auto b = run_boolean(op, args, tools, true);
-  if (BRepCheck_Analyzer(b->Shape(), true, true).IsValid()) return b;
+                                                                  const ShapeList& tools, bool refine = true) {
+  if (refine) {
+    auto b = run_boolean(op, args, tools, true);
+    if (BRepCheck_Analyzer(b->Shape(), true, true).IsValid()) return b;
+  }
   auto raw = run_boolean(op, args, tools, false);
   if (BRepCheck_Analyzer(raw->Shape(), true, true).IsValid()) return raw;
   throw Standard_Failure("boolean operation produced an invalid solid");
 }
 
-int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins) {
+int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!target || !tool || !out || !origins) return fail("null argument");
   ShapeList args, tools;
@@ -1411,7 +1414,7 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
     tools.Append(tool->s);
   }
   if (tools.IsEmpty()) return fail("the tool is empty");
-  auto b = run_boolean_checked(op, args, tools);  // validated
+  auto b = run_boolean_checked(op, args, tools, refine != 0);  // validated
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;
@@ -1426,8 +1429,8 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   GS_GUARD_END
 }
 
-int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, GsShape** out,
-                    GsBuf* origins) {
+int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, int refine,
+                    GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!target || !out || !origins || (!tools && ntools)) return fail("null argument");
   if (ntools > size_t(INT_MAX) - 1) return fail("too many tools");
@@ -1440,7 +1443,7 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   args.Append(target->s);
   for (size_t i = 0; i < ntools; ++i) tool_list.Append(tools[i]->s);
   if (op != GS_BOOL_UNION && op != GS_BOOL_CUT) return fail("only union and cut take several tools at once");
-  auto b = run_boolean_checked(op, args, tool_list);
+  auto b = run_boolean_checked(op, args, tool_list, refine != 0);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;

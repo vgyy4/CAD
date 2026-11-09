@@ -9,7 +9,7 @@ use gusset_kernel::{
 };
 
 /// Protocol version, checked by `Ping`.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 /// A fault the worker injects on request (tests only, ADR 0022 §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +36,9 @@ pub(crate) enum Request {
     Revolve(Profile, RevolveSpec),
     Sweep(Profile, SweepPath, SweepSpec),
     Loft(Vec<Profile>, LoftSpec),
-    Boolean(BoolOp, Shape, Shape),
-    BooleanMany(BoolOp, Shape, Vec<Shape>),
+    /// The last field is `refine`: unify coplanar faces of the result.
+    Boolean(BoolOp, Shape, Shape, bool),
+    BooleanMany(BoolOp, Shape, Vec<Shape>, bool),
     Fillet(Shape, Vec<u32>, f64),
     Chamfer(Shape, Vec<u32>, f64),
     ChamferRef(Shape, Vec<u32>, Vec<u32>, ChamferSpec),
@@ -220,17 +221,19 @@ impl Request {
                 sections.put(&mut w, s)?;
                 spec.put(&mut w, s)?;
             }
-            Request::Boolean(op, a, b) => {
+            Request::Boolean(op, a, b, refine) => {
                 w.u8(6);
                 op.put(&mut w, s)?;
                 put_shape(&mut w, s, a)?;
                 put_shape(&mut w, s, b)?;
+                w.bool(*refine);
             }
-            Request::BooleanMany(op, a, tools) => {
+            Request::BooleanMany(op, a, tools, refine) => {
                 w.u8(7);
                 op.put(&mut w, s)?;
                 put_shape(&mut w, s, a)?;
                 put_shapes(&mut w, s, tools)?;
+                w.bool(*refine);
             }
             Request::Fillet(shape, edges, v) | Request::Chamfer(shape, edges, v) | Request::Shell(shape, edges, v) => {
                 w.u8(match self {
@@ -311,8 +314,10 @@ impl Request {
             3 => Request::Revolve(Profile::get(&mut r, s)?, RevolveSpec::get(&mut r, s)?),
             4 => Request::Sweep(Profile::get(&mut r, s)?, SweepPath::get(&mut r, s)?, SweepSpec::get(&mut r, s)?),
             5 => Request::Loft(Vec::<Profile>::get(&mut r, s)?, LoftSpec::get(&mut r, s)?),
-            6 => Request::Boolean(BoolOp::get(&mut r, s)?, get_shape(&mut r, s)?, get_shape(&mut r, s)?),
-            7 => Request::BooleanMany(BoolOp::get(&mut r, s)?, get_shape(&mut r, s)?, get_shapes(&mut r, s)?),
+            6 => Request::Boolean(BoolOp::get(&mut r, s)?, get_shape(&mut r, s)?, get_shape(&mut r, s)?, r.bool()?),
+            7 => {
+                Request::BooleanMany(BoolOp::get(&mut r, s)?, get_shape(&mut r, s)?, get_shapes(&mut r, s)?, r.bool()?)
+            }
             t @ 8..=10 => {
                 let (shape, list, v) = (get_shape(&mut r, s)?, get_u32s(&mut r)?, r.f64()?);
                 match t {

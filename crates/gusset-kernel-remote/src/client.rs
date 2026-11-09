@@ -505,11 +505,19 @@ impl Kernel for RemoteKernel {
     }
 
     fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
-        self.op(&Request::Boolean(op, target.clone(), tool.clone()))
+        self.op(&Request::Boolean(op, target.clone(), tool.clone(), true))
+    }
+
+    fn boolean_unrefined(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
+        self.op(&Request::Boolean(op, target.clone(), tool.clone(), false))
     }
 
     fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
-        self.op(&Request::BooleanMany(op, target.clone(), tools.to_vec()))
+        self.op(&Request::BooleanMany(op, target.clone(), tools.to_vec(), true))
+    }
+
+    fn boolean_many_unrefined(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+        self.op(&Request::BooleanMany(op, target.clone(), tools.to_vec(), false))
     }
 
     fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {

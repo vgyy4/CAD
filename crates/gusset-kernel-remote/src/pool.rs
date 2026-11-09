@@ -151,6 +151,23 @@ impl Kernel for PoolKernel {
         }
     }
 
+    fn boolean_unrefined(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
+        let (k, s) = self.place(&[target, tool])?;
+        match s.as_slice() {
+            [t, u] => k.boolean_unrefined(op, t, u),
+            _ => Err(empty()),
+        }
+    }
+
+    fn boolean_many_unrefined(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+        let all: Vec<&Shape> = std::iter::once(target).chain(tools).collect();
+        let (k, s) = self.place(&all)?;
+        match s.split_first() {
+            Some((t, rest)) => k.boolean_many_unrefined(op, t, rest),
+            None => Err(empty()),
+        }
+    }
+
     fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {
         let (k, s) = self.on_one(shape)?;
         k.fillet(&s, edges, radius)

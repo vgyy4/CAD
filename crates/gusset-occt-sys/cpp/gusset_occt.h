@@ -111,11 +111,13 @@ int gs_sweep_helix(const GsProfile* p, const double* h, double pitch, double hei
 /* Lofts through `nsections` profiles (each one region without holes); ruled != 0 joins
  * neighbouring sections with ruled surfaces instead of a smooth interpolation. */
 int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** out, GsBuf* origins);
-int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins);
+/* `refine` != 0 unifies coplanar faces and collinear edges of the result; 0 keeps the
+ * boolean's own split faces (FreeCAD's Refine = false). */
+int gs_boolean(int op, const GsShape* target, const GsShape* tool, int refine, GsShape** out, GsBuf* origins);
 /* Union or cut of `target` with all `tools` in one operation. INPUT origins: 0 = target,
  * i + 1 = tools[i]. */
-int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, GsShape** out,
-                    GsBuf* origins);
+int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, size_t ntools, int refine,
+                    GsShape** out, GsBuf* origins);
 int gs_fillet(const GsShape* s, const uint32_t* edges, size_t nedges, double radius, GsShape** out, GsBuf* origins);
 int gs_chamfer(const GsShape* s, const uint32_t* edges, size_t nedges, double dist, GsShape** out, GsBuf* origins);
 /* Chamfers with a reference face per edge (`faces[i]` is a face index adjacent to `edges[i]`;

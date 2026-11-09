@@ -1310,3 +1310,29 @@ fn full_round_errors_are_clean() {
     let v = k().mass_properties(&r.shape).unwrap().volume;
     assert!(v < 200.0 && v > 150.0, "{v}");
 }
+
+#[test]
+fn unrefined_boolean_keeps_the_split_faces() {
+    // Two 10 mm cubes side by side share a face: refined, the union is one 20 x 10 x 10 box
+    // (6 faces); unrefined, the four faces around the seam stay split (10 faces).
+    let cube = |x: f64| {
+        let mut p = boxp(10.0, 10.0);
+        p.frame.origin = [x, 0.0, 0.0];
+        k().extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap().shape
+    };
+    let (a, b) = (cube(0.0), cube(10.0));
+    let faces = |s: &Shape| k().topology(s).unwrap().faces.len();
+    let vol = |s: &Shape| k().mass_properties(s).unwrap().volume;
+    let refined = k().boolean(BoolOp::Union, &a, &b).unwrap();
+    let raw = k().boolean_unrefined(BoolOp::Union, &a, &b).unwrap();
+    assert_eq!(faces(&refined.shape), 6);
+    assert_eq!(faces(&raw.shape), 10);
+    assert!(close(vol(&raw.shape), 2000.0, 1e-9) && close(vol(&refined.shape), 2000.0, 1e-9));
+    assert!(raw.face_origins.iter().all(|o| !o.is_empty()), "every split face keeps its history");
+    // The same with several tools in one operation.
+    let c = cube(20.0);
+    let many = k().boolean_many(BoolOp::Union, &a, &[b.clone(), c.clone()]).unwrap();
+    let many_raw = k().boolean_many_unrefined(BoolOp::Union, &a, &[b, c]).unwrap();
+    assert_eq!((faces(&many.shape), faces(&many_raw.shape)), (6, 14));
+    assert!(close(vol(&many_raw.shape), 3000.0, 1e-9));
+}

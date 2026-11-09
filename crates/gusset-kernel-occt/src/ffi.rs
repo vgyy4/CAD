@@ -83,12 +83,12 @@ fn sweep_err(e: ShimError) -> KernelError {
     ke.with_hint(hint)
 }
 
-pub(crate) fn boolean(op: i32, a: &RawShape, b: &RawShape) -> KResult<OpOut> {
-    safe::boolean(op, a, b).map_err(err(KernelErrorKind::OperationFailed))
+pub(crate) fn boolean(op: i32, a: &RawShape, b: &RawShape, refine: bool) -> KResult<OpOut> {
+    safe::boolean(op, a, b, refine).map_err(err(KernelErrorKind::OperationFailed))
 }
 
-pub(crate) fn boolean_many(op: i32, target: &RawShape, tools: &[&RawShape]) -> KResult<OpOut> {
-    safe::boolean_many(op, target, tools).map_err(err(KernelErrorKind::OperationFailed))
+pub(crate) fn boolean_many(op: i32, target: &RawShape, tools: &[&RawShape], refine: bool) -> KResult<OpOut> {
+    safe::boolean_many(op, target, tools, refine).map_err(err(KernelErrorKind::OperationFailed))
 }
 
 pub(crate) fn chamfer_asym(s: &RawShape, edges: &[u32], faces: &[u32], mode: i32, a: f64, b: f64) -> KResult<OpOut> {

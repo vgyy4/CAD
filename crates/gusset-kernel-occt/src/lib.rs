@@ -359,6 +359,28 @@ mod imp {
         Ok(out)
     }
 
+    fn boolean_code(op: BoolOp) -> i32 {
+        match op {
+            BoolOp::Union => sys::GS_BOOL_UNION,
+            BoolOp::Cut => sys::GS_BOOL_CUT,
+            BoolOp::Intersect => sys::GS_BOOL_INTERSECT,
+        }
+    }
+
+    fn boolean_one(op: BoolOp, target: &Shape, tool: &Shape, refine: bool) -> KResult<OpResult> {
+        op_result(ffi::boolean(boolean_code(op), raw(target)?, raw(tool)?, refine)?)
+    }
+
+    /// One operation with all tools. OCCT's common with a tool list keeps what is inside
+    /// *any* tool; the trait means every tool, so intersect one tool at a time.
+    fn boolean_all(k: &OcctKernel, op: BoolOp, target: &Shape, tools: &[Shape], refine: bool) -> KResult<OpResult> {
+        if op == BoolOp::Intersect || tools.is_empty() {
+            return gusset_kernel::sequential_boolean_with(k, op, target, tools, refine);
+        }
+        let raws = tools.iter().map(raw).collect::<KResult<Vec<_>>>()?;
+        op_result(ffi::boolean_many(boolean_code(op), raw(target)?, &raws, refine)?)
+    }
+
     impl Kernel for OcctKernel {
         fn name(&self) -> &'static str {
             "occt"
@@ -431,27 +453,19 @@ mod imp {
         }
 
         fn boolean(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
-            let code = match op {
-                BoolOp::Union => sys::GS_BOOL_UNION,
-                BoolOp::Cut => sys::GS_BOOL_CUT,
-                BoolOp::Intersect => sys::GS_BOOL_INTERSECT,
-            };
-            op_result(ffi::boolean(code, raw(target)?, raw(tool)?)?)
+            boolean_one(op, target, tool, true)
+        }
+
+        fn boolean_unrefined(&self, op: BoolOp, target: &Shape, tool: &Shape) -> KResult<OpResult> {
+            boolean_one(op, target, tool, false)
         }
 
         fn boolean_many(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
-            let code = match op {
-                BoolOp::Union => sys::GS_BOOL_UNION,
-                BoolOp::Cut => sys::GS_BOOL_CUT,
-                // OCCT's common with a tool list keeps what is inside *any* tool; the trait
-                // means every tool, so intersect one tool at a time.
-                BoolOp::Intersect => return gusset_kernel::sequential_boolean(self, op, target, tools),
-            };
-            if tools.is_empty() {
-                return gusset_kernel::sequential_boolean(self, op, target, tools);
-            }
-            let raws = tools.iter().map(raw).collect::<KResult<Vec<_>>>()?;
-            op_result(ffi::boolean_many(code, raw(target)?, &raws)?)
+            boolean_all(self, op, target, tools, true)
+        }
+
+        fn boolean_many_unrefined(&self, op: BoolOp, target: &Shape, tools: &[Shape]) -> KResult<OpResult> {
+            boolean_all(self, op, target, tools, false)
         }
 
         fn fillet(&self, shape: &Shape, edges: &[u32], radius: f64) -> KResult<OpResult> {
