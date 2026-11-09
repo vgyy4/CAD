@@ -182,3 +182,15 @@ on (`bottom cover`), 1 extrude whose boolean the kernel rejects (`LED Arm`). Tim
 **Not done.** Edge-naming records (`375c6982` ids), pattern directions, thicken, ellipse sketch curves,
 chamfers with two distances or an angle (read as equal distances; the rebuild check refuses them if
 wrong), multi-body parts, assemblies.
+
+## Amendment (2026-11-09): Solid Edge feature history, decoding in progress
+
+A part's history is in `PSMcluster0` (objects framed by `QQ`, a type index into `PSMtypetable`
+and a rising serial; references by serial), with its profiles as wire bodies in the
+`SKETCH.P_B` Parasolid partition. Decoded from the sample bytes alone
+(`docs/formats/solidedge-feature-tree.md`; prototype in `scripts/re/solidedge/`): the feature
+chain (protrusion, cutout, revolved cutout, hole, thread, pattern), depths and profiles. Of
+the 15 sample parts only 2 are ordered-feature parts; the other 13 are synchronous parts,
+which keep no extrude or revolve history (their body is all there is). 1 part rebuilds
+exactly. Missing: reference-plane records, hole placement, patterns, revolve angles, and more
+ordered-feature samples. `.par` stays tier 2.
