@@ -274,9 +274,9 @@ fn short(s: &str) -> String {
     s.chars().take(MAX_REPORT_CHARS).collect()
 }
 
-/// A number for the text: up to 6 decimals, no trailing zeros.
+/// A number for the text: up to 12 decimals, no trailing zeros.
 fn num(v: f64) -> String {
-    let s = format!("{:.6}", if v.abs() < 5e-7 { 0.0 } else { v });
+    let s = format!("{:.12}", if v.abs() < 5e-13 { 0.0 } else { v });
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
     if s == "-0" { "0".into() } else { s }
 }
@@ -814,7 +814,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                     return Err("an ellipse needs major, a and b".into());
                 };
                 let ok = |v: f64| v.is_finite() && v > 0.0 && v < 1e12;
-                if !(ok(a) && ok(b)) || !m.iter().all(|v| v.is_finite()) || m[0].hypot(m[1]) < 1e-9 {
+                if !(ok(a) && ok(b)) || !m.iter().all(|v| v.is_finite()) || libm::hypot(m[0], m[1]) < 1e-9 {
                     return Err("an ellipse needs positive semi-axes and a major direction".into());
                 }
                 // The axis direction in the Gusset sketch's frame.

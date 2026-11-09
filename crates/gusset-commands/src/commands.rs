@@ -1879,7 +1879,7 @@ pub struct SketchAddEllipseArc {
 impl Command for SketchAddEllipseArc {
     const ID: &'static str = "sketch.add_ellipse_arc";
     const TITLE: &'static str = "Elliptical arc";
-    const DESCRIPTION: &'static str = "Add a counter-clockwise ellipse arc (as sketch.add_ellipse) from parameter angle `from` to `to` (degrees; 0 = end of axis a).";
+    const DESCRIPTION: &'static str = "Add a counter-clockwise ellipse arc (as sketch_add_ellipse) from parameter angle `from` to `to` (degrees; 0 = end of axis a).";
     const CATEGORY: Category = Category::Sketch;
     const FLAGS: Flags = EDIT;
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
@@ -1890,7 +1890,7 @@ impl Command for SketchAddEllipseArc {
         let (t0, t1) = (self.from.to_radians(), self.to.to_radians());
         let tau = std::f64::consts::TAU;
         if ((t1 - t0) / tau - libm::round((t1 - t0) / tau)).abs() < 1e-9 {
-            return Err(CommandError::args("from and to must differ (use sketch.add_ellipse for a whole ellipse)"));
+            return Err(CommandError::args("from and to must differ (use an ellipse for a whole one)"));
         }
         let at = |t: f64| {
             let p = gusset_sketch::ellipse::point([self.cx, self.cy], angle, self.a, self.b, t);
