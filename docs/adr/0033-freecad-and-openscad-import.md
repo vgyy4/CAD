@@ -90,7 +90,9 @@ is read directly (`crates/gusset-commands/src/fcstd_tree.rs`).
 ADR 0042) and the tree importer builds it. Translated:
 
 * sketches (lines, circles, counter-clockwise arcs, construction geometry);
-* pad and pocket (a length, midplane, reversed; pocket through all);
+* pad and pocket (a length, two lengths, midplane, reversed; pocket through all; up to a face,
+  the first or the last face as a plain extrusion to the far end of the solid FreeCAD stored
+  for it, `AddSubShape`);
 * revolution and groove about a sketch axis or line, or an origin axis;
 * mirrored, linear and polar patterns and MultiTransform (each step in turn, about sketch
   axes, origin axes and planes or datum lines and planes; the whole body or listed features);
@@ -117,7 +119,7 @@ Draft arrays) keep their shapes. Any untranslated feature, failure or mismatch k
 shapes (tier 2, as before) with a warning naming the first reason; nothing is half-imported.
 
 **Coverage** on FreeCAD's own example files (160 files, 140 with a PartDesign body; run with
-`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 99 come in as history,
+`GUSSET_FCSTD_SAMPLES`, `crates/gusset-cli/tests/freecad_history.rs`): 103 come in as history,
 the rest as exact shapes. The main remaining reasons: features that rebuild with a different
 volume (fillets whose edges change with the feature order, and stale shapes), lofts,
 pad and pocket types up to a face (two lengths are written as two extrusions), ellipse arcs, and

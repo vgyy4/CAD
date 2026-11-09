@@ -802,6 +802,42 @@ pub(crate) fn tree(xml: &[u8], shape_edges: ShapeEdges<'_>) -> Result<crate::tre
                         (_, 0 | 4) => len,
                         // Through all: far enough for any part (the volume check confirms).
                         (true, 1) => 100_000.0,
+                        // Up to a face, the first or last face: the solid FreeCAD added or
+                        // removed is stored (`AddSubShape`); its reach along the sketch normal is
+                        // the depth (the rebuild check confirms a plain extrusion was meant).
+                        (_, 1..=3) => {
+                            let file = o
+                                .first("AddSubShape", "Part")
+                                .and_then(|e| e.attrs.get("file"))
+                                .filter(|f| !f.is_empty())
+                                .ok_or(format!("{name}: an up-to extrusion without its stored shape"))?;
+                            let (sk, _) = sketches.get(&profile).ok_or(format!("{name}: no profile frame"))?;
+                            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                            for e in shape_edges(file).map_err(|e| format!("{name}: {e}"))? {
+                                for p in e.path.iter().chain(std::iter::once(&e.mid)) {
+                                    let h = (p[0] - sk.p[0]) * sk.z[0]
+                                        + (p[1] - sk.p[1]) * sk.z[1]
+                                        + (p[2] - sk.p[2]) * sk.z[2];
+                                    lo = lo.min(h);
+                                    hi = hi.max(h);
+                                }
+                            }
+                            // The stored solid is what was actually added or removed, which can
+                            // start past empty space: the extrusion runs from the sketch to its
+                            // far end. On both sides of the sketch it is something else.
+                            if !(lo.is_finite() && hi.is_finite()) || (lo < -1e-4 && hi > 1e-4) {
+                                return Err(format!(
+                                    "{name}: its up-to extrusion reaches both sides of the sketch ({lo:.4} to {hi:.4} mm)"
+                                ));
+                            }
+                            let signed = if hi.abs() >= lo.abs() { hi } else { lo };
+                            // Undo the sign rules below so that the extrusion is `signed`.
+                            let mut d = if pocket { -signed } else { signed };
+                            if o.bool("Reversed") {
+                                d = -d;
+                            }
+                            d
+                        }
                         _ => {
                             return Err(format!(
                                 "{name}: this {} type is not translated yet",
