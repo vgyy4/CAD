@@ -367,3 +367,19 @@ circle edges of a full revolve are named by edge records (key of the profile seg
 closed paths. The rebuild check is unchanged. Coverage 34 of 85 (slip-pad 20 of 35, arig-revisions 14 of 50);
 MicroGearMotor_v1 is the new one. GT2_Bobbin_v2 now fails in the kernel (a 1 mm chamfer along a 1 mm wall), the
 end types 4/5 and the Angle_support features are decoded as far as `docs/formats/solidworks-feature-tree.md` L10 says.
+
+## Amendment (2026-11-09): up-to-surface and offset-from-surface ends
+
+The extrude node's end types 4 (up to surface) and 5 (offset from surface) name their face in the node's last
+`moSingleFaceRef_w`: its first reference is an edge-record reference (feature id, face number) to a cap or a side of an earlier
+extrude, resolved with the faces the reader already models. The reader writes `"end_condition": "to_face"` (ADR 0042 amendment)
+with the face's point and outward normal, `offset` and `reverse` when the face is ahead of the sweep and covers the profile swept
+onto it; otherwise the plane's position as a blind distance (SolidWorks extends a planar surface; a face behind the sketch, as
+spring_base_v1 Boss-Extrude2's, only gives a distance). Type 5 puts the end plane `D1` into the face's material. The reader's
+own end-type label is now `sw_end_kind` (it had shadowed the tree's `end_condition`, which made every non-blind extrude fail
+to import: the importer learned that key in the up-to-face commit; coverage had dropped to 13 for that one commit). Coverage
+34 of 85, unchanged: FrameBracket (both files) now gets past its four type-4 features and the type-5 cut and stops at
+Fillet1 (edges between faces of features with different normals) and its hole wizards; spring_base_v1 stops at its
+countersinks, which are not a fit-check equality problem: the pocket floor (r 3.15 at x = -22) is clipped by the plate's
+edge at x = -25, so the mouth overhangs the plate by 0.15 mm and the check is right (left as it is). See
+`docs/formats/solidworks-feature-tree.md` L10.
