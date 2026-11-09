@@ -64,7 +64,7 @@ supported platform. Build-only and test-only dependencies are not listed.
 
 ### Overview
 
-- MIT License (375)
+- MIT License (376)
 - Unicode License v3 (19)
 - Apache License 2.0 (15)
 - BSD 3-Clause "New" or "Revised" License (5)
@@ -5696,6 +5696,7 @@ Used by:
 - [gusset-meshio 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-naming 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-occt-sys 0.1.0-mvp](https://github.com/vgyy4/CAD)
+- [gusset-ole 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-project 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-render 0.1.0-mvp](https://github.com/vgyy4/CAD)
 - [gusset-sandbox 0.1.0-mvp](https://github.com/vgyy4/CAD)

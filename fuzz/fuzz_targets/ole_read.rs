@@ -5,12 +5,8 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let limits = gusset_ole::Limits {
-        max_streams: 256,
-        max_stream_bytes: 1 << 20,
-        max_total_bytes: 4 << 20,
-        max_ratio: 2048,
-    };
+    let limits =
+        gusset_ole::Limits { max_streams: 256, max_stream_bytes: 1 << 20, max_total_bytes: 4 << 20, max_ratio: 2048 };
     let _ = gusset_ole::solidedge::extract_xt(data, &limits);
     let _ = gusset_ole::inventor::extract_sab(data, &limits);
     // The same bytes behind the compound file signature.
