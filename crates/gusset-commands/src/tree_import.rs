@@ -653,8 +653,7 @@ pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Res
             "fillet" | "chamfer" => serde_json::from_value::<EdgeF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
-            "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft"
-            | "stored_body"
+            "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
