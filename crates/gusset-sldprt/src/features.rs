@@ -1438,11 +1438,104 @@ fn snap(p: V3, f: &Swept, g: &Geometry, s: &Seg) -> V3 {
     [c3[0] + w[0] * r / l + h * n[0], c3[1] + w[1] * r / l + h * n[1], c3[2] + w[2] * r / l + h * n[2]]
 }
 
-/// A face an edge record names: a cap of a swept feature or one of its sides.
+/// A face an edge record names: a cap of a swept feature or one of its sides, or the face a
+/// fillet made of a corner of its profile.
 #[derive(Clone, Copy)]
 enum Face<'a> {
     Cap(u32, &'a Swept, u32),
     Side(u32, &'a Swept, Seg),
+    Round(Round),
+}
+
+/// The rounded corner of a swept feature's profile that one edge of a fillet made: the two
+/// straight sides (their sketch keys) meeting at `corner`, the fillet circle's tangent points
+/// on them and the middle of its arc, all in sketch coordinates (m). A later feature names the
+/// fillet's face by the fillet's id and the 1-based number of the edge in its selection.
+#[derive(Clone, Copy)]
+struct Round {
+    f: Swept,
+    keys: [u32; 2],
+    corner: (f64, f64),
+    tangent: [(f64, f64); 2],
+    arc_mid: (f64, f64),
+}
+
+/// The corner a fillet edge record rounds: an edge between two straight sides of one feature
+/// (`radius` in m).
+fn round_of(
+    reps: &[Rep],
+    swept: &HashMap<u32, Swept>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+    radius: f64,
+) -> Option<Round> {
+    let (ra, rb) = (reps.first()?, reps.get(1)?);
+    if ra.fid != rb.fid || cap_tags.contains(&ra.tag) || cap_tags.contains(&rb.tag) {
+        return None;
+    }
+    let f = swept.get(&ra.fid)?;
+    let g = sketches.get(f.sketch)?;
+    let line = |idx: u32| -> Option<Seg> {
+        let mut c = g.segs.iter().filter(|q| q.a == idx && !q.construction);
+        match (c.next(), c.next()) {
+            (Some(q), None) if q.kind == SegKind::Line => Some(*q),
+            _ => None,
+        }
+    };
+    let (sa, sb) = (line(ra.idx)?, line(rb.idx)?);
+    let common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+    let [corner] = common[..] else { return None };
+    let v = point(&g.pts, corner)?;
+    let away = |q: &Seg| -> Option<(f64, f64)> {
+        let o = point(&g.pts, if q.s == corner { q.e } else { q.s })?;
+        let l = libm::hypot(o.x - v.x, o.y - v.y);
+        (l > 1e-12).then(|| ((o.x - v.x) / l, (o.y - v.y) / l))
+    };
+    let (u1, u2) = (away(&sa)?, away(&sb)?);
+    let sum = (u1.0 + u2.0, u1.1 + u2.1);
+    let sl = libm::hypot(sum.0, sum.1);
+    if sl < 1e-9 || radius.is_nan() || radius <= 0.0 {
+        return None;
+    }
+    // Half the angle between the sides: cos = |u1 + u2| / 2.
+    let cos_h = sl / 2.0;
+    let sin_h = libm::sqrt(1.0 - cos_h * cos_h);
+    if sin_h < 1e-9 {
+        return None;
+    }
+    let (bx, by) = (sum.0 / sl, sum.1 / sl);
+    let tl = radius * cos_h / sin_h;
+    let d = radius / sin_h;
+    Some(Round {
+        f: *f,
+        keys: [ra.idx, rb.idx],
+        corner: (v.x, v.y),
+        tangent: [(v.x + u1.0 * tl, v.y + u1.1 * tl), (v.x + u2.0 * tl, v.y + u2.1 * tl)],
+        arc_mid: (v.x + bx * (d - radius), v.y + by * (d - radius)),
+    })
+}
+
+/// The arc-length fraction of the polyline `a` nearest to `p`.
+fn frac_on(a: &[V3], p: V3) -> Option<f64> {
+    let mut best: Option<(f64, f64)> = None;
+    let mut run = 0.0;
+    let mut spans = Vec::new();
+    for w in a.windows(2) {
+        let (q, r) = (w.first()?, w.get(1)?);
+        let e = sub(*r, *q);
+        let l2 = dot(e, e);
+        let l = libm::sqrt(l2);
+        let u = if l2 > 1e-18 { (dot(sub(p, *q), e) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let c = [q[0] + e[0] * u, q[1] + e[1] * u, q[2] + e[2] * u];
+        let dist = sub(p, c);
+        let dd = dot(dist, dist);
+        if best.is_none_or(|(b, _)| dd < b) {
+            best = Some((dd, run + u * l));
+        }
+        run += l;
+        spans.push(l);
+    }
+    (run > 0.0).then(|| best.map(|(_, at)| at / run)).flatten()
 }
 
 fn round3(p: V3) -> V3 {
@@ -1455,6 +1548,7 @@ fn round3(p: V3) -> V3 {
 fn midpoint(
     reps: &[Rep],
     swept: &HashMap<u32, Swept>,
+    rounds: &HashMap<u32, Vec<Option<Round>>>,
     sketches: &[Geometry],
     cap_tags: &HashSet<u16>,
     work: &mut u64,
@@ -1462,6 +1556,9 @@ fn midpoint(
     let [r0, r1, r2, r3] = reps else { return Ok(None) };
     let geo = |f: &Swept| sketches.get(f.sketch);
     let face = |r: &Rep| -> Option<Face<'_>> {
+        if let Some(list) = rounds.get(&r.fid) {
+            return list.get((r.idx as usize).checked_sub(1)?).copied().flatten().map(Face::Round);
+        }
         let f = swept.get(&r.fid)?;
         if cap_tags.contains(&r.tag) {
             return Some(Face::Cap(r.fid, f, r.idx));
@@ -1476,7 +1573,13 @@ fn midpoint(
     let (fc, fd) = (face(r2), face(r3));
     let sides: Vec<Face> = [fa, fb].into_iter().filter(|x| matches!(x, Face::Side(..))).collect();
     let caps: Vec<Face> = [fa, fb].into_iter().filter(|x| matches!(x, Face::Cap(..))).collect();
+    let round: Vec<Round> =
+        [fa, fb].into_iter().filter_map(|x| if let Face::Round(r) = x { Some(r) } else { None }).collect();
     match (sides.as_slice(), caps.as_slice()) {
+        ([], [Face::Cap(_, g, c)]) if round.len() == 1 => {
+            let Some(r) = round.first() else { return Ok(None) };
+            Ok(Some(round3(lift(&r.f, r.arc_mid.0 * 1000.0, r.arc_mid.1 * 1000.0, cap_height(g, *c)))))
+        }
         ([Face::Side(fid, f, s)], [Face::Cap(_, g, c)]) => {
             let Some(gf) = geo(f) else { return Ok(None) };
             let Some(a) = poly(f, gf, s, work)? else { return Ok(None) };
@@ -1494,6 +1597,23 @@ fn midpoint(
             if cuts.len() >= 2 {
                 lo = cuts.iter().copied().fold(f64::INFINITY, f64::min);
                 hi = cuts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            }
+            // A fillet that rounded the corner at an end of this side shortens it to the
+            // circle's tangent point (whatever neighbours the record lists).
+            for r in rounds.values().flatten().flatten() {
+                if r.f.sketch == f.sketch
+                    && let Some(k) = r.keys.iter().position(|k| *k == s.a)
+                    && let Some(&(tx, ty)) = r.tangent.get(k)
+                {
+                    let at = |x: f64, y: f64| frac_on(&a, lift(f, x * 1000.0, y * 1000.0, 0.0));
+                    if let (Some(t), Some(c)) = (at(tx, ty), at(r.corner.0, r.corner.1)) {
+                        if c < 0.5 {
+                            lo = lo.max(t);
+                        } else {
+                            hi = hi.min(t);
+                        }
+                    }
+                }
             }
             let Some(m) = point_at(&a, f64::midpoint(lo, hi)) else { return Ok(None) };
             let Some(m) = to_plane(m, g, normal(f), cap_height(g, *c)) else { return Ok(None) };
@@ -1876,6 +1996,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
     let mut solid = false;
     let mut first_solid: Option<String> = None;
     let mut swept: HashMap<u32, Swept> = HashMap::new();
+    let mut rounds: HashMap<u32, Vec<Option<Round>>> = HashMap::new();
     let mut hole: Option<HoleState> = None;
     for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
@@ -2218,17 +2339,24 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             let mut mids: Vec<Option<V3>> = Vec::new();
             let mut stale = 0usize;
             let mut unresolved = false;
+            let mut made: Vec<Option<Round>> = Vec::new();
             for (_, reps) in &sel {
-                let m = midpoint(reps, &swept, &sketches, &cap_tags, &mut work)?;
+                let m = midpoint(reps, &swept, &rounds, &sketches, &cap_tags, &mut work)?;
                 mids.push(m);
+                made.push(ps.first().filter(|_| fillet).and_then(|r| round_of(reps, &swept, &sketches, &cap_tags, *r)));
                 match m {
                     Some(m) => edges.push(json!({"midpoint": m})),
                     // References to faces the sketch no longer has are superseded selections.
-                    None if reps.iter().all(|r| swept.contains_key(&r.fid)) => stale += 1,
+                    None if reps.iter().all(|r| swept.contains_key(&r.fid) || rounds.contains_key(&r.fid)) => {
+                        stale += 1;
+                    }
                     None => unresolved = true,
                 }
             }
             unresolved |= edges.is_empty();
+            if made.iter().any(Option::is_some) {
+                rounds.insert(n.id, made);
+            }
             // A distance-angle chamfer; 45 degrees is an equal one, 90 has no tangent.
             if !fillet
                 && !unresolved
