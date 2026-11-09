@@ -501,15 +501,15 @@ fn torus_graph(major: f64, minor: f64) -> crate::decode::Graph {
 
 #[test]
 fn apple_and_lemon_tori_are_both_written() {
-    // Apple: major above minor, as is. Lemon (spindle): minor above major, the same radii in
-    // STEP with the normal reversed (SolidWorks r1 fillets on r1.5 lugs). Metres to mm.
+    // Apple: major above minor. Lemon (spindle): minor above major, the same radii in STEP and
+    // the same sense (SolidWorks r1 fillets on r1.5 lugs). Metres to mm.
     let (apple, w) = crate::step::surface_text(&torus_graph(0.002, 0.001), 2);
     let (line, flipped) = apple.unwrap();
     assert!(line.contains("TOROIDAL_SURFACE('',#") && line.ends_with(",2.0,1.0);") && !flipped, "{line} {w:?}");
     let (lemon, w) = crate::step::surface_text(&torus_graph(0.0005, 0.001), 2);
     let (line, flipped) = lemon.unwrap();
-    assert!(line.ends_with(",0.5,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
-    // A horn torus (equal radii) is not flipped.
+    assert!(line.ends_with(",0.5,1.0);") && !flipped && w.is_empty(), "{line} {w:?}");
+    // A horn torus (equal radii) is written too.
     assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
     // Non-positive radii cannot be written.
     for (a, b) in [(0.0, 0.001), (-0.001, 0.002), (0.002, 0.0), (0.002, -0.001)] {

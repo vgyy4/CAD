@@ -110,11 +110,14 @@ intersecting (apple or lemon)") and left its faces out, so the idler arms (Solid
 r1 on r1.5 lugs, major 0.5 mm, minor 1 mm) lost the upper halves of both lugs (204.9 mm3). From
 the bytes, Parasolid stores a lemon like an apple: both radii positive (no negative-radius
 convention occurs in the samples), the face's edges select the part. STEP's TOROIDAL_SURFACE
-takes the same radii and OCCT accepts minor > major, but the surface normal then points the
-other way relative to XT's: written with the XT sense the arms came out at 230.1 mm3 (open
-shell), with `same_sense` reversed for minor > major they are closed with solid = mesh volume
-(190.6 and 296.6 mm3, no open or inconsistent mesh edges). Non-positive radii are still left out
-with a warning. Equal radii (horn torus) are written as an apple; no sample has one.
+takes the same radii and OCCT accepts minor > major, so a lemon is written as it is, with the
+face's sense unchanged. The fillet of a convex lug edge is the outer part of the tube, whose
+natural normal is XT's. A first version reversed `same_sense` for minor > major; it gave a
+closed shell with matching mesh volume (190.6 mm3) but the feature-history rebuild, an
+independent path, gives 230.1106 mm3 (long arm 336.0977), which the unreversed import matches
+(230.1168, 336.1048; relative 2.7e-5 and 2.1e-5, the history gate is 2e-5). Closure and mesh
+volume do not decide the orientation of a spindle-torus face. Non-positive radii are still left
+out with a warning. Equal radii (horn torus) are written as an apple; no sample has one.
 Over all samples only the three torus parts changed (both idler arms and one zenodo
-`Combination` body, 166766 to 167417 mm3, not checked face by face); history counts are
+`Combination` body, 166766 to 167950 mm3, not checked face by face); history counts are
 unchanged (34 as history).
