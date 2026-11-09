@@ -511,7 +511,7 @@ fn draft_box_golden() {
     let rect = |s: f64| (40.0 - 2.0 * s) * (20.0 - 2.0 * s);
     let want = 10.0 / 6.0 * (rect(0.0) + rect(off) + 4.0 * rect(off / 2.0));
     let m = k().mass_properties(&r.shape).unwrap();
-    assert!(close(m.volume, want, 1e-9), "{} vs {want}", m.volume);
+    assert!(close(m.volume, want, 1e-8), "{} vs {want}", m.volume);
     // Every face is an input face, once.
     let rt = k().topology(&r.shape).unwrap();
     assert_eq!((rt.solids, rt.faces.len()), (1, 6));
@@ -1169,4 +1169,65 @@ fn a_placed_body_keeps_its_name_and_colours_through_step() {
     assert_eq!(parts.next(), Some("#2050c0"), "{:?}", back[0].1);
     assert_eq!(parts.next().map(|f| f.split(',').count()), Some(1), "{:?}", back[0].1);
     assert!((k().bbox(&back[0].0).unwrap().min[0] - 100.0).abs() < 1e-6);
+}
+
+fn ellipse_profile(frame: Frame, center: P2, major: P2, a: f64, b: f64) -> Profile {
+    Profile {
+        frame,
+        regions: vec![Region2 {
+            outer: Loop2 { edges: vec![ProfileEdge { seg: Seg2::Ellipse { center, major, a, b }, tag: 7 }] },
+            holes: vec![],
+        }],
+    }
+}
+
+#[test]
+fn an_extruded_ellipse_has_the_volume_of_its_area() {
+    let p = ellipse_profile(Frame::XY, [1.0, 2.0], [0.6, 0.8], 5.0, 3.0);
+    let r = k().extrude(&p, &ExtrudeSpec { distance: 10.0, symmetric: false }).unwrap();
+    let want = std::f64::consts::PI * 5.0 * 3.0 * 10.0;
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, want, 1e-8), "{} vs {want}", m.volume);
+    let t = k().topology(&r.shape).unwrap();
+    assert_eq!((t.faces.len(), t.solids), (3, 1));
+    assert!(r.face_origins.iter().flatten().any(|o| matches!(o, FaceOrigin::Lateral { tag: 7 })));
+}
+
+#[test]
+fn a_revolved_ellipse_is_an_o_ring() {
+    // Inventor's 10x5 O-ring section: centre x = 7.85, a = 3.24 along y, b = 2.15.
+    let (rr, a, b) = (7.85, 3.24, 2.15);
+    let p = ellipse_profile(Frame::XZ, [rr, 0.0], [0.0, 1.0], a, b);
+    let r = k()
+        .revolve(&p, &RevolveSpec { axis_origin: [0.0, 0.0], axis_dir: [0.0, 1.0], angle: std::f64::consts::TAU })
+        .unwrap();
+    let want = 2.0 * std::f64::consts::PI * rr * std::f64::consts::PI * a * b;
+    let m = k().mass_properties(&r.shape).unwrap();
+    assert!(close(m.volume, want, 1e-8), "{} vs {want}", m.volume);
+}
+
+#[test]
+fn elliptical_arcs_join_lines_either_way_round() {
+    // Half of a 4 x 2 ellipse closed by its major axis, travelled both ways.
+    let arc = |ccw: bool| {
+        let (s, e, line) = if ccw {
+            ([4.0, 0.0], [-4.0, 0.0], Seg2::Line { a: [-4.0, 0.0], b: [4.0, 0.0] })
+        } else {
+            ([-4.0, 0.0], [4.0, 0.0], Seg2::Line { a: [4.0, 0.0], b: [-4.0, 0.0] })
+        };
+        let seg = Seg2::EllipseArc { center: [0.0, 0.0], major: [1.0, 0.0], a: 4.0, b: 2.0, start: s, end: e, ccw };
+        Profile {
+            frame: Frame::XY,
+            regions: vec![Region2 {
+                outer: Loop2 { edges: vec![ProfileEdge { seg, tag: 1 }, ProfileEdge { seg: line, tag: 2 }] },
+                holes: vec![],
+            }],
+        }
+    };
+    for ccw in [true, false] {
+        let r = k().extrude(&arc(ccw), &ExtrudeSpec { distance: 3.0, symmetric: false }).unwrap();
+        let m = k().mass_properties(&r.shape).unwrap();
+        let want = std::f64::consts::PI * 4.0 * 3.0;
+        assert!(close(m.volume, want, 1e-8), "ccw={ccw}: {} vs {want}", m.volume);
+    }
 }

@@ -42,6 +42,7 @@
 #include <TopExp_Explorer.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <memory>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Defeaturing.hxx>
@@ -108,6 +109,10 @@
 #include <Standard_Failure.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <gp_Elips.hxx>
+#include <Geom_Ellipse.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <Standard_Version.hxx>
 #include <TDataStd_Name.hxx>
@@ -573,6 +578,23 @@ bool has_freeform_face(const TopoDS_Shape& s) {
       case GeomAbs_Torus: break;
       default: return true;
     }
+  }
+  return false;
+}
+
+// Is there an extruded or revolved ellipse? Their faces are not analytic surfaces, and
+// the default and the 1e-7 adaptive quadrature leave a relative error of 1e-5 .. 1e-8.
+bool has_elliptic_face(const TopoDS_Shape& s) {
+  for (TopExp_Explorer ex(s, TopAbs_FACE); ex.More(); ex.Next()) {
+    Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(ex.Current()));
+    Handle(Geom_Curve) basis;
+    if (Handle(Geom_SurfaceOfLinearExtrusion) e = Handle(Geom_SurfaceOfLinearExtrusion)::DownCast(g))
+      basis = e->BasisCurve();
+    else if (Handle(Geom_SurfaceOfRevolution) r = Handle(Geom_SurfaceOfRevolution)::DownCast(g))
+      basis = r->BasisCurve();
+    if (basis.IsNull()) continue;
+    if (Handle(Geom_TrimmedCurve) t = Handle(Geom_TrimmedCurve)::DownCast(basis)) basis = t->BasisCurve();
+    if (!Handle(Geom_Ellipse)::DownCast(basis).IsNull()) return true;
   }
   return false;
 }
@@ -1307,6 +1329,39 @@ int gs_loft(const GsProfile* sections, size_t nsections, int ruled, GsShape** ou
   GS_GUARD_END
 }
 
+// The general boolean on the given arguments and tools. With `simplify` the result's
+// coplanar faces and collinear edges are unified; unification can turn a valid result
+// invalid (FreeCAD's examples: a pad touching a mirrored body), so callers retry without.
+std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean(int op, const ShapeList& args, const ShapeList& tools,
+                                                          bool simplify) {
+  std::unique_ptr<BRepAlgoAPI_BooleanOperation> b;
+  switch (op) {
+    case GS_BOOL_UNION: b = std::make_unique<BRepAlgoAPI_Fuse>(); break;
+    case GS_BOOL_CUT: b = std::make_unique<BRepAlgoAPI_Cut>(); break;
+    case GS_BOOL_INTERSECT: b = std::make_unique<BRepAlgoAPI_Common>(); break;
+    default: throw Standard_Failure("unknown boolean operation");
+  }
+  b->SetArguments(args);
+  b->SetTools(tools);
+  // Sequential on purpose: model-defining operations must give the same topology order
+  // on every run and machine (spec "Determinism").
+  b->SetRunParallel(false);
+  b->Build();
+  if (!b->IsDone() || b->HasErrors()) throw Standard_Failure("boolean operation failed");
+  if (simplify) b->SimplifyResult(true, true);
+  return b;
+}
+
+// The boolean with unification, or without it when unification breaks the result.
+std::unique_ptr<BRepAlgoAPI_BooleanOperation> run_boolean_checked(int op, const ShapeList& args,
+                                                                  const ShapeList& tools) {
+  auto b = run_boolean(op, args, tools, true);
+  if (BRepCheck_Analyzer(b->Shape(), true, true).IsValid()) return b;
+  auto raw = run_boolean(op, args, tools, false);
+  if (BRepCheck_Analyzer(raw->Shape(), true, true).IsValid()) return raw;
+  throw Standard_Failure("boolean operation produced an invalid solid");
+}
+
 int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out, GsBuf* origins) {
   GS_GUARD_BEGIN
   if (!target || !tool || !out || !origins) return fail("null argument");
@@ -1322,25 +1377,7 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
     tools.Append(tool->s);
   }
   if (tools.IsEmpty()) return fail("the tool is empty");
-  BRepAlgoAPI_BooleanOperation* b = nullptr;
-  BRepAlgoAPI_Fuse fuse;
-  BRepAlgoAPI_Cut cut;
-  BRepAlgoAPI_Common common;
-  switch (op) {
-    case GS_BOOL_UNION: b = &fuse; break;
-    case GS_BOOL_CUT: b = &cut; break;
-    case GS_BOOL_INTERSECT: b = &common; break;
-    default: return fail("unknown boolean operation");
-  }
-  b->SetArguments(args);
-  b->SetTools(tools);
-  b->SetRunParallel(false);
-  b->Build();
-  if (!b->IsDone() || b->HasErrors()) return fail("boolean operation failed");
-  // DBGBEGIN
-  if (getenv("GS_DBG")) { BRepCheck_Analyzer a0(target->s), a1(tool->s), a2(b->Shape()); fprintf(stderr,"DBG in %d %d raw %d\n",a0.IsValid(),a1.IsValid(),a2.IsValid()); }
-  // DBGEND
-  b->SimplifyResult(true, true);
+  auto b = run_boolean_checked(op, args, tools);  // validated
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;
@@ -1349,7 +1386,6 @@ int gs_boolean(int op, const GsShape* target, const GsShape* tool, GsShape** out
   std::vector<int64_t> o;
   record_input_faces(*b, target->s, 0, out_faces, o);
   record_input_faces(*b, tool->s, 1, out_faces, o);
-  check_valid(result, "boolean operation");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -1369,22 +1405,8 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   ShapeList args, tool_list;
   args.Append(target->s);
   for (size_t i = 0; i < ntools; ++i) tool_list.Append(tools[i]->s);
-  BRepAlgoAPI_BooleanOperation* b = nullptr;
-  BRepAlgoAPI_Fuse fuse;
-  BRepAlgoAPI_Cut cut;
-  switch (op) {
-    case GS_BOOL_UNION: b = &fuse; break;
-    case GS_BOOL_CUT: b = &cut; break;
-    default: return fail("only union and cut take several tools at once");
-  }
-  b->SetArguments(args);
-  b->SetTools(tool_list);
-  // Sequential on purpose: model-defining operations must give the same topology order
-  // on every run and machine (spec "Determinism").
-  b->SetRunParallel(false);
-  b->Build();
-  if (!b->IsDone() || b->HasErrors()) return fail("boolean operation failed");
-  b->SimplifyResult(true, true);
+  if (op != GS_BOOL_UNION && op != GS_BOOL_CUT) return fail("only union and cut take several tools at once");
+  auto b = run_boolean_checked(op, args, tool_list);
   TopoDS_Shape result = b->Shape();
   if (result.IsNull()) return fail("boolean operation produced no result");
   ShapeMap out_faces;
@@ -1393,7 +1415,6 @@ int gs_boolean_many(int op, const GsShape* target, const GsShape* const* tools, 
   std::vector<int64_t> o;
   record_input_faces(*b, target->s, 0, out_faces, o);
   for (size_t i = 0; i < ntools; ++i) record_input_faces(*b, tools[i]->s, int64_t(i) + 1, out_faces, o);
-  check_valid(result, "boolean operation");
   to_buf(o, origins);
   *out = new GsShape{result};
   return GS_OK;
@@ -2043,8 +2064,8 @@ int gs_mass(const GsShape* s, GsBuf* mass) {
   if (has_freeform_face(s->s)) {
     // Swept, lofted and spline faces: the default quadrature is off by a few tenths of a
     // percent on twisted surfaces, so integrate adaptively.
-    BRepGProp::VolumeProperties(s->s, vol, 1e-7);
-    BRepGProp::SurfaceProperties(s->s, area, 1e-7);
+    BRepGProp::VolumeProperties(s->s, vol, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
+    BRepGProp::SurfaceProperties(s->s, area, has_elliptic_face(s->s) ? 1e-10 : 1e-7);
   } else {
     BRepGProp::VolumeProperties(s->s, vol);
     BRepGProp::SurfaceProperties(s->s, area);
