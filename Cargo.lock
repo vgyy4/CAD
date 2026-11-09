@@ -1635,6 +1635,7 @@ dependencies = [
  "gusset-kernel",
  "gusset-meshio",
  "gusset-naming",
+ "gusset-ole",
  "gusset-project",
  "gusset-sat",
  "gusset-scad",
@@ -1827,6 +1828,14 @@ name = "gusset-occt-sys"
 version = "0.1.0-mvp"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "gusset-ole"
+version = "0.1.0-mvp"
+dependencies = [
+ "gusset-sldprt",
+ "miniz_oxide 0.9.1",
 ]
 
 [[package]]

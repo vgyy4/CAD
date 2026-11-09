@@ -18,7 +18,10 @@ Per-format status (spec: "Interoperability & import"). Tier: 1 = editable featur
 | FreeCAD .FCStd | import | 1 / 2 | PartDesign history as editable features when it rebuilds to FreeCAD's stored shapes (ADR 0033 amendment 2026-11-09: sketches, pad/pocket, revolution/groove, patterns, mirrors, fillets, chamfers, primitives; 60 of FreeCAD's 140 example bodies); otherwise the stored shapes through the import worker, with the reason | – | – | 0 |
 | OpenSCAD .scad | import | 1 | done (ADR 0033 and amendment: each object as editable features - sketches, extrudes, revolves, moves, combines - checked against the exact build; mirrors and uneven scales come in as exact bodies) | – | – | 0 |
 | Gusset feature tree .gtree.json | import | 1 | done (ADR 0042: exporter plugins for Fusion, SolidWorks and Onshape, unverified until run in the real apps) | – | – | 0 |
-| Solid Edge .par/.asm, Inventor .ipt/.iam | import | 2 | not started: no public sample files found (a clean-room reader needs samples; Solid Edge embeds Parasolid, Inventor ShapeManager, so the XT and ACIS readers would carry most of it) | – | – | 0 |
+| Solid Edge .par/.psm | import | 2 | done for parts (ADR 0046: the Parasolid transmit in the `PARASOLID` storage, via `gusset-xt`; no feature history; `.psm` assumed, no sample) | 87 % (13/15 parts; 2 use Parasolid node types of schema 31100 that `gusset-xt` lacks) | 100 % of those read (volumes and boxes plausible; no STEP twins) | 15 |
+| Solid Edge .asm | import | 2 | not started: no placements decoded (ADR 0046); the 3 samples list their parts' paths but the transforms cannot be tied to them without ground truth | – | – | 0 |
+| Inventor .ipt | import | 2 | done for parts (ADR 0046: the result body in the deflated `RSeStorage/B*` stream, via `gusset-sat`; no feature history); 8 of 8 STEP twins checked, 6 match to 1e-15 and 2 are other revisions of the model | 100 % (35/35) | 100 % (35/35) | 35 |
+| Inventor .iam | import | 2 | not started: component paths are listed in `UFRxDoc`, the placements were not found (ADR 0046) | – | – | 0 |
 
 ## Feature-tree exporter plugins
 | Plugin | Status |

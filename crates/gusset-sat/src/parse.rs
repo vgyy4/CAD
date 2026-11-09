@@ -262,6 +262,11 @@ fn parse_binary(b: &[u8], limits: &Limits) -> Result<Sat, SatError> {
                         ty.push('-');
                     } else {
                         typed = true;
+                        // Inventor's parts end `End-of-ASM-History-Section` and `End-of-ASM-data`
+                        // without the record terminator and carry other data after them.
+                        if ty.starts_with("End-of-") {
+                            break;
+                        }
                     }
                 }
             }

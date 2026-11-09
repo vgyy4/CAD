@@ -12,7 +12,8 @@
 //! chain and inflated size is bounded by [`Limits`].
 
 mod assembly;
-mod cfb;
+/// The OLE2 compound file reader, shared with `gusset-ole` (Solid Edge, Inventor; ADR 0046).
+pub mod cfb;
 mod chunks;
 mod crc;
 

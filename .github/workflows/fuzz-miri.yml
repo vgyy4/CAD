@@ -58,6 +58,7 @@ jobs:
           - xt_read
           - sat_read
           - sldprt_read
+          - ole_read
           - bundle_import
           - fusion_design
     steps:

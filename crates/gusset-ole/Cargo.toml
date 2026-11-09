@@ -1,0 +1,15 @@
+[package]
+name = "gusset-ole"
+description = "Solid Edge (.par/.psm/.asm) and Autodesk Inventor (.ipt/.iam) readers for Gusset (ADR 0046): find the B-rep inside the OLE2 container"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gusset-sldprt.workspace = true
+miniz_oxide.workspace = true
+
+[lints]
+workspace = true

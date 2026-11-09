@@ -54,6 +54,12 @@ enum Kind {
     Sldasm,
     /// An ACIS SAT file, converted here to STEP and imported by the worker (ADR 0039).
     Sat,
+    /// A Solid Edge part (`.par`, `.psm`): the Parasolid transmit inside the OLE2 container,
+    /// then as `Xt` (ADR 0046).
+    SolidEdge,
+    /// An Inventor part (`.ipt`): the ShapeManager body inside the OLE2 container, then as
+    /// `Sat` (ADR 0046).
+    Inventor,
     /// A Fusion 360 archive: its binary ACIS bodies (`.smb`), as SAT (ADR 0039).
     F3d,
     /// A feature tree written by an exporter plugin (`.gtree.json`, ADR 0042).
@@ -261,6 +267,8 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
         "sldprt" => Kind::Sldprt,
         "sldasm" => Kind::Sldasm,
         "sat" | "sab" => Kind::Sat,
+        "par" | "psm" => Kind::SolidEdge,
+        "ipt" => Kind::Inventor,
         "f3d" | "f3z" => Kind::F3d,
         "scad" => Kind::Scad,
         "json" => Kind::Tree,
@@ -268,13 +276,23 @@ pub(crate) fn open_import(s: &Session, ctx: &CmdCtx, path: &str) -> Result<Impor
             Some(f) => Kind::Mesh(f),
             None => {
                 return Err(CommandError::args(format!("'.{other}' files cannot be imported"))
-                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sldprt, .sldasm, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
+                    .hint("supported: .step, .stp, .iges, .igs, .x_t, .x_b, .sldprt, .sldasm, .par, .psm, .ipt, .sat, .sab, .f3d, .f3z, .fcstd, .scad, .gtree.json, .stl, .3mf, .obj, .ply, .gltf, .glb"));
             }
         },
     };
     let importer = s.importer.clone();
-    if matches!(kind, Kind::Brep(_) | Kind::FreeCad | Kind::Xt | Kind::Sldprt | Kind::Sldasm | Kind::Sat | Kind::F3d)
-        && importer.is_none()
+    if matches!(
+        kind,
+        Kind::Brep(_)
+            | Kind::FreeCad
+            | Kind::Xt
+            | Kind::Sldprt
+            | Kind::Sldasm
+            | Kind::Sat
+            | Kind::F3d
+            | Kind::SolidEdge
+            | Kind::Inventor
+    ) && importer.is_none()
     {
         return Err(CommandError::new(
             "not_allowed",
@@ -373,6 +391,20 @@ impl ImportJob {
                 warnings.truncate(50);
                 (bodies.collect::<Vec<_>>(), TIER_SAT, warnings)
             }
+            Kind::SolidEdge | Kind::Inventor => {
+                let importer = self
+                    .importer
+                    .ok_or_else(|| CommandError::new("not_allowed", "Solid Edge/Inventor import is not available"))?;
+                let stem = Path::new(&self.file_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if matches!(self.kind, Kind::SolidEdge) {
+                    solid_edge_part(&bytes, &stem, importer.as_ref(), cancel)?
+                } else {
+                    inventor_part(&bytes, &stem, importer.as_ref(), cancel)?
+                }
+            }
             Kind::F3d => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "Fusion import is not available"))?;
@@ -446,6 +478,55 @@ impl ImportJob {
         }
         Ok(PreparedImport { bodies, file_name: self.file_name, tier, warnings, tree: None })
     }
+}
+
+/// Tier note for Solid Edge parts.
+pub const TIER_SOLID_EDGE: &str = "exact geometry from the Solid Edge part's Parasolid data (B-rep, no feature history; intersection curves are fitted)";
+
+/// Tier note for Inventor parts.
+pub const TIER_INVENTOR: &str = "exact geometry from the Inventor part's ShapeManager body (B-rep, no feature history)";
+
+/// A Solid Edge part (`.par`, `.psm`): the Parasolid transmit of its `PARASOLID` storage, as
+/// for `.x_t` (ADR 0046).
+fn solid_edge_part(
+    bytes: &[u8],
+    stem: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let part = gusset_ole::solidedge::extract_xt(bytes, &gusset_ole::Limits::default())
+        .map_err(|e| CommandError::new("io", format!("Solid Edge: {e}")))?;
+    let c = gusset_xt::to_step(&part.xt, stem, &gusset_xt::Limits::default())
+        .map_err(|e| CommandError::new("io", format!("Solid Edge (Parasolid): {e}")))?;
+    let bodies = importer
+        .import("step", c.step.as_bytes(), cancel)
+        .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+    let mut warnings = part.warnings;
+    warnings.extend(c.warnings);
+    warnings.truncate(50);
+    Ok((with_looks(bodies, &c.looks), TIER_SOLID_EDGE, warnings))
+}
+
+/// An Inventor part (`.ipt`): the ShapeManager body of its result, as for a Fusion `.smb`
+/// (ADR 0046).
+fn inventor_part(
+    bytes: &[u8],
+    stem: &str,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Result<(Vec<PreparedBody>, &'static str, Vec<String>), CommandError> {
+    let part = gusset_ole::inventor::extract_sab(bytes, &gusset_ole::Limits::default())
+        .map_err(|e| CommandError::new("io", format!("Inventor: {e}")))?;
+    let c = gusset_sat::to_step(&part.sab, stem, &gusset_sat::Limits::default())
+        .map_err(|e| CommandError::new("io", format!("Inventor (ShapeManager): {e}")))?;
+    let bodies = importer
+        .import("step", c.step.as_bytes(), cancel)
+        .map_err(|e| if cancel.load(Ordering::Relaxed) { cancelled() } else { CommandError::new("io", e) })?;
+    let bodies = bodies.into_iter().map(|(name, blob)| prepared(&name, blob, ImportFormat::Step));
+    let mut warnings = part.warnings;
+    warnings.extend(c.warnings);
+    warnings.truncate(50);
+    Ok((bodies.collect(), TIER_INVENTOR, warnings))
 }
 
 /// The bodies of one SolidWorks part (`bytes`), moved by `place` (metres, as stored) when

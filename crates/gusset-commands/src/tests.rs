@@ -402,6 +402,67 @@ fn import_uses_the_importer_and_stores_blobs_once() {
 }
 
 #[test]
+fn inventor_and_solid_edge_parts_go_through_their_readers() {
+    use std::sync::Mutex;
+    struct Capture(Mutex<Vec<String>>);
+    impl session::Importer for Capture {
+        fn import(
+            &self,
+            format: &str,
+            bytes: &[u8],
+            _cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            assert_eq!(format, "step");
+            self.0.lock().unwrap().push(String::from_utf8_lossy(bytes).into_owned());
+            Ok(vec![("Body".into(), b"brep".to_vec())])
+        }
+    }
+    let cap = Arc::new(Capture(Mutex::new(Vec::new())));
+    struct Shared(Arc<Capture>);
+    impl session::Importer for Shared {
+        fn import(
+            &self,
+            format: &str,
+            bytes: &[u8],
+            cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            self.0.import(format, bytes, cancel)
+        }
+    }
+    let mut s = session();
+    s.importer = Some(Arc::new(Shared(cap.clone())));
+    let u = CmdCtx::user(1);
+    let d = std::env::temp_dir().join(format!("gusset-ole-import-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    s.project_dir = Some(d.clone());
+    // An Inventor part whose result body is a ShapeManager box: the reader's STEP reaches the importer.
+    let sab = gusset_sat::fixtures::to_binary(&gusset_sat::fixtures::box_sat(700, [10.0, 20.0, 30.0]));
+    std::fs::write(d.join("box.ipt"), gusset_ole::fixtures::inventor_part(&sab)).unwrap();
+    let r = run(&mut s, &u, "import.file", json!({"path": "box.ipt"}));
+    assert_eq!(r["features"].as_array().unwrap().len(), 1);
+    assert!(r["tier"].as_str().unwrap_or_default().contains("Inventor"), "{r}");
+    let seen = cap.0.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].matches("ADVANCED_FACE").count(), 6);
+    // Files that are not what their extension says, or have no geometry, are errors that name the format.
+    std::fs::write(d.join("junk.ipt"), b"not a compound file").unwrap();
+    let e = execute(&mut s, &u, "import.file", json!({"path": "junk.ipt"})).unwrap_err();
+    assert!(e.message.contains("Inventor"), "{}", e.message);
+    std::fs::write(d.join("junk.par"), b"not a compound file").unwrap();
+    let e = execute(&mut s, &u, "import.file", json!({"path": "junk.par"})).unwrap_err();
+    assert!(e.message.contains("Solid Edge"), "{}", e.message);
+    std::fs::write(d.join("asm.ipt"), gusset_ole::fixtures::ole(&[("Mx", b"meta")])).unwrap();
+    let e = execute(&mut s, &u, "import.file", json!({"path": "asm.ipt"})).unwrap_err();
+    assert!(e.message.contains("no solid geometry"), "{}", e.message);
+    // A Solid Edge file whose transmit is not Parasolid data.
+    std::fs::write(d.join("bad.par"), gusset_ole::fixtures::solid_edge_part(b"**ABC\n**END_OF_HEADER**\nrubbish"))
+        .unwrap();
+    let e = execute(&mut s, &u, "import.file", json!({"path": "bad.par"})).unwrap_err();
+    assert!(e.message.contains("Solid Edge"), "{}", e.message);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_freecad_file_imports_its_visible_shapes_through_the_worker() {
     struct Fake;
     impl session::Importer for Fake {

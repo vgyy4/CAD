@@ -72,6 +72,29 @@ fn the_binary_form_converts_like_the_text() {
 }
 
 #[test]
+fn an_end_record_without_terminator_ends_the_file() {
+    // Inventor writes the history section's end and the file's end as bare type names with
+    // no record terminator, then other data (here: a tag the reader does not know).
+    let text = box_sat(700, [10.0, 20.0, 30.0]);
+    let mut bin = to_binary(&text);
+    let tail = [&[0x0du8, 15][..], b"End-of-ASM-data", &[0x11]].concat();
+    assert!(bin.ends_with(&tail));
+    bin.truncate(bin.len() - tail.len());
+    for (tag, part) in [(0x0eu8, "End"), (0x0e, "of"), (0x0e, "ASM"), (0x0e, "History"), (0x0d, "Section")] {
+        bin.extend([tag, part.len() as u8]);
+        bin.extend(part.as_bytes());
+    }
+    for (tag, part) in [(0x0eu8, "End"), (0x0e, "of"), (0x0e, "ASM"), (0x0d, "data")] {
+        bin.extend([tag, part.len() as u8]);
+        bin.extend(part.as_bytes());
+    }
+    bin.extend([0x41, 1, 0, 0x80, 0x7f, 0x7f]);
+    let a = to_step(text.as_bytes(), "box", &Limits::default()).unwrap();
+    let b = to_step(&bin, "box", &Limits::default()).unwrap();
+    assert_eq!(a.step, b.step);
+}
+
+#[test]
 fn shared_loops_and_endless_helices_are_refused() {
     // Two faces naming one loop (the review's 1 MB file that became 1 GB of STEP).
     let sat = box_sat(700, [1.0, 1.0, 1.0]);

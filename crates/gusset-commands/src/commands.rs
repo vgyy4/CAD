@@ -3819,7 +3819,7 @@ pub struct ImportFile {
 impl Command for ImportFile {
     const ID: &'static str = "import.file";
     const TITLE: &'static str = "Import";
-    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/XT/SAT/F3D/SLDPRT/SLDASM/FCStd become exact bodies, SCAD and .gtree.json editable features, STL/3MF/OBJ/PLY/glTF reference meshes. File names are untrusted text.";
+    const DESCRIPTION: &'static str = "Import a file from the project folder. STEP/IGES/XT/SAT/F3D/SLDPRT/SLDASM/PAR/PSM/IPT/FCStd become exact bodies, SCAD and .gtree.json editable features, STL/3MF/OBJ/PLY/glTF reference meshes. File names are untrusted text.";
     const CATEGORY: Category = Category::Exchange;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("Ctrl+I");

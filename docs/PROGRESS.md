@@ -297,7 +297,15 @@ Phase 3 has started (see Next).
      the extra byte found in these files; 12 blussyya pairs match SolidWorks' STEP to 1e-15; fuzz
      target `sldprt_read`; OCCT test `sldprt_samples.rs`). Parts whose bodies come from an
      imported feature (`LocalBodies`) done (ADR 0043 amendment; all 23 samples import); a file that
-     ends early warns. `.sldasm` assemblies import too (amendment 2026-11-08: component list + placements from `swXmlContents/COMPINSTANCETREE`, parts read from the assembly's folder). Virtual components are read from their embedded part streams (amendment 2; the sample's two are empty parts). The row-vector rotation reading is confirmed on 54 public assemblies (ADR 0043 limits). Not yet: feature history, OLE2-era assemblies. Solid Edge and Inventor: no public sample files found (2026-11-08); a reader waits for samples (docs/INTEROP.md).
+     ends early warns. `.sldasm` assemblies import too (amendment 2026-11-08: component list + placements from `swXmlContents/COMPINSTANCETREE`, parts read from the assembly's folder). Virtual components are read from their embedded part streams (amendment 2; the sample's two are empty parts). The row-vector rotation reading is confirmed on 54 public assemblies (ADR 0043 limits). Not yet: feature history, OLE2-era assemblies. Solid Edge and Inventor parts: see the next entry.
+   - Solid Edge `.par`/`.psm` and Inventor `.ipt` import done (ADR 0046, `gusset-ole`; samples from Zenodo found
+     2026-11-09, CC-BY): both are OLE2 files (the CFB reader of `gusset-sldprt` is shared). Solid Edge keeps a plain
+     Parasolid transmit in `PARASOLID/STREAM0.X_B` (13 of 15 parts import via `gusset-xt`; 2 stop at
+     Parasolid node types 163/184 of schema 31100, which `gusset-xt` does not know). Inventor keeps the part's body
+     as binary ShapeManager in a deflated `RSeStorage/B*` stream (35 of 35 parts import via `gusset-sat`; 6 of the 8
+     parts with a STEP twin match it to 1e-15, the other two are different revisions of the model).
+     `gusset-sat` now stops at an end record without terminator. Fuzz target `ole_read`; OCCT test `ole_samples.rs`
+     (env `GUSSET_OLE_SAMPLES`). Not done: `.asm`/`.iam` assemblies, `.psm` (no sample), feature history.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body
@@ -407,8 +415,8 @@ Phase 3 has started (see Next).
 
 ## Waiting on the owner (2026-11-08)
 Work that cannot go further without something only the owner can give:
-- **Sample files.** Solid Edge `.par`/`.asm` and Inventor `.ipt`/`.iam` (no public samples
-  found), FreeCAD `.FCStd` with PartDesign history (FreeCAD's examples are on GitHub, not
+- **Sample files.** Solid Edge `.asm`/`.psm` and Inventor `.iam` with a known placement (the
+  parts came in with ADR 0046; assemblies need ground truth), FreeCAD `.FCStd` with PartDesign history (FreeCAD's examples are on GitHub, not
   reachable here), a SolidWorks assembly with a non-symmetric rotation (to confirm the
   placement convention, ADR 0043 amendment 2), and the ARIG `cad-projects` repository
   (access was declined in this environment).

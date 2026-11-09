@@ -94,6 +94,7 @@ gusset-fea = { path = "crates/gusset-fea", version = "0.1.0-mvp" }
 gusset-sat = { path = "crates/gusset-sat", version = "0.1.0-mvp" }
 gusset-xt = { path = "crates/gusset-xt", version = "0.1.0-mvp" }
 gusset-sldprt = { path = "crates/gusset-sldprt", version = "0.1.0-mvp" }
+gusset-ole = { path = "crates/gusset-ole", version = "0.1.0-mvp" }
 gusset-occt-sys = { path = "crates/gusset-occt-sys", version = "0.1.0-mvp" }
 gusset-kernel-occt = { path = "crates/gusset-kernel-occt", version = "0.1.0-mvp" }
 gusset-eval = { path = "crates/gusset-eval", version = "0.1.0-mvp" }

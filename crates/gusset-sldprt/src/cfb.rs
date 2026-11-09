@@ -4,7 +4,7 @@
 
 use crate::{Limits, SldprtError};
 
-pub(crate) const SIGNATURE: [u8; 8] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+pub const SIGNATURE: [u8; 8] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 const END: u32 = 0xFFFF_FFFE;
 const MAX_REGULAR: u32 = 0xFFFF_FFFA;
 const DIR_ENTRY: usize = 128;
@@ -25,13 +25,21 @@ fn u64_at(b: &[u8], off: usize) -> Option<u64> {
 
 /// A stream's directory entry.
 #[derive(Debug, Clone)]
-pub(crate) struct Entry {
+pub struct Entry {
     pub name: String,
     start: u32,
     size: u64,
 }
 
-pub(crate) struct Cfb<'a> {
+impl Entry {
+    /// The stream's size in bytes, as the directory states it.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+#[derive(Debug)]
+pub struct Cfb<'a> {
     bytes: &'a [u8],
     sector: usize,
     mini_sector: usize,
@@ -43,7 +51,7 @@ pub(crate) struct Cfb<'a> {
 }
 
 impl<'a> Cfb<'a> {
-    pub(crate) fn open(bytes: &'a [u8], limits: &Limits) -> Result<Self, SldprtError> {
+    pub fn open(bytes: &'a [u8], limits: &Limits) -> Result<Self, SldprtError> {
         if bytes.get(..8) != Some(&SIGNATURE[..]) {
             return Err(bad("signature missing"));
         }
@@ -119,7 +127,7 @@ impl<'a> Cfb<'a> {
     }
 
     /// True when the sector table uses sectors past the end of the file (a cut copy).
-    pub(crate) fn cut_short(&self) -> bool {
+    pub fn cut_short(&self) -> bool {
         let have = (self.bytes.len() / self.sector).saturating_sub(1);
         self.fat.iter().skip(have).any(|e| *e <= MAX_REGULAR || *e == END)
     }
@@ -169,7 +177,7 @@ impl<'a> Cfb<'a> {
     }
 
     /// The bytes of stream `i` (an index into [`Cfb::streams`]).
-    pub(crate) fn read(&self, i: usize, limits: &Limits) -> Result<Vec<u8>, SldprtError> {
+    pub fn read(&self, i: usize, limits: &Limits) -> Result<Vec<u8>, SldprtError> {
         let e = self.streams.get(i).ok_or_else(|| bad("no such stream"))?;
         let size = usize::try_from(e.size).map_err(|_| SldprtError::TooLarge("stream size".into()))?;
         if size > limits.max_stream_bytes {

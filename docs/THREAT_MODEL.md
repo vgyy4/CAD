@@ -130,6 +130,8 @@ in Rust, bounded and fuzzed where noted; the B-rep they yield still goes through
 (or is canonicalized by it) before OCCT reads it:
 - `.sldprt` containers (`gusset-sldprt`: OLE2/CFB and the chunk container, one byte budget
   per file, fuzz target `sldprt_read`) and the Parasolid XT they hold (`gusset-xt`).
+- Solid Edge `.par` and Inventor `.ipt` containers (`gusset-ole`: the same OLE2 reader, deflate streams capped by size, ratio
+  and one byte budget per file, fuzz target `ole_read`) and the Parasolid/ShapeManager data they hold (`gusset-xt`, `gusset-sat`).
 - ACIS SAT/SAB and Fusion `.f3d`/`.f3z` archives (`gusset-sat`, `fusion::read_design`, the
   archives' JSON), zip entries including Zstandard ones (the C `zstd` decoder, output capped
   at the declared size).
