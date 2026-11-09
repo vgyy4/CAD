@@ -701,7 +701,7 @@ fn a_sketch_and_an_extrude_become_a_tree() {
     assert_eq!(ex["type"], "extrude");
     assert_eq!(ex["sketch"], "Sketch1");
     assert_eq!(ex["operation"], "new");
-    assert_eq!(ex["end_condition"], "blind");
+    assert_eq!(ex["sw_end_kind"], "blind");
     assert_eq!(ex["distance"].as_f64(), Some(5.0));
     assert_eq!(ex["symmetric"], false);
     // The same streams in the chunk container.
@@ -740,7 +740,7 @@ fn a_mid_plane_cut_and_an_unknown_feature() {
     assert_eq!(cut["operation"], "cut", "{t}");
     assert_eq!(cut["target"], "Boss-Extrude1");
     assert_eq!(cut["sketch"], "Sketch2");
-    assert_eq!(cut["end_condition"], "mid_plane");
+    assert_eq!(cut["sw_end_kind"], "mid_plane");
     assert_eq!((cut["distance"].as_f64(), cut["symmetric"].as_bool()), (Some(2.0), Some(true)));
     // A feature class the reader does not know refuses the whole history, naming it.
     let mut hole = extra.clone();

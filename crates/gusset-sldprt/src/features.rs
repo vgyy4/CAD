@@ -2285,7 +2285,7 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             js.insert("profiles".into(), json!("all"));
             js.insert("operation".into(), json!(op));
             js.insert("target".into(), if op == "new" { Value::Null } else { json!(first_solid) });
-            js.insert("end_condition".into(), json!(end));
+            js.insert("sw_end_kind".into(), json!(end));
             js.insert("distance".into(), json!(distance));
             if through_all {
                 js.insert("through_all".into(), json!(true));
@@ -2562,7 +2562,7 @@ fn check(tree: &Value) -> Result<(), String> {
                     return Err(format!("{name}: its sketch could not be read"));
                 }
                 if s("type") == "extrude" && f.get("distance").is_none_or(Value::is_null) {
-                    return Err(format!("{name}: end condition {} is not supported", s("end_condition")));
+                    return Err(format!("{name}: end condition {} is not supported", s("sw_end_kind")));
                 }
                 if s("type") == "revolve" && f.get("axis").is_none_or(Value::is_null) {
                     return Err(format!("{name}: no axis line in its sketch"));
