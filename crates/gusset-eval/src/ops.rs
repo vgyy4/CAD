@@ -947,7 +947,12 @@ fn length_point(
 }
 
 /// The indices of `refs` in `body` (each once), or the missing reference with a suggestion.
-fn resolve_faces(name: &str, body: &Body, refs: &[gusset_doc::FaceRef], hint: &str) -> Result<Vec<u32>, EvalError> {
+pub(crate) fn resolve_faces(
+    name: &str,
+    body: &Body,
+    refs: &[gusset_doc::FaceRef],
+    hint: &str,
+) -> Result<Vec<u32>, EvalError> {
     let mut faces: Vec<u32> = Vec::new();
     for r in refs {
         let Some(fi) = body.names.face_index(r) else {

@@ -251,6 +251,7 @@ extrude Extrude1 (profile: Sketch1.regions(l5), distance: 5 mm, op: new)
 extrude  <Name> (profile: <P>, distance: <expr>, [symmetric: true], [op: new|add|cut|intersect], [body: <Feature>], [body_name: <Body>])
 revolve  <Name> (profile: <P>, axis: X|Y|Z|<Sketch>.<line>, angle: <expr>, [op: ...], [body: ...], [body_name: ...])
 fillet   <Name> (edges: [<edge>, ...], radius: <expr>)
+fillet   <Name> (full_round: [<face>, ...])
 chamfer  <Name> (edges: [<edge>, ...], distance: <expr>, [distance2: <expr> | angle: <expr>], [faces: [<face>, ...]])
 import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "name.step")
 ```
@@ -266,6 +267,13 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   is refused); `Sketch1.l5` is a line of a sketch.
 - `fillet` and `chamfer` take persistent edge names (copy them from `query_body` with
   `names: true`; never guess them).
+- `full_round` replaces `edges` and `radius`: each named face must be planar and lie between two
+  parallel planar faces (the end of a wall, a slot's end), perpendicular to both. The face is
+  replaced by a half cylinder of half the distance between the two sides, tangent to both
+  (OCCT's ordinary fillet of both edges fails there). If the face has several pairs of
+  parallel neighbours, the closest pair is rounded. The rounded face is named
+  `<Fillet>/blend(<edge>)` after the face's edge with the smaller name. The face is a persistent
+  name: the round follows the wall thickness when the model changes.
 - A chamfer is equal (one `distance` on both faces) unless it has a second leg: `distance2`
   (a length on the other face) or `angle` (the angle from the reference face, between 0 and 90
   degrees; the second leg is `distance * tan(angle)`), not both. `distance` always runs along
@@ -861,7 +869,7 @@ counter-clockwise, optional `constraints` `{type, entities, value, parameter}` w
 grammar's constraint types), `extrude` (`sketch`, `profiles: "all"` or `[{point: [u, v]}]`,
 `distance` along the sketch normal, `symmetric`, `distance_parameter`, `operation:
 new|join|cut|intersect`, `target`), `revolve` (`axis: {line}` or `{origin, direction}`, `angle`),
-`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`; a chamfer may add `distance2` (mm) or `angle` (degrees from the reference face) and `face: {point, normal}`, the reference face `distance` runs along), and
+`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`; a fillet may instead give `full_round: {point, normal}` (version 2); a chamfer may add `distance2` (mm) or `angle` (degrees from the reference face) and `face: {point, normal}`, the reference face `distance` runs along), and
 `unsupported` (`original_type`). Version 2 adds (faces are found by a point on them, like edges
 by midpoint): `hole` (`face: {point, normal}`, world `positions: [[x, y, z]]`, `diameter`,
 `through` or `depth`, `variant: simple|counterbore|countersink`, `cbore_diameter`, `cbore_depth`,

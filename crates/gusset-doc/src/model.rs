@@ -281,7 +281,7 @@ impl FeatureKind {
                 for e in &b.edges {
                     e.features(&mut add);
                 }
-                for f in &b.faces {
+                for f in b.faces.iter().chain(&b.full_round) {
                     f.features(&mut add);
                 }
             }
@@ -1056,13 +1056,29 @@ pub struct EdgeBlendDef {
     /// first distance runs along. Empty = the default rule (see `gusset-eval`); otherwise one
     /// per edge. Ignored when `second` is `None`.
     pub faces: Vec<FaceRef>,
+    /// Fillet only (ADR 0004 amendment): the middle faces of a *full round*. Non-empty = a
+    /// full-round fillet: `edges` is empty and `size` unused (the radius is half the distance
+    /// between the face's two parallel neighbours).
+    pub full_round: Vec<FaceRef>,
 }
 
 impl EdgeBlendDef {
     /// A blend with one size: a fillet, or an equal chamfer.
     pub fn new(edges: Vec<EdgeRef>, size: Expr) -> Self {
-        EdgeBlendDef { edges, size, second: ChamferSecond::Equal, faces: Vec::new() }
+        EdgeBlendDef { edges, size, second: ChamferSecond::Equal, faces: Vec::new(), full_round: Vec::new() }
     }
+
+    /// A full-round fillet of the given middle faces.
+    pub fn full_round(faces: Vec<FaceRef>) -> Self {
+        let mut d = EdgeBlendDef::new(Vec::new(), full_round_placeholder());
+        d.full_round = faces;
+        d
+    }
+}
+
+/// The unused `size` of a full-round fillet (`0 mm`).
+pub fn full_round_placeholder() -> Expr {
+    gusset_units::expr::parse("0 mm").unwrap_or_else(|_| unreachable!("a literal length parses"))
 }
 
 /// The second leg of a chamfer.

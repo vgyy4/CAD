@@ -193,6 +193,34 @@ fn unequal_chamfer_arguments_are_checked_before_committing() {
 }
 
 #[test]
+fn full_round_arguments_are_checked_before_committing() {
+    let mut s = session();
+    let u = CmdCtx::user(1);
+    build_plate(&mut s, &u);
+    let head = s.history().head(s.history().main()).unwrap();
+    let edge = "edge(Extrude1/cap(end), Extrude1/side(Sketch1/l6))";
+    let face = "Extrude1/side(Sketch1/l6)";
+    for (args, why) in [
+        (json!({"full_round": [face], "radius": "1 mm"}), "replaces edges and radius"),
+        (json!({"full_round": [face], "edges": [edge]}), "replaces edges and radius"),
+        (json!({"full_round": []}), "at least one face"),
+        (json!({"full_round": ["nonsense("]}), "face 'nonsense('"),
+        (json!({"full_round": ["Extrude1/side(Sketch1/l99)"]}), "does not exist"),
+        (json!({"edges": [edge]}), "radius is required"),
+    ] {
+        let e = execute(&mut s, &u, "feature.fillet", args).unwrap_err();
+        assert!(e.message.contains(why) || e.hint.as_deref().is_some_and(|h| h.contains(why)), "{why}: {e:?}");
+    }
+    assert_eq!(s.history().head(s.history().main()).unwrap(), head);
+    // A valid face is committed and prints as the text language says (the mock kernel cannot
+    // round it, so the rebuild is flagged).
+    let r = run(&mut s, &u, "feature.fillet", json!({"full_round": [face], "name": "R1"}));
+    assert_eq!(r["feature"], "R1");
+    let text = s.document(&u.actor).unwrap().to_text();
+    assert!(text.contains(&format!("fillet R1 (full_round: [{face}])")), "{text}");
+}
+
+#[test]
 fn agents_work_on_their_own_branch_and_need_approval() {
     let mut s = session();
     let u = CmdCtx::user(1);

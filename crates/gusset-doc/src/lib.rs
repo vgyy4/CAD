@@ -391,6 +391,36 @@ import Import1 (blob: "0123456789abcdef0123456789abcdef0123456789abcdef012345678
     }
 
     #[test]
+    fn full_round_fillets_round_trip_and_are_validated() {
+        let f1 = "E/side(P/l4)";
+        let f2 = "E/cap(end)";
+        let ok = format!("{HOLE_BASE}fillet R1 (full_round: [{f1}])\n\nfillet R2 (full_round: [{f1}, {f2}])\n");
+        let doc = Document::from_text(&ok).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(doc.to_text(), ok);
+        let FeatureKind::Fillet(b) = &doc.feature("R2").unwrap().kind else { panic!() };
+        assert_eq!((b.edges.len(), b.full_round.len()), (0, 2));
+        assert_eq!(doc.feature("R2").unwrap().kind.dependencies(), ["E", "P"]);
+        // A normal fillet is unchanged, and the two forms do not mix.
+        let e = Document::from_text(&format!("{HOLE_BASE}fillet R (full_round: [{f1}], radius: 1 mm)\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("full_round only"), "{e}");
+        let e = Document::from_text(&format!("{HOLE_BASE}fillet R (full_round: [])\n")).unwrap_err().to_string();
+        assert!(e.contains("at least one face"), "{e}");
+        let e = Document::from_text(&format!("{HOLE_BASE}chamfer C (full_round: [{f1}], distance: 1 mm)\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("full_round"), "{e}");
+        // Renaming a feature renames the faces too.
+        let mut doc = Document::from_text(&ok).unwrap();
+        let FeatureKind::Fillet(b) = &mut doc.features.iter_mut().find(|f| f.name == "R1").unwrap().kind else {
+            panic!()
+        };
+        b.full_round.iter_mut().for_each(|f| f.rename_feature("E", "Body"));
+        assert!(doc.to_text().contains("fillet R1 (full_round: [Body/side(P/l4)])"));
+    }
+
+    #[test]
     fn sweep_and_loft_round_trip_and_are_validated() {
         let ok = format!(
             "{SWEEP_BASE}sweep S1 (profile: P.regions(c2), path: Q.curves(l4, l5), orientation: frenet, twist: turn, op: new, body_name: Pipe)\n\nsweep S2 (profile: P, path: Q, orientation: fixed, op: add, body: S1)\n\nsweep S3 (profile: P, path: [edge(S1/cap(end), S1/side(P/c2)), edge(S1/cap(end), S1/side(P/c2_p1))], orientation: frenet, op: add, body: S1)\n\nloft L1 (profiles: [P, P.regions(c2)], ruled: true, op: new)\n"

@@ -450,10 +450,15 @@ fn print_feature(out: &mut String, f: &Feature) {
             }
         }
         FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
-            let edges: Vec<String> = b.edges.iter().map(EdgeRef::to_string).collect();
-            args.push(format!("edges: [{}]", edges.join(", ")));
-            let key = if matches!(f.kind, FeatureKind::Fillet(_)) { "radius" } else { "distance" };
-            args.push(format!("{key}: {}", b.size));
+            if b.full_round.is_empty() {
+                let edges: Vec<String> = b.edges.iter().map(EdgeRef::to_string).collect();
+                args.push(format!("edges: [{}]", edges.join(", ")));
+                let key = if matches!(f.kind, FeatureKind::Fillet(_)) { "radius" } else { "distance" };
+                args.push(format!("{key}: {}", b.size));
+            } else {
+                let faces: Vec<String> = b.full_round.iter().map(FaceRef::to_string).collect();
+                args.push(format!("full_round: [{}]", faces.join(", ")));
+            }
             match &b.second {
                 ChamferSecond::Equal => {}
                 ChamferSecond::Distance(e) => args.push(format!("distance2: {e}")),
@@ -1124,13 +1129,14 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
     let mut size = None;
     let mut second: Option<ChamferSecond> = None;
     let mut faces: Option<Vec<FaceRef>> = None;
+    let mut full_round: Option<Vec<FaceRef>> = None;
     let mut blob = None;
     let mut format = None;
     let mut file = None;
     let allowed = match kw {
         "extrude" => "profile, distance, symmetric, op, body, body_name, label, group, suppressed",
         "revolve" => "profile, axis, angle, op, body, body_name, label, group, suppressed",
-        "fillet" => "edges, radius, label, group, suppressed",
+        "fillet" => "edges, radius, full_round, label, group, suppressed",
         "chamfer" => "edges, distance, distance2, angle, faces, label, group, suppressed",
         _ => "blob, format, file, label, group, suppressed",
     };
@@ -1188,6 +1194,7 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
                 second = Some(ChamferSecond::Angle(c.expr()?));
             }
             ("chamfer", "faces") => faces = Some(parse_face_list(c)?),
+            ("fillet", "full_round") => full_round = Some(parse_face_list(c)?),
             ("import", "blob") => blob = Some(c.string()?),
             ("import", "format") => {
                 let w = c.ident_or_digits()?;
@@ -1219,12 +1226,22 @@ fn parse_feature(kw: &str, c: &mut Cursor<'_>) -> Result<Feature, ParseError> {
             body,
             body_name,
         }),
+        "fillet" | "chamfer" if full_round.is_some() => {
+            if full_round.as_ref().is_some_and(Vec::is_empty) {
+                return Err(c.err("full_round needs at least one face"));
+            }
+            if edges.is_some() || size.is_some() {
+                return Err(c.err("a full-round fillet takes full_round only, not edges or radius"));
+            }
+            FeatureKind::Fillet(EdgeBlendDef::full_round(full_round.unwrap_or_default()))
+        }
         "fillet" | "chamfer" => {
             let def = EdgeBlendDef {
                 edges: edges.ok_or_else(|| missing(c, kw, "edges"))?,
                 size: size.ok_or_else(|| missing(c, kw, if kw == "fillet" { "radius" } else { "distance" }))?,
                 second: second.unwrap_or_default(),
                 faces: faces.unwrap_or_default(),
+                full_round: Vec::new(),
             };
             if kw == "fillet" { FeatureKind::Fillet(def) } else { FeatureKind::Chamfer(def) }
         }

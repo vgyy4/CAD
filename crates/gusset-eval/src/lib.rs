@@ -19,6 +19,7 @@ mod datum;
 mod delta;
 mod deps;
 pub mod error;
+mod full_round;
 pub mod gear;
 mod hole;
 mod joint;
@@ -1083,6 +1084,7 @@ impl Evaluator {
             }
             FeatureKind::Sweep(d) => self.run_sweep(s, name, d, units, params),
             FeatureKind::Loft(d) => self.run_loft(s, name, d),
+            FeatureKind::Fillet(b) if !b.full_round.is_empty() => self.run_full_round(s, name, b),
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 let fillet = matches!(f.kind, FeatureKind::Fillet(_));
                 let size = eval_expr(name, &b.size, Dim::LENGTH, params, units)?;

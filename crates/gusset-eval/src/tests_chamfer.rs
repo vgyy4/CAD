@@ -79,3 +79,20 @@ fn reference_faces_must_exist_and_border_the_edge() {
     let e = first("distance: 2 mm, distance2: 1 mm, faces: [Extrude1/side(Sketch1/l6)]");
     assert_ne!(e.code, ErrorCode::InvalidReference, "{e:?}");
 }
+
+#[test]
+fn full_round_reaches_the_kernel_and_checks_its_faces() {
+    let run = |args: &str| {
+        let doc = Document::from_text(&format!("{BASE}\nfillet F1 ({args})\n")).unwrap_or_else(|e| panic!("{e}"));
+        let mut ev = Evaluator::new(Arc::new(MockKernel));
+        ev.evaluate(&doc, None, &()).errors().into_iter().next().cloned().unwrap_or_else(|| panic!("no error"))
+    };
+    // A missing face is a reference error.
+    let e = run("full_round: [Extrude1/side(Sketch1/l99)]");
+    assert_eq!(e.code, ErrorCode::MissingReference, "{e:?}");
+    assert!(e.reference.is_some());
+    // An existing face reaches the kernel; the mock cannot round, so that is what fails.
+    let e = run("full_round: [Extrude1/side(Sketch1/l6)]");
+    assert_ne!(e.code, ErrorCode::MissingReference, "{e:?}");
+    assert!(e.message.contains("full round"), "{}", e.message);
+}

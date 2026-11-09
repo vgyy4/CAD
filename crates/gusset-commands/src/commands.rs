@@ -2479,8 +2479,13 @@ fn blend_outcome(out: &crate::session::CommitOutcome) -> Value {
 #[serde(deny_unknown_fields)]
 pub struct Fillet {
     /// Edge references, e.g. `edge(Extrude1/cap(end), Extrude1/side(Sketch1/l5))` (see query_body).
+    #[serde(default)]
     pub edges: Vec<String>,
-    pub radius: String,
+    #[serde(default)]
+    pub radius: Option<String>,
+    /// Full round instead of edges and radius: middle faces between two parallel faces.
+    #[serde(default)]
+    pub full_round: Option<Vec<String>>,
     #[serde(default)]
     pub name: Option<String>,
 }
@@ -2488,26 +2493,53 @@ pub struct Fillet {
 impl Command for Fillet {
     const ID: &'static str = "feature.fillet";
     const TITLE: &'static str = "Fillet";
-    const DESCRIPTION: &'static str = "Round edges with a radius. Edges are persistent references (query_body lists them); unknown ones are rejected with candidate names.";
+    const DESCRIPTION: &'static str = "Round edges with a radius, or give full_round faces (a wall's end between two parallel faces becomes a half cylinder). References are persistent (query_body); unknown ones are rejected with candidates.";
     const CATEGORY: Category = Category::Solid;
     const FLAGS: Flags = EDIT;
     const SHORTCUT: Option<&'static str> = Some("F");
     fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
-        let edges = parse_edges(&self.edges)?;
-        let size = parse_expr("radius", &self.radius)?;
-        check_edges_resolve(s, ctx, &edges)?;
-        check_blend_size(s, ctx, &edges, &size, "radius")?;
+        let (def, edges, size) = match &self.full_round {
+            Some(f) => {
+                if !self.edges.is_empty() || self.radius.is_some() {
+                    return Err(CommandError::args("full_round replaces edges and radius")
+                        .hint("give either full_round (faces) or edges with radius"));
+                }
+                if f.is_empty() {
+                    return Err(CommandError::args("full_round needs at least one face")
+                        .hint("name the middle face of the wall, e.g. Extrude1/side(Sketch1/l6)"));
+                }
+                let faces = f
+                    .iter()
+                    .map(|x| FaceRef::parse(x).map_err(|err| CommandError::args(format!("face '{x}': {err}"))))
+                    .collect::<Result<Vec<_>, _>>()?;
+                for r in &faces {
+                    check_face_resolves(s, ctx, r)?;
+                }
+                (Some(EdgeBlendDef::full_round(faces)), Vec::new(), None)
+            }
+            None => {
+                let Some(radius) = &self.radius else {
+                    return Err(CommandError::args("radius is required").hint("give edges and radius, or full_round"));
+                };
+                let edges = parse_edges(&self.edges)?;
+                let size = parse_expr("radius", radius)?;
+                check_edges_resolve(s, ctx, &edges)?;
+                check_blend_size(s, ctx, &edges, &size, "radius")?;
+                (None, edges, Some(size))
+            }
+        };
         edit_post(
             s,
             ctx,
             "Fillet",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Fillet")?;
-                insert_feature(
-                    doc,
-                    rb,
-                    Feature::new(name.clone(), FeatureKind::Fillet(EdgeBlendDef::new(edges, size))),
-                );
+                let def = match (def, size) {
+                    (Some(d), _) => d,
+                    (None, Some(size)) => EdgeBlendDef::new(edges, size),
+                    (None, None) => return Err(CommandError::args("radius is required")),
+                };
+                insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Fillet(def)));
                 Ok(json!({ "feature": name }))
             },
             |_, out, _| blend_outcome(out),
@@ -2582,7 +2614,7 @@ impl Command for Chamfer {
             "Chamfer",
             |doc, rb| {
                 let name = feature_name(doc, self.name, "Chamfer")?;
-                let def = EdgeBlendDef { edges, size, second, faces };
+                let def = EdgeBlendDef { edges, size, second, faces, full_round: Vec::new() };
                 insert_feature(doc, rb, Feature::new(name.clone(), FeatureKind::Chamfer(def)));
                 Ok(json!({ "feature": name }))
             },
@@ -2699,6 +2731,9 @@ fn rename_in_doc(doc: &mut Document, from: &str, to: &str) {
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
                 for e in &mut b.edges {
                     e.rename_feature(from, to);
+                }
+                for f in b.faces.iter_mut().chain(&mut b.full_round) {
+                    f.rename_feature(from, to);
                 }
             }
             FeatureKind::Import(_) => {}

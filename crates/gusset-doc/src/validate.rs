@@ -264,7 +264,9 @@ pub fn validate(doc: &Document) -> Vec<Issue> {
                 check_body_op(n, &target, live_bodies, &seen, &consumed, &mut out);
             }
             FeatureKind::Fillet(b) | FeatureKind::Chamfer(b) => {
-                if b.edges.is_empty() {
+                if !b.full_round.is_empty() {
+                    // Nothing else to check: the faces are resolved at evaluation.
+                } else if b.edges.is_empty() {
                     out.push(issue_h(n, "no edges selected", "select at least one edge"));
                 }
                 if !b.faces.is_empty() && b.faces.len() != b.edges.len() {
