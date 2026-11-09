@@ -166,18 +166,21 @@ mod tests {
         assert!(SpaceMouse::connect(Some(&dir.join("none.sock")), None).is_none());
         let m = SpaceMouse::connect(Some(&sock), None).unwrap();
         server.join().unwrap();
-        let mut got = None;
-        for _ in 0..100 {
+        // The reader thread may hand the two packets over in separate drains: sum them.
+        let mut motion = ([0i32; 3], [0i32; 3]);
+        for _ in 0..200 {
             match m.drain() {
-                Some((Some(mo), b)) => {
-                    got = Some((mo, b));
-                    break;
+                Some((Some((t, r)), _)) => {
+                    motion.0.iter_mut().zip(t).for_each(|(a, b)| *a += b);
+                    motion.1.iter_mut().zip(r).for_each(|(a, b)| *a += b);
+                    if motion.1 == [0, 600, 0] {
+                        break;
+                    }
                 }
                 Some(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
                 None => break,
             }
         }
-        let (motion, _) = got.unwrap();
         assert_eq!(motion, ([0; 3], [0, 600, 0]));
         // A turn about the up axis changes where the camera looks from.
         let mut cam = gusset_render::Camera::default();
