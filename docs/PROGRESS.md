@@ -251,7 +251,9 @@ Phase 3 has started (see Next).
      done (ADR 0031: translate/turn faces rigidly, the faces around keep their surfaces and
      stretch; holes and bosses slide; OCCT tests in `modeling_move.rs`). FreeCAD and OpenSCAD
      import done (`gusset-scad`, FCStd in the import worker); OpenSCAD objects come in as editable
-     features checked against the exact build (ADR 0033 amendment, 2026-11-08). PLY and glTF 2.0 done (`gusset-meshio`:
+     features checked against the exact build (ADR 0033 amendment, 2026-11-08); FreeCAD PartDesign
+     history comes in as editable features when it rebuilds to FreeCAD's stored shapes (ADR 0033
+     amendment 2026-11-09). PLY and glTF 2.0 done (`gusset-meshio`:
      PLY ASCII/binary import and binary export; glTF `.glb` export and `.glb`/`.gltf` import with
      node transforms, metres/Y-up converted to mm/Z-up, only embedded buffers read; fuzz targets
      `mesh_ply`, `mesh_gltf`; File > Export lists OBJ, PLY and glTF). Parasolid XT done (ADR 0035, `gusset-xt`: clean-room
@@ -416,11 +418,8 @@ Phase 3 has started (see Next).
 ## Waiting on the owner (2026-11-08)
 Work that cannot go further without something only the owner can give:
 - **Sample files.** Solid Edge `.asm`/`.psm` and Inventor `.iam` with a known placement (the
-  parts came in with ADR 0046; assemblies need ground truth), FreeCAD `.FCStd` with PartDesign history (FreeCAD's examples are on GitHub, not
-  reachable here), a SolidWorks assembly with a non-symmetric rotation (to confirm the
-  placement convention, ADR 0043 amendment 2), and the ARIG `cad-projects` repository
-  (access was declined in this environment).
-- **Standards.** DIN 974-1 / ISO 4762 / ISO 10642 tables to check the hole presets (paywalled).
+  parts came in with ADR 0046; assemblies need ground truth). (FreeCAD examples, ARIG's
+  SolidWorks assemblies and public Inventor/Solid Edge parts were fetched on 2026-11-09.)
 - **Network listener.** The live collaboration relay (ADR 0044 phase 2) opens a port: the
   owner's say-so (folder sync, now also automatic, covers sharing until then).
 - **Hardware.** A real integrated-GPU measurement of the large-assembly frame time
