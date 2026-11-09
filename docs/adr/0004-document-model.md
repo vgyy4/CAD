@@ -117,3 +117,38 @@ deterministic, readable text form for tests, golden files, agents and "Export as
 - The text format is a public, versioned API (`docs/FORMAT.md`). Breaking changes need
   migrations.
 - The parser is security-critical and is fuzzed.
+
+## Amendment (2026-11-09): unequal chamfers
+
+`chamfer` keeps `edges` and `distance` and gains three optional arguments:
+`distance2: <len>` or `angle: <deg>` (not both), and `faces: [<face>, ...]`. Without
+`distance2`/`angle` the chamfer is equal and prints exactly as before, so existing files and
+round-trips do not change. `FeatureKind::Chamfer(EdgeBlendDef)` carries `second:
+ChamferSecond` (`Equal`, `Distance(Expr)`, `Angle(Expr)`) and `faces: Vec<FaceRef>`; fillets
+always have `Equal` and no faces.
+
+- **Meaning.** `distance` runs along the edge's *reference face*: the chamfer face meets that
+  face `distance` from the edge. `distance2` is the same measure on the other face. With
+  `angle`, the chamfer face leaves the reference face at that angle, so the other leg is
+  `distance * tan(angle)`; the angle is in (0, 90) degrees exclusive (45 degrees is an equal
+  chamfer). OCCT calls: `BRepFilletAPI_MakeChamfer::Add(d1, d2, edge, face)` and
+  `AddDA(distance, angle, edge, face)` (`Kernel::chamfer_ref` with a `ChamferSpec`); golden
+  tests check the direction by face areas, not only by volume.
+- **Reference face rule.** `faces[i]` is the reference face of `edges[i]`; the list is empty
+  or has one face per edge, and each must be one of the edge's two faces (else the
+  evaluation fails with `invalid_reference`, "does not border"). When a chamfer has no
+  `faces`, the reference face is the adjacent face whose persistent name is smallest in the
+  `FaceRef` order (feature name, then `side` before `cap` before `blend` and the rest of
+  `FaceKey`'s declaration order, then entity and index). Names, not kernel face indices,
+  decide, so the choice is the same after regeneration; it does not depend on OCCT's
+  numbering. `faces` without `distance2`/`angle` is a validation error (it would not be
+  printed back).
+- **Validation.** `distance`, `distance2` > 0 (length), `angle` in (0, 90) degrees; checked
+  in `gusset-eval` before the kernel is called, and by `feature.chamfer` before it commits.
+- **Naming.** Unchanged (ADR 0003): the chamfer face is `<feature>/blend(<edge name>)`; a
+  reference face named in `faces` is an ordinary face reference, so it is renamed with the
+  feature it points to, and counts as a dependency of the chamfer.
+- **Command.** `feature.chamfer` gains `distance2`, `angle` and `faces` (strings; `faces` is
+  a list). The MCP tool entry stays under the byte budget (about 750 bytes). The GUI form
+  has a mode switch (equal / two distances / distance and angle) that shows only the fields
+  of the chosen mode; `feature.edit` reaches the same arguments through the code view's names.

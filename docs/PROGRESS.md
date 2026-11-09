@@ -332,6 +332,16 @@ Phase 3 has started (see Next).
      (L-Bracket, side, Conecting plate 1, back accses panel added); Rust trees equal the prototype's except
      fp ties in a degenerate thumbscrew arc. Next here: ellipse sketch curves (4 O-rings, needs an ellipse in the
      tree format), thicken (3), two-distance chamfers (M8), full-round fillets, rolling-ball/vertex blends.
+   - Unequal chamfers done (2026-11-09; ADR 0004 amendment, ADR 0042 amendment): `chamfer` takes
+     `distance2: <len>` or `angle: <deg>` and an optional `faces: [..]` (one reference face per edge;
+     default: the adjacent face whose persistent name sorts first). `Kernel::chamfer_ref` +
+     `ChamferSpec` (mock: none, as for equal chamfers; OCCT: `Add(d1, d2, E, F)` / `AddDA`; remote protocol request 35),
+     eval validation (`gusset-eval/src/chamfer.rs`), `feature.chamfer` arguments, GUI mode switch
+     (equal / two distances / distance and angle), tree import (`distance2`, `angle`, `face` pick).
+     OCCT golden tests (2 x 3 on a 10 mm cube = 1000 - 0.5 * 2 * 3 * 10) in `gusset-kernel-occt`,
+     `modeling_chamfer.rs` and `modeling_tree_import.rs`. Left: the Inventor/SolidWorks/FreeCAD
+     importers still write equal chamfers only (M8: they need to emit `distance2`/`angle` and the face
+     pick), variable-distance chamfers, a viewport preview of the reference face.
    - Sheet metal (ADR 0037) phase 1 done: `contour_flange` (open line chain bent at every
      corner; thickness, inside bend radius, K-factor, flip, symmetric), `tab` (flat plate),
      faces named `flat/flat_back/bend_in/bend_out/start/end(<line>)`, flat pattern on the body

@@ -231,3 +231,23 @@ SolidWorks hole-wizard features with head clearance give): each face gets its ow
 `{"type": "combine", "name", "target", "tools": [names], "operation": "join" | "cut" |
 "intersect"}` combines bodies made by earlier features into the target body (Gusset's
 `combine`); FreeCAD's Part workbench booleans are written this way.
+
+## Amendment (2026-11-09): unequal chamfers
+
+A `chamfer` feature (either format version) may add `distance2` (mm, > 0) or `angle` (degrees,
+0 to 90 exclusive), not both, and `face: {"point": [x, y, z], "normal": [x, y, z]}` (the
+`normal` is optional), the *reference face*: the face the first `distance` runs along, and the
+one the angle is measured from. Exporters map their two-distance and distance-angle chamfers to it, naming the face their first distance lies on. Without
+`distance2`/`angle` the chamfer is equal and `face` is ignored with a warning.
+
+- The face is found like a hole's face (a point on the surface within 0.01 mm, the normal
+  within 2.5 degrees when given) and written as a persistent name in the chamfer's `faces`
+  list, one per edge. An edge that does not border the picked face takes the default
+  reference face (the adjacent face whose persistent name sorts first, ADR 0004 amendment)
+  and a warning says so; a face on another body than the edges is an error.
+- Without a `face`, no `faces` list is written and the default applies.
+- A bad `distance2` or `angle`, or both together, skips the feature with the reason in
+  `skipped_user_text`, like any other feature that does not build.
+- Exporter plugins do not need a new format version: the fields are optional and a version 1
+  reader that ignores unknown fields still builds an equal chamfer from `distance`.
+  Gusset's reader takes them in version 1 files too.
