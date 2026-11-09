@@ -83,10 +83,12 @@ fn point(d: &Design, i: u64) -> Option<V3> {
     let (_, after) = ref_end(d, rec, b)?;
     for gap in [9usize, 10, 8, 11] {
         if let Some(v) = dbl3(rec, after + gap)
-            && zero(v[2])
+            && v[2].abs() < 1e-9
             && v.iter().all(|x| zero(*x) || (1e-200 < x.abs() && x.abs() < 1e5))
         {
-            return Some(v);
+            // A point on the sketch plane can carry rounding noise in z (-1e-17 after a
+            // transform): it is on the plane.
+            return Some([v[0], v[1], 0.0]);
         }
     }
     None

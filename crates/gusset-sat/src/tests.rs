@@ -295,3 +295,22 @@ fn bodies_without_a_material_take_the_colour_their_features_reference_gives() {
     assert_eq!(styled(&History::default().with_body_colours(vec![Some(1), Some(2)])).0, 0);
     assert!(History::default().is_empty() && !History::default().with_body_colours(vec![None]).is_empty());
 }
+
+#[test]
+fn a_history_blobs_header_unit_is_not_a_length_unit() {
+    // Fusion's `.smbh` header carries 20..50 where the `.smb` blobs carry 10, with the same
+    // centimetre coordinates: the nth-body reader takes the Fusion unit whatever the header says.
+    let text = box_sat(700, [1.0, 2.0, 3.0]);
+    let with_unit = |unit: f64| {
+        let mut bin = to_binary(&text);
+        let at = bin.iter().position(|b| *b == 0x06).unwrap();
+        bin.get_mut(at + 1..at + 9).unwrap().copy_from_slice(&unit.to_le_bytes());
+        bin
+    };
+    let (a, b) = (with_unit(10.0), with_unit(50.0));
+    let a = crate::to_step_nth(&a, "box", &Limits::default(), None, 0, 1).unwrap();
+    let b = crate::to_step_nth(&b, "box", &Limits::default(), None, 0, 1).unwrap();
+    assert_eq!(a.step, b.step);
+    // And it is centimetres: a 1 x 2 x 3 box is 10 x 20 x 30 mm.
+    assert!(a.step.contains("30."), "{}", a.step.lines().find(|l| l.contains("CARTESIAN_POINT")).unwrap_or(""));
+}

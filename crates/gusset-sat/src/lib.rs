@@ -166,6 +166,9 @@ pub fn to_step_coloured_history(
     Ok(Converted { step, bodies, skipped_sheets, version: sat.version, warnings })
 }
 
+/// Fusion stores centimetres.
+const FUSION_CM_TO_MM: f64 = 10.0;
+
 /// One body of a blob as STEP text: body `nth` (from 0, in file order) of a blob that must hold
 /// exactly `of` bodies, moved by `place`. A Fusion base feature's output is the last bodies of its
 /// history blob (`BREP.<id>.smbh`). An error where the blob holds another number of bodies or the
@@ -181,7 +184,12 @@ pub fn to_step_nth(
     nth: usize,
     of: usize,
 ) -> Result<Converted, SatError> {
-    let sat = parse(bytes, limits)?;
+    let mut sat = parse(bytes, limits)?;
+    // The `.smbh` header's unit double is 10 x something (20, 30, 40, 50 in the sample set) while
+    // its coordinates are the same centimetres as the `.smb` blobs' (10): every body of 46 in
+    // a 50-header blob has exactly the raw box of a pre-feature body of an `.smb`, and the
+    // component's final bodies agree. The header is not a length unit here.
+    sat.scale = FUSION_CM_TO_MM;
     let (step, bodies, skipped_sheets, warnings) =
         step::write(&sat, name, place, false, &Colours::new(), None, Some((nth, of)))?;
     if bodies == 0 {

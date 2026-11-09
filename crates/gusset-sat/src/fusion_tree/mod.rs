@@ -153,7 +153,9 @@ impl Graph {
         for &i in &d.ids {
             if d.is(i, "D26351F0") {
                 for q in ref_ids(d, d.rec(i)) {
-                    if d.is(q, "D3937028") || d.is(q, "C3423E04") || d.is(q, "2C54F6D6") {
+                    // `40DCC3F4` (a blob-name holder) leads one link of the sample set (NeoKey
+                    // Trinkey's 0805-NO Base Feature) ahead of its creator.
+                    if d.is(q, "D3937028") || d.is(q, "C3423E04") || d.is(q, "2C54F6D6") || d.is(q, "40DCC3F4") {
                         continue;
                     }
                     g.creator.entry(i).or_insert(q);
