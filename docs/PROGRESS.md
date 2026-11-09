@@ -328,7 +328,7 @@ Phase 3 has started (see Next).
      Fuzz target `ole_read` covers the reader. Round 2 (amendment 3, 2026-11-09): fillet/chamfer picks on the
      true pre-fillet edge with a 0.1 mm path, cylinder blends with any two plane/cylinder supports, edge-blend
      tags, the +-pi fix, seam picks for whole circles, hole fallback axis as a profile line, rectangular
-     patterns (direction, count, spacing, chained second direction, midplane): 20 of 35 as history
+     patterns (direction, count, spacing, chained second direction, midplane): 20 of 47 as history
      (L-Bracket, side, Conecting plate 1, back accses panel added); Rust trees equal the prototype's except
      fp ties in a degenerate thumbscrew arc. Next here: ellipse sketch curves (4 O-rings, needs an ellipse in the
      tree format), thicken (3), two-distance chamfers (M8), full-round fillets, rolling-ball/vertex blends.

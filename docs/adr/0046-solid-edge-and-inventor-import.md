@@ -186,7 +186,7 @@ wrong), multi-body parts, assemblies.
 ## Amendment (2026-11-09, 3): Inventor round 2 - edge picks, cylinder blends, rectangular patterns
 
 The prototype's second round (`docs/formats/inventor-feature-tree.md`, "Round 2") is ported to
-`gusset_ole`. **20 of 35 sample parts** now come in as history (was 16): the 16 above plus L-Bracket,
+`gusset_ole`. **20 of 47 sample parts** now come in as history (was 16): the 16 above plus L-Bracket,
 side, Conecting plate 1 and back accses panel (OCCT test `ipt_history.rs`, floor
 `GUSSET_IPT_MIN_HISTORY=20`).
 
