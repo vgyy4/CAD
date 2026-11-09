@@ -1097,6 +1097,14 @@ fn freecad_history(
             .iter()
             .enumerate()
             .map(|(i, e)| crate::fcstd_tree::SrcEdge {
+                smooth: match e.faces.as_slice() {
+                    [f, g] if f != g => topo
+                        .faces
+                        .get(*f as usize)
+                        .zip(topo.faces.get(*g as usize))
+                        .is_some_and(|(a, b)| crate::fcstd_tree::is_smooth_edge(e.kind, e.midpoint, a, b)),
+                    _ => false,
+                },
                 mid: e.midpoint,
                 faces: e.faces.clone(),
                 path: mesh

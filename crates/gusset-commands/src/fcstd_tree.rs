@@ -771,6 +771,42 @@ pub(crate) struct SrcEdge {
     pub mid: [f64; 3],
     pub faces: Vec<u32>,
     pub path: Vec<[f64; 3]>,
+    /// The edge joins two faces of one smooth surface (a split cylinder's seam line): no
+    /// fillet or chamfer rounds it, and picking a whole face brings it along.
+    pub smooth: bool,
+}
+
+/// Whether an edge between two faces lies inside one surface: coplanar planes, or cylinders
+/// about one axis (their shared line then lies at one radius from it).
+pub(crate) fn is_smooth_edge(
+    kind: gusset_kernel::CurveKind,
+    mid: [f64; 3],
+    a: &gusset_kernel::FaceInfo,
+    b: &gusset_kernel::FaceInfo,
+) -> bool {
+    use gusset_kernel::{CurveKind, SurfaceKind};
+    let dot = |u: [f64; 3], v: [f64; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let sub = |u: [f64; 3], v: [f64; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let tol = 1e-6;
+    match (a.kind, b.kind, a.axis, b.axis) {
+        (SurfaceKind::Plane, SurfaceKind::Plane, ..) => {
+            kind == CurveKind::Line
+                && dot(a.normal, b.normal) > 1.0 - tol
+                && dot(sub(mid, a.centroid), a.normal).abs() < 1e-6
+                && dot(sub(b.centroid, a.centroid), a.normal).abs() < 1e-6
+        }
+        (SurfaceKind::Cylinder, SurfaceKind::Cylinder, Some(x), Some(y)) => {
+            let across = |u: [f64; 3], v: [f64; 3]| {
+                [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+            };
+            let n = |u: [f64; 3]| libm::sqrt(dot(u, u));
+            let along = kind == CurveKind::Line && n(across(x.dir, y.dir)) < tol;
+            // The same axis line (a line on a cylinder runs along it).
+            let same_line = n(across(sub(y.origin, x.origin), x.dir)) < 1e-6;
+            along && same_line
+        }
+        _ => false,
+    }
 }
 /// Reads [`Edges`] of a shape file.
 pub(crate) type ShapeEdges<'a> = &'a mut dyn FnMut(&str) -> Result<Edges, String>;
@@ -1185,7 +1221,7 @@ pub(crate) fn tree_with(
                         } else if let Some(i) = n("Face") {
                             let f = u32::try_from(i - 1).map_err(|_| format!("{name}: a bad face"))?;
                             (0..edges.len())
-                                .filter(|k| edges.get(*k).is_some_and(|e| e.faces.contains(&f)))
+                                .filter(|k| edges.get(*k).is_some_and(|e| e.faces.contains(&f) && !e.smooth))
                                 .for_each(&mut add);
                         } else if !sub.is_empty() {
                             return Err(format!("{name}: a pick of {sub} is not translated yet"));
@@ -1502,5 +1538,34 @@ mod tests {
         let c = &t.features[4];
         assert_eq!((c["target"].as_str(), c["operation"].as_str()), (Some("Box"), Some("cut")));
         assert_eq!(c["tools"], serde_json::json!(["Cylinder"]));
+    }
+
+    #[test]
+    fn an_edge_inside_one_cylinder_or_plane_is_smooth() {
+        use gusset_kernel::{Axis3, CurveKind, FaceInfo, SurfaceKind};
+        let cyl = |nx: f64, ny: f64| FaceInfo {
+            kind: SurfaceKind::Cylinder,
+            area: 1.0,
+            centroid: [0.0; 3],
+            normal: [nx, ny, 0.0],
+            axis: Some(Axis3 { origin: [0.0; 3], dir: [0.0, 0.0, 1.0] }),
+        };
+        // Two halves of one cylinder meet along a line.
+        assert!(is_smooth_edge(CurveKind::Line, [5.0, 0.0, 3.0], &cyl(1.0, 0.0), &cyl(-1.0, 0.0)));
+        // A circle between two cylinders is not a seam line.
+        assert!(!is_smooth_edge(CurveKind::Circle, [5.0, 0.0, 3.0], &cyl(1.0, 0.0), &cyl(-1.0, 0.0)));
+        // Cylinders about different axes are different surfaces.
+        let mut other = cyl(-1.0, 0.0);
+        other.axis = Some(Axis3 { origin: [1.0, 0.0, 0.0], dir: [0.0, 0.0, 1.0] });
+        assert!(!is_smooth_edge(CurveKind::Line, [5.0, 0.0, 3.0], &cyl(1.0, 0.0), &other));
+        let plane = |z: f64| FaceInfo {
+            kind: SurfaceKind::Plane,
+            area: 1.0,
+            centroid: [0.0, 0.0, z],
+            normal: [0.0, 0.0, 1.0],
+            axis: None,
+        };
+        assert!(is_smooth_edge(CurveKind::Line, [0.0, 0.0, 0.0], &plane(0.0), &plane(0.0)));
+        assert!(!is_smooth_edge(CurveKind::Line, [0.0, 0.0, 0.0], &plane(0.0), &plane(1.0)));
     }
 }
