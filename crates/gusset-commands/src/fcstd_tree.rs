@@ -1008,4 +1008,44 @@ mod tests {
         assert!(tree(b"<Document/>", &mut no_shapes).is_err());
         assert!(tree(b"\xff\xfe garbage", &mut no_shapes).is_err());
     }
+
+    #[test]
+    fn the_body_ends_at_its_tip() {
+        let doc = DOC.replace(
+            r#"<Link value="Pocket"/></LinkList></Property>"#,
+            r#"<Link value="Pocket"/></LinkList></Property>
+    <Property name="Tip" type="App::PropertyLink"><Link value="Pad"/></Property>"#,
+        );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        assert_eq!(t.features.len(), 2, "the pocket after the tip is left out");
+    }
+
+    #[test]
+    fn solids_outside_bodies_keep_the_stored_shapes() {
+        let doc = DOC
+            .replace(
+                r#"<Objects Count="4">"#,
+                r#"<Objects Count="5">
+  <Object type="Part::Cut" name="Cut"/>"#,
+            )
+            .replace(
+                r#"<ObjectData Count="4">"#,
+                r#"<ObjectData Count="5">
+  <Object name="Cut"><Properties>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape9.brp"/></Property>
+  </Properties></Object>"#,
+            );
+        assert!(tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("Part::Cut outside a PartDesign body"));
+    }
+
+    #[test]
+    fn sketch_edges_are_named_without_construction_geometry() {
+        // The first line is construction: FreeCAD's Edge1 is the second line, Axis0 the first.
+        let doc = DOC.replacen(r#"<Construction value="0"/>"#, r#"<Construction value="1"/>"#, 1);
+        let o = parse(doc.as_bytes()).unwrap();
+        let (_, names) = sketch("Sketch", o.get("Sketch").unwrap(), &IDENTITY).unwrap();
+        assert_eq!(names.get("Axis0").map(String::as_str), Some("l1"));
+        assert_eq!(names.get("Edge1").map(String::as_str), Some("l2"));
+        assert_eq!(names.get("Edge4").map(String::as_str), Some("c5"));
+    }
 }
