@@ -421,12 +421,15 @@ stores, like FreeCAD, SolidWorks and Inventor histories:
   the blended prism, the slotted body and the slot and hole cut tools; the finished body with its
   nine holes is not stored, the author's STL has it). Then `fusion_states_check` rebuilds each
   prefix of the timeline and requires every stored solid to be a state of the model (its volume
-  after some feature) or a whole multiple (pattern copies) of what a feature removes or adds, at
-  least one state, and the finished model to lie in the stored solids' box. The features after the
-  last stored state (L-Bracket: the holes and their patterns) are checked only by the volume they
-  remove being whole copies of the stored tool; the note on the import says so. Counts of pattern
-  copies are therefore not verified against the file there (they were against the STL in the
-  prototype work: 197515.929 = 199654.175 - 9 x 237.583 mm3).
+  after some feature) or a cut tool: some feature's volume change must equal the tool's volume
+  times the number of copies the tree makes (`fusion_instances`: a cut or join extrude one, a hole
+  its positions, a linear pattern its count less one times the copies of the features it repeats,
+  a mirror the copies of its inputs; never derived from the volume). Every feature after the last
+  stored state (L-Bracket: the hole and its three patterns, 9 copies of the 237.583 mm3 tool)
+  must change the volume by exactly a stored tool times its copies, so a wrong pattern count is
+  refused (unit tests in `import.rs`); a feature after the last state whose copies cannot be
+  derived (a blend, a pattern of one, a new body) refuses the history with that reason. At least
+  one state must be stored and the finished model must lie in the stored solids' box.
 
 Result on the sample set (19 files): `8028536__L-Bracket.f3d` (13 features: fillets by two radius
 sets, chamfer, cut through the leg, chained linear patterns, hole) and `5128 MacroPad

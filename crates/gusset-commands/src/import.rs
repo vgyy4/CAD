@@ -1418,11 +1418,108 @@ fn fusion_history(
     }
 }
 
+/// How many copies of its cut tool (or added body) each feature makes, from the tree: a cut or
+/// join extrude one, a hole its positions, a linear pattern its count less one times the copies
+/// of the features it repeats, a mirror the copies of the features it mirrors. `None` where it
+/// cannot be said (blends, new bodies, a pattern of something unknown).
+fn fusion_instances(features: &[Value]) -> Vec<Option<u64>> {
+    let mut by_name: std::collections::HashMap<String, Option<u64>> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(features.len());
+    for f in features {
+        let get = |k: &str| f.get(k).and_then(Value::as_str);
+        let inputs = || -> Option<u64> {
+            let names = f.get("features")?.as_array()?;
+            let mut sum = 0u64;
+            for n in names {
+                sum = sum.checked_add((*by_name.get(n.as_str()?)?)?)?;
+            }
+            (sum > 0).then_some(sum)
+        };
+        let n = match get("type") {
+            Some("hole") => f.get("positions").and_then(Value::as_array).map(|p| p.len() as u64).filter(|n| *n > 0),
+            Some("extrude") if matches!(get("operation"), Some("cut" | "join")) => Some(1),
+            Some("pattern_linear") => {
+                let count = f.get("count").and_then(Value::as_u64).filter(|c| *c >= 2);
+                count.and_then(|c| inputs()?.checked_mul(c - 1))
+            }
+            Some("mirror") => inputs(),
+            _ => None,
+        };
+        if let Some(name) = get("name") {
+            by_name.insert(name.to_string(), n);
+        }
+        out.push(n);
+    }
+    out
+}
+
+/// The stored volumes against the model's volume after each feature (`vols[k]` after `k`
+/// features) and the copies each feature makes: every stored solid is a state (some `vols[k]`) or
+/// a tool whose volume times the copies of some feature is that feature's volume change, and
+/// every feature after the last state changes the volume by exactly a stored tool times its
+/// copies. Returns the numbers of states and tools.
+fn fusion_explain_steps(
+    vols: &[f64],
+    stored: &[f64],
+    insts: &[Option<u64>],
+    names: &[String],
+) -> Result<(usize, usize), String> {
+    let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
+    let delta = |k: usize| -> f64 {
+        match (vols.get(k), k.checked_sub(1).and_then(|p| vols.get(p))) {
+            (Some(a), Some(b)) => (a - b).abs(),
+            _ => 0.0,
+        }
+    };
+    let is_state = |v: f64| vols.iter().skip(1).any(|s| same(*s, v));
+    let copies = |k: usize| insts.get(k - 1).copied().flatten();
+    let explains = |tool: f64, k: usize| copies(k).is_some_and(|m| same(delta(k), tool * m as f64));
+    let (mut states, mut tools) = (0, 0);
+    let mut tool_volumes = Vec::new();
+    for v in stored {
+        if is_state(*v) {
+            states += 1;
+        } else if (1..vols.len()).any(|k| delta(k) > 1e-9 && explains(*v, k)) {
+            tools += 1;
+            tool_volumes.push(*v);
+        } else {
+            return Err(format!(
+                "a stored solid of {v:.4} mm3 is neither a state of the model nor the cut tool of a feature with the copies the tree makes"
+            ));
+        }
+    }
+    if states == 0 {
+        return Err("no stored solid is a state of the model".into());
+    }
+    let last =
+        (1..vols.len()).rev().find(|k| vols.get(*k).is_some_and(|v| stored.iter().any(|s| same(*s, *v)))).unwrap_or(0);
+    for k in last + 1..vols.len() {
+        if delta(k) <= 1e-9 {
+            continue;
+        }
+        let name = names.get(k - 1).map_or("?", String::as_str);
+        let Some(m) = copies(k) else {
+            return Err(format!(
+                "how many copies {name} makes cannot be derived from the tree, and it follows the last stored state"
+            ));
+        };
+        if !tool_volumes.iter().any(|t| explains(*t, k)) {
+            return Err(format!(
+                "{name} changes the volume by {:.4} mm3, not {m} copies of a stored cut tool",
+                delta(k)
+            ));
+        }
+    }
+    Ok((states, tools))
+}
+
 /// The check for a Fusion file that stores the bodies of every feature step: each stored solid
-/// must be either the model after some feature (a state) or what a feature (with its pattern
-/// copies) removes or adds, a whole multiple of the solid (a cut tool), and the finished model
-/// must lie in the box of the stored solids. The features after the last stored state are
-/// therefore checked only by the volume they remove being whole copies of a stored tool.
+/// must be either the model after some feature (a state) or a cut tool, the volume a feature
+/// removes or adds being exactly the tool times the number of copies the tree makes
+/// ([`fusion_instances`]: a hole's positions, the counts of the patterns that repeat it). Every
+/// feature after the last stored state must be explained that way, so a wrong pattern count is
+/// refused; one whose copies cannot be derived is refused too. The finished model must also lie
+/// in the box of the stored solids.
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
@@ -1476,22 +1573,11 @@ fn fusion_states_check(
         vols.push(if is_sketch { prev } else { build(k, false)?.0 });
     }
     let (final_vol, final_box) = build(n, true)?;
-    let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
-    let deltas: Vec<f64> =
-        vols.windows(2).filter_map(|w| Some((w.get(1)? - w.first()?).abs())).filter(|d| *d > 1e-9).collect();
-    let (mut states, mut tools) = (0, 0);
-    for (v, _) in &stored {
-        if vols.iter().skip(1).any(|s| same(*s, *v)) {
-            states += 1;
-        } else if deltas.iter().any(|d| (1..=256).any(|m| same(*d, *v * f64::from(m)))) {
-            tools += 1;
-        } else {
-            return Err(format!("a stored solid of {v:.4} mm3 is neither a state of the model nor a cut tool"));
-        }
-    }
-    if states == 0 {
-        return Err("no stored solid is a state of the model".into());
-    }
+    let names: Vec<String> =
+        tree.features.iter().map(|f| f.get("name").and_then(Value::as_str).unwrap_or("?").to_string()).collect();
+    let insts = fusion_instances(&tree.features);
+    let volumes: Vec<f64> = stored.iter().map(|(v, _)| *v).collect();
+    let (states, tools) = fusion_explain_steps(&vols, &volumes, &insts, &names)?;
     let mut want_box: Option<gusset_kernel::BBox> = None;
     for (_, b) in &stored {
         want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
@@ -1511,7 +1597,7 @@ fn fusion_states_check(
     }
     tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(final_vol) }];
     Ok(format!(
-        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools"
+        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools; every feature after the last state removes exactly its tool times the copies the tree makes"
     ))
 }
 
@@ -2426,5 +2512,62 @@ mod sldasm_tests {
         let cancel: CancelFlag = Arc::default();
         let dir = std::env::temp_dir();
         assert!(sldasm(b"not an assembly", &dir, &Never, &cancel).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fusion_steps_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The L-Bracket's steps: prism, blends, slot cut, 2 more slots, the first hole, 8 more.
+    fn lbracket(v_count: u64) -> (Vec<Value>, Vec<f64>) {
+        let tree = vec![
+            json!({"type": "sketch", "name": "S1"}),
+            json!({"type": "extrude", "name": "E1", "operation": "new"}),
+            json!({"type": "fillet", "name": "F1"}),
+            json!({"type": "extrude", "name": "E2", "operation": "cut"}),
+            json!({"type": "pattern_linear", "name": "P1", "features": ["E2"], "count": 3}),
+            json!({"type": "hole", "name": "H1", "positions": [[0, 0, 0]]}),
+            json!({"type": "pattern_linear", "name": "P2", "features": ["H1"], "count": 2}),
+            json!({"type": "pattern_linear", "name": "P2b", "features": ["H1"], "count": 2}),
+            json!({"type": "pattern_linear", "name": "P2v", "features": ["H1", "P2", "P2b"], "count": v_count}),
+        ];
+        let (slot, hole) = (7941.786, 237.583);
+        let mut v = vec![0.0, 0.0, 225500.0, 223479.535];
+        v.push(v[3] - slot);
+        v.push(v[4] - 2.0 * slot);
+        v.push(v[5] - hole);
+        v.push(v[6] - hole);
+        v.push(v[7] - hole);
+        v.push(v[8] - (v_count - 1) as f64 * 3.0 * hole);
+        (tree, v)
+    }
+
+    fn names(t: &[Value]) -> Vec<String> {
+        t.iter().map(|f| f["name"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn copies_come_from_the_tree() {
+        let (t, _) = lbracket(3);
+        assert_eq!(fusion_instances(&t), vec![None, None, None, Some(1), Some(2), Some(1), Some(1), Some(1), Some(6)]);
+    }
+
+    #[test]
+    fn the_exact_pattern_count_is_accepted_and_a_wrong_one_refused() {
+        let stored = [225500.0, 223479.535, 199654.177, 237.583, 7941.786];
+        let (t, v) = lbracket(3);
+        let ok = fusion_explain_steps(&v, &stored, &fusion_instances(&t), &names(&t));
+        assert_eq!(ok, Ok((3, 2)));
+        // The file's volumes belong to three columns of holes; a tree making two refuses.
+        let (t2, _) = lbracket(2);
+        let why = fusion_explain_steps(&v, &stored, &fusion_instances(&t2), &names(&t2)).unwrap_err();
+        assert!(why.contains("P2v") && why.contains("copies"), "{why}");
+        // A tree whose copies cannot be derived (a pattern of a blend) is refused.
+        let (mut t3, _) = lbracket(3);
+        t3[8] = json!({"type": "pattern_linear", "name": "P2v", "features": ["F1"], "count": 3});
+        let why = fusion_explain_steps(&v, &stored, &fusion_instances(&t3), &names(&t3)).unwrap_err();
+        assert!(why.contains("cannot be derived"), "{why}");
     }
 }
