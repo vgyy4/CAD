@@ -47,8 +47,11 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
   resumes work stopped by usage limits. Do not run `rustup`
   install/target-add from worktrees concurrently (shared toolchain; races corrupt it).
 - Usage budget (owner request): prefer doing small/mechanical work directly over
-  spawning subagents; at most 1–2 subagents at a time, scoped tightly, with
-  `model: sonnet` for mechanical work (merges, CI fixes, docs). Keep tool output
+  spawning subagents; at most 4 subagents at a time (owner raised the cap, 2026-11-09),
+  scoped tightly, with `model: sonnet` by default (reverse engineering, ports, merges,
+  CI fixes, docs). A Sonnet agent that judges a problem beyond it says so in its report
+  instead of guessing; only that problem then goes to an Opus agent. Haiku is not used
+  for reverse engineering. Keep tool output
   short (filter test/build output with grep/tail), test only changed crates while
   iterating and run the full workspace once before pushing.
 - Slow geometry: profile before guessing. Release vs debug tells Rust from OCCT time;
