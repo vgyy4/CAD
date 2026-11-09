@@ -441,7 +441,27 @@ impl ImportJob {
             Kind::F3d => {
                 let importer =
                     self.importer.ok_or_else(|| CommandError::new("not_allowed", "Fusion import is not available"))?;
-                f3d(&bytes, importer.as_ref(), cancel)?
+                let (out, tier, mut warnings) = f3d(&bytes, importer.as_ref(), cancel)?;
+                // The design timeline as editable features, when it rebuilds to the bodies the
+                // file stores (ADR 0039 amendment); else the bodies themselves.
+                match fusion_history(&bytes, &out, &self.kernel, &self.file_name) {
+                    Ok((tree, note)) => {
+                        // The warnings of the exact-body import (placements, repeats) do not
+                        // describe the features; the surfaces it leaves out still hold.
+                        warnings.retain(|w| w.contains("sheet (surface)"));
+                        warnings.extend(note);
+                        return Ok(PreparedImport {
+                            bodies: Vec::new(),
+                            file_name: self.file_name,
+                            tier: TIER_FUSION_HISTORY,
+                            warnings,
+                            tree: Some(tree),
+                        });
+                    }
+                    Err(why) if why.is_empty() => {}
+                    Err(why) => warnings.push(format!("the design history came in as exact bodies: {why}")),
+                }
+                (out, tier, warnings)
             }
             Kind::Tree => return Err(CommandError::args("a feature tree has no bodies")),
             Kind::FreeCad => {
@@ -1333,6 +1353,168 @@ fn rebuild_check(
     let note = (rel > 1e-7).then(|| {
         format!("the features' volume differs from {whose} stored shapes by {rel:.1e} (approximated surfaces)")
     });
+/// Tier note for a Fusion design whose timeline came in as features.
+const TIER_FUSION_HISTORY: &str = "tier 1: the Fusion design timeline as editable features";
+
+/// Most features of a Fusion timeline checked state by state against the stored bodies.
+const MAX_FUSION_STATE_FEATURES: usize = 80;
+
+/// A Fusion design's timeline as a feature tree (ADR 0039 amendment), kept only when it rebuilds
+/// to the bodies the file stores, like a FreeCAD history does. A file that stores one body per
+/// feature step (the result of each, and the cut tools) is checked step by step instead
+/// ([`fusion_states_check`]). `Err("")`: nothing to say (a design without a timeline).
+fn fusion_history(
+    bytes: &[u8],
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+) -> Result<(crate::tree_import::Tree, Option<String>), String> {
+    let limits = gusset_meshio::Limits::default();
+    let mut budget = limits.max_decompressed_bytes;
+    let wanted = |n: &str| {
+        n.ends_with("/MetaStream.dat")
+            || n.ends_with("/BulkStream.dat")
+            || (n.contains("Breps.BlobParts/")
+                && (n.to_ascii_lowercase().ends_with(".smb") || n.to_ascii_lowercase().ends_with(".smbh")))
+    };
+    let entries =
+        gusset_meshio::archive::read_entries_within(bytes, &limits, &wanted, MAX_F3D_STREAM_BYTES, &mut budget)
+            .map_err(|e| e.to_string())?;
+    if !entries.iter().any(|(n, _)| n.ends_with("/BulkStream.dat")) {
+        return Err(String::new());
+    }
+    let tree = match gusset_sat::fusion_tree::feature_tree(&entries, file_name) {
+        Ok(t) => t,
+        Err(why) if why.starts_with("the design has no") || why.starts_with("the file has no") => {
+            return Err(String::new());
+        }
+        Err(why) => return Err(why),
+    };
+    let text = serde_json::to_vec(&tree).map_err(|e| e.to_string())?;
+    let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+    match rebuild_check(&mut t, bodies, kernel, file_name, "the file's stored") {
+        Ok(note) => {
+            // One entry per stored body, so the import's own body count check agrees.
+            t.bodies = bodies
+                .iter()
+                .map(|b| {
+                    let volume_mm3 = kernel
+                        .read_native(&b.blob)
+                        .ok()
+                        .and_then(|s| kernel.mass_properties(&s).ok())
+                        .map(|m| m.volume);
+                    crate::tree_import::TreeBody { name: b.name.clone(), volume_mm3 }
+                })
+                .collect();
+            Ok((t, note))
+        }
+        Err(why) if bodies.len() > 1 && why.contains("mm3") => {
+            let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
+            let note = fusion_states_check(&mut t, bodies, kernel, file_name)
+                .map_err(|states| format!("{why}; checked step by step: {states}"))?;
+            Ok((t, Some(note)))
+        }
+        Err(why) => Err(why),
+    }
+}
+
+/// The check for a Fusion file that stores the bodies of every feature step: each stored solid
+/// must be either the model after some feature (a state) or what a feature (with its pattern
+/// copies) removes or adds, a whole multiple of the solid (a cut tool), and the finished model
+/// must lie in the box of the stored solids. The features after the last stored state are
+/// therefore checked only by the volume they remove being whole copies of a stored tool.
+fn fusion_states_check(
+    tree: &mut crate::tree_import::Tree,
+    bodies: &[PreparedBody],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    file_name: &str,
+) -> Result<String, String> {
+    let n = tree.features.len();
+    if n > MAX_FUSION_STATE_FEATURES {
+        return Err(format!("more than {MAX_FUSION_STATE_FEATURES} features"));
+    }
+    let mut stored: Vec<(f64, gusset_kernel::BBox)> = Vec::new();
+    for b in bodies {
+        let shape = kernel.read_native(&b.blob).map_err(|e| e.message)?;
+        stored.push((
+            kernel.mass_properties(&shape).map_err(|e| e.message)?.volume,
+            kernel.bbox(&shape).map_err(|e| e.message)?,
+        ));
+    }
+    let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
+    // The volume and box of the model after the first k features.
+    let build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>), String> {
+        let mut t = tree.clone();
+        t.features.truncate(k);
+        t.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(1.0) }];
+        let ctx = crate::CmdCtx::user(0);
+        let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
+        let r = crate::tree_import::apply(&mut scratch, &ctx, &t, file_name).map_err(|e| e.message)?;
+        if let Some(first) = r.get("skipped_user_text").and_then(Value::as_array).and_then(|a| a.first()) {
+            let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
+            return Err(format!("a feature could not be rebuilt, the first: {first}"));
+        }
+        let vol = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(0.0);
+        let mut bb: Option<gusset_kernel::BBox> = None;
+        if full {
+            let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
+            for b in &ev.bodies {
+                let g = kernel.bbox(&b.shape).map_err(|e| e.message)?;
+                bb = Some(bb.map_or(g, |a| gusset_kernel::BBox {
+                    min: [a.min[0].min(g.min[0]), a.min[1].min(g.min[1]), a.min[2].min(g.min[2])],
+                    max: [a.max[0].max(g.max[0]), a.max[1].max(g.max[1]), a.max[2].max(g.max[2])],
+                }));
+            }
+        }
+        Ok((vol, bb))
+    };
+    // States: after every feature that changes the solid (sketches do not).
+    let mut vols = vec![0.0f64];
+    for k in 1..=n {
+        let is_sketch = tree.features.get(k - 1).and_then(|f| f.get("type")).and_then(Value::as_str) == Some("sketch");
+        let prev = vols.last().copied().unwrap_or(0.0);
+        vols.push(if is_sketch { prev } else { build(k, false)?.0 });
+    }
+    let (final_vol, final_box) = build(n, true)?;
+    let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
+    let deltas: Vec<f64> =
+        vols.windows(2).filter_map(|w| Some((w.get(1)? - w.first()?).abs())).filter(|d| *d > 1e-9).collect();
+    let (mut states, mut tools) = (0, 0);
+    for (v, _) in &stored {
+        if vols.iter().skip(1).any(|s| same(*s, *v)) {
+            states += 1;
+        } else if deltas.iter().any(|d| (1..=256).any(|m| same(*d, *v * f64::from(m)))) {
+            tools += 1;
+        } else {
+            return Err(format!("a stored solid of {v:.4} mm3 is neither a state of the model nor a cut tool"));
+        }
+    }
+    if states == 0 {
+        return Err("no stored solid is a state of the model".into());
+    }
+    let mut want_box: Option<gusset_kernel::BBox> = None;
+    for (_, b) in &stored {
+        want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
+            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+        }));
+    }
+    if let (Some(w), Some(g)) = (want_box, final_box) {
+        let tol = 1e-4 * (1.0 + gusset_kernel::norm(w.size()));
+        let far = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).any(|(a, b)| (a - b).abs() > tol);
+        if far(w.min, g.min) || far(w.max, g.max) {
+            return Err(format!(
+                "the features lie in {:?}..{:?}, the stored solids in {:?}..{:?}",
+                g.min, g.max, w.min, w.max
+            ));
+        }
+    }
+    tree.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(final_vol) }];
+    Ok(format!(
+        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools"
+    ))
+}
+
     Ok(note)
 }
 
@@ -1912,7 +2094,10 @@ pub(crate) fn commit_import(s: &mut Session, ctx: &CmdCtx, p: PreparedImport) ->
         let mut out = crate::tree_import::apply(s, ctx, tree, &p.file_name)?;
         // A FreeCAD document's or SolidWorks part's history says where it came from (not an
         // exporter plugin).
-        if (p.tier == TIER_FREECAD_HISTORY || p.tier == TIER_SOLIDWORKS_HISTORY || p.tier == TIER_INVENTOR_HISTORY)
+        if (p.tier == TIER_FREECAD_HISTORY
+            || p.tier == TIER_SOLIDWORKS_HISTORY
+            || p.tier == TIER_INVENTOR_HISTORY
+            || p.tier == TIER_FUSION_HISTORY)
             && let Some(o) = out.as_object_mut()
         {
             o.insert("tier".into(), json!(p.tier));
