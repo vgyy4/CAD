@@ -2017,6 +2017,35 @@ pub(crate) fn convert_in(rf: &[u8], c0: &[u8], file: &str, chunk: bool) -> Resul
             if op == "cut" && !symmetric && distance.is_some_and(|v| v > 0.0) {
                 distance = distance.map(|v| -v);
             }
+            // A blind cut with a second dimension `D2` and an end spec of X 0 starts that far
+            // from its sketch plane (idler_single_v1: D1 10 mm, D2 1 mm; the truth's bore spans
+            // x -1 .. 2.9 from the Right plane, so it starts 1 mm behind the plane and runs
+            // along the sketch normal).
+            let start_offset = named_params(rf, a, b, nt)?
+                .iter()
+                .find(|(k, _)| k == "D2")
+                .map(|(_, v)| mm(*v))
+                .filter(|_| op == "cut" && typ == Some(0) && es.is_some_and(|e| e.x == 0) && !symmetric);
+            if let (Some(off), Some(sk), Some(d)) = (start_offset, last_sketch.as_ref(), distance)
+                && let Some(entry) = sketch_by_name.get_mut(sk)
+                && swept.values().all(|w| w.sketch != entry.0)
+            {
+                let nrm = cross(entry.1.x, entry.1.y);
+                let mut o = entry.1.origin;
+                for (v, n) in o.iter_mut().zip(nrm) {
+                    *v = round_to(*v - off * n, 6) + 0.0;
+                }
+                entry.1.origin = o;
+                let origin = entry.1.origin;
+                if let Some(Value::Object(f)) = feats.iter_mut().find(|f| {
+                    f.get("type").and_then(Value::as_str) == Some("sketch")
+                        && f.get("name").and_then(Value::as_str) == Some(sk.as_str())
+                }) && let Some(Value::Object(pl)) = f.get_mut("plane")
+                {
+                    pl.insert("origin".into(), json!(origin));
+                }
+                distance = Some(d.abs());
+            }
             let mut js = Map::new();
             js.insert("type".into(), json!("extrude"));
             js.insert("name".into(), json!(n.name));
