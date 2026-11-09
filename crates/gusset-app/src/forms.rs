@@ -59,6 +59,72 @@ pub fn suggestions(command: &str, field: &str) -> &'static [&'static str] {
     }
 }
 
+/// The chamfer form's mode switch: equal, two distances, distance and angle.
+pub const CHAMFER_MODES: [(&str, &str); 3] = [
+    ("Equal", "One distance on both faces"),
+    ("Two distances", "distance on the reference face, distance2 on the other"),
+    ("Distance and angle", "distance on the reference face, angle from it"),
+];
+
+impl Form {
+    /// The mode a chamfer form's fields describe: `angle` set = 2, `distance2` set = 1.
+    fn chamfer_mode_of_fields(&self) -> usize {
+        let set = |n: &str| self.value(n).is_some_and(|v| !v.trim().is_empty());
+        if set("angle") {
+            2
+        } else if set("distance2") {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Switches the chamfer form to `mode` (0 = equal, 1 = two distances, 2 = distance and
+    /// angle): the fields of the other modes are emptied and the new one gets a starting value.
+    pub fn set_chamfer_mode(&mut self, mode: usize) {
+        self.mode = mode;
+        match mode {
+            0 => {
+                self.set("distance2", "");
+                self.set("angle", "");
+                self.set("faces", "");
+            }
+            1 => {
+                self.set("angle", "");
+                if self.value("distance2").is_none_or(|v| v.trim().is_empty()) {
+                    let d = self.value("distance").unwrap_or_default().trim().to_string();
+                    self.set("distance2", if d.is_empty() { "1 mm" } else { &d });
+                }
+            }
+            _ => {
+                self.set("distance2", "");
+                if self.value("angle").is_none_or(|v| v.trim().is_empty()) {
+                    self.set("angle", "45 deg");
+                }
+            }
+        }
+    }
+
+    /// Whether the form shows `field` in its current mode (always, except on the chamfer form).
+    #[must_use]
+    pub fn field_visible(&self, field: &str) -> bool {
+        if self.command != "feature.chamfer" {
+            return true;
+        }
+        match field {
+            "distance2" => self.mode == 1,
+            "angle" => self.mode == 2,
+            "faces" => self.mode > 0,
+            _ => true,
+        }
+    }
+
+    /// Whether `field` belongs to the mode switch and so is shown without "More".
+    fn in_mode_switch(&self, field: &str) -> bool {
+        self.command == "feature.chamfer" && matches!(field, "distance2" | "angle" | "faces")
+    }
+}
+
 /// A form for one command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Form {
@@ -67,6 +133,8 @@ pub struct Form {
     pub description: &'static str,
     pub fields: Vec<Field>,
     pub show_more: bool,
+    /// The chamfer form's mode ([`CHAMFER_MODES`]); unused by other forms.
+    pub mode: usize,
     pub error: Option<String>,
     /// Points placed with viewport clicks so far (sketch commands, [`crate::sketch_place`]).
     pub clicks: Vec<crate::sketch_place::Click>,
@@ -178,6 +246,7 @@ impl Form {
             description: spec.description,
             fields,
             show_more: false,
+            mode: 0,
             clicks: Vec::new(),
             repeat: false,
             error: None,
@@ -226,13 +295,33 @@ pub fn show(ui: &mut egui::Ui, form: &mut Form) -> bool {
         ui.label(egui::RichText::new(crate::i18n::tr("sketch.place_hint")).small().weak());
     }
     ui.add_space(crate::theme::SPACE[2]);
-    let has_optional = form.fields.iter().any(|f| !f.required);
+    if form.command == "feature.chamfer" {
+        // A form filled from an existing chamfer starts in the mode its fields describe.
+        if form.mode == 0 {
+            form.mode = form.chamfer_mode_of_fields();
+        }
+        let mode = form.mode;
+        ui.horizontal(|ui| {
+            for (i, (label, help)) in CHAMFER_MODES.iter().enumerate() {
+                if ui.selectable_label(mode == i, *label).on_hover_text(*help).clicked() && mode != i {
+                    form.set_chamfer_mode(i);
+                }
+            }
+        });
+        ui.add_space(crate::theme::SPACE[1]);
+    }
+    let has_optional = form.fields.iter().any(|f| !f.required && !form.in_mode_switch(&f.name));
     egui::Grid::new(("form", form.command))
         .num_columns(2)
         .spacing([crate::theme::SPACE[3], crate::theme::SPACE[2]])
         .show(ui, |ui| {
             let show_more = form.show_more;
-            for f in form.fields.iter_mut().filter(|f| f.required || show_more) {
+            let shown: Vec<bool> = form
+                .fields
+                .iter()
+                .map(|f| form.field_visible(&f.name) && (f.required || show_more || form.in_mode_switch(&f.name)))
+                .collect();
+            for (f, _) in form.fields.iter_mut().zip(shown).filter(|(_, v)| *v) {
                 ui.label(&f.label).on_hover_text(&f.help);
                 let r = match f.kind {
                     FieldKind::Bool => {
@@ -344,6 +433,39 @@ mod tests {
         assert_eq!(h.to_value().unwrap(), serde_json::json!([6.0, 10.0]));
         h.value = "6, ten".into();
         assert!(h.to_value().unwrap_err().contains("'ten' is not a number"));
+    }
+
+    #[test]
+    fn chamfer_form_mode_switch_shows_and_clears_the_right_fields() {
+        let spec = gusset_commands::registry().iter().find(|s| s.id == "feature.chamfer").unwrap();
+        let mut f = Form::new(spec);
+        f.set("edges", "edge(A/cap(end), A/side(S/l1))");
+        f.set("distance", "2 mm");
+        // Equal: the legs and faces are hidden and not sent.
+        assert!(["distance2", "angle", "faces"].iter().all(|n| !f.field_visible(n)));
+        assert_eq!(
+            f.to_args().unwrap(),
+            serde_json::json!({"edges": ["edge(A/cap(end), A/side(S/l1))"], "distance": "2 mm"})
+        );
+        // Two distances: distance2 and faces show; distance2 starts at the distance.
+        f.set_chamfer_mode(1);
+        assert!(f.field_visible("distance2") && f.field_visible("faces") && !f.field_visible("angle"));
+        assert_eq!(f.value("distance2"), Some("2 mm"));
+        f.set("distance2", "3 mm");
+        assert_eq!(f.to_args().unwrap()["distance2"], "3 mm");
+        // Distance and angle replaces distance2 by an angle.
+        f.set_chamfer_mode(2);
+        assert!(f.field_visible("angle") && !f.field_visible("distance2"));
+        let args = f.to_args().unwrap();
+        assert_eq!((args.get("angle"), args.get("distance2")), (Some(&serde_json::json!("45 deg")), None));
+        // Back to equal clears everything.
+        f.set("faces", "A/cap(end)");
+        f.set_chamfer_mode(0);
+        let args = f.to_args().unwrap();
+        assert!(["distance2", "angle", "faces"].iter().all(|n| args.get(n).is_none()), "{args}");
+        // A form for another command is unaffected.
+        let other = Form::new(gusset_commands::registry().iter().find(|s| s.id == "feature.fillet").unwrap());
+        assert!(other.field_visible("angle"));
     }
 
     #[test]

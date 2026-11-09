@@ -309,6 +309,21 @@ fn find_face(
     best.map(|x| x.2).ok_or_else(|| format!("no planar or cylindrical face of the model holds the point {point:?}"))
 }
 
+/// The persistent name (and body feature) of the face a pick names, for a chamfer's
+/// reference face; the same search as holes use.
+pub(super) fn pick_face_name(
+    g: &mut Gen,
+    s: &Session,
+    ev: &gusset_eval::Evaluation,
+    pick: &FacePick,
+) -> Result<(String, String), String> {
+    let fp = finite3(pick.point, "the face point")?;
+    let mut meshes: Meshes = Vec::new();
+    let f = find_face(s.kernel().as_ref(), ev, &mut meshes, fp, pick.normal)?;
+    warn_fallback(g, &f, fp);
+    Ok((f.body, f.name))
+}
+
 fn warn_fallback(g: &mut Gen, f: &FaceHit, point: V3) {
     if f.fallback {
         g.warn(format!("no face contains the point {point:?}: the face {} with the nearest centre was taken", f.name));

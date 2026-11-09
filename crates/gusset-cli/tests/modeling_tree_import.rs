@@ -485,3 +485,60 @@ fn a_cut_through_two_regions_that_share_an_edge() {
     ]);
     assert_vol(v, 60000.0 - 1.5 * (10.0 * 176.25 + 3.0 * 32.0));
 }
+
+/// Imports a version 2 tree into a fresh session; returns the session and the report.
+fn import_into_session(features: Vec<Value>) -> (Session, Value) {
+    let tree = json!({"format": "gusset-feature-tree", "version": 2, "source": {"app": "test"}, "features": features});
+    let mut s = session();
+    std::fs::write(s.project_dir.clone().unwrap().join("t.gtree.json"), serde_json::to_vec(&tree).unwrap()).unwrap();
+    let r = execute(&mut s, &CmdCtx::user(1), "import.file", json!({"path": "t.gtree.json"})).unwrap();
+    (s, r)
+}
+
+fn unequal_chamfer_tree(chamfer: Value) -> Vec<Value> {
+    vec![rect("Base", plane_at(0.0), 0.0, 0.0, 10.0, 10.0), extrude("Box", "Base", 10.0, "new"), chamfer]
+}
+
+#[test]
+fn an_unequal_chamfer_runs_its_first_distance_along_the_picked_face() {
+    // The 10 mm edge along x at y = 0, z = 10 borders the top (z = 10) and the front (y = 0).
+    let edge = json!({"midpoint": [5, 0, 10]});
+    let top = json!({"point": [5, 5, 10], "normal": [0, 0, 1]});
+    let front = json!({"point": [5, 0, 5], "normal": [0, -1, 0]});
+    for (face, along_top) in [(&top, true), (&front, false)] {
+        let (mut s, r) = import_into_session(unequal_chamfer_tree(json!({
+            "type": "chamfer", "name": "C", "edges": [edge], "distance": 2, "distance2": 3, "face": face
+        })));
+        assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0 - 0.5 * 2.0 * 3.0 * 10.0);
+        let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+        let line = text.lines().find(|l| l.starts_with("chamfer ")).unwrap_or_else(|| panic!("{text}"));
+        assert!(line.contains("distance: 2 mm, distance2: 3 mm, faces: ["), "{line}");
+        assert_eq!(line.contains("faces: [Extrude1/cap(end)]") || line.contains("/cap(end)]"), along_top, "{line}");
+    }
+}
+
+#[test]
+fn a_distance_and_angle_chamfer_without_a_face_uses_the_default_face() {
+    // 3 mm from the default reference face at 30 degrees: legs 3 and 3 tan 30; edge 10 mm.
+    let (_, v) = import_v2(unequal_chamfer_tree(json!({
+        "type": "chamfer", "name": "C", "edges": [{"midpoint": [5, 0, 10]}], "distance": 3, "angle": 30
+    })));
+    assert_vol(v, 1000.0 - 0.5 * 3.0 * (3.0 / 3.0_f64.sqrt()) * 10.0);
+}
+
+#[test]
+fn bad_unequal_chamfers_are_skipped_with_a_reason() {
+    for extra in
+        [json!({"distance2": 2, "angle": 30}), json!({"distance2": -1}), json!({"angle": 90}), json!({"angle": 0})]
+    {
+        let mut c = json!({"type": "chamfer", "name": "C", "edges": [{"midpoint": [5, 0, 10]}], "distance": 2});
+        c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let (mut s, r) = import_into_session(unequal_chamfer_tree(c));
+        let skipped = r["skipped_user_text"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1, "{extra}: {r}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0);
+    }
+}

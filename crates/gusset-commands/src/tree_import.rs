@@ -181,6 +181,16 @@ struct EdgeF {
     radius: Option<f64>,
     #[serde(default)]
     distance: Option<f64>,
+    /// Chamfer, unequal (mm): the distance on the other face.
+    #[serde(default)]
+    distance2: Option<f64>,
+    /// Chamfer, unequal (degrees, 0 to 90 exclusive): the angle from the reference face.
+    #[serde(default)]
+    angle: Option<f64>,
+    /// Chamfer, unequal: the reference face, the one `distance` runs along (like a hole's
+    /// `face`). Edges it does not border take the default rule, with a warning.
+    #[serde(default)]
+    face: Option<v2::FacePick>,
 }
 
 /// Tier note for feature-tree imports.
@@ -1072,6 +1082,57 @@ fn edge_holds(
     }
 }
 
+/// The `, distance2: ...` / `, angle: ...` and `, faces: [...]` arguments of an unequal
+/// chamfer, or nothing for an equal one. The reference face of each edge is the picked
+/// face when the edge borders it, else the default (see the chamfer ADR amendment).
+fn chamfer_second(g: &mut Gen, s: &Session, d: &EdgeF, body: &str, names: &[String]) -> Result<String, String> {
+    let (second, face) = match (d.distance2, d.angle) {
+        (None, None) => {
+            if d.face.is_some() {
+                g.warn(format!("{}: a reference face needs distance2 or angle: ignored", d.name));
+            }
+            return Ok(String::new());
+        }
+        (Some(_), Some(_)) => return Err("a chamfer takes distance2 or angle, not both".into()),
+        (Some(v), None) => {
+            let v = Some(v).filter(|v| v.is_finite() && *v > 0.0 && *v < 1e12).ok_or("distance2 is not positive")?;
+            (format!(", distance2: {} mm", num(v)), d.face.as_ref())
+        }
+        (None, Some(a)) => {
+            let a = Some(a)
+                .filter(|a| a.is_finite() && *a > 0.0 && *a < 90.0)
+                .ok_or("angle is not between 0 and 90 degrees")?;
+            (format!(", angle: {} deg", num(a)), d.face.as_ref())
+        }
+    };
+    let Some(pick) = face else { return Ok(second) };
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let (face_body, face_name) = v2::pick_face_name(g, s, &ev, pick)?;
+    if face_body != body {
+        return Err("the reference face is on another body than the edges".into());
+    }
+    let b = ev.bodies.iter().find(|b| b.feature == body).ok_or("the edges' body is gone")?;
+    let mut refs = Vec::new();
+    for n in names {
+        // Faces next to the edge, by name; the picked one if among them, else the smallest.
+        let adjacent: Vec<gusset_doc::FaceRef> = b
+            .names
+            .edges
+            .iter()
+            .position(|e| e.to_string() == *n)
+            .and_then(|i| b.topology.edges.get(i))
+            .map(|e| e.faces.iter().filter_map(|f| b.names.faces.get(*f as usize)).cloned().collect())
+            .unwrap_or_default();
+        if adjacent.iter().any(|f| f.to_string() == face_name) {
+            refs.push(face_name.clone());
+        } else {
+            g.warn(format!("{}: the reference face {face_name} does not border {n}: the default face is used", d.name));
+            refs.push(adjacent.into_iter().min().map_or_else(|| face_name.clone(), |f| f.to_string()));
+        }
+    }
+    Ok(format!("{second}, faces: [{}]", refs.join(", ")))
+}
+
 /// Most points of a source edge's path looked at.
 const MAX_PATH_POINTS: usize = 512;
 
@@ -1117,13 +1178,13 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
         return Err("its edges are on several bodies".into());
     }
     let (body, mut names) = by_body.into_iter().next().ok_or("no edges")?;
-    let _ = body;
     // Several source pieces of one edge of the model name it once.
     let mut seen = HashSet::new();
     names.retain(|n| seen.insert(n.clone()));
     let name = g.fresh(&d.name, if fillet { "Fillet" } else { "Chamfer" });
     let (kw, key) = if fillet { ("fillet", "radius") } else { ("chamfer", "distance") };
-    let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm)\n", names.join(", "), num(size));
+    let second = if fillet { String::new() } else { chamfer_second(g, s, d, &body, &names)? };
+    let line = format!("\n{kw} {name} (edges: [{}], {key}: {} mm{second})\n", names.join(", "), num(size));
     g.text.push_str(&line);
     let ev = g.evaluate(s).map_err(|e| e.message)?;
     if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {

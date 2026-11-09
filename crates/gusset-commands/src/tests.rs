@@ -184,6 +184,12 @@ fn unequal_chamfer_arguments_are_checked_before_committing() {
     );
     let r = run(&mut s, &u, "feature.chamfer", json!({"edges": [edge], "distance": "2 mm", "distance2": "3 mm"}));
     assert!(s.document(&u.actor).unwrap().to_text().contains("distance: 2 mm, distance2: 3 mm)"), "{r}");
+    // feature.edit reaches the new arguments through the code view's names.
+    let name = r["feature"].as_str().unwrap().to_string();
+    run(&mut s, &u, "feature.edit", json!({"name": name, "set": {"distance2": "4 mm"}}));
+    assert!(s.document(&u.actor).unwrap().to_text().contains("distance: 2 mm, distance2: 4 mm)"));
+    run(&mut s, &u, "feature.edit", json!({"name": name, "remove": ["distance2"]}));
+    assert!(!s.document(&u.actor).unwrap().to_text().contains("distance2: 4 mm"));
 }
 
 #[test]

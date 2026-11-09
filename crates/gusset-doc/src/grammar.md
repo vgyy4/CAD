@@ -240,7 +240,8 @@ import   <Name> (blob: "<64 hex>", format: step|iges|stl|3mf|obj|brep, file: "na
   degrees; the second leg is `distance * tan(angle)`), not both. `distance` always runs along
   the edge's reference face. `faces` names that face for each edge (same count and order as
   `edges`, each one of the edge's two faces); left out, the reference face is the adjacent
-  face with the smaller name (names compare as text, so the choice survives regeneration).
+  face whose name sorts first (by feature name, then side before cap before blend, then the
+  sketch entity), so the choice survives regeneration, which renumbers the kernel's faces.
 
 ## References
 
@@ -829,7 +830,7 @@ counter-clockwise, optional `constraints` `{type, entities, value, parameter}` w
 grammar's constraint types), `extrude` (`sketch`, `profiles: "all"` or `[{point: [u, v]}]`,
 `distance` along the sketch normal, `symmetric`, `distance_parameter`, `operation:
 new|join|cut|intersect`, `target`), `revolve` (`axis: {line}` or `{origin, direction}`, `angle`),
-`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`; a chamfer also takes `distance2` or `angle`, see version 2), and
+`fillet` / `chamfer` (`edges: [{midpoint: [x, y, z]}]`, `radius` / `distance`; a chamfer may add `distance2` (mm) or `angle` (degrees from the reference face) and `face: {point, normal}`, the reference face `distance` runs along), and
 `unsupported` (`original_type`). Version 2 adds (faces are found by a point on them, like edges
 by midpoint): `hole` (`face: {point, normal}`, world `positions: [[x, y, z]]`, `diameter`,
 `through` or `depth`, `variant: simple|counterbore|countersink`, `cbore_diameter`, `cbore_depth`,
