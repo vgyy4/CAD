@@ -403,22 +403,22 @@ fn classify(d: &[u8], nodes: &mut [Node]) {
 /// Dimension values in `[a, b)` (`feat.params`): node name, CString name, `u32 0, u32 flags,
 /// u32 -1, u32 0, u16 0, f64 value`.
 fn params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<f64>, String> {
+    Ok(named_params(d, a, b, nt)?.into_iter().map(|(_, v)| v).collect())
+}
+
+/// The same with each parameter's name (the hole wizard's are told apart by name).
+fn named_params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<(String, f64)>, String> {
     let pat = [nt[0], nt[1], UTF16_MARK[0], UTF16_MARK[1], UTF16_MARK[2]];
     let mut out = Vec::new();
     let mut at = a;
     while let Some(i) = find(d, &pat, at, b) {
-        // The length byte is part of the match (and is not a newline).
+        // The length byte is part of the match (any byte: the prototype matches with DOTALL).
         let Some(&n) = d.get(i + 5).filter(|_| i + 6 <= b) else { break };
-        if n == b'\n' {
-            at = i + 1;
-            continue;
-        }
         at = i + 6;
         let q = i + 6 + 2 * usize::from(n);
         let tail = d.get(q..q + 18);
         let ok = tail.is_some_and(|t| {
             t.get(..4) == Some(&[0, 0, 0, 0][..])
-                && t.get(4) != Some(&b'\n')
                 && t.get(5..7) == Some(&[0, 0][..])
                 && matches!(t.get(7), Some(0x40 | 0xc0))
                 && t.get(8..18) == Some(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0][..])
@@ -426,7 +426,8 @@ fn params(d: &[u8], a: usize, b: usize, nt: [u8; 2]) -> Result<Vec<f64>, String>
         if !ok {
             continue;
         }
-        out.push(need(f64_at(d, q + 18), "a parameter")?);
+        let name = utf16(d.get(i + 6..q).unwrap_or_default());
+        out.push((name, need(f64_at(d, q + 18), "a parameter")?));
         if out.len() > MAX_MATCHES {
             return Err("too many parameters".into());
         }
@@ -449,9 +450,7 @@ fn endspec_candidates(d: &[u8], a: usize, b: usize) -> Result<Vec<EndSpec>, Stri
     let mut i = a;
     while i + 18 <= b.min(d.len()) {
         let Some(w) = d.get(i..i + 18) else { break };
-        let matched = w.first() != Some(&b'\n')
-            && w.get(1) != Some(&b'\n')
-            && w.get(2..4) == Some(&[0, 0][..])
+        let matched = w.get(2..4) == Some(&[0, 0][..])
             && matches!(w.get(4), Some(0 | 1))
             && w.get(5..18).is_some_and(|z| z.iter().all(|&c| c == 0));
         if !matched {
@@ -498,6 +497,11 @@ struct Pt {
     x: f64,
     y: f64,
     ext: bool,
+    /// The record id (`u32 -1` marks dimension helpers).
+    id: u32,
+    /// The u16 after the coordinates: 1 for a stand-alone point (a hole centre in a
+    /// hole-wizard placement sketch), 0 for the end of a segment.
+    alone: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,8 +571,11 @@ fn payload(d: &[u8], h: usize) -> Option<(Option<usize>, bool)> {
 /// The sketch lists (`sketch.parse_sketch`); `None` where the prototype raised (the sketch
 /// is then skipped).
 fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
-    let npts = usize::try_from(u32_at(d, body)?).ok()?;
     let hdrs = find_headers(d, body, end)?;
+    if hdrs.is_empty() {
+        return Some(Geometry::default()); // an empty sketch has no entity headers at all
+    }
+    let npts = usize::try_from(u32_at(d, body)?).ok()?;
     if npts > hdrs.len() {
         return None;
     }
@@ -587,7 +594,8 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                 continue;
             }
             let [x, y] = f64s_at::<2>(d, p + 2)?;
-            g.pts.push(Some(Pt { x, y, ext }));
+            let alone = u16_at(d, p + 18)?;
+            g.pts.push(Some(Pt { x, y, ext, id: rid, alone }));
         } else {
             let (s, e, one) = (u16_at(d, p)?, u16_at(d, p + 2)?, u16_at(d, p + 4)?);
             let m1 = f64_at(d, p + 8)?;
@@ -595,7 +603,9 @@ fn parse_sketch(d: &[u8], body: usize, end: usize) -> Option<Geometry> {
                 continue;
             }
             let (s, e) = (usize::from(s), usize::from(e));
-            let construction = flags & 8 != 0;
+            // Bit 0x08 is construction; bit 0x01 is not part of the profile either
+            // (confirmed by volume on baseJoint and Top_mainplate).
+            let construction = flags & 9 != 0;
             if d.get(p + 22..p + 38).is_some_and(|w| w.chunks(4).all(|c| c == [0xfe, 0xff, 0xff, 0xff])) {
                 let dir = i32_at(d, p + 16)?;
                 let c = usize::from(u16_at(d, p + 20)?);
@@ -687,10 +697,12 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
         }
     }
     hits.sort_unstable();
-    let mut best: Option<(usize, Plane)> = None;
-    let mut offer = |at: usize, p: Plane| {
-        if best.is_none_or(|(b, _)| at < b) {
-            best = Some((at, p));
+    // The earliest candidate; a plane-data block also keeps its rotation (a face sketch's own
+    // frame is looked for after it).
+    let mut best: Option<(usize, Plane, Option<[f64; 9]>)> = None;
+    let mut offer = |at: usize, p: Plane, face: Option<[f64; 9]>| {
+        if best.is_none_or(|(b, _, _)| at < b) {
+            best = Some((at, p, face));
         }
     };
     for i0 in hits {
@@ -715,7 +727,7 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
         let t = need(f64s_at::<3>(d, q), "a plane reference")?;
         let sc = need(f64_at(d, q + 24), "a plane reference")?;
         if is(sc, 1.0) && orthonormal(&r) && t.iter().all(|x| x.abs() < 10.0) {
-            offer(i, frame(&r, &t, Some(cid)));
+            offer(i, frame(&r, &t, Some(cid)), None);
         }
     }
     // Plane-data blocks: origin, normal, hasRot, [R], t, 1.0.
@@ -751,9 +763,35 @@ fn find_plane(d: &[u8], a: usize, b: usize, uc: Option<usize>) -> Result<Option<
         if !is(sc, 1.0) || !t.iter().all(|x| x.abs() < 10.0) {
             continue;
         }
-        offer(i, frame(&r, &t, None));
+        offer(i, frame(&r, &t, None), Some(r));
     }
-    Ok(best.map(|(_, p)| p))
+    let Some((at, plane, face)) = best else { return Ok(None) };
+    let Some(r) = face else { return Ok(Some(plane)) };
+    // A sketch on a model face: the first block is the face's plane data (its axes may be
+    // turned 180 degrees about the normal); the sketch's own frame follows as
+    // `01 00 00 00 <12 x 00> 01 <R 3x3> <t> 1.0` with the same normal column (confirmed by
+    // the bounding box of FrameBracket's Sketch11).
+    let mut mark = vec![1u8, 0, 0, 0];
+    mark.extend([0u8; 12]);
+    mark.push(1);
+    let mut from = at + 49;
+    while let Some(j) = find(d, &mark, from, b) {
+        let q = j + mark.len();
+        let r2 = need(f64s_at::<9>(d, q), "a sketch frame")?;
+        if orthonormal(&r2)
+            && (0..3).all(|row| {
+                (r2.get(3 * row + 2).copied().unwrap_or(0.0) - r.get(3 * row + 2).copied().unwrap_or(0.0)).abs() < 1e-9
+            })
+        {
+            let t2 = need(f64s_at::<3>(d, q + 72), "a sketch frame")?;
+            let sc = need(f64_at(d, q + 96), "a sketch frame")?;
+            if is(sc, 1.0) {
+                return Ok(Some(frame(&r2, &t2, None)));
+            }
+        }
+        from = j + 1;
+    }
+    Ok(Some(plane))
 }
 
 /// The plane as written: origin in mm, axes to 12 decimals.
@@ -845,34 +883,54 @@ struct Rep {
     tag: u16,
     fid: u32,
     idx: u32,
+    /// Followed by exactly one extra word and not the record's last reference: a cap face.
     ext: bool,
 }
 
-/// Edge records in `[a, b)` (`edges.edge_records`).
+/// An edge record's header at `i` (`edges.HDR`): `01 00*7 n`, then either `00{4,6} kind(1..4)
+/// 00 00 <u32 id>` (an edge) or `00{11}` (a face list, e.g. a mirror's), the two sentinels and
+/// `00 00`. Returns `n`, whether it is a face list, and the end of the header.
+fn edge_header(d: &[u8], i: usize) -> Option<(usize, bool, usize)> {
+    let w = d.get(i..i + 9)?;
+    let n = *w.get(8)?;
+    if w.get(..8) != Some(&[1, 0, 0, 0, 0, 0, 0, 0][..]) || !(1..=16).contains(&n) {
+        return None;
+    }
+    let sentinels_at = |s: usize| -> Option<usize> {
+        (d.get(s..s + 8) == Some(&SENTINEL[..])
+            && d.get(s + 8..s + 16) == Some(&SENTINEL[..])
+            && d.get(s + 16..s + 18) == Some(&[0, 0][..]))
+        .then_some(s + 18)
+    };
+    let zeros = d.get(i + 9..)?.iter().take(11).take_while(|&&c| c == 0).count();
+    if (4..=6).contains(&zeros) {
+        let k = i + 9 + zeros;
+        if matches!(d.get(k), Some(1..=4)) && d.get(k + 1..k + 3) == Some(&[0, 0][..]) {
+            // k + 3 .. k + 7 is the id.
+            if let Some(end) = sentinels_at(k + 7) {
+                return Some((usize::from(n), false, end));
+            }
+        }
+    }
+    if zeros == 11 {
+        return sentinels_at(i + 20).map(|end| (usize::from(n), true, end));
+    }
+    None
+}
+
+/// Edge records in `[a, b)` (`edges.edge_records`). Each reference is a 20-byte core followed
+/// by 0 to 2 extra words, depending on its class.
 fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, String> {
-    const LEN: usize = 38;
     let mut out = Vec::new();
     let mut i = a;
     let end = b.min(d.len());
-    while i + LEN <= end {
-        let Some(w) = d.get(i..i + LEN) else { break };
-        let matched = w.get(..8) == Some(&[1, 0, 0, 0, 0, 0, 0, 0][..])
-            && w.get(9..13) == Some(&[0, 0, 0, 0][..])
-            && w.get(14..16) == Some(&[0, 0][..])
-            && w.get(20..28) == Some(&SENTINEL[..])
-            && w.get(28..36) == Some(&SENTINEL[..])
-            && w.get(36..38) == Some(&[0, 0][..]);
-        if !matched {
+    while i < end {
+        let Some((n, face_list, mut p)) = edge_header(d, i).filter(|h| h.2 <= end) else {
             i += 1;
             continue;
-        }
+        };
         let start = i;
-        i += LEN;
-        let n = usize::from(w.get(8).copied().unwrap_or(0));
-        if n > 8 {
-            continue;
-        }
-        let mut p = start + LEN;
+        i = p;
         let mut reps = Vec::new();
         for k in 0..n {
             if p + 20 > d.len() {
@@ -886,15 +944,31 @@ fn edge_records(d: &[u8], a: usize, b: usize) -> Result<Vec<(usize, Vec<Rep>)>, 
                 break;
             }
             p += 20;
-            let next = need(u16_at(d, p), "an edge record")?;
-            let ext =
-                if k + 1 < n { next & 0x8000 == 0 } else { need(u32_at(d, p), "an edge record")? < 16 && idx <= 1 };
-            if ext {
+            let last = k + 1 == n;
+            let mut extra = 0;
+            while extra < 2 && p + 4 <= d.len() {
+                let n0 = need(u16_at(d, p), "an edge record")?;
+                let n1 = need(u16_at(d, p + 2), "an edge record")?;
+                if !last && n0 & 0x8000 != 0 && n1 == 0 {
+                    break;
+                }
+                let w = need(u32_at(d, p), "an edge record")?;
+                if last && !(w < 16 || w == 0xffff_ffff) {
+                    break;
+                }
+                if last && extra == 0 && !matches!(w, 0 | 1 | 0xffff_ffff) {
+                    break;
+                }
                 p += 4;
+                extra += 1;
+                if last && w != 0xffff_ffff {
+                    break;
+                }
             }
-            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext });
+            reps.push(Rep { tag: t & 0x7fff, fid, idx, ext: extra == 1 && !last });
         }
-        if reps.len() == n {
+        // Face lists (mirror planes) hold n - 1 references.
+        if reps.len() == n || (face_list && !reps.is_empty()) {
             out.push((start, reps));
             if out.len() > MAX_MATCHES {
                 return Err("too many edge records".into());
@@ -916,6 +990,30 @@ fn selection(recs: Vec<(usize, Vec<Rep>)>) -> Vec<(usize, Vec<Rep>)> {
     run
 }
 
+/// Classes of cap references (`edges.cap_tags_of`): those followed by one extra word, or whose
+/// index is only ever 0 or 1 while bounding a side/side edge (the `3Int` caps carry two extra
+/// words like the sides).
+fn cap_tags_of(records: &[(usize, Vec<Rep>)]) -> HashSet<u16> {
+    let mut caps = HashSet::new();
+    let mut idx: HashMap<u16, HashSet<u32>> = HashMap::new();
+    for (_, reps) in records {
+        for r in reps {
+            idx.entry(r.tag).or_default().insert(r.idx);
+            if r.ext {
+                caps.insert(r.tag);
+            }
+        }
+    }
+    for (_, reps) in records {
+        let [r0, _, r2, r3] = reps.as_slice() else { continue };
+        let both = (r2.idx == 0 && r3.idx == 1) || (r2.idx == 1 && r3.idx == 0);
+        if r2.tag == r3.tag && both && r0.tag != r2.tag && idx.get(&r2.tag).is_some_and(|s| s.iter().all(|&v| v <= 1)) {
+            caps.insert(r2.tag);
+        }
+    }
+    caps
+}
+
 /// A solid feature an edge can name: its sketch, plane and signed depth (mm).
 #[derive(Debug, Clone, Copy)]
 struct Swept {
@@ -923,39 +1021,39 @@ struct Swept {
     plane: JsonPlane,
     distance: f64,
     symmetric: bool,
+    through: bool,
 }
 
-fn point(pts: &[Option<Pt>], i: usize) -> Result<Pt, String> {
-    pts.get(i).copied().flatten().ok_or_else(|| "an edge names a sketch point that was not read".to_string())
+type V3 = [f64; 3];
+
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
-fn seg_mid(pts: &[Option<Pt>], s: &Seg) -> Result<Option<(f64, f64)>, String> {
-    let (p, q) = (point(pts, s.s)?, point(pts, s.e)?);
-    if s.kind == SegKind::Line {
-        return Ok(Some(((p.x + q.x) / 2.0, (p.y + q.y) / 2.0)));
-    }
-    let c = point(pts, s.c)?;
-    let r = libm::hypot(p.x - c.x, p.y - c.y);
-    let a0 = libm::atan2(p.y - c.y, p.x - c.x);
-    let mut a1 = libm::atan2(q.y - c.y, q.x - c.x);
-    if s.s == s.e {
-        return Ok(None); // a full circle has no single midpoint
-    }
-    // atan2 lies in [-pi, pi]: two turns at most.
-    for _ in 0..4 {
-        if s.dir > 0 && a1 <= a0 {
-            a1 += TAU;
-        } else if s.dir <= 0 && a1 >= a0 {
-            a1 -= TAU;
-        }
-    }
-    let am = f64::midpoint(a0, a1);
-    Ok(Some((c.x + r * libm::cos(am), c.y + r * libm::sin(am))))
+fn normal(f: &Swept) -> V3 {
+    cross(f.plane.x, f.plane.y)
 }
 
-fn lift(f: &Swept, x: f64, y: f64, h: f64) -> [f64; 3] {
+fn cap_height(f: &Swept, cap: u32) -> f64 {
+    let d = f.distance;
+    if f.symmetric {
+        if cap == 1 { d / 2.0 } else { -d / 2.0 }
+    } else if cap == 1 {
+        d
+    } else {
+        0.0
+    }
+}
+
+fn lift(f: &Swept, x: f64, y: f64, h: f64) -> V3 {
     let (o, xa, ya) = (f.plane.origin, f.plane.x, f.plane.y);
-    let n = [xa[1] * ya[2] - xa[2] * ya[1], xa[2] * ya[0] - xa[0] * ya[2], xa[0] * ya[1] - xa[1] * ya[0]];
+    let n = cross(xa, ya);
     let at = |i: usize| -> f64 {
         let (Some(o), Some(a), Some(b), Some(n)) = (o.get(i), xa.get(i), ya.get(i), n.get(i)) else { return 0.0 };
         round_to(o + x * a + y * b + h * n, 6)
@@ -963,50 +1061,256 @@ fn lift(f: &Swept, x: f64, y: f64, h: f64) -> [f64; 3] {
     [at(0), at(1), at(2)]
 }
 
-/// The midpoint of an edge record (`edges.midpoint`): the first two references are the
-/// edge's faces, the last two bound its end vertices.
-fn midpoint(reps: &[Rep], swept: &HashMap<u32, Swept>, sketches: &[Geometry]) -> Result<Option<[f64; 3]>, String> {
-    let [f1, f2, _, _] = reps else { return Ok(None) };
-    let cap_tags: HashSet<u16> = reps.iter().filter(|r| r.ext).map(|r| r.tag).collect();
-    let Some(f) = swept.get(&f1.fid) else { return Ok(None) };
-    if f2.fid != f1.fid {
-        return Ok(None);
+fn point(pts: &[Option<Pt>], i: usize) -> Option<Pt> {
+    pts.get(i).copied().flatten()
+}
+
+/// Number of samples on an arc when edges are intersected.
+const ARC_STEPS: usize = 2000;
+
+/// The 3D polyline (mm, on the sketch plane) of a sketch segment (`edges._poly`).
+fn poly(f: &Swept, g: &Geometry, s: &Seg, work: &mut u64) -> Result<Option<Vec<V3>>, String> {
+    let (Some(p), Some(q)) = (point(&g.pts, s.s), point(&g.pts, s.e)) else { return Ok(None) };
+    let uv: Vec<(f64, f64)> = if s.kind == SegKind::Line {
+        vec![(p.x, p.y), (q.x, q.y)]
+    } else {
+        let Some(c) = point(&g.pts, s.c) else { return Ok(None) };
+        let r = libm::hypot(p.x - c.x, p.y - c.y);
+        let a0 = libm::atan2(p.y - c.y, p.x - c.x);
+        let mut a1 = libm::atan2(q.y - c.y, q.x - c.x);
+        if s.s == s.e {
+            a1 = a0 + TAU * if s.dir > 0 { 1.0 } else { -1.0 };
+        } else {
+            // atan2 lies in [-pi, pi]: two turns at most.
+            for _ in 0..4 {
+                if s.dir > 0 && a1 <= a0 {
+                    a1 += TAU;
+                } else if s.dir <= 0 && a1 >= a0 {
+                    a1 -= TAU;
+                }
+            }
+        }
+        (0..=ARC_STEPS)
+            .map(|k| {
+                let a = a0 + (a1 - a0) * (k as f64) / (ARC_STEPS as f64);
+                (c.x + r * libm::cos(a), c.y + r * libm::sin(a))
+            })
+            .collect()
+    };
+    *work = work.saturating_add(uv.len() as u64);
+    if *work > MAX_EDGE_WORK {
+        return Err(TOO_MUCH_WORK.into());
     }
-    let Some(g) = sketches.get(f.sketch) else { return Ok(None) };
-    let seg = |r: &Rep| {
-        let mut c = g.segs.iter().filter(|s| s.a == r.idx && !s.construction);
+    Ok(Some(uv.into_iter().map(|(u, v)| lift(f, u * 1000.0, v * 1000.0, 0.0)).collect()))
+}
+
+/// Moves `p` along `along` onto the plane of `f` at height `h` (`edges._to_plane`).
+fn to_plane(p: V3, f: &Swept, along: V3, h: f64) -> Option<V3> {
+    let n = normal(f);
+    let o = lift(f, 0.0, 0.0, h);
+    let den = dot(along, n);
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let t = dot(sub(o, p), n) / den;
+    Some([p[0] + t * along[0], p[1] + t * along[1], p[2] + t * along[2]])
+}
+
+/// 2D coordinates of `p` in a frame normal to `n` (`edges._flat`).
+fn flat(p: V3, n: V3) -> (f64, f64) {
+    let mut x = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let d = dot(x, n);
+    x = [x[0] - d * n[0], x[1] - d * n[1], x[2] - d * n[2]];
+    let l = libm::sqrt(dot(x, x));
+    x = [x[0] / l, x[1] / l, x[2] / l];
+    let y = [n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]];
+    (dot(p, x), dot(p, y))
+}
+
+fn lengths(a: &[(f64, f64)]) -> Vec<f64> {
+    let mut l = vec![0.0];
+    for w in a.windows(2) {
+        let (Some(p), Some(q), Some(&last)) = (w.first(), w.get(1), l.last()) else { break };
+        l.push(last + libm::hypot(q.0 - p.0, q.1 - p.1));
+    }
+    l
+}
+
+const TOO_MUCH_WORK: &str = "the fillet edges need too much work to locate";
+
+/// Most segment pairs intersected for one part: polylines of 2000 samples cost millions each.
+const MAX_EDGE_WORK: u64 = 100_000_000;
+
+/// The arc-length fractions on `a` where `a` and `b` cross, seen along `n`
+/// (`edges._cross_params`).
+fn cross_params(a: &[V3], b: &[V3], n: V3, work: &mut u64) -> Result<Vec<f64>, String> {
+    *work = work.saturating_add((a.len() as u64).saturating_mul(b.len() as u64));
+    if *work > MAX_EDGE_WORK {
+        return Err(TOO_MUCH_WORK.into());
+    }
+    let a2: Vec<(f64, f64)> = a.iter().map(|p| flat(*p, n)).collect();
+    let b2: Vec<(f64, f64)> = b.iter().map(|p| flat(*p, n)).collect();
+    let l = lengths(&a2);
+    let total = l.last().copied().unwrap_or(0.0);
+    let mut out = Vec::new();
+    for (k, pq) in a2.windows(2).enumerate() {
+        let (Some(&p), Some(&q)) = (pq.first(), pq.get(1)) else { continue };
+        for rs in b2.windows(2) {
+            let (Some(&r), Some(&s)) = (rs.first(), rs.get(1)) else { continue };
+            let den = (q.0 - p.0) * (s.1 - r.1) - (q.1 - p.1) * (s.0 - r.0);
+            if den.abs() < 1e-15 {
+                continue;
+            }
+            let t = ((r.0 - p.0) * (s.1 - r.1) - (r.1 - p.1) * (s.0 - r.0)) / den;
+            let u = ((r.0 - p.0) * (q.1 - p.1) - (r.1 - p.1) * (q.0 - p.0)) / den;
+            if (-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u) {
+                let (Some(&l0), Some(&l1)) = (l.get(k), l.get(k + 1)) else { continue };
+                out.push(if total != 0.0 { (l0 + t * (l1 - l0)) / total } else { 0.0 });
+                if out.len() > MAX_MATCHES {
+                    return Err("too many edge crossings".into());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The point at arc-length fraction `frac` of a polyline (`edges._at`).
+fn point_at(a: &[V3], frac: f64) -> Option<V3> {
+    let mut l = vec![0.0];
+    for w in a.windows(2) {
+        let (Some(p), Some(q), Some(&last)) = (w.first(), w.get(1), l.last()) else { break };
+        l.push(last + libm::sqrt(dot(sub(*q, *p), sub(*q, *p))));
+    }
+    let target = frac * l.last().copied().unwrap_or(0.0);
+    for k in 1..a.len() {
+        let (Some(&lk), Some(&lp)) = (l.get(k), l.get(k - 1)) else { break };
+        if lk >= target {
+            let t = if lk > lp { (target - lp) / (lk - lp) } else { 0.0 };
+            let (p, q) = (a.get(k - 1)?, a.get(k)?);
+            return Some([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), p[2] + t * (q[2] - p[2])]);
+        }
+    }
+    a.last().copied()
+}
+
+/// Puts a point computed on a sampled arc back onto the exact circle (`edges._snap`).
+fn snap(p: V3, f: &Swept, g: &Geometry, s: &Seg) -> V3 {
+    if s.kind != SegKind::Arc {
+        return p;
+    }
+    let (Some(c), Some(q)) = (point(&g.pts, s.c), point(&g.pts, s.s)) else { return p };
+    let r = libm::hypot(q.x - c.x, q.y - c.y) * 1000.0;
+    let n = normal(f);
+    let c3 = lift(f, c.x * 1000.0, c.y * 1000.0, 0.0);
+    let v = sub(p, c3);
+    let h = dot(v, n);
+    let w = [v[0] - h * n[0], v[1] - h * n[1], v[2] - h * n[2]];
+    let l = libm::sqrt(dot(w, w));
+    if l == 0.0 || l.is_nan() {
+        return p;
+    }
+    [c3[0] + w[0] * r / l + h * n[0], c3[1] + w[1] * r / l + h * n[1], c3[2] + w[2] * r / l + h * n[2]]
+}
+
+/// A face an edge record names: a cap of a swept feature or one of its sides.
+#[derive(Clone, Copy)]
+enum Face<'a> {
+    Cap(u32, &'a Swept, u32),
+    Side(u32, &'a Swept, Seg),
+}
+
+fn round3(p: V3) -> V3 {
+    p.map(|v| round_to(v, 6))
+}
+
+/// The midpoint of an edge record (`edges.midpoint`): the first two references are the
+/// edge's faces, the last two bound its end vertices. The faces may belong to different
+/// features (a cut's wall against a boss's cap).
+fn midpoint(
+    reps: &[Rep],
+    swept: &HashMap<u32, Swept>,
+    sketches: &[Geometry],
+    cap_tags: &HashSet<u16>,
+    work: &mut u64,
+) -> Result<Option<V3>, String> {
+    let [r0, r1, r2, r3] = reps else { return Ok(None) };
+    let geo = |f: &Swept| sketches.get(f.sketch);
+    let face = |r: &Rep| -> Option<Face<'_>> {
+        let f = swept.get(&r.fid)?;
+        if cap_tags.contains(&r.tag) {
+            return Some(Face::Cap(r.fid, f, r.idx));
+        }
+        let mut c = geo(f)?.segs.iter().filter(|s| s.a == r.idx && !s.construction);
         match (c.next(), c.next()) {
-            (Some(s), None) => Some(*s),
+            (Some(s), None) => Some(Face::Side(r.fid, f, *s)),
             _ => None,
         }
     };
-    let d = f.distance;
-    let height = |cap: u32| {
-        if f.symmetric {
-            if cap == 1 { d / 2.0 } else { -d / 2.0 }
-        } else if cap == 1 {
-            d
-        } else {
-            0.0
+    let (Some(fa), Some(fb)) = (face(r0), face(r1)) else { return Ok(None) };
+    let (fc, fd) = (face(r2), face(r3));
+    let sides: Vec<Face> = [fa, fb].into_iter().filter(|x| matches!(x, Face::Side(..))).collect();
+    let caps: Vec<Face> = [fa, fb].into_iter().filter(|x| matches!(x, Face::Cap(..))).collect();
+    match (sides.as_slice(), caps.as_slice()) {
+        ([Face::Side(fid, f, s)], [Face::Cap(_, g, c)]) => {
+            let Some(gf) = geo(f) else { return Ok(None) };
+            let Some(a) = poly(f, gf, s, work)? else { return Ok(None) };
+            let (mut lo, mut hi) = (0.0, 1.0);
+            let mut cuts = Vec::new();
+            for b in [fc, fd].into_iter().flatten() {
+                if let Face::Side(bid, bf, bs) = b
+                    && bid != *fid
+                    && let Some(bg) = geo(bf)
+                    && let Some(pb) = poly(bf, bg, &bs, work)?
+                {
+                    cuts.extend(cross_params(&a, &pb, normal(f), work)?);
+                }
+            }
+            if cuts.len() >= 2 {
+                lo = cuts.iter().copied().fold(f64::INFINITY, f64::min);
+                hi = cuts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            }
+            let Some(m) = point_at(&a, f64::midpoint(lo, hi)) else { return Ok(None) };
+            let Some(m) = to_plane(m, g, normal(f), cap_height(g, *c)) else { return Ok(None) };
+            Ok(Some(round3(snap(m, f, gf, s))))
         }
-    };
-    let (c1, c2) = (cap_tags.contains(&f1.tag), cap_tags.contains(&f2.tag));
-    if !c1 && !c2 {
-        let (Some(a), Some(b)) = (seg(f1), seg(f2)) else { return Ok(None) };
-        let mut common: Vec<usize> = [a.s, a.e].into_iter().filter(|v| *v == b.s || *v == b.e).collect();
-        common.dedup();
-        let [shared] = common.as_slice() else { return Ok(None) };
-        let p = point(&g.pts, *shared)?;
-        let h = if f.symmetric { 0.0 } else { d / 2.0 };
-        return Ok(Some(lift(f, p.x * 1000.0, p.y * 1000.0, h)));
+        ([Face::Side(ida, f, sa), Face::Side(idb, g, sb)], _) => {
+            let (Some(gf), Some(gg)) = (geo(f), geo(g)) else { return Ok(None) };
+            let p0 = if ida == idb {
+                let mut common: Vec<usize> = [sa.s, sa.e].into_iter().filter(|v| *v == sb.s || *v == sb.e).collect();
+                common.dedup();
+                let [shared] = common.as_slice() else { return Ok(None) };
+                let Some(p) = point(&gf.pts, *shared) else { return Ok(None) };
+                lift(f, p.x * 1000.0, p.y * 1000.0, 0.0)
+            } else {
+                if (dot(normal(f), normal(g)).abs() - 1.0).abs() > 1e-9 {
+                    return Ok(None);
+                }
+                let (Some(pa), Some(pb)) = (poly(f, gf, sa, work)?, poly(g, gg, sb, work)?) else { return Ok(None) };
+                let ts = cross_params(&pa, &pb, normal(f), work)?;
+                let [t] = ts.as_slice() else { return Ok(None) };
+                let Some(at) = point_at(&pa, *t) else { return Ok(None) };
+                snap(at, f, gf, sa)
+            };
+            // Height: halfway between the bounding caps, or between this feature's own caps.
+            let bc: Vec<(u32, &Swept, u32)> = [fc, fd]
+                .into_iter()
+                .flatten()
+                .filter_map(|x| if let Face::Cap(i, s, c) = x { Some((i, s, c)) } else { None })
+                .collect();
+            let (g2, hs) = match bc.as_slice() {
+                [(i0, s0, c0), (i1, _, c1)] if i0 == i1 && !s0.through => {
+                    (*s0, [cap_height(s0, *c0), cap_height(s0, *c1)])
+                }
+                _ => {
+                    let Some(g2) = [*f, *g].into_iter().find(|x| !x.through) else { return Ok(None) };
+                    (g2, [cap_height(g2, 0), cap_height(g2, 1)])
+                }
+            };
+            Ok(to_plane(p0, g2, normal(f), f64::midpoint(hs[0], hs[1])).map(round3))
+        }
+        _ => Ok(None),
     }
-    if c1 != c2 {
-        let (side, cap) = if c1 { (f2, f1) } else { (f1, f2) };
-        let Some(a) = seg(side) else { return Ok(None) };
-        let Some((x, y)) = seg_mid(&g.pts, &a)? else { return Ok(None) };
-        return Ok(Some(lift(f, x * 1000.0, y * 1000.0, height(cap.idx))));
-    }
-    Ok(None)
 }
 
 // --- the tree --------------------------------------------------------------------------------
@@ -1025,6 +1329,128 @@ pub fn feature_tree(bytes: &[u8], file_name: &str, limits: &Limits) -> Result<Op
     let tree = convert(&rf, &c0, file)?;
     check(&tree)?;
     Ok(Some(tree))
+}
+
+/// A hole-wizard feature being read: its node is followed by a placement sketch and a
+/// section sketch, and then the hole's dimension parameters.
+struct HoleState {
+    /// Index of the placeholder in the feature list.
+    at: usize,
+    name: String,
+    /// Sketches seen after the node (two belong to the hole).
+    sketches: u8,
+    params: Vec<(String, f64)>,
+    positions: Vec<V3>,
+    face: Option<(V3, V3)>,
+    target: Option<String>,
+}
+
+fn json_v3(v: V3) -> Value {
+    json!([v[0], v[1], v[2]])
+}
+
+/// `swfeat.finish_hole`: the hole's parameters by name (values in metres and radians).
+fn finish_hole(h: HoleState) -> Value {
+    let ps: HashMap<&str, f64> = h.params.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let get = |names: &[&str]| names.iter().find_map(|k| ps.get(k).copied());
+    let nonzero = |v: Option<f64>| v.filter(|x| *x != 0.0);
+    let dia = nonzero(get(&["Hole Dia.", "Thru Hole Dia.", "Tap Drill Dia."]));
+    let dep = nonzero(get(&["Hole Depth", "Thru Hole Depth", "Tap Drill Depth"]));
+    let cs_d = nonzero(get(&["C'Sink Dia.", "Near C'Sink Dia."]));
+    let cs_a = nonzero(get(&["C'Sink Angle", "Near C'Sink Angle"]));
+    let clearance = nonzero(get(&["Head Clearance"]));
+    let mut o = Map::new();
+    o.insert("type".into(), json!("hole"));
+    o.insert("name".into(), json!(h.name));
+    o.insert("positions".into(), Value::Array(h.positions.iter().map(|p| json_v3(*p)).collect()));
+    if h.target.is_some() {
+        o.insert("target".into(), json!(h.target));
+    }
+    if let Some(d) = dia {
+        o.insert("diameter".into(), json!(mm(d)));
+    }
+    if let Some(d) = dep {
+        o.insert("depth".into(), json!(mm(d)));
+        o.insert("point_angle".into(), json!(118.0));
+    }
+    if let Some(d) = cs_d {
+        o.insert("variant".into(), json!("countersink"));
+        o.insert("csink_diameter".into(), json!(mm(d)));
+        o.insert("csink_angle".into(), json!(cs_a.map_or(90.0, |a| round_to(a.to_degrees(), 9))));
+    } else {
+        o.insert("variant".into(), json!("simple"));
+    }
+    if let Some(c) = clearance {
+        o.insert("head_clearance".into(), json!(mm(c)));
+    }
+    match (&h.face, dia, h.positions.is_empty()) {
+        (Some((point, normal)), Some(_), false) => {
+            o.insert("face".into(), json!({"point": json_v3(*point), "normal": json_v3(*normal)}));
+        }
+        _ => {
+            o.insert("unresolved".into(), json!(true));
+        }
+    }
+    Value::Object(o)
+}
+
+/// `swfeat.expand_holes`: head clearance (confirmed by volume on motorClip) is a cylinder of
+/// the countersink diameter, `head_clearance` deep, above the countersink. It is written as a
+/// circle pocket per position and then one hole per position from the pocket floor (Gusset
+/// drops a hole whose positions lie on different faces, so each position gets its own hole).
+fn expand_holes(feats: Vec<Value>) -> Vec<Value> {
+    let v3 = |v: Option<&Value>| -> Option<V3> {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+    };
+    let mut out = Vec::new();
+    for f in feats {
+        let plan = (|| {
+            if f.get("type")?.as_str()? != "hole"
+                || f.get("unresolved").is_some()
+                || f.get("variant")?.as_str()? != "countersink"
+            {
+                return None;
+            }
+            let c = f.get("head_clearance")?.as_f64().filter(|c| *c != 0.0)?;
+            let n = v3(f.pointer("/face/normal"))?;
+            let r = f.get("csink_diameter")?.as_f64()? / 2.0;
+            let pos: Vec<V3> = f.get("positions")?.as_array()?.iter().map(|p| v3(Some(p))).collect::<Option<_>>()?;
+            Some((c, n, r, pos))
+        })();
+        let Some((c, n, r, pos)) = plan else {
+            out.push(f);
+            continue;
+        };
+        let mut x = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+        let dd = dot(x, n);
+        x = [x[0] - dd * n[0], x[1] - dd * n[1], x[2] - dd * n[2]];
+        let l = libm::sqrt(dot(x, x));
+        x = [x[0] / l, x[1] / l, x[2] / l];
+        let y = cross(n, x);
+        let name = f.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        for (k, p) in pos.iter().enumerate() {
+            let nm = format!("{name}_{}", k + 1);
+            out.push(json!({
+                "type": "sketch", "name": format!("{nm}_clearance"),
+                "plane": {"origin": json_v3(*p), "x_axis": json_v3(x), "y_axis": json_v3(y)},
+                "points": [{"id": "c", "x": 0.0, "y": 0.0}],
+                "curves": [{"id": "k", "type": "circle", "center": "c", "radius": r}],
+            }));
+            out.push(json!({
+                "type": "extrude", "name": format!("{nm}_clearance_cut"), "sketch": format!("{nm}_clearance"),
+                "profiles": "all", "distance": -c, "operation": "cut", "target": f.get("target"),
+            }));
+            let q = round3([p[0] - c * n[0], p[1] - c * n[1], p[2] - c * n[2]]);
+            let mut g = f.as_object().cloned().unwrap_or_default();
+            g.remove("head_clearance");
+            g.insert("name".into(), json!(nm));
+            g.insert("face".into(), json!({"point": json_v3(q), "normal": json_v3(n)}));
+            g.insert("positions".into(), json!([json_v3(q)]));
+            out.push(Value::Object(g));
+        }
+    }
+    out
 }
 
 /// `swfeat.convert`: the tree, with unresolved features marked as the prototype marks them.
@@ -1061,6 +1487,9 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
         .fold(None::<(u16, usize)>, |b, &(k, v)| if b.is_none_or(|(_, bv)| v > bv) { Some((k, v)) } else { b })
         .map(|(k, _)| k);
     let in_es = |c: &EndSpec| c.cls.is_some() && c.cls == es_cls;
+    // Cap classes are learned per file from every edge record in the stream.
+    let cap_tags = cap_tags_of(&edge_records(rf, 0, rf.len())?);
+    let mut work = 0u64;
 
     let mut feats: Vec<Value> = Vec::new();
     let mut sketches: Vec<Geometry> = Vec::new();
@@ -1070,9 +1499,36 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
     let mut solid = false;
     let mut first_solid: Option<String> = None;
     let mut swept: HashMap<u32, Swept> = HashMap::new();
-    for n in &nodes {
+    let mut hole: Option<HoleState> = None;
+    for (ni, n) in nodes.iter().enumerate() {
         let mut cls = n.cls.clone();
         let (a, b) = span(n);
+        if hole.as_ref().is_some_and(|h| cls.as_deref() != Some("moProfileFeature_c") || h.sketches >= 2)
+            && let Some(h) = hole.take()
+        {
+            let at = h.at;
+            if let Some(slot) = feats.get_mut(at) {
+                *slot = finish_hole(h);
+            }
+        }
+        if cls.as_deref() == Some("moHoleWzd_c") {
+            let mut j = ni + 1;
+            while nodes.get(j).is_some_and(|m| m.cls.as_deref() == Some("moProfileFeature_c")) {
+                j += 1;
+            }
+            let hb = nodes.get(j).map_or(rf.len(), |m| m.start);
+            hole = Some(HoleState {
+                at: feats.len(),
+                name: n.name.clone(),
+                sketches: 0,
+                params: named_params(rf, a, hb, nt)?,
+                positions: Vec::new(),
+                face: None,
+                target: if solid { first_solid.clone() } else { None },
+            });
+            feats.push(Value::Null);
+            continue;
+        }
         if cls.as_deref() == Some("moProfileFeature_c") {
             let h = [find(rf, &ENT_HDR, n.post, b), find(rf, &ENT_HDR3, n.post, b)]
                 .into_iter()
@@ -1081,11 +1537,49 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
                 .unwrap_or(b);
             let Some(geo) = h.checked_sub(14).and_then(|body| parse_sketch(rf, body, b)) else {
                 last_sketch = None;
+                if let Some(h) = hole.as_mut() {
+                    h.sketches += 1;
+                }
                 continue;
             };
             let plane = find_plane(rf, a, b, uc)?;
             let jp = json_plane(plane.as_ref());
-            feats.push(sketch_json(&n.name, &geo, plane.as_ref(), &jp));
+            let sk = sketch_json(&n.name, &geo, plane.as_ref(), &jp);
+            if let Some(h) = hole.as_mut() {
+                h.sketches += 1;
+                // The placement sketch holds the hole centres as stand-alone sketch points;
+                // the other one is the hole's section.
+                let centres: Vec<Pt> = geo
+                    .pts
+                    .iter()
+                    .flatten()
+                    .filter(|p| p.alone == 1 && p.id != 0xffff_ffff && !p.ext)
+                    .copied()
+                    .collect();
+                if !centres.is_empty() && h.positions.is_empty() && plane.is_some() {
+                    let mut seen: Vec<V3> = Vec::new();
+                    for q in centres {
+                        let at = |i: usize| -> f64 {
+                            let (Some(o), Some(x), Some(y)) = (jp.origin.get(i), jp.x.get(i), jp.y.get(i)) else {
+                                return 0.0;
+                            };
+                            round_to(o + q.x * 1000.0 * x + q.y * 1000.0 * y, 6)
+                        };
+                        let p = [at(0), at(1), at(2)];
+                        if seen.iter().all(|o| p.iter().zip(o).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max) > 1e-6) {
+                            seen.push(p);
+                        }
+                    }
+                    let nrm = cross(jp.x, jp.y).map(|v| round_to(v, 12) + 0.0);
+                    h.face = seen.first().map(|p| (*p, nrm));
+                    h.positions = seen;
+                }
+                feats.push(sk);
+                sketches.push(geo);
+                sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
+                continue;
+            }
+            feats.push(sk);
             sketches.push(geo);
             sketch_by_name.insert(n.name.clone(), (sketches.len() - 1, jp));
             last_sketch = Some(n.name.clone());
@@ -1154,7 +1648,7 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
             if let (Some(sk), Some(dist)) = (last_sketch.as_ref(), distance)
                 && let Some(&(i, plane)) = sketch_by_name.get(sk)
             {
-                swept.insert(n.id, Swept { sketch: i, plane, distance: dist, symmetric });
+                swept.insert(n.id, Swept { sketch: i, plane, distance: dist, symmetric, through: through_all });
             }
             feats.push(Value::Object(js));
             solid = true;
@@ -1171,7 +1665,7 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
             js.insert("sketch".into(), json!(last_sketch));
             js.insert("profiles".into(), json!("all"));
             js.insert("operation".into(), json!(op));
-            js.insert("angle".into(), json!(ang.map_or(360.0, |v| round_to(v / (core::f64::consts::PI / 180.0), 9))));
+            js.insert("angle".into(), json!(ang.map_or(360.0, |v| round_to(v.to_degrees(), 9))));
             if op != "new" {
                 js.insert("target".into(), json!(first_solid));
             }
@@ -1191,23 +1685,77 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
             if first_solid.as_deref().is_none_or(str::is_empty) {
                 first_solid = Some(n.name.clone());
             }
+        } else if cls.as_deref() == Some("moMirrorPattern_c") {
+            // The bodies to mirror are back-references into Config-0, i.e. the whole solid
+            // body; the plane is the mirror plane's own frame:
+            // `<4 f64 display extents> 01 <R 3x3> <t> 1.0` (confirmed by the box of
+            // FrameBracket's Mirror1: the Right plane, x = 0). The face list in the same body
+            // (the faces it was picked by) is only the fallback.
+            let mut plane: Option<(V3, V3)> = None;
+            for i in a..b.saturating_sub(129) {
+                if rf.get(i) != Some(&1) {
+                    continue;
+                }
+                let (Some(r), Some(t), Some(sc)) =
+                    (f64s_at::<9>(rf, i + 1), f64s_at::<3>(rf, i + 73), f64_at(rf, i + 97))
+                else {
+                    continue;
+                };
+                if !orthonormal(&r) || !is(sc, 1.0) {
+                    continue;
+                }
+                let fr = frame(&r, &t, None);
+                let z = [r[2], r[5], r[8]];
+                plane = Some((fr.origin.map(|v| round_to(v * 1000.0, 6) + 0.0), z.map(|v| round_to(v, 12) + 0.0)));
+                break;
+            }
+            if plane.is_none()
+                && let Some((_, reps)) = edge_records(rf, a, b)?.first()
+                && let Some(r0) = reps.first()
+                && cap_tags.contains(&r0.tag)
+                && let Some(f) = swept.get(&r0.fid)
+            {
+                plane = Some((lift(f, 0.0, 0.0, cap_height(f, r0.idx)), normal(f)));
+            }
+            let mut js = Map::new();
+            js.insert("type".into(), json!("mirror"));
+            js.insert("name".into(), json!(n.name));
+            js.insert("features".into(), json!([]));
+            js.insert("target".into(), json!(first_solid));
+            js.insert("merge".into(), json!(true));
+            match plane {
+                Some((origin, nrm)) => {
+                    js.insert("plane".into(), json!({"origin": json_v3(origin), "normal": json_v3(nrm)}));
+                }
+                None => {
+                    js.insert("unresolved".into(), json!(true));
+                }
+            }
+            feats.push(Value::Object(js));
         } else if matches!(cls.as_deref(), Some("Fillet_c" | "Chamfer_c")) {
             let fillet = cls.as_deref() == Some("Fillet_c");
             let ps = params(rf, a, b, nt)?;
             let sel = selection(edge_records(rf, a, b)?);
             let mut edges = Vec::new();
-            let mut unresolved = sel.is_empty();
+            let mut stale = 0usize;
+            let mut unresolved = false;
             for (_, reps) in &sel {
-                match midpoint(reps, &swept, &sketches)? {
+                match midpoint(reps, &swept, &sketches, &cap_tags, &mut work)? {
                     Some(m) => edges.push(json!({"midpoint": m})),
+                    // References to faces the sketch no longer has are superseded selections.
+                    None if reps.iter().all(|r| swept.contains_key(&r.fid)) => stale += 1,
                     None => unresolved = true,
                 }
             }
+            unresolved |= edges.is_empty();
             let mut js = Map::new();
             js.insert("type".into(), json!(if fillet { "fillet" } else { "chamfer" }));
             js.insert("name".into(), json!(n.name));
             js.insert(if fillet { "radius" } else { "distance" }.into(), json!(ps.first().map(|v| mm(*v))));
             js.insert("edges".into(), json!(edges));
+            if stale > 0 {
+                js.insert("stale_edges".into(), json!(stale));
+            }
             if unresolved {
                 js.insert("edges_unresolved".into(), json!(true));
                 js.insert("edges_selected".into(), json!(sel.len()));
@@ -1219,11 +1767,17 @@ pub(crate) fn convert(rf: &[u8], c0: &[u8], file: &str) -> Result<Value, String>
             feats.push(json!({"type": "unsupported", "name": n.name, "original_type": cls}));
         }
     }
+    if let Some(h) = hole.take() {
+        let at = h.at;
+        if let Some(slot) = feats.get_mut(at) {
+            *slot = finish_hole(h);
+        }
+    }
     Ok(json!({
         "format": "gusset-feature-tree",
         "version": 2,
         "source": {"app": "solidworks", "file": file},
-        "features": feats,
+        "features": expand_holes(feats),
     }))
 }
 
@@ -1255,6 +1809,9 @@ fn check(tree: &Value) -> Result<(), String> {
                 if s("type") == "revolve" && f.get("axis").is_none_or(Value::is_null) {
                     return Err(format!("{name}: no axis line in its sketch"));
                 }
+            }
+            "hole" | "mirror" if f.get("unresolved").is_some() => {
+                return Err(format!("{name}: the {} was not resolved", s("type")));
             }
             kind @ ("fillet" | "chamfer") => {
                 if f.get("edges_unresolved").is_some() {

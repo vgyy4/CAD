@@ -587,19 +587,55 @@ fn config0() -> Vec<u8> {
     v
 }
 
+/// A reference-plane component of plane feature `fid` (identity rotation, `t = (0, 0, tz)`).
+fn comp_plane(fid: u32, tz: f64) -> Vec<u8> {
+    let mut v = vec![0x01, 0x80, 2, 0];
+    v.extend([0u8; 10]);
+    v.extend([0u8; 31]);
+    v.extend(fid.to_le_bytes());
+    v.extend(9u32.to_le_bytes());
+    v.extend([0, 0, 0, 0, 0, 0, 0]);
+    v.extend([0u8; 16]);
+    v.extend(tz.to_le_bytes());
+    v.extend(1.0f64.to_le_bytes());
+    v
+}
+
+/// A sketch whose points are `(x, y, A)` in metres and which has no segments.
+fn point_sketch(name: &str, id: u32, plane: &[u8], pts: &[(f64, f64, u16)]) -> Vec<u8> {
+    let mut v = feature_node("moProfileFeature_c", name, id);
+    v.extend(plane);
+    v.extend([0u8; 16]);
+    v.extend((pts.len() as u32).to_le_bytes());
+    for (i, (x, y, a)) in pts.iter().enumerate() {
+        v.extend(sketch_item(100 + i as u32, 10 + i as u32, 0));
+        v.extend(0x1eu16.to_le_bytes());
+        v.extend(x.to_le_bytes());
+        v.extend(y.to_le_bytes());
+        v.extend(a.to_le_bytes());
+        v.extend([0u8; 10]);
+    }
+    v.extend(0u32.to_le_bytes());
+    v.extend([0u8; 16]);
+    v
+}
+
+/// A dimension parameter: node name, `u32 0, u32 0x40000000, u32 -1, u32 0, u16 0, f64`.
+fn parameter(name: &str, value: f64) -> Vec<u8> {
+    let mut v = class_decl("moLengthParameter_c");
+    v.extend(node_name(name));
+    v.extend([0, 0, 0, 0, 0, 0, 0, 0x40, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+    v.extend(value.to_le_bytes());
+    v.extend([0u8; 16]);
+    v
+}
+
 /// A 10 x 10 mm square sketch on the Front plane, extruded 5 mm (and `extra` nodes after).
 fn feature_stream(extra: &[u8]) -> Vec<u8> {
     let mut rf = vec![3, 0];
     rf.extend(feature_node("moProfileFeature_c", "Sketch1", 5));
     // The plane: a reference-plane component of plane feature 2 (Front), identity, t = 0.
-    rf.extend([0x01, 0x80, 2, 0]);
-    rf.extend([0u8; 10]);
-    rf.extend([0u8; 31]);
-    rf.extend(2u32.to_le_bytes());
-    rf.extend(9u32.to_le_bytes());
-    rf.extend([0, 0, 0, 0, 0, 0, 0]);
-    rf.extend([0u8; 24]);
-    rf.extend(1.0f64.to_le_bytes());
+    rf.extend(comp_plane(2, 0.0));
     rf.extend([0u8; 16]);
     let corners = [(0.0, 0.0), (0.01, 0.0), (0.01, 0.01), (0.0, 0.01)];
     rf.extend(4u32.to_le_bytes());
@@ -708,9 +744,9 @@ fn a_mid_plane_cut_and_an_unknown_feature() {
     assert_eq!((cut["distance"].as_f64(), cut["symmetric"].as_bool()), (Some(2.0), Some(true)));
     // A feature class the reader does not know refuses the whole history, naming it.
     let mut hole = extra.clone();
-    hole.extend(feature_node("moHoleWzd_c", "Tapped Hole1", 11));
+    hole.extend(feature_node("moDomeFeature_c", "Dome1", 11));
     let why = history(&feature_stream(&hole)).unwrap_err();
-    assert!(why.contains("Tapped Hole1") && why.contains("moHoleWzd_c"), "{why}");
+    assert!(why.contains("Dome1") && why.contains("moDomeFeature_c"), "{why}");
 }
 
 #[test]
@@ -725,22 +761,233 @@ fn parts_without_a_feature_stream_have_no_history() {
     assert!(history(only_sketch).unwrap_err().contains("no extrude"));
 }
 
+/// A hole-wizard feature: the node, a placement sketch on the plane z = 5 mm with two
+/// stand-alone points and a line-end point, an empty section sketch, and the parameters.
+fn hole_wizard(countersink: bool) -> Vec<u8> {
+    let plane = comp_plane(2, -0.005);
+    let mut v = feature_node("moHoleWzd_c", "Hole1", 11);
+    v.extend(point_sketch("Sketch2", 12, &plane, &[(0.002, 0.003, 1), (0.007, 0.003, 1), (0.001, 0.001, 0)]));
+    v.extend(feature_node("moProfileFeature_c", "Sketch3", 13));
+    v.extend(&plane);
+    v.extend([0u8; 40]);
+    v.extend(parameter("Hole Dia.", 0.002));
+    v.extend(parameter("Hole Depth", 0.003));
+    if countersink {
+        v.extend(parameter("Near C'Sink Dia.", 0.004));
+        v.extend(parameter("Near C'Sink Angle", core::f64::consts::FRAC_PI_2));
+        v.extend(parameter("Head Clearance", 0.00015));
+    }
+    v
+}
+
+#[test]
+fn a_hole_wizard_becomes_a_hole_at_its_placement_points() {
+    let t = history(&feature_stream(&hole_wizard(false))).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap();
+    let hole = f.iter().find(|x| x["type"] == "hole").unwrap();
+    assert_eq!(hole["target"], "Boss-Extrude1");
+    assert_eq!(hole["variant"], "simple");
+    assert_eq!(hole["diameter"].as_f64(), Some(2.0));
+    assert_eq!(hole["depth"].as_f64(), Some(3.0));
+    // The free points of the placement sketch, on its plane (z = 5 mm); the line end is not one.
+    assert_eq!(hole["positions"], serde_json::json!([[2.0, 3.0, 5.0], [7.0, 3.0, 5.0]]));
+    assert_eq!(hole["face"]["normal"], serde_json::json!([0.0, 0.0, 1.0]));
+    assert!(hole.get("head_clearance").is_none());
+    // Both sketches of the wizard are kept and none is the extrude's profile.
+    assert_eq!(f.iter().filter(|x| x["type"] == "sketch").count(), 3);
+    assert_eq!(f.iter().find(|x| x["name"] == "Boss-Extrude1").unwrap()["sketch"], "Sketch1");
+}
+
+#[test]
+fn a_head_clearance_becomes_a_pocket_and_a_hole_per_position() {
+    let t = history(&feature_stream(&hole_wizard(true))).unwrap().unwrap();
+    let f = t["features"].as_array().unwrap();
+    assert!(f.iter().all(|x| x["name"] != "Hole1"), "{t}");
+    for k in [1, 2] {
+        let pocket = f.iter().find(|x| x["name"] == format!("Hole1_{k}_clearance_cut")).unwrap();
+        assert_eq!((pocket["operation"].as_str(), pocket["distance"].as_f64()), (Some("cut"), Some(-0.15)));
+        assert_eq!(pocket["target"], "Boss-Extrude1");
+        let ring = f.iter().find(|x| x["name"] == format!("Hole1_{k}_clearance")).unwrap();
+        assert_eq!(ring["curves"][0]["radius"].as_f64(), Some(2.0));
+        let hole = f.iter().find(|x| x["name"] == format!("Hole1_{k}")).unwrap();
+        assert_eq!(hole["variant"], "countersink");
+        assert_eq!((hole["csink_diameter"].as_f64(), hole["csink_angle"].as_f64()), (Some(4.0), Some(90.0)));
+        // From the pocket floor: 0.15 mm below the face.
+        let z = hole["positions"][0][2].as_f64().unwrap();
+        assert!((z - 4.85).abs() < 1e-9, "{hole}");
+        assert_eq!(hole["positions"].as_array().unwrap().len(), 1);
+        assert!(hole.get("head_clearance").is_none());
+    }
+}
+
+#[test]
+fn a_hole_without_placement_points_is_a_reason() {
+    let mut v = feature_node("moHoleWzd_c", "Hole1", 11);
+    v.extend(point_sketch("Sketch2", 12, &comp_plane(2, 0.0), &[(0.001, 0.001, 0)]));
+    v.extend(parameter("Hole Dia.", 0.002));
+    let why = history(&feature_stream(&v)).unwrap_err();
+    assert!(why.contains("Hole1") && why.contains("not resolved"), "{why}");
+}
+
+/// A mirror feature whose body holds its plane's frame (here the Right plane, x = 0).
+fn mirror(frame: bool) -> Vec<u8> {
+    let mut v = feature_node("moMirrorPattern_c", "Mirror1", 20);
+    if frame {
+        for e in [0.089f64, -0.089, 0.055, -0.055] {
+            v.extend(e.to_le_bytes());
+        }
+        v.push(1);
+        // Columns: x = -Z, y = +Y, normal = +X.
+        for r in [0.0f64, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0] {
+            v.extend(r.to_le_bytes());
+        }
+        v.extend(1.0f64.to_le_bytes());
+    }
+    v.extend([0u8; 40]);
+    v
+}
+
+#[test]
+fn a_mirror_takes_the_plane_of_its_own_frame() {
+    let t = history(&feature_stream(&mirror(true))).unwrap().unwrap();
+    let m = t["features"].as_array().unwrap().last().unwrap();
+    assert_eq!(m["type"], "mirror");
+    assert_eq!(m["merge"], true);
+    assert_eq!(m["target"], "Boss-Extrude1");
+    assert_eq!(m["plane"]["origin"], serde_json::json!([0.0, 0.0, 0.0]));
+    assert_eq!(m["plane"]["normal"], serde_json::json!([1.0, 0.0, 0.0]));
+    let why = history(&feature_stream(&mirror(false))).unwrap_err();
+    assert!(why.contains("Mirror1") && why.contains("not resolved"), "{why}");
+}
+
+/// A sketch on a model face: the face's plane data first (axes turned 180 degrees about the
+/// normal), then the sketch's own frame.
+#[test]
+fn a_face_sketch_uses_its_own_frame_block() {
+    let face = |own: bool| {
+        let mut p = Vec::new();
+        for v in [0.0f64, 0.0, 0.005, 0.0, 0.0, 1.0] {
+            p.extend(v.to_le_bytes()); // origin, normal
+        }
+        p.push(1);
+        for r in [-1.0f64, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.005] {
+            p.extend(r.to_le_bytes()); // R turned 180 deg, t
+        }
+        p.extend(1.0f64.to_le_bytes());
+        if own {
+            p.extend([1, 0, 0, 0]);
+            p.extend([0u8; 12]);
+            p.push(1);
+            for r in [1.0f64, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -0.005] {
+                p.extend(r.to_le_bytes());
+            }
+            p.extend(1.0f64.to_le_bytes());
+        }
+        p
+    };
+    let tree = |own: bool| {
+        let mut rf = vec![3, 0];
+        rf.extend(point_sketch("Sketch1", 5, &face(own), &[(0.0, 0.0, 0)]));
+        rf.extend(feature_node("moExtrusion_c", "Boss-Extrude1", 7));
+        rf.extend(class_decl("moEndSpec_c"));
+        rf.extend([0, 0, 1, 0, 0, 0]);
+        rf.extend([0u8; 26]);
+        rf.extend(parameter("D1", 0.005));
+        history(&rf)
+    };
+    // The sketch has no profile, but its plane is what is read.
+    let t = tree(true).unwrap().unwrap();
+    let pl = &t["features"][0]["plane"];
+    assert_eq!(pl["x_axis"], serde_json::json!([1.0, 0.0, 0.0]), "{t}");
+    assert_eq!(pl["origin"], serde_json::json!([0.0, 0.0, 5.0]));
+    assert!(pl.get("ref").is_none());
+    // Without the own frame the face block's turned axes would be used.
+    let t = tree(false).unwrap().unwrap();
+    assert_eq!(t["features"][0]["plane"]["x_axis"], serde_json::json!([-1.0, 0.0, 0.0]));
+}
+
+/// A face reference: class tag, `u16 0`, tag, `u16`, feature id, stamp, index.
+fn face_ref(tag: u16, fid: u32, idx: u32) -> Vec<u8> {
+    let mut v = (0x8000 | tag).to_le_bytes().to_vec();
+    v.extend([0, 0]);
+    v.extend((0x8000 | tag).to_le_bytes());
+    v.extend([0, 0]);
+    v.extend(fid.to_le_bytes());
+    v.extend(1u32.to_le_bytes());
+    v.extend(idx.to_le_bytes());
+    v
+}
+
+/// An edge record of four face references.
+fn edge_record(refs: &[Vec<u8>], extra_zero_bytes: usize) -> Vec<u8> {
+    let mut v = vec![1, 0, 0, 0, 0, 0, 0, 0, refs.len() as u8];
+    v.extend(vec![0u8; 4 + extra_zero_bytes]);
+    v.push(2);
+    v.extend([0, 0]);
+    v.extend(77u32.to_le_bytes());
+    v.extend([0x7d, 0xc3, 0x94, 0x25, 0xad, 0x49, 0xb2, 0x54].repeat(2));
+    v.extend([0, 0]);
+    for r in refs {
+        v.extend(r);
+    }
+    v
+}
+
+#[test]
+fn a_fillet_edge_between_two_side_faces_is_picked_by_its_midpoint() {
+    // Sides 1 and 2 of the square (keys of the segments p0-p1 and p1-p2) meet in p1 = (10, 0);
+    // the edge is at mid-depth of the 5 mm extrude.
+    for pad in [0, 2] {
+        let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
+        let refs = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+        fillet.extend(edge_record(&refs, pad));
+        fillet.extend([0u8; 4]);
+        fillet.extend(parameter("D1", 0.001));
+        let t = history(&feature_stream(&fillet)).unwrap().unwrap();
+        let f = t["features"].as_array().unwrap().last().unwrap();
+        assert_eq!(f["type"], "fillet", "{t}");
+        assert_eq!(f["radius"].as_f64(), Some(1.0));
+        assert_eq!(f["edges"], serde_json::json!([{"midpoint": [10.0, 0.0, 2.5]}]), "{f}");
+        assert!(f.get("edges_unresolved").is_none());
+    }
+    // A reference to a face of no known feature is unresolved, naming the fillet.
+    let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
+    let refs = [face_ref(0x50, 99, 1), face_ref(0x50, 99, 2), face_ref(0x51, 99, 0), face_ref(0x51, 99, 1)];
+    fillet.extend(edge_record(&refs, 0));
+    fillet.extend([0u8; 4]);
+    fillet.extend(parameter("D1", 0.001));
+    let why = history(&feature_stream(&fillet)).unwrap_err();
+    assert!(why.contains("Fillet1") && why.contains("0 of 1"), "{why}");
+}
+
 #[test]
 fn damaged_feature_streams_never_panic() {
-    let rf = feature_stream(&feature_node("moHoleWzd_c", "Hole1", 11));
+    let mut fillet = feature_node("Fillet_c", "Fillet1", 30);
+    let refs = [face_ref(0x50, 7, 1), face_ref(0x50, 7, 2), face_ref(0x51, 7, 0), face_ref(0x51, 7, 1)];
+    fillet.extend(edge_record(&refs, 1));
+    fillet.extend(parameter("D1", 0.001));
+    let streams = [
+        feature_stream(&hole_wizard(false)),
+        feature_stream(&hole_wizard(true)),
+        feature_stream(&mirror(true)),
+        feature_stream(&fillet),
+    ];
+    let rf = streams[0].clone();
     let c0 = config0();
     let mut rng = Lcg(11);
-    for n in 0..rf.len() {
-        let _ = features::convert(&rf[..n], &c0, "p");
-    }
-    for _ in 0..1500 {
-        let mut m = rf.clone();
-        for _ in 0..1 + rng.next() % 8 {
-            let i = rng.next() % m.len();
-            m[i] = rng.next() as u8;
+    for rf in &streams {
+        for n in 0..rf.len() {
+            let _ = features::convert(&rf[..n], &c0, "p");
         }
-        let _ = features::convert(&m, &c0, "p");
-        let _ = features::convert(&m, &m, "p");
+        for _ in 0..600 {
+            let mut m = rf.clone();
+            for _ in 0..1 + rng.next() % 8 {
+                let i = rng.next() % m.len();
+                m[i] = rng.next() as u8;
+            }
+            let _ = features::convert(&m, &c0, "p");
+            let _ = features::convert(&m, &m, "p");
+        }
     }
     // Whole files, cut anywhere.
     let f = ole(&[("Config-0", &c0), ("Config-0-ResolvedFeatures", &rf)]);
