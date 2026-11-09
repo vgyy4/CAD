@@ -95,9 +95,34 @@ struct Sketch {
 }
 
 enum Curve {
-    Line { id: usize, a: usize, b: usize, con: bool },
-    Arc { id: usize, c: usize, s: usize, e: usize, con: bool },
-    Circle { id: usize, c: usize, r: f64, con: bool },
+    Line {
+        id: usize,
+        a: usize,
+        b: usize,
+        con: bool,
+    },
+    Arc {
+        id: usize,
+        c: usize,
+        s: usize,
+        e: usize,
+        con: bool,
+    },
+    Circle {
+        id: usize,
+        c: usize,
+        r: f64,
+        con: bool,
+    },
+    /// Centre point, unit major direction, semi-axes (mm).
+    Ellipse {
+        id: usize,
+        c: usize,
+        major: [f64; 2],
+        a: f64,
+        b: f64,
+        con: bool,
+    },
 }
 
 impl Sketch {
@@ -129,6 +154,10 @@ impl Sketch {
                     Curve::Circle { id, c, r, con } => {
                         (json!({"id": format!("c{id}"), "type": "circle", "center": format!("p{c}"), "radius": r}), con)
                     }
+                    Curve::Ellipse { id, c, major, a, b, con } => (
+                        json!({"id": format!("e{id}"), "type": "ellipse", "center": format!("p{c}"), "major": major, "a": a, "b": b}),
+                        con,
+                    ),
                 };
                 if con {
                     put(&mut j, "construction", json!(true));
@@ -160,6 +189,11 @@ impl Sketch {
                 Curve::Arc { c, s, e, con: false, .. } => {
                     if let (Some(&c), Some(&s), Some(&e)) = (p.get(&c), p.get(&s), p.get(&e)) {
                         out.push(Poly::Arc { c, s, e });
+                    }
+                }
+                Curve::Ellipse { c, major, a, b, con: false, .. } => {
+                    if let Some(&c) = p.get(&c) {
+                        out.push(Poly::Ellipse { c, major: (major[0], major[1]), a, b });
                     }
                 }
                 _ => {}
@@ -204,7 +238,7 @@ impl Reader<'_> {
         let m = self.owned.get_or_init(|| {
             let mut m: HashMap<usize, Vec<usize>> = HashMap::new();
             for i in 0..self.dc.n() {
-                if matches!(self.dc.role(i), Role::SkPoint | Role::SkLine | Role::SkCircle)
+                if matches!(self.dc.role(i), Role::SkPoint | Role::SkLine | Role::SkCircle | Role::SkEllipse)
                     && let Some(o) = self.owner(i)
                 {
                     m.entry(o).or_default().push(i);
@@ -268,7 +302,7 @@ impl Reader<'_> {
         }
         for &i in items {
             let role = self.dc.role(i);
-            if !matches!(role, Role::SkLine | Role::SkCircle) {
+            if !matches!(role, Role::SkLine | Role::SkCircle | Role::SkEllipse) {
                 continue;
             }
             if sk.curves.len() >= MAX_CURVES {
@@ -282,6 +316,12 @@ impl Reader<'_> {
                     (list.first(), list.get(1), list.iter().take(2).all(known))
                 {
                     sk.curves.push(Curve::Line { id: i, a: *a, b: *b, con });
+                }
+                continue;
+            }
+            if role == Role::SkEllipse {
+                if let Some(c) = self.ellipse(i, &sk.points, con) {
+                    sk.curves.push(c);
                 }
                 continue;
             }
@@ -307,6 +347,43 @@ impl Reader<'_> {
             }
         }
         Ok(sk)
+    }
+
+    /// An ellipse record: the tail holds `f64 s, a, b, u8` (cm; `s` = y component of the major
+    /// axis direction, `a` >= `b`), and it refers to its centre and axis-end points. The centre
+    /// is the referred point from which the others lie `a` / `b` away; the x sign of the
+    /// direction comes from the axis-end point when there is one, else it is taken as positive.
+    fn ellipse(&self, i: usize, points: &[(usize, f64, f64, bool)], con: bool) -> Option<Curve> {
+        let rec = self.dc.r(i);
+        let k = rec.len().checked_sub(25)?;
+        let (s, a, b) = (f64_at(rec, k)?, f64_at(rec, k + 8)? * CM, f64_at(rec, k + 16)? * CM);
+        if !(a > 0.0 && b > 0.0 && a >= b && s.abs() <= 1.0 + 1e-9) {
+            return None;
+        }
+        let at = |id: usize| points.iter().find(|p| p.0 == id).map(|p| (p.1, p.2));
+        let refd: Vec<(usize, (f64, f64))> = self
+            .dc
+            .refs(i)
+            .into_iter()
+            .filter(|&(_, x)| self.dc.role(x) == Role::SkPoint)
+            .filter_map(|(_, x)| Some((x, at(x)?)))
+            .collect();
+        let near = |p: (f64, f64), q: (f64, f64), d: f64| (libm::hypot(p.0 - q.0, p.1 - q.1) - d).abs() < 1e-4;
+        let centre = if let [only] = refd.as_slice() {
+            *only
+        } else {
+            *refd
+                .iter()
+                .find(|&&(_, c)| refd.iter().all(|&(_, q)| near(q, c, 0.0) || near(q, c, a) || near(q, c, b)))?
+        };
+        let sy = s.clamp(-1.0, 1.0);
+        let cx = libm::sqrt((1.0 - sy * sy).max(0.0));
+        // The major-axis end, when it is among the points, fixes the x sign.
+        let sx = refd
+            .iter()
+            .find(|&&(_, q)| near(q, centre.1, a) && ((q.1 - centre.1.1) / a - sy).abs() < 1e-4)
+            .map_or(cx, |&(_, q)| if cx > 1e-9 { cx * ((q.0 - centre.1.0).signum()) } else { cx });
+        Some(Curve::Ellipse { id: i, c: centre.0, major: [rnd(sx), rnd(sy)], a: rnd(a), b: rnd(b), con })
     }
 
     /// The sketch whose profile a loops list belongs to.

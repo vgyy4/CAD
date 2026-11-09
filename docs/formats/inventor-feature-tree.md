@@ -103,7 +103,7 @@ u16 0, u16 0xffff` (value at len-20). Units cm / rad.
   * `ce52df3b` circle/arc: list [start, end] (both null = full circle), ..., `ref centre`,
     `f64 radius`, `u8` (1 for full circles). Arcs run counter-clockwise start->end (confirmed
     by the slot of `L-Bracket` and the flanges, which rebuild exactly).
-  * `4507d460` ellipse (O-rings): centre, two axis points, radii. Not expressible in the tree.
+  * `4507d460` ellipse (O-rings): centre, axis-end points, radii; see D. Emitted as tree `ellipse`.
   * `8ef06c89` work axis: f64 start(3), f64 vector(3) after a list.
   * Constraints (`90874d94`, `90874d96`, `e1108c00`, ...) and dimensions were not decoded.
 
@@ -249,8 +249,11 @@ the points: for the three listed points `[axis end 1, axis end 2, centre]` order
 * So: semi_x = a if s==0 else b; semi_y = b if s==0 else a. A general rotation would need cos too: s alone is a GUESS
   (sin of the angle); no rotated sample exists.
 * Revolve: `Umdrehung1` extent 3 (full), axis = the construction line `ce52df3a` #34 on the sketch y axis (points (0,-0.45),(0,0.45)).
-* Proposed tree JSON: {"type":"ellipse","id","center":"<point id>","semi_major":a_mm,"semi_minor":b_mm,"angle":deg of the major axis}
-  (angle = 0 when s==0, 90 when s==1).
+* Implemented (2026-11-09): tree `{"type":"ellipse","center":<centre point>,"major":[cos,sin],"a","b"}`. Reader (`inventor_features.rs`
+  `ellipse()`): `s` = sin of the major-axis angle; the referred SkPoints are centre + major-axis end + minor-axis end (65x3 refers only
+  the centre). The centre is the referred point from which every other referred point lies 0, `a` or `b` away; the x sign of the
+  direction is taken from the major-axis end point when present, else positive (a point at distance `a` whose y offset = s*a). All 4
+  O-rings now import as history (volumes match the stored shapes to 1e-7; warning only about 'rot_spl_sur' approximations).
 
 ## E. Cylinder blends generalised (CONFIRMED: back_accses_panel exact)
 A cylindrical blend face (cone-surface with zero half-angle... `cyl` in blend.py) replaced a STRAIGHT edge parallel to its axis.

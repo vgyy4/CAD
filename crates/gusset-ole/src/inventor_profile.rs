@@ -17,7 +17,18 @@ pub(crate) type P2 = (f64, f64);
 pub(crate) enum Poly {
     Line(P2, P2),
     Circle(P2, f64),
-    Arc { c: P2, s: P2, e: P2 },
+    Arc {
+        c: P2,
+        s: P2,
+        e: P2,
+    },
+    /// Centre, unit major direction, semi-axes.
+    Ellipse {
+        c: P2,
+        major: P2,
+        a: f64,
+        b: f64,
+    },
 }
 
 fn dist(a: P2, b: P2) -> f64 {
@@ -30,6 +41,13 @@ fn sample(c: &Poly) -> Vec<P2> {
         Poly::Line(a, b) => vec![a, b],
         Poly::Circle(c, r) => (0..=96)
             .map(|k| (c.0 + r * libm::cos(tau * f64::from(k) / 96.0), c.1 + r * libm::sin(tau * f64::from(k) / 96.0)))
+            .collect(),
+        Poly::Ellipse { c, major, a, b } => (0..=96)
+            .map(|k| {
+                let t = tau * f64::from(k) / 96.0;
+                let (u, v) = (a * libm::cos(t), b * libm::sin(t));
+                (c.0 + u * major.0 - v * major.1, c.1 + u * major.1 + v * major.0)
+            })
             .collect(),
         Poly::Arc { c, s, e } => {
             let r = dist(c, s);

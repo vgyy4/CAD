@@ -619,4 +619,19 @@ mod sab {
         assert!(d > 5.0, "{p:?}");
         assert!(picks(&[], &[]).is_none());
     }
+
+    #[test]
+    fn a_tilted_ellipse_is_a_region_inside_its_loop() {
+        let curves = vec![Poly::Ellipse { c: (5.0, 3.0), major: (0.6, 0.8), a: 4.0, b: 2.0 }];
+        let lp: Vec<P2> = (0..64)
+            .map(|k| {
+                let t = f64::from(k) * std::f64::consts::TAU / 64.0;
+                let (u, v) = (4.0 * libm::cos(t), 2.0 * libm::sin(t));
+                (5.0 + 0.6 * u - 0.8 * v, 3.0 + 0.8 * u + 0.6 * v)
+            })
+            .collect();
+        let p = picks(&curves, &[lp]).unwrap();
+        assert_eq!(p.len(), 1);
+        assert!((p[0].0 - 5.0).abs() < 1.0 && (p[0].1 - 3.0).abs() < 1.0, "{p:?}");
+    }
 }
