@@ -200,3 +200,27 @@ r = t/2 fails with "fillet failed" because the two blends are tangent to each ot
 - **Command.** `feature.fillet` gains `full_round` (list of face names); `edges` and `radius`
   are then left out (and `radius` is required otherwise). The MCP tool entry stays under the
   byte budget. No GUI form yet.
+
+### Amendment: `refine: false` keeps a boolean's split faces (2026-11-09)
+
+FreeCAD unifies the coplanar faces and collinear edges of a pad, pocket or boolean only when the
+feature's `Refine` is on; a file with `Refine = false` is rebuilt (and later filleted) on the
+unrefined shape. Gusset unified always, so such a file got fewer faces and a fillet found
+different material (FreeCAD Page_108: 90 faces instead of 174, volume 1.1e-4 off).
+
+- **Syntax.** `refine: false` on `extrude`, `revolve`, `sweep`, `loft`, `combine`, `mirror` (with
+  `merge`), `pattern_linear` and `pattern_circular` (default `true`, printed only when false; the
+  definitions gain `refine: bool`). It governs the boolean of `op: add|cut|intersect` (and of a combine); with
+  `op: new` there is nothing to unify and it is accepted and ignored. Dressups and holes still
+  refine (the FreeCAD files at hand need no more). Grammar and round trip are tested.
+- **Kernel.** `Kernel::boolean_unrefined` and `boolean_many_unrefined` (defaults call the refined
+  forms, so the mock is unchanged). OCCT passes `refine` to `gs_boolean`/`gs_boolean_many`, which
+  run the boolean without `SimplifyResult`; the "unify, and retry without if the result is
+  invalid" fallback of `run_boolean_checked` is skipped for it. Remote protocol 12: requests 6
+  and 7 carry the flag.
+- **Eval.** `combine_refined` and `boolean_tools_refined` take the flag; each feature passes its
+  own.
+- **Naming.** An unrefined result keeps the boolean's own face history, so each split face has
+  its own origin and, with the ADR 0003 ties, its own persistent name; golden tests check that
+  all 10 faces of two touching cubes are named distinctly, survive a parameter change and take a
+  fillet by name. A fillet of the flat seam edge itself fails as in FreeCAD (tangent faces).

@@ -323,3 +323,11 @@ face the blend removes, i.e. the face of the model as built *before* the fillet.
   parallel planar faces ("it does not build here: ...").
 - The feature needs no `radius`: it is half the distance between the sides.
 - A reader that does not know `full_round` has no edges and no size, so it skips the fillet.
+
+### Amendment: `refine` (2026-11-09)
+
+`extrude`, `revolve`, `sweep`, `loft`, `combine`, `mirror` and `pattern_linear`/`pattern_circular` features take `"refine": false` (default
+true): the body-combining boolean then keeps the split faces of its result (ADR 0004 amendment,
+`refine: false` in the generated text). It is written only for operations other than `new`. A
+reader that does not know `refine` unifies the result, which may change later face and edge
+picks of a source that was unrefined.

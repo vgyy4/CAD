@@ -159,3 +159,23 @@ an arc) and `PartDesign` ellipsoids (a half ellipse turned about z, two radii) c
 tree ellipses and a revolve (Page_022 x2, Page_029). Page_108 needs a boolean that keeps
 FreeCAD's `Refine=false` result: the shim's `run_boolean` has a `simplify` flag but the
 kernel API, the document feature and the eval op do not carry it.
+
+### Amendment: `Refine=false` (2026-11-09)
+
+The translator reads `Refine` of every PartDesign feature it turns into a joining, cutting or
+intersecting tree feature (pad, pocket, revolution, groove, additive and subtractive pipes and
+lofts) and of `Part::Cut/Fuse/Common`, and writes `"refine": false` when the stored value is
+false (a missing property stays refined), also on MultiTransform and the pattern and mirror
+objects it makes. An object that becomes two features here (a two-length pad, pocket, groove or
+revolution: `_back` is the second side, where FreeCAD makes one solid) stays refined, since the
+seam between its halves would be an edge FreeCAD's shape does not have (Page_093's chamfers). Gusset then rebuilds on the unrefined shape as
+FreeCAD does (ADR 0004 and 0042 amendments), so face counts and the edges and faces that
+fillets pick match. A first pad (`operation: new`) is not marked: it does no boolean.
+
+Result on the 160 example files: coverage unchanged (126 as history); no file was gained.
+Page_108 now builds the same pre-fillet shape as FreeCAD's stored one (70 faces, 138 edges
+with `refine: false` on the pads, the pocket and the polar pattern; 34 faces refined), but
+OCCT's fillet of its 48 edges then yields a face BRepCheck reports as unorientable that
+ShapeFix does not repair (two edges of neighbouring teeth fail together, each alone and the
+pair of the same tooth are fine), so the file stays at tier 2. Page_089 with its patterns
+unrefined builds but is 5% off in volume (not traced).
