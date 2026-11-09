@@ -32,6 +32,8 @@ pub(super) fn splice(tree: &mut Value, resolve: &mut InsertResolver, depth: usiz
     }
     let old = std::mem::take(feats);
     let mut out: Vec<Value> = Vec::with_capacity(old.len());
+    // Each merged insert and the names of the bodies it leaves.
+    let mut merged: Vec<(String, Vec<String>)> = Vec::new();
     for f in old {
         if !is_insert(&f) {
             out.push(f);
@@ -58,15 +60,61 @@ pub(super) fn splice(tree: &mut Value, resolve: &mut InsertResolver, depth: usiz
             // A design without a timeline we can read: what its blobs store.
             Err(why) => stored_bodies(&files, &name, &why)?,
         };
-        out.extend(bring(inner, &name, &pl)?);
+        let brought = bring(inner, &name, &pl)?;
+        merged.push((name.clone(), final_bodies(&brought)));
+        out.extend(brought);
         if out.len() > MAX_INSERT_FEATURES {
             return Err("the inserted designs bring too many features".into());
         }
     }
+    retarget(&mut out, &merged);
     if let Some(feats) = tree.get_mut("features").and_then(Value::as_array_mut) {
         *feats = out;
     }
     Ok(())
+}
+
+/// The bodies the features leave, by the name of the feature that made each (a join, cut or
+/// intersect keeps its target's name, so those bodies stay under the same names).
+pub(super) fn final_bodies(feats: &[Value]) -> Vec<String> {
+    feats
+        .iter()
+        .filter(|f| {
+            f.get("type").and_then(Value::as_str) == Some("stored_body")
+                || f.get("creates_bodies").and_then(Value::as_u64).is_some_and(|n| n > 0)
+        })
+        .filter_map(|f| f.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A root feature that joins to or cuts the bodies "of" an insert names the insert feature, which
+/// is no longer in the tree: it names the bodies the insert left instead (one name when it left
+/// one; several make the target a list, which the tree's check refuses for these features).
+pub(super) fn retarget(feats: &mut [Value], merged: &[(String, Vec<String>)]) {
+    for f in feats {
+        let Some(t) = f.get_mut("target") else { continue };
+        let names: Vec<String> = match t {
+            Value::String(s) => vec![s.clone()],
+            Value::Array(a) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+            _ => continue,
+        };
+        if !names.iter().any(|n| merged.iter().any(|(m, _)| m == n)) {
+            continue;
+        }
+        let mut now: Vec<String> = Vec::new();
+        for n in names {
+            match merged.iter().find(|(m, _)| *m == n) {
+                Some((_, bodies)) => now.extend(bodies.iter().cloned()),
+                None => now.push(n),
+            }
+        }
+        now.dedup();
+        *t = match now.as_slice() {
+            [one] => one.as_str().into(),
+            many => many.to_vec().into(),
+        };
+    }
 }
 
 fn is_insert(f: &Value) -> bool {

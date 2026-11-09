@@ -669,3 +669,39 @@ fn an_insert_nobody_resolves_stays_and_the_check_names_it() {
     let why = check(&tree).unwrap_err();
     assert!(why.contains("Component Insert1") && why.contains("not merged"), "{why}");
 }
+
+#[test]
+fn a_root_feature_that_names_the_insert_is_pointed_at_the_merged_body() {
+    use super::insert::{final_bodies, retarget};
+    let brought = vec![
+        json!({"type": "extrude", "name": "Board [In]", "operation": "new", "creates_bodies": 1}),
+        json!({"type": "extrude", "name": "Hole [In]", "operation": "cut", "target": "Board [In]", "creates_bodies": 0}),
+        json!({"type": "stored_body", "name": "Part [In]", "creates_bodies": 1}),
+    ];
+    // The cut keeps its target's name: the board and the part are what the insert leaves.
+    assert_eq!(final_bodies(&brought), vec!["Board [In]".to_string(), "Part [In]".to_string()]);
+    let one = [("In".to_string(), vec!["Part [In]".to_string()])];
+    let mut feats = vec![
+        json!({"type": "extrude", "name": "A", "operation": "cut", "target": "In"}),
+        json!({"type": "extrude", "name": "B", "operation": "join", "target": ["In", "Other"]}),
+        json!({"type": "extrude", "name": "C", "operation": "cut", "target": "Other"}),
+    ];
+    retarget(&mut feats, &one);
+    assert_eq!(feats[0]["target"], json!("Part [In]"));
+    assert_eq!(feats[1]["target"], json!(["Part [In]", "Other"]));
+    assert_eq!(feats[2]["target"], json!("Other"));
+    // An insert that left two bodies makes the target a list, which the check refuses.
+    let two = [("In".to_string(), vec!["P".to_string(), "Q".to_string()])];
+    let mut feats = vec![json!({"type": "extrude", "name": "A", "operation": "cut", "target": "In"})];
+    retarget(&mut feats, &two);
+    assert_eq!(feats[0]["target"], json!(["P", "Q"]));
+}
+
+#[test]
+fn a_shell_with_faces_and_a_thickness_is_readable() {
+    let tree = json!({"features": [
+        {"type": "extrude", "name": "E", "profiles": [], "distance": 5.0, "operation": "new"},
+        {"type": "shell", "name": "Shell1", "faces": [{"point": [0, 0, 5]}], "thickness": 1.6, "side": "inside"},
+    ]});
+    assert!(check(&tree).is_ok());
+}

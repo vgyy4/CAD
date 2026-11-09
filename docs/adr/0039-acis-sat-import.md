@@ -535,3 +535,14 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
 - Result: NeoKey Breakout and CyberDeck Bonnet come in as history (10 of 18). Crickit HAT: 221 stored solids unexplained;
   the two Cases stop at Shell (then Draft, Combine, Move, Scale, RemoveBody, none read yet).
 
+
+## Amendment (2026-11-09, round 9): Shell, insert targets, findings
+
+- Shell (`E8063467`) is read: `innerThickness` wall, removed faces from the bounded-face recipes (first name = the face).
+  Emitted as the tree's `shell`. It is not yet exercised by a rebuild: the two Cases fail earlier, at Fillet1, because
+  sketch construction lines are read as profile lines (profile point on such a line); then unresolved blend edges, Draft,
+  Scale, Move, Combine (operation field not found), RemoveBody. The earlier "stops at Shell1" was a tree-level statement.
+- After a Component Insert merge a later feature's `target` that names the insert follows to the merged bodies (unit test
+  only; no sample has it).
+- Crickit HAT: the 221 solids are the Board's Extrude2 hole tools (1.57 mm cylinders); the cut board is not stored, and 5 of
+  the 0.9 mm tools remove no material. No check was loosened; coverage stays 10 of 18 (details in the stream notes, section 17).

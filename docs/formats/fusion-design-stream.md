@@ -608,3 +608,67 @@ stream, and the archive's other designs only have to be handed over.
 | BQ25185 3V Buck Case (6124) | Component Insert | bodies: the inserted PCB design rebuilds inside; stops at the root's Shell1 |
 | BQ25185 5V Buck Case (6126) | Component Insert | bodies: same, Shell1 (then Draft, Combine, Move, Scale, RemoveBody) |
 | MacroPad RP2040-Assembly (5128) | no history | bodies: its inserts now resolve, so the reason is the inserted MacroPad's R-Pattern (no feature history of its own before) |
+
+## 17. Round 9: Shell, Combine, insert targets, Crickit HAT's 221 solids (2026-11-09)
+Helper: `scripts/re/fusion/tl.py` (timeline listing, `skel` record skeletons, `tree` record walks).
+
+### Shell `E8063467` (decoded; not yet rebuilt end to end)
+* Wall: parameter `innerThickness` (via the `D91D429C` holder, centimetres) = Gusset's `inside`; `outerThickness` would be
+  `outside` (no sample has it). The removed faces are `7ACC2A03` recipes under `2CA5A1CD` -> `5662F619`; in 6124/6126 the
+  recipe is `bounded_face_recipe_data`: its **first face name is the face itself, the others bound it** (as for the To-object
+  extent). Resolved like fillet faces (`Ctx::face`): Shell1 of 6124 removes cap "2" of Extrude2 (the 14 mm case body's
+  open top, point (0, 0, 14) mm) with a 1.6 mm wall. Emitted as `{"type":"shell","faces":[{"point"}],"thickness","side"}`
+  without normals (cap and side normals from the names are not oriented outward). 12 further Shells live in the Crickit
+  designs (not reached).
+* NOT verified by a rebuild: the check never got past an earlier feature in 6124/6126. The earlier report "stops at Shell1"
+  was a tree-level statement (the reader's `check`); no rebuild of the root was ever run. Rebuilding up to Shell1 shows
+  Fillet1 failing ("no edge has its midpoint at [-17, -12, 7]"): see below.
+
+### Why 6124/6126 are far from history (full blocker list, 6124)
+Fillet2 (4 edges unresolved), Chamfer1 (8), Chamfer1 of Top (2), Fillet4 (16), Chamfer2 of Top (8), Extrude4 of Top (profile
+is a face, not a sketch), Extrude16/17 (profile regions of the logo sketches), Draft1 x2, Scale5, Move3-5, Combine1,
+RemoveBody. Tree features that exist: `shell`, `combine`, `mirror`. Missing: draft, scale/move of a body (the tree has
+no body transform), remove-body. RemoveBody-Body51 is the tool removal of Combine1 (Combine refs the `4A782808` record);
+it leaves no trace only if the combine consumes its tool, so it could be dropped together with a Combine that does.
+* **Sketch construction lines are read as profile lines.** Sketch1 of Bottom (34 x 24 mm box) has two extra lines
+  (-17,0)-(0,0)-(0,12) whose line records differ from the box lines in one byte (tail of the `DCA267ED` section: the byte
+  3 after the `01` that follows the second reference is 1 instead of 0; layout of the 307-byte records only, other lengths
+  not checked). They split the rectangle in the importer's profile search and the chosen profile point (-4.25, 0) lies ON
+  such a line. The body is then not the box: Fillet1's edge midpoints (+-17, +-12, 7) miss by 8.46 mm. This (not Shell)
+  is the first thing to fix for these two designs; a `construction` flag per line would also remove the "outer loops"
+  ambiguities seen elsewhere. Not done: needs the flag position for every line/arc/circle record length.
+* Combine `2A94257F`: no parameter holder. Refs: `4A782808` (the RemoveBody of the tool), `2E3AC990` (flags `00 01 00 01` +
+  back reference), then selection lists. **Tools = the first `2CA5A1CD` list(s) (`u32 n` + n selections, each ->
+  `9716F783` -> body link `D26351F0`), target = the last single selection** (6124: tool body of Extrude17, target
+  body 1796 = the Shell1 body; the same link 1796 appears in the shell's selection). The operation (join/cut/intersect) is
+  NOT found: the eight Combines of the corpus differ only in u64 ids and counts (0x219, 0x150, 0x181, 0x1f2 after the
+  first section: not an enum), `2E3AC990` is identical in all four samples that have one. Not emitted as a tree
+  feature for that reason (a guessed operation would be a guess).
+
+### Component Insert targets
+Implemented in `insert.rs` (`retarget`, `final_bodies`): after a merge, a later feature whose `target` names the insert
+now names the bodies the inserted features leave (one name, else a list that the check refuses). No sample reaches it:
+in the six `.f3z` every root cut/join has a one-feature target (6124/6126: Extrude5 "cut Extrude2"), so this is
+covered only by a unit test.
+
+### Crickit HAT (3957): the 221 solids are the hole tools of the Board's Extrude2
+* The Board's blob (`BREP.cd166dcd...smb`) has 230 bodies: 222 solids (the 5551.7171 mm3 uncut board and **221 cylinders
+  of height 1.57 mm** with r = 0.25 (109), 0.35 (2), 0.4 (2), 0.45 (45), 0.5 (55), 1.4 (4), 1.6 (4): the volumes
+  0.3083 / 0.6042 / 0.7892 / 0.9988 / 1.2331 / 9.6673 / 12.6267 are exactly 1.57 pi r^2) and 8 sheets. Sketch2 of the Board
+  has exactly these 221 circles and Extrude2 (cut, 1.57 mm, all 221 profiles read) uses them: the "1.2331 mm3 bodies the
+  model lacks" are the 55 holes of r = 0.5 mm.
+* The model cuts only 233.335 mm3 of 238.334 (5 of the 45 r = 0.45 tools remove nothing: they lie outside the board
+  material), so `fusion_explain_steps` finds no feature whose delta is a stored tool times its copies. The loose rule
+  (sum of the uncovered tools) fails on the same 4.9988 mm3 (5 x 0.9988) and is not loosened.
+* The **cut board (5318.3819 mm3) is not stored anywhere** in the file (stored solids: only the uncut 5551.7171). Total:
+  stored 13330.6143 - model 12858.9504 = 471.664 = 233.335 (uncut vs cut board) + 238.334 (tools). So the file stores the
+  history state of the cut (board + tools) but not its result, or stores it as a body the reader drops (the 8 sheets are
+  profile faces: bodies 221/222 have 221 vertices at z = 0, 224/225/228/229 are the outline faces, 226/227 two-vertex
+  pieces; none is a solid with holes). Whether the final design has the holes cannot be told from the file here.
+* All features of the Crickit root are `in_timeline: false` (no captured timeline), so which of them are part of the final
+  design is itself uncertain. Next step if resumed: decide, from the `B65B5682` compute order and the `SpecifiedColor`
+  attribute that only the cut carries, whether Extrude2 is applied; then the check could count the 5 outside tools
+  (they would need a "tool that removes nothing" rule, i.e. a loosening that needs the owner's decision).
+
+### Corpus after this round
+Unchanged: 10 of 18 as history.

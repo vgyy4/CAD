@@ -731,6 +731,8 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
             feats.push(j);
+        } else if c8 == "E8063467" {
+            feats.push(shell_json(cx, fid, &nm, &fusion_type, class));
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if c8 == "D7015B81" {
@@ -777,6 +779,44 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
         "single_component": distinct.len() <= 1 && with_bodies <= 1,
         "component_records": d.ids.iter().filter(|i| d.is(**i, "E03784ED")).count(),
     })
+}
+
+/// Shell `E8063467`: the faces it removes are `7ACC2A03` face recipes under its selection records
+/// (a cap or side of an extrude, resolved like the edges of a fillet); the wall is the
+/// `innerThickness` parameter (walls grow inward) or, with no inner value, `outerThickness`.
+fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str) -> Value {
+    let d = cx.d;
+    let fail = |why: &str| {
+        json!({"type": "unsupported", "fusion_type": fusion_type, "name": name, "class_guid": class,
+            "source_id": fid, "error": why})
+    };
+    let inner = feature::param_values(d, fid, &["innerThickness"]).first().copied().filter(|v| *v > 0.0);
+    let outer = feature::param_values(d, fid, &["outerThickness"]).first().copied().filter(|v| *v > 0.0);
+    let (side, t) = match (inner, outer) {
+        (Some(t), None) => ("inside", t),
+        (None, Some(t)) => ("outside", t),
+        _ => return fail("the shell has no single wall thickness (inner and outer, or none)"),
+    };
+    let mut faces: Vec<Value> = Vec::new();
+    for rid in cx.input_recipes(fid) {
+        let (kind, names) = naming::recipe(d, rid);
+        // A bounded-face recipe names the face first and the faces that bound it after.
+        let (Some(naming::RecipeKind::Face | naming::RecipeKind::BoundedFace), Some(names)) = (kind, names) else {
+            return fail("a removed face is not a face recipe");
+        };
+        let Some((g, ops)) = names.first().and_then(|f| f.first()) else {
+            return fail("a removed face has no name");
+        };
+        match cx.face(g, ops) {
+            // No normal: the cap and side normals the names give are not oriented outward.
+            Some(naming::FaceG::Plane { p, .. }) => faces.push(json!({"point": v3mm(p)})),
+            _ => return fail("a removed face is not a cap or planar side of an extrude"),
+        }
+    }
+    if faces.is_empty() {
+        return fail("no removed face was found");
+    }
+    json!({"type": "shell", "name": name, "source_id": fid, "faces": faces, "thickness": mm(t), "side": side})
 }
 
 /// Component Insert `428B5C6E`: the placement of the occurrence it inserts and the keys that name
@@ -967,7 +1007,7 @@ fn blocker(f: &Value) -> Option<String> {
             }
             None
         }
-        "hole" | "mirror" => None,
+        "hole" | "mirror" | "shell" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
