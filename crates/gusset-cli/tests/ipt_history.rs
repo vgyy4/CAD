@@ -72,6 +72,9 @@ fn inventor_parts_come_in_as_history_or_bodies() {
                         let w =
                             w.split_once("\"reason\":\"").map_or(w, |x| x.1.split("\"}").next().unwrap_or_default());
                         let w = w.split_once("cannot be read: ").map_or(w, |x| x.1);
+                        if std::env::var_os("GUSSET_IPT_RAW").is_some() {
+                            eprintln!("RAW {w}");
+                        }
                         let mut out = String::new();
                         for c in w.chars().take(200) {
                             let digit = c.is_ascii_digit() || (c == '.' || c == '-') && out.ends_with('#');

@@ -234,3 +234,17 @@ reference geometry, whose length must equal the distance). Other types, a first 
 length and unequal chamfers on several edges stay refused. The M8 screw (2 chamfers, 30 deg) now
 rebuilds within the volume check: 21 of 47 sample parts come in as history (was 20). Open: the
 two-distances type value and which record names the face are inferred from that one part.
+
+## Amendment (2026-11-09, 5): Inventor ellipses; what still blocks history
+
+Sketch ellipses (`4507d460`, the O-ring grooves) are read as tree `ellipse` curves (centre point,
+unit major direction, semi-axes; see `docs/formats/inventor-feature-tree.md` D). The four O-rings
+now rebuild exactly: 25 of 47 sample parts come in as history (was 21). The 22 left as bodies:
+4 are standard-part exports with no feature records, 3 thicken parts and 1 more need a
+full-round fillet (a blend whose two supports are parallel planes at twice its radius: the
+pre-fillet edge no longer exists, and a Gusset fillet with exactly half the gap fails in OCCT,
+so the tree needs a "full round" feature), 6 reach a rolling-ball or vertex blend (spline
+surface) that cannot be turned into a straight pre-fillet edge, 3 differ by about 1 % in volume
+(the thumbscrew knurl: ~32 notches that are not in the extrusion's stored profile), 3 name an
+edge the analysis cannot place, 1 uses extrude extents not decoded, 2 are kernel fillet
+failures. No new tree feature was needed except full-round.

@@ -298,3 +298,21 @@ its range comes from the blend face's vertices (clamped to end planes as before)
   not the record index; not decoded. The tag route (A) + support-face geometry (B/E) was sufficient instead.
 * Importer-side limits met: `path` picks only match Line/Circle edges; full circles (1 vertex) never match by `path`
   -> use the seam midpoint (build.py flips a pick to `_full` = centre - R*ref when the importer reports it missing).
+
+## H. Remaining body fallbacks after the ellipse round (2026-11-09; 25 of 47 as history)
+Tally of the 22 others (corpus test, `GUSSET_IPT_RAW=1` prints the unabridged reason):
+* 4 `not exported (unknown)`: standard-part exports (T-slot extrusion, washers, spring); nothing to read.
+* 3 `thicken` (+ unresolved/full-round fillets), `Long Bottom Nut Traps` (full round): NEED a tree "full round" fillet. Checked in OCCT
+  through the importer: filleting both edges of a 4 mm slab with r = 2 mm (or one edge with r = 4) fails ("fillet failed"), r = 1.5 works.
+* `cylinder blend with N usable supports` (LED Arm, Thumbscrew 20mm M5, Connecting plate 2): the neighbours of the blend are
+  `spline-surface-ref` faces (record `spline-surface-rb_blend_spl_sur-cone-null_curve-...-ellipse-nubs`, i.e. another blend between two
+  cones) that `Acis::kind` reports as `None` (the face's surface record type does not end in `surface`), or a real 45 deg countersink
+  cone (Connecting plate 2: blend r 0.35 tangent to one r 0.1 cylinder, other neighbour a cone). The missing support cannot be recovered.
+* `bottom cover` Fillet4: r = 27.5 = the whole wall height (a quarter round that eats the wall): the support walk puts the edge at
+  r 106.75 mm, outside the 80 mm body. Same degenerate family as the full round.
+* `Thumbscrew - Long/Short`, `M5 - Long`: features give +4.35 mm3 (1.1 %) over the stored shape. 4.35 / 0.1375 (one 0.125 x 0.25 notch,
+  4.4 deep) = ~32 notches; Sketch4 holds one notch rectangle, no pattern record was found among the records that refer to the sketch
+  (`2d06cad3`, `90874d94/95/96/97/98`, `39a41830` are constraints/dimensions; `90874d53` are edge tags). OPEN: where the circular count is stored.
+* `reviii Fixture Body`: 95 features, extrude extents 7 (11x) and 4 (1x) not decoded, 18 fillets unsupported.
+* `LED Washer` (`ChFi3d_Builder: only 1 faces`), `Leg Shelf` (invalid solid): kernel fillet failures on a correct tree.
+* Harness note: a failed run with "could not start the import worker" happens when the workers are rebuilt during the run.
