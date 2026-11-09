@@ -14,9 +14,8 @@ fuzz_target!(|data: &[u8]| {
     }
     // The first two bytes say where the MetaStream ends and the third where the BulkStream does.
     let Some((head, rest)) = data.split_first_chunk::<3>() else { return };
-    let cut = |at: usize, of: &[u8]| of.split_at(at.min(of.len()));
-    let (meta, rest) = cut(usize::from(u16::from_le_bytes([head[0], head[1]])), rest);
-    let (bulk, acis) = cut(usize::from(head[2]) * rest.len() / 255, rest);
+    let (meta, rest) = rest.split_at(usize::from(u16::from_le_bytes([head[0], head[1]])).min(rest.len()));
+    let (bulk, acis) = rest.split_at((usize::from(head[2]) * rest.len() / 255).min(rest.len()));
     let files = vec![
         ("FusionAssetName[Active]/Design1/MetaStream.dat".to_string(), meta.to_vec()),
         ("FusionAssetName[Active]/Design1/BulkStream.dat".to_string(), bulk.to_vec()),
