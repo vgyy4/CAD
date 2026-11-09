@@ -189,7 +189,12 @@ struct EdgePick {
 #[derive(Debug, Clone, Deserialize)]
 struct EdgeF {
     name: String,
+    #[serde(default)]
     edges: Vec<EdgePick>,
+    /// Fillet, full round (version 2): the middle face between two parallel faces, replaced
+    /// by a half cylinder; instead of `edges` and `radius`.
+    #[serde(default)]
+    full_round: Option<v2::FacePick>,
     #[serde(default)]
     radius: Option<f64>,
     #[serde(default)]
@@ -1191,7 +1196,31 @@ fn chamfer_second(g: &mut Gen, s: &Session, d: &EdgeF, body: &str, names: &[Stri
 /// Most points of a source edge's path looked at.
 const MAX_PATH_POINTS: usize = 512;
 
+/// A full-round fillet of the face the pick names (ADR 0042 amendment).
+fn full_round(g: &mut Gen, s: &Session, d: &EdgeF, pick: &v2::FacePick, fillet: bool) -> Result<(), String> {
+    if !fillet {
+        return Err("only a fillet can be a full round".into());
+    }
+    if !d.edges.is_empty() || d.radius.is_some() || d.distance.is_some() {
+        return Err("a full round takes a face, not edges and a radius".into());
+    }
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let (_, face) = v2::pick_face_name(g, s, &ev, pick)?;
+    let name = g.fresh(&d.name, "Fillet");
+    g.text.push_str(&format!("\nfillet {name} (full_round: [{face}])\n"));
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    if let Some(e) = ev.errors().iter().find(|e| e.feature == name) {
+        return Err(format!("it does not build here: {}", e.message));
+    }
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), name);
+    Ok(())
+}
+
 fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String> {
+    if let Some(pick) = &d.full_round {
+        return full_round(g, s, d, pick, fillet);
+    }
     let size = if fillet { d.radius } else { d.distance };
     let size = size.filter(|v| v.is_finite() && *v > 0.0 && *v < 1e12).ok_or("no positive size")?;
     if d.edges.len() > MAX_PICKS {

@@ -543,6 +543,43 @@ fn bad_unequal_chamfers_are_skipped_with_a_reason() {
     }
 }
 
+// ---- Full-round fillets (ADR 0042 amendment) ----
+
+fn slab_tree(round: Value) -> Vec<Value> {
+    vec![rect("Base", plane_at(0.0), 0.0, 0.0, 20.0, 4.0), extrude("Slab", "Base", 10.0, "new"), round]
+}
+
+#[test]
+fn a_full_round_fillet_is_picked_by_a_point_on_its_face() {
+    // The 4 x 10 end face at x = 20 becomes a half cylinder of radius 2.
+    let round = json!({"type": "fillet", "name": "R", "full_round": {"point": [20, 2, 5], "normal": [1, 0, 0]}});
+    let (mut s, r) = import_into_session(slab_tree(round));
+    assert_eq!(r["skipped_user_text"], json!([]), "{r}");
+    let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+    let pi = std::f64::consts::PI;
+    assert_vol(b["volume_mm3"].as_f64().unwrap(), 800.0 - (4.0 * 2.0 * 10.0 - pi * 2.0 * 2.0 / 2.0 * 10.0));
+    let text = s.document(&gusset_history::Actor::User).unwrap().to_text();
+    assert!(text.contains("fillet R (full_round: [Slab/side(Base/l6)])"), "{text}");
+}
+
+#[test]
+fn bad_full_rounds_are_skipped_with_a_reason() {
+    let pick = json!({"point": [20, 2, 5], "normal": [1, 0, 0]});
+    for round in [
+        json!({"type": "fillet", "name": "R", "full_round": pick, "radius": 1, "edges": [{"midpoint": [5, 0, 10]}]}),
+        json!({"type": "chamfer", "name": "R", "full_round": pick, "distance": 1}),
+        json!({"type": "fillet", "name": "R", "full_round": {"point": [20, "x", 5]}}),
+        // A point far from every face.
+        json!({"type": "fillet", "name": "R", "full_round": {"point": [500, 500, 500], "normal": [1, 0, 0]}}),
+    ] {
+        let (mut s, r) = import_into_session(slab_tree(round.clone()));
+        let skipped = r["skipped_user_text"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1, "{round}: {r}");
+        let b = execute(&mut s, &CmdCtx::user(1), "query.body", json!({})).unwrap();
+        assert_vol(b["volume_mm3"].as_f64().unwrap(), 800.0);
+    }
+}
+
 // ---- Ellipses and elliptical arcs (ADR 0042 amendment) ----
 
 fn ellipse_sketch(name: &str, plane: Value, x: f64, y: f64, major: [f64; 2], a: f64, b: f64) -> Value {
