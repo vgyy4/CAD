@@ -1079,9 +1079,10 @@ fn freecad_history(
     let ctx = crate::CmdCtx::user(0);
     let mut scratch = crate::Session::new(&empty, kernel.clone(), &ctx);
     let r = crate::tree_import::apply(&mut scratch, &ctx, &tree, file_name).map_err(|e| e.message)?;
-    let skipped = r.get("skipped_user_text").and_then(Value::as_array).map_or(0, Vec::len);
-    if skipped > 0 {
-        return Err(format!("{skipped} features could not be rebuilt"));
+    let skipped = r.get("skipped_user_text").and_then(Value::as_array).cloned().unwrap_or_default();
+    if let Some(first) = skipped.first() {
+        let first = first.as_str().map_or_else(|| first.to_string(), str::to_string);
+        return Err(format!("{} features could not be rebuilt, the first: {first}", skipped.len()));
     }
     let got = r.pointer("/volume_mm3/imported").and_then(Value::as_f64).unwrap_or(f64::NAN);
     let close = (got - want).abs() <= 1e-6 * want;
