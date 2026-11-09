@@ -16,6 +16,10 @@ that are not configured. Nothing is signed up for or paid for without asking the
 | **Apple Developer ID + notarization** | US$99/year (Apple Developer Program) | Needed to avoid Gatekeeper warnings on macOS. The hardened runtime is enabled regardless |
 | Classic OV/EV certificates | roughly US$200–600/year plus a hardware token or cloud HSM | Not preferred |
 
+Update (2026-11-09): the repository is public, so SignPath Foundation is open to us. The
+policy their programme asks for, and the owner's set-up steps for every key, are in
+`docs/CODE_SIGNING.md` (linked from the README); the keys are created by the owner at the end.
+
 Recommendation for the owner, when ready: make the repository public and apply to
 SignPath Foundation for Windows (free); add Apple Developer ID only if macOS demand
 justifies it.

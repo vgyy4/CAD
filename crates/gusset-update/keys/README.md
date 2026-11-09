@@ -6,9 +6,9 @@ release keypair. Until then `BUILTIN_KEYS` in `src/lib.rs` is empty and the app 
 every manifest, so no update is ever installed unverified.
 
 Adding a key:
-1. The maintainer runs `minisign -G` (or `rsign generate`) offline and stores the
-   secret key only in the protected `release` environment as `UPDATE_SIGNING_KEY`
-   (and its password as `UPDATE_SIGNING_KEY_PASSWORD`).
+1. The maintainer runs `minisign -G -W` offline (no password: the release workflow signs
+   unattended) and stores the secret key only in the protected `release` environment as
+   `UPDATE_SIGNING_KEY` (step by step: `docs/CODE_SIGNING.md`).
 2. Commit the public key here as `<name>.pub`, and add its second line to
    `BUILTIN_KEYS` together with the name.
 3. Rotation: ship release N with {old, new}, sign with new from N+1, and drop old after

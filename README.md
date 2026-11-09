@@ -33,6 +33,28 @@ License: MIT OR Apache-2.0.
   FreeCAD and OpenSCAD, with names and colours kept. Imports run in a sandboxed worker.
 - **Headless:** the `gusset` command line builds, exports and renders documents.
 
+## Install
+
+Download the package for your system from the
+[Releases](https://github.com/vgyy4/CAD/releases) page (AppImage, .deb or .tar.gz on Linux; MSI
+or zip on Windows; .dmg on macOS) and check it against `SHA256SUMS` if you like. Releases are
+not yet code-signed (see "Code signing policy" below), so the first start shows a warning:
+
+- **Windows:** "Windows protected your PC": click **More info → Run anyway**.
+- **macOS:** "Gusset can't be opened…": right-click the app → **Open** → **Open**, or
+  System Settings → Privacy & Security → **Open Anyway**.
+- **Linux:** no prompt; make the AppImage executable (`chmod +x`).
+
+Updates are checked in the app (Settings), and installed only when their Ed25519 signature
+verifies.
+
+## Code signing policy
+
+Release packages are built and signed only by this repository's public release workflow, with
+approval by the maintainer; Windows signing is planned through SignPath Foundation's free
+open-source programme. The policy (what is signed, roles, privacy, revocation) and the
+maintainer's set-up steps are in [docs/CODE_SIGNING.md](docs/CODE_SIGNING.md).
+
 ## Using Gusset with AI agents (MCP)
 
 Gusset has a built-in [MCP](https://modelcontextprotocol.io) server (ADR 0012). Agents
