@@ -482,3 +482,38 @@ fn a_cone_widens_along_its_axis() {
     let q = crate::eval::project(&g, 2, [0.0, 2.0, 1.0]).unwrap();
     assert!((q[1] - 2.0).abs() < 1e-9 && (q[2] - 1.0).abs() < 1e-9, "a point on the cone stays: {q:?}");
 }
+
+fn torus_graph(major: f64, minor: f64) -> crate::decode::Graph {
+    let mut f = TextFile::new();
+    f.node(
+        54,
+        2,
+        &[
+            ("centre", v3([0.0; 3])),
+            ("axis", v3([0.0, 0.0, 1.0])),
+            ("major_radius", vec![n(major)]),
+            ("minor_radius", vec![n(minor)]),
+            ("x_axis", v3([1.0, 0.0, 0.0])),
+        ],
+    );
+    decode(&f.finish(), &Limits::default()).unwrap()
+}
+
+#[test]
+fn apple_and_lemon_tori_are_both_written() {
+    // Apple: major above minor, as is. Lemon (spindle): minor above major, the same radii in
+    // STEP with the normal reversed (SolidWorks r1 fillets on r1.5 lugs). Metres to mm.
+    let (apple, w) = crate::step::surface_text(&torus_graph(0.002, 0.001), 2);
+    let (line, flipped) = apple.unwrap();
+    assert!(line.contains("TOROIDAL_SURFACE('',#") && line.ends_with(",2.0,1.0);") && !flipped, "{line} {w:?}");
+    let (lemon, w) = crate::step::surface_text(&torus_graph(0.0005, 0.001), 2);
+    let (line, flipped) = lemon.unwrap();
+    assert!(line.ends_with(",0.5,1.0);") && flipped && w.is_empty(), "{line} {w:?}");
+    // A horn torus (equal radii) is not flipped.
+    assert!(!crate::step::surface_text(&torus_graph(0.001, 0.001), 2).0.unwrap().1);
+    // Non-positive radii cannot be written.
+    for (a, b) in [(0.0, 0.001), (-0.001, 0.002), (0.002, 0.0), (0.002, -0.001)] {
+        let (r, w) = crate::step::surface_text(&torus_graph(a, b), 2);
+        assert!(r.is_none() && w.len() == 2, "{a} {b}: {w:?}");
+    }
+}

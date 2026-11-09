@@ -102,3 +102,19 @@ warnings, 5.2 mm3); the Angle_support bodies still warn that BLENDED_EDGE surfac
 out, as their mirrored twins (`Symetrie_Angle_support`) do, and their volumes agree with those
 twins to 2e-5. Both Solid Edge parts that stopped at 163/184 (`M1.2x3 screw`,
 `Plastic-handle-Loaded-Felfer-holder`) read too.
+
+## Amendment (2026-11-09): lemon (spindle) tori
+
+The reader refused every torus whose minor radius was not below its major radius ("self-
+intersecting (apple or lemon)") and left its faces out, so the idler arms (SolidWorks fillets of
+r1 on r1.5 lugs, major 0.5 mm, minor 1 mm) lost the upper halves of both lugs (204.9 mm3). From
+the bytes, Parasolid stores a lemon like an apple: both radii positive (no negative-radius
+convention occurs in the samples), the face's edges select the part. STEP's TOROIDAL_SURFACE
+takes the same radii and OCCT accepts minor > major, but the surface normal then points the
+other way relative to XT's: written with the XT sense the arms came out at 230.1 mm3 (open
+shell), with `same_sense` reversed for minor > major they are closed with solid = mesh volume
+(190.6 and 296.6 mm3, no open or inconsistent mesh edges). Non-positive radii are still left out
+with a warning. Equal radii (horn torus) are written as an apple; no sample has one.
+Over all samples only the three torus parts changed (both idler arms and one zenodo
+`Combination` body, 166766 to 167417 mm3, not checked face by face); history counts are
+unchanged (34 as history).

@@ -66,6 +66,16 @@ struct Writer<'a> {
     faces: Vec<(usize, u32)>,
 }
 
+/// Whether a torus's natural normal is opposite to the XT surface's, or `None` when a radius is
+/// not positive. Parasolid stores a lemon (spindle torus, minor radius above major) with both
+/// radii positive, like an apple (SolidWorks fillets of r1 on r1.5 lugs: major 0.5, minor 1 mm).
+/// STEP's TOROIDAL_SURFACE takes the same radii (OCCT accepts minor > major; the face's edges
+/// select the part), but its normal there is the XT one reversed: with `same_sense` as it is
+/// the lugs' solids came out 230 mm3 against a closed 190.6 mm3 (solid = mesh) when reversed.
+fn torus_flipped(major: f64, minor: f64) -> Option<bool> {
+    (major > 0.0 && minor > 0.0).then_some(major < minor)
+}
+
 impl Writer<'_> {
     fn add(&mut self, body: &str) -> usize {
         let id = self.next;
@@ -277,14 +287,15 @@ impl Writer<'_> {
             }
             "TORUS" => {
                 let (ma, mi) = (g.real(s, "major_radius")?, g.real(s, "minor_radius")?);
-                if ma <= mi {
-                    self.warnings.push(format!("torus {s} is self-intersecting (apple or lemon)"));
+                let Some(flipped) = torus_flipped(ma, mi) else {
+                    self.warnings
+                        .push(format!("torus {s} has a non-positive radius ({ma}, {mi}); its faces are left out"));
                     return None;
-                }
+                };
                 let a = self.place(g.vec3(s, "centre")?, g.vec3(s, "axis")?, g.vec3(s, "x_axis")?);
                 Some((
                     self.add(&format!("TOROIDAL_SURFACE('',#{a},{},{})", real(ma * self.mm()), real(mi * self.mm()))),
-                    false,
+                    flipped,
                 ))
             }
             "B_SURFACE" => {
@@ -504,6 +515,30 @@ fn extent(g: &Graph, m: &Model, s: &Shell) -> f64 {
 }
 
 /// STEP text for the model, one product per body named `{name} {n}`, and the warnings.
+/// The STEP entity text and flip of surface `s`, for tests.
+#[cfg(test)]
+pub(crate) fn surface_text(g: &Graph, s: u32) -> (Option<(String, bool)>, Vec<String>) {
+    let mut w = Writer {
+        g,
+        out: String::new(),
+        next: 1,
+        curves: BTreeMap::new(),
+        surfaces: BTreeMap::new(),
+        vertices: BTreeMap::new(),
+        edges: BTreeMap::new(),
+        warnings: Vec::new(),
+        hints: BTreeMap::new(),
+        xf: None,
+        scale: 1.0,
+        faces: Vec::new(),
+    };
+    let r = w.surface(s).map(|(id, flipped)| {
+        let line = w.out.lines().find(|l| l.starts_with(&format!("#{id}="))).unwrap_or_default().to_string();
+        (line, flipped)
+    });
+    (r, w.warnings)
+}
+
 pub(crate) fn write(g: &Graph, m: &Model, name: &str) -> (String, Vec<String>) {
     let mut w = Writer {
         g,
