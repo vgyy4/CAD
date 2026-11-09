@@ -202,3 +202,99 @@ comparing against the Parasolid body: volume within 1e-4 relative and box within
 * Hole wizard, mirror, patterns: emitted as `{"type":"unsupported"}`.
 * idler_single_v1: the Parasolid truth volume is negative (-163.557), so the truth itself is
   suspect.
+
+## 6. Round 3: hole wizard
+
+### 6.1 Feature layout. Confirmed on all 11 hole-wizard features in the samples.
+* The moHoleWzd_c node is short (about 0x75 bytes).
+* It is followed by exactly two moProfileFeature_c sketches:
+  * a **placement sketch** on the face;
+  * a **section sketch**, which often has no entities. An empty sketch has no entity
+    headers at all, which is why it used to fail as "point count ... > records 0".
+* After the two sketches come the hole's dimension parameters, with these names:
+  * `Hole Dia.`, `Thru Hole Dia.`, `Tap Drill Dia.`
+  * `Hole Depth`, `Thru Hole Depth`, `Tap Drill Depth`
+  * `C'Sink Dia.` / `Near C'Sink Dia.`
+  * `C'Sink Angle` / `Near C'Sink Angle` (radians; 1.5708 = 90°)
+  * `Head Clearance` (0.15 mm)
+  * a parameter named `4` with value 25.4 mm (meaning unknown)
+* **Hole centres** are the stand-alone points of the placement sketch: point records whose
+  u16 after x,y (field `A`) is 1.
+  * Line endpoints have A=0, and records with id -1 are dimension helpers.
+  * Checked: motorClip (0, ±8.5) and spring_base_tab (±7, 2.5) lie on the true holes;
+    the rebuild volumes move by the expected amount.
+* Face: the placement sketch plane; the normal is the sketch normal, pointing out of the face.
+
+### 6.2 Head clearance. Confirmed by volume, not emitted.
+* motorClip still misses by 4.57 mm³ = 2 x π·2.2²·0.15. That is the head-clearance cylinder:
+  the countersink is preceded by a cylinder of the countersink diameter, 0.15 mm deep.
+* gtree `hole` cannot express it. A pocket cut plus a hole on the pocket floor did not
+  work: the importer silently drops the hole.
+* The prototype writes `head_clearance` (mm) as an extra field.
+
+## 7. Round 4
+
+### 7.1 Head clearance emission
+* Each countersink hole that has a `Head Clearance` parameter is now emitted as, per
+  position:
+  1. a circle sketch of the countersink diameter on the face;
+  2. a `-clearance` cut;
+  3. a hole from the pocket floor (`position - clearance * normal`).
+* The round-3 "vanishing hole" was a single hole whose two positions lie on two different
+  pocket floors. Gusset drops such a hole silently: no skip/fail line, no volume change.
+  * Repro: `rebuild/motorClip_clearance_vanish.gtree.json`, run with
+    `bin/gusset build truth/empty.gus.txt --import <it>`.
+  * The same tree with one position imports the hole.
+  * The prototype therefore emits one hole per position.
+* Result: spring_base_tab goes from 735.72 to 732.52 against a truth of 723.785. That is
+  4.37 mm³ per hole still missing after the clearance, so the clearance does not explain
+  the remaining error.
+* motorClip has no `Head Clearance` parameter, but its gap (4.57 mm³ = 2 * pi * 2.2^2 * 0.15)
+  looks like one. Applying a 0.15 clearance anyway only takes it from 7.0e-3 to 2.4e-3, so it
+  is not applied.
+
+### 7.2 End type 1, flag 0
+* The EndSpec bodies of all type-1 cuts are byte-identical. This was checked on
+  Top_modular/Cut-Extrude2, spring_base_tab/Cut-Extrude1, Top_beltSupportRim/Cut-Extrude1
+  and 5, and spring_base/Cut-Extrude2.
+* Yet spring_base_tab needs the inward through-all, while Top_modular only matches if
+  Cut-Extrude2 removes nothing.
+* So nothing in the EndSpec distinguishes them. The difference must come from elsewhere:
+  the sketch plane, profile-region selection, or another field of the feature.
+
+## 8. Round 5
+
+### 8.1 Edge records, generalised
+* The header can carry 0-2 extra zero bytes before the kind byte; it is matched as
+  `01 00*7 n 00{4,6} kind 00 00 id sentinel*2 00 00`.
+* Face references carry 0, 1 or 2 extra u32 after the 20-byte core:
+  * plain side (moFromSktEntSurfIdRep_c): 0
+  * plain cap (moEndFaceSurfIdRep_c): 1
+  * ICE side and cap (moFromSktEnt3IntSurfIdRep_c / moEndFace3IntSurfIdRep_c): 2,
+    i.e. `-1, 0` for sides, `n, 0` for caps
+* Cap classes are learned per file. A class counts as a cap when either:
+  * it is followed by exactly one extra word on a reference that is not the last in its
+    record; or
+  * it bounds a side/side edge with indices {0, 1}.
+* Face references can name faces of different features, e.g. a cut wall against the boss's
+  top cap.
+  * Side/cap edge: the midpoint of the side segment, clipped between the crossings with
+    the bounding side faces when they belong to another feature, and moved onto the cap
+    plane along the side's extrusion direction.
+  * Side/side edge between two features: the 2D crossing of the two segments seen along
+    the normal. Its height is halfway between the bounding caps, or between the caps of the
+    non-through feature.
+* Confirmed: Base_loadCell Fillet2 rounds the four vertical edges of the Cut-Extrude2
+  pocket (ICE side keys 26-31, bounded by Boss-Extrude1's caps). With it, Base_loadCell
+  rebuilds exactly.
+* Confirmed by rebuild: references to faces the profile sketch no longer has are stale and
+  can be dropped. Base_loadCell Fillet1 lists 7 edges; only the 4 corners exist, and the
+  part is exact with those 4.
+
+### 8.2 Gusset observations
+* idler_differential_arm_short Fillet2 has two edges, the concave corners at (+-8.5, 3.5).
+  * Each edge alone rounds (volume 245.179 -> 244.834).
+  * Both edges together report `ok` and are not skipped, but the volume stays 245.179.
+  * Repro: `rebuild/arm_fillet2_noop.gtree.json`.
+* `mcp.py` imports a tree through `gusset mcp` (`run import.file`) and prints
+  `skipped_user_text`. It needs `mcpw/p.gus` (made with `gusset pack`).

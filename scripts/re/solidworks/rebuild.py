@@ -10,7 +10,7 @@ for fn in sys.argv[2:]:
     name = os.path.basename(fn)[:-5]
     if name == 'summary' or name not in truth: continue
     t = json.load(open(fn))
-    unresolved = [f['name'] for f in t['features'] if f.get('edges_unresolved') or f['type'] == 'unsupported'
+    unresolved = [f['name'] for f in t['features'] if f.get('edges_unresolved') or f.get('unresolved') or f['type'] == 'unsupported'
                   or (f['type'] == 'extrude' and f.get('distance') is None) or (f['type'] == 'sketch' and f['plane'].get('unresolved'))]
     d = os.path.join(HERE, 'rebuild'); os.makedirs(d, exist_ok=True)
     g = os.path.join(d, name + '.gtree.json'); shutil.copy(fn, g)
@@ -20,6 +20,11 @@ for fn in sys.argv[2:]:
                        capture_output=True, text=True, timeout=600)
     out = p.stdout + p.stderr
     bad = [l.strip() for l in out.splitlines() if l.strip().startswith(('skip', 'fail', 'error', 'Error')) or 'not imported' in l]
+    oks = set(re.findall(r'^\s+ok\s+(\S+)', out, re.M))
+    ident = lambda n: re.sub(r'[^A-Za-z0-9_]', '_', n)
+    missing = [f['name'] for f in t['features'] if f['type'] != 'unsupported'
+               and not any(o == ident(f['name']) or o.startswith(ident(f['name']) + '_') or (len(o) >= 40 and ident(f['name']).startswith(o)) for o in oks)]
+    bad += ['not imported: ' + m for m in missing]
     vols = [float(x) for x in re.findall(r'body .*?: volume (-?[\d.]+)', out)]
     tv = truth[name].get('parasolid_volume', [None])[0]
     r = dict(unresolved=unresolved, problems=bad[:6], volume=sum(vols) if vols else None, truth=tv)
@@ -27,7 +32,8 @@ for fn in sys.argv[2:]:
         lo, hi, _ = stl(stlp)
         r['box_err'] = max(max(abs(a - b) for a, b in zip(lo, truth[name]['min'])), max(abs(a - b) for a, b in zip(hi, truth[name]['max'])))
         r['vol_rel'] = abs(r['volume'] - tv) / abs(tv) if tv else None
-    r['match'] = bool(r.get('vol_rel') is not None and r['vol_rel'] < 1e-4 and r['box_err'] < 0.01)
+    r['missing'] = missing
+    r['match'] = bool(not missing and r.get('vol_rel') is not None and r['vol_rel'] < 1e-4 and r['box_err'] < 0.01)
     res[name] = r
     print('%-32s %-5s vol %s/%s rel %s box %s unresolved %d %s' % (name, 'MATCH' if r['match'] else '', r['volume'], tv,
           '%.2e' % r['vol_rel'] if r.get('vol_rel') is not None else '-', '%.3f' % r['box_err'] if 'box_err' in r else '-',

@@ -54,7 +54,8 @@ def parse_sketch(d, body, end):
             if kind != 0 or ptype not in (0x1e, 0x1f):
                 warn.append('record %x: expected point, kind %d type %x' % (h, kind, ptype)); pts.append(None); continue
             x, y = struct.unpack_from('<dd', d, p + 2)
-            pts.append(dict(id=rid, x=x, y=y, ext=ext, origin=ptype == 0x1f, flags=flags))
+            A = struct.unpack_from('<H', d, p + 18)[0]
+            pts.append(dict(id=rid, x=x, y=y, ext=ext, origin=ptype == 0x1f, flags=flags, A=A))
         else:
             s, e, one = struct.unpack_from('<HHH', d, p)
             m1 = struct.unpack_from('<d', d, p + 8)[0]

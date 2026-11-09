@@ -16,6 +16,7 @@ PLANE_NAMES = {2: 'Front', 3: 'Top', 4: 'Right'}
 EXTRUDE = ('moExtrusion_c', 'moICE_c', 'moCut_c')
 REVOLVE = ('moRevolution_c', 'moRevCut_c')
 BIG = 500.0
+H_DEFAULT_CLEAR = None   # 0.15 gets motorClip from 7.0e-3 to 2.4e-3 only; not applied
 END_TYPES = {0: 'blind', 1: 'through_all?', 2: 'through_all?', 6: 'mid_plane', 9: 'through_all_both'}
 
 def mm(v): return round(v * 1000.0, 6)
@@ -124,6 +125,58 @@ def inside(pt, poly):
 def centroid_x_area(poly_pts):
     pass
 
+def cross(a, b):
+    return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+
+def finish_hole(h, rep):
+    """Hole-wizard parameters (names as the samples store them; values in m / rad)."""
+    h.pop('_nsk', None)
+    ps = {p['name']: p['value'] for p in h.pop('_params')}
+    def get(*names):
+        for k in names:
+            if k in ps: return ps[k]
+        return None
+    dia = get('Hole Dia.', 'Thru Hole Dia.', 'Tap Drill Dia.')
+    dep = get('Hole Depth', 'Thru Hole Depth', 'Tap Drill Depth')
+    cs_d = get("C'Sink Dia.", "Near C'Sink Dia.")
+    cs_a = get("C'Sink Angle", "Near C'Sink Angle")
+    if dia: h['diameter'] = mm(dia)
+    if dep: h['depth'] = mm(dep); h['point_angle'] = 118.0
+    if cs_d:
+        h['variant'] = 'countersink'; h['csink_diameter'] = mm(cs_d)
+        h['csink_angle'] = round(math.degrees(cs_a), 9) if cs_a else 90.0
+    else:
+        h['variant'] = 'simple'
+    if get('Head Clearance'): h['head_clearance'] = mm(get('Head Clearance'))
+    elif cs_d and H_DEFAULT_CLEAR: h['head_clearance'] = H_DEFAULT_CLEAR
+    if not h['positions'] or not dia or 'face' not in h:
+        h['unresolved'] = True; rep['unsupported'].append('%s (hole not resolved)' % h['name'])
+
+def expand_holes(feats):
+    """Head clearance (confirmed by volume on motorClip): a cylinder of the countersink diameter,
+    head_clearance deep, above the countersink.  Emitted as a 0.15 mm circle pocket per position,
+    then one hole per position from the pocket floor (Gusset drops a hole whose positions lie on
+    different faces, so each position gets its own hole)."""
+    out = []
+    for f in feats:
+        if f['type'] != 'hole' or f.get('unresolved') or not f.get('head_clearance') or f.get('variant') != 'countersink':
+            out.append(f); continue
+        c = f.pop('head_clearance'); n = f['face']['normal']; R = f['csink_diameter'] / 2
+        x = [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0]
+        dd = sum(x[i] * n[i] for i in range(3)); x = [x[i] - dd * n[i] for i in range(3)]
+        L = math.sqrt(sum(v * v for v in x)); x = [v / L for v in x]; y = cross(n, x)
+        for k, P in enumerate(f['positions']):
+            nm = '%s_%d' % (f['name'], k + 1)
+            out.append(dict(type='sketch', name=nm + '_clearance', plane=dict(origin=P, x_axis=x, y_axis=y),
+                            points=[dict(id='c', x=0.0, y=0.0)], curves=[dict(id='k', type='circle', center='c', radius=R)]))
+            out.append(dict(type='extrude', name=nm + '_clearance_cut', sketch=nm + '_clearance', profiles='all',
+                            distance=-c, operation='cut', target=f.get('target')))
+            Q = [round(P[i] - c * n[i], 6) for i in range(3)]
+            g = {k2: v for k2, v in f.items() if k2 not in ('positions', 'face', 'name')}
+            g.update(name=nm, face=dict(point=Q, normal=n), positions=[Q])
+            out.append(g)
+    return out
+
 # ------------------------------------------------------------ per part
 def convert(path):
     st = load(path)
@@ -149,20 +202,49 @@ def convert(path):
             for c in endspec_candidates(rf, a, b):
                 if c['cls'] < 0x3000 and c['X'] == 1: C[c['cls']] += 1
     es_cls = [k for k, _ in C.most_common(1)]
-    for n in ns:
+    cap_tags = edgemod.cap_tags_of(edgemod.edge_records(rf, 0, len(rf)))
+    hole = None
+    for ni, n in enumerate(ns):
         cls = n['cls']; a, b = span(n)
         rep['features'].append('%s:%s' % (cls, n['name']))
+        if hole is not None and (cls != 'moProfileFeature_c' or hole['_nsk'] >= 2):
+            finish_hole(hole, rep); hole = None
+        if cls == 'moHoleWzd_c':
+            j = ni + 1
+            while j < len(ns) and ns[j]['cls'] == 'moProfileFeature_c': j += 1
+            hb = ns[j]['start'] if j < len(ns) else len(rf)
+            hole = dict(type='hole', name=n['name'], positions=[], _params=params(rf, a, hb, nt), _nsk=0)
+            if solid: hole['target'] = first_solid
+            feats.append(hole); continue
         if cls == 'moProfileFeature_c':
             rep['sketches'] += 1
-            from sketch import ENT_HDR, ENT_HDR3
-            h = min([x for x in (rf.find(ENT_HDR, n['post'], b), rf.find(ENT_HDR3, n['post'], b)) if x >= 0] or [b])
+            from sketch import find_headers
+            hh = find_headers(rf, n['post'], b)
+            h = hh[0] if hh else b
             body = h - 14
             try:
-                pts, segs, warn = parse_sketch(rf, body, b)
+                pts, segs, warn = parse_sketch(rf, body, b) if hh else ([], [], [])
             except Exception as e:
-                notes.append('%s: sketch parse failed: %s' % (n['name'], e)); last_sketch = None; continue
+                notes.append('%s: sketch parse failed: %s' % (n['name'], e)); last_sketch = None
+                if hole is not None: hole['_nsk'] += 1
+                continue
             plane = find_plane(rf, a, b, uc)
             js = sketch_json(n['name'], pts, segs, plane)
+            if hole is not None:
+                hole['_nsk'] += 1
+                # hole-wizard sketches: the placement sketch holds the hole centres as stand-alone
+                # sketch points (point field A == 1); the other one is the hole's section
+                cen = [p for p in pts if p and p.get('A') == 1 and p['id'] != 0xFFFFFFFF and not p.get('ext')]
+                if cen and not hole['positions'] and plane is not None:
+                    pl = js['plane']; nrm = cross(pl['x_axis'], pl['y_axis'])
+                    seen = []
+                    for q in cen:
+                        P = [round(pl['origin'][i] + q['x'] * 1000 * pl['x_axis'][i] + q['y'] * 1000 * pl['y_axis'][i], 6) for i in range(3)]
+                        if all(max(abs(P[i] - o[i]) for i in range(3)) > 1e-6 for o in seen): seen.append(P)
+                    hole['positions'] = seen
+                    hole['face'] = dict(point=seen[0], normal=[round(x, 12) + 0.0 for x in nrm])
+                feats.append(js); sketch_geo[n['name']] = (pts, segs, plane); sk_json[n['name']] = js
+                continue
             if plane is None: notes.append('%s: plane not found in span (back-referenced plane?)' % n['name'])
             else: rep['sketch_ok'] += 1
             feats.append(js); last_sketch = n['name']; sketch_geo[n['name']] = (pts, segs, plane); sk_json[n['name']] = js
@@ -197,7 +279,8 @@ def convert(path):
             js['sw_end'] = [dict(X=c['X'], type=c['type'], flag=c['flag']) for c in cands[:3]]
             if last_sketch in sketch_geo and js.get('distance') is not None:
                 by_fid[n['id']] = dict(pts=sketch_geo[last_sketch][0], segs=sketch_geo[last_sketch][1],
-                                       plane=sk_json[last_sketch]['plane'], distance=js['distance'], symmetric=js.get('symmetric'))
+                                       plane=sk_json[last_sketch]['plane'], distance=js['distance'], symmetric=js.get('symmetric'),
+                                       through=bool(js.get('through_all')))
             if js.get('distance') is not None or js.get('through_all'): rep['extrude_ok'] += 1
             else: rep['unsupported'].append('%s (end type %s)' % (n['name'], typ))
             feats.append(js); solid = True; first_solid = first_solid or n['name']
@@ -222,9 +305,11 @@ def convert(path):
                       radius=mm(ps[0]['value']) if ps else None)
             if cls == 'Chamfer_c': js['distance'] = js.pop('radius')
             sel = edgemod.selection(edgemod.edge_records(rf, a, b))
-            mids = [edgemod.midpoint(r, by_fid) for r in sel]
+            mids = [edgemod.midpoint(r, by_fid, cap_tags) for r in sel]
             js['edges'] = [dict(midpoint=m) for m in mids if m is not None]
-            if not sel or any(m is None for m in mids):
+            stale = [r for r, m in zip(sel, mids) if m is None and all(x['fid'] in by_fid for x in r[1])]
+            if stale: js['stale_edges'] = len(stale)   # references to faces the sketch no longer has (guess: superseded selections)
+            if not js['edges'] or any(m is None and r not in stale for r, m in zip(sel, mids)):
                 js['edges_unresolved'] = True
                 rep['unsupported'].append('%s (%d of %d edges resolved)' % (n['name'], len(js['edges']), len(sel)))
             feats.append(js)
@@ -235,8 +320,9 @@ def convert(path):
         else:
             rep['unsupported'].append('%s:%s' % (cls, n['name']))
             feats.append(dict(type='unsupported', name=n['name'], original_type=cls))
+    if hole is not None: finish_hole(hole, rep)
     tree = {'format': 'gusset-feature-tree', 'version': 2, 'source': {'app': 'solidworks', 'file': os.path.basename(path)},
-            'features': feats}
+            'features': expand_holes(feats)}
     rep['notes'] = notes
     return tree, rep
 
