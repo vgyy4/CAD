@@ -93,6 +93,14 @@ struct SkCurve {
     center: Option<String>,
     #[serde(default)]
     radius: Option<f64>,
+    /// Ellipses: the unit direction of the major axis in sketch coordinates, and the
+    /// semi-major and semi-minor lengths (mm).
+    #[serde(default)]
+    major: Option<[f64; 2]>,
+    #[serde(default)]
+    a: Option<f64>,
+    #[serde(default)]
+    b: Option<f64>,
     #[serde(default)]
     construction: bool,
 }
@@ -800,6 +808,35 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                 let (s0, s1) = if map.flipped { (&c.end, &c.start) } else { (&c.start, &c.end) };
                 let s = format!("  {id} = arc({}, {}, {})", pid(&map, &c.center)?, pid(&map, s0)?, pid(&map, s1)?);
                 (id, s)
+            }
+            kind @ ("ellipse" | "ellipse_arc") => {
+                let (Some(a), Some(b), Some(m)) = (c.a, c.b, c.major) else {
+                    return Err("an ellipse needs major, a and b".into());
+                };
+                let ok = |v: f64| v.is_finite() && v > 0.0 && v < 1e12;
+                if !(ok(a) && ok(b)) || !m.iter().all(|v| v.is_finite()) || m[0].hypot(m[1]) < 1e-9 {
+                    return Err("an ellipse needs positive semi-axes and a major direction".into());
+                }
+                // The axis direction in the Gusset sketch's frame.
+                let (o, t) = (map.map(0.0, 0.0), map.map(m[0], m[1]));
+                let angle = fine_deg(libm::atan2(t[1] - o[1], t[0] - o[0]));
+                let centre = pid(&map, &c.center)?;
+                if kind == "ellipse" {
+                    let id = next("o");
+                    (id.clone(), format!("  {id} = ellipse({centre}, {angle}, {}, {})", num(a), num(b)))
+                } else {
+                    let id = next("q");
+                    // Counter-clockwise about the source normal, as for arcs.
+                    let (s0, s1) = if map.flipped { (&c.end, &c.start) } else { (&c.start, &c.end) };
+                    let s = format!(
+                        "  {id} = ellipse_arc({centre}, {angle}, {}, {}, {}, {})",
+                        num(a),
+                        num(b),
+                        pid(&map, s0)?,
+                        pid(&map, s1)?
+                    );
+                    (id, s)
+                }
             }
             other => return Err(format!("sketch curve type '{}' is not imported", short(other))),
         };

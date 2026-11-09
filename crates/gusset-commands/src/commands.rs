@@ -111,6 +111,8 @@ fn base_specs() -> Vec<CommandSpec> {
         spec::<SketchAddRectangle>(),
         spec::<SketchAddCircle>(),
         spec::<SketchAddArc>(),
+        spec::<SketchAddEllipse>(),
+        spec::<SketchAddEllipseArc>(),
         spec::<SketchImportDxf>(),
         spec::<SketchAddConstraint>(),
         spec::<SketchDeleteItems>(),
@@ -1805,6 +1807,116 @@ impl Command for SketchImportDxf {
                     json!(["the file states no unit ($INSUNITS): read as mm; pass scale to convert"])
                 },
             }))
+        })
+    }
+}
+
+/// Adds an ellipse.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddEllipse {
+    pub sketch: String,
+    pub cx: f64,
+    pub cy: f64,
+    pub a: f64,
+    pub b: f64,
+    #[serde(default)]
+    pub angle: Option<f64>,
+    #[serde(default)]
+    pub construction: bool,
+}
+
+/// The ellipse parameters of an ellipse command: angle in radians, checked axes.
+fn ellipse_args(a: f64, b: f64, angle_deg: Option<f64>) -> Result<f64, CommandError> {
+    if !(a.is_finite() && b.is_finite() && a > 0.0 && b > 0.0 && a <= 1e9 && b <= 1e9) {
+        return Err(CommandError::args("a and b (semi-axes, mm) must be positive"));
+    }
+    let deg = angle_deg.unwrap_or(0.0);
+    if !deg.is_finite() {
+        return Err(CommandError::args("angle must be finite (degrees)"));
+    }
+    Ok(deg.to_radians())
+}
+
+impl Command for SketchAddEllipse {
+    const ID: &'static str = "sketch.add_ellipse";
+    const TITLE: &'static str = "Ellipse";
+    const DESCRIPTION: &'static str =
+        "Add an ellipse (mm): semi-axes a (along angle, degrees from +x, default 0) and b.";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let angle = ellipse_args(self.a, self.b, self.angle)?;
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add ellipse", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let c = add_point(d, self.cx, self.cy)?;
+            let e =
+                add_entity(d, SkGeom::Ellipse { center: c.clone(), angle, a: self.a, b: self.b }, self.construction);
+            store_solution(doc, &sk);
+            Ok(json!({ "ellipse": e, "center": c }))
+        })
+    }
+}
+
+/// Adds a counter-clockwise arc of an ellipse.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAddEllipseArc {
+    pub sketch: String,
+    pub cx: f64,
+    pub cy: f64,
+    pub a: f64,
+    pub b: f64,
+    #[serde(default)]
+    pub angle: Option<f64>,
+    pub from: f64,
+    pub to: f64,
+    #[serde(default)]
+    pub construction: bool,
+}
+
+impl Command for SketchAddEllipseArc {
+    const ID: &'static str = "sketch.add_ellipse_arc";
+    const TITLE: &'static str = "Elliptical arc";
+    const DESCRIPTION: &'static str = "Add a counter-clockwise ellipse arc (as sketch.add_ellipse) from parameter angle `from` to `to` (degrees; 0 = end of axis a).";
+    const CATEGORY: Category = Category::Sketch;
+    const FLAGS: Flags = EDIT;
+    fn run(self, s: &mut Session, ctx: &CmdCtx) -> Result<Value, CommandError> {
+        let angle = ellipse_args(self.a, self.b, self.angle)?;
+        if !(self.from.is_finite() && self.to.is_finite()) {
+            return Err(CommandError::args("from and to must be finite (degrees)"));
+        }
+        let (t0, t1) = (self.from.to_radians(), self.to.to_radians());
+        let tau = std::f64::consts::TAU;
+        if ((t1 - t0) / tau - libm::round((t1 - t0) / tau)).abs() < 1e-9 {
+            return Err(CommandError::args("from and to must differ (use sketch.add_ellipse for a whole ellipse)"));
+        }
+        let at = |t: f64| {
+            let p = gusset_sketch::ellipse::point([self.cx, self.cy], angle, self.a, self.b, t);
+            (p[0], p[1])
+        };
+        let ((x1, y1), (x2, y2)) = (at(t0), at(t1));
+        let sk = self.sketch.clone();
+        edit(s, ctx, "Add elliptical arc", |doc, _| {
+            let d = sketch_mut(doc, &sk)?;
+            let c = add_point(d, self.cx, self.cy)?;
+            let p0 = add_point(d, x1, y1)?;
+            let p1 = add_point(d, x2, y2)?;
+            let e = add_entity(
+                d,
+                SkGeom::EllipseArc {
+                    center: c.clone(),
+                    angle,
+                    a: self.a,
+                    b: self.b,
+                    start: p0.clone(),
+                    end: p1.clone(),
+                },
+                self.construction,
+            );
+            store_solution(doc, &sk);
+            Ok(json!({ "arc": e, "center": c, "start": p0, "end": p1 }))
         })
     }
 }

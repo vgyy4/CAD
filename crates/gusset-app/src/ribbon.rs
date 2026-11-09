@@ -220,6 +220,7 @@ const SKETCH: &[Group] = &[
             d("sketch.add_line", "Line"),
             d("sketch.add_rectangle", "Rectangle"),
             d("sketch.add_circle", "Circle"),
+            d("sketch.add_ellipse", "Ellipse"),
             d("sketch.add_arc", "Arc"),
             d("sketch.add_polyline", "Polyline"),
             d("sketch.pattern", "Pattern"),

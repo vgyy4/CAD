@@ -542,3 +542,65 @@ fn bad_unequal_chamfers_are_skipped_with_a_reason() {
         assert_vol(b["volume_mm3"].as_f64().unwrap(), 1000.0);
     }
 }
+
+// ---- Ellipses and elliptical arcs (ADR 0042 amendment) ----
+
+fn ellipse_sketch(name: &str, plane: Value, x: f64, y: f64, major: [f64; 2], a: f64, b: f64) -> Value {
+    json!({
+        "type": "sketch", "name": name, "plane": plane,
+        "points": [{"id": "c", "x": x, "y": y}],
+        "curves": [{"id": "e", "type": "ellipse", "center": "c", "major": major, "a": a, "b": b}]
+    })
+}
+
+#[test]
+fn a_tilted_ellipse_extrudes_to_its_area_times_the_length() {
+    let (_, v) = import_v2(vec![
+        ellipse_sketch("E", plane_at(0.0), 1.0, 2.0, [0.6, 0.8], 5.0, 3.0),
+        extrude("X", "E", 10.0, "new"),
+    ]);
+    assert_vol(v, std::f64::consts::PI * 5.0 * 3.0 * 10.0);
+}
+
+#[test]
+fn an_o_ring_section_revolves_to_a_torus_like_ring() {
+    // Inventor's 10x5 O-ring: centre x = 7.85, a = 3.24 along the sketch's y axis, b = 2.15,
+    // on an XZ sketch, turned about world Z (the sketch's y axis): V = 2 pi R * pi a b.
+    let xz = json!({"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]});
+    let (r, a, b) = (7.85, 3.24, 2.15);
+    let (_, v) = import_v2(vec![
+        ellipse_sketch("S", xz, r, 0.0, [0.0, 1.0], a, b),
+        json!({"type": "revolve", "name": "R", "sketch": "S", "profiles": "all",
+               "axis": {"origin": [0, 0, 0], "direction": [0, 0, -1]}, "angle": 360, "operation": "new"}),
+    ]);
+    let pi = std::f64::consts::PI;
+    assert_vol(v, 2.0 * pi * r * pi * a * b);
+}
+
+#[test]
+fn an_elliptical_arc_joins_a_line_on_either_side_of_the_plane() {
+    // The upper half of x^2/16 + y^2/4 = 1 (from (4,0) to (-4,0), counter-clockwise about
+    // the normal) closed by the major axis. On the flipped plane (y axis reversed) the same
+    // source arc runs the other way round in Gusset's frame.
+    for y_axis in [[0, 1, 0], [0, -1, 0]] {
+        let plane = json!({"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": y_axis});
+        let sk = json!({
+            "type": "sketch", "name": "H", "plane": plane,
+            "points": [{"id": "c", "x": 0, "y": 0}, {"id": "s", "x": 4, "y": 0}, {"id": "e", "x": -4, "y": 0}],
+            "curves": [
+                {"id": "q", "type": "ellipse_arc", "center": "c", "major": [1, 0], "a": 4, "b": 2, "start": "s", "end": "e"},
+                {"id": "l", "type": "line", "start": "e", "end": "s"}
+            ]
+        });
+        let (_, v) = import_v2(vec![sk, extrude("X", "H", 3.0, "new")]);
+        assert_vol(v, std::f64::consts::PI * 4.0 * 3.0);
+    }
+}
+
+#[test]
+fn a_bad_ellipse_is_skipped_with_a_reason() {
+    let mut e = ellipse_sketch("E", plane_at(0.0), 0.0, 0.0, [1.0, 0.0], 5.0, -3.0);
+    e["curves"][0]["b"] = json!(-3.0);
+    let (_, r) = import_into_session(vec![e]);
+    assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{r}");
+}

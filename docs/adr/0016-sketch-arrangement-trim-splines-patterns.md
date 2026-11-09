@@ -272,3 +272,24 @@ none): `g11 = pattern_linear(of: [c7], count: 4, dx: 10 mm, dy: 0 mm, count2: ro
 column `j1` and row `j2` is numbered `j = j1 + 64·j2` (so `c7_65` is column 1, row 1), and
 each direction holds at most 63 instances; the numbers stay stable when either count
 changes. Patterning a pattern copy still explodes it.
+
+### Amendment (2026-11-09): ellipses and elliptical arcs
+`Geom::Ellipse { center, angle, a, b }` and `Geom::EllipseArc { center, angle, a, b, start,
+end }` (gusset-sketch). `angle` (radians), `a` and `b` (mm) are three consecutive solver
+unknowns like a circle's radius (positive `a`, `b` are enforced like radii); the centre is
+an ordinary point. An elliptical arc runs counter-clockwise from `start` to `end`, two
+points that two internal equations keep on the ellipse (first-order distance
+`f / |grad f|` with `f = (u/a)² + (v/b)² - 1`, so residuals are in mm).
+Constraints: `PointOnCircle` accepts ellipses, `Horizontal`/`Vertical` turn the `a` axis
+along x / y, `Fixed` pins centre, angle and axes (and the arc's points), and the new
+`SemiMajor`/`SemiMinor` dimensions set `a` and `b`. **Not supported yet:** tangency,
+`Equal`, `Radius`/`Diameter`, a general axis angle dimension, symmetric, pattern sources and
+`sketch.trim` (each reports an error naming the entity).
+
+Arrangement: ellipses meet other curves numerically (the spline path of `curves.rs`:
+eccentric-anomaly parameter, quarter-turn cells, Newton and touch refinement); two curves on
+the same ellipse meet where one's ends lie on the other, like arcs of one circle. Profiles
+normalise `a >= b` (turning the axis a quarter turn and shifting the anomaly), so
+`Curve::Ellipse` / `Curve::EllipseArc` carry a unit `major` direction. Areas are exact
+(`pi a b`; an arc: `1/2 (c x (e - s) + a b span)`) and windings are taken in the unit-circle
+image of the ellipse (an affine, orientation-preserving map).

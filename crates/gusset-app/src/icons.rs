@@ -373,7 +373,7 @@ pub fn tool_for_command(id: &str) -> Option<Tool> {
         "sketch.add_line" => Tool::Line,
         "sketch.add_polyline" => Tool::Polyline,
         "sketch.add_rectangle" => Tool::Rect,
-        "sketch.add_circle" => Tool::Circle,
+        "sketch.add_circle" | "sketch.add_ellipse" => Tool::Circle,
         "sketch.add_arc" => Tool::Arc,
         "sketch.add_constraint" => Tool::Constraint,
         "sketch.trim" => Tool::Trim,

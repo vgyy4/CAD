@@ -24,7 +24,7 @@ pub struct Click {
 #[must_use]
 pub fn clicks_needed(command: &str) -> Option<Option<usize>> {
     match command {
-        "sketch.add_line" | "sketch.add_rectangle" | "sketch.add_circle" => Some(Some(2)),
+        "sketch.add_line" | "sketch.add_rectangle" | "sketch.add_circle" | "sketch.add_ellipse" => Some(Some(2)),
         "sketch.add_arc" => Some(Some(3)),
         "sketch.add_polyline" => Some(None),
         _ => None,
@@ -97,6 +97,14 @@ pub fn fill(form: &mut Form, clicks: &[Click], closed: bool) -> bool {
             form.set("radius", &n(round((p.at[0] - c.at[0]).hypot(p.at[1] - c.at[1]))));
             true
         }
+        ("sketch.add_ellipse", [c, p]) => {
+            // The second click is a corner of the ellipse's bounding box (axes along u / v).
+            form.set("cx", &n(c.at[0]));
+            form.set("cy", &n(c.at[1]));
+            form.set("a", &n(round((p.at[0] - c.at[0]).abs())));
+            form.set("b", &n(round((p.at[1] - c.at[1]).abs())));
+            true
+        }
         ("sketch.add_arc", [c, s, e]) => {
             form.set("cx", &n(c.at[0]));
             form.set("cy", &n(c.at[1]));
@@ -139,6 +147,17 @@ pub fn preview(command: &str, clicks: &[Click], cursor: Option<[f64; 2]>) -> Vec
         ("sketch.add_line" | "sketch.add_polyline", p) if p.len() >= 2 => vec![p.to_vec()],
         ("sketch.add_rectangle", [a, b]) => vec![vec![*a, [b[0], a[1]], *b, [a[0], b[1]], *a]],
         ("sketch.add_circle", [c, p]) => vec![circle(*c, (p[0] - c[0]).hypot(p[1] - c[1]), 0.0, std::f64::consts::TAU)],
+        ("sketch.add_ellipse", [c, p]) => {
+            let (a, b) = ((p[0] - c[0]).abs(), (p[1] - c[1]).abs());
+            vec![
+                (0..=48)
+                    .map(|i| {
+                        let t = std::f64::consts::TAU * f64::from(i) / 48.0;
+                        [c[0] + a * t.cos(), c[1] + b * t.sin()]
+                    })
+                    .collect(),
+            ]
+        }
         ("sketch.add_arc", [c, s]) => vec![vec![*c, *s]],
         ("sketch.add_arc", [c, s, e]) => {
             let r = (s[0] - c[0]).hypot(s[1] - c[1]);
@@ -217,6 +236,10 @@ mod tests {
         let arc = preview("sketch.add_arc", &[click(0.0, 0.0), click(1.0, 0.0)], Some([0.0, 1.0]));
         let end = arc[0].last().copied().unwrap_or_default();
         assert!((end[0]).abs() < 1e-9 && (end[1] - 1.0).abs() < 1e-9, "{end:?}");
+        let e = preview("sketch.add_ellipse", &pts[..1], Some([4.0, 2.0]));
+        assert_eq!(e[0].len(), 49);
+        assert!((e[0][0][0] - 4.0).abs() < 1e-9 && e[0][0][1].abs() < 1e-9);
+        assert_eq!(clicks_needed("sketch.add_ellipse"), Some(Some(2)));
         assert_eq!(clicks_needed("sketch.add_polyline"), Some(None));
         assert_eq!(clicks_needed("feature.extrude"), None);
     }

@@ -152,3 +152,18 @@ always have `Equal` and no faces.
   a list). The MCP tool entry stays under the byte budget (about 750 bytes). The GUI form
   has a mode switch (equal / two distances / distance and angle) that shows only the fields
   of the chosen mode; `feature.edit` reaches the same arguments through the code view's names.
+
+## Amendment (2026-11-09): ellipses in the text language
+Sketch entities `o5 = ellipse(p1, angle, a, b)` (id prefix `o`) and `q6 = ellipse_arc(p1,
+angle, a, b, p2, p3)` (prefix `q`, counter-clockwise from `p2` to `p3`, both points kept on
+the ellipse). `angle` is the direction of the `a` semi-axis in radians from the sketch's u
+axis, `a` and `b` are mm; like circle radii they are solver state, printed exactly
+and written back after solving. New constraint keywords `semi_major(o5, 5 mm)` and
+`semi_minor(o5, 3 mm)`; `horizontal`, `vertical`, `on_circle` and `fixed` accept ellipses.
+Validation: finite angle, positive `a`/`b`, an arc with three different points, references
+to earlier points. Ellipses are not pattern sources and cannot be trimmed. Persistent names
+need nothing new: entity tags are generic over the id prefix, so the lateral faces of an
+extruded or revolved ellipse are named `Sketch1/o5` like those of circles (ADR 0003).
+Commands `sketch.add_ellipse` (cx, cy, a, b, angle in degrees) and `sketch.add_ellipse_arc`
+(plus `from`/`to`, parametric angles in degrees); the GUI Ellipse tool is two clicks (centre,
+bounding-box corner; axes along u / v).

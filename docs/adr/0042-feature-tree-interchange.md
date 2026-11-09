@@ -251,3 +251,33 @@ one the angle is measured from. Exporters map their two-distance and distance-an
 - Exporter plugins do not need a new format version: the fields are optional and a version 1
   reader that ignores unknown fields still builds an equal chamfer from `distance`.
   Gusset's reader takes them in version 1 files too.
+
+## Amendment (2026-11-09): ellipses and elliptical arcs in sketches
+
+Two more sketch curve types (either format version):
+
+```json
+{ "id": "e1", "type": "ellipse", "center": "p1", "major": [0, 1], "a": 3.24, "b": 2.15 },
+{ "id": "e2", "type": "ellipse_arc", "center": "p1", "major": [1, 0], "a": 4, "b": 2,
+  "start": "p2", "end": "p3" }
+```
+
+`center` is a sketch point; `major` is the direction of the semi-axis `a` in the sketch's own
+frame (a unit vector, normalised on reading; only its direction counts); `a` and `b` are the
+semi-axes in mm along and across it. Either may be the larger: the importer keeps them as
+given and Gusset normalises when it builds the profile. An `ellipse_arc` runs
+counter-clockwise (about the plane normal) from `start` to `end`, two points the solver keeps
+on the ellipse (the importer does not check that they lie on it; a point off the curve is
+moved onto it). Like arcs, ellipse arcs are written from `end` to `start` on a sketch whose
+plane is mirrored. Inventor O-ring profiles are a whole `ellipse` revolved 360 degrees:
+centre x = 7.85 mm, `major` = [0, 1], `a` = 3.24, `b` = 2.15 gives a ring of
+volume `2 pi R * pi a b`.
+
+- Gusset text: `o3 = ellipse(p1, angle, a, b)` and `q4 = ellipse_arc(p1, angle, a, b, p2,
+  p3)` with `angle` in radians (the direction of `major` in the Gusset sketch) and the
+  ids prefixes `o` and `q` (ADR 0004 amendment of the same date).
+- A missing or non-positive `a`/`b`, or a zero `major`, skips the sketch with the reason in
+  `skipped_user_text`.
+- Constraints on ellipses are not in the exchange format: a source's `radius`-like
+  dimensions on ellipses are left out like any unknown constraint; the geometry is imported
+  as it is drawn.

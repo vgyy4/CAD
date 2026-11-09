@@ -9,6 +9,16 @@ refuses tag pushes); the tag triggers the release workflow after the milestone r
 Phase 3 has started (see Next).
 
 ## Done
+- Ellipses and elliptical arcs (2026-11-09), end to end: sketch entities with solver
+  support (angle, `a`, `b` as plain unknowns, arc ends kept on the curve, point-on-ellipse,
+  fixed, horizontal/vertical, `semi_major`/`semi_minor`), arrangement and exact areas,
+  `Seg2::Ellipse`/`EllipseArc` through the kernel wire and OCCT (`gp_Elips` edges), text
+  language (`ellipse`, `ellipse_arc`), `sketch.add_ellipse`/`add_ellipse_arc`, a GUI
+  Ellipse tool, tree import (`ellipse`, `ellipse_arc`; ADR 0042) and OCCT golden volumes
+  (extruded ellipse, 360-degree O-ring revolve). Left: tangent/equal/radius constraints and
+  a general axis-angle dimension on ellipses, ellipse patterns and trimming, a GUI
+  elliptical-arc tool, DXF/drawing and CAM import of ellipses, FreeCAD/Inventor importers
+  emitting the new curve types (other agents). ADRs 0004, 0016, 0042 amended.
 - Research and design docs: `docs/RESEARCH.md` (+5 reports), `docs/DESIGN.md`, threat
   model, SECURITY.md, HARDWARE.md, PERFORMANCE.md (budgets), INTEROP.md, FORMAT.md;
   ADRs 0000–0015.
