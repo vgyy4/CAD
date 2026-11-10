@@ -893,3 +893,18 @@ board file, not from sketches) and the drill tools as their steps; not done.
 * Stored solids of components the tree lacks (4313: the display's and the card socket's package bodies), which then
   count as unexplained "tools" and hide the board's cut; a stored solid with a negative volume (3211: -0.0063 mm3, a
   body read inside out); 2900: a 193.75 mm3 solid no feature makes.
+
+### Combine `2A94257F`: the record's leading fields (read from 29 records; the operation is still not converted)
+* Body: `u32 A`, `u32 n` + n references to `4A782808` (the RemoveBody of a consumed tool; n is 0 or 1), a flag block
+  (with or without a `2E3AC990`), a `u64`, then `u32 ntools` + that many `2CA5A1CD` selections (**the tools**),
+  `u32 m` + m direct `D26351F0` body links (the tools' own links, m = ntools; none when the tool is removed), and
+  `u32 1` + one `2CA5A1CD` (**the target**); the selections are listed once more near the end.
+  3651 FeatherWing's header part (also in 3900, 4200, 4242, 4400): Combine1 = tool Mirror1's body into Extrude1's,
+  Combine2 = the five bodies of R-Pattern1 into Extrude1's, Combine3 = Extrude1's body into Mirror2's.
+* `A` is 0 in 24 records (all of that part's, STEMMA Buttons, the Crickit CPX ones, CyberDeck HAT/Bonnet) and 1 in 5
+  (NEMA-17, 5981 TRRS Trinkey Case, 6114 Solar Charger Case, and the two BQ25185 Cases, whose Combine1 takes the logo body
+  as a tool and removes it). The round-10 comparison missed it (it compared records of `A` = 0 only, and the Cases').
+  It reads like the operation (0 where bodies are put together, 1 where a logo is taken out of a case), but no rebuild
+  has confirmed either value yet: the next step is to write Combine1 of the header part as a join and as a cut and let
+  the state check tell (the part's stored bodies follow each Combine). A tool can be the several bodies of one body
+  pattern, which the tree names with one feature name; that needs a name per copy first.

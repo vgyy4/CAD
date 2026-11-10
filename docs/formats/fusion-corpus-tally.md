@@ -98,3 +98,35 @@ Grouped by category, sorted by count. The importer reports only the first blocki
 PC Joystick Adapter.f3d hit the 300 s import timeout; Terminal Block FeatherWing.f3d took about
 250 s (imports as history, 156 bodies); Feather RP2040 USB Host.f3d, MagTag.f3d, Adafruit Crickit
 HAT.f3z and Solenoid Driver 8 Channel.f3d took 70-80 s each. Most others took 5-30 s.
+
+## Re-run after round 13 (2026-11-10)
+
+Same set and command, after the reader changes of ADR 0039's round 13 amendment
+(`docs/formats/fusion-design-stream.md` section 21).
+
+| outcome | before | after |
+|---|---|---|
+| as history | 59 | 76 (51 %) |
+| as bodies only | 90 | 73 |
+| failed (300 s timeout, PC Joystick Adapter) | 1 | 1 |
+
+First blocking reason of the 74 designs not as history:
+
+| # | category | before | notes |
+|---|---|---|---|
+| 16 | State check mismatch | 24 | 11 "a stored solid is neither a state nor a cut tool" (5 of them 2025 files whose layer bodies come from `PCBExtrude`/`BoxPrimitive` features the reader does not walk; the others store bodies of components the tree lacks, or a solid read inside out), 1 box mismatch (Crickit HAT: a joint), 2 with blends after the last stored state, 2 others |
+| 9 | Unresolved fillet/chamfer edges | 8 | 7 in the reader (edges whose faces are neither modelled nor stored under their names), 2 at the rebuild ("no edge has its midpoint at") |
+| 7 | No feature history stored | 7 | unchanged |
+| 6 | Extrude limits | 4 | 3 layouts not recognised, 3 to-object / through-all extents, 1 taper (two-distance extrudes are read now) |
+| 6 | Unsupported feature type | 12 | 2 ElectronicsPackageGenerator, Thread, MirrorComponent, Derived Base Feature, one unnamed class; the `DBAF` entry (7) is read |
+| 5 | Profile decoding | 24 | 2 curve unknown, 1 piece not reproduced, 1 no interior point, 1 face/text profile; "loop does not close" (15) is gone; 2 more hit the importer's 256-pick limit |
+| 5 | Rebuild limits / kernel | 3 | 3 "built the model too many times", 1 shell, 1 extrusion that does not build |
+| 3 | Combine | 0 | reached now (the header part "2x12 short female"); its operation is not confirmed |
+| 3 | Base Feature state lists | 2 | |
+| 2 | Revolve axis | 2 | |
+| 2 | Draft | 0 | reached now |
+| 6 | others, one each | | sweep path, pattern of components, mirror making another number of bodies, extrude changing several bodies, shell face, chamfer without distance |
+
+Designs gained (17): the "loop does not close" and "curve piece" designs that had no further
+blocker, the mirror and two-distance ones, and those whose hole tools now lie in the board
+(typed references). None of the 59 was lost.

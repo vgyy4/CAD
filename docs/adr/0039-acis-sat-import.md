@@ -567,3 +567,30 @@ accepts only an exact sum (Crickit HAT: five hole tools lie in slots of the boar
 18 designs are history (MacroPad RP2040 joins). Left: joints (Crickit HAT, MacroPad Assembly),
 sketch text (both Cases), swept-face blends and an unknown Combine operation (CyberDeck HAT,
 Cases), the Crickit CPX chain. Details: `docs/formats/fusion-design-stream.md` section 20.
+
+## Amendment (2026-11-10, round 13): the 150-design corpus
+
+Worked from the tally of 150 further public designs (`docs/formats/fusion-corpus-tally.md`), the
+commonest first blockers first, each as a general rule of the reader:
+
+- **Profile pieces are cut by their own loop.** "Piece a of b" of a profile curve counts the cuts
+  by the other curves of the same loop (and by the ends of a line lying on it), not by all profile
+  curves of the sketch; a loop lists every curve on its boundary (an edge drawn twice is listed
+  twice) and walks a hole joined to the outline in the outline's loop.
+- **Face names are stored with the bodies.** The ACIS face tag holds the whole name (generator and
+  operation ids), so an edge recipe is looked up as a stored edge between the two named faces, and
+  an unmodelled planar face as the stored plane of that name. This is a fallback behind the
+  modelled extrude faces and reaches faces of any feature.
+- Mirrors of bodies, extrudes to two sides (one extrude from a moved copy of the sketch), 64-bit
+  curve ids of newer streams, the `8DBAF917` activation entry.
+- **Typed references** to the two classes whose GUID text has its dashes out of place were not
+  seen, which left components of older streams unplaced in the tree (their stored bodies were
+  placed): the cause of "the hole tools do not lie in the board" refusals.
+
+Nothing in the rebuild or state checks was loosened; the refusal of a loose cut now says its
+numbers. Result: 59 of 150 designs were history before, 76 after; the 18-design
+set stays at 11 (its remaining seven: joints, sketch text, swept-face blends, the Crickit CPX
+chain). Found and not converted: the Combine record's leading field (0 or 1, likely the
+operation, unconfirmed), the `Assemble` joint frames (the 0.02 mm of round 12 is the author's
+0.30 mm against a 0.32 mm half pin), and the body-making `PCBExtrude` / `BoxPrimitive` features
+of 2025 files. Details: `docs/formats/fusion-design-stream.md` section 21.
