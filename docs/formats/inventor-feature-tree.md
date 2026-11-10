@@ -337,3 +337,25 @@ Tally of the 22 others (corpus test, `GUSSET_IPT_RAW=1` prints the unabridged re
     short of touching it (rolling ball between disjoint faces, no pre-fillet edge). `bottom plate` also has later fillets not reached.
   - Top motor plate: `Chamfer5` "no support pair" (same chained-cone family) and `Chamfer6` "blend surface None" (a neighbour face
     whose surface record `Acis::kind` cannot read).
+
+## J. Chamfer corner patches, plane/cylinder chamfers, slot-end rounds, spline surfaces (2026-11-10)
+Coverage stays 25 of 47 as history; the three thicken parts now get further (verified with the corpus test).
+* Chamfer faces that are not edge chamfers: a corner patch (a triangle between chamfers, or a vertex blend spline surface) carries the
+  feature's tag but replaced no edge, and a planar tagged face lying far from its pre-chamfer line is a leftover; both are skipped.
+* A chamfer between a plane and a cylinder parallel to it (the r 23.25 mm cylinder with conical corner patches) takes its pre-chamfer
+  edge as the plane/cylinder intersection line, not from a plane pair. `bottom plate` Chamfer1 and `Top motor plate` Chamfer5 ("no support
+  pair" before) are past this now.
+* `Acis::kind` reads `spline-surface` records (their type name does not end in `surface`, so they read as `None` before) and resolves
+  `spline-surface-ref` pointers to them.
+* Slot ends: a full round whose middle face faces away from the crest is concave (a slot end). The kernel's full round does tabs only,
+  so a concave one is emitted as a sketch and a join of the two corner slivers (x towards the crest, y across the slot, extruded over the
+  cylinder's extent). The midpoint of a half circle comes from the face's arcs, not from its two diametrically opposite ends.
+* Where the three thicken parts stop now (corpus, `GUSSET_IPT_RAW=1`):
+  - `bottom plate`, `bottom plate mod` Fillet11: "supports do not meet" (the ACIS file is in cm). The blend cylinder (r 0.8, axis -z,
+    centre (1.8, -1.3)) is tangent to the plane x = 2.6 (normal -x) and externally to the r 0.3 half cylinder (centre (2.1, -2.358)) of an
+    earlier tab-end full round. That plane and cylinder do not intersect: the cylinder's side planes lie 0.2 inside the wall plane. So the
+    pre-fillet edge is not support / support; the ball bridges a gap, and the edge the feature picked belongs to a face the earlier
+    full round or a later feature removed. A fourth neighbour (z = 0.2, normal -z) is the floor. NOT resolved; a likely route is the
+    model state before the full round, where the edge is plane x = 2.6 against the flat tab end.
+  - `Top motor plate` Chamfer6: now "blend surface ref (1 coaxial long-side neighbours)": a `spline-surface-ref` neighbour that is read
+    but not a plane / cylinder / torus / cone the profile code can use. NOT resolved.

@@ -270,3 +270,14 @@ first extrusion's bounding box. It is only trusted through the whole-part rebuil
 thicken parts now get past `Thicken1` and their full rounds (12, 12 and 8 tree fillets) are emitted,
 but each still stops at a later feature (docs/formats/inventor-feature-tree.md I), so they stay bodies.
 
+
+## Amendment (2026-11-10, 7): Inventor chamfer patches, slot-end rounds, spline surfaces
+
+Chamfer feature faces that replaced no edge (corner patches between chamfers, vertex blend spline
+surfaces, planar leftovers far from their pre-chamfer line) are skipped; a chamfer between a plane and
+a parallel cylinder takes its edge as their intersection line. `Acis::kind` reads spline-surface
+records and their `-ref` pointers. A concave full round (slot end) is emitted as a sketch plus a join of
+the two corner slivers, because the kernel's full round does tabs only. Coverage is unchanged (25 of
+47); the thicken parts now stop at a fillet whose supports no longer touch (`bottom plate` Fillet11)
+and at a chamfer next to a spline-surface neighbour (`Top motor plate` Chamfer6); see
+`docs/formats/inventor-feature-tree.md` J. The rebuild check (volume 2e-5) is unchanged.
