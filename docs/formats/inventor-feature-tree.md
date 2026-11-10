@@ -359,3 +359,25 @@ Coverage stays 25 of 47 as history; the three thicken parts now get further (ver
     model state before the full round, where the edge is plane x = 2.6 against the flat tab end.
   - `Top motor plate` Chamfer6: now "blend surface ref (1 coaxial long-side neighbours)": a `spline-surface-ref` neighbour that is read
     but not a plane / cylinder / torus / cone the profile code can use. NOT resolved.
+
+### J.2 Bridged rounds (Fillet11) and where the thicken parts stop (2026-11-10, later)
+* `bottom plate` Fillet11 (r 8 mm) is a ROUND OVER A CONSUMED MIDDLE FACE, not a failure of the support walk. In the top-face outline
+  the r 8 arc (centre (18, -13) mm) runs from its tangent point on the wall x = 26 to the r 3 mm tab end (centre (21, -23.583)) and is
+  split at the point 45 degrees round its circle, (23.657, -18.657): that vertex is where a 45 degree plane was tangent to the ball.
+  The pre-fillet model had that diagonal face between the wall and the tab; the ball took it entirely (two edges, three faces, like a
+  full round but with a middle plane that is parallel to neither support). The tab centre y -23.583 is itself derived from the
+  tangency (-13 - sqrt(11^2 - 3^2)), so the cylinder is not an independent feature there.
+* Reading: a cylinder blend with exactly one plane (parallel to its axis, tangent at distance r) and one convex cylinder (parallel axis,
+  externally tangent at r + r') whose cross-sections do not intersect (`Acis::bridged_round`). Emission (`bridged_rounds`): the material
+  it added is the sliver between its arc and the body, so the tree gets a join extrude of the arc closed by a circumscribed polyline
+  1.2 radii out whose far side lies inside the existing body (any overlap with existing material is harmless in a join). The diagonal
+  face is never needed. Only the whole-part rebuild check vouches for the result; with it `bottom plate` and `bottom plate mod` build
+  through Fillet11 and the tree without the last blends is 327 mm3 (0.3 %) above the stored shape, in line with the fillets still missing.
+* `Top motor plate` Chamfer6 builds now (the `blend surface None` of the notes above was cured by reading spline surfaces in the previous
+  commit). The remaining `blend surface ref (1 coaxial long-side neighbours)` in the corpus belongs to another part, not to a thicken part.
+* The three parts now all stop at one 84-edge blend of the same shape: `bottom plate` / `mod` Fillet13 (r 1.5 mm), `Top motor plate`
+  Chamfer4 (0.25 mm). Picks lie round the ends of the bottom tabs (vertical edge at z 2.6, the arc through z 0.586, the z = 0 edge).
+  The kernel refuses the whole set, and the tab at x -13..-7 builds alone while the one at x -62..-56 does not even for a single edge.
+  That tab is a concave slot end (`Fillet12_4_sketch` at (-59, -49) mm): the slot-end rounds are emitted as a sketch and a join of two
+  slivers, whose edges are split differently from Inventor's, so the pick midpoints do not meet one edge. OPEN: either unify the faces
+  after the slot-end join (kernel side) or pick the split edges; not done.

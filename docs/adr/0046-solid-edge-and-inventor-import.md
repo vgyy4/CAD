@@ -281,3 +281,8 @@ the two corner slivers, because the kernel's full round does tabs only. Coverage
 47); the thicken parts now stop at a fillet whose supports no longer touch (`bottom plate` Fillet11)
 and at a chamfer next to a spline-surface neighbour (`Top motor plate` Chamfer6); see
 `docs/formats/inventor-feature-tree.md` J. The rebuild check (volume 2e-5) is unchanged.
+
+Addendum (same day): a cylinder blend between a plane and a convex cylinder that do not meet (a consumed middle face, `bottom plate`
+Fillet11) is emitted as a join of the blend's arc and a circumscribed polyline lying in the existing body (`Acis::bridged_round`,
+`bridged_rounds`); the rebuild check is the only authority. `Top motor plate` Chamfer6 builds. The three thicken parts now stop at an
+84-edge blend on the bottom tab ends whose picks do not match the edges split by the slot-end joins (notes J.2); coverage stays 25 of 47.
