@@ -99,7 +99,8 @@ fn point(d: &Design, i: u64) -> Option<V3> {
 /// the layouts whose flag was checked against the profiles are read (every flagged curve of the
 /// sample set lies outside all profiles of its sketch: 24 + 49 lines of the 303/307-byte
 /// layout, 72 of the 396-byte one, one arc of the 471-byte one):
-/// line 303/307 bytes: 7 after the second point reference, 396: 2; arc 471: 2 after the third.
+/// line 303/307 bytes: 7 after the second point reference, 396: 2, 276/300: 1 (the diagonals
+/// and centre crosses of a pin-header part); arc 471: 2 after the third.
 /// Another layout reads as "not construction" (no sample has a flagged curve there).
 fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
     let need = if line { 2 } else { 3 };
@@ -113,6 +114,7 @@ fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
 /// Bytes between the end of the last point reference and the construction flag, by record layout.
 pub(super) fn construction_flag_offset(line: bool, record_len: usize) -> Option<usize> {
     match (line, record_len) {
+        (true, 276 | 300) => Some(1),
         (true, 303 | 307) => Some(7),
         (true, 396) | (false, 471) => Some(2),
         _ => None,
