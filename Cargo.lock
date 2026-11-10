@@ -1775,6 +1775,7 @@ dependencies = [
 name = "gusset-kernel-occt"
 version = "0.1.0-mvp"
 dependencies = [
+ "blake3",
  "gusset-kernel",
  "gusset-occt-sys",
  "gusset-sandbox",

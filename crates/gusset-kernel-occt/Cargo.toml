@@ -13,6 +13,7 @@ gusset-occt-sys.workspace = true
 # Untrusted B-rep blobs are validated in the sandboxed worker before parsing (ADR 0008).
 gusset-worker.workspace = true
 gusset-sandbox.workspace = true
+blake3.workspace = true
 
 # No `unsafe` here: the FFI wrappers live in gusset-occt-sys (ADR 0008).
 [lints]

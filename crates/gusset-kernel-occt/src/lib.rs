@@ -74,6 +74,7 @@ mod imp {
     use super::*;
     use gusset_occt_sys as sys;
     use std::any::Any;
+    use std::sync::Arc;
 
     /// A shape and its derived summaries, each computed at most once (shapes are
     /// immutable). Every operation needs the face count and the evaluator then asks for the
@@ -85,8 +86,40 @@ mod imp {
     #[derive(Debug, Default)]
     pub(crate) struct Derived {
         topology: std::sync::OnceLock<Topology>,
+        metrics: Arc<Metrics>,
+    }
+
+    /// Volume and box: shared by every shape read from the same bytes ([`metrics_for`]).
+    #[derive(Debug, Default)]
+    pub(crate) struct Metrics {
         mass: std::sync::OnceLock<MassProps>,
         bbox: std::sync::OnceLock<BBox>,
+    }
+
+    /// Most byte strings whose metrics are remembered (a few hundred bytes each).
+    const MAX_METRICS_BY_BYTES: usize = 16_384;
+
+    /// The metrics cell of the shape that `bytes` (a native B-rep) holds. Importers read the same
+    /// stored body many times (a Fusion import's checks read each of its stored bodies about six
+    /// times, then build it): equal bytes are the same shape, so its volume and box are measured
+    /// once. The bytes are named by their BLAKE3 hash; the oldest names go first.
+    fn metrics_for(bytes: &[u8]) -> Arc<Metrics> {
+        type ByBytes = (std::collections::HashMap<[u8; 32], Arc<Metrics>>, std::collections::VecDeque<[u8; 32]>);
+        static BY_BYTES: std::sync::Mutex<Option<ByBytes>> = std::sync::Mutex::new(None);
+        let key = *blake3::hash(bytes).as_bytes();
+        let Ok(mut guard) = BY_BYTES.lock() else { return Arc::default() };
+        let (map, order) = guard.get_or_insert_with(Default::default);
+        if let Some(m) = map.get(&key) {
+            return m.clone();
+        }
+        while map.len() >= MAX_METRICS_BY_BYTES {
+            let Some(old) = order.pop_front() else { break };
+            map.remove(&old);
+        }
+        let m = Arc::new(Metrics::default());
+        map.insert(key, m.clone());
+        order.push_back(key);
+        m
     }
 
     fn once<T: Clone>(cell: &std::sync::OnceLock<T>, f: impl FnOnce() -> KResult<T>) -> KResult<T> {
@@ -100,6 +133,11 @@ mod imp {
     impl OcctShape {
         pub(crate) fn new(raw: RawShape) -> OcctShape {
             OcctShape(raw, Derived::default())
+        }
+
+        /// A shape read from native bytes: it shares its metrics with every other read of them.
+        fn read(raw: RawShape, bytes: &[u8]) -> OcctShape {
+            OcctShape(raw, Derived { topology: std::sync::OnceLock::new(), metrics: metrics_for(bytes) })
         }
 
         fn topology(&self) -> KResult<Topology> {
@@ -650,7 +688,7 @@ mod imp {
 
         fn mass_properties(&self, shape: &Shape) -> KResult<MassProps> {
             let s = shape.downcast::<OcctShape>()?;
-            once(&s.1.mass, || {
+            once(&s.1.metrics.mass, || {
                 let m = ffi::mass(&s.0)?;
                 match m.as_slice() {
                     [v, a, x, y, z] => Ok(MassProps { volume: *v, area: *a, centroid: [*x, *y, *z] }),
@@ -661,7 +699,7 @@ mod imp {
 
         fn bbox(&self, shape: &Shape) -> KResult<BBox> {
             let s = shape.downcast::<OcctShape>()?;
-            once(&s.1.bbox, || {
+            once(&s.1.metrics.bbox, || {
                 let b = ffi::bbox(&s.0)?;
                 match b.as_slice() {
                     [x0, y0, z0, x1, y1, z1] => Ok(BBox { min: [*x0, *y0, *z0], max: [*x1, *y1, *z1] }),
@@ -744,10 +782,10 @@ mod imp {
             // the worker's canonical re-serialization of an untrusted blob. The
             // untrusted original itself never reaches BinTools::Read here.
             if self.inputs_vetted {
-                return Ok(Shape::new(OcctShape::new(ffi::brep_read(data)?)));
+                return Ok(Shape::new(OcctShape::read(ffi::brep_read(data)?, data)));
             }
             let vetted = vet_native(self.worker.as_deref(), data)?;
-            Ok(Shape::new(OcctShape::new(ffi::brep_read(&vetted)?)))
+            Ok(Shape::new(OcctShape::read(ffi::brep_read(&vetted)?, &vetted)))
         }
     }
 }
