@@ -144,6 +144,77 @@ fn through_reach(cx: &mut Ctx, fid: u64) -> Option<f64> {
     }
 }
 
+/// The signed length (cm, along the sketch normal) of the tool an extrude without a distance
+/// swept, read off the tool itself where the file stores it: a stored body that has every
+/// straight edge of the profile's outline at the sketch plane and at one other offset, and at no
+/// third. Edges two picked regions share are inside the tool and not looked for. Several such
+/// bodies must agree.
+fn tool_reach(cx: &mut Ctx, fid: u64) -> Option<f64> {
+    let g = cx.ext_geom(fid)?;
+    let (pl, z) = (g.pl, g.pl.z);
+    // The outline of the picked regions together: the straight pieces only one region has.
+    let regions = cx.rc.regions(cx.d, fid, &g.sketch).ok()?;
+    let near = |a: V3, b: V3| geom::norm(geom::sub(a, b)) < 1e-6;
+    let same = |x: &(V3, V3), y: &(V3, V3)| (near(x.0, y.0) && near(x.1, y.1)) || (near(x.0, y.1) && near(x.1, y.0));
+    let mut pieces: Vec<Vec<(V3, V3)>> = Vec::new();
+    for r in regions.iter() {
+        let mut own: Vec<(V3, V3)> = Vec::new();
+        for sg in &r.segments {
+            if !g.sketch.lines.contains_key(&sg.curve) {
+                continue;
+            }
+            let (a, b) = (*sg.poly.first()?, *sg.poly.last()?);
+            let l = (geom::world(&pl, a, 0.0), geom::world(&pl, b, 0.0));
+            if !own.iter().any(|m| same(&l, m)) {
+                own.push(l);
+            }
+        }
+        pieces.push(own);
+    }
+    let outline: Vec<(V3, V3)> = pieces
+        .iter()
+        .flatten()
+        .filter(|l| pieces.iter().filter(|own| own.iter().any(|m| same(l, m))).count() == 1)
+        .copied()
+        .collect();
+    // Two directions at least, or a slab of any outline would do.
+    let dir = |l: &(V3, V3)| geom::unit(geom::sub(l.1, l.0));
+    let first = outline.first().and_then(dir)?;
+    if !outline.iter().filter_map(dir).any(|u| dot(u, first).abs() < 1.0 - 1e-9) {
+        return None;
+    }
+    let mut found: Option<f64> = None;
+    for body in cx.edge_sets() {
+        let mut reach: Option<f64> = None;
+        let mut ok = true;
+        'lines: for l in &outline {
+            let mut at: Vec<f64> = Vec::new();
+            for (p, q) in body {
+                let t = dot(geom::sub(*p, l.0), z);
+                let moved = (geom::add(l.0, geom::mul(z, t)), geom::add(l.1, geom::mul(z, t)));
+                if same(&moved, &(*p, *q)) && !at.iter().any(|x| (x - t).abs() < 1e-7) {
+                    at.push(t);
+                }
+            }
+            let far: Vec<f64> = at.iter().copied().filter(|t| t.abs() > 1e-7).collect();
+            match (far.as_slice(), at.len()) {
+                ([t], 2) if reach.is_none_or(|r| (r - t).abs() < 1e-7) => reach = Some(*t),
+                _ => {
+                    ok = false;
+                    break 'lines;
+                }
+            }
+        }
+        if let (true, Some(t)) = (ok, reach) {
+            if found.is_some_and(|f| (f - t).abs() > 1e-7) {
+                return None;
+            }
+            found = Some(t);
+        }
+    }
+    found.map(|t| (t * 1e7).round() / 1e7)
+}
+
 fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, String>) -> Map<String, Value> {
     let d = cx.d;
     let mut j = Map::new();
@@ -220,8 +291,12 @@ fn extrude_json(cx: &mut Ctx, fid: u64, name: &str, sketch_names: &HashMap<u64, 
         && e.sketch.is_some()
         && !cx.acis.is_empty()
     {
-        // Through all: measured on the stored body.
-        if let Some(t) = through_reach(cx, fid).filter(|t| *t != 0.0) {
+        // To a body, or through all: the length of the stored tool, where the file has it.
+        if let Some(t) = tool_reach(cx, fid) {
+            distance = Some(mm(t));
+            j.insert("extent_from".into(), "the length of the stored tool body".into());
+        } else if let Some(t) = through_reach(cx, fid).filter(|t| *t != 0.0) {
+            // Through all: measured on the stored body.
             distance = Some(mm(t));
             j.insert("extent_from".into(), "through all (reach measured on the stored body)".into());
         }
