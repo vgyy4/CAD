@@ -1119,3 +1119,29 @@ fn a_typed_reference_carries_its_targets_class_as_the_class_table_spells_it() {
     let d = Design::new(&m, &bulk).unwrap();
     assert!(super::stream::ref_ids(&d, d.rec(6)).is_empty());
 }
+
+#[test]
+fn an_extrude_that_names_its_target_by_a_typed_reference_is_still_recognised() {
+    // Flag, a typed reference to the target's selection (49 bytes), two zero bytes, then the
+    // enum block (cut, one side, distance) and the direction.
+    let r5 = record(256, 5, &[]);
+    let mut body = vec![1u8, 1];
+    body.extend(le64(5));
+    body.extend(s(G1));
+    body.extend([0, 0]);
+    for v in [2u32, 1, 2] {
+        body.extend(le32(v));
+    }
+    body.extend([0, 1]);
+    for v in [0.0f64, 0.0, 1.0] {
+        body.extend(v.to_le_bytes());
+    }
+    body.extend([0; 64]);
+    let r6 = record(257, 6, &body);
+    let mut bulk = r5.clone();
+    bulk.extend(&r6);
+    let m = meta(&[(5, 0), (6, r5.len() as u64)], &|i| usize::from(i == 6));
+    let d = Design::new(&m, &bulk).unwrap();
+    let e = feature::extrude_raw(&d, 6).unwrap();
+    assert_eq!((e.op, e.extent, e.vec), (2, 1, Some([0.0, 0.0, 1.0])));
+}

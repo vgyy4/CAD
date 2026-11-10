@@ -161,7 +161,9 @@ pub(super) fn extrude_raw(d: &Design, fid: u64) -> Option<ExtRaw> {
     let rec = d.rec(fid);
     let h = parse_header(rec)?;
     let b = h.body.saturating_sub(8).max(15);
-    let mut m = enum_search(rec, b, b + 64);
+    // A join or cut names its target's selection first: 10 bytes as a plain reference, 49 as a
+    // typed one (older streams), which puts the enum block past the first window.
+    let mut m = enum_search(rec, b, b + 64).or_else(|| enum_search(rec, b, b + 104));
     if m.is_none() && find_bytes(rec.get(..200.min(rec.len()))?, b"SpecifiedColor").is_some() {
         // The colour attribute is a nested object of variable size: search after its appearance name.
         let utf16: Vec<u8> = "PrismOpaque".encode_utf16().flat_map(u16::to_le_bytes).collect();
