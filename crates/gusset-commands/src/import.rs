@@ -1821,13 +1821,23 @@ fn fusion_loose(features: &[Value]) -> Vec<bool> {
         .collect()
 }
 
+/// The part of each stored tool (indices into the stored solids) that lies in the bodies feature
+/// `k` changes, as they were before it; `None` where it cannot be measured.
+type ToolsInside<'a> = dyn FnMut(usize, &[usize]) -> Result<Option<Vec<f64>>, String> + 'a;
+
+/// The volumes, box and shapes of a model's bodies after some features.
+type Built = (f64, Option<gusset_kernel::BBox>, Vec<f64>, Vec<gusset_kernel::Shape>);
+
 /// The stored volumes against the bodies of the model after each feature (`per_body[k]` holds the
 /// volume of every body after `k` features, `vols[k]` their sum) and the copies each feature
 /// makes: every stored solid is a state (the volume of some body of the model after some feature)
 /// or a tool whose volume times the copies of some feature is that feature's volume change, and
 /// every feature after the last state changes the volume by exactly a stored tool times its
 /// copies. A cut of several loops may make fewer tools than loops (`loose`): its volume change is
-/// then the sum of the tools no other feature explains. Returns the numbers of states and tools.
+/// then the sum of the tools no other feature explains, or, where a tool lies (partly) where the
+/// body already has no material (a hole drilled into a slot of the outline), the sum of the parts
+/// of those tools that lie in the body the feature changes, as `inside(k, tools)` measures them
+/// (`None`: not measurable). Returns the numbers of states and tools.
 fn fusion_explain_steps(
     vols: &[f64],
     per_body: &[Vec<f64>],
@@ -1835,6 +1845,7 @@ fn fusion_explain_steps(
     insts: &[Option<u64>],
     loose: &[bool],
     names: &[String],
+    inside: &mut ToolsInside<'_>,
 ) -> Result<(usize, usize), String> {
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let delta = |k: usize| -> f64 {
@@ -1847,12 +1858,15 @@ fn fusion_explain_steps(
     let copies = |k: usize| insts.get(k - 1).copied().flatten();
     let explains = |tool: f64, k: usize| copies(k).is_some_and(|m| same(delta(k), tool * m as f64));
     let mut tool_volumes = Vec::new();
+    // Where each tool is in `stored`.
+    let mut tool_at = Vec::new();
     let mut states = 0;
-    for v in stored {
+    for (at, v) in stored.iter().enumerate() {
         if is_state(*v) {
             states += 1;
         } else {
             tool_volumes.push(*v);
+            tool_at.push(at);
         }
     }
     if states == 0 {
@@ -1879,7 +1893,15 @@ fn fusion_explain_steps(
         }
         let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
         let sum: f64 = group.iter().filter_map(|i| tool_volumes.get(*i)).sum();
-        if !group.is_empty() && copies(k).is_some_and(|m| group.len() as u64 <= m) && same(delta(k), sum) {
+        if group.is_empty() || !copies(k).is_some_and(|m| group.len() as u64 <= m) {
+            continue;
+        }
+        let fits = same(delta(k), sum) || {
+            // Measured: the part of each tool inside the body before the feature.
+            let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+            inside(k, &at)?.is_some_and(|parts| parts.len() == at.len() && same(delta(k), parts.iter().sum()))
+        };
+        if fits {
             covered.extend(group);
             explained.insert(k);
         }
@@ -1969,7 +1991,7 @@ fn fusion_states_check(
     // The volume of every body (and the box of the whole) of the model after the first k features.
     // One evaluator for every prefix: each build reuses what the shorter ones built.
     let mut evaluator = gusset_eval::Evaluator::new(kernel.clone());
-    let mut build = |k: usize, full: bool| -> Result<(f64, Option<gusset_kernel::BBox>, Vec<f64>), String> {
+    let mut build = |k: usize, full: bool| -> Result<Built, String> {
         let mut t = tree.clone();
         t.features.truncate(k);
         t.bodies = vec![crate::tree_import::TreeBody { name: "all".into(), volume_mm3: Some(1.0) }];
@@ -1985,6 +2007,7 @@ fn fusion_states_check(
         let mut bb: Option<gusset_kernel::BBox> = None;
         let mut each = Vec::new();
         let ev = scratch.evaluate(&ctx.actor).map_err(|e| e.message)?;
+        let shapes: Vec<gusset_kernel::Shape> = ev.bodies.iter().map(|b| b.shape.clone()).collect();
         for b in &ev.bodies {
             each.push(kernel.mass_properties(&b.shape).map_err(|e| e.message)?.volume);
             if full {
@@ -1995,7 +2018,7 @@ fn fusion_states_check(
                 }));
             }
         }
-        Ok((vol, bb, each))
+        Ok((vol, bb, each, shapes))
     };
     // States: the bodies after every feature. Sketches change no body; a run of features that
     // only add bodies (new-body extrudes and sweeps, stored bodies) is built once and its
@@ -2019,7 +2042,7 @@ fn fusion_states_check(
         }
         // The run k..end-1 only adds bodies; it is built as one when it is longer than a step.
         if end > k + 1 {
-            let (_, _, each) = build(end - 1, false)?;
+            let (_, _, each, _) = build(end - 1, false)?;
             let made: Vec<usize> = (k..end).map(|j| tree.features.get(j - 1).and_then(adds).unwrap_or(0)).collect();
             let total: usize = made.iter().sum();
             let ordered =
@@ -2040,19 +2063,60 @@ fn fusion_states_check(
             vols.push(vols.last().copied().unwrap_or(0.0));
             per_body.push(prev_bodies);
         } else {
-            let (v, _, each) = build(k, false)?;
+            let (v, _, each, _) = build(k, false)?;
             vols.push(v);
             per_body.push(each);
         }
         k += 1;
     }
-    let (final_vol, final_box, _) = build(n, true)?;
+    let (final_vol, final_box, _, _) = build(n, true)?;
     let names: Vec<String> =
         tree.features.iter().map(|f| f.get("name").and_then(Value::as_str).unwrap_or("?").to_string()).collect();
     let insts = fusion_instances(&tree.features);
     let loose = fusion_loose(&tree.features);
     let volumes: Vec<f64> = stored.iter().map(|(v, _)| *v).collect();
-    let (states, tools) = fusion_explain_steps(&vols, &per_body, &volumes, &insts, &loose, &names)?;
+    // The part of each stored tool that lies in the bodies feature `k` changes, as they were
+    // before it (the bodies of the model after `k - 1` features that `k` leaves different).
+    let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<f64>>, String> {
+        let (_, _, _, before) = build(k - 1, false)?;
+        let (_, _, mut after, _) = build(k, false)?;
+        let mut changed = Vec::new();
+        for body in before {
+            let v = kernel.mass_properties(&body).map_err(|e| e.message)?.volume;
+            match after.iter().position(|a| same_vol(*a, v)) {
+                Some(at) => {
+                    after.swap_remove(at);
+                }
+                None => changed.push((kernel.bbox(&body).map_err(|e| e.message)?, body)),
+            }
+        }
+        if changed.is_empty() {
+            return Ok(None);
+        }
+        let apart = |a: &gusset_kernel::BBox, b: &gusset_kernel::BBox| {
+            (0..3).any(|i| a.max.get(i) < b.min.get(i) || b.max.get(i) < a.min.get(i))
+        };
+        let mut parts = Vec::with_capacity(tools.len());
+        for t in tools {
+            let (Some(b), Some((_, tool_box))) = (bodies.get(*t), stored.get(*t)) else { return Ok(None) };
+            let tool = kernel.read_native(&b.blob).map_err(|e| e.message)?;
+            let mut part = 0.0;
+            for (body_box, body) in &changed {
+                if apart(body_box, tool_box) {
+                    continue;
+                }
+                // An empty common part is reported as an error: the tool lies in a void.
+                match kernel.boolean(gusset_kernel::BoolOp::Intersect, body, &tool) {
+                    Ok(common) => part += kernel.mass_properties(&common.shape).map_err(|e| e.message)?.volume,
+                    Err(e) if e.message.contains("removed all material") => {}
+                    Err(e) => return Err(e.message),
+                }
+            }
+            parts.push(part);
+        }
+        Ok(Some(parts))
+    };
+    let (states, tools) = fusion_explain_steps(&vols, &per_body, &volumes, &insts, &loose, &names, &mut inside)?;
     let mut want_box: Option<gusset_kernel::BBox> = None;
     for (_, b) in &stored {
         want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
@@ -3087,6 +3151,11 @@ mod fusion_steps_tests {
         v.iter().map(|x| if *x > 0.0 { vec![*x] } else { Vec::new() }).collect()
     }
 
+    /// No tool can be measured against the model.
+    fn none(_: usize, _: &[usize]) -> Result<Option<Vec<f64>>, String> {
+        Ok(None)
+    }
+
     fn names(t: &[Value]) -> Vec<String> {
         t.iter().map(|f| f["name"].as_str().unwrap().to_string()).collect()
     }
@@ -3108,39 +3177,131 @@ mod fusion_steps_tests {
         let per_body = vec![vec![], vec![100.0], vec![100.0, 7.0], vec![96.5, 7.0]];
         let vols = [0.0, 100.0, 107.0, 103.5];
         let stored = [100.0, 7.0, 1.0, 2.5];
-        let got = fusion_explain_steps(&vols, &per_body, &stored, &fusion_instances(&t), &fusion_loose(&t), &names(&t));
+        let got = fusion_explain_steps(
+            &vols,
+            &per_body,
+            &stored,
+            &fusion_instances(&t),
+            &fusion_loose(&t),
+            &names(&t),
+            &mut none,
+        );
         assert_eq!(got, Ok((2, 2)));
         // The tools do not add up to the cut: refused.
         let bad = [100.0, 7.0, 1.0, 2.0];
-        let why = fusion_explain_steps(&vols, &per_body, &bad, &fusion_instances(&t), &fusion_loose(&t), &names(&t))
-            .unwrap_err();
+        let why = fusion_explain_steps(
+            &vols,
+            &per_body,
+            &bad,
+            &fusion_instances(&t),
+            &fusion_loose(&t),
+            &names(&t),
+            &mut none,
+        )
+        .unwrap_err();
         assert!(why.contains("neither a state"), "{why}");
         // More tools than loops: refused.
         let many = [100.0, 7.0, 0.5, 0.5, 0.5, 0.5, 1.5];
         assert!(
-            fusion_explain_steps(&vols, &per_body, &many, &fusion_instances(&t), &fusion_loose(&t), &names(&t))
-                .is_err()
+            fusion_explain_steps(
+                &vols,
+                &per_body,
+                &many,
+                &fusion_instances(&t),
+                &fusion_loose(&t),
+                &names(&t),
+                &mut none
+            )
+            .is_err()
         );
+    }
+
+    #[test]
+    fn a_loose_cut_tool_in_a_void_counts_with_its_part_inside_the_body() {
+        // A board with a slot (100), then a cut of three loops: the third tool (0.9) lies in the
+        // slot and removes nothing.
+        let t = vec![
+            json!({"type": "extrude", "name": "Board", "operation": "new"}),
+            json!({"type": "extrude", "name": "Cut", "operation": "cut", "profiles": [{}, {}, {}]}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![96.5]];
+        let vols = [0.0, 100.0, 96.5];
+        let stored = [100.0, 1.0, 2.5, 0.9];
+        let run = |parts: Vec<f64>| {
+            let mut asked = Vec::new();
+            let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<f64>>, String> {
+                asked.push((k, tools.to_vec()));
+                Ok(Some(parts.clone()))
+            };
+            let r = fusion_explain_steps(
+                &vols,
+                &per_body,
+                &stored,
+                &fusion_instances(&t),
+                &fusion_loose(&t),
+                &names(&t),
+                &mut inside,
+            );
+            (r, asked)
+        };
+        let (got, asked) = run(vec![1.0, 2.5, 0.0]);
+        assert_eq!(got, Ok((1, 3)));
+        assert_eq!(asked, vec![(2, vec![1, 2, 3])]);
+        // The measured parts do not add up to the cut: refused.
+        assert!(run(vec![1.0, 2.4, 0.0]).0.is_err());
+        // Not measurable: refused as before.
+        let refused = fusion_explain_steps(
+            &vols,
+            &per_body,
+            &stored,
+            &fusion_instances(&t),
+            &fusion_loose(&t),
+            &names(&t),
+            &mut none,
+        );
+        assert!(refused.unwrap_err().contains("neither a state"));
     }
 
     #[test]
     fn the_exact_pattern_count_is_accepted_and_a_wrong_one_refused() {
         let stored = [225500.0, 223479.535, 199654.177, 237.583, 7941.786];
         let (t, v) = lbracket(3);
-        let ok = fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t), &fusion_loose(&t), &names(&t));
+        let ok = fusion_explain_steps(
+            &v,
+            &one_body(&v),
+            &stored,
+            &fusion_instances(&t),
+            &fusion_loose(&t),
+            &names(&t),
+            &mut none,
+        );
         assert_eq!(ok, Ok((3, 2)));
         // The file's volumes belong to three columns of holes; a tree making two refuses.
         let (t2, _) = lbracket(2);
-        let why =
-            fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t2), &fusion_loose(&t2), &names(&t2))
-                .unwrap_err();
+        let why = fusion_explain_steps(
+            &v,
+            &one_body(&v),
+            &stored,
+            &fusion_instances(&t2),
+            &fusion_loose(&t2),
+            &names(&t2),
+            &mut none,
+        )
+        .unwrap_err();
         assert!(why.contains("P2v") && why.contains("copies"), "{why}");
         // A tree whose copies cannot be derived (a pattern of a blend) is refused.
         let (mut t3, _) = lbracket(3);
         t3[8] = json!({"type": "pattern_linear", "name": "P2v", "features": ["F1"], "count": 3});
-        let why =
-            fusion_explain_steps(&v, &one_body(&v), &stored, &fusion_instances(&t3), &fusion_loose(&t3), &names(&t3))
-                .unwrap_err();
+        let why = fusion_explain_steps(
+            &v,
+            &one_body(&v),
+            &stored,
+            &fusion_instances(&t3),
+            &fusion_loose(&t3),
+            &names(&t3),
+            &mut none,
+        )
+        .unwrap_err();
         assert!(why.contains("cannot be derived"), "{why}");
     }
 }
