@@ -204,6 +204,12 @@ impl Session {
         self.evaluator.kernel()
     }
 
+    /// Exchanges the session's evaluator with `e` (the feature-tree import builds with one
+    /// evaluator and commits with it, so the commit reuses every trial build and its shapes).
+    pub(crate) fn swap_evaluator(&mut self, e: &mut Evaluator) {
+        std::mem::swap(&mut self.evaluator, e);
+    }
+
     /// [`Kernel::tessellate`] through the session's cache (see `tess_cache`).
     ///
     /// # Errors

@@ -638,12 +638,18 @@ impl Gen {
 /// # Errors
 /// An evaluation or commit error; features that cannot be imported are reported, not errors.
 pub fn apply(s: &mut Session, ctx: &CmdCtx, tree: &Tree, file_name: &str) -> Result<Value, CommandError> {
+    // The trial builds use the session's own evaluator: they start from what it has built of the
+    // document already, and the session keeps them (and its cancel flag and limits apply).
     let mut evaluator = gusset_eval::Evaluator::new(s.kernel().clone());
-    apply_with(s, ctx, tree, file_name, &mut evaluator)
+    s.swap_evaluator(&mut evaluator);
+    let r = apply_with(s, ctx, tree, file_name, &mut evaluator);
+    s.swap_evaluator(&mut evaluator);
+    r
 }
 
 /// [`apply`] with the caller's evaluator for the trial builds, so that a caller importing
-/// several prefixes of one tree (Fusion's state check) builds each feature once.
+/// several prefixes of one tree (Fusion's state check) builds each feature once. The commit builds
+/// with it too.
 ///
 /// # Errors
 /// As [`apply`].
@@ -830,12 +836,17 @@ pub fn apply_with(
     } else {
         Value::Null
     };
-    crate::commands::edit(s, ctx, &format!("Import {file_name}"), |doc, _| {
+    // The commit and the comparison below build with the trial evaluator: every feature is in its
+    // cache, so nothing is built twice and the bodies are the very shapes the trials measured.
+    s.swap_evaluator(evaluator);
+    let committed = crate::commands::edit(s, ctx, &format!("Import {file_name}"), |doc, _| {
         *doc = new;
         Ok(Value::Null)
-    })?;
+    })
+    .and_then(|_| s.evaluate(&ctx.actor));
+    s.swap_evaluator(evaluator);
     // Compare with the source's bodies.
-    let ev = s.evaluate(&ctx.actor)?;
+    let ev = committed?;
     let k = s.kernel().clone();
     // Only the bodies the import made (the document may hold others: F7-6).
     let made_bodies: Vec<_> = ev.bodies.iter().filter(|b| made.contains(&b.feature)).collect();
