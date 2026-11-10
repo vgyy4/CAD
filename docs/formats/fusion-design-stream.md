@@ -741,3 +741,46 @@ Reader: `fusion_tree/bodyops.rs`; tree types `move_body`, `scale_body`, `remove_
 * Left in 6124: Fillet4 (4 of 13 edges, faces of multi-op names [374, 376, 377]), Top's Extrude4 (profile is a face),
   the logo Extrude16/17 (spline-like sketch entities `D82E012F`, `FF23079A`), Combine1. 6126 also has OffsetFaces1 and
   RemoveInstance1.
+
+## 20. Round 12: patterns of components, tools in voids, joints, text (2026-11-10)
+Reader: `fusion_tree/occpattern.rs`; importer: `fusion_explain_steps` / `fusion_states_check` in gusset-commands `import.rs`.
+
+### Rectangular pattern of components (MacroPad RP2040 5100: R-Pattern1 of the `M3 SMT8mm` standoff; confirmed)
+* The `E8816367` record lists the original occurrence (`2D6E13A1`) first, then one occurrence per copy, each followed in
+  the record by a 4x4 matrix; the list is repeated near the end with the parameter holders: `countU`, `CountV`
+  (`A085449A` holders), `uSpaceDistance`, `vSpaceDistance` (`D91D429C`, cm), one `F2A7590D` direction (U) and a
+  `5A1BF548` reference (the V direction, not decoded). 5100: 2 x 2, 52.07 mm along +x, -81.28 mm.
+* An occurrence's first `CE2913AA` record names its component (`E03784ED`) and, for a copy, holds the copy's placement in
+  the parent component (row-major 4x4, cm; 5100: (5.207, 0, 0), (0, -8.128, 0), (5.207, -8.128, 0)). The original's
+  record has no matrix. The block-layout stream scanner (`fusion::read_design`) never saw these copies: the body import
+  placed **one** standoff.
+* Rule: copy placement = (original occurrence's placement) then (copy matrix). Read only when the copies are exactly the
+  lattice of the parameters (countU x CountV occurrences, i * uSpaceDistance along the stored direction plus j steps of
+  one vector of length |vSpaceDistance|, no rotation); otherwise the pattern stays unsupported and names why.
+* Independent check: the `standoffs` component's Sketch1 has four r = 2.125 mm circles at (3.81, 19.05), (55.88, 19.05),
+  (3.81, 100.33), (55.88, 100.33) (component coordinates), the Board (same placement) has four r = 2.125 holes there, and
+  the original standoff stands on (3.81, 100.33): the three copies land on the other three. 5100 now comes in as history.
+* Not covered: a pattern of an inserted design's occurrence (5128 Assembly R-Pattern1 of 12 switches: the occurrence's
+  `CE2913AA` names no component of this design) and Crickit CPX Assembly's (the repeated component lists no body).
+
+### Crickit HAT (3957): the five r = 0.45 tools that remove nothing
+* The Board's Sketch1 outline has five inner loops: milled slots around (2.48, 8.27), (2.48, 15.47), (7.60, 42.67),
+  (11.00, 37.87) and (13.85, 42.67). The five r = 0.45 hole circles of Sketch2 that cut nothing are exactly at those
+  centres (`c1097`, `c1100`, `c1145`, `c1148`, `c1151`): plated slots drawn as a hole plus a slot. They cut nothing in
+  Fusion either (its board already has the slots: the stored uncut board is the rebuilt one, 5551.7171 mm3).
+* The step check now measures, for a loose cut whose tools do not add up to its volume change, the part of each stored
+  tool inside the bodies the feature changes (their common volume before the feature) and accepts only when those parts
+  add up exactly: the 221 tools pass (positions included). Nothing is loosened: a tool in the wrong place now fails too.
+* 3957 then fails the box check: the inserted 2x20 header (`92c70d58`, 1030.5448 mm3) is placed by the Component Insert's
+  matrix (y -9.81..-4.73) in the tree and not placed at all by the body import. The root's **Assemble1** (`8DFDD543`, a
+  joint) moves it afterwards: two joint frames (cm: one turned, origin (4.858, 0, -0.1); one at the board hole
+  (5.663, 5.123, 0.157)) and the parameters `alignAngle` 90 deg, `alignOffsetX` 0.3 mm, `alignOffsetY` 0, `alignOffsetZ`
+  -1.5 mm, plus a motion record (`OffsetX/Y/Z`, `AngleZ`, all 0). How these combine is not established: the reading
+  "frame on the header -> 90 deg -> offset -> frame at the hole" puts the pins 0.02 mm off the hole grid in x (one sample, no
+  stored final placement), so it is not used. Joints also govern 5128 Assembly (Assemble1..8).
+
+### Cases 6124/6126: Top's Extrude4 (2) / Extrude5 (2) cut **text**
+* The "face profile" is a sketch text: Sketch3 (2) holds three `E0618268` records with the font name and the text
+  ("Arial Rounded MT Bold": "GND", "4.5V", "3V") and a `5275CBA4`; the extrude's profile records (`92F9A5F4`) name the
+  sketch (3834), no curves. The glyph outlines are not in the file (they come from the font), so these extrudes cannot be
+  rebuilt; both Cases stay bodies whatever else is solved.

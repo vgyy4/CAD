@@ -555,3 +555,15 @@ and Draft; a chamfer on a fillet's edges resolves through the fillet face (`Face
 design becomes history by this (10 of 18 unchanged): the Cases still stop at the logo splines,
 Top's face-profile extrude, Fillet4 and the unknown Combine operation. Details and evidence:
 `docs/formats/fusion-design-stream.md` section 19.
+
+## Amendment (2026-11-10, round 12): patterns of components, tools in voids
+
+A rectangular pattern of a component's occurrences (`fusion_tree::pattern_copies`) is read from
+the copies' stored placements, and only when they are exactly the pattern parameters' lattice;
+the body import places the component once more per copy, the tree writes the component's
+features once per occurrence. The Fusion step check measures, for a loose cut whose stored tools
+do not add up to its volume change, the part of each tool inside the bodies it changes, and
+accepts only an exact sum (Crickit HAT: five hole tools lie in slots of the board outline). 11 of
+18 designs are history (MacroPad RP2040 joins). Left: joints (Crickit HAT, MacroPad Assembly),
+sketch text (both Cases), swept-face blends and an unknown Combine operation (CyberDeck HAT,
+Cases), the Crickit CPX chain. Details: `docs/formats/fusion-design-stream.md` section 20.
