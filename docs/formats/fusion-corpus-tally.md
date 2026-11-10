@@ -158,12 +158,14 @@ What moved without becoming history:
 | 4200 PyBadge | Combine | box check: a jointed header stands elsewhere than its stored body (joints) |
 | 4242 PyGamer | pattern | a Base Feature body not among the last of its state list |
 
-Still open, by first blocker (72 designs): state check 18 (five 2025 PCB files, whose PCBExtrude and
-BoxPrimitive features are decoded in section 22 but not converted; stored package bodies the tree lacks; 805,
-whose cut removes 2 mm3 where its stored tool holds 20; three that used to hit the rebuild limit), unresolved
-blend edges 9 (side faces of an extrude whose generator numbers the profile does not explain and that no stored
-plane carries), no history stored 7, unsupported types 7 (Split, Thread, MirrorComponent, OffsetFaces, Derived Base
-Feature, ElectronicsPackageGenerator x2), profile decoding 5, Base Feature state lists 4, extrude limits 3 (a face
-object behind a spline outline, an unknown object face, a taper), revolve axis 2, draft 2, and one each of sweep
-path, mirror count, extrude changing several bodies, shell face, shell kernel failure, chamfer without distance,
-extrusion that does not build, sketch text, profile picks limit x2.
+Still open, by first blocker (71 designs as bodies, 1 timeout): state check 20 (16 "a stored solid is neither a
+state nor a tool": the five 2025 PCB files, whose PCBExtrude and BoxPrimitive features are decoded in section 22
+but not converted, stored package bodies the tree lacks, 805, whose cut removes 2 mm3 where its stored tool holds
+20, and three designs that hit the rebuild limit before; 2 box mismatches from joints; 2 with blends after the last
+stored state), unresolved blend edges 10 (7 in the reader: side faces of an extrude whose generator numbers the
+profile does not explain and that no stored plane carries; 3 at the rebuild), no history stored 7, unsupported
+types 8 (Split, Thread, MirrorComponent, OffsetFaces, Derived Base Feature, one unnamed class,
+ElectronicsPackageGenerator x2), profile decoding 5 and the pick limit 2, Base Feature state lists 4, extrude
+limits 4 (two to-object extents, a taper, a cut of several bodies), revolve axis 2, draft 2, shell 2, and one each
+of sweep path, mirror count, chamfer without distance, an extrusion that does not build, a pattern that makes a
+new body.
