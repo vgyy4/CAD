@@ -861,6 +861,15 @@ library part with two.)
   misreading. Still one sample with no stored final placement (the occurrence's `CE2913AA` and the insert hold only the
   placement before the joint), and the tally shows no design of the 150 whose first blocker is a joint, so it is not
   converted yet.
+* The resulting placement **is** stored (round 14 note): the root's transform records (`E03784ED`) name the header's
+  reference as `<uuid>_urn:adsk.wipprod:fs.file:vf.<id>?version=2` (UTF-16), the matrix right after that text. There are
+  three for 3957, all owned by the same occurrence id: one without a matrix, one with the insert's matrix (rotation
+  diag(1, -1, -1), t = (0, -8.54, 1.3381) mm, followed by `Component Insert`) and, later in the stream, one with
+  diag(1, -1, -1), t = (8.35, 51.23, -0.93) mm. That last one puts frame 1's origin (48.58, 0, -1) at (56.93, 51.23, 0.07),
+  i.e. the hole frame (56.63, 51.23, 1.57) plus the typed offsets (x 0.30, z -1.5): the joint's result. The reader stopped
+  after the UUID (no matrix found, so the header sat at the origin); it now skips the `_urn:` text and, as for every
+  reference, takes the last record, so the body import places the header where Fusion has it. Only 3957 of the corpus has
+  such keys.
 
 ### Typed references to two oddly spelled classes (the "tools are not where the board is" refusals)
 * Two classes spell their GUID with the dashes out of place, in the class table and in every typed reference:
