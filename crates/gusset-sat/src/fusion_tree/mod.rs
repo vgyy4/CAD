@@ -23,6 +23,7 @@ mod insert;
 mod json;
 mod naming;
 mod occpattern;
+mod patdir;
 mod sketch;
 mod stream;
 

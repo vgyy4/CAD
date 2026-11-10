@@ -732,7 +732,26 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             let val = |n: &str| pget(&ps, n).and_then(|p| p.value);
             let in_names: Vec<String> =
                 ins.iter().map(|q| names.get(q).cloned().unwrap_or_else(|| q.to_string())).collect();
-            let dirs = feature::pattern_dirs(d, fid);
+            let mut dirs = feature::pattern_dirs(d, fid);
+            // One stored direction and a second count: V is perpendicular to U, on the side the
+            // stored bodies show.
+            let mut v_from_bodies = false;
+            if let ([(pt, u)], true, Some(nu), Some(nv)) =
+                (dirs.as_slice(), linear && !ins.is_empty(), val("countU"), val("CountV").filter(|n| *n > 1.5))
+            {
+                let lat = super::patdir::Lattice {
+                    u: *u,
+                    spacing_u: val("uSpaceDistance").unwrap_or(0.0),
+                    count_u: nu.round().max(1.0) as usize,
+                    spacing_v: val("vSpaceDistance").unwrap_or(0.0),
+                    count_v: nv.round() as usize,
+                };
+                if let Some(v) = cx.second_direction(&ins, &lat) {
+                    let pt = *pt;
+                    dirs.push((pt, v));
+                    v_from_bodies = true;
+                }
+            }
             // A pattern of bodies names no feature: the bodies it copies are the ones its input
             // records reach, each named by the feature that made it.
             let mut body_in: Vec<String> = Vec::new();
@@ -775,6 +794,12 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     feats.extend(chain.into_iter().map(|mut v| {
                         if let Some(o) = v.as_object_mut() {
                             o.insert("source_id".into(), fid.into());
+                            if v_from_bodies {
+                                o.insert(
+                                    "direction_v_from".into(),
+                                    "perpendicular to the stored direction, on the side where the stored bodies have the copies' edges".into(),
+                                );
+                            }
                         }
                         v
                     }));
