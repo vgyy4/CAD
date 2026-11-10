@@ -1,0 +1,49 @@
+diff --git a/src/ModelingAlgorithms/TKGeomAlgo/Geom2dInt/Geom2dInt_TheIntPCurvePCurveOfGInter_0.cxx b/src/ModelingAlgorithms/TKGeomAlgo/Geom2dInt/Geom2dInt_TheIntPCurvePCurveOfGInter_0.cxx
+index 6b9920b2..8e3a6c94 100644
+--- a/src/ModelingAlgorithms/TKGeomAlgo/Geom2dInt/Geom2dInt_TheIntPCurvePCurveOfGInter_0.cxx
++++ b/src/ModelingAlgorithms/TKGeomAlgo/Geom2dInt/Geom2dInt_TheIntPCurvePCurveOfGInter_0.cxx
+@@ -40,4 +40,5 @@
+   <Geom2dInt_ExactIntersectionPointOfTheIntPCurvePCurveOfGInter.hxx>
+ #define IntCurve_IntPolyPolyGen Geom2dInt_TheIntPCurvePCurveOfGInter
+ #define IntCurve_IntPolyPolyGen_hxx <Geom2dInt_TheIntPCurvePCurveOfGInter.hxx>
++#define IntCurve_IntPolyPolyGen_SelfCopy
+ #include <IntCurve_IntPolyPolyGen.gxx>
+diff --git a/src/ModelingAlgorithms/TKGeomAlgo/IntCurve/IntCurve_IntPolyPolyGen.gxx b/src/ModelingAlgorithms/TKGeomAlgo/IntCurve/IntCurve_IntPolyPolyGen.gxx
+index dd8aa8cf..09efcdc5 100644
+--- a/src/ModelingAlgorithms/TKGeomAlgo/IntCurve/IntCurve_IntPolyPolyGen.gxx
++++ b/src/ModelingAlgorithms/TKGeomAlgo/IntCurve/IntCurve_IntPolyPolyGen.gxx
+@@ -434,7 +434,24 @@ void IntCurve_IntPolyPolyGen::Perform(const TheCurve&        C1,
+   }
+ 
+   Intf_InterferencePolygon2d      InterPP(Poly1);
+-  IntCurve_ExactIntersectionPoint EIP(C1, C1, TolConf);
++#ifdef IntCurve_IntPolyPolyGen_SelfCopy
++  // A second adaptor of the same curve for the root finder, which evaluates the curve at two
++  // parameters in turn: with one adaptor its B-spline span cache is rebuilt at nearly every
++  // evaluation (gusset patch 0003; the values are the same).
++  occ::handle<TheCurve> aSecond;
++  try
++  {
++    aSecond = C1.ShallowCopy();
++  }
++  catch (const Standard_Failure&)
++  {
++    aSecond.Nullify();
++  }
++  const TheCurve& C2 = aSecond.IsNull() ? C1 : *aSecond;
++#else
++  const TheCurve& C2 = C1;
++#endif
++  IntCurve_ExactIntersectionPoint EIP(C1, C2, TolConf);
+   double                          U, V;
+ 
+   //----------------------------------------------------------------------
+@@ -527,7 +544,7 @@ void IntCurve_IntPolyPolyGen::Perform(const TheCurve&        C1,
+             EIP.Roots(U, V);
+ 
+             TheCurveTool::D1(C1, U, P1, Tan1);
+-            TheCurveTool::D1(C1, V, P2, Tan2);
++            TheCurveTool::D1(C2, V, P2, Tan2);
+             double Dist  = P1.Distance(P2);
+             double EpsX1 = 10.0 * TheCurveTool::EpsX(C1);
+ 

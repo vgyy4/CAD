@@ -82,3 +82,11 @@ release's OCCT source archive carries the patches next to the unmodified source
   gear). It now uses the sign of the closed shell's volume, and keeps the classifier
   when the volume is too small relative to the bounding box to trust its sign. Same
   solids (OCCT goldens unchanged). To offer upstream.
+- `gusset-0003-self-intersection-second-adaptor.patch`: the self-intersection of a 2D curve
+  (`IntCurve_IntPolyPolyGen`, instantiated as `Geom2dInt_TheIntPCurvePCurveOfGInter`) gave
+  the root finder the same adaptor for both parameters, so a B-spline's span cache was
+  rebuilt at nearly every evaluation. It now gives it a shallow copy (the HLR instantiation,
+  whose curve type has no copy, is unchanged). Shape healing checks every pcurve of a STEP
+  read this way: one body blob of PC Joystick Adapter.f3d (24 bodies whose projected pcurves
+  self-intersect 150-250 times) reads in 287 s instead of 417 s; the 155 shapes of that
+  design read to the same B-rep bytes and volumes. To offer upstream.
