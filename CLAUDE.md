@@ -49,9 +49,10 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
 - Owner rule (importers, 2026-11-10): perfect one importer at a time with Opus agents
   instead of spreading rounds over all formats; Fusion first, then the next format once
   Fusion is as complete as its corpus allows. Grow the format's sample corpus to measure it.
-  Opus for the decoding/geometry work; Sonnet stays for mechanical jobs (fetching samples,
-  tallies, docs). Fable (about 2x Opus per token, longer turns) only as an escalation: a
-  problem an Opus agent reports as beyond it, or a blocker a round made no progress on.
+  Fable for the decoding/geometry work (owner, 2026-11-10: judge cost per completed task, not
+  per token - a round that cracks a blocker beats several that do not); Opus for well-scoped
+  implementation; Sonnet for mechanical jobs (fetching samples, tallies, docs). Compare rounds
+  by what they gain.
 - Usage budget (owner request): prefer doing small/mechanical work directly over
   spawning subagents; at most 4 subagents at a time (owner raised the cap, 2026-11-09),
   scoped tightly, with `model: sonnet` by default (reverse engineering, ports, merges,
