@@ -784,3 +784,80 @@ Reader: `fusion_tree/occpattern.rs`; importer: `fusion_explain_steps` / `fusion_
   ("Arial Rounded MT Bold": "GND", "4.5V", "3V") and a `5275CBA4`; the extrude's profile records (`92F9A5F4`) name the
   sketch (3834), no curves. The glyph outlines are not in the file (they come from the font), so these extrudes cannot be
   rebuilt; both Cases stay bodies whatever else is solved.
+
+## 21. Round 13: the 150-design corpus (2026-11-10)
+Worked from `docs/formats/fusion-corpus-tally.md` (150 further public Adafruit designs): the commonest first blockers, each
+fixed in the reader. Counts are over that set unless said otherwise.
+
+### Profile loops (the 15 "loop does not close" and 4 "curve piece not reproduced" designs)
+* **"Piece a of b" counts the cuts by the curves of the same loop**, not by all profile curves of the sketch (section 10
+  had it as the latter): line 1793 of 3464 Joy Bonnet is "2/2" in the board outline (cut by one loop neighbour) and "2/3"
+  in a small rectangle (cut by that loop's two sides), and four curves cross it in all. **The ends of a line that lies on
+  the line cut it too** (parallel lines do not cross). Checked on every piece entry the reader reaches: the cuts by the
+  loop's own curves give exactly `b` pieces for 646 of 647 open pieces and 175 of 178 closed ones (without the lying-on
+  ends 581; by all profile curves 259; by all sketch curves 569). The old orders (profile curves, all curves, loop
+  neighbours) remain as fallbacks, the unchecked neighbour trim last.
+* **A loop lists every sketch curve on its boundary**: where a rectangle is drawn on a side of another, the shared edge
+  is listed twice (805 slide switch: both rectangles' bottom lines over the same span). A polyline lying wholly on another
+  polyline of the loop is left out of the ring (`geom::drop_covered`; of two equal ones the first stays).
+* **A hole joined to the outline is walked in the outline's loop**: 610 DC Jack lists, in one loop flagged outer, a
+  rectangle, a line from its bottom edge up to a circle, and the circle. The ring is the rectangle, the circle a hole of
+  the region (`geom::bridged`: open polylines with a free end are the curves walked both ways; each closed curve must hang
+  on one or touch the outline, and lie inside it). The same reading covers a circle tangent to an edge of the outline
+  (a D shape with a circle touching its chord).
+* A cut of a circle sampled as 64 chords lies on a chord, up to the chord's sag off the circle (6299: 0.00027 cm), which
+  the ring join's tolerance did not allow: the join now allows the sag of the curved polylines it joins.
+* Newer streams (2025 files) write **64-bit hashes as `crv_primary_id`** in the profile entries (`30 d4 3c 03 da d8 9e 45`);
+  the entry layout is unchanged. The reader bounded the id at 2^40 and reported "0D57BD2F layout" (7 designs).
+* Left: two coincident circles in one loop (their sampled polylines cross everywhere; 2 designs), a circle with pieces
+  1/2 and 2/2 against another circle (1), a line "2/3" that nothing of its loop touches (1).
+
+### `8DBAF917` (the unnamed "DBAF" feature, 7 designs, 319 records)
+Its parent in the class table is `54F9ACE8` (component activation); the record names an occurrence `2D6E13A1` and its
+CreateComponent; no body record and no body link names one (0 of 319). A non-geometric timeline entry like its parent.
+
+### Extrudes to two sides (`extent` 2, `AgainstDistance`)
+The solid lies between `-AgainstDistance` and `AlongDistance` along the extrude direction; a negative `AgainstDistance`
+("-3.00 mm" with Along 4 mm: 878, 1501) starts it off the sketch plane on the first side. The tree has one distance, so
+the extrude is written from a copy of its sketch moved along the normal to the second end (`<name> start`), over the
+length between the ends. The rebuild check decides per design (the naming code already used these two ends).
+
+### Mirror of bodies (`D1728651` without feature inputs)
+The selected bodies are reached like a body pattern's (`2CA5A1CD`/`8DB90DAE` -> `9716F783` -> body link); the mirror is the
+creator of one new body link per selected body. Written as a tree `mirror` with `target` and `merge: false`, one per
+body; a mirror that makes a different number of bodies stays unsupported. (10 designs have one; "2x12 short female" is a
+library part with two.)
+
+### Face names are in the stored bodies (the general way to an edge)
+* A `generic_tag_attrib_def` attribute of an ACIS face holds the **whole face name**, not only the generator: after the
+  attribute's second name string come `1`, the entry count, then per entry the generator text, a number, the count of
+  operation ids, the ids and `0`, i.e. the entry layout of a `7ACC2A03` recipe face (keyplate: `'6' 0 1 313 0`).
+  The reader used the generator text alone (and so could mix faces of different operations).
+* So an edge recipe can be looked up: an edge of a stored body whose two faces carry exactly the recipe's first two
+  names is that edge, whatever made the faces (sweep, revolve, pattern copy, chamfer). Its middle comes from the edge's
+  curve (`straight`: point + t * direction; `ellipse`: centre, normal, major axis, ratio) at the mean of the two stored
+  parameters, taken only when the parameters reproduce both end vertices (with either sense). Several stored edges of
+  one pair of names must agree on the middle, or exactly one must have the recipe's further faces at its ends.
+  Of the 3217 edge recipes of the set 1243 (39 %) have such a stored edge; of 1631 in the 18-design set, 404.
+* A face of a recipe that the model does not explain is taken from the stored bodies when a **planar** stored face has
+  the name, alone or followed only by operations that trim a face without moving it (extrude, sweep, revolve, hole,
+  fillet, chamfer, combine, loft); all such faces must lie on one plane. Used for the plane/plane edges and the
+  to-object extent, not for picks that need a point of the face (shell, draft).
+* Used as a fallback behind the modelled faces. Unresolved blend edges in the set: 718 -> 358; designs whose first
+  blocker is an unresolved edge: 12 -> 5.
+
+### Joints: the layout of `Assemble` `8DFDD543` and why the pins sat 0.02 mm off (read, not converted)
+* Record (3957 `Assemble1`, 795 bytes): reference to a `7B6C3C2D` (the first joint frame's holder), a row-major 4x4
+  matrix at body+36 (cm) = **frame 1** in the moved component's own coordinates: rows `[0 -1 0 4.858] [-1 0 0 0]
+  [0 0 -1 -0.1]`, so x axis (0,-1,0), y (-1,0,0), z (0,0,-1), origin (48.58, 0, -1) mm; then a reference to the
+  `JointOrigin` `02E8AA49` and a second matrix = **frame 2**, identity at (56.63, 51.23, 1.57) mm (a hole of the board,
+  on its top face); then the parameter holders in the order `alignAngle`, `alignOffsetZ`, `alignOffsetX`, `alignOffsetY`
+  and, further on, the motion values (`OffsetX/Y/Z`, `AngleZ`). The `7B6C3C2D` repeats frame 1 and names the geometry it
+  snaps to: a point selection `69EE2FA7` at (4.858, 0, -0.1) and two `F2A7590D` edges.
+* One of those edges is (4.858, 0.032, -0.1) + (0, -0.064, 0) cm: a 0.64 mm edge of the last pin, and frame 1's origin is
+  its **middle**, i.e. 0.32 mm from the pin's axis. The reading "frame 1 turned by `alignAngle` about z, then moved by the
+  offsets, lands on frame 2" puts the pin axis at 0.32 - 0.30 = 0.02 mm from the hole centre in x and exactly on it in y:
+  the 0.02 mm of round 12 is the difference between the half width of the pin and the 0.30 mm the author typed, not a
+  misreading. Still one sample with no stored final placement (the occurrence's `CE2913AA` and the insert hold only the
+  placement before the joint), and the tally shows no design of the 150 whose first blocker is a joint, so it is not
+  converted yet.
