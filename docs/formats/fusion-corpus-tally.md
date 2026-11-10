@@ -127,6 +127,8 @@ First blocking reason of the 74 designs not as history:
 | 2 | Draft | 0 | reached now |
 | 6 | others, one each | | sweep path, pattern of components, mirror making another number of bodies, extrude changing several bodies, shell face, chamfer without distance |
 
-Designs gained (17): the "loop does not close" and "curve piece" designs that had no further
-blocker, the mirror and two-distance ones, and those whose hole tools now lie in the board
-(typed references). None of the 59 was lost.
+Designs gained (17), none of the 59 lost: 1833, 2829, 2884, 3191, 3800, 3857, 4062, 4900, 5217,
+5302, 5325, 5397, 5645, 5665, 5769, 5877, 6421. Most of the "stored solid of 1.2331 mm3" refusals
+of the first run are answered by the round 12 step check (hole tools that lie in slots
+of the outline), which the first run did not have yet (its own first re-run, before the typed references, already showed them as history); round 13 adds the loop and piece rules
+(2829, 2884) and the typed references (1833, 3857).
