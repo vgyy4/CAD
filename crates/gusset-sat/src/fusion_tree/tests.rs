@@ -1147,3 +1147,70 @@ fn an_extrude_that_names_its_target_by_a_typed_reference_is_still_recognised() {
     let e = feature::extrude_raw(&d, 6).unwrap();
     assert_eq!((e.op, e.extent, e.vec), (2, 1, Some([0.0, 0.0, 1.0])));
 }
+
+/// A Combine of the body of feature 101 (the tool) into the body of feature 100 (the target),
+/// with the given operation value.
+fn combine_stream(op: u32) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 5] = [
+        "2A94257F-0000-0000-0000-000000000000",
+        "2CA5A1CD-0000-0000-0000-000000000000",
+        "9716F783-0000-0000-0000-000000000000",
+        "D26351F0-0000-0000-0000-000000000000",
+        "DD405BC2-0000-0000-0000-000000000000",
+    ];
+    let mut body = le32(op);
+    body.extend(le32(0));
+    body.extend([0, 0, 1, 0, 0, 0, 0]);
+    body.extend(le64(0x1e9));
+    for list in [401u64, 201, 400] {
+        body.extend(le32(1));
+        body.extend(r#ref(list));
+        body.extend([0; 4]);
+    }
+    let recs: Vec<(u64, usize, Vec<u8>)> = vec![
+        (100, 4, Vec::new()),
+        (101, 4, Vec::new()),
+        (200, 3, r#ref(100)),
+        (201, 3, r#ref(101)),
+        (300, 2, r#ref(200)),
+        (301, 2, r#ref(201)),
+        (400, 1, r#ref(300)),
+        (401, 1, r#ref(301)),
+        (500, 0, body),
+    ];
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    (meta_classes(&CLASSES, &objs), bulk)
+}
+
+#[test]
+fn a_combine_joins_its_tool_bodies_to_its_target_and_an_unconfirmed_operation_is_refused() {
+    use super::combine::Combined;
+    let feats = vec![
+        json!({"type": "extrude", "name": "Extrude1", "source_id": 100, "creates_bodies": 1}),
+        json!({"type": "mirror", "name": "Mirror1", "source_id": 101, "creates_bodies": 1}),
+    ];
+    let names = std::collections::HashMap::new();
+    let (m, bulk) = combine_stream(0);
+    let d = Design::new(&m, &bulk).unwrap();
+    let g = super::Graph::new(&d);
+    let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
+    let Combined::Feature(f) = ed.combine(500, "Combine1") else { panic!("not read") };
+    assert_eq!(f["type"], "combine");
+    assert_eq!(f["target"], "Extrude1");
+    assert_eq!(f["tools"], json!(["Mirror1"]));
+    assert_eq!(f["operation"], "join");
+    // A tool whose maker makes several bodies is not one body the tree can name.
+    let several = vec![feats[0].clone(), json!({"type": "mirror", "name": "Mirror1", "source_id": 101})];
+    let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &several };
+    assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
+    let (m, bulk) = combine_stream(1);
+    let d = Design::new(&m, &bulk).unwrap();
+    let g = super::Graph::new(&d);
+    let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
+    assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
+}

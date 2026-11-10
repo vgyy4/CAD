@@ -16,6 +16,7 @@
 
 mod acis;
 mod bodyops;
+mod combine;
 mod feature;
 mod geom;
 mod insert;

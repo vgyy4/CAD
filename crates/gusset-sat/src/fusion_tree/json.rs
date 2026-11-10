@@ -836,6 +836,19 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 _ => ed.remove_json(fid, &nm, &fusion_type, class),
             };
             feats.push(j);
+        } else if c8 == "2A94257F" {
+            let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
+            match ed.combine(fid, &nm) {
+                super::combine::Combined::Feature(j) => feats.push(j),
+                super::combine::Combined::Redundant(why) => {
+                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": why, "source_id": fid}));
+                    continue;
+                }
+                super::combine::Combined::Refused(why) => {
+                    feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                        "class_guid": class, "source_id": fid, "error": why}));
+                }
+            }
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if c8 == "D7015B81" {
@@ -1110,7 +1123,7 @@ fn blocker(f: &Value) -> Option<String> {
             }
             None
         }
-        "hole" | "mirror" | "shell" | "draft" | "move_body" | "scale_body" | "remove_body" => None,
+        "hole" | "mirror" | "shell" | "draft" | "move_body" | "scale_body" | "remove_body" | "combine" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
