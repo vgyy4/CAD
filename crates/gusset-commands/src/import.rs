@@ -1887,6 +1887,8 @@ fn fusion_explain_steps(
             }
         }
     }
+    // The first loose cut whose tools do not fit, for the message.
+    let mut misfit: Option<String> = None;
     for k in 1..vols.len() {
         if delta(k) <= 1e-9 || explained.contains(&k) || !loose.get(k - 1).copied().unwrap_or(false) {
             continue;
@@ -1896,20 +1898,34 @@ fn fusion_explain_steps(
         if group.is_empty() || !copies(k).is_some_and(|m| group.len() as u64 <= m) {
             continue;
         }
+        let mut measured = None;
         let fits = same(delta(k), sum) || {
             // Measured: the part of each tool inside the body before the feature.
             let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
-            inside(k, &at)?.is_some_and(|parts| parts.len() == at.len() && same(delta(k), parts.iter().sum()))
+            measured = inside(k, &at)?.filter(|parts| parts.len() == at.len()).map(|parts| parts.iter().sum::<f64>());
+            measured.is_some_and(|m| same(delta(k), m))
         };
         if fits {
             covered.extend(group);
             explained.insert(k);
+        } else {
+            let name = names.get(k - 1).map_or("?", String::as_str);
+            let inside_text =
+                measured.map_or_else(String::new, |m| format!(", {m:.4} mm3 of them inside the body it changes"));
+            misfit.get_or_insert_with(|| {
+                format!(
+                    " ({name} changes the volume by {:.4} mm3; the {} stored tools no other feature explains hold {sum:.4} mm3{inside_text})",
+                    delta(k),
+                    group.len()
+                )
+            });
         }
     }
     if let Some(i) = (0..tool_volumes.len()).find(|i| !covered.contains(i)) {
         let v = tool_volumes.get(i).copied().unwrap_or(0.0);
         return Err(format!(
-            "a stored solid of {v:.4} mm3 is neither a state of the model nor the cut tool of a feature with the copies the tree makes"
+            "a stored solid of {v:.4} mm3 is neither a state of the model nor the cut tool of a feature with the copies the tree makes{}",
+            misfit.unwrap_or_default()
         ));
     }
     let tools = tool_volumes.len();
