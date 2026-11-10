@@ -393,7 +393,7 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, S
 }
 
 /// Part workbench objects translated (primitives, booleans, extrusions of sketches).
-const PART_KINDS: [&str; 11] = [
+const PART_KINDS: [&str; 13] = [
     "Part::Box",
     "Part::Cylinder",
     "Part::Sphere",
@@ -405,7 +405,92 @@ const PART_KINDS: [&str; 11] = [
     "Part::MultiCommon",
     "Part::Extrusion",
     "Part::Thickness",
+    "Part::Helix",
+    "Part::Sweep",
 ];
+
+/// The `Part::Helix` an object stands for: itself, or the one a PartDesign base feature wraps.
+fn helix_object<'a>(objects: &'a BTreeMap<String, Obj>, name: &str) -> Option<(&'a String, &'a Obj)> {
+    let mut cur = objects.get_key_value(name)?;
+    for _ in 0..8 {
+        match cur.1.kind.as_str() {
+            "Part::Helix" => return Some(cur),
+            "PartDesign::FeatureBase" => cur = objects.get_key_value(&cur.1.link("BaseFeature")?.0)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// A `Part::Helix` used as a pipe's or sweep's spine, as the tree's `helix` (ADR 0042 amendment
+/// 2026-11-10); `None` when the spine is not a helix. The spine must be the whole helix (every
+/// edge). A stored `Angle` that leaves the helix on its cylinder (the stored edges all lie at the
+/// radius) is ignored as FreeCAD did; one that does not is passed on, and the tree refuses it.
+fn helix_spine(
+    name: &str,
+    objects: &BTreeMap<String, Obj>,
+    spine: &str,
+    subs: &[String],
+    shape_edges: ShapeEdges<'_>,
+) -> Result<Option<Value>, String> {
+    let Some((hname, h)) = helix_object(objects, spine) else { return Ok(None) };
+    let (Some(radius), Some(pitch), Some(height)) = (h.float("Radius"), h.float("Pitch"), h.float("Height")) else {
+        return Err(format!("{name}: its helix {hname} has no radius, pitch or height"));
+    };
+    // The spine object's own stored shape and placement: a PartDesign base feature wraps the
+    // helix's shape with its own placement, not the helix's.
+    let holder = objects.get(spine).unwrap_or(h);
+    let place = Place::of(holder);
+    let file = holder
+        .first("Shape", "Part")
+        .and_then(|e| e.attrs.get("file"))
+        .filter(|f| !f.is_empty())
+        .ok_or(format!("{name}: its helix {hname} has no stored shape"))?;
+    let shape = shape_edges(file).map_err(|e| format!("{name}: {e}"))?;
+    let mut picked: Vec<usize> = Vec::new();
+    for s in subs.iter().filter(|s| !s.is_empty()) {
+        picked.push(
+            s.strip_prefix("Edge")
+                .and_then(|n| n.parse::<usize>().ok())
+                .ok_or(format!("{name}: its path {s} is not an edge of the helix"))?,
+        );
+    }
+    picked.sort_unstable();
+    picked.dedup();
+    if !picked.is_empty() && !picked.iter().copied().eq(1..=shape.edges.len()) {
+        return Err(format!("{name}: a path of some edges of a helix is not translated yet"));
+    }
+    // The stored edges lie on the cylinder about the placed axis (a bare wire has no tessellated
+    // path: its edges' midpoints stand in).
+    let mut off = 0.0f64;
+    for q in shape.edges.iter().flat_map(|e| e.path.iter().chain(std::iter::once(&e.mid))) {
+        let r = [q[0] - place.p[0], q[1] - place.p[1], q[2] - place.p[2]];
+        let a = r[0] * place.z[0] + r[1] * place.z[1] + r[2] * place.z[2];
+        let c = [r[0] - a * place.z[0], r[1] - a * place.z[1], r[2] - a * place.z[2]];
+        off = off.max((libm::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - radius).abs());
+    }
+    let tapered = h.float("Angle").is_some_and(|a| a.abs() > 1e-9);
+    // FreeCAD keeps a stored `Angle` the helix ignored (a cylinder): only a shape off the
+    // cylinder is tapered.
+    if shape.edges.is_empty() || (!tapered && off > 2e-3) {
+        return Err(format!("{name}: the stored shape of its helix {hname} does not match its parameters"));
+    }
+    let mut j = json!({"origin": place.p, "axis": place.z, "x": place.x, "radius": radius, "pitch": pitch,
+        "height": height, "left_handed": h.int("LocalCoord") == Some(1)});
+    if tapered
+        && off > 2e-3
+        && let (Some(m), Some(a)) = (j.as_object_mut(), h.float("Angle"))
+    {
+        m.insert("taper_angle".into(), json!(a));
+    }
+    Ok(Some(j))
+}
+
+/// Whether a placement is the identity.
+fn is_identity(p: &Place) -> bool {
+    let near = |a: V3, b: V3| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-9);
+    near(p.p, [0.0; 3]) && near(p.x, IDENTITY.x) && near(p.y, IDENTITY.y) && near(p.z, IDENTITY.z)
+}
 
 /// A Draft array (`Part::FeaturePython` whose proxy is Draft's `_Array`).
 fn is_draft_array(o: &Obj) -> bool {
@@ -651,6 +736,26 @@ fn part_features(
                         features.push(json!({"type": "extrude", "name": format!("{name}_back"), "sketch": base, "profiles": "all", "distance": -sign * rev, "symmetric": false, "operation": "join", "target": name}));
                     }
                 }
+                body_of.insert(name.clone(), name.clone());
+            }
+            "Part::Sweep" => {
+                let sections = o.link_list("Sections");
+                let [section] = sections.as_slice() else {
+                    return Err(format!("{name}: a sweep through several sections is not translated yet"));
+                };
+                let sk = objects.get(section).filter(|b| b.kind == "Sketcher::SketchObject").ok_or(format!(
+                    "{name}: a sweep of a {} is not translated yet",
+                    objects.get(section).map_or("missing object", |b| b.kind.as_str())
+                ))?;
+                let (spine, subs) = o.link("Spine").ok_or(format!("{name}: no path"))?;
+                let helix = helix_spine(name, objects, &spine, &subs, shape_edges)?
+                    .ok_or(format!("{name}: a sweep along a path other than a helix is not translated yet"))?;
+                if sketched.insert(section.clone()) {
+                    let (f, _) = sketch(section, sk, &IDENTITY)?;
+                    features.push(f);
+                }
+                features.push(json!({"type": "sweep", "name": name, "sketch": section, "helix": helix,
+                    "orientation": "frenet", "operation": "new"}));
                 body_of.insert(name.clone(), name.clone());
             }
             "Part::Thickness" => {
@@ -1707,8 +1812,16 @@ pub(crate) fn tree_options(
                         return Err(format!("{name}: its profile is not a sketch of the body"));
                     }
                     let (spine, edges) = o.link("Spine").ok_or(format!("{name}: no path"))?;
-                    let (_, refs) =
-                        sketches.get(&spine).ok_or(format!("{name}: its path is not a sketch of the body"))?;
+                    let helix = helix_spine(name, &objects, &spine, &edges, shape_edges)?;
+                    if helix.is_some() && !is_identity(&place) {
+                        return Err(format!("{name}: a helix path in a placed body is not translated yet"));
+                    }
+                    let no_refs = HashMap::new();
+                    let refs = if helix.is_some() {
+                        &no_refs
+                    } else {
+                        &sketches.get(&spine).ok_or(format!("{name}: its path is not a sketch of the body"))?.1
+                    };
                     if !o.link_list("Sections").is_empty() || o.link("AuxillerySpine").is_some() {
                         return Err(format!(
                             "{name}: a pipe through sections or with a second path is not translated yet"
@@ -1724,7 +1837,7 @@ pub(crate) fn tree_options(
                         _ => return Err(format!("{name}: this pipe mode is not translated yet")),
                     };
                     let mut curves = Vec::new();
-                    for e in edges.iter().filter(|e| !e.is_empty()) {
+                    for e in edges.iter().filter(|e| !e.is_empty() && helix.is_none()) {
                         curves.push(
                             refs.get(e).ok_or(format!("{name}: its path edge {e} is not a sketch curve"))?.clone(),
                         );
@@ -1737,6 +1850,11 @@ pub(crate) fn tree_options(
                     };
                     let mut f = json!({"type": "sweep", "name": name, "sketch": profile, "path": spine,
                         "path_curves": curves, "orientation": orientation, "operation": op});
+                    if let (Some(h), Some(m)) = (helix, f.as_object_mut()) {
+                        m.remove("path");
+                        m.remove("path_curves");
+                        m.insert("helix".into(), h);
+                    }
                     if let (Some(t), Some(m)) = (&first_solid, f.as_object_mut()) {
                         m.insert("target".into(), json!(t));
                     }
@@ -1772,6 +1890,8 @@ pub(crate) fn tree_options(
                     first_solid.get_or_insert_with(|| name.clone());
                     features.push(f);
                 }
+                // A helix wrapped as the body's base feature is only a path for a pipe.
+                "PartDesign::FeatureBase" if helix_object(&objects, name).is_some() => {}
                 // Datums and the origin carry no geometry of the body.
                 // A datum plane a pad or pocket takes as its profile is the rectangle of its
                 // size, centred on its placement.
@@ -2276,6 +2396,166 @@ mod tests {
         let p = t.features.iter().find(|f| f["type"] == "pattern_linear").expect("the pattern");
         assert_eq!(p["direction"], serde_json::json!([0.0, 0.0, 1.0]));
         assert_eq!(p["spacing"], 3.0);
+    }
+
+    /// A radius 1 circle profile, a helix (radius 9.4, pitch 8.67, height 26, along world Y from
+    /// (0, 5.5, 0)) and `extra` objects; `props` are the helix's extra properties.
+    fn helix_doc(props: &str, extra: &str, objects: &str) -> String {
+        format!(
+            r#"<Document SchemaVersion="4">
+<Objects Count="4">
+  <Object type="Sketcher::SketchObject" name="Profile"/>
+  <Object type="Part::Helix" name="Helix"/>
+  {objects}
+</Objects>
+<ObjectData Count="4">
+  <Object name="Profile"><Properties>
+    <Property name="Geometry" type="Part::PropertyGeometryList"><GeometryList count="1">
+      <Geometry type="Part::GeomCircle"><Construction value="0"/><Circle CenterX="5" CenterY="0" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1"/></Geometry>
+    </GeometryList></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="5" Pz="0" Q0="0" Q1="0.707106781187" Q2="0" Q3="-0.707106781187"/></Property>
+  </Properties></Object>
+  <Object name="Helix"><Properties>
+    <Property name="Radius" type="App::PropertyLength"><Float value="9.4"/></Property>
+    <Property name="Pitch" type="App::PropertyLength"><Float value="8.67"/></Property>
+    <Property name="Height" type="App::PropertyLength"><Float value="26"/></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="5.5" Pz="0" Q0="0.5" Q1="0.5" Q2="0.5" Q3="-0.5"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="Helix.brp"/></Property>
+    {props}
+  </Properties></Object>
+  {extra}
+</ObjectData>
+</Document>"#
+        )
+    }
+
+    const SWEEP: &str = r#"<Object name="Sweep"><Properties>
+    <Property name="Sections" type="App::PropertyLinkList"><LinkList count="1"><Link value="Profile"/></LinkList></Property>
+    <Property name="Spine" type="App::PropertyLinkSub"><LinkSub value="Helix" count="3"><Sub value="Edge1"/><Sub value="Edge2"/><Sub value="Edge3"/></LinkSub></Property>
+    <Property name="Frenet" type="App::PropertyBool"><Bool value="true"/></Property>
+    <Property name="Solid" type="App::PropertyBool"><Bool value="true"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="Sweep.brp"/></Property>
+  </Properties></Object>"#;
+
+    /// Three turns of the helix: one edge each, their midpoints on the cylinder (`radius`).
+    fn helix_edges(radius: f64) -> impl FnMut(&str) -> Result<Edges, String> {
+        move |_| {
+            let mid = |p: [f64; 3]| SrcEdge { mid: p, ..SrcEdge::default() };
+            Ok(Edges::from(vec![mid([radius, 10.0, 0.0]), mid([0.0, 18.0, radius]), mid([-radius, 26.0, 0.0])]))
+        }
+    }
+
+    fn sweep_doc(props: &str) -> String {
+        helix_doc(props, SWEEP, r#"<Object type="Part::Sweep" name="Sweep"/>"#)
+    }
+
+    #[test]
+    fn a_part_sweep_along_a_helix_carries_its_axis_pitch_and_hand() {
+        let t = tree(sweep_doc("").as_bytes(), &mut helix_edges(9.4)).unwrap();
+        let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
+        assert_eq!(kinds, ["sketch", "sweep"]);
+        let s = &t.features[1];
+        assert_eq!((s["sketch"].as_str(), s["orientation"].as_str()), (Some("Profile"), Some("frenet")));
+        assert!(s.get("path").is_none() && s.get("path_curves").is_none(), "{s}");
+        let h = &s["helix"];
+        let near = |v: &Value, w: [f64; 3]| (0..3).all(|i| (v[i].as_f64().unwrap() - w[i]).abs() < 1e-9);
+        assert!(near(&h["origin"], [0.0, 5.5, 0.0]) && near(&h["axis"], [0.0, 1.0, 0.0]), "{h}");
+        assert!(near(&h["x"], [0.0, 0.0, 1.0]), "{h}");
+        assert_eq!(
+            (h["radius"].as_f64(), h["pitch"].as_f64(), h["height"].as_f64()),
+            (Some(9.4), Some(8.67), Some(26.0))
+        );
+        assert_eq!(h["left_handed"], false);
+        assert!(h.get("taper_angle").is_none());
+        let left = r#"<Property name="LocalCoord" type="App::PropertyEnumeration"><Integer value="1"/></Property>"#;
+        let t = tree(sweep_doc(left).as_bytes(), &mut helix_edges(9.4)).unwrap();
+        assert_eq!(t.features[1]["helix"]["left_handed"], true);
+    }
+
+    #[test]
+    fn a_stored_angle_is_ignored_only_when_the_stored_helix_is_a_cylinder() {
+        let angle = r#"<Property name="Angle" type="App::PropertyAngle"><Float value="90"/></Property>"#;
+        let t = tree(sweep_doc(angle).as_bytes(), &mut helix_edges(9.4)).unwrap();
+        assert!(t.features[1]["helix"].get("taper_angle").is_none());
+        // Edges off the cylinder: a cone; the tree refuses it.
+        let angle = r#"<Property name="Angle" type="App::PropertyAngle"><Float value="10"/></Property>"#;
+        let t = tree(sweep_doc(angle).as_bytes(), &mut helix_edges(7.0)).unwrap();
+        assert_eq!(t.features[1]["helix"]["taper_angle"], 10.0);
+        // Without an angle, a stored shape off its cylinder is a different helix than the parameters say.
+        let e = tree(sweep_doc("").as_bytes(), &mut helix_edges(7.0)).unwrap_err();
+        assert!(e.contains("does not match its parameters"), "{e}");
+    }
+
+    #[test]
+    fn sweeps_that_are_not_a_whole_helix_are_not_translated() {
+        let e = tree(sweep_doc("").as_bytes(), &mut no_shapes).unwrap_err();
+        assert!(e.contains("no shapes"), "{e}");
+        let partial = sweep_doc("").replace(r#"<Sub value="Edge3"/>"#, "");
+        let e = tree(partial.as_bytes(), &mut helix_edges(9.4)).unwrap_err();
+        assert!(e.contains("some edges of a helix"), "{e}");
+        let two =
+            sweep_doc("").replace(r#"<Link value="Profile"/>"#, r#"<Link value="Profile"/><Link value="Profile"/>"#);
+        let e = tree(two.as_bytes(), &mut helix_edges(9.4)).unwrap_err();
+        assert!(e.contains("several sections"), "{e}");
+        let line = sweep_doc("").replace(r#"<LinkSub value="Helix""#, r#"<LinkSub value="Profile""#);
+        let e = tree(line.as_bytes(), &mut helix_edges(9.4)).unwrap_err();
+        assert!(e.contains("other than a helix"), "{e}");
+    }
+
+    #[test]
+    fn a_pipe_along_a_helix_base_feature_uses_the_base_features_placement() {
+        // A PartDesign body holding the helix as a base feature (placement and shape of its own).
+        let doc = r#"<Document SchemaVersion="4">
+<Objects Count="5">
+  <Object type="PartDesign::Body" name="Body"/>
+  <Object type="Part::Helix" name="Helix"/>
+  <Object type="PartDesign::FeatureBase" name="BaseFeature"/>
+  <Object type="Sketcher::SketchObject" name="Sketch"/>
+  <Object type="PartDesign::AdditivePipe" name="AdditivePipe"/>
+</Objects>
+<ObjectData Count="5">
+  <Object name="Body"><Properties>
+    <Property name="Group" type="App::PropertyLinkList"><LinkList count="3"><Link value="BaseFeature"/><Link value="Sketch"/><Link value="AdditivePipe"/></LinkList></Property>
+  </Properties></Object>
+  <Object name="Helix"><Properties>
+    <Property name="Radius" type="App::PropertyLength"><Float value="15"/></Property>
+    <Property name="Pitch" type="App::PropertyLength"><Float value="16.67"/></Property>
+    <Property name="Height" type="App::PropertyLength"><Float value="50"/></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="0" Pz="0" Q0="0.5" Q1="0.5" Q2="0.5" Q3="0.5"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="Helix.brp"/></Property>
+  </Properties></Object>
+  <Object name="BaseFeature"><Properties>
+    <Property name="BaseFeature" type="App::PropertyLink"><Link value="Helix"/></Property>
+    <Property name="Shape" type="Part::PropertyPartShape"><Part file="Base.brp"/></Property>
+  </Properties></Object>
+  <Object name="Sketch"><Properties>
+    <Property name="Geometry" type="Part::PropertyGeometryList"><GeometryList count="1">
+      <Geometry type="Part::GeomCircle"><Construction value="0"/><Circle CenterX="15" CenterY="0" CenterZ="0" NormalX="0" NormalY="0" NormalZ="1" Radius="1.5"/></Geometry>
+    </GeometryList></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="0" Pz="0" Q0="0.707106781187" Q1="0" Q2="0" Q3="0.707106781187"/></Property>
+  </Properties></Object>
+  <Object name="AdditivePipe"><Properties>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0"></LinkSub></Property>
+    <Property name="Spine" type="App::PropertyLinkSub"><LinkSub value="BaseFeature" count="1"><Sub value="Edge1"/></LinkSub></Property>
+    <Property name="Mode" type="App::PropertyEnumeration"><Integer value="0"/></Property>
+  </Properties></Object>
+</ObjectData>
+</Document>"#;
+        // The base feature's stored helix is about world Z (its own placement is the identity).
+        let mut z_helix = |_: &str| -> Result<Edges, String> {
+            Ok(Edges::from(vec![SrcEdge { mid: [0.0, 15.0, 25.0], ..SrcEdge::default() }]))
+        };
+        let t = tree(doc.as_bytes(), &mut z_helix).unwrap();
+        let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
+        assert_eq!(kinds, ["sketch", "sweep"]);
+        let s = &t.features[1];
+        assert_eq!((s["operation"].as_str(), s["name"].as_str()), (Some("new"), Some("AdditivePipe")));
+        assert_eq!(s["helix"]["axis"], serde_json::json!([0.0, 0.0, 1.0]));
+        assert_eq!(s["helix"]["origin"], serde_json::json!([0.0, 0.0, 0.0]));
+        // A fixed profile does not follow a helix: the tree refuses it later; the mode is carried.
+        let fixed = doc.replace(r#"<Integer value="0"/>"#, r#"<Integer value="1"/>"#);
+        let t = tree(fixed.as_bytes(), &mut z_helix).unwrap();
+        assert_eq!(t.features[1]["orientation"], "fixed");
     }
 
     #[test]

@@ -208,9 +208,19 @@ translated, so nothing else is needed (Page_056-1 gets past it but stays at tier
 fused one, which no tree feature gives). `Part::Thickness` (skin mode, faces taken from the input feature's stored shape,
 a negative value inward) is written as a `shell`; Page_037 still fails: Gusset's shell reports the walls too
 thick for the part at any thickness inward and an invalid solid outward (a 600 mm dish pad with a pocket; not traced).
-Helix sweeps (Page_085, Page_092) need a tree change: `SweepF` (tree_import/v2.rs) takes a path sketch only, so
-it would need an optional `helix` object (origin, axis, x, radius, pitch, height, hand) mapping to ADR 0034's
-`path: helix(...)`, and FreeCAD's pipe spine is the helix edges of a `Part::Helix` object (radius, pitch,
-height, placement; Page_085 has 3 turns as 3 edges). Not done here. Page_058 ("Sketch has no closed regions"),
+Helix sweeps (Page_085, Page_092): the tree sweep takes a `helix` (ADR 0042 amendment 2026-11-10) and
+`fcstd_tree.rs` writes a `Part::Helix` used as the spine of a `PartDesign::AdditivePipe`/`SubtractivePipe`
+(directly, or wrapped in a `PartDesign::FeatureBase`, which has a placement and stored shape of its own: Page_085's
+helix is about world Z there, its own placement turns it to X) or of a `Part::Sweep` (one section, helix
+spine of all its edges; `Frenet` or not both become `frenet`). The stored edges must lie on the cylinder of
+the helix about the placed axis (a stored `Angle` the helix ignored, Page_085's 90, is dropped; an edge off the
+cylinder passes it on as `taper_angle`, which the tree refuses). The axis must be a positive world axis
+through the origin (the document's helix cannot say more). Both files still stay at tier 2, for FreeCAD's own
+approximation of the sweep, not for the translation: Page_085 gives the same volume (7e-6) but FreeCAD's end
+section is not the screw image of the profile (about 20 degrees of tilt by its top height; presumably its Frenet frame
+on the BSpline helix; a mesh of
+the stored shape at 0.001 mm tops at z 51.412, the exact solid at 51.5), so the bounding-box check fails by
+0.09 mm; Page_092's profile is not centred on the helix point, so the same effect shows in the volume (1.2e-4: 639.222 against Pappus' 639.143 mm3 for the sweep).
+Page_058 ("Sketch has no closed regions"),
 Page_074 (the pipe path starts 8 mm from the profile plane) and Page_094 (loft similarity) were looked at only
 for their reasons.
