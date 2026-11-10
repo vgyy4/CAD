@@ -34,6 +34,8 @@ pub(crate) struct Rec {
     pub(crate) dbls: Vec<f64>,
     pub(crate) pos: Vec<V3>,
     pub(crate) vec: Vec<V3>,
+    /// Flag tokens (0x0a, 0x0b) in order: the senses (`forward`/`reversed`) and booleans.
+    pub(crate) flags: Vec<u8>,
 }
 
 fn size_of(tag: u8) -> Option<usize> {
@@ -129,6 +131,10 @@ fn records(b: &[u8]) -> Result<Vec<Rec>, String> {
                 i = i.saturating_add(4).saturating_add(l);
                 prev_name = None;
             }
+            0x0a | 0x0b => {
+                cur.flags.push(t);
+                prev_name = None;
+            }
             _ => {
                 let n = width(t).ok_or("unknown token")?;
                 let v = b.get(i..i + n).ok_or("cut short")?;
@@ -164,13 +170,13 @@ pub(crate) struct Acis {
     bodies: HashMap<i64, usize>,
 }
 
-fn sub(a: V3, b: V3) -> V3 {
+pub(crate) fn sub(a: V3, b: V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-fn add(a: V3, b: V3) -> V3 {
+pub(crate) fn add(a: V3, b: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
-fn mul(a: V3, s: f64) -> V3 {
+pub(crate) fn mul(a: V3, s: f64) -> V3 {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 pub(crate) fn dot(a: V3, b: V3) -> f64 {
@@ -232,6 +238,25 @@ impl Acis {
         let ratio = r.dbls.first().copied().unwrap_or(1.0);
         let mn = cross(n, maj);
         Some(add(cen, add(mul(maj, libm::cos(t)), mul(mn, ratio * libm::sin(t)))))
+    }
+
+    /// Points along the curved edges of face `f` that run round the axis `ax` through `cen` at
+    /// one radius and height (the arcs of a cone or cylinder face), in file units.
+    fn arc_samples(&self, f: i64, cen: V3, ax: V3) -> Vec<V3> {
+        let u = unit(ax);
+        let mut out = Vec::new();
+        for c in self.coedges(f) {
+            let Some(e) = self.rec(c).and_then(|r| r.refs.iter().copied().find(|&y| self.is(y, "edge"))) else {
+                continue;
+            };
+            let Some(pts) = self.edge_samples(e).filter(|p| p.len() > 2) else { continue };
+            let rh: Vec<(f64, f64)> = pts.iter().map(|&p| Self::rh(cen, u, p)).collect();
+            let Some(&(r0, h0)) = rh.first() else { continue };
+            if rh.iter().all(|&(r, h)| (r - r0).abs() < 1e-6 && (h - h0).abs() < 1e-6) {
+                out.extend(pts);
+            }
+        }
+        out
     }
 
     /// An edge from its start vertex to its end vertex (straight edges: the two ends).
@@ -342,6 +367,24 @@ impl Acis {
 
 // --- the result body: blend faces -------------------------------------------------------------
 
+/// A full round as read from its cylinder face (file units).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FullRound {
+    /// The crest of the half cylinder: where it touches the middle face it replaced.
+    pub(crate) point: V3,
+    /// The outward normal of that middle face.
+    pub(crate) normal: V3,
+    /// A slot's end (the supports face the axis) rather than a tab's.
+    pub(crate) concave: bool,
+    /// A point on the cylinder axis, the axis direction, the direction from the axis to the
+    /// crest, the radius, and the axial extent of the cylinder face about the point.
+    pub(crate) axis: V3,
+    pub(crate) dir: V3,
+    pub(crate) out: V3,
+    pub(crate) radius: f64,
+    pub(crate) span: (f64, f64),
+}
+
 /// A surface as far as blend analysis needs it.
 #[derive(Debug, Clone)]
 pub(crate) enum Surf {
@@ -356,12 +399,29 @@ pub(crate) enum Surf {
 
 impl Acis {
     fn surf_rec(&self, f: i64) -> Option<usize> {
-        self.rec(f)?.refs.iter().copied().find(|&y| self.ends(y, "surface")).and_then(|y| usize::try_from(y).ok())
+        self.rec(f)?
+            .refs
+            .iter()
+            .copied()
+            .find(|&y| self.ends(y, "surface") || self.is_spline_surface(y))
+            .and_then(|y| usize::try_from(y).ok())
+    }
+
+    /// A spline surface record: its type name carries the whole description of the surface
+    /// (`spline-surface-rb_blend_spl_sur-cone-...`), so it does not end in `surface`.
+    fn is_spline_surface(&self, k: i64) -> bool {
+        self.rec(k).is_some_and(|r| r.ty.starts_with("spline-surface-"))
     }
 
     pub(crate) fn kind(&self, f: i64) -> Surf {
         let Some(s) = self.surf_rec(f) else { return Surf::None };
-        let Some(r) = self.recs.get(s) else { return Surf::None };
+        let Some(mut r) = self.recs.get(s) else { return Surf::None };
+        // A `spline-surface-ref` is a pointer to the spline surface record that describes it.
+        if r.ty == "spline-surface-ref"
+            && let Some(q) = r.refs.iter().filter_map(|&y| self.rec(y)).find(|q| q.ty.starts_with("spline-surface-"))
+        {
+            r = q;
+        }
         let t = r.ty.as_str();
         let (p0, v0) = (r.pos.first().copied(), r.vec.first().copied());
         if t.ends_with("plane-surface") {
@@ -387,6 +447,11 @@ impl Acis {
         }
         if t == "sphere-surface" {
             return Surf::Sphere;
+        }
+        if let Some(rest) = t.strip_prefix("spline-surface-") {
+            // The kind of spline surface: `srf_srf_v_bl_spl_sur` (a vertex blend, the patch where
+            // blends meet), `rb_blend_spl_sur` (a rolling ball blend), ...
+            return Surf::Other(rest.split('-').next().unwrap_or(rest).to_string());
         }
         Surf::Other(t.to_string())
     }
@@ -470,17 +535,15 @@ impl Acis {
         pts
     }
 
-    /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
-    /// some circle edges use) attribute whose 4th int is `fid`.
     /// A full round: the cylinder face `f` is tangent to two parallel planar faces (apart by
     /// twice its radius, on opposite sides of its axis) and replaces the face between them.
     /// Returns a point on that middle face (the crest of the half cylinder, at the middle of
     /// its extent along the axis) and the face's outward normal, in file units. `None` when
     /// `f` is not such a blend.
-    pub(crate) fn full_round(&self, f: i64) -> Option<(V3, V3)> {
+    pub(crate) fn full_round(&self, f: i64) -> Option<FullRound> {
         let Surf::Cyl { c, ax, r } = self.kind(f) else { return None };
         let u = unit(ax);
-        let mut sup: Vec<(i64, V3, f64)> = Vec::new();
+        let mut sup: Vec<(i64, V3, f64, f64)> = Vec::new();
         for (g, _) in self.neighbours(f) {
             if sup.iter().any(|x| x.0 == g) {
                 continue;
@@ -489,7 +552,9 @@ impl Acis {
                 && dot(n, u).abs() < 1e-6
                 && (dot(sub(p, c), n).abs() - r).abs() < 1e-6
             {
-                sup.push((g, n, dot(sub(p, c), n)));
+                // The outward normal: a reversed face (first flag) faces against its surface.
+                let sgn = if self.rec(g).and_then(|r| r.flags.first()) == Some(&0x0a) { -1.0 } else { 1.0 };
+                sup.push((g, n, dot(sub(p, c), n), sgn));
             }
         }
         let [a, b] = sup.as_slice() else { return None };
@@ -513,7 +578,26 @@ impl Acis {
         if !t.is_finite() {
             return None;
         }
-        Some((add(c, add(mul(u, t), mul(out, r))), out))
+        // A convex round (a tab's end) has supports whose outward normals point away from the
+        // axis; a concave one (a slot's end) has them pointing at it, and the middle face it
+        // replaced then faces the other way than the crest does.
+        let away = (a.3 * a.2 > 0.0, b.3 * b.2 > 0.0);
+        if away.0 != away.1 {
+            return None;
+        }
+        let normal = if away.0 { out } else { mul(out, -1.0) };
+        let lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Some(FullRound {
+            point: add(c, add(mul(u, t), mul(out, r))),
+            normal,
+            concave: !away.0,
+            axis: c,
+            dir: u,
+            out,
+            radius: r,
+            span: (lo, hi),
+        })
     }
 
     /// The planar faces (point, unit normal; file units) tagged `NMx_Brep_Feature_tag` by
@@ -532,6 +616,27 @@ impl Acis {
         out
     }
 
+    /// A planar face of a chamfer that meets at least two other faces of the same feature and has
+    /// three corners: the patch where chamfers of a straight and a curved edge meet at a vertex.
+    /// It replaces no edge of its own (the faces around it carry the edges).
+    pub(crate) fn is_chamfer_corner_patch(&self, f: i64, feature_faces: &[i64]) -> bool {
+        if !matches!(self.kind(f), Surf::Plane { .. }) {
+            return false;
+        }
+        let mut corners: Vec<V3> = Vec::new();
+        for v in self.verts(f) {
+            if corners.iter().all(|c| dist(*c, v) > 1e-7) {
+                corners.push(v);
+            }
+        }
+        let mut near: Vec<i64> = self.neighbours(f).into_iter().map(|x| x.0).filter(|g| *g != f).collect();
+        near.sort_unstable();
+        near.dedup();
+        corners.len() == 3 && near.iter().filter(|g| feature_faces.contains(g)).count() >= 2
+    }
+
+    /// Faces that carry an `NMx_blend_tag` (or `NMx_edge_blend_tag`, which the chamfers of
+    /// some circle edges use) attribute whose 4th int is `fid`.
     pub(crate) fn blend_faces(&self, fid: i64) -> Vec<i64> {
         let mut out = Vec::new();
         for r in &self.recs {
@@ -562,6 +667,24 @@ fn line_of_planes(p1: V3, n1: V3, p2: V3, n2: V3, near: V3) -> Option<(V3, V3)> 
     Some((add(near, add(mul(n1, a), mul(n2, b))), u))
 }
 
+/// Where a plane meets a cylinder whose axis is parallel to it: a line along the axis; of the
+/// two, the one nearest `near`.
+fn line_of_plane_cyl(p: V3, n: V3, c: V3, ax: V3, r: f64, near: V3) -> Option<(V3, V3)> {
+    let (n, u) = (unit(n), unit(ax));
+    if dot(n, u).abs() > 1e-6 {
+        return None;
+    }
+    let d = dot(sub(c, p), n);
+    if d.abs() > r + 1e-9 {
+        return None;
+    }
+    let h = libm::sqrt((r * r - d * d).max(0.0));
+    let foot = sub(c, mul(n, d));
+    let w = unit(cross(n, u));
+    let (a, b) = (add(foot, mul(w, h)), sub(foot, mul(w, h)));
+    Some((if dist(a, near) <= dist(b, near) { a } else { b }, u))
+}
+
 fn round_to(x: f64, digits: i32) -> f64 {
     let s = libm::pow(10.0, f64::from(digits));
     libm::round(x * s) / s
@@ -581,6 +704,22 @@ fn ref_dir(n: V3) -> V3 {
 pub(crate) enum EdgeInfo {
     Line { dir: V3 },
     Circle { cen: V3, ax: V3, r: f64 },
+}
+
+/// The vertices are two points on opposite sides of the axis: the arc between them is half a
+/// circle, but which half is not known from them.
+fn is_half_circle(cen: V3, ax: V3, vs: &[V3]) -> bool {
+    let u = unit(ax);
+    let mut dirs: Vec<V3> = Vec::new();
+    for &v in vs {
+        let q = sub(v, cen);
+        let q = sub(q, mul(u, dot(q, u)));
+        if libm::sqrt(dot(q, q)) > 1e-9 && dirs.iter().all(|p| dist(*p, unit(q)) > 1e-6) {
+            dirs.push(unit(q));
+        }
+    }
+    let [a, b] = dirs.as_slice() else { return false };
+    dot(*a, *b) < -1.0 + 1e-9
 }
 
 /// The midpoint of the arc the vertices `vs` bound on a circle; of a whole circle (fewer than
@@ -836,6 +975,10 @@ impl Acis {
     /// The midpoint (file units) of the edge the blend face `f` replaced, with the edge's
     /// tangent information, or why not.
     pub(crate) fn edge_mid(&self, f: i64) -> Result<(V3, EdgeInfo), String> {
+        self.edge_mid_of(f)
+    }
+
+    fn edge_mid_of(&self, f: i64) -> Result<(V3, EdgeInfo), String> {
         let kind = self.kind(f);
         let nb: Vec<(i64, Surf)> = self.neighbours(f).into_iter().map(|(g, _)| (g, self.kind(g))).collect();
         let mut planes: Vec<(i64, V3, V3)> = Vec::new();
@@ -851,7 +994,15 @@ impl Acis {
         if vs.is_empty() {
             return Err("no vertices".into());
         }
-        let circle = |cen: V3, ax: V3, r: f64| (circ_mid(cen, ax, r, &vs), EdgeInfo::Circle { cen, ax, r });
+        let circle = |cen: V3, ax: V3, r: f64| {
+            // A half circle has its two ends diametrically opposite: which half is not in the
+            // vertices, so the face's own arcs say.
+            let mut pts = vs.clone();
+            if is_half_circle(cen, ax, &vs) {
+                pts.extend(self.arc_samples(f, cen, ax));
+            }
+            (circ_mid(cen, ax, r, &pts), EdgeInfo::Circle { cen, ax, r })
+        };
         let (p, u);
         match &kind {
             Surf::Cyl { c, ax, r } => (p, u) = cyl_edge(&nb, *c, *ax, *r)?,
@@ -859,15 +1010,24 @@ impl Acis {
                 let k = 1.0 / vs.len() as f64;
                 let cen = mul(vs.iter().fold([0.0; 3], |a, &v| add(a, v)), k);
                 let mut best: Option<(f64, (V3, V3))> = None;
+                let mut consider = |l: (V3, V3)| {
+                    let dd = dist(l.0, cen);
+                    if dot(l.1, *nc).abs() <= 1e-6 && best.as_ref().is_none_or(|x| dd < x.0) {
+                        best = Some((dd, l));
+                    }
+                };
                 for (i, a) in planes.iter().enumerate() {
                     for b in planes.iter().skip(i + 1) {
-                        let Some(l) = line_of_planes(a.1, a.2, b.1, b.2, cen) else { continue };
-                        if dot(l.1, *nc).abs() > 1e-6 {
-                            continue;
+                        if let Some(l) = line_of_planes(a.1, a.2, b.1, b.2, cen) {
+                            consider(l);
                         }
-                        let dd = dist(l.0, cen);
-                        if best.as_ref().is_none_or(|x| dd < x.0) {
-                            best = Some((dd, l));
+                    }
+                    // A chamfer between a plane and a cylinder about an axis parallel to it.
+                    for (_, s) in &nb {
+                        if let Surf::Cyl { c, ax, r } = s
+                            && let Some(l) = line_of_plane_cyl(a.1, a.2, *c, *ax, *r, cen)
+                        {
+                            consider(l);
                         }
                     }
                 }
@@ -1031,6 +1191,42 @@ mod tests {
         assert!(dist(m, mul(want, 2.0)) < 1e-6, "{m:?}");
         // A single vertex is a whole circle: the seam.
         assert!(dist(circ_mid([0.0; 3], ax, 2.0, &[v0]), mul(rf, -2.0)) < 1e-12);
+    }
+
+    #[test]
+    fn a_plane_meets_a_parallel_cylinder_in_a_line_nearest_the_point() {
+        // The plane y = -0.5 and the cylinder of radius 2 about the z axis meet at x = +-sqrt(3.75).
+        let (p, u) =
+            line_of_plane_cyl([0.0, -0.5, 0.0], [0.0, -1.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0], 2.0, [-2.0, -0.4, 1.0])
+                .unwrap();
+        assert!(dist(p, [-libm::sqrt(3.75), -0.5, 0.0]) < 1e-9, "{p:?}");
+        assert!(dot(u, [0.0, 0.0, 1.0]).abs() > 0.999);
+        // An axis across the plane, or a cylinder the plane misses, meet in no line.
+        assert!(
+            line_of_plane_cyl([0.0, -0.5, 0.0], [0.0, -1.0, 0.0], [0.0; 3], [0.0, 1.0, 0.0], 2.0, [0.0; 3]).is_none()
+        );
+        assert!(
+            line_of_plane_cyl([0.0, -3.0, 0.0], [0.0, -1.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0], 2.0, [0.0; 3]).is_none()
+        );
+    }
+
+    #[test]
+    fn the_midpoint_of_a_half_circle_comes_from_its_arc_not_its_two_ends() {
+        let ax = [0.0, 0.0, 1.0];
+        let ends = [[2.0, 0.0, 0.0], [-2.0, 0.0, 0.0]];
+        assert!(is_half_circle([0.0; 3], ax, &ends));
+        assert!(!is_half_circle([0.0; 3], ax, &[ends[0], [0.0, 2.0, 0.0]]));
+        // Points along the upper half give its crest, those of the lower half the opposite one.
+        let arc = |s: f64| {
+            (0..=8).map(move |k| {
+                let t = std::f64::consts::PI * f64::from(k) / 8.0;
+                [2.0 * libm::cos(t), s * 2.0 * libm::sin(t), 0.0]
+            })
+        };
+        let up: Vec<V3> = arc(1.0).collect();
+        let down: Vec<V3> = arc(-1.0).collect();
+        assert!(dist(circ_mid([0.0; 3], ax, 2.0, &up), [0.0, 2.0, 0.0]) < 1e-9);
+        assert!(dist(circ_mid([0.0; 3], ax, 2.0, &down), [0.0, -2.0, 0.0]) < 1e-9);
     }
 
     #[test]

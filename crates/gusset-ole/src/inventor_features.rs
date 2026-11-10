@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, Surf, V3, cross, dot, local_path};
+use crate::acis::{Acis, EdgeInfo, FullRound, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
@@ -895,6 +895,53 @@ fn unsupported(name: &str, what: &str, reason: Option<String>) -> Value {
     v
 }
 
+/// The rounds of slot ends (concave full rounds: the kernel's full round does the convex ones).
+/// The round fills the two corners between the slot's end wall and the half cylinder with
+/// material, so each is a join of the two slivers, drawn in a sketch across the cylinder's axis
+/// (x towards the crest, y across the slot) and extruded over the cylinder's extent.
+fn slot_end_rounds(st: &mut State, name: &str, ends: &[FullRound]) -> Result<(), String> {
+    let target = st.first_body.clone().ok_or("a slot end round before any body")?;
+    let mut ends = ends.to_vec();
+    ends.sort_by(|a, b| a.point.partial_cmp(&b.point).unwrap_or(std::cmp::Ordering::Equal));
+    ends.dedup_by(|a, b| crate::acis::dist(a.point, b.point) < 1e-6);
+    for (k, e) in ends.iter().enumerate() {
+        let nm = if k == 0 { name.to_string() } else { format!("{name}_{}", k + 1) };
+        let (lo, hi) = e.span;
+        let top = crate::acis::add(e.axis, crate::acis::mul(e.dir, hi));
+        let org = [top[0] * CM, top[1] * CM, top[2] * CM];
+        let ex = unit3(e.out);
+        let ey = cross(unit3(e.dir), ex);
+        let r = e.radius * CM;
+        let pt = |id: &str, x: f64, y: f64| json!({"id": id, "x": rnd(x), "y": rnd(y)});
+        let points = vec![
+            pt("o", 0.0, 0.0),
+            pt("a1", 0.0, r),
+            pt("b1", r, r),
+            pt("c1", r, 0.0),
+            pt("a2", 0.0, -r),
+            pt("b2", r, -r),
+            pt("c2", r, 0.0),
+        ];
+        let line = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b});
+        let curves = vec![
+            line("l1", "a1", "b1"),
+            line("l2", "b1", "c1"),
+            json!({"id": "r1", "type": "arc", "center": "o", "start": "c1", "end": "a1"}),
+            line("l3", "a2", "b2"),
+            line("l4", "b2", "c2"),
+            json!({"id": "r2", "type": "arc", "center": "o", "start": "a2", "end": "c2"}),
+        ];
+        let sname = format!("{nm}_sketch");
+        st.out.push(json!({"type": "sketch", "name": sname, "plane": {"origin": org, "x_axis": ex, "y_axis": ey},
+                           "points": points, "curves": curves}));
+        let picks = [[rnd(0.8 * r), rnd(0.8 * r)], [rnd(0.8 * r), rnd(-0.8 * r)]];
+        st.out.push(json!({"type": "extrude", "name": nm, "sketch": sname,
+                           "profiles": [{"point": picks[0]}, {"point": picks[1]}], "operation": "join",
+                           "target": target, "distance": rnd(-(hi - lo) * CM), "symmetric": false}));
+    }
+    Ok(())
+}
+
 fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
     let s = r.slots(f)?;
     let label = typ.label();
@@ -910,23 +957,48 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut why: Vec<String> = Vec::new();
     let mut radii: Vec<f64> = Vec::new();
     let mut rounds: Vec<(V3, V3)> = Vec::new();
+    let mut slot_ends: Vec<FullRound> = Vec::new();
+    let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
         let k = b.kind(face);
         // A corner patch; and a planar face with a fillet's tag is a leftover of an edge split
         // later (a fillet face is never planar).
-        if matches!(k, Surf::Sphere) || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
+        // A vertex blend (`srf_srf_v_bl_spl_sur`) is the patch where blends meet at a corner.
+        let patch = matches!(&k, Surf::Other(t) if t.contains("_v_bl_"));
+        if matches!(k, Surf::Sphere) || patch || (typ == FeatType::Fillet && matches!(k, Surf::Plane { .. })) {
+            continue;
+        }
+        if typ == FeatType::Chamfer && b.is_chamfer_corner_patch(face, &faces) {
             continue;
         }
         if typ == FeatType::Fillet
-            && let Some((p, n)) = b.full_round(face)
+            && let Some(fr) = b.full_round(face)
         {
-            rounds.push((mm(p), n));
+            if fr.concave {
+                slot_ends.push(fr);
+            } else {
+                rounds.push((mm(fr.point), fr.normal));
+            }
             continue;
         }
         match b.edge_mid(face) {
             Err(w) => why.push(w),
             Ok((m, info)) => {
+                // A chamfer face lies within a few distances of the edge it replaced. A planar
+                // face with the tag whose "edge" is further away is a leftover (an original
+                // wall that kept the tag when a chamfer chain went round it), not a chamfer.
+                if typ == FeatType::Chamfer
+                    && matches!(k, Surf::Plane { .. })
+                    && let (EdgeInfo::Line { dir }, Some(d)) = (&info, chamfer_d)
+                    && b.verts(face).iter().any(|&v| {
+                        let q = crate::acis::sub(v, m);
+                        let off = crate::acis::sub(q, crate::acis::mul(*dir, crate::acis::dot(q, *dir)));
+                        libm::sqrt(crate::acis::dot(off, off)) > 3.0 * d
+                    })
+                {
+                    continue;
+                }
                 mids.push((mm(m), local_path(m, &info, PATH_EPS).map(|[a, b]| [mm(a), mm(b)])));
                 match k {
                     Surf::Cyl { r, .. } => radii.push(rnd_to(r * CM, 1e6)),
@@ -934,6 +1006,13 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     _ => {}
                 }
             }
+        }
+    }
+    if !slot_ends.is_empty() {
+        if !mids.is_empty() || !why.is_empty() || !rounds.is_empty() {
+            why.push("a full round next to other fillet edges".into());
+        } else {
+            return slot_end_rounds(st, name, &slot_ends);
         }
     }
     if !rounds.is_empty() {
