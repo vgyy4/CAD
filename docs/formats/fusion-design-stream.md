@@ -861,3 +861,35 @@ library part with two.)
   misreading. Still one sample with no stored final placement (the occurrence's `CE2913AA` and the insert hold only the
   placement before the joint), and the tally shows no design of the 150 whose first blocker is a joint, so it is not
   converted yet.
+
+### Typed references to two oddly spelled classes (the "tools are not where the board is" refusals)
+* Two classes spell their GUID with the dashes out of place, in the class table and in every typed reference:
+  `40DCC3F41D-E94F-B3B1-3E95-9B6ABE572C` (the blob-name holder of a body-state list) and
+  `A7AEA631-985B-4DD1-8CE2-DE2C-14B54081`. The reader took a typed reference for `01`, an object id and a `str` of the
+  form 8-4-4-4-12, so in a typed-reference stream (older class versions) the reference from a component's state list
+  `CD57BC48` to its `40DCC3F4` was not seen, the component had no `.smb` blob, and `json::place` left its features at the
+  identity while the body import (which reads the names from the UTF-16 runs) stood the bodies where the occurrence puts
+  them. A typed reference is now also `01`, id, and the 36 characters of **the target's own class as the class table
+  spells it**.
+* Seen on 3857 Feather M4 Express: the stored board is [-25.4, -0.785, 0]..[25.4, 0.785, 22.86] mm (in the xz plane,
+  centred), the tree's board was [0, 0, 0]..[50.8, 22.86, 1.57]; of the 133 hole tools (113.81 mm3) 3.99 mm3 lay in the
+  tree's board. With the reference read, the tools lie in the board (111.81 mm3, two r = 0.45 tools in slots) and the
+  design is history; 1833 microUSB breakout too (its box check failed the same way).
+
+### Newer streams (2025 files): body-making features that are in no list the reader walks (found, not read)
+The five designs whose first blocker was `8DBAF917` now stop at the state check: the file stores 300 solids and the
+tree has the board extrude and 12 Base Features. The other bodies are made by feature classes the timeline walk does not
+know, each the creator of body links: `2BB91A84` and `94B9F77E` (named `PCBExtrude`: copper, soldermask and substrate
+layers; the first lists layer names `16_copper`, `16_copper_polygon`, `17_bottom_copper`, `16_smd_copper` and one body
+link each) and `F193B033` (`BoxPrimitive`: five parameter holders and a 4x4 placement). Their parent chain is
+`2EDC2536` > `666BFBBC` > `A2052F46`. Among the stored solids are cylinders 400 mm long (z -200..200, r 0.25 and others)
+in the layer components: drill tools. Reading them needs the layer bodies as stored bodies (their geometry comes from the
+board file, not from sketches) and the drill tools as their steps; not done.
+
+### State-check refusals that remain (adafruit-more)
+* A single stored solid that is the state **before** the design's last blends (2011 Battery: 16650.0 mm3 = the box, the
+  features give 16443.98 with Fillet1; 931 OLED): the final body is not in the file, so the blends cannot be checked.
+  Refused, as the rules ask.
+* Stored solids of components the tree lacks (4313: the display's and the card socket's package bodies), which then
+  count as unexplained "tools" and hide the board's cut; a stored solid with a negative volume (3211: -0.0063 mm3, a
+  body read inside out); 2900: a 193.75 mm3 solid no feature makes.
