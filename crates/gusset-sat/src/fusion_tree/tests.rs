@@ -1086,3 +1086,36 @@ fn a_stored_edge_is_known_by_the_names_of_its_two_faces() {
     // Parameters that do not give the edge's end vertex: the middle is unknown, the edge is left out.
     assert!(acis::named_edges(&named_edge_blob(5.0)).unwrap().is_empty());
 }
+
+#[test]
+fn a_typed_reference_carries_its_targets_class_as_the_class_table_spells_it() {
+    // The blob-name holder's class is written with its dashes out of place.
+    const ODD: &str = "40DCC3F41D-E94F-B3B1-3E95-9B6ABE572C";
+    let typed = |id: u64, class: &str| {
+        let mut v = vec![1];
+        v.extend(le64(id));
+        v.extend(s(class));
+        v
+    };
+    let r5 = record(257, 5, &[]);
+    let mut body6 = typed(5, ODD);
+    body6.extend(typed(6, G1));
+    let r6 = record(256, 6, &body6);
+    let mut bulk = r5.clone();
+    bulk.extend(&r6);
+    let mut m = meta(&[(5, 0), (6, r5.len() as u64)], &|i| usize::from(i == 5));
+    // The second class of the table, spelled the odd way (same length).
+    let at = m.windows(36).position(|w| w == G2.as_bytes()).unwrap();
+    m.splice(at..at + 36, ODD.bytes());
+    let d = Design::new(&m, &bulk).unwrap();
+    assert_eq!(d.cls(5), ODD);
+    assert_eq!(super::stream::ref_ids(&d, d.rec(6)), vec![5, 6]);
+    // The same text in front of an object of another class is not a reference to it.
+    let mut wrong = typed(6, ODD);
+    wrong.extend([0; 12]);
+    let r7 = record(256, 6, &wrong);
+    let mut bulk = r5.clone();
+    bulk.extend(&r7);
+    let d = Design::new(&m, &bulk).unwrap();
+    assert!(super::stream::ref_ids(&d, d.rec(6)).is_empty());
+}

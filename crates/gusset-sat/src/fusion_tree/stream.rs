@@ -275,7 +275,14 @@ pub(super) fn ref_end(d: &Design, rec: &[u8], j: usize) -> Option<(u64, usize)> 
         return None;
     }
     let e = j + 9;
-    if guid_str_at(rec, e) {
+    // Two classes spell their GUID with the dashes elsewhere (`40DCC3F41D-E94F-B3B1-3E95-9B6ABE572C`,
+    // the blob-name holder, and `A7AEA631-985B-4DD1-8CE2-DE2C-14B54081`): a typed reference to
+    // one carries that text, which is the target's class as the class table spells it.
+    let own_class = || {
+        let c = d.cls(q).as_bytes();
+        c.len() == 36 && u32_at(rec, e) == Some(36) && rec.get(e + 4..e + 40) == Some(c)
+    };
+    if guid_str_at(rec, e) || own_class() {
         Some((q, e + 40))
     } else if rec.get(e) == Some(&0) {
         Some((q, e + 1))
