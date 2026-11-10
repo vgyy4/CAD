@@ -1610,8 +1610,19 @@ pub(crate) fn tree_options(
                     let whole = o.int("TransformMode").unwrap_or(0) == 1;
                     let originals = o.link_list("Originals");
                     // Gusset repeats features that change a body; repeating the body's first
-                    // feature is a transform of the whole body (the check confirms).
-                    let whole = whole || originals.contains(&target);
+                    // feature is a transform of the whole body (the check confirms). In the
+                    // tool variant the first solid is one more tool that is joined (FreeCAD
+                    // fuses the copies of an additive primitive and cuts those of a
+                    // subtractive one, original by original: Page_089).
+                    let first_is_tool = !whole
+                        && tool_patterns
+                        && originals.contains(&target)
+                        && features.iter().any(|f| {
+                            f.get("name").and_then(Value::as_str) == Some(target.as_str())
+                                && matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "revolve"))
+                                && f.get("operation").and_then(Value::as_str) == Some("new")
+                        });
+                    let whole = whole || (originals.contains(&target) && !first_is_tool);
                     let mut feats: Vec<String> = if whole { Vec::new() } else { originals };
                     if !whole && feats.is_empty() {
                         return Err(format!("{name}: a pattern of no features"));
@@ -1642,7 +1653,8 @@ pub(crate) fn tree_options(
                             features.iter().any(|f| {
                                 f.get("name").and_then(Value::as_str) == Some(n)
                                     && matches!(f.get("type").and_then(Value::as_str), Some("extrude" | "revolve"))
-                                    && matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
+                                    && (matches!(f.get("operation").and_then(Value::as_str), Some("cut" | "join"))
+                                        || (first_is_tool && *n == target))
                             })
                         })
                         .collect();
@@ -1654,7 +1666,11 @@ pub(crate) fn tree_options(
                             else {
                                 continue;
                             };
-                            let op = src.get("operation").cloned().unwrap_or(json!("cut"));
+                            let op = match src.get("operation").and_then(Value::as_str) {
+                                Some("new") => json!("join"),
+                                Some(other) => json!(other),
+                                None => json!("cut"),
+                            };
                             let tool = format!("{orig}_tool");
                             let mut t = src;
                             if let Some(m) = t.as_object_mut() {

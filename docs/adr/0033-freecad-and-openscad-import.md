@@ -225,13 +225,45 @@ Page_058 ("Sketch has no closed regions"),
 Page_074 (the pipe path starts 8 mm from the profile plane) and Page_094 (loft similarity) were looked at only
 for their reasons.
 
-### Amendment: fillet cluster, sketch precision (2026-11-10)
+### Amendment: fillet cluster (2026-11-10)
 
-Page_020 was not a fillet problem. The sketch arcs and circles were written with 6 decimals; an
-arc's start and end are separate points, so they sat up to 5e-7 off one circle, the solver moved
-points to repair it, and two pads of one cylinder got radii that differ by more than the kernel's
-tolerance: their faces stayed apart and the 10 mm fillet of the edge between them failed. Points an
-arc runs through and circle/ellipse radii are now written with 8 decimals. A boolean can depend on
-the old 6-decimal values (Page_033), so the importer tries the 6-decimal text last (`coarse`).
-Coverage 128 -> 129 of 160. Page_108, 028, 025, 026, 089 and the Page_015 fillets variant are
-still open (untouched in this round).
+Method: each fillet was rerun in a standalone OCCT 8 program on FreeCAD's own stored base shape
+(`BRepFilletAPI_MakeFillet`, constant radius, same edges: FreeCAD's `makeElementFillet` calls
+`Add(r, r, edge)`, which is the same as `Add(r, edge)`), and compared with the fillet shape FreeCAD
+stored. That separates translator, shim and OCCT causes.
+
+Gained (128 -> 131 of 160):
+* Page_020 was not a fillet problem. Sketch arcs and circles were written with 6 decimals; an arc's
+  start and end are separate points, so they sat up to 5e-7 off one circle, the solver moved points
+  to repair it, and two pads of one cylinder got radii that differ by more than the kernel's
+  tolerance: their faces stayed apart and the 10 mm fillet of the edge between them failed. Points
+  an arc runs through and circle and ellipse radii are now written with 8 decimals. A boolean can
+  depend on the old 6-decimal values (Page_033), so the importer tries the 6-decimal text last.
+* Page_026: FreeCAD splits a closed B-spline edge at the vertices a cut touches it (two pieces on
+  each side), at points Gusset's boolean does not make, and fillets all four pieces, that is both
+  whole loops. A pick no line or circle holds now falls back to the model's B-spline or other
+  free-form edges that have an end where the pick starts or stops (a wrong guess is caught by the
+  rebuild check).
+* Page_089: its MultiTransform lists the body's first solid (an additive cylinder primitive), a pad
+  and a subtractive primitive. Gusset took that as a transform of the whole body (union of the
+  rotated bodies, 11106 mm3), FreeCAD fuses or cuts the copies of each original in turn
+  (10345.6 mm3; checked in OCCT with both orders: per original 10345.58, per transformation
+  10599). In the tool variant the first solid is now one more tool that is joined.
+
+Not fixable here (causes found):
+* Page_108: FreeCAD's stored fillet shape is itself BRepCheck-invalid (the Fillet feature does not
+  test validity; `BRepAlgo::IsValid` there only limits tolerances). OCCT 8 filleting FreeCAD's own
+  pre-fillet shape gives the same topology (174 faces, 386 edges) and the same invalid result, but
+  its eight vertex-blend patches (B-spline corner faces) have 0.8% more area than the file's
+  (OCCT 7's), 0.5 mm3 or 4.4e-5 of the volume. Accepting the invalid solid would not pass the
+  2e-5 check either.
+* Page_028: FreeCAD's stored first fillet has a cylinder face of negative area (-3.33 mm2) where
+  OCCT 8, and Gusset, make a sound one (1.19 mm2): the file's shape is 54 mm3 too large, a
+  FreeCAD/OCCT 7 defect. Gusset's 174443 mm3 is the correct one.
+* Page_025: the stored Chamfer is BRepCheck-invalid and the 4 mm fillet on it differs by 1%
+  between OCCT 8 and the file's shape; no sound comparison.
+* Page_015 fillets variant and Exercise 2D -7 fillets: every step matches to 1e-7 until a pad is
+  fused into the filleted body. OCCT 8 fusing FreeCAD's own two stored shapes gives 206802 (with
+  unification) or 206795 mm3, Gusset's 206831, FreeCAD's 206824; inclusion-exclusion with the
+  Common gives 206831 to 206840. The volume of such trimmed fillet faces is only good to about
+  1e-4, so a 2e-5 check cannot hold; the check stays.

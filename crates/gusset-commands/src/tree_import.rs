@@ -1212,6 +1212,35 @@ fn containing_edges(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(Strin
     out
 }
 
+/// The free-form (B-spline and other) edges of the model that share an end with a source edge.
+/// FreeCAD splits a closed spline edge where a cut's vertex touches it, at points Gusset's
+/// boolean does not make, so the pieces of a pick do not match Gusset's pieces; the last resort
+/// is the model's spline edges that have an end where the pick starts or stops (the fillet
+/// check on the rebuilt volume rejects a wrong guess).
+fn spline_edges_at_ends(ev: &gusset_eval::Evaluation, pick: &EdgePick) -> Vec<(String, String)> {
+    let (Some(first), Some(last)) = (pick.path.first().copied(), pick.path.last().copied()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for b in &ev.bodies {
+        let t = &b.topology;
+        for (i, e) in t.edges.iter().enumerate() {
+            if !matches!(e.kind, gusset_kernel::CurveKind::BSpline | gusset_kernel::CurveKind::Other) {
+                continue;
+            }
+            let at_end = e
+                .vertices
+                .iter()
+                .filter_map(|v| t.vertices.get(*v as usize))
+                .any(|v| norm(sub(v.point, first)) <= 0.01 || norm(sub(v.point, last)) <= 0.01);
+            if at_end && let Some(n) = b.names.edges.get(i) {
+                out.push((b.feature.clone(), n.to_string()));
+            }
+        }
+    }
+    out
+}
+
 /// Whether every point lies (within 0.01 mm) on a line or circular arc given by its ends and
 /// midpoint.
 fn edge_holds(
@@ -1368,6 +1397,9 @@ fn edges(g: &mut Gen, s: &Session, d: &EdgeF, fillet: bool) -> Result<(), String
                 let mut on_path = on_path_edges(&ev, &pick.path);
                 if on_path.is_empty() {
                     on_path = containing_edges(&ev, pick);
+                }
+                if on_path.is_empty() {
+                    on_path = spline_edges_at_ends(&ev, pick);
                 }
                 if on_path.is_empty() {
                     let near = best.as_ref().map_or(String::new(), |b| format!(" (the nearest is {:.3} mm away)", b.0));
