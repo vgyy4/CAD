@@ -650,6 +650,8 @@ pub(crate) fn kernel_profile(
         return Err(EvalError::new(feature, ErrorCode::OpenProfile, format!("{sketch_name} has no closed regions"))
             .with_hint("draw a closed outline"));
     }
+    // Regions that share an edge are one region: swept apart they would be solids that touch.
+    let (regions, ids) = crate::merge::merge_touching(regions, ids);
     Ok((Profile { frame, regions }, ids))
 }
 

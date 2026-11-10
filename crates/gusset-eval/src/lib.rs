@@ -23,6 +23,7 @@ mod full_round;
 pub mod gear;
 mod hole;
 mod joint;
+mod merge;
 mod ops;
 mod pattern;
 pub mod sheet;
