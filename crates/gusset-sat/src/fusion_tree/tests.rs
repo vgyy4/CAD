@@ -719,3 +719,55 @@ fn the_construction_flag_is_read_only_for_the_layouts_it_was_checked_in() {
     }
     assert_eq!(off(false, 431), None);
 }
+
+fn matrix_record(m: [f64; 16], lead: usize) -> Vec<u8> {
+    let mut rec = vec![0x5a; lead];
+    for v in m {
+        rec.extend_from_slice(&v.to_le_bytes());
+    }
+    rec.extend_from_slice(&[0, 0, 1]);
+    rec
+}
+
+#[test]
+fn a_move_matrix_is_found_wherever_the_record_puts_it() {
+    // Row major, translation in the last column (centimetres), at any byte offset.
+    let m = [1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, -0.5, 0.0, 0.0, 1.0, 1.8, 0.0, 0.0, 0.0, 1.0];
+    for lead in [8usize, 41, 48, 93] {
+        let (r, t) = super::bodyops::matrix(&matrix_record(m, lead)).unwrap();
+        assert_eq!(r, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_eq!(t, [0.25, -0.5, 1.8]);
+    }
+    // A scaled or sheared block, or a last row that is not (0, 0, 0, 1), is not a rigid move.
+    let mut scaled = m;
+    scaled[0] = 2.0;
+    assert!(super::bodyops::matrix(&matrix_record(scaled, 8)).is_none());
+    let mut proj = m;
+    proj[13] = 0.5;
+    assert!(super::bodyops::matrix(&matrix_record(proj, 8)).is_none());
+}
+
+#[test]
+fn body_edits_are_features_the_check_accepts_and_an_insert_moves() {
+    let features = vec![
+        json!({"type": "sketch", "name": "S", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]}}),
+        json!({"type": "extrude", "name": "E", "profiles": [{"point": [1, 1]}], "distance": 5.0, "operation": "new"}),
+        json!({"type": "scale_body", "name": "Scale", "target": "E", "factor": 0.5, "center": [1.0, 2.0, 3.0]}),
+        json!({"type": "move_body", "name": "Move", "target": "E", "translate": [1.0, 0.0, 0.0], "copy": false}),
+        json!({"type": "remove_body", "name": "Gone", "target": "E"}),
+        json!({"type": "draft", "name": "Draft", "faces": [{"point": [1.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0]}],
+               "plane": {"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0]}, "angle": 5.0, "flip": false}),
+    ];
+    assert!(check(&json!({ "features": features })).is_ok());
+    // Placed by a quarter turn about z (x -> y) and a shift of (10, 0, 5): points turn and shift,
+    // directions and translations only turn, the factor stays.
+    let out = super::insert::bring(features, "Insert", &quarter_turn()).unwrap();
+    let at = |n: &str| out.iter().find(|f| f["name"].as_str().is_some_and(|x| x.starts_with(n))).unwrap().clone();
+    assert_eq!(at("Scale")["center"], json!([10.0 - 2.0, 1.0, 8.0]));
+    assert_eq!(at("Scale")["factor"], json!(0.5));
+    assert_eq!(at("Move")["translate"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(at("Draft")["faces"][0]["point"], json!([10.0, 1.0, 5.0]));
+    assert_eq!(at("Draft")["faces"][0]["normal"], json!([0.0, 1.0, 0.0]));
+    assert_eq!(at("Draft")["plane"]["normal"], json!([0.0, 0.0, 1.0]));
+    assert_eq!(at("Move")["target"], at("Gone")["target"]);
+}

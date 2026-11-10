@@ -17,8 +17,21 @@ const MAX_INSERT_FEATURES: usize = 50_000;
 
 /// Feature kinds whose points and directions `move_feature` moves; a design with another kind
 /// is not moved to a placement that is not the identity.
-const MOVABLE: [&str; 9] =
-    ["sketch", "extrude", "fillet", "chamfer", "hole", "mirror", "stored_body", "pattern_linear", "pattern_circular"];
+const MOVABLE: [&str; 13] = [
+    "sketch",
+    "extrude",
+    "fillet",
+    "chamfer",
+    "hole",
+    "mirror",
+    "stored_body",
+    "pattern_linear",
+    "pattern_circular",
+    "move_body",
+    "scale_body",
+    "remove_body",
+    "draft",
+];
 
 /// Replaces each `component_insert` feature of `tree` by the features of the design it inserts.
 /// An insert the resolver cannot resolve stays, and the tree's check names it.

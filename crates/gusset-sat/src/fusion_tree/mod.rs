@@ -15,6 +15,7 @@
 #![allow(clippy::float_cmp)]
 
 mod acis;
+mod bodyops;
 mod feature;
 mod geom;
 mod insert;

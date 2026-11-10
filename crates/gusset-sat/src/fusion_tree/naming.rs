@@ -290,8 +290,20 @@ pub(super) fn gen_map(segs: &[Rc<Seg>]) -> Option<GenMap> {
 /// Face geometry of a modelled face.
 #[derive(Debug, Clone)]
 pub(super) enum FaceG {
-    Plane { n: V3, p: V3, cap: bool },
-    Cyl { axis: V3, feature: u64, seg: Rc<Seg>, pl: Plane },
+    /// `mid`: a point of the face itself (a cap's origin projection, a side's chord middle at mid
+    /// height); `p` is any point of its plane.
+    Plane {
+        n: V3,
+        p: V3,
+        cap: bool,
+        mid: V3,
+    },
+    Cyl {
+        axis: V3,
+        feature: u64,
+        seg: Rc<Seg>,
+        pl: Plane,
+    },
 }
 
 fn on_sweep(g: &ExtGeom, sg: &Seg, pts: &[V3], tol: f64) -> bool {
@@ -416,7 +428,7 @@ impl Ctx<'_> {
             return self.face_of_extrude(g, ops);
         }
         let base = self.face_of_extrude(g, std::slice::from_ref(first))?;
-        let FaceG::Plane { n, p, cap } = base else { return None };
+        let FaceG::Plane { n, p, cap, mid } = base else { return None };
         let efid = *self.opmap.get(&u64::try_from(*first).ok()?)?;
         let eg = self.ext_geom(efid)?;
         let (t0, t1) = (eg.t0?, eg.t1?);
@@ -432,7 +444,34 @@ impl Ctx<'_> {
             return None;
         }
         let q = add(p, mul(n, wall * side.signum()));
-        Some(FaceG::Plane { n, p: q, cap })
+        Some(FaceG::Plane { n, p: q, cap, mid: add(mid, mul(n, wall * side.signum())) })
+    }
+
+    /// A planar face of an extrude (or its shelled wall) as the draft reads it: a point of the
+    /// face and the normal that points away from the middle of the extrude's profile at mid
+    /// height (outward for a convex profile; the cap normals follow the extrusion direction).
+    pub(super) fn face_pick(&mut self, g: &str, ops: &[i32]) -> Option<(V3, V3)> {
+        let FaceG::Plane { n, mid, cap, .. } = self.face(g, ops)? else { return None };
+        let efid = *self.opmap.get(&u64::try_from(*ops.first()?).ok()?)?;
+        let eg = self.ext_geom(efid)?;
+        let (t0, t1) = (eg.t0?, eg.t1?);
+        if cap {
+            let up = if t1 >= t0 { 1.0 } else { -1.0 };
+            let s = if g == "2" { up } else { -up };
+            return Some((mid, mul(n, s)));
+        }
+        let pts: Vec<P2> = eg.segs.iter().flat_map(|sg| sg.poly.iter().copied()).collect();
+        if pts.is_empty() {
+            return None;
+        }
+        let k = pts.len() as f64;
+        let mean = [pts.iter().map(|q| q[0]).sum::<f64>() / k, pts.iter().map(|q| q[1]).sum::<f64>() / k];
+        let c = world(&eg.pl, mean, (t0 + t1) / 2.0);
+        let side = dot(n, sub(mid, c));
+        if side.abs() < 1e-9 {
+            return None;
+        }
+        Some((mid, mul(n, side.signum())))
     }
 
     /// Geometry of a face named (generator, operation ids), when it is an extrude's cap or side.
@@ -447,7 +486,8 @@ impl Ctx<'_> {
         let z = pl.z;
         if g == "1" || g == "2" {
             let t = if g == "1" { eg.t0 } else { eg.t1 }?;
-            return Some(FaceG::Plane { n: z, p: world(&pl, [0.0, 0.0], t), cap: true });
+            let p = world(&pl, [0.0, 0.0], t);
+            return Some(FaceG::Plane { n: z, p, cap: true, mid: p });
         }
         let sg: Rc<Seg> = match self.truth(&eg, g) {
             Some(c) => eg.segs.iter().find(|x| x.curve == c)?.clone(),
@@ -466,7 +506,8 @@ impl Ctx<'_> {
             let pa = world(&pl, a, 0.0);
             let pb = world(&pl, b, 0.0);
             let n = unit(cross(z, sub(pb, pa)))?;
-            return Some(FaceG::Plane { n, p: pa, cap: false });
+            let mid = world(&pl, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], (eg.t0? + eg.t1?) / 2.0);
+            return Some(FaceG::Plane { n, p: pa, cap: false, mid });
         }
         if eg.sketch.arcs.contains_key(&q) {
             return Some(FaceG::Cyl { axis: z, feature: fid, seg: sg.clone(), pl });
@@ -500,7 +541,7 @@ impl Ctx<'_> {
         }
         // A cap meeting an arc side: the middle of the arc piece at the cap.
         for (cap, cyl) in [(&a, &b), (&b, &a)] {
-            let (FaceG::Plane { n, p, cap: true }, FaceG::Cyl { axis, feature, seg, pl, .. }) = (cap, cyl) else {
+            let (FaceG::Plane { n, p, cap: true, .. }, FaceG::Cyl { axis, feature, seg, pl, .. }) = (cap, cyl) else {
                 continue;
             };
             if (dot(*n, *axis).abs() - 1.0).abs() > 1e-9 {

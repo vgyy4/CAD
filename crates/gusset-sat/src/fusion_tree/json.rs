@@ -733,6 +733,16 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             feats.push(j);
         } else if c8 == "E8063467" {
             feats.push(shell_json(cx, fid, &nm, &fusion_type, class));
+        } else if c8 == "F4163A07" {
+            feats.push(super::bodyops::draft_json(cx, fid, &nm, &fusion_type, class));
+        } else if matches!(c8.as_str(), "64E40C8E" | "D45FD6C4" | "4A782808") {
+            let ed = super::bodyops::Edit { d, g: &g, names: &names, feats: &feats };
+            let j = match c8.as_str() {
+                "64E40C8E" => ed.move_json(fid, &nm, &fusion_type, class),
+                "D45FD6C4" => ed.scale_json(fid, &nm, &fusion_type, class),
+                _ => ed.remove_json(fid, &nm, &fusion_type, class),
+            };
+            feats.push(j);
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
         } else if c8 == "D7015B81" {
@@ -1007,7 +1017,7 @@ fn blocker(f: &Value) -> Option<String> {
             }
             None
         }
-        "hole" | "mirror" | "shell" => None,
+        "hole" | "mirror" | "shell" | "draft" | "move_body" | "scale_body" | "remove_body" => None,
         "component_insert" => Some("the design it inserts is not merged into the tree".into()),
         "stored_body" => (!has("brep")).then(|| "the stored body names no blob".to_string()),
         "pattern_linear" => (!has("direction") || !has("features")).then(|| "the pattern has no direction".to_string()),
@@ -1211,6 +1221,41 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
             let pl = before.map_or(pl, |old| pl.then(&old));
             if let Some(o) = f.as_object_mut() {
                 o.insert("placement".into(), json!({"r": pl.r, "t": pl.t}));
+            }
+        }
+        "move_body" => {
+            // A translation follows the turn of the placement; its own rotation is never read.
+            if let Some(t) = get3(f.get("translate")).map(|p| v3mm_raw(xf_dir(&pl, p)))
+                && let Some(o) = f.as_object_mut()
+            {
+                o.insert("translate".into(), t);
+            }
+        }
+        "draft" => {
+            if let Some(fs) = f.get_mut("faces").and_then(Value::as_array_mut) {
+                for fc in fs.iter_mut().filter_map(Value::as_object_mut) {
+                    let (p, n) = (pt(fc.get("point")), dir(fc.get("normal")));
+                    for (k, v) in [("point", p), ("normal", n)] {
+                        if let Some(v) = v {
+                            fc.insert(k.into(), v);
+                        }
+                    }
+                }
+            }
+            if let Some(pl) = f.get_mut("plane").and_then(Value::as_object_mut) {
+                let (p, n) = (pt(pl.get("origin")), dir(pl.get("normal")));
+                for (k, v) in [("origin", p), ("normal", n)] {
+                    if let Some(v) = v {
+                        pl.insert(k.into(), v);
+                    }
+                }
+            }
+        }
+        "scale_body" => {
+            if let Some(c) = pt(f.get("center"))
+                && let Some(o) = f.as_object_mut()
+            {
+                o.insert("center".into(), c);
             }
         }
         "pattern_circular" => {

@@ -203,3 +203,62 @@ fn fusion_trees_match_the_prototype() {
         assert!(compared >= min, "{compared} designs compared, at least {min} expected");
     }
 }
+
+/// Writes each sample's unchecked feature tree to `<GUSSET_F3D_DUMP>/<file name>.json` (a reading
+/// aid, runs when `GUSSET_F3D_SAMPLES` and `GUSSET_F3D_DUMP` are set; `GUSSET_F3D_ONLY` filters).
+#[test]
+fn fusion_trees_are_dumped_on_request() {
+    let (Ok(dir), Ok(out)) = (std::env::var("GUSSET_F3D_SAMPLES"), std::env::var("GUSSET_F3D_DUMP")) else { return };
+    let only = std::env::var("GUSSET_F3D_ONLY").ok();
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            if only.as_ref().is_some_and(|o| !p.to_string_lossy().contains(o.as_str())) {
+                continue;
+            }
+            let bytes = std::fs::read(&p).unwrap();
+            let limits = gusset_meshio::Limits::default();
+            let mut budget = limits.max_decompressed_bytes;
+            let keep = |n: &str| n.ends_with("Stream.dat") || n.ends_with(".smb") || n.ends_with(".smbh");
+            let mut designs: Vec<(String, Vec<(String, Vec<u8>)>)> = Vec::new();
+            if let Ok(e) = gusset_meshio::archive::read_entries_within(&bytes, &limits, &keep, 256 << 20, &mut budget)
+                && e.iter().any(|(n, _)| n.ends_with("Stream.dat"))
+            {
+                designs.push((name.clone(), e));
+            } else if let Ok(inner) = gusset_meshio::archive::read_entries_within(
+                &bytes,
+                &limits,
+                &|n| n.to_ascii_lowercase().ends_with(".f3d"),
+                256 << 20,
+                &mut budget,
+            ) {
+                // An `.f3z`: every design it holds, as `<file>.<design>.json`.
+                for (n, data) in inner {
+                    if let Ok(e) =
+                        gusset_meshio::archive::read_entries_within(&data, &limits, &keep, 256 << 20, &mut budget)
+                    {
+                        designs.push((format!("{name}.{}", n.chars().take(8).collect::<String>()), e));
+                    }
+                }
+            }
+            for (name, entries) in designs {
+                match gusset_sat::fusion_tree::feature_tree_unchecked(&entries, &name) {
+                    Err(e) => eprintln!("{name}: {e}"),
+                    Ok(tree) => {
+                        std::fs::write(
+                            std::path::Path::new(&out).join(format!("{name}.json")),
+                            serde_json::to_vec_pretty(&tree).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
