@@ -726,14 +726,24 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
             // A pattern of the occurrences of a component: the copies are occurrences the file
             // places, so the component's features are written once per occurrence (`place`).
-            if ins.is_empty() && body_in.is_empty() && super::occpattern::copies_of(d, fid).is_ok() {
-                skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
-                    "reason": "pattern of components: its copies are occurrences of the component, placed like its other occurrences"}));
-                continue;
+            let mut note =
+                "pattern of components, of several bodies, with a partial angle, or no direction record: not converted"
+                    .to_string();
+            if ins.is_empty() && body_in.is_empty() {
+                match super::occpattern::copies_of(d, fid) {
+                    Ok(_) => {
+                        skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                            "reason": "pattern of components: its copies are occurrences of the component, placed like its other occurrences"}));
+                        continue;
+                    }
+                    Err(why) if linear && why != "the pattern names no occurrence" => {
+                        note = format!("pattern of components: {why}");
+                    }
+                    Err(_) => {}
+                }
             }
             let mut j = json!({"type": "unsupported", "gtree_type": if linear { "pattern_linear" } else { "pattern_circular" },
-                "fusion_type": fusion_type, "name": nm, "source_id": fid, "features": in_names,
-                "note": "pattern of components, of several bodies, with a partial angle, or no direction record: not converted"});
+                "fusion_type": fusion_type, "name": nm, "source_id": fid, "features": in_names, "note": note});
             if let (Some(o), Some((_, dir))) = (j.as_object_mut(), dirs.first()) {
                 o.insert("direction".into(), json!([round9(dir[0]), round9(dir[1]), round9(dir[2])]));
             }
