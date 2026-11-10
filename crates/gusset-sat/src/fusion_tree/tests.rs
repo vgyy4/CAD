@@ -1426,3 +1426,37 @@ fn the_reach_of_an_extrude_to_a_body_is_read_off_its_stored_tool() {
     let parallel = [outline[0], outline[2]];
     assert_eq!(json::reach_of(&parallel, z, &[tool(0.4)]), None);
 }
+
+#[test]
+fn a_feature_belongs_to_the_component_whose_first_timeline_is_its_own() {
+    // The root (1) names its own timeline (3) and then the one of the component being edited (4);
+    // that component (2) names only its own. Features 7 and 8 sit in the timelines' records.
+    const CLASSES: [&str; 4] = [
+        "E03784ED-0000-0000-0000-000000000000",
+        "C3423E04-0000-0000-0000-000000000000",
+        "3A6D1E62-0000-0000-0000-000000000000",
+        "D7015B81-0000-0000-0000-000000000000",
+    ];
+    let refs = |ids: &[u64]| ids.iter().flat_map(|i| r#ref(*i)).collect::<Vec<u8>>();
+    let recs: Vec<(u64, usize, Vec<u8>)> = vec![
+        (1, 0, refs(&[3, 4])),
+        (2, 0, refs(&[4])),
+        (3, 1, refs(&[5])),
+        (4, 1, refs(&[6])),
+        (5, 2, Vec::new()),
+        (6, 2, Vec::new()),
+        (7, 3, refs(&[5])),
+        (8, 3, refs(&[6])),
+    ];
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    let meta = meta_classes(&CLASSES, &objs);
+    let d = Design::new(&meta, &bulk).unwrap();
+    let g = super::Graph::new(&d);
+    assert_eq!(g.component(&d, 7), Some(1));
+    assert_eq!(g.component(&d, 8), Some(2));
+}
