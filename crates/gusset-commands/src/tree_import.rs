@@ -20,9 +20,16 @@ const MAX_ENTITIES: usize = 20_000;
 const MAX_PARAMS: usize = 5000;
 const MAX_TOTAL_ENTITIES: usize = 200_000;
 const MAX_PICKS: usize = 256;
+/// Most profile picks of one extrude or revolve: a perforated board picks every hole (the
+/// Perma-Proto boards 488 and 840). Each pick is one bounding-box test per region and a
+/// point-in-polygon test only where it lands; the regions' polygons are made once.
+const MAX_PROFILE_PICKS: usize = 4096;
 /// Most model evaluations an import may run (each solid, fillet and chamfer is built to
-/// check it); later features that need one are skipped.
-const MAX_EVALUATIONS: usize = 400;
+/// check it); later features that need one are skipped. One evaluator keeps every feature
+/// built so far, so an evaluation builds only the new feature (tens of milliseconds for the
+/// rest); the corpus needs up to about 500 (MEMENTO 494, TFP401 423). [`MAX_IMPORT_TIME`]
+/// bounds the building itself.
+const MAX_EVALUATIONS: usize = 2000;
 /// Longest an import may spend building the model before features that need a build are
 /// skipped.
 const MAX_IMPORT_TIME: std::time::Duration = std::time::Duration::from_secs(300);
@@ -512,8 +519,32 @@ fn inside(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     c
 }
 
-fn region_holds(r: &Region2, p: [f64; 2]) -> bool {
-    inside(&loop_points(&r.outer.edges), p) && !r.holes.iter().any(|h| inside(&loop_points(&h.edges), p))
+/// A region's loops as polygons, made once so that many profile picks (a perforated board's
+/// hundreds of holes) do not tessellate every loop again for each pick.
+struct RegionPolys {
+    outer: Vec<[f64; 2]>,
+    /// The outer polygon's box: most picks are outside it.
+    lo: [f64; 2],
+    hi: [f64; 2],
+    holes: Vec<Vec<[f64; 2]>>,
+}
+
+impl RegionPolys {
+    fn new(r: &Region2) -> Self {
+        let outer = loop_points(&r.outer.edges);
+        let (lo, hi) = outer.iter().fold(([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]), |(lo, hi), q| {
+            ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])])
+        });
+        Self { outer, lo, hi, holes: r.holes.iter().map(|h| loop_points(&h.edges)).collect() }
+    }
+
+    fn holds(&self, p: [f64; 2]) -> bool {
+        let [x, y] = p;
+        (self.lo[0]..=self.hi[0]).contains(&x)
+            && (self.lo[1]..=self.hi[1]).contains(&y)
+            && inside(&self.outer, p)
+            && !self.holes.iter().any(|h| inside(h, p))
+    }
 }
 
 /// The generator's state.
@@ -1028,7 +1059,9 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
         None => sk_name.clone(),
         Some(Profiles::All(a)) if a == "all" => sk_name.clone(),
         Some(Profiles::All(_)) => return Err("profiles is not \"all\" or a list".into()),
-        Some(Profiles::Picks(picks)) if picks.len() > MAX_PICKS => return Err("too many profile picks".into()),
+        Some(Profiles::Picks(picks)) if picks.len() > MAX_PROFILE_PICKS => {
+            return Err("too many profile picks".into());
+        }
         Some(Profiles::Picks(picks)) => {
             let ev = g.evaluate(s).map_err(|e| e.message)?;
             let sr = ev.sketches.get(&sk_name).ok_or("its sketch did not solve")?;
@@ -1041,10 +1074,12 @@ fn solid(g: &mut Gen, s: &Session, d: &SolidF, revolve: bool) -> Result<(), Stri
             let all: Vec<String> = infos.iter().map(|ri| ri.id.clone()).collect();
             let outlines = gusset_eval::sketch_regions_each(&sk_name, def, &ev.params, doc.units, &all)
                 .map_err(|e| format!("its sketch does not solve: {}", e.message))?;
+            let polys: Vec<Vec<RegionPolys>> =
+                outlines.iter().map(|rs| rs.iter().map(RegionPolys::new).collect()).collect();
             let mut ids = Vec::new();
             for pk in picks {
                 let p = sm.map(pk.point[0], pk.point[1]);
-                let hit = all.iter().zip(&outlines).find(|(_, rs)| rs.iter().any(|r| region_holds(r, p)));
+                let hit = all.iter().zip(&polys).find(|(_, rs)| rs.iter().any(|r| r.holds(p)));
                 match hit {
                     Some((id, _)) => ids.push(id.clone()),
                     None => return Err(format!("no region of its sketch holds the profile point {:?}", pk.point)),
