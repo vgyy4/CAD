@@ -281,14 +281,39 @@ impl Ctx<'_> {
 
     /// Edge midpoints (mm) of a fillet/chamfer set: for each radius/distance set its value (cm),
     /// the midpoints found and the count of edges left unresolved.
-    pub(super) fn blend_sets(&mut self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<V3>, usize)> {
+    /// The value (cm) and edge recipes of each radius/distance set of a fillet/chamfer.
+    fn blend_groups(&self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<u64>)> {
         let d = self.d;
         let sets: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "4A557CE2")).collect();
-        let groups: Vec<(Option<f64>, Vec<u64>)> = if sets.is_empty() {
+        if sets.is_empty() {
             vec![(param_values(d, fid, names).first().copied(), self.input_recipes(fid))]
         } else {
             sets.iter().map(|q| (param_values(d, *q, names).first().copied(), self.input_recipes(*q))).collect()
-        };
+        }
+    }
+
+    /// The `idx`-th edge recipe (0-based, over all sets in order, repeats dropped) of a fillet and
+    /// the radius (cm) of its set: a fillet's generator `k` names the face of its `k`-th edge.
+    pub(super) fn blend_edge(&self, fid: u64, idx: usize) -> Option<(f64, u64)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut n = 0;
+        for (v, recs) in self.blend_groups(fid, &["Radius"]) {
+            for rid in recs {
+                if !seen.insert(rid) {
+                    continue;
+                }
+                if n == idx {
+                    return Some((v.filter(|v| *v > 0.0)?, rid));
+                }
+                n += 1;
+            }
+        }
+        None
+    }
+
+    pub(super) fn blend_sets(&mut self, fid: u64, names: &[&str]) -> Vec<(Option<f64>, Vec<V3>, usize)> {
+        let d = self.d;
+        let groups = self.blend_groups(fid, names);
         let mut out = Vec::new();
         for (v, recs) in groups {
             let mut es: Vec<V3> = Vec::new();

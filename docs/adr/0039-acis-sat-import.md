@@ -546,3 +546,12 @@ copies the tree has once). The sample test is gated on `GUSSET_F3D_SAMPLES` and 
   only; no sample has it).
 - Crickit HAT: the 221 solids are the Board's Extrude2 hole tools (1.57 mm cylinders); the cut board is not stored, and 5 of
   the 0.9 mm tools remove no material. No check was loosened; coverage stays 10 of 18 (details in the stream notes, section 17).
+
+## Amendment (2026-11-10, round 11): body edits and fillet faces
+
+The tree reader now emits `move_body` (translations only), `scale_body` (uniform, about a
+vertex), `remove_body` and `draft` (unverified sign, `flip` false) from Move, Scale, RemoveBody
+and Draft; a chamfer on a fillet's edges resolves through the fillet face (`FaceG::Fillet`). No
+design becomes history by this (10 of 18 unchanged): the Cases still stop at the logo splines,
+Top's face-profile extrude, Fillet4 and the unknown Combine operation. Details and evidence:
+`docs/formats/fusion-design-stream.md` section 19.

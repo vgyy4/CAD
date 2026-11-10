@@ -771,3 +771,26 @@ fn body_edits_are_features_the_check_accepts_and_an_insert_moves() {
     assert_eq!(at("Draft")["plane"]["normal"], json!([0.0, 0.0, 1.0]));
     assert_eq!(at("Move")["target"], at("Gone")["target"]);
 }
+
+#[test]
+fn a_fillet_face_gives_the_edges_of_its_corner() {
+    use super::naming::{FaceG, fillet_edge};
+    // A pocket corner at the origin: sides x = 0 and y = 0 with normals into the void, rounded
+    // with r = 1; a second corner at y = 10 (sides x = 0 and y = 10); the wall is the plane z = 5.
+    let side = |p: [f64; 3], n: [f64; 3]| (p, n);
+    let f1 = FaceG::Fillet { r: 1.0, a: side([0.0; 3], [1.0, 0.0, 0.0]), b: side([0.0; 3], [0.0, 1.0, 0.0]) };
+    let f2 = FaceG::Fillet {
+        r: 1.0,
+        a: side([0.0, 10.0, 0.0], [1.0, 0.0, 0.0]),
+        b: side([0.0, 10.0, 0.0], [0.0, -1.0, 0.0]),
+    };
+    let wall = FaceG::Plane { n: [0.0, 0.0, 1.0], p: [0.0, 0.0, 5.0], cap: false, mid: [0.0, 0.0, 5.0] };
+    let sx = FaceG::Plane { n: [1.0, 0.0, 0.0], p: [0.0; 3], cap: false, mid: [0.0, 5.0, 2.0] };
+    // The arc: the circle's centre is (1, 1, 5); its point nearest the corner is r along the bisector away.
+    let (m, arc) = fillet_edge(&[Some(f1.clone()), Some(wall.clone())]).unwrap();
+    let k = 1.0 - std::f64::consts::FRAC_1_SQRT_2;
+    assert!(arc && (m[0] - k).abs() < 1e-12 && (m[1] - k).abs() < 1e-12 && (m[2] - 5.0).abs() < 1e-12, "{m:?}");
+    // The straight edge between the two fillets: the middle of the tangent points (0, 1, 5), (0, 9, 5).
+    let (m, arc) = fillet_edge(&[Some(wall), Some(sx), Some(f1), Some(f2)]).unwrap();
+    assert!(!arc && m[0].abs() < 1e-12 && (m[1] - 5.0).abs() < 1e-12 && (m[2] - 5.0).abs() < 1e-12, "{m:?}");
+}

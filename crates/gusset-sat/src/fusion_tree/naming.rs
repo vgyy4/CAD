@@ -304,6 +304,13 @@ pub(super) enum FaceG {
         seg: Rc<Seg>,
         pl: Plane,
     },
+    /// The rolling-ball face a fillet puts on one concave edge of two planar sides: its radius and
+    /// each side's point and normal pointing into the void (towards the fillet's axis).
+    Fillet {
+        r: f64,
+        a: (V3, V3),
+        b: (V3, V3),
+    },
 }
 
 fn on_sweep(g: &ExtGeom, sg: &Seg, pts: &[V3], tol: f64) -> bool {
@@ -352,6 +359,53 @@ pub(super) fn plane_plane(n0: V3, p0: V3, n1: V3, p1: V3) -> Option<(V3, V3)> {
         return None;
     }
     Some((mul(add(mul(c, d0), mul(e, d1)), 1.0 / den), u))
+}
+
+/// The centre of the rolling ball of a fillet (radius `r`, sides `a`, `b` with their inward
+/// normals) in the plane `w` (normal, point): the point `r` inside both sides.
+fn fillet_centre(r: f64, a: (V3, V3), b: (V3, V3), w: (V3, V3)) -> Option<V3> {
+    let (na, nb, nw) = (a.1, b.1, w.0);
+    let det = dot(na, cross(nb, nw));
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let (ra, rb, rw) = (dot(na, a.0) + r, dot(nb, b.0) + r, dot(nw, w.1));
+    let x = add(add(mul(cross(nb, nw), ra), mul(cross(nw, na), rb)), mul(cross(na, nb), rw));
+    Some(mul(x, 1.0 / det))
+}
+
+/// The midpoint of an edge that touches fillet faces. Either the arc where a fillet meets a
+/// plane (the middle of the arc, at the point of the circle nearest the corner), or the straight
+/// line where two planes meet between two fillets (the middle of the two tangent points).
+pub(super) fn fillet_edge(fs: &[Option<FaceG>]) -> Option<(V3, bool)> {
+    let first = [fs.first()?.as_ref()?, fs.get(1)?.as_ref()?];
+    if let [FaceG::Fillet { r, a, b }, FaceG::Plane { n, p, .. }]
+    | [FaceG::Plane { n, p, .. }, FaceG::Fillet { r, a, b }] = first
+    {
+        let c = fillet_centre(*r, *a, *b, (*n, *p))?;
+        let bisector = unit(add(a.1, b.1))?;
+        return Some((sub(c, mul(bisector, *r)), true));
+    }
+    let [FaceG::Plane { n: n0, p: p0, .. }, FaceG::Plane { n: n1, p: p1, .. }] = first else { return None };
+    let fillets: Vec<&FaceG> = fs.iter().skip(2).flatten().filter(|f| matches!(f, FaceG::Fillet { .. })).collect();
+    // The side is the plane both fillets round; the other is the wall they are cut in.
+    for (w, s) in [((*n0, *p0), (*n1, *p1)), ((*n1, *p1), (*n0, *p0))] {
+        let ends: Vec<V3> = fillets
+            .iter()
+            .filter_map(|f| {
+                let FaceG::Fillet { r, a, b } = f else { return None };
+                let side = [a, b]
+                    .into_iter()
+                    .find(|q| (dot(q.1, s.0).abs() - 1.0).abs() < 1e-6 && dot(q.1, sub(s.1, q.0)).abs() < 1e-6)?;
+                let c = fillet_centre(*r, *a, *b, w)?;
+                Some(sub(c, mul(side.1, *r)))
+            })
+            .collect();
+        if let [e0, e1] = ends.as_slice() {
+            return Some((mul(add(*e0, *e1), 0.5), false));
+        }
+    }
+    None
 }
 
 impl Ctx<'_> {
@@ -410,6 +464,16 @@ impl Ctx<'_> {
     /// height). The shell's op names the face on both its sides in the samples (6124: Fillet2's
     /// edges end on the outer wall `[321]` and the inner wall `[321, 324]`).
     pub(super) fn face(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
+        self.face_at(g, ops, 0)
+    }
+
+    fn face_at(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<FaceG> {
+        if let [op] = ops
+            && let Some(fid) = u64::try_from(*op).ok().and_then(|o| self.opmap.get(&o).copied())
+            && self.d.is(fid, "A07D5F17")
+        {
+            return self.face_of_fillet(g, fid, depth);
+        }
         let (first, rest) = ops.split_first()?;
         if rest.is_empty() {
             return self.face_of_extrude(g, ops);
@@ -447,11 +511,38 @@ impl Ctx<'_> {
         Some(FaceG::Plane { n, p: q, cap, mid: add(mid, mul(n, wall * side.signum())) })
     }
 
+    /// The face a fillet puts on its `g`-th edge (1-based, in the order of its edge recipes): the
+    /// two sides that edge joins must be planar faces, and the fillet a corner of the void they
+    /// bound, rounded with the radius of the fillet's set.
+    fn face_of_fillet(&mut self, g: &str, fid: u64, depth: usize) -> Option<FaceG> {
+        if depth >= 3 {
+            return None;
+        }
+        let k: usize = g.parse().ok().filter(|k| *k >= 1)?;
+        let (r, rid) = self.blend_edge(fid, k - 1)?;
+        let (Some(RecipeKind::Edge), Some(faces)) = recipe(self.d, rid) else { return None };
+        let side = |cx: &mut Self, f: &FaceName| -> Option<(V3, V3)> {
+            let (g, ops) = f.first()?;
+            if !matches!(cx.face_at(g, ops, depth + 1)?, FaceG::Plane { cap: false, .. }) {
+                return None;
+            }
+            let (p, out) = cx.face_pick_at(g, ops, depth + 1)?;
+            Some((p, mul(out, -1.0)))
+        };
+        let a = side(self, faces.first()?)?;
+        let b = side(self, faces.get(1)?)?;
+        Some(FaceG::Fillet { r, a, b })
+    }
+
     /// A planar face of an extrude (or its shelled wall) as the draft reads it: a point of the
     /// face and the normal that points away from the middle of the extrude's profile at mid
     /// height (outward for a convex profile; the cap normals follow the extrusion direction).
     pub(super) fn face_pick(&mut self, g: &str, ops: &[i32]) -> Option<(V3, V3)> {
-        let FaceG::Plane { n, mid, cap, .. } = self.face(g, ops)? else { return None };
+        self.face_pick_at(g, ops, 0)
+    }
+
+    fn face_pick_at(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<(V3, V3)> {
+        let FaceG::Plane { n, mid, cap, .. } = self.face_at(g, ops, depth)? else { return None };
         let efid = *self.opmap.get(&u64::try_from(*ops.first()?).ok()?)?;
         let eg = self.ext_geom(efid)?;
         let (t0, t1) = (eg.t0?, eg.t1?);
@@ -519,6 +610,9 @@ impl Ctx<'_> {
     /// whether it is an arc.
     pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
         let fs: Vec<Option<FaceG>> = faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
+        if fs.iter().flatten().any(|f| matches!(f, FaceG::Fillet { .. })) {
+            return fillet_edge(&fs);
+        }
         let (a, b) = (fs.first()?.clone()?, fs.get(1)?.clone()?);
         if let (FaceG::Plane { n: n0, p: p0, .. }, FaceG::Plane { n: n1, p: p1, .. }) = (&a, &b) {
             let (pp, u) = plane_plane(*n0, *p0, *n1, *p1)?;
@@ -535,6 +629,25 @@ impl Ctx<'_> {
                 let hi = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 if hi - lo > 1e-7 {
                     return Some((add(pp, mul(u, (lo + hi) / 2.0)), false));
+                }
+            }
+            // A side of an extrude standing on a perpendicular plane, bounded by that same
+            // extrude's neighbouring sides (arcs among them): the edge is the whole segment at
+            // the plane, so its middle is the side's chord middle moved onto the plane.
+            for ((wn, wp), (sn, sm, sface)) in [(&a, &b), (&b, &a)].into_iter().filter_map(|(w, s)| {
+                let (FaceG::Plane { n: wn, p: wp, .. }, FaceG::Plane { n: sn, mid, cap: false, .. }) = (w, s) else {
+                    return None;
+                };
+                Some(((*wn, *wp), (*sn, *mid, if std::ptr::eq(s, &a) { 0 } else { 1 })))
+            }) {
+                let side_ops = &faces.get(sface)?.first()?.1;
+                let bounded_by_own = faces
+                    .iter()
+                    .skip(2)
+                    .all(|f| f.first().is_some_and(|(g, ops)| ops == side_ops && g != "1" && g != "2"));
+                if bounded_by_own && faces.len() > 2 && dot(wn, sn).abs() < 1e-6 {
+                    let t = dot(wn, sub(wp, sm));
+                    return Some((add(sm, mul(wn, t)), false));
                 }
             }
             return None;

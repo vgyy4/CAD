@@ -226,7 +226,8 @@ fn fusion_trees_are_dumped_on_request() {
             let limits = gusset_meshio::Limits::default();
             let mut budget = limits.max_decompressed_bytes;
             let keep = |n: &str| n.ends_with("Stream.dat") || n.ends_with(".smb") || n.ends_with(".smbh");
-            let mut designs: Vec<(String, Vec<(String, Vec<u8>)>)> = Vec::new();
+            type Entries = Vec<(String, Vec<u8>)>;
+            let mut designs: Vec<(String, Entries)> = Vec::new();
             if let Ok(e) = gusset_meshio::archive::read_entries_within(&bytes, &limits, &keep, 256 << 20, &mut budget)
                 && e.iter().any(|(n, _)| n.ends_with("Stream.dat"))
             {

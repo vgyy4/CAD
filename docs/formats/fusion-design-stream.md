@@ -709,3 +709,35 @@ not an enum). The `2E3AC990` records are identical in all four that have one. No
 known (the Bonnet's and the CyberDeck HAT's are in unreadable inserted designs; the rebuild of the Cases stops before
 theirs), so a join/cut/intersect byte cannot be told apart by comparison. Next evidence needed: a Combine whose
 result is a stored state (volume before/after).
+
+## 19. Round 11: Move, Scale, RemoveBody, Draft, fillet faces (2026-11-10)
+Reader: `fusion_tree/bodyops.rs`; tree types `move_body`, `scale_body`, `remove_body`, `draft`.
+
+* **Selection**: a `2CA5A1CD` list -> `9716F783` -> `7ACC2A03` with `body_recipe_data` + the `D26351F0` body link; the
+  body keeps the tree name of the feature that made it. A face recipe there would be a face move (not read). All Move,
+  Scale and RemoveBody records of the corpus select bodies.
+* **Move `64E40C8E`**: the first ref is an `84E6245F` record holding a row-major 4x4 matrix (16 doubles, translation in the
+  last column, cm, last row exactly 0 0 0 1) at a record-dependent offset (found by that row). Only translations are
+  emitted: no sample has a rotation, so its convention is unverified; a body created by the Move (copy) is refused.
+* **Scale `D45FD6C4`**: parameter `ScaleFactor` (uniform; the only parameter in the samples), centre = the point of the
+  `69EE2FA7` selection (a vertex, via `5662F619` -> `994C518A`).
+* **Verified against the stored logo bodies** (vertex boxes of the `.smb`; original Extrude16 box
+  [-22.365,-23.527,0]..[22.385,19.053,20] mm): 6124: Scale5 0.2 about (0.0064,4.9531,10), Move3 (-0.0064,-4.9531,18),
+  Move4 (-0.0772,0.8494,0), Move5 (0,0,0.4) give [-4.551,-4.846,26.4]..[4.399,3.669,30.4], the stored box; 6126: Scale5 0.2,
+  Scale6 0.8, Move3 (0,0,-16), Move4 (0,-4.7484,4.0336), Move5 (0,0,0.6) give [-3.573,-4.352,-2.966]..[3.587,2.461,0.234],
+  the stored box. (Volume not checked: the logo extrudes are not rebuilt.)
+* **Draft `F4163A07`**: `Angle1` (`Angle2` = 0), a list of bounded-face recipes (the faces) and a list with one plain face
+  recipe (the neutral plane). Emitted with the plane face's outward normal as pull direction and `flip` false; both are
+  unverified (no stored state after a Draft is reachable). The Crickit drafts name faces that are not extrude faces.
+* **RemoveBody `4A782808`** (an off-timeline extra): same body selection; in the Cases it removes the Combine's tool.
+* **Combine operation: still not found.** No Combine's result is a stored state: the Cases stop before it, and the Cases'
+  stored solids hold no body that follows a Combine.
+* **Fillet faces**: generator k of a fillet op is the face of its k-th edge recipe (set order); the face is a rolling ball of
+  the set's radius between the two planar sides of that edge (centre r inside both sides, on the profile-interior side).
+  An arc edge "fillet x wall" has its middle r from the centre along minus the bisector; a straight edge "wall x side"
+  between two fillets has the middle of the two tangent points. Chamfer1 of 6124 (8 edges) now builds in the rebuild
+  (every edge midpoint is found on the model: 3382.7765 -> 3369.5028 mm3; no stored solid holds that state). Also resolved:
+  Top's Chamfer1(2) (4 edges, the boss base at z = 15.6) and Chamfer2.
+* Left in 6124: Fillet4 (4 of 13 edges, faces of multi-op names [374, 376, 377]), Top's Extrude4 (profile is a face),
+  the logo Extrude16/17 (spline-like sketch entities `D82E012F`, `FF23079A`), Combine1. 6126 also has OffsetFaces1 and
+  RemoveInstance1.
