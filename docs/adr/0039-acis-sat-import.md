@@ -594,3 +594,34 @@ chain). Found and not converted: the Combine record's leading field (0 or 1, lik
 operation, unconfirmed), the `Assemble` joint frames (the 0.02 mm of round 12 is the author's
 0.30 mm against a 0.32 mm half pin), and the body-making `PCBExtrude` / `BoxPrimitive` features
 of 2025 files. Details: `docs/formats/fusion-design-stream.md` section 21.
+
+## Amendment (2026-11-10, round 14): Combine, implicit pattern direction, tools by place
+
+- **Combine is read when it joins.** The record's first field is the operation. The test left
+  open in round 13 was run: the pin-header part of Hallowing rebuilds its stored states with
+  Combine1 written as a join and fails them written as a cut, so value 0 is a join. Value 1 has
+  no rebuild and stays refused. A Combine that joins all copies of a body pattern to the
+  pattern's original is written as nothing, because the tree's pattern of a body already unites
+  them; pattern copies still have no names of their own.
+- **A rectangular pattern with one stored direction and a second count** takes V perpendicular
+  to U in the plane of the patterned extrudes, on the side where every copy's profile edges are
+  edges of a stored body and the other side's are not; undecided patterns stay unconverted.
+- **Construction lines** of two more line layouts (276 and 300 bytes) are left out of sketches.
+- **An extrude to a body** (no distance, a body as its object) takes its length from the stored
+  tool body: the one that has the profile's outline edges at the sketch plane and at exactly one
+  other offset.
+- **Step check, placed tools.** Behind the existing rules, which are unchanged and run first: a
+  feature that removes material owns the unexplained stored tools whose place holds material
+  before it and none after it, a feature that adds material those whose place it fills; what
+  they hold of the body before must be the feature's volume change exactly, and they are not
+  more than its profile loops. This is a criterion by position where the older one had only
+  volumes; it lets a design pass in which two features each made fewer tools than loops, or a
+  tool reaches out of the body it cuts. Every stored solid must still be a state or a tool and
+  every feature after the last state must still be explained.
+
+Result: 78 of 150 designs as history (76 before; 3900 and 878 gained, none lost), 11 of 18
+unchanged. Decoded and not converted: the timeline of 2025 PCB files (the drill table of the
+board's PCBExtrude, the BoxPrimitive's sizes and placement, the state lists of the layer
+bodies). Not solved: the unresolved blend edges (their faces are in no stored plane), the
+to-object extents behind other blockers, Split, joints. Details:
+`docs/formats/fusion-design-stream.md` section 22.

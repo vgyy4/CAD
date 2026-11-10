@@ -132,3 +132,38 @@ Designs gained (17), none of the 59 lost: 1833, 2829, 2884, 3191, 3800, 3857, 40
 of the first run are answered by the round 12 step check (hole tools that lie in slots
 of the outline), which the first run did not have yet (its own first re-run, before the typed references, already showed them as history); round 13 adds the loop and piece rules
 (2829, 2884) and the typed references (1833, 3857).
+
+## Re-run after round 14 (2026-11-10)
+
+Same set and command, after the changes of ADR 0039's round 14 amendment
+(`docs/formats/fusion-design-stream.md` section 22). The run was made with another session's uncommitted
+work on the importer's limits in the build, which changes the reasons of three designs (2219, 5420, 6250:
+from "built the model too many times" to a state-check refusal) and no outcome.
+
+| outcome | round 13 | round 14 |
+|---|---|---|
+| as history | 76 | 78 (52 %) |
+| as bodies only | 73 | 71 |
+| failed (300 s timeout, PC Joystick Adapter) | 1 | 1 |
+
+Designs gained (2), none lost: 3900 Hallowing (Combine as a join, the implicit second pattern direction, the
+construction flag of its line layout) and 878 7-segment display backpack (extrude to a body, tools told apart
+by where they are). The 18-design set stays at 11.
+
+What moved without becoming history:
+
+| design | before | now |
+|---|---|---|
+| 3651 3.5in TFT FeatherWing | Combine | Split (not read) |
+| 4200 PyBadge | Combine | box check: a jointed header stands elsewhere than its stored body (joints) |
+| 4242 PyGamer | pattern | a Base Feature body not among the last of its state list |
+
+Still open, by first blocker (72 designs): state check 18 (five 2025 PCB files, whose PCBExtrude and
+BoxPrimitive features are decoded in section 22 but not converted; stored package bodies the tree lacks; 805,
+whose cut removes 2 mm3 where its stored tool holds 20; three that used to hit the rebuild limit), unresolved
+blend edges 9 (side faces of an extrude whose generator numbers the profile does not explain and that no stored
+plane carries), no history stored 7, unsupported types 7 (Split, Thread, MirrorComponent, OffsetFaces, Derived Base
+Feature, ElectronicsPackageGenerator x2), profile decoding 5, Base Feature state lists 4, extrude limits 3 (a face
+object behind a spline outline, an unknown object face, a taper), revolve axis 2, draft 2, and one each of sweep
+path, mirror count, extrude changing several bodies, shell face, shell kernel failure, chamfer without distance,
+extrusion that does not build, sketch text, profile picks limit x2.
