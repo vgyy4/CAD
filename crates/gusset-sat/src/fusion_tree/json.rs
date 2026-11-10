@@ -13,9 +13,12 @@ use std::collections::{HashMap, HashSet};
 
 /// Timeline entries that create no body geometry (none is the creator of a body link or
 /// references a body record in the samples).
-const NON_GEOMETRIC: [(&str, &str); 11] = [
+const NON_GEOMETRIC: [(&str, &str); 12] = [
     ("78B9DEFC", "CreateComponent"),
     ("54F9ACE8", "component activation"),
+    // A class derived from the component activation (its parent in the class table): it names
+    // an occurrence and its CreateComponent, and no body or body link names it.
+    ("8DBAF917", "component activation (of an occurrence)"),
     ("02E8AA49", "JointOrigin"),
     ("8DFDD543", "Assemble (joint)"),
     ("AA8B3D40", "As-built joint"),
@@ -264,6 +267,51 @@ fn op_target(j: &mut Map<String, Value>, g: &Graph, d: &Design, fid: u64, names:
 /// Sweep `FCBB1707`: the operation enum is the first u32 of the body; the profile is a `4BD53E5A`
 /// (names its sketch), the path a list of `5A1BF548` -> `E2CEFD18` sketch-curve references
 /// (`u64 sketch data id`, `u64 crv_primary_id`).
+/// An extrude to both sides by two distances has no form of its own in the tree: it becomes one
+/// extrude from a copy of its sketch moved along the normal to where the second side ends,
+/// over the length between the two ends (the same solid; the copy is named `<extrude> start`).
+fn two_sided_from_a_moved_sketch(cx: &mut Ctx, j: &mut Map<String, Value>, name: &str, feats: &mut Vec<Value>) {
+    if j.get("two_sided").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let (Some(d1), Some(d2), Some(sid)) = (
+        j.get("distance").and_then(Value::as_f64),
+        j.get("distance2").and_then(Value::as_f64),
+        j.get("sketch_source_id").and_then(Value::as_u64),
+    ) else {
+        return;
+    };
+    // The solid lies between the two reaches (a negative second distance starts it off the
+    // sketch plane, on the first side).
+    if (d1 - d2).abs() < 1e-9 {
+        return;
+    }
+    let Some(pl) = cx.sketch(sid).plane else { return };
+    let Some(Value::Object(mut c)) = feats
+        .iter()
+        .find(|f| {
+            f.get("type").and_then(Value::as_str) == Some("sketch")
+                && f.get("source_id").and_then(Value::as_u64) == Some(sid)
+        })
+        .cloned()
+    else {
+        return;
+    };
+    let o = geom::add(pl.origin, geom::mul(pl.z, d2 / 10.0));
+    c.insert("plane".into(), json!({"origin": v3mm(o), "x_axis": pl.x, "y_axis": pl.y}));
+    c.insert("plane_note".into(), "moved along its normal to the far end of an extrude to both sides".into());
+    let copy = format!("{name} start");
+    c.insert("name".into(), copy.clone().into());
+    feats.push(Value::Object(c));
+    j.insert("sketch".into(), copy.into());
+    j.insert("distance".into(), round6(d1 - d2).into());
+    j.insert("two_sided".into(), false.into());
+    j.insert("extent_from".into(), format!("two sides ({d1} and {d2} mm) as one extrude from a moved sketch").into());
+    j.remove("distance_expr");
+    j.remove("distance2");
+    j.remove("distance2_expr");
+}
+
 fn sweep_json(
     cx: &mut Ctx,
     fid: u64,
@@ -549,6 +597,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if d.is(fid, EXTRUDE) {
             let mut j = extrude_json(cx, fid, &nm, &sketch_names);
+            two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
             let made = op_target(&mut j, &g, d, fid, &names);
             j.insert("creates_bodies".into(), made.into());
             feats.push(Value::Object(j));
@@ -630,10 +679,37 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                     feats.push(json!({"type": "mirror", "name": nm, "source_id": fid, "features": in_names,
                         "plane": {"origin": v3mm(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]}}));
                 }
+                // A mirror of bodies names no feature: each selected body, named by the feature
+                // that made it, gets a copy of its own (the mirror is the creator of one new
+                // body per selected one; a mirror that makes none joins, which is not read).
+                Some((o, n)) if ins.is_empty() => {
+                    let mut body_in: Vec<String> = Vec::new();
+                    let mut known = true;
+                    for l in g.selected_bodies(d, fid) {
+                        match g.creator.get(&l).copied().filter(|c| *c != fid).and_then(|c| names.get(&c)) {
+                            Some(n) if !body_in.contains(n) => body_in.push(n.clone()),
+                            Some(_) => {}
+                            None => known = false,
+                        }
+                    }
+                    let made = g.body_links(d, fid, 4).iter().filter(|l| g.creator.get(l) == Some(&fid)).count();
+                    if known && !body_in.is_empty() && made == body_in.len() {
+                        for (k, t) in body_in.iter().enumerate() {
+                            let name = if k == 0 { nm.clone() } else { format!("{nm} body {}", k + 1) };
+                            feats.push(json!({"type": "mirror", "name": name, "source_id": fid, "features": [],
+                                "target": t, "merge": false, "creates_bodies": 1,
+                                "plane": {"origin": v3mm(o), "normal": [round9(n[0]), round9(n[1]), round9(n[2])]}}));
+                        }
+                    } else {
+                        feats.push(json!({"type": "unsupported", "gtree_type": "mirror", "fusion_type": fusion_type,
+                            "name": nm, "source_id": fid, "features": in_names,
+                            "note": format!("it mirrors {} bodies and makes {made}: not one copy per body of a known feature", body_in.len())}));
+                    }
+                }
                 _ => feats.push(
                     json!({"type": "unsupported", "gtree_type": "mirror", "fusion_type": fusion_type, "name": nm,
                     "source_id": fid, "features": in_names,
-                    "note": "the mirror plane is not an origin/construction plane frame, or it mirrors bodies"}),
+                    "note": "the mirror plane is not an origin/construction plane frame"}),
                 ),
             }
         } else if d.is(fid, "AE12AD3F") || d.is(fid, "E8816367") || d.is(fid, "11F1A5CE") {
@@ -834,7 +910,7 @@ fn shell_json(cx: &mut Ctx, fid: u64, name: &str, fusion_type: &str, class: &str
         let Some((g, ops)) = names.first().and_then(|f| f.first()) else {
             return fail("a removed face has no name");
         };
-        match cx.face(g, ops) {
+        match cx.face_with_middle(g, ops) {
             // No normal: the cap and side normals the names give are not oriented outward.
             Some(naming::FaceG::Plane { p, .. }) => faces.push(json!({"point": v3mm(p)})),
             _ => return fail("a removed face is not a cap or planar side of an extrude"),

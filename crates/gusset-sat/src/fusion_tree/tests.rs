@@ -548,7 +548,7 @@ fn damaged_input_is_refused_without_panics() {
         let n = (next() % 400) as usize;
         let mut b = b"ASM BinaryFile4tY\x0d\x09asmheader\x11".to_vec();
         b.extend((0..n).map(|_| [0x0c, 0x0d, 0x11, 0x13, 0x07, 0x0e, next() as u8][(next() % 7) as usize]));
-        let _ = (acis::body_edges(&b), acis::tagged_faces(&b), round);
+        let _ = (acis::body_edges(&b), acis::tagged_faces(&b), acis::named_edges(&b), round);
     }
     // Profile, recipe and operation-table readers on noise.
     for _ in 0..200 {
@@ -906,4 +906,183 @@ fn a_pattern_of_components_gives_its_stored_copies_only_on_its_lattice() {
     assert!(super::pattern_copies(&m, &bulk).is_empty());
     let (m, bulk) = component_pattern(&lattice[..2]);
     assert!(super::pattern_copies(&m, &bulk).is_empty());
+}
+
+#[test]
+fn a_loop_that_lists_an_edge_twice_closes_on_one_of_them() {
+    // A square whose bottom edge is also a piece of a longer line drawn on it.
+    let polys: Vec<Vec<P2>> = vec![
+        vec![[0.0, 0.0], [1.0, 0.0]],
+        vec![[1.0, 0.0], [1.0, 1.0]],
+        vec![[1.0, 0.0], [0.0, 0.0]],
+        vec![[1.0, 1.0], [0.0, 1.0]],
+        vec![[0.0, 1.0], [0.0, 0.0]],
+    ];
+    assert!(geom::chain(&polys).is_none());
+    let fewer = geom::drop_covered(&polys).unwrap();
+    assert_eq!(fewer.len(), 4);
+    assert_eq!(fewer.first(), polys.first(), "of two equal polylines the first stays");
+    assert_eq!(geom::chain(&fewer).unwrap().len(), 4);
+    // A shorter line lying on an edge goes, the edge stays; nothing to drop gives `None`.
+    let mut part = fewer.clone();
+    part.push(vec![[0.2, 0.0], [0.6, 0.0]]);
+    assert_eq!(geom::drop_covered(&part).unwrap(), fewer);
+    assert!(geom::drop_covered(&fewer).is_none());
+}
+
+fn unit_circle_at(c: P2, r: f64) -> Vec<P2> {
+    (0..=64)
+        .map(|k| {
+            let t = f64::from(k) / 64.0 * std::f64::consts::TAU;
+            [c[0] + r * libm::cos(t), c[1] + r * libm::sin(t)]
+        })
+        .collect()
+}
+
+#[test]
+fn a_hole_joined_to_the_outline_is_walked_in_the_outline_loop() {
+    // A 4 x 4 square, a circle of radius 1 in its middle and the line from the bottom edge up
+    // to the circle, walked there and back.
+    let mut polys: Vec<Vec<P2>> = vec![
+        vec![[0.0, 0.0], [2.0, 0.0]],
+        vec![[2.0, 0.0], [2.0, 1.0]],
+        unit_circle_at([2.0, 2.0], 1.0),
+        vec![[2.0, 0.0], [4.0, 0.0]],
+        vec![[4.0, 0.0], [4.0, 4.0]],
+        vec![[4.0, 4.0], [0.0, 4.0]],
+        vec![[0.0, 4.0], [0.0, 0.0]],
+    ];
+    assert!(geom::chain(&polys).is_none());
+    let (outer, holes) = geom::bridged(&polys).unwrap();
+    assert_eq!(outer.len(), 5);
+    assert_eq!(holes.len(), 1);
+    assert!(geom::inside([0.5, 0.5], &outer) && geom::inside([2.0, 2.0], holes.first().unwrap()));
+    // A circle that touches the bottom edge needs no line; one outside the outline is refused,
+    // and so is one that neither touches nor hangs on a line.
+    polys.remove(1);
+    if let Some(c) = polys.get_mut(1) {
+        *c = unit_circle_at([2.0, 1.0], 1.0);
+    }
+    assert_eq!(geom::bridged(&polys).unwrap().1.len(), 1);
+    if let Some(c) = polys.get_mut(1) {
+        *c = unit_circle_at([2.0, -1.0], 1.0);
+    }
+    assert!(geom::bridged(&polys).is_none());
+    if let Some(c) = polys.get_mut(1) {
+        *c = unit_circle_at([2.0, 2.0], 1.0);
+    }
+    assert!(geom::bridged(&polys).is_none());
+}
+
+#[test]
+fn a_line_is_cut_by_the_ends_of_a_line_lying_on_it() {
+    let long: Vec<P2> = vec![[0.0, 0.0], [6.0, 0.0]];
+    let on: Vec<P2> = vec![[4.0, 0.0], [2.0, 0.0]];
+    let others: Vec<&[P2]> = vec![&on];
+    assert!(geom::piece(&long, false, &others, 2, 3).is_none(), "parallel lines do not cross");
+    let mid = geom::piece_ex(&long, false, &others, 2, 3, true).unwrap();
+    assert_eq!(mid, vec![[2.0, 0.0], [4.0, 0.0]]);
+    // A parallel line beside it cuts nothing.
+    let beside: Vec<P2> = vec![[4.0, 0.1], [2.0, 0.1]];
+    let others: Vec<&[P2]> = vec![&beside];
+    assert!(geom::piece_ex(&long, false, &others, 2, 3, true).is_none());
+}
+
+#[test]
+fn a_chord_and_the_arc_it_cuts_off_close_within_the_sag_of_the_sampled_arc() {
+    // The cut of a sampled circle lies on a chord of the polyline, a little off the true circle.
+    let circle = unit_circle_at([0.0, 0.0], 1.0);
+    let y = 0.72;
+    let x = libm::sqrt(1.0 - y * y);
+    let chord: Vec<P2> = vec![[-x, y], [x, y]];
+    let others: Vec<&[P2]> = vec![&chord];
+    let cap = geom::piece(&circle, true, &others, 2, 2).unwrap();
+    assert!(cap.iter().all(|p| p[1] >= y - 1e-3));
+    assert!(geom::chain(&[chord, cap]).is_some());
+}
+
+enum Tok<'a> {
+    P(i32),
+    I(i32),
+    D(f64),
+    Pos([f64; 3]),
+    Vec([f64; 3]),
+    S(&'a str),
+}
+
+fn sab_tokens(names: &[&str], toks: &[Tok]) -> Vec<u8> {
+    let mut v = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        v.extend(token_str(if i + 1 == names.len() { 0x0d } else { 0x0e }, n));
+    }
+    for t in toks {
+        match t {
+            Tok::P(p) => {
+                v.push(0x0c);
+                v.extend(p.to_le_bytes());
+            }
+            Tok::I(i) => {
+                v.push(0x04);
+                v.extend(i.to_le_bytes());
+            }
+            Tok::D(d) => {
+                v.push(0x06);
+                v.extend(d.to_le_bytes());
+            }
+            Tok::Pos(p) | Tok::Vec(p) => {
+                v.push(if matches!(t, Tok::Pos(_)) { 0x13 } else { 0x14 });
+                for x in p {
+                    v.extend(x.to_le_bytes());
+                }
+            }
+            Tok::S(s) => v.extend(token_str(0x07, s)),
+        }
+    }
+    v.push(0x11);
+    v
+}
+
+/// A blob with one straight edge from (1, 0, 0) to (3, 0, 0) between two named faces; `t1` is
+/// the edge's stored end parameter (2 is right).
+fn named_edge_blob(t1: f64) -> Vec<u8> {
+    use Tok::{D, I, P, Pos, S, Vec as V};
+    let tag = |face: i32, entries: &[(&'static str, &[i32])]| {
+        let mut t = vec![P(-1), I(-1), P(-1), P(-1), P(face), S("generic_tag_attrib_def"), I(3), I(3), I(-1)];
+        t.extend([S("generic_tag_attrib_def "), I(1), I(entries.len() as i32)]);
+        for (g, ops) in entries {
+            t.extend([S(g), I(0), I(ops.len() as i32)]);
+            t.extend(ops.iter().map(|o| I(*o)));
+            t.push(I(0));
+        }
+        sab_tokens(&["ATTRIB_CUSTOM", "attrib"], &t)
+    };
+    let mut b = b"ASM BinaryFile4tY".to_vec();
+    b.extend(sab_tokens(&["asmheader"], &[]));
+    b.extend(sab_tokens(&["face"], &[P(3)]));
+    b.extend(sab_tokens(&["face"], &[P(4)]));
+    b.extend(sab_tokens(&["loop"], &[P(5), P(1)]));
+    b.extend(sab_tokens(&["loop"], &[P(6), P(2)]));
+    b.extend(sab_tokens(&["coedge"], &[P(7), P(3)]));
+    b.extend(sab_tokens(&["coedge"], &[P(7), P(4)]));
+    b.extend(sab_tokens(&["edge"], &[P(8), D(0.0), P(9), D(t1), P(5), P(12)]));
+    b.extend(sab_tokens(&["vertex"], &[P(10)]));
+    b.extend(sab_tokens(&["vertex"], &[P(11)]));
+    b.extend(sab_tokens(&["point"], &[Pos([1.0, 0.0, 0.0])]));
+    b.extend(sab_tokens(&["point"], &[Pos([3.0, 0.0, 0.0])]));
+    b.extend(sab_tokens(&["straight", "curve"], &[Pos([1.0, 0.0, 0.0]), V([1.0, 0.0, 0.0])]));
+    b.extend(tag(1, &[("5", &[313])]));
+    b.extend(tag(2, &[("3", &[313, 320]), ("4", &[313])]));
+    b
+}
+
+#[test]
+fn a_stored_edge_is_known_by_the_names_of_its_two_faces() {
+    let edges = acis::named_edges(&named_edge_blob(2.0)).unwrap();
+    let [e] = edges.as_slice() else { panic!("one edge, got {}", edges.len()) };
+    assert_eq!(e.faces[0], vec![("5".to_string(), vec![313])]);
+    assert_eq!(e.faces[1], vec![("3".to_string(), vec![313, 320]), ("4".to_string(), vec![313])]);
+    assert_eq!((e.a, e.b, e.mid), ([1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 0.0, 0.0]));
+    assert!(e.around.is_empty());
+    // Parameters that do not give the edge's end vertex: the middle is unknown, the edge is left out.
+    assert!(acis::named_edges(&named_edge_blob(5.0)).unwrap().is_empty());
 }

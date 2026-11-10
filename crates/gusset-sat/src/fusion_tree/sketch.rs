@@ -264,7 +264,8 @@ fn parse_region(rec: &[u8], mut o: usize, depth: usize) -> Option<(Region, usize
             let b = stream::u32_at(rec, o + 28)?;
             stream::u32_at(rec, o + 20)?;
             rec.get(o + 32..o + 40)?;
-            if t > 16 || p > 1 << 40 {
+            // (Newer streams use 64-bit hashes as curve ids, so the id itself has no bound.)
+            if t > 16 {
                 return None;
             }
             curves.push(Entry { primary: p, secondary: s, a, b });
@@ -557,16 +558,23 @@ impl RegionCache {
                         .filter(|(kk, v)| kk != q && v.is_some() && used_set.contains(kk))
                         .filter_map(|(_, v)| v.as_deref())
                         .collect();
-                    let mut pc = geom::piece(&pl, closed, &first, c.a, c.b);
-                    if pc.is_none() && !closed {
-                        let prev = if n > 1 { full.get((k + n - 1) % n).map(|f| f.2.as_slice()) } else { None };
-                        let next = if n > 1 { full.get((k + 1) % n).map(|f| f.2.as_slice()) } else { None };
-                        pc = geom::trim_by_neighbours(&pl, prev, next, c.a, c.b);
+                    // The curve is cut by the other curves of its loop; the ends of a line
+                    // that lies on it cut it too (646 of 647 open and 175 of 178 closed pieces
+                    // of the sample set have exactly `b` pieces this way).
+                    let own: Vec<&[P2]> = full.iter().filter(|f| f.0 != *q).map(|f| f.2.as_slice()).collect();
+                    let mut pc = geom::piece_ex(&pl, closed, &own, c.a, c.b, true);
+                    if pc.is_none() {
+                        pc = geom::piece(&pl, closed, &first, c.a, c.b);
                     }
                     if pc.is_none() {
                         let everything: Vec<&[P2]> =
                             all.iter().filter(|(kk, _)| kk != q).filter_map(|(_, v)| v.as_deref()).collect();
                         pc = geom::piece(&pl, closed, &everything, c.a, c.b);
+                    }
+                    if pc.is_none() && !closed {
+                        let prev = if n > 1 { full.get((k + n - 1) % n).map(|f| f.2.as_slice()) } else { None };
+                        let next = if n > 1 { full.get((k + 1) % n).map(|f| f.2.as_slice()) } else { None };
+                        pc = geom::trim_by_neighbours(&pl, prev, next, c.a, c.b);
                     }
                     pl = pc.ok_or_else(|| format!("curve piece {}/{} not reproduced", c.a, c.b))?;
                 }
@@ -575,6 +583,24 @@ impl RegionCache {
                 segs.push(Rc::new(Seg { id: self.next_id, curve: *q, poly: pl, flag: l.flag, loopkey }));
             }
             let mut ring = geom::chain(&polys);
+            if ring.is_none()
+                && let Some(fewer) = geom::drop_covered(&polys)
+            {
+                // Curves that lie on each other are all listed: each edge counts once.
+                ring = geom::chain(&fewer);
+                if ring.is_some() {
+                    polys = fewer;
+                }
+            }
+            let mut islands: Vec<Vec<P2>> = Vec::new();
+            if ring.is_none()
+                && l.flag == 1
+                && let Some((outer, inner)) = geom::bridged(&polys)
+            {
+                // A hole joined to the outline by a curve is walked in the same loop.
+                ring = Some(outer);
+                islands = inner;
+            }
             if ring.is_none() {
                 // The record can leave out a curve of the loop (a corner arc that a duplicate
                 // arc of the sketch shadows): a sketch curve that joins exactly the open ends
@@ -589,6 +615,7 @@ impl RegionCache {
                 ring = geom::chain(&polys);
             }
             rings.push((l.flag, ring.ok_or("loop does not close")?));
+            rings.extend(islands.into_iter().map(|r| (0, r)));
         }
         Ok((rings, segs))
     }

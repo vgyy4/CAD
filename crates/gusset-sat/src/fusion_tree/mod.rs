@@ -51,6 +51,8 @@ struct Ctx<'a> {
     gmaps: HashMap<u64, Option<Rc<naming::GenMap>>>,
     tagged: Option<Vec<acis::TaggedFace>>,
     edge_sets: Option<Vec<Vec<acis::Edge>>>,
+    named_edges: Option<Vec<acis::NamedEdge>>,
+    named_planes: Option<Vec<acis::NamedPlane>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -65,6 +67,8 @@ impl<'a> Ctx<'a> {
             gmaps: HashMap::new(),
             tagged: None,
             edge_sets: None,
+            named_edges: None,
+            named_planes: None,
         }
     }
 }

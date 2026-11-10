@@ -89,6 +89,34 @@ fn seg_x(p1: P2, p2: P2, q1: P2, q2: P2) -> Option<f64> {
 
 /// Arc-length fractions (0..1) where `poly` is crossed or touched by any of the other polylines.
 pub(super) fn split_params(poly: &[P2], others: &[&[P2]]) -> Vec<f64> {
+    split_params_ex(poly, others, false)
+}
+
+/// Parameters on `p1..p2` of the ends of `q1..q2` when the two segments lie on one line.
+fn seg_on(p1: P2, p2: P2, q1: P2, q2: P2) -> Vec<f64> {
+    let (rx, ry) = (p2[0] - p1[0], p2[1] - p1[1]);
+    let l2 = rx * rx + ry * ry;
+    if l2 < 1e-24 {
+        return Vec::new();
+    }
+    let l = libm::sqrt(l2);
+    let mut out = Vec::new();
+    for q in [q1, q2] {
+        let off = ((q[0] - p1[0]) * ry - (q[1] - p1[1]) * rx) / l;
+        if off.abs() > 1e-9 {
+            return Vec::new();
+        }
+        let t = ((q[0] - p1[0]) * rx + (q[1] - p1[1]) * ry) / l2;
+        if (-1e-9..=1.0 + 1e-9).contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// [`split_params`]; with `collinear` the ends of a straight piece lying on a straight piece
+/// of `poly` cut it too.
+pub(super) fn split_params_ex(poly: &[P2], others: &[&[P2]], collinear: bool) -> Vec<f64> {
     let l = cumulative(poly);
     let tot = match l.last().copied() {
         Some(t) if t != 0.0 => t,
@@ -100,9 +128,13 @@ pub(super) fn split_params(poly: &[P2], others: &[&[P2]]) -> Vec<f64> {
             let [a, b] = w else { continue };
             for w2 in o.windows(2) {
                 let [c, dd] = w2 else { continue };
+                let (l0, l1) = (l.get(k).copied().unwrap_or(0.0), l.get(k + 1).copied().unwrap_or(0.0));
                 if let Some(t) = seg_x(*a, *b, *c, *dd) {
-                    let (l0, l1) = (l.get(k).copied().unwrap_or(0.0), l.get(k + 1).copied().unwrap_or(0.0));
                     out.push((l0 + t * (l1 - l0)) / tot);
+                } else if collinear && poly.len() == 2 && o.len() == 2 {
+                    for t in seg_on(*a, *b, *c, *dd) {
+                        out.push((l0 + t * (l1 - l0)) / tot);
+                    }
                 }
             }
         }
@@ -150,12 +182,26 @@ pub(super) fn sub_poly(poly: &[P2], f0: f64, f1: f64) -> Vec<P2> {
 /// Piece `a` (1-based) of `b` of a curve cut at its crossings with the other curves; `None`
 /// when the crossings do not give `b` pieces.
 pub(super) fn piece(poly: &[P2], closed: bool, others: &[&[P2]], a: u32, b: u32) -> Option<Vec<P2>> {
+    piece_ex(poly, closed, others, a, b, false)
+}
+
+/// [`piece`]; with `collinear` the ends of a line lying on a line cut it too.
+pub(super) fn piece_ex(
+    poly: &[P2],
+    closed: bool,
+    others: &[&[P2]],
+    a: u32,
+    b: u32,
+    collinear: bool,
+) -> Option<Vec<P2>> {
     if a == 0 || a > b {
         return None;
     }
     let (a, b) = (a as usize, b as usize);
-    let fs: Vec<f64> =
-        split_params(poly, others).into_iter().filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed).collect();
+    let fs: Vec<f64> = split_params_ex(poly, others, collinear)
+        .into_iter()
+        .filter(|f| (*f > 1e-6 && *f < 1.0 - 1e-6) || closed)
+        .collect();
     if closed {
         let mut fs: Vec<f64> =
             fs.into_iter().map(|f| round9(f.rem_euclid(1.0))).map(|f| if f >= 1.0 { 0.0 } else { f }).collect();
@@ -270,6 +316,134 @@ pub(super) fn close_gaps(
     added
 }
 
+/// Distance from `p` to the polyline `q`.
+fn poly_dist(p: P2, q: &[P2]) -> f64 {
+    q.windows(2)
+        .filter_map(|w| if let [a, b] = w { Some(seg_dist(p, *a, *b)) } else { None })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// `p` lies wholly on `q`: its vertices and the middles of its segments are on `q`. Curved
+/// polylines are compared within the sag of their chords.
+fn covered_by(p: &[P2], q: &[P2], scale: f64) -> bool {
+    if p.len() < 2 || q.len() < 2 {
+        return false;
+    }
+    let sag = |v: &[P2]| -> f64 {
+        if v.len() == 2 {
+            return 0.0;
+        }
+        v.windows(2).filter_map(|w| if let [a, b] = w { Some(dist(*a, *b)) } else { None }).fold(0.0, f64::max) * 0.05
+    };
+    let tol = 1e-7 * scale + 1e-9 + sag(p).max(sag(q));
+    p.iter().all(|a| poly_dist(*a, q) <= tol)
+        && p.windows(2).all(|w| {
+            let [a, b] = w else { return true };
+            poly_dist([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], q) <= tol
+        })
+}
+
+/// The polylines of a loop without those that lie wholly on another polyline of the loop: a
+/// profile loop lists every sketch curve on its boundary, so where two curves lie on each
+/// other (a rectangle drawn on a rectangle's side) an edge is listed twice. Of two polylines
+/// that cover each other the first stays. `None` when nothing is dropped.
+pub(super) fn drop_covered(polys: &[Vec<P2>]) -> Option<Vec<Vec<P2>>> {
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in polys.iter().flatten() {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let scale = dist(lo, hi).max(1e-6);
+    let mut keep = vec![true; polys.len()];
+    for (i, p) in polys.iter().enumerate() {
+        for (j, q) in polys.iter().enumerate() {
+            if i == j || !keep.get(j).copied().unwrap_or(false) || !covered_by(p, q, scale) {
+                continue;
+            }
+            // Equal polylines: the later one goes.
+            if covered_by(q, p, scale) && i < j {
+                continue;
+            }
+            if let Some(k) = keep.get_mut(i) {
+                *k = false;
+            }
+            break;
+        }
+    }
+    if keep.iter().all(|k| *k) {
+        return None;
+    }
+    Some(polys.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| p.clone()).collect())
+}
+
+/// A loop that walks its outline, a curve into the region, a closed curve there (a hole) and
+/// the same curve back, or a closed curve that touches the outline: the outline's ring and the
+/// rings of the closed curves, which must lie inside it. Polylines that lie on each other count once; open polylines with an end no
+/// other open polyline meets are the curves walked both ways.
+pub(super) fn bridged(polys: &[Vec<P2>]) -> Option<(Vec<P2>, Vec<Vec<P2>>)> {
+    let polys = drop_covered(polys).unwrap_or_else(|| polys.to_vec());
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for p in polys.iter().flatten() {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let tol = 1e-4 * dist(lo, hi).max(1e-6);
+    let is_closed = |p: &Vec<P2>| match (p.first(), p.last()) {
+        (Some(a), Some(b)) => p.len() > 2 && dist(*a, *b) < tol,
+        _ => false,
+    };
+    let (closed, mut open): (Vec<Vec<P2>>, Vec<Vec<P2>>) = polys.into_iter().partition(is_closed);
+    if closed.is_empty() || open.is_empty() {
+        return None;
+    }
+    let mut bridges: Vec<Vec<P2>> = Vec::new();
+    loop {
+        let ends: Vec<(usize, P2)> = open
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| [p.first(), p.last()].into_iter().flatten().map(move |e| (i, *e)))
+            .collect();
+        let spur = open.iter().enumerate().position(|(i, p)| {
+            [p.first(), p.last()]
+                .into_iter()
+                .flatten()
+                .any(|e| !ends.iter().any(|(j, e2)| *j != i && dist(*e, *e2) < tol))
+        });
+        match spur {
+            Some(i) => bridges.push(open.remove(i)),
+            None => break,
+        }
+    }
+    let outer = chain(&open)?;
+    let mut ring = outer.clone();
+    ring.push(*outer.first()?);
+    // Each closed curve hangs on a walked-twice curve or touches the outline (a circle
+    // tangent to an edge), and lies inside the outline.
+    let mut rings = Vec::new();
+    for c in closed {
+        let step =
+            c.windows(2).filter_map(|w| if let [a, b] = w { Some(dist(*a, *b)) } else { None }).fold(0.0, f64::max);
+        let near = 20.0 * tol + 0.05 * step;
+        let hung =
+            bridges.iter().any(|b| [b.first(), b.last()].into_iter().flatten().any(|e| poly_dist(*e, &c) < near));
+        let (mut touch, mut far) = (f64::INFINITY, (0.0, *c.first()?));
+        for v in &c {
+            let dv = poly_dist(*v, &ring);
+            touch = touch.min(dv);
+            if dv > far.0 {
+                far = (dv, *v);
+            }
+        }
+        if !(hung || touch < near) || !inside(far.1, &outer) {
+            return None;
+        }
+        let mut r = c;
+        r.pop();
+        rings.push(r);
+    }
+    Some((outer, rings))
+}
+
 pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
     if polys.is_empty() {
         return None;
@@ -286,6 +460,15 @@ pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
         let d = dist(f, l);
         return (d < tol * 10.0 || (r.len() > 2 && d < 1e-3 * scale)).then(|| r.clone());
     }
+    // A cut of a curved polyline lies on a chord, off the curve by up to the chord's sag.
+    let sag = polys
+        .iter()
+        .filter(|p| p.len() > 2)
+        .flat_map(|p| p.windows(2))
+        .filter_map(|w| if let [a, b] = w { Some(dist(*a, *b)) } else { None })
+        .fold(0.0, f64::max)
+        * 0.05;
+    let join = 1e-4 * scale + sag;
     let mut rest: Vec<Vec<P2>> = polys.to_vec();
     let mut ring = rest.remove(0);
     let mut flipped = false;
@@ -303,7 +486,7 @@ pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
             }
         }
         let (bd, bk, brev) = best?;
-        if bd > 1e-4 * scale {
+        if bd > join {
             if !flipped {
                 ring.reverse();
                 flipped = true;
@@ -317,7 +500,7 @@ pub(super) fn chain(polys: &[Vec<P2>]) -> Option<Vec<P2>> {
         }
         ring.extend(p.into_iter().skip(1));
     }
-    if dist(*ring.first()?, *ring.last()?) > 1e-4 * scale {
+    if dist(*ring.first()?, *ring.last()?) > join {
         return None;
     }
     ring.pop();

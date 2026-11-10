@@ -16,6 +16,12 @@ struct ARec {
     strs: Vec<String>,
     /// The first position (`0x13`) token.
     pos: Option<V3>,
+    /// Integer (`0x04`) tokens, and for each string of `strs` how many came before it.
+    ints: Vec<i64>,
+    str_at: Vec<usize>,
+    /// Double (`0x06`) tokens and position/vector (`0x13`, `0x14`) tokens.
+    nums: Vec<f64>,
+    vecs: Vec<V3>,
 }
 
 fn find(b: &[u8], pat: &[u8]) -> Option<usize> {
@@ -57,6 +63,7 @@ fn records(b: &[u8]) -> Option<Vec<ARec>> {
                 if !s.is_empty() {
                     let text: String = s.iter().map(|&c| char::from(c)).collect();
                     if t == 0x07 {
+                        cur.str_at.push(cur.ints.len());
                         cur.strs.push(text);
                     } else {
                         names.push(text);
@@ -84,10 +91,23 @@ fn records(b: &[u8]) -> Option<Vec<ARec>> {
                         };
                         cur.ptrs.push(p);
                     }
-                    0x13 if cur.pos.is_none() => {
+                    0x04 => {
+                        let p = if n == 4 {
+                            i64::from(i32::from_le_bytes(v.try_into().ok()?))
+                        } else {
+                            i64::from_le_bytes(v.try_into().ok()?)
+                        };
+                        cur.ints.push(p);
+                    }
+                    0x06 => cur.nums.push(f64::from_le_bytes(v.try_into().ok()?)),
+                    0x13 | 0x14 => {
                         let f =
                             |k: usize| v.get(k * 8..k * 8 + 8).and_then(|s| s.try_into().ok()).map(f64::from_le_bytes);
-                        cur.pos = Some([f(0)?, f(1)?, f(2)?]);
+                        let p = [f(0)?, f(1)?, f(2)?];
+                        if t == 0x13 && cur.pos.is_none() {
+                            cur.pos = Some(p);
+                        }
+                        cur.vecs.push(p);
                     }
                     _ => {}
                 }
@@ -255,6 +275,188 @@ pub(super) fn tagged_faces(b: &[u8]) -> Option<Vec<TaggedFace>> {
                 out.push(TaggedFace { tag: t.clone(), verts });
             }
         }
+    }
+    Some(out)
+}
+
+/// A face name as the design stream writes it: entries of (generator, operation ids).
+pub(super) type Name = Vec<(String, Vec<i32>)>;
+
+/// The name a `generic_tag_attrib_def` attribute gives its owner: after the attribute's second
+/// name string come `1`, the entry count, then per entry the generator text, a number, the
+/// count of operation ids, the ids and `0` (the layout of a face name in a recipe record).
+fn tag_name(r: &ARec) -> Option<Name> {
+    let k = r.strs.iter().rposition(|x| x.starts_with("generic_tag_attrib_def"))?;
+    if k == 0 {
+        return None;
+    }
+    let count = usize::try_from(*r.ints.get(r.str_at.get(k)? + 1)?).ok().filter(|c| *c <= 256)?;
+    let mut out = Name::new();
+    for j in 0..count {
+        let g = r.strs.get(k + 1 + j)?;
+        let at = *r.str_at.get(k + 1 + j)?;
+        let n = usize::try_from(*r.ints.get(at + 1)?).ok().filter(|n| *n <= 4096)?;
+        let ops: Option<Vec<i32>> =
+            (0..n).map(|i| r.ints.get(at + 2 + i).and_then(|v| i32::try_from(*v).ok())).collect();
+        out.push((g.clone(), ops?));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// An edge of a stored body between two named faces: the faces' names, the names of the other
+/// faces at its two ends, its ends and its middle (cm).
+#[derive(Debug)]
+pub(super) struct NamedEdge {
+    pub faces: [Name; 2],
+    pub around: Vec<Name>,
+    pub a: V3,
+    pub b: V3,
+    pub mid: V3,
+}
+
+/// A named face of a stored body that lies on a plane: the plane's point and normal (cm).
+#[derive(Debug)]
+pub(super) struct NamedPlane {
+    pub name: Name,
+    pub point: V3,
+    pub normal: V3,
+}
+
+/// The face names of a blob: record index of the face to its name.
+fn face_names(recs: &[ARec]) -> HashMap<usize, Name> {
+    let mut name: HashMap<usize, Name> = HashMap::new();
+    for r in recs {
+        if !r.ty.contains("attrib") || r.strs.first().map(String::as_str) != Some("generic_tag_attrib_def") {
+            continue;
+        }
+        let owner = r
+            .ptrs
+            .iter()
+            .filter_map(|p| usize::try_from(*p).ok())
+            .find(|p| recs.get(*p).is_some_and(|o| !o.ty.contains("attrib")));
+        if let (Some(o), Some(n)) = (owner, tag_name(r))
+            && recs.get(o).is_some_and(|x| x.ty.ends_with("face"))
+        {
+            name.insert(o, n);
+        }
+    }
+    name
+}
+
+/// The planar named faces of the blob's bodies.
+pub(super) fn named_planes(b: &[u8]) -> Option<Vec<NamedPlane>> {
+    let recs = records(b)?;
+    let names = face_names(&recs);
+    let mut keys: Vec<&usize> = names.keys().collect();
+    keys.sort_unstable();
+    let mut out = Vec::new();
+    for f in keys {
+        let (Some(fr), Some(name)) = (recs.get(*f), names.get(f)) else { continue };
+        let surface = fr
+            .ptrs
+            .iter()
+            .filter_map(|p| usize::try_from(*p).ok())
+            .filter_map(|p| recs.get(p))
+            .find(|x| x.ty.ends_with("plane-surface"));
+        if let Some(sr) = surface
+            && let (Some(point), Some(normal)) = (sr.vecs.first(), sr.vecs.get(1))
+        {
+            out.push(NamedPlane { name: name.clone(), point: *point, normal: *normal });
+        }
+    }
+    Some(out)
+}
+
+fn curve_point(c: &ARec, t: f64) -> Option<V3> {
+    if c.ty.ends_with("straight-curve") {
+        let (p, v) = (c.vecs.first()?, c.vecs.get(1)?);
+        return Some([p[0] + t * v[0], p[1] + t * v[1], p[2] + t * v[2]]);
+    }
+    if c.ty.ends_with("ellipse-curve") {
+        let (p, n, m) = (c.vecs.first()?, c.vecs.get(1)?, c.vecs.get(2)?);
+        let ratio = *c.nums.first()?;
+        let w = [n[1] * m[2] - n[2] * m[1], n[2] * m[0] - n[0] * m[2], n[0] * m[1] - n[1] * m[0]];
+        let (co, si) = (libm::cos(t), libm::sin(t) * ratio);
+        return Some([p[0] + co * m[0] + si * w[0], p[1] + co * m[1] + si * w[1], p[2] + co * m[2] + si * w[2]]);
+    }
+    None
+}
+
+/// The edges of the blob's bodies that lie between two faces carrying a name. An edge whose
+/// curve is not a line or an ellipse, or whose stored parameters do not give its end vertices,
+/// is left out (its middle is not known).
+pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
+    let recs = records(b)?;
+    let vpt = vertex_points(&recs);
+    let at = |p: &i64| usize::try_from(*p).ok().filter(|p| *p < recs.len());
+    let kind = |p: usize, end: &str| recs.get(p).is_some_and(|x| x.ty.ends_with(end));
+    let name = face_names(&recs);
+    let mut loop_face: HashMap<usize, usize> = HashMap::new();
+    for (k, r) in recs.iter().enumerate() {
+        if r.ty.ends_with("loop")
+            && let Some(f) = r.ptrs.iter().filter_map(at).find(|p| kind(*p, "face"))
+        {
+            loop_face.insert(k, f);
+        }
+    }
+    let is_edge = |p: usize| kind(p, "edge") && !kind(p, "coedge");
+    let mut edge_faces: HashMap<usize, Vec<usize>> = HashMap::new();
+    for r in recs.iter().filter(|r| r.ty.ends_with("coedge")) {
+        let e = r.ptrs.iter().filter_map(at).find(|p| is_edge(*p));
+        let f = r.ptrs.iter().filter_map(at).find(|p| kind(*p, "loop")).and_then(|l| loop_face.get(&l));
+        if let (Some(e), Some(f)) = (e, f) {
+            let v = edge_faces.entry(e).or_default();
+            if !v.contains(f) {
+                v.push(*f);
+            }
+        }
+    }
+    // The faces at each vertex.
+    let mut vertex_faces: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (e, fs) in &edge_faces {
+        let Some(er) = recs.get(*e) else { continue };
+        for v in er.ptrs.iter().filter_map(at).filter(|p| vpt.contains_key(p)) {
+            let l = vertex_faces.entry(v).or_default();
+            for f in fs {
+                if !l.contains(f) {
+                    l.push(*f);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut keys: Vec<&usize> = edge_faces.keys().collect();
+    keys.sort_unstable();
+    for e in keys {
+        let (Some(er), Some([f0, f1])) = (recs.get(*e), edge_faces.get(e).map(Vec::as_slice)) else { continue };
+        let (Some(n0), Some(n1)) = (name.get(f0), name.get(f1)) else { continue };
+        let vs: Vec<usize> = er.ptrs.iter().filter_map(at).filter(|p| vpt.contains_key(p)).collect();
+        let [va, vb] = vs.as_slice() else { continue };
+        let (Some(a), Some(b)) = (vpt.get(va).copied(), vpt.get(vb).copied()) else { continue };
+        let (Some(t0), Some(t1)) = (er.nums.first().copied(), er.nums.get(1).copied()) else { continue };
+        let Some(curve) = er.ptrs.iter().filter_map(at).find(|p| kind(*p, "curve")).and_then(|c| recs.get(c)) else {
+            continue;
+        };
+        // The edge runs along its curve or against it (the parameters are then negated).
+        let near = |p: V3, q: V3| (p[0] - q[0]).abs() + (p[1] - q[1]).abs() + (p[2] - q[2]).abs() < 1e-6;
+        let mid = [1.0, -1.0].into_iter().find_map(|s| {
+            let (p0, p1) = (curve_point(curve, s * t0)?, curve_point(curve, s * t1)?);
+            (near(p0, a) && near(p1, b)).then(|| curve_point(curve, s * (t0 + t1) / 2.0)).flatten()
+        });
+        let Some(mid) = mid else { continue };
+        let mut around = Vec::new();
+        for v in [va, vb] {
+            for f in vertex_faces.get(v).map(Vec::as_slice).unwrap_or(&[]) {
+                if f != f0
+                    && f != f1
+                    && let Some(n) = name.get(f)
+                    && !around.contains(n)
+                {
+                    around.push(n.clone());
+                }
+            }
+        }
+        out.push(NamedEdge { faces: [n0.clone(), n1.clone()], around, a, b, mid });
     }
     Some(out)
 }

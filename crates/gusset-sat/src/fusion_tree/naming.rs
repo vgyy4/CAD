@@ -425,6 +425,101 @@ impl Ctx<'_> {
         })
     }
 
+    /// The edges of the stored bodies (every state the file keeps) that lie between two named
+    /// faces.
+    fn named_edges(&mut self) -> &[acis::NamedEdge] {
+        let files = self.acis;
+        self.named_edges.get_or_insert_with(|| {
+            let mut out = Vec::new();
+            for (n, b) in files {
+                if (n.ends_with(".smb") || n.ends_with(".smbh"))
+                    && let Some(s) = acis::named_edges(b)
+                {
+                    out.extend(s);
+                }
+            }
+            out
+        })
+    }
+
+    /// The plane of the face named (generator, operation ids), as the stored bodies hold it: a
+    /// planar face whose name has the generator with these operations, alone or followed by
+    /// operations that trim a face without moving it (extrudes, sweeps, revolves, holes, blends,
+    /// combines). Every such stored face must lie on one plane.
+    fn stored_plane(&mut self, g: &str, ops: &[i32]) -> Option<(V3, V3)> {
+        const TRIMMING: [&str; 8] =
+            [super::EXTRUDE, super::SWEEP, "E3849A15", "1C037A07", "A07D5F17", "F757D611", "2A94257F", "B6678572"];
+        if ops.is_empty() {
+            return None;
+        }
+        let files = self.acis;
+        if self.named_planes.is_none() {
+            let mut out = Vec::new();
+            for (n, b) in files {
+                if (n.ends_with(".smb") || n.ends_with(".smbh"))
+                    && let Some(s) = acis::named_planes(b)
+                {
+                    out.extend(s);
+                }
+            }
+            self.named_planes = Some(out);
+        }
+        let mut found: Option<(V3, V3)> = None;
+        for f in self.named_planes.as_deref().unwrap_or(&[]) {
+            let hit = f.name.iter().any(|(g2, ops2)| {
+                g2 == g
+                    && ops2.get(..ops.len()) == Some(ops)
+                    && ops2.iter().skip(ops.len()).all(|o| {
+                        u64::try_from(*o)
+                            .ok()
+                            .and_then(|o| self.opmap.get(&o))
+                            .is_some_and(|fid| TRIMMING.iter().any(|c| self.d.is(*fid, c)))
+                    })
+            });
+            if !hit {
+                continue;
+            }
+            let n = unit(f.normal)?;
+            match found {
+                None => found = Some((f.point, n)),
+                Some((p, m)) => {
+                    if (dot(n, m).abs() - 1.0).abs() > 1e-9 || dot(m, sub(f.point, p)).abs() > 1e-7 {
+                        return None;
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// The edge a recipe names, as a stored body holds it: an edge between two faces carrying
+    /// exactly the names of the recipe's first two faces. Several such edges (the two faces
+    /// meet more than once, or several stored states hold the edge) must agree on the middle,
+    /// or exactly one of them must have the recipe's other faces at its ends.
+    fn stored_edge(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
+        let (f0, f1) = (faces.first()?, faces.get(1)?);
+        let ends: Vec<&FaceName> = faces.iter().skip(2).collect();
+        let mut mids: Vec<(V3, bool, bool)> = Vec::new();
+        for e in self.named_edges() {
+            let [a, b] = &e.faces;
+            if !((a == f0 && b == f1) || (a == f1 && b == f0)) {
+                continue;
+            }
+            let bounded = ends.iter().all(|n| e.around.contains(n));
+            let chord = mul(add(e.a, e.b), 0.5);
+            let arc = norm(sub(chord, e.mid)) > 1e-7;
+            match mids.iter_mut().find(|m| norm(sub(m.0, e.mid)) < 1e-6) {
+                Some(m) => m.2 |= bounded,
+                None => mids.push((e.mid, arc, bounded)),
+            }
+        }
+        if let [one] = mids.as_slice() {
+            return Some((one.0, one.1));
+        }
+        let fit: Vec<&(V3, bool, bool)> = mids.iter().filter(|m| m.2).collect();
+        if let [one] = fit.as_slice() { Some((one.0, one.1)) } else { None }
+    }
+
     pub(super) fn edge_sets(&mut self) -> &[Vec<acis::Edge>] {
         let files = self.acis;
         self.edge_sets.get_or_insert_with(|| {
@@ -467,7 +562,22 @@ impl Ctx<'_> {
         self.face_at(g, ops, 0)
     }
 
+    /// [`Ctx::face`] without the stored planes: a face whose middle point is known.
+    pub(super) fn face_with_middle(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
+        self.face_modelled(g, ops, 0)
+    }
+
+    /// The modelled face, else the plane a stored body has under that name (read as a face
+    /// without a known middle: `cap`, so nothing takes it for an extrude's side).
     fn face_at(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<FaceG> {
+        if let Some(f) = self.face_modelled(g, ops, depth) {
+            return Some(f);
+        }
+        let (p, n) = self.stored_plane(g, ops)?;
+        Some(FaceG::Plane { n, p, cap: true, mid: p })
+    }
+
+    fn face_modelled(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<FaceG> {
         if let [op] = ops
             && let Some(fid) = u64::try_from(*op).ok().and_then(|o| self.opmap.get(&o).copied())
             && self.d.is(fid, "A07D5F17")
@@ -542,7 +652,7 @@ impl Ctx<'_> {
     }
 
     fn face_pick_at(&mut self, g: &str, ops: &[i32], depth: usize) -> Option<(V3, V3)> {
-        let FaceG::Plane { n, mid, cap, .. } = self.face_at(g, ops, depth)? else { return None };
+        let FaceG::Plane { n, mid, cap, .. } = self.face_modelled(g, ops, depth)? else { return None };
         let efid = *self.opmap.get(&u64::try_from(*ops.first()?).ok()?)?;
         let eg = self.ext_geom(efid)?;
         let (t0, t1) = (eg.t0?, eg.t1?);
@@ -609,6 +719,10 @@ impl Ctx<'_> {
     /// The midpoint of the edge between `faces[0]` and `faces[1]`, bounded by the others: and
     /// whether it is an arc.
     pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
+        self.modelled_edge(faces).or_else(|| self.stored_edge(faces))
+    }
+
+    fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<(V3, bool)> {
         let fs: Vec<Option<FaceG>> = faces.iter().map(|f| f.first().and_then(|(g, ops)| self.face(g, ops))).collect();
         if fs.iter().flatten().any(|f| matches!(f, FaceG::Fillet { .. })) {
             return fillet_edge(&fs);

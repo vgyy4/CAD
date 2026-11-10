@@ -249,6 +249,11 @@ fn fusion_trees_are_dumped_on_request() {
                 }
             }
             for (name, entries) in designs {
+                // What the reader alone says of the design (no rebuild): a quick tally aid.
+                match gusset_sat::fusion_tree::feature_tree_local(&entries, &name) {
+                    Err(e) => eprintln!("reader: {name}: {e}"),
+                    Ok(_) => eprintln!("reader: {name}: reads in full"),
+                }
                 match gusset_sat::fusion_tree::feature_tree_unchecked(&entries, &name) {
                     Err(e) => eprintln!("{name}: {e}"),
                     Ok(tree) => {
