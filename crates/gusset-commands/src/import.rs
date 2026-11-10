@@ -1849,8 +1849,9 @@ fn fusion_loose(features: &[Value]) -> Vec<bool> {
 /// it cannot be measured.
 type ToolsInside<'a> = dyn FnMut(usize, &[usize]) -> Result<Option<Vec<[f64; 2]>>, String> + 'a;
 
-/// Most unexplained stored tools the placed-tool rule of [`fusion_explain_steps`] measures.
-const MAX_FUSION_PLACED_TOOLS: usize = 64;
+/// Most unexplained stored tools the placed-tool rule of [`fusion_explain_steps`] measures for one
+/// feature (as many as an extrude may pick profiles: a board's drill is one tool per hole).
+const MAX_FUSION_PLACED_TOOLS: usize = 256;
 
 /// The volumes, box and shapes of a model's bodies after some features.
 type Built = (f64, Option<gusset_kernel::BBox>, Vec<f64>, Vec<gusset_kernel::Shape>);
@@ -1866,6 +1867,7 @@ type Built = (f64, Option<gusset_kernel::BBox>, Vec<f64>, Vec<gusset_kernel::Sha
 /// of those tools that lie in the body the feature changes, as `inside(k, tools)` measures them
 /// (`None`: not measurable). What those rules leave is decided by where the tools are: see the
 /// placed-tool rule in the body. Returns the numbers of states and tools.
+#[cfg(test)]
 fn fusion_explain_steps(
     vols: &[f64],
     per_body: &[Vec<f64>],
@@ -1875,6 +1877,37 @@ fn fusion_explain_steps(
     names: &[String],
     inside: &mut ToolsInside<'_>,
 ) -> Result<(usize, usize), String> {
+    let steps = FusionSteps { vols, per_body, stored, insts, loose, names };
+    fusion_explain_placed(&steps, inside, &mut |_, tools| Ok(tools.to_vec()))
+        .map(|(states, tools)| (states, tools.len()))
+}
+
+/// What [`fusion_explain_placed`] compares: see [`fusion_explain_steps`].
+struct FusionSteps<'a> {
+    vols: &'a [f64],
+    per_body: &'a [Vec<f64>],
+    stored: &'a [f64],
+    insts: &'a [Option<u64>],
+    loose: &'a [bool],
+    names: &'a [String],
+}
+
+/// Of some stored tools (indices into the stored solids), the ones that are not, for feature `k`,
+/// a repeat of an earlier one of the list.
+type ToolsFirst<'a> = dyn FnMut(usize, &[usize]) -> Result<Vec<usize>, String> + 'a;
+
+/// [`fusion_explain_steps`] for stored solids whose places are known: `firsts(k, tools)` leaves
+/// out the tools that are an earlier tool of the list over again as far as the bodies feature `k`
+/// changes go (the same solid at the same place in them). A file stores such a tool once per
+/// body it cuts (a board's drill for the board and for each soldermask), so the placed-tool rule
+/// gives a feature one of them and leaves the others to the features that cut the other bodies.
+/// Returns the number of states and which stored solids are tools.
+fn fusion_explain_placed(
+    steps: &FusionSteps<'_>,
+    inside: &mut ToolsInside<'_>,
+    firsts: &mut ToolsFirst<'_>,
+) -> Result<(usize, Vec<usize>), String> {
+    let FusionSteps { vols, per_body, stored, insts, loose, names } = *steps;
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let delta = |k: usize| -> f64 {
         match (vols.get(k), k.checked_sub(1).and_then(|p| vols.get(p))) {
@@ -1926,7 +1959,13 @@ fn fusion_explain_steps(
             if delta(k) <= 1e-9 || !loose.get(k - 1).copied().unwrap_or(false) {
                 continue;
             }
-            let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+            let mut group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+            if measure && !group.is_empty() {
+                // By place: a tool stored again for another body is that body's feature's.
+                let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+                let first_at = firsts(k, &at)?;
+                group = group.iter().zip(&at).filter(|(_, at)| first_at.contains(at)).map(|(i, _)| *i).collect();
+            }
             let sum: f64 = group.iter().filter_map(|i| tool_volumes.get(*i)).sum();
             let owned = placed_tools.get(&k).copied().unwrap_or(0);
             if group.is_empty() || !copies(k).is_some_and(|m| (group.len() + owned) as u64 <= m) {
@@ -1981,13 +2020,22 @@ fn fusion_explain_steps(
         // volume change, and they are not more than its copies. Several features that each made
         // fewer tools than loops, or a tool that reaches out of the body it cuts, are told apart so.
         for k in 1..vols.len() {
-            let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
-            if group.is_empty() || group.len() > MAX_FUSION_PLACED_TOOLS {
+            let all: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+            if all.is_empty() {
                 break;
             }
             let Some(m) = copies(k) else { continue };
             if delta(k) <= 1e-9 || explained.contains(&k) {
                 continue;
+            }
+            // Of the tools stored several times at one place, the first: the others are the tools
+            // of other features.
+            let all_at: Vec<usize> = all.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+            let first_at = firsts(k, &all_at)?;
+            let group: Vec<usize> =
+                all.iter().zip(&all_at).filter(|(_, at)| first_at.contains(at)).map(|(i, _)| *i).collect();
+            if group.is_empty() || group.len() > MAX_FUSION_PLACED_TOOLS {
+                break;
             }
             let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
             let Some(parts) = inside(k, &at)?.filter(|parts| parts.len() == at.len()) else { continue };
@@ -2020,7 +2068,6 @@ fn fusion_explain_steps(
             misfit.unwrap_or_default()
         ));
     }
-    let tools = tool_volumes.len();
     // The last step that added or changed a body to a stored volume.
     let changed = |k: usize| -> Vec<f64> {
         let mut before: Vec<f64> = k.checked_sub(1).and_then(|p| per_body.get(p)).cloned().unwrap_or_default();
@@ -2054,7 +2101,7 @@ fn fusion_explain_steps(
             ));
         }
     }
-    Ok((states, tools))
+    Ok((states, tool_at))
 }
 
 /// The check for a Fusion file that stores the bodies of every feature step: each stored solid
@@ -2063,7 +2110,7 @@ fn fusion_explain_steps(
 /// ([`fusion_instances`]: a hole's positions, the counts of the patterns that repeat it). Every
 /// feature after the last stored state must be explained that way, so a wrong pattern count is
 /// refused; one whose copies cannot be derived is refused too. The finished model must also lie
-/// in the box of the stored solids.
+/// in the box of the stored solids that are states (a tool may reach out of the body it cuts).
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
@@ -2185,7 +2232,9 @@ fn fusion_states_check(
     let volumes: Vec<f64> = stored.iter().map(|(v, _)| *v).collect();
     // The part of each stored tool that lies in the bodies feature `k` changes, as they were
     // before it (the bodies of the model after `k - 1` features that `k` leaves different).
-    let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+    // The bodies feature `k` changes, as they were before it and as they are after it.
+    type Changed = Vec<(gusset_kernel::BBox, gusset_kernel::Shape)>;
+    let changed_by = std::cell::RefCell::new(|k: usize| -> Result<(Changed, Changed), String> {
         let (_, _, before_vols, before) = build(k - 1, false)?;
         let (_, _, mut after, after_shapes) = build(k, false)?;
         let mut left = before_vols;
@@ -2199,9 +2248,6 @@ fn fusion_states_check(
                 None => changed.push((kernel.bbox(&body).map_err(|e| e.message)?, body)),
             }
         }
-        if changed.is_empty() {
-            return Ok(None);
-        }
         // The same bodies after the feature: the ones that are not a body of before.
         let mut changed_after = Vec::new();
         for body in after_shapes {
@@ -2212,6 +2258,64 @@ fn fusion_states_check(
                 }
                 None => changed_after.push((kernel.bbox(&body).map_err(|e| e.message)?, body)),
             }
+        }
+        Ok((changed, changed_after))
+    });
+    // A tool that is another tool over again where feature `k` works: the same volume, and its box
+    // within the box of the bodies `k` changes equal to the other's or inside it (a drill stored
+    // once per body it goes through, each copy at its own body's height).
+    let mut firsts = |k: usize, tools: &[usize]| -> Result<Vec<usize>, String> {
+        let (changed, _) = (changed_by.borrow_mut())(k)?;
+        let Some(region) = changed.iter().map(|(b, _)| *b).reduce(|a, b| gusset_kernel::BBox {
+            min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
+            max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
+        }) else {
+            return Ok(tools.to_vec());
+        };
+        let tol = 1e-6 * (1.0 + gusset_kernel::norm(region.size()));
+        let clip = |b: &gusset_kernel::BBox| -> Option<[f64; 6]> {
+            let mut c = [0.0; 6];
+            for i in 0..3 {
+                let (lo, hi) = (b.min.get(i)?.max(*region.min.get(i)?), b.max.get(i)?.min(*region.max.get(i)?));
+                if lo > hi {
+                    return None;
+                }
+                *c.get_mut(i)? = lo;
+                *c.get_mut(i + 3)? = hi;
+            }
+            Some(c)
+        };
+        // One box within the other: the same tool reaching less far into the bodies (a copy stored
+        // for a thinner body next to them). The one that reaches furthest stands for them.
+        let within = |a: &[f64; 6], b: &[f64; 6]| {
+            (0..3).all(|i| match (a.get(i), a.get(i + 3), b.get(i), b.get(i + 3)) {
+                (Some(alo), Some(ahi), Some(blo), Some(bhi)) => *alo >= blo - tol && *ahi <= bhi + tol,
+                _ => false,
+            })
+        };
+        let mut seen: Vec<(usize, f64, [f64; 6])> = Vec::new();
+        let mut apart = Vec::new();
+        for t in tools {
+            let Some((v, b)) = stored.get(*t) else { continue };
+            let Some(c) = clip(b) else {
+                apart.push(*t);
+                continue;
+            };
+            match seen.iter_mut().find(|(_, sv, sc)| same_vol(*sv, *v) && (within(&c, sc) || within(sc, &c))) {
+                Some(first) => {
+                    if !within(&c, &first.2) {
+                        *first = (*t, *v, c);
+                    }
+                }
+                None => seen.push((*t, *v, c)),
+            }
+        }
+        Ok(tools.iter().copied().filter(|t| apart.contains(t) || seen.iter().any(|(s, _, _)| s == t)).collect())
+    };
+    let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+        let (changed, changed_after) = (changed_by.borrow_mut())(k)?;
+        if changed.is_empty() {
+            return Ok(None);
         }
         let apart = |a: &gusset_kernel::BBox, b: &gusset_kernel::BBox| {
             (0..3).any(|i| a.max.get(i) < b.min.get(i) || b.max.get(i) < a.min.get(i))
@@ -2238,9 +2342,14 @@ fn fusion_states_check(
         }
         Ok(Some(parts))
     };
-    let (states, tools) = fusion_explain_steps(&vols, &per_body, &volumes, &insts, &loose, &names, &mut inside)?;
+    let steps =
+        FusionSteps { vols: &vols, per_body: &per_body, stored: &volumes, insts: &insts, loose: &loose, names: &names };
+    let (states, tool_at) = fusion_explain_placed(&steps, &mut inside, &mut firsts)?;
+    let tools = tool_at.len();
+    // The model lies where the stored states lie: a tool may reach out of the body it cuts (a
+    // drill is far longer than its board is thick).
     let mut want_box: Option<gusset_kernel::BBox> = None;
-    for (_, b) in &stored {
+    for (_, b) in stored.iter().enumerate().filter(|(at, _)| !tool_at.contains(at)).map(|(_, s)| s) {
         want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
             min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
             max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
@@ -3450,6 +3559,65 @@ mod fusion_steps_tests {
             &mut inside,
         );
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_drill_stored_once_per_body_gives_each_cut_one_copy_of_its_tools() {
+        // A board (500) and a mask (40), each drilled with the same two holes; the file stores
+        // the undrilled board, the drilled mask and the two long tools twice, once per body.
+        let t = vec![
+            json!({"type": "extrude", "name": "Board", "operation": "new"}),
+            json!({"type": "extrude", "name": "Drill", "operation": "cut", "profiles": [{}, {}]}),
+            json!({"type": "extrude", "name": "Mask", "operation": "new"}),
+            json!({"type": "extrude", "name": "Mask drill", "operation": "cut", "profiles": [{}, {}]}),
+        ];
+        let per_body = vec![vec![], vec![500.0], vec![470.0], vec![470.0, 40.0], vec![470.0, 37.0]];
+        let vols = [0.0, 500.0, 470.0, 510.0, 507.0];
+        // Stored: 0 the board, 1 the drilled mask, 2 and 3 the board's tools, 4 and 5 the mask's.
+        let stored = [500.0, 37.0, 7000.0, 3000.0, 7000.0, 3000.0];
+        let steps = |t: &[Value]| (fusion_instances(t), fusion_loose(t), names(t));
+        // What each tool holds of the board at step 2 and of the mask at step 4, before and after.
+        let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+            let (big, small) = if k == 2 { (21.0, 9.0) } else { (2.1, 0.9) };
+            Ok(Some(tools.iter().map(|t| [if t % 2 == 0 { big } else { small }, 0.0]).collect()))
+        };
+        // The second copy of a tool is the first over again wherever a feature works.
+        let mut firsts = |_: usize, tools: &[usize]| -> Result<Vec<usize>, String> {
+            let mut seen: Vec<usize> = Vec::new();
+            let mut out = Vec::new();
+            for t in tools {
+                if !seen.contains(&(t % 2)) {
+                    seen.push(t % 2);
+                    out.push(*t);
+                }
+            }
+            Ok(out)
+        };
+        let (insts, loose, names_) = steps(&t);
+        let all = FusionSteps {
+            vols: &vols,
+            per_body: &per_body,
+            stored: &stored,
+            insts: &insts,
+            loose: &loose,
+            names: &names_,
+        };
+        assert_eq!(fusion_explain_placed(&all, &mut inside, &mut firsts), Ok((2, vec![2, 3, 4, 5])));
+        // Without the places every copy holds material of the board: four tools for two holes.
+        let mut each = |_: usize, tools: &[usize]| -> Result<Vec<usize>, String> { Ok(tools.to_vec()) };
+        assert!(fusion_explain_placed(&all, &mut inside, &mut each).is_err());
+        // A mask whose drill removes more than one copy of the tools holds is refused.
+        let wrong = vec![vec![], vec![500.0], vec![470.0], vec![470.0, 40.0], vec![470.0, 36.0]];
+        let stored_wrong = [500.0, 36.0, 7000.0, 3000.0, 7000.0, 3000.0];
+        let bad = FusionSteps {
+            vols: &[0.0, 500.0, 470.0, 510.0, 506.0],
+            per_body: &wrong,
+            stored: &stored_wrong,
+            insts: &insts,
+            loose: &loose,
+            names: &names_,
+        };
+        assert!(fusion_explain_placed(&bad, &mut inside, &mut firsts).is_err());
     }
 
     #[test]
