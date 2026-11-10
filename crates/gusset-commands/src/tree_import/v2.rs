@@ -118,10 +118,15 @@ pub(super) struct LoftF {
 pub(super) struct SweepF {
     name: String,
     sketch: String,
-    path: String,
+    /// The path sketch; exactly one of it and `helix`.
+    #[serde(default)]
+    path: Option<String>,
     /// Curve ids of the path sketch; all of its curves when empty.
     #[serde(default)]
     path_curves: Vec<String>,
+    /// A helix about a world axis as the path (ADR 0034).
+    #[serde(default)]
+    helix: Option<HelixF>,
     /// `frenet` (default) or `fixed`.
     #[serde(default)]
     orientation: Option<String>,
@@ -132,6 +137,31 @@ pub(super) struct SweepF {
     /// `false` keeps the boolean's split faces (FreeCAD's `Refine = false`, ADR 0042).
     #[serde(default = "refine_default")]
     refine: bool,
+}
+
+/// The helical path of a sweep (ADR 0042 amendment 2026-11-10): the screw motion that carries the
+/// profile. The solid depends on the axis, pitch, height and hand; `radius` and `x` only
+/// describe where the source drew the helix (the profile itself fixes the document's).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HelixF {
+    origin: V3,
+    axis: V3,
+    /// Direction of the helix start from the axis.
+    #[serde(default)]
+    x: Option<V3>,
+    radius: f64,
+    pitch: f64,
+    /// The axial travel; exactly one of it and `turns`.
+    #[serde(default)]
+    height: Option<f64>,
+    #[serde(default)]
+    turns: Option<f64>,
+    #[serde(default)]
+    left_handed: bool,
+    /// Degrees; only 0 (a cylindrical helix) is supported.
+    #[serde(default)]
+    taper_angle: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -800,23 +830,38 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
         .ok_or_else(|| format!("its sketch '{}' was not imported", short(&d.sketch)))?
         .name
         .clone();
-    let pm = g.sketches.get(&d.path).ok_or_else(|| format!("its path '{}' was not imported", short(&d.path)))?;
-    if d.path_curves.len() > MAX_PICKS {
-        return Err("too many path curves".into());
-    }
-    let path = if d.path_curves.is_empty() {
-        pm.name.clone()
-    } else {
-        let mut ids = Vec::new();
-        for c in &d.path_curves {
-            ids.push(pm.ids.get(c).ok_or_else(|| format!("unknown path curve '{}'", short(c)))?.clone());
+    let path = match (&d.path, &d.helix) {
+        (Some(_), Some(_)) => return Err("a sweep takes a path sketch or a helix, not both".into()),
+        (None, None) => return Err("a sweep needs a path sketch or a helix".into()),
+        (None, Some(h)) => {
+            if !d.path_curves.is_empty() {
+                return Err("path_curves belong to a path sketch, not a helix".into());
+            }
+            helix_path(h)?
         }
-        format!("{}.curves({})", pm.name, ids.join(", "))
+        (Some(path), None) => {
+            let pm = g.sketches.get(path).ok_or_else(|| format!("its path '{}' was not imported", short(path)))?;
+            if d.path_curves.len() > MAX_PICKS {
+                return Err("too many path curves".into());
+            }
+            if d.path_curves.is_empty() {
+                pm.name.clone()
+            } else {
+                let mut ids = Vec::new();
+                for c in &d.path_curves {
+                    ids.push(pm.ids.get(c).ok_or_else(|| format!("unknown path curve '{}'", short(c)))?.clone());
+                }
+                format!("{}.curves({})", pm.name, ids.join(", "))
+            }
+        }
     };
     let orientation = match d.orientation.as_deref().unwrap_or("frenet") {
         o @ ("frenet" | "fixed") => o,
         other => return Err(format!("orientation '{}' is not frenet or fixed", short(other))),
     };
+    if d.helix.is_some() && orientation != "frenet" {
+        return Err("a helical sweep turns the profile with the helix: orientation must be frenet".into());
+    }
     let op = match d.operation.as_deref().unwrap_or("new") {
         "new" => "new",
         "join" => "add",
@@ -841,6 +886,46 @@ pub(super) fn sweep(g: &mut Gen, s: &Session, d: &SweepF) -> Result<(), String> 
     g.made.push(name.clone());
     g.features.insert(d.name.clone(), name);
     Ok(())
+}
+
+/// The document's `helix(...)` path of a tree helix. The document's helix climbs a world axis
+/// (`X`, `Y` or `Z` through the origin) in its positive direction; its radius and start come
+/// from the profile, and it is cylindrical.
+fn helix_path(h: &HelixF) -> Result<String, String> {
+    finite3(h.origin, "the helix origin")?;
+    finite3(h.axis, "the helix axis")?;
+    let a = unit(h.axis).ok_or("the helix axis has no direction")?;
+    let (name, k) = [("X", 0), ("Y", 1), ("Z", 2)]
+        .into_iter()
+        .find(|(_, k)| a.iter().enumerate().all(|(i, c)| (c - if i == *k { 1.0 } else { 0.0 }).abs() < 1e-9))
+        .ok_or("a helix climbs a world axis in its positive direction (X, Y or Z)")?;
+    // The origin must lie on that axis line.
+    if h.origin.iter().enumerate().any(|(i, c)| i != k && c.abs() > 1e-6) {
+        return Err(format!("the helix axis must pass through the origin (world {name})"));
+    }
+    positive(Some(h.radius), "the helix radius")?;
+    if let Some(x) = h.x {
+        finite3(x, "the helix start direction")?;
+        let n = norm(x);
+        if n.is_nan() || n <= 1e-9 || x.get(k).is_some_and(|c| c.abs() > 1e-6 * n) {
+            return Err("the helix start direction must be across the axis".into());
+        }
+    }
+    if h.taper_angle.is_some_and(|t| !t.is_finite() || t.abs() > 1e-9) {
+        return Err("a tapered helix is not supported: the document's helix is cylindrical".into());
+    }
+    let pitch = positive(Some(h.pitch), "the helix pitch")?;
+    let height = match (h.height, h.turns) {
+        (Some(_), Some(_)) => return Err("a helix takes a height or turns, not both".into()),
+        (Some(v), None) => positive(Some(v), "the helix height")?,
+        (None, Some(t)) => positive(Some(t * pitch), "the helix turns")?,
+        (None, None) => return Err("a helix needs a height or turns".into()),
+    };
+    if height / pitch > 2000.0 {
+        return Err("the helix has more than 2000 turns".into());
+    }
+    let left = if h.left_handed { ", left: true" } else { "" };
+    Ok(format!("helix(axis: {name}, pitch: {} mm, height: {} mm{left})", num(pitch), num(height)))
 }
 
 /// The Gusset operation of a tree operation.

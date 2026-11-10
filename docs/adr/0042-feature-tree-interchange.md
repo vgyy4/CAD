@@ -381,3 +381,24 @@ of the feature that made or last edited them (`target`), like `combine`.
   the kernel's range, a zero factor, a missing target or an empty motion skips the feature with
   the reason in `skipped_user_text`. A reader that does not know them skips them and later
   features that depend on the changed geometry may not resolve their picks.
+
+## Amendment (2026-11-10): helical sweeps
+A `sweep` takes either `path` (a path sketch, with optional `path_curves`) or `helix`, exactly one:
+```json
+{"type": "sweep", "name": "Coil", "sketch": "Wire", "operation": "new",
+ "helix": {"origin": [0, 0, 0], "axis": [0, 0, 1], "x": [1, 0, 0], "radius": 10,
+           "pitch": 5, "height": 20, "left_handed": false}}
+```
+It becomes the document's `path: helix(axis: Z, pitch: 5 mm, height: 20 mm[, left: true])` (ADR 0034).
+`height` or `turns` (height = turns x pitch, not both) gives the axial travel; at most 2000 turns.
+The document's helix is the screw motion that carries the profile, so the solid depends on the
+axis, pitch, height and hand only: `radius` (positive) and `x` (start direction, across the axis)
+describe the source's helix and are checked for sense, not used (the document takes the radius
+and start from the profile, which is how the profile stays where the source drew it). What the
+document cannot say is skipped with its reason: an axis that is not a world axis in its positive
+direction through the origin (`axis` along X, Y or Z, `origin` on that line), a non-zero
+`taper_angle` (the document's helix is cylindrical), `orientation: fixed`, `path_curves` with a
+helix, both or neither of `path` and `helix`, a non-positive pitch, radius or height, or unknown
+fields in `helix`. Volumes: a profile in a plane through the axis gives area x 2 pi x centroid
+radius per turn (Pappus), one across the axis gives area x height (tests in
+`modeling_tree_import.rs`).

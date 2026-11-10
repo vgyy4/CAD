@@ -391,6 +391,92 @@ fn a_disc_swept_along_a_path_sketch_line() {
     assert!(r["features"].to_string().contains("Pipe"), "{r}");
 }
 
+/// A tree helix about world Z.
+fn helix(extra: Value) -> Value {
+    let mut h = json!({"origin": [0, 0, 0], "axis": [0, 0, 1], "radius": 10, "pitch": 5, "height": 20});
+    h.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    h
+}
+
+fn helix_sweep(profile: Value, helix: Value, extra: Value) -> Vec<Value> {
+    let mut sweep = json!({"type": "sweep", "name": "Coil", "sketch": "Wire", "helix": helix, "operation": "new"});
+    sweep.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    vec![profile, sweep]
+}
+
+/// A radius 1 disc in the XZ plane (through the Z axis), centred 10 mm from it.
+fn wire_through_the_axis() -> Value {
+    disc("Wire", json!({"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]}), 10.0, 0.0, 1.0)
+}
+
+#[test]
+fn a_disc_swept_along_a_helix_gives_pappus_volume() {
+    // Per turn the disc (a pi, centroid 10 mm from the axis) sweeps pi x 2 pi 10: four turns
+    // (pitch 5, height 20), right- or left-handed, by height or by turns.
+    let want = 4.0 * std::f64::consts::PI * 2.0 * std::f64::consts::PI * 10.0;
+    for h in [json!({}), json!({"left_handed": true}), json!({"height": null, "turns": 4})] {
+        let (r, v) = import_v2(helix_sweep(wire_through_the_axis(), helix(h.clone()), json!({})));
+        assert_vol(v, want);
+        assert!(r["features"].to_string().contains("Coil"), "{h}: {r}");
+    }
+}
+
+#[test]
+fn a_disc_across_the_axis_swept_along_a_helix_gives_area_times_height() {
+    // A disc in a plane across the axis moves 20 mm along it: pi 1^2 x 20.
+    let (_, v) =
+        import_v2(helix_sweep(disc("Wire", plane_at(0.0), 10.0, 0.0, 1.0), helix(json!({"x": [1, 0, 0]})), json!({})));
+    assert_vol(v, std::f64::consts::PI * 20.0);
+}
+
+#[test]
+fn a_helical_cut_removes_a_groove() {
+    // The same coil cut from a 24 x 24 x 24 block from z = -2 (the coil is wholly inside it).
+    let mut f = vec![rect("Base", plane_at(-2.0), -12.0, -12.0, 24.0, 24.0), extrude("Block", "Base", 24.0, "new")];
+    f.extend(helix_sweep(wire_through_the_axis(), helix(json!({})), json!({"operation": "cut", "target": "Block"})));
+    let (_, v) = import_v2(f);
+    assert_vol(v, 24.0 * 24.0 * 24.0 - 4.0 * std::f64::consts::PI * 2.0 * std::f64::consts::PI * 10.0);
+}
+
+#[test]
+fn bad_helical_sweeps_are_skipped_with_a_reason() {
+    let path = json!({
+        "type": "sketch", "name": "Path", "plane": {"origin": [0, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 0, 1]},
+        "points": [{"id": "a", "x": 0, "y": 0}, {"id": "b", "x": 0, "y": 20}],
+        "curves": [{"id": "p", "type": "line", "start": "a", "end": "b"}]
+    });
+    let cases: Vec<(Value, Value, &str)> = vec![
+        (helix(json!({"taper_angle": 5})), json!({}), "tapered"),
+        (helix(json!({"axis": [0, 0, -1]})), json!({}), "world axis"),
+        (helix(json!({"axis": [1, 1, 0]})), json!({}), "world axis"),
+        (helix(json!({"origin": [3, 0, 0]})), json!({}), "through the origin"),
+        (helix(json!({"x": [0, 0, 1]})), json!({}), "across the axis"),
+        (helix(json!({"turns": 4})), json!({}), "not both"),
+        (helix(json!({"height": null})), json!({}), "height or turns"),
+        (helix(json!({"pitch": 0})), json!({}), "pitch"),
+        (helix(json!({"pitch": -5})), json!({}), "pitch"),
+        (helix(json!({"radius": 0})), json!({}), "radius"),
+        (helix(json!({"height": -1})), json!({}), "height"),
+        (helix(json!({"height": 20000})), json!({}), "2000 turns"),
+        (helix(json!({"spin": 1})), json!({}), "spin"),
+        (helix(json!({})), json!({"orientation": "fixed"}), "frenet"),
+        (helix(json!({})), json!({"path": "Path"}), "not both"),
+        (helix(json!({})), json!({"path_curves": ["p"]}), "path_curves"),
+    ];
+    for (h, extra, why) in cases {
+        let mut f = helix_sweep(wire_through_the_axis(), h.clone(), extra.clone());
+        f.push(path.clone());
+        let (_, r) = import_into_session(f);
+        let skipped = r["skipped_user_text"].to_string();
+        assert!(skipped.contains(why), "{h} {extra}: expected '{why}' in {r}");
+    }
+    // Neither a path nor a helix.
+    let mut f = helix_sweep(wire_through_the_axis(), json!({}), json!({}));
+    f[1].as_object_mut().unwrap().remove("helix");
+    let (_, r) = import_into_session(f);
+    assert!(r["skipped_user_text"].to_string().contains("path sketch or a helix"), "{r}");
+}
+
 #[test]
 fn a_loft_between_two_squares() {
     // Two 10 mm squares 8 mm apart: a 10 x 10 x 8 block.
