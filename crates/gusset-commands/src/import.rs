@@ -1822,8 +1822,12 @@ fn fusion_loose(features: &[Value]) -> Vec<bool> {
 }
 
 /// The part of each stored tool (indices into the stored solids) that lies in the bodies feature
-/// `k` changes, as they were before it; `None` where it cannot be measured.
-type ToolsInside<'a> = dyn FnMut(usize, &[usize]) -> Result<Option<Vec<f64>>, String> + 'a;
+/// `k` changes, as they were before it and as they are after it (`[before, after]`); `None` where
+/// it cannot be measured.
+type ToolsInside<'a> = dyn FnMut(usize, &[usize]) -> Result<Option<Vec<[f64; 2]>>, String> + 'a;
+
+/// Most unexplained stored tools the placed-tool rule of [`fusion_explain_steps`] measures.
+const MAX_FUSION_PLACED_TOOLS: usize = 64;
 
 /// The volumes, box and shapes of a model's bodies after some features.
 type Built = (f64, Option<gusset_kernel::BBox>, Vec<f64>, Vec<gusset_kernel::Shape>);
@@ -1837,7 +1841,8 @@ type Built = (f64, Option<gusset_kernel::BBox>, Vec<f64>, Vec<gusset_kernel::Sha
 /// then the sum of the tools no other feature explains, or, where a tool lies (partly) where the
 /// body already has no material (a hole drilled into a slot of the outline), the sum of the parts
 /// of those tools that lie in the body the feature changes, as `inside(k, tools)` measures them
-/// (`None`: not measurable). Returns the numbers of states and tools.
+/// (`None`: not measurable). What those rules leave is decided by where the tools are: see the
+/// placed-tool rule in the body. Returns the numbers of states and tools.
 fn fusion_explain_steps(
     vols: &[f64],
     per_body: &[Vec<f64>],
@@ -1889,36 +1894,100 @@ fn fusion_explain_steps(
     }
     // The first loose cut whose tools do not fit, for the message.
     let mut misfit: Option<String> = None;
-    for k in 1..vols.len() {
-        if delta(k) <= 1e-9 || explained.contains(&k) || !loose.get(k - 1).copied().unwrap_or(false) {
-            continue;
+    // How many tools the placed-tool rule gave each feature.
+    let mut placed_tools: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    // Loose cuts by the plain sum of the tools first, then the tools by where they are, then the
+    // loose cuts by the parts of their tools inside the body.
+    for measure in [false, true] {
+        for k in 1..vols.len() {
+            if delta(k) <= 1e-9 || !loose.get(k - 1).copied().unwrap_or(false) {
+                continue;
+            }
+            let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+            let sum: f64 = group.iter().filter_map(|i| tool_volumes.get(*i)).sum();
+            let owned = placed_tools.get(&k).copied().unwrap_or(0);
+            if group.is_empty() || !copies(k).is_some_and(|m| (group.len() + owned) as u64 <= m) {
+                continue;
+            }
+            if explained.contains(&k) {
+                // A cut the placed tools explain may have made more tools where its body has no
+                // material: the tools left over, when none of them holds any of the body.
+                if measure && owned > 0 {
+                    let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+                    let void = inside(k, &at)?
+                        .filter(|parts| parts.len() == at.len())
+                        .is_some_and(|parts| parts.iter().all(|p| p[0] == 0.0 && p[1] == 0.0));
+                    if void {
+                        covered.extend(group);
+                    }
+                }
+                continue;
+            }
+            let mut measured = None;
+            let fits = same(delta(k), sum)
+                || measure && {
+                    // Measured: the part of each tool inside the body before the feature.
+                    let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
+                    measured = inside(k, &at)?
+                        .filter(|parts| parts.len() == at.len())
+                        .map(|parts| parts.iter().map(|p| p[0]).sum::<f64>());
+                    measured.is_some_and(|m| same(delta(k), m))
+                };
+            if fits {
+                covered.extend(group);
+                explained.insert(k);
+            } else {
+                let name = names.get(k - 1).map_or("?", String::as_str);
+                let inside_text =
+                    measured.map_or_else(String::new, |m| format!(", {m:.4} mm3 of them inside the body it changes"));
+                misfit.get_or_insert_with(|| {
+                    format!(
+                        " ({name} changes the volume by {:.4} mm3; the {} stored tools no other feature explains hold {sum:.4} mm3{inside_text})",
+                        delta(k),
+                        group.len()
+                    )
+                });
+            }
         }
-        let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
-        let sum: f64 = group.iter().filter_map(|i| tool_volumes.get(*i)).sum();
-        if group.is_empty() || !copies(k).is_some_and(|m| group.len() as u64 <= m) {
-            continue;
+        if measure {
+            break;
         }
-        let mut measured = None;
-        let fits = same(delta(k), sum) || {
-            // Measured: the part of each tool inside the body before the feature.
+        // Tools by where they are: a feature that removes material owns the unexplained tools whose
+        // place holds material before it and none after it, a feature that adds material those whose
+        // place it fills; what they hold of the body before (or lack of it) must be the feature's
+        // volume change, and they are not more than its copies. Several features that each made
+        // fewer tools than loops, or a tool that reaches out of the body it cuts, are told apart so.
+        for k in 1..vols.len() {
+            let group: Vec<usize> = (0..tool_volumes.len()).filter(|i| !covered.contains(i)).collect();
+            if group.is_empty() || group.len() > MAX_FUSION_PLACED_TOOLS {
+                break;
+            }
+            let Some(m) = copies(k) else { continue };
+            if delta(k) <= 1e-9 || explained.contains(&k) {
+                continue;
+            }
             let at: Vec<usize> = group.iter().filter_map(|i| tool_at.get(*i).copied()).collect();
-            measured = inside(k, &at)?.filter(|parts| parts.len() == at.len()).map(|parts| parts.iter().sum::<f64>());
-            measured.is_some_and(|m| same(delta(k), m))
-        };
-        if fits {
-            covered.extend(group);
-            explained.insert(k);
-        } else {
-            let name = names.get(k - 1).map_or("?", String::as_str);
-            let inside_text =
-                measured.map_or_else(String::new, |m| format!(", {m:.4} mm3 of them inside the body it changes"));
-            misfit.get_or_insert_with(|| {
-                format!(
-                    " ({name} changes the volume by {:.4} mm3; the {} stored tools no other feature explains hold {sum:.4} mm3{inside_text})",
-                    delta(k),
-                    group.len()
-                )
-            });
+            let Some(parts) = inside(k, &at)?.filter(|parts| parts.len() == at.len()) else { continue };
+            let removes = vols.get(k).zip(vols.get(k - 1)).is_some_and(|(a, b)| a < b);
+            let none = |part: f64, v: f64| part.abs() <= FREECAD_VOLUME_TOLERANCE * v;
+            let mut mine = Vec::new();
+            let mut change = 0.0;
+            for (i, part) in group.iter().zip(&parts) {
+                let v = tool_volumes.get(*i).copied().unwrap_or(0.0);
+                let [before, after] = *part;
+                if removes && none(after, v) && !none(before, v) {
+                    mine.push(*i);
+                    change += before;
+                } else if !removes && same(after, v) && !same(before, v) {
+                    mine.push(*i);
+                    change += v - before;
+                }
+            }
+            if !mine.is_empty() && mine.len() as u64 <= m && same(delta(k), change) {
+                placed_tools.insert(k, mine.len());
+                covered.extend(mine);
+                explained.insert(k);
+            }
         }
     }
     if let Some(i) = (0..tool_volumes.len()).find(|i| !covered.contains(i)) {
@@ -2093,9 +2162,10 @@ fn fusion_states_check(
     let volumes: Vec<f64> = stored.iter().map(|(v, _)| *v).collect();
     // The part of each stored tool that lies in the bodies feature `k` changes, as they were
     // before it (the bodies of the model after `k - 1` features that `k` leaves different).
-    let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<f64>>, String> {
-        let (_, _, _, before) = build(k - 1, false)?;
-        let (_, _, mut after, _) = build(k, false)?;
+    let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+        let (_, _, before_vols, before) = build(k - 1, false)?;
+        let (_, _, mut after, after_shapes) = build(k, false)?;
+        let mut left = before_vols;
         let mut changed = Vec::new();
         for body in before {
             let v = kernel.mass_properties(&body).map_err(|e| e.message)?.volume;
@@ -2109,6 +2179,17 @@ fn fusion_states_check(
         if changed.is_empty() {
             return Ok(None);
         }
+        // The same bodies after the feature: the ones that are not a body of before.
+        let mut changed_after = Vec::new();
+        for body in after_shapes {
+            let v = kernel.mass_properties(&body).map_err(|e| e.message)?.volume;
+            match left.iter().position(|a| same_vol(*a, v)) {
+                Some(at) => {
+                    left.swap_remove(at);
+                }
+                None => changed_after.push((kernel.bbox(&body).map_err(|e| e.message)?, body)),
+            }
+        }
         let apart = |a: &gusset_kernel::BBox, b: &gusset_kernel::BBox| {
             (0..3).any(|i| a.max.get(i) < b.min.get(i) || b.max.get(i) < a.min.get(i))
         };
@@ -2116,16 +2197,18 @@ fn fusion_states_check(
         for t in tools {
             let (Some(b), Some((_, tool_box))) = (bodies.get(*t), stored.get(*t)) else { return Ok(None) };
             let tool = kernel.read_native(&b.blob).map_err(|e| e.message)?;
-            let mut part = 0.0;
-            for (body_box, body) in &changed {
-                if apart(body_box, tool_box) {
-                    continue;
-                }
-                // An empty common part is reported as an error: the tool lies in a void.
-                match kernel.boolean(gusset_kernel::BoolOp::Intersect, body, &tool) {
-                    Ok(common) => part += kernel.mass_properties(&common.shape).map_err(|e| e.message)?.volume,
-                    Err(e) if e.message.contains("removed all material") => {}
-                    Err(e) => return Err(e.message),
+            let mut part = [0.0; 2];
+            for (sum, set) in part.iter_mut().zip([&changed, &changed_after]) {
+                for (body_box, body) in set {
+                    if apart(body_box, tool_box) {
+                        continue;
+                    }
+                    // An empty common part is reported as an error: the tool lies in a void.
+                    match kernel.boolean(gusset_kernel::BoolOp::Intersect, body, &tool) {
+                        Ok(common) => *sum += kernel.mass_properties(&common.shape).map_err(|e| e.message)?.volume,
+                        Err(e) if e.message.contains("removed all material") => {}
+                        Err(e) => return Err(e.message),
+                    }
                 }
             }
             parts.push(part);
@@ -3180,7 +3263,7 @@ mod fusion_steps_tests {
     }
 
     /// No tool can be measured against the model.
-    fn none(_: usize, _: &[usize]) -> Result<Option<Vec<f64>>, String> {
+    fn none(_: usize, _: &[usize]) -> Result<Option<Vec<[f64; 2]>>, String> {
         Ok(None)
     }
 
@@ -3257,9 +3340,9 @@ mod fusion_steps_tests {
         let stored = [100.0, 1.0, 2.5, 0.9];
         let run = |parts: Vec<f64>| {
             let mut asked = Vec::new();
-            let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<f64>>, String> {
+            let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
                 asked.push((k, tools.to_vec()));
-                Ok(Some(parts.clone()))
+                Ok(Some(tools.iter().map(|t| [parts[*t - 1], 0.0]).collect()))
             };
             let r = fusion_explain_steps(
                 &vols,
@@ -3274,7 +3357,8 @@ mod fusion_steps_tests {
         };
         let (got, asked) = run(vec![1.0, 2.5, 0.0]);
         assert_eq!(got, Ok((1, 3)));
-        assert_eq!(asked, vec![(2, vec![1, 2, 3])]);
+        // Asked for the three tools, then for the one that holds none of the body.
+        assert_eq!(asked, vec![(2, vec![1, 2, 3]), (2, vec![3])]);
         // The measured parts do not add up to the cut: refused.
         assert!(run(vec![1.0, 2.4, 0.0]).0.is_err());
         // Not measurable: refused as before.
@@ -3288,6 +3372,61 @@ mod fusion_steps_tests {
             &mut none,
         );
         assert!(refused.unwrap_err().contains("neither a state"));
+    }
+
+    #[test]
+    fn tools_of_several_loose_features_are_told_apart_by_where_they_are() {
+        // A part (100), a join of four loops that made two tools (3 each), then a cut whose
+        // one tool (40) reaches out of the part and removes 12 of it.
+        let t = vec![
+            json!({"type": "extrude", "name": "Part", "operation": "new"}),
+            json!({"type": "extrude", "name": "Join", "operation": "join", "profiles": [{}, {}, {}, {}]}),
+            json!({"type": "extrude", "name": "Cut", "operation": "cut", "profiles": [{}, {}]}),
+        ];
+        let per_body = vec![vec![], vec![100.0], vec![106.0], vec![94.0]];
+        let vols = [0.0, 100.0, 106.0, 94.0];
+        let stored = [100.0, 3.0, 3.0, 40.0];
+        // [before, after] of the tools 3, 3 and 40 at the join (step 2) and at the cut (step 3).
+        let run = |join: [[f64; 2]; 3], cut: [[f64; 2]; 3]| {
+            let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+                let all = if k == 2 { join } else { cut };
+                Ok(Some(tools.iter().map(|t| all[*t - 1]).collect()))
+            };
+            fusion_explain_steps(
+                &vols,
+                &per_body,
+                &stored,
+                &fusion_instances(&t),
+                &fusion_loose(&t),
+                &names(&t),
+                &mut inside,
+            )
+        };
+        let join = [[0.0, 3.0], [0.0, 3.0], [10.0, 10.0]];
+        let cut = [[3.0, 3.0], [3.0, 3.0], [12.0, 0.0]];
+        assert_eq!(run(join, cut), Ok((1, 3)));
+        // The tool holds less of the part than the cut removes.
+        assert!(run(join, [[3.0, 3.0], [3.0, 3.0], [11.0, 0.0]]).is_err());
+        // More tools than the feature has loops.
+        let one_loop = vec![
+            t[0].clone(),
+            json!({"type": "extrude", "name": "Join", "operation": "join", "profiles": [{}]}),
+            t[2].clone(),
+        ];
+        let mut inside = |k: usize, tools: &[usize]| -> Result<Option<Vec<[f64; 2]>>, String> {
+            let all = if k == 2 { join } else { cut };
+            Ok(Some(tools.iter().map(|t| all[*t - 1]).collect()))
+        };
+        let r = fusion_explain_steps(
+            &vols,
+            &per_body,
+            &stored,
+            &fusion_instances(&one_loop),
+            &fusion_loose(&one_loop),
+            &names(&one_loop),
+            &mut inside,
+        );
+        assert!(r.is_err());
     }
 
     #[test]
