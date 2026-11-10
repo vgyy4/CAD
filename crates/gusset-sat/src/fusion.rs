@@ -611,8 +611,10 @@ fn transforms(b: &[u8]) -> Transforms {
         }
         // (b) The id follows the class (after a length prefix), then the matrix and, for a
         // reference used several times, the matrices of the other instances.
-        let Some((_, end, id, _)) = uuid_strings(b, at + 44, at + 44 + 80, 1).into_iter().next() else { continue };
-        let end = past_urn(b, end);
+        let Some((_, end, mut id, _)) = uuid_strings(b, at + 44, at + 44 + 80, 1).into_iter().next() else { continue };
+        let (end, urn) = past_urn(b, end);
+        // The key with its urn is how the archive's design description names the reference.
+        id.push_str(&urn);
         let first = (end..=end + 32).find_map(|p| rigid_at(b, p).map(|m| (p, m)));
         let Some((mut pos, m)) = first else {
             // At the origin; the board inside may still have been moved (the Buck case).
@@ -644,17 +646,21 @@ fn transforms(b: &[u8]) -> Transforms {
 const MAX_URN_CHARS: usize = 512;
 
 /// After a reference key, the end of the `_urn:<document>?version=<n>` text a design may append
-/// to it (3957 Crickit HAT: the jointed 2x20 header, whose transform records name it so); `end`
-/// when there is none.
-fn past_urn(b: &[u8], end: usize) -> usize {
+/// to it (3957 Crickit HAT: the jointed 2x20 header, whose transform records name it so), and
+/// that text in lowercase; `end` and nothing when there is none.
+fn past_urn(b: &[u8], end: usize) -> (usize, String) {
     let starts =
         "_urn:".bytes().enumerate().all(|(k, c)| b.get(end + 2 * k) == Some(&c) && b.get(end + 2 * k + 1) == Some(&0));
     if !starts {
-        return end;
+        return (end, String::new());
     }
-    let printable =
-        |k: usize| b.get(end + 2 * k).is_some_and(|c| (0x21..0x7f).contains(c)) && b.get(end + 2 * k + 1) == Some(&0);
-    end + 2 * (0..MAX_URN_CHARS).take_while(|k| printable(*k)).count()
+    let text: String = (0..MAX_URN_CHARS)
+        .map_while(|k| match (b.get(end + 2 * k), b.get(end + 2 * k + 1)) {
+            (Some(c), Some(0)) if (0x21..0x7f).contains(c) => Some(char::from(c.to_ascii_lowercase())),
+            _ => None,
+        })
+        .collect();
+    (end + 2 * text.len(), text)
 }
 
 /// What a design stream says about placements.
@@ -1453,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_key_with_a_document_urn_takes_the_last_stored_placement() {
+    fn a_reference_key_with_a_document_urn_keeps_it_and_takes_the_last_stored_placement() {
         // The 3957 layout: the key is followed by `_urn:...?version=2`, then the matrix. A
         // record without a matrix, the one written at insert time and the one after the joint
         // moved the occurrence: the last is where the design has it.
@@ -1474,7 +1480,8 @@ mod tests {
         b.extend(matrix([0.835, 5.123, -0.093], true));
         b.extend([5u8; 100]);
         let d = read_design(&b);
-        let x = d.xrefs.iter().find(|x| x.role == id(7)).unwrap();
+        let role = format!("{}_urn:adsk.wipprod:fs.file:vf.abc_-d?version=2", id(7));
+        let x = d.xrefs.iter().find(|x| x.role == role).unwrap();
         assert_eq!(x.instances.len(), 1);
         assert!(near(x.instances[0].t, [8.35, 51.23, -0.93]), "{:?}", x.instances);
         // Text that is not a urn is not skipped: no matrix is found and the key is bare.
