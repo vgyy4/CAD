@@ -908,3 +908,79 @@ board file, not from sketches) and the drill tools as their steps; not done.
   has confirmed either value yet: the next step is to write Combine1 of the header part as a join and as a cut and let
   the state check tell (the part's stored bodies follow each Combine). A tool can be the several bodies of one body
   pattern, which the tree names with one feature name; that needs a name per copy first.
+
+## 22. Round 14: Combine joins, the implicit second pattern direction, tools by place (2026-11-10)
+Reader: `fusion_tree/combine.rs`, `fusion_tree/patdir.rs`, `tool_reach` in `fusion_tree/json.rs`; importer:
+`fusion_explain_steps` in gusset-commands `import.rs`.
+
+### Combine `2A94257F`: value 0 of the first field is a join (confirmed by a rebuild)
+* The test section 21 asked for, on the pin-header part "2x16 short female" of 3900 Hallowing (Combine1: Mirror1's body
+  into Extrude1's): written as a **join** the design rebuilds its stored states; written as a **cut** the step check
+  refuses it (10543.31 mm3 against the stored 11631.15 mm3, a stored solid of 7.1025 mm3 unexplained). So `A` = 0 is a
+  join. `A` = 1 (5 records, a logo body taken out of a case) has no rebuild yet and stays refused by name.
+* Tools and target: the first reference list of `2CA5A1CD` selections after the fields is the tools, the next list of
+  one selection the target; each selection's `9716F783` names one body link, whose creator is the tree feature that
+  made the body (an extrude, a sweep, a stored body, a mirror of a body).
+* Tools that are **all the copies of one body pattern of the target** (Combine2: the five bodies of R-Pattern1 into
+  Extrude1's): the tree's pattern of a body already unites the copies with the original, so this Combine is written as
+  nothing (listed under `skipped` with that reason). Copies of a pattern of another body, or some of the copies, stay
+  refused: a copy has no name of its own in the tree.
+* The tree's `combine` consumes its tools, as these records do (their tools have no body afterwards).
+
+### Rectangular pattern with one stored direction and `CountV` > 1 (the header part's R-Pattern1: 2 x 16)
+* The record has one `F2A7590D` (U: +x, `uSpaceDistance` 2.54 mm) and `vSpaceDistance` -2.54 mm with no second
+  direction record: V is perpendicular to U. On which side is not in the record. It is read off the stored bodies: the
+  straight profile edges of the patterned extrudes, moved to every copy's place (flattened onto the sketch plane), must
+  each be a stored edge for one sense of `n x U` (n the sketch normal) and fail for the other; else the pattern stays
+  unconverted. Here V = +y (copies towards -y with the negative spacing), the same turn as the 5100 component pattern
+  of section 20 (U = +x, V = +y there by the stored copy matrices).
+
+### Construction flag of the 276- and 300-byte line layouts
+One byte after the second point reference (`01` = construction). The header part's holes are squares with a centre
+cross of two construction lines, and its outline has two construction diagonals; read as profile curves the cross cut
+the hole's region in four and the cut took a quarter (the chamfer's edges were then 0.335 mm off). 28 flagged lines of
+the 300-byte layout in the set, none in a profile the reader reaches; the 276-byte layout is the same part in 3900.
+
+### Extrude "to a body" (extent 1, third enum field 1, no distance parameter)
+* 878 Extrude6: the enum block is `2, 1, 1` (cut, one side, **1**; a distance extrude has 2 there), the only parameter
+  is `TaperAngle`, and after it comes a `2CA5A1CD` -> `9716F783` selection of a **body** (not a face). The stored tool
+  is 51 x 20 x 4 mm = 4080 mm3: from the sketch plane up to the far side of the selected body as it then is.
+* Read from the tool itself: the stored body that has every straight edge of the profile's outline (the pieces only one
+  picked region has) at the sketch plane and at exactly one other offset gives the signed length; several such bodies
+  must agree. No such tool: the extent stays unread. (The earlier "through all" reading measured edges of any stored
+  body and refused two-sided evidence; it remains the fallback.)
+* A to-object extrude whose object is a `face_recipe_data` face (1501 Extrude8: face `1` of Extrude7) is still refused:
+  the design then stops at a spline outline, so nothing confirms the reading.
+
+### Step check: tools by where they are (878 as the sample)
+878 stores 13 solids: four states and the tools of three features that each made fewer tools than loops (a join of 8
+loops with 4 tools of 34.0234 mm3, a join of 4 with 4 of 6.2832, the cut above with one of 4080). The older rule offers
+every unexplained tool to each such feature, so two of them in one design never pass. Added behind the older rules: a
+feature that removes material owns the unexplained stored tools whose place holds material before it and none after
+it; one that adds material those whose place is all material after it and was not before; what the tools hold of the
+body before (or lack of it) must be the feature's volume change exactly, and they are not more than its loops. A tool
+that reaches out of the body it cuts (4080 mm3, of which 1029.67 in the part) is thereby checked by position too.
+Measured for at most 64 unexplained tools. Tools in voids of a cut the placed tools explain are accepted as before
+(none of them may hold any of the body).
+
+### 2025 PCB files: what their timeline is (decoded, not converted)
+* The design timeline `2F4C1849` holds only the board sketch and the silkscreens; everything else is in the compute
+  list `B65B5682`: Extrude1 (the board), `94B9F77E` PCBExtrude1 and PCBExtrude2 in the board component, one
+  `2BB91A84` PCBExtrude per copper component (four bodies each: `<n>_copper`, `<n>_copper_polygon`,
+  `<n>_top_copper`/`_bottom_copper`, `<n>_smd_copper`), one `94B9F77E` per soldermask component, then per footprint a
+  Base Feature or a `F193B033` BoxPrimitive.
+* Every body link of these features leads, like a Base Feature's, to a `D3937028` body in a `CD57BC48` state list that
+  names a `.smbh` blob: 6067 has 30 links (board blob: Extrude1's body and PCBExtrude2's `CopperHoles`, two bodies;
+  copper blobs four bodies each; one per soldermask, box and package).
+* **PCBExtrude1 of the board (no body link) is the drill**: after its `C46D3EEB` reference come five zero bytes,
+  `u64 n` and `n` entries of five doubles: x, y (cm) and three zeros. 6067: 10 holes at (2.54, 2.54), (2.54, 15.24),
+  (6.35, 2.54) ... mm. No diameter in the entry; the stored drill tools (cylinders from z = -200 to 200 mm) have it.
+  The record also names the board's `369DDC0A` (layer data: 1.067 mm, 0.035 mm copper).
+* **BoxPrimitive `F193B033`**: five `D91D429C` holders `DistanceX`, `DistanceY`, `DistanceZ`, `OffsetDistanceX`,
+  `OffsetDistanceY` (6067: 4 x 4 x 0.1 mm, offsets 0), a `CAA90BED` plane reference and a row-major 4x4 at body+78
+  (cm): identity turned, translation (-DistanceX/2, -DistanceY/2, 0) in the samples, i.e. the matrix is the box's
+  corner. Which way DistanceZ runs is not read yet (the stored box decides).
+* What a conversion needs: these three classes in the walk; the box as a rectangle sketch and an extrude; a PCBExtrude
+  body as a stored body **before** its drill (the layer outline comes from the board file) followed by a cut of the
+  hole table (circles with the stored tools' radii), so that the pre-drill solids and the drill tools in the blobs are
+  states and tools of the model. Not done: the blobs' own order of states and tools has not been read.
