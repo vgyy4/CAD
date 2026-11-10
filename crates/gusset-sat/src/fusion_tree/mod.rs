@@ -207,10 +207,10 @@ impl Graph {
                     g.creator.entry(i).or_insert(q);
                 }
             } else if d.is(i, "E03784ED") {
-                for q in ref_ids(d, d.rec(i)) {
-                    if d.is(q, "C3423E04") {
-                        g.comp_of_tl.entry(q).or_insert(i);
-                    }
+                // A component's own timeline is the first it names: the root also names the
+                // timeline of the component being edited (6501, 6522), whose features are not its.
+                if let Some(q) = ref_ids(d, d.rec(i)).into_iter().find(|q| d.is(*q, "C3423E04")) {
+                    g.comp_of_tl.entry(q).or_insert(i);
                 }
             } else if d.is(i, "C3423E04") {
                 for q in ref_ids(d, d.rec(i)) {
