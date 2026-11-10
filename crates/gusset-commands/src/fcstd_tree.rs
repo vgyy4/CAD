@@ -393,7 +393,7 @@ fn sketch(name: &str, o: &Obj, body: &Place) -> Result<(Value, HashMap<String, S
 }
 
 /// Part workbench objects translated (primitives, booleans, extrusions of sketches).
-const PART_KINDS: [&str; 10] = [
+const PART_KINDS: [&str; 11] = [
     "Part::Box",
     "Part::Cylinder",
     "Part::Sphere",
@@ -404,6 +404,7 @@ const PART_KINDS: [&str; 10] = [
     "Part::Common",
     "Part::MultiCommon",
     "Part::Extrusion",
+    "Part::Thickness",
 ];
 
 /// A Draft array (`Part::FeaturePython` whose proxy is Draft's `_Array`).
@@ -516,6 +517,7 @@ fn part_features(
     features: &mut Vec<Value>,
     body_of: &mut HashMap<String, String>,
     snaps: Option<&Snapshots>,
+    shape_edges: ShapeEdges<'_>,
 ) -> Result<(), String> {
     // The body a Part object works on: the PartDesign feature's own body as built, or (with
     // snapshots) a renamed copy of the features up to it.
@@ -650,6 +652,33 @@ fn part_features(
                     }
                 }
                 body_of.insert(name.clone(), name.clone());
+            }
+            "Part::Thickness" => {
+                let (src, subs) = o.link("Faces").ok_or(format!("{name}: no faces"))?;
+                let file = objects
+                    .get(&src)
+                    .and_then(|b| b.first("Shape", "Part"))
+                    .and_then(|e| e.attrs.get("file"))
+                    .filter(|f| !f.is_empty())
+                    .ok_or(format!("{name}: its input shape is not stored in the file"))?;
+                let shape = shape_edges(file).map_err(|e| format!("{name}: {e}"))?;
+                if o.int("Mode").unwrap_or(0) != 0 || o.bool("Intersection") || o.bool("SelfIntersection") {
+                    return Err(format!("{name}: only a thickness of the skin mode is translated"));
+                }
+                let mut faces = Vec::new();
+                for sub in &subs {
+                    let n = sub.strip_prefix("Face").and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0);
+                    let f =
+                        n.and_then(|n| shape.faces.get(n - 1)).ok_or(format!("{name}: {sub} is not on its input"))?;
+                    faces.push(json!({"point": f.point, "normal": f.normal}));
+                }
+                let v = o.float("Value").filter(|v| v.abs() > 1e-12).ok_or(format!("{name}: no thickness"))?;
+                // FreeCAD: a negative value grows the wall inward; Gusset's default side is inside.
+                let side = if v < 0.0 { "inside" } else { "outside" };
+                let target = input(features, body_of, name, &src)?;
+                features
+                    .push(json!({"type": "shell", "name": name, "faces": faces, "thickness": v.abs(), "side": side}));
+                body_of.insert(name.clone(), target);
             }
             "Part::FeaturePython" => {
                 let (base, _) = o.link("Base").ok_or(format!("{name}: an array of nothing"))?;
@@ -1177,7 +1206,7 @@ pub(crate) fn tree_options(
         .filter(|o| PART_KINDS.contains(&o.kind.as_str()) || is_draft_array(o))
         .flat_map(|o| {
             let mut v: Vec<String> = o.link_list("Shapes");
-            v.extend(["Base", "Tool"].iter().filter_map(|k| o.link(k)).map(|(n, _)| n));
+            v.extend(["Base", "Tool", "Faces"].iter().filter_map(|k| o.link(k)).map(|(n, _)| n));
             v
         })
         .collect();
@@ -1199,7 +1228,7 @@ pub(crate) fn tree_options(
                 let o = objects.get(n)?;
                 let needs = match o.kind.as_str() {
                     "PartDesign::Fillet" | "PartDesign::Chamfer" => o.link("Base"),
-                    "PartDesign::Pad" | "PartDesign::Pocket" => o.link("Profile"),
+                    "PartDesign::Pad" | "PartDesign::Pocket" => o.link("Profile").or_else(|| o.link("Sketch")),
                     _ => None,
                 }?;
                 let j = group.iter().position(|g| *g == needs.0)?;
@@ -1744,8 +1773,34 @@ pub(crate) fn tree_options(
                     features.push(f);
                 }
                 // Datums and the origin carry no geometry of the body.
-                "App::Origin" | "App::Line" | "App::Plane" | "PartDesign::Plane" | "PartDesign::Line"
-                | "PartDesign::Point" => {}
+                // A datum plane a pad or pocket takes as its profile is the rectangle of its
+                // size, centred on its placement.
+                "PartDesign::Plane" if objects.values().any(|p| p.link("Profile").is_some_and(|(n, _)| &n == name)) => {
+                    let (Some(l), Some(w)) = (o.float("Length"), o.float("Width")) else {
+                        return Err(format!("{name}: a datum plane without size"));
+                    };
+                    let (hx, hy) = (l / 2.0, w / 2.0);
+                    let corners = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)];
+                    let points: Vec<Value> = corners
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (x, y))| json!({"id": format!("p{}", i + 1), "x": x, "y": y}))
+                        .collect();
+                    let curves: Vec<Value> = (0..4)
+                        .map(|i| json!({"id": format!("l{}", i + 1), "type": "line", "start": format!("p{}", i + 1), "end": format!("p{}", (i + 1) % 4 + 1), "construction": false}))
+                        .collect();
+                    let pl = place.then(&Place::of(o));
+                    features.push(json!({"type": "sketch", "name": name, "plane": {"origin": pl.p, "x_axis": pl.x, "y_axis": pl.y}, "points": points, "curves": curves}));
+                    let lines = (0..4).map(|i| (format!("Edge{}", i + 1), format!("l{}", i + 1))).collect();
+                    sketches.insert(name.clone(), (pl, lines));
+                }
+                "App::Origin"
+                | "App::Line"
+                | "App::Plane"
+                | "PartDesign::Plane"
+                | "PartDesign::Line"
+                | "PartDesign::Point"
+                | "PartDesign::ShapeBinder" => {}
                 other => return Err(format!("{name}: {other} is not translated yet")),
             }
         }
@@ -1768,7 +1823,7 @@ pub(crate) fn tree_options(
             }
         }
     }
-    part_features(&objects, &mut features, &mut body_of, copy_sources.then_some(&snaps))?;
+    part_features(&objects, &mut features, &mut body_of, copy_sources.then_some(&snaps), shape_edges)?;
     if features.is_empty() {
         return Err("no PartDesign body".into());
     }
@@ -1917,6 +1972,56 @@ mod tests {
     }
 
     #[test]
+    fn an_old_pad_names_its_sketch_and_a_shape_binder_is_a_datum() {
+        // Before bodies, a pad's link is `Sketch`, and the group may list the pad first.
+        let doc = DOC
+            .replace(r#"name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0">"#, r#"name="Sketch" type="App::PropertyLink"><Link value="Sketch" count="0">"#)
+            .replace("</LinkSub></Property>", "</Link></Property>")
+            .replace(
+                r#"<Link value="Sketch"/><Link value="Pad"/><Link value="Pocket"/>"#,
+                r#"<Link value="Pad"/><Link value="Sketch"/><Link value="Pocket"/>"#,
+            )
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>"#,
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/><Object type="PartDesign::ShapeBinder" name="Binder"/>"#,
+            )
+            .replace(r#"<Link value="Pocket"/></LinkList>"#, r#"<Link value="Pocket"/><Link value="Binder"/></LinkList>"#);
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let kinds: Vec<&str> = t.features.iter().filter_map(|f| f["type"].as_str()).collect();
+        assert_eq!(kinds, ["sketch", "extrude", "extrude"]);
+    }
+
+    #[test]
+    fn a_datum_plane_profile_is_a_rectangle_centred_on_the_plane() {
+        let doc = DOC
+            .replace(
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/>"#,
+                r#"<Object type="PartDesign::Pocket" name="Pocket"/><Object type="PartDesign::Plane" name="Datum"/>"#,
+            )
+            .replace(r#"<Link value="Pad"/><Link value="Pocket"/>"#, r#"<Link value="Pad"/><Link value="Datum"/><Link value="Pocket"/>"#)
+            .replace("</ObjectData>", r#"<Object name="Datum"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="20"/></Property>
+    <Property name="Width" type="App::PropertyLength"><Float value="10"/></Property>
+    <Property name="Placement" type="App::PropertyPlacement"><PropertyPlacement Px="0" Py="0" Pz="3" Q0="0" Q1="0" Q2="0" Q3="1"/></Property>
+  </Properties></Object></ObjectData>"#)
+            .replace(
+                r#"<Object name="Pocket"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="1"/></Property>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Sketch" count="0">"#,
+                r#"<Object name="Pocket"><Properties>
+    <Property name="Length" type="App::PropertyLength"><Float value="1"/></Property>
+    <Property name="Profile" type="App::PropertyLinkSub"><LinkSub value="Datum" count="0">"#,
+            );
+        let t = tree(doc.as_bytes(), &mut no_shapes).unwrap();
+        let sk = t.features.iter().find(|f| f["name"] == "Datum").unwrap();
+        assert_eq!(sk["type"], "sketch");
+        assert_eq!(sk["plane"]["origin"], json!([0.0, 0.0, 3.0]));
+        assert_eq!(sk["points"][2]["x"], 10.0);
+        assert_eq!(sk["points"][2]["y"], 5.0);
+        assert_eq!(t.features.last().unwrap()["sketch"], "Datum");
+    }
+
+    #[test]
     fn a_symmetric_side_type_is_a_midplane_pad() {
         let doc = DOC.replace(
             r#"<Property name="Length" type="App::PropertyLength"><Float value="2"/></Property>"#,
@@ -2027,7 +2132,7 @@ mod tests {
             .replace(
                 r#"<Objects Count="4">"#,
                 r#"<Objects Count="5">
-  <Object type="Part::Thickness" name="Cut"/>"#,
+  <Object type="Part::Offset2D" name="Cut"/>"#,
             )
             .replace(
                 r#"<ObjectData Count="4">"#,
@@ -2036,9 +2141,7 @@ mod tests {
     <Property name="Shape" type="Part::PropertyPartShape"><Part file="PartShape9.brp"/></Property>
   </Properties></Object>"#,
             );
-        assert!(
-            tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("Part::Thickness outside a PartDesign body")
-        );
+        assert!(tree(doc.as_bytes(), &mut no_shapes).unwrap_err().contains("Part::Offset2D outside a PartDesign body"));
     }
 
     #[test]

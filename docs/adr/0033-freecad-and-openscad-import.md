@@ -195,3 +195,22 @@ fallback). UpToFirst/UpToLast stay distances: their end face would have to be fo
 `SrcFace` does not carry. `page67_bynormandc` (the one UpToFace in the 160 files) stays at tier 2: its sketch is tilted 45 degrees
 to the face z = -25 behind it, so the pad is FreeCAD's two-sided up-to (-72.14 .. +28.28 mm along the sketch normal); Gusset
 refuses a face behind part of the profile. Coverage unchanged: 126 of 160.
+
+### Amendment: datum-plane profiles, pre-body pads, shape binders, thickness (2026-11-10)
+
+Coverage 126 to 128 of 160. A pad or pocket whose profile is a `PartDesign::Plane` (AttachmentTutorial) takes
+the plane's `Length` x `Width` rectangle, centred on the plane's placement, as a sketch named after the plane.
+A pad of a file from before bodies names its sketch in `Sketch`, not `Profile`: the group-order pass reads
+both, so a pad listed ahead of its sketch is put after it (Sketcher example 4). A `PartDesign::ShapeBinder`
+is a datum like the origin: sketches attached to one keep their stored placement and constraints are not
+translated, so nothing else is needed (Page_056-1 gets past it but stays at tier 2: its `Draft` array has
+`Fuse=false`, so FreeCAD's shape is a compound of six overlapping copies whose volume is six times the
+fused one, which no tree feature gives). `Part::Thickness` (skin mode, faces taken from the input feature's stored shape,
+a negative value inward) is written as a `shell`; Page_037 still fails: Gusset's shell reports the walls too
+thick for the part at any thickness inward and an invalid solid outward (a 600 mm dish pad with a pocket; not traced).
+Helix sweeps (Page_085, Page_092) need a tree change: `SweepF` (tree_import/v2.rs) takes a path sketch only, so
+it would need an optional `helix` object (origin, axis, x, radius, pitch, height, hand) mapping to ADR 0034's
+`path: helix(...)`, and FreeCAD's pipe spine is the helix edges of a `Part::Helix` object (radius, pitch,
+height, placement; Page_085 has 3 turns as 3 edges). Not done here. Page_058 ("Sketch has no closed regions"),
+Page_074 (the pipe path starts 8 mm from the profile plane) and Page_094 (loft similarity) were looked at only
+for their reasons.
