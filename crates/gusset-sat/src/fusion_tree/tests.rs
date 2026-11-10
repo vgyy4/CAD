@@ -3,9 +3,9 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 
 use super::geom::{self, P2};
-use super::json::{check, place};
+use super::json::{self, check, place};
 use super::stream::{Design, parse_header, ref_end, ref_lists, refs_at, sections, wstrings_all};
-use super::{acis, feature, naming, pcb, sketch};
+use super::{acis, feature, naming, patdir, pcb, sketch};
 use serde_json::json;
 
 fn le32(v: u32) -> Vec<u8> {
@@ -1362,4 +1362,67 @@ fn a_drill_table_is_a_count_and_entries_of_forty_bytes() {
     let mut other = rec.clone();
     other[3 + 4 + 30] = 1;
     assert_eq!(pcb::hole_table(&other, 3), None);
+}
+
+/// The four edges of an axis-parallel rectangle at height `z`.
+fn rect_edges(x: (f64, f64), y: (f64, f64), z: f64) -> Vec<(geom::V3, geom::V3)> {
+    let c = [[x.0, y.0, z], [x.1, y.0, z], [x.1, y.1, z], [x.0, y.1, z]];
+    (0..4).map(|i| (c[i], c[(i + 1) % 4])).collect()
+}
+
+#[test]
+fn the_second_pattern_direction_is_the_side_where_the_stored_copies_are() {
+    // A 1 x 1 square hole patterned 3 x 2: U = +x by 2.54, V perpendicular by -2.54.
+    let segs = rect_edges((0.0, 1.0), (0.0, 1.0), 0.0);
+    let lat =
+        |count_v: usize| patdir::Lattice { u: [1.0, 0.0, 0.0], spacing_u: 2.54, count_u: 3, spacing_v: -2.54, count_v };
+    let n = [0.0, 0.0, 1.0];
+    // The stored body has the second row at y = -2.54 (and its edges at another height).
+    let copies = |dy: f64| -> Vec<(geom::V3, geom::V3)> {
+        (0..3)
+            .flat_map(|i| {
+                let x = 2.54 * f64::from(i);
+                [rect_edges((x, x + 1.0), (0.0, 1.0), 0.3), rect_edges((x, x + 1.0), (dy, dy + 1.0), 0.3)].concat()
+            })
+            .collect()
+    };
+    // n x U = +y: with the negative spacing the copies go towards -y.
+    assert_eq!(patdir::side_of(&segs, n, &lat(2), &copies(-2.54)), Some([0.0, 1.0, 0.0]));
+    assert_eq!(patdir::side_of(&segs, n, &lat(2), &copies(2.54)), Some([0.0, -1.0, 0.0]));
+    // Copies on both sides, on neither, or one copy missing: not decided.
+    let both: Vec<_> = [copies(-2.54), copies(2.54)].concat();
+    assert_eq!(patdir::side_of(&segs, n, &lat(2), &both), None);
+    assert_eq!(patdir::side_of(&segs, n, &lat(2), &copies(-5.0)), None);
+    let mut missing = copies(-2.54);
+    missing.truncate(missing.len() - 4);
+    assert_eq!(patdir::side_of(&segs, n, &lat(2), &missing), None);
+    // A third row the bodies lack, a single row, a direction out of the sketch plane, no edges.
+    assert_eq!(patdir::side_of(&segs, n, &lat(3), &copies(-2.54)), None);
+    assert_eq!(patdir::side_of(&segs, n, &lat(1), &copies(-2.54)), None);
+    assert_eq!(patdir::side_of(&segs, [1.0, 0.0, 0.0], &lat(2), &copies(-2.54)), None);
+    assert_eq!(patdir::side_of(&[], n, &lat(2), &copies(-2.54)), None);
+}
+
+#[test]
+fn the_reach_of_an_extrude_to_a_body_is_read_off_its_stored_tool() {
+    let z = [0.0, 0.0, 1.0];
+    let outline = rect_edges((0.0, 5.1), (0.0, 2.0), 0.0);
+    let tool =
+        |depth: f64| [rect_edges((0.0, 5.1), (0.0, 2.0), 0.0), rect_edges((0.0, 5.1), (0.0, 2.0), depth)].concat();
+    // Another body, with other edges, says nothing.
+    let other = rect_edges((0.0, 9.0), (0.0, 9.0), 0.0);
+    assert_eq!(json::reach_of(&outline, z, &[other.clone(), tool(-0.4)]), Some(-0.4));
+    assert_eq!(json::reach_of(&outline, z, &[tool(0.4), tool(0.4)]), Some(0.4));
+    // Two tools that disagree; none; a body with the outline at three heights (not one tool).
+    assert_eq!(json::reach_of(&outline, z, &[tool(0.4), tool(-0.4)]), None);
+    assert_eq!(json::reach_of(&outline, z, &[other]), None);
+    let stacked = [tool(0.4), rect_edges((0.0, 5.1), (0.0, 2.0), 0.9)].concat();
+    assert_eq!(json::reach_of(&outline, z, &[stacked]), None);
+    // A tool that lacks one edge of the outline at its far side.
+    let mut open = tool(0.4);
+    open.pop();
+    assert_eq!(json::reach_of(&outline, z, &[open]), None);
+    // An outline of one direction would fit any slab: not decided.
+    let parallel = [outline[0], outline[2]];
+    assert_eq!(json::reach_of(&parallel, z, &[tool(0.4)]), None);
 }

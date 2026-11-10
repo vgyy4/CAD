@@ -177,17 +177,26 @@ fn tool_reach(cx: &mut Ctx, fid: u64) -> Option<f64> {
         .filter(|l| pieces.iter().filter(|own| own.iter().any(|m| same(l, m))).count() == 1)
         .copied()
         .collect();
+    reach_of(&outline, z, cx.edge_sets())
+}
+
+/// The signed length along `z` of the tool whose outline (straight pieces, on the sketch plane)
+/// is `outline`: a body of `bodies` that has every piece at the plane and at exactly one other
+/// offset. Several such bodies must agree; an outline of one direction decides nothing.
+pub(super) fn reach_of(outline: &[(V3, V3)], z: V3, bodies: &[Vec<super::acis::Edge>]) -> Option<f64> {
     // Two directions at least, or a slab of any outline would do.
     let dir = |l: &(V3, V3)| geom::unit(geom::sub(l.1, l.0));
+    let near = |a: V3, b: V3| geom::norm(geom::sub(a, b)) < 1e-6;
+    let same = |x: &(V3, V3), y: &(V3, V3)| (near(x.0, y.0) && near(x.1, y.1)) || (near(x.0, y.1) && near(x.1, y.0));
     let first = outline.first().and_then(dir)?;
     if !outline.iter().filter_map(dir).any(|u| dot(u, first).abs() < 1.0 - 1e-9) {
         return None;
     }
     let mut found: Option<f64> = None;
-    for body in cx.edge_sets() {
+    for body in bodies {
         let mut reach: Option<f64> = None;
         let mut ok = true;
-        'lines: for l in &outline {
+        'lines: for l in outline {
             let mut at: Vec<f64> = Vec::new();
             for (p, q) in body {
                 let t = dot(geom::sub(*p, l.0), z);

@@ -51,33 +51,40 @@ impl Ctx<'_> {
                 }
             }
         }
-        let n = normal?;
-        if segs.is_empty() || dot(n, lat.u).abs() > 1e-9 {
-            return None;
-        }
-        let v = geom::unit(geom::cross(n, lat.u))?;
-        // Flattened onto the sketch plane: a stored edge anywhere along the normal counts.
-        let flat = |p: V3| geom::sub(p, geom::mul(n, dot(p, n)));
-        let stored: Vec<(V3, V3)> = self.edge_sets().iter().flatten().map(|(a, b)| (flat(*a), flat(*b))).collect();
-        let near = |a: V3, b: V3| geom::norm(geom::sub(a, b)) < TOL;
-        let supported = |sense: f64| -> bool {
-            (0..lat.count_u).all(|i| {
-                (1..lat.count_v).all(|j| {
-                    let off = geom::add(
-                        geom::mul(lat.u, lat.spacing_u * i as f64),
-                        geom::mul(v, sense * lat.spacing_v * j as f64),
-                    );
-                    segs.iter().any(|(a, b)| {
-                        let (a, b) = (flat(geom::add(*a, off)), flat(geom::add(*b, off)));
-                        stored.iter().any(|(p, q)| (near(*p, a) && near(*q, b)) || (near(*p, b) && near(*q, a)))
-                    })
+        let stored: Vec<(V3, V3)> = self.edge_sets().iter().flatten().copied().collect();
+        side_of(&segs, normal?, lat, &stored)
+    }
+}
+
+/// The unit V direction of `lat` in the plane of normal `n`: `n x U` or its opposite, whichever
+/// puts every copy of the straight edges `segs` (one of them per copy at least) on an edge of
+/// `stored`; `None` when both senses or neither do. Edges are compared flattened onto the plane,
+/// so a stored edge anywhere along the normal counts.
+pub(super) fn side_of(segs: &[(V3, V3)], n: V3, lat: &Lattice, stored: &[(V3, V3)]) -> Option<V3> {
+    if lat.count_v < 2 || segs.is_empty() || dot(n, lat.u).abs() > 1e-9 {
+        return None;
+    }
+    let v = geom::unit(geom::cross(n, lat.u))?;
+    let flat = |p: V3| geom::sub(p, geom::mul(n, dot(p, n)));
+    let stored: Vec<(V3, V3)> = stored.iter().map(|(a, b)| (flat(*a), flat(*b))).collect();
+    let near = |a: V3, b: V3| geom::norm(geom::sub(a, b)) < TOL;
+    let supported = |sense: f64| -> bool {
+        (0..lat.count_u).all(|i| {
+            (1..lat.count_v).all(|j| {
+                let off = geom::add(
+                    geom::mul(lat.u, lat.spacing_u * i as f64),
+                    geom::mul(v, sense * lat.spacing_v * j as f64),
+                );
+                segs.iter().any(|(a, b)| {
+                    let (a, b) = (flat(geom::add(*a, off)), flat(geom::add(*b, off)));
+                    stored.iter().any(|(p, q)| (near(*p, a) && near(*q, b)) || (near(*p, b) && near(*q, a)))
                 })
             })
-        };
-        match (supported(1.0), supported(-1.0)) {
-            (true, false) => Some(v),
-            (false, true) => Some(geom::mul(v, -1.0)),
-            _ => None,
-        }
+        })
+    };
+    match (supported(1.0), supported(-1.0)) {
+        (true, false) => Some(v),
+        (false, true) => Some(geom::mul(v, -1.0)),
+        _ => None,
     }
 }
