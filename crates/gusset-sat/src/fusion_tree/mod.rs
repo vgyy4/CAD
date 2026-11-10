@@ -24,6 +24,7 @@ mod json;
 mod naming;
 mod occpattern;
 mod patdir;
+mod pcb;
 mod sketch;
 mod stream;
 
@@ -324,11 +325,43 @@ impl Graph {
 }
 
 /// Classes whose records carry a feature name in the samples' timelines.
-const FEATURE_PREFIXES: [&str; 33] = [
-    "78B9DEFC", "DD405BC2", "8DA771B7", "A07D5F17", "F757D611", "F4163A07", "D1728651", "AA8B3D40", "D087EFE5",
-    "428B5C6E", "D869265F", "AE12AD3F", "64E40C8E", "E8063467", "E8816367", "D7015B81", "8DFDD543", "02E8AA49",
-    "FCBB1707", "2A94257F", "1339A425", "D45FD6C4", "8EE00B00", "4A782808", "B6678572", "D3DC9613", "E3849A15",
-    "1C037A07", "21B67709", "11F1A5CE", "B0EEF272", "0EE4A83E", "54F9ACE8",
+const FEATURE_PREFIXES: [&str; 36] = [
+    "78B9DEFC",
+    "DD405BC2",
+    "8DA771B7",
+    "A07D5F17",
+    "F757D611",
+    "F4163A07",
+    "D1728651",
+    "AA8B3D40",
+    "D087EFE5",
+    "428B5C6E",
+    "D869265F",
+    "AE12AD3F",
+    "64E40C8E",
+    "E8063467",
+    "E8816367",
+    "D7015B81",
+    "8DFDD543",
+    "02E8AA49",
+    "FCBB1707",
+    "2A94257F",
+    "1339A425",
+    "D45FD6C4",
+    "8EE00B00",
+    "4A782808",
+    "B6678572",
+    "D3DC9613",
+    "E3849A15",
+    "1C037A07",
+    "21B67709",
+    "11F1A5CE",
+    "B0EEF272",
+    "0EE4A83E",
+    "54F9ACE8",
+    pcb::BOX,
+    pcb::LAYER,
+    pcb::COPPER,
 ];
 
 /// Feature ids in timeline order (the reference lists of the `2F4C1849` records), then the

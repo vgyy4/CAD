@@ -951,6 +951,21 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if c8 == "428B5C6E" {
             feats.push(insert_json(d, fid, &nm, &fusion_type, class));
+        } else if matches!(c8.as_str(), super::pcb::BOX | super::pcb::LAYER | super::pcb::COPPER) {
+            let read = match c8.as_str() {
+                super::pcb::BOX => cx.box_primitive(&g, fid, &nm).map(Some),
+                super::pcb::COPPER => cx.copper(&g, fid, &nm, &mut used_names).map(Some),
+                _ => cx.layer(&g, fid, &nm, &names, &feats, &mut used_names),
+            };
+            match read {
+                Ok(Some(made)) => feats.extend(made),
+                Ok(None) => {
+                    skipped.push(json!({"name": name, "fusion_type": fusion_type, "reason": "a drill without holes", "source_id": fid}));
+                    continue;
+                }
+                Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                    "class_guid": class, "source_id": fid, "error": why})),
+            }
         } else if c8 == "D7015B81" {
             // Base Feature: its visible bodies are bodies the file stores (section 13), handed
             // to the importer as `stored_body` features.

@@ -5,7 +5,7 @@
 use super::geom::{self, P2};
 use super::json::{check, place};
 use super::stream::{Design, parse_header, ref_end, ref_lists, refs_at, sections, wstrings_all};
-use super::{acis, feature, naming, sketch};
+use super::{acis, feature, naming, pcb, sketch};
 use serde_json::json;
 
 fn le32(v: u32) -> Vec<u8> {
@@ -1213,4 +1213,153 @@ fn a_combine_joins_its_tool_bodies_to_its_target_and_an_unconfirmed_operation_is
     let g = super::Graph::new(&d);
     let ed = super::bodyops::Edit { d: &d, g: &g, names: &names, feats: &feats };
     assert!(matches!(ed.combine(500, "Combine1"), Combined::Refused(_)));
+}
+
+/// A record with pointers, a position, vectors and doubles (a surface or a transform).
+fn sab_geometry(names: &[&str], ptrs: &[i32], pos: Option<[f64; 3]>, vecs: &[[f64; 3]], nums: &[f64]) -> Vec<u8> {
+    let mut v = sab_record(names, ptrs, pos);
+    v.pop();
+    for p in vecs {
+        v.push(0x14);
+        for x in p {
+            v.extend(x.to_le_bytes());
+        }
+    }
+    for x in nums {
+        v.push(0x06);
+        v.extend(x.to_le_bytes());
+    }
+    v.push(0x11);
+    v
+}
+
+#[test]
+fn a_blob_body_is_described_by_its_lumps_box_and_cylinders() {
+    // 1 body -> transform 2 (identity), lumps 3 and 4 -> faces 5, 6 -> cylinders 7, 8;
+    // vertices 9, 10 under the first lump; 13 a second body: a flat sheet with a real transform.
+    let mut b = b"ASM BinaryFile4tY".to_vec();
+    b.extend(sab_record(&["asmheader"], &[], None));
+    b.extend(sab_record(&["body"], &[3, 4, 2], None));
+    let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]];
+    b.extend(sab_geometry(&["transform"], &[], None, &rows, &[1.0]));
+    b.extend(sab_record(&["lump"], &[5, 9, 10], None));
+    b.extend(sab_record(&["lump"], &[6], None));
+    b.extend(sab_record(&["face"], &[7], None));
+    b.extend(sab_record(&["face"], &[8], None));
+    let up = [[0.0, 0.0, 2.0], [0.25, 0.0, 0.0]];
+    b.extend(sab_geometry(&["cone", "surface"], &[], Some([1.0, 2.0, -20.0]), &up, &[1.0, 0.0, 1.0, 0.25]));
+    b.extend(sab_geometry(&["cone", "surface"], &[], Some([3.0, 2.0, -20.0]), &up, &[1.0, 0.0, 1.0, 0.25]));
+    b.extend(sab_record(&["vertex"], &[11], None));
+    b.extend(sab_record(&["vertex"], &[12], None));
+    b.extend(sab_record(&["point"], &[], Some([1.25, 2.0, -20.0])));
+    b.extend(sab_record(&["point"], &[], Some([1.25, 2.0, 20.0])));
+    b.extend(sab_record(&["body"], &[14, 15, 18], None));
+    b.extend(sab_record(&["lump"], &[16, 17], None));
+    b.extend(sab_geometry(&["spline", "surface"], &[], None, &[], &[]));
+    b.extend(sab_record(&["vertex"], &[19], None));
+    b.extend(sab_record(&["vertex"], &[20], None));
+    let moved = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [5.0, 0.0, 0.0]];
+    b.extend(sab_geometry(&["transform"], &[], None, &moved, &[1.0]));
+    b.extend(sab_record(&["point"], &[], Some([0.0, 0.0, 0.0])));
+    b.extend(sab_record(&["point"], &[], Some([4.0, 3.0, 0.0])));
+    let shapes = acis::body_shapes(&b).unwrap();
+    assert_eq!(shapes.len(), 2);
+    let tool = &shapes[0];
+    // Its only vertices are the ends of one seam: flat by its vertices, a tool all the same.
+    assert_eq!((tool.lumps, tool.transformed, tool.other_surfaces, tool.flat()), (2, false, false, true));
+    assert_eq!(tool.vertex_box, Some(([1.25, 2.0, -20.0], [1.25, 2.0, 20.0])));
+    assert_eq!(
+        tool.cylinders,
+        vec![([1.0, 2.0, -20.0], [0.0, 0.0, 1.0], 0.25), ([3.0, 2.0, -20.0], [0.0, 0.0, 1.0], 0.25)]
+    );
+    let sheet = &shapes[1];
+    assert_eq!((sheet.lumps, sheet.transformed, sheet.other_surfaces, sheet.flat()), (1, true, true, true));
+    // The whole cylinders along z, one per lump, are a drill; the sheet is none.
+    let drills = pcb::drills_of(&shapes);
+    assert_eq!(drills, vec![pcb::Drill { holes: vec![(1.0, 2.0, 0.25), (3.0, 2.0, 0.25)], z: (-20.0, 20.0) }]);
+}
+
+fn shape(lumps: usize, cylinders: Vec<(geom::V3, geom::V3, f64)>, z: (f64, f64)) -> acis::BodyShape {
+    acis::BodyShape {
+        lumps,
+        vertex_box: Some(([0.0, 0.0, z.0], [1.0, 1.0, z.1])),
+        cylinders,
+        other_surfaces: false,
+        transformed: false,
+    }
+}
+
+#[test]
+fn only_bodies_of_whole_upright_cylinders_are_drill_tools() {
+    let up = [0.0, 0.0, 1.0];
+    let hole = |x: f64, r: f64| ([x, 0.5, -20.0], up, r);
+    // A plate with two holes: one lump, two cylinders.
+    assert!(pcb::drills_of(&[shape(1, vec![hole(0.2, 0.1), hole(0.6, 0.1)], (0.0, 0.1))]).is_empty());
+    // Plated barrels: an inner and an outer cylinder per lump.
+    assert!(
+        pcb::drills_of(&[shape(2, vec![hole(0.2, 0.1), hole(0.2, 0.12), hole(0.6, 0.1), hole(0.6, 0.12)], (0.0, 0.1))])
+            .is_empty()
+    );
+    // A cylinder that lies down, a body with another curved surface, a moved body.
+    assert!(pcb::drills_of(&[shape(1, vec![([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0.1)], (0.0, 0.2))]).is_empty());
+    let mut curved = shape(1, vec![hole(0.2, 0.1)], (-20.0, 20.0));
+    curved.other_surfaces = true;
+    let mut moved = shape(1, vec![hole(0.2, 0.1)], (-20.0, 20.0));
+    moved.transformed = true;
+    assert!(pcb::drills_of(&[curved, moved]).is_empty());
+    // Two tools of one blob are both read (a face of one cylinder stored twice counts once).
+    let long = shape(2, vec![hole(0.2, 0.1), hole(0.6, 0.05), hole(0.6, 0.05)], (-20.0, 20.0));
+    let short = shape(1, vec![hole(0.4, 0.07)], (-0.1, 0.2));
+    let drills = pcb::drills_of(&[long, short]);
+    assert_eq!(drills.len(), 2);
+    assert_eq!(drills[0].holes, vec![(0.2, 0.5, 0.1), (0.6, 0.5, 0.05)]);
+    assert_eq!(drills[1].z, (-0.1, 0.2));
+}
+
+#[test]
+fn a_drill_is_a_sketch_of_circles_and_a_cut_as_long_as_its_tool() {
+    let drill = pcb::Drill { holes: vec![(0.254, 0.254, 0.125), (0.635, 0.254, 0.05)], z: (-19.9, 20.1) };
+    let feats = pcb::drill_json(&drill, "PCBExtrude1", "PCBExtrude1 holes", "Extrude1", 346);
+    let [sketch, cut] = feats.as_slice() else { panic!("two features") };
+    assert_eq!(sketch["plane"]["origin"], json!([0.0, 0.0, 1.0]));
+    assert_eq!(sketch["curves"][1], json!({"id": "c1", "type": "circle", "center": "p1", "radius": 0.5}));
+    assert_eq!(sketch["points"][1], json!({"id": "p1", "x": 6.35, "y": 2.54}));
+    assert_eq!((cut["operation"].as_str(), cut["target"].as_str()), (Some("cut"), Some("Extrude1")));
+    assert_eq!((cut["distance"].as_f64(), cut["symmetric"].as_bool()), (Some(400.0), Some(true)));
+    assert_eq!(cut["profiles"], json!([{"point": [2.54, 2.54]}, {"point": [6.35, 2.54]}]));
+    assert!(check(&json!({"features": feats})).is_ok());
+}
+
+#[test]
+fn the_side_of_a_box_is_the_side_of_its_stored_body() {
+    // Corner (-0.2, -0.2, 0), axes x, y, z; the stored body lies above or below the corner's plane.
+    let m = [1.0, 0.0, 0.0, -0.2, 0.0, 1.0, 0.0, -0.2, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    let size = [0.4, 0.4, 0.01];
+    assert_eq!(pcb::box_height(&m, size, ([-0.2, -0.2, 0.0], [0.2, 0.2, 0.01])), Some(0.01));
+    assert_eq!(pcb::box_height(&m, size, ([-0.2, -0.2, -0.01], [0.2, 0.2, 0.0])), Some(-0.01));
+    // Another size, or a body elsewhere (an offset the parameters do not explain): not this box.
+    assert_eq!(pcb::box_height(&m, size, ([-0.2, -0.2, 0.0], [0.2, 0.2, 0.02])), None);
+    assert_eq!(pcb::box_height(&m, size, ([-0.1, -0.2, 0.0], [0.3, 0.2, 0.01])), None);
+    // A turned frame: x along world y, y along world -x.
+    let turned = [0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    assert_eq!(pcb::box_height(&turned, [0.3, 0.2, 0.1], ([0.8, 2.0, 0.0], [1.0, 2.3, 0.1])), Some(0.1));
+}
+
+#[test]
+fn a_drill_table_is_a_count_and_entries_of_forty_bytes() {
+    let mut rec = vec![0xaa; 3];
+    rec.extend(le32(2));
+    for (x, y) in [(0.254f64, 0.254f64), (2.286, 1.524)] {
+        rec.extend(le32(0));
+        rec.extend(x.to_le_bytes());
+        rec.extend(y.to_le_bytes());
+        rec.extend([0u8; 20]);
+    }
+    assert_eq!(pcb::hole_table(&rec, 3), Some(vec![(0.254, 0.254), (2.286, 1.524)]));
+    // No holes; a cut-off table; an entry with something in its zero bytes.
+    assert_eq!(pcb::hole_table(&le32(0), 0), Some(Vec::new()));
+    assert_eq!(pcb::hole_table(&rec[..rec.len() - 1], 3), None);
+    let mut other = rec.clone();
+    other[3 + 4 + 30] = 1;
+    assert_eq!(pcb::hole_table(&other, 3), None);
 }

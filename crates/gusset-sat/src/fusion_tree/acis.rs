@@ -460,3 +460,92 @@ pub(super) fn named_edges(b: &[u8]) -> Option<Vec<NamedEdge>> {
     }
     Some(out)
 }
+
+/// What one body of a blob is, as far as the PCB features need it: its lumps, the box of its
+/// vertices, its cylinders and whether it has any other curved surface.
+#[derive(Debug, Clone)]
+pub(super) struct BodyShape {
+    pub(super) lumps: usize,
+    /// The box of the body's vertices (cm): `None` for a body without vertices.
+    pub(super) vertex_box: Option<(V3, V3)>,
+    /// Root point, unit axis and radius (cm) of every cylindrical surface.
+    pub(super) cylinders: Vec<(V3, V3, f64)>,
+    /// A surface that is neither a plane nor a cylinder.
+    pub(super) other_surfaces: bool,
+    /// The body record names a transform: its geometry is not in the blob's own frame.
+    pub(super) transformed: bool,
+}
+
+impl BodyShape {
+    /// All vertices in one plane of constant x, y or z: a sheet, not a solid.
+    pub(super) fn flat(&self) -> bool {
+        self.vertex_box.is_none_or(|(lo, hi)| lo.iter().zip(hi).any(|(a, b)| (b - a).abs() < 1e-9))
+    }
+}
+
+/// A transform record that moves nothing: unit rows, no translation, scale 1 (as doubles or as
+/// vectors).
+fn identity(t: &ARec) -> bool {
+    const ROWS: [f64; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+    let flat: Vec<f64> = t.vecs.iter().flatten().copied().collect();
+    let as_doubles = t.nums.get(..12) == Some(&ROWS[..]) && t.nums.get(12) == Some(&1.0);
+    let as_vectors = flat.get(..12) == Some(&ROWS[..]) && t.nums.first() == Some(&1.0);
+    as_doubles || as_vectors
+}
+
+/// Every body of the blob, in file order (none left out).
+pub(super) fn body_shapes(b: &[u8]) -> Option<Vec<BodyShape>> {
+    let recs = records(b)?;
+    let vpt = vertex_points(&recs);
+    let mut out = Vec::new();
+    for (k, r) in recs.iter().enumerate() {
+        if !is_body(&r.ty) {
+            continue;
+        }
+        let mut shape = BodyShape {
+            lumps: 0,
+            vertex_box: None,
+            cylinders: Vec::new(),
+            other_surfaces: false,
+            transformed: r.ptrs.iter().any(|p| {
+                usize::try_from(*p)
+                    .ok()
+                    .and_then(|p| recs.get(p))
+                    .is_some_and(|x| x.ty.contains("transform") && !identity(x))
+            }),
+        };
+        let mut members: Vec<usize> = closure(&recs, k).into_iter().collect();
+        members.sort_unstable();
+        for m in members {
+            let Some(x) = recs.get(m) else { continue };
+            if x.ty.ends_with("lump") {
+                shape.lumps += 1;
+            } else if let Some(p) = vpt.get(&m) {
+                shape.vertex_box = Some(shape.vertex_box.map_or((*p, *p), |(lo, hi)| {
+                    (
+                        [lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])],
+                        [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])],
+                    )
+                }));
+            } else if x.ty.ends_with("cone-surface") {
+                // Root, axis, major radius vector; ratio, sine and cosine of the half angle.
+                match (x.vecs.as_slice(), x.nums.as_slice()) {
+                    ([root, axis, major, ..], [ratio, sine, ..])
+                        if sine.abs() < 1e-12 && (ratio - 1.0).abs() < 1e-12 =>
+                    {
+                        let n = super::geom::norm(*axis);
+                        let radius = super::geom::norm(*major);
+                        if n > 0.0 {
+                            shape.cylinders.push((*root, [axis[0] / n, axis[1] / n, axis[2] / n], radius));
+                        }
+                    }
+                    _ => shape.other_surfaces = true,
+                }
+            } else if x.ty.ends_with("-surface") && !x.ty.ends_with("plane-surface") {
+                shape.other_surfaces = true;
+            }
+        }
+        out.push(shape);
+    }
+    Some(out)
+}
