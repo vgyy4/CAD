@@ -224,3 +224,14 @@ the stored shape at 0.001 mm tops at z 51.412, the exact solid at 51.5), so the 
 Page_058 ("Sketch has no closed regions"),
 Page_074 (the pipe path starts 8 mm from the profile plane) and Page_094 (loft similarity) were looked at only
 for their reasons.
+
+### Amendment: fillet cluster, sketch precision (2026-11-10)
+
+Page_020 was not a fillet problem. The sketch arcs and circles were written with 6 decimals; an
+arc's start and end are separate points, so they sat up to 5e-7 off one circle, the solver moved
+points to repair it, and two pads of one cylinder got radii that differ by more than the kernel's
+tolerance: their faces stayed apart and the 10 mm fillet of the edge between them failed. Points an
+arc runs through and circle/ellipse radii are now written with 8 decimals. A boolean can depend on
+the old 6-decimal values (Page_033), so the importer tries the 6-decimal text last (`coarse`).
+Coverage 128 -> 129 of 160. Page_108, 028, 025, 026, 089 and the Page_015 fillets variant are
+still open (untouched in this round).

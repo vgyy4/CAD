@@ -1185,21 +1185,34 @@ fn freecad_history(
         // copy of its input (the body goes on beside it): try the tree written so.
         // A pad or pocket up to a face that does not rebuild as such is tried as the distance
         // its stored shape shows.
+        // Sketch arcs and circles are written with 8 decimals; a boolean can depend on the
+        // 6-decimal values older imports used (Page_033), so those are tried last.
         let up_to = tree.features.iter().any(|f| f.get("end_condition").and_then(Value::as_str) == Some("to_face"));
-        for faces in [true, false] {
-            if !faces && !up_to {
-                break;
-            }
-            for (tools, copies) in [(false, false), (true, false), (false, true), (true, true)] {
-                // The plain tree with faces is the first attempt.
-                if faces && !tools && !copies {
-                    continue;
-                }
-                if let Ok(mut alt) = crate::fcstd_tree::tree_options(doc, &mut shape_edges, tools, copies, faces)
-                    && alt.features != tree.features
+        for coarse in [false, true] {
+            if coarse {
+                let mut alt = tree.clone();
+                if mark_coarse(&mut alt)
                     && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
                 {
                     return Ok((alt, note));
+                }
+            }
+            for faces in [true, false] {
+                if !faces && !up_to {
+                    break;
+                }
+                for (tools, copies) in [(false, false), (true, false), (false, true), (true, true)] {
+                    // The plain tree with faces is the first attempt.
+                    if faces && !tools && !copies {
+                        continue;
+                    }
+                    if let Ok(mut alt) = crate::fcstd_tree::tree_options(doc, &mut shape_edges, tools, copies, faces)
+                        && alt.features != tree.features
+                        && (!coarse || mark_coarse(&mut alt))
+                        && let Ok(note) = rebuild_check(&mut alt, bodies, kernel, file_name, "FreeCAD's")
+                    {
+                        return Ok((alt, note));
+                    }
                 }
             }
         }
@@ -1207,6 +1220,19 @@ fn freecad_history(
     }
     let note = first?;
     Ok((tree, note))
+}
+
+/// Marks every sketch of `tree` to be written with 6-decimal arcs and circles. Whether there was
+/// a sketch.
+fn mark_coarse(tree: &mut crate::tree_import::Tree) -> bool {
+    let mut any = false;
+    for f in &mut tree.features {
+        if f.get("type").and_then(Value::as_str) == Some("sketch") {
+            f["coarse"] = Value::Bool(true);
+            any = true;
+        }
+    }
+    any
 }
 
 /// Tier note for a SolidWorks part whose feature history came in as features.

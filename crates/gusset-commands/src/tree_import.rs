@@ -131,6 +131,10 @@ struct SketchF {
     curves: Vec<SkCurve>,
     #[serde(default)]
     constraints: Vec<SkConstraint>,
+    /// Written by the FreeCAD importer's retry: the arcs' points and circle radii are rounded to
+    /// 6 decimals like the others (see [`coord`]).
+    #[serde(default)]
+    coarse: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -310,6 +314,16 @@ fn short(s: &str) -> String {
 /// A number for the text: up to 6 decimals, no trailing zeros.
 fn num(v: f64) -> String {
     let s = format!("{:.6}", if v.abs() < 5e-7 { 0.0 } else { v });
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s == "-0" { "0".into() } else { s }
+}
+
+/// A coordinate or radius of a sketch arc or circle: 8 decimals, no trailing zeros. An arc's start
+/// and end points are separate points, so rounding them to 6 decimals leaves them up to 5e-7 off
+/// one circle, which the solver then repairs by moving points (the radii of two pads of one
+/// cylinder then differ by more than the kernel's tolerance, and the faces stay apart: Page_020).
+fn coord(v: f64) -> String {
+    let s = format!("{:.8}", if v.abs() < 5e-9 { 0.0 } else { v });
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
     if s == "-0" { "0".into() } else { s }
 }
@@ -851,12 +865,22 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
     };
     let mut body = String::new();
     let mut points: HashSet<String> = HashSet::new();
+    // Points that an arc runs through keep more digits (see `coord`).
+    let fine = if d.coarse { num } else { coord };
+    let on_arc: HashSet<&str> = d
+        .curves
+        .iter()
+        .filter(|c| matches!(c.kind.as_str(), "arc" | "ellipse_arc"))
+        .flat_map(|c| [&c.start, &c.end, &c.center])
+        .filter_map(|p| p.as_deref())
+        .collect();
     for p in &d.points {
         let id = next("p");
         let [u, v] = map.map(finite(p.x, "a point")?, finite(p.y, "a point")?);
         let (u, v) = (finite(u, "a point")?, finite(v, "a point")?);
         let c = if p.construction { " construction" } else { "" };
-        let _ = writeln!(body, "  {id} = point({}, {}){c}", num(u), num(v));
+        let w = if on_arc.contains(p.id.as_str()) { fine } else { num };
+        let _ = writeln!(body, "  {id} = point({}, {}){c}", w(u), w(v));
         map.ids.insert(p.id.clone(), id);
         points.insert(p.id.clone());
     }
@@ -880,7 +904,7 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                 let id = next("c");
                 let r =
                     c.radius.filter(|r| r.is_finite() && *r > 0.0 && *r < 1e12).ok_or("a circle without a radius")?;
-                let s = format!("  {id} = circle({}, {})", pid(&map, &c.center)?, num(r));
+                let s = format!("  {id} = circle({}, {})", pid(&map, &c.center)?, fine(r));
                 (id, s)
             }
             "arc" => {
@@ -905,15 +929,15 @@ fn sketch(g: &mut Gen, d: &SketchF) -> Result<(), String> {
                 let centre = pid(&map, &c.center)?;
                 if kind == "ellipse" {
                     let id = next("o");
-                    (id.clone(), format!("  {id} = ellipse({centre}, {angle}, {}, {})", num(a), num(b)))
+                    (id.clone(), format!("  {id} = ellipse({centre}, {angle}, {}, {})", fine(a), fine(b)))
                 } else {
                     let id = next("q");
                     // Counter-clockwise about the source normal, as for arcs.
                     let (s0, s1) = if map.flipped { (&c.end, &c.start) } else { (&c.start, &c.end) };
                     let s = format!(
                         "  {id} = ellipse_arc({centre}, {angle}, {}, {}, {}, {})",
-                        num(a),
-                        num(b),
+                        fine(a),
+                        fine(b),
                         pid(&map, s0)?,
                         pid(&map, s1)?
                     );
