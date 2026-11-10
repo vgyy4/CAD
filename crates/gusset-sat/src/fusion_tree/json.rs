@@ -724,6 +724,13 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 tag_feats(&mut feats, nbefore, comp.map(|c| (c, comp_name.as_deref())), extra.contains(&fid));
                 continue;
             }
+            // A pattern of the occurrences of a component: the copies are occurrences the file
+            // places, so the component's features are written once per occurrence (`place`).
+            if ins.is_empty() && body_in.is_empty() && super::occpattern::copies_of(d, fid).is_ok() {
+                skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                    "reason": "pattern of components: its copies are occurrences of the component, placed like its other occurrences"}));
+                continue;
+            }
             let mut j = json!({"type": "unsupported", "gtree_type": if linear { "pattern_linear" } else { "pattern_circular" },
                 "fusion_type": fusion_type, "name": nm, "source_id": fid, "features": in_names,
                 "note": "pattern of components, of several bodies, with a partial angle, or no direction record: not converted"});

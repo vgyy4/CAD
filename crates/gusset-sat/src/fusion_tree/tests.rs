@@ -794,3 +794,116 @@ fn a_fillet_face_gives_the_edges_of_its_corner() {
     let (m, arc) = fillet_edge(&[Some(wall), Some(sx), Some(f1), Some(f2)]).unwrap();
     assert!(!arc && m[0].abs() < 1e-12 && (m[1] - 5.0).abs() < 1e-12 && (m[2] - 5.0).abs() < 1e-12, "{m:?}");
 }
+
+/// A MetaStream with the given classes (GUID texts) and objects (id, bulk offset, class index).
+fn meta_classes(classes: &[&str], objs: &[(u64, u64, usize)]) -> Vec<u8> {
+    let mut m = s("Design");
+    m.extend(le32(0));
+    m.extend(ws(""));
+    m.extend(le32(classes.len() as u32));
+    for (k, g) in classes.iter().enumerate() {
+        m.extend(s(g));
+        m.extend(s(""));
+        m.extend(le32(1));
+        m.extend(s("Fusion"));
+        let ids: Vec<u64> = objs.iter().filter(|o| o.2 == k).map(|o| o.0).collect();
+        m.extend(le32(ids.len() as u32));
+        for i in ids {
+            m.extend(le64(i));
+        }
+    }
+    m.extend(le32(0));
+    m.extend(le32(objs.len() as u32));
+    for (i, o, _) in objs {
+        m.extend(le64(*i));
+        m.extend(le64(*o));
+    }
+    m.extend(le32(0));
+    m.extend(vec![0; 64]);
+    m
+}
+
+/// A 2 x 2 rectangular pattern of the occurrences of one component (spacings 5 and -8 cm along
+/// x and y): the original occurrence, then copies at the given translations (cm).
+fn component_pattern(copies: &[[f64; 3]]) -> (Vec<u8>, Vec<u8>) {
+    const CLASSES: [&str; 10] = [
+        "E8816367-0000-0000-0000-000000000000",
+        "2D6E13A1-0000-0000-0000-000000000000",
+        "CE2913AA-0000-0000-0000-000000000000",
+        "E03784ED-0000-0000-0000-000000000000",
+        "CD57BC48-0000-0000-0000-000000000000",
+        "A085449A-0000-0000-0000-000000000000",
+        "D91D429C-0000-0000-0000-000000000000",
+        "7A6A3D31-0000-0000-0000-000000000000",
+        "F2A7590D-0000-0000-0000-000000000000",
+        "11111111-0000-0000-0000-000000000000",
+    ];
+    let refs = |ids: &[u64]| ids.iter().flat_map(|i| r#ref(*i)).collect::<Vec<u8>>();
+    let mut recs: Vec<(u64, usize, Vec<u8>)> = Vec::new();
+    let occs: Vec<u64> = (0..=copies.len() as u64).map(|k| 11 + k).collect();
+    let mut pattern = occs.clone();
+    pattern.extend([20, 21, 22, 23, 24]);
+    recs.push((10, 0, refs(&pattern)));
+    for (k, o) in occs.iter().enumerate() {
+        recs.push((*o, 1, refs(&[31 + k as u64])));
+        let mut ce = refs(&[40]);
+        if let Some(t) = k.checked_sub(1).and_then(|c| copies.get(c)) {
+            ce.extend([0; 3]);
+            for v in [1.0, 0.0, 0.0, t[0], 0.0, 1.0, 0.0, t[1], 0.0, 0.0, 1.0, t[2], 0.0, 0.0, 0.0, 1.0] {
+                ce.extend(f64::to_le_bytes(v));
+            }
+        }
+        recs.push((31 + k as u64, 2, ce));
+    }
+    recs.push((40, 3, refs(&[41])));
+    recs.push((41, 4, refs(&[42])));
+    recs.push((42, 9, ws("BREP.abc.smb")));
+    for (holder, class, param, expr, name, v) in [
+        (20, 5, 25, "2", "countU", 2.0),
+        (21, 5, 26, "2", "CountV", 2.0),
+        (22, 6, 27, "50 mm", "uSpaceDistance", 5.0),
+        (23, 6, 28, "-80 mm", "vSpaceDistance", -8.0),
+    ] {
+        recs.push((holder, class, refs(&[param])));
+        let mut p = ws(expr);
+        p.extend(ws(name));
+        p.extend(ws("d1"));
+        p.extend(f64::to_le_bytes(v));
+        recs.push((param, 7, p));
+    }
+    let mut dir = vec![0; 4];
+    for v in [0.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+        dir.extend(f64::to_le_bytes(v));
+    }
+    recs.push((24, 8, dir));
+    let mut bulk = Vec::new();
+    let mut objs = Vec::new();
+    for (id, class, body) in recs {
+        objs.push((id, bulk.len() as u64, class));
+        bulk.extend(record(256 + class as u32, id, &body));
+    }
+    (meta_classes(&CLASSES, &objs), bulk)
+}
+
+#[test]
+fn a_pattern_of_components_gives_its_stored_copies_only_on_its_lattice() {
+    let lattice = [[5.0, 0.0, 0.0], [0.0, -8.0, 0.0], [5.0, -8.0, 0.0]];
+    let (m, bulk) = component_pattern(&lattice);
+    let got = super::pattern_copies(&m, &bulk);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].blobs, vec!["BREP.abc.smb".to_string()]);
+    let ts: Vec<[f64; 3]> = got[0].copies.iter().map(|c| c.t).collect();
+    assert_eq!(ts, vec![[50.0, 0.0, 0.0], [0.0, -80.0, 0.0], [50.0, -80.0, 0.0]]);
+    // Each copy is placed by the original occurrence's placement, then its own.
+    let mut placed =
+        vec![crate::fusion::Placed { brep: "abc".into(), occurrence: "c:1".into(), placement: quarter_turn() }];
+    super::add_pattern_copies(&mut placed, &got);
+    assert_eq!(placed.len(), 4);
+    assert_eq!(placed[1].occurrence, "c:1 [2]");
+    assert_eq!(placed[1].placement, quarter_turn().then(&got[0].copies[0]));
+    // A copy that is not where the parameters put it, or one too few: no copies at all.
+    let (m, bulk) = component_pattern(&[[5.0, 0.0, 0.0], [0.0, -8.0, 0.0], [5.0, -8.5, 0.0]]);
+    assert!(super::pattern_copies(&m, &bulk).is_empty());
+    let (m, bulk) = component_pattern(&lattice[..2]);
+    assert!(super::pattern_copies(&m, &bulk).is_empty());
+}

@@ -21,6 +21,7 @@ mod geom;
 mod insert;
 mod json;
 mod naming;
+mod occpattern;
 mod sketch;
 mod stream;
 
@@ -135,8 +136,10 @@ fn built(
     json::check(&tree)?;
     // The features are in each component's own coordinates; the file's bodies stand where the
     // occurrences of the components put them.
-    let (_, bulk) = pick_stream(files)?;
-    json::place(&mut tree, &crate::fusion::read_design(bulk).bodies)?;
+    let (meta, bulk) = pick_stream(files)?;
+    let mut placed = crate::fusion::read_design(bulk).bodies;
+    add_pattern_copies(&mut placed, &pattern_copies(meta, bulk));
+    json::place(&mut tree, &placed)?;
     Ok(tree)
 }
 
@@ -353,6 +356,44 @@ fn timeline(d: &Design) -> (Vec<u64>, Vec<u64>) {
         }
     }
     (out, extra)
+}
+
+pub use occpattern::PatternCopies;
+
+/// The occurrences that the rectangular patterns of components of one design stream made, each
+/// relative to the original occurrence ([`PatternCopies`]); patterns whose stored copies are not
+/// exactly their parameters' lattice are left out (the tree reader then refuses them).
+pub fn pattern_copies(meta: &[u8], bulk: &[u8]) -> Vec<PatternCopies> {
+    if meta.len().saturating_add(bulk.len()) > MAX_STREAM_BYTES {
+        return Vec::new();
+    }
+    let Some(d) = Design::new(meta, bulk) else { return Vec::new() };
+    d.ids
+        .iter()
+        .filter(|i| d.is(**i, "AE12AD3F") || d.is(**i, "E8816367"))
+        .filter_map(|i| occpattern::copies_of(&d, *i).ok())
+        .collect()
+}
+
+/// Adds to `bodies` the occurrences the patterns of components made: every body placed by an
+/// occurrence of a repeated component gets one more placement per copy (the occurrence's
+/// placement, then the copy's).
+pub fn add_pattern_copies(bodies: &mut Vec<crate::fusion::Placed>, sets: &[PatternCopies]) {
+    let originals = bodies.clone();
+    for set in sets {
+        let mine = |brep: &str| {
+            set.blobs.iter().any(|b| b.strip_prefix("BREP.").and_then(|b| b.strip_suffix(".smb")) == Some(brep))
+        };
+        for p in originals.iter().filter(|p| mine(&p.brep)) {
+            for (k, c) in set.copies.iter().enumerate() {
+                bodies.push(crate::fusion::Placed {
+                    brep: p.brep.clone(),
+                    occurrence: format!("{} [{}]", p.occurrence, k + 2),
+                    placement: p.placement.then(c),
+                });
+            }
+        }
+    }
 }
 
 /// The user-visible name of a component record.

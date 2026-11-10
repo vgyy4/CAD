@@ -2390,7 +2390,9 @@ fn f3d(
     let is_protein = |n: &str| n.contains("ProteinAssets.BlobParts/") && n.ends_with(".protein");
     // The history blobs (`BREP.<id>.smbh`) keep the face materials some body blobs lost.
     let is_hist = |n: &str| n.contains("Breps.BlobParts/") && n.to_ascii_lowercase().ends_with(".smbh");
-    let wanted = |n: &str| is_brep(n) || is_hist(n) || is_stream(n) || is_protein(n);
+    // The class table of a stream: patterns of components are read from the object records.
+    let is_meta = |n: &str| n.ends_with("/MetaStream.dat");
+    let wanted = |n: &str| is_brep(n) || is_hist(n) || is_stream(n) || is_meta(n) || is_protein(n);
     let read = |data: &[u8], budget: &mut u64| {
         gusset_meshio::archive::read_entries_within(data, &limits, &wanted, MAX_F3D_STREAM_BYTES, budget).map_err(bad)
     };
@@ -2407,7 +2409,7 @@ fn f3d(
         let active: Vec<&(String, Vec<u8>)> = streams.iter().filter(|(n, _)| n.contains("[Active]")).copied().collect();
         let chosen = if active.is_empty() { streams } else { active };
         let mut info = gusset_sat::fusion::Design::default();
-        for (_, b) in chosen {
+        for (name, b) in chosen {
             streams_read += 1;
             if streams_read > MAX_F3D_STREAMS {
                 return Err(CommandError::new(
@@ -2415,7 +2417,17 @@ fn f3d(
                     format!("the Fusion file has more than {MAX_F3D_STREAMS} design streams"),
                 ));
             }
-            let Some(d) = gusset_sat::fusion::read_design_cancellable(b, cancel) else { return Err(cancelled()) };
+            let Some(mut d) = gusset_sat::fusion::read_design_cancellable(b, cancel) else { return Err(cancelled()) };
+            // The occurrences patterns of components made (stored with their placements).
+            let meta = name
+                .strip_suffix("BulkStream.dat")
+                .and_then(|dir| entries.iter().find(|(m, _)| m.strip_prefix(dir) == Some("MetaStream.dat")));
+            if let Some((_, meta)) = meta {
+                gusset_sat::fusion_tree::add_pattern_copies(
+                    &mut d.bodies,
+                    &gusset_sat::fusion_tree::pattern_copies(meta, b),
+                );
+            }
             charge_placements(
                 &mut placements_kept,
                 d.bodies.len() + d.xrefs.iter().map(|x| x.instances.len()).sum::<usize>(),
