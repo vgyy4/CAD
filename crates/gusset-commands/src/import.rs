@@ -1664,9 +1664,10 @@ fn fusion_history(
 
 /// The kernel-native bodies the tree's `stored_body` features (Fusion Base Features) stand for, in
 /// the order of their `body` numbers: body `index` of the history blob the feature names, moved by
-/// the component's placement like the tree's other features. A history that has nothing but stored
-/// bodies, or whose stored body is already the finished body that a later feature changes, is not a
-/// history: the rebuild check would pass trivially.
+/// the component's placement like the tree's other features; a body of several lumps (the copper of
+/// a board) is one stored body per lump, in the order the lumps come in. A history that has
+/// nothing but stored bodies, or whose stored body is already the finished body that a later
+/// feature changes, is not a history: the rebuild check would pass trivially.
 fn fusion_stored_bodies(
     tree: &Value,
     entries: &[(String, Vec<u8>)],
@@ -1688,6 +1689,9 @@ fn fusion_stored_bodies(
         return Err("the design has too many base feature bodies".into());
     }
     let mut out: Vec<Vec<u8>> = Vec::new();
+    // The last body converted: (blob, index, placement) and its solids.
+    type Converted = ((String, usize, Option<String>), Vec<Vec<u8>>);
+    let mut converted: Option<Converted> = None;
     for (k, f) in stored_feats.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".into());
@@ -1724,13 +1728,32 @@ fn fusion_stored_bodies(
             Some(None) => return Err(format!("the placement of {name} cannot be read")),
             None => None,
         };
-        let c = gusset_sat::to_step_nth(blob, name, &gusset_sat::Limits::default(), place.as_ref(), index, count)
-            .map_err(|e| format!("the stored body {name}: {e}"))?;
-        let mut imported = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| e.to_string())?;
-        let (Some((_, blob)), true) = (imported.pop(), imported.is_empty()) else {
-            return Err(format!("the stored body {name} did not come in as one body"));
+        // A body of several lumps comes in as one solid per lump: the tree names each lump
+        // (`lump` of `lumps`), and the body is converted once for all of them.
+        let key = (blob_name.to_string(), index, f.get("placement").map(Value::to_string));
+        if converted.as_ref().is_none_or(|(k, _)| *k != key) {
+            let c = gusset_sat::to_step_nth(blob, name, &gusset_sat::Limits::default(), place.as_ref(), index, count)
+                .map_err(|e| format!("the stored body {name}: {e}"))?;
+            let solids = importer.import("step", c.step.as_bytes(), cancel).map_err(|e| e.to_string())?;
+            converted = Some((key, solids.into_iter().map(|(_, b)| b).collect()));
+        }
+        let solids = converted.as_ref().map_or(&[][..], |(_, s)| s.as_slice());
+        let blob = match (num("lump"), num("lumps")) {
+            (Some(lump), Some(lumps)) => {
+                if solids.len() != lumps {
+                    return Err(format!(
+                        "the stored body {name} came in as {} solids, its blob stores {lumps} lumps",
+                        solids.len()
+                    ));
+                }
+                solids.get(lump).ok_or_else(|| format!("the stored body {name} names a lump its blob lacks"))?
+            }
+            _ => match solids {
+                [one] => one,
+                _ => return Err(format!("the stored body {name} did not come in as one body")),
+            },
         };
-        out.push(blob);
+        out.push(blob.clone());
     }
     // A later feature that changes a stored body must find it as it was before: when the stored
     // body is the very body the file ends with, the feature has nothing left to do and the
