@@ -50,7 +50,8 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
   instead of spreading rounds over all formats; Fusion first, then the next format once
   Fusion is as complete as its corpus allows. Grow the format's sample corpus to measure it.
   Opus for the decoding/geometry work; Sonnet stays for mechanical jobs (fetching samples,
-  tallies, docs).
+  tallies, docs). Fable (about 2x Opus per token, longer turns) only as an escalation: a
+  problem an Opus agent reports as beyond it, or a blocker a round made no progress on.
 - Usage budget (owner request): prefer doing small/mechanical work directly over
   spawning subagents; at most 4 subagents at a time (owner raised the cap, 2026-11-09),
   scoped tightly, with `model: sonnet` by default (reverse engineering, ports, merges,
