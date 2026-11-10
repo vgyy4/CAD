@@ -49,6 +49,8 @@ is refused and the kernel runs in-process (the `diagnostics` resource says so).
 - Owner rule (importers, 2026-11-10): perfect one importer at a time with Opus agents
   instead of spreading rounds over all formats; Fusion first, then the next format once
   Fusion is as complete as its corpus allows. Grow the format's sample corpus to measure it.
+  Opus for the decoding/geometry work; Sonnet stays for mechanical jobs (fetching samples,
+  tallies, docs).
 - Usage budget (owner request): prefer doing small/mechanical work directly over
   spawning subagents; at most 4 subagents at a time (owner raised the cap, 2026-11-09),
   scoped tightly, with `model: sonnet` by default (reverse engineering, ports, merges,
