@@ -6,14 +6,14 @@ Usage: python3 -I scripts/fetch-samples.py DEST [SET...]
 Each set lands in its own new folder under DEST. Downloaded files are untrusted data:
 nothing here runs them, and nothing that reads them should either (use `python3 -I`,
 pass paths as arguments). Samples are never committed. Sets: freecad, slippad, zenodo,
-arig, adafruit (default: all).
+arig, adafruit, adafruit-more (default: all but adafruit-more).
 
 The samples back these tests, gated on environment variables:
   GUSSET_FCSTD_SAMPLES   DEST/freecad-examples
   GUSSET_SLDPRT_SAMPLES  DEST/slip-pad
   GUSSET_IPT_SAMPLES     DEST/zenodo        (Inventor parts, records 4309294, 11061412, 13941029, 8028536)
   GUSSET_OLE_SAMPLES     DEST/zenodo        (Solid Edge record 8028435 and the Inventor ones)
-  GUSSET_F3D_SAMPLES     DEST/adafruit
+  GUSSET_F3D_SAMPLES     DEST/adafruit, DEST/adafruit-more (the broad Fusion corpus)
 """
 
 import hashlib
@@ -168,14 +168,51 @@ def adafruit(root):
                 print("failed:", p, e)
 
 
-SETS = {"freecad": freecad, "slippad": slippad, "zenodo": zenodo, "arig": arig, "adafruit": adafruit}
+# A broad, evenly spread sample of the same repository (Fusion corpus for the importer tally).
+MORE_FILES = 150
+MORE_TOTAL = 1500 << 20
+MORE_MIN_FREE = 4 << 30
+
+
+def adafruit_more(root):
+    repo = os.path.join(root, "adafruit-cad")
+    clone(ADAFRUIT, repo, full=True)
+    head = git("rev-parse", "HEAD", cwd=repo).strip()
+    paths = sorted(p for p in git("ls-tree", "-r", "--name-only", head, cwd=repo).splitlines()
+                   if p.lower().endswith((".f3d", ".f3z")))
+    # Evenly spread over the sorted paths so every product family is represented.
+    step = max(1, len(paths) / MORE_FILES)
+    picks = [paths[int(i * step)] for i in range(min(MORE_FILES, len(paths)))]
+    out = os.path.join(root, "adafruit-more")
+    os.makedirs(out, exist_ok=True)
+    total = 0
+    for p in picks:
+        dest = os.path.join(out, p.replace("/", "__"))
+        free = os.statvfs(out)
+        if total >= MORE_TOTAL or free.f_bavail * free.f_frsize < MORE_MIN_FREE:
+            print("budget reached (size cap or free disk), stopping")
+            break
+        url = f"https://raw.githubusercontent.com/{ADAFRUIT}/{head}/{urllib.parse.quote(p)}"
+        try:
+            get(url, dest)
+        except OSError as e:
+            print("failed:", p, e)
+            continue
+        if os.path.exists(dest):
+            total += os.path.getsize(dest)
+    print("adafruit-more:", len(os.listdir(out)), "files,", total >> 20, "MiB")
+
+
+SETS = {"freecad": freecad, "slippad": slippad, "zenodo": zenodo, "arig": arig, "adafruit": adafruit,
+        "adafruit-more": adafruit_more}
+DEFAULT_SETS = [n for n in SETS if n != "adafruit-more"]
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     root = os.path.abspath(sys.argv[1])
     os.makedirs(root, exist_ok=True)
-    for name in sys.argv[2:] or list(SETS):
+    for name in sys.argv[2:] or DEFAULT_SETS:
         print("fetching", name)
         try:
             SETS[name](root)
