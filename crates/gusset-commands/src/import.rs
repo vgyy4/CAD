@@ -1877,7 +1877,7 @@ fn fusion_explain_steps(
     names: &[String],
     inside: &mut ToolsInside<'_>,
 ) -> Result<(usize, usize), String> {
-    let steps = FusionSteps { vols, per_body, stored, insts, loose, names };
+    let steps = FusionSteps { vols, per_body, per_solid: &[], stored, insts, loose, names };
     fusion_explain_placed(&steps, inside, &mut |_, tools| Ok(tools.to_vec()))
         .map(|(states, tools)| (states, tools.len()))
 }
@@ -1886,6 +1886,9 @@ fn fusion_explain_steps(
 struct FusionSteps<'a> {
     vols: &'a [f64],
     per_body: &'a [Vec<f64>],
+    /// After each step, the volumes of the solids of the bodies that are several solids apart:
+    /// the file stores each solid on its own, so each is a state like a body.
+    per_solid: &'a [Vec<f64>],
     stored: &'a [f64],
     insts: &'a [Option<u64>],
     loose: &'a [bool],
@@ -1901,13 +1904,14 @@ type ToolsFirst<'a> = dyn FnMut(usize, &[usize]) -> Result<Vec<usize>, String> +
 /// changes go (the same solid at the same place in them). A file stores such a tool once per
 /// body it cuts (a board's drill for the board and for each soldermask), so the placed-tool rule
 /// gives a feature one of them and leaves the others to the features that cut the other bodies.
-/// Returns the number of states and which stored solids are tools.
+/// Returns the number of states and which stored solids are tools, each with whether a feature
+/// that adds material owns it.
 fn fusion_explain_placed(
     steps: &FusionSteps<'_>,
     inside: &mut ToolsInside<'_>,
     firsts: &mut ToolsFirst<'_>,
-) -> Result<(usize, Vec<usize>), String> {
-    let FusionSteps { vols, per_body, stored, insts, loose, names } = *steps;
+) -> Result<(usize, Vec<(usize, bool)>), String> {
+    let FusionSteps { vols, per_body, per_solid, stored, insts, loose, names } = *steps;
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let delta = |k: usize| -> f64 {
         match (vols.get(k), k.checked_sub(1).and_then(|p| vols.get(p))) {
@@ -1915,7 +1919,7 @@ fn fusion_explain_placed(
             _ => 0.0,
         }
     };
-    let is_state = |v: f64| per_body.iter().skip(1).any(|bs| bs.iter().any(|b| same(*b, v)));
+    let is_state = |v: f64| per_body.iter().chain(per_solid).any(|bs| bs.iter().any(|b| same(*b, v)));
     let copies = |k: usize| insts.get(k - 1).copied().flatten();
     let explains = |tool: f64, k: usize| copies(k).is_some_and(|m| same(delta(k), tool * m as f64));
     let mut tool_volumes = Vec::new();
@@ -1936,6 +1940,9 @@ fn fusion_explain_placed(
     // The tools one feature makes: one stored tool times its copies, or (a loose cut) the sum of
     // the tools no other feature explains, not more than its loops.
     let mut covered: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    // The tools of features that add material (joins): all of such a tool is in the model.
+    let mut joined: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let adds = |k: usize| vols.get(k).zip(k.checked_sub(1).and_then(|p| vols.get(p))).is_some_and(|(a, b)| a > b);
     let mut explained: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for k in 1..vols.len() {
         if delta(k) <= 1e-9 {
@@ -1944,6 +1951,9 @@ fn fusion_explain_placed(
         for (i, t) in tool_volumes.iter().enumerate() {
             if explains(*t, k) {
                 covered.insert(i);
+                if adds(k) {
+                    joined.insert(i);
+                }
                 explained.insert(k);
             }
         }
@@ -1996,6 +2006,9 @@ fn fusion_explain_placed(
                     measured.is_some_and(|m| same(delta(k), m))
                 };
             if fits {
+                if adds(k) {
+                    joined.extend(group.iter().copied());
+                }
                 covered.extend(group);
                 explained.insert(k);
             } else {
@@ -2056,6 +2069,9 @@ fn fusion_explain_placed(
             }
             if !mine.is_empty() && mine.len() as u64 <= m && same(delta(k), change) {
                 placed_tools.insert(k, mine.len());
+                if adds(k) {
+                    joined.extend(mine.iter().copied());
+                }
                 covered.extend(mine);
                 explained.insert(k);
             }
@@ -2070,14 +2086,16 @@ fn fusion_explain_placed(
     }
     // The last step that added or changed a body to a stored volume.
     let changed = |k: usize| -> Vec<f64> {
-        let mut before: Vec<f64> = k.checked_sub(1).and_then(|p| per_body.get(p)).cloned().unwrap_or_default();
         let mut out = Vec::new();
-        for b in per_body.get(k).map_or(&[][..], Vec::as_slice) {
-            match before.iter().position(|x| same(*x, *b)) {
-                Some(at) => {
-                    before.swap_remove(at);
+        for lists in [per_body, per_solid] {
+            let mut before: Vec<f64> = k.checked_sub(1).and_then(|p| lists.get(p)).cloned().unwrap_or_default();
+            for b in lists.get(k).map_or(&[][..], Vec::as_slice) {
+                match before.iter().position(|x| same(*x, *b)) {
+                    Some(at) => {
+                        before.swap_remove(at);
+                    }
+                    None => out.push(*b),
                 }
-                None => out.push(*b),
             }
         }
         out
@@ -2101,7 +2119,7 @@ fn fusion_explain_placed(
             ));
         }
     }
-    Ok((states, tool_at))
+    Ok((states, tool_at.into_iter().enumerate().map(|(i, at)| (at, joined.contains(&i))).collect()))
 }
 
 /// The check for a Fusion file that stores the bodies of every feature step: each stored solid
@@ -2110,7 +2128,8 @@ fn fusion_explain_placed(
 /// ([`fusion_instances`]: a hole's positions, the counts of the patterns that repeat it). Every
 /// feature after the last stored state must be explained that way, so a wrong pattern count is
 /// refused; one whose copies cannot be derived is refused too. The finished model must also lie
-/// in the box of the stored solids that are states (a tool may reach out of the body it cuts).
+/// in the box of the stored solids that are states or tools of joins (a cut's tool may reach out
+/// of the body it cuts).
 fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
@@ -2188,16 +2207,39 @@ fn fusion_states_check(
     let same_vol = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let mut vols = vec![0.0f64];
     let mut per_body: Vec<Vec<f64>> = vec![Vec::new()];
+    // The solids of the bodies that are several apart (a new-body extrude of two regions that do
+    // not touch is one body here and two in the file, which stores every solid on its own).
+    let mut per_solid: Vec<Vec<f64>> = vec![Vec::new()];
+    let mut split_cache: std::collections::HashMap<u64, Vec<f64>> = std::collections::HashMap::new();
+    let mut split = |volume: f64, shape: &gusset_kernel::Shape| -> Result<Vec<f64>, String> {
+        if let Some(parts) = split_cache.get(&volume.to_bits()) {
+            return Ok(parts.clone());
+        }
+        let mut parts = Vec::new();
+        if kernel.topology(shape).map_err(|e| e.message)?.solids > 1 {
+            let step = kernel.export_step(&[(shape, "body")]).map_err(|e| e.message)?;
+            for (solid, _) in kernel.import_step(&step).map_err(|e| e.message)? {
+                parts.push(kernel.mass_properties(&solid).map_err(|e| e.message)?.volume);
+            }
+            // Only a split that keeps the body's volume is one.
+            if !same_vol(parts.iter().sum(), volume) {
+                parts.clear();
+            }
+        }
+        split_cache.insert(volume.to_bits(), parts.clone());
+        Ok(parts)
+    };
     let mut k = 1;
     while k <= n {
         let prev_bodies = per_body.last().cloned().unwrap_or_default();
+        let prev_solids = per_solid.last().cloned().unwrap_or_default();
         let mut end = k;
         while end <= n && tree.features.get(end - 1).and_then(adds).is_some() {
             end += 1;
         }
         // The run k..end-1 only adds bodies; it is built as one when it is longer than a step.
         if end > k + 1 {
-            let (_, _, each, _) = build(end - 1, false)?;
+            let (_, _, each, shapes) = build(end - 1, false)?;
             let made: Vec<usize> = (k..end).map(|j| tree.features.get(j - 1).and_then(adds).unwrap_or(0)).collect();
             let total: usize = made.iter().sum();
             let ordered =
@@ -2209,6 +2251,11 @@ fn fusion_states_check(
                     let bodies: Vec<f64> = each.iter().take(have).copied().collect();
                     vols.push(bodies.iter().sum());
                     per_body.push(bodies);
+                    let mut solids = Vec::new();
+                    for (v, shape) in each.iter().zip(&shapes).take(have) {
+                        solids.extend(split(*v, shape)?);
+                    }
+                    per_solid.push(solids);
                 }
                 k = end;
                 continue;
@@ -2217,9 +2264,15 @@ fn fusion_states_check(
         if tree.features.get(k - 1).map(kind).as_deref() == Some("sketch") {
             vols.push(vols.last().copied().unwrap_or(0.0));
             per_body.push(prev_bodies);
+            per_solid.push(prev_solids);
         } else {
-            let (v, _, each, _) = build(k, false)?;
+            let (v, _, each, shapes) = build(k, false)?;
             vols.push(v);
+            let mut solids = Vec::new();
+            for (v, shape) in each.iter().zip(&shapes) {
+                solids.extend(split(*v, shape)?);
+            }
+            per_solid.push(solids);
             per_body.push(each);
         }
         k += 1;
@@ -2342,14 +2395,23 @@ fn fusion_states_check(
         }
         Ok(Some(parts))
     };
-    let steps =
-        FusionSteps { vols: &vols, per_body: &per_body, stored: &volumes, insts: &insts, loose: &loose, names: &names };
+    let steps = FusionSteps {
+        vols: &vols,
+        per_body: &per_body,
+        per_solid: &per_solid,
+        stored: &volumes,
+        insts: &insts,
+        loose: &loose,
+        names: &names,
+    };
     let (states, tool_at) = fusion_explain_placed(&steps, &mut inside, &mut firsts)?;
+    // The tools of cuts: a tool that only ever adds material is part of the model.
+    let cut_tools: Vec<usize> = tool_at.iter().filter(|(_, joined)| !joined).map(|(at, _)| *at).collect();
     let tools = tool_at.len();
-    // The model lies where the stored states lie: a tool may reach out of the body it cuts (a
-    // drill is far longer than its board is thick).
+    // The model lies where the stored states and the tools of its joins lie: a cut's tool may
+    // reach out of the body it cuts (a drill is far longer than its board is thick).
     let mut want_box: Option<gusset_kernel::BBox> = None;
-    for (_, b) in stored.iter().enumerate().filter(|(at, _)| !tool_at.contains(at)).map(|(_, s)| s) {
+    for (_, b) in stored.iter().enumerate().filter(|(at, _)| !cut_tools.contains(at)).map(|(_, s)| s) {
         want_box = Some(want_box.map_or(*b, |a| gusset_kernel::BBox {
             min: [a.min[0].min(b.min[0]), a.min[1].min(b.min[1]), a.min[2].min(b.min[2])],
             max: [a.max[0].max(b.max[0]), a.max[1].max(b.max[1]), a.max[2].max(b.max[2])],
@@ -3597,12 +3659,16 @@ mod fusion_steps_tests {
         let all = FusionSteps {
             vols: &vols,
             per_body: &per_body,
+            per_solid: &[],
             stored: &stored,
             insts: &insts,
             loose: &loose,
             names: &names_,
         };
-        assert_eq!(fusion_explain_placed(&all, &mut inside, &mut firsts), Ok((2, vec![2, 3, 4, 5])));
+        assert_eq!(
+            fusion_explain_placed(&all, &mut inside, &mut firsts),
+            Ok((2, vec![(2, false), (3, false), (4, false), (5, false)]))
+        );
         // Without the places every copy holds material of the board: four tools for two holes.
         let mut each = |_: usize, tools: &[usize]| -> Result<Vec<usize>, String> { Ok(tools.to_vec()) };
         assert!(fusion_explain_placed(&all, &mut inside, &mut each).is_err());
@@ -3612,6 +3678,7 @@ mod fusion_steps_tests {
         let bad = FusionSteps {
             vols: &[0.0, 500.0, 470.0, 510.0, 506.0],
             per_body: &wrong,
+            per_solid: &[],
             stored: &stored_wrong,
             insts: &insts,
             loose: &loose,
