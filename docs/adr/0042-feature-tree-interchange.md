@@ -402,3 +402,23 @@ helix, both or neither of `path` and `helix`, a non-positive pitch, radius or he
 fields in `helix`. Volumes: a profile in a plane through the axis gives area x 2 pi x centroid
 radius per turn (Pappus), one across the axis gives area x height (tests in
 `modeling_tree_import.rs`).
+
+## Amendment (2026-11-10): import work bounds
+The importer's bounds limit work on untrusted trees; the 150-design Fusion corpus
+(`docs/formats/fusion-corpus-tally.md`) showed two of them cutting off real designs.
+- **Profile picks**: an extrude or revolve may pick up to 4096 profile regions
+  (`MAX_PROFILE_PICKS`; edges, faces, hole positions, pattern and combine lists stay at 256).
+  The Perma-Proto boards pick every hole of the board (1606: 840, 723: 488). Each region's
+  loops are tessellated once with a bounding box, instead of once per pick and region, so a
+  pick costs one box test per region and a point-in-polygon test only where it lands; both
+  boards now import as history (48 s together, debug build).
+- **Evaluations**: 2000 per import (was 400). One evaluator keeps every feature built so far,
+  so a trial evaluation builds only the new feature (otherwise tens of milliseconds); TFP401
+  HDMI Breakout needed 423 and MEMENTO 494 (both now reach the step check, which refuses them
+  for other reasons). `MAX_IMPORT_TIME` (300 s) still bounds the building itself.
+- **Commit**: the import commits with the evaluator of its trial builds (and `apply` lends the
+  session's own evaluator to the trials), so the commit rebuilds nothing and reports the very
+  shapes the trials measured. Shapes read from equal native bytes share their volume and box
+  (kernel, keyed by the bytes' hash, at most 16384 names): a Fusion import reads each stored
+  body about six times. Terminal Block FeatherWing: 1219 volume/box computations for 181
+  bodies became 448, its import 257 s to 87 s. What is checked is unchanged.
