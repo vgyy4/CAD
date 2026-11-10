@@ -873,6 +873,71 @@ fn cyl_edge(nb: &[(i64, Surf)], c: V3, ax: V3, rad: f64) -> Result<(V3, V3), Str
     Ok((add(c, add(mul(e1, q.0), mul(e2, q.1))), u))
 }
 
+/// A cylindrical blend that rolled between a plane and a convex cylinder that do not meet (a
+/// middle face between them was consumed entirely, as in a full round, but not parallel to
+/// either): file units.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BridgedRound {
+    /// The blend's axis point, direction and radius.
+    pub(crate) axis: V3,
+    pub(crate) dir: V3,
+    pub(crate) radius: f64,
+    /// The direction from the blend axis to its contact line on the plane (into the material
+    /// beyond the plane), and to the axis of the cylinder it touches.
+    pub(crate) to_plane: V3,
+    pub(crate) to_cyl: V3,
+    /// The axial extent of the blend face about `axis`.
+    pub(crate) span: (f64, f64),
+}
+
+impl Acis {
+    /// Reads a cylinder blend whose two supports (a plane parallel to the axis and a cylinder
+    /// about a parallel axis, touching the blend externally) have no common edge.
+    pub(crate) fn bridged_round(&self, f: i64) -> Option<BridgedRound> {
+        let Surf::Cyl { c, ax, r: rad } = self.kind(f) else { return None };
+        let u = unit(ax);
+        let nb: Vec<(i64, Surf)> = self.neighbours(f).into_iter().map(|(g, _)| (g, self.kind(g))).collect();
+        let mut plane: Option<(i64, V3)> = None;
+        let mut cyl: Option<(i64, V3, f64)> = None;
+        for (g, s) in &nb {
+            match s {
+                Surf::Plane { p, n } if dot(*n, u).abs() < 1e-6 && (dot(sub(*p, c), *n).abs() - rad).abs() < 1e-6 => {
+                    if plane.is_some_and(|x| x.0 != *g) {
+                        return None;
+                    }
+                    let side = if dot(sub(*p, c), *n) > 0.0 { 1.0 } else { -1.0 };
+                    plane = Some((*g, mul(*n, side)));
+                }
+                Surf::Cyl { c: cp, ax: n, r } if (dot(*n, u).abs() - 1.0).abs() < 1e-6 => {
+                    let q = sub(*cp, c);
+                    let q = sub(q, mul(u, dot(q, u)));
+                    let d = libm::sqrt(dot(q, q));
+                    if (d - (r + rad)).abs() < 1e-6 {
+                        if cyl.is_some_and(|x| x.0 != *g) {
+                            return None;
+                        }
+                        cyl = Some((*g, q, *r));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let ((_, to_plane), (_, q, cr)) = (plane?, cyl?);
+        // They must really be disjoint: the plane is further from the cylinder's axis than its radius.
+        let gap = rad - dot(q, to_plane);
+        if gap.abs() <= cr + 1e-6 {
+            return None;
+        }
+        let ts: Vec<f64> = self.verts(f).iter().map(|&v| dot(sub(v, c), u)).collect();
+        let lo = ts.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if !lo.is_finite() || !hi.is_finite() || hi - lo < 1e-9 {
+            return None;
+        }
+        Some(BridgedRound { axis: c, dir: u, radius: rad, to_plane, to_cyl: unit(q), span: (lo, hi) })
+    }
+}
+
 impl Acis {
     /// (distance from the axis, height along it) of a point.
     fn rh(o: V3, ax: V3, p: V3) -> (f64, f64) {

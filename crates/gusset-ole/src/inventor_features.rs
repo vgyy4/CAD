@@ -15,7 +15,7 @@
 //! Input is untrusted: every count, list, chain and walk is bounded, and a record that is not
 //! shaped as expected gives an `unsupported` feature or an error, never a panic.
 
-use crate::acis::{Acis, EdgeInfo, FullRound, Surf, V3, cross, dot, local_path};
+use crate::acis::{Acis, BridgedRound, EdgeInfo, FullRound, Surf, V3, cross, dot, local_path};
 use crate::inventor_dc::{Dc, FeatType, Feature, Role, f64_at, u16_at, u32_at};
 use crate::inventor_profile::{P2, Poly, picks};
 use crate::{Limits, inventor};
@@ -942,6 +942,53 @@ fn slot_end_rounds(st: &mut State, name: &str, ends: &[FullRound]) -> Result<(),
     Ok(())
 }
 
+/// A cylinder blend between a plane and a convex cylinder that do not meet (a consumed middle
+/// face): the material it adds is the sliver between its arc and the surrounding body. It is
+/// joined as a sketch of the arc and a circumscribed polyline (1.2 radii out) whose far side
+/// lies in the existing body; only the whole-part rebuild check vouches for that.
+fn bridged_rounds(st: &mut State, name: &str, rs: &[BridgedRound]) -> Result<(), String> {
+    let target = st.first_body.clone().ok_or("a bridged round before any body")?;
+    for (k, b) in rs.iter().enumerate() {
+        let nm = if k == 0 { name.to_string() } else { format!("{name}_{}", k + 1) };
+        let (lo, hi) = b.span;
+        let top = crate::acis::add(b.axis, crate::acis::mul(b.dir, hi));
+        let org = [top[0] * CM, top[1] * CM, top[2] * CM];
+        let ex = unit3(b.to_plane);
+        let ey = cross(unit3(b.dir), ex);
+        let phi = libm::atan2(crate::acis::dot(b.to_cyl, ey), crate::acis::dot(b.to_cyl, ex));
+        let (rad, out) = (b.radius * CM, 1.2 * b.radius * CM);
+        let at = |a: f64, q: f64| (q * libm::cos(a), q * libm::sin(a));
+        let ang = [0.0, phi / 3.0, 2.0 * phi / 3.0, phi];
+        let mut points = vec![
+            json!({"id": "o", "x": 0.0, "y": 0.0}),
+            json!({"id": "p0", "x": rnd(rad), "y": 0.0}),
+            json!({"id": "k", "x": rnd(at(phi, rad).0), "y": rnd(at(phi, rad).1)}),
+        ];
+        for (i, a) in ang.iter().enumerate() {
+            let (x, y) = at(*a, out);
+            points.push(json!({"id": format!("w{i}"), "x": rnd(x), "y": rnd(y)}));
+        }
+        let line = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b});
+        let (s0, s1) = if phi > 0.0 { ("p0", "k") } else { ("k", "p0") };
+        let curves = vec![
+            json!({"id": "arc", "type": "arc", "center": "o", "start": s0, "end": s1}),
+            line("l0", "k", "w3"),
+            line("l1", "w3", "w2"),
+            line("l2", "w2", "w1"),
+            line("l3", "w1", "w0"),
+            line("l4", "w0", "p0"),
+        ];
+        let sname = format!("{nm}_sketch");
+        st.out.push(json!({"type": "sketch", "name": sname, "plane": {"origin": org, "x_axis": ex, "y_axis": ey},
+                           "points": points, "curves": curves}));
+        let mid = at(phi / 2.0, (rad + out) / 2.0);
+        st.out.push(json!({"type": "extrude", "name": nm, "sketch": sname,
+                           "profiles": [{"point": [rnd(mid.0), rnd(mid.1)]}], "operation": "join",
+                           "target": target, "distance": rnd(-(hi - lo) * CM), "symmetric": false}));
+    }
+    Ok(())
+}
+
 fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> Result<(), String> {
     let s = r.slots(f)?;
     let label = typ.label();
@@ -958,6 +1005,7 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
     let mut radii: Vec<f64> = Vec::new();
     let mut rounds: Vec<(V3, V3)> = Vec::new();
     let mut slot_ends: Vec<FullRound> = Vec::new();
+    let mut bridged: Vec<BridgedRound> = Vec::new();
     let chamfer_d = (typ == FeatType::Chamfer).then(|| r.pval(&s, 2).ok()).flatten();
     let mm = |v: V3| [rnd_to(v[0] * CM, 1e6), rnd_to(v[1] * CM, 1e6), rnd_to(v[2] * CM, 1e6)];
     for &face in &faces {
@@ -979,6 +1027,14 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                 slot_ends.push(fr);
             } else {
                 rounds.push((mm(fr.point), fr.normal));
+            }
+            continue;
+        }
+        if typ == FeatType::Fillet
+            && let Some(br) = b.bridged_round(face)
+        {
+            if bridged.iter().all(|x| crate::acis::dist(x.axis, br.axis) > 1e-6) {
+                bridged.push(br);
             }
             continue;
         }
@@ -1006,6 +1062,13 @@ fn blend(r: &Reader, st: &mut State, f: &Feature, name: &str, typ: FeatType) -> 
                     _ => {}
                 }
             }
+        }
+    }
+    if !bridged.is_empty() {
+        if !mids.is_empty() || !why.is_empty() || !rounds.is_empty() || !slot_ends.is_empty() {
+            why.push("a bridged round next to other fillet edges".into());
+        } else {
+            return bridged_rounds(st, name, &bridged);
         }
     }
     if !slot_ends.is_empty() {
