@@ -17,6 +17,7 @@ use super::feature::{params_of, pget};
 use super::geom::{self, V3, mm, round9};
 use super::stream::{f64_at, ref_end, ref_ids, refs_at, u32_at, wstrings_all};
 use super::{Ctx, Graph, component_bodies};
+use crate::cover;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -145,7 +146,10 @@ fn layer_kind(cx: &Ctx, rec: &[u8]) -> Option<(u32, usize)> {
     let (at, _) = refs_at(d, rec, 0).into_iter().find(|(_, q)| d.is(*q, "C46D3EEB"))?;
     let (_, end) = ref_end(d, rec, at)?;
     (rec.get(end) == Some(&0)).then_some(())?;
-    Some((u32_at(rec, end + 1)?, end + 5))
+    let kind = u32_at(rec, end + 1)?;
+    cover::skip(rec, end, 1, "layer.pad");
+    cover::field(rec, end + 1, 4, "layer.kind");
+    Some((kind, end + 5))
 }
 
 /// The drill record's table: `u32 n` and `n` entries of 40 bytes: a zero `u32`, x and y (cm) and
@@ -161,6 +165,13 @@ pub(super) fn hole_table(rec: &[u8], at: usize) -> Option<Vec<(f64, f64)>> {
             return None;
         }
         out.push((x, y));
+    }
+    cover::field(rec, at, 4, "drill.count");
+    for k in 0..n {
+        let o = at + 4 + 40 * k;
+        cover::skip(rec, o, 4, "drill.zero");
+        cover::field(rec, o + 4, 16, "drill.xy");
+        cover::skip(rec, o + 20, 20, "drill.zeros");
     }
     Some(out)
 }
@@ -267,6 +278,8 @@ impl Ctx<'_> {
         for (k, v) in m.iter_mut().enumerate() {
             *v = f64_at(rec, at + 8 * k).filter(|v| v.is_finite()).ok_or("the box has no placement")?;
         }
+        cover::skip(rec, at - 2, 2, "box.pad");
+        cover::field(rec, at, 128, "box.placement");
         let frame = (column(&m, 0), column(&m, 1), column(&m, 2), column(&m, 3));
         let (Some(x), Some(y), Some(z), Some(o)) = frame else { return Err("the box has no placement".into()) };
         let unit = |a: V3| (geom::norm(a) - 1.0).abs() < 1e-9;

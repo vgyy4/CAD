@@ -5,6 +5,7 @@ use super::geom::{self, P2, Plane, V3};
 use super::stream::{
     self, Design, dbl, dbl3, parse_header, ref_end, ref_ids, ref_lists, refs_at, sections, wstrings_all,
 };
+use crate::cover;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -154,9 +155,12 @@ fn spline(d: &Design, i: u64, points: &BTreeMap<u64, V3>) -> Option<Spline> {
         if !(tol > 0.0 && tol < 1e-3) {
             continue;
         }
+        let head = o;
         let Some((knots, o)) = spline_array(rec, o + 14, 1) else { continue };
+        let weights_at = o;
         let Some((weights, o)) = spline_array(rec, o, 1) else { continue };
-        let Some((flat, _)) = spline_array(rec, o, 3) else { continue };
+        let poles_at = o;
+        let Some((flat, poles_end)) = spline_array(rec, o, 3) else { continue };
         let poles: Vec<V3> = flat.chunks_exact(3).filter_map(|c| <[f64; 3]>::try_from(c).ok()).collect();
         let n = poles.len();
         let clamped =
@@ -187,6 +191,13 @@ fn spline(d: &Design, i: u64, points: &BTreeMap<u64, V3>) -> Option<Spline> {
         if closed != (start_ref == end_ref) {
             continue;
         }
+        cover::skip(rec, after, gap, "spline.pad");
+        cover::field(rec, head, 2, "spline.flag-closed");
+        cover::field(rec, head + 2, 4, "spline.degree");
+        cover::field(rec, head + 6, 8, "spline.tolerance");
+        cover::field(rec, head + 14, weights_at - head - 14, "spline.knots");
+        cover::field(rec, weights_at, poles_at - weights_at, "spline.weights");
+        cover::field(rec, poles_at, poles_end - poles_at, "spline.poles");
         return Some(Spline { degree, knots, weights, poles, start_ref, end_ref });
     }
     None
@@ -251,6 +262,7 @@ fn point(d: &Design, i: u64) -> Option<V3> {
         {
             // A point on the sketch plane can carry rounding noise in z (-1e-17 after a
             // transform): it is on the plane.
+            cover::field(rec, after + gap, 24, "point.xyz");
             return Some([v[0], v[1], 0.0]);
         }
     }
@@ -278,7 +290,11 @@ fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
     if line && rec.len() == 447 && rec.get(end + 3..end + 6) != Some(&[0, 0, 0]) {
         return false;
     }
-    construction_flag_offset(line, rec.len()).is_some_and(|off| rec.get(end + off) == Some(&1))
+    let off = construction_flag_offset(line, rec.len());
+    if let Some(off) = off {
+        cover::field(rec, end + off, 1, "curve.construction");
+    }
+    off.is_some_and(|off| rec.get(end + off) == Some(&1))
 }
 
 /// Bytes between the end of the last point reference and the construction flag, by record layout.
@@ -296,6 +312,8 @@ fn line(d: &Design, i: u64) -> Option<Line> {
     let rec = d.rec(i);
     let v = dbl::<9>(rec, b)?;
     let slice = rec.get(..e)?;
+    cover::field(rec, b, 48, "line.origin-vector");
+    cover::skip(rec, b + 48, 24, "line.unread-doubles");
     let pts: Vec<u64> =
         refs_at(d, slice, b + 72).into_iter().map(|p| p.1).filter(|q| has_section(d, *q, POINT)).take(2).collect();
     Some(Line {
@@ -311,6 +329,7 @@ fn arc(d: &Design, i: u64) -> Option<Arc> {
     let rec = d.rec(i);
     let v = dbl::<12>(rec, b)?;
     let slice = rec.get(..e)?;
+    cover::field(rec, b, 96, "arc.center-normal-xdir-radius-angles");
     let refs: Vec<u64> =
         refs_at(d, slice, b + 96).into_iter().map(|p| p.1).filter(|q| has_section(d, *q, POINT)).take(3).collect();
     Some(Arc {
@@ -336,10 +355,12 @@ fn xform(d: &Design, i: u64) -> Option<(Plane, bool)> {
         }
         let cols = [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]];
         if cols.iter().all(|c| (geom::dot(*c, *c) - 1.0).abs() < 1e-6) {
+            cover::field(rec, o, 128, "sketch.transform");
             return Some((Plane { x: cols[0], y: cols[1], z: cols[2], origin: [m[3], m[7], m[11]] }, false));
         }
     }
     if rec.len() < 100 && rec.get(21..23) == Some(&[1, 0]) {
+        cover::field(rec, 21, 2, "sketch.transform-identity");
         return Some((Plane { x: [1.0, 0.0, 0.0], y: [0.0, 1.0, 0.0], z: [0.0, 0.0, 1.0], origin: [0.0; 3] }, true));
     }
     None
@@ -349,10 +370,11 @@ pub(super) fn read_sketch(d: &Design, sid: u64) -> Sketch {
     let mut out = Sketch { id: sid, ..Sketch::default() };
     let Some((b, e)) = find_section(d, sid, SKETCH_BASE) else { return out };
     let rec = d.rec(sid);
-    if let Some((xf, _)) = ref_end(d, rec, b)
+    if let Some((xf, xe)) = ref_end(d, rec, b)
         && d.is(xf, SK_XFORM)
         && let Some((pl, assumed)) = xform(d, xf)
     {
+        cover::field(rec, b, xe - b, "sketch.transform-ref");
         out.plane = Some(pl);
         out.identity_assumed = assumed;
     }
@@ -424,6 +446,7 @@ fn parse_region(rec: &[u8], mut o: usize, depth: usize) -> Option<(Region, usize
         return None;
     }
     let nl = stream::u32_at(rec, o)?;
+    cover::field(rec, o, 4, "region.loop-count");
     o += 4;
     if nl >= 10_000 || (nl == 0 && depth > 0) {
         return None;
@@ -431,6 +454,7 @@ fn parse_region(rec: &[u8], mut o: usize, depth: usize) -> Option<(Region, usize
     let mut loops = Vec::new();
     for _ in 0..nl {
         let n = stream::u32_at(rec, o)? as usize;
+        cover::field(rec, o, 4, "loop.curve-count");
         o += 4;
         if n == 0 || n >= 100_000 {
             return None;
@@ -449,9 +473,15 @@ fn parse_region(rec: &[u8], mut o: usize, depth: usize) -> Option<(Region, usize
                 return None;
             }
             curves.push(Entry { primary: p, secondary: s, a, b });
+            cover::field(rec, o, 4, "loop.curve-type");
+            cover::field(rec, o + 4, 16, "loop.curve-ids");
+            cover::skip(rec, o + 20, 4, "loop.curve-unread-u32");
+            cover::field(rec, o + 24, 8, "loop.curve-piece");
+            cover::skip(rec, o + 32, 8, "loop.curve-unread-8");
             o += 40;
         }
         let flag = *rec.get(o)?;
+        cover::field(rec, o, 1, "loop.flag");
         o += 1;
         loops.push(Loop { flag, curves });
     }
@@ -459,6 +489,7 @@ fn parse_region(rec: &[u8], mut o: usize, depth: usize) -> Option<(Region, usize
         return Some((Region { loops, children: Vec::new() }, o));
     }
     let nc = stream::u32_at(rec, o)? as usize;
+    cover::field(rec, o, 4, "region.child-count");
     o += 4;
     if nc > 10_000 {
         return None;
@@ -481,6 +512,7 @@ pub(super) fn parse_profiles(d: &Design, i: u64) -> Option<Vec<Region>> {
     for j in b.saturating_sub(4).max(15)..hi {
         let Some((_, after)) = ref_end(d, rec, j) else { continue };
         for skip in [1usize, 0, 2] {
+            let undo = cover::mark();
             let mut o = after + skip;
             let Some(n) = stream::u32_at(rec, o) else { continue };
             o += 4;
@@ -502,14 +534,19 @@ pub(super) fn parse_profiles(d: &Design, i: u64) -> Option<Vec<Region>> {
                 }
             }
             if !ok {
+                cover::rollback(undo);
                 continue;
             }
             let sec = rec
                 .get(o..o + 7)
                 .is_some_and(|s| s.starts_with(&[3, 0, 0, 0]) && s.iter().skip(4).all(u8::is_ascii_digit));
             if sec || o == rec.len() {
+                cover::field(rec, j, after - j, "profile.sketch-ref");
+                cover::skip(rec, after, skip, "profile.pad");
+                cover::field(rec, after + skip, 4, "profile.region-count");
                 return Some(regs);
             }
+            cover::rollback(undo);
         }
     }
     None

@@ -9,6 +9,8 @@
 //! so its shell comes in as a sheet.
 
 #[doc(hidden)]
+pub mod cover;
+#[doc(hidden)]
 pub mod fixtures;
 pub mod fusion;
 pub mod fusion_tree;

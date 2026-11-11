@@ -7,6 +7,7 @@ use super::acis;
 use super::geom::{self, P2, Plane, V3, add, cross, dot, mul, norm, sub, unit, world};
 use super::sketch::{Seg, Sketch};
 use super::stream::{Design, i32_at, u32_at, u64_at};
+use crate::cover;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -24,10 +25,11 @@ pub(super) fn op_map(d: &Design) -> HashMap<u64, u64> {
             if n == 0 || n >= 100_000 {
                 continue;
             }
-            if let Some((res, known)) = newer_ops(d, r, j, n)
+            if let Some((res, known, end)) = newer_ops(d, r, j, n)
                 && !res.is_empty()
                 && known * 2 >= n
             {
+                cover::field(r, j, end - j, "op-map.feature-ops");
                 out.extend(res);
                 break;
             }
@@ -43,6 +45,7 @@ pub(super) fn op_map(d: &Design) -> HashMap<u64, u64> {
                     && known * 2 >= n
                     && pairs.iter().all(|(o, f)| *o < 1 << 32 && *f < 1 << 40)
                 {
+                    cover::field(r, j, 4 + 16 * n, "op-map.pairs");
                     out.extend(pairs.into_iter().filter(|(_, f)| d.has(*f)));
                     break;
                 }
@@ -52,7 +55,7 @@ pub(super) fn op_map(d: &Design) -> HashMap<u64, u64> {
     out
 }
 
-fn newer_ops(d: &Design, r: &[u8], j: usize, n: usize) -> Option<(HashMap<u64, u64>, usize)> {
+fn newer_ops(d: &Design, r: &[u8], j: usize, n: usize) -> Option<(HashMap<u64, u64>, usize, usize)> {
     let mut p = j + 4;
     let mut res = HashMap::new();
     let mut known = 0;
@@ -79,7 +82,7 @@ fn newer_ops(d: &Design, r: &[u8], j: usize, n: usize) -> Option<(HashMap<u64, u
             }
         }
     }
-    Some((res, known))
+    Some((res, known, p))
 }
 
 /// An edge of the model: its middle, whether it is curved, and for a curved edge points along
@@ -112,9 +115,17 @@ pub(super) fn recipe(d: &Design, i: u64) -> (Option<RecipeKind>, Option<Vec<Face
     ]
     .into_iter()
     .find(|(n, _)| has(n))
-    .map(|(_, k)| k);
+    .map(|(n, k)| {
+        if let Some(at) = r.windows(n.len()).position(|w| w == n) {
+            let len_at = at.checked_sub(4).filter(|o| u32_at(r, *o) == Some(n.len() as u32));
+            let from = len_at.unwrap_or(at);
+            cover::field(r, from, at + n.len() - from, "recipe.kind");
+        }
+        k
+    });
     for start in 15..40 {
-        if let Some(faces) = recipe_faces(r, start) {
+        if let Some((faces, end)) = recipe_faces(r, start) {
+            cover::field(r, start, end - start, "recipe.faces");
             return (kind, Some(faces));
         }
     }
@@ -135,7 +146,7 @@ fn generator(r: &[u8], p: usize) -> Option<(String, usize)> {
     Some((g.to_string(), p + 4 + l))
 }
 
-fn recipe_faces(r: &[u8], start: usize) -> Option<Vec<FaceName>> {
+fn recipe_faces(r: &[u8], start: usize) -> Option<(Vec<FaceName>, usize)> {
     let mut p = start;
     let a = u32_at(r, p)?;
     let nf = u32_at(r, p + 8)? as usize;
@@ -176,7 +187,7 @@ fn recipe_faces(r: &[u8], start: usize) -> Option<Vec<FaceName>> {
         }
         faces.push(ents);
     }
-    Some(faces)
+    Some((faces, p))
 }
 
 // ----- extrude geometry --------------------------------------------------------------------

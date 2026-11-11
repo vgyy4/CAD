@@ -102,6 +102,7 @@ fn rigid_at(b: &[u8], at: usize) -> Option<Placement> {
     if !(unit && orth && (det - 1.0).abs() < 1e-6 && t.iter().all(|x| x.abs() <= MAX_OFFSET_CM)) {
         return None;
     }
+    crate::cover::field(b, at, 128, "placement.matrix");
     Some(Placement { r, t: t.map(|x| x * 10.0) })
 }
 
@@ -329,6 +330,7 @@ fn uuid_strings(b: &[u8], lo: usize, hi: usize, max: usize) -> Vec<(usize, usize
             && b.get(i).is_some_and(u8::is_ascii_hexdigit)
             && let Some((id, end, dollar)) = uuid16_at(b, i)
         {
+            crate::cover::field(b, i, end - i, "placement.uuid");
             out.push((i, end, id, dollar));
             i = end;
         } else {

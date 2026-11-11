@@ -7,6 +7,7 @@
 
 use super::bodyops::Edit;
 use super::stream::{parse_header, ref_ids, ref_lists, u32_at};
+use crate::cover;
 use serde_json::{Value, json};
 
 /// What a Combine becomes in the tree.
@@ -48,6 +49,7 @@ impl Edit<'_> {
         let rec = d.rec(fid);
         let refuse = |why: &str| Combined::Refused(why.to_string());
         let Some(h) = parse_header(rec) else { return refuse("the Combine's record is not recognised") };
+        cover::field(rec, h.body, 4, "combine.operation");
         let op = match u32_at(rec, h.body) {
             Some(0) => "join",
             // 1 stands where a logo body is taken out of a case (5 records), which reads like a

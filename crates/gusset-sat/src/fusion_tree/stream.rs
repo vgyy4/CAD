@@ -3,6 +3,7 @@
 //! the feature readers anchor on (layout notes: `docs/formats/fusion-design-stream.md`).
 //! Every read is bounds-checked; damage gives `None`, never a panic.
 
+use crate::cover;
 use std::collections::HashMap;
 
 /// Most classes in a stream's class table, and most objects in its index.
@@ -132,6 +133,8 @@ struct Meta {
     classes: Vec<(String, Vec<u64>)>,
     order: Vec<u64>,
     index: Vec<(u64, u64)>,
+    /// Bytes of the MetaStream read (everything up to the second table's end).
+    used: usize,
 }
 
 fn parse_meta(m: &[u8]) -> Option<Meta> {
@@ -188,8 +191,9 @@ fn parse_meta(m: &[u8]) -> Option<Meta> {
     };
     let index = table()?;
     table()?;
+    let used = r.i;
     let order = index.iter().map(|p| p.0).collect();
-    Some(Meta { classes, order, index })
+    Some(Meta { classes, order, index, used })
 }
 
 /// One design stream: class of every object, and where its record lies in the BulkStream.
@@ -203,6 +207,8 @@ pub(super) struct Design<'a> {
     /// The index's ids in file order, repeats included (the compute order lists).
     pub order: Vec<u64>,
     objs: HashMap<u64, (usize, usize)>,
+    /// Bytes of the MetaStream the framing reads.
+    pub meta_used: usize,
 }
 
 impl<'a> Design<'a> {
@@ -231,7 +237,12 @@ impl<'a> Design<'a> {
             objs.insert(*id, (o, e));
             ids.push(*id);
         }
-        Some(Design { bulk, classes, cls_of, ids, order: m.order, objs })
+        Some(Design { bulk, classes, cls_of, ids, order: m.order, objs, meta_used: m.used })
+    }
+
+    /// Where the record of object `id` lies in the BulkStream: `[start, end)`.
+    pub(super) fn span(&self, id: u64) -> Option<(usize, usize)> {
+        self.objs.get(&id).map(|(o, e)| ((*o).min(self.bulk.len()), (*e).min(self.bulk.len())))
     }
 
     pub(super) fn has(&self, id: u64) -> bool {
@@ -320,8 +331,10 @@ pub(super) fn refs_at(d: &Design, rec: &[u8], start: usize) -> Vec<(usize, u64)>
     let own = own_id(rec).filter(|id| id & 0xff == 1);
     while j + 10 <= rec.len() {
         if own.is_some_and(|id| own_id_at(rec, j, id)) {
+            cover::field(rec, j, 8, "own-id");
             j += 8;
         } else if let Some((q, e)) = ref_end(d, rec, j) {
+            cover::field(rec, j, e - j, "ref");
             out.push((j, q));
             j = e;
         } else {
@@ -372,6 +385,18 @@ pub(super) fn ref_lists(d: &Design, rec: &[u8], start: usize) -> Vec<(usize, Vec
             }
         }
         if let Some((ids, o)) = hit {
+            if cover::on() {
+                cover::field(rec, j, 4, "list.count");
+                let mut k = j + 4;
+                while let Some((_, e)) = ref_end(d, rec, k).filter(|_| k < o) {
+                    cover::field(rec, k, e - k, "ref");
+                    k = e;
+                    while k < o && rec.get(k) == Some(&0) {
+                        cover::skip(rec, k, 1, "list.pad");
+                        k += 1;
+                    }
+                }
+            }
             out.push((j, ids));
             j = o;
         } else {
@@ -395,6 +420,10 @@ pub(super) fn sections(rec: &[u8]) -> Option<Vec<(usize, u32)>> {
             let t = rec.get(j + 4..j + 7).unwrap_or(&[]);
             if t.iter().all(u8::is_ascii_digit) && rec.get(j + 7..j + 15) == Some(&key[..]) {
                 let n = t.iter().fold(0u32, |a, c| a * 10 + u32::from(c - b'0'));
+                cover::field(rec, j, 15, "section.head");
+                if u32_at(rec, j + 15) == Some(0) {
+                    cover::field(rec, j + 15, 4, "section.zero");
+                }
                 out.push((j, n));
                 j += 15;
                 continue;
@@ -464,12 +493,21 @@ pub(super) fn parse_header(rec: &[u8]) -> Option<Header> {
     if o + 2 > rec.len() {
         return None;
     }
+    cover::field(rec, 0, o - 4, "header.tag-id");
+    if rec.get(o - 4..o) == Some(&[0, 0, 0, 0]) {
+        cover::field(rec, o - 4, 4, "header.zero");
+    }
     for flag_at in [o + 1, o] {
         if rec.get(flag_at) == Some(&1)
             && let Some((attrs, body)) = parse_attrs(rec, flag_at + 1)
         {
+            cover::field(rec, o, flag_at + 1 - o, "header.flags");
+            cover::field(rec, flag_at + 1, body - flag_at - 1, "header.attributes");
             return Some(Header { attrs, body });
         }
+    }
+    if rec.get(o - 4..o) == Some(&[0, 0, 0, 0]) && rec.get(o..o + 2).is_some_and(|f| f.iter().all(|c| *c <= 1)) {
+        cover::field(rec, o, 2, "header.flags");
     }
     Some(Header { attrs: HashMap::new(), body: o + 2 })
 }
@@ -486,6 +524,7 @@ pub(super) fn wstrings(rec: &[u8], start: usize, end: usize) -> Vec<(usize, usiz
             let s = rec.get(j + 4..j + 4 + 2 * n).unwrap_or(&[]);
             if s.chunks_exact(2).all(|c| c.get(1) == Some(&0) && c.first().is_some_and(|&x| (32..127).contains(&x))) {
                 let text: String = s.chunks_exact(2).map(|c| char::from(c.first().copied().unwrap_or(b'?'))).collect();
+                cover::field(rec, j, 4 + 2 * n, "wstr");
                 out.push((j, j + 4 + 2 * n, text));
                 j += 4 + 2 * n;
                 continue;
@@ -515,5 +554,8 @@ pub(super) fn param(d: &Design, pid: u64) -> Option<Param> {
         return None;
     }
     let value = ws.last().and_then(|l| f64_at(r, l.1));
+    if let Some(l) = ws.last().filter(|_| value.is_some()) {
+        cover::field(r, l.1, 8, "param.value");
+    }
     Some(Param { expr: ws.first()?.2.clone(), name: ws.get(1).map(|w| w.2.clone()), value })
 }

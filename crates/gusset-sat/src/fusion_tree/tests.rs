@@ -1652,3 +1652,46 @@ fn edge_paths_and_picked_faces_move_with_a_placement() {
     assert_eq!(fillet["edges"][0]["midpoint"], json!([8.0, 1.0, 3.0]));
     assert_eq!(fillet["edges"][0]["path"], json!([[10.0, 1.0, 3.0], [8.0, 1.0, 3.0]]));
 }
+
+#[test]
+fn coverage_tiles_every_record_into_known_and_unknown_spans() {
+    let r5 = record(256, 5, &[9, 9, 9]);
+    let mut body6 = r#ref(5);
+    body6.extend(le32(2));
+    body6.extend(r#ref(5));
+    body6.extend(r#ref(6));
+    let r6 = record(257, 6, &body6);
+    let off6 = r5.len() as u64;
+    let bulk = [r5.clone(), r6.clone()].concat();
+    let m = meta(&[(5, 0), (6, off6)], &|i| usize::from(i == 6));
+    let dir = "FusionAssetName[Active]/Design1/";
+    let files = vec![(format!("{dir}MetaStream.dat"), m), (format!("{dir}BulkStream.dat"), bulk.clone())];
+    let c = super::coverage(&files).unwrap();
+    assert_eq!(c.bulk_len, bulk.len());
+    assert_eq!(c.outside_records, 0);
+    assert_eq!(c.records.len(), 2);
+    for (r, want) in c.records.iter().zip([&r5, &r6]) {
+        // The spans tile the record exactly.
+        assert_eq!(&r.bytes, want);
+        let mut at = 0;
+        for sp in &r.spans {
+            assert_eq!(sp.start, at);
+            at += sp.len;
+        }
+        assert_eq!(at, r.bytes.len());
+        // The header (tag, id) is decoded framing.
+        assert_eq!(r.spans[0].kind, super::SpanKind::Decoded);
+        assert_eq!(r.spans[0].name, "header.tag-id");
+    }
+    // No reader reads these classes: the bodies stay unknown, the references are guessed.
+    let r = &c.records[1];
+    assert_eq!(r.tally()[0], body6.len());
+    assert_eq!(r.guesses.iter().filter(|g| matches!(g.2, super::Guess::Ref { .. })).count(), 3);
+    assert_eq!(r.tag, Some(257));
+    assert!(r.class.starts_with("AAAAAAAA"));
+    let dump = c.dump();
+    assert!(dump.contains("#6 tag 257"), "{dump}");
+    assert!(dump.contains("UNKNOWN"));
+    // Outside a coverage run nothing is recorded.
+    assert!(!crate::cover::on());
+}

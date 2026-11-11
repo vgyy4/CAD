@@ -8,6 +8,7 @@ use super::stream::{
     Design, Param, dbl3, finite_doubles, is_uuid_text, param, parse_header, ref_ids, u32_at, wstrings_all,
 };
 use super::{Ctx, PARAM, PARAM_HOLDER};
+use crate::cover;
 use std::rc::Rc;
 
 /// Parameters by role name, in the order found (the first of a name wins).
@@ -44,6 +45,8 @@ pub(super) fn feature_name(d: &Design, i: u64) -> (Option<String>, Option<String
             return (Some(base.clone()), Some(base.clone()));
         }
         let n = u32_at(rec, *e2).unwrap_or(u32::MAX);
+        cover::field(rec, *e2, 4, "feature.index");
+        cover::skip(rec, e2 + 4, 4, "feature.name-gap");
         let mut name = if n < 100_000 { format!("{base}{n}") } else { base.clone() };
         let l = u32_at(rec, e2 + 8).unwrap_or(0) as usize;
         if 0 < l && l < 256 && e2 + 12 + 2 * l <= rec.len() {
@@ -56,8 +59,11 @@ pub(super) fn feature_name(d: &Design, i: u64) -> (Option<String>, Option<String
             if let Ok(custom) = String::from_utf16(&units)
                 && printable(&custom)
             {
+                cover::field(rec, e2 + 8, 4 + 2 * l, "feature.user-name");
                 name = custom;
             }
+        } else if l == 0 {
+            cover::field(rec, e2 + 8, 4, "feature.user-name");
         }
         return (Some(base.clone()), Some(name));
     }
@@ -174,11 +180,17 @@ pub(super) fn extrude_raw(d: &Design, fid: u64) -> Option<ExtRaw> {
     }
     let s = m?;
     let (op, extent) = (*rec.get(s)?, *rec.get(s + 4)?);
+    cover::field(rec, s, 4, "extrude.operation");
+    cover::field(rec, s + 4, 4, "extrude.extent");
+    cover::skip(rec, s + 8, 6, "extrude.kind-flags");
     let end = s + 14;
     let vec = (end..end + 40).find_map(|o| {
         let v = dbl3(rec, o)?;
         let n = super::geom::norm(v);
-        ((n - 1.0).abs() < 1e-6 && v.iter().any(|x| x.abs() > 0.5)).then_some(v)
+        ((n - 1.0).abs() < 1e-6 && v.iter().any(|x| x.abs() > 0.5)).then(|| {
+            cover::field(rec, o, 24, "extrude.direction");
+            v
+        })
     });
     Some(ExtRaw { op, extent, vec, sketch: profile_sketch_of(d, rec), params: params_of(d, fid) })
 }
@@ -361,6 +373,7 @@ pub(super) fn plane_frame(d: &Design, q: u64) -> Option<(V3, V3)> {
         let Some(v) = finite_doubles::<9>(rec, o, 1e6) else { continue };
         let (origin, x, y) = ([v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]);
         if (dot(x, x) - 1.0).abs() < 1e-9 && (dot(y, y) - 1.0).abs() < 1e-9 && dot(x, y).abs() < 1e-9 {
+            cover::field(rec, o, 72, "plane.origin-x-y");
             return Some((origin, cross(x, y)));
         }
     }
@@ -374,6 +387,7 @@ pub(super) fn point3(d: &Design, q: u64) -> Option<V3> {
         if let Some(v) = finite_doubles::<3>(rec, o, 1e6)
             && v.iter().any(|a| a.abs() > 1e-12)
         {
+            cover::field(rec, o, 24, "point3.xyz");
             return Some([v[0], v[1], v[2]]);
         }
     }
@@ -394,6 +408,7 @@ pub(super) fn pattern_dirs(d: &Design, fid: u64) -> Vec<(V3, V3)> {
         if n < 1e-12 {
             continue;
         }
+        cover::field(rec, 25, 48, "pattern.direction-point-vector");
         out.push(([v[0], v[1], v[2]], [vec[0] / n, vec[1] / n, vec[2] / n]));
     }
     out
@@ -411,6 +426,8 @@ pub(super) fn pattern_symmetric(d: &Design, fid: u64) -> Option<[bool; 3]> {
         if let Some(v) = finite_doubles::<3>(rec, k + 4, 1e6)
             && v.iter().all(|a| a.abs() == 0.0 || (a.abs() - 1.0).abs() == 0.0)
         {
+            cover::field(rec, k, 4, "pattern.symmetric-marker");
+            cover::field(rec, k + 4, 24, "pattern.symmetric");
             return Some([v[0] != 0.0, v[1] != 0.0, v[2] != 0.0]);
         }
     }

@@ -9,6 +9,7 @@ use super::geom::{V3, dot, mm, round9};
 use super::naming::{self, RecipeKind};
 use super::stream::{Design, finite_doubles, ref_ids};
 use super::{Ctx, Graph, PARAM, PARAM_HOLDER};
+use crate::cover;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -191,6 +192,7 @@ pub(super) fn matrix(rec: &[u8]) -> Option<Mat> {
             rows.iter().enumerate().all(|(q, rq)| (dot(*rp, *rq) - if p == q { 1.0 } else { 0.0 }).abs() < 1e-6)
         });
         if ortho {
+            cover::field(rec, o, 128, "body-op.matrix");
             return Some((rows, [tx, ty, tz]));
         }
     }

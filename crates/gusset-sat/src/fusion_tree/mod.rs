@@ -17,6 +17,7 @@
 mod acis;
 mod bodyops;
 mod combine;
+mod coverage;
 mod feature;
 mod geom;
 mod insert;
@@ -33,6 +34,8 @@ use sketch::{RegionCache, Sketch};
 use std::collections::HashMap;
 use std::rc::Rc;
 use stream::{Design, ref_ids, ref_lists, wstrings_all};
+
+pub use coverage::{Coverage, Guess, ParamHit, RecordCover, Span, SpanKind, coverage};
 
 const EXTRUDE: &str = "DD405BC2";
 const SWEEP: &str = "FCBB1707";

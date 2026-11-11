@@ -8,6 +8,7 @@ use super::sketch::{self, SKETCH_FEAT};
 use super::stream::ref_ids;
 use super::stream::{self, Design};
 use super::{Ctx, EXTRUDE, Graph, PARAM, SWEEP, component_bodies, component_name, timeline};
+use crate::cover;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -442,6 +443,7 @@ fn sweep_json(
         return (j, None);
     };
     let op = rec.get(h.body).copied().unwrap_or(0);
+    cover::field(rec, h.body, 1, "sweep.operation");
     let profile = feature::profile_sketch_of(d, rec);
     j.insert("sketch".into(), profile.and_then(|s| sketch_names.get(&s)).map_or(Value::Null, |s| s.as_str().into()));
     j.insert("sketch_source_id".into(), profile.map_or(Value::Null, Value::from));
@@ -463,6 +465,7 @@ fn sweep_json(
                 ok = false;
                 continue;
             };
+            cover::field(r, 0x21, 16, "sweep-path.sketch-curve");
             if path_sketch.is_some_and(|p| p != sk) {
                 ok = false;
             }
@@ -1235,6 +1238,7 @@ fn insert_json(d: &Design, fid: u64, name: &str, fusion_type: &str, class: &str)
         .then_some((occ, end))
     });
     let Some((occ, end)) = found else { return fail("the occurrence it inserts is not recognised") };
+    cover::field(rec, end, 3, "insert.flags");
     let Some(cx) = ref_ids(d, d.rec(occ)).into_iter().find(|q| d.is(*q, "CE2913AA")) else {
         return fail("the occurrence has no transform record");
     };
@@ -1255,6 +1259,7 @@ fn insert_json(d: &Design, fid: u64, name: &str, fusion_type: &str, class: &str)
         let Some(m) = stream::dbl::<12>(rec, end + 3) else { return fail("its placement is not readable") };
         // The occurrence repeats the same bytes.
         let raw = rec.get(end + 3..end + 3 + 96).unwrap_or(&[]);
+        cover::field(rec, end + 3, 96, "insert.placement");
         if raw.len() != 96 || !crec.windows(96).any(|w| w == raw) {
             return fail("its placement differs from the occurrence's");
         }
