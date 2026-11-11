@@ -2067,7 +2067,7 @@ fn fusion_explain_steps(
     names: &[String],
     inside: &mut ToolsInside<'_>,
 ) -> Result<(usize, usize), String> {
-    let steps = FusionSteps { vols, per_body, per_solid: &[], stored, insts, loose, names, ends: &[] };
+    let steps = FusionSteps { vols, per_body, per_solid: &[], stored, insts, loose, names, ends: &[], finished: &[] };
     fusion_explain_placed(&steps, inside, &mut |_, tools| Ok(tools.to_vec()))
         .map(|(states, tools)| (states, tools.len()))
 }
@@ -2099,6 +2099,10 @@ struct FusionSteps<'a> {
     /// The bodies the file stores as the design's end result ([`fusion_end_bodies`]); empty
     /// where it stores none.
     ends: &'a [f64],
+    /// The finished bodies as the file stores them: a body that is several solids apart is
+    /// stored as its solids, each a body of its own (a new-body extrude of 16 pads that do not
+    /// touch makes 16 bodies). Empty: the last of `per_body`.
+    finished: &'a [f64],
 }
 
 /// Of some stored tools (indices into the stored solids), the ones that are not, for feature `k`,
@@ -2117,7 +2121,8 @@ fn fusion_explain_placed(
     inside: &mut ToolsInside<'_>,
     firsts: &mut ToolsFirst<'_>,
 ) -> Result<(usize, Vec<(usize, bool)>), String> {
-    let FusionSteps { vols, per_body, per_solid, stored, insts, loose, names, ends } = *steps;
+    let FusionSteps { vols, per_body, per_solid, stored, insts, loose, names, ends, finished } = *steps;
+    let finished = if finished.is_empty() { per_body.last().map_or(&[][..], Vec::as_slice) } else { finished };
     let same = |a: f64, b: f64| (a - b).abs() <= FREECAD_VOLUME_TOLERANCE * a.abs().max(b.abs());
     let delta = |k: usize| -> f64 {
         match (vols.get(k), k.checked_sub(1).and_then(|p| vols.get(p))) {
@@ -2318,7 +2323,7 @@ fn fusion_explain_placed(
         (1..vols.len()).rev().find(|k| changed(*k).iter().any(|b| stored.iter().any(|s| same(*s, *b)))).unwrap_or(0);
     // The file's own end bodies confirm the features after the last stored state together: the
     // finished bodies are those bodies.
-    if fusion_ends_agree(per_body.last().map_or(&[][..], Vec::as_slice), ends) {
+    if fusion_ends_agree(finished, ends) {
         return Ok((states, tool_at.into_iter().enumerate().map(|(i, at)| (at, joined.contains(&i))).collect()));
     }
     for k in last + 1..vols.len() {
@@ -2520,6 +2525,17 @@ fn fusion_states_check(
         }
         k += 1;
     }
+    // The finished bodies as the file stores them: each body that is several solids apart as
+    // its solids (every final body went through `split` above).
+    let finished: Vec<f64> = per_body
+        .last()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .flat_map(|v| match split_cache.get(&v.to_bits()) {
+            Some(parts) if !parts.is_empty() => parts.clone(),
+            _ => vec![*v],
+        })
+        .collect();
     let (final_vol, final_box, _, _) = build(n, true)?;
     let names: Vec<String> =
         tree.features.iter().map(|f| f.get("name").and_then(Value::as_str).unwrap_or("?").to_string()).collect();
@@ -2647,9 +2663,10 @@ fn fusion_states_check(
         loose: &loose,
         names: &names,
         ends,
+        finished: &finished,
     };
     let (states, tool_at) = fusion_explain_placed(&steps, &mut inside, &mut firsts)?;
-    let by_ends = fusion_ends_agree(per_body.last().map_or(&[][..], Vec::as_slice), ends);
+    let by_ends = fusion_ends_agree(&finished, ends);
     // The tools of cuts: a tool that only ever adds material is part of the model.
     let cut_tools: Vec<usize> = tool_at.iter().filter(|(_, joined)| !joined).map(|(at, _)| *at).collect();
     let tools = tool_at.len();
@@ -4136,6 +4153,7 @@ mod fusion_steps_tests {
             loose: &loose,
             names: &names_,
             ends: &[],
+            finished: &[],
         };
         assert_eq!(
             fusion_explain_placed(&all, &mut inside, &mut firsts),
@@ -4156,6 +4174,7 @@ mod fusion_steps_tests {
             loose: &loose,
             names: &names_,
             ends: &[],
+            finished: &[],
         };
         assert!(fusion_explain_placed(&bad, &mut inside, &mut firsts).is_err());
     }
@@ -4183,6 +4202,7 @@ mod fusion_steps_tests {
                 loose: &loose,
                 names: &names_,
                 ends,
+                finished: &[],
             };
             fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).map(|(states, _)| states)
         };
@@ -4206,9 +4226,29 @@ mod fusion_steps_tests {
             loose: &loose,
             names: &names_,
             ends: &[100.0, 6.5],
+            finished: &[],
         };
         let why = fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).unwrap_err();
         assert!(why.contains("neither a state"), "{why}");
+        // A finished body of two solids apart is stored as two end bodies: compared solid by
+        // solid, and only so.
+        let ends = [100.0, 3.25, 3.25];
+        let mut steps = FusionSteps {
+            vols: &vols,
+            per_body: &per_body,
+            per_solid: &[],
+            stored: &stored,
+            insts: &insts,
+            loose: &loose,
+            names: &names_,
+            ends: &ends,
+            finished: &[],
+        };
+        assert!(fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).is_err());
+        steps.finished = &[100.0, 3.25, 3.25];
+        assert_eq!(fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).map(|r| r.0), Ok(2));
+        steps.finished = &[100.0, 3.0, 3.5];
+        assert!(fusion_explain_placed(&steps, &mut inside, &mut |_, tools| Ok(tools.to_vec())).is_err());
     }
 
     #[test]
