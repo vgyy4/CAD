@@ -973,6 +973,30 @@ impl Ctx<'_> {
         ((closest - r).abs() < 1e-6).then_some(t)
     }
 
+    /// Whether the generator numbering of an extrude whose profile has holes agrees with the
+    /// stored faces: at least two of its side generators name a stored face whose piece is known
+    /// (`truth`), and each of those is the piece the numbering gives. 6299's `Extrude1 (2)` (an
+    /// outline of 16 pieces and a round hole): generators 3 to 6 are stored and all agree, and
+    /// `Chamfer1 (2)` names generator 8.
+    fn gen_map_confirmed(&mut self, fid: u64, eg: &ExtGeom, op: i32) -> bool {
+        if let Some(c) = self.gconfirmed.get(&(fid, op)) {
+            return *c;
+        }
+        let ok = self.gen_map(fid).is_some_and(|m| {
+            let mut agree = 0;
+            for (k, (i, _)) in m.iter() {
+                match self.truth(eg, k, op) {
+                    Some((t, _)) if t == *i => agree += 1,
+                    Some(_) => return false,
+                    None => {}
+                }
+            }
+            agree >= 2
+        });
+        self.gconfirmed.insert((fid, op), ok);
+        ok
+    }
+
     /// Geometry of a face named (generator, operation ids), when it is an extrude's cap or side.
     fn face_of_extrude(&mut self, g: &str, ops: &[i32]) -> Option<FaceG> {
         let op = u64::try_from(*ops.first()?).ok()?;
@@ -1002,7 +1026,9 @@ impl Ctx<'_> {
                 eg.segs.get(i)?.clone()
             }
             None => {
-                if eg.segs.iter().any(|x| x.flag != 1) {
+                // With holes the generator numbering is only taken where the stored faces confirm
+                // it (see `gen_map_confirmed`).
+                if eg.segs.iter().any(|x| x.flag != 1) && !self.gen_map_confirmed(fid, &eg, *ops.first()?) {
                     return None;
                 }
                 let m = self.gen_map(fid)?;
@@ -1031,7 +1057,37 @@ impl Ctx<'_> {
     /// The midpoint of the edge between `faces[0]` and `faces[1]`, bounded by the others: and
     /// whether it is an arc.
     pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
-        self.modelled_edge(faces).or_else(|| self.stored_edge(faces))
+        self.modelled_edge(faces).or_else(|| self.stored_edge(faces)).or_else(|| self.side_at_cap(faces))
+    }
+
+    /// An edge named by a straight side of an extrude and a cap of the same extrude, and by
+    /// nothing that bounds it (6299's `Chamfer1 (2)`), where neither the model nor the stored
+    /// bodies say more: the whole side at the cap, so its middle is the side's chord middle moved
+    /// onto the cap. A model edge that is only part of it (the side cut by a later feature) does
+    /// not match that middle, so the import stops there.
+    fn side_at_cap(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let [f0, f1] = faces else { return None };
+        let (g0, ops0) = f0.first()?;
+        let (g1, ops1) = f1.first()?;
+        if ops0 != ops1 || f0.len() != 1 || f1.len() != 1 {
+            return None;
+        }
+        let is_cap = |g: &str| g == "1" || g == "2";
+        let (side, cap) = match (is_cap(g0), is_cap(g1)) {
+            (false, true) => ((g0, ops0), (g1, ops1)),
+            (true, false) => ((g1, ops1), (g0, ops0)),
+            _ => return None,
+        };
+        let (FaceG::Plane { n: sn, mid: sm, cap: false, .. }, FaceG::Plane { n: cn, p: cp, cap: true, .. }) =
+            (self.face(side.0, side.1)?, self.face(cap.0, cap.1)?)
+        else {
+            return None;
+        };
+        if dot(cn, sn).abs() > 1e-6 {
+            return None;
+        }
+        let t = dot(cn, sub(cp, sm));
+        Some((add(sm, mul(cn, t)), false, Vec::new()))
     }
 
     fn modelled_edge(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {

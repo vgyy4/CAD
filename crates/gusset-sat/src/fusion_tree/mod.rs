@@ -59,6 +59,8 @@ struct Ctx<'a> {
     rc: RegionCache,
     exts: HashMap<u64, Option<Rc<naming::ExtGeom>>>,
     gmaps: HashMap<u64, Option<Rc<naming::GenMap>>>,
+    /// Whether an extrude's generator numbering agrees with its stored faces, by (extrude, op).
+    gconfirmed: HashMap<(u64, i32), bool>,
     tagged: Option<Vec<acis::TaggedFace>>,
     edge_sets: Option<Vec<Vec<acis::Edge>>>,
     named_edges: Option<Vec<acis::NamedEdge>>,
@@ -78,6 +80,7 @@ impl<'a> Ctx<'a> {
             rc: RegionCache::default(),
             exts: HashMap::new(),
             gmaps: HashMap::new(),
+            gconfirmed: HashMap::new(),
             tagged: None,
             edge_sets: None,
             named_edges: None,
