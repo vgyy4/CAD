@@ -712,6 +712,7 @@ fn the_construction_flag_is_read_only_for_the_layouts_it_was_checked_in() {
     assert_eq!(off(true, 307), Some(7));
     assert_eq!(off(true, 303), Some(7));
     assert_eq!(off(true, 396), Some(2));
+    assert_eq!(off(true, 447), Some(2));
     assert_eq!(off(true, 300), Some(1));
     assert_eq!(off(true, 276), Some(1));
     assert_eq!(off(false, 471), Some(2));

@@ -263,7 +263,9 @@ fn point(d: &Design, i: u64) -> Option<V3> {
 /// sample set lies outside all profiles of its sketch: 24 + 49 lines of the 303/307-byte
 /// layout, 72 of the 396-byte one, one arc of the 471-byte one):
 /// line 303/307 bytes: 7 after the second point reference, 396: 2, 276/300: 1 (the diagonals
-/// and centre crosses of a pin-header part); arc 471: 2 after the third.
+/// and centre crosses of a pin-header part); arc 471: 2 after the third; line 447: 2 (four
+/// flagged lines of the 150-design set, none in a profile; they are a board outline that the
+/// profile's circles cross uncut).
 /// Another layout reads as "not construction" (no sample has a flagged curve there).
 fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
     let need = if line { 2 } else { 3 };
@@ -271,6 +273,11 @@ fn construction(d: &Design, rec: &[u8], e_from: usize, line: bool) -> bool {
         refs_at(d, rec, e_from).into_iter().filter(|p| has_section(d, p.1, POINT)).map(|p| p.0).take(need).collect();
     let Some(at) = (pts.len() == need).then(|| pts.last().copied()).flatten() else { return false };
     let Some((_, end)) = ref_end(d, rec, at) else { return false };
+    // The 447-byte line layout is the 396-byte one with a byte more; a record of that length
+    // with other content after the reference (a `01` followed by a count) is not read as flagged.
+    if line && rec.len() == 447 && rec.get(end + 3..end + 6) != Some(&[0, 0, 0]) {
+        return false;
+    }
     construction_flag_offset(line, rec.len()).is_some_and(|off| rec.get(end + off) == Some(&1))
 }
 
@@ -279,7 +286,7 @@ pub(super) fn construction_flag_offset(line: bool, record_len: usize) -> Option<
     match (line, record_len) {
         (true, 276 | 300) => Some(1),
         (true, 303 | 307) => Some(7),
-        (true, 396) | (false, 471) => Some(2),
+        (true, 396 | 447) | (false, 471) => Some(2),
         _ => None,
     }
 }
