@@ -1569,6 +1569,14 @@ pub(super) fn move_feature(f: &mut Value, pl: &crate::fusion::Placement) {
                     {
                         o.insert("midpoint".into(), m);
                     }
+                    // The points of a curved edge go with its middle.
+                    if let Some(path) = e.get_mut("path").and_then(Value::as_array_mut) {
+                        for q in path.iter_mut() {
+                            if let Some(m) = pt(Some(q)) {
+                                *q = m;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -1641,3 +1641,14 @@ fn a_frame_narrower_than_the_grid_has_an_interior_point() {
     let d = (6.075 - p[0].abs()).min(3.83 - p[1].abs());
     assert!(d > 0.01 && d < 0.03, "{p:?}");
 }
+
+#[test]
+fn edge_paths_and_picked_faces_move_with_a_placement() {
+    // A quarter turn about z, then 10 mm along x: (x, y, z) -> (10 - y, x, z).
+    let pl = crate::fusion::Placement { r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], t: [10.0, 0.0, 0.0] };
+    let mut fillet = json!({"type": "fillet", "name": "F", "radius": 1.0,
+        "edges": [{"midpoint": [1.0, 2.0, 3.0], "path": [[1.0, 0.0, 3.0], [1.0, 2.0, 3.0]]}]});
+    super::json::move_feature(&mut fillet, &pl);
+    assert_eq!(fillet["edges"][0]["midpoint"], json!([8.0, 1.0, 3.0]));
+    assert_eq!(fillet["edges"][0]["path"], json!([[10.0, 1.0, 3.0], [8.0, 1.0, 3.0]]));
+}
