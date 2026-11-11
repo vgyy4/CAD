@@ -221,7 +221,7 @@ come in as history already (4862).
 
 ## Re-run after round 16 (2026-11-11)
 
-Run on a tree without the joints above; a combined re-run is pending.
+Run on a tree without the joints above.
 
 Same set and command. "Before" is the tree at the start of round 16 (with the other session's commits
 since round 15: 99, not 90); "after" adds extrude starts (`ProfileOffset`), OffsetFaces, the end bodies'
@@ -242,3 +242,16 @@ rebuild before). Whole run 2,297 s instead of 2,834 s. The 18-design set stays a
 
 Still open, by first blocker (50 designs as bodies): reader refusals 26, state check 11 (stored solids
 no feature makes, bodies a joint moved), no history stored 7, rebuild failures 6.
+
+## Combined re-run after the joints and round 16 (2026-11-11)
+
+Same command on both sets, with the joints and round 16 together: adafruit-more 103 of 150 as history (3957,
+4200, 4400 added by the joints; none lost), adafruit 12 of 18. Whole adafruit-more run 2,304 s.
+
+Remaining first blockers (adafruit-more and adafruit): no feature history 7; stored-state mismatch 8 (2219, 3211,
+4242, 4313, 4745, 5021, 4800 box, 2441 copies); profile regions not decoded 6 (324, 512, 858, 2756, 3027, 5360);
+profile not a sketch profile 2 (6124, 6126); revolve axis a topological reference 2 (1145, 3722); tapered
+extrude 2 (592, 6299); ElectronicsPackageGenerator 2 (5905, 5967); rebuild failures 4 (sweep 4863, chamfer 1463,
+3632, shell 3422); one each: Thread 3350, Split 3651, MirrorComponent 4343, Derived Base Feature 3502, Base
+Feature 4431, pattern of inserted-design occurrences 5128, sweep path 3101, shell face 4632, extrude body 610,
+extrude between two faces 2190, draft 355 and 258, chamfer edges 5981 and 3093, unknown feature class 5358.
