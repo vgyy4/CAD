@@ -1057,7 +1057,50 @@ impl Ctx<'_> {
     /// The midpoint of the edge between `faces[0]` and `faces[1]`, bounded by the others: and
     /// whether it is an arc.
     pub(super) fn edge_midpoint(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
-        self.modelled_edge(faces).or_else(|| self.stored_edge(faces)).or_else(|| self.side_at_cap(faces))
+        self.modelled_edge(faces)
+            .or_else(|| self.stored_edge(faces))
+            .or_else(|| self.side_at_cap(faces))
+            .or_else(|| self.rim_at_plane(faces))
+    }
+
+    /// A closed edge (no faces bound its ends) between a plane and a cylinder about an axis
+    /// across it, where the cylinder is known only from the stored bodies (610's `Fillet3`: the
+    /// rim of `Extrude2`'s end cap on the side it shares with `Extrude1`, a profile whose
+    /// generator numbering is not confirmed): the whole circle where the plane cuts the
+    /// cylinder. Where its seam lies is not known, so the edge goes as points all round it
+    /// (the import matches the model's edge along them).
+    fn rim_at_plane(&mut self, faces: &[FaceName]) -> Option<EdgeAt> {
+        let [f0, f1] = faces else { return None };
+        for (pf, cf) in [(f0, f1), (f1, f0)] {
+            let (pg, pops) = pf.first()?;
+            let (cg, cops) = cf.first()?;
+            let (n, p) = match self.face(pg, pops) {
+                Some(FaceG::Plane { n, p, .. }) => (n, p),
+                _ => continue,
+            };
+            if self.face(cg, cops).is_some() {
+                continue;
+            }
+            let Some(StoredPick { surface: Surface::Cylinder { origin, axis, radius }, .. }) =
+                self.stored_face(cg, cops)
+            else {
+                continue;
+            };
+            if (dot(n, axis).abs() - 1.0).abs() > 1e-9 || !(radius > 0.0) {
+                continue;
+            }
+            // The circle's centre: the axis where it meets the plane.
+            let centre = add(origin, mul(axis, dot(n, sub(p, origin)) / dot(n, axis)));
+            let u = unit(cross(axis, if axis[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] }))?;
+            let v = cross(axis, u);
+            // Chords within 5e-4 cm (0.005 mm) of the circle.
+            let step = libm::acos((1.0 - 5e-4 / radius).clamp(-1.0, 1.0)) * 2.0;
+            let k = ((2.0 * std::f64::consts::PI / step.max(1e-3)).ceil() as usize).clamp(16, 256);
+            let at = |t: f64| add(centre, add(mul(u, radius * libm::cos(t)), mul(v, radius * libm::sin(t))));
+            let path: Vec<V3> = (0..=k).map(|i| at(2.0 * std::f64::consts::PI * i as f64 / k as f64)).collect();
+            return Some((at(std::f64::consts::PI), true, path));
+        }
+        None
     }
 
     /// An edge named by a straight side of an extrude and a cap of the same extrude, and by
