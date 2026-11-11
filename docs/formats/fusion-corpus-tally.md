@@ -286,3 +286,14 @@ are faces or PCB data 5981, 6124, 6126; one each: a body mirror on a work plane 
 hold 2348, a Combine target 3093, chamfer edges 6299, draft of an end cap 258, a shell with no removed face 4632,
 sweep path 3101, pattern of inserted-design occurrences 5128, a pattern of components 512, the body an extrude
 changes 610, a loop that does not close 858, an extrude between two faces 2190, a Base Feature body 4431.
+
+## Combined re-run after round 19 (2026-11-11)
+
+Same command on both sets with round 19 E (threads read and modeled ones refused by what they are, a mirror of
+faces made by several features) and F (package generators, bodies moved between components, Derived Base
+Features, two-sided tapered extrudes, two-distance chamfers, sweep paths of 45-byte records): adafruit-more 116 of
+150 as history (2232 added, none lost), adafruit 11 of 18. 4862 is lost: its inserted header used to fail to read
+and came in as stored bodies; now it is rebuilt and the step check refuses the board's hole cut (260.85 mm³
+removed against 92.10 mm³ of stored tools), the same excess that stops 5967. Round 19 F's findings moved the other
+blockers on (section 30 of `fusion-design-stream.md`): 5905 MirrorComponent, 5358/5360 a pin fillet one pitch off,
+3502 Bend, 5981 a thin-wall extrude of an open chain, 6124/6126 sketch text in a font the file does not hold.
