@@ -980,6 +980,9 @@ impl Ctx<'_> {
         if !self.d.is(fid, super::EXTRUDE) {
             return None;
         }
+        if let Some(caps) = self.thin_caps.get(&fid) {
+            return caps.face(g, ops.len() > 1);
+        }
         let eg = self.ext_geom(fid)?;
         let pl = eg.pl;
         let z = pl.z;

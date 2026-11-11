@@ -30,6 +30,7 @@ mod patdir;
 mod pcb;
 mod sketch;
 mod stream;
+mod thin;
 mod thread;
 
 use feature::feature_name;
@@ -63,6 +64,8 @@ struct Ctx<'a> {
     named_edges: Option<Vec<acis::NamedEdge>>,
     named_planes: Option<Vec<acis::NamedPlane>>,
     named_faces: Option<Vec<acis::NamedFace>>,
+    /// The end caps of each thin extrude read so far (section 33).
+    thin_caps: HashMap<u64, thin::Caps>,
 }
 
 impl<'a> Ctx<'a> {
@@ -80,6 +83,7 @@ impl<'a> Ctx<'a> {
             named_edges: None,
             named_planes: None,
             named_faces: None,
+            thin_caps: HashMap::new(),
         }
     }
 }

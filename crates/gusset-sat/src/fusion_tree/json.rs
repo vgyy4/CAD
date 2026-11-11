@@ -1355,6 +1355,7 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             }
         } else if d.is(fid, EXTRUDE) {
             let mut j = extrude_json(cx, fid, &nm, &sketch_names);
+            super::thin::thin_extrude(cx, fid, &mut j, &mut feats, &sketch_names, &nm);
             two_sided_from_a_moved_sketch(cx, &mut j, &nm, &mut feats);
             in_own_component(&mut j, "sketch", comp, &mut feats, nbefore, format!("{nm} sketch"));
             let made = op_target(&mut j, &g, d, fid, &names);
