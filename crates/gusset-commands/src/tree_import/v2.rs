@@ -1165,6 +1165,49 @@ pub(super) fn remove_body(g: &mut Gen, s: &Session, d: &RemoveBodyF) -> Result<(
     Ok(())
 }
 
+/// Push or pull faces along their normals (ADR 0042 amendment).
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct OffsetFaceF {
+    name: String,
+    faces: Vec<FacePick>,
+    distance: f64,
+}
+
+pub(super) fn offset_face(g: &mut Gen, s: &Session, d: &OffsetFaceF) -> Result<(), String> {
+    if d.faces.is_empty() || d.faces.len() > MAX_PICKS {
+        return Err("an offset moves between 1 and 256 faces".into());
+    }
+    finite(d.distance, "the offset distance")?;
+    if d.distance == 0.0 {
+        return Err("the offset distance is zero".into());
+    }
+    let ev = g.evaluate(s).map_err(|e| e.message)?;
+    let mut body: Option<String> = None;
+    let mut names: Vec<String> = Vec::new();
+    for pick in &d.faces {
+        let (b, face) = pick_face_name(g, s, &ev, pick)?;
+        if body.as_ref().is_some_and(|x| *x != b) {
+            return Err("its faces are on several bodies".into());
+        }
+        body = Some(b);
+        if !names.contains(&face) {
+            names.push(face);
+        }
+    }
+    let body = body.ok_or("no faces")?;
+    let name = g.fresh(&d.name, "OffsetFace");
+    let _ = writeln!(
+        g.text,
+        "\noffset_face {name} (body: {body}, faces: [{}], distance: {} mm)",
+        names.join(", "),
+        num(d.distance)
+    );
+    builds(g, s, &name)?;
+    g.made.push(name.clone());
+    g.features.insert(d.name.clone(), body);
+    Ok(())
+}
+
 /// Taper faces for molding about their line on a neutral plane.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct DraftF {

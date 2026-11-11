@@ -503,3 +503,26 @@ mirrors):
 Gusset writes `merge: false` and names the copies `Row_copy1`, `Row_copy2` (ADR 0004
 amendment of the same date). `"merge": false` on a pattern of `features` skips it with the
 reason.
+
+## Amendment (2026-11-11): `offset_face`, and the points of a curved blend edge
+
+Version 2 trees may carry `offset_face` (Fusion's OffsetFaces / Press Pull on faces):
+
+```json
+{ "type": "offset_face", "name": "Lower", "faces": [ { "point": [5, 5, 10], "normal": [0, 0, 1] } ],
+  "distance": -1.5 }
+```
+
+- It becomes the document's `offset_face` (ADR 0030). `faces` are picked like a draft's
+  (`pick_face_name`; all on one body; `normal` optional); `distance` is in mm along the faces'
+  outward normals, positive adding material. The body keeps its tree name for later `target`s.
+- No faces, more than 256, a zero or non-finite distance, faces on several bodies or a face the
+  point does not find skip the feature with the reason. In a version 1 file the type is skipped
+  like the other version 2 types.
+
+A `fillet` / `chamfer` edge may carry `"path": [[x, y, z], ...]`, points along the source edge
+from end to end, next to its `midpoint`. The midpoint decides first (within 0.01 mm). Where it
+names no edge, the model's edges lying on the path stand for it, or the one edge (a line, or a
+circle's arc) that holds the midpoint and both ends of the path: a source that merges edges
+Gusset keeps apart (FreeCAD's refine), or a whole circle whose seam, and so whose middle, lies
+elsewhere in the source than in the model (Fusion).

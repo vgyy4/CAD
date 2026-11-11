@@ -777,7 +777,7 @@ pub fn apply_with(
                 .map_err(|e| e.to_string())
                 .and_then(|d| edges(&mut g, s, &d, kind == "fillet")),
             "hole" | "pattern_linear" | "pattern_circular" | "mirror" | "shell" | "sweep" | "loft" | "stored_body"
-            | "move_body" | "draft" | "scale_body" | "remove_body"
+            | "move_body" | "draft" | "scale_body" | "remove_body" | "offset_face"
                 if tree.version < 2 =>
             {
                 Err(format!("feature type '{kind}' is in version 2 files; this file says version 1"))
@@ -818,6 +818,9 @@ pub fn apply_with(
             "shell" => serde_json::from_value::<v2::ShellF>(f.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|d| v2::shell(&mut g, s, &d)),
+            "offset_face" => serde_json::from_value::<v2::OffsetFaceF>(f.clone())
+                .map_err(|e| e.to_string())
+                .and_then(|d| v2::offset_face(&mut g, s, &d)),
             "unsupported" => {
                 let what = f.get("original_type").and_then(Value::as_str).unwrap_or("?");
                 Err(format!("not exported by the plugin ({what})"))

@@ -1103,6 +1103,31 @@ fn bad_drafts_are_skipped_with_a_reason() {
 }
 
 #[test]
+fn an_offset_face_pushes_and_pulls_along_the_normal() {
+    // The top of a 10 mm cube lifted by 2 mm, then its +x wall pulled in by 1 mm; the body
+    // keeps its name for the second edit.
+    let mut f = box_tree(10.0, 10.0, 10.0);
+    f.push(json!({"type": "offset_face", "name": "Lift", "faces": [{"point": [5, 5, 10], "normal": [0, 0, 1]}],
+                  "distance": 2}));
+    f.push(json!({"type": "offset_face", "name": "Trim", "faces": [{"point": [10, 5, 5], "normal": [1, 0, 0]}],
+                  "distance": -1}));
+    let (mut s, _) = import_v2_session(f);
+    assert_vol(body_of(&mut s, None)["volume_mm3"].as_f64().unwrap(), 9.0 * 10.0 * 12.0);
+}
+
+#[test]
+fn bad_offset_faces_are_skipped_with_a_reason() {
+    for bad in [json!({"faces": []}), json!({"distance": 0}), json!({"faces": [{"point": [50, 50, 50]}]})] {
+        let mut f = box_tree(10.0, 10.0, 10.0);
+        let mut d = json!({"type": "offset_face", "name": "Bad", "faces": [{"point": [5, 5, 10]}], "distance": 1});
+        d.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        f.push(d);
+        let (_, r) = import_into_session(f);
+        assert_eq!(r["skipped_user_text"].as_array().unwrap().len(), 1, "{bad}: {r}");
+    }
+}
+
+#[test]
 fn the_whole_body_edits_need_a_version_2_file() {
     let tree = json!({"format": "gusset-feature-tree", "version": 1, "source": {"app": "test"},
         "features": [{"type": "remove_body", "name": "R", "target": "X"}]});
