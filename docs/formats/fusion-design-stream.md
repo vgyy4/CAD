@@ -1500,3 +1500,8 @@ sides) does not give.
   (determinant +1) and a move, so the reflection is in the new component's own bodies, not in its placement. With
   both left out the design stops at a stored body of its Base Feature that does not come in as one body, so the
   mirror alone gains nothing; left unsupported.
+
+### Result
+* adafruit-more: 116 of 150 as history (2232 gained, none lost). The threads of 1145, 3350 and 324 are now refused as
+  modeled threads with what they are; 3651 (Split), 3722 (CoilPrimitive) and 4343 (MirrorComponent) stop where
+  they did.
