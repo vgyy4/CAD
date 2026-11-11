@@ -1505,3 +1505,31 @@ sides) does not give.
 * adafruit-more: 116 of 150 as history (2232 gained, none lost). The threads of 1145, 3350 and 324 are now refused as
   modeled threads with what they are; 3651 (Split), 3722 (CoilPrimitive) and 4343 (MirrorComponent) stop where
   they did.
+
+## 30. Round 19 F: package generators, bodies moved between components (2026-11-11)
+Reader: `timeline` in `fusion_tree/mod.rs`, `carry_moved_bodies` in `fusion_tree/bodyops.rs`, `design_json` in
+`fusion_tree/json.rs`.
+
+### ElectronicsPackageGenerator `827B3935`: a custom feature over ordinary features
+* The record holds the strings `adsk.fusion.custompackage3d`, `Autodesk Inc.`, an id, `ElectronicsPackageGenerator`,
+  a zero UUID (no user name) and the package kind (5905: `surface_mount_header_female`). Its **first reference
+  list** (`u32 n` at byte 21, then n references) names the features it made, in order: 5905's 15 are WorkPlane,
+  Sketch, Extrude, WorkPlane, Sketch, Extrude, R-Pattern, WorkPlane, Sketch, Sweep, Chamfer, Mirror `D1728651`,
+  Move `64E40C8E`, R-Pattern, R-Pattern. The list follows again behind the record's own id.
+* These features are in no timeline list (`2F4C1849`) and no compute list: only the generator is. The reader now
+  puts the members in its place, in list order, and skips the generator itself. They are ordinary parametric
+  features with their own parameters and the bodies they make; what the generator's own parameters (pin count,
+  pitch) were is not read, so editing them in Gusset edits the features, not the package.
+* 5967 holds six generators (one per header), each behind a component activation `54F9ACE8`.
+
+### Body->Comp `56225BC7` and CutPasteBodies `BA3059E4`: a body moved into another component
+* Both have the same layout: a body selection `2CA5A1CD` at byte 29, then a Base Feature `D7015B81` reference and
+  a RemoveBody `4A782808` reference (both off-timeline features). The record's name strings are `Body->Comp` and
+  `Body->Comp1 - Housing` (5358): the base name holds `->`, which the name reader now accepts for this one word.
+* The Base Feature holds the body in its new component (a stored body) and the RemoveBody takes it out of the old
+  one. Nothing about the shape changes: the reader carries the body on. The body links whose maker is the Base
+  Feature are given to the maker of the removed body, and the move and both halves are skipped, so later features
+  in the new component act on the history body (5358: `Extrude - Pad Clearance` in component Housing cuts
+  `Extrude - Housing`). A move whose halves are not one Base Feature making one body and one RemoveBody of one body
+  is refused.
+* 5358 and 5360 now stop at a later feature (below).

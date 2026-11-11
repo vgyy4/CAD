@@ -375,6 +375,9 @@ const FEATURE_PREFIXES: [&str; 36] = [
     pcb::COPPER,
 ];
 
+/// A custom feature (`ElectronicsPackageGenerator`): a group of ordinary features it made.
+pub(super) const CUSTOM_FEATURE: &str = "827B3935";
+
 /// Feature ids in timeline order (the reference lists of the `2F4C1849` records), then the
 /// features of designs whose history is not captured, in compute order (the lists of `B65B5682`).
 fn timeline(d: &Design) -> (Vec<u64>, Vec<u64>) {
@@ -385,6 +388,17 @@ fn timeline(d: &Design) -> (Vec<u64>, Vec<u64>) {
                 for q in ids {
                     if !out.contains(&q) {
                         out.push(q);
+                        // A custom feature (ElectronicsPackageGenerator) stands in the timeline
+                        // for the features it made: its first reference list, in order (section 30).
+                        if d.is(q, CUSTOM_FEATURE)
+                            && let Some((_, members)) = ref_lists(d, d.rec(q), 0).into_iter().next()
+                        {
+                            for m in members {
+                                if m != q && !out.contains(&m) {
+                                    out.push(m);
+                                }
+                            }
+                        }
                     }
                 }
             }

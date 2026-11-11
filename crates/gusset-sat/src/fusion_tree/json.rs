@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Timeline entries that create no body geometry (none is the creator of a body link or
 /// references a body record in the samples).
-const NON_GEOMETRIC: [(&str, &str); 12] = [
+const NON_GEOMETRIC: [(&str, &str); 13] = [
     ("78B9DEFC", "CreateComponent"),
     ("54F9ACE8", "component activation"),
     // A class derived from the component activation (its parent in the class table): it names
@@ -29,6 +29,7 @@ const NON_GEOMETRIC: [(&str, &str); 12] = [
     ("D869265F", "WorkPlane (construction)"),
     ("B0EEF272", "PCB link (bodies come from the extrudes that follow)"),
     ("A917FE80", "timeline group (a folder: its members follow it in the timeline)"),
+    (super::CUSTOM_FEATURE, "custom feature (package generator): the features it made follow it in the timeline"),
 ];
 
 fn op_name(op: u8) -> String {
@@ -1070,7 +1071,14 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
     let mut sketch_names: HashMap<u64, String> = HashMap::new();
     let (tl, extra) = timeline(d);
     let mut used_names: HashSet<String> = HashSet::new();
-    let g = Graph::new(d);
+    let mut g = Graph::new(d);
+    let moves = super::bodyops::carry_moved_bodies(d, &mut g);
+    let halves: HashMap<u64, u64> = moves
+        .iter()
+        .filter_map(|(m, r)| r.as_ref().ok().map(|h| (*m, *h)))
+        .flat_map(|(m, h)| h.map(|q| (q, m)))
+        .collect();
+    let g = g;
     let mut names: HashMap<u64, String> = HashMap::new();
     let mut comps: Vec<(u64, Option<String>, Vec<String>)> = Vec::new();
     for &fid in tl.iter().chain(extra.iter()) {
@@ -1104,6 +1112,20 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
             continue;
         }
         let fusion_type = base.clone().unwrap_or_else(|| c8.clone());
+        if let Some(m) = halves.get(&fid) {
+            skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                "reason": format!("a half of the body move {m}: the body is carried on as the body it moves")}));
+            continue;
+        }
+        if let Some(r) = moves.get(&fid) {
+            match r {
+                Ok(_) => skipped.push(json!({"name": name, "fusion_type": fusion_type, "source_id": fid,
+                    "reason": "moves a body to another component: the body is carried on"})),
+                Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": nm,
+                    "class_guid": class, "source_id": fid, "error": why})),
+            }
+            continue;
+        }
         if d.is(fid, SKETCH_FEAT) {
             match sketch_json(cx, fid, &nm) {
                 Some((j, sid)) => {

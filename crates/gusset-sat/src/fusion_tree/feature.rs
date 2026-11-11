@@ -38,7 +38,7 @@ pub(super) fn feature_name(d: &Design, i: u64) -> (Option<String>, Option<String
         if !(is_uuid_text(s) && *o2 >= *e && *o2 - *e < 1024) {
             continue;
         }
-        if is_uuid_text(base) || base.starts_with("Prism") || !is_name(base) {
+        if is_uuid_text(base) || base.starts_with("Prism") || !(is_name(base) || base == "Body->Comp") {
             continue;
         }
         if *e2 + 12 > rec.len() {

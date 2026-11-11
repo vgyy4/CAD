@@ -363,3 +363,53 @@ fn v3(p: V3) -> Value {
 fn unit9(n: V3) -> Value {
     json!([round9(n[0]), round9(n[1]), round9(n[2])])
 }
+
+/// Body->Comp `56225BC7` (a body made into a component) and CutPasteBodies `BA3059E4` (a body
+/// cut from one component and pasted into another): two off-timeline features do the work, a
+/// Base Feature `D7015B81` that holds the body in its new component and a RemoveBody `4A782808`
+/// that takes it out of the old one (section 30).
+pub(super) const BODY_MOVES: [&str; 2] = ["56225BC7", "BA3059E4"];
+
+/// For every body move of the design whose two halves are one Base Feature making one body and
+/// one RemoveBody of one body: the body the Base Feature makes is the removed body carried on,
+/// so its links are given to the removed body's maker (later features then act on that body).
+/// Returns the moves and their two halves, which are not features of the tree.
+pub(super) fn carry_moved_bodies(d: &Design, g: &mut Graph) -> HashMap<u64, Result<[u64; 2], String>> {
+    let mut out = HashMap::new();
+    for &m in &d.ids {
+        if !BODY_MOVES.iter().any(|c| d.is(m, c)) {
+            continue;
+        }
+        let refs = ref_ids(d, d.rec(m));
+        let mut bases: Vec<u64> = refs.iter().copied().filter(|q| d.is(*q, "D7015B81")).collect();
+        let mut removes: Vec<u64> = refs.iter().copied().filter(|q| d.is(*q, "4A782808")).collect();
+        bases.sort_unstable();
+        bases.dedup();
+        removes.sort_unstable();
+        removes.dedup();
+        let res = (|| {
+            let ([base], [remove]) = (bases.as_slice(), removes.as_slice()) else {
+                return Err(format!(
+                    "it names {} Base Features and {} RemoveBodies, not one each",
+                    bases.len(),
+                    removes.len()
+                ));
+            };
+            let removed = g.selected_bodies(d, *remove);
+            let [link] = removed.as_slice() else {
+                return Err(format!("its RemoveBody selects {} bodies, not one", removed.len()));
+            };
+            let maker = g.creator.get(link).copied().ok_or("the moved body has no maker")?;
+            let made: Vec<u64> = g.creator.iter().filter(|(_, f)| **f == *base).map(|(l, _)| *l).collect();
+            if made.len() != 1 {
+                return Err(format!("its Base Feature makes {} bodies, not one", made.len()));
+            }
+            for l in made {
+                g.creator.insert(l, maker);
+            }
+            Ok([*base, *remove])
+        })();
+        out.insert(m, res);
+    }
+    out
+}
