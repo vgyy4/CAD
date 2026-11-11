@@ -1660,7 +1660,8 @@ fn fusion_history(
             }
             let mut t = crate::tree_import::parse(&text).map_err(|e| e.message)?;
             t.stored_bodies = stored;
-            let note = fusion_states_check(&mut t, bodies, (&ends, end_box), kernel, file_name)
+            let dropped = fusion_dropped_inputs(&tree, &entries, &t.stored_bodies, kernel, importer, cancel);
+            let note = fusion_states_check(&mut t, bodies, (&ends, end_box), &dropped, kernel, file_name)
                 .map_err(|states| format!("{why}; checked step by step: {states}"))?;
             Ok((t, Some(note)))
         }
@@ -1716,19 +1717,7 @@ fn fusion_stored_bodies(
         let (Some(index), Some(count)) = (num("index"), num("count")) else {
             return Err(format!("the stored body {name} does not say which body of its blob it is"));
         };
-        let place = f.get("placement").map(|p| -> Option<gusset_sat::fusion::Placement> {
-            let mut r = [[0.0; 3]; 3];
-            let mut t = [0.0; 3];
-            for (i, row) in p.get("r")?.as_array()?.iter().enumerate().take(3) {
-                for (j, v) in row.as_array()?.iter().enumerate().take(3) {
-                    *r.get_mut(i)?.get_mut(j)? = v.as_f64()?;
-                }
-            }
-            for (i, v) in p.get("t")?.as_array()?.iter().enumerate().take(3) {
-                *t.get_mut(i)? = v.as_f64()?;
-            }
-            Some(gusset_sat::fusion::Placement { r, t })
-        });
+        let place = f.get("placement").map(fusion_placement);
         let place = match place {
             Some(Some(p)) => Some(p),
             Some(None) => return Err(format!("the placement of {name} cannot be read")),
@@ -1795,6 +1784,138 @@ fn fusion_stored_bodies(
         }
     }
     Ok(out)
+}
+
+/// Whether two solids are the same solid at the same place, as far as volume (within
+/// [`FREECAD_VOLUME_TOLERANCE`]) and bounding box (within a millionth of its size) tell.
+fn fusion_same_solid(a: (f64, &gusset_kernel::BBox), b: (f64, &gusset_kernel::BBox)) -> bool {
+    let tol = 1e-6 * (1.0 + gusset_kernel::norm(a.1.size()));
+    let near = |p: [f64; 3], q: [f64; 3]| p.iter().zip(q).all(|(p, q)| (p - q).abs() <= tol);
+    (a.0 - b.0).abs() <= FREECAD_VOLUME_TOLERANCE * a.0.abs().max(b.0.abs())
+        && near(a.1.min, b.1.min)
+        && near(a.1.max, b.1.max)
+}
+
+/// The input bodies that Base Features drop, as solids (volume, box) where the component places
+/// them: a Base Feature's record names its input (PM) bodies and which of them become its output
+/// (DM) bodies (`dropped_inputs` of its `stored_body` features: the PM blob, the number of PM
+/// bodies and the place in their list of each kept one); the others are in the PM blob (the
+/// component's `.smb`) and in no later state. The PM bodies are a run of the blob's solid bodies
+/// in list order; that run is the one, and only one, whose kept bodies are the Base Feature's
+/// output bodies (volume and box): the pairing of the list with the blob is checked by geometry,
+/// not assumed. Nothing for a Base Feature where that does not hold or a blob cannot be read.
+fn fusion_dropped_inputs(
+    tree: &Value,
+    entries: &[(String, Vec<u8>)],
+    stored: &[Vec<u8>],
+    kernel: &Arc<dyn gusset_kernel::Kernel>,
+    importer: &dyn Importer,
+    cancel: &CancelFlag,
+) -> Vec<(f64, gusset_kernel::BBox)> {
+    type Solid = (f64, gusset_kernel::BBox);
+    let feats = tree.get("features").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let solid_of = |blob: &[u8]| -> Option<Solid> {
+        let s = kernel.read_native(blob).ok()?;
+        Some((kernel.mass_properties(&s).ok()?.volume, kernel.bbox(&s).ok()?))
+    };
+    // The output bodies of each Base Feature at each place: (feature, placement) -> stored bodies.
+    let mut groups: Vec<((u64, String), &Value, Vec<usize>)> = Vec::new();
+    for f in feats.iter().filter(|f| f.get("type").and_then(Value::as_str) == Some("stored_body")) {
+        let (Some(inputs), Some(fid), Some(body)) = (
+            f.get("dropped_inputs"),
+            f.get("source_id").and_then(Value::as_u64),
+            f.get("body").and_then(Value::as_u64),
+        ) else {
+            continue;
+        };
+        let key = (fid, f.get("placement").map(Value::to_string).unwrap_or_default());
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, _, bodies)) => bodies.push(body as usize),
+            None => groups.push((key, inputs, vec![body as usize])),
+        }
+    }
+    let limits = gusset_sat::Limits::default();
+    let mut out = Vec::new();
+    let mut converted = 0usize;
+    for ((_, place_text), inputs, outputs) in groups {
+        let (Some(blob_name), Some(count), Some(kept)) = (
+            inputs.get("brep").and_then(Value::as_str),
+            inputs.get("count").and_then(Value::as_u64).map(|c| c as usize),
+            inputs.get("kept").and_then(Value::as_array),
+        ) else {
+            continue;
+        };
+        let kept: Vec<usize> = kept.iter().filter_map(Value::as_u64).map(|k| k as usize).collect();
+        let outputs: Option<Vec<Solid>> = outputs.iter().map(|b| stored.get(*b).and_then(|s| solid_of(s))).collect();
+        let Some(outputs) = outputs.filter(|o| o.len() == kept.len() && kept.len() < count) else { continue };
+        let Some((_, blob)) = entries.iter().find(|(n, _)| n.rsplit('/').next() == Some(blob_name)) else { continue };
+        let place: Option<gusset_sat::fusion::Placement> = if place_text.is_empty() {
+            None
+        } else {
+            let Some(p) = serde_json::from_str::<Value>(&place_text).ok().and_then(|p| fusion_placement(&p)) else {
+                continue;
+            };
+            Some(p)
+        };
+        let Ok(n) = gusset_sat::body_count(blob, &limits) else { continue };
+        converted += n;
+        if converted > MAX_F3D_BODIES || cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        // The blob's solid bodies in file order, each as its solids.
+        let mut solids: Vec<Vec<Solid>> = Vec::new();
+        let mut readable = true;
+        for nth in 0..n {
+            let step = match gusset_sat::to_step_nth(blob, "input body", &limits, place.as_ref(), nth, n) {
+                Ok(c) => c.step,
+                Err(gusset_sat::SatError::Unsupported(why)) if why.ends_with("is not a solid") => continue,
+                Err(_) => {
+                    readable = false;
+                    break;
+                }
+            };
+            let parts: Option<Vec<Solid>> = importer
+                .import("step", step.as_bytes(), cancel)
+                .ok()
+                .and_then(|s| s.iter().map(|(_, b)| solid_of(b)).collect());
+            match parts.filter(|p| !p.is_empty()) {
+                Some(p) => solids.push(p),
+                None => {
+                    readable = false;
+                    break;
+                }
+            }
+        }
+        if !readable || solids.len() < count {
+            continue;
+        }
+        let fits = |s: usize| {
+            kept.iter().zip(&outputs).all(|(k, (v, b))| {
+                matches!(solids.get(s + k).map(Vec::as_slice), Some([(pv, pb)]) if fusion_same_solid((*pv, pb), (*v, b)))
+            })
+        };
+        let runs: Vec<usize> = (0..=solids.len() - count).filter(|s| fits(*s)).collect();
+        let [start] = runs.as_slice() else { continue };
+        for at in (0..count).filter(|at| !kept.contains(at)) {
+            out.extend(solids.get(start + at).cloned().unwrap_or_default());
+        }
+    }
+    out
+}
+
+/// A placement as the tree writes it (`{"r": rows, "t": translation}`).
+fn fusion_placement(p: &Value) -> Option<gusset_sat::fusion::Placement> {
+    let mut r = [[0.0; 3]; 3];
+    let mut t = [0.0; 3];
+    for (i, row) in p.get("r")?.as_array()?.iter().enumerate().take(3) {
+        for (j, v) in row.as_array()?.iter().enumerate().take(3) {
+            *r.get_mut(i)?.get_mut(j)? = v.as_f64()?;
+        }
+    }
+    for (i, v) in p.get("t")?.as_array()?.iter().enumerate().take(3) {
+        *t.get_mut(i)? = v.as_f64()?;
+    }
+    Some(gusset_sat::fusion::Placement { r, t })
 }
 
 /// The volumes of the design's end bodies as the file stores them apart from the `.smb` solids: the
@@ -2228,6 +2349,7 @@ fn fusion_states_check(
     tree: &mut crate::tree_import::Tree,
     bodies: &[PreparedBody],
     (ends, end_box): (&[f64], Option<gusset_kernel::BBox>),
+    dropped: &[(f64, gusset_kernel::BBox)],
     kernel: &Arc<dyn gusset_kernel::Kernel>,
     file_name: &str,
 ) -> Result<String, String> {
@@ -2256,6 +2378,24 @@ fn fusion_states_check(
             kernel.bbox(&shape).map_err(|e| e.message)?,
         ));
     }
+    // The input bodies Base Features drop are in the file's `.smb` blobs and in no state of the
+    // model: each takes the one stored solid it is (volume and box), and no other rule sees it.
+    let mut taken = vec![false; stored.len()];
+    for (v, b) in dropped {
+        if let Some(at) = (0..stored.len()).find(|at| {
+            !taken.get(*at).copied().unwrap_or(true)
+                && stored.get(*at).is_some_and(|(sv, sb)| fusion_same_solid((*sv, sb), (*v, b)))
+        }) && let Some(t) = taken.get_mut(at)
+        {
+            *t = true;
+        }
+    }
+    let dropped_count = taken.iter().filter(|t| **t).count();
+    let kept_bodies: Vec<PreparedBody> =
+        bodies.iter().zip(&taken).filter(|(_, t)| !**t).map(|(b, _)| b.clone()).collect();
+    let bodies = &kept_bodies[..];
+    let stored: Vec<(f64, gusset_kernel::BBox)> =
+        stored.into_iter().zip(&taken).filter(|(_, t)| !**t).map(|(s, _)| s).collect();
     let empty = gusset_doc::Document::from_text("gusset 1\nunits mm\n").map_err(|e| e.to_string())?;
     // The volume of every body (and the box of the whole) of the model after the first k features.
     // One evaluator for every prefix: each build reuses what the shorter ones built.
@@ -2533,8 +2673,15 @@ fn fusion_states_check(
     } else {
         "every feature after the last state removes exactly its tool times the copies the tree makes"
     };
+    let inputs = if dropped_count > 0 {
+        format!(
+            "; {dropped_count} are input bodies that Base Features drop (the file names them as inputs and not as outputs)"
+        )
+    } else {
+        String::new()
+    };
     Ok(format!(
-        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools; {after}"
+        "the file stores the steps of the design, not its end result: {states} stored solids are states of the rebuilt model and {tools} are its cut tools{inputs}; {after}"
     ))
 }
 

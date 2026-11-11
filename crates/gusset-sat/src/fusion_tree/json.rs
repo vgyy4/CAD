@@ -1206,14 +1206,19 @@ pub(super) fn design_json(cx: &mut Ctx) -> Value {
                 }
                 Ok(bodies) => {
                     let n = bodies.len();
+                    let inputs = base_feature_inputs(d, &g, fid);
                     for (k, (brep, index, count)) in bodies.into_iter().enumerate() {
                         let mut bn = if k == 0 { nm.clone() } else { format!("{nm} {}", k + 1) };
                         while k > 0 && used_names.contains(&bn) {
                             bn.push('_');
                         }
                         used_names.insert(bn.clone());
-                        feats.push(json!({"type": "stored_body", "name": bn, "source_id": fid, "brep": brep,
-                            "index": index, "count": count, "creates_bodies": n}));
+                        let mut f = json!({"type": "stored_body", "name": bn, "source_id": fid, "brep": brep,
+                            "index": index, "count": count, "creates_bodies": n});
+                        if let (Some(inputs), Some(o)) = (&inputs, f.as_object_mut()) {
+                            o.insert("dropped_inputs".into(), inputs.clone());
+                        }
+                        feats.push(f);
                     }
                 }
                 Err(why) => feats.push(json!({"type": "unsupported", "fusion_type": fusion_type, "name": name,
@@ -1499,6 +1504,67 @@ fn base_feature_bodies(d: &Design, g: &Graph, fid: u64) -> Result<Vec<(String, u
         }
     }
     Ok(out)
+}
+
+/// The input (PM) bodies of a Base Feature that it does not hand on, as `{"brep": <the PM
+/// bodies' blob, BREP.<id>.smb>, "count": <PM bodies>, "kept": [<place in the PM list of the PM
+/// body of each DM body, in DM order>]}`; `None` where it hands on all of them or the records do
+/// not say it plainly. The record names its PM bodies, then its DM bodies, then again the PM
+/// bodies that become the DM bodies, in DM order (section 13): 5021's slide potentiometer has 15
+/// PM bodies and 6 DM bodies, and the 9 PM bodies named once (three 0.028 mm3 blocks, pins and a
+/// housing at other places) are in the component's `.smb` but in no later body.
+fn base_feature_inputs(d: &Design, g: &Graph, fid: u64) -> Option<Value> {
+    let refs: Vec<u64> = ref_ids(d, d.rec(fid)).into_iter().filter(|q| d.is(*q, "D3937028")).collect();
+    let mut dm: Vec<u64> = Vec::new();
+    for link in ref_ids(d, d.rec(fid)) {
+        if d.is(link, "D26351F0") && g.creator.get(&link) == Some(&fid) {
+            dm.push(ref_ids(d, d.rec(link)).into_iter().find(|q| d.is(*q, "D3937028"))?);
+        }
+    }
+    // PM bodies, the DM block, then the kept PM bodies again.
+    let first_dm = refs.iter().position(|q| dm.contains(q))?;
+    let (pm, rest) = refs.split_at(first_dm);
+    let (dm_block, again) = rest.split_at(rest.iter().position(|q| !dm.contains(q)).unwrap_or(rest.len()));
+    if dm_block != dm.as_slice() || again.len() != dm.len() || pm.len() <= dm.len() || pm.len() > 4096 {
+        return None;
+    }
+    let mut kept = Vec::with_capacity(again.len());
+    for q in again {
+        let at = pm.iter().position(|p| p == q)?;
+        if kept.contains(&at) {
+            return None;
+        }
+        kept.push(at);
+    }
+    // Every PM body is in one state list, and that list names the PM blob.
+    let list_of = |b: u64| -> Option<u64> {
+        let lists: Vec<u64> = ref_ids(d, d.rec(b)).into_iter().filter(|q| d.is(*q, "CD57BC48")).collect();
+        let first = *lists.first()?;
+        lists.iter().all(|l| *l == first).then_some(first)
+    };
+    let list = list_of(*pm.first()?)?;
+    if pm.iter().any(|b| list_of(*b) != Some(list)) {
+        return None;
+    }
+    let members = ref_ids(d, d.rec(list));
+    let names: Vec<String> = members
+        .iter()
+        .filter(|q| d.is(**q, "40DCC3F4"))
+        .flat_map(|q| stream::wstrings_all(d.rec(*q)).into_iter().map(|w| w.2))
+        .filter(|w| w.starts_with("BREP.") && w.ends_with(".smb"))
+        .collect();
+    let [brep] = names.as_slice() else { return None };
+    // The list names its bodies (twice, as two reference lists): the PM bodies and no others.
+    let mut listed: Vec<u64> = Vec::new();
+    for q in members.into_iter().filter(|q| d.is(*q, "D3937028")) {
+        if !listed.contains(&q) {
+            listed.push(q);
+        }
+    }
+    if listed != pm {
+        return None;
+    }
+    Some(json!({"brep": brep, "count": pm.len(), "kept": kept}))
 }
 
 fn tag_feats(feats: &mut [Value], from: usize, comp: Option<(u64, Option<&str>)>, off_timeline: bool) {
